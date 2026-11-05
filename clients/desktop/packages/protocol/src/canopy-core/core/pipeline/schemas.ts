@@ -219,7 +219,7 @@ export const PipelineDefinitionDuplicateResultSchema = z.looseObject({
  * reads the remote itself; the caller never supplies the document.
  */
 export const PipelineDefinitionImportParamsSchema = z.strictObject({
-  /** A `curated:` or `shared:` definition id. */
+  /** A `curated:`, `shared:`, `public-share:` or `package-pipeline:` remote id. */
   remoteDefinitionId: id,
   /** The scope the install is authorized in; the definition is unscoped. */
   targetScope: CanopyWorkspaceScopeSchema,

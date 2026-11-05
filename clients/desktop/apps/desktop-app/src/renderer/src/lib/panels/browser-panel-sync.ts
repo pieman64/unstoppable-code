@@ -412,15 +412,6 @@ export function initBrowserPanelSync(): void {
   });
 }
 
-/** Test-only: runs a pending (scheduled) sweep synchronously. */
-export function flushBrowserPanelSyncForTests(): void {
-  if (!pendingSweep) {
-    return;
-  }
-  pendingSweep = false;
-  runSweep();
-}
-
 /** Test-only: tears down the subscription and clears all module state. */
 export function resetBrowserPanelSyncForTests(): void {
   unsubscribePanels?.();

@@ -26,6 +26,7 @@ import {
   describeLockedProviderReason,
   isContinuableHarnessPair,
 } from '@/lib/chatProviderLock';
+import { connectProviderLabel } from '@canopy/ui-shared';
 import { brandText } from '@/lib/brand';
 import { getProviderLabel } from '@/lib/providerLabels';
 import type { BillingFramework } from '@/lib/chatBillingFramework';
@@ -83,13 +84,11 @@ export type ModelRecovery =
    * CAN-3026 — a GUEST picked a model Canopy would pay for that is not on the
    * guest allowlist. An account is required, not a balance.
    *
-   * Deliberately distinct from `needs-credits`: a guest may already be FUNDED
-   * (a guest who opted in to the daily free-credit drip tops up every day,
-   * like a signed-in free account), so this modal must not lead with a
-   * purchase for something money cannot buy. The drip is off by default, so an
-   * opted-out guest or free user with no balance who picks an allowlisted
-   * Canopy-paid model lands on `needs-credits`, whose modal then offers
-   * "Turn on free daily credits" first.
+   * Deliberately distinct from `needs-credits`: a guest may already be FUNDED,
+   * so this modal must not lead with a purchase for something money cannot
+   * buy. A guest or free user with no balance who picks an allowlisted
+   * Canopy-paid model lands on `needs-credits`, whose modal offers
+   * "Buy AI Credits" (CAN-4766: never free daily credits).
    *
    * `access` says which remedy the row's lock hint names (CAN-4028): sign-in
    * alone, or sign-in followed by a purchase. Absent means sign-in alone, so
@@ -658,7 +657,7 @@ export function resolveModelRowGate(input: ModelRowGateInput): ModelRowGate {
     return {
       kind: 'hard-disabled',
       cause: 'no-billing-source',
-      reason: `Sign in to ${getProviderLabel(provider)} or add AI Credits to use these models.`,
+      reason: `${connectProviderLabel(getProviderLabel(provider))} or buy AI Credits to use these models.`,
     };
   }
 

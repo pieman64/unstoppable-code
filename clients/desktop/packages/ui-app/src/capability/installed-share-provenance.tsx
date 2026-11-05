@@ -5,7 +5,12 @@ import type {
   SharedSkillInstallOrigin,
   SharedSkillSummary,
 } from '@canopy/protocol';
-import { Badge, ExecutionActionButton } from '@canopy/ui-shared/components';
+import {
+  Badge,
+  Button,
+  buttonClassName,
+  ExecutionActionButton,
+} from '@canopy/ui-shared/components';
 import { RefreshIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { SHARE_ATTRIBUTION_SHARER_PREFIX } from '../sharing/share-install-copy';
@@ -112,25 +117,22 @@ export function sharedSkillDisplayNames(
 }
 
 function SourceLink({ source }: { source: InstalledShareSource }): JSX.Element {
-  const className =
-    'focus-ring rounded-sm fg-accent underline-offset-2 hover:underline';
   if (source.kind === 'action') {
     return (
-      <button
-        type="button"
-        className={className}
+      <Button
+        variant="link"
         data-testid="installed-share-source-link"
         onClick={source.onSelect}
       >
         {VIEW_SHARED_SKILL_LABEL}
-      </button>
+      </Button>
     );
   }
   const { onNavigate } = source;
   return (
     <a
       href={source.href}
-      className={className}
+      className={buttonClassName({ variant: 'link' })}
       data-testid="installed-share-source-link"
       onClick={
         onNavigate

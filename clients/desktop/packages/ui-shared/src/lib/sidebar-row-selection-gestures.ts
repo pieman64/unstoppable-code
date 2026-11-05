@@ -14,9 +14,11 @@ export interface SelectionGestureInputs {
 }
 
 /**
- * `toggle`: the platform command-click. `range`: Shift-click. `open`: a
+ * `toggle`: the platform command-click. `range`: Shift-click, with or
+ * without the command key (Finder keeps earlier picks either way). `open`: a
  * plain click with no selection, or a modified click on an unselectable row.
- * `open-and-clear`: a plain click while a selection is active.
+ * `open-and-clear`: a plain click while a selection is active. A plain click
+ * on a selectable row also anchors later Shift ranges there.
  */
 export type SelectionClickIntent =
   | 'toggle'
@@ -24,7 +26,14 @@ export type SelectionClickIntent =
   | 'open'
   | 'open-and-clear';
 
-export type SelectionKeyIntent = 'toggle' | 'select-all' | 'clear' | null;
+/** `extend-up` / `extend-down`: Shift+Up/Down move the Shift range's far end. */
+export type SelectionKeyIntent =
+  | 'toggle'
+  | 'select-all'
+  | 'clear'
+  | 'extend-up'
+  | 'extend-down'
+  | null;
 
 export interface ModifierKeys {
   readonly metaKey: boolean;
@@ -45,8 +54,8 @@ export function resolveSelectionClick(
 ): SelectionClickIntent {
   const command = commandKey(event, isMac);
   if (inputs.selectable) {
-    if (command) return 'toggle';
     if (event.shiftKey) return 'range';
+    if (command) return 'toggle';
   }
   if (command || event.shiftKey) return 'open';
   return inputs.active ? 'open-and-clear' : 'open';
@@ -66,6 +75,15 @@ export function resolveSelectionKey(
   ) {
     return 'toggle';
   }
+  if (
+    (event.key === 'ArrowUp' || event.key === 'ArrowDown') &&
+    event.shiftKey &&
+    !command &&
+    !event.altKey &&
+    inputs.selectable
+  ) {
+    return event.key === 'ArrowUp' ? 'extend-up' : 'extend-down';
+  }
   if ((event.key === 'a' || event.key === 'A') && command && !event.altKey) {
     return 'select-all';
   }
@@ -81,4 +99,19 @@ export function shiftMouseDownSuppressesTextSelection(
   selectable: boolean,
 ): boolean {
   return event.shiftKey && selectable;
+}
+
+/**
+ * Focuses the rendered row that carries `key` in the selection-row attribute,
+ * after Shift+Up/Down moved the range there. Pinned copies carry no key.
+ */
+export function focusSelectionRow(
+  from: HTMLElement,
+  attribute: string,
+  key: string,
+): void {
+  const row = from.ownerDocument.querySelector<HTMLElement>(
+    `[${attribute}="${CSS.escape(key)}"]`,
+  );
+  row?.focus();
 }

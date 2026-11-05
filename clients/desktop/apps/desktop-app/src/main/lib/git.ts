@@ -87,7 +87,11 @@ import {
   type GitFetchFreshnessIdentity,
 } from './git-fetch-freshness';
 import { getWorktreeDeleteTimeoutMs } from './worktree-delete-config';
-import { terminateProcessesReferencingPath } from './worktree-process-cleanup';
+import {
+  terminateProcessesReferencingPath,
+  withLinuxWorktreeRemovalVerification,
+  WorktreeProcessCleanupError,
+} from './worktree-process-cleanup';
 import { removeWindowsWorktreeReparsePoints } from './windows-worktree-reparse-points';
 import { settleAll } from '@canopy/desktop-shared/node/lib/detached-work';
 export { removeWindowsWorktreeReparsePoints } from './windows-worktree-reparse-points';
@@ -3131,8 +3135,17 @@ async function removeWorktreeWithoutLock(
 ): Promise<void> {
   await terminateProcessesReferencingPath(worktreePath).catch(
     (error: unknown) => {
-      // Process cleanup is best effort. Git removal remains authoritative and
-      // must still run when process enumeration is unavailable.
+      // On Linux a process that outlives termination can keep writing into
+      // the checkout after Git unlinks it, so that failure stops removal.
+      if (
+        hostOperatingSystem() === 'linux' &&
+        error instanceof WorktreeProcessCleanupError
+      ) {
+        throw error;
+      }
+      // Elsewhere process cleanup is best effort. Git removal remains
+      // authoritative and must still run when process enumeration is
+      // unavailable.
       // eslint-disable-next-line no-console
       console.warn('Failed to clean up processes for removed worktree.', {
         worktreePath,
@@ -3140,10 +3153,19 @@ async function removeWorktreeWithoutLock(
       });
     },
   );
-  await removeWindowsWorktreeReparsePoints(worktreePath);
-  await runGit(['worktree', 'remove', '--force', worktreePath], repoPath, {
-    timeoutMs: getWorktreeDeleteTimeoutMs(),
-  });
+  const removeCheckout = async (): Promise<void> => {
+    await removeWindowsWorktreeReparsePoints(worktreePath);
+    await runGit(['worktree', 'remove', '--force', worktreePath], repoPath, {
+      timeoutMs: getWorktreeDeleteTimeoutMs(),
+    });
+  };
+  if (hostOperatingSystem() !== 'linux') {
+    await removeCheckout();
+    return;
+  }
+  // Checks Canopy-owned writers before removal and again after, so a retained
+  // directory and a removed-but-still-written one are reported distinctly.
+  await withLinuxWorktreeRemovalVerification(worktreePath, removeCheckout);
 }
 
 export async function withWorktreeRemovalLock<T>(

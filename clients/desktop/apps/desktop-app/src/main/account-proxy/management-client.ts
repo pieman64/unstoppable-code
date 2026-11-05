@@ -12,6 +12,10 @@ import {
   parseAccountProxyVersion,
 } from '@canopy/desktop-shared/lib/account-proxy';
 import type { AccountProxyErrorCode } from '@canopy/desktop-shared/types/account-proxy';
+import {
+  revealLocalAccountProxyKey,
+  type LocalAccountProxyKey,
+} from './local-launch-keys';
 
 const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
@@ -31,9 +35,15 @@ export interface AccountProxyManagementResponse {
   readonly body: unknown;
 }
 
+/**
+ * A server's management key, or the handle of the proxy on this device's
+ * current launch key.
+ */
+export type AccountProxyManagementKey = string | LocalAccountProxyKey;
+
 export interface AccountProxyManagementRequest {
   readonly baseUrl: string;
-  readonly managementKey: string;
+  readonly managementKey: AccountProxyManagementKey;
   readonly method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   /** Path under `/v8/management`, with its query string. */
   readonly path: string;
@@ -84,6 +94,15 @@ export async function requestAccountProxyManagement(
   // A cancelled caller sends nothing, so a key it no longer trusts is not
   // offered to the server again.
   request.signal?.throwIfAborted();
+  const managementKey =
+    typeof request.managementKey === 'string'
+      ? request.managementKey
+      : revealLocalAccountProxyKey(request.managementKey);
+  // The launch this key belonged to has ended. A later proxy process would
+  // count it as a wrong key toward its block, so nothing is sent.
+  if (managementKey === null) {
+    throw new AccountProxyManagementError('unreachable');
+  }
   const signal = request.signal
     ? AbortSignal.any([request.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)])
     : AbortSignal.timeout(REQUEST_TIMEOUT_MS);
@@ -92,7 +111,7 @@ export async function requestAccountProxyManagement(
     response = await fetch(`${request.baseUrl}/v8/management${request.path}`, {
       method: request.method,
       headers: {
-        authorization: `Bearer ${request.managementKey}`,
+        authorization: `Bearer ${managementKey}`,
         accept: 'application/json',
         ...(request.body !== undefined
           ? { 'content-type': 'application/json' }

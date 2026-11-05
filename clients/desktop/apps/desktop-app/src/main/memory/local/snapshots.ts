@@ -20,14 +20,15 @@ import {
   isChatHistoryProfileTopic,
   removeChatHistoryProfileIndexLines,
   replaceChatHistoryProfileIndexLine,
-} from './chat-history-profile';
+} from '@canopy/memory-consolidation/chat-history-profile';
 import { recordMemoryEdit, withMemoryWriteLock } from './edit-coordination';
 import {
+  assertMemoryPathContained,
   assertMemoryScopeLockHeld,
-  ensureOwnerOnlyDir,
+  ensureOwnerOnlyMemoryDir,
   isMemoryMarkdownFileName,
 } from './memory-files';
-import { topicIdentity } from './topic-identity';
+import { topicIdentity } from '@canopy/memory-consolidation/topic-identity';
 
 export const LOCAL_MEMORY_SNAPSHOT_RETENTION = 10;
 /**
@@ -265,7 +266,7 @@ async function saveSnapshot(
 
   const id = snapshotId(now);
   const directory = snapshotsDir(scopeDir);
-  await ensureOwnerOnlyDir(directory);
+  await ensureOwnerOnlyMemoryDir(scopeDir, directory);
   const staging = join(directory, `.${id}.tmp`);
   const manifest: SnapshotManifest = {
     version: SNAPSHOT_VERSION,
@@ -665,6 +666,7 @@ function createLocalMemoryWriteGuard(
    */
   const verify = async (path: string): Promise<string | null> => {
     if (stopped) stop();
+    await assertMemoryPathContained(scopeDir, dirname(path));
     await assertMemoryScopeLockHeld();
     const key = keyFor(path);
     if (key === null) return null;
@@ -692,7 +694,7 @@ function createLocalMemoryWriteGuard(
   const guard: LocalMemoryWriteGuard = {
     async stage(targetPath, content) {
       if (stopped) stop();
-      await ensureOwnerOnlyDir(dirname(targetPath));
+      await ensureOwnerOnlyMemoryDir(scopeDir, dirname(targetPath));
       const temporaryPath = `${targetPath}.${process.pid}.${randomUUID()}.tmp`;
       staged.add(temporaryPath);
       await writeFile(temporaryPath, content, {

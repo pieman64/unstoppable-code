@@ -60,6 +60,9 @@ export const DEFAULT_LEDGER_FEED_FILTERS: LedgerFeedFilters = {
   includeArchived: false,
 };
 
+/** The number of Activity entries a page shows before Show more entries. */
+export const LEDGER_FEED_PAGE_ENTRIES = 25;
+
 export interface LedgerFeedListState {
   readonly status: 'idle' | 'loading' | 'ready' | 'problem';
   /** Changes whenever a fresh first page establishes a new list placement. */
@@ -162,6 +165,8 @@ export interface LedgerFeedRemoteDetailState {
 
 export interface LedgerFeedState {
   readonly audience: LedgerFeedAudience;
+  readonly showTeammates: boolean;
+  readonly onlyThisDevice: boolean;
   readonly queryText: string;
   readonly filters: LedgerFeedFilters;
   readonly list: LedgerFeedListState;
@@ -169,6 +174,10 @@ export interface LedgerFeedState {
   readonly actors: Readonly<Record<string, LedgerActorLabel>>;
   /** A newer first page waits to be shown; the list stays until it is. */
   readonly newActivity: boolean;
+  readonly live: boolean;
+  /** The Activity list holds new rows while the pointer is over it. */
+  readonly liveHeld: boolean;
+  readonly activityShownCount: number;
   readonly selectedEntryId: string | null;
   /**
    * This device's scope the detail shows: the selected row's, or the one a
@@ -181,10 +190,15 @@ export interface LedgerFeedState {
   /** Reads the first page; `refresh` reads past the host's cache. */
   readonly load: (options?: { readonly refresh?: boolean }) => Promise<void>;
   readonly setAudience: (audience: LedgerFeedAudience) => Promise<void>;
+  readonly setShowTeammates: (on: boolean) => Promise<void>;
+  readonly setOnlyThisDevice: (on: boolean) => Promise<void>;
+  readonly setLive: (on: boolean) => Promise<void>;
+  readonly setLiveHeld: (held: boolean) => Promise<void>;
   /** Sets the search text; the next `load` searches for it. */
   readonly setQueryText: (text: string) => void;
   readonly setFilters: (filters: LedgerFeedFilters) => Promise<void>;
   readonly loadMore: () => Promise<void>;
+  readonly showMoreEntries: () => Promise<void>;
   /**
    * Looks at the newest first page in the background. Rows already shown
    * take fresh copies in place; a new entry within the reached range, a
@@ -304,6 +318,7 @@ function movedDraft(
   return {
     ...draft,
     owner: null,
+    parent: null,
     referenceFiles: sameProject ? draft.referenceFiles : [],
   };
 }
@@ -327,6 +342,39 @@ function audienceIncludes(
     : audience !== 'this_device';
 }
 
+function audienceFromOptions(
+  showTeammates: boolean,
+  onlyThisDevice: boolean,
+): LedgerFeedAudience {
+  if (onlyThisDevice) return 'this_device';
+  return showTeammates ? 'teammates' : 'mine';
+}
+
+function hasNoticeOrMissingRows(
+  shown: LedgerFeedListState,
+  fresh: LedgerFeedPage,
+): boolean {
+  const passingOutage =
+    fresh.notice === 'remote_unavailable' && shown.notice === null;
+  if (fresh.notice !== shown.notice && !passingOutage) return true;
+  if (passingOutage || fresh.hasMore) return false;
+
+  const freshIds = new Set(fresh.rows.map((row) => row.entry.entryId));
+  return shown.rows.some((row) => !freshIds.has(row.entry.entryId));
+}
+
+function newRowsInReachedRange(
+  shown: LedgerFeedListState,
+  fresh: LedgerFeedPage,
+): readonly LedgerFeedRow[] {
+  const shownIds = new Set(shown.rows.map((row) => row.entry.entryId));
+  return fresh.rows.filter(
+    (row, index) =>
+      !shownIds.has(row.entry.entryId) &&
+      (index < shown.rows.length || !shown.hasMore),
+  );
+}
+
 /**
  * Whether the fresh page offers an entry within the range the list has
  * reached, or says that shown rows or the notice have changed. A passing
@@ -337,24 +385,9 @@ function hasNewActivity(
   shown: LedgerFeedListState,
   fresh: LedgerFeedPage,
 ): boolean {
-  const passingOutage =
-    fresh.notice === 'remote_unavailable' && shown.notice === null;
-  if (fresh.notice !== shown.notice && !passingOutage) return true;
-
-  const shownIds = new Set(shown.rows.map((row) => row.entry.entryId));
-  const freshIds = new Set(fresh.rows.map((row) => row.entry.entryId));
-  const hasNewEntryInReachedRange = fresh.rows.some(
-    (row, index) =>
-      !shownIds.has(row.entry.entryId) &&
-      (index < shown.rows.length || !shown.hasMore),
-  );
-  if (hasNewEntryInReachedRange) return true;
-
-  // A final page says that rows the list had shown are no longer present.
   return (
-    !passingOutage &&
-    !fresh.hasMore &&
-    shown.rows.some((row) => !freshIds.has(row.entry.entryId))
+    hasNoticeOrMissingRows(shown, fresh) ||
+    newRowsInReachedRange(shown, fresh).length > 0
   );
 }
 
@@ -498,7 +531,40 @@ export function createLedgerFeedStore(
         list: readyList(result.value, state.list.generation + 1),
         actors: withActors(state.actors, result.value.actors),
         scrollTop: 0,
+        activityShownCount: LEDGER_FEED_PAGE_ENTRIES,
       }));
+    };
+
+    const setAudienceWithOptions = async (
+      audience: LedgerFeedAudience,
+      showTeammates: boolean,
+      onlyThisDevice: boolean,
+    ): Promise<void> => {
+      const current = get();
+      if (
+        audience === current.audience &&
+        showTeammates === current.showTeammates &&
+        onlyThisDevice === current.onlyThisDevice
+      ) {
+        return;
+      }
+      // A remote detail the new audience cannot read is let go of in the
+      // same way for the page's two controls and the legacy audience setter.
+      const { origin } = current.remoteDetail;
+      if (origin !== null && !audienceIncludes(audience, origin)) {
+        detailGeneration += 1;
+        set({
+          audience,
+          showTeammates,
+          onlyThisDevice,
+          selectedEntryId: null,
+          selectedScope: null,
+          remoteDetail: IDLE_REMOTE_DETAIL,
+        });
+      } else {
+        set({ audience, showTeammates, onlyThisDevice });
+      }
+      await load();
     };
 
     const loadMore = async (): Promise<void> => {
@@ -546,6 +612,21 @@ export function createLedgerFeedStore(
       }));
     };
 
+    const showMoreEntries = async (): Promise<void> => {
+      const activityShownCount =
+        get().activityShownCount + LEDGER_FEED_PAGE_ENTRIES;
+      set({ activityShownCount });
+      while (
+        get().list.rows.length < activityShownCount &&
+        get().list.hasMore
+      ) {
+        const before = get().list.rows.length;
+        await loadMore();
+        const { list } = get();
+        if (list.rows.length <= before || !list.hasMore) break;
+      }
+    };
+
     const checkForNewActivity = async (): Promise<void> => {
       const shown = get().list;
       if (shown.status !== 'ready') return;
@@ -573,6 +654,7 @@ export function createLedgerFeedStore(
         set((state) => ({
           list: readyList(fresh, state.list.generation + 1),
           actors: withActors(state.actors, fresh.actors),
+          activityShownCount: LEDGER_FEED_PAGE_ENTRIES,
         }));
         return;
       }
@@ -588,18 +670,58 @@ export function createLedgerFeedStore(
       const withOwn =
         own.length === 0 ? list : { ...list, rows: [...own, ...list.rows] };
       const newActivity = hasNewActivity(withOwn, fresh);
+      const nonInsertChange = hasNoticeOrMissingRows(withOwn, fresh);
+      const { live, liveHeld } = get();
+      const insertFreshRows = live && !liveHeld;
+      const oldHeadId = list.rows[0]?.entry.entryId;
+      const peekReachedOldHead =
+        oldHeadId !== undefined &&
+        fresh.rows.some((row) => row.entry.entryId === oldHeadId);
+      if (insertFreshRows && newActivity && !peekReachedOldHead) {
+        // A peek that misses the old head may hide a page-sized gap; start a
+        // fresh snapshot instead of splicing only the newest peek page.
+        await load({ refresh: true });
+        return;
+      }
       set((state) => {
         const current = new Set(
           state.list.rows.map((row) => row.entry.entryId),
         );
-        const added = own.filter((row) => !current.has(row.entry.entryId));
+        const ownAdds = own.filter((row) => !current.has(row.entry.entryId));
+        const withOwnIds = new Set([
+          ...Array.from(current),
+          ...ownAdds.map((row) => row.entry.entryId),
+        ]);
+        const shownWithOwn: LedgerFeedListState = {
+          ...state.list,
+          rows: [...ownAdds, ...state.list.rows],
+        };
+        const reachedAdds = insertFreshRows
+          ? newRowsInReachedRange(shownWithOwn, fresh).filter(
+              (row) => !withOwnIds.has(row.entry.entryId),
+            )
+          : [];
+        const insertedIds = new Set([
+          ...ownAdds.map((row) => row.entry.entryId),
+          ...reachedAdds.map((row) => row.entry.entryId),
+        ]);
+        const liveAdds = insertFreshRows
+          ? fresh.rows.filter((row) => insertedIds.has(row.entry.entryId))
+          : ownAdds;
         return {
           list: {
             ...state.list,
-            rows: refreshedRows([...added, ...state.list.rows], fresh.rows),
+            rows: refreshedRows([...liveAdds, ...state.list.rows], fresh.rows),
           },
           actors: withActors(state.actors, fresh.actors),
-          ...(newActivity ? { newActivity: true } : {}),
+          ...(insertFreshRows
+            ? { newActivity: nonInsertChange }
+            : newActivity
+              ? { newActivity: true }
+              : {}),
+          ...(insertFreshRows
+            ? { activityShownCount: state.activityShownCount + liveAdds.length }
+            : {}),
         };
       });
     };
@@ -735,11 +857,16 @@ export function createLedgerFeedStore(
 
     return {
       audience: 'mine',
+      showTeammates: false,
+      onlyThisDevice: false,
       queryText: '',
       filters: DEFAULT_LEDGER_FEED_FILTERS,
       list: IDLE_LIST,
       actors: {},
       newActivity: false,
+      live: false,
+      liveHeld: false,
+      activityShownCount: LEDGER_FEED_PAGE_ENTRIES,
       selectedEntryId: null,
       selectedScope: null,
       remoteDetail: IDLE_REMOTE_DETAIL,
@@ -747,22 +874,42 @@ export function createLedgerFeedStore(
       scrollTop: 0,
       load,
       setAudience: async (audience): Promise<void> => {
-        if (audience === get().audience) return;
-        // This device's entries are in every audience; a remote one the
-        // new audience leaves out is let go of, not shown as someone else's.
-        const { origin } = get().remoteDetail;
-        if (origin !== null && !audienceIncludes(audience, origin)) {
-          detailGeneration += 1;
-          set({
-            audience,
-            selectedEntryId: null,
-            selectedScope: null,
-            remoteDetail: IDLE_REMOTE_DETAIL,
-          });
-        } else {
-          set({ audience });
+        const showTeammates = audience === 'teammates';
+        const onlyThisDevice = audience === 'this_device';
+        await setAudienceWithOptions(audience, showTeammates, onlyThisDevice);
+      },
+      setShowTeammates: async (on): Promise<void> => {
+        const onlyThisDevice = on ? false : get().onlyThisDevice;
+        const showTeammates = on;
+        await setAudienceWithOptions(
+          audienceFromOptions(showTeammates, onlyThisDevice),
+          showTeammates,
+          onlyThisDevice,
+        );
+      },
+      setOnlyThisDevice: async (on): Promise<void> => {
+        const showTeammates = on ? false : get().showTeammates;
+        const onlyThisDevice = on;
+        await setAudienceWithOptions(
+          audienceFromOptions(showTeammates, onlyThisDevice),
+          showTeammates,
+          onlyThisDevice,
+        );
+      },
+      setLive: async (on): Promise<void> => {
+        const current = get();
+        if (current.live === on) return;
+        set({ live: on });
+        if (on && current.newActivity && !current.liveHeld) {
+          await checkForNewActivity();
         }
-        await load();
+      },
+      setLiveHeld: async (held): Promise<void> => {
+        const current = get();
+        set({ liveHeld: held });
+        if (!held && current.live && current.newActivity) {
+          await checkForNewActivity();
+        }
       },
       setQueryText: (text): void => {
         set({ queryText: text });
@@ -772,6 +919,7 @@ export function createLedgerFeedStore(
         await load();
       },
       loadMore,
+      showMoreEntries,
       checkForNewActivity,
       noteOwnEntry,
       showNewActivity,
@@ -906,11 +1054,16 @@ export function createLedgerFeedStore(
         ownEntries.clear();
         set((state) => ({
           audience: 'mine',
+          showTeammates: false,
+          onlyThisDevice: false,
           queryText: '',
           filters: DEFAULT_LEDGER_FEED_FILTERS,
           list: { ...IDLE_LIST, generation: state.list.generation },
           actors: {},
           newActivity: false,
+          live: false,
+          liveHeld: false,
+          activityShownCount: LEDGER_FEED_PAGE_ENTRIES,
           selectedEntryId: null,
           selectedScope: null,
           remoteDetail: IDLE_REMOTE_DETAIL,

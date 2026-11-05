@@ -5,6 +5,10 @@ import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { BRAND } from '@canopy/brand/current';
+import {
+  CODE_GRAPH_RUNTIME_ROOTS,
+  DAEMON_EXECUTION_HOST_ENTRIES,
+} from '@canopy/core-platform/execution-host/daemon-payload';
 import { daemonName } from '@canopy/protocol/brand';
 import type {
   CliInstallResult,
@@ -14,14 +18,9 @@ import type {
 const TOOLS = ['claude', 'codex', 'codex-code-mode-host', 'gh', 'rg', 'rtk'];
 const DAEMON = daemonName(BRAND);
 const DAEMON_FILES = [`${DAEMON}.identity.json`, 'w5-commit-log-worker.js'];
-// The daemon's execution host entries beside it: its terminal host (CAN-5088).
+// The daemon's execution host entries beside it, and the graph runtime its
+// code-graph hosts share with the CLI: the release's own lists (CAN-5672).
 const DAEMON_HOSTS = 'execution-hosts';
-const DAEMON_HOST_ENTRIES = ['terminal-host.js'];
-const RESOURCE_ROOTS = [
-  'resources/code-graph',
-  'node_modules/web-tree-sitter',
-  'node_modules/typescript',
-];
 const RECEIPT = '.cli-install.json';
 
 interface InstallOptions {
@@ -420,7 +419,7 @@ async function requirePayload(directory: string): Promise<void> {
   for (const [directory, name] of [
     ['node-pty', 'package.json'],
     ['node-pty', 'build/Release/pty.node'],
-    ...DAEMON_HOST_ENTRIES.map((entry) => [DAEMON_HOSTS, entry]),
+    ...DAEMON_EXECUTION_HOST_ENTRIES.map((entry) => [DAEMON_HOSTS, entry]),
   ]) {
     const source = members.get(directory);
     const stat = source ? await statIfPresent(path.join(source, name)) : null;
@@ -428,7 +427,9 @@ async function requirePayload(directory: string): Promise<void> {
       throw new Error(`Incomplete CLI distribution: ${directory}/${name}`);
     }
   }
-  for (const name of RESOURCE_ROOTS) {
+  for (const name of CODE_GRAPH_RUNTIME_ROOTS) {
+    if (!(await statIfPresent(path.join(directory, name)))?.isDirectory())
+      throw new Error(`Incomplete CLI distribution: ${name}`);
     const files = await fs.readdir(path.join(directory, name), {
       recursive: true,
     });

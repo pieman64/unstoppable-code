@@ -155,36 +155,72 @@ function assetFileDestination(assetRoot: string, entryPath: string): string {
   return destination;
 }
 
+/** A file {@link installPipelineAssets} writes, under the asset dir. */
+export interface PipelineAssetFileWrite {
+  /** `<assetId>/<path>`, relative to `getPipelineAssetsDir`. */
+  path: string;
+  sha256: string;
+  executable: boolean;
+}
+
 /**
- * Copy each `file_asset` resource from the cached package into
- * `getPipelineAssetsDir(localPipelineId)/<assetId>`. `seed` writes only files
- * that are missing; `replace` overwrites. `assets.json` then records the hash
- * of every file install wrote (for `seed`, a file left in place keeps the
- * hash an earlier install recorded, or its own when it already matches).
- * Idempotent: a retry writes the same bytes and the same record.
+ * What {@link installPipelineAssets} is about to write into a local
+ * pipeline's asset dir, worked out before its first write.
  */
-export async function installPipelineAssets(input: {
+export interface PipelineAssetInstallPlan {
+  files: PipelineAssetFileWrite[];
+  /**
+   * Every folder it makes sure of, relative to the asset dir (`.` is the
+   * asset dir itself), parents first.
+   */
+  directories: string[];
+  /** The ones of {@link directories} that do not exist yet. */
+  createdDirectories: string[];
+  manifest: PipelineAssetsManifestV1;
+  /** The `assets.json` it writes. */
+  manifestText: string;
+}
+
+/** The folder chain from the asset dir down to `relativeDir`, parents first. */
+function folderChain(relativeDir: string): string[] {
+  const chain = ['.'];
+  if (relativeDir === '.') return chain;
+  const segments = relativeDir.split('/');
+  for (let index = 1; index <= segments.length; index += 1) {
+    chain.push(segments.slice(0, index).join('/'));
+  }
+  return chain;
+}
+
+/**
+ * What installing the package's `file_asset` resources into a local
+ * pipeline would write, without writing. `seed` writes only files that are
+ * missing; `replace` overwrites. `assets.json` then records the hash of
+ * every file install wrote (for `seed`, a file left in place keeps the hash
+ * an earlier install recorded, or its own when it already matches).
+ */
+export async function planPipelineAssetInstall(input: {
   localPipelineId: string;
-  /** The verified cache directory of the package. */
-  packagePath: string;
   /** The package's `file_asset` resources for this pipeline. */
   resources: readonly PipelinePackageResource[];
-}): Promise<PipelineAssetsManifestV1> {
+}): Promise<PipelineAssetInstallPlan> {
   const assetsRoot = getPipelineAssetsDir(input.localPipelineId);
   const previous = await readPipelineAssetsManifest(input.localPipelineId);
-  const recorded: PipelineAssetsManifestV1 = {
+  const manifest: PipelineAssetsManifestV1 = {
     version: 1,
     assets: { ...previous.assets },
   };
+  const files: PipelineAssetFileWrite[] = [];
+  const folders = new Set<string>();
   for (const resource of input.resources) {
     const assetId = fileAssetId(resource);
     const installMode = resource.installMode ?? 'seed';
     const assetRoot = path.join(assetsRoot, assetId);
     const previousFiles = previous.assets[assetId]?.files ?? {};
-    const files: Record<string, string> = {};
+    const assetFiles: Record<string, string> = {};
     // An asset with no files (empty, or every file withheld) still installs
     // its folder, so runs resolve it here instead of the author's path.
-    await mkdir(assetRoot, { recursive: true });
+    folderChain(assetId).forEach((folder) => folders.add(folder));
     for (const tree of resource.trees) {
       for (const entry of tree.entries) {
         const destination = assetFileDestination(assetRoot, entry.path);
@@ -194,31 +230,81 @@ export async function installPipelineAssets(input: {
             ((await fileSha256(destination)) === entry.sha256
               ? entry.sha256
               : undefined);
-          if (kept !== undefined) files[entry.path] = kept;
+          if (kept !== undefined) assetFiles[entry.path] = kept;
           continue;
         }
-        const bytes = await readFile(
-          path.join(input.packagePath, 'blobs', entry.sha256),
+        const relativePath = `${assetId}/${entry.path}`;
+        folderChain(path.posix.dirname(relativePath)).forEach((folder) =>
+          folders.add(folder),
         );
-        if (createHash('sha256').update(bytes).digest('hex') !== entry.sha256) {
-          throw new Error(
-            `The cached package file ${entry.path} failed verification. Install the automation again.`,
-          );
-        }
-        // A script the analyzer accepted as executable stays runnable.
-        await writeFileAtomically(destination, bytes, {
+        files.push({
+          path: relativePath,
+          sha256: entry.sha256,
           executable: entry.mode === 'execute',
         });
-        files[entry.path] = entry.sha256;
+        assetFiles[entry.path] = entry.sha256;
       }
     }
-    recorded.assets[assetId] = { installMode, files };
+    manifest.assets[assetId] = { installMode, files: assetFiles };
+  }
+  const directories = Array.from(folders);
+  const createdDirectories: string[] = [];
+  for (const folder of directories) {
+    if (!(await pathExists(path.resolve(assetsRoot, folder))))
+      createdDirectories.push(folder);
+  }
+  return {
+    files,
+    directories,
+    createdDirectories,
+    manifest,
+    manifestText: `${JSON.stringify(manifest, null, 2)}\n`,
+  };
+}
+
+/**
+ * Copy each `file_asset` resource from the cached package into
+ * `getPipelineAssetsDir(localPipelineId)/<assetId>`, as
+ * {@link planPipelineAssetInstall} plans, then write `assets.json`.
+ * `beforeWrite` receives the plan before the first write, so an install can
+ * keep what it replaces (CAN-5677).
+ * Idempotent: a retry writes the same bytes and the same record.
+ */
+export async function installPipelineAssets(input: {
+  localPipelineId: string;
+  /** The verified cache directory of the package. */
+  packagePath: string;
+  /** The package's `file_asset` resources for this pipeline. */
+  resources: readonly PipelinePackageResource[];
+  beforeWrite?: (plan: PipelineAssetInstallPlan) => Promise<void>;
+}): Promise<PipelineAssetsManifestV1> {
+  const assetsRoot = getPipelineAssetsDir(input.localPipelineId);
+  const plan = await planPipelineAssetInstall(input);
+  await input.beforeWrite?.(plan);
+  for (const folder of plan.directories) {
+    await mkdir(path.resolve(assetsRoot, folder), { recursive: true });
+  }
+  for (const file of plan.files) {
+    const bytes = await readFile(
+      path.join(input.packagePath, 'blobs', file.sha256),
+    );
+    if (createHash('sha256').update(bytes).digest('hex') !== file.sha256) {
+      throw new Error(
+        `The cached package file ${file.path} failed verification. Install the automation again.`,
+      );
+    }
+    // A script the analyzer accepted as executable stays runnable.
+    await writeFileAtomically(
+      path.resolve(assetsRoot, ...file.path.split('/')),
+      bytes,
+      { executable: file.executable },
+    );
   }
   await writeFileAtomically(
     getPipelineAssetsManifestPath(input.localPipelineId),
-    `${JSON.stringify(recorded, null, 2)}\n`,
+    plan.manifestText,
   );
-  return recorded;
+  return plan.manifest;
 }
 
 /**

@@ -26,6 +26,7 @@ import {
   type WorkflowTriggerKind,
   withoutAutomationOwnedPipelines,
 } from '@canopy/ui-app/workflows';
+import { canDuplicateAutomation } from './automation-duplicate';
 import { automationLibraryKey } from './run-feed';
 import { automationProjectId } from './schedule-filter';
 
@@ -192,19 +193,24 @@ export function latestExecutions(
   return latest;
 }
 
-/**
- * The link a pipeline row copies. A public link wins; team and organization
- * shares copy their member-only lander. Anything else has no link.
- */
+/** Canonical shared item identity; public snapshot URLs are independent wire facts. */
+export function pipelineShareLinkItemId(
+  pipeline: PipelineInfo,
+): string | undefined {
+  if (pipeline.source !== 'shared' || !pipeline.remoteId) return undefined;
+  return pipeline.publicShare ||
+    pipeline.shareScope === 'team' ||
+    pipeline.shareScope === 'organization'
+    ? pipeline.remoteId
+    : undefined;
+}
+
+/** Compatibility projection for consumers that still require a route path. */
 export function pipelineShareLinkPath(
   pipeline: PipelineInfo,
 ): string | undefined {
-  if (pipeline.publicShare) return pipeline.publicShare.sharePath;
-  if (pipeline.source !== 'shared' || !pipeline.remoteId) return undefined;
-  return pipeline.shareScope === 'team' ||
-    pipeline.shareScope === 'organization'
-    ? pipelineSharePath(pipeline.remoteId)
-    : undefined;
+  const itemId = pipelineShareLinkItemId(pipeline);
+  return itemId ? pipelineSharePath(itemId) : undefined;
 }
 
 function pipelineActions(
@@ -213,12 +219,12 @@ function pipelineActions(
 ): readonly WorkflowLibraryAction[] {
   const actions: WorkflowLibraryAction[] = ['toggle'];
   if (manual) actions.push('run');
-  actions.push('edit', 'view-runs');
-  // Your own pipeline is edited in place; the others are copied to change.
-  if (pipeline.source !== 'user') actions.push('duplicate');
-  if (pipelineShareLinkPath(pipeline) !== undefined) actions.push('copy-link');
+  actions.push('edit', 'view-runs', 'duplicate');
+  if (pipelineShareLinkItemId(pipeline) !== undefined)
+    actions.push('copy-link');
   if (pipeline.source === 'shared') {
-    if (pipeline.canUpdate === true) actions.push('share');
+    // Remote management authority does not supply an editable local source.
+    // Local definitions retain Share through their own library row.
     if (pipeline.canDelete === true) actions.push('delete');
     return actions;
   }
@@ -435,6 +441,24 @@ export function compactAutomationTrigger(
   return trigger.text;
 }
 
+function automationActions(
+  activity: ScheduledActivity,
+): readonly WorkflowLibraryAction[] {
+  const actions: WorkflowLibraryAction[] = [
+    'toggle',
+    'run',
+    'edit',
+    'view-runs',
+  ];
+  if (canDuplicateAutomation(activity)) actions.push('duplicate');
+  // A usage-limit resume binds to a local execution, so it is not shared.
+  if (activity.action.type !== 'pipeline_execution_resume') {
+    actions.push('share');
+  }
+  actions.push('delete');
+  return actions;
+}
+
 function projectAutomationRow(
   activity: ScheduledActivity,
   runningActivityIds: ReadonlySet<string>,
@@ -478,11 +502,7 @@ function projectAutomationRow(
     enabled: activity.enabled,
     ...(projectId ? { projectId } : {}),
     ...(projectName ? { projectName } : {}),
-    // A usage-limit resume binds to a local execution, so it is not shared.
-    actions:
-      activity.action.type === 'pipeline_execution_resume'
-        ? ['toggle', 'run', 'edit', 'view-runs', 'delete']
-        : ['toggle', 'run', 'edit', 'view-runs', 'share', 'delete'],
+    actions: automationActions(activity),
   };
 }
 

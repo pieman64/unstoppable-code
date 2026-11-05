@@ -34,7 +34,7 @@ import {
 } from 'react';
 import { ArrowUpIcon } from '../icons/AppIcons';
 import { REPLAY_BLOCK_CLASS, REPLAY_MASK_CLASS } from '../lib/replay-privacy';
-import { SkeletonBlock, type SkeletonBarWidth } from './SkeletonBlock';
+import { Skeleton, SKELETON_KEEP } from './Skeleton';
 import { EmptyStateRow } from './StatusBlocks';
 
 export type DataTableAlign = 'left' | 'center' | 'right';
@@ -274,7 +274,12 @@ export function DataTableHead({
   children,
 }: DataTableHeadProps): JSX.Element {
   return (
-    <thead className={sticky ? 'sticky top-0 z-1' : undefined}>
+    // Column labels are known before the rows: inside a `Skeleton` the band
+    // draws as itself and only the values become bars.
+    <thead
+      {...SKELETON_KEEP}
+      className={sticky ? 'sticky top-0 z-1' : undefined}
+    >
       {groups !== undefined && groups.length > 0 ? (
         <tr className={`${HEAD_ROW_CLASS} border-b border-line-base`}>
           {groups.map((group, index) => (
@@ -631,26 +636,50 @@ export function DataTableEmptyRow({
   );
 }
 
-const SKELETON_WIDTHS: readonly [SkeletonBarWidth, ...SkeletonBarWidth[]] = [
-  '2/3',
-  '1/2',
-  '3/5',
-];
-
-const SKELETON_JUSTIFY_CLASS: Record<DataTableAlign, string> = {
-  left: 'justify-start',
-  center: 'justify-center',
-  right: 'justify-end',
-};
-
 export interface DataTableSkeletonColumn {
   readonly align?: DataTableAlign;
   readonly showFrom?: DataTableBreakpoint;
+  /** The column label, which the sample values are drawn from. */
+  readonly header?: string;
+}
+
+/** First-column samples, varied so the rows read as distinct records. */
+const SKELETON_FIRST_COLUMN = [
+  'Sample record',
+  'Another sample record',
+  'Sample',
+] as const;
+
+/** Right-aligned samples: numbers in tabular figures. */
+const SKELETON_NUMBERS = ['1,240', '86', '312'] as const;
+
+/**
+ * A sample value for one cell, from the column model: a name in the first
+ * column, a number in a right-aligned one, and the column's own label
+ * elsewhere, so each bar is about as wide as that column's values.
+ */
+function skeletonCellText(
+  column: DataTableSkeletonColumn,
+  columnIndex: number,
+  rowIndex: number,
+): string {
+  if (columnIndex === 0) {
+    return SKELETON_FIRST_COLUMN[rowIndex % SKELETON_FIRST_COLUMN.length] ?? '';
+  }
+  if (column.align === 'right') {
+    return SKELETON_NUMBERS[rowIndex % SKELETON_NUMBERS.length] ?? '';
+  }
+  return column.header === undefined || column.header === ''
+    ? 'Sample'
+    : column.header;
 }
 
 /**
- * Placeholder rows in the table's own columns while its rows load, with one
- * hidden `Loading` status. Each bar sits on its column's alignment.
+ * Sample rows in the table's own columns while its rows load: real
+ * {@link DataTableRow}s and {@link DataTableCell}s holding plain values from
+ * the column model. Wrap the whole {@link DataTableFrame} in the measured
+ * `Skeleton`, which draws a bar over each value and announces the load; the
+ * header band stays as itself.
  */
 export function DataTableSkeletonRows({
   columns,
@@ -669,40 +698,21 @@ export function DataTableSkeletonRows({
   return (
     <>
       {rowIndexes.map((rowIndex) => (
-        <tr
+        <DataTableRow
           key={rowIndex}
           data-testid={rowIndex === 0 ? testId : undefined}
-          className="h-9 border-t border-line-base"
         >
           {columns.map((column, columnIndex) => (
-            <td
+            <DataTableCell
               key={columnIndex}
-              className={joinClasses(
-                'px-3',
-                column.showFrom !== undefined &&
-                  SHOW_FROM_CLASS[column.showFrom],
-              )}
+              align={column.align}
+              tone={columnIndex === 0 ? 'primary' : 'secondary'}
+              showFrom={column.showFrom}
             >
-              {rowIndex === 0 && columnIndex === 0 ? (
-                <span role="status" className="sr-only">
-                  Loading
-                </span>
-              ) : null}
-              <span
-                className={`flex ${SKELETON_JUSTIFY_CLASS[column.align ?? 'left']}`}
-              >
-                <SkeletonBlock
-                  height="text"
-                  width={
-                    SKELETON_WIDTHS[
-                      (rowIndex + columnIndex) % SKELETON_WIDTHS.length
-                    ] ?? SKELETON_WIDTHS[0]
-                  }
-                />
-              </span>
-            </td>
+              {skeletonCellText(column, columnIndex, rowIndex)}
+            </DataTableCell>
           ))}
-        </tr>
+        </DataTableRow>
       ))}
     </>
   );
@@ -753,9 +763,12 @@ export interface DataTableProps<T> {
   readonly caption?: string;
   /** The line shown in place of rows when there are none. */
   readonly emptyLabel?: ReactNode;
-  /** Shows placeholder rows in place of the body. */
+  /**
+   * Shows the table in the measured skeleton: the header as itself, and
+   * sample rows from the column model drawn as bars.
+   */
   readonly loading?: boolean;
-  /** How many placeholder rows to show while loading (default 3). */
+  /** How many sample rows to show while loading (default 3). */
   readonly loadingRows?: number;
   /** An optional header row of group labels above the column labels. */
   readonly columnGroups?: ReadonlyArray<DataTableColumnGroup>;
@@ -777,7 +790,9 @@ export interface DataTableProps<T> {
   readonly stickyHeader?: boolean;
   /**
    * Root test id. Derived ids: `-empty` on the empty line, `-loading` on the
-   * first placeholder row and `-sort-<key>` on sort buttons.
+   * loading status region and `-sort-<key>` on sort buttons. While loading,
+   * the root id is kept aside on the sample table, so it marks loaded rows
+   * only.
    */
   readonly testId?: string;
   /** Placement only: margin, width, visibility and flex participation. */
@@ -880,13 +895,7 @@ export function DataTable<T>({
 
   let body: ReactNode = null;
   if (loading) {
-    body = (
-      <DataTableSkeletonRows
-        columns={columns}
-        rows={loadingRows}
-        testId={derivedTestId(testId, 'loading')}
-      />
-    );
+    body = <DataTableSkeletonRows columns={columns} rows={loadingRows} />;
   } else if (sortedRows.length === 0) {
     if (emptyLabel !== undefined) {
       body = (
@@ -935,14 +944,14 @@ export function DataTable<T>({
     });
   }
 
-  return (
+  const table = (
     <DataTableFrame
       caption={caption}
       layout={layout}
       minWidth={minWidth}
       busy={loading}
       testId={testId}
-      className={className}
+      className={loading ? undefined : className}
     >
       <DataTableHead groups={columnGroups} sticky={stickyHeader}>
         {columns.map((column) => (
@@ -970,5 +979,18 @@ export function DataTable<T>({
       </DataTableHead>
       <DataTableBody>{body}</DataTableBody>
     </DataTableFrame>
+  );
+  if (!loading) return table;
+  // The real table with sample rows, measured: the bars sit where the
+  // values will, and the rows replace them in place.
+  return (
+    <Skeleton
+      loading
+      label="Loading"
+      testId={derivedTestId(testId, 'loading')}
+      className={className}
+    >
+      {table}
+    </Skeleton>
   );
 }

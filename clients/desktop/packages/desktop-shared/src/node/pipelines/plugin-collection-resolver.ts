@@ -22,6 +22,12 @@ export async function resolvePipelinePluginCollections(
         pluginRefs: [],
         mcpServerRefs: [],
       },
+      chatSelections: preferences[collection.id]?.extraSelections ?? {
+        collectionIds: [],
+        skillRefs: [],
+        pluginRefs: [],
+        mcpServerRefs: [],
+      },
       sourceCollectionIds:
         preferences[collection.id]?.extraSelections.collectionIds ?? [],
       missingOptionalDefaults: [],

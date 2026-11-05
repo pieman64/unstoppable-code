@@ -177,7 +177,15 @@ export function connectLocalWorkerBinding({
     requestSends += 1;
     void connection
       .send(request)
-      .catch(transportFailure)
+      .catch((error: unknown) => {
+        if (connection.signal.aborted) return transportFailure(error);
+        // Refused before a byte was written, such as too large to send:
+        // only this call fails and the binding stays open.
+        const id = String(request.id);
+        const call = pending.get(id);
+        pending.delete(id);
+        call?.fail(transportStopError(error));
+      })
       .finally(() => {
         requestSends -= 1;
       });
@@ -381,7 +389,10 @@ export function connectLocalWorkerBinding({
         release: () => signal?.removeEventListener('abort', onAbort),
       };
       pending.set(id, {
+        // Only a stopped binding or a refused send fails an open, and no
+        // reply follows either, so the open gives its slot back here.
         fail: (error): void => {
+          openingStreams -= 1;
           route.release();
           if (opening) reject(error);
           opening = false;
@@ -441,8 +452,15 @@ export function connectLocalWorkerBinding({
         outcome: params.outcome,
         error: params.error,
       });
-      if (valid && parsed.success)
-        sink?.end(parsed.data.outcome, parsed.data.error ?? undefined);
+      const cursor = CanopyStreamCursorSchema.safeParse(params.cursor);
+      // Ends where the worker ended, so a resume from the end reaches it
+      // even when the stream ended before its first item (CAN-5696).
+      if (valid && parsed.success && cursor.success)
+        sink?.endAt(
+          cursor.data,
+          parsed.data.outcome,
+          parsed.data.error ?? undefined,
+        );
       else sink?.end('error', canopyInvalidHandlerResultError().payload);
       return;
     }

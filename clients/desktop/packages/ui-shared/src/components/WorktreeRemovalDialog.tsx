@@ -1,11 +1,14 @@
 'use client';
 
-import { useId, useState, type JSX } from 'react';
+import { useState, type JSX } from 'react';
 import { InfoIcon } from '../icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import { ConfirmDialog } from './ConfirmDialog';
 import { RichHoverTooltip } from './RichHoverTooltip';
-import { ToggleSwitch } from './ToggleSwitch';
+import {
+  KeepLocalBranchToggle,
+  DEFAULT_KEEP_LOCAL_BRANCH,
+} from './KeepLocalBranchToggle';
 
 /** The row a worktree removal confirmation names. */
 export interface WorktreeRemovalDialogIdentity {
@@ -73,7 +76,11 @@ export function WorktreeRemovalDialog({
   onCancel,
   onConfirm,
 }: WorktreeRemovalDialogProps): JSX.Element {
-  const [keepBranch, setKeepBranch] = useState(requestedDeleteBranch !== true);
+  const [keepBranch, setKeepBranch] = useState(
+    requestedDeleteBranch === undefined
+      ? DEFAULT_KEEP_LOCAL_BRANCH
+      : !requestedDeleteBranch,
+  );
   // A replacement request (another worktree, the other mode, or a different
   // requested branch handling) presets the switch again instead of keeping
   // the choice made for the previous request.
@@ -81,10 +88,12 @@ export function WorktreeRemovalDialog({
   const [presetFor, setPresetFor] = useState(requestKey);
   if (presetFor !== requestKey) {
     setPresetFor(requestKey);
-    setKeepBranch(requestedDeleteBranch !== true);
+    setKeepBranch(
+      requestedDeleteBranch === undefined
+        ? DEFAULT_KEEP_LOCAL_BRANCH
+        : !requestedDeleteBranch,
+    );
   }
-  const switchLabelId = useId();
-  const switchNoteId = useId();
   const automationId = (base: string): string => `${base}${testIdSuffix}`;
   const hasLineStats =
     localChanges !== undefined &&
@@ -164,32 +173,17 @@ export function WorktreeRemovalDialog({
         )}
         confirmDisabled={disabled}
       >
-        <div className="flex items-center gap-3 rounded-xl bg-subtle py-2 pl-3 pr-2.5">
-          <div className="min-w-0 flex-1">
-            <div id={switchLabelId} className="text-s fg-primary">
-              Keep the local branch
-            </div>
-            <div
-              id={switchNoteId}
-              className="truncate text-xs fg-tertiary"
-              data-testid={automationId('worktree-removal-target-identity')}
-            >
-              {identity.branchName}
-              {keepBranch ? ' stays in ' : ' is deleted from '}
-              <span className={REPLAY_MASK_CLASS}>
-                {identity.workspaceName}
-              </span>
-              .{branchChoiceHint ? ` ${branchChoiceHint}` : ''}
-            </div>
-          </div>
-          <ToggleSwitch
-            checked={keepBranch}
-            label="Keep the local branch"
-            describedBy={switchNoteId}
-            onChange={setKeepBranch}
-            dataTestId={automationId('worktree-removal-keep-branch')}
-          />
-        </div>
+        <KeepLocalBranchToggle
+          checked={keepBranch}
+          onChange={setKeepBranch}
+          dataTestId={automationId('worktree-removal-keep-branch')}
+          noteTestId={automationId('worktree-removal-target-identity')}
+        >
+          {identity.branchName}
+          {keepBranch ? ' stays in ' : ' is deleted from '}
+          <span className={REPLAY_MASK_CLASS}>{identity.workspaceName}</span>.
+          {branchChoiceHint ? ` ${branchChoiceHint}` : ''}
+        </KeepLocalBranchToggle>
       </ConfirmDialog>
     </div>
   );

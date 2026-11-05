@@ -1,3 +1,4 @@
+import { W5_LAUNCH_HEAL_OPERATIONS } from '@canopy/core-runtime/node/w5/commit-log/apply-evidence';
 import { dirname, join } from 'node:path';
 // The host module alone: main imports this at startup, and the commit log's
 // index would load node:sqlite there, which only the worker needs.
@@ -30,6 +31,7 @@ export function getW5CommitLogHost(): W5CommitLogHost {
     const root = getWorkspacesRootDir();
     const dataRoot = dirname(root);
     defaultHost = new W5CommitLogHost({
+      healCleanConflictOperations: W5_LAUNCH_HEAL_OPERATIONS,
       dbPath: getW5CommitLogPath(),
       root,
       dataRoot,

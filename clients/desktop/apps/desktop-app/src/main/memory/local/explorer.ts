@@ -26,7 +26,7 @@ import {
   isMemoryMarkdownFileName,
   isMemoryPathContained,
 } from './memory-files';
-import { redactMemoryContent } from './store';
+import { redactMemoryContent } from '@canopy/memory-consolidation/redaction';
 
 const MAX_FILE_BYTES = 512 * 1024;
 const MAX_FILES = 2_000;

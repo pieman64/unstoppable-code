@@ -50,6 +50,7 @@ export * from './InputIcon';
 export * from './LabelIcon';
 export * from './LayoutDashboardIcon';
 export * from './LinearLogo';
+export * from './LinearStatusIcons';
 export * from './LinkedInLogo';
 export * from './LoginIcon';
 export * from './MagnifyingGlassIcon';

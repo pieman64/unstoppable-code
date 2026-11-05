@@ -6,6 +6,7 @@ import type {
   LedgerViewResult,
   LedgerViewUnavailableReason,
 } from '@canopy/protocol/ledger-view';
+import { sameLedgerValue } from './ledger-structural-sharing';
 
 /*
  * What the Ledger panel's and the Feed's stores share: how a read's result
@@ -67,7 +68,12 @@ export function withActors(
   labels: readonly LedgerActorLabel[] | undefined,
 ): Readonly<Record<string, LedgerActorLabel>> {
   if (labels === undefined || labels.length === 0) return current;
+  // Unchanged labels keep the same object, so a refresh redraws nothing.
+  const changed = labels.filter(
+    (label) => !sameLedgerValue(current[label.actorId], label),
+  );
+  if (changed.length === 0) return current;
   const next: Record<string, LedgerActorLabel> = { ...current };
-  for (const label of labels) next[label.actorId] = label;
+  for (const label of changed) next[label.actorId] = label;
   return next;
 }

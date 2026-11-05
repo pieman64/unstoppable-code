@@ -11,7 +11,7 @@ import {
   DelayedLoadingPlaceholder,
   Notice,
   NoticeButton,
-  SettingsFormSkeleton,
+  Skeleton,
   SettingsRowsRow,
   CopyDetailsButton,
   SettingsRowsSection,
@@ -34,6 +34,28 @@ const TOGGLE_ID = 'install-update-emails-toggle';
 const LABEL = "Updates to things I've installed";
 const DESCRIPTION =
   'Get an email when someone updates a skill, workflow, automation or other item you installed.';
+
+const noop = (): void => undefined;
+
+/** The setting's row; `control` is absent while the value is unknown. */
+function InstallUpdateEmailsRow({
+  control,
+}: {
+  readonly control?: ReactNode;
+}): JSX.Element {
+  return (
+    <div className={SETTINGS_CARD_ROW_CLASS}>
+      <div className="min-w-0 flex-1">
+        <SettingsRowsRow
+          label={LABEL}
+          description={DESCRIPTION}
+          htmlFor={control === undefined ? undefined : TOGGLE_ID}
+          control={control}
+        />
+      </div>
+    </div>
+  );
+}
 
 type SettingState =
   | { readonly kind: 'loading' }
@@ -235,30 +257,37 @@ function InstallUpdateEmailsContent({
       )}
       {state.kind === 'loading' ? (
         <DelayedLoadingPlaceholder>
-          <SettingsFormSkeleton rows={1} />
-        </DelayedLoadingPlaceholder>
-      ) : (
-        <div className={SETTINGS_CARD_ROW_CLASS}>
-          <div className="min-w-0 flex-1">
-            <SettingsRowsRow
-              label={LABEL}
-              description={DESCRIPTION}
-              htmlFor={state.kind === 'ready' ? TOGGLE_ID : undefined}
+          <Skeleton
+            loading
+            label="Loading email settings"
+            testId="settings-skeleton-form"
+          >
+            <InstallUpdateEmailsRow
               control={
-                state.kind === 'ready' ? (
-                  <SettingsCardSwitch
-                    id={TOGGLE_ID}
-                    checked={state.enabled}
-                    disabled={state.saving}
-                    label={LABEL}
-                    onChange={handleToggle}
-                    dataTestId="install-update-emails-toggle"
-                  />
-                ) : undefined
+                <SettingsCardSwitch
+                  checked={false}
+                  label={LABEL}
+                  onChange={noop}
+                />
               }
             />
-          </div>
-        </div>
+          </Skeleton>
+        </DelayedLoadingPlaceholder>
+      ) : (
+        <InstallUpdateEmailsRow
+          control={
+            state.kind === 'ready' ? (
+              <SettingsCardSwitch
+                id={TOGGLE_ID}
+                checked={state.enabled}
+                disabled={state.saving}
+                label={LABEL}
+                onChange={handleToggle}
+                dataTestId="install-update-emails-toggle"
+              />
+            ) : undefined
+          }
+        />
       )}
     </div>
   );

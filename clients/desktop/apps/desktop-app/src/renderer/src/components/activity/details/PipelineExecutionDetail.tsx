@@ -12,7 +12,11 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react';
-import { EmptyState, Notice } from '@canopy/ui-shared/components';
+import {
+  CustomizeBreadcrumbs,
+  EmptyState,
+  Notice,
+} from '@canopy/ui-shared/components';
 import type {
   ExecutionState,
   ExecutionSummary,
@@ -73,7 +77,6 @@ import {
   isPipelineDetailsCostSelection,
   usePipelineRunCostPanel,
 } from './pipelineRunCostPanelContext';
-import { ChevronRightMediumIcon as AppCatalogChevronRightMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
 
 const LazyPipelineRunCostPreviewCard = lazy(() =>
   import('@canopy/ui-app/cost').then((module) => ({
@@ -357,16 +360,6 @@ function useRetainedBodyScroll(
     if (timerRef.current !== null) return;
     timerRef.current = setTimeout(flush, SCROLL_RETAIN_DELAY_MS);
   }, [bodyRef, flush, session]);
-}
-
-function BreadcrumbChevron(): JSX.Element {
-  return (
-    <AppCatalogChevronRightMediumIcon
-      width="12"
-      height="12"
-      className="fg-secondary/60"
-    />
-  );
 }
 
 /**
@@ -833,36 +826,20 @@ export function PipelineExecutionDetail({
       {(viewStack.length > 0 || state?.rerun_source_id) && (
         <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b px-5 py-2 text-xs">
           {viewStack.length > 0 && (
-            <nav className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={() => navigateToBreadcrumb(-1)}
-                className="rounded px-1 py-0.5 fg-info/80 transition-colors hover:bg-fg-primary/[0.04] hover:fg-info"
-              >
-                {rootLabel}
-              </button>
-              {viewStack.map((entry, index) => (
-                <span
-                  key={entry.executionId}
-                  className="flex items-center gap-1"
-                >
-                  <BreadcrumbChevron />
-                  {index === viewStack.length - 1 ? (
-                    <span className="px-1 py-0.5 fg-primary/80">
-                      {entry.label}
-                    </span>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => navigateToBreadcrumb(index)}
-                      className="rounded px-1 py-0.5 fg-info/80 transition-colors hover:bg-fg-primary/[0.04] hover:fg-info"
-                    >
-                      {entry.label}
-                    </button>
-                  )}
-                </span>
-              ))}
-            </nav>
+            <CustomizeBreadcrumbs
+              items={[
+                {
+                  key: 'root',
+                  label: rootLabel,
+                  onSelect: () => navigateToBreadcrumb(-1),
+                },
+                ...viewStack.map((entry, index) => ({
+                  key: entry.executionId,
+                  label: entry.label,
+                  onSelect: () => navigateToBreadcrumb(index),
+                })),
+              ]}
+            />
           )}
           {state?.rerun_source_id && (
             <span className="text-2xs fg-secondary">

@@ -31,7 +31,7 @@ import {
   PencilIcon as AppCatalogPencilIcon,
   CloseIcon as AppCatalogCloseIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
-import { InlineTextInput } from '@canopy/ui-shared/components';
+import { Button, InlineTextInput } from '@canopy/ui-shared/components';
 
 interface TerminalListProps {
   projectId: string;
@@ -291,28 +291,34 @@ function GroupRow({
           </button>
         )}
         {!isHeaderEditing && (
-          <Tooltip label="Rename">
-            <button
-              type="button"
-              className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
-              aria-label={`Rename ${ariaLabel}`}
-              onClick={(): void => onStartEditGroup(group.id)}
-            >
-              <AppCatalogPencilIcon size={14} />
-            </button>
-          </Tooltip>
+          <span className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100">
+            <Tooltip label="Rename">
+              <Button
+                variant="ghost-quiet"
+                size="sm"
+                iconOnly
+                aria-label={`Rename ${ariaLabel}`}
+                onClick={(): void => onStartEditGroup(group.id)}
+              >
+                <AppCatalogPencilIcon size={14} />
+              </Button>
+            </Tooltip>
+          </span>
         )}
         {!isHeaderEditing && (
-          <Tooltip label="Close group">
-            <button
-              type="button"
-              className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
-              aria-label={`Close ${ariaLabel}`}
-              onClick={(): void => onCloseGroup(group.id)}
-            >
-              <AppCatalogCloseIcon size={14} />
-            </button>
-          </Tooltip>
+          <span className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100">
+            <Tooltip label="Close group">
+              <Button
+                variant="ghost-quiet"
+                size="sm"
+                iconOnly
+                aria-label={`Close ${ariaLabel}`}
+                onClick={(): void => onCloseGroup(group.id)}
+              >
+                <AppCatalogCloseIcon size={14} />
+              </Button>
+            </Tooltip>
+          </span>
         )}
       </div>
     );
@@ -348,28 +354,34 @@ function GroupRow({
           </button>
         )}
         {!isHeaderEditing && (
-          <Tooltip label="Rename">
-            <button
-              type="button"
-              className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
-              aria-label={`Rename ${ariaLabel}`}
-              onClick={(): void => onStartEditGroup(group.id)}
-            >
-              <AppCatalogPencilIcon size={14} />
-            </button>
-          </Tooltip>
+          <span className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100">
+            <Tooltip label="Rename">
+              <Button
+                variant="ghost-quiet"
+                size="sm"
+                iconOnly
+                aria-label={`Rename ${ariaLabel}`}
+                onClick={(): void => onStartEditGroup(group.id)}
+              >
+                <AppCatalogPencilIcon size={14} />
+              </Button>
+            </Tooltip>
+          </span>
         )}
         {!isHeaderEditing && (
-          <Tooltip label="Close group">
-            <button
-              type="button"
-              className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
-              aria-label={`Close ${ariaLabel}`}
-              onClick={(): void => onCloseGroup(group.id)}
-            >
-              <AppCatalogCloseIcon size={14} />
-            </button>
-          </Tooltip>
+          <span className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100">
+            <Tooltip label="Close group">
+              <Button
+                variant="ghost-quiet"
+                size="sm"
+                iconOnly
+                aria-label={`Close ${ariaLabel}`}
+                onClick={(): void => onCloseGroup(group.id)}
+              >
+                <AppCatalogCloseIcon size={14} />
+              </Button>
+            </Tooltip>
+          </span>
         )}
       </div>
       <ul className="flex h-full items-end gap-0.5">
@@ -426,28 +438,34 @@ function GroupRow({
                 </button>
               )}
               {!isPaneEditing && (
-                <Tooltip label="Rename">
-                  <button
-                    type="button"
-                    className="shrink-0 opacity-0 transition-opacity group-hover/pane:opacity-100"
-                    aria-label={`Rename terminal ${paneNumber}`}
-                    onClick={(): void => onStartEditTerminal(id)}
-                  >
-                    <AppCatalogPencilIcon size={14} />
-                  </button>
-                </Tooltip>
+                <span className="shrink-0 opacity-0 transition-opacity group-hover/pane:opacity-100">
+                  <Tooltip label="Rename">
+                    <Button
+                      variant="ghost-quiet"
+                      size="sm"
+                      iconOnly
+                      aria-label={`Rename terminal ${paneNumber}`}
+                      onClick={(): void => onStartEditTerminal(id)}
+                    >
+                      <AppCatalogPencilIcon size={14} />
+                    </Button>
+                  </Tooltip>
+                </span>
               )}
               {!isPaneEditing && (
-                <Tooltip label="Close terminal">
-                  <button
-                    type="button"
-                    className="shrink-0 opacity-0 transition-opacity group-hover/pane:opacity-100"
-                    aria-label={`Close terminal ${paneNumber}`}
-                    onClick={(): void => onCloseTerminal(id)}
-                  >
-                    <AppCatalogCloseIcon size={14} />
-                  </button>
-                </Tooltip>
+                <span className="shrink-0 opacity-0 transition-opacity group-hover/pane:opacity-100">
+                  <Tooltip label="Close terminal">
+                    <Button
+                      variant="ghost-quiet"
+                      size="sm"
+                      iconOnly
+                      aria-label={`Close terminal ${paneNumber}`}
+                      onClick={(): void => onCloseTerminal(id)}
+                    >
+                      <AppCatalogCloseIcon size={14} />
+                    </Button>
+                  </Tooltip>
+                </span>
               )}
             </li>
           );

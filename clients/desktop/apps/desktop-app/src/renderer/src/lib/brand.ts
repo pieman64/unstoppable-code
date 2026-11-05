@@ -13,9 +13,11 @@
  */
 import { BRAND } from '@canopy/brand/current';
 import type {
+  BrandSourceRepository,
   BrandWebMobileApps,
   DesktopBrandRuntime,
 } from '@canopy/protocol/brand';
+import { parseGitHubRepositoryUrl } from '@canopy/protocol/settings/github-repository-url';
 
 export const brand: DesktopBrandRuntime = BRAND;
 
@@ -48,6 +50,22 @@ export function getBrandMobileApps(): BrandWebMobileApps | null {
     return null;
   }
   return mobileApps;
+}
+
+/**
+ * The current brand's public github.com source repository, or `null` when
+ * the brand declares none or its URL is not a github.com repository. The
+ * GitHub star prompt (CAN-5604) never counts or shows when this is `null`,
+ * which includes the default `canopy` brand and the default E2E build.
+ */
+export function getBrandSourceRepository(): BrandSourceRepository | null {
+  // The annotated alias: the generated per-brand module infers a narrow
+  // `web` shape that omits `marketing` for brands that do not declare it.
+  const repository = brand.web.marketing?.sourceRepository;
+  if (!repository || !parseGitHubRepositoryUrl(repository.url).ok) {
+    return null;
+  }
+  return repository;
 }
 
 /**

@@ -479,19 +479,55 @@ export class ChatArtifactMaintenance {
     if (!state) return undefined;
     if (!state.filter || !state.identity) return undefined;
     const child = await this.storage.childArtifactSnapshot(chatId);
-    return this.storage.transcripts.artifactReferenceIdentity(
+    if (state.childIdentity !== child.identity) return undefined;
+    const identity = await this.storage.transcripts.artifactReferenceIdentity(
       chatId,
       undefined,
       child.identityInputs,
     );
+    return identity === state.identity ? identity : undefined;
   }
 
-  /** Called only after the canonical commit returned with an empty WAL. */
+  /**
+   * Rebase an already-counted journal projection after its checkpoint. The
+   * backend captures the physical identity before checkpoint under its lease;
+   * any unknown primary change or child/registry change forces a full scan.
+   */
+  public async checkpointedJournal(
+    chatId: string,
+    beforeIdentity?: string,
+  ): Promise<void> {
+    const state = await this.state(chatId, true);
+    if (!state) return;
+    try {
+      const child = await this.storage.childArtifactSnapshot(chatId);
+      if (
+        !state.filter ||
+        beforeIdentity === undefined ||
+        state.identity !== beforeIdentity ||
+        state.childIdentity !== child.identity ||
+        !(await this.storage.journalIsClear())
+      ) {
+        await this.resetCandidateDiscovery(state);
+        return;
+      }
+      state.identity = await this.storage.transcripts.artifactReferenceIdentity(
+        chatId,
+        undefined,
+        child.identityInputs,
+      );
+    } finally {
+      this.release(state);
+    }
+  }
+
+  /** Called in commit order; pending journals still prohibit reclamation. */
   public async committed(
     chatId: string,
     write: ChatTranscriptWrite,
     oldActive: readonly PersistedChatMessage[],
     beforeIdentity?: string,
+    options?: { journalPending?: boolean },
   ): Promise<void> {
     this.clean.delete(chatId);
     const state = await this.state(chatId, true);
@@ -519,6 +555,12 @@ export class ChatArtifactMaintenance {
         state.directoryFamilyIndex = 0;
         return;
       }
+      if (options?.journalPending && write.kind === 'append') {
+        // Appends change committed files and must be checkpointed before
+        // acknowledgement. An unexpected ordering never receives new identity.
+        await this.resetCandidateDiscovery(state);
+        return;
+      }
       const nextActive =
         write.kind === 'active' || write.kind === 'active-replace'
           ? write.messages
@@ -536,9 +578,7 @@ export class ChatArtifactMaintenance {
         !state.identity ||
         state.identity !== beforeIdentity
       ) {
-        state.filter = undefined;
-        state.identity = undefined;
-        await clearReferenceScan(state);
+        await this.resetCandidateDiscovery(state);
         return;
       }
       try {
@@ -566,6 +606,14 @@ export class ChatArtifactMaintenance {
             'add',
           );
         const child = await this.storage.childArtifactSnapshot(chatId);
+        if (state.childIdentity !== child.identity) {
+          await this.resetCandidateDiscovery(state);
+          return;
+        }
+        // With pending active records, the exact logical active references
+        // above are counted, but their on-disk identity has not changed yet.
+        // A later checkpoint rebases it only from a trusted cached identity.
+        if (options?.journalPending) return;
         state.identity =
           await this.storage.transcripts.artifactReferenceIdentity(
             chatId,
@@ -573,9 +621,7 @@ export class ChatArtifactMaintenance {
             child.identityInputs,
           );
       } catch {
-        state.filter = undefined;
-        state.identity = undefined;
-        await clearReferenceScan(state);
+        await this.resetCandidateDiscovery(state);
       }
     } finally {
       this.release(state);
@@ -589,8 +635,13 @@ export class ChatArtifactMaintenance {
    */
   public async hasWork(chatId: string): Promise<boolean> {
     const state = states.get(this.key(chatId));
-    if (state && !state.closing)
-      return state.candidates.size > 0 || !state.discoveryComplete;
+    if (state && !state.closing) {
+      if (state.candidates.size > 0 || !state.discoveryComplete) return true;
+      // Child/registry writes do not pass through primary committed(). A
+      // finished candidate walk cannot hide references they replaced.
+      const child = await this.storage.childArtifactSnapshot(chatId);
+      return state.childIdentity !== child.identity;
+    }
     const cleanIdentity = this.clean.get(chatId);
     if (cleanIdentity === undefined) return true;
     try {
@@ -698,9 +749,9 @@ export class ChatArtifactMaintenance {
         typeof expected === 'function' ? await expected() : expected;
       const transcript = this.storage.transcripts;
       if (state.childIdentity !== child.identity) {
-        state.filter = undefined;
-        state.identity = undefined;
-        await clearReferenceScan(state);
+        // Rediscover candidates too: a formerly reachable registry answer or
+        // child-only output may have been discarded by an earlier walk.
+        await this.resetCandidateDiscovery(state);
         state.childIdentity = child.identity;
       }
       if (

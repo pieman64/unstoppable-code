@@ -77,6 +77,8 @@ function makeStorage(): MemoryStorage {
     records,
     load: (): Promise<readonly StoredDelegation[]> =>
       Promise.resolve(structuredClone(Array.from(records.values()))),
+    loadOne: (id): Promise<StoredDelegation | undefined> =>
+      Promise.resolve(structuredClone(records.get(id))),
     commit: (record): Promise<void> => {
       const copy = structuredClone(record);
       records.set(copy.state.delegationId, copy);

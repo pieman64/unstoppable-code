@@ -1,5 +1,6 @@
 import { useState, type JSX } from 'react';
 import { REPLAY_BLOCK_CLASS, REPLAY_MASK_CLASS } from '../lib/replay-privacy';
+import { BeingWatchedIcon } from '../icons/AppIcons';
 import { DrawerInspectorAction } from './DrawerInspectorAction';
 import { ExecutionActionButton } from './ExecutionActionButton';
 import { RichHoverTooltip } from './RichHoverTooltip';
@@ -80,16 +81,13 @@ export function DrawerWatcherControl({
       ) : (
         <ExecutionActionButton
           variant="text"
-          label={
-            <span className="inline-flex items-center gap-1.5">
-              Watchers <span className="fg-quaternary">{count}</span>
-            </span>
-          }
+          icon={<BeingWatchedIcon size="sm" />}
+          label={<span className="tabular-nums">{count}</span>}
           ariaLabel={ariaLabel}
           aria-haspopup="dialog"
           stopKeyDownPropagation={false}
           dataTestId={dataTestId}
-          className="-ml-2.5"
+          className="-ml-3"
           onClick={(): void => {
             setPreviewOpen(false);
             onClick();

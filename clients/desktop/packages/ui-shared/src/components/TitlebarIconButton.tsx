@@ -42,6 +42,8 @@ export interface TitlebarIconButtonProps extends Omit<
   icon: AppIcon;
   /** App glyph size. Titlebar controls use 16px. */
   iconSize?: number;
+  /** Grow the control itself to 44px on touch layouts, without changing desktop geometry. */
+  coarsePointerTarget?: boolean;
   /** Defaults to the top-bar ink. */
   foreground?: TitlebarIconButtonForeground;
   surface?: TitlebarIconButtonSurface;
@@ -80,6 +82,7 @@ export const TitlebarIconButton = forwardRef<
   {
     icon: Icon,
     iconSize = 16,
+    coarsePointerTarget = false,
     foreground = 'top-bar',
     surface = 'titlebar',
     tooltipLabel,
@@ -106,7 +109,7 @@ export const TitlebarIconButton = forwardRef<
         ref={ref}
         type={type}
         aria-label={ariaLabel}
-        className={`electron-no-drag focus-ring inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors enabled:hover:bg-subtle disabled:opacity-35 ${FOREGROUND_CLASS_NAMES[foreground]}${surface === 'titlebar' ? '' : ` ${SURFACE_CLASS_NAMES[surface]}`}${holdHoverWhenExpanded ? ' aria-expanded:bg-subtle aria-expanded:fg-primary' : ''} ${className}`}
+        className={`electron-no-drag focus-ring inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors enabled:hover:bg-subtle disabled:opacity-35 ${coarsePointerTarget ? 'pointer-coarse:min-h-11 pointer-coarse:min-w-11' : ''} ${FOREGROUND_CLASS_NAMES[foreground]}${surface === 'titlebar' ? '' : ` ${SURFACE_CLASS_NAMES[surface]}`}${holdHoverWhenExpanded ? ' aria-expanded:bg-subtle aria-expanded:fg-primary' : ''} ${className}`}
         {...props}
       >
         <Icon size={iconSize} aria-hidden="true" />

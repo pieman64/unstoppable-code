@@ -36,6 +36,7 @@ import { openSessionBreakdownPanel } from '@/lib/cost/open-cost-panels';
 import { CursorAccountUsage } from './CursorAccountUsage';
 import { PlanAccountUsage, type PlanAccountProvider } from './PlanAccountUsage';
 import { ProxyAccountUsage } from './ProxyAccountUsage';
+import { useWeeklyLimitUsedPercent } from './useWeeklyLimitUsedPercent';
 import { createSeededTabUsage } from '@/lib/chatUsageNormalization';
 import {
   useComposerAiCreditsBalance,
@@ -251,6 +252,15 @@ export function UsageIndicator({
     chatChoseAiCredits: aiCreditsRouted,
     subscriptionBillingOverride,
   });
+  // The ring shows the weekly limit of the plan this chat runs on; a chat the
+  // account proxy routes is bound by its accounts, and one billed to AI
+  // Credits by its wallet, not the user's sign-in.
+  const weeklyUsedPercent = useWeeklyLimitUsedPercent(
+    accountSource === 'account-proxy' || aiCreditsBilled
+      ? undefined
+      : planProvider,
+    usageModel,
+  );
   // Copilot reports cumulative token buckets, but no dollar cost or current
   // context occupancy. Keep its totals visible without inventing those figures.
   const displayUsage = isCopilot
@@ -306,6 +316,9 @@ export function UsageIndicator({
           }
         : {})}
       capsule
+      {...(weeklyUsedPercent !== undefined
+        ? { weeklyLimit: { usedPercent: weeklyUsedPercent } }
+        : {})}
       {...(alignRef ? { alignRef } : {})}
       responseUsage={
         opencode

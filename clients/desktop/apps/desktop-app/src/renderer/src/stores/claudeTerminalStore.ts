@@ -623,17 +623,3 @@ export function disposeClaudeTerminalSubscriptions(): void {
     }
   }
 }
-
-/**
- * Reset the store back to its empty shape. Used by tests to keep test
- * isolation; not exported from the index so production code can't accidentally
- * wipe live runtime state.
- */
-export function __resetClaudeTerminalStoreForTests(): void {
-  disposeClaudeTerminalSubscriptions();
-  useClaudeTerminalStore.setState({
-    byChat: {},
-    terminalIdIndex: {},
-    inFlightLaunch: {},
-  });
-}

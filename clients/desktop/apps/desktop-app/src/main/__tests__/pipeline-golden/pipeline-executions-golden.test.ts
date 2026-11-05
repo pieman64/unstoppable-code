@@ -144,6 +144,36 @@ function projectStates(value: unknown): unknown {
 const HOST_FACT_KEY = /(^pid$|Pid$|_pid$|[dD]uration|_ms$|Ms$|elapsed)/;
 
 /** Normalize, then blank host facts such as pids and durations. */
+/**
+ * A retried or rerun execution starts asynchronously, so its command response
+ * projects the run at any point of its progress: pending, running or already
+ * finished. Keep what identifies the started run; the settled projections pin
+ * how it ended.
+ */
+function startedRun(response: unknown): unknown {
+  const started = (entry: unknown): unknown => {
+    if (Array.isArray(entry)) return entry.map(started);
+    if (typeof entry !== 'object' || entry === null) return entry;
+    return Object.fromEntries(
+      Object.entries(entry).flatMap(([key, inner]): [string, unknown][] => {
+        if (key === 'finishedAt' || key === 'outputTail') return [];
+        if (key !== 'status') return [[key, started(inner)]];
+        expect(['pending', 'running', 'success']).toContain(inner);
+        return [[key, '<started>']];
+      }),
+    );
+  };
+  if (typeof response !== 'object' || response === null) return response;
+  if (!('payload' in response)) return response;
+  const { payload } = response;
+  if (typeof payload !== 'object' || payload === null) return response;
+  if (!('result' in payload)) return response;
+  return {
+    ...response,
+    payload: { ...payload, result: started(payload.result) },
+  };
+}
+
 function golden(value: unknown): unknown {
   const scrub = (entry: unknown): unknown => {
     if (Array.isArray(entry)) return entry.map(scrub);
@@ -612,10 +642,6 @@ describe('Portal', () => {
       scoped(toCancel.executionId),
     );
 
-    // Retry starts execution asynchronously; the response can observe either
-    // side of the pending-to-running transition. The settled result below
-    // still pins the successful retry and retained jobs.
-    const retryStatus: unknown = expect.stringMatching(/^(pending|running)$/);
     expect(
       golden({
         success,
@@ -628,24 +654,16 @@ describe('Portal', () => {
           projectId: GOLDEN_WORKSPACE_ID,
           worktreeId: GOLDEN_WORKTREE_ID,
         }),
-        retry,
+        retry: startedRun(retry),
         retried,
-        rerun: rerun.result,
+        rerun: startedRun(rerun.result),
         rerunSettled,
         resumeMissingAnswer,
         resume,
         resumed,
         cancel,
       }),
-    ).toMatchSnapshot({
-      retry: {
-        payload: {
-          result: {
-            status: retryStatus,
-          },
-        },
-      },
-    });
+    ).toMatchSnapshot();
   });
 
   it('refuses invalid runs and foreign executions', async () => {

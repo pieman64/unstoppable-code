@@ -829,31 +829,27 @@ export const ChatTabBar = memo(function ChatTabBar({
               getOnlyQueuedHookPlaceholderQueueId(activeTab) === null);
           return (
             <div className="relative shrink-0">
-              <button
+              <TitlebarIconButton
                 ref={sessionMenuButtonRef}
-                type="button"
                 data-testid="chat-tab-session-menu"
+                // A tab row chrome control, like the `+` and archive beside it.
+                surface="panelChrome"
+                icon={AppCatalogMoreVerticalIcon}
                 onClick={() => setSessionMenuOpen((open) => !open)}
                 aria-label="Session actions"
                 aria-haspopup="menu"
                 aria-expanded={sessionMenuOpen}
-                className="electron-no-drag relative px-1.5 py-2 fg-secondary transition-colors hover:fg-primary"
-              >
-                <AppCatalogMoreVerticalIcon
-                  width="13"
-                  height="13"
-                  aria-hidden="true"
+                holdHoverWhenExpanded
+              />
+              {/* Unread shared-run comments (CAN-397): the menu hosts the
+                  Comments entry, so the dot advertises it without opening. */}
+              {(activeTab.sharedRun?.unreadCommentCount ?? 0) > 0 && (
+                <Dot
+                  tone="unread"
+                  data-testid="chat-tab-session-menu-unread"
+                  className="pointer-events-none absolute right-1 top-1"
                 />
-                {/* Unread shared-run comments (CAN-397): the menu hosts the
-                    Comments entry, so the dot advertises it without opening. */}
-                {(activeTab.sharedRun?.unreadCommentCount ?? 0) > 0 && (
-                  <Dot
-                    tone="unread"
-                    data-testid="chat-tab-session-menu-unread"
-                    className="pointer-events-none absolute top-1 right-0.5"
-                  />
-                )}
-              </button>
+              )}
               <FloatingMenu
                 open={sessionMenuOpen}
                 onOpenChange={setSessionMenuOpen}

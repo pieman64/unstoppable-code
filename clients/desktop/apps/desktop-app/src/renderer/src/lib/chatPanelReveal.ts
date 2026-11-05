@@ -22,12 +22,22 @@ type Listener = (target: ChatPanelRevealTarget) => void;
 
 const listeners = new Set<Listener>();
 
+// The latest reveal, kept for a composer that mounts after it fires (the
+// target worktree renders only once selected) and so missed the broadcast.
+// The target composer takes it once its question is there, a newer reveal
+// replaces it, and it expires once the navigation that fired it has had time
+// to render, so a later visit after navigating elsewhere cannot reopen a
+// prompt.
+const PENDING_REVEAL_TTL_MS = 5_000;
+let pendingReveal: (ChatPanelRevealTarget & { at: number }) | null = null;
+
 /** Ask the panel grid to reveal (expand + select) the given chat's panel. */
 export function requestChatPanelReveal(
   projectId: string,
   worktreeId: string,
   chatId: string,
 ): void {
+  pendingReveal = { projectId, worktreeId, chatId, at: Date.now() };
   listeners.forEach((listener) => {
     listener({ projectId, worktreeId, chatId });
   });
@@ -39,4 +49,21 @@ export function subscribeChatPanelReveal(listener: Listener): () => void {
   return (): void => {
     listeners.delete(listener);
   };
+}
+
+/** Take the pending reveal when it targets this chat and is still fresh. */
+export function consumeChatPanelReveal(target: ChatPanelRevealTarget): boolean {
+  if (
+    pendingReveal !== null &&
+    Date.now() - pendingReveal.at > PENDING_REVEAL_TTL_MS
+  )
+    pendingReveal = null;
+  if (
+    pendingReveal?.projectId !== target.projectId ||
+    pendingReveal.worktreeId !== target.worktreeId ||
+    pendingReveal.chatId !== target.chatId
+  )
+    return false;
+  pendingReveal = null;
+  return true;
 }

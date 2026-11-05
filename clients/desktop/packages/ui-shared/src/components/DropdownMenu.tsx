@@ -53,14 +53,16 @@ export type DropdownMenuItemAlert = 'warning' | 'critical';
  * inset that keeps the 12px surface and 8px row corners concentric. `controls`
  * (8px) suits a grouped control such as a segmented toggle, `readout`
  * (12px) a read-only popover whose text sits where a menu's row text does
- * (4px surface plus 8px row), and `content` (16px) a dialog-style popover
- * with copy, switches, and fields.
+ * (4px surface plus 8px row), `content` (16px) a dialog-style popover
+ * with copy, switches, and fields, and `none` a popover body that lays out
+ * its own sections to the surface's edges (a sticky header, a rule).
  */
 export type DropdownMenuSurfacePadding =
   | 'menu'
   | 'controls'
   | 'readout'
-  | 'content';
+  | 'content'
+  | 'none';
 
 /**
  * `picker` is the flagship picker anatomy (`.canopy-picker-menu`): the
@@ -142,6 +144,7 @@ const SURFACE_PADDING_CLASS_NAMES: Record<DropdownMenuSurfacePadding, string> =
     controls: 'p-2',
     readout: 'p-3',
     content: 'p-4',
+    none: 'p-0',
   };
 
 /**

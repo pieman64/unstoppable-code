@@ -408,8 +408,3 @@ export const usePlanViewStore = create<PlanViewState>((set, get) => ({
     });
   },
 }));
-
-/** Clear every entry. Tests only. */
-export function resetPlanViewStoreForTests(): void {
-  usePlanViewStore.setState({ entries: {} });
-}

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import {
   DelayedLoadingPlaceholder,
   ErrorBanner,
-  SettingsFormSkeleton,
+  Skeleton,
 } from '@canopy/ui-shared/components';
 import {
   SETTINGS_CARD_ROW_CLASS,
@@ -21,6 +21,32 @@ function readPushEnabled(value: unknown): boolean | null {
   if (typeof value !== 'object' || value === null) return null;
   const record: Record<string, unknown> = { ...value };
   return typeof record.pushEnabled === 'boolean' ? record.pushEnabled : null;
+}
+
+const noop = (): void => undefined;
+
+/** The opt-in row: its label and switch. */
+function PushToggleRow({
+  checked,
+  disabled,
+  onChange,
+}: {
+  readonly checked: boolean;
+  readonly disabled: boolean;
+  readonly onChange: () => void;
+}): JSX.Element {
+  return (
+    <div className={`mt-4 ${SETTINGS_CARD_ROW_CLASS}`}>
+      <p className="text-s font-medium fg-primary">Allow push notifications</p>
+      <SettingsCardSwitch
+        checked={checked}
+        label="Allow push notifications"
+        disabled={disabled}
+        dataTestId="account-push-toggle"
+        onChange={onChange}
+      />
+    </div>
+  );
 }
 
 /**
@@ -123,22 +149,21 @@ export function PushPreferencesSection(): JSX.Element {
       <ErrorBanner error={error?.copy} details={error?.details} />
 
       {loading ? (
-        <DelayedLoadingPlaceholder className="mt-4">
-          <SettingsFormSkeleton rows={1} />
+        <DelayedLoadingPlaceholder>
+          <Skeleton
+            loading
+            label="Loading push notification settings"
+            testId="settings-skeleton-form"
+          >
+            <PushToggleRow checked={false} disabled={false} onChange={noop} />
+          </Skeleton>
         </DelayedLoadingPlaceholder>
       ) : loadError !== null ? null : (
-        <div className={`mt-4 ${SETTINGS_CARD_ROW_CLASS}`}>
-          <p className="text-s font-medium fg-primary">
-            Allow push notifications
-          </p>
-          <SettingsCardSwitch
-            checked={pushEnabled}
-            label="Allow push notifications"
-            disabled={saving}
-            dataTestId="account-push-toggle"
-            onChange={() => void handleToggle()}
-          />
-        </div>
+        <PushToggleRow
+          checked={pushEnabled}
+          disabled={saving}
+          onChange={() => void handleToggle()}
+        />
       )}
     </SettingsCard>
   );

@@ -4,6 +4,10 @@ import type {
   OnboardingTipsQueryMap,
 } from '@canopy/protocol/onboarding-tips';
 import type {
+  SuggestionsCommandMap,
+  SuggestionsQueryMap,
+} from '@canopy/protocol/suggestions';
+import type {
   RepoRulesScanRequest,
   RepoRulesScanResponse,
   RepoRulesApplyRequest,
@@ -83,6 +87,7 @@ import type {
   TurnFeedbackRateRequest,
 } from '@canopy/protocol/turn-feedback';
 import type { InstallUpdateEmailPreference } from '@canopy/protocol/account-notifications';
+import type { StarSourceRepositoryResult } from '@canopy/protocol/onboarding';
 import type {
   GitHubOriginRepository,
   GitHubPreviewResult,
@@ -166,6 +171,8 @@ import type { ExternalAgentsClient } from './external-agents-client';
 import type { MarketplaceSourcesClient } from './marketplace-sources-client';
 import type { AccountOrganizationSettingsClient } from '../settings/settings-client';
 
+export type { StarSourceRepositoryResult };
+
 /**
  * Arguments for the `session.snapshot` query: scope the snapshot to a
  * workspace/worktree, or omit both for the top-level overview shell.
@@ -195,7 +202,7 @@ export type TerminalShellSpawnArgs = Omit<
  * snapshot; feature slices extend this map here.
  */
 export interface QueryMap
-  extends ScriptActionsQueryMap, OnboardingTipsQueryMap {
+  extends ScriptActionsQueryMap, OnboardingTipsQueryMap, SuggestionsQueryMap {
   /** Read the authoritative managed-delegation allowance for one worktree. */
   'delegation.lifetimeStatus': {
     args: { readonly projectId: string; readonly worktreeId: string };
@@ -435,7 +442,10 @@ export type BackgroundTaskStopOutcome =
   | 'session-ended';
 
 export interface CommandMap
-  extends ScriptActionsCommandMap, OnboardingTipsCommandMap {
+  extends
+    ScriptActionsCommandMap,
+    OnboardingTipsCommandMap,
+    SuggestionsCommandMap {
   /** User-authorized extension of one worktree's managed-delegation allowance. */
   'delegation.extendLifetimeLimit': {
     args: { readonly projectId: string; readonly worktreeId: string };
@@ -660,6 +670,16 @@ export interface CommandMap
    */
   'plan.update': { args: PortalPlanUpdatePayload; result: void };
   /**
+   * Stars the brand's source repository in app with the GitHub CLI's
+   * account. Takes no args: the host resolves the repository. Gated by
+   * `CanopyCapabilities.sourceRepositoryStar`; any `{ starred: false }`
+   * result, or a rejection, falls back to opening the repository URL.
+   */
+  'sourceRepository.star': {
+    args: Record<string, never>;
+    result: StarSourceRepositoryResult;
+  };
+  /**
    * Turn-level thumbs up/down (CAN-1521). `rate` records the rating in one
    * click; `detail` amends that existing row with the thumbs-down reason and
    * optional comment, so skipping the dialog can never undo the rating.
@@ -823,6 +843,8 @@ export interface CanopyClient {
    * and reload through this client; no transport identity crosses the boundary.
    */
   subscribeOnboardingTipsSourceChange?(listener: () => void): Unsubscribe;
+  /** Invalidates pending suggestions operations when the paired source changes. */
+  subscribeSuggestionsSourceChange?(listener: () => void): Unsubscribe;
 
   /**
    * Capabilities for one workspace or worktree, addressed by any local id. A

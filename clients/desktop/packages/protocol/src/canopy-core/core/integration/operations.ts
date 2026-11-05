@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { CanopyWorkspaceScopeSchema } from '../../common';
 import { CanopyJsonValueSchema } from '../../errors';
 import {
+  defineCanopyInstruction,
+  defineCanopyInstructionRegistry,
   defineCanopyQuery,
   defineCanopyQueryRegistry,
 } from '../../definitions';
@@ -10,6 +12,7 @@ import { inherentOperationErrorSchema } from '../shared';
 
 export const CORE_INTEGRATION_GRANTS = {
   read: 'core.integration.read',
+  star: 'core.integration.star',
 } as const;
 
 const OpaqueIdSchema = z
@@ -211,3 +214,57 @@ export const CORE_INTEGRATION_QUERIES = defineCanopyQueryRegistry('core', {
     requiredGrants: ['core.integration.read'],
   }),
 });
+
+/**
+ * No params: the core resolves the product's own source repository from its
+ * bundled brand, so a caller cannot star an arbitrary repository.
+ */
+export const CoreIntegrationSourceRepositoryStarParamsSchema = z.strictObject(
+  {},
+);
+
+export const CoreIntegrationSourceRepositoryStarResultSchema = z.strictObject({
+  repository: z.strictObject({
+    owner: z.string().min(1).max(256),
+    repo: z.string().min(1).max(256),
+  }),
+});
+
+export const CORE_INTEGRATION_SOURCE_REPOSITORY_STAR_ERROR_CODES = [
+  'core.integration.sourceRepository.unavailable',
+  'core.integration.githubCli.notInstalled',
+  'core.integration.notAuthenticated',
+  'core.integration.sourceRepository.star.failed',
+] as const;
+
+export type CoreIntegrationSourceRepositoryStarParams = z.output<
+  typeof CoreIntegrationSourceRepositoryStarParamsSchema
+>;
+export type CoreIntegrationSourceRepositoryStarResult = z.output<
+  typeof CoreIntegrationSourceRepositoryStarResultSchema
+>;
+export type CoreIntegrationSourceRepositoryStarErrorCode =
+  (typeof CORE_INTEGRATION_SOURCE_REPOSITORY_STAR_ERROR_CODES)[number];
+
+/**
+ * Stars the brand's source repository with the GitHub CLI's own github.com
+ * account. Starring is a PUT, so a repeat is inherently idempotent.
+ */
+export const CORE_INTEGRATION_INSTRUCTIONS = defineCanopyInstructionRegistry(
+  'core',
+  {
+    'core.integration.sourceRepository.star': defineCanopyInstruction({
+      plane: 'core',
+      domain: 'integration',
+      version: 1,
+      placement: 'core-only',
+      params: CoreIntegrationSourceRepositoryStarParamsSchema,
+      result: CoreIntegrationSourceRepositoryStarResultSchema,
+      error: inherentOperationErrorSchema(
+        CORE_INTEGRATION_SOURCE_REPOSITORY_STAR_ERROR_CODES,
+      ),
+      idempotency: 'inherent',
+      requiredGrants: ['core.integration.star'],
+    }),
+  },
+);

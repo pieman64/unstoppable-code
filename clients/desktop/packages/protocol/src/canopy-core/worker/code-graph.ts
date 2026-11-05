@@ -243,6 +243,141 @@ export const WorkerCodeGraphBuildParamsSchema = z.strictObject({
 
 const count = z.number().int().min(0);
 
+const milliseconds = z.number().min(0);
+
+export const WORKER_CODE_GRAPH_GENERATION_TRIGGERS = [
+  'worktree-created',
+  'refresh',
+  'tool-request',
+  'manual',
+] as const;
+
+/** The generation stage a failed generation is attributed to. */
+export const WORKER_CODE_GRAPH_GENERATION_STAGES = [
+  'preflight',
+  'seed-preparation',
+  'worker-build',
+] as const;
+
+/** The telemetry classification of a failed generation. */
+export const WORKER_CODE_GRAPH_GENERATION_FAILURE_REASONS = [
+  'timeout',
+  'canceled',
+  'unavailable',
+  'worker-exit',
+  'spawn-failed',
+  'post-failed',
+  'malformed-response',
+  'worker-response',
+  'unknown',
+] as const;
+
+/** The local diagnostic's classification, which also names read failures. */
+export const WORKER_CODE_GRAPH_GENERATION_DIAGNOSTIC_FAILURE_REASONS = [
+  ...WORKER_CODE_GRAPH_GENERATION_FAILURE_REASONS,
+  'queue-timeout',
+  'execution-timeout',
+  'busy',
+  'invalid-response',
+  'database-error',
+] as const;
+
+export const WorkerCodeGraphResolverTimingsSchema = z.strictObject({
+  resetMs: milliseconds,
+  importsMs: milliseconds,
+  configExtendsMs: milliseconds,
+  docLinksMs: milliseconds,
+  ipcMs: milliseconds,
+  workflowActionsMs: milliseconds,
+  callsMs: milliseconds,
+  testsMs: milliseconds,
+});
+
+/** Where one build's time went, as the build host measured it. */
+export const WorkerCodeGraphBuildTimingsSchema = z.strictObject({
+  queueWaitMs: milliseconds.optional(),
+  fingerprintMs: milliseconds.optional(),
+  seedCopyMs: milliseconds.optional(),
+  fusionMs: milliseconds.optional(),
+  prepareMs: milliseconds,
+  scanMs: milliseconds,
+  hashMs: milliseconds,
+  parseMs: milliseconds,
+  resolveMs: WorkerCodeGraphResolverTimingsSchema.optional(),
+  ftsMs: milliseconds.optional(),
+  derivedMs: milliseconds.optional(),
+  diagnosticsMs: milliseconds,
+  commitMs: milliseconds,
+  finalizeMs: milliseconds.optional(),
+  rowsWritten: count,
+  walStartBytes: count.optional(),
+  peakWalBytes: count.optional(),
+  peakRssBytes: count.optional(),
+  timeToFirstGraphMs: milliseconds.optional(),
+});
+
+/** Flat, privacy-bounded telemetry values: counts, flags and enums. */
+const telemetryValue = z.union([z.string().max(128), z.number(), z.boolean()]);
+
+/**
+ * The `core.runtime.initialize` client capability that asks for generation
+ * reports. A client that does not announce it gets build results and
+ * refusals without them, as before CAN-5627.
+ */
+export const WORKER_CODE_GRAPH_GENERATION_REPORT_CAPABILITY =
+  'worker.codeGraph.generationReport';
+
+/**
+ * One worktree generation as the worker measured it (CAN-5627): the context
+ * of its telemetry operation and its local build diagnostic. The requesting
+ * interface records both with its own consent and bundled telemetry
+ * configuration, so each generation is recorded once, by the client that
+ * asked for it. It names no path, label or worker message.
+ */
+export const WorkerCodeGraphGenerationReportSchema = z.strictObject({
+  trigger: z.enum(WORKER_CODE_GRAPH_GENERATION_TRIGGERS),
+  outcome: z.enum(['success', 'failure']),
+  repositoryCount: count.nullable(),
+  /** The generation's wall time, from request to settlement. */
+  totalMs: milliseconds,
+  /** Result counts the telemetry operation reports on success. */
+  telemetry: z
+    .record(z.string().regex(/^[a-z][a-z_]{0,63}$/), telemetryValue)
+    .refine((context) => Object.keys(context).length <= 64, {
+      message: 'At most 64 telemetry values.',
+    }),
+  failure: z
+    .strictObject({
+      stage: z.enum(WORKER_CODE_GRAPH_GENERATION_STAGES),
+      reason: z.enum(WORKER_CODE_GRAPH_GENERATION_FAILURE_REASONS),
+    })
+    .nullable(),
+  /** The local build diagnostic, a session event for this worktree. */
+  diagnostic: z.strictObject({
+    outcome: z.enum(['success', 'failure', 'deferred']),
+    failureStage: z.enum(WORKER_CODE_GRAPH_GENERATION_STAGES).optional(),
+    failureReason: z
+      .enum(WORKER_CODE_GRAPH_GENERATION_DIAGNOSTIC_FAILURE_REASONS)
+      .optional(),
+    attemptId: z
+      .string()
+      .regex(/^[a-zA-Z0-9_-]{1,64}$/)
+      .optional(),
+    queuePriority: z.enum(['agent', 'first-build', 'worktree']).optional(),
+    totalMs: milliseconds,
+    filesScanned: count.optional(),
+    filesParsed: count.optional(),
+    factsChanged: z.boolean().optional(),
+    queueWaitMs: milliseconds.optional(),
+    timings: WorkerCodeGraphBuildTimingsSchema.optional(),
+    endFingerprintMs: milliseconds.optional(),
+    fingerprintPersistMs: milliseconds.optional(),
+    fingerprintPersistOutcome: z
+      .enum(['persisted', 'unstable', 'busy', 'error'])
+      .optional(),
+  }),
+});
+
 /** Bounds on the build warnings a result carries; hosts clip to them. */
 export const WORKER_CODE_GRAPH_BUILD_WARNING_LIMITS = {
   diagnostics: 1_024,
@@ -294,6 +429,8 @@ export const WorkerCodeGraphBuildResultSchema = z.discriminatedUnion('kind', [
       )
       .max(WORKER_CODE_GRAPH_BUILD_WARNING_LIMITS.derivedWarnings)
       .nullable(),
+    /** How the generation went, for the requester's telemetry (CAN-5627). */
+    generation: WorkerCodeGraphGenerationReportSchema.optional(),
   }),
   z.strictObject({
     kind: z.literal('workspace_base'),
@@ -324,7 +461,10 @@ export const WORKER_CODE_GRAPH_BUILD_FAILURES = [
 ] as const;
 
 export const WorkerCodeGraphBuildFailureDetailsSchema = z.strictObject({
-  failure: z.enum(WORKER_CODE_GRAPH_BUILD_FAILURES),
+  /** Present on `worker.codeGraph.buildFailed`. */
+  failure: z.enum(WORKER_CODE_GRAPH_BUILD_FAILURES).optional(),
+  /** How a worktree generation went before it failed (CAN-5627). */
+  generation: WorkerCodeGraphGenerationReportSchema.optional(),
 });
 
 export const WorkerCodeGraphBuildErrorSchema = CanopyErrorPayloadSchema.extend({
@@ -345,6 +485,9 @@ export const WorkerCodeGraphBuildErrorSchema = CanopyErrorPayloadSchema.extend({
 
 export type WorkerCodeGraphBuildParams = z.output<
   typeof WorkerCodeGraphBuildParamsSchema
+>;
+export type WorkerCodeGraphGenerationReport = z.output<
+  typeof WorkerCodeGraphGenerationReportSchema
 >;
 export type WorkerCodeGraphBuildResult = z.output<
   typeof WorkerCodeGraphBuildResultSchema

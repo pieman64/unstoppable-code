@@ -76,16 +76,10 @@ import type {
   SearchLocalMemoryInput,
 } from './core';
 import { readPreferencesFile } from '../lib/preferences-store';
-import { getUserMemoryDir, getWorkspaceMemoryDir } from '../lib/paths';
-import {
-  appendInboxNote,
-  readMemoryFile,
-  searchMemory,
-} from '../memory/local/store';
 import { broadcastLocalMemoryChanged } from '../memory/local/change-events';
+import { localMemoryStore } from '../memory/local/memory-store';
 import { resolveLocalMemoryPolicy } from '../memory/local/policy';
 import { LocalMemoryScopeReadOnlyError } from '../memory/local/scope-manifest';
-import { recordUsage, seedEntry } from '../memory/local/usage';
 import { checkGitHubCliStatus } from '../lib/github-auth';
 import { resolveCommitMessageInstructions } from '@canopy/desktop-shared/lib/commit-message-generator';
 import { resolvePrContentInstructions } from '@canopy/desktop-shared/lib/github-pr-generator';
@@ -206,22 +200,18 @@ export async function saveLocalMemory(
     return 'User memory is unavailable in a private-memory project. Use workspace scope.';
   }
 
-  let scopeDir: string;
   let scopeRequest: LocalMemoryScopeRequest;
   if (options.scope === 'user') {
-    scopeDir = getUserMemoryDir();
     scopeRequest = { scope: 'user' };
   } else {
     if (policy.kind !== 'scoped') {
       return WORKSPACE_MEMORY_UNAVAILABLE_MESSAGE;
     }
-    const workspaceId = policy.workspaceId;
-    scopeDir = getWorkspaceMemoryDir(workspaceId);
-    scopeRequest = { scope: 'workspace', workspaceId };
+    scopeRequest = { scope: 'workspace', workspaceId: policy.workspaceId };
   }
   let fileKey: string;
   try {
-    fileKey = await appendInboxNote(scopeDir, {
+    fileKey = await localMemoryStore.saveNote(scopeRequest, {
       text: options.text,
       source: {
         provider: options.provider,
@@ -239,7 +229,7 @@ export async function saveLocalMemory(
     throw new Error('The memory note could not be written.');
   }
   broadcastLocalMemoryChanged(scopeRequest);
-  await seedEntry(scopeDir, fileKey);
+  await localMemoryStore.seedUsage(scopeRequest, fileKey);
   return `Saved ${options.scope} memory to ${fileKey}`;
 }
 
@@ -259,17 +249,17 @@ export async function searchLocalMemory(
   if (policy.kind === 'blocked')
     return 'Project memory is unavailable because its configuration could not be read.';
 
-  const userDir = getUserMemoryDir();
-  const scopeDirs: { scope: 'user' | 'workspace'; dir: string }[] =
-    policy.kind === 'scoped' && policy.privateMemory
-      ? []
-      : [{ scope: 'user', dir: userDir }];
-  const workspaceDir =
-    policy.kind === 'scoped' ? getWorkspaceMemoryDir(policy.workspaceId) : null;
-  if (workspaceDir !== null) {
-    scopeDirs.push({ scope: 'workspace', dir: workspaceDir });
+  const userScope: LocalMemoryScopeRequest = { scope: 'user' };
+  const scopes: LocalMemoryScopeRequest[] =
+    policy.kind === 'scoped' && policy.privateMemory ? [] : [userScope];
+  const workspaceScope: LocalMemoryScopeRequest | null =
+    policy.kind === 'scoped'
+      ? { scope: 'workspace', workspaceId: policy.workspaceId }
+      : null;
+  if (workspaceScope !== null) {
+    scopes.push(workspaceScope);
   }
-  const hits = await searchMemory(scopeDirs, options.query);
+  const hits = await localMemoryStore.search(scopes, options.query);
   const userFileKeys = Array.from(
     new Set(
       hits.filter((hit) => hit.scope === 'user').map((hit) => hit.fileKey),
@@ -286,10 +276,12 @@ export async function searchLocalMemory(
   // latency instead of serializing the SearchMemory response.
   const usageWrites: Promise<void>[] = [];
   if (userFileKeys.length > 0) {
-    usageWrites.push(recordUsage(userDir, userFileKeys));
+    usageWrites.push(localMemoryStore.recordUsage(userScope, userFileKeys));
   }
-  if (workspaceDir !== null && workspaceFileKeys.length > 0) {
-    usageWrites.push(recordUsage(workspaceDir, workspaceFileKeys));
+  if (workspaceScope !== null && workspaceFileKeys.length > 0) {
+    usageWrites.push(
+      localMemoryStore.recordUsage(workspaceScope, workspaceFileKeys),
+    );
   }
   await Promise.all(usageWrites);
 
@@ -321,22 +313,21 @@ export async function readLocalMemory(
     return 'User memory is unavailable in a private-memory project. Use workspace scope.';
   }
 
-  let scopeDir: string;
+  let scope: LocalMemoryScopeRequest;
   if (options.scope === 'user') {
-    scopeDir = getUserMemoryDir();
+    scope = { scope: 'user' };
   } else {
     if (policy.kind !== 'scoped') {
       return WORKSPACE_MEMORY_READ_UNAVAILABLE_MESSAGE;
     }
-    const workspaceId = policy.workspaceId;
-    scopeDir = getWorkspaceMemoryDir(workspaceId);
+    scope = { scope: 'workspace', workspaceId: policy.workspaceId };
   }
 
-  const content = await readMemoryFile(scopeDir, options.file);
+  const content = await localMemoryStore.readFile(scope, options.file);
   if (content === undefined) {
     return `Local memory file not found: [${options.scope}] ${options.file}.`;
   }
-  await recordUsage(scopeDir, [options.file]);
+  await localMemoryStore.recordUsage(scope, [options.file]);
   return content;
 }
 

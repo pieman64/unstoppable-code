@@ -6,16 +6,25 @@ import type {
   UsageMetricsViewResponse,
 } from '@canopy/desktop-shared/types';
 import { useObservabilityStore } from '@/stores/observabilityStore';
+import { useObservabilityEntriesInterest } from '@/lib/chat-interest';
 import { useProjectsStore } from '@/stores/projectsStore';
 import {
   DataTable,
   DelayedLoadingPlaceholder,
   SettingsSelect,
+  Skeleton,
   type DataTableColumn,
 } from '@canopy/ui-shared/components';
 import { ErrorBanner } from '@/components/shared/StatusBlocks';
 import type { TabSpec } from './tab-specs';
 import { formatCurrencyUsd, formatNumber } from './format';
+
+/** Plain rows the loading skeleton measures in the table's own columns. */
+const SAMPLE_BREAKDOWN_ROWS: ReadonlyArray<UsageBreakdownRow> = [
+  { key: 'sample-1', label: 'Checkout service', count: 128 },
+  { key: 'sample-2', label: 'Docs site', count: 64 },
+  { key: 'sample-3', label: 'Mobile app', count: 12 },
+];
 
 interface MetricsBreakdownPanelProps {
   spec: TabSpec;
@@ -24,6 +33,7 @@ interface MetricsBreakdownPanelProps {
 export function MetricsBreakdownPanel({
   spec,
 }: MetricsBreakdownPanelProps): JSX.Element {
+  useObservabilityEntriesInterest();
   const [metric, setMetric] = useState<UsageMetricId>(spec.defaultTableMetric);
   const [groupBy, setGroupBy] = useState<UsageGroupById>(
     spec.defaultTableGrouping,
@@ -133,15 +143,20 @@ export function MetricsBreakdownPanel({
         <ErrorBanner error={error} className="" />
       ) : response === null ? (
         <DelayedLoadingPlaceholder slowNote="Still loading breakdown…">
-          <BreakdownTable
-            rows={[]}
+          <Skeleton
             loading
-            showStats={false}
-            groupBy={groupBy}
-            countColumnLabel={spec.countColumnLabel ?? 'Count'}
-            valueFormat={spec.valueFormat ?? 'number'}
-            emptyMessage={spec.emptyMessage}
-          />
+            label="Loading breakdown"
+            testId={`usage-breakdown-loading-${spec.id}`}
+          >
+            <BreakdownTable
+              rows={SAMPLE_BREAKDOWN_ROWS}
+              showStats={false}
+              groupBy={groupBy}
+              countColumnLabel={spec.countColumnLabel ?? 'Count'}
+              valueFormat={spec.valueFormat ?? 'number'}
+              emptyMessage={spec.emptyMessage}
+            />
+          </Skeleton>
         </DelayedLoadingPlaceholder>
       ) : (
         <BreakdownTable
@@ -159,7 +174,6 @@ export function MetricsBreakdownPanel({
 
 interface BreakdownTableProps {
   rows: ReadonlyArray<UsageBreakdownRow>;
-  loading?: boolean;
   showStats: boolean;
   groupBy: UsageGroupById;
   countColumnLabel: string;
@@ -180,7 +194,6 @@ const STAT_COLUMNS: ReadonlyArray<{ key: StatKey; header: string }> = [
 
 function BreakdownTable({
   rows,
-  loading = false,
   showStats,
   groupBy,
   countColumnLabel,
@@ -224,7 +237,6 @@ function BreakdownTable({
       columns={columns}
       rows={rows}
       rowKey={(row) => row.key}
-      loading={loading}
       emptyLabel={emptyMessage}
     />
   );

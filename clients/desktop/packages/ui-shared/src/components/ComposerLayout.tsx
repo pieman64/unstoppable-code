@@ -659,6 +659,20 @@ export function ComposerStatusRow({
   );
 }
 
+/**
+ * While the usage meter shows its weekly % (hover, keyboard focus or its
+ * open popover), the access control before it slides left by the 37px the
+ * meter's hover fill grows, on the meter's curve: 300 ms in, 240 ms out. A
+ * transform, so the row never relayouts; hover counts only for a fine
+ * pointer, so a tap on touch cannot leave it slid. The meter is the next
+ * sibling, so the access wrapper watches it with `:has(+ …)`. The wrapper's
+ * 37px leading padding keeps the slide clear of the controls before it: free
+ * row width absorbs it, and a full row truncates the model name that much
+ * earlier.
+ */
+const ACCESS_WEEKLY_SLIDE_CLASS =
+  'flex min-w-0 has-[+*_[data-weekly-trigger]]:pl-9.25 transition-[translate] duration-240 ease-drawer motion-reduce:transition-none pointer-fine:has-[+*_[data-weekly-trigger]:hover]:duration-300 has-[+*_[data-weekly-trigger]:focus-visible]:duration-300 has-[+*_[data-weekly-trigger][aria-expanded=true]]:duration-300 has-[+*_[data-weekly-trigger][data-open=true]]:duration-300 pointer-fine:has-[+*_[data-weekly-trigger]:hover]:-translate-x-9.25 has-[+*_[data-weekly-trigger]:focus-visible]:-translate-x-9.25 has-[+*_[data-weekly-trigger][aria-expanded=true]]:-translate-x-9.25 has-[+*_[data-weekly-trigger][data-open=true]]:-translate-x-9.25';
+
 /** Access precedes supplied usage without adding a flex item around the pair. */
 export function ComposerAccessUsage({
   access,
@@ -669,7 +683,11 @@ export function ComposerAccessUsage({
 }): JSX.Element {
   return (
     <>
-      {access}
+      {access != null && usage != null ? (
+        <div className={ACCESS_WEEKLY_SLIDE_CLASS}>{access}</div>
+      ) : (
+        access
+      )}
       {usage != null ? <div className="shrink-0">{usage}</div> : null}
     </>
   );

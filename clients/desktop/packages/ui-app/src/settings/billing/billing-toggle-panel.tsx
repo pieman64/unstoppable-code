@@ -10,8 +10,8 @@ import { ErrorBanner, ToggleSwitch } from '@canopy/ui-shared/components';
  * slot for content rendered below the switch (for example the auto top-up
  * meter and settings summary).
  *
- * Used by {@link AutoTopUpControls} and {@link DailyFreeCreditsControls} so the
- * Billing tab has one switch implementation.
+ * Used by {@link AutoTopUpControls} so the Billing tab has one switch
+ * implementation.
  */
 export interface BillingTogglePanelProps {
   /** Test id on the panel container. */

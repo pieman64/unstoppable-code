@@ -43,6 +43,7 @@ import { deleteSplitPrMapForWorktree } from './split-pr-persistence';
 import { getChatSearchService } from '../chat-search/service';
 import { validateId } from './validation';
 import { removeTreeWithoutAsar } from './remove-tree-without-asar';
+import { withLinuxWorktreeRemovalVerification } from './worktree-process-cleanup';
 import { getChatStateService } from '../services/chat-state-service';
 import { releaseCodeReviewTasks } from './code-review-deletion-fence';
 import { runAsLocalFenceHolder } from '../app-advisor/local-fence-holder';
@@ -113,6 +114,18 @@ function buildCleanupWarning(label: string, error: unknown): string {
       break;
     case 'EPERM':
       detail = 'operation not permitted';
+      break;
+    case 'EROFS':
+      detail = 'read-only file system';
+      break;
+    case 'EXDEV':
+      detail = 'cross-device operation not permitted';
+      break;
+    case 'ENOTEMPTY':
+      detail = 'directory not empty';
+      break;
+    case 'ETXTBSY':
+      detail = 'file is busy because it is being executed';
       break;
     default:
       if (error instanceof Error && error.message.trim().length > 0) {
@@ -348,13 +361,17 @@ function buildCleanupTasks(
         terminalPersistenceStore.forgetWorktree(projectId, worktreeId);
         // App-managed chat workspaces live under app-workspaces/, not
         // workspaces/ — the resolved root keeps their metadata reclaimable.
-        return removePersistedWorktreeDataDirectory(projectId, worktreeId, {
-          worktreeDataRootDir: getWorktreeDataRootDir(projectId),
-          removeTree: lifecycleTreeRemoval(
-            join(getWorktreeDataRootDir(projectId), worktreeId),
-            removeTreeWithoutAsar,
-          ),
-        });
+        return withLinuxWorktreeRemovalVerification(
+          join(getWorktreeDataRootDir(projectId), worktreeId),
+          () =>
+            removePersistedWorktreeDataDirectory(projectId, worktreeId, {
+              worktreeDataRootDir: getWorktreeDataRootDir(projectId),
+              removeTree: lifecycleTreeRemoval(
+                join(getWorktreeDataRootDir(projectId), worktreeId),
+                removeTreeWithoutAsar,
+              ),
+            }),
+        );
       },
     },
     {

@@ -29,6 +29,20 @@ export interface CanopyClientConformancePair {
   close(): Promise<void>;
 }
 
+export interface CanopyClientConformanceBinding {
+  /**
+   * False when the client cannot observe the server ending its connection
+   * until its next request, so no close or close reason reaches it (HTTP POST
+   * plus SSE, ADR 13a): cases that close the server end become `it.todo`.
+   */
+  readonly serverClose?: boolean;
+  /** Exact case names this binding cannot pass yet, each with its owning ticket. */
+  readonly pending?: Readonly<Record<string, string>>;
+}
+
+const NO_SERVER_CLOSE =
+  'no server close reaches the client on this binding (ADR 13a)';
+
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -154,8 +168,23 @@ function recorder(): {
 export function describeCanopyClientConformance(
   name: string,
   createPair: () => Promise<CanopyClientConformancePair>,
+  binding: CanopyClientConformanceBinding = {},
 ): void {
   describe(`${name}: canonical client conformance`, () => {
+    const pending = new Map(Object.entries(binding.pending ?? {}));
+    /** Registers a case, or its `it.todo` when this binding cannot run it. */
+    const conformance = (
+      title: string,
+      closesServer: boolean,
+      body: () => Promise<void>,
+    ): void => {
+      const owner = pending.get(title);
+      pending.delete(title);
+      if (owner) it.todo(`${title} (pending ${owner})`);
+      else if (closesServer && binding.serverClose === false)
+        it.todo(`${title} (${NO_SERVER_CLOSE})`);
+      else it(title, body);
+    };
     const pairs: CanopyClientConformancePair[] = [];
     const cores: CanonicalCoreServer[] = [];
     const holds: (() => void)[] = [];
@@ -492,35 +521,39 @@ export function describeCanopyClientConformance(
       expect(client.signal.aborted).toBe(false);
     });
 
-    it('settles pending calls when the core disconnects', async () => {
-      const { client, core, server } = await open(hold);
-      const query = rejection(client.query('core.test.echo', { text: 'x' }));
-      const keyed = rejection(
-        client.instruction(
-          'core.test.record',
-          { value: 1 },
-          { metadata: { idempotencyKey: 'key-1' } },
-        ),
-      );
-      expect(await received(core, 3)).toBe(true);
-      server.close();
-      expect(await within(query)).toMatchObject({
-        kind: 'unavailable',
-        retry: { kind: 'same_request' },
-      });
-      expect(await within(keyed)).toMatchObject({
-        kind: 'unavailable',
-        retry: { kind: 'same_idempotency_key' },
-      });
-      expect(client.signal.aborted).toBe(true);
-      expect(
-        await rejection(client.query('core.test.echo', { text: 'x' })),
-      ).toMatchObject({ kind: 'unavailable' });
-    });
+    conformance(
+      'settles pending calls when the core disconnects',
+      true,
+      async () => {
+        const { client, core, server } = await open(hold);
+        const query = rejection(client.query('core.test.echo', { text: 'x' }));
+        const keyed = rejection(
+          client.instruction(
+            'core.test.record',
+            { value: 1 },
+            { metadata: { idempotencyKey: 'key-1' } },
+          ),
+        );
+        expect(await received(core, 3)).toBe(true);
+        server.close();
+        expect(await within(query)).toMatchObject({
+          kind: 'unavailable',
+          retry: { kind: 'same_request' },
+        });
+        expect(await within(keyed)).toMatchObject({
+          kind: 'unavailable',
+          retry: { kind: 'same_idempotency_key' },
+        });
+        expect(client.signal.aborted).toBe(true);
+        expect(
+          await rejection(client.query('core.test.echo', { text: 'x' })),
+        ).toMatchObject({ kind: 'unavailable' });
+      },
+    );
 
     // Simulated: the core closes with a typed reason. Real auth and version
     // negotiation are covered by the handshake cases and transport tests.
-    it.each<CanopyErrorPayload>([
+    const closeReasons: CanopyErrorPayload[] = [
       {
         kind: 'unauthenticated',
         message: 'Session token expired.',
@@ -532,39 +565,42 @@ export function describeCanopyClientConformance(
         code: 'core.runtime.invalidState',
         retry: { kind: 'never' },
       },
-    ])(
-      'settles pending and later calls with a mid-session $kind close',
-      async (reason) => {
-        const { client, core, server } = await open(hold);
-        const pending = [
-          rejection(client.query('core.test.echo', { text: 'x' })),
-          rejection(
-            client.instruction(
-              'core.test.record',
-              { value: 1 },
-              { metadata: { idempotencyKey: 'key-1' } },
+    ];
+    for (const reason of closeReasons)
+      conformance(
+        `settles pending and later calls with a mid-session ${reason.kind} close`,
+        true,
+        async () => {
+          const { client, core, server } = await open(hold);
+          const pending = [
+            rejection(client.query('core.test.echo', { text: 'x' })),
+            rejection(
+              client.instruction(
+                'core.test.record',
+                { value: 1 },
+                { metadata: { idempotencyKey: 'key-1' } },
+              ),
             ),
-          ),
-        ];
-        expect(await received(core, 3)).toBe(true);
-        server.close(reason);
-        expect(await within(Promise.all(pending))).toEqual([reason, reason]);
-        expect(client.signal.aborted).toBe(true);
-        expect(
-          await rejection(client.query('core.test.echo', { text: 'x' })),
-        ).toEqual(reason);
-        expect(
-          await rejection(
-            client.instruction(
-              'core.test.record',
-              { value: 2 },
-              { metadata: { idempotencyKey: 'key-2' } },
+          ];
+          expect(await received(core, 3)).toBe(true);
+          server.close(reason);
+          expect(await within(Promise.all(pending))).toEqual([reason, reason]);
+          expect(client.signal.aborted).toBe(true);
+          expect(
+            await rejection(client.query('core.test.echo', { text: 'x' })),
+          ).toEqual(reason);
+          expect(
+            await rejection(
+              client.instruction(
+                'core.test.record',
+                { value: 2 },
+                { metadata: { idempotencyKey: 'key-2' } },
+              ),
             ),
-          ),
-        ).toEqual(reason);
-        expect(core.requests).toHaveLength(3);
-      },
-    );
+          ).toEqual(reason);
+          expect(core.requests).toHaveLength(3);
+        },
+      );
 
     it('closes the session when the client signal aborts', async () => {
       const controller = new AbortController();
@@ -611,29 +647,51 @@ export function describeCanopyClientConformance(
     const thrown = (action: () => unknown): Promise<CanopyErrorPayload> =>
       rejection(Promise.resolve().then(action));
 
-    it('streams typed frames to completion with the open result and request id', async () => {
-      const { client, core } = await open();
-      const handle = await client.openStream('core.test.ticks', { count: 2 });
-      expect(handle.requestId).toBe(String(core.requests[1]?.id));
-      expect(handle.openResult).toEqual({
-        subscriptionId: subscriptionIdFor(handle.requestId),
-        acceptedCursor: null,
+    conformance(
+      'streams typed frames to completion with the open result and request id',
+      false,
+      async () => {
+        const { client, core } = await open();
+        const handle = await client.openStream('core.test.ticks', { count: 2 });
+        expect(handle.requestId).toBe(String(core.requests[1]?.id));
+        expect(handle.openResult).toEqual({
+          subscriptionId: subscriptionIdFor(handle.requestId),
+          acceptedCursor: null,
+        });
+        expect(await drain(handle.frames)).toEqual([
+          item(1, 0),
+          item(2, 1),
+          completed(2),
+        ]);
+      },
+    );
+
+    it('delivers frames sent ahead of their open reply first, in order', async () => {
+      const { client } = await open();
+      const handle = await client.openStream('core.test.ticks', {
+        early: 2,
+        count: 1,
       });
       expect(await drain(handle.frames)).toEqual([
         item(1, 0),
         item(2, 1),
-        completed(2),
+        item(3, 2),
+        completed(3),
       ]);
     });
 
-    it('delivers every frame to an onFrame option attached at open', async () => {
-      const { client } = await open();
-      const pushed = recorder();
-      const options = { onFrame: pushed.listener };
-      await client.openStream('core.test.ticks', { count: 3 }, options);
-      expect(await within(pushed.ended)).toBeUndefined();
-      expect(ticksOf(pushed.frames)).toEqual([0, 1, 2, 'completed']);
-    });
+    conformance(
+      'delivers every frame to an onFrame option attached at open',
+      false,
+      async () => {
+        const { client } = await open();
+        const pushed = recorder();
+        const options = { onFrame: pushed.listener };
+        await client.openStream('core.test.ticks', { count: 3 }, options);
+        expect(await within(pushed.ended)).toBeUndefined();
+        expect(ticksOf(pushed.frames)).toEqual([0, 1, 2, 'completed']);
+      },
+    );
 
     it('buffers while push listeners detach and redelivers in order past listener errors', async () => {
       const { client, core } = await open();
@@ -932,7 +990,7 @@ export function describeCanopyClientConformance(
     const disconnect = ({ server }: Session): void => server.close();
     const expire = ({ server }: Session): void => server.close(expired);
     const closeClient = ({ client }: Session): Promise<void> => client.close();
-    it.each([
+    const sessionEnds = [
       ['the core disconnects', disconnect, { kind: 'unavailable' }, 'error'],
       ['the core closes typed', expire, expired, 'error'],
       [
@@ -941,27 +999,39 @@ export function describeCanopyClientConformance(
         { kind: 'cancelled', message: 'The client was closed.' },
         'cancelled',
       ],
-    ] as const)(
-      'ends held streams with the session reason when %s',
-      async (_, closeSession, reason, outcome) => {
-        const session = await open();
-        const { client, core } = session;
-        const handle = await openHeld(client);
-        await core.emit(handle.openResult.subscriptionId, { tick: 1 });
-        await flush(client);
-        await closeSession(session);
-        const frames = await drain(handle.frames);
-        const cursor = frames[0]?.cursor ?? {};
-        expect(frames).toMatchObject([
-          { kind: 'item' },
-          { kind: 'end', cursor, outcome, error: reason },
-        ]);
-        expect(client.signal.aborted).toBe(true);
-        expect(await rejection(openHeld(client))).toMatchObject(reason);
-      },
-    );
+    ] as const;
+    for (const [when, closeSession, reason, outcome] of sessionEnds)
+      conformance(
+        `ends held streams with the session reason when ${when}`,
+        closeSession !== closeClient,
+        async () => {
+          const session = await open();
+          const { client, core } = session;
+          const handle = await openHeld(client);
+          await core.emit(handle.openResult.subscriptionId, { tick: 1 });
+          await flush(client);
+          await closeSession(session);
+          const frames = await drain(handle.frames);
+          const cursor = frames[0]?.cursor ?? {};
+          expect(frames).toMatchObject([
+            { kind: 'item' },
+            { kind: 'end', cursor, outcome, error: reason },
+          ]);
+          expect(client.signal.aborted).toBe(true);
+          expect(await rejection(openHeld(client))).toMatchObject(reason);
+        },
+      );
 
-    it('keeps identities, cursors, and streams independent across connections', async () => {
+    /** Two connections to distinct cores, each holding a same-id stream. */
+    const twoConnections = async (): Promise<{
+      first: Awaited<ReturnType<typeof open>>;
+      other: Awaited<ReturnType<typeof connect>>;
+      second: CanonicalClient;
+      lost: Awaited<ReturnType<typeof openHeld>>;
+      kept: Awaited<ReturnType<typeof openHeld>>;
+      subscriptionId: string;
+      daemonEpoch: string;
+    }> => {
       const first = await open();
       const base = canonicalInitializeResult();
       const runtime = {
@@ -973,7 +1043,6 @@ export function describeCanopyClientConformance(
       };
       const other = await connect({}, { initialize: { ...base, runtime } });
       const second = await other.connecting;
-      const { daemonEpoch } = runtime;
       const identities = [first.client, second].map(({ identity }) => [
         identity.authorityId,
         identity.runtimeId,
@@ -989,24 +1058,69 @@ export function describeCanopyClientConformance(
       // Both cores issue the same subscription id; routing stays per connection.
       const { subscriptionId } = kept.openResult;
       expect(lost.openResult.subscriptionId).toBe(subscriptionId);
+      return {
+        first,
+        other,
+        second,
+        lost,
+        kept,
+        subscriptionId,
+        daemonEpoch: runtime.daemonEpoch,
+      };
+    };
+
+    conformance('routes same-id streams per connection', false, async () => {
+      const { first, other, lost, kept, subscriptionId, daemonEpoch } =
+        await twoConnections();
       await first.core.emit(subscriptionId, { tick: 1 });
       await other.core.emit(subscriptionId, { tick: 2 });
-      await flush(first.client);
-      first.server.close();
-      expect(ticksOf(await drain(lost.frames))).toEqual([1, 'error']);
-      await other.core.emit(subscriptionId, { tick: 3 });
+      await first.core.end(subscriptionId);
       await other.core.end(subscriptionId);
+      expect(await drain(lost.frames)).toEqual([item(1, 1), completed(1)]);
       expect(await drain(kept.frames)).toEqual([
         item(1, 2, daemonEpoch),
-        item(2, 3, daemonEpoch),
-        completed(2, daemonEpoch),
+        completed(1, daemonEpoch),
       ]);
-      const local = await openHeld(second);
-      local.close();
-      expect(await drain(local.frames)).toMatchObject([
-        { cursor: { daemonEpoch, sequence: 0 } },
-      ]);
-      expect(second.signal.aborted).toBe(false);
     });
+
+    conformance(
+      'keeps identities, cursors, and streams independent across connections',
+      true,
+      async () => {
+        const {
+          first,
+          other,
+          second,
+          lost,
+          kept,
+          subscriptionId,
+          daemonEpoch,
+        } = await twoConnections();
+        await first.core.emit(subscriptionId, { tick: 1 });
+        await other.core.emit(subscriptionId, { tick: 2 });
+        await flush(first.client);
+        first.server.close();
+        expect(ticksOf(await drain(lost.frames))).toEqual([1, 'error']);
+        await other.core.emit(subscriptionId, { tick: 3 });
+        await other.core.end(subscriptionId);
+        expect(await drain(kept.frames)).toEqual([
+          item(1, 2, daemonEpoch),
+          item(2, 3, daemonEpoch),
+          completed(2, daemonEpoch),
+        ]);
+        const local = await openHeld(second);
+        local.close();
+        expect(await drain(local.frames)).toMatchObject([
+          { cursor: { daemonEpoch, sequence: 0 } },
+        ]);
+        expect(second.signal.aborted).toBe(false);
+      },
+    );
+
+    // A stale entry would silently stop naming a case that now runs.
+    if (pending.size > 0)
+      throw new Error(
+        `Unknown pending cases (each must name a case registered through conformance()): ${[...pending.keys()].join(', ')}`,
+      );
   });
 }

@@ -44,6 +44,7 @@ import {
   toCanopyInitializeError,
   type CanopyAcceptedInitialize,
 } from './handshake';
+import { PendingFrames } from './pending-frames';
 import {
   ByteBudget,
   CONNECTION_BUDGET_BYTES,
@@ -91,6 +92,8 @@ interface RequestSpec<T> {
   readonly deadlineAt?: number;
   readonly definition?: Definition;
   accept(response: Response): T;
+  /** The call `id` was given up before its reply: abort or deadline. */
+  abandoned?(id: number): void;
 }
 
 const INITIALIZE = 'core.runtime.initialize';
@@ -105,6 +108,9 @@ const MAX_BUFFERED_STREAM_ITEMS = 1_024;
 // session fails closed rather than forget an id the core may still reuse.
 const MAX_REFUSED_STREAMS = 1_024;
 const MAX_REFUSED_ID_BYTES = 1024 * 1024;
+// Locally ended streams the core still serves; the oldest past it is
+// forgotten, and its frames are then only held while an open waits.
+const MAX_ORPHANED_STREAMS = 1_024;
 
 function clientError(
   kind: CanopyErrorPayload['kind'],
@@ -213,8 +219,11 @@ interface StreamSpec {
   readonly deadlineAt?: number;
   /** Holds the terminal reservation from admission. */
   readonly budget: StreamBudget;
-  /** Removes the stream from its session's routing table. */
-  readonly forget: () => void;
+  /**
+   * Removes the stream from its session's routing table. `orphaned`: it ended
+   * locally, so the core may still send its frames.
+   */
+  readonly forget: (orphaned: boolean) => void;
 }
 
 /** A stream opened by the core but refused locally; its frames are dropped. */
@@ -299,7 +308,7 @@ class ClientStream {
       });
       if (!base.success) return malformed();
       const frame: Frame = { ...end, ...base.data, kind: 'end' };
-      return this.finish(frame, encodedSize(message));
+      return this.finish(frame, encodedSize(message), false);
     }
     const item = safeParseCanopySchema(definition.item, params.item);
     const cursor = CanopyStreamCursorSchema.safeParse(params.cursor);
@@ -319,7 +328,7 @@ class ClientStream {
    */
   terminate(error: CanopyClientError): void {
     const frame = endFrame(error, this.cursor);
-    this.finish(frame, encodedSize(frame));
+    this.finish(frame, encodedSize(frame), true);
   }
 
   /**
@@ -334,7 +343,7 @@ class ClientStream {
     const { budget } = this.spec;
     if (!this.ended) budget.release(TERMINAL_RESERVATION_BYTES);
     this.ended = true;
-    this.spec.forget();
+    this.spec.forget(true);
     this.queue.splice(0).forEach(({ bytes }) => budget.release(bytes));
     this.append({ frame: endFrame(error, this.delivered), bytes: 0 });
   }
@@ -344,10 +353,10 @@ class ClientStream {
    * becomes `resource_exhausted` at the last accepted cursor, which the
    * reservation always holds. Abort and deadline stay armed until it is read.
    */
-  private finish(frame: Frame, bytes: number): void {
+  private finish(frame: Frame, bytes: number, orphaned: boolean): void {
     if (this.ended) return;
     this.ended = true;
-    this.spec.forget();
+    this.spec.forget(orphaned);
     const { budget } = this.spec;
     if (budget.admit(bytes, TERMINAL_RESERVATION_BYTES))
       return this.append({ frame, bytes });
@@ -451,6 +460,11 @@ class ClientSession {
   private readonly envelopes = new Map<string, CanopyOperationEnvelopes>();
   private readonly streams = new Map<string, ClientStream>();
   private readonly refused = new Map<string, RefusedStream>();
+  private readonly early = new PendingFrames();
+  /** Locally ended subscriptions awaiting the core's end, by stream name. */
+  private readonly orphans = new Map<string, string>();
+  /** Stream opens given up before their reply, by request id. */
+  private readonly abandonedOpens = new Map<number, string>();
   private refusedIdBytes = 0;
   private readonly budget = new ByteBudget(CONNECTION_BUDGET_BYTES);
   private closeReason: CanopyClientError | null = null;
@@ -489,6 +503,7 @@ class ClientSession {
       const abandon = (error: CanopyClientError): void => {
         if (!this.pending.delete(id)) return;
         this.rememberAbandoned(id);
+        spec.abandoned?.(id);
         release();
         reject(error);
       };
@@ -566,7 +581,9 @@ class ClientSession {
     const { openResult } = prepared.definition;
     if (!notification || !openResult)
       throw clientError('internal', `${name} has an incomplete definition.`);
-    // Runs inside the receive loop: the stream is routable before the next frame.
+    const pending = this.early.begin();
+    // Runs inside the receive loop: the stream is routable before the next
+    // frame, after the frames that outran this reply.
     const accept = (response: Response): StreamHandle => {
       if ('error' in response)
         throw this.operationError(prepared.definition, response.error);
@@ -582,6 +599,9 @@ class ClientSession {
           'internal',
           `${name} returned an invalid open result.`,
         );
+      // An error or invalid reply settles below, dropping them once no open
+      // waits.
+      const early = this.early.settle(pending, subscriptionId);
       if (
         this.streams.has(subscriptionId) ||
         this.refused.has(subscriptionId)
@@ -598,6 +618,9 @@ class ClientSession {
       if (!budget) {
         const route = { name, definition: prepared.definition, notification };
         const retained = this.retainRefused(subscriptionId, route);
+        // A held end frees the id it would otherwise keep.
+        if (retained)
+          early.forEach((message) => this.dropRefused(subscriptionId, message));
         const exhausted = clientError(
           'resource_exhausted',
           retained
@@ -619,9 +642,11 @@ class ClientSession {
           notification,
           options,
           budget,
-          forget: (): boolean =>
-            this.streams.get(subscriptionId) === stream &&
-            this.streams.delete(subscriptionId),
+          forget: (orphaned): void => {
+            if (this.streams.get(subscriptionId) !== stream) return;
+            this.streams.delete(subscriptionId);
+            if (orphaned) this.orphan(subscriptionId, name);
+          },
         },
         cursor,
         {
@@ -629,10 +654,38 @@ class ClientSession {
           openResult: { subscriptionId, acceptedCursor },
         },
       );
+      // The core may reuse an orphaned id; the new stream takes it.
+      this.orphans.delete(subscriptionId);
       this.streams.set(subscriptionId, stream);
+      // Ends at its accepted cursor, so a resume from it skips nothing.
+      if (pending.overflowed) stream.terminate(streamBufferExhausted());
+      else
+        for (const message of early) {
+          // Routing stops at an end, as it does for frames off the wire.
+          if (this.streams.get(subscriptionId) !== stream) break;
+          stream.receive(message);
+        }
       return stream.handle;
     };
-    return this.request(name, prepared.params, { ...prepared, accept });
+    const opening = this.request(name, prepared.params, {
+      ...prepared,
+      accept,
+      // Its late reply names a subscription the core serves: an orphan.
+      abandoned: (id) => {
+        this.abandonedOpens.set(id, name);
+        const oldest = this.abandonedOpens.keys().next().value;
+        if (
+          this.abandonedOpens.size > MAX_ORPHANED_STREAMS &&
+          oldest !== undefined
+        )
+          this.abandonedOpens.delete(oldest);
+      },
+    });
+    // Releases an open whose reply is an error, never comes, or never
+    // registers. A side chain, so the handle resolves on the same turn.
+    const settle = (): unknown => this.early.settle(pending);
+    opening.then(settle, settle);
+    return opening;
   }
 
   close(reason?: CanopyClientError): Promise<void> {
@@ -751,12 +804,20 @@ class ClientSession {
           });
           continue;
         }
-        // Unknown or locally ended subscriptions are dropped without a reply.
+        // Unknown or locally ended subscriptions are never answered; their
+        // frames are held while an open waits for its reply, else dropped.
         const { subscriptionId } = message.params;
         if (typeof subscriptionId !== 'string') continue;
         const stream = this.streams.get(subscriptionId);
         if (stream) stream.receive(message);
-        else this.dropRefused(subscriptionId, message);
+        else if (this.refused.has(subscriptionId))
+          this.dropRefused(subscriptionId, message);
+        else if (this.orphans.has(subscriptionId)) {
+          // Dropped, never held: no open claims them. Any end frees the id;
+          // a stray one only lets later frames be held, never delivered.
+          if (message.method === `${this.orphans.get(subscriptionId)}.end`)
+            this.orphans.delete(subscriptionId);
+        } else this.early.hold(subscriptionId, message);
         continue;
       }
       // One reply in flight: a core that stops draining stops being read.
@@ -764,6 +825,13 @@ class ClientSession {
       if (this.closeReason) return;
       reply = this.replyMethodNotFound(message.id);
     }
+  }
+
+  private orphan(subscriptionId: string, name: string): void {
+    this.orphans.set(subscriptionId, name);
+    const oldest = this.orphans.keys().next().value;
+    if (this.orphans.size > MAX_ORPHANED_STREAMS && oldest !== undefined)
+      this.orphans.delete(oldest);
   }
 
   /** False when retaining the id would pass a bound. */
@@ -831,7 +899,15 @@ class ClientSession {
         return call.respond(response);
       }
       // Taking an interior id splits its range, so the bound is checked here too.
-      if (this.abandoned.take(id)) return this.boundAbandoned();
+      if (this.abandoned.take(id)) {
+        const name = this.abandonedOpens.get(id);
+        this.abandonedOpens.delete(id);
+        const result = 'result' in response ? response.result : undefined;
+        const subscriptionId = isRecord(result) && result.subscriptionId;
+        if (name && typeof subscriptionId === 'string')
+          this.orphan(subscriptionId, name);
+        return this.boundAbandoned();
+      }
     }
     this.failClosed(
       clientError(
@@ -873,6 +949,9 @@ class ClientSession {
     this.streams.clear();
     streams.forEach((stream) => stream.terminate(reason));
     this.refused.clear();
+    this.early.clear();
+    this.orphans.clear();
+    this.abandonedOpens.clear();
     this.leaseEvictions.clear();
     this.refusedIdBytes = 0;
   }
@@ -911,6 +990,9 @@ export async function createCanopyClient(
       clientVersion: options.clientVersion,
       protocolVersions,
       clientCapabilities: options.clientCapabilities ?? [],
+      ...(connection.maxMessageBytes !== undefined && {
+        maxMessageBytes: connection.maxMessageBytes,
+      }),
     });
     session.accepted = await session.request(INITIALIZE, params, {
       signal,
@@ -931,7 +1013,9 @@ export async function createCanopyClient(
     await session.close(failure);
     throw failure;
   }
-  const { runtime, identity, manifest } = session.accepted;
+  const { runtime, identity, manifest, peerMaxMessageBytes } = session.accepted;
+  if (peerMaxMessageBytes !== null)
+    connection.allowPeerMessageBytes?.(peerMaxMessageBytes);
   return {
     connection,
     runtime,

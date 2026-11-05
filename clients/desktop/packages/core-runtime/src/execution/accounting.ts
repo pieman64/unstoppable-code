@@ -79,6 +79,10 @@ export class ExecutionAccounting<TMetadata extends { type: string }> {
   private snapshot: ExecutionAccountingSnapshot<TMetadata>;
   private sampling: Promise<ExecutionAccountingSnapshot<TMetadata>> | null =
     null;
+  /** Counts changes to the processes registrations name. */
+  private registrationVersion = 0;
+  /** The registration version the last finished sample started from. */
+  private sampledVersion = 0;
 
   constructor(options: ExecutionAccountingOptions<TMetadata>) {
     this.options = options;
@@ -190,21 +194,29 @@ export class ExecutionAccounting<TMetadata extends { type: string }> {
       startedAt: registration.startedAt ?? new Date(this.now()).toISOString(),
     };
     this.registrations.set(registration.id, current);
+    this.registrationVersion += 1;
     let active = true;
     return {
       update: (update): void => {
         const existing = this.registrations.get(registration.id);
         if (!active || !existing) return;
-        this.registrations.set(registration.id, {
+        const next: ExecutionRegistration<TMetadata> = {
           ...existing,
           ...update,
           id: existing.id,
-        });
+        };
+        this.registrations.set(registration.id, next);
+        if (
+          next.pid !== existing.pid ||
+          next.processGroupId !== existing.processGroupId
+        )
+          this.registrationVersion += 1;
       },
       unregister: (): void => {
         if (!active) return;
         active = false;
         this.registrations.delete(registration.id);
+        this.registrationVersion += 1;
       },
     };
   }
@@ -218,6 +230,25 @@ export class ExecutionAccounting<TMetadata extends { type: string }> {
     return (): void => {
       this.listeners.delete(listener);
     };
+  }
+
+  /**
+   * The last sample, or a new one when a process was registered or
+   * unregistered since that sample started, so a read never misses a host
+   * registered after it. A sample already running is joined, and sampled
+   * again if it started before the change. A failed sample leaves the last
+   * one, as a read without changes would.
+   */
+  async currentSnapshot(): Promise<ExecutionAccountingSnapshot<TMetadata>> {
+    const wanted = this.registrationVersion;
+    if (this.sampledVersion >= wanted) return this.snapshot;
+    try {
+      await this.sample();
+      if (this.sampledVersion < wanted) await this.sample();
+    } catch {
+      // The host's process table failed; the next sample tries again.
+    }
+    return this.snapshot;
   }
 
   /** Samples once; a sample already running is joined, not repeated. */
@@ -236,6 +267,7 @@ export class ExecutionAccounting<TMetadata extends { type: string }> {
    */
   dispose(): void {
     this.registrations.clear();
+    this.registrationVersion += 1;
     this.pending.clear();
     this.listeners.clear();
     this.snapshot = this.emptySnapshot();
@@ -249,6 +281,7 @@ export class ExecutionAccounting<TMetadata extends { type: string }> {
   }
 
   private async sampleOnce(): Promise<ExecutionAccountingSnapshot<TMetadata>> {
+    const version = this.registrationVersion;
     const hostItems = this.options.hostProcesses?.() ?? [];
     const table = await this.options.readProcessTable();
     const sample = createProcessSample(
@@ -299,6 +332,7 @@ export class ExecutionAccounting<TMetadata extends { type: string }> {
     };
     // Guard decisions read the newest sample, as admission will.
     this.snapshot = next;
+    this.sampledVersion = version;
     next.memoryGuardBlocked = this.memoryGuardBlocked(limits);
     next.families = this.familyStatus();
     for (const listener of Array.from(this.listeners)) {

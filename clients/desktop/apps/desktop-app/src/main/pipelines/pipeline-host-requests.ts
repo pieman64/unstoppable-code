@@ -16,6 +16,7 @@ import type {
   PipelineHostActions,
 } from '@canopy/desktop-shared/node/pipelines/executor/types';
 import { PIPELINE_NEEDS_DESKTOP_MESSAGE } from '@canopy/desktop-shared/pipelines/host-actions';
+import type { ResolvedSendAgentMessageInputs } from '@canopy/desktop-shared/pipelines/host-send-agent-message';
 import type { PipelineChatSendRecord } from '@canopy/desktop-shared/types/pipeline';
 import { peekDesktopCanopyRuntime } from '../canopy-runtime/desktop-runtime-access';
 
@@ -28,9 +29,33 @@ import { peekDesktopCanopyRuntime } from '../canopy-runtime/desktop-runtime-acce
  * applies the request's own action, inputs and owner), the step's abort
  * signal, the executor's controls (artifacts directory, timeout finalizer),
  * the desktop host that applies the policy, the host's own unexpected
- * error, `send-agent-message`'s attachment paths and the host-path outputs
+ * error, `send-agent-message`'s host-path inputs and the host-path outputs
  * the boundary refuses (CAN-5086).
  */
+
+/**
+ * `send-agent-message`'s inputs that hold host paths: its contained
+ * attachments, and a converted chat automation's composer payload (CAN-5479).
+ */
+type SendHostPaths = Pick<
+  ResolvedSendAgentMessageInputs,
+  | 'attachments'
+  | 'attachmentPaths'
+  | 'attachmentPromptContexts'
+  | 'fileReferences'
+>;
+
+/** Each host-path input and the count that crosses in its place. */
+const SEND_HOST_PATH_COUNTS = [
+  ['attachments', 'attachmentCount'],
+  ['attachmentPaths', 'attachmentPathCount'],
+  ['attachmentPromptContexts', 'attachmentPromptContextCount'],
+  ['fileReferences', 'fileReferenceCount'],
+] as const satisfies readonly (readonly [keyof SendHostPaths, string])[];
+
+type SendHostPathCounts = Partial<
+  Record<(typeof SEND_HOST_PATH_COUNTS)[number][1], number>
+>;
 
 interface InProcessHostCall {
   readonly host: PipelineHostActions;
@@ -38,8 +63,8 @@ interface InProcessHostCall {
   readonly controls: PipelineHostActionControls | undefined;
   /** The step's own signal: the executor withdrawing the call stops the host. */
   readonly signal: AbortSignal;
-  /** `send-agent-message`'s contained attachment paths. */
-  readonly attachments: readonly string[] | undefined;
+  /** `send-agent-message`'s host-path inputs, as the executor passed them. */
+  readonly hostPaths: SendHostPaths | undefined;
   error?: unknown;
   pathOutputs?: Record<string, string>;
   /** A send record the boundary refuses; the executor reports it as invalid. */
@@ -100,20 +125,45 @@ function portableOwner(executionContext: string | undefined): string | null {
   return parseWorkspaceContext(owner) !== null ? owner : null;
 }
 
-/** The request's portable inputs; attachment paths stay on this host. */
-function portableInputs(request: PipelineHostActionRequest): object {
-  if (request.action !== 'send-agent-message') return request.inputs;
-  const { attachments, ...inputs } = request.inputs;
-  return attachments === undefined || attachments.length === 0
-    ? inputs
-    : { ...inputs, attachmentCount: attachments.length };
+/** A send's host-path inputs, only those it sets; an empty list stays. */
+function sendHostPaths(inputs: ResolvedSendAgentMessageInputs): SendHostPaths {
+  const paths: SendHostPaths = {};
+  if (inputs.attachments !== undefined) paths.attachments = inputs.attachments;
+  if (inputs.attachmentPaths !== undefined)
+    paths.attachmentPaths = inputs.attachmentPaths;
+  if (inputs.attachmentPromptContexts !== undefined)
+    paths.attachmentPromptContexts = inputs.attachmentPromptContexts;
+  if (inputs.fileReferences !== undefined)
+    paths.fileReferences = inputs.fileReferences;
+  return paths;
 }
 
-function attachmentsOf(
+function sendHostPathCounts(paths: SendHostPaths): SendHostPathCounts {
+  const counts: SendHostPathCounts = {};
+  for (const [input, count] of SEND_HOST_PATH_COUNTS) {
+    const length = paths[input]?.length ?? 0;
+    if (length > 0) counts[count] = length;
+  }
+  return counts;
+}
+
+/** The request's portable inputs; host paths stay on this host. */
+function portableInputs(request: PipelineHostActionRequest): object {
+  if (request.action !== 'send-agent-message') return request.inputs;
+  const inputs = Object.entries(request.inputs).filter(
+    ([key]) => !SEND_HOST_PATH_COUNTS.some(([input]) => input === key),
+  );
+  return {
+    ...Object.fromEntries(inputs),
+    ...sendHostPathCounts(sendHostPaths(request.inputs)),
+  };
+}
+
+function hostPathsOf(
   request: PipelineHostActionRequest,
-): readonly string[] | undefined {
+): SendHostPaths | undefined {
   return request.action === 'send-agent-message'
-    ? request.inputs.attachments
+    ? sendHostPaths(request.inputs)
     : undefined;
 }
 
@@ -151,7 +201,7 @@ export function createWorkerPipelineHostActions(
         caller,
         controls,
         signal,
-        attachments: attachmentsOf(request),
+        hostPaths: hostPathsOf(request),
       };
       calls.set(requestId, call);
       try {
@@ -220,20 +270,29 @@ function toHostRequest(
       return { action, inputs };
     }
     case 'send-agent-message': {
-      const { action, attachmentCount, ...inputs } = request;
-      // The paths the worker contained, for the count the request names.
-      if ((call.attachments?.length ?? 0) !== (attachmentCount ?? 0))
-        return null;
-      return {
+      const {
         action,
-        inputs: {
-          ...inputs,
-          // An explicit empty list stays: the host fingerprints it.
-          ...(call.attachments !== undefined
-            ? { attachments: [...call.attachments] }
-            : {}),
-        },
+        attachmentCount,
+        attachmentPathCount,
+        attachmentPromptContextCount,
+        fileReferenceCount,
+        ...inputs
+      } = request;
+      const counts: SendHostPathCounts = {
+        attachmentCount,
+        attachmentPathCount,
+        attachmentPromptContextCount,
+        fileReferenceCount,
       };
+      // The paths the worker kept, for the counts the request names.
+      const hostPaths = call.hostPaths ?? {};
+      const kept = sendHostPathCounts(hostPaths);
+      if (
+        SEND_HOST_PATH_COUNTS.some(([, count]) => kept[count] !== counts[count])
+      )
+        return null;
+      // An explicit empty list stays: the host fingerprints it.
+      return { action, inputs: { ...inputs, ...hostPaths } };
     }
     case 'wait-for-agent-reply': {
       const { action, ...inputs } = request;

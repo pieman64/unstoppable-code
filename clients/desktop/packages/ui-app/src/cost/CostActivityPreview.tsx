@@ -20,6 +20,7 @@ import {
 import { useCostScopeStore } from './use-cost-view-store';
 import { useCostInsightsEnabled } from './CostInsightsGate';
 import { CostViewFrame } from './CostViewFrame';
+import { COST_SCOPE_VIEW_SAMPLE } from './cost-view-samples';
 import {
   costScopeScaleMax,
   hasUnattachedCost,
@@ -63,6 +64,7 @@ function CostActivityPreviewContent({
         status={status}
         problem={problem}
         onRetry={() => void load()}
+        loadingSample={COST_SCOPE_VIEW_SAMPLE}
         testId="cost-activity-preview"
       >
         {(view) => {

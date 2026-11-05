@@ -753,12 +753,3 @@ export function installRuntimeDivergenceDetector(
   }
   return uninstall;
 }
-
-/** Clear the detector singleton for isolated tests. */
-export function __resetRuntimeDivergenceForTests(): void {
-  activeUninstall?.();
-  activeUninstall = undefined;
-  deps = undefined;
-  operationCounter = 0;
-  clearAllTimersAndState();
-}

@@ -48,3 +48,22 @@ export class W5CommitRefusedError extends Error {
     this.name = 'W5CommitRefusedError';
   }
 }
+
+/** Acquisition failed before a W5 decision; never an apply conflict. */
+export class W5ProcessFileLockTimeoutError extends Error {
+  constructor(readonly path: string) {
+    super(
+      "Another process is changing this project's worktree list. Try again in a moment.",
+    );
+    this.name = 'W5ProcessFileLockTimeoutError';
+  }
+}
+
+/** A stale preimage, before decision or after proven no-effect abandonment. */
+export class W5FileWriteRefusedError extends Error {
+  readonly reason = 'fingerprint-conflict';
+  constructor(readonly path: string) {
+    super('This was changed since it was read. Reload and try again.');
+    this.name = 'W5FileWriteRefusedError';
+  }
+}

@@ -30,6 +30,7 @@
     "./terminal-core": "./src/terminal-core.ts",
     "./terminal": "./src/terminal.ts",
     "./sharing": "./src/sharing/index.ts",
+    "./sharing/marketplaceShareLink": "./src/sharing/marketplaceShareLink.ts",
     "./sharing/sharedResourceProvenance": "./src/sharing/sharedResourceProvenance.ts",
     "./sharing/SharedResourceProvenanceMeta": "./src/sharing/SharedResourceProvenanceMeta.tsx",
     "./sharing/InviteToOrganizationDialog": "./src/sharing/InviteToOrganizationDialog.tsx",
@@ -43,6 +44,7 @@
     "./org-project-catalog": "./src/org-project-catalog.ts",
     "./subagents": "./src/subagents.ts",
     "./ledger": "./src/ledger/index.ts",
+    "./ledger/page-labels": "./src/ledger/page-labels.ts",
     "./lifecycle-journal": "./src/lifecycle-journal/index.ts",
     "./worktree-discard": "./src/worktree-discard/index.ts",
     "./local-memory": "./src/local-memory/index.ts",
@@ -68,6 +70,7 @@
     "./script-actions": "./src/script-actions/index.ts",
     "./onboarding": "./src/onboarding/index.ts",
     "./onboarding-tips": "./src/onboarding-tips/index.ts",
+    "./suggestions": "./src/suggestions/index.ts",
     "./composer-recovery": "./src/composer-recovery/index.ts",
     "./marketplace-sources": "./src/marketplace-sources/index.ts"
   },
@@ -124,6 +127,7 @@
     "./src/script-actions/**",
     "./src/settings/**",
     "./src/sharing/**",
+    "./src/suggestions/**",
     "./src/usage/**",
     "./src/workflows/**",
     "./src/worktree-discard/**"

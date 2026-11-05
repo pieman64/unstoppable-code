@@ -3,7 +3,10 @@ import { delegationChildMessages } from '@canopy/agent-transcript';
 import { DELEGATION_TRANSCRIPT_CHAT_LOG } from '@canopy/protocol/delegation';
 import type { DelegatedAgentCallBlock } from '@canopy/agent-transcript/types';
 import type { TranscriptReadSource } from '@canopy/app-core';
-import { isStreamBackedDelegation } from '@canopy/ui-app';
+import {
+  isStreamBackedDelegation,
+  overlayManagedDelegationProgress,
+} from '@canopy/ui-app';
 import { mergeToolResults } from '@canopy/desktop-shared/lib/message-transforms';
 import type { DisplayBlock } from './types';
 import { useChatStore } from '@/stores/chatStore';
@@ -83,20 +86,18 @@ function persistedBlock(
 }
 
 /**
- * A logged card (`transcriptStore: 'chat-log-v1'`) with its live progress
- * and child blocks: from this session's live snapshots, else from the
- * delegate log, read once when the card mounts. Active current-chat cards
- * bootstrap their progress separately from the existing snapshot endpoint.
- * Other cards are returned
- * unchanged: their children are rows of the committed transcript.
+ * A logged card gets live progress and child blocks from its session snapshots
+ * or delegate log. A stream-backed card overlays only its live card progress;
+ * stream child pages are mounted separately by the shared managed card.
  */
 export function useDelegatedAgentTranscript(
   block: DelegatedAgentDisplayBlock,
 ): DelegatedAgentDisplayBlock {
   const source = useContext(DelegationTranscriptSourceContext);
   const logged = block.transcriptStore === DELEGATION_TRANSCRIPT_CHAT_LOG;
+  const streamBacked = isStreamBackedDelegation(block.transcriptStore);
   const key =
-    logged && source
+    (logged || streamBacked) && source
       ? delegationRunKey(source, {
           delegationId: block.delegationId,
           runGeneration: block.runGeneration,
@@ -125,22 +126,34 @@ export function useDelegatedAgentTranscript(
     });
   }, [logged, source, load, block.delegationId, block.runGeneration]);
   useEffect(() => {
-    if (!logged || !source || !current || !active) return;
+    if ((!logged && !streamBacked) || !source || !current || !active) return;
     hydrateCurrent(source, {
       delegationId: block.delegationId,
       runGeneration: block.runGeneration,
+      transcriptStore: block.transcriptStore,
     });
   }, [
     logged,
+    streamBacked,
     source,
     current,
     active,
     hydrateCurrent,
     block.delegationId,
     block.runGeneration,
+    block.transcriptStore,
   ]);
 
   return useMemo(() => {
+    if (streamBacked && source) {
+      const live = entry?.streamProgress;
+      const hydrated = entry?.streamHydrated;
+      const progress =
+        hydrated && (!live || live.arrivalStamp <= hydrated.requestArrivalStamp)
+          ? hydrated.progress
+          : live;
+      return overlayManagedDelegationProgress(block, progress);
+    }
     if (!logged || !entry) return block;
     const live = entry.live;
     // A historical copy never reads current state. A settled committed card
@@ -176,5 +189,5 @@ export function useDelegatedAgentTranscript(
         candidate.type === 'delegated_agent_call',
     );
     return merged ?? { ...card, subBlocks: [] };
-  }, [block, entry, logged, current, active]);
+  }, [block, entry, logged, streamBacked, source, current, active]);
 }

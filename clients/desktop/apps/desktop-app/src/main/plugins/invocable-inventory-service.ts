@@ -69,9 +69,7 @@ import {
 } from './claude-enabled-plugins';
 import { sendToWebContents } from '../lib/web-contents-send';
 
-// E2E seeders write this version: bump INVOCABLE_INVENTORY_CACHE_VERSION in
-// tests/electron/seeders/invocableInventoryCache.mjs with it (a unit test
-// checks the two match).
+// A cache written with any other version is rebuilt from disk.
 const CACHE_VERSION = 5;
 
 let cachedInventory: InvocableInventoryCache | null | undefined;

@@ -120,6 +120,23 @@ export function assertStreamRegistration(
     integrity('Stream registration target/key mismatch');
 }
 
+/**
+ * Whether stream metadata stamped at `revision` belongs under a catalog
+ * published at `catalogRevision`. A checkpoint may leave a registry or a
+ * descriptor it did not change at the checkpoint that last wrote it, so an
+ * older stamp is valid: the catalog pins each registry by digest, and each
+ * descriptor is checked against its log. A stamp newer than the catalog is a
+ * publication still in progress, and a descriptor is never older than its
+ * stream's registration.
+ */
+export function publishedAtOrBefore(
+  revision: number,
+  catalogRevision: number,
+  registeredAtRevision = 0,
+): boolean {
+  return revision <= catalogRevision && revision >= registeredAtRevision;
+}
+
 export interface ParsedStreamRegistry {
   header: TranscriptStreamRegistryHeader;
   entries: TranscriptStreamRegistration[];
@@ -329,7 +346,10 @@ export async function validateStreamTarget(
     throw new UnknownTranscriptStreamError('Unknown transcript stream');
   const registry = await loadStreamRegistry(root, target.chatId, options);
   if (
-    registry.header.checkpointRevision !== parsedCatalog.checkpointRevision ||
+    !publishedAtOrBefore(
+      registry.header.checkpointRevision,
+      parsedCatalog.checkpointRevision,
+    ) ||
     registry.header.entryCount !== reference.entryCount ||
     registry.bytes.length !== reference.registryBytes ||
     registry.sha256 !== reference.registrySha256
@@ -354,7 +374,11 @@ export async function validateStreamTarget(
   if (
     transcriptTargetKey(descriptor.target) !== transcriptTargetKey(target) ||
     descriptor.streamKey !== entry.streamKey ||
-    descriptor.checkpointRevision !== parsedCatalog.checkpointRevision ||
+    !publishedAtOrBefore(
+      descriptor.checkpointRevision,
+      parsedCatalog.checkpointRevision,
+      entry.registeredAtRevision,
+    ) ||
     (options.logMayExtend
       ? descriptor.committedByteLength > logSize
       : descriptor.committedByteLength !== logSize)
@@ -628,7 +652,10 @@ export async function validateStreamClosure(
   )) {
     const registry = await loadStreamRegistry(root, parentChatId, options);
     if (
-      registry.header.checkpointRevision !== parsedCatalog.checkpointRevision ||
+      !publishedAtOrBefore(
+        registry.header.checkpointRevision,
+        parsedCatalog.checkpointRevision,
+      ) ||
       registry.header.entryCount !== reference.entryCount ||
       registry.bytes.length !== reference.registryBytes ||
       registry.sha256 !== reference.registrySha256
@@ -649,7 +676,11 @@ export async function validateStreamClosure(
         transcriptTargetKey(descriptor.target) !==
           transcriptTargetKey(entry.target) ||
         descriptor.streamKey !== entry.streamKey ||
-        descriptor.checkpointRevision !== parsedCatalog.checkpointRevision ||
+        !publishedAtOrBefore(
+          descriptor.checkpointRevision,
+          parsedCatalog.checkpointRevision,
+          entry.registeredAtRevision,
+        ) ||
         (options.logMayExtend
           ? descriptor.committedByteLength > logSize
           : descriptor.committedByteLength !== logSize)

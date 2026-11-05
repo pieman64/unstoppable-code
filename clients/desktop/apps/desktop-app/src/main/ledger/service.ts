@@ -27,6 +27,10 @@ import {
   type LedgerEntrySearchItem,
   type LedgerEntryUpdateParams,
   type LedgerEntryUpdateResult,
+  type LedgerWorkSummaryGetParams,
+  type LedgerWorkSummaryGetResult,
+  type LedgerRollupsListParams,
+  type LedgerRollupsListResult,
   type LedgerFileRef,
   type LedgerMutation,
   type LedgerOrigin,
@@ -50,9 +54,18 @@ import {
   type LedgerOwnerEligibility,
 } from './actor-directory';
 import type { LedgerEntryChange } from './change-events';
-import type { LedgerDelegateLivenessSource } from './delegate-owners';
+import {
+  readLedgerDelegateLineage,
+  type LedgerDelegateLineageOwner,
+  type LedgerDelegateLivenessSource,
+} from './delegate-owners';
 import type { LedgerPipelineAgentSource } from './pipeline-agent-owners';
-import type { LedgerPendingTitleRecord } from '@canopy/desktop-shared/node/ledger';
+import type {
+  LedgerPendingTitleRecord,
+  LedgerRelatedEntryChange,
+  LedgerScopeRecord,
+  LedgerStoreCommandReceipt,
+} from '@canopy/desktop-shared/node/ledger';
 import {
   getLedgerCallerBindingRegistry,
   type LedgerCallerBinding,
@@ -69,11 +82,12 @@ import {
   type LedgerErrorSite,
   type LedgerOperation,
 } from './service-errors';
+import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
 import { LedgerStorageHostError } from './storage-host';
 import type { LedgerSyncHold } from './sync-policy';
 
 /**
- * Handler logic for the seven `core.ledger.*` operations. Every call is
+ * Handler logic for the `core.ledger.*` operations. Every call is
  * gated by `canopy-ledger-enabled`, then resolved to a trusted caller binding;
  * scope, actor, origin, attribution and author details come from that
  * binding, never from params. Title, content and highlights are redacted
@@ -92,10 +106,18 @@ export interface LedgerService {
     params: LedgerOwnersListParams,
     context: CanopyHandlerContext,
   ): Promise<LedgerOwnersListResult>;
+  getWorkSummary(
+    params: LedgerWorkSummaryGetParams,
+    context: CanopyHandlerContext,
+  ): Promise<LedgerWorkSummaryGetResult>;
   listChanges(
     params: LedgerChangesListParams,
     context: CanopyHandlerContext,
   ): Promise<LedgerChangesListResult>;
+  listRollups(
+    params: LedgerRollupsListParams,
+    context: CanopyHandlerContext,
+  ): Promise<LedgerRollupsListResult>;
   addEntry(
     params: LedgerEntryAddParams,
     context: CanopyHandlerContext,
@@ -279,6 +301,16 @@ function resolveActorFilter(
   return filter === 'self' ? self.actorId : filter.actorId;
 }
 
+function boundScopeFromRecord(scope: LedgerScopeRecord): LedgerBoundScope {
+  return {
+    ledgerId: scope.scope.ledgerId,
+    authorityId: scope.scope.authorityId,
+    container: scope.scope.container,
+    containerCreatedAt: scope.containerCreatedAt,
+    accountId: scope.accountId,
+  };
+}
+
 /** Every actor an entry and its history page name, in reading order. */
 function entryActorIds(
   entry: LedgerEntry,
@@ -352,12 +384,49 @@ export class LedgerCoreService implements LedgerService {
     return this.run(site, context, async (caller) => {
       const { scope, actor } = caller;
       const sync = this.scopeSync(scope);
+      let ownerIn: readonly string[] | undefined;
+      if (params.ownerDelegationId !== undefined) {
+        ownerIn = await this.actors.managedDelegationActorIds(scope, [
+          params.ownerDelegationId,
+        ]);
+      }
+      if (params.updatableByCaller === true) {
+        const updatableOwnerIds = await this.updatableOwnerActorIds(caller);
+        if (updatableOwnerIds !== undefined) {
+          ownerIn =
+            ownerIn === undefined
+              ? updatableOwnerIds
+              : ownerIn.filter((actorId) =>
+                  updatableOwnerIds.includes(actorId),
+                );
+        }
+      }
+      // Without rootOnly, what anyone on the chat's line owns matches too.
+      const rootChat = params.rootChat;
+      const rootChatOwnerIn =
+        rootChat?.chatId === undefined || rootChat.rootOnly
+          ? undefined
+          : await this.actors.rootChatActorIds(scope, rootChat.chatId);
       const result = await this.options.store().searchEntries({
         ledgerId: scope.ledgerId,
         query: params.query,
         entryIds: params.entryIds,
+        ...(ownerIn === undefined ? {} : { ownerIn }),
+        ...(params.updatableByCaller === true ? { openOnly: true } : {}),
         ownerActorId: resolveActorFilter(params.owner, actor),
         authorActorId: resolveActorFilter(params.author, actor),
+        ...(params.parentEntryId === undefined
+          ? {}
+          : { parentEntryId: params.parentEntryId }),
+        ...(params.rootEntryId === undefined
+          ? {}
+          : { rootEntryId: params.rootEntryId }),
+        ...(params.authorIn === undefined ? {} : { authorIn: params.authorIn }),
+        ...(params.sourceKinds === undefined
+          ? {}
+          : { sourceKinds: params.sourceKinds }),
+        ...(rootChat === undefined ? {} : { rootChat }),
+        ...(rootChatOwnerIn === undefined ? {} : { rootChatOwnerIn }),
         types: params.types,
         statuses: params.statuses,
         attribution: params.attribution,
@@ -480,11 +549,46 @@ export class LedgerCoreService implements LedgerService {
     return this.run(site, context, (caller) =>
       this.ownersPage(
         caller,
-        { limit: params.limit, cursor: params.cursor },
+        {
+          limit: params.limit,
+          cursor: params.cursor,
+          ...(params.delegationId === undefined
+            ? {}
+            : { delegationId: params.delegationId }),
+        },
         'cursor',
         site,
       ),
     );
+  }
+
+  getWorkSummary(
+    params: LedgerWorkSummaryGetParams,
+    context: CanopyHandlerContext,
+  ): Promise<LedgerWorkSummaryGetResult> {
+    const site: LedgerErrorSite = {
+      operation: 'core.ledger.workSummary.get',
+      mode: 'query',
+    };
+    return this.run(site, context, async (caller) => {
+      const delegationIds = await readLedgerDelegateLineage(
+        caller.scope.container,
+        {
+          kind: 'managed_delegation',
+          delegationId: params.delegationId,
+        },
+      );
+      const actorIds = await this.actors.managedDelegationActorIds(
+        caller.scope,
+        delegationIds === null
+          ? [params.delegationId]
+          : [params.delegationId, ...delegationIds],
+      );
+      return this.options.store().getWorkSummary({
+        ledgerId: caller.scope.ledgerId,
+        actorIds,
+      });
+    });
   }
 
   listChanges(
@@ -502,6 +606,80 @@ export class LedgerCoreService implements LedgerService {
         limit: params.limit,
       }),
     );
+  }
+
+  async listRollups(
+    params: LedgerRollupsListParams,
+    context: CanopyHandlerContext,
+  ): Promise<LedgerRollupsListResult> {
+    const site: LedgerErrorSite = {
+      operation: 'core.ledger.rollups.list',
+      mode: 'query',
+    };
+    if (!this.isEnabled()) throw ledgerDisabledError(site);
+    const binding = this.resolveBinding(context, site);
+    try {
+      const accountId = await this.options.getAccountId();
+      const store = this.options.store();
+      // Authorize every scope before resolving any per-scope actor. In
+      // particular, a denied second ID cannot partially prepare the query.
+      const records = await Promise.all(
+        params.ledgerIds.map((ledgerId) => store.getScope(ledgerId)),
+      );
+      if (
+        records.some(
+          (record, index) =>
+            record === null ||
+            record.scope.ledgerId !== params.ledgerIds[index] ||
+            record.lifecycleState !== 'active' ||
+            record.accountId !== accountId,
+        )
+      ) {
+        throw ledgerOperationError('NOT_FOUND', site, {
+          field: 'ledgerIds',
+        });
+      }
+      const scopes = await Promise.all(
+        records.map(async (record) => {
+          // The previous all-ID check narrows null and inactive scopes.
+          if (record === null || record.lifecycleState !== 'active') {
+            throw ledgerOperationError('NOT_FOUND', site, {
+              field: 'ledgerIds',
+            });
+          }
+          const user = await this.actors.findCaller(
+            boundScopeFromRecord(record),
+            binding.actor,
+          );
+          // A scope can be bound before the person's actor registers in it;
+          // then nothing there is owned by the caller, but it still rolls up.
+          if (user === null) {
+            return { ledgerId: record.scope.ledgerId, callerActorId: null };
+          }
+          if (user.actor.kind !== 'user') {
+            throw ledgerOperationError('NOT_FOUND', site, {
+              field: 'ledgerIds',
+            });
+          }
+          return {
+            ledgerId: record.scope.ledgerId,
+            callerActorId: user.actor.actorId,
+          };
+        }),
+      );
+      const result = await store.listRollups({
+        scopes,
+        ...(params.cursor === undefined ? {} : { cursor: params.cursor }),
+      });
+      if ((await this.options.getAccountId()) !== accountId) {
+        throw ledgerOperationError('NOT_FOUND', site, {
+          field: 'ledgerIds',
+        });
+      }
+      return result;
+    } catch (error) {
+      throw toLedgerOperationError(error, site);
+    }
   }
 
   addEntry(
@@ -543,7 +721,7 @@ export class LedgerCoreService implements LedgerService {
               ),
             }),
       };
-      const commit: OwnerCommit<LedgerCommandReceipt> = (
+      const commit: OwnerCommit<LedgerStoreCommandReceipt> = (
         owner,
         ownerEligible,
       ) =>
@@ -596,10 +774,11 @@ export class LedgerCoreService implements LedgerService {
       const idempotencyKey = requireIdempotencyKey(context, site, requestMeta);
       const authorDetails = this.authorDetails(caller, site);
       const invocationOrigin = await this.origin(caller, site);
+      const delegateOwnerActorIds = await this.delegateOwnerActorIds(caller);
       const commit = (
         newOwner: LedgerActorRef | null,
         ownerEligible: boolean,
-      ): Promise<LedgerCommandReceipt> =>
+      ): Promise<LedgerStoreCommandReceipt> =>
         this.options.store().updateEntry({
           ledgerId: caller.scope.ledgerId,
           attribution: attributionFor(caller, authorDetails),
@@ -607,8 +786,11 @@ export class LedgerCoreService implements LedgerService {
           params: update,
           newOwner,
           ownerEligible,
-          // Only the user may change entries it does not currently own.
+          // Only the user may change entries regardless of their current owner.
           mayUpdateAnyOpenEntry: caller.binding.role === 'user',
+          ...(delegateOwnerActorIds === undefined
+            ? {}
+            : { delegateOwnerActorIds }),
           idempotencyKey,
         });
       const target = update.owner;
@@ -620,6 +802,46 @@ export class LedgerCoreService implements LedgerService {
             : await this.withEligibleOwner(caller, target, site, commit);
       return this.committed(caller.scope, await this.held(caller, receipt));
     });
+  }
+
+  private async delegateOwnerActorIds(
+    caller: LedgerResolvedCaller,
+  ): Promise<readonly string[] | undefined> {
+    const owner = delegateLineageOwnerForCaller(caller.binding);
+    if (owner === undefined) return undefined;
+    const delegationIds = await readLedgerDelegateLineage(
+      caller.scope.container,
+      owner,
+    );
+    if (delegationIds === null) return undefined;
+    try {
+      return await this.actors.managedDelegationActorIds(
+        caller.scope,
+        delegationIds,
+      );
+    } catch {
+      // A partial or failed actor map must never widen update authority.
+      return undefined;
+    }
+  }
+
+  /** Current owners the caller could update; undefined means any open owner. */
+  private async updatableOwnerActorIds(
+    caller: LedgerResolvedCaller,
+  ): Promise<readonly string[] | undefined> {
+    switch (caller.binding.role) {
+      case 'user':
+        return undefined;
+      case 'interactive_chat':
+      case 'managed_delegation': {
+        const descendantActorIds = await this.delegateOwnerActorIds(caller);
+        return [caller.actor.actorId, ...(descendantActorIds ?? [])];
+      }
+      case 'pipeline_agent':
+        return [caller.actor.actorId];
+      case 'summary_publisher':
+        return [];
+    }
   }
 
   publishSummary(
@@ -684,10 +906,10 @@ export class LedgerCoreService implements LedgerService {
   }
 
   /** A receipt with the scope's hold applied to its sync state. */
-  private async held(
+  private async held<Receipt extends LedgerCommandReceipt>(
     caller: LedgerResolvedCaller,
-    receipt: LedgerCommandReceipt,
-  ): Promise<LedgerCommandReceipt> {
+    receipt: Receipt,
+  ): Promise<Receipt> {
     const hold = await this.syncHold(caller.scope);
     const syncState = withSyncHold(receipt.syncState, hold);
     return syncState === receipt.syncState
@@ -697,25 +919,37 @@ export class LedgerCoreService implements LedgerService {
 
   /**
    * Reports a command that changed an entry to the change listener, in the
-   * scope's current container, and returns its receipt unchanged.
+   * scope's current container, followed by every other entry the command
+   * revised (close cascades and operation auto-start). Returns the protocol
+   * receipt, without the store-internal `relatedChanges`.
    */
   private committed(
     scope: LedgerBoundScope,
-    receipt: LedgerCommandReceipt,
+    receipt: LedgerStoreCommandReceipt,
   ): LedgerCommandReceipt {
-    if (receipt.changed) {
+    const { relatedChanges, ...protocolReceipt } = receipt;
+    const changes: LedgerRelatedEntryChange[] = receipt.changed
+      ? [
+          {
+            entryId: receipt.entry.entryId,
+            revision: receipt.entry.revision,
+          },
+        ]
+      : [];
+    changes.push(...(relatedChanges ?? []));
+    for (const change of changes) {
       try {
         this.options.onEntryChanged?.({
           container: scope.container,
           ledgerId: scope.ledgerId,
-          entryId: receipt.entry.entryId,
-          revision: receipt.entry.revision,
+          entryId: change.entryId,
+          revision: change.revision,
         });
       } catch {
         // The command has committed; a listener cannot undo it.
       }
     }
-    return receipt;
+    return protocolReceipt;
   }
 
   /**
@@ -819,7 +1053,11 @@ export class LedgerCoreService implements LedgerService {
     if (
       binding === undefined ||
       !roleMayUse(binding.role, site.operation) ||
-      binding.actor.kind !== ROLE_ACTOR_KIND[binding.role]
+      binding.actor.kind !== ROLE_ACTOR_KIND[binding.role] ||
+      (site.operation === 'core.ledger.rollups.list' &&
+        (binding.role !== 'user' ||
+          context.caller.interfaceKind !== 'desktop' ||
+          context.caller.authorityId !== LOCAL_DESKTOP_AUTHORITY_ID))
     ) {
       throw ledgerOperationError('FORBIDDEN', site);
     }
@@ -828,13 +1066,22 @@ export class LedgerCoreService implements LedgerService {
 
   private ownersPage(
     caller: LedgerResolvedCaller,
-    request: { readonly limit?: number; readonly cursor?: string },
+    request: {
+      readonly limit?: number;
+      readonly cursor?: string;
+      readonly delegationId?: string;
+    },
     cursorField: string,
     site: LedgerErrorSite,
   ): Promise<LedgerOwnerCandidatePage> {
+    const delegateOwner = delegateLineageOwnerForCaller(caller.binding);
     return this.actors
       .pageOwnerCandidates(caller.scope, {
         callerActorId: caller.actor.actorId,
+        ...(delegateOwner === undefined ? {} : { delegateOwner }),
+        ...(request.delegationId === undefined
+          ? {}
+          : { delegationId: request.delegationId }),
         limit: request.limit,
         cursor: request.cursor,
       })
@@ -876,6 +1123,7 @@ export class LedgerCoreService implements LedgerService {
           scope,
           owner,
           target.eligibilityToken,
+          delegateLineageOwnerForCaller(caller.binding),
         );
         return commit(owner.actor, eligible);
       });
@@ -1097,6 +1345,29 @@ function isConsistentDelegateLineage(
       (parent.kind === 'managed_delegation' &&
         parent.originKey !== origin.delegationId))
   );
+}
+
+/** A chat/delegate caller may offer its own new delegates to owner pickers. */
+function delegateLineageOwnerForCaller(
+  binding: LedgerCallerBinding,
+): LedgerDelegateLineageOwner | undefined {
+  switch (binding.role) {
+    case 'interactive_chat':
+      return binding.actor.kind === 'chat'
+        ? { kind: 'chat', chatId: binding.actor.originKey }
+        : undefined;
+    case 'managed_delegation':
+      return binding.actor.kind === 'managed_delegation' &&
+        binding.origin?.kind === 'managed_delegation' &&
+        isConsistentDelegateLineage(binding, binding.origin)
+        ? {
+            kind: 'managed_delegation',
+            delegationId: binding.actor.originKey,
+          }
+        : undefined;
+    default:
+      return undefined;
+  }
 }
 
 /** Agents self-report; the user's own changes are attributed to the user. */

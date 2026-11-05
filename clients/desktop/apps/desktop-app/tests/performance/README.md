@@ -47,7 +47,6 @@ pnpm run perf:desktop --profile baseline --scenarios startup-settle --startup-tr
 pnpm run perf:desktop:compare before.json after.json
 pnpm run perf:desktop:sampler-overhead --assert
 pnpm run build:core-daemon && pnpm run perf:desktop:daemon-idle-shutdown --stop signal
-pnpm run test:desktop-performance
 pnpm run perf:desktop --profile baseline --scenarios browser-actions --browser-actions-iterations 50
 pnpm run build && node --import tsx apps/desktop-app/tests/performance/run.mjs --release-like --profile baseline --scenarios browser-actions --browser-actions-iterations 50
 pnpm run perf:desktop --profile baseline --scenarios browser-agent-actions

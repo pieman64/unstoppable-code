@@ -10,7 +10,7 @@ import { useEffect, useState, type JSX } from 'react';
 import {
   DelayedLoadingPlaceholder,
   ErrorBanner,
-  SettingsFormSkeleton,
+  Skeleton,
   ToggleSwitch,
   Tooltip,
   Heading,
@@ -181,47 +181,120 @@ function MemorySettingsCard({
         {loading ? (
           <div className="mt-4">
             <DelayedLoadingPlaceholder>
-              <SettingsFormSkeleton />
+              <MemoryParticipationSkeleton orgName={orgName} />
             </DelayedLoadingPlaceholder>
           </div>
         ) : (
           <ul className="flex flex-col">
-            {members.map((member) => {
-              const busy = savingMemberId !== null;
-              return (
-                <li
-                  key={member.userId}
-                  className={SETTINGS_CARD_ROW_CLASS}
-                  data-testid={`memory-participation-row-${member.userId}`}
-                >
-                  <div className={joinClassNames('min-w-0', blockClassName)}>
-                    <p className="truncate text-s font-medium fg-primary">
-                      {member.name ?? member.email}
-                    </p>
-                    <p className="truncate text-xs fg-secondary">
-                      {member.email} · {roleLabel(member.role)}
-                    </p>
-                    {!member.contributingRecently && (
-                      <QuietParticipationLabel
-                        userId={member.userId}
-                        orgName={orgName}
-                      />
-                    )}
-                  </div>
-                  <ToggleSwitch
-                    checked={member.memoryEnabled}
-                    label={`Include ${member.name ?? member.email} in organization memory`}
-                    disabled={busy}
-                    dataTestId={`memory-participation-toggle-${member.userId}`}
-                    onChange={(next) => void handleToggle(member.userId, next)}
-                  />
-                </li>
-              );
-            })}
+            {members.map((member) => (
+              <MemoryParticipationRow
+                key={member.userId}
+                member={member}
+                orgName={orgName}
+                blockClassName={blockClassName}
+                busy={savingMemberId !== null}
+                onToggle={(next) => void handleToggle(member.userId, next)}
+              />
+            ))}
           </ul>
         )}
       </div>
     </section>
+  );
+}
+
+const noop = (): void => undefined;
+
+/** Sample members for the loading state: plain, of the loaded shape. */
+const SAMPLE_MEMORY_MEMBERS: readonly MemoryParticipationMember[] = [
+  {
+    userId: 'sample-member-1',
+    name: 'Sample member',
+    email: 'member@example.com',
+    role: 'ADMIN',
+    memoryEnabled: true,
+    contributingRecently: true,
+  },
+  {
+    userId: 'sample-member-2',
+    name: 'Another member',
+    email: 'another@example.com',
+    role: 'MEMBER',
+    memoryEnabled: true,
+    contributingRecently: true,
+  },
+];
+
+/**
+ * The member list while it loads: the real rows with sample members inside
+ * `Skeleton`, so skullet measures them into bars in place.
+ */
+function MemoryParticipationSkeleton({
+  orgName,
+}: {
+  orgName: string;
+}): JSX.Element {
+  return (
+    <Skeleton
+      loading
+      label="Loading memory participation"
+      testId="settings-skeleton-form"
+      className="w-full"
+    >
+      <ul className="flex flex-col">
+        {SAMPLE_MEMORY_MEMBERS.map((member) => (
+          <MemoryParticipationRow
+            key={member.userId}
+            member={member}
+            orgName={orgName}
+            blockClassName=""
+            busy={false}
+            onToggle={noop}
+          />
+        ))}
+      </ul>
+    </Skeleton>
+  );
+}
+
+/** One member's row: who they are and whether memory includes them. */
+function MemoryParticipationRow({
+  member,
+  orgName,
+  blockClassName,
+  busy,
+  onToggle,
+}: {
+  member: MemoryParticipationMember;
+  orgName: string;
+  blockClassName: string;
+  busy: boolean;
+  onToggle: (next: boolean) => void;
+}): JSX.Element {
+  return (
+    <li
+      className={SETTINGS_CARD_ROW_CLASS}
+      data-testid={`memory-participation-row-${member.userId}`}
+    >
+      <div className={joinClassNames('min-w-0', blockClassName)}>
+        <p className="truncate text-s font-medium fg-primary">
+          {member.name ?? member.email}
+        </p>
+        <p className="truncate text-xs fg-secondary">
+          {member.email} · {roleLabel(member.role)}
+        </p>
+        {!member.contributingRecently && (
+          <QuietParticipationLabel userId={member.userId} orgName={orgName} />
+        )}
+      </div>
+      <ToggleSwitch
+        checked={member.memoryEnabled}
+        label={`Include ${member.name ?? member.email} in organization memory`}
+        disabled={busy}
+        dataTestId={`memory-participation-toggle-${member.userId}`}
+        onChange={onToggle}
+      />
+    </li>
   );
 }
 

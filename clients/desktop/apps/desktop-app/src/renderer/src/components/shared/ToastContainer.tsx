@@ -27,7 +27,7 @@ import {
   type InAppNotificationPlacement,
   type ToastStackItem,
 } from '@canopy/ui-shared';
-import { CopyLinkButton } from '@canopy/ui-shared/components';
+import { Button, CopyLinkButton } from '@canopy/ui-shared/components';
 import { ExternalIcon } from '@canopy/ui-shared/icons/AppIcons';
 import type { JSX, MouseEvent } from 'react';
 import { useState } from 'react';
@@ -188,15 +188,11 @@ function ModalMetaDetails({
         <span>
           <span className="fg-secondary/60">Worktree</span>{' '}
           {onNavigate ? (
-            <button
-              type="button"
-              onClick={onNavigate}
-              className="font-medium fg-accent underline underline-offset-2 hover:fg-accent/80"
-            >
+            <Button variant="link" onClick={onNavigate}>
               <span className={POSTHOG_REPLAY_MASK_CLASS}>
                 {meta.worktreeId}
               </span>
-            </button>
+            </Button>
           ) : (
             <span className={`${POSTHOG_REPLAY_MASK_CLASS} fg-primary/80`}>
               {meta.worktreeId}

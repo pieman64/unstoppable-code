@@ -5,6 +5,7 @@ import type {
   CapabilityItemKind,
   CapabilityReferenceArtifactReceiptV1,
 } from '@canopy/protocol/agent-artifacts';
+import type { StatusGlyphState } from '../lib/status-glyph';
 import { WORKFLOW_ITEM_LABEL } from '../lib/workflow-labels';
 
 /**
@@ -31,6 +32,18 @@ export type CapabilityTileTone =
   | 'warning'
   | 'danger'
   | 'muted';
+
+/**
+ * A tile's state. A run or waiting state draws its status glyph in place of
+ * the label; availability states such as "Installed" stay as text.
+ */
+export interface CapabilityTileState {
+  label: string;
+  tone: CapabilityTileTone;
+  glyph?: StatusGlyphState;
+  /** A finished run's duration, e.g. "4 s". */
+  detail?: string;
+}
 
 /**
  * Host-observed state layered over a persisted receipt. `unknown` keeps the
@@ -61,7 +74,7 @@ export interface CapabilityTileModel {
   /** Readable list of changed settings, for updates that report them. */
   changeSummary?: string;
   sourceLabel?: string;
-  state?: { label: string; tone: CapabilityTileTone };
+  state?: CapabilityTileState;
   /** Why the agent recommended the item. */
   reason?: string;
   /** The receipt names an unverified external source. */
@@ -100,16 +113,22 @@ const CHANGED_FIELD_LABELS: Record<AgentArtifactChangedField, string> = {
   shareScope: 'sharing',
 };
 
+const RUNNING_STATE: CapabilityTileState = {
+  label: 'Running',
+  tone: 'info',
+  glyph: 'running',
+};
+
 const RUN_STATUS: Record<
   AutomationRunArtifactReceiptV1['status'],
-  { label: string; tone: CapabilityTileTone }
+  CapabilityTileState
 > = {
-  running: { label: 'Running', tone: 'info' },
-  success: { label: 'Succeeded', tone: 'success' },
-  failure: { label: 'Failed', tone: 'danger' },
-  skipped: { label: 'Skipped', tone: 'warning' },
-  canceled: { label: 'Canceled', tone: 'muted' },
-  missed: { label: 'Missed', tone: 'warning' },
+  running: RUNNING_STATE,
+  success: { label: 'Succeeded', tone: 'success', glyph: 'done' },
+  failure: { label: 'Failed', tone: 'danger', glyph: 'failed' },
+  skipped: { label: 'Skipped', tone: 'warning', glyph: 'cancelled' },
+  canceled: { label: 'Canceled', tone: 'muted', glyph: 'cancelled' },
+  missed: { label: 'Missed', tone: 'warning', glyph: 'cancelled' },
 };
 
 const SKIP_REASONS: Record<
@@ -123,11 +142,11 @@ const SKIP_REASONS: Record<
 
 const REFERENCE_STATES: Record<
   CapabilityReferenceArtifactReceiptV1['state'],
-  { label: string; tone: CapabilityTileTone } | undefined
+  CapabilityTileState | undefined
 > = {
   installed: { label: 'Installed', tone: 'muted' },
   available: { label: 'Not installed', tone: 'muted' },
-  'needs-auth': { label: 'Needs sign-in', tone: 'warning' },
+  'needs-auth': { label: 'Needs sign-in', tone: 'warning', glyph: 'needs-you' },
   unknown: undefined,
 };
 
@@ -183,6 +202,11 @@ export function formatCapabilityRunDuration(
   return rest > 0 ? `${minutes} min ${rest} s` : `${minutes} min`;
 }
 
+/** "Failed · 4 s", or the label alone when there is no duration. */
+export function capabilityTileStatusText(state: CapabilityTileState): string {
+  return state.detail ? `${state.label} · ${state.detail}` : state.label;
+}
+
 /** "Pipeline" → "pipeline"; an acronym such as "MCP server" stays as is. */
 function lowerFirstWord(label: string): string {
   return /^[A-Z][a-z]/.test(label)
@@ -211,6 +235,9 @@ function automationRunModel(
     status === receipt.status
       ? (receipt.durationMs ?? live.runDurationMs)
       : live.runDurationMs;
+  // A running run has no duration yet, even when stale data carries one.
+  const duration =
+    status === 'running' ? undefined : formatCapabilityRunDuration(durationMs);
   const trigger =
     receipt.trigger === 'manual'
       ? 'Manual run'
@@ -227,11 +254,11 @@ function automationRunModel(
       status === 'skipped' && receipt.skipReason
         ? SKIP_REASONS[receipt.skipReason]
         : undefined,
-      status === 'running'
-        ? undefined
-        : formatCapabilityRunDuration(durationMs),
+      duration,
     ),
-    state: RUN_STATUS[status],
+    state: duration
+      ? { ...RUN_STATUS[status], detail: duration }
+      : RUN_STATUS[status],
   };
 }
 
@@ -272,9 +299,7 @@ function baseModel(
           receipt.enabled ? 'Enabled' : 'Disabled',
           receipt.schedule,
         ),
-        ...(receipt.running
-          ? { state: { label: 'Running', tone: 'info' as const } }
-          : {}),
+        ...(receipt.running ? { state: RUNNING_STATE } : {}),
       };
     case 'automation_run':
       return automationRunModel(receipt, live);

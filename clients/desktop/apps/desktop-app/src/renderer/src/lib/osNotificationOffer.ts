@@ -11,6 +11,10 @@
  * it, and nothing is replayed at startup. Until preferences have been read the
  * eligibility is `unknown` and completions never arm the offer.
  *
+ * The suggestions master switch (CAN-4343) gates arming: until committed
+ * preferences say suggestions are on, completions never arm the offer, and
+ * turning suggestions off drops a pending offer without answering it.
+ *
  * This module is a leaf: `osNotifications.ts` calls into it from the delivery
  * gate, so it must not import that module or any store that does.
  */
@@ -29,8 +33,12 @@ export type OsNotificationOfferEligibility =
 
 export type OsNotificationOfferChoice = 'enable' | 'dismiss';
 
+/** The committed suggestions gate; `unknown` until preferences are read. */
+export type OsNotificationOfferSuggestionsGate = 'unknown' | 'on' | 'off';
+
 export interface OsNotificationOfferState {
   eligibility: OsNotificationOfferEligibility;
+  suggestionsGate: OsNotificationOfferSuggestionsGate;
   /** A qualifying background completion arrived and the offer awaits an answer. */
   pending: boolean;
   /** The choice being saved, or `null` when idle. */
@@ -48,6 +56,7 @@ export interface OsNotificationOfferState {
 
 const INITIAL_STATE: OsNotificationOfferState = {
   eligibility: 'unknown',
+  suggestionsGate: 'unknown',
   pending: false,
   answering: null,
   answerChoice: null,
@@ -133,8 +142,40 @@ export function noteOsNotificationOfferCompletion(
 ): void {
   if (windowFocused) return;
   const state = useOsNotificationOfferStore.getState();
+  if (state.suggestionsGate !== 'on') return;
   if (state.eligibility !== 'eligible' || state.pending) return;
   useOsNotificationOfferStore.setState({ pending: true });
+}
+
+/**
+ * Apply the committed suggestions gate: on only while the master switch is on
+ * and the category is not dismissed. `null` (a degraded read) keeps the
+ * previous gate, so it never turns a known-off gate back on. Off drops a
+ * pending, unanswered offer without recording an answer or changing
+ * eligibility; an answer already being saved finishes.
+ */
+export function setOsNotificationOfferSuggestionsGate(
+  enabled: boolean | null,
+): void {
+  if (enabled === null) return;
+  const state = useOsNotificationOfferStore.getState();
+  if (enabled) {
+    if (state.suggestionsGate !== 'on') {
+      useOsNotificationOfferStore.setState({ suggestionsGate: 'on' });
+    }
+    return;
+  }
+  useOsNotificationOfferStore.setState({
+    suggestionsGate: 'off',
+    ...(state.answering === null
+      ? {
+          pending: false,
+          answerChoice: null,
+          saveFailed: false,
+          answerTimestamp: null,
+        }
+      : {}),
+  });
 }
 
 /** Record that the user made an explicit choice elsewhere (Settings). */
@@ -211,11 +252,4 @@ export async function answerOsNotificationOffer(
   } catch {
     return { kind: 'opt-in-failed' };
   }
-}
-
-// Test-only reset. Not part of the public surface.
-export function __resetOsNotificationOfferForTests(): void {
-  answerGeneration += 1;
-  savingAnswerTimestamp = null;
-  useOsNotificationOfferStore.setState({ ...INITIAL_STATE });
 }

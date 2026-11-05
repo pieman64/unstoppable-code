@@ -24,8 +24,8 @@ import type { ProviderModelAvailability } from '@/hooks/useProviderAvailability'
 /**
  * CAN-5213 — the desktop adapter for the shared picker row cue.
  *
- * Translates a row's gate and the provider, credit, and daily-credit reads
- * into the portable facts `resolveModelPickerRowCue` decides on. It reads the
+ * Translates a row's gate and the provider and credit reads into the
+ * portable facts `resolveModelPickerRowCue` decides on. It reads the
  * gate; it never changes it, so selection and recovery stay exactly where
  * `resolveModelRowGate` puts them.
  */
@@ -117,17 +117,7 @@ export function resolveDesktopModelRowCue(
               creditsSufficient === 'yes' &&
               admitted)),
       );
-  const dailyCreditsOn: ModelPickerRowFact =
-    !creditsSettled || availability.dailyCreditsEnabled === undefined
-      ? 'unknown'
-      : fact(availability.dailyCreditsEnabled);
-  const dailyCreditsRecoverySupported =
-    admitted &&
-    gate.kind === 'recoverable' &&
-    (gate.recovery.kind === 'needs-credits' ||
-      (gate.recovery.kind === 'needs-billing-source' && routable));
-
-  // The modal's sign-in, offered whenever the gate asks for a billing source.
+  // The modal's Connect action, offered whenever the gate asks for a billing source.
   const providerSignInLabel =
     gate.kind === 'recoverable' && gate.recovery.kind === 'needs-billing-source'
       ? getProviderLabel(gate.recovery.provider)
@@ -144,8 +134,6 @@ export function resolveDesktopModelRowCue(
     usableNow,
     creditsRoute,
     creditsSufficient,
-    dailyCreditsOn,
-    dailyCreditsRecoverySupported,
     providerSignInLabel,
   });
 }

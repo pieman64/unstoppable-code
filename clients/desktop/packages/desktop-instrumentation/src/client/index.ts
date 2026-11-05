@@ -35,6 +35,20 @@ import {
   POSTHOG_PAGEVIEW_EVENT,
   type PostHogRoute,
 } from '../posthog-routes';
+import {
+  APP_ERROR_POSTHOG_EVENT,
+  buildAppErrorDatadogContext,
+  buildAppErrorDatadogError,
+  buildAppErrorPostHogProperties,
+  type AppErrorTelemetrySessions,
+} from '../app-error-telemetry';
+import {
+  createAppErrorHandler,
+  type AppErrorHandler,
+  type AppErrorReport,
+  type AppErrorReportOptions,
+  type AppErrorSink,
+} from '@canopy/protocol/app-errors';
 import type * as DatadogBrowserRumModule from '@datadog/browser-rum';
 import type { PostHog } from 'posthog-js/dist/module.full.no-external';
 import type {
@@ -54,6 +68,11 @@ type FeatureFlagValue = Exclude<
 >;
 type FeatureFlagReporter = (key: string, value: FeatureFlagValue) => void;
 type OperationReporter = (operation: PostHogOperationEvent) => void;
+type AppErrorPostHogEvent = {
+  event: typeof APP_ERROR_POSTHOG_EVENT;
+  properties: ReturnType<typeof buildAppErrorPostHogProperties>;
+};
+type AppErrorReporter = (event: AppErrorPostHogEvent) => void;
 
 const DATADOG_UNSUPPORTED_FEATURE_FLAG_KEY_CHARS =
   /[.:+\-=><!(){}[\]^"“”~*?\\&|]/g;
@@ -149,7 +168,9 @@ async function initializeDatadogClient(
 let disposePostHog: (() => void) | undefined;
 let reportPostHogFeatureFlagEvaluation: FeatureFlagReporter | undefined;
 let reportPostHogOperation: OperationReporter | undefined;
+let reportPostHogAppError: AppErrorReporter | undefined;
 let isPostHogOperationStartEligible: (() => boolean) | undefined;
+let posthogAppErrorSession: AppErrorTelemetrySessions['posthog'];
 /** Bounds operations that finish while the SDK is still initializing. */
 const MAX_PENDING_POSTHOG_OPERATIONS = 50;
 let posthogInitialization:
@@ -157,6 +178,8 @@ let posthogInitialization:
   | undefined;
 
 export function disposePostHogInstrumentationClient(): void {
+  // Pending summaries need the provider this is about to tear down.
+  disposeClientAppErrorHandler();
   const dispose = disposePostHog;
   disposePostHog = undefined;
   posthogInitialization = undefined;
@@ -210,8 +233,11 @@ async function initializePostHogClient(
     reportedEvaluations.set(key, value);
   };
   reportPostHogFeatureFlagEvaluation = reportEvaluation;
-  const pendingOperations: PostHogOperationEvent[] = [];
-  const reportOperation: OperationReporter = (operation) => {
+  const pendingOperations: Array<PostHogOperationEvent | AppErrorPostHogEvent> =
+    [];
+  const reportEvent = (
+    operation: PostHogOperationEvent | AppErrorPostHogEvent,
+  ): void => {
     if (disposed) return;
     if (!posthog || !controller) {
       if (!waitingForFlags && flags?.captureEnabled !== true) return;
@@ -223,19 +249,31 @@ async function initializePostHogClient(
     if (!controller.allowsEvent(operation.event)) return;
     posthog.capture(operation.event, operation.properties);
   };
+  const reportOperation: OperationReporter = reportEvent;
+  const reportAppError: AppErrorReporter = reportEvent;
   reportPostHogOperation = reportOperation;
+  reportPostHogAppError = reportAppError;
+  let appErrorSession: AppErrorTelemetrySessions['posthog'];
+  const disposeOnUnload = (): void => {
+    disposeClientAppErrorHandler();
+    dispose();
+  };
   const dispose = (): void => {
     if (disposed) return;
     disposed = true;
     if (unloadInstalled && typeof window !== 'undefined') {
-      window.removeEventListener('unload', dispose);
+      window.removeEventListener('unload', disposeOnUnload);
       unloadInstalled = false;
     }
+    if (posthogAppErrorSession === appErrorSession)
+      posthogAppErrorSession = undefined;
     screenTracker?.dispose();
     if (reportPostHogFeatureFlagEvaluation === reportEvaluation)
       reportPostHogFeatureFlagEvaluation = undefined;
     if (reportPostHogOperation === reportOperation)
       reportPostHogOperation = undefined;
+    if (reportPostHogAppError === reportAppError)
+      reportPostHogAppError = undefined;
     if (isPostHogOperationStartEligible === eligibleStart)
       isPostHogOperationStartEligible = undefined;
     posthogOperations.discardAcquisitionStarts();
@@ -397,6 +435,21 @@ async function initializePostHogClient(
       (listener) => activeSession.onAdopted(listener),
     );
     activeSession.start();
+    if (!disposed) {
+      const sdk = posthog;
+      const activeController = controller;
+      // A session link exists only while main authorizes capture on this SDK.
+      appErrorSession = {
+        getSessionId: (): unknown =>
+          activeSession.allowsCapture() &&
+          activeController.allowsEvent(APP_ERROR_POSTHOG_EVENT)
+            ? sdk.get_session_id()
+            : undefined,
+        isRecording: (): unknown => sdk.sessionRecordingStarted(),
+        getReplayUrl: (): unknown => sdk.get_session_replay_url(),
+      };
+      posthogAppErrorSession = appErrorSession;
+    }
     if (options.posthogRoutes) {
       const sdk = posthog;
       screenTracker = createPostHogScreenTracker({
@@ -413,7 +466,7 @@ async function initializePostHogClient(
       });
     }
     if (typeof window !== 'undefined') {
-      window.addEventListener('unload', dispose, { once: true });
+      window.addEventListener('unload', disposeOnUnload, { once: true });
       unloadInstalled = true;
     }
     if (controller.allowsEvent('app_opened')) {
@@ -588,4 +641,70 @@ export function addClientFeatureFlagEvaluation(
     });
   }
   safelyInvoke(() => reportPostHogFeatureFlagEvaluation?.(key, value));
+}
+
+/** Reads current SDK state at capture time; the builders tolerate failures. */
+const appErrorSessions: AppErrorTelemetrySessions = {
+  datadog: {
+    getSessionId: () =>
+      initialized
+        ? datadogRumModule?.datadogRum.getInternalContext()?.session_id
+        : undefined,
+  },
+  posthog: {
+    getSessionId: () => posthogAppErrorSession?.getSessionId(),
+    isRecording: () => posthogAppErrorSession?.isRecording(),
+    getReplayUrl: () => posthogAppErrorSession?.getReplayUrl(),
+  },
+};
+
+const captureAppErrorInDatadog: AppErrorSink = (record) => {
+  if (!initialized || !datadogRumModule) return;
+  datadogRumModule.datadogRum.addError(
+    buildAppErrorDatadogError(record),
+    buildAppErrorDatadogContext(record, appErrorSessions),
+  );
+};
+
+const captureAppErrorInPostHog: AppErrorSink = (record) => {
+  reportPostHogAppError?.({
+    event: APP_ERROR_POSTHOG_EVENT,
+    properties: buildAppErrorPostHogProperties(record, appErrorSessions),
+  });
+};
+
+let appErrorHandler: AppErrorHandler | undefined;
+
+function createClientAppErrorHandler(appVersion: string): AppErrorHandler {
+  return createAppErrorHandler({
+    host: 'renderer',
+    appVersion,
+    sinks: [captureAppErrorInDatadog, captureAppErrorInPostHog],
+  });
+}
+
+/** Created on first use so importing this module starts nothing. */
+export function getClientAppErrorHandler(): AppErrorHandler {
+  if (appErrorHandler) return appErrorHandler;
+  const appVersion = getDesktopInstrumentationConfig().appVersion ?? 'unknown';
+  try {
+    appErrorHandler = createClientAppErrorHandler(appVersion);
+  } catch {
+    // An unusable build version must not stop errors from being classified.
+    appErrorHandler = createClientAppErrorHandler('unknown');
+  }
+  return appErrorHandler;
+}
+
+export function reportClientAppError(
+  value: unknown,
+  options?: AppErrorReportOptions,
+): AppErrorReport | undefined {
+  return getClientAppErrorHandler().report(value, options);
+}
+
+/** Flushes pending summaries; the next use reads current configuration. */
+export function disposeClientAppErrorHandler(): void {
+  appErrorHandler?.dispose();
+  appErrorHandler = undefined;
 }

@@ -38,7 +38,11 @@ import type { ChatTab } from '@/stores/chat/types';
 import { isTabAiCreditsRouted } from '@/stores/chat/tab-utils';
 import { provisionalFirstSendAttemptId } from '@/stores/chat/provisional-first-send';
 import { loadChatMessageListModule } from '@/components/chat/chatMessageListChunk';
-import { getWorktreeCacheKey, useFileListStore } from '@/stores/fileListStore';
+import {
+  getWorktreeCacheKey,
+  useFileListStore,
+  withRetainedFileIndex,
+} from '@/stores/fileListStore';
 import {
   useProjectsStore,
   type CreateWorktreeOptions,
@@ -285,24 +289,36 @@ async function rewriteDraftPromptForWorktree(
     return { prompt, fileReferences: [...fileReferences] };
   }
 
-  await useFileListStore.getState().fetchFileIndex(workspaceId, worktreeId);
   const cacheKey = getWorktreeCacheKey(workspaceId, worktreeId);
-  const targetRepos =
-    useFileListStore.getState().indexCache[cacheKey]?.data.repos ?? [];
-  const sourceRepos = useHomeComposerStore.getState().fileIndex ?? [];
-  const repoMapped = rewriteFileReferencesAcrossRepoRoots(
-    [...fileReferences],
-    sourceRepos,
-    targetRepos,
-  );
-  const targetCwd = getCwdFromFileIndex(targetRepos, selectedRepoId);
-  if (!targetCwd) {
-    return { prompt, fileReferences: repoMapped };
-  }
+  return withRetainedFileIndex(
+    cacheKey,
+    async (): Promise<RewrittenDraftPrompt> => {
+      await useFileListStore.getState().fetchFileIndex(workspaceId, worktreeId);
+      const targetRepos =
+        useFileListStore.getState().indexCache[cacheKey]?.data.repos ?? [];
+      const sourceRepos = useHomeComposerStore.getState().fileIndex ?? [];
+      const repoMapped = rewriteFileReferencesAcrossRepoRoots(
+        [...fileReferences],
+        sourceRepos,
+        targetRepos,
+      );
+      const targetCwd = getCwdFromFileIndex(targetRepos, selectedRepoId);
+      if (!targetCwd) {
+        return { prompt, fileReferences: repoMapped };
+      }
 
-  const targeted = rewriteFileReferencesForTargetCwd(repoMapped, targetCwd);
-  const rewritten = rewriteFileReferencesForCwd(prompt, targeted, targetCwd);
-  return { prompt: rewritten.text, fileReferences: rewritten.fileReferences };
+      const targeted = rewriteFileReferencesForTargetCwd(repoMapped, targetCwd);
+      const rewritten = rewriteFileReferencesForCwd(
+        prompt,
+        targeted,
+        targetCwd,
+      );
+      return {
+        prompt: rewritten.text,
+        fileReferences: rewritten.fileReferences,
+      };
+    },
+  );
 }
 
 /**

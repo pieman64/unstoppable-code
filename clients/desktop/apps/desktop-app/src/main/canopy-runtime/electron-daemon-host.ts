@@ -34,6 +34,7 @@ import {
 } from '@canopy/core-transport/node';
 import { daemonName, type CanopyRuntimeMode } from '@canopy/protocol/brand';
 import {
+  CORE_EXECUTION_STREAMS,
   CORE_TRANSPORT_QUERY_DEFINITIONS,
   CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
   CORE_TRANSPORT_STREAM_DEFINITIONS,
@@ -102,6 +103,10 @@ export const ELECTRON_DAEMON_DEFINITIONS = {
     'core.events.subscribe':
       CORE_TRANSPORT_STREAM_DEFINITIONS['core.events.subscribe'],
     ...WORKER_TERMINAL_STREAM_DEFINITIONS,
+    // The daemon's execution status for the resource monitor (CAN-5690);
+    // a daemon without it refuses the stream and the monitor goes on alone.
+    'core.execution.status.events':
+      CORE_EXECUTION_STREAMS['core.execution.status.events'],
   },
 };
 type D = typeof ELECTRON_DAEMON_DEFINITIONS;

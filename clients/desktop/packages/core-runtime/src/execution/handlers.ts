@@ -35,16 +35,30 @@ export interface CoreExecutionHandlers {
   streams: ExecutionStreamHandlers;
 }
 
+/**
+ * What a host adds to its own accounting before clients read it, such as
+ * work another execution host on the machine reports.
+ */
+export interface ExecutionStatusView<TMetadata extends { type: string }> {
+  project(
+    snapshot: ExecutionAccountingSnapshot<TMetadata>,
+  ): ExecutionAccountingSnapshot<TMetadata>;
+  /** Notes each change to what `project` adds between samples. */
+  subscribe(onChange: () => void): () => void;
+}
+
 export interface CoreExecutionHandlerOptions<
   TMetadata extends { type: string },
 > {
   /**
-   * Sees the host snapshot each `core.execution.status.get` projects, so an
-   * in-process host can keep its own metadata for a compatibility payload.
+   * Sees the host snapshot each `core.execution.status.get` projects, before
+   * the view, so an in-process host can keep its own metadata for a
+   * compatibility payload.
    */
   readonly observeRead?: (
     snapshot: ExecutionAccountingSnapshot<TMetadata>,
   ) => void;
+  readonly view?: ExecutionStatusView<TMetadata>;
 }
 
 /** Host strings such as process command lines can exceed the wire bounds. */
@@ -180,28 +194,34 @@ export function coreExecutionStatus<TMetadata extends { type: string }>(
 
 /**
  * `core.execution.*` over one host's execution accounting. Every client of
- * that host reads the same accounting: a read returns the last sample with
- * live family counts, and the events stream sends the current status on open
- * and then each sample, whoever asked for it. Closing a stream only
- * unsubscribes; it never releases work.
+ * that host reads the same accounting, through the host's view when it has
+ * one: a read returns the last sample with live family counts, sampling
+ * again first when processes were registered or unregistered since, and the
+ * events stream sends the current status on open and then each sample,
+ * whoever asked for it, and each change the view notes. Closing a stream
+ * only unsubscribes; it never releases work.
  */
 export function createCoreExecutionHandlers<TMetadata extends { type: string }>(
   accounting: ExecutionAccounting<TMetadata>,
   options: CoreExecutionHandlerOptions<TMetadata> = {},
 ): CoreExecutionHandlers {
+  const view = (
+    snapshot: ExecutionAccountingSnapshot<TMetadata>,
+  ): ExecutionAccountingSnapshot<TMetadata> =>
+    options.view ? options.view.project(snapshot) : snapshot;
   return {
     queries: {
       'core.execution.status.get':
-        (): Promise<CoreExecutionStatusGetResult> => {
-          const snapshot = accounting.getSnapshot();
+        async (): Promise<CoreExecutionStatusGetResult> => {
+          const snapshot = await accounting.currentSnapshot();
           options.observeRead?.(snapshot);
-          return Promise.resolve({
+          return {
             status: coreExecutionStatus(
-              snapshot,
+              view(snapshot),
               accounting.familyStatus(),
               accounting.isMemoryGuardBlocked(),
             ),
-          });
+          };
         },
     },
     streams: {
@@ -212,26 +232,36 @@ export function createCoreExecutionHandlers<TMetadata extends { type: string }>(
       ): Promise<(() => void) | void> => {
         const opened = sink.emit({
           status: coreExecutionStatus(
-            accounting.getSnapshot(),
+            view(accounting.getSnapshot()),
             accounting.familyStatus(),
             accounting.isMemoryGuardBlocked(),
           ),
         });
         if (opened === null) return Promise.resolve();
-        let unsubscribe = (): void => undefined;
-        unsubscribe = accounting.subscribe((snapshot) => {
+        let unsubscribeSamples = (): void => undefined;
+        let unsubscribeView = (): void => undefined;
+        const unsubscribe = (): void => {
+          unsubscribeSamples();
+          unsubscribeView();
+        };
+        const send = (
+          snapshot: ExecutionAccountingSnapshot<TMetadata>,
+        ): void => {
           const status = coreExecutionStatus(
-            snapshot,
+            view(snapshot),
             snapshot.families,
             snapshot.memoryGuardBlocked,
           );
           // The sink refuses items once the stream has ended, including when
           // a slow client overflows its buffer.
           if (sink.emit({ status }) === null) unsubscribe();
-        });
-        return Promise.resolve((): void => {
-          unsubscribe();
-        });
+        };
+        unsubscribeSamples = accounting.subscribe(send);
+        if (options.view)
+          unsubscribeView = options.view.subscribe((): void =>
+            send(accounting.getSnapshot()),
+          );
+        return Promise.resolve(unsubscribe);
       },
     },
   };

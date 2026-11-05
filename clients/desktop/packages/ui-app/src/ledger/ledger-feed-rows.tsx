@@ -2,7 +2,7 @@
 
 import { useCallback, type JSX } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import type { LedgerFilePicker } from '@canopy/app-core';
+import type { LedgerClient, LedgerFilePicker } from '@canopy/app-core';
 import type { LedgerFeedStore, LedgerViewStoreFor } from '@canopy/app-state';
 import type {
   LedgerFeedAudience,
@@ -45,6 +45,8 @@ export function FeedControls({
   onAudienceChange,
   onSearchChange,
   onFiltersChange,
+  heading,
+  onOnlyThisDeviceChange,
 }: {
   readonly store: LedgerFeedStore;
   /** The tabs offered, in order. */
@@ -52,10 +54,13 @@ export function FeedControls({
   readonly onAudienceChange: (audience: LedgerFeedAudience) => void;
   readonly onSearchChange: (text: string) => void;
   readonly onFiltersChange: (filters: LedgerFeedFilters) => void;
+  readonly heading: boolean;
+  readonly onOnlyThisDeviceChange: (checked: boolean) => void;
 }): JSX.Element {
-  const { audience, queryText, filters } = store(
+  const { audience, onlyThisDevice, queryText, filters } = store(
     useShallow((state) => ({
       audience: state.audience,
+      onlyThisDevice: state.onlyThisDevice,
       queryText: state.queryText,
       filters: state.filters,
     })),
@@ -66,17 +71,19 @@ export function FeedControls({
       data-testid="ledger-feed-controls"
       className="flex shrink-0 flex-col gap-4 pb-2"
     >
-      <TabBar
-        items={audiences.map((option) => ({
-          id: option,
-          label: AUDIENCE_LABELS[option],
-          dataTestId: `ledger-feed-audience-${option}`,
-        }))}
-        value={audience}
-        onChange={(next): void => onAudienceChange(next)}
-        label="Whose entries"
-        density="compact"
-      />
+      {!heading && (
+        <TabBar
+          items={audiences.map((option) => ({
+            id: option,
+            label: AUDIENCE_LABELS[option],
+            dataTestId: `ledger-feed-audience-${option}`,
+          }))}
+          value={audience}
+          onChange={(next): void => onAudienceChange(next)}
+          label="Whose entries"
+          density="compact"
+        />
+      )}
       {/* The page search row: the search fills it, the filters follow as
           one Filter dropdown. No hairline under it; the list follows. */}
       <PageSearchRow>
@@ -93,6 +100,14 @@ export function FeedControls({
             trigger="page"
             filters={filters}
             onChange={onFiltersChange}
+            {...(heading
+              ? {
+                  onlyThisDevice: {
+                    checked: onlyThisDevice,
+                    onChange: onOnlyThisDeviceChange,
+                  },
+                }
+              : {})}
           />
         </PageSearchControls>
       </PageSearchRow>
@@ -103,6 +118,7 @@ export function FeedControls({
 /** The Add entry control/form in its one row above the Feed's entries. */
 export function FeedComposerRow({
   store,
+  client,
   scopeStore,
   scopeHasDraft,
   addableScopes,
@@ -110,6 +126,7 @@ export function FeedComposerRow({
   personName,
 }: {
   readonly store: LedgerFeedStore;
+  readonly client: LedgerClient;
   readonly scopeStore: LedgerViewStoreFor;
   readonly scopeHasDraft: (scope: LedgerViewScope) => boolean;
   readonly addableScopes: readonly LedgerFeedScopeOption[];
@@ -131,6 +148,7 @@ export function FeedComposerRow({
       <div className="border-b border-line-base pb-4">
         <LedgerFeedComposer
           store={store}
+          client={client}
           scopeStore={scopeStore}
           scopeHasDraft={scopeHasDraft}
           addableScopes={addableScopes}

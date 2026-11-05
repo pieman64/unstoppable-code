@@ -22,10 +22,12 @@ import {
 export interface SharedByYouFacts extends ExistingShareFacts {
   /** Only the owner can unshare, so only the owner sees the section. */
   readonly canDelete?: boolean;
+  readonly canUpdate?: boolean;
   readonly createdAt?: string;
   readonly publicShare?: {
     readonly upToDate?: boolean;
     readonly createdAt?: string;
+    readonly updatedAt?: string;
     readonly externalId?: string;
   } | null;
 }
@@ -200,7 +202,7 @@ export function sharedByYouAudienceCount(
   personalOrganizationId: string | null,
 ): number {
   const rows = audienceRows(facts, personalOrganizationId);
-  return (rows.account ? 1 : 0) + (rows.public ? 1 : 0);
+  return rows.account || rows.public ? 1 : 0;
 }
 
 /**

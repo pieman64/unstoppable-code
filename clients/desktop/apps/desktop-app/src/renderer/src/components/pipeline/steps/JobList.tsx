@@ -16,7 +16,12 @@ import {
 } from '@dnd-kit/sortable';
 import type { Pipeline, Step } from '@canopy/desktop-shared/types/pipeline';
 import type { Selection } from '../../../hooks/usePipelineEditor';
-import { Badge, EmptyState, Heading } from '@canopy/ui-shared/components';
+import {
+  Badge,
+  Button,
+  EmptyState,
+  Heading,
+} from '@canopy/ui-shared/components';
 import { JobCard } from './JobCard';
 
 interface JobListProps {
@@ -236,13 +241,9 @@ export function JobList({
 
         {/* Add Job button */}
         {!readonly && (
-          <button
-            onClick={onAddJob}
-            className="w-full py-3 text-xs font-medium fg-secondary border border-dashed rounded-lg
-              hover:border-line-accent hover:fg-primary transition-colors"
-          >
+          <Button size="compact" onClick={onAddJob} className="self-start">
             Add job
-          </button>
+          </Button>
         )}
       </div>
     </div>

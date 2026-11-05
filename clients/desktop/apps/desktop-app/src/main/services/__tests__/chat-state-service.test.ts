@@ -115,6 +115,7 @@ import type * as ChatQueueServiceModule from '../chat-queue-service';
 import type * as AppAdvisorWatchersModule from '../../app-advisor/watchers';
 import { ChatStateV2Repository as ChatStateRepository } from '../chat-state-v2-repository';
 import type { ChatStateV2RepositoryOptions } from '../chat-state-v2-repository';
+import type { ChatScopeKey } from '../chat-state-contracts';
 import {
   assertChatStorageIndexes,
   ChatStorageV2,
@@ -183,6 +184,7 @@ import { TURN_END_LIMIT } from '../../lib/chat-turn-ends';
 import { projectPortalLastTurnEnd } from '../../lib/portal-turn-end';
 import { normalizeTabForInheritedPluginDefaults } from '../../lib/inherited-plugin-defaults-normalization';
 import type { ChatStateServiceOptions } from '../chat-state-service';
+import * as e2eGate from '../../lib/e2e-gate';
 import {
   beginChatTurnPreparation,
   cancelChatTurnPreparations,
@@ -325,6 +327,33 @@ const queueConsumeRestoredInput = jest.fn();
 const queueSnapshots = jest.fn((): never[] => []);
 
 const SCOPE = { projectId: 'workspace-1', worktreeId: 'worktree-1' };
+
+function hostRepositoryOption(target: ChatStateService, key: string): unknown {
+  const repository: unknown = Reflect.get(target, 'repository');
+  if (!(repository instanceof ChatStateRepository))
+    throw new Error('Chat state service has no V2 repository');
+  const options: unknown = Reflect.get(repository, 'options');
+  if (typeof options !== 'object' || options === null)
+    throw new Error('Chat state repository has no options');
+  return Reflect.get(options, key);
+}
+
+function invokeHostServiceMethod(
+  target: ChatStateService,
+  methodName: string,
+  args: readonly unknown[],
+): unknown {
+  const method: unknown = Reflect.get(target, methodName);
+  if (typeof method !== 'function')
+    throw new Error(`Chat state service is missing ${methodName}`);
+  return Reflect.apply(method, target, args);
+}
+
+function invokeHostUninstaller(uninstaller: unknown): void {
+  if (typeof uninstaller !== 'function')
+    throw new Error('Scope pin provider did not return an uninstall function');
+  Reflect.apply(uninstaller, undefined, []);
+}
 
 /**
  * Whether `request` may steer into a session that applied `mode` and `rules`,
@@ -33464,6 +33493,184 @@ describe('chat state service', () => {
     expect(JSON.stringify(snapshot.tabsFile.tabs[0]?.messages)).toContain(
       'Committed during teardown',
     );
+  });
+
+  it('migrates a new scope from inside its own admitted operation', async () => {
+    const target = new ChatStateService({ recordDiagnostic: jest.fn() });
+    const scope: ChatScopeKey = {
+      projectId: SCOPE.projectId,
+      worktreeId: 'admitted-first-load',
+    };
+    try {
+      // The admission must not read as an active turn to the v1 migration
+      // guard, or a scope's first admitted operation waits on itself.
+      const state = await target.runWithScopeActivity(scope, () =>
+        target.getState(scope),
+      );
+      expect(state.tabsFile.tabs).toEqual([]);
+    } finally {
+      await target.drain();
+    }
+  });
+
+  it('keeps an admitted scope from idle unload until its operation finishes', async () => {
+    const target = new ChatStateService({ recordDiagnostic: jest.fn() });
+    const admitted: unknown = hostRepositoryOption(
+      target,
+      'hasAdmittedOperation',
+    );
+    const dependency: unknown = hostRepositoryOption(
+      target,
+      'hasLiveDependency',
+    );
+    if (typeof admitted !== 'function' || typeof dependency !== 'function')
+      throw new Error('Chat state repository lacks its host scope checks');
+    const isAdmitted = (): boolean => {
+      const result: unknown = Reflect.apply(admitted, undefined, [SCOPE]);
+      if (typeof result !== 'boolean')
+        throw new Error('Admitted-operation check returned an invalid result');
+      return result;
+    };
+    const isLive = async (): Promise<boolean> => {
+      const result: unknown = await Reflect.apply(dependency, undefined, [
+        SCOPE,
+      ]);
+      if (typeof result !== 'boolean')
+        throw new Error('Live-dependency check returned an invalid result');
+      return result;
+    };
+    let releaseOperation: (() => void) | undefined;
+    let markStarted: (() => void) | undefined;
+    const blocked = new Promise<void>((resolve) => {
+      releaseOperation = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const operation = target.runWithScopeActivity(SCOPE, async () => {
+      markStarted?.();
+      await blocked;
+    });
+
+    try {
+      await started;
+      expect(isAdmitted()).toBe(true);
+      // The live check also guards v1 migration, so admission stays out of it.
+      expect(await isLive()).toBe(false);
+      releaseOperation?.();
+      await operation;
+      expect(isAdmitted()).toBe(false);
+    } finally {
+      releaseOperation?.();
+      await target.drain();
+    }
+  });
+
+  it('installs, replaces and safely uninstalls the live scope pin provider', async () => {
+    const target = new ChatStateService({ recordDiagnostic: jest.fn() });
+    let replacementIsPinned = false;
+    const firstProvider = (scope: ChatScopeKey): boolean =>
+      scope.projectId === SCOPE.projectId;
+    const secondProvider = (scope: ChatScopeKey): boolean =>
+      replacementIsPinned && scope.projectId === SCOPE.projectId;
+    const firstUninstall = invokeHostServiceMethod(
+      target,
+      'setScopePinProvider',
+      [firstProvider],
+    );
+    let latestUninstall = firstUninstall;
+    const isPinned: unknown = hostRepositoryOption(target, 'isScopePinned');
+    if (typeof isPinned !== 'function')
+      throw new Error('Chat state repository has no scope pin check');
+    const readPin = (): boolean => {
+      const result: unknown = Reflect.apply(isPinned, undefined, [SCOPE]);
+      if (typeof result !== 'boolean')
+        throw new Error('Scope pin check returned an invalid result');
+      return result;
+    };
+
+    try {
+      expect(readPin()).toBe(true);
+      const secondUninstall = invokeHostServiceMethod(
+        target,
+        'setScopePinProvider',
+        [secondProvider],
+      );
+      latestUninstall = secondUninstall;
+      expect(readPin()).toBe(false);
+      invokeHostUninstaller(firstUninstall);
+      replacementIsPinned = true;
+      expect(readPin()).toBe(true);
+      invokeHostUninstaller(secondUninstall);
+      expect(readPin()).toBe(false);
+
+      const throwingUninstall = invokeHostServiceMethod(
+        target,
+        'setScopePinProvider',
+        [
+          (): boolean => {
+            throw new Error('unavailable');
+          },
+        ],
+      );
+      latestUninstall = throwingUninstall;
+      expect(readPin()).toBe(true);
+      invokeHostUninstaller(throwingUninstall);
+      expect(readPin()).toBe(false);
+    } finally {
+      invokeHostUninstaller(latestUninstall);
+      invokeHostUninstaller(firstUninstall);
+      await target.drain();
+    }
+  });
+
+  it('uses the valid idle-unload override only in E2E builds', async () => {
+    const originalOverride = process.env.CANOPY_E2E_SCOPE_IDLE_UNLOAD_MS;
+    const originalNodeEnv = process.env.NODE_ENV;
+    const targets: ChatStateService[] = [];
+    const e2eBuild = jest.spyOn(e2eGate, 'isE2eBuild');
+    const restoreOverride = (): void => {
+      if (originalOverride === undefined)
+        delete process.env.CANOPY_E2E_SCOPE_IDLE_UNLOAD_MS;
+      else process.env.CANOPY_E2E_SCOPE_IDLE_UNLOAD_MS = originalOverride;
+    };
+
+    try {
+      process.env.CANOPY_E2E_SCOPE_IDLE_UNLOAD_MS = '42000';
+      e2eBuild.mockReturnValue(false);
+      process.env.NODE_ENV = 'production';
+      const productionTarget = new ChatStateService({
+        recordDiagnostic: jest.fn(),
+      });
+      targets.push(productionTarget);
+      // Production keeps the repository's own default delay.
+      expect(
+        hostRepositoryOption(productionTarget, 'idleScopeUnloadMs'),
+      ).toBeUndefined();
+      process.env.NODE_ENV = originalNodeEnv;
+
+      // Under Jest an undrained service never arms the idle timer.
+      const jestTarget = new ChatStateService({ recordDiagnostic: jest.fn() });
+      targets.push(jestTarget);
+      expect(hostRepositoryOption(jestTarget, 'idleScopeUnloadMs')).toBe(0);
+
+      e2eBuild.mockReturnValue(true);
+      const e2eTarget = new ChatStateService({ recordDiagnostic: jest.fn() });
+      targets.push(e2eTarget);
+      expect(hostRepositoryOption(e2eTarget, 'idleScopeUnloadMs')).toBe(42000);
+
+      process.env.CANOPY_E2E_SCOPE_IDLE_UNLOAD_MS = '9007199254740992';
+      const invalidTarget = new ChatStateService({
+        recordDiagnostic: jest.fn(),
+      });
+      targets.push(invalidTarget);
+      expect(hostRepositoryOption(invalidTarget, 'idleScopeUnloadMs')).toBe(0);
+    } finally {
+      process.env.NODE_ENV = originalNodeEnv;
+      e2eBuild.mockRestore();
+      restoreOverride();
+      await Promise.all(targets.map((target) => target.drain()));
+    }
   });
 
   it('closes scope admission and waits for an admitted send before deletion', async () => {

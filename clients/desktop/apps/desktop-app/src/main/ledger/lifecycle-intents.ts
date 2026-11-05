@@ -5,6 +5,10 @@ import type { LedgerContainer } from '@canopy/protocol/canopy-core';
 import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
 // Only the pure time helper: the store itself runs in the storage worker.
 import { canonicalizeLedgerInstant } from '@canopy/desktop-shared/node/ledger/time';
+import {
+  damagedCopiesOf,
+  pruneDamagedCopies,
+} from '@canopy/desktop-shared/node/lib/damaged-copies';
 import { renameWithRetry } from '../lib/atomic-file';
 import { fsyncDirectory } from '../lib/fsync-directory';
 import { isRecord } from '../lib/type-guards';
@@ -70,7 +74,8 @@ import { ledgerContainerKey } from './scope-bindings';
  * this version cannot read is kept verbatim, for a version that can, and
  * while any is kept the journal reports a gap that covers every scope. A
  * journal that cannot be parsed at all is copied aside to
- * `<name>.corrupt-<time>`, then replaced by an empty one marked `damagedAt`:
+ * `<name>.corrupt-<time>` (the newest five copies are kept), then replaced
+ * by an empty one marked `damagedAt`:
  * any intent recorded until then may be lost, so the gap covers every scope
  * created by then. The startup pass retires no scope a gap covers; it keeps
  * it instead. New intents are recorded as usual, since the journal can hold
@@ -592,10 +597,15 @@ export function createLedgerLifecycleIntentFile(
       }
     },
     replace: (content: string): Promise<void> => replaceDurably(path, content),
-    preserveDamaged: (content: string, detectedAt: string): Promise<void> =>
-      replaceDurably(
+    preserveDamaged: async (
+      content: string,
+      detectedAt: string,
+    ): Promise<void> => {
+      await replaceDurably(
         `${path}.corrupt-${detectedAt.replace(/[^0-9A-Za-z]/g, '-')}`,
         content,
-      ),
+      );
+      await pruneDamagedCopies(damagedCopiesOf(path, '.corrupt-'));
+    },
   };
 }

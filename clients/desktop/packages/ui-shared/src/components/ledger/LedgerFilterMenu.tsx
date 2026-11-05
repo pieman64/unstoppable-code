@@ -16,6 +16,7 @@ import {
   FilterIcon,
   HistoryIcon,
   ListFilterIcon,
+  MacbookIcon,
   PersonIcon,
   SparkleIcon,
 } from '../../icons/AppIcons';
@@ -238,6 +239,10 @@ export function isLedgerFeedFiltered(filters: LedgerFeedFilters): boolean {
 export interface LedgerFeedFilterMenuProps {
   filters: LedgerFeedFilters;
   onChange: (filters: LedgerFeedFilters) => void;
+  onlyThisDevice?: {
+    readonly checked: boolean;
+    readonly onChange: (checked: boolean) => void;
+  };
   /**
    * `icon` is the panel's filter glyph with a dot while a filter is on;
    * `page` is the quiet `Filter · 2` dropdown after a page's search, a row
@@ -253,16 +258,25 @@ export interface LedgerFeedFilterMenuProps {
 export function LedgerFeedFilterMenu({
   filters,
   onChange,
+  onlyThisDevice,
   trigger = 'icon',
 }: LedgerFeedFilterMenuProps): JSX.Element {
   if (trigger === 'page') {
-    return <LedgerFeedPageFilter filters={filters} onChange={onChange} />;
+    return (
+      <LedgerFeedPageFilter
+        filters={filters}
+        onChange={onChange}
+        {...(onlyThisDevice === undefined ? {} : { onlyThisDevice })}
+      />
+    );
   }
   return (
     <LedgerFilterMenu
       filters={filters}
       onChange={onChange}
-      active={isLedgerFeedFiltered(filters)}
+      active={
+        isLedgerFeedFiltered(filters) || (onlyThisDevice?.checked ?? false)
+      }
     >
       <PickerMenuSection>
         <PickerMenuSectionLabel>Added by</PickerMenuSectionLabel>
@@ -327,6 +341,25 @@ export function LedgerFeedFilterMenu({
           </PickerMenuOptionContent>
         </PickerMenuOption>
       </PickerMenuSection>
+      {onlyThisDevice !== undefined && (
+        <PickerMenuSection>
+          <PickerMenuOption
+            role="menuitemcheckbox"
+            aria-checked={onlyThisDevice.checked}
+            selected={onlyThisDevice.checked}
+            data-testid="feed-only-this-device"
+            onClick={() => onlyThisDevice.onChange(!onlyThisDevice.checked)}
+          >
+            <PickerMenuOptionCheck
+              selected={onlyThisDevice.checked}
+              reserveSpace
+            />
+            <PickerMenuOptionContent>
+              <PickerMenuOptionLabel>Only this device</PickerMenuOptionLabel>
+            </PickerMenuOptionContent>
+          </PickerMenuOption>
+        </PickerMenuSection>
+      )}
     </LedgerFilterMenu>
   );
 }
@@ -351,9 +384,11 @@ const LEDGER_FEED_NO_FILTERS: LedgerFeedFilters = {
 function LedgerFeedPageFilter({
   filters,
   onChange,
+  onlyThisDevice,
 }: {
   readonly filters: LedgerFeedFilters;
   readonly onChange: (filters: LedgerFeedFilters) => void;
+  readonly onlyThisDevice?: LedgerFeedFilterMenuProps['onlyThisDevice'];
 }): JSX.Element {
   const groups = [
     pageFilter<LedgerEntryType>({
@@ -448,11 +483,30 @@ function LedgerFeedPageFilter({
       onClear: (): void => onChange({ ...filters, includeArchived: false }),
       testId: 'ledger-filter-archived',
     }),
+    ...(onlyThisDevice === undefined
+      ? []
+      : [
+          pageFilter<'this_device'>({
+            key: 'device',
+            title: 'Device',
+            groupIcon: <MacbookIcon />,
+            anyLabel: 'Any device',
+            options: [{ value: 'this_device', label: 'Only this device' }],
+            selected: onlyThisDevice.checked ? ['this_device'] : [],
+            onToggle: (): void =>
+              onlyThisDevice.onChange(!onlyThisDevice.checked),
+            onClear: (): void => onlyThisDevice.onChange(false),
+            testId: 'feed-only-this-device',
+          }),
+        ]),
   ].map((filter) => filter.group);
   return (
     <FilterMenuButton
       groups={groups}
-      onClearAll={(): void => onChange(LEDGER_FEED_NO_FILTERS)}
+      onClearAll={(): void => {
+        onChange(LEDGER_FEED_NO_FILTERS);
+        onlyThisDevice?.onChange(false);
+      }}
       name="Filter entries"
       testId="ledger-filter-trigger"
     />

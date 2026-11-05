@@ -362,6 +362,7 @@ export class RevisionedChatSync {
     snapshot: ChatStateSnapshot,
     reason: 'hydrate' | 'refresh',
   ): void {
+    const held = scope.revision ?? -1;
     this.host.installSnapshot(snapshot, { reason });
     scope.revision = snapshot.revision;
     scope.phase = 'live';
@@ -375,6 +376,21 @@ export class RevisionedChatSync {
     // bounded set of post-snapshot buffered ids; revisions reject older
     // duplicates even after their ids age out.
     scope.seenEventIds.clear();
+    // Except for card states: a snapshot carries no transcript rows, so the
+    // card state a covered event carried would never reach a loaded card.
+    // Each is complete, so they apply after it, in revision order. A late
+    // delivery the held revision already covered is stale and stays dropped.
+    const covered = buffered.filter(
+      (event) => event.revision > held && event.revision <= snapshot.revision,
+    );
+    const lastCovered = covered[covered.length - 1];
+    const coveredCards = covered.flatMap((event) =>
+      event.changes.filter(
+        (change) => change.type === 'delegation.card_state_updated',
+      ),
+    );
+    if (lastCovered && coveredCards.length > 0)
+      this.host.applyCommittedEvent({ ...lastCovered, changes: coveredCards });
     let gapped = false;
     for (const event of buffered) {
       rememberEventId(scope, event.eventId);

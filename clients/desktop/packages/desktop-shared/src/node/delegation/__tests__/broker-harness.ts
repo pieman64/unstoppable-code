@@ -8,6 +8,7 @@ import {
   type DelegationStorage,
   type StoredDelegation,
 } from '../broker';
+import { isTerminalDelegationSummary } from '../terminal-summary';
 import { AgentRunnerRegistry } from '../runner-registry';
 import type { AgentRunRequest, DelegationParentContext } from '../types';
 import { FakeRunner, routeFixture } from './fixtures';
@@ -37,11 +38,32 @@ export const baseTask: AgentDelegationSpawnRequest = {
 export class MemoryDelegationStorage implements DelegationStorage {
   readonly records = new Map<string, StoredDelegation>();
 
+  loadReadOnly(): Promise<{
+    readonly records: readonly StoredDelegation[];
+    readonly missing: boolean;
+  }> {
+    return Promise.resolve({
+      records: structuredClone(Array.from(this.records.values())),
+      missing: false,
+    });
+  }
+
   load(): Promise<readonly StoredDelegation[]> {
     return Promise.resolve(structuredClone(Array.from(this.records.values())));
   }
 
+  loadOne(delegationId: string): Promise<StoredDelegation | undefined> {
+    const record = this.records.get(delegationId);
+    return Promise.resolve(
+      record === undefined ? undefined : structuredClone(record),
+    );
+  }
+
   commit(record: StoredDelegation): Promise<void> {
+    if (isTerminalDelegationSummary(record))
+      return Promise.reject(
+        new Error('Terminal delegation summaries cannot be committed'),
+      );
     const copy = structuredClone(record);
     this.records.set(copy.state.delegationId, copy);
     return Promise.resolve();

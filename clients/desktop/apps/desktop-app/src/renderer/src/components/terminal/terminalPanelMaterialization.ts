@@ -60,7 +60,3 @@ export function ensureLegacyTerminalPanelsMaterialized(
   materializations.set(worktreeKey, materialization);
   return materialization;
 }
-
-export function resetTerminalPanelMaterializationForTesting(): void {
-  materializations.clear();
-}

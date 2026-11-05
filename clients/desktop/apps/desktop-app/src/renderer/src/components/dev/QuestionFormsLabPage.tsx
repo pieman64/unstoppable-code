@@ -23,7 +23,7 @@ import {
   reduceQuestionPlayground,
   type PlaygroundPhase,
 } from '@/components/pages/chatQuestionPlaygroundData';
-import { ChoiceField } from '@canopy/ui-shared/components';
+import { ChoiceField, ListRow } from '@canopy/ui-shared/components';
 import { applyTheme } from '@/lib/theme';
 import { ChoiceOptionsLab } from './ChoiceOptionsLab';
 import { LabComposerReplicaInput } from './LabComposerReplicaInput';
@@ -180,21 +180,16 @@ export function QuestionFormsLabPage(): JSX.Element {
             <LabSection title="Preset">
               <div className="flex flex-col">
                 {QUESTION_PRESETS.map((entry) => (
-                  <button
+                  <ListRow
                     key={entry.id}
-                    type="button"
                     data-testid={`question-forms-lab-preset-${entry.id}`}
                     aria-pressed={entry.id === machine.presetId}
+                    selected={entry.id === machine.presetId}
                     onClick={() => dispatch({ type: 'preset', id: entry.id })}
-                    className={`flex flex-col rounded-lg px-2 py-1.5 text-left hover:bg-subtle ${
-                      entry.id === machine.presetId ? 'bg-subtle' : ''
-                    }`}
+                    description={entry.description}
                   >
-                    <span className="text-s fg-primary">{entry.title}</span>
-                    <span className="text-xs fg-tertiary">
-                      {entry.description}
-                    </span>
-                  </button>
+                    {entry.title}
+                  </ListRow>
                 ))}
               </div>
             </LabSection>

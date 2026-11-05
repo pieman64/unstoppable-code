@@ -615,14 +615,14 @@ export function CanopyPortalModal({
               >
                 {SIGN_IN_BUTTON}
               </Button>
-              <button
-                type="button"
+              <Button
+                variant="secondary"
+                size="compact"
                 onClick={onOpenAccountSettings}
                 data-testid="canopy-portal-open-settings"
-                className="text-s font-medium fg-secondary underline-offset-2 hover:fg-primary hover:underline transition-colors focus-ring"
               >
                 {OPEN_SETTINGS_BUTTON}
-              </button>
+              </Button>
             </div>
           </div>
         )}

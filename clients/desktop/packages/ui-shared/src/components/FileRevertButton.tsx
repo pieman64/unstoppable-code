@@ -1,5 +1,6 @@
 import type { JSX, KeyboardEvent, MouseEvent } from 'react';
 import { RevertIcon } from '../icons/RevertIcon';
+import { Button } from './Button';
 
 export interface FileRevertButtonProps {
   onClick: () => void;
@@ -12,7 +13,9 @@ export interface FileRevertButtonProps {
 
 /**
  * Hover-revealed revert button rendered alongside an entry in Changed Files.
- * Pure display: the parent owns the actual revert dispatch.
+ * Pure display: the parent owns the actual revert dispatch. The wrapper owns
+ * the reveal (it takes the place of the row's change counts on hover), and the
+ * 28px quiet icon button overhangs the row's text line rather than growing it.
  */
 export function FileRevertButton({
   onClick,
@@ -21,26 +24,29 @@ export function FileRevertButton({
   dataTestId = 'activity-file-revert',
 }: FileRevertButtonProps): JSX.Element {
   return (
-    <button
-      type="button"
-      className="hidden shrink-0 rounded p-0.5 fg-secondary transition-colors hover:bg-fg-primary/[0.1] hover:fg-primary disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:fg-secondary group-hover:inline-flex group-focus-within:inline-flex"
-      aria-label={ariaLabel}
-      data-testid={dataTestId}
-      disabled={disabled}
-      onClick={(event: MouseEvent<HTMLButtonElement>): void => {
-        event.stopPropagation();
-        if (disabled) {
-          return;
-        }
-        onClick();
-      }}
-      onKeyDown={(event: KeyboardEvent<HTMLButtonElement>): void => {
-        if (event.key === 'Enter' || event.key === ' ') {
+    <span className="-my-1.5 hidden shrink-0 group-hover:inline-flex group-focus-within:inline-flex">
+      <Button
+        variant="ghost-quiet"
+        size="sm"
+        iconOnly
+        aria-label={ariaLabel}
+        data-testid={dataTestId}
+        disabled={disabled}
+        onClick={(event: MouseEvent<HTMLButtonElement>): void => {
           event.stopPropagation();
-        }
-      }}
-    >
-      <RevertIcon />
-    </button>
+          if (disabled) {
+            return;
+          }
+          onClick();
+        }}
+        onKeyDown={(event: KeyboardEvent<HTMLButtonElement>): void => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.stopPropagation();
+          }
+        }}
+      >
+        <RevertIcon />
+      </Button>
+    </span>
   );
 }

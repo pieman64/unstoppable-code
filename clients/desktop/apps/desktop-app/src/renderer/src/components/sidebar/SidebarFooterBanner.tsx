@@ -1,5 +1,9 @@
 import { type JSX, type ReactNode } from 'react';
-import { RichHoverTooltip, Tooltip } from '@canopy/ui-shared/components';
+import {
+  Button,
+  RichHoverTooltip,
+  Tooltip,
+} from '@canopy/ui-shared/components';
 import {
   SIDEBAR_STATUS_HOVER_WASH_CLASSNAME,
   SIDEBAR_STATUS_SURFACE_CLASSNAME,
@@ -118,24 +122,24 @@ export function SidebarFooterBanner({
             {children}
           </button>
         </RichHoverTooltip>
-        {/* The button sits 2px from the banner's top, bottom, and trailing
-            edges (-mr-1.5 against the banner's pr-2): 28×24 in the 28px
-            banner, 28×28 in early access's 32px one. Its extra width puts
-            the glyph center 16px from the content edge — the same center
-            line as the account row's 32px RailIconButton glyphs. */}
+        {/* The shared 28px quiet icon button sits 2px from the banner's
+            trailing edge (-mr-1.5 against the banner's pr-2), which puts the
+            glyph center 16px from the content edge — the same center line
+            as the account row's 32px RailIconButton glyphs. */}
         <Tooltip
           label={trailingAction.title ?? trailingAction.ariaLabel}
           className="-mr-1.5"
         >
-          <button
-            type="button"
+          <Button
+            variant="ghost-quiet"
+            size="sm"
+            iconOnly
             onClick={trailingAction.onClick}
             aria-label={trailingAction.ariaLabel}
-            className={`focus-ring flex ${heightClassName === 'h-8' ? 'h-7' : 'h-6'} w-7 shrink-0 items-center justify-center rounded-md fg-secondary transition-colors hover:bg-subtle hover:fg-primary`}
             data-testid={trailingAction.testId}
           >
             {trailingAction.icon}
-          </button>
+          </Button>
         </Tooltip>
       </div>
     );

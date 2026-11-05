@@ -8,6 +8,7 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
+    "./app-errors": "./src/app-errors/index.ts",
     "./file-image-save": "./src/file-image-save.ts",
     "./file-save-conflict": "./src/file-save-conflict.ts",
     "./approvals": "./src/approvals.ts",
@@ -70,6 +71,7 @@
     "./mcp-servers": "./src/mcp-servers/index.ts",
     "./capability-name": "./src/capability-name.ts",
     "./capability-files": "./src/capability-files/index.ts",
+    "./secret-redaction": "./src/secret-redaction/index.ts",
     "./capability-package-repair": "./src/capability-package-repair/index.ts",
     "./capability-bundle": "./src/capability-bundle/index.ts",
     "./plugin-catalog": "./src/plugin-catalog/index.ts",
@@ -82,6 +84,7 @@
     "./generated-names": "./src/generated-names.ts",
     "./worktree-branch-names": "./src/worktree-branch-names/index.ts",
     "./archive-retention": "./src/archive-retention/index.ts",
+    "./suggestions": "./src/suggestions/index.ts",
     "./onboarding-tips": "./src/onboarding-tips/index.ts",
     "./chat-detail": "./src/chat-detail/index.ts",
     "./experiments": "./src/experiments/index.ts",
@@ -170,13 +173,12 @@
     "./settings/top-up-fee-default": "./src/settings/top-up-fee-default.ts",
     "./try-it": "./src/try-it/index.ts",
     "./try-it/continuation": "./src/try-it/continuation.ts",
-    "./try-it/staging": "./src/try-it/staging.ts"
+    "./try-it/staging": "./src/try-it/staging.ts",
+    "./marketplace": "./src/marketplace/index.ts",
+    "./uuid": "./src/uuid.ts"
   },
   "dependencies": {
     "zod": "4.3.6"
-  },
-  "devDependencies": {
-    "ajv": "^8.20.0"
   },
   "sideEffects": false
 }

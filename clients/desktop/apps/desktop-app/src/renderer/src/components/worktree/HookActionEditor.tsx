@@ -11,6 +11,7 @@ import {
   ChoiceField,
   ErrorBanner,
   FormField,
+  ListRow,
   SearchField,
   SettingsSelect,
   TextArea,
@@ -632,40 +633,25 @@ function PipelineActionFields({
                   option.actionId === action.id;
                 const displayName = option.data.info.name || option.actionId;
                 return (
-                  <button
+                  <ListRow
                     key={getPipelineOptionKey(option)}
-                    type="button"
                     onClick={() => {
                       void selectPipeline(option);
                     }}
-                    className={`flex w-full items-center gap-3 rounded-md px-2.5 py-2 text-left transition-colors ${
-                      isSelected
-                        ? 'bg-accent-subtle ring-1 ring-line-accent/40'
-                        : 'hover:bg-fg-primary/[0.06]'
-                    }`}
+                    selected={isSelected}
+                    aria-current={isSelected ? 'true' : undefined}
+                    icon={<PipelineRowIcon icon={option.data.info.icon} />}
+                    description={option.data.info.description || undefined}
+                    trailing={
+                      <span
+                        className={`rounded px-1.5 py-0.5 text-3xs font-medium leading-none ${PIPELINE_HOOK_SOURCE_BADGE_CLASS[option.actionSource]}`}
+                      >
+                        {PIPELINE_HOOK_SOURCE_LABELS[option.actionSource]}
+                      </span>
+                    }
                   >
-                    <PipelineRowIcon icon={option.data.info.icon} />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="truncate text-s font-medium fg-primary">
-                          {displayName}
-                        </span>
-                        <span
-                          className={`shrink-0 rounded px-1.5 py-0.5 text-3xs font-medium leading-none ${PIPELINE_HOOK_SOURCE_BADGE_CLASS[option.actionSource]}`}
-                        >
-                          {PIPELINE_HOOK_SOURCE_LABELS[option.actionSource]}
-                        </span>
-                      </div>
-                      {option.data.info.description && (
-                        <div
-                          className="truncate text-xs fg-secondary"
-                          title={option.data.info.description}
-                        >
-                          {option.data.info.description}
-                        </div>
-                      )}
-                    </div>
-                  </button>
+                    {displayName}
+                  </ListRow>
                 );
               })}
             </div>

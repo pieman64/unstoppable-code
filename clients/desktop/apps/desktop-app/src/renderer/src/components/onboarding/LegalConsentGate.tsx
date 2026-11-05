@@ -92,8 +92,9 @@ export function LegalConsentGate({
   };
 
   return (
+    // The window's whole content in place of the shell, not a layer over it.
     <div
-      className="fixed inset-0 z-modal flex flex-col items-center justify-center bg-base fg-primary animate-fade-in"
+      className="flex h-screen w-full flex-col items-center justify-center overflow-hidden bg-base fg-primary animate-fade-in"
       data-testid="legal-consent-gate"
     >
       {/* Keep the window draggable behind the centered content. */}

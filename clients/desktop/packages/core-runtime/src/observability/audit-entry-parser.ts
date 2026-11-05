@@ -655,6 +655,9 @@ export function normalizeAuditEntry(value: unknown): AgentAuditEntry | null {
   readOptionalStringField(value, 'model', (model) => {
     entry.model = model;
   });
+  readOptionalStringField(value, 'requestedModel', (requestedModel) => {
+    entry.requestedModel = requestedModel;
+  });
   readOptionalStringField(value, 'serviceTier', (serviceTier) => {
     entry.serviceTier = serviceTier;
   });

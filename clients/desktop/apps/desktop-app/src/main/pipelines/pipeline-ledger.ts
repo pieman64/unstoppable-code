@@ -35,6 +35,7 @@ import {
   getLedgerPipelineAgentOwners,
   retireLedgerPipelineExecution,
 } from '../ledger/pipeline-agent-owners';
+import { notifyLedgerSessionEnded } from '../ledger/session-end-sweep-ports';
 import {
   getMcpHttpProxyService,
   type CanopyWorktreeSessionRoute,
@@ -463,6 +464,30 @@ async function openAttempt(
           checkpointId: outcome.checkpointId,
           pausedAt: outcome.pausedAt,
         });
+      } else if (
+        request.projectId !== undefined &&
+        request.worktreeId !== undefined
+      ) {
+        // A global (workflow) run has no task to hand its entries back in;
+        // only a task's steps are swept.
+        // The executor's close port is synchronous. A quit before this
+        // asynchronous intent write lands can lose the handback; this is the
+        // accepted step-end-to-intent window. The sweep follows durability.
+        try {
+          void notifyLedgerSessionEnded({
+            target: {
+              projectId: request.projectId,
+              worktreeId: request.worktreeId,
+            },
+            actor: { kind: 'pipeline_agent', originKey: agentSessionId },
+            recipient: { kind: 'user' },
+            reason: 'pipeline_step_finished',
+            transitionKey: `pipeline:${request.executionId}:${request.physicalJobId}:${request.stepId}:${request.attempt}`,
+            transitionAt: new Date().toISOString(),
+          }).catch((): void => undefined);
+        } catch {
+          // Ledger bookkeeping must not affect the finished attempt.
+        }
       }
     },
   };

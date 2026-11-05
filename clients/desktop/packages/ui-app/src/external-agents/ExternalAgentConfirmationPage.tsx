@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type JSX, type ReactNode } from 'react';
+import { type JSX, type ReactNode } from 'react';
 import { useStore } from 'zustand';
 import type { ExternalAgentsClient } from '@canopy/app-core';
 import { useCanopyClient, useCapabilities } from '@canopy/app-state';
@@ -13,15 +13,13 @@ import {
 import type { ExternalAgentPendingAction } from '@canopy/protocol/external-agents';
 import {
   Button,
+  Disclosure,
   McpServerLogo,
   Notice,
   NoticeButton,
   Heading,
+  TextLinkButton,
 } from '@canopy/ui-shared/components';
-import {
-  ChevronDownIcon,
-  ChevronRightIcon,
-} from '@canopy/ui-shared/icons/AppIcons';
 import { EXTERNAL_AGENT_SERVER_COPY, relativeTimeLabel } from './display';
 import {
   FactRow,
@@ -331,43 +329,30 @@ function ExactRequest({
 }: {
   readonly action: ExternalAgentPendingAction;
 }): JSX.Element {
-  const [open, setOpen] = useState(false);
-  const Chevron = open ? ChevronDownIcon : ChevronRightIcon;
   return (
-    <div className="flex min-w-0 flex-col gap-3">
-      <button
-        type="button"
-        data-settings-control="disclosure"
-        aria-expanded={open}
-        aria-controls="external-agent-confirmation-request"
-        data-testid="external-agent-confirmation-request-toggle"
-        onClick={(): void => setOpen((current) => !current)}
-        className="focus-ring flex w-full items-center justify-between gap-6 rounded-md text-left text-s fg-secondary"
+    <Disclosure
+      label="Exact request"
+      dataTestId="external-agent-confirmation-request-disclosure"
+      toggleTestId="external-agent-confirmation-request-toggle"
+    >
+      <div
+        data-testid="external-agent-confirmation-request"
+        className="min-w-0 space-y-2"
       >
-        Exact request
-        <Chevron size={16} aria-hidden className="shrink-0 fg-tertiary" />
-      </button>
-      {open ? (
-        <div
-          id="external-agent-confirmation-request"
-          data-testid="external-agent-confirmation-request"
-          className="min-w-0 space-y-2"
-        >
-          <div className="break-all font-mono text-xs fg-primary">
-            {action.toolName}
-          </div>
-          {action.arguments === null ? (
-            <p className="text-xs text-pretty fg-secondary">
-              The exact request is no longer kept.
-            </p>
-          ) : (
-            <pre className="max-w-full overflow-x-auto whitespace-pre rounded-md bg-base p-3 font-mono text-xs fg-secondary">
-              {JSON.stringify(action.arguments, null, 2)}
-            </pre>
-          )}
+        <div className="break-all font-mono text-xs fg-primary">
+          {action.toolName}
         </div>
-      ) : null}
-    </div>
+        {action.arguments === null ? (
+          <p className="text-xs text-pretty fg-secondary">
+            The exact request is no longer kept.
+          </p>
+        ) : (
+          <pre className="max-w-full overflow-x-auto whitespace-pre rounded-md bg-base p-3 font-mono text-xs fg-secondary">
+            {JSON.stringify(action.arguments, null, 2)}
+          </pre>
+        )}
+      </div>
+    </Disclosure>
   );
 }
 
@@ -475,16 +460,13 @@ function PauseOffer({
         data-testid="external-agent-confirmation-paused"
       >
         {`${action.clientName} can’t read or change anything until you resume it. `}
-        <button
-          type="button"
-          data-settings-control="link"
-          className="font-medium underline underline-offset-2"
+        <TextLinkButton
           onClick={(): void =>
             onOpenPath(externalAgentPath(action.connectionId))
           }
         >
           {`Open ${action.clientName}`}
-        </button>
+        </TextLinkButton>
         {' to resume it.'}
       </Notice>
     );

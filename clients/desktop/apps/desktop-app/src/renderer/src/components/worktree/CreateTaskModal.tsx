@@ -32,11 +32,14 @@ import {
 import { ChatIcon, PipelineIcon, PlanModeIcon } from '@canopy/ui-shared/icons';
 import {
   Button,
+  DelayedLoadingPlaceholder,
   DialogFormField,
   ErrorBanner,
+  ListRow,
   SearchField,
   SegmentedControl,
   type SegmentedControlOption,
+  Skeleton,
   TextArea,
   TextInput,
   WordBoundaryTruncatedText,
@@ -189,35 +192,27 @@ function LinearSearch({
       );
     } else {
       dropdownContent = (
-        <ul>
+        <ul className="p-1">
           {results.map((ticket) => {
             const description = ticket.description?.trim() ?? '';
             return (
               <li key={ticket.id}>
-                <button
-                  type="button"
+                <ListRow
                   onClick={() => onSelect(ticket)}
                   data-testid={`create-task-linear-result-${ticket.id}`}
-                  className="focus-ring flex w-full flex-col items-start gap-0.5 border-b px-3 py-2 text-left transition-colors last:border-b-0 hover:bg-fg-primary/[0.04]"
+                  description={description.length > 0 ? description : undefined}
                 >
-                  <span className="flex w-full min-w-0 items-center gap-2">
-                    <span className="rounded bg-fg-primary/[0.08] px-1.5 py-0.5 font-mono text-2xs fg-primary">
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="shrink-0 font-mono text-xs fg-secondary">
                       {ticket.identifier}
                     </span>
-                    <span className="min-w-0 flex-1 text-s fg-primary">
-                      <WordBoundaryTruncatedText
-                        text={ticket.title}
-                        hoverTitle
-                        className="block"
-                      />
-                    </span>
+                    <WordBoundaryTruncatedText
+                      text={ticket.title}
+                      hoverTitle
+                      className="block min-w-0 flex-1"
+                    />
                   </span>
-                  {description.length > 0 && (
-                    <span className="line-clamp-1 w-full truncate text-xs fg-secondary">
-                      {description}
-                    </span>
-                  )}
-                </button>
+                </ListRow>
               </li>
             );
           })}
@@ -250,6 +245,60 @@ interface BranchResultsProps {
   onSelect: (name: string) => void;
 }
 
+/** Plain branches the loading skeleton lays out as the result list. */
+const SAMPLE_BRANCH_OPTIONS: BranchOption[] = [
+  {
+    name: 'main',
+    isRemote: false,
+    isCurrent: true,
+    isUsedByWorktree: false,
+    hasLocalRef: true,
+    hasRemoteRef: true,
+  },
+  {
+    name: 'fix/checkout-retry',
+    isRemote: false,
+    isCurrent: false,
+    isUsedByWorktree: false,
+    hasLocalRef: true,
+    hasRemoteRef: true,
+  },
+  {
+    name: 'feature/release-notes',
+    isRemote: false,
+    isCurrent: false,
+    isUsedByWorktree: false,
+    hasLocalRef: true,
+    hasRemoteRef: true,
+  },
+];
+
+const noop = (): void => undefined;
+
+function BranchResultList({
+  options,
+  onSelect,
+}: Omit<BranchResultsProps, 'loading'>): JSX.Element {
+  return (
+    <ul className="max-h-64 overflow-y-auto rounded-lg border bg-base p-1">
+      {options.map((option) => {
+        const badge = getBranchProvenanceBadge(option);
+        return (
+          <li key={option.name}>
+            <ListRow
+              onClick={() => onSelect(option.name)}
+              data-testid={`create-from-branch-result-${option.name}`}
+              trailing={badge || undefined}
+            >
+              <span className="font-mono">{option.name}</span>
+            </ListRow>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 function BranchResults({
   loading,
   options,
@@ -257,9 +306,15 @@ function BranchResults({
 }: BranchResultsProps): JSX.Element {
   if (loading) {
     return (
-      <div className="flex items-center justify-center rounded-lg border bg-base px-3 py-3 fg-secondary">
-        <LoadingSpinner />
-      </div>
+      <DelayedLoadingPlaceholder slowNote="Still loading branches…">
+        <Skeleton
+          loading
+          label="Loading branches"
+          testId="create-from-branch-loading"
+        >
+          <BranchResultList options={SAMPLE_BRANCH_OPTIONS} onSelect={noop} />
+        </Skeleton>
+      </DelayedLoadingPlaceholder>
     );
   }
   if (options.length === 0) {
@@ -269,32 +324,7 @@ function BranchResults({
       </p>
     );
   }
-  return (
-    <ul className="max-h-64 overflow-y-auto rounded-lg border bg-base">
-      {options.map((option) => {
-        const badge = getBranchProvenanceBadge(option);
-        return (
-          <li key={option.name}>
-            <button
-              type="button"
-              onClick={() => onSelect(option.name)}
-              data-testid={`create-from-branch-result-${option.name}`}
-              className="focus-ring flex w-full items-center gap-2 border-b px-3 py-2 text-left transition-colors last:border-b-0 hover:bg-fg-primary/[0.04]"
-            >
-              <span className="min-w-0 flex-1 truncate font-mono text-sm fg-primary">
-                {option.name}
-              </span>
-              {badge && (
-                <span className="shrink-0 rounded bg-fg-primary/[0.08] px-1.5 py-0.5 text-2xs fg-secondary">
-                  {badge}
-                </span>
-              )}
-            </button>
-          </li>
-        );
-      })}
-    </ul>
-  );
+  return <BranchResultList options={options} onSelect={onSelect} />;
 }
 
 interface PrPreviewProps {

@@ -4,7 +4,11 @@ import {
   ChatDeltaJournalIntegrityError,
   ChatStorageNewerFormatError,
 } from '../../lib/chat-delta-journal/format';
-import type { ChatScopeKey } from '../../services/chat-state-contracts';
+import type {
+  ChatScopeKey,
+  ChildStreamWritePreparation,
+  PreparedChildStreamCommit,
+} from '../../services/chat-state-contracts';
 import { decodeChatTranscriptReadCursor } from '../../lib/chat-transcript-read-cursor';
 import type {
   DelegationChildRow,
@@ -166,6 +170,12 @@ export interface RepositoryDelegationTranscriptChatState {
     revision: number;
     descriptor: TranscriptStreamDescriptor;
   }>;
+  commitPreparedChildStream(
+    scope: ChatScopeKey,
+    target: TranscriptTarget,
+    mutationKey: string,
+    prepare: ChildStreamWritePreparation,
+  ): Promise<PreparedChildStreamCommit>;
   getChildStreamMessage(
     scope: ChatScopeKey,
     target: TranscriptTarget,
@@ -620,24 +630,43 @@ export class RepositoryDelegationTranscriptPort implements DelegationTranscriptP
         target,
         async (): Promise<DelegationTranscriptReceipt> => {
           assertNotAborted(signal);
-          const descriptor = await this.chatState.getChildStreamState(
+          // The stream and its stored rows are read in the commit's own turn
+          // of the scope lease, which concurrent delegates keep busy.
+          const prepared: { classified?: ClassifiedChanges } = {};
+          const committed = await this.chatState.commitPreparedChildStream(
             this.scope,
             target,
+            input.mutationKey,
+            async (descriptor, storedRow) => {
+              assertNotAborted(signal);
+              if (descriptor === undefined)
+                throw new TranscriptPortOperationError(
+                  'not_found',
+                  'The delegation transcript stream was not found.',
+                );
+              const classified = await this.classifyChanges(
+                descriptor,
+                rows,
+                storedRow,
+                signal,
+              );
+              prepared.classified = classified;
+              if (
+                classified.rowsToCommit.length > 0 &&
+                descriptor.status === 'settled'
+              )
+                throw new TranscriptPortOperationError(
+                  'conflict',
+                  'A settled child stream is immutable.',
+                );
+              return classified.rowsToCommit;
+            },
           );
-          if (descriptor === undefined)
-            throw new TranscriptPortOperationError(
-              'not_found',
-              'The delegation transcript stream was not found.',
-            );
-          const state = stateFromDescriptor(target, descriptor);
-          const classified = await this.classifyChanges(
-            target,
-            descriptor,
-            rows,
-            signal,
-          );
+          const classified = prepared.classified;
+          if (!classified || !committed.prepared)
+            throw new Error('Child write preparation did not run');
           assertNotAborted(signal);
-          if (classified.rowsToCommit.length === 0)
+          if (!committed.committed)
             return this.originalReceipt(
               target,
               input.mutationKey,
@@ -645,19 +674,7 @@ export class RepositoryDelegationTranscriptPort implements DelegationTranscriptP
               classified.items,
               signal,
             );
-          if (descriptor.status === 'settled')
-            throw new TranscriptPortOperationError(
-              'conflict',
-              'A settled child stream is immutable.',
-            );
-
-          const committed = await this.chatState.commitChildStream(
-            this.scope,
-            target,
-            input.mutationKey,
-            classified.rowsToCommit,
-          );
-          assertNotAborted(signal);
+          const state = stateFromDescriptor(target, committed.prepared);
           const nextState = stateFromDescriptor(target, committed.descriptor);
           if (committed.applied) {
             if (nextState.streamRevision <= state.streamRevision)
@@ -1223,21 +1240,16 @@ export class RepositoryDelegationTranscriptPort implements DelegationTranscriptP
   }
 
   private async classifyChanges(
-    target: DelegationTranscriptTarget,
     descriptor: TranscriptStreamDescriptor,
     rows: readonly DelegationChildRow[],
+    storedRow: (messageId: string) => Promise<DelegationChildRow | undefined>,
     signal?: AbortSignal,
   ): Promise<ClassifiedChanges> {
     const rowsToCommit: DelegationChildRow[] = [];
     let replayed = true;
     for (const row of rows) {
       assertNotAborted(signal);
-      const stored = await this.chatState.getChildStreamMessage(
-        this.scope,
-        target,
-        row.id,
-        descriptor.streamRevision,
-      );
+      const stored = await storedRow(row.id);
       assertNotAborted(signal);
       if (stored === undefined) {
         if (descriptor.status === 'settled')

@@ -118,6 +118,7 @@ import { isModelBlockedByStoredPolicy } from '../lib/model-policy-state';
 import { resolveAiCreditsScopeOwner } from '../agents/work-owner';
 import { previewAccountProxySessionRoute } from '../account-proxy/routing';
 import { assertTurnAuthDependencies } from '../lib/auth-preflight';
+import { resolveSendBillingRefusal } from '../lib/send-billing-refusal';
 import { waitForWorktreeGitSetup } from '../lib/worktree-git-setup';
 import { TurnDispatchTiming } from '../lib/turn-dispatch-timing';
 import {
@@ -2811,6 +2812,7 @@ async function consumePersistedPendingSystemInstructions(input: {
           return updatedTab;
         },
         `consume-system-instructions:${input.chatId}:${Array.from(consumedIds).sort().join(',')}`,
+        { metadataOnly: true },
       );
       if (!result.updated) return null;
       const updatedTab = result.tabsFile.tabs.find(
@@ -3324,6 +3326,37 @@ async function sendWorktreeChatMessageNow(
     (await isModelBlockedByStoredPolicy(request.model, policyOwner))
   ) {
     throw new Error('This model is blocked by your organization policy.');
+  }
+
+  // A concrete model whose every lane is confirmed dead is refused here, as
+  // cowork and the Portal adapter already do (CAN-5233): past this point the
+  // tab and the user message are written before dispatch aborts with
+  // `no_billing_source`. Only `request.model` is judged, for the reason given
+  // at the policy gate above: with none, dispatch runs the lane default, not
+  // the tab's model. The implicit-default dead end is refused by the Portal
+  // adapter and by dispatch's `NoDispatchableModelError`. After the policy
+  // gate, so a model that is both blocked and billing-dead gets the policy
+  // message. A Portal send (judged in the adapter) and a queued send (judged
+  // at enqueue) are judged again on re-entry; the second pass reuses the
+  // cached sign-in answer.
+  const billingJudgedModel = request.model;
+  if (billingJudgedModel) {
+    const billingRefusal = await turnDispatchTiming.measure(
+      'auth_preflight',
+      () =>
+        resolveSendBillingRefusal({
+          concreteModel: billingJudgedModel,
+          credentialScope: {
+            workspaceId: request.projectId,
+            workOwnerSession: {
+              projectId: request.projectId,
+              worktreeId: request.worktreeId,
+              chatId,
+            },
+          },
+        }),
+    );
+    if (billingRefusal !== null) throw new Error(billingRefusal);
   }
 
   // Same placement rule as the model-policy gate directly above, for the same

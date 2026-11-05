@@ -361,13 +361,11 @@ export function ArchivedChatTranscriptModal({
             inputRef={searchInputRef}
           />
           {search.error && (
-            <button
-              type="button"
-              className="text-xs fg-secondary"
-              onClick={search.refresh}
-            >
-              {search.error}
-            </button>
+            <p className="text-xs">
+              <Button variant="link" onClick={search.refresh}>
+                {search.error}
+              </Button>
+            </p>
           )}
         </div>
 

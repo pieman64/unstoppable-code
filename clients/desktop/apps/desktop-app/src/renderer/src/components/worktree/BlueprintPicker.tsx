@@ -1,7 +1,7 @@
 import { useState, type JSX } from 'react';
 import type { DesktopBlueprintCatalogEntry } from '@canopy/desktop-shared/types';
 import { WORKSPACE_TEMPLATE_SHARE_LABEL_LOWER } from '@canopy/protocol';
-import { StartingPointChip } from '@canopy/ui-shared/components';
+import { Button, StartingPointChip } from '@canopy/ui-shared/components';
 import type { WorkspaceTemplateShareSummary } from '@canopy/protocol';
 import { FormSectionHeading } from './FormSectionHeading';
 
@@ -124,14 +124,15 @@ export function BlueprintPicker({
             </div>
           )}
           {hidden > 0 && !expanded && (
-            <button
-              type="button"
-              data-testid="add-workspace-blueprint-see-more"
-              onClick={() => setExpanded(true)}
-              className="focus-ring mt-2 text-xs fg-secondary underline underline-offset-2 hover:fg-primary"
-            >
-              Show {hidden} more
-            </button>
+            <p className="mt-2 text-xs">
+              <Button
+                variant="link"
+                data-testid="add-workspace-blueprint-see-more"
+                onClick={() => setExpanded(true)}
+              >
+                Show {hidden} more
+              </Button>
+            </p>
           )}
           {/* The explanation is the heading's subtitle (CAN-3453); only a
               selected starting point's description or the unavailable notice
@@ -139,14 +140,13 @@ export function BlueprintPicker({
           {unavailable ? (
             <p className="mt-2 text-xs fg-secondary">
               Starting points are unavailable right now.{' '}
-              <button
-                type="button"
+              <Button
+                variant="link"
                 data-testid="add-workspace-blueprint-retry"
                 onClick={onRetry}
-                className="focus-ring underline underline-offset-2 hover:fg-primary"
               >
                 Try again
-              </button>
+              </Button>
             </p>
           ) : (
             selectedExternalId !== null && (

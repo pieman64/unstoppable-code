@@ -66,6 +66,7 @@ import {
   type CalendarView,
 } from '@/components/automations/calendar/calendarPreferences';
 import { formatRelativeTime } from '@/lib/format';
+import { automationDuplicateRequest } from '@/lib/workflows/automation-duplicate';
 import {
   ChevronDownIcon,
   PipelineIcon,
@@ -212,6 +213,10 @@ export interface AutomationsPageBodyApi {
   readonly toggleEnabled: (
     activity: ScheduledActivity,
   ) => Promise<AutomationMutationResponse>;
+  /** Adds a copy of the automation, switched off, and reports how it went. */
+  readonly duplicate: (
+    activity: ScheduledActivity,
+  ) => Promise<AutomationMutationResponse>;
   readonly share: (activity: ScheduledActivity) => void;
   readonly remove: (activity: ScheduledActivity) => Promise<void>;
   /** The automation whose Run now is in flight. */
@@ -244,6 +249,7 @@ export function AutomationsPage({
     updateActivity,
     deleteActivity,
     runNow,
+    createActivity,
     clearMutationError,
   } = useAutomationsStore(
     useShallow((s) => ({
@@ -256,6 +262,7 @@ export function AutomationsPage({
       updateActivity: s.updateActivity,
       deleteActivity: s.deleteActivity,
       runNow: s.runNow,
+      createActivity: s.createActivity,
       clearMutationError: s.clearMutationError,
     })),
   );
@@ -637,6 +644,12 @@ export function AutomationsPage({
     [updateActivity],
   );
 
+  const handleDuplicate = useCallback(
+    (activity: ScheduledActivity): Promise<AutomationMutationResponse> =>
+      createActivity(automationDuplicateRequest(activity)),
+    [createActivity],
+  );
+
   const handleReview = useCallback(
     (activity: ScheduledActivity): void => {
       setSelectedActivityId(activity.id);
@@ -722,6 +735,7 @@ export function AutomationsPage({
           beginView,
           runNow: handleRunNow,
           toggleEnabled: handleToggleEnabled,
+          duplicate: handleDuplicate,
           share: handleShare,
           remove: async (activity): Promise<void> => {
             const response = await deleteActivity(activity.id);

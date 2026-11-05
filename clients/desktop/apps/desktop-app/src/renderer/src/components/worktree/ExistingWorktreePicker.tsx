@@ -3,12 +3,17 @@ import type {
   ExistingWorktreeJoinCandidate,
   ExistingWorktreeJoinWorkspaceGroup,
 } from '@canopy/desktop-shared/types';
-import { SearchField, Tooltip } from '@canopy/ui-shared';
+import {
+  ListRow,
+  SearchEmptyState,
+  SearchField,
+  Tooltip,
+} from '@canopy/ui-shared/components';
 import { ChevronDownIcon, ChevronRightIcon } from '@canopy/ui-shared/icons';
 import { useBranchDisplayStore } from '@/stores/branchDisplayStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { WorkspaceBadgeIcon } from '../shared/WorkspaceBadgeIcon';
-import { describeWorkspaceSubtitle } from '../shared/workspaceEntry';
+import { describeWorkspaceSubtitle } from '@canopy/ui-app/code/shell/WorkspaceMultiSelectPicker';
 import { DiffBadge } from './DiffBadge';
 import { getWorktreeRecordKey } from './worktree-record-key';
 
@@ -168,19 +173,24 @@ export function ExistingWorktreePicker({
         data-testid="existing-worktree-picker-search"
         aria-label="Search worktrees"
       />
-      <ul
-        className="max-h-[32vh] space-y-1 overflow-y-auto rounded-lg border bg-base p-1"
-        data-testid="existing-worktree-picker-list"
-      >
-        {filteredGroups.length === 0 ? (
-          <li
-            className="px-3 py-4 text-center text-xs fg-secondary"
-            data-testid="existing-worktree-picker-no-matches"
-          >
-            No matching worktrees
-          </li>
-        ) : (
-          filteredGroups.map((group) => {
+      {filteredGroups.length === 0 ? (
+        <SearchEmptyState
+          testId="existing-worktree-picker-no-matches"
+          title="No worktrees match your search."
+          {...(searchQuery.trim() === ''
+            ? {}
+            : {
+                actionLabel: 'Clear search',
+                onAction: () => onSearchQueryChange(''),
+                actionTestId: 'existing-worktree-picker-clear-search',
+              })}
+        />
+      ) : (
+        <ul
+          className="max-h-[32vh] space-y-1 overflow-y-auto rounded-lg border bg-base p-1"
+          data-testid="existing-worktree-picker-list"
+        >
+          {filteredGroups.map((group) => {
             const isCollapsed = collapsedWorkspaceIds.has(group.workspaceId);
             const subtitle = describeWorkspaceSubtitle({
               isMultiRepo: group.isMultiRepo,
@@ -189,34 +199,32 @@ export function ExistingWorktreePicker({
             });
             return (
               <li key={group.workspaceId}>
-                <button
-                  type="button"
+                <ListRow
                   onClick={() => toggleWorkspaceCollapsed(group.workspaceId)}
                   aria-expanded={!isCollapsed}
-                  className="focus-ring flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-secondary/30"
                   data-testid={`existing-worktree-picker-group-${group.workspaceId}`}
-                >
-                  <WorkspaceBadgeIcon
-                    isMultiRepo={group.isMultiRepo}
-                    temporary={group.temporary}
-                    color={group.color}
-                    name={group.workspaceName}
-                    repoPath={group.repoPath}
-                  />
-                  <span className="min-w-0 flex-1 truncate text-s font-medium">
-                    {group.workspaceName}
-                  </span>
-                  {subtitle && (
-                    <span className="shrink-0 text-xs fg-secondary">
-                      {subtitle}
+                  icon={
+                    <WorkspaceBadgeIcon
+                      isMultiRepo={group.isMultiRepo}
+                      temporary={group.temporary}
+                      color={group.color}
+                      name={group.workspaceName}
+                      repoPath={group.repoPath}
+                    />
+                  }
+                  trailing={
+                    <span className="flex items-center gap-2">
+                      {subtitle && <span>{subtitle}</span>}
+                      {isCollapsed ? (
+                        <ChevronRightIcon className="shrink-0 fg-secondary" />
+                      ) : (
+                        <ChevronDownIcon className="shrink-0 fg-secondary" />
+                      )}
                     </span>
-                  )}
-                  {isCollapsed ? (
-                    <ChevronRightIcon className="shrink-0 fg-secondary" />
-                  ) : (
-                    <ChevronDownIcon className="shrink-0 fg-secondary" />
-                  )}
-                </button>
+                  }
+                >
+                  {group.workspaceName}
+                </ListRow>
                 {!isCollapsed && (
                   <ul className="space-y-0.5 pl-3">
                     {group.candidates.map((candidate) => {
@@ -240,32 +248,21 @@ export function ExistingWorktreePicker({
                         selected.workspaceId === candidate.workspaceId &&
                         selected.worktreeId === candidate.worktreeId;
                       const rowButton = (
-                        <button
-                          type="button"
+                        <ListRow
                           onClick={() => onSelect(candidate)}
                           disabled={disabledReason !== null}
-                          className={`focus-ring flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left transition-colors ${
-                            disabledReason !== null
-                              ? 'cursor-not-allowed fg-secondary/60'
-                              : isSelected
-                                ? 'bg-accent-subtle fg-primary'
-                                : 'fg-primary hover:bg-secondary/40'
-                          }`}
+                          selected={isSelected}
                           data-testid={`existing-worktree-picker-option-${candidate.workspaceId}-${candidate.worktreeId}`}
                           aria-pressed={isSelected}
+                          description={candidate.worktreeId}
+                          trailing={
+                            hasLineChanges ? (
+                              <DiffBadge stats={candidateStats} compact />
+                            ) : undefined
+                          }
                         >
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-s font-medium">
-                              {getDisplayName(candidate.branchName)}
-                            </span>
-                            <span className="block truncate text-xs fg-secondary">
-                              {candidate.worktreeId}
-                            </span>
-                          </span>
-                          {hasLineChanges && (
-                            <DiffBadge stats={candidateStats} compact />
-                          )}
-                        </button>
+                          {getDisplayName(candidate.branchName)}
+                        </ListRow>
                       );
                       return (
                         <li key={candidate.worktreeId}>
@@ -283,9 +280,9 @@ export function ExistingWorktreePicker({
                 )}
               </li>
             );
-          })
-        )}
-      </ul>
+          })}
+        </ul>
+      )}
     </div>
   );
 }

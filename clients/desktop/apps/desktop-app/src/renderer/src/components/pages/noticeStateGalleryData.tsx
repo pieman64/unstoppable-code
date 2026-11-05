@@ -290,7 +290,7 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
       {
         id: 'usage-limit-arrival-routed',
         title: 'Credits bought: using AI Credits',
-        note: "Get AI Credits routed this chat once the purchase landed. The purchase is the card's state until the first credits turn starts, so no balance repeats it; the reset time sits beside the secondary switch it explains.",
+        note: "Buy AI Credits routed this chat once the purchase landed. The purchase is the card's state until the first credits turn starts, so no balance repeats it; the reset time sits beside the secondary switch it explains.",
         intent: 'positive',
         heading: '16 AI Credits added.',
         message: 'Ready to use in this chat.',
@@ -363,17 +363,17 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         intent: 'attention',
         heading: 'Claude usage limit reached',
         message:
-          'Get AI Credits to keep going now, or wait for your quota to reset around 6:00 PM.',
+          'Buy AI Credits to keep going now, or wait for your quota to reset around 6:00 PM.',
         actions: [
           { label: 'Resume at reset' },
-          { label: 'Get AI Credits', variant: 'primary' },
+          { label: 'Buy AI Credits', variant: 'primary' },
         ],
         dismissible: true,
       },
       {
         id: 'usage-limit-pricing-handoff',
         title: 'Usage limit reached: finishing checkout',
-        note: 'After Get AI Credits opens the browser, the checkout step replaces the limit, as on every purchase path. Waiting is not a warning.',
+        note: 'After Buy AI Credits opens the browser, the checkout step replaces the limit, as on every purchase path. Waiting is not a warning.',
         intent: 'neutral',
         icon: <TimeslotIcon size={16} aria-hidden="true" />,
         heading: 'Finish checkout in your browser',
@@ -397,14 +397,14 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
       },
       {
         id: 'no-billing-source',
-        title: 'No billing source: not signed in',
-        note: 'The title names the missing half; the buttons carry both remedies.',
+        title: 'No billing source: not connected',
+        note: 'The title names the missing half; the buttons carry both remedies, Connect first.',
         intent: 'attention',
-        heading: 'Not signed in to Claude',
+        heading: 'Not connected to Claude',
         message: `You have no ${brand} AI Credits to cover this chat either.`,
         actions: [
-          { label: 'Sign in to Claude' },
-          { label: 'Get AI Credits', variant: 'primary' },
+          { label: 'Connect Claude', variant: 'primary' },
+          { label: 'Buy AI Credits' },
         ],
       },
       {
@@ -413,7 +413,7 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         intent: 'attention',
         heading: 'Message not sent',
         message: `Your ${brand} AI Credits didn't cover that message.`,
-        actions: [{ label: 'Get AI Credits', variant: 'primary' }],
+        actions: [{ label: 'Buy AI Credits', variant: 'primary' }],
       },
       {
         id: 'no-billing-source-policy',
@@ -427,13 +427,13 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
       {
         id: 'no-billing-source-handoff',
         title: 'No billing source: finishing checkout',
-        note: 'After Get AI Credits opens the browser, the title and message name the step. Waiting is not a warning, and every action is a button on its own row.',
+        note: 'After Buy AI Credits opens the browser, the title and message name the step. Waiting is not a warning, and every action is a button on its own row.',
         intent: 'neutral',
         icon: <TimeslotIcon size={16} aria-hidden="true" />,
         heading: 'Finish checkout in your browser',
         message: 'Your credits show up here once the payment goes through.',
         actions: [
-          { label: 'Sign in to Claude instead' },
+          { label: 'Connect Claude instead' },
           { label: 'Reopen billing' },
           { label: 'Check again', variant: 'primary' },
         ],
@@ -448,7 +448,7 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         heading: 'No credits yet',
         message: "If you've paid, they can take a minute to arrive.",
         actions: [
-          { label: 'Sign in to Claude instead' },
+          { label: 'Connect Claude instead' },
           { label: 'Reopen billing' },
           { label: 'Check again', variant: 'primary' },
         ],
@@ -462,7 +462,7 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         heading: "Couldn't check your balance",
         message: 'Try again in a moment.',
         actions: [
-          { label: 'Sign in to Claude instead' },
+          { label: 'Connect Claude instead' },
           { label: 'Check again', variant: 'primary' },
         ],
         actionsPlacement: 'below',
@@ -652,9 +652,10 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         heading: SKILL_SUGGESTION_COPY.title(4),
         message: SKILL_SUGGESTION_COPY.promptMessage,
         actions: [
-          { label: SKILL_SUGGESTION_COPY.dismiss, variant: 'secondary' },
+          { label: SKILL_SUGGESTION_COPY.dismissForever, variant: 'secondary' },
           { label: SKILL_SUGGESTION_COPY.create, variant: 'primary' },
         ],
+        dismissible: true,
       },
       {
         id: 'skill-suggestion-chain',
@@ -665,9 +666,10 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         heading: SKILL_SUGGESTION_COPY.title(3),
         message: SKILL_SUGGESTION_COPY.chainMessage(3),
         actions: [
-          { label: SKILL_SUGGESTION_COPY.dismiss, variant: 'secondary' },
+          { label: SKILL_SUGGESTION_COPY.dismissForever, variant: 'secondary' },
           { label: SKILL_SUGGESTION_COPY.create, variant: 'primary' },
         ],
+        dismissible: true,
       },
       {
         id: 'routing-status-personal',

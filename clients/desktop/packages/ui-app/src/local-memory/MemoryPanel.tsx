@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
   type JSX,
+  type ReactNode,
 } from 'react';
 import { Fact, FactList, Heading } from '@canopy/ui-shared/components';
 import type {
@@ -23,12 +24,12 @@ import {
   Button,
   ConfirmDialog,
   EmptyState,
-  CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
   FormField,
   ErrorBanner,
   ErrorState,
   Markdown,
+  Skeleton,
   TextArea,
   TextInput,
   type ActionMenuItem,
@@ -64,6 +65,10 @@ import {
   type MemoryFilters,
   type MemoryPanelScope,
 } from './memory-model';
+import {
+  SAMPLE_MEMORY_ENTRIES,
+  SAMPLE_MEMORY_PARAGRAPHS,
+} from './memory-samples';
 import {
   MemoryFilterMenu,
   MemoryMoreMenu,
@@ -153,6 +158,48 @@ function without(set: ReadonlySet<string>, id: string): ReadonlySet<string> {
 
 function conflict(failure: unknown): boolean {
   return /conflict|changed|revision/i.test(errorText(failure));
+}
+
+const noop = (): void => undefined;
+
+/** A day's memories: its label, then one row per memory. */
+function MemoryDaySection({
+  group,
+  children,
+}: {
+  readonly group: string;
+  readonly children: ReactNode;
+}): JSX.Element {
+  return (
+    <section aria-label={group}>
+      <Heading
+        level={3}
+        variant="label"
+        className="mx-2.5 mb-0.5 mt-3 first:mt-1"
+      >
+        {group}
+      </Heading>
+      <ul>{children}</ul>
+    </section>
+  );
+}
+
+/** A memory's body, as its Markdown renders. */
+function MemoryBody({
+  testId,
+  children,
+}: {
+  readonly testId?: string;
+  readonly children: ReactNode;
+}): JSX.Element {
+  return (
+    <div
+      className={`mb-4 min-w-0 text-xs fg-primary wrap-anywhere ${REPLAY_BLOCK_CLASS} [&_li]:my-0 [&_ol]:my-0 [&_ol]:list-decimal [&_ol]:pl-4 [&_p]:my-0 [&_p+p]:mt-2 [&_pre]:my-1 [&_pre]:overflow-auto [&_ul]:my-0 [&_ul]:list-disc [&_ul]:pl-4`}
+      data-testid={testId}
+    >
+      {children}
+    </div>
+  );
 }
 
 export function MemoryPanel({
@@ -772,17 +819,16 @@ export function MemoryPanel({
         }
       >
         <span className="min-w-0">{message}</span>
-        <button
-          type="button"
+        <Button
+          variant="link"
           onClick={() => {
             void consolidateNow();
           }}
           disabled={running || editing}
-          className="focus-ring fg-accent hover:underline disabled:opacity-50 disabled:hover:no-underline"
           data-testid="memory-consolidate"
         >
           Consolidate now
-        </button>
+        </Button>
       </p>
     );
   }
@@ -801,7 +847,25 @@ export function MemoryPanel({
     if (loading)
       return (
         <DelayedLoadingPlaceholder slowNote="Still loading memories…">
-          <CenteredLoadingSpinner className="my-12" />
+          <Skeleton
+            loading
+            label="Loading memories"
+            testId="memory-list-loading"
+          >
+            <MemoryDaySection group="Today">
+              {SAMPLE_MEMORY_ENTRIES.map((entry) => (
+                <MemoryRow
+                  key={entry.id}
+                  entry={entry}
+                  scope="user"
+                  meta="Topic"
+                  time="12:00"
+                  onOpen={noop}
+                  menu={null}
+                />
+              ))}
+            </MemoryDaySection>
+          </Skeleton>
         </DelayedLoadingPlaceholder>
       );
     if (listError)
@@ -863,53 +927,44 @@ export function MemoryPanel({
     return (
       <div data-testid="memory-items">
         {groupByDay(visible, now).map(({ group, entries: rows }) => (
-          <section key={group} aria-label={group}>
-            <Heading
-              level={3}
-              variant="label"
-              className="mx-2.5 mb-0.5 mt-3 first:mt-1"
-            >
-              {group}
-            </Heading>
-            <ul>
-              {rows.map((entry) => (
-                <MemoryRow
-                  key={entry.id}
-                  ref={(element) => {
-                    if (element) rowRefs.current.set(entry.id, element);
-                    else rowRefs.current.delete(entry.id);
-                  }}
-                  entry={entry}
-                  scope={stableScopes[entry.scopeIndex].scope.scope}
-                  meta={rowMeta(entry)}
-                  time={rowTime(entry.file.modifiedAt, now)}
-                  onOpen={() => openDetail(entry)}
-                  menu={
-                    <MemoryMoreMenu
-                      size="row"
-                      // A fixed name: session replay records labels as
-                      // text, and titles can be the memory itself.
-                      label="More actions"
-                      testId="memory-row-menu"
-                      items={rowMenuItems({
-                        onEdit: () => openDetail(entry, true),
-                        onCopy: () => {
-                          void copyEntry(entry);
-                        },
-                        ...(entry.file.kind === 'index'
-                          ? {}
-                          : {
-                              onDelete: (): void => {
-                                void deleteEntry(entry);
-                              },
-                            }),
-                      })}
-                    />
-                  }
-                />
-              ))}
-            </ul>
-          </section>
+          <MemoryDaySection key={group} group={group}>
+            {rows.map((entry) => (
+              <MemoryRow
+                key={entry.id}
+                ref={(element) => {
+                  if (element) rowRefs.current.set(entry.id, element);
+                  else rowRefs.current.delete(entry.id);
+                }}
+                entry={entry}
+                scope={stableScopes[entry.scopeIndex].scope.scope}
+                meta={rowMeta(entry)}
+                time={rowTime(entry.file.modifiedAt, now)}
+                onOpen={() => openDetail(entry)}
+                menu={
+                  <MemoryMoreMenu
+                    size="row"
+                    // A fixed name: session replay records labels as
+                    // text, and titles can be the memory itself.
+                    label="More actions"
+                    testId="memory-row-menu"
+                    items={rowMenuItems({
+                      onEdit: () => openDetail(entry, true),
+                      onCopy: () => {
+                        void copyEntry(entry);
+                      },
+                      ...(entry.file.kind === 'index'
+                        ? {}
+                        : {
+                            onDelete: (): void => {
+                              void deleteEntry(entry);
+                            },
+                          }),
+                    })}
+                  />
+                }
+              />
+            ))}
+          </MemoryDaySection>
         ))}
       </div>
     );
@@ -930,9 +985,9 @@ export function MemoryPanel({
           <>
             <Fact label="Source">
               {chat ? (
-                <button
-                  type="button"
-                  className="focus-ring max-w-full truncate text-left underline decoration-line-base underline-offset-2 hover:decoration-current"
+                <Button
+                  variant="link"
+                  className="max-w-full"
                   data-testid="memory-detail-source"
                   onClick={() => {
                     void client.openChat(source.chatId).then((result) => {
@@ -941,8 +996,11 @@ export function MemoryPanel({
                     });
                   }}
                 >
-                  Chat · <span className={REPLAY_MASK_CLASS}>{chat.title}</span>
-                </button>
+                  <span className="block truncate">
+                    Chat ·{' '}
+                    <span className={REPLAY_MASK_CLASS}>{chat.title}</span>
+                  </span>
+                </Button>
               ) : (
                 <span data-testid="memory-detail-source">Chat</span>
               )}
@@ -1102,18 +1160,25 @@ export function MemoryPanel({
                 <ErrorBanner error={document.error} />
               ) : content ? (
                 content.body && (
-                  <div
-                    className={`mb-4 min-w-0 text-xs fg-primary wrap-anywhere ${REPLAY_BLOCK_CLASS} [&_li]:my-0 [&_ol]:my-0 [&_ol]:list-decimal [&_ol]:pl-4 [&_p]:my-0 [&_p+p]:mt-2 [&_pre]:my-1 [&_pre]:overflow-auto [&_ul]:my-0 [&_ul]:list-disc [&_ul]:pl-4`}
-                    data-testid="memory-detail-body"
-                  >
+                  <MemoryBody testId="memory-detail-body">
                     <Markdown options={markdown ?? undefined}>
                       {content.body}
                     </Markdown>
-                  </div>
+                  </MemoryBody>
                 )
               ) : (
                 <DelayedLoadingPlaceholder slowNote="Still opening…">
-                  <CenteredLoadingSpinner className="my-4" />
+                  <Skeleton
+                    loading
+                    label="Opening memory"
+                    testId="memory-detail-loading"
+                  >
+                    <MemoryBody>
+                      {SAMPLE_MEMORY_PARAGRAPHS.map((paragraph) => (
+                        <p key={paragraph}>{paragraph}</p>
+                      ))}
+                    </MemoryBody>
+                  </Skeleton>
                 </DelayedLoadingPlaceholder>
               )}
               {renderFacts(entry)}

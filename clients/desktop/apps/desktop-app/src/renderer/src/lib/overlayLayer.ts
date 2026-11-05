@@ -423,16 +423,3 @@ export function disposeOverlayLayer(slot: OverlayLayerSlot): void {
     loseRecord(active, false);
   }
 }
-
-/** Test-only: dispose every layer, remove the opener listener, and reset guards. */
-export function resetOverlayLayersForTests(): void {
-  for (const slot of Array.from(slotStates.keys())) {
-    disposeOverlayLayer(slot);
-  }
-  slotStates.clear();
-
-  if (openerPageHideListenerInstalled && typeof window !== 'undefined') {
-    window.removeEventListener('pagehide', handleOpenerPageHide);
-  }
-  openerPageHideListenerInstalled = false;
-}

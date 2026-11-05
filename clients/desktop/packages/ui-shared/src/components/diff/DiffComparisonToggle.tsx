@@ -16,5 +16,5 @@ export interface DiffComparisonToggleProps {
 export function DiffComparisonToggle(
   props: DiffComparisonToggleProps,
 ): JSX.Element {
-  return <DiffToggle {...props} options={OPTIONS} />;
+  return <DiffToggle {...props} options={OPTIONS} label="Compare" />;
 }

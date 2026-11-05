@@ -2,6 +2,7 @@ import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import type { RemoteChannelDisposition } from '@canopy/desktop-shared/remote-control/channel-dispositions';
 import type { BrowserWindow } from 'electron';
 import { ChatEventInterestFilter } from '../../ipc/chat-event-interest';
+import { shouldDropObservabilityEvent } from '../../ipc/observability-event-interest';
 import { getObservabilityService } from '../../observability';
 import type { RemoteSurface } from '@canopy/desktop-shared/remote-control/surfaces';
 import {
@@ -207,7 +208,8 @@ export class RemoteHostSession {
     surface?: RemoteSurface,
   ): void {
     if (
-      channel === IPC_CHANNELS.chatEvent &&
+      (channel === IPC_CHANNELS.chatEvent ||
+        channel === IPC_CHANNELS.observabilityEvent) &&
       surface === undefined &&
       this.startedBridges.size > 1
     ) {
@@ -222,6 +224,11 @@ export class RemoteHostSession {
       channel === IPC_CHANNELS.chatEvent &&
       bridge &&
       this.chatEventInterestFilter.shouldDrop(bridge, interest, args[0])
+    )
+      return;
+    if (
+      channel === IPC_CHANNELS.observabilityEvent &&
+      shouldDropObservabilityEvent(interest, args[0])
     )
       return;
     let bytes = 0;

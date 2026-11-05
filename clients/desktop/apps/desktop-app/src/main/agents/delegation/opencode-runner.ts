@@ -34,6 +34,7 @@ import { isJsonValue } from '@canopy/desktop-shared/node/codex-runtime';
 import { openCodeNativeOperations } from '@canopy/desktop-shared/node/opencode/tool-input';
 import { openCodeToolDisplay } from '@canopy/desktop-shared/node/opencode/tool-display';
 import type { OpenCodeToolInput } from '@canopy/desktop-shared/node/opencode/runtime';
+import { ChildAppendQueue } from './child-append-queue';
 import { DelegationChildNormalizer } from './child-row-normalizers';
 import { delegationBlockId } from '@canopy/agent-transcript';
 import { materializeSelectedCapabilityRoot } from '@canopy/desktop-shared/node/cursor/capability-root';
@@ -333,13 +334,19 @@ export function createOpenCodeDelegationRunner(options: {
       const transcript = new DelegationTranscriptRecorder(
         childNormalizer ? DELEGATION_STREAM_PREVIEW_LIMITS : undefined,
       );
+      const childAppends = appendChildChanges
+        ? new ChildAppendQueue(appendChildChanges, (changes) =>
+            childNormalizer?.acknowledge(changes),
+          )
+        : undefined;
+      // Provider events queue their rows and continue; finishing waits until
+      // every queued row is durable.
+      const queueNormalizedChanges = async (
+        changes: readonly DelegationTranscriptChange[],
+      ): Promise<void> => childAppends?.enqueue(changes);
       const appendNormalizedChanges = async (
         changes: readonly DelegationTranscriptChange[],
-      ): Promise<void> => {
-        if (!changes.length || !appendChildChanges) return;
-        await appendChildChanges(changes);
-        childNormalizer?.acknowledge(changes);
-      };
+      ): Promise<void> => childAppends?.flush(changes);
       let lastTranscript = 0;
       const flush = async (): Promise<void> => {
         const items = transcript.take();
@@ -474,7 +481,7 @@ export function createOpenCodeDelegationRunner(options: {
             },
             emit: async (event) => {
               transcript.cursor(event);
-              await appendNormalizedChanges(
+              await queueNormalizedChanges(
                 childNormalizer ? await childNormalizer.patch(event) : [],
               );
               if (transcript.limitExceeded && !childNormalizer)

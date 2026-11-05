@@ -11,13 +11,20 @@ export function invalidateGitHubCliStatusCache(): void {
   pending = null;
 }
 
+/**
+ * The bundled GitHub CLI's status, shared through a module cache. With
+ * `enabled` false it reads only an already-cached status and never spawns
+ * `gh`, so hot mounts (every chat composer) can defer the check.
+ */
 export function useGitHubCliStatus(
   refreshKey: number = 0,
+  enabled: boolean = true,
 ): GitHubCliStatus | null {
   const [status, setStatus] = useState<GitHubCliStatus | null>(cache);
   const lastRefreshKeyRef = useRef(refreshKey);
 
   useEffect(() => {
+    if (!enabled) return undefined;
     let cancelled = false;
     const bypassCache = refreshKey !== lastRefreshKeyRef.current;
     lastRefreshKeyRef.current = refreshKey;
@@ -71,7 +78,7 @@ export function useGitHubCliStatus(
     return (): void => {
       cancelled = true;
     };
-  }, [refreshKey]);
+  }, [refreshKey, enabled]);
 
   return status;
 }

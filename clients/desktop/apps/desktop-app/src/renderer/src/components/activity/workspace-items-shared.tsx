@@ -16,6 +16,7 @@ import {
   TrashIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { RichHoverTooltip } from '@/components/shared/RichHoverTooltip';
+import { Button } from '@canopy/ui-shared/components';
 
 /**
  * Inserts an @-mention pill into the visible composer via the ChatInput
@@ -81,14 +82,15 @@ export function ItemMetaInfo({
         </span>
       }
     >
-      <button
-        type="button"
+      <Button
+        variant="ghost-quiet"
+        size="sm"
+        iconOnly
         onClick={(e): void => e.stopPropagation()}
-        className="focus-ring rounded p-1 fg-secondary transition-colors hover:bg-fg-primary/[0.06] hover:fg-primary"
         aria-label="Item details"
       >
         <InfoIcon width={12} height={12} />
-      </button>
+      </Button>
     </RichHoverTooltip>
   );
 }

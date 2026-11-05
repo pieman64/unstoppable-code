@@ -833,8 +833,12 @@ const REVIEWED_STUDY_OVERLAYS = Object.freeze({
     installed:
       '1cb298b806a9e7159942cc06d0ccfd8eebb555e74599c08617703b5f6a14944b',
   }),
-  'apps/desktop-app/tests/performance/scenarios.mjs':
-    'dba1f957e931f61e9e42d1d22d3e6d1ac36510d3567661d1ae9cd4756df7501b',
+  'apps/desktop-app/tests/performance/scenarios.mjs': Object.freeze({
+    original:
+      'dba1f957e931f61e9e42d1d22d3e6d1ac36510d3567661d1ae9cd4756df7501b',
+    installed:
+      'a83f2e15140d9800e2aa33a5782b6e3374ef2493840ea0ab45d3ed7c2863208b',
+  }),
   'apps/desktop-app/tests/performance/monitor.mjs':
     '5d644bd000078fce4776cc0f8d09072cfc3ec719cf98da331dd1e27db53de02c',
   'apps/desktop-app/tests/performance/process-tree-supervisor.mjs':
@@ -926,6 +930,15 @@ const REVIEWED_STUDY_OVERLAYS = Object.freeze({
 // Keep the study's installed identities above and pin reviewed current
 // compositions when shared harness fixtures change after the closed study.
 const REVIEWED_CURRENT_STUDY_OVERLAYS = Object.freeze({
+  // C3 adds the opt-in many-worktree file-index corpus and its lab capture;
+  // B7 adds the opt-in scope-residency scenario; the merge with develop adds
+  // its opt-in sidebar reorder and Code Review registry scenarios; the
+  // opt-in delegation-restart-cycles scenario follows; the next merge adds
+  // develop's W5 store arms and 120 Hz frame report, and the one after it
+  // CAN-5651's startup-settle catalog cache seed from the shared helper, and
+  // the opt-in Feed overview scenario composes with them.
+  'apps/desktop-app/tests/performance/scenarios.mjs':
+    'aeeda501273e8eba8aff3fba5423d57f9b0e0c709add217cad37e49ea5657101',
   // CAN-3606 adds bounded Linear issue attachment responses to the shared
   // fixture; transcript reference previews add team-key catalog and
   // exact-issue routes.
@@ -1023,9 +1036,13 @@ const REVIEWED_SIDEBAR_REORDER_HELPERS = Object.freeze({
 });
 // CAN-5022 extracts the existing catalog from the cloud route. Pin the helper
 // bytes separately while preserving the closed study's original route source.
+// CAN-5651 reads the served catalog version from source through a shared
+// helper that the startup-settle cache seed also uses.
 const REVIEWED_GATEWAY_CATALOG_HELPERS = Object.freeze({
   'apps/desktop-app/tests/electron/mock-server/routes/ai-gateway-catalog.mjs':
-    '49fd5d6b3042b75d68e397d4893d86e10b5b14c28c151d36590761c671af6a12',
+    '3694fbd3a00c10d6d651c1b59c34a538cada399d13bf9a080a519353bb5f6379',
+  'apps/desktop-app/tests/electron/ai-gateway-catalog-versions.mjs':
+    '88d6d1c7db87def04df4c717580fe51cd4df66642136ff5cf8497dcf15f6e505',
 });
 // CAN-4495 adds the opt-in Code Review registry workload, absent from the
 // frozen study baseline.
@@ -1057,6 +1074,8 @@ const REVIEWED_ADDED_HARNESS_HELPERS = Object.freeze([
   ...Object.keys(REVIEWED_HOSTED_SETTINGS_HELPERS),
   ...Object.keys(REVIEWED_COST_HARNESS_HELPERS),
   'apps/desktop-app/tests/electron/cowork-summary-fixture.mjs',
+  // B7 adds the deterministic scope-residency fixture.
+  'apps/desktop-app/tests/performance/scope-residency-fixture.mjs',
   'apps/desktop-app/tests/electron/fixtures/curatedPipelinesCloud.mjs',
   'apps/desktop-app/tests/electron/mock-server/request-guard.mjs',
   'apps/desktop-app/tests/electron/seeders/claudeQueryPrelude.mjs',
@@ -1069,6 +1088,15 @@ const REVIEWED_ADDED_HARNESS_HELPERS = Object.freeze([
   'apps/desktop-app/tests/electron/seeders/seedPipelineShareUnresolvedInvocations.mjs',
   // #5948: canonical turn lifecycle receipts for injected E2E turns.
   'apps/desktop-app/tests/electron/seeders/publishTurnLifecycle.mjs',
+  // Foreground-first A0: the 80k-row lab transcript fixture and its driver.
+  'apps/desktop-app/tests/electron/lab-transcript-fixture.mjs',
+  'apps/desktop-app/tests/electron/lab-transcript-driver.mjs',
+  // Foreground-first C2: the many-chat residency fixture.
+  'apps/desktop-app/tests/electron/many-chat-fixture.mjs',
+  // The delegation-restart-cycles scenario reuses the Electron flows'
+  // transcript rewrite observer and background drawer helper.
+  'apps/desktop-app/tests/electron/backgroundDrawer.mjs',
+  'apps/desktop-app/tests/electron/delegationStorageWorkload.mjs',
   'apps/desktop-app/tests/electron/stress-transcript-driver.mjs',
   'apps/desktop-app/tests/electron/stress-transcript-fixture.mjs',
   'apps/desktop-app/tests/performance/disk-io.mjs',

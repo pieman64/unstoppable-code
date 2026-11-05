@@ -3,6 +3,7 @@ import {
   GITHUB_CLI_ENVIRONMENT_VARIABLES,
   GITHUB_CLI_INTEGRATION_ID,
   GITHUB_INTEGRATION_ID,
+  type CanopyInstructionHandler,
   type CanopyQueryHandler,
   type CanopyWorkspaceScope,
   type CoreIntegration,
@@ -32,7 +33,29 @@ export interface CoreIntegrationHost {
   readonly github: GitHubRequestHandle;
   /** Runs the GitHub CLI's status command without Canopy secrets. */
   observeGitHubCli(): Promise<GitHubCliObservation>;
+  /**
+   * The product's own github.com repository, resolved by the host from its
+   * bundled brand; `null` when the brand declares none.
+   */
+  readonly sourceRepository: GitHubRepositoryTarget | null;
+  /** Stars `target` with the GitHub CLI's github.com account. */
+  starRepository(
+    target: GitHubRepositoryTarget,
+    options: { readonly signal: AbortSignal },
+  ): Promise<GitHubCliStarOutcome>;
 }
+
+export interface GitHubRepositoryTarget {
+  readonly owner: string;
+  readonly repo: string;
+}
+
+/** Observations of one `gh api` star request; the host never throws. */
+export type GitHubCliStarOutcome =
+  | { readonly kind: 'starred' }
+  | { readonly kind: 'not-installed' }
+  | { readonly kind: 'not-authenticated' }
+  | { readonly kind: 'failed'; readonly detail: string };
 
 export interface CoreIntegrationHandlers {
   'core.integration.get': CanopyQueryHandler<
@@ -45,6 +68,13 @@ export interface CoreIntegrationHandlers {
   >;
   'core.integration.resource.list': CanopyQueryHandler<
     'core.integration.resource.list',
+    CanopyHandlerContext
+  >;
+}
+
+export interface CoreIntegrationInstructionHandlers {
+  'core.integration.sourceRepository.star': CanopyInstructionHandler<
+    'core.integration.sourceRepository.star',
     CanopyHandlerContext
   >;
 }
@@ -425,6 +455,66 @@ export function createCoreIntegrationHandlers(
           end < resources.length
             ? resourceCursors.mint(String(end), binding)
             : null,
+      };
+    },
+  };
+}
+
+function starFailure(
+  outcome: Exclude<GitHubCliStarOutcome, { kind: 'starred' }>,
+): CanopyOperationError {
+  switch (outcome.kind) {
+    case 'not-installed':
+      return new CanopyOperationError({
+        kind: 'failed_precondition',
+        code: 'core.integration.githubCli.notInstalled',
+        message: 'The GitHub CLI is not installed.',
+        retry: { kind: 'never' },
+      });
+    case 'not-authenticated':
+      return new CanopyOperationError({
+        kind: 'failed_precondition',
+        code: 'core.integration.notAuthenticated',
+        message: 'The GitHub CLI is not signed in to github.com.',
+        retry: { kind: 'never' },
+      });
+    case 'failed':
+      // The CLI's stderr is diagnostic only and never crosses the wire.
+      return new CanopyOperationError(
+        {
+          kind: 'unavailable',
+          code: 'core.integration.sourceRepository.star.failed',
+          message: 'The GitHub CLI could not star the repository.',
+          retry: { kind: 'same_request' },
+        },
+        new Error(outcome.detail),
+      );
+  }
+}
+
+/**
+ * `core.integration.sourceRepository.star`: stars the brand's own repository
+ * with the GitHub CLI. The repository comes from the host, never the caller.
+ */
+export function createCoreIntegrationInstructionHandlers(
+  host: CoreIntegrationHost,
+): CoreIntegrationInstructionHandlers {
+  return {
+    'core.integration.sourceRepository.star': async (_params, context) => {
+      const repository = host.sourceRepository;
+      if (repository === null)
+        throw new CanopyOperationError({
+          kind: 'capability_unavailable',
+          code: 'core.integration.sourceRepository.unavailable',
+          message: 'This build declares no source repository to star.',
+          retry: { kind: 'never' },
+        });
+      const outcome = await host.starRepository(repository, {
+        signal: context.signal,
+      });
+      if (outcome.kind !== 'starred') throw starFailure(outcome);
+      return {
+        repository: { owner: repository.owner, repo: repository.repo },
       };
     },
   };

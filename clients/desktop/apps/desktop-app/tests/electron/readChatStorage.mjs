@@ -1,5 +1,11 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
@@ -20,20 +26,28 @@ function manifestPath(workspaceRoot, scopeId) {
   return path.join(workspaceRoot, 'chat-storage-manifests', `${scopeId}.json`);
 }
 
-/** Version 2 keeps every commit in its files; version 3 adds a delta journal. */
+/**
+ * Version 2 keeps every commit in its files; version 3 adds a delta journal;
+ * version 4 adds delegation streams and offloads large fields.
+ */
 function readManifest(workspaceRoot, scopeId) {
   const manifest = readJson(manifestPath(workspaceRoot, scopeId));
   assert.ok(
-    manifest.version === 2 || manifest.version === 3,
+    manifest.version >= 2 && manifest.version <= 4,
     `Unsupported chat storage manifest version ${manifest.version}`,
   );
   assert.equal(manifest.scopeId, scopeId);
   return manifest;
 }
 
+/** Version 3 always has a journal; version 4 only until it is checkpointed. */
+function journalOf(manifest) {
+  return manifest.version === 3 || typeof manifest.journal === 'string';
+}
+
 function usesDeltaJournal(workspaceRoot, scopeId) {
   const file = manifestPath(workspaceRoot, scopeId);
-  return existsSync(file) && readManifest(workspaceRoot, scopeId).version === 3;
+  return existsSync(file) && journalOf(readManifest(workspaceRoot, scopeId));
 }
 
 let replayBundle;
@@ -66,7 +80,7 @@ function replayBundlePath() {
  * every journal record applied, read through the app's own replay helper.
  * `chats` is a list of chat ids, or 'tabs' for every live chat tab.
  */
-function replayDeltaJournalScope(workspaceRoot, scopeId, chats) {
+function replayDeltaJournalScope(workspaceRoot, scopeId, chats, streams = []) {
   const result = spawnSync(
     process.execPath,
     [
@@ -75,6 +89,7 @@ function replayDeltaJournalScope(workspaceRoot, scopeId, chats) {
         directory: scopeDirectory(workspaceRoot, scopeId),
         scopeId,
         chats,
+        streams,
       }),
     ],
     { encoding: 'utf8', maxBuffer: REPLAY_OUTPUT_BYTES },
@@ -99,7 +114,7 @@ function assertIndexVersions({ live, archive }) {
  * fixtures should still be seeded as v1 to exercise direct migration.
  */
 export function readChatStorageIndexes(workspaceRoot, scopeId) {
-  if (readManifest(workspaceRoot, scopeId).version === 3)
+  if (journalOf(readManifest(workspaceRoot, scopeId)))
     return assertIndexVersions(
       replayDeltaJournalScope(workspaceRoot, scopeId, []).indexes,
     );
@@ -155,6 +170,42 @@ function readTranscriptFiles(workspaceRoot, scopeId, chatId) {
   return messages;
 }
 
+/**
+ * The committed rows of one format 4 delegation stream, oldest first. A
+ * checkpointed scope keeps them in the stream's files; otherwise the journal
+ * may still hold some.
+ */
+export function readDelegationStreamRows(workspaceRoot, scopeId, target) {
+  if (usesDeltaJournal(workspaceRoot, scopeId))
+    return replayDeltaJournalScope(workspaceRoot, scopeId, [], [target])
+      .streams[0];
+  const directory = path.join(
+    scopeDirectory(workspaceRoot, scopeId),
+    'transcripts',
+    'delegations',
+    target.chatId,
+    'v2',
+  );
+  if (!existsSync(directory)) return [];
+  for (const name of readdirSync(directory)) {
+    const descriptor = path.join(directory, name, 'descriptor.json');
+    if (!existsSync(descriptor)) continue;
+    const stream = readJson(descriptor).target;
+    if (
+      stream.delegationId === target.delegationId &&
+      stream.runGeneration === target.runGeneration
+    )
+      return readFileSync(
+        path.join(directory, name, 'transcript.jsonl'),
+        'utf8',
+      )
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+  }
+  return [];
+}
+
 export function readChatStorageMessages(workspaceRoot, scopeId, chatId) {
   if (usesDeltaJournal(workspaceRoot, scopeId))
     return replayDeltaJournalScope(workspaceRoot, scopeId, [chatId]).messages[
@@ -167,7 +218,7 @@ export function readChatStorageMessages(workspaceRoot, scopeId, chatId) {
  * Large output artifacts stay referenced, just as they do in the JSONL.
  */
 export function readChatStorageTabs(workspaceRoot, scopeId) {
-  if (readManifest(workspaceRoot, scopeId).version === 3) {
+  if (journalOf(readManifest(workspaceRoot, scopeId))) {
     const { indexes, messages } = replayDeltaJournalScope(
       workspaceRoot,
       scopeId,

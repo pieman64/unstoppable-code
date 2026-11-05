@@ -552,22 +552,3 @@ export async function fireTestOsNotification(
     return 'error';
   }
 }
-
-// Test-only reset. Not part of the public surface.
-export function __resetForTests(): void {
-  cachedOsPreferences = null;
-  cachedInAppPreferences = null;
-  visibleContext = { worktreeKey: null, chatId: null };
-  navigationHandler = null;
-  inAppNotificationListeners.clear();
-  pendingNotifications.clear();
-  if (pendingSweepTimer) {
-    clearInterval(pendingSweepTimer);
-    pendingSweepTimer = null;
-  }
-  clickListenerUnsubscribe?.();
-  closeListenerUnsubscribe?.();
-  clickListenerUnsubscribe = null;
-  closeListenerUnsubscribe = null;
-  notificationCounter = 0;
-}

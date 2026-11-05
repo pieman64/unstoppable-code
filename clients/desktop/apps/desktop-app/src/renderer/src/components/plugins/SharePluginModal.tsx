@@ -1,5 +1,6 @@
 import { type JSX, useCallback, useMemo, useRef, useState } from 'react';
 import { getShareablePluginRefKey } from '@canopy/protocol/plugins';
+import { useResourceContext } from '@canopy/ui-app/capability';
 import { CANOPY_CLOUD_SERVER_ID } from '@canopy/desktop-shared/constants/canopy-cloud';
 import {
   shareablePluginSourceLabel,
@@ -10,6 +11,7 @@ import {
   classifyShareFailure,
   deriveExistingShare,
   existingShareLoadFailure,
+  publicAudienceLocked,
   ShareFailureError,
   shareOwnerFields,
   type ShareDialogLink,
@@ -33,8 +35,9 @@ const SHARE_SCOPES: readonly ShareResourceScope[] = [
   'public',
 ];
 const pluginLinks = createShareLinkResolver(
-  (id) => `/portal/plugins/plugins/${encodeURIComponent(id)}`,
+  (id) => `/portal/plugins/plugins/shared/${encodeURIComponent(id)}`,
   resolveSharedPluginUrl,
+  'plugin',
 );
 
 /**
@@ -79,6 +82,7 @@ export function SharePluginModal({
   onShared,
   ownerDocument,
 }: SharePluginModalProps): JSX.Element {
+  const policy = useResourceContext();
   useCurrentUiStateReporter('sharing.pluginDialog', {
     open: true,
     refKey: getShareablePluginRefKey(pluginRef),
@@ -87,7 +91,13 @@ export function SharePluginModal({
     null,
   );
   const [remoteLink, setRemoteLink] = useState<ShareDialogLink | null>(null);
+  const [reconciliationRevision, setReconciliationRevision] = useState(0);
   const pendingDetail = useRef<SharedPluginDetail | null>(null);
+  const reconciliationTarget = useRef<{
+    readonly id: string;
+    readonly refKey: string;
+    readonly accountId: string;
+  } | null>(null);
   const packagePort = useMemo(
     (): CapabilityPackageSharePort => ({
       analyze: async (): Promise<PipelinePackageAnalysisSummary> => {
@@ -123,139 +133,223 @@ export function SharePluginModal({
     [],
   );
 
-  const loadExistingShare = useCallback(async () => {
-    setRemoteDetail(null);
-    setRemoteLink(null);
-    const [accountResult, listResult] = await Promise.all([
-      window.api.loadCanopyCloudAccount(),
-      window.plugins.listShared({ serverId: CANOPY_CLOUD_SERVER_ID }),
-    ]);
-    if (!listResult.success || !listResult.data) {
-      return existingShareLoadFailure('plugin');
-    }
-    const accountId = accountResult.account?.id;
-    const refKey = getShareablePluginRefKey(pluginRef);
-    const existing = listResult.data.data.find(
-      (candidate) =>
-        candidate.refKey === refKey && candidate.createdBy.id === accountId,
-    );
-    if (!existing) return { status: 'ready' } as const;
-    const detailResult = await window.plugins.getShared({
-      serverId: CANOPY_CLOUD_SERVER_ID,
-      remoteId: existing.externalId,
-    });
-    if (!detailResult.success || !detailResult.data) {
-      return existingShareLoadFailure('plugin');
-    }
-    setRemoteDetail(detailResult.data);
-    setRemoteLink(await linkFromDetail(detailResult.data));
-    return { status: 'ready' } as const;
-  }, [linkFromDetail, pluginRef]);
+  const loadExistingShare = useCallback(
+    async (assertCurrent?: () => void) => {
+      void reconciliationRevision;
+      assertCurrent?.();
+      setRemoteDetail(null);
+      assertCurrent?.();
+      setRemoteLink(null);
+      const [accountResult, listResult] = await Promise.all([
+        window.api.loadCanopyCloudAccount(),
+        window.plugins.listShared({ serverId: CANOPY_CLOUD_SERVER_ID }),
+      ]);
+      if (!listResult.success || !listResult.data) {
+        return existingShareLoadFailure('plugin');
+      }
+      const accountId = accountResult.account?.id;
+      const refKey = getShareablePluginRefKey(pluginRef);
+      const existing = listResult.data.data.find(
+        (candidate) =>
+          candidate.refKey === refKey && candidate.createdBy.id === accountId,
+      );
+      const pending = reconciliationTarget.current;
+      const remoteId =
+        pending?.refKey === refKey && pending.accountId === accountId
+          ? pending.id
+          : existing?.externalId;
+      if (!remoteId) return { status: 'ready' } as const;
+      const detailResult = await window.plugins.getShared({
+        serverId: CANOPY_CLOUD_SERVER_ID,
+        remoteId,
+      });
+      if (!detailResult.success || !detailResult.data) {
+        return existingShareLoadFailure('plugin');
+      }
+      assertCurrent?.();
+      setRemoteDetail(detailResult.data);
+      reconciliationTarget.current = null;
+      const refreshedLink = await linkFromDetail(detailResult.data);
+
+      assertCurrent?.();
+
+      setRemoteLink(refreshedLink);
+      return { status: 'ready' } as const;
+    },
+    [linkFromDetail, pluginRef, reconciliationRevision],
+  );
 
   const share = useCallback(
     async (input: ShareResourceShareInput): Promise<ShareResourceOutcome> => {
-      const owner = shareOwnerFields(input, remoteDetail);
-      const request = {
-        serverId: CANOPY_CLOUD_SERVER_ID,
-        ref: pluginRef,
-        name,
-        description: description ?? null,
-        ...owner,
-      };
-      if (input.scope !== 'public' && remoteDetail?.publicShare) {
-        const revoked = await window.plugins.revokePublicShare(
-          remoteDetail.externalId,
-        );
-        if (!revoked.success) {
-          throw new Error(
-            revoked.error ?? 'The public plugin link could not be removed.',
-          );
-        }
-      }
-      const result = remoteDetail
-        ? await window.plugins.updateShared({
-            ...request,
-            remoteId: remoteDetail.externalId,
-          })
-        : await window.plugins.createShared(request);
-      if (!result.success || !result.data) {
-        // Keep the structured cause so the dialog explains it and offers
-        // the right recovery; older handlers send only the string.
-        const failure = classifyShareFailure(result);
-        if (failure) throw new ShareFailureError(failure);
-        throw new Error(result.error ?? 'The plugin could not be shared.');
-      }
-      let detail = result.data;
-      let revokedReusedLink = false;
-      if (!remoteDetail) {
-        // The server returns this creator's existing share for the same
-        // plugin, even from a lane this dialog did not list, without applying
-        // the requested audience. Apply it, as the catalog share path does.
-        if (input.scope !== 'public' && detail.publicShare) {
+      let revocationStarted = false;
+      try {
+        const owner = shareOwnerFields(input, remoteDetail);
+        const request = {
+          serverId: CANOPY_CLOUD_SERVER_ID,
+          ref: pluginRef,
+          name,
+          description: description ?? null,
+          ...owner,
+        };
+        if (
+          input.scope !== 'public' &&
+          !input.preservePublicLink &&
+          remoteDetail?.publicShare
+        ) {
+          input.assertAllowed?.();
+          revocationStarted = true;
+          reconciliationTarget.current = {
+            id: remoteDetail.externalId,
+            refKey: getShareablePluginRefKey(pluginRef),
+            accountId: remoteDetail.createdBy.id,
+          };
           const revoked = await window.plugins.revokePublicShare(
-            detail.externalId,
+            remoteDetail.externalId,
           );
           if (!revoked.success) {
             throw new Error(
               revoked.error ?? 'The public plugin link could not be removed.',
             );
           }
-          revokedReusedLink = true;
-        }
-        if (!hasRequestedOwner(detail, owner)) {
-          const moved = await window.plugins.updateShared({
-            ...request,
-            remoteId: detail.externalId,
+          const remaining = { ...remoteDetail, publicShare: null };
+          input.assertAllowed?.();
+          setRemoteDetail(remaining);
+          input.assertAllowed?.();
+          const nextLink = await pluginLinks.linkFromDetail({
+            ...remaining,
+            id: remaining.externalId,
           });
-          if (!moved.success || !moved.data) {
-            const failure = classifyShareFailure(moved);
-            if (failure) throw new ShareFailureError(failure);
-            throw new Error(moved.error ?? 'The plugin could not be shared.');
+          input.assertAllowed?.();
+          setRemoteLink(nextLink);
+        }
+        input.assertAllowed?.();
+        const result = remoteDetail
+          ? await window.plugins.updateShared({
+              ...request,
+              remoteId: remoteDetail.externalId,
+            })
+          : await window.plugins.createShared(request);
+        if (!result.success || !result.data) {
+          // Keep the structured cause so the dialog explains it and offers
+          // the right recovery; older handlers send only the string.
+          const failure = classifyShareFailure(result);
+          if (failure) throw new ShareFailureError(failure);
+          throw new Error(result.error ?? 'The plugin could not be shared.');
+        }
+        let detail = result.data;
+        let revokedReusedLink = false;
+        if (!remoteDetail) {
+          // The server returns this creator's existing share for the same
+          // plugin, even from a lane this dialog did not list, without applying
+          // the requested audience. Apply it, as the catalog share path does.
+          input.assertAllowed?.();
+          // A new share already owned as requested needs no reconciliation.
+          if (
+            (!hasRequestedOwner(detail, owner) || detail.publicShare) &&
+            (policy.context !== undefined || !policy.ready) &&
+            publicAudienceLocked(
+              deriveExistingShare(detail),
+              policy.personalOrganizationId,
+            )
+          ) {
+            // The create endpoint can return a share omitted by the list.
+            // Adopt its ownership before any revoke, move, or publication.
+            setRemoteDetail(detail);
+            const link = await linkFromDetail(detail);
+            input.assertAllowed?.();
+            setRemoteLink(link);
+            throw new Error('The sharing context changed. Try again.');
           }
-          detail = moved.data;
+          if (input.scope !== 'public' && detail.publicShare) {
+            input.assertAllowed?.();
+            revocationStarted = true;
+            reconciliationTarget.current = {
+              id: detail.externalId,
+              refKey: getShareablePluginRefKey(pluginRef),
+              accountId: detail.createdBy.id,
+            };
+            const revoked = await window.plugins.revokePublicShare(
+              detail.externalId,
+            );
+            if (!revoked.success) {
+              throw new Error(
+                revoked.error ?? 'The public plugin link could not be removed.',
+              );
+            }
+            revokedReusedLink = true;
+          }
+          if (!hasRequestedOwner(detail, owner)) {
+            input.assertAllowed?.();
+            const moved = await window.plugins.updateShared({
+              ...request,
+              remoteId: detail.externalId,
+            });
+            if (!moved.success || !moved.data) {
+              const failure = classifyShareFailure(moved);
+              if (failure) throw new ShareFailureError(failure);
+              throw new Error(moved.error ?? 'The plugin could not be shared.');
+            }
+            detail = moved.data;
+          }
         }
-      }
-      let shareUrl: string | undefined;
-      let publicLinkFailed = false;
-      if (input.scope === 'public') {
-        const published = await window.plugins.publishPublicShare(
-          detail.externalId,
-        );
-        if (!published.success || !published.data) {
-          publicLinkFailed = true;
+        input.assertAllowed?.();
+        let shareUrl: string | undefined;
+        let publicLinkFailed = false;
+        if (input.scope === 'public') {
+          const published = await window.plugins.publishPublicShare(
+            detail.externalId,
+          );
+          if (!published.success || !published.data) {
+            publicLinkFailed = true;
+          } else {
+            detail = { ...detail, publicShare: published.data };
+            const link = await pluginLinks.resolveLink({
+              kind: 'public',
+              id: detail.externalId,
+              sharePath: published.data.sharePath,
+            });
+            input.assertAllowed?.();
+            setRemoteLink(link);
+            shareUrl = link.url;
+          }
         } else {
-          detail = { ...detail, publicShare: published.data };
+          if (
+            !input.preservePublicLink &&
+            (remoteDetail?.publicShare || revokedReusedLink)
+          ) {
+            detail = { ...detail, publicShare: null };
+          }
           const link = await pluginLinks.resolveLink({
-            kind: 'public',
-            sharePath: published.data.sharePath,
+            kind: 'scoped',
+            id: detail.externalId,
           });
+          input.assertAllowed?.();
           setRemoteLink(link);
           shareUrl = link.url;
         }
-      } else {
-        if (remoteDetail?.publicShare || revokedReusedLink) {
-          detail = { ...detail, publicShare: null };
-        }
-        const link = await pluginLinks.resolveLink({
-          kind: 'scoped',
-          id: detail.externalId,
-        });
-        setRemoteLink(link);
-        shareUrl = link.url;
+        input.assertAllowed?.();
+        pendingDetail.current = detail;
+        input.assertAllowed?.();
+        setRemoteDetail(detail);
+        input.assertAllowed?.();
+        window.dispatchEvent(new Event(SHARED_PLUGINS_CHANGED_EVENT));
+        return {
+          ...(shareUrl ? { shareUrl } : {}),
+          ...(publicLinkFailed ? { publicLinkFailed: true } : {}),
+        };
+      } catch (error: unknown) {
+        input.assertAllowed?.();
+        if (revocationStarted)
+          setReconciliationRevision((revision) => revision + 1);
+        throw error;
       }
-      pendingDetail.current = detail;
-      setRemoteDetail(detail);
-      window.dispatchEvent(new Event(SHARED_PLUGINS_CHANGED_EVENT));
-      return {
-        ...(shareUrl ? { shareUrl } : {}),
-        ...(publicLinkFailed ? { publicLinkFailed: true } : {}),
-      };
     },
-    [description, name, pluginRef, remoteDetail],
+    [description, linkFromDetail, name, pluginRef, policy, remoteDetail],
   );
 
-  const retryPublicLink =
-    useCallback(async (): Promise<ShareResourceOutcome> => {
+  const retryPublicLink = useCallback(
+    async (assertCurrent?: () => void): Promise<ShareResourceOutcome> => {
+      assertCurrent?.();
       const detail = pendingDetail.current;
       if (!detail) return { publicLinkFailed: true };
       const published = await window.plugins.publishPublicShare(
@@ -265,29 +359,58 @@ export function SharePluginModal({
         return { publicLinkFailed: true };
       }
       const next = { ...detail, publicShare: published.data };
+      assertCurrent?.();
       pendingDetail.current = next;
+      assertCurrent?.();
       setRemoteDetail(next);
       const link = await pluginLinks.resolveLink({
         kind: 'public',
+        id: detail.externalId,
         sharePath: published.data.sharePath,
       });
+      assertCurrent?.();
       setRemoteLink(link);
       return { shareUrl: link.url };
-    }, []);
+    },
+    [],
+  );
 
-  const revokePublicLink = useCallback(async (): Promise<void> => {
-    if (!remoteDetail?.publicShare) return;
-    const result = await window.plugins.revokePublicShare(
-      remoteDetail.externalId,
-    );
-    if (!result.success) {
-      throw new Error(
-        result.error ?? 'The public plugin link could not be removed.',
-      );
-    }
-    setRemoteDetail({ ...remoteDetail, publicShare: null });
-    setRemoteLink(null);
-  }, [remoteDetail]);
+  const revokePublicLink = useCallback(
+    async (assertCurrent?: () => void): Promise<void> => {
+      assertCurrent?.();
+      if (!remoteDetail?.publicShare) return;
+      reconciliationTarget.current = {
+        id: remoteDetail.externalId,
+        refKey: getShareablePluginRefKey(pluginRef),
+        accountId: remoteDetail.createdBy.id,
+      };
+      try {
+        const result = await window.plugins.revokePublicShare(
+          remoteDetail.externalId,
+        );
+        if (!result.success) {
+          throw new Error(
+            result.error ?? 'The public plugin link could not be removed.',
+          );
+        }
+        const remaining = { ...remoteDetail, publicShare: null };
+        assertCurrent?.();
+        setRemoteDetail(remaining);
+        assertCurrent?.();
+        const nextLink = await pluginLinks.linkFromDetail({
+          ...remaining,
+          id: remaining.externalId,
+        });
+        assertCurrent?.();
+        setRemoteLink(nextLink);
+      } catch (error: unknown) {
+        assertCurrent?.();
+        setReconciliationRevision((revision) => revision + 1);
+        throw error;
+      }
+    },
+    [remoteDetail, pluginRef],
+  );
 
   // `pendingDetail` is written only by a successful share, so the dialog's
   // completion can report it without mistaking a close or a link removal.
@@ -323,6 +446,10 @@ export function SharePluginModal({
 
   return (
     <DesktopShareResourceDialog
+      marketplace={{
+        kind: 'plugin',
+        resourceKey: getShareablePluginRefKey(pluginRef),
+      }}
       resourceNoun="plugin"
       testIdPrefix="share-plugin"
       requiredCapability="plugins-crud-v1"

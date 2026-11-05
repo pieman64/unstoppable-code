@@ -30,7 +30,12 @@ import {
   useWorkspaceReadinessLaunchStore,
 } from '@/stores/workspaceReadinessLaunchStore';
 import { Button, LoadingSpinner } from '../shared';
-import { ErrorBanner, Heading } from '@canopy/ui-shared/components';
+import {
+  DelayedLoadingPlaceholder,
+  ErrorBanner,
+  Heading,
+  Skeleton,
+} from '@canopy/ui-shared/components';
 
 interface WorkspaceReadinessRecommendationsProps {
   workspaceId: string;
@@ -207,7 +212,15 @@ export function WorkspaceReadinessRecommendations({
           </div>
           <div className="flex shrink-0 items-center gap-1.5 text-s fg-secondary">
             {loadState === 'loading' ? (
-              <LoadingSpinner tone="secondary" />
+              // The count is the value still on its way: its real text,
+              // measured.
+              <Skeleton
+                loading
+                label="Checking repository readiness"
+                testId="workspace-readiness-loading"
+              >
+                2 to fix
+              </Skeleton>
             ) : loadState === 'error' ? (
               <Button size="compact" onClick={() => void load()}>
                 Try again
@@ -297,10 +310,18 @@ export function WorkspaceReadinessRecommendations({
             Repository readiness
           </Heading>
           {loadState === 'loading' && (
-            <div className="mt-1 flex items-center gap-2 text-xs fg-secondary">
-              <LoadingSpinner />
-              <span>Checking repository readiness…</span>
-            </div>
+            <DelayedLoadingPlaceholder slowNote="Still checking repository readiness…">
+              <Skeleton
+                loading
+                label="Checking repository readiness"
+                testId="workspace-readiness-loading"
+              >
+                <p className="mt-1 text-xs fg-secondary">
+                  This Code project has setup and launch scripts, hooks, and
+                  shared agent instructions in place.
+                </p>
+              </Skeleton>
+            </DelayedLoadingPlaceholder>
           )}
           {ready && (
             <p className="mt-1 text-xs fg-secondary">

@@ -84,9 +84,3 @@ export function recordReleaseHighlightsVersion(version: string): Promise<void> {
   writeChain = writeChain.then(run, run);
   return writeChain;
 }
-
-/** Test-only reset for the module-level write state. */
-export function resetReleaseHighlightsWritesForTests(): void {
-  writeChain = Promise.resolve();
-  highestWrittenVersion = null;
-}

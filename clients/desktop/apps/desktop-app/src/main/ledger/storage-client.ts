@@ -10,6 +10,9 @@ import type {
   LedgerScopeSyncRecord,
   LedgerSearchEntriesResult,
   LedgerStorageCounts,
+  LedgerStoreCommandReceipt,
+  LedgerRollupsInput,
+  LedgerWorkSummaryInput,
 } from '@canopy/desktop-shared/node/ledger';
 // Only the constants: the store itself runs in the storage worker.
 import {
@@ -27,14 +30,17 @@ import {
   LedgerEntrySchema,
   LedgerOpaqueIdSchema,
   LedgerOriginSchema,
+  LedgerRollupsListResultSchema,
+  LedgerWorkSummaryGetResultSchema,
   LedgerScopeRefSchema,
   LedgerSequenceSchema,
   LedgerTimestampSchema,
   LedgerUuidSchema,
   type CanopyJsonValue,
   type LedgerChangesListResult,
-  type LedgerCommandReceipt,
   type LedgerEntryGetResult,
+  type LedgerRollupsListResult,
+  type LedgerWorkSummaryGetResult,
 } from '@canopy/protocol/canopy-core';
 import {
   LedgerScopeAudienceSchema,
@@ -138,6 +144,23 @@ const OutboxEventRecordSchema: z.ZodType<LedgerOutboxEventRecord> =
 const RebindAccountResultSchema: z.ZodType<LedgerRebindAccountResult> =
   z.strictObject({ rebound: z.int().min(0) });
 
+/**
+ * The protocol receipt plus the store-internal list of other entries the
+ * command revised. The service strips `relatedChanges` before returning.
+ */
+const StoreCommandReceiptSchema: z.ZodType<LedgerStoreCommandReceipt> =
+  LedgerCommandReceiptSchema.extend({
+    relatedChanges: z
+      .array(
+        z.strictObject({
+          entryId: LedgerUuidSchema,
+          revision: z.int().min(1),
+        }),
+      )
+      .min(1)
+      .optional(),
+  });
+
 const RowCountSchema = z.int().min(0);
 
 const StorageCountsSchema: z.ZodType<LedgerStorageCounts> = z.strictObject({
@@ -212,8 +235,8 @@ export function createWorkerLedgerStoreClient(
       call('registerActor', [input], RegisterActorResultSchema),
     listActors: (ledgerId): Promise<LedgerActorRecord[]> =>
       call('listActors', [ledgerId], z.array(ActorRecordSchema)),
-    addEntry: (input): Promise<LedgerCommandReceipt> =>
-      call('addEntry', [input], LedgerCommandReceiptSchema),
+    addEntry: (input): Promise<LedgerStoreCommandReceipt> =>
+      call('addEntry', [input], StoreCommandReceiptSchema),
     listPendingTitles: (): Promise<LedgerPendingTitleRecord[]> =>
       call('listPendingTitles', [], z.array(PendingTitleRecordSchema)),
     recordPendingTitleAttempt: (
@@ -226,10 +249,12 @@ export function createWorkerLedgerStoreClient(
       ),
     resolvePendingTitle: (input): Promise<LedgerResolvePendingTitleResult> =>
       call('resolvePendingTitle', [input], ResolvePendingTitleResultSchema),
-    updateEntry: (input): Promise<LedgerCommandReceipt> =>
-      call('updateEntry', [input], LedgerCommandReceiptSchema),
-    publishSummary: (input): Promise<LedgerCommandReceipt> =>
-      call('publishSummary', [input], LedgerCommandReceiptSchema),
+    updateEntry: (input): Promise<LedgerStoreCommandReceipt> =>
+      call('updateEntry', [input], StoreCommandReceiptSchema),
+    handBackEntry: (input): Promise<LedgerStoreCommandReceipt> =>
+      call('handBackEntry', [input], StoreCommandReceiptSchema),
+    publishSummary: (input): Promise<LedgerStoreCommandReceipt> =>
+      call('publishSummary', [input], StoreCommandReceiptSchema),
     listReceiptKeys: (input): Promise<string[]> =>
       call('listReceiptKeys', [input], z.array(z.string())),
     getEntry: (input): Promise<LedgerEntryGetResult> =>
@@ -238,6 +263,14 @@ export function createWorkerLedgerStoreClient(
       call('searchEntries', [input], SearchEntriesResultSchema),
     listChanges: (input): Promise<LedgerChangesListResult> =>
       call('listChanges', [input], LedgerChangesListResultSchema),
+    listRollups: (
+      input: LedgerRollupsInput,
+    ): Promise<LedgerRollupsListResult> =>
+      call('listRollups', [input], LedgerRollupsListResultSchema),
+    getWorkSummary: (
+      input: LedgerWorkSummaryInput,
+    ): Promise<LedgerWorkSummaryGetResult> =>
+      call('getWorkSummary', [input], LedgerWorkSummaryGetResultSchema),
     getStorageCounts: (): Promise<LedgerStorageCounts> =>
       call('getStorageCounts', [], StorageCountsSchema),
     listScopes: (): Promise<LedgerScopeRecord[]> =>

@@ -70,10 +70,12 @@ import {
   type CanopyCallerDescriptor,
   type CanopyErrorPayload,
   type CanopyJsonRpcId,
+  type CanopyJsonRpcMessage,
   type CoreClientLease,
   type CoreClientCapabilitiesRegisterResult,
 } from '@canopy/protocol/canopy-core';
 import { createPlatformEndpointServices } from '@canopy/core-platform';
+import { z } from 'zod';
 import {
   FixtureCleanup,
   requireCompletedPhases,
@@ -3053,6 +3055,289 @@ posix('request metadata a params schema declares', () => {
       const reply = await daemon.peer.request('core.example.keyed', cursor);
       expect(decodeCanopyError(reply.error).kind).toBe('invalid_argument');
       expect(daemon.seen).toEqual([]);
+    } finally {
+      await daemon.close();
+    }
+  });
+});
+
+posix('messages larger than one frame (CAN-5630, CAN-5684)', () => {
+  const QUERIES = defineCanopyQueryRegistry('core', {
+    'core.example.blob': defineCanopyQuery({
+      plane: 'core',
+      domain: 'example',
+      version: 1,
+      placement: 'core-only',
+      idempotency: 'inherent',
+      requiredGrants: [],
+      // `sequence` is the reply's text length.
+      params: CanopyStreamCursorSchema,
+      result: z.strictObject({ text: z.string() }),
+      error: CanopyErrorPayloadSchema,
+    }),
+  });
+  // Each opened stream sends a `sequence`-long item, then a small one.
+  const STREAMS = defineCanopyStreamRegistry('core', {
+    'core.example.blobs': defineCanopyStream({
+      plane: 'core',
+      domain: 'example',
+      version: 1,
+      placement: 'core-only',
+      idempotency: 'inherent',
+      requiredGrants: [],
+      params: CanopyStreamCursorSchema.extend({
+        cursor: CanopyStreamCursorSchema.nullable().optional(),
+      }),
+      item: z.strictObject({ text: z.string() }),
+      end: CanopyStreamEndSchema,
+      openResult: CoreEventsSubscribeOpenResultSchema,
+      error: CanopyErrorPayloadSchema,
+    }),
+  });
+  const LARGE = 10 * 1024 * 1024;
+
+  async function blobPlane(): Promise<{
+    path: string;
+    close(): Promise<void>;
+  }> {
+    const scope = cleanup.fork([files]);
+    const runtime = createCanopyRuntime({
+      profile: 'core',
+      identity: {
+        runtimeId: 'runtime',
+        hostId: 'host',
+        authorityId: 'local',
+      },
+      definitions: { queries: QUERIES, instructions: {}, streams: STREAMS },
+      owners: [
+        {
+          name: 'core.example',
+          operations: ['core.example.blob', 'core.example.blobs'],
+        },
+      ],
+      services: [],
+      principalFor: () => 'interface',
+      phaseDeadlineMs: 1_000,
+      createDispatcher: (input) =>
+        createCanopyDispatcher<
+          typeof input.definitions.queries,
+          typeof input.definitions.instructions,
+          typeof input.definitions.streams
+        >({
+          profile: input.profile,
+          definitions: input.definitions,
+          handlers: {
+            ...input.runtimeHandlers,
+            queries: {
+              ...input.runtimeHandlers.queries,
+              // Test host policy: no profile row installs the test-only
+              // operation, so this manifest advertises it itself.
+              'core.runtime.manifest.get': async (params, context) => {
+                const manifest = await input.runtimeHandlers.queries[
+                  'core.runtime.manifest.get'
+                ](params, context);
+                return {
+                  ...manifest,
+                  operations: [
+                    ...manifest.operations,
+                    ...(['query', 'stream'] as const).map((kind) => ({
+                      name:
+                        kind === 'query'
+                          ? 'core.example.blob'
+                          : 'core.example.blobs',
+                      kind,
+                      version: 1,
+                      placement: 'core-only' as const,
+                      requiredGrants: [],
+                      available: true,
+                    })),
+                  ],
+                };
+              },
+              'core.example.blob': ({ sequence }) => ({
+                text: 'ü'.repeat(sequence / 2),
+              }),
+            },
+            instructions: {},
+            streams: {
+              ...input.runtimeHandlers.streams,
+              'core.example.blobs': ({ sequence }, _context, sink) => {
+                sink.emit({ text: 'ü'.repeat(sequence / 2) });
+                sink.emit({ text: 'ü' });
+                sink.end('completed');
+                return Promise.resolve();
+              },
+            },
+          },
+        }),
+    });
+    const started = runtime.start();
+    const shutdown = scope.own(async () => {
+      await started.catch(() => undefined);
+      await requireCompletedPhases(runtime.shutdown('test'));
+    });
+    await scope.initialize(() => started);
+    const daemon = await controlPlane({
+      dispatcher: runtime.dispatcher,
+      operations: runtime.operations,
+    });
+    shutdown.dependsOn(cleanup.own(() => daemon.close()));
+    return {
+      path: daemon.path,
+      close: async (): Promise<void> => {
+        await daemon.close();
+        await shutdown.release();
+      },
+    };
+  }
+
+  it('sends a client that reassembles parts the whole reply', async () => {
+    const daemon = await blobPlane();
+    const client = await connectCanopyClient({
+      endpoint: { kind: 'socket', path: daemon.path, auth: AUTH },
+      clientName: 'parts',
+      clientVersion: '0',
+      definitions: { queries: QUERIES, instructions: {}, streams: {} },
+    });
+    try {
+      const reply = await client.query('core.example.blob', {
+        daemonEpoch: 'epoch',
+        sequence: LARGE,
+      });
+      expect(reply).toEqual({ text: 'ü'.repeat(LARGE / 2) });
+      await expect(
+        client.query('core.example.blob', {
+          daemonEpoch: 'epoch',
+          sequence: 2,
+        }),
+      ).resolves.toEqual({ text: 'ü' });
+    } finally {
+      await client.close();
+      await daemon.close();
+    }
+  });
+
+  it('answers a client that did not say it reassembles parts with resource_exhausted', async () => {
+    const daemon = await blobPlane();
+    try {
+      const { client } = await connect(daemon.path);
+      const peer = rpcPeer(client);
+      // An older client: no `client.maxMessageBytes`, so nothing is split.
+      await peer.request('core.runtime.initialize', {
+        client: {
+          name: 'test',
+          version: '0',
+          protocolVersions: [1],
+          capabilities: [],
+        },
+      });
+      const refused = await peer.request('core.example.blob', {
+        daemonEpoch: 'epoch',
+        sequence: LARGE,
+      });
+      expect(decodeCanopyError(refused.error)).toMatchObject({
+        kind: 'resource_exhausted',
+        retry: { kind: 'never' },
+      });
+      await expect(
+        peer.request('core.example.blob', {
+          daemonEpoch: 'epoch',
+          sequence: 2,
+        }),
+      ).resolves.toMatchObject({ result: { text: 'ü' } });
+      client.close();
+    } finally {
+      await daemon.close();
+    }
+  });
+
+  it('sends a client that reassembles parts a whole stream item', async () => {
+    const daemon = await blobPlane();
+    const client = await connectCanopyClient({
+      endpoint: { kind: 'socket', path: daemon.path, auth: AUTH },
+      clientName: 'parts',
+      clientVersion: '0',
+      definitions: {
+        queries: QUERIES,
+        instructions: CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
+        streams: STREAMS,
+      },
+    });
+    try {
+      await client.instruction('core.client.lease.acquire', {
+        ...ACQUIRE,
+        _meta: { idempotencyKey: 'blobs' },
+      });
+      const handle = await client.openStream('core.example.blobs', {
+        daemonEpoch: 'epoch',
+        sequence: LARGE,
+      });
+      const frames: unknown[] = [];
+      for await (const frame of handle.frames) frames.push(frame);
+      expect(frames).toMatchObject([
+        { kind: 'item', item: { text: 'ü'.repeat(LARGE / 2) } },
+        { kind: 'item', item: { text: 'ü' } },
+        { kind: 'end', outcome: 'completed', error: null },
+      ]);
+    } finally {
+      await client.close();
+      await daemon.close();
+    }
+  });
+
+  it('ends only the stream whose item a client without parts cannot take', async () => {
+    const daemon = await blobPlane();
+    try {
+      const { client } = await connect(daemon.path);
+      const exchange = async (
+        id: number,
+        method: CanopyOperationName,
+        params: Record<string, unknown>,
+      ): Promise<CanopyJsonRpcMessage> => {
+        await client.send({ jsonrpc: '2.0', id, method, params });
+        return client.receive();
+      };
+      // An older client: no `client.maxMessageBytes`, so nothing is split.
+      await exchange(1, 'core.runtime.initialize', {
+        client: {
+          name: 'test',
+          version: '0',
+          protocolVersions: [1],
+          capabilities: [],
+        },
+      });
+      await exchange(2, 'core.client.lease.acquire', {
+        ...ACQUIRE,
+        _meta: { idempotencyKey: 'blobs' },
+      });
+      const resumed = { daemonEpoch: 'resumed', sequence: 5 };
+      const opened = await exchange(3, 'core.example.blobs', {
+        daemonEpoch: 'epoch',
+        sequence: LARGE,
+        cursor: resumed,
+      });
+      const { subscriptionId } = CoreEventsSubscribeOpenResultSchema.parse(
+        'result' in opened ? opened.result : undefined,
+      );
+      // Before CAN-5684 the refused item answered the open request again.
+      const ended = await client.receive();
+      expect(ended).toMatchObject({
+        method: 'core.example.blobs.end',
+        params: {
+          subscriptionId,
+          // Nothing was delivered, so it ends where it resumed.
+          cursor: resumed,
+          outcome: 'error',
+          error: { kind: 'resource_exhausted', retry: { kind: 'never' } },
+        },
+      });
+      await expect(
+        exchange(4, 'core.example.blob', {
+          daemonEpoch: 'epoch',
+          sequence: 2,
+        }),
+      ).resolves.toMatchObject({ id: 4, result: { text: 'ü' } });
+      client.close();
     } finally {
       await daemon.close();
     }

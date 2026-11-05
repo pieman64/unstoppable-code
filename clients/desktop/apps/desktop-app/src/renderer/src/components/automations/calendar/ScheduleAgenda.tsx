@@ -3,7 +3,6 @@ import type { AutomationAction } from '@canopy/desktop-shared/types';
 import { isSameDay, isToday } from './calendarDateUtils';
 import {
   calendarEventChipAttributes,
-  calendarEventSelectedClasses,
   calendarEventToneClasses,
   formatGroupCount,
   formatGroupTimeRange,
@@ -11,6 +10,7 @@ import {
   type CalendarEvent,
   type CalendarEventGroup,
 } from './calendarEvents';
+import { ListRow } from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 
 interface ScheduleAgendaProps {
@@ -103,11 +103,11 @@ export function ScheduleAgenda({
             const selected = selectedActivityId === group.activityId;
             const countLabel = formatGroupCount(group.count);
             return (
-              <button
+              <ListRow
                 key={group.key}
-                type="button"
                 {...calendarEventChipAttributes(event, selected)}
                 data-event-count={group.count}
+                selected={selected}
                 onClick={
                   clickable
                     ? (clickEvent): void => {
@@ -117,34 +117,34 @@ export function ScheduleAgenda({
                     : undefined
                 }
                 disabled={!clickable}
-                className={`flex items-center gap-3 rounded-md px-2 py-1.5 text-left text-xs transition-colors ${
-                  clickable
-                    ? 'cursor-pointer hover:bg-fg-primary/[0.04]'
-                    : 'cursor-default'
-                } ${calendarEventSelectedClasses(selected)}`}
+                icon={
+                  <span
+                    aria-hidden="true"
+                    className={`inline-flex h-2.5 w-2.5 shrink-0 rounded-full border ${calendarEventToneClasses(
+                      event,
+                    )}`}
+                  />
+                }
               >
-                <span
-                  className={`inline-flex h-2.5 w-2.5 shrink-0 rounded-full border ${calendarEventToneClasses(
-                    event,
-                  )}`}
-                />
-                <span className="shrink-0 tabular-nums whitespace-nowrap fg-secondary">
-                  {formatGroupTimeRange(group)}
-                </span>
-                <span className="shrink-0 font-medium fg-primary">
-                  {event.name}
-                </span>
-                {countLabel !== null && (
-                  <span className="shrink-0 tabular-nums fg-secondary">
-                    {countLabel}
+                <span className="flex min-w-0 items-center gap-3">
+                  <span className="shrink-0 tabular-nums whitespace-nowrap fg-secondary">
+                    {formatGroupTimeRange(group)}
                   </span>
-                )}
-                <span
-                  className={`${POSTHOG_REPLAY_BLOCK_CLASS} truncate fg-secondary`}
-                >
-                  {secondaryText(group, describeAction)}
+                  <span className="shrink-0 font-medium fg-primary">
+                    {event.name}
+                  </span>
+                  {countLabel !== null && (
+                    <span className="shrink-0 tabular-nums fg-secondary">
+                      {countLabel}
+                    </span>
+                  )}
+                  <span
+                    className={`${POSTHOG_REPLAY_BLOCK_CLASS} min-w-0 truncate fg-secondary`}
+                  >
+                    {secondaryText(group, describeAction)}
+                  </span>
                 </span>
-              </button>
+              </ListRow>
             );
           })}
         </div>

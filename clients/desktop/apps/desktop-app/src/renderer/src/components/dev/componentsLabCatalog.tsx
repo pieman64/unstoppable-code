@@ -19,9 +19,36 @@ import {
   SpacingSpecimen,
   TooltipSpecimen,
 } from './componentsLabLayout';
+import { GAP_ROOT_3C_LAB_ENTRIES } from './componentsLabEntriesGapRoot3C';
+import { GAP_ROOT_3A_LAB_ENTRIES } from './componentsLabEntriesGapRoot3A';
+import { GAP_ROOT_3D_LAB_ENTRIES } from './componentsLabEntriesGapRoot3D';
+import { GAP_ROOT_3B_LAB_ENTRIES } from './componentsLabEntriesGapRoot3B';
+import { CHAT_MARKERS_LAB_ENTRIES } from './componentsLabChatMarkers';
+import { CHAT_QUEUE_LAB_ENTRIES } from './componentsLabChatQueue';
+import { CHAT_SUBAGENTS_LAB_ENTRIES } from './componentsLabChatSubagents';
+import { CHAT_TURN_LAB_ENTRIES } from './componentsLabChatTurn';
 import { LoadingSpecimen } from './componentsLabLoading';
+import { SidebarPartsSpecimen } from './componentsLabSidebar';
+import { StatusPartsSpecimen } from './componentsLabStatus';
+import { UsagePartsSpecimen } from './componentsLabUsage';
+import { ChatLookSpecimen, PlanChipSpecimen } from './componentsLabChatLook';
+import { SharedASpecimen } from './componentsLabSharedA';
+import { SharedBSpecimen } from './componentsLabSharedB';
+import { SharedCSpecimen } from './componentsLabSharedC';
+import { CustomizePartsSpecimen } from './componentsLabCustomize';
+import { CuratedWorkflowsSpecimen } from './componentsLabCurated';
+import { CreditsNoticesSpecimen } from './componentsLabCredits';
+import { SettingsAndAgentsSpecimen } from './componentsLabSettings';
 import { TablesSpecimen } from './componentsLabTables';
+import { DetailHeaderSpecimen } from './componentsLabDetail';
+import { FilesAndDiffsSpecimen } from './componentsLabFilesAndDiffs';
+import { DrawerAndEntriesSpecimen } from './componentsLabDrawerAndEntries';
 import { PendingSpecimen } from './componentsLabPending';
+import { InstalledStatusSpecimen } from './componentsLabInstalledStatus';
+import { ReferenceAndInstructionsSpecimen } from './componentsLabReferenceAndInstructions';
+import { HomeAndResumeSpecimen } from './componentsLabHomeAndResume';
+import { KeysAndMarkdownSpecimen } from './componentsLabKeysAndMarkdown';
+import { ProvidersSpecimen } from './componentsLabProviders';
 import { ProgressSpecimen } from './componentsLabProgress';
 import { SegmentedControlSpecimen, TabBarSpecimen } from './componentsLabTabs';
 import {
@@ -239,6 +266,35 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     View: DialogsSpecimen,
   },
   {
+    id: 'customize-parts',
+    name: 'Customize page parts',
+    group: 'Unified',
+    note: 'The Customize breadcrumb trail, the capability-gated Installed state and a row menu with its disabled and destructive items.',
+    source:
+      'packages/ui-shared/src/components/{CustomizeBreadcrumbs,CustomizeInstalledUnavailable,CustomizeRowMenu}.tsx',
+    prs: [],
+    View: CustomizePartsSpecimen,
+  },
+  {
+    id: 'curated-workflows',
+    name: 'Curated workflows',
+    group: 'Unified',
+    note: 'The curated catalog failure and saved-copy notices, and the preview dialog a Browse row opens in each of its states.',
+    source:
+      'packages/ui-shared/src/components/{CuratedCatalogNotice,CuratedPipelinePreviewDialog}.tsx',
+    prs: [],
+    View: CuratedWorkflowsSpecimen,
+  },
+  {
+    id: 'credits-notices',
+    name: 'Credits recovery notice',
+    group: 'Unified',
+    note: 'The out-of-credits notice in its purchase and contact-an-admin arms, with one or several detail lines.',
+    source: 'packages/ui-shared/src/components/CreditsRecoveryNotice.tsx',
+    prs: [],
+    View: CreditsNoticesSpecimen,
+  },
+  {
     id: 'spacing',
     name: 'Spacing',
     group: 'Unified',
@@ -246,6 +302,36 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     source: 'packages/ui-shared/src/components/Stack.tsx',
     prs: [7215],
     View: SpacingSpecimen,
+  },
+  {
+    id: 'detail-header',
+    name: 'Detail header',
+    group: 'Unified',
+    note: 'A detail page header (title, description, meta, actions, one notice) and the ⋯ More menu that leads its actions.',
+    source:
+      'packages/ui-shared/src/components/{DetailHeader,DetailMoreMenu}.tsx',
+    prs: [],
+    View: DetailHeaderSpecimen,
+  },
+  {
+    id: 'files-and-diffs',
+    name: 'Diff counts and file rows',
+    group: 'Unified',
+    note: 'DiffLineCounts, GroupedDiffStats, the root-group tree row in both presentations and the working-directory picker option.',
+    source:
+      'packages/ui-shared/src/components/{DiffLineCounts,GroupedDiffStats,FileRootGroupRow,DirectoryPickerOptionRow}.tsx',
+    prs: [],
+    View: FilesAndDiffsSpecimen,
+  },
+  {
+    id: 'drawer-and-entries',
+    name: 'Drawer actions and entry metadata',
+    group: 'Unified',
+    note: 'The drawer footer action and watcher control, and the source label and surface icon on Customize entries.',
+    source:
+      'packages/ui-shared/src/components/{DrawerInspectorAction,DrawerWatcherControl,EntrySourceLabel,EntrySurfaceIcon}.tsx',
+    prs: [],
+    View: DrawerAndEntriesSpecimen,
   },
   {
     id: 'tooltip-copy',
@@ -256,6 +342,55 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     prs: [7082],
     Stage: TooltipStage,
     View: TooltipSpecimen,
+  },
+  {
+    id: 'installed-status',
+    name: 'Installed item status',
+    group: 'Unified',
+    note: 'The Active / Available / Disabled picker and its icon, the card control, the detail Status row with configurations and notices, and the Customize status filter.',
+    source:
+      'packages/ui-shared/src/components/{InstalledItemStatusPicker,InstalledItemStatusRow,InstalledStatusFilterDropdown}.tsx',
+    prs: [],
+    View: InstalledStatusSpecimen,
+  },
+  {
+    id: 'reference-and-instructions',
+    name: 'Reference cards, ready lines and instructions',
+    group: 'Unified',
+    note: 'ReferenceHoverCard with its footer facts, ReadyStatusLine, and the InstructionsEditor shared by desktop cowork projects and web workspaces.',
+    source:
+      'packages/ui-shared/src/components/{ReferenceHoverCard,ReadyStatusLine,InstructionsEditor}.tsx',
+    prs: [],
+    View: ReferenceAndInstructionsSpecimen,
+  },
+  {
+    id: 'home-and-resume',
+    name: 'Home sections, resume rows and guest gate',
+    group: 'Unified',
+    note: 'HomeSection (hide and restore), the interrupted-session row in its selection and queue layouts, and the guest model gate in each state.',
+    source:
+      'packages/ui-shared/src/components/{HomeSection,InterruptedSessionRow,GuestModelGateContent}.tsx',
+    prs: [],
+    View: HomeAndResumeSpecimen,
+  },
+  {
+    id: 'keys-and-markdown',
+    name: 'Shortcut chip and transcript markdown',
+    group: 'Unified',
+    note: 'A Button’s KbdChip on each look, transcript links that navigate or stay inert, and the scrolling table frame.',
+    source: 'packages/ui-shared/src/components/{KbdChip,markdown-render}.tsx',
+    prs: [],
+    View: KeysAndMarkdownSpecimen,
+  },
+  {
+    id: 'providers',
+    name: 'Context providers',
+    group: 'Unified',
+    note: 'The icon style, the server-seeded layout tier and the Mermaid export services, each with a live readout and the component that reads it.',
+    source:
+      'packages/ui-shared/src/components/{icon-style,LayoutTierProvider,markdown-mermaid-export-context}.tsx',
+    prs: [],
+    View: ProvidersSpecimen,
   },
   {
     id: 'data-table',
@@ -274,6 +409,99 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     source: 'packages/ui-shared/src/components/DisplayAvatar.tsx',
     prs: [7359, 7363, 7367],
     View: AvatarsSpecimen,
+  },
+  ...GAP_ROOT_3C_LAB_ENTRIES,
+  ...GAP_ROOT_3A_LAB_ENTRIES,
+  ...GAP_ROOT_3D_LAB_ENTRIES,
+  ...GAP_ROOT_3B_LAB_ENTRIES,
+  ...CHAT_MARKERS_LAB_ENTRIES,
+  ...CHAT_QUEUE_LAB_ENTRIES,
+  ...CHAT_TURN_LAB_ENTRIES,
+  ...CHAT_SUBAGENTS_LAB_ENTRIES,
+  {
+    id: 'settings-diff-agents',
+    name: 'Settings pages, diff source and agent access',
+    group: 'Unified',
+    note: 'SettingsBackButton, SettingsButtonRow (open and select), SettingsSaveBar, DiffSourceSelector and AgentAccessEditor, each in every state it has.',
+    source:
+      'packages/ui-shared/src/components/{settings/SettingsBackButton,settings/SettingsButtonRow,settings/SettingsSaveBar,diff/DiffSourceSelector,external-agents/AgentAccessEditor}.tsx',
+    prs: [],
+    View: SettingsAndAgentsSpecimen,
+  },
+  {
+    id: 'sidebar-parts',
+    name: 'Sidebar and settings parts',
+    group: 'Unified',
+    note: 'The sidebar nav marker, style picker and batch-removal notice and dialog, and the settings save line, each in every state.',
+    source:
+      'packages/ui-shared/src/components/{SidebarNavMarker,SidebarStylePicker,SidebarBatchRemovalNotice,SidebarBatchRemovalDialog,SettingsSaveStatus}.tsx',
+    prs: [],
+    View: SidebarPartsSpecimen,
+  },
+  {
+    id: 'status-parts',
+    name: 'Notices, status and presentation parts',
+    group: 'Unified',
+    note: 'The skill update and stuck-agent notices, starting-point chip, chat summary, status label, store badges, slash-command primitives and the spinner and streaming presentation providers, each in every state.',
+    source:
+      'packages/ui-shared/src/components/{SkillUpdateNotice,StuckAgentNotice,StartingPointChip,StartChatSummary,StatusLabel,StoreBadgeLink,SlashCommandPrimitives,spinner-style,streaming-text,StandardPresentationProvider}.tsx',
+    prs: [],
+    View: StatusPartsSpecimen,
+  },
+  {
+    id: 'usage-parts',
+    name: 'Usage, wake and workflow parts',
+    group: 'Unified',
+    note: 'The usage meter and popover actions, usage-limit and wake notices, wake turn boundary, workflow last-run text, uninstall confirmation, update marker and the tooltip provider, each in every state.',
+    source:
+      'packages/ui-shared/src/components/{usage-indicator-meter,UsageIndicatorActions,UsageLimitNotice,UsageResetIcon,WakeParkedNotice,WakeTurnBoundary,WorkflowLastRunText,UninstallConfirmDialog,UpdateMarker,tooltip-handoff}.tsx',
+    prs: [],
+    View: UsagePartsSpecimen,
+  },
+  {
+    id: 'feature-parts-a',
+    name: 'Feature parts, set 1',
+    group: 'Unified',
+    note: 'Shared feature components from ui-shared (set 1) in each state: default, busy, disabled, empty, error and long text.',
+    source: 'packages/ui-shared/src/components/',
+    prs: [],
+    View: SharedASpecimen,
+  },
+  {
+    id: 'feature-parts-b',
+    name: 'Feature parts, set 2',
+    group: 'Unified',
+    note: 'Shared feature components from ui-shared (set 2) in each state: default, busy, disabled, empty, error and long text.',
+    source: 'packages/ui-shared/src/components/',
+    prs: [],
+    View: SharedBSpecimen,
+  },
+  {
+    id: 'feature-parts-c',
+    name: 'Feature parts, set 3',
+    group: 'Unified',
+    note: 'Shared feature components from ui-shared (set 3) in each state: default, busy, disabled, empty, error and long text.',
+    source: 'packages/ui-shared/src/components/',
+    prs: [],
+    View: SharedCSpecimen,
+  },
+  {
+    id: 'chat-look',
+    name: 'Chat look',
+    group: 'Unified',
+    note: 'The chat look, chat detail, app name and step tense providers with the transcript parts that read them, side by side, and a live readout of each hook.',
+    source: 'packages/ui-shared/src/components/chat-look.tsx',
+    prs: [],
+    View: ChatLookSpecimen,
+  },
+  {
+    id: 'composer-plan-chip',
+    name: 'Composer plan chip',
+    group: 'Unified',
+    note: 'The Plan chip beside + (dismissible and toggle) and the Question chip, in a composer-sized box: on, off, read only, compact, disabled and long label.',
+    source: 'packages/ui-shared/src/components/composer-plan-chip.tsx',
+    prs: [],
+    View: PlanChipSpecimen,
   },
   {
     id: 'not-unified',

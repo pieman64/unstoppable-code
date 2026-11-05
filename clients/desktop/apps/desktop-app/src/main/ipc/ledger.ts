@@ -23,6 +23,8 @@ import {
   type LedgerEntriesSearchParams,
   type LedgerEntriesSearchResult,
   type LedgerOrigin,
+  type LedgerRollupsListParams,
+  type LedgerRollupsListResult,
 } from '@canopy/protocol/canopy-core';
 import {
   LEDGER_FEED_AUDIENCES,
@@ -30,6 +32,7 @@ import {
   isLedgerTaskViewScope,
   ledgerViewScopeKey,
   type LedgerFeedPage,
+  type LedgerFeedWorkPage,
   type LedgerGlobalViewScope,
   type LedgerViewChange,
   type LedgerViewChangedEvent,
@@ -58,6 +61,7 @@ import {
 import { readLedgerGlobalAccountId } from '../ledger/core-ledger-adapter';
 import { getLedgerFeedService } from '../ledger/feed-host';
 import type {
+  LedgerFeedRollupsIncarnation,
   LedgerFeedScopeIncarnation,
   LedgerFeedService,
 } from '../ledger/feed-service';
@@ -111,6 +115,18 @@ const EMPTY_SEARCH_RESULT: LedgerEntriesSearchResult = {
   hasMore: false,
   watermark: '0',
   actors: [],
+};
+
+/** No database means no local rollups have ever been recorded. */
+const EMPTY_ROLLUPS_RESULT: LedgerRollupsListResult = { scopes: [] };
+
+/** The Feed work view of a Ledger that has never had a database. */
+const EMPTY_FEED_WORK_PAGE: LedgerFeedWorkPage = {
+  rows: [],
+  actors: [],
+  actorHosts: {},
+  olderCount: 0,
+  truncated: false,
 };
 
 /** What the handlers need from the app; tests substitute their own. */
@@ -568,9 +584,13 @@ export async function listLedgerOwnersForView(
 }
 
 const ACTOR_FILTER = z.enum(['anyone', 'you']);
+const LedgerViewScopeSchema = z
+  .strictObject({ projectId: z.string(), worktreeId: z.string() })
+  .refine((scope) => readViewScope(scope) !== null);
 
 /** A Feed search as the renderer sends it. */
 const LedgerFeedRequestSchema = z.strictObject({
+  scope: LedgerViewScopeSchema.optional(),
   audience: z.enum(LEDGER_FEED_AUDIENCES),
   query: z.string().max(4 * LEDGER_LIMITS.searchQueryMaxCodePoints),
   filters: z.strictObject({
@@ -584,6 +604,15 @@ const LedgerFeedRequestSchema = z.strictObject({
   cursor: z.string().min(1).max(128).optional(),
   refresh: z.boolean().optional(),
   peek: z.boolean().optional(),
+  // Activity search filters across scopes; the rollup batch bound belongs to
+  // the worker call, not this potentially much larger list of scope IDs.
+  ledgerIds: z.array(LedgerUuidSchema).optional(),
+});
+
+const LedgerFeedWorkRequestSchema = z.strictObject({
+  scope: LedgerViewScopeSchema.optional(),
+  includeOlder: z.boolean(),
+  refresh: z.boolean().optional(),
 });
 
 const LedgerFeedEntryRequestSchema = z.strictObject({
@@ -663,6 +692,71 @@ export async function searchLedgerFeedForView(
       reason: 'UNKNOWN',
       message: "Couldn't load the Feed.",
     };
+  }
+}
+
+/** One local rollup batch for the Feed, read as the person through the dispatcher. */
+async function listLedgerFeedRollupsForView(
+  dispatcher: Pick<DesktopCanopyDispatcher, 'query'>,
+  ipcCaller: CanopyCallerDescriptor,
+  params: LedgerRollupsListParams,
+  incarnation: LedgerFeedRollupsIncarnation,
+  host: LedgerIpcHost,
+): Promise<LedgerViewResult<LedgerRollupsListResult>> {
+  if (!host.isEnabled()) return { status: 'unavailable', reason: 'disabled' };
+  try {
+    if (!(await host.databaseMayExist())) {
+      return { status: 'ok', value: EMPTY_ROLLUPS_RESULT };
+    }
+    const value = await asLocalUser(
+      {
+        kind: 'ready',
+        scope: ledgerViewScopeForContainer(
+          incarnation.container,
+          incarnation.ledgerId,
+        ),
+        container: incarnation.container,
+        containerCreatedAt: incarnation.containerCreatedAt,
+      },
+      ipcCaller,
+      host,
+      LEDGER_GRANTS.read,
+      (caller) =>
+        dispatcher.query('core.ledger.rollups.list', params, { caller }),
+    );
+    return { status: 'ok', value };
+  } catch (error) {
+    return errorResult(error);
+  }
+}
+
+/** This device's operations and top-level task rollups, for the Feed. */
+export async function listLedgerFeedWorkForView(
+  feed: Pick<LedgerFeedService, 'listWork'>,
+  dispatcher: Pick<DesktopCanopyDispatcher, 'query'>,
+  ipcCaller: CanopyCallerDescriptor,
+  request: unknown,
+  host: LedgerIpcHost = DESKTOP_LEDGER_IPC_HOST,
+): Promise<LedgerViewResult<LedgerFeedWorkPage>> {
+  if (!host.isEnabled()) return { status: 'unavailable', reason: 'disabled' };
+  const parsed = LedgerFeedWorkRequestSchema.safeParse(request);
+  if (!parsed.success) return invalidRequest('Invalid Feed work request.');
+  try {
+    if (!(await host.databaseMayExist())) {
+      return { status: 'ok', value: EMPTY_FEED_WORK_PAGE };
+    }
+    return await feed.listWork(parsed.data, {
+      listRollups: (params, incarnation) =>
+        listLedgerFeedRollupsForView(
+          dispatcher,
+          ipcCaller,
+          params,
+          incarnation,
+          host,
+        ),
+    });
+  } catch (error) {
+    return errorResult(error);
   }
 }
 
@@ -801,6 +895,24 @@ export function registerLedgerHandlers(
     IPC_CHANNELS.ledgerFeedGetEntry,
     (_event: IpcMainInvokeEvent, request) =>
       getLedgerFeedEntryForView(getLedgerFeedService(), request),
+  );
+  registerIpcHandler<[unknown], LedgerViewResult<LedgerFeedWorkPage>>(
+    IPC_CHANNELS.ledgerFeedWork,
+    async (
+      event: IpcMainInvokeEvent,
+      request,
+    ): Promise<LedgerViewResult<LedgerFeedWorkPage>> => {
+      try {
+        return await listLedgerFeedWorkForView(
+          getLedgerFeedService(),
+          dispatcher,
+          resolveCaller(event),
+          request,
+        );
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
   );
   disposeChangeBroadcast?.();
   const broadcaster = createLedgerChangeBroadcaster((event): void =>

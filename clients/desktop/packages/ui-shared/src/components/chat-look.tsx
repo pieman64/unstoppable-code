@@ -187,14 +187,6 @@ export const CLEAN_FOOTER_ICON_BUTTON_CLASS = buttonClassName({
 });
 
 /**
- * A turn footer's icon button under the classic look (thumbs, copy): no
- * border or background at rest, the timestamp's muted tone, and a subtle
- * hover/active tint. The hit area and focus ring stay.
- */
-export const CLASSIC_FOOTER_ICON_BUTTON_CLASS =
-  'focus-ring flex h-6 w-6 pointer-coarse:h-11 pointer-coarse:w-11 items-center justify-center rounded-md fg-quaternary transition-colors hover:bg-fg-primary/[0.04] hover:fg-secondary active:bg-fg-primary/[0.08]';
-
-/**
  * Whether a step is done, still running, failed, was blocked before it ran,
  * or was interrupted or is waiting for approval. Status changes do not
  * change the stable action label.

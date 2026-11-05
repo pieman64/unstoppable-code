@@ -164,6 +164,13 @@ const WORKLOAD_PROFILES = Object.freeze({
     managedDelegationTranscriptBytes: 1024 * 1024,
     managedDelegationChildSteps: 6,
     managedDelegationChildStepMs: 400,
+    delegationCyclesTranscriptBytes: 8 * 1024 * 1024,
+    delegationCyclesHistoryCards: 60,
+    delegationCycles: 2,
+    delegationCyclesDelegates: 3,
+    delegationCyclesChildSteps: 60,
+    delegationCyclesChildStepMs: 500,
+    delegationCyclesParentStreamMs: 90_000,
     codeGraphQueuedRefreshes: 3,
     codeGraphNewWorktreeFiles: 300,
     codeGraphSmallEditSmallFiles: 100,
@@ -326,6 +333,13 @@ const WORKLOAD_PROFILES = Object.freeze({
     managedDelegationTranscriptBytes: 8 * 1024 * 1024,
     managedDelegationChildSteps: 16,
     managedDelegationChildStepMs: 600,
+    delegationCyclesTranscriptBytes: 64 * 1024 * 1024,
+    delegationCyclesHistoryCards: 300,
+    delegationCycles: 4,
+    delegationCyclesDelegates: 4,
+    delegationCyclesChildSteps: 80,
+    delegationCyclesChildStepMs: 600,
+    delegationCyclesParentStreamMs: 90_000,
     codeGraphQueuedRefreshes: 6,
     codeGraphNewWorktreeFiles: 1_200,
     codeGraphSmallEditSmallFiles: 1_000,
@@ -488,6 +502,13 @@ const WORKLOAD_PROFILES = Object.freeze({
     managedDelegationTranscriptBytes: 16 * 1024 * 1024,
     managedDelegationChildSteps: 32,
     managedDelegationChildStepMs: 600,
+    delegationCyclesTranscriptBytes: 128 * 1024 * 1024,
+    delegationCyclesHistoryCards: 600,
+    delegationCycles: 6,
+    delegationCyclesDelegates: 6,
+    delegationCyclesChildSteps: 100,
+    delegationCyclesChildStepMs: 600,
+    delegationCyclesParentStreamMs: 90_000,
     codeGraphQueuedRefreshes: 10,
     codeGraphNewWorktreeFiles: 3_000,
     codeGraphSmallEditSmallFiles: 1_000,
@@ -508,6 +529,10 @@ const MULTI_CHAT_STREAMING_SCENARIOS = Object.freeze([
 
 const MANAGED_DELEGATION_SCENARIOS = Object.freeze([
   'managed-delegation-concurrency',
+]);
+
+const DELEGATION_RESTART_CYCLES_SCENARIOS = Object.freeze([
+  'delegation-restart-cycles',
 ]);
 
 /**
@@ -566,6 +591,13 @@ export const SCENARIO_SCOPED_CONFIG_KEYS = Object.freeze({
   managedDelegationTranscriptBytes: MANAGED_DELEGATION_SCENARIOS,
   managedDelegationChildSteps: MANAGED_DELEGATION_SCENARIOS,
   managedDelegationChildStepMs: MANAGED_DELEGATION_SCENARIOS,
+  delegationCyclesTranscriptBytes: DELEGATION_RESTART_CYCLES_SCENARIOS,
+  delegationCyclesHistoryCards: DELEGATION_RESTART_CYCLES_SCENARIOS,
+  delegationCycles: DELEGATION_RESTART_CYCLES_SCENARIOS,
+  delegationCyclesDelegates: DELEGATION_RESTART_CYCLES_SCENARIOS,
+  delegationCyclesChildSteps: DELEGATION_RESTART_CYCLES_SCENARIOS,
+  delegationCyclesChildStepMs: DELEGATION_RESTART_CYCLES_SCENARIOS,
+  delegationCyclesParentStreamMs: DELEGATION_RESTART_CYCLES_SCENARIOS,
   codeGraphQueuedRefreshes: Object.freeze(['code-graph-new-worktree']),
   codeGraphNewWorktreeFiles: Object.freeze(['code-graph-new-worktree']),
   codeGraphSmallEditSmallFiles: Object.freeze(['code-graph-small-edit']),
@@ -579,10 +611,13 @@ export const SCENARIO_SCOPED_CONFIG_KEYS = Object.freeze({
   ]),
   frameSmoothnessIterations: Object.freeze(['frame-smoothness']),
   frameSmoothnessSidebarEntries: Object.freeze(['frame-smoothness']),
-  ledgerScopeEntries: Object.freeze(['ledger-panel']),
-  ledgerOtherScopes: Object.freeze(['ledger-panel']),
-  ledgerOtherScopeEntries: Object.freeze(['ledger-panel']),
-  ledgerRoundTrips: Object.freeze(['ledger-panel']),
+  ledgerScopeEntries: Object.freeze(['ledger-panel', 'ledger-feed-overview']),
+  ledgerOtherScopes: Object.freeze(['ledger-panel', 'ledger-feed-overview']),
+  ledgerOtherScopeEntries: Object.freeze([
+    'ledger-panel',
+    'ledger-feed-overview',
+  ]),
+  ledgerRoundTrips: Object.freeze(['ledger-panel', 'ledger-feed-overview']),
   ledgerIdleDwellMs: Object.freeze(['ledger-disabled-idle']),
   costIndexAuditDays: Object.freeze(['cost-index-first-build']),
   costIndexAuditLinesPerDay: Object.freeze(['cost-index-first-build']),
@@ -637,6 +672,7 @@ export const OPT_IN_SCENARIO_NAMES = Object.freeze([
   'browser-agent-actions',
   ...MULTI_CHAT_STREAMING_SCENARIOS,
   ...MANAGED_DELEGATION_SCENARIOS,
+  ...DELEGATION_RESTART_CYCLES_SCENARIOS,
   'code-graph-new-worktree',
   'code-graph-small-edit',
   'claude-graph-orientation',
@@ -644,6 +680,12 @@ export const OPT_IN_SCENARIO_NAMES = Object.freeze([
   'frame-smoothness',
   'cost-index-first-build',
   'skill-suggestions-backfill',
+  'lab-transcript-onscreen',
+  'lab-transcript-offscreen',
+  'lab-transcript-checkpoint',
+  'many-chat-residency',
+  'many-worktree-file-index',
+  'scope-residency',
   ...CODE_REVIEW_REGISTRY_SCENARIOS,
   ...W5_STORE_SCENARIOS,
 ]);
@@ -716,6 +758,7 @@ export const SCENARIO_NAMES = Object.freeze([
   'chats',
   'mixed-provider-agent-concurrency',
   'managed-delegation-concurrency',
+  'delegation-restart-cycles',
   'multi-chat-streaming',
   'multi-chat-streaming-sequential',
   'background-streaming',
@@ -728,12 +771,19 @@ export const SCENARIO_NAMES = Object.freeze([
   'code-graph-concurrency',
   'code-graph-background-concurrency',
   'ledger-panel',
+  'ledger-feed-overview',
   'ledger-disabled-idle',
   'code-graph-new-worktree',
   'code-graph-small-edit',
   'claude-graph-orientation',
   'cost-index-first-build',
   'skill-suggestions-backfill',
+  'lab-transcript-onscreen',
+  'lab-transcript-offscreen',
+  'lab-transcript-checkpoint',
+  'many-chat-residency',
+  'many-worktree-file-index',
+  'scope-residency',
   ...CODE_REVIEW_REGISTRY_SCENARIOS,
   ...W5_STORE_SCENARIOS,
 ]);
@@ -1251,7 +1301,7 @@ export function performanceUsage() {
 
 Options:
   --profile <smoke|baseline|stress|counters> Workload size (default baseline); counters runs the smoke-sized work-counter ratchet
-  --scenarios <csv>                  sidebar-reorder,startup-settle,startup-realistic,power-user-idle,power-user-active,loaded-ui,pipeline-history,large-transcripts,stress-transcript,transcript-streaming-tail,transcript-streaming-history,transcript-active-turn,transcript-active-turn-stop,transcript-active-turn-tools,transcript-retention-cycle,math-transcripts,linear-reference-transcripts,frame-smoothness,chat-search-indexing,plugin-picker,file-explorer,browser-panels,browser-actions,browser-agent-actions,inner-panels-collapse,plan-open,chats,mixed-provider-agent-concurrency,managed-delegation-concurrency,multi-chat-streaming,multi-chat-streaming-sequential,background-streaming,chat-switch-catch-up,pipelines,scripts,worktrees,worktree-concurrency,large-transcript-concurrency,code-graph-concurrency,code-graph-background-concurrency,code-graph-new-worktree,code-graph-small-edit,claude-graph-orientation,ledger-panel,ledger-disabled-idle,cost-index-first-build,skill-suggestions-backfill,code-review-registry-cleanup,code-review-registry-cleanup-trace,w5-store-startup,w5-store-reload,w5-store-writes
+  --scenarios <csv>                  sidebar-reorder,startup-settle,startup-realistic,power-user-idle,power-user-active,loaded-ui,pipeline-history,large-transcripts,stress-transcript,transcript-streaming-tail,transcript-streaming-history,transcript-active-turn,transcript-active-turn-stop,transcript-active-turn-tools,transcript-retention-cycle,math-transcripts,linear-reference-transcripts,frame-smoothness,chat-search-indexing,plugin-picker,file-explorer,browser-panels,browser-actions,browser-agent-actions,inner-panels-collapse,plan-open,chats,mixed-provider-agent-concurrency,managed-delegation-concurrency,delegation-restart-cycles,multi-chat-streaming,multi-chat-streaming-sequential,background-streaming,chat-switch-catch-up,pipelines,scripts,worktrees,worktree-concurrency,large-transcript-concurrency,code-graph-concurrency,code-graph-background-concurrency,code-graph-new-worktree,code-graph-small-edit,claude-graph-orientation,ledger-panel,ledger-feed-overview,ledger-disabled-idle,cost-index-first-build,skill-suggestions-backfill,lab-transcript-onscreen,lab-transcript-offscreen,lab-transcript-checkpoint,many-chat-residency,many-worktree-file-index,scope-residency,code-review-registry-cleanup,code-review-registry-cleanup-trace,w5-store-startup,w5-store-reload,w5-store-writes
   --output <path>                    JSON result path
   --label <text>                     Human-readable run label
   --repeat <n>                       Run every scenario n times, each a fresh launch, and keep every sample (default 1)

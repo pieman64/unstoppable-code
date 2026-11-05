@@ -54,7 +54,6 @@ import {
   type CanopyStreamFrame,
   type CanopyStreamHandle,
   type CanopyStreamOptions,
-  canopyCapabilityUnavailableError,
 } from '@canopy/core-runtime';
 import type {
   ChatStateCommandPort,
@@ -76,6 +75,10 @@ import type {
   ChatToolOutputResponse,
 } from '@canopy/desktop-shared/types';
 import { createCoreChatStateAdapter } from './core-chat-state-adapter';
+import {
+  createCoreChatTurnAdapter,
+  type CoreChatTurnCancelHost,
+} from './core-chat-turn-adapter';
 import type { TranscriptPage } from '@canopy/agent-transcript/transcript-storage';
 import { createCoreChatEventsAdapter } from './core-chat-events-adapter';
 import {
@@ -90,6 +93,7 @@ import { logMainProcessError } from '../lib/main-process-logging';
 import { getChatStateCommandPort } from '../ipc/chat-state';
 import { createCoreChatCommandAdapter } from './core-chat-command-adapter';
 import { getChatStateService } from '../services/chat-state-service';
+import { getChatTurnOwnership } from '../services/chat-turn-ownership';
 import { createCoreChatMessageAdapter } from './core-chat-message-command-adapter';
 import {
   createCoreWorkspaceAdapter,
@@ -261,6 +265,8 @@ export interface CreateDesktopRuntimeOptions {
   workspaceReadSnapshotLimits?: CoreReadSnapshotLimits;
   chatServices?: CoreChatReadServices;
   chatCommandPort?: ChatStateCommandPort;
+  /** Effects behind `core.chat.turn.cancel`; default to the desktop Stop. */
+  turnCancelHost?: CoreChatTurnCancelHost;
   adapters?: DesktopDomainAdapter[];
   /**
    * Handler logic for `core.ledger.*`. Defaults to the app's Ledger service,
@@ -786,6 +792,9 @@ function recoverLegacyWorkspaceRead(error: unknown, captured: unknown): null {
   throw error;
 }
 
+/** Rows of one chat id the search index can hold: live, archived, plan. */
+const CHAT_SCOPE_LOOKUP_LIMIT = 20;
+
 export function createDesktopRuntime(
   options: CreateDesktopRuntimeOptions = {},
 ): DesktopCanopyDispatcher {
@@ -1174,16 +1183,58 @@ export function createDesktopRuntime(
     queries: operationAdapter.queries,
     instructions: operationAdapter.instructions,
   };
-  // shortcut: desktop's stop does not reach the dispatcher yet, so this
-  // catalog operation (served by the web core, CAN-4156) is refused here and
-  // left out of the core+worker manifest (runtime-profiles.yaml); CAN-5485
-  // routes desktop's stop through it.
   const turnAdapter: DesktopDomainAdapter = {
-    instructions: {
-      'core.chat.turn.cancel': () => {
-        throw canopyCapabilityUnavailableError();
+    instructions: createCoreChatTurnAdapter(
+      options.turnCancelHost ?? {
+        scopesForChat: async (chatId) => {
+          const scopes = new Map(
+            getChatTurnOwnership()
+              .scopesForChat(chatId)
+              .map((scope) => [
+                `${scope.projectId}/${scope.worktreeId}`,
+                scope,
+              ]),
+          );
+          try {
+            const { getChatSearchService } =
+              await import('../chat-search/service');
+            // The index lists every live and archived chat by id, one query.
+            for (const row of getChatSearchService().getCatalog(
+              CHAT_SCOPE_LOOKUP_LIMIT,
+              [chatId],
+            ))
+              scopes.set(`${row.projectId}/${row.worktreeId}`, {
+                projectId: row.projectId,
+                worktreeId: row.worktreeId,
+                chatId,
+              });
+          } catch (error) {
+            // Without the index an untracked chat is unknown, not missing.
+            if (scopes.size === 0)
+              throw new CanopyOperationError(
+                {
+                  kind: 'unavailable',
+                  message: 'The chat lookup is unavailable.',
+                  retry: { kind: 'same_request', delayMs: 1_000 },
+                },
+                error,
+              );
+            logMainProcessError('Chat search scope lookup failed', error);
+          }
+          return [...scopes.values()];
+        },
+        getState: (scope) =>
+          (options.chatCommandPort ?? getChatStateService()).getState(scope),
+        stop: async (request, userMessageId) => {
+          // Lazy: the chat IPC module's graph loads only on the first Stop.
+          const [{ stopChatForUser }, { getMainWindow }] = await Promise.all([
+            import('../ipc/chat'),
+            import('../lib/main-window-focus'),
+          ]);
+          return stopChatForUser(request, getMainWindow, userMessageId);
+        },
       },
-    },
+    ),
   };
   const adapters: DesktopDomainAdapter[] = [
     commandAdapter,

@@ -80,10 +80,12 @@ import {
 } from './receipt-reply';
 import {
   decodeStoredDelegationV3,
+  encodeStoredDelegationV3,
   legacyPrefixView,
   currentStopPolicy,
   delegationSettlementKey,
   delegationStopRequestHash,
+  isLatestReceipt,
   nextV3ReceiptAdmissionTime,
   type StoredDelegationV3,
   type StoredCardPublication,
@@ -91,6 +93,11 @@ import {
   type V3StopReceiptEntry,
 } from './record-v3';
 import { DelegationReadMetadataError } from './record-read-metadata';
+import {
+  isTerminalDelegationSummary,
+  matchesTerminalDelegationSummary,
+  summarizeTerminalDelegation,
+} from './terminal-summary';
 import {
   DELEGATION_CHILD_ID_LIMIT,
   DELEGATION_NOT_DESCENDANT_ERROR,
@@ -136,7 +143,7 @@ import {
   type DelegationLaunchRecord,
   type DelegationNativeReconciliation,
 } from './launch-journal';
-import type { AgentRunnerRegistry, AgentRunnerLease } from './runner-registry';
+import { AgentRunnerRegistry, type AgentRunnerLease } from './runner-registry';
 import type {
   DelegationParentContext,
   ResolvedAgentRouteSnapshot,
@@ -176,6 +183,15 @@ import {
 } from './capability-grant';
 
 const MAX_RETAINED_STOP_REQUESTS = 64;
+const SESSION_END_ADMISSION_TIMEOUT_MS = 3_000;
+const TRANSCRIPT_MUTATION_METHODS = new Set([
+  'appendReceipt',
+  'open',
+  'appendChanges',
+  'settle',
+  'updateCardState',
+  'registerGeneration',
+]);
 
 export interface StoredDelegationControl {
   readonly operationId: string;
@@ -382,6 +398,27 @@ function legacyArrays(
   return record?.version === 3 ? undefined : record;
 }
 
+/** A queue/outbox view: never retains immutable legacy transcript bodies. */
+function withoutLegacyTranscriptBodies(
+  record: StoredDelegationV3,
+): StoredDelegationV3 {
+  if (isSettledStatus(record.state.status)) {
+    const summary = summarizeTerminalDelegation(record);
+    if (summary.version !== 3)
+      throw new Error('Stream outbox record changed format');
+    return summary;
+  }
+  if (!record.legacyPrefix) return record;
+  const {
+    history: _history,
+    results: _results,
+    ...legacyPrefix
+  } = record.legacyPrefix;
+  void _history;
+  void _results;
+  return { ...record, legacyPrefix };
+}
+
 /** Historical and stream command metadata for keyed replay only. */
 export function controlsForReplay(
   record: StoredDelegation,
@@ -486,6 +523,33 @@ function isSettledStatus(
   );
 }
 
+/**
+ * Record-local repair work. This deliberately does not decide whether a
+ * terminal card is current: repairStreams audits that separately through the
+ * read-only transcript descriptor and its optional terminal-audit predicate.
+ */
+export function isUnconvergedStreamDelegation(
+  record: StoredDelegation,
+): boolean {
+  if (record.version !== 3) return false;
+  const intentionalInterruption =
+    record.state.status === 'interrupted' &&
+    (record.interruptedGeneration === record.state.runGeneration ||
+      record.control?.operation === 'interrupt');
+  // A restart interruption is settled once its generation's result is recorded.
+  const unsettled =
+    !isSettledStatus(record.state.status) ||
+    (record.state.status === 'interrupted' &&
+      !intentionalInterruption &&
+      record.latestResult?.runGeneration !== record.state.runGeneration);
+  return (
+    unsettled ||
+    record.settling !== undefined ||
+    record.receipts.activeStop !== undefined ||
+    (record.latestResult !== undefined && record.latestResult.notified !== true)
+  );
+}
+
 function delegateOutput(
   record: StoredDelegation,
   resultIndex: number,
@@ -549,6 +613,19 @@ export function delegationExitReason(
   record: StoredDelegation,
   runGeneration: number,
 ): DelegationStopReason | undefined {
+  if (isTerminalDelegationSummary(record)) {
+    const result = record.summaryIndex.resultMetadata.find(
+      (candidate) => candidate.runGeneration === runGeneration,
+    );
+    if (result?.stopReason) return result.stopReason;
+    if (record.state.runGeneration === runGeneration)
+      return isSettledStatus(record.state.status)
+        ? record.state.stopReason
+        : undefined;
+    return record.summaryIndex.historicalStopReasons.find(
+      (candidate) => candidate.runGeneration === runGeneration,
+    )?.stopReason;
+  }
   const result = legacyPrefixView(record).results?.find(
     (candidate) => candidate.runGeneration === runGeneration,
   );
@@ -562,10 +639,22 @@ export function delegationExitReason(
   )?.snapshot.stopReason;
 }
 
+/** The digest of the bytes `FileDelegationStorage` writes for a record. */
+function streamRecordFileDigest(record: StoredDelegationV3): string {
+  return createHash('sha256')
+    .update(
+      encodeStoredDelegationV3(
+        decodeStoredDelegationV3(JSON.parse(JSON.stringify(record))),
+      ),
+    )
+    .digest('hex');
+}
+
 /** V1 is normalized in memory and upgraded only on the next owned write. */
 export function normalizeStoredDelegationRecord(
   record: StoredDelegation,
 ): StoredDelegation {
+  if (isTerminalDelegationSummary(record)) return record;
   if (record.version === 3) return record;
   const retained = [...(legacyArrays(record)?.results ?? [])].sort(
     (left, right) => left.resultIndex - right.resultIndex,
@@ -606,6 +695,8 @@ export function normalizeStoredDelegationRecord(
 }
 
 function withSettledResult(record: StoredDelegation): StoredDelegation {
+  if (isTerminalDelegationSummary(record))
+    throw new Error('Cannot update a terminal summary');
   if (record.version === 3) return record;
   if (!isSettledStatus(record.state.status)) return record;
   const withoutAutomaticDelivery =
@@ -641,8 +732,17 @@ function withSettledResult(record: StoredDelegation): StoredDelegation {
 
 export interface DelegationStorage {
   load(): Promise<readonly StoredDelegation[]>;
-  /** Canonical single-record parse, used only by a pending outbox repair. */
-  loadOne?(delegationId: string): Promise<StoredDelegation | undefined>;
+  /** Observation-only load for maintenance jobs; never creates missing storage. */
+  loadReadOnly?(): Promise<{
+    readonly records: readonly StoredDelegation[];
+    readonly missing: boolean;
+  }>;
+  /**
+   * Required private-file/schema/identity-checked point read of durable bytes.
+   * Hydration normalizes this raw form before generation/revision validation;
+   * observation-only storage callers retain their existing decoded shape.
+   */
+  loadOne(delegationId: string): Promise<StoredDelegation | undefined>;
   commit(record: StoredDelegation): Promise<void>;
 }
 
@@ -667,6 +767,16 @@ class GenerationStoreRefused extends Error {}
 
 export interface AgentDelegationBrokerOptions {
   readonly asyncAdmission?: boolean;
+  /**
+   * Best-effort host hand-off after a task-ID spawn is durably admitted and
+   * installed, but before its runner is created. Not called for replays or
+   * spawns without `taskIds`.
+   */
+  readonly onAdmitted?: (
+    parent: DelegationParentContext,
+    task: AgentDelegationSpawnRequest,
+    delegationId: string,
+  ) => Promise<void>;
   /** Chosen once, before the generation is durably admitted or launched. */
   readonly generationStore?: (context: {
     readonly record: StoredDelegation;
@@ -815,6 +925,28 @@ export interface AgentDelegationBrokerOptions {
     route: ResolvedAgentRouteSnapshot,
     signal: AbortSignal,
   ) => Promise<AgentDelegationResult<void>>;
+}
+
+export interface AgentDelegationRepairOnlyBrokerOptions {
+  readonly repairOnly: true;
+  readonly storage: DelegationStorage;
+  readonly transcriptPort: DelegationTranscriptPort;
+  readonly onSettled?: AgentDelegationBrokerOptions['onSettled'];
+  readonly onError?: AgentDelegationBrokerOptions['onError'];
+}
+
+export interface AgentDelegationStreamRepairOptions {
+  /** Return false or throw when the caller's captured scope was removed. */
+  readonly revalidateScope?: () => boolean | Promise<boolean>;
+  /** Gates only terminal records with no record-local repair flags. */
+  readonly shouldAuditTerminal?: (
+    record: StoredDelegationV3,
+  ) => boolean | Promise<boolean>;
+}
+
+export interface AgentDelegationStreamRepairResult {
+  readonly repaired: number;
+  readonly failed: number;
 }
 
 /**
@@ -1051,6 +1183,9 @@ function mergeAuthoredTranscriptItems(
     truncated,
   };
 }
+
+/** How stale a running stream record's activity may get between item writes. */
+const STREAM_TRANSCRIPT_ACTIVITY_MS = 1_000;
 
 function retainAuthoredTranscriptItems(
   reduced: DelegationRunState,
@@ -1414,15 +1549,19 @@ function applyFailed(
   control: StoredDelegationControl,
   apply: DelegationApplyFailure,
 ): AgentDelegationResult<never> {
+  return { ok: false, error: applyFailedError(control, apply) };
+}
+
+function applyFailedError(
+  control: StoredDelegationControl,
+  apply: DelegationApplyFailure,
+): AgentDelegationError {
   return {
-    ok: false,
-    error: {
-      code: 'apply_failed',
-      message: control.error ?? 'Nothing was applied.',
-      // A fresh apply can succeed without changes only after a failed write.
-      retryable: apply.reason === 'write_failed',
-      apply,
-    },
+    code: 'apply_failed',
+    message: control.error ?? 'Nothing was applied.',
+    // A fresh apply can succeed without changes only after a failed write.
+    retryable: apply.reason === 'write_failed',
+    apply,
   };
 }
 
@@ -1435,17 +1574,29 @@ const MAX_RETAINED_HISTORY = 16;
 
 /** Same-process only: no answer bytes or extra repair ledger is persisted. */
 interface StreamSettlementOutbox {
-  readonly record: StoredDelegationV3;
+  record: StoredDelegationV3;
   readonly target: DelegationTranscriptTarget;
   readonly key: string;
   readonly digest: string;
   readonly outcome: DelegationTranscriptResultEntry['outcome'];
   readonly resultIndex: number;
-  readonly input?: V3SettlementContractInput;
+  /** Exact answer remains transient only until registry settlement commits. */
+  input?: V3SettlementContractInput;
+  /** Registry success releases input before the local locator commit. */
+  registrySettled?: boolean;
   locator?: NonNullable<StoredDelegationV3['latestResult']>;
   stage: string;
   attempts: number;
   timer?: ReturnType<typeof setTimeout>;
+}
+
+interface DelegationCallEntry {
+  readonly hash: string;
+  readonly owner: string;
+  /** Only retained while admission is in flight; never a settled snapshot. */
+  result?: Promise<AgentDelegationResult<AgentDelegationSnapshot>>;
+  delegationId?: string;
+  failure?: AgentDelegationError;
 }
 
 class OutboxFenceConflict extends Error {}
@@ -1460,6 +1611,16 @@ export interface DelegationContinuationCandidate {
   /** The root chat the delegation belongs to. */
   readonly chatId: string;
   /** When the delegation was first created, in epoch milliseconds. */
+  readonly createdAt: number;
+}
+
+/** Retained identity and original lineage for Ledger ownership resolution. */
+export interface RetainedLedgerDelegation {
+  readonly delegationId: string;
+  readonly rootChatId: string;
+  readonly parentDelegationId?: string;
+  readonly description: string;
+  readonly runGeneration: number;
   readonly createdAt: number;
 }
 
@@ -1495,22 +1656,36 @@ class ReceiptAdmissionFailure extends Error {
 }
 
 /** One host instance owns a private worktree registry. No restart path launches work. */
+/** A terminal summary's canonical record is missing or no longer matches it. */
+class TerminalSummaryHydrationError extends Error {}
+
 export class AgentDelegationBroker {
+  private readonly options: AgentDelegationBrokerOptions;
+  private readonly repairOnly: boolean;
   private readonly cardPublications: CardPublicationQueue;
   private readonly excludedCardGenerations = new Set<string>();
   private readonly validatedCardRecords = new WeakSet<StoredDelegationV3>();
+  /**
+   * During initialization only: the digest of each stream record's file as
+   * loaded or last written. Startup repair rewrites a settled record even
+   * when nothing changed; a write of identical bytes is skipped.
+   */
+  private readonly startupFileDigests = new Map<string, string>();
+  /**
+   * The newest transcript receipt of each stream record's current
+   * generation. A receipt confirms rows the transcript port already made
+   * durable, so it costs no record write of its own: the record's next write
+   * carries it (`prepareV3Update`).
+   */
+  private readonly latestReceipts = new Map<
+    string,
+    NonNullable<StoredDelegationV3['latestReceipt']>
+  >();
   private readonly stoppedGenerations = new Set<string>();
   /** Immediate fence while durable revocation writes are still pending. */
   private readonly revokedDelegations = new Set<string>();
   private readonly records = new Map<string, StoredDelegation>();
-  private readonly calls = new Map<
-    string,
-    {
-      hash: string;
-      owner: string;
-      result: Promise<AgentDelegationResult<AgentDelegationSnapshot>>;
-    }
-  >();
+  private readonly calls = new Map<string, DelegationCallEntry>();
   /** New identities not yet represented in records; never continuations. */
   private readonly newIdentityReservations = new Set<string>();
   private readonly pending = new Map<
@@ -1541,12 +1716,20 @@ export class AgentDelegationBroker {
   private readonly outboxWaiters = new Set<() => void>();
   private readonly recordTransaction =
     new AsyncLocalStorage<PreparedRecordTransaction>();
+  private readonly streamRepairContext = new AsyncLocalStorage<{
+    readonly revalidateScope?: () => boolean | Promise<boolean>;
+  }>();
 
   private readonly controlCalls = new Map<
     string,
     {
       hash: string;
-      result: Promise<AgentDelegationResult<AgentDelegationSnapshot>>;
+      result?: Promise<AgentDelegationResult<AgentDelegationSnapshot>>;
+      /** Plain replay projection; unlike `result`, it retains no promise chain. */
+      replay?: AgentDelegationSnapshot;
+      delegationId?: string;
+      settled?: boolean;
+      failure?: AgentDelegationError;
     }
   >();
   private readonly commands = new Map<Promise<void>, string>();
@@ -1574,19 +1757,47 @@ export class AgentDelegationBroker {
   private readonly admission: DelegationAdmissionController;
   private initialized = false;
   private closed = false;
+  private streamRepairStarted = false;
 
-  constructor(private readonly options: AgentDelegationBrokerOptions) {
+  constructor(
+    options:
+      | AgentDelegationBrokerOptions
+      | AgentDelegationRepairOnlyBrokerOptions,
+  ) {
+    if ('repairOnly' in options) {
+      this.repairOnly = true;
+      this.options = {
+        storage: options.storage,
+        transcriptPort: options.transcriptPort,
+        onSettled: options.onSettled,
+        onError: options.onError,
+        registry: new AgentRunnerRegistry(),
+        cwd: '',
+        resolveRoute: (): Promise<never> =>
+          Promise.reject(new Error('Repair-only broker cannot resolve routes')),
+        authorize: (): Promise<never> =>
+          Promise.reject(
+            new Error('Repair-only broker cannot authorize routes'),
+          ),
+      };
+    } else {
+      this.repairOnly = false;
+      this.options = options;
+    }
     this.cardPublications = new CardPublicationQueue({
       port: (): DelegationTranscriptPort => this.streamPort(),
       rebase: (record, publication): Promise<StoredDelegationV3> =>
         this.rebaseCardPublication(record, publication),
       onError: (error): void => this.options.onError?.(error),
     });
-    for (const value of [options.capacity ?? 5, options.totalCapacity ?? 64])
+    for (const value of [
+      this.options.capacity ?? 5,
+      this.options.totalCapacity ?? 64,
+    ])
       if (!Number.isInteger(value) || value < 1 || value > 64)
         throw new Error('Invalid delegation capacity');
     this.admission =
-      options.admission ??
+      this.options.admission ??
       createDelegationAdmissionController({
         limitForBucket: (bucket): number => {
           const bucketParent = this.bucketParents.get(
@@ -1598,6 +1809,170 @@ export class AgentDelegationBroker {
         },
         hostCapacity: (): number => this.options.totalCapacity ?? 64,
       });
+  }
+
+  /** Retain only metadata after the full terminal record has been committed. */
+  private retainRecord(record: StoredDelegation): StoredDelegation {
+    const retained = isSettledStatus(record.state.status)
+      ? summarizeTerminalDelegation(record)
+      : record;
+    this.records.set(record.state.delegationId, retained);
+    if (isSettledStatus(record.state.status))
+      for (const entry of Array.from(this.controlCalls.values()))
+        if (entry.delegationId === record.state.delegationId && entry.settled)
+          entry.result = undefined;
+    return retained;
+  }
+
+  /**
+   * Writers own the per-id chain before calling this helper. A summary is
+   * hydrated only from canonical single-record storage, then checked against
+   * the exact summary revision before the caller may mutate it.
+   */
+  private async recordForMutation(
+    id: string,
+    retained: StoredDelegation,
+  ): Promise<StoredDelegation> {
+    if (!isTerminalDelegationSummary(retained)) {
+      if (this.records.get(id) !== retained)
+        throw new Error('Delegation record changed before mutation');
+      return retained;
+    }
+    const loaded = await this.options.storage.loadOne(id);
+    if (!loaded)
+      throw new TerminalSummaryHydrationError(
+        'Canonical delegation record unavailable',
+      );
+    const record = normalizeStoredDelegationRecord(loaded);
+    if (!matchesTerminalDelegationSummary(retained, record))
+      throw new TerminalSummaryHydrationError(
+        'Canonical delegation record does not match its summary',
+      );
+    if (this.records.get(id) !== retained)
+      throw new Error('Delegation record changed during mutation hydration');
+    return record;
+  }
+
+  /** Public body reads are ephemeral and retry if a writer won the race. */
+  private async recordForRead(
+    id: string,
+    initial?: StoredDelegation,
+  ): Promise<StoredDelegation> {
+    let first = initial;
+    const awaitedWriteTokens = new Set<Promise<void>>();
+    const waitForWrite = async (token?: Promise<void>): Promise<boolean> => {
+      if (!token || awaitedWriteTokens.has(token)) return false;
+      awaitedWriteTokens.add(token);
+      await token;
+      return true;
+    };
+    for (;;) {
+      const retained = first ?? this.records.get(id);
+      first = undefined;
+      if (!retained) throw new Error('Delegation record is unavailable');
+      if (!isTerminalDelegationSummary(retained)) {
+        if (this.records.get(id) === retained) return retained;
+        continue;
+      }
+
+      // Read the last committed body even when a write has been queued. A
+      // queued or failed mutation must not hide the prior readable output.
+      const writeTokenBeforeLoad = this.writes.get(id);
+      const loaded = await this.options.storage.loadOne(id);
+      if (!loaded) {
+        const pendingWrite = this.writes.get(id) ?? writeTokenBeforeLoad;
+        if (await waitForWrite(pendingWrite)) continue;
+        throw new Error('Canonical delegation record unavailable');
+      }
+      const record = normalizeStoredDelegationRecord(loaded);
+      const summaryMatches = matchesTerminalDelegationSummary(retained, record);
+      const retainedIsCurrent = this.records.get(id) === retained;
+      const writeTokenAfterLoad = this.writes.get(id);
+      if (
+        !summaryMatches ||
+        !retainedIsCurrent ||
+        writeTokenAfterLoad !== writeTokenBeforeLoad
+      ) {
+        const pendingWrite = writeTokenAfterLoad ?? writeTokenBeforeLoad;
+        if (await waitForWrite(pendingWrite)) continue;
+        if (!retainedIsCurrent) continue;
+        if (!summaryMatches)
+          throw new Error(
+            'Canonical delegation record does not match its summary',
+          );
+        continue;
+      }
+      return record;
+    }
+  }
+
+  /**
+   * Repairs only v3 stream records. This is intentionally independent from
+   * initialize(): legacy recovery, workspace reconciliation and runner
+   * lifecycle are not part of this maintenance entry point.
+   */
+  async repairStreams(
+    options: AgentDelegationStreamRepairOptions = {},
+  ): Promise<AgentDelegationStreamRepairResult> {
+    const empty: AgentDelegationStreamRepairResult = {
+      repaired: 0,
+      failed: 0,
+    };
+    if (this.initialized || this.closed || this.streamRepairStarted) {
+      this.options.onError?.(
+        new Error('Stream repair requires an unused broker instance'),
+      );
+      return { ...empty, failed: 1 };
+    }
+    this.streamRepairStarted = true;
+    const storage = this.options.storage;
+    if (!storage.loadReadOnly) {
+      this.options.onError?.(
+        new Error('Stream repair requires read-only delegation storage'),
+      );
+      return { ...empty, failed: 1 };
+    }
+    let snapshot: Awaited<
+      ReturnType<NonNullable<DelegationStorage['loadReadOnly']>>
+    >;
+    try {
+      snapshot = await storage.loadReadOnly();
+    } catch (error) {
+      this.options.onError?.(error);
+      return { ...empty, failed: 1 };
+    }
+    if (snapshot.missing) return empty;
+
+    const result = { ...empty };
+    await this.streamRepairContext.run(
+      { revalidateScope: options.revalidateScope },
+      async () => {
+        for (const record of snapshot.records) {
+          if (record.version !== 3) continue;
+          const recordLocalRepair = isUnconvergedStreamDelegation(record);
+          if (!recordLocalRepair && options.shouldAuditTerminal) {
+            try {
+              if (!(await options.shouldAuditTerminal(record))) continue;
+            } catch (error) {
+              result.failed += 1;
+              this.options.onError?.(error);
+              continue;
+            }
+          }
+          try {
+            const repaired = await this.repairStreamCandidate(
+              record,
+              recordLocalRepair,
+            );
+            if (repaired) result.repaired += 1;
+          } catch (error) {
+            result.failed += 1;
+            this.options.onError?.(error);
+          }
+        }
+      },
+    );
+    return result;
   }
 
   private parentCapacity(parent: DelegationParentContext): number {
@@ -1681,6 +2056,8 @@ export class AgentDelegationBroker {
   }
 
   async initialize(): Promise<void> {
+    if (this.repairOnly || this.streamRepairStarted)
+      throw new Error('A stream-repair broker cannot initialize');
     if (this.initialized || this.closed)
       throw new Error('Delegation broker cannot initialize twice');
     const records = await this.options.storage.load();
@@ -1692,6 +2069,8 @@ export class AgentDelegationBroker {
       if (this.records.has(id))
         throw new Error('Duplicate delegation identity');
       this.records.set(id, record);
+      if (record.version === 3)
+        this.startupFileDigests.set(id, streamRecordFileDigest(record));
       if (record.version === 3) {
         await this.repairStreamRecord(record);
         const repaired = this.records.get(id);
@@ -1736,7 +2115,12 @@ export class AgentDelegationBroker {
       }
       if (record.applyJournal)
         await this.restoreInterruptedApply(id, record.applyJournal);
-      if (record.state.approvalPending !== undefined)
+      // No approval survives a restart. A stream record that already says
+      // none is pending is not rewritten to drop the flag.
+      if (
+        record.state.approvalPending === true ||
+        (record.version !== 3 && record.state.approvalPending !== undefined)
+      )
         await this.update(id, (current) => ({
           ...current,
           state: { ...current.state, approvalPending: undefined },
@@ -1821,15 +2205,17 @@ export class AgentDelegationBroker {
       await this.suppressLegacyDelivery(id, 'automatic_delivery_removed');
       const current = this.records.get(id);
       if (!current) throw new Error('Delegation record disappeared');
-      if (this.calls.has(current.callKey))
+      const retained = this.retainRecord(current);
+      if (this.calls.has(retained.callKey))
         throw new Error('Duplicate delegation call identity');
-      this.calls.set(current.spawnIdentity?.key ?? current.callKey, {
-        hash: current.spawnIdentity?.hash ?? current.requestHash,
-        owner: ownerKey(current.parent),
-        result: Promise.resolve({ ok: true, value: this.projectLive(current) }),
+      this.calls.set(retained.spawnIdentity?.key ?? retained.callKey, {
+        hash: retained.spawnIdentity?.hash ?? retained.requestHash,
+        owner: ownerKey(retained.parent),
+        delegationId: id,
       });
     }
     this.initialized = true;
+    this.startupFileDigests.clear();
     for (const record of Array.from(this.records.values()))
       if (record.version === 3) this.cardPublications.enqueue(record, true);
   }
@@ -1841,8 +2227,9 @@ export class AgentDelegationBroker {
     id: string,
     journal: DelegationApplyJournal,
   ): Promise<void> {
-    const record = this.records.get(id);
-    if (!record) return;
+    const retained = this.records.get(id);
+    if (!retained) return;
+    const record = await this.recordForRead(id, retained);
     let restored: Awaited<
       ReturnType<
         NonNullable<AgentDelegationBrokerOptions['rollbackWorkspaceApply']>
@@ -1879,18 +2266,25 @@ export class AgentDelegationBroker {
     delegationId?: string,
   ): Promise<readonly AgentDelegationTranscript[]> {
     await Promise.all(Array.from(this.writes.values()));
-    const records =
+    const retainedRecords =
       delegationId === undefined
         ? Array.from(this.records.values())
         : [this.records.get(delegationId)].flatMap((record) =>
             record ? [record] : [],
           );
-    return records
-      .filter((record) => sameChat(record.parent, parent))
-      .flatMap((record) => [
+    const transcripts: AgentDelegationTranscript[] = [];
+    for (const retained of retainedRecords) {
+      if (!sameChat(retained.parent, parent)) continue;
+      const record = await this.recordForRead(
+        retained.state.delegationId,
+        retained,
+      );
+      transcripts.push(
         ...(legacyPrefixView(record).history ?? []),
         this.projectTranscript(record),
-      ]);
+      );
+    }
+    return transcripts;
   }
 
   private projectTranscript(
@@ -1950,24 +2344,39 @@ export class AgentDelegationBroker {
       .update(JSON.stringify(parsed.value))
       .digest('hex');
     const previous = this.calls.get(callKey);
-    if (previous)
-      return previous.hash === requestHash
-        ? previous.result.then((result) =>
-            result.ok
-              ? {
-                  ok: true,
-                  value:
-                    this.inspect(parent, result.value.delegationId) ??
-                    result.value,
-                }
-              : result,
-          )
-        : Promise.resolve(
-            failure(
-              'invalid_request',
-              'A delegation call cannot change its arguments.',
-            ),
-          );
+    if (previous) {
+      if (previous.hash !== requestHash)
+        return Promise.resolve(
+          failure(
+            'invalid_request',
+            'A delegation call cannot change its arguments.',
+          ),
+        );
+      if (previous.result)
+        return previous.result.then((result) =>
+          result.ok
+            ? {
+                ok: true,
+                value:
+                  this.inspect(parent, result.value.delegationId) ??
+                  result.value,
+              }
+            : result,
+        );
+      if (previous.delegationId) {
+        const current = this.inspect(parent, previous.delegationId);
+        return current
+          ? Promise.resolve({ ok: true, value: current })
+          : Promise.resolve(
+              failure('runtime_error', 'The delegation result is unavailable.'),
+            );
+      }
+      return Promise.resolve(
+        previous.failure
+          ? { ok: false, error: previous.failure }
+          : failure('runtime_error', 'The delegation result is unavailable.'),
+      );
+    }
     if (
       Array.from(this.workspaceControlReservations.values()).some(
         (ancestorId) => this.parentDescendsFrom(parent, ancestorId),
@@ -2032,7 +2441,14 @@ export class AgentDelegationBroker {
     ).finally(() => {
       if (this.newIdentityReservations.delete(callKey)) this.notify(context);
     });
-    this.calls.set(callKey, { hash: requestHash, owner, result });
+    const call: DelegationCallEntry = { hash: requestHash, owner, result };
+    this.calls.set(callKey, call);
+    void result.then((settled) => {
+      if (this.calls.get(callKey) !== call) return;
+      call.result = undefined;
+      if (settled.ok) call.delegationId = settled.value.delegationId;
+      else call.failure = settled.error;
+    });
     return result;
   }
 
@@ -2963,8 +3379,14 @@ export class AgentDelegationBroker {
     parent: DelegationParentContext,
     request: GetDelegateOutputRequest,
   ): Promise<AgentDelegationResult<GetDelegateOutputValue>> {
-    const record = this.records.get(request.delegationId);
-    if (!record || !this.canAccess(parent, record)) return notDescendant();
+    const retained = this.records.get(request.delegationId);
+    if (!retained || !this.canAccess(parent, retained)) return notDescendant();
+    let record: StoredDelegation;
+    try {
+      record = await this.recordForRead(request.delegationId, retained);
+    } catch {
+      return failure('runtime_error', 'The delegation output is unavailable.');
+    }
     const prefix = legacyPrefixView(record);
     const prefixLatest = prefix.results?.[(prefix.results?.length ?? 0) - 1];
     const latestIndex =
@@ -3173,12 +3595,123 @@ export class AgentDelegationBroker {
           runGeneration: record.state.runGeneration,
           description: record.task.description,
           chatId: record.parent.chatId,
-          createdAt:
-            record.version === 3
+          createdAt: isTerminalDelegationSummary(record)
+            ? record.summaryIndex.firstHistoricalTimestamp
+            : record.version === 3
               ? record.readMetadata.originAt
               : (record.history?.[0]?.createdAt ?? record.createdAt),
         }),
       );
+  }
+
+  /**
+   * Every persisted delegation retained by this broker, including records
+   * that cannot accept another continuation. Hosts use this source to resolve
+   * original lineage independently of execution eligibility.
+   */
+  retainedLedgerDelegations(): readonly RetainedLedgerDelegation[] {
+    return Array.from(this.records.values(), (record) => {
+      const parentDelegationId =
+        record.parentDelegationId ?? record.parent.parentDelegationId;
+      return {
+        delegationId: record.state.delegationId,
+        rootChatId: record.parent.chatId,
+        ...(parentDelegationId ? { parentDelegationId } : {}),
+        description: record.task.description,
+        runGeneration: record.state.runGeneration,
+        createdAt:
+          record.version === 3
+            ? record.readMetadata.originAt
+            : (record.history?.[0]?.createdAt ?? record.createdAt),
+      };
+    });
+  }
+
+  /**
+   * Reads the retained generation, including a settled run. Unlike
+   * continuationCandidates(), this deliberately does not require the record
+   * to remain eligible for a continuation.
+   */
+  currentRunGeneration(delegationId: string): number | null {
+    if (!this.initialized || this.closed) return null;
+    return this.records.get(delegationId)?.state.runGeneration ?? null;
+  }
+
+  /**
+   * Reads the retained generation for Ledger replay, distinguishing an
+   * authoritatively missing record from a broker that is not yet readable.
+   */
+  sessionEndRunGeneration(delegationId: string): number | null | 'gone' {
+    if (!this.initialized || this.closed) return null;
+    const record = this.records.get(delegationId);
+    return record === undefined ? 'gone' : record.state.runGeneration;
+  }
+
+  /**
+   * Admits one Ledger session-end sweep against this record's current
+   * generation. The per-record write queue is also used by continuations, so
+   * a continuation admitted after this callback cannot update the record
+   * until the sweep callback settles. Its timeout aborts the callback, while
+   * the Ledger storage deadline bounds any already-submitted store operation.
+   *
+   * This callback must not call back into the broker for this delegation:
+   * doing so would queue behind itself. The core callback is cancellable; after
+   * timeout this method waits for its already-submitted work to settle before
+   * releasing the shared queue, so the callback must honor its storage deadline.
+   */
+  withSessionEndAdmission(
+    delegationId: string,
+    runGeneration: number,
+    apply: (signal: AbortSignal) => Promise<void>,
+  ): Promise<'applied' | 'superseded' | 'unknown'> {
+    if (
+      !Number.isSafeInteger(runGeneration) ||
+      runGeneration < 1 ||
+      !this.initialized ||
+      this.closed
+    )
+      return Promise.resolve('unknown');
+
+    const previous = this.writes.get(delegationId) ?? Promise.resolve();
+    const next = previous.then(
+      async (): Promise<'applied' | 'superseded' | 'unknown'> => {
+        if (!this.initialized || this.closed) return 'unknown';
+        const record = this.records.get(delegationId);
+        if (!record) return 'unknown';
+        if (record.state.runGeneration > runGeneration) return 'superseded';
+        if (record.state.runGeneration !== runGeneration) return 'unknown';
+
+        const controller = new AbortController();
+        let timedOut = false;
+        const timeout = setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+        }, SESSION_END_ADMISSION_TIMEOUT_MS);
+        timeout.unref?.();
+        const work = Promise.resolve()
+          .then(() => apply(controller.signal))
+          .then(
+            (): 'applied' | 'failed' => 'applied',
+            (): 'applied' | 'failed' => 'failed',
+          );
+
+        try {
+          const outcome = await work;
+          if (timedOut || outcome === 'failed') return 'unknown';
+          return 'applied';
+        } finally {
+          clearTimeout(timeout);
+        }
+      },
+    );
+    this.writes.set(
+      delegationId,
+      next.then(
+        (): void => undefined,
+        (): void => undefined,
+      ),
+    );
+    return next;
   }
 
   /**
@@ -3205,7 +3738,10 @@ export class AgentDelegationBroker {
     return (
       record.route?.capabilities.includes('resume') === true &&
       Boolean(record.state.nativeSessionId ?? record.resumeSessionId) &&
-      (legacyArrays(record)?.history?.length ?? 0) < MAX_RETAINED_HISTORY &&
+      (isTerminalDelegationSummary(record)
+        ? record.summaryIndex.historyCount
+        : (legacyArrays(record)?.history?.length ?? 0)) <
+        MAX_RETAINED_HISTORY &&
       (record.version === 3
         ? record.receipts.commandReceipts.length
         : (record.controls?.length ?? 0)) < 64 &&
@@ -3324,9 +3860,18 @@ export class AgentDelegationBroker {
         const record = this.records.get(target.delegationId);
         if (!record)
           throw new Error('Captured delegate generation is unavailable');
-        const result = legacyPrefixView(record).results?.find(
-          (candidate) => candidate.runGeneration === target.runGeneration,
-        );
+        const result = isTerminalDelegationSummary(record)
+          ? record.summaryIndex.resultMetadata.find(
+              (candidate) =>
+                candidate.runGeneration === target.runGeneration &&
+                (record.version !== 3 ||
+                  record.summaryIndex.legacyResultGenerations.includes(
+                    target.runGeneration,
+                  )),
+            )
+          : legacyPrefixView(record).results?.find(
+              (candidate) => candidate.runGeneration === target.runGeneration,
+            );
         if (record.version === 3 && !result) {
           const resolution = await this.watchResolver().resolve(
             { record, readMetadata: record.readMetadata },
@@ -3509,7 +4054,7 @@ export class AgentDelegationBroker {
     )
       return Promise.resolve(this.receiptUnavailable());
     const prior = this.controlCalls.get(key);
-    if (prior && prior.hash === hash) return prior.result;
+    if (prior && prior.hash === hash && prior.result) return prior.result;
     const result = this.withReceiptAdmission<AgentDelegationSnapshot>(
       { chatId: parent.chatId, receiptKind: 'command', key },
       async (owned) => {
@@ -3541,11 +4086,16 @@ export class AgentDelegationBroker {
         );
         if ('kind' in outcome) return outcome;
         const dispatch = owned.dispatch;
+        const applying = isRecord(input) && input.operation === 'apply';
         if (dispatch)
           owned.dispatch = async (): Promise<
             AgentDelegationResult<AgentDelegationSnapshot>
           > => {
             const dispatched = await dispatch();
+            // An apply waits for its outcome to report it in this reply,
+            // details included; the durable acknowledgement predates the
+            // outcome, so only a replay answers from the bounded receipt.
+            if (applying) return dispatched;
             const latest = this.records.get(current.state.delegationId);
             const receipt =
               latest?.version === 3
@@ -3637,15 +4187,39 @@ export class AgentDelegationBroker {
       }
     }
     const prior = this.controlCalls.get(key);
-    if (prior)
-      return prior.hash === hash
-        ? prior.result
-        : Promise.resolve(
-            failure(
-              'invalid_request',
-              'A command call cannot change its arguments.',
-            ),
-          );
+    if (prior) {
+      if (prior.hash !== hash)
+        return Promise.resolve(
+          failure(
+            'invalid_request',
+            'A command call cannot change its arguments.',
+          ),
+        );
+      if (prior.result) return prior.result;
+      if (prior.failure)
+        return Promise.resolve({
+          ok: false,
+          error: structuredClone(prior.failure),
+        });
+      if (prior.replay)
+        return Promise.resolve({
+          ok: true,
+          value: structuredClone(prior.replay),
+        });
+      const replay = prior.delegationId
+        ? this.legacyRecordCommandReplay(
+            parent,
+            key,
+            hash,
+            prior.delegationId,
+            userOperationId !== undefined,
+          )
+        : undefined;
+      return Promise.resolve(
+        replay ??
+          failure('runtime_error', 'The delegation result is unavailable.'),
+      );
+    }
     // The in-memory replay table is intentionally bounded. User operations
     // therefore consult the durable receipt before applying that admission
     // ceiling, so a prior UUID keeps its first result after many later calls.
@@ -3718,7 +4292,40 @@ export class AgentDelegationBroker {
         return outcome;
       },
     );
-    this.controlCalls.set(key, { hash, result });
+    const delegationId =
+      isRecord(input) && typeof input.delegationId === 'string'
+        ? input.delegationId
+        : undefined;
+    const call: {
+      hash: string;
+      result?: Promise<AgentDelegationResult<AgentDelegationSnapshot>>;
+      replay?: AgentDelegationSnapshot;
+      delegationId?: string;
+      settled?: boolean;
+      failure?: AgentDelegationError;
+    } = {
+      hash,
+      result,
+      ...(delegationId === undefined ? {} : { delegationId }),
+    };
+    this.controlCalls.set(key, call);
+    void result.then(
+      (outcome) => {
+        if (this.controlCalls.get(key) !== call) return;
+        call.settled = true;
+        if (!outcome.ok) {
+          call.failure = outcome.error;
+          call.result = undefined;
+          return;
+        }
+        call.replay = structuredClone(outcome.value);
+        call.delegationId ??= outcome.value.delegationId;
+        const retained = this.records.get(outcome.value.delegationId);
+        if (retained && isSettledStatus(retained.state.status))
+          call.result = undefined;
+      },
+      () => undefined,
+    );
     return result;
   }
 
@@ -4096,7 +4703,13 @@ export class AgentDelegationBroker {
         'policy_blocked',
         'This delegate was retired. Start a new delegate to continue.',
       );
-    if (continuesInactive && !record.route?.capabilities.includes('resume'))
+    // A child still preparing has no route recorded yet; a follow-up queued
+    // behind that launch is checked when it continues.
+    if (
+      continuesInactive &&
+      (record.route !== undefined || !targetActive) &&
+      !record.route?.capabilities.includes('resume')
+    )
       return failure(
         'capability_unavailable',
         'This route cannot resume a native child session.',
@@ -4563,8 +5176,7 @@ export class AgentDelegationBroker {
     readonly controller: AbortController;
     readonly slot: AdmissionSlot;
   }> {
-    const record = this.records.get(id);
-    if (!record) throw new Error('Delegation record disappeared');
+    const record = await this.recordForRead(id);
     if (record.version === 3 && record.settling)
       throw new Error('Previous settlement is unresolved');
     // The command retains the authority present before its acceptance commit.
@@ -4608,6 +5220,8 @@ export class AgentDelegationBroker {
       (legacyArrays(record)?.history?.length ?? 0) >= 16
     )
       throw new Error('Native child cannot continue');
+    if (!record.route.capabilities.includes('resume'))
+      throw new Error('This route cannot resume a native child session.');
     const runGeneration = record.state.runGeneration + 1;
     let slot = providedSlot;
     if (!slot) {
@@ -4749,6 +5363,7 @@ export class AgentDelegationBroker {
         });
         if (!descriptor.ok) throw new Error(descriptor.error.message);
         next = this.prepareV3Update(record, nextBase);
+        this.latestReceipts.delete(id);
         next = {
           ...next,
           latestReceipt: undefined,
@@ -4807,6 +5422,16 @@ export class AgentDelegationBroker {
         )
           throw new Error('Continuation cancelled');
         if (
+          current.state.runGeneration !== record.state.runGeneration ||
+          current.state.sequence !== record.state.sequence ||
+          current.transcriptRevision !== record.transcriptRevision ||
+          current.state.status !== record.state.status ||
+          current.state.nativeSessionId !== record.state.nativeSessionId ||
+          current.state.finalText !== record.state.finalText ||
+          current.state.partialText !== record.state.partialText
+        )
+          throw new Error('Delegation changed during continuation preparation');
+        if (
           current.version === 3 &&
           (current.state.runGeneration !== record.state.runGeneration ||
             this.cardPublications.watermark(
@@ -4823,16 +5448,19 @@ export class AgentDelegationBroker {
       slot.withdraw();
       throw error;
     }
-    this.journals.set(id, this.restoreJournal(next));
+    const retainedNext = this.records.get(id);
+    if (!retainedNext)
+      throw new Error('Committed continuation record disappeared');
+    this.journals.set(id, this.restoreJournal(retainedNext));
     if (continuedUserMessage) {
       try {
-        this.options.onTranscript?.(next.parent, historyTranscript);
+        this.options.onTranscript?.(retainedNext.parent, historyTranscript);
       } catch (error) {
         this.options.onError?.(error);
       }
     }
-    this.publishTranscript(next);
-    this.pending.set(next.callKey, {
+    this.publishTranscript(retainedNext);
+    this.pending.set(retainedNext.callKey, {
       parent,
       controller,
       slot,
@@ -4848,12 +5476,12 @@ export class AgentDelegationBroker {
           (this.harnessRevisions.get(harnessId) ?? 0),
       )
     ) {
-      const pending = this.pending.get(next.callKey);
+      const pending = this.pending.get(retainedNext.callKey);
       if (pending) claimStop(pending, { reason: 'policy_revoked' });
       controller.abort();
     }
     this.notify(parent);
-    return { next, controller, slot };
+    return { next: retainedNext, controller, slot };
   }
 
   /** Awaits the slot grant then runs create(); a launch failure settles the
@@ -5027,9 +5655,10 @@ export class AgentDelegationBroker {
         });
         try {
           this.checkReceiptQuarantine(id);
+          const workspaceRecord = await this.recordForRead(id, record);
           await this.options.manageWorkspace?.(
             parent,
-            record,
+            workspaceRecord,
             command.operation,
             controller.signal,
             {
@@ -5421,7 +6050,7 @@ export class AgentDelegationBroker {
         claimStop(preparation, causes.descendant);
         preparation.controller.abort();
         const call = this.calls.get(key);
-        if (call) pendingCalls.push(call.result);
+        if (call?.result) pendingCalls.push(call.result);
       }
     }
     await Promise.allSettled(pendingCalls);
@@ -5670,7 +6299,7 @@ export class AgentDelegationBroker {
     await Promise.allSettled(
       Array.from(this.calls.values())
         .filter((call) => owners.has(call.owner))
-        .map((call) => call.result),
+        .flatMap((call) => (call.result ? [call.result] : [])),
     );
     await Promise.allSettled(
       Array.from(this.preparations.entries())
@@ -5724,12 +6353,20 @@ export class AgentDelegationBroker {
       entry.controller.abort();
     }
     await Promise.allSettled(
-      Array.from(this.calls.values(), (call) => call.result),
+      Array.from(this.calls.values()).flatMap((call) =>
+        call.result ? [call.result] : [],
+      ),
     );
     await Promise.allSettled(Array.from(this.preparations.values()));
     const suppressed = await Promise.allSettled(
       Array.from(this.records.keys(), (id) =>
-        this.suppressLegacyDelivery(id, 'parent_gone'),
+        this.suppressLegacyDelivery(id, 'parent_gone').catch(
+          (error: unknown): void => {
+            // A terminal summary whose canonical record is gone or was
+            // replaced by another writer has no delivery of ours to suppress.
+            if (!(error instanceof TerminalSummaryHydrationError)) throw error;
+          },
+        ),
       ),
     );
     const stopped = await Promise.allSettled(
@@ -5816,10 +6453,10 @@ export class AgentDelegationBroker {
             'The delegation could not be durably admitted.',
           );
     }
-    this.records.set(id, record);
     this.newIdentityReservations.delete(callKey);
     this.journals.set(id, this.restoreJournal(record));
     this.publishTranscript(record);
+    await this.notifyAdmitted(parent, task, id);
     const preparation = this.create(
       parent,
       task,
@@ -6158,9 +6795,9 @@ export class AgentDelegationBroker {
         });
       } else {
         record = await this.commitStorageRecord(record);
-        this.records.set(id, record);
         this.newIdentityReservations.delete(callKey);
         this.publishTranscript(record);
+        await this.notifyAdmitted(parent, task, id);
       }
       const journal = this.restoreJournal(record);
       this.journals.set(id, journal);
@@ -6238,8 +6875,9 @@ export class AgentDelegationBroker {
             throw new GenerationStoreRefused(
               'Delegation storage targets do not agree. Try again.',
             );
-          return retainedLease.adapter.start(request, (event) =>
-            this.receive(retainedId, event),
+          return retainedLease.adapter.start(
+            request,
+            this.runEventSink(retainedId),
           );
         },
       );
@@ -6301,6 +6939,29 @@ export class AgentDelegationBroker {
     }
   }
 
+  /**
+   * A task-ID hand-off is an optional host effect. The durable delegation must
+   * keep launching even when assignment or diagnostic reporting is unavailable.
+   */
+  private async notifyAdmitted(
+    parent: DelegationParentContext,
+    task: AgentDelegationSpawnRequest,
+    delegationId: string,
+  ): Promise<void> {
+    if (!task.taskIds?.length || !this.options.onAdmitted) return;
+    try {
+      await this.options.onAdmitted(parent, task, delegationId);
+    } catch {
+      try {
+        this.options.onError?.(
+          new Error('Delegation Feed assignment unavailable'),
+        );
+      } catch {
+        // A diagnostic failure must not prevent the admitted runner from starting.
+      }
+    }
+  }
+
   private abortRuns(
     reason: DelegationStopReason,
     owners?: ReadonlySet<string>,
@@ -6318,6 +6979,14 @@ export class AgentDelegationBroker {
       run.stopReason ??= reason;
       run.controller.abort();
     }
+  }
+
+  // Keep runner-owned callbacks outside launch's lexical scope: that scope
+  // contains the full hydrated record and its historical bodies.
+  private runEventSink(
+    id: string,
+  ): (event: AgentDelegationEvent) => Promise<void> {
+    return (event) => this.receive(id, event);
   }
 
   private async receive(
@@ -6349,21 +7018,25 @@ export class AgentDelegationBroker {
     )
       return;
     if (record.version === 3 && event.event.type === 'transcript_receipt') {
-      const receipt = event.event;
-      await this.update(id, (current) =>
-        current.version === 3
-          ? {
-              ...current,
-              latestReceipt: {
-                target: current.readMetadata.current.target,
-                streamRevision: receipt.streamRevision,
-                mutationKey: receipt.mutationKey,
-                items: receipt.items,
-                replayed: receipt.replayed,
-              },
-            }
-          : current,
-      );
+      const target = record.readMetadata.current.target;
+      const latest = {
+        target,
+        streamRevision: event.event.streamRevision,
+        mutationKey: event.event.mutationKey,
+        items: event.event.items,
+        replayed: event.event.replayed,
+      };
+      // A receipt the record could not store is never folded into a later
+      // write; the rows it confirms are already durable either way.
+      if (
+        isLatestReceipt(
+          latest,
+          target.chatId,
+          target.delegationId,
+          target.runGeneration,
+        )
+      )
+        this.latestReceipts.set(id, latest);
       return;
     }
     const terminalAnswer =
@@ -6389,6 +7062,18 @@ export class AgentDelegationBroker {
         }
       : reducedState;
     if (receivedState === record.state) return;
+    // A stream record stores no transcript (its rows are in the stream), so a
+    // legacy transcript event only advances the sequence and activity. Write
+    // that at most once a second; the next write carries the latest sequence.
+    if (
+      record.version === 3 &&
+      event.event.type === 'transcript' &&
+      (receivedState.outputTruncated === true) ===
+        (record.state.outputTruncated === true) &&
+      Date.now() - record.readMetadata.lastActivityAt <
+        STREAM_TRANSCRIPT_ACTIVITY_MS
+    )
+      return;
     if (event.event.type === 'started' && event.event.nativeSessionId) {
       const journal = this.journals.get(id);
       // A running child can move to a new native session mid-run (a Codex
@@ -6717,13 +7402,13 @@ export class AgentDelegationBroker {
   }
 
   private restoreJournal(record: StoredDelegation): DelegationLaunchJournal {
+    const id = record.state.delegationId;
+    const runGeneration = record.state.runGeneration;
     return DelegationLaunchJournal.restore(record.launch, {
       commit: (launch) =>
-        this.update(record.state.delegationId, (current) => ({
+        this.update(id, (current) => ({
           ...current,
-          ...(current.state.runGeneration === record.state.runGeneration
-            ? { launch }
-            : {}),
+          ...(current.state.runGeneration === runGeneration ? { launch } : {}),
         })),
     });
   }
@@ -6736,6 +7421,15 @@ export class AgentDelegationBroker {
     >['reason'],
   ): Promise<void> {
     if (this.receiptQuarantine.isQuarantined(id)) return Promise.resolve();
+    // A stream record already past delivery needs no update, so its retained
+    // summary is not hydrated from disk to find that out.
+    const retained = this.records.get(id);
+    if (
+      retained?.version === 3 &&
+      (retained.delivery.status === 'acknowledged' ||
+        retained.delivery.status === 'suppressed')
+    )
+      return Promise.resolve();
     return this.update(id, (current) =>
       current.delivery.status === 'acknowledged' ||
       current.delivery.status === 'suppressed'
@@ -6818,6 +7512,41 @@ export class AgentDelegationBroker {
       return { ok: true, value: this.projectLive({ ...record, control }) };
     }
     return undefined;
+  }
+
+  /** Re-projects settled legacy commands after their promise body is evicted. */
+  private legacyRecordCommandReplay(
+    parent: DelegationParentContext,
+    key: string,
+    hash: string,
+    id: string,
+    user: boolean,
+  ): AgentDelegationResult<AgentDelegationSnapshot> | undefined {
+    const record = this.records.get(id);
+    if (!record || record.version === 3 || !sameChat(parent, record.parent))
+      return undefined;
+    const control = controlsForReplay(record).find(
+      (entry) => entry.key === key,
+    );
+    if (!control) return undefined;
+    if (record.state.delegationId !== id || control.requestHash !== hash)
+      return failure(
+        'invalid_request',
+        'A command call cannot change its arguments.',
+      );
+    if (user && control.firstError)
+      return {
+        ok: false,
+        error: structuredClone(control.firstError),
+      };
+    if (user && control.firstOutcome)
+      return {
+        ok: true,
+        value: structuredClone(control.firstOutcome),
+      };
+    if (control.status === 'failed' && control.applyFailure)
+      return applyFailed(control, control.applyFailure);
+    return { ok: true, value: this.projectLive({ ...record, control }) };
   }
 
   private async persistStreamFailure(
@@ -7174,7 +7903,30 @@ export class AgentDelegationBroker {
   private streamPort(): DelegationTranscriptPort {
     if (!this.options.transcriptPort)
       throw new Error('Stream generation requires its transcript port');
-    return this.options.transcriptPort;
+    const port = this.options.transcriptPort;
+    if (!this.streamRepairContext.getStore()) return port;
+    return new Proxy(port, {
+      get: (target, property, receiver): unknown => {
+        const member: unknown = Reflect.get(target, property, receiver);
+        if (
+          typeof property !== 'string' ||
+          !TRANSCRIPT_MUTATION_METHODS.has(property) ||
+          typeof member !== 'function'
+        )
+          return member;
+        return async (...args: unknown[]): Promise<unknown> => {
+          await this.revalidateStreamRepair();
+          const result: unknown = await Reflect.apply(member, target, args);
+          return result;
+        };
+      },
+    });
+  }
+
+  private async revalidateStreamRepair(): Promise<void> {
+    const revalidate = this.streamRepairContext.getStore()?.revalidateScope;
+    if (revalidate && !(await revalidate()))
+      throw new Error('Delegation repair scope is no longer available');
   }
 
   private watchResolver(): DelegationWatchBootstrapResolver {
@@ -7316,6 +8068,13 @@ export class AgentDelegationBroker {
         ...record.state,
         ...result.outcome,
         finishedAt: result.outcome.finishedAt,
+        // The canonical outcome keeps only the stop reason; a stopped state
+        // pairs it with the flag its record validation requires.
+        ...(result.outcome.stopReason === undefined
+          ? {}
+          : {
+              cancelledByUser: result.outcome.stopReason === 'user_cancelled',
+            }),
       },
       readMetadata: {
         ...record.readMetadata,
@@ -7327,10 +8086,150 @@ export class AgentDelegationBroker {
       },
     };
     next = await this.commitStorageRecord(next);
-    this.records.set(id, next);
     if (!locator.notified) {
       await this.notifyRepairedStreamResult(next, locator, result);
     }
+  }
+
+  private async repairStreamCandidate(
+    record: StoredDelegationV3,
+    recordLocalRepair: boolean,
+  ): Promise<boolean> {
+    const target = record.readMetadata.current.target;
+    const id = target.delegationId;
+    const missingTerminalResult =
+      record.state.status !== 'interrupted' &&
+      isSettledStatus(record.state.status) &&
+      record.latestResult?.runGeneration !== record.state.runGeneration;
+    const repairRecordState = recordLocalRepair || missingTerminalResult;
+    const initial = await this.streamPort().generation(target);
+    if (!initial.ok) {
+      if (!repairRecordState || initial.error.code !== 'not_found')
+        throw new Error(initial.error.message);
+    } else {
+      const initialCard = classifyCardDescriptor(
+        record,
+        initial.value.stream?.cardState,
+      );
+      if (initialCard.kind === 'conflict')
+        throw new Error(
+          'Card descriptor conflicts with retained stream record',
+        );
+      if (!repairRecordState && initialCard.kind === 'covered') return false;
+    }
+
+    this.retainRecord(record);
+    const journal = this.restoreJournal(record);
+    this.journals.set(id, journal);
+    if (repairRecordState) {
+      await this.repairStreamRecord(record);
+      let current = this.records.get(id);
+      if (current?.version !== 3)
+        throw new Error('Stream repair lost its retained record');
+
+      if (current.receipts.activeStop) {
+        if (!isSettledStatus(current.state.status)) {
+          await this.update(id, (latest) => ({
+            ...latest,
+            state: {
+              ...latest.state,
+              sequence: latest.state.sequence + 1,
+              status: 'cancelled',
+              finishedAt: Date.now(),
+              stopReason: 'shutdown',
+              cancelledByUser: false,
+              stoppedBy: undefined,
+              error: undefined,
+            },
+          }));
+          current = this.records.get(id);
+        }
+        if (current?.version !== 3)
+          throw new Error('Stop repair changed record format');
+        await this.finishStreamStop(current, 'completed');
+        current = this.records.get(id);
+        if (current?.version !== 3)
+          throw new Error('Stop repair lost its retained record');
+      }
+
+      if (!isSettledStatus(current.state.status)) {
+        const stillQueued =
+          current.admission?.runGeneration === current.state.runGeneration &&
+          current.admission.state === 'waiting';
+        const neverDispatched =
+          stillQueued || current.launch.phase === 'reserved';
+        const status: 'cancelled' | 'interrupted' = neverDispatched
+          ? 'cancelled'
+          : 'interrupted';
+        await this.update(id, (latest) => ({
+          ...latest,
+          state: {
+            ...latest.state,
+            sequence: latest.state.sequence + 1,
+            status,
+            finishedAt: Date.now(),
+            ...(neverDispatched
+              ? {
+                  stopReason: 'shutdown',
+                  cancelledByUser: false,
+                  stoppedBy: undefined,
+                  error: undefined,
+                }
+              : {
+                  error: {
+                    code: 'launch_uncertain',
+                    message:
+                      'The previous host stopped before child completion was confirmed.',
+                    retryable: false,
+                  },
+                }),
+          },
+        }));
+        current = this.records.get(id);
+        if (current?.version !== 3)
+          throw new Error('Stream repair lost its interrupted record');
+        if (neverDispatched) await journal.settle('cancelled');
+      }
+
+      const latest = this.records.get(id);
+      if (latest?.version !== 3)
+        throw new Error('Stream repair lost its terminal record');
+      if (
+        latest.settling ||
+        latest.latestResult?.runGeneration !== target.runGeneration
+      )
+        await this.settleStreamRecordForId(id, target.runGeneration);
+      const settled = this.records.get(id);
+      if (settled?.version !== 3)
+        throw new Error('Stream repair lost its settled record');
+      if (
+        settled.state.status === 'completed' ||
+        settled.state.status === 'failed' ||
+        settled.state.status === 'cancelled' ||
+        settled.state.status === 'deadline_exceeded'
+      )
+        await journal.settle(settled.state.status);
+    }
+
+    const current = this.records.get(id);
+    if (current?.version !== 3)
+      throw new Error('Stream repair lost its current record');
+    const descriptor = repairRecordState
+      ? await this.streamPort().generation(target)
+      : initial;
+    if (!descriptor.ok) throw new Error(descriptor.error.message);
+    const card = classifyCardDescriptor(
+      current,
+      descriptor.value.stream?.cardState,
+    );
+    if (card.kind === 'conflict')
+      throw new Error('Card descriptor conflicts with retained stream record');
+    const cardRepaired = await this.cardPublications.repairOnce(
+      current,
+      descriptor.value,
+      () => this.revalidateStreamRepair(),
+    );
+    return repairRecordState || cardRepaired;
   }
 
   private async selectGenerationStore(
@@ -7540,15 +8439,17 @@ export class AgentDelegationBroker {
           entry,
           fitDelegationReceiptFinal({
             status: command.status,
-            ...(command.error
-              ? {
-                  error: {
-                    code: 'runtime_error',
-                    message: command.error,
-                    retryable: false,
-                  },
-                }
-              : {}),
+            ...(command.applyFailure
+              ? { error: applyFailedError(command, command.applyFailure) }
+              : command.error
+                ? {
+                    error: {
+                      code: 'runtime_error',
+                      message: command.error,
+                      retryable: false,
+                    },
+                  }
+                : {}),
           }),
         );
         if (
@@ -7571,6 +8472,8 @@ export class AgentDelegationBroker {
         };
       }
     }
+    // Receipts are kept in memory and ride on the record's next write.
+    const observedReceipt = this.latestReceipts.get(prior.state.delegationId);
     const operationalControl: StoredDelegationControl | undefined = control;
     const operational = operationalControl
       ? (({ firstOutcome, firstError, ...value }): typeof value => {
@@ -7600,7 +8503,11 @@ export class AgentDelegationBroker {
           : prior.registration,
       legacyPrefix: prior.legacyPrefix,
       latestReceipt:
-        candidate.version === 3 ? candidate.latestReceipt : prior.latestReceipt,
+        observedReceipt?.target.runGeneration === state.runGeneration
+          ? observedReceipt
+          : candidate.version === 3
+            ? candidate.latestReceipt
+            : prior.latestReceipt,
       latestResult: prior.latestResult,
       settling: prior.settling,
       readMetadata: {
@@ -7638,7 +8545,7 @@ export class AgentDelegationBroker {
       runGeneration: locator.runGeneration,
     };
     const entry: StreamSettlementOutbox = {
-      record,
+      record: withoutLegacyTranscriptBodies(record),
       target,
       key: result.settlementKey,
       digest: result.settlementDigest,
@@ -7654,6 +8561,7 @@ export class AgentDelegationBroker {
       await this.notifyStreamResult(record, locator, result.outcome);
     } catch (error) {
       this.options.onError?.(error);
+      if (this.streamRepairContext.getStore()) throw error;
       this.scheduleStreamOutbox(entry);
       return record;
     }
@@ -7664,10 +8572,24 @@ export class AgentDelegationBroker {
     this.fenceStreamOutbox(entry, latest);
     if (latest.version !== 3)
       throw new OutboxFenceConflict('Expected stream record');
-    return this.commitStorageRecord({
-      ...latest,
-      latestResult: { ...locator, notified: true },
+    await this.updateAsync(target.delegationId, (current) => {
+      if (current.version !== 3)
+        throw new OutboxFenceConflict('Expected stream record');
+      this.fenceStreamOutbox(entry, current);
+      // This is a locator marker, not an execution/receipt reduction. Preserve
+      // it through the serialized full-record seam without prepareV3Update
+      // restoring the previous locator's unmarked value.
+      return Promise.resolve(
+        this.rememberPreparedCandidate(current, {
+          ...current,
+          latestResult: { ...locator, notified: true },
+        }),
+      );
     });
+    const committed = await this.recordForRead(target.delegationId);
+    if (committed.version !== 3)
+      throw new OutboxFenceConflict('Expected stream record');
+    return committed;
   }
 
   private streamOutboxKey(target: DelegationTranscriptTarget): string {
@@ -7701,6 +8623,7 @@ export class AgentDelegationBroker {
           locator.status !== entry.outcome.status ||
           locator.settledAt !== entry.outcome.finishedAt)) ||
       (!entry.input &&
+        !entry.registrySettled &&
         (locator?.runGeneration !== entry.target.runGeneration ||
           locator.resultIndex !== entry.resultIndex))
     )
@@ -7752,7 +8675,7 @@ export class AgentDelegationBroker {
     entry: StreamSettlementOutbox,
   ): Promise<void> {
     const id = entry.target.delegationId;
-    const loaded = await this.options.storage.loadOne?.(id);
+    const loaded = await this.options.storage.loadOne(id);
     if (!loaded) throw new Error('Canonical outbox record unavailable');
     this.fenceStreamOutbox(entry, loaded);
     if (loaded.version !== 3)
@@ -7763,17 +8686,21 @@ export class AgentDelegationBroker {
       !entry.input
         ? loaded
         : {
-            ...entry.record,
+            ...loaded,
             settling: entry.input.intent,
             readMetadata: {
-              ...entry.record.readMetadata,
+              ...loaded.readMetadata,
               settling: { runGeneration: entry.target.runGeneration },
             },
           };
     // Validate without card reads/reallocation; reaffirm exactly what load proved.
     this.validateCardRecord(next);
+    await this.revalidateStreamRepair();
+    if (isTerminalDelegationSummary(next))
+      throw new Error('Terminal delegation summaries cannot be committed');
+    this.startupFileDigests.delete(id);
     await this.options.storage.commit(next);
-    this.records.set(id, next);
+    this.retainRecord(next);
     this.receiptQuarantine.clearAfterOutboxReaffirm(id);
     if (this.initialized)
       this.recordTransaction.exit(() => this.cardPublications.enqueue(next));
@@ -7789,15 +8716,22 @@ export class AgentDelegationBroker {
       if (this.closed || this.settlementOutbox.get(key) !== entry) return;
       if (this.receiptQuarantine.isQuarantined(id))
         await this.reopenStreamOutbox(entry);
-      const current = this.records.get(id);
-      if (!current) throw new OutboxFenceConflict('Outbox record disappeared');
+      const retained = this.records.get(id);
+      if (!retained) throw new OutboxFenceConflict('Outbox record disappeared');
+      this.fenceStreamOutbox(entry, retained);
+      const current = await this.recordForMutation(id, retained);
       this.fenceStreamOutbox(entry, current);
-      if (entry.locator) {
-        await this.notifyStreamResult(
-          entry.record,
-          entry.locator,
-          entry.outcome,
-        );
+      if (current.version !== 3)
+        throw new OutboxFenceConflict('Expected stream record');
+      const locator =
+        entry.locator ??
+        (current.latestResult?.runGeneration === entry.target.runGeneration
+          ? current.latestResult
+          : undefined);
+      if (locator) {
+        entry.locator = locator;
+        entry.input = undefined;
+        await this.notifyStreamResult(current, locator, entry.outcome);
         this.completeStreamOutbox(entry);
         // Marker touches only the locator that was actually notified.
         if (
@@ -7809,7 +8743,7 @@ export class AgentDelegationBroker {
             ...current,
             latestResult: { ...current.latestResult, notified: true },
           });
-      } else await this.settleStreamRecord(entry.record);
+      } else await this.settleStreamRecord(current);
     });
     this.writes.set(
       id,
@@ -7858,6 +8792,16 @@ export class AgentDelegationBroker {
       this.validateCardRecord(record);
     }
     const retained = this.settlementOutbox.get(this.streamOutboxKey(target));
+    if (retained && isSettledStatus(retained.record.state.status)) {
+      if (
+        record.state.runGeneration !== retained.record.state.runGeneration ||
+        record.state.sequence > retained.record.state.sequence
+      )
+        throw new OutboxFenceConflict(
+          'Terminal state changed after settlement',
+        );
+      record = { ...record, state: retained.record.state };
+    }
     let intent = retained?.input?.intent ?? record.settling;
     if (!intent) {
       if (!isSettledStatus(status)) return;
@@ -7939,7 +8883,7 @@ export class AgentDelegationBroker {
       },
     };
     const entry: StreamSettlementOutbox = retained ?? {
-      record,
+      record: withoutLegacyTranscriptBodies(record),
       input,
       target,
       key: stableIntent.settlementKey,
@@ -7950,12 +8894,15 @@ export class AgentDelegationBroker {
       attempts: 0,
     };
     this.settlementOutbox.set(this.streamOutboxKey(target), entry);
+    let currentRecord = record;
     let rowTime = 0;
     let uncertainWrite = false;
     const commit = async (next: StoredDelegationV3): Promise<void> => {
       try {
-        next = await this.commitStorageRecord(next);
-        this.records.set(id, next);
+        const committed = await this.commitStorageRecord(next);
+        if (committed.version !== 3)
+          throw new Error('Settlement record changed format');
+        currentRecord = committed;
       } catch (error) {
         if (error instanceof ReceiptAdmissionFailure && error.uncertainWrite)
           uncertainWrite = true;
@@ -7964,7 +8911,7 @@ export class AgentDelegationBroker {
     };
     const current = (): StoredDelegationV3 => {
       this.checkReceiptQuarantine(id);
-      const latest = this.records.get(id);
+      const latest = currentRecord;
       if (
         !latest ||
         latest.version !== 3 ||
@@ -7983,10 +8930,10 @@ export class AgentDelegationBroker {
         )
           return;
         const next: StoredDelegationV3 = {
-          ...entry.record,
+          ...latest,
           settling: stableIntent,
           readMetadata: {
-            ...entry.record.readMetadata,
+            ...latest.readMetadata,
             settling: { runGeneration: target.runGeneration },
           },
         };
@@ -8009,15 +8956,62 @@ export class AgentDelegationBroker {
           ? { ok: true, value: descriptor.value.stream }
           : port.open({ target });
       },
-      resultBySettlementKey: (input) => port.resultBySettlementKey(input),
-      resultByGeneration: (input) => port.resultByGeneration(input),
-      settle: (input) => port.settle(input),
+      resultBySettlementKey: async (request) => {
+        const result = await port.resultBySettlementKey(request);
+        if (
+          result.ok &&
+          result.value.settlementKey === stableIntent.settlementKey &&
+          result.value.runGeneration === stableIntent.runGeneration &&
+          result.value.settlementDigest ===
+            stableIntent.expectedSettlementDigest
+        ) {
+          entry.registrySettled = true;
+          entry.input = undefined;
+        }
+        return result;
+      },
+      resultByGeneration: async (request) => {
+        const result = await port.resultByGeneration(request);
+        if (
+          result.ok &&
+          result.value.settlementKey === stableIntent.settlementKey &&
+          result.value.runGeneration === stableIntent.runGeneration &&
+          result.value.settlementDigest ===
+            stableIntent.expectedSettlementDigest
+        ) {
+          entry.registrySettled = true;
+          entry.input = undefined;
+        }
+        return result;
+      },
+      settle: async (request) => {
+        const result = await port.settle(request);
+        if (result.ok) {
+          entry.registrySettled = true;
+          entry.input = undefined;
+        }
+        return result;
+      },
       commitLocator: async (locator) => {
         const latest = current();
         const { settling: ignored, ...metadata } = latest.readMetadata;
         void ignored;
+        const answerPreview =
+          input.settleAnswer && 'text' in input.settleAnswer
+            ? input.settleAnswer.role === 'final'
+              ? { finalText: v3StatePreview(input.settleAnswer.text) }
+              : { partialText: v3StatePreview(input.settleAnswer.text) }
+            : {};
         await commit({
           ...latest,
+          state: {
+            ...latest.state,
+            ...stableIntent.outcome,
+            ...(isSettledStatus(latest.state.status)
+              ? {}
+              : { sequence: latest.state.sequence + 1 }),
+            ...answerPreview,
+          },
           settling: undefined,
           latestResult: locator,
           readMetadata: {
@@ -8043,6 +9037,9 @@ export class AgentDelegationBroker {
       notify: async (locator) => {
         const latest = current();
         entry.locator = locator;
+        // The body-free durable locator is now authoritative; retries only
+        // re-notify it and no longer need the transient exact answer bytes.
+        entry.input = undefined;
         entry.stage = 'notify';
         await this.notifyStreamResult(latest, locator, stableIntent.outcome);
         this.completeStreamOutbox(entry);
@@ -8066,6 +9063,11 @@ export class AgentDelegationBroker {
       entry.stage = settled.stage;
       if (settled.error && !settled.error.retryable)
         this.failStreamOutbox(entry, new Error(settled.error.message));
+      else if (this.streamRepairContext.getStore())
+        this.failStreamOutbox(
+          entry,
+          new Error(`Settlement pending at ${settled.stage}`),
+        );
       else this.scheduleStreamOutbox(entry);
     } else if (settled.kind === 'conflict')
       this.failStreamOutbox(entry, new OutboxFenceConflict(settled.reason));
@@ -8084,6 +9086,8 @@ export class AgentDelegationBroker {
     // onSettled failure, report it and let terminal cleanup run.
     if (settled.kind === 'retry' && settled.stage === 'notify') {
       this.options.onError?.(new Error('Settlement notification failed'));
+      if (this.streamRepairContext.getStore())
+        throw new Error('Settlement notification failed');
       return;
     }
     if (settled.kind === 'conflict' || settled.kind === 'retry')
@@ -8099,17 +9103,18 @@ export class AgentDelegationBroker {
     locator: NonNullable<StoredDelegationV3['latestResult']>,
     outcome: DelegationTranscriptResultEntry['outcome'],
   ): Promise<void> {
-    return (
-      this.options.onSettled?.(record.parent, record.state.delegationId, {
-        resultIndex: locator.resultIndex,
-        runGeneration: locator.runGeneration,
-        status: locator.status,
-        settledAt: locator.settledAt,
-        outputTruncated: false,
-        ...(outcome.error ? { error: outcome.error } : {}),
-        ...(outcome.usage ? { usage: outcome.usage } : {}),
-        ...(outcome.stopReason ? { stopReason: outcome.stopReason } : {}),
-      }) ?? Promise.resolve()
+    return this.revalidateStreamRepair().then(
+      () =>
+        this.options.onSettled?.(record.parent, record.state.delegationId, {
+          resultIndex: locator.resultIndex,
+          runGeneration: locator.runGeneration,
+          status: locator.status,
+          settledAt: locator.settledAt,
+          outputTruncated: false,
+          ...(outcome.error ? { error: outcome.error } : {}),
+          ...(outcome.usage ? { usage: outcome.usage } : {}),
+          ...(outcome.stopReason ? { stopReason: outcome.stopReason } : {}),
+        }) ?? Promise.resolve(),
     );
   }
 
@@ -8214,7 +9219,10 @@ export class AgentDelegationBroker {
     const previous = this.writes.get(id) ?? Promise.resolve();
     const next = previous.then(async (): Promise<StoredDelegationV3> => {
       this.checkReceiptQuarantine(id);
-      const latest = this.records.get(id);
+      const retained = this.records.get(id);
+      if (!retained) throw new Error('Card rebase record disappeared');
+      const hydrated = await this.recordForMutation(id, retained);
+      const latest = hydrated;
       if (
         latest?.version !== 3 ||
         latest.parent.chatId !== record.parent.chatId ||
@@ -8253,9 +9261,13 @@ export class AgentDelegationBroker {
     record: StoredDelegation,
     baseline?: StoredDelegationV3,
   ): Promise<StoredDelegation> {
+    if (isTerminalDelegationSummary(record))
+      throw new Error('Terminal delegation summaries cannot be committed');
     const id = record.state.delegationId;
     if (record.version !== 3) {
+      await this.revalidateStreamRepair();
       await this.options.storage.commit(record);
+      this.retainRecord(record);
       return record;
     }
     if (!this.validatedCardRecords.has(record)) {
@@ -8266,9 +9278,18 @@ export class AgentDelegationBroker {
       this.validateCardRecord(record);
     }
     this.checkReceiptQuarantine(id);
+    const digest = this.initialized
+      ? undefined
+      : streamRecordFileDigest(record);
     try {
-      await this.options.storage.commit(record);
+      await this.revalidateStreamRepair();
+      // The file already holds these bytes, durably: loaded, or written by
+      // this initialization.
+      if (digest === undefined || this.startupFileDigests.get(id) !== digest)
+        await this.options.storage.commit(record);
+      if (digest !== undefined) this.startupFileDigests.set(id, digest);
     } catch {
+      this.startupFileDigests.delete(id);
       // Install both barriers synchronously, inside the write chain and before
       // the outer chat-key lock can release. Never infer absence from rejection.
       this.receiptQuarantine.quarantine(id);
@@ -8292,7 +9313,10 @@ export class AgentDelegationBroker {
         true,
       );
     }
-    this.records.set(id, record);
+    this.retainRecord(record);
+    // The record now stores the kept receipt; a newer one stays in memory.
+    if (this.latestReceipts.get(id) === record.latestReceipt)
+      this.latestReceipts.delete(id);
     const committed = record;
     if (this.initialized)
       this.recordTransaction.exit(() =>
@@ -8321,6 +9345,28 @@ export class AgentDelegationBroker {
         this.options.onError?.(error),
       );
     }
+  }
+
+  /** Hydrates a retained summary only after reserving its per-id write turn. */
+  private settleStreamRecordForId(
+    id: string,
+    runGeneration: number,
+  ): Promise<void> {
+    const previous = this.writes.get(id) ?? Promise.resolve();
+    const next = previous.then(async (): Promise<void> => {
+      this.checkReceiptQuarantine(id);
+      const retained = this.records.get(id);
+      if (!retained) throw new Error('Stream settlement record disappeared');
+      const record = await this.recordForMutation(id, retained);
+      if (record.version !== 3 || record.state.runGeneration !== runGeneration)
+        throw new Error('Stream settlement generation changed');
+      await this.settleStreamRecord(record);
+    });
+    this.writes.set(
+      id,
+      next.catch(() => undefined),
+    );
+    return next;
   }
 
   private checkReceiptQuarantine(id: string): void {
@@ -8507,14 +9553,21 @@ export class AgentDelegationBroker {
         await this.settleStreamRecord(updated, terminalAnswer);
       else {
         updated = await this.commitStorageRecord(updated);
-        this.records.set(id, updated);
       }
-      this.publishTranscript(this.records.get(id) ?? updated);
+      const retained = this.records.get(id);
+      if (!retained) throw new Error('Committed stream delegation disappeared');
+      const committed = await this.recordForMutation(id, retained);
+      if (committed.version !== 3)
+        throw new Error('Committed stream delegation changed format');
+      this.publishTranscript(committed);
+      this.retainRecord(committed);
       return;
     }
     updated = await this.commitStorageRecord(updated);
-    this.records.set(id, updated);
-    if (updated.version === 3) return;
+    if (updated.version === 3) {
+      this.retainRecord(updated);
+      return;
+    }
     const published = legacyArrays(updated)?.results?.find(
       (result) =>
         !(legacyArrays(record)?.results ?? []).some(
@@ -8536,6 +9589,7 @@ export class AgentDelegationBroker {
       record.transcriptRevision !== updated.transcriptRevision
     )
       this.publishTranscript(updated);
+    this.retainRecord(updated);
   }
 
   private update(
@@ -8554,8 +9608,9 @@ export class AgentDelegationBroker {
       this.checkReceiptQuarantine(id);
       const retained = this.records.get(id);
       if (!retained) throw new Error('Unknown delegation record');
+      const hydrated = await this.recordForMutation(id, retained);
       const record =
-        retained.version === 3 ? await this.cardBaseline(retained) : retained;
+        hydrated.version === 3 ? await this.cardBaseline(hydrated) : hydrated;
       const changed = change(record);
       if (record.version === 3 && changed === record) return;
       const updated = this.prepareRecordUpdate(record, changed);
@@ -8580,8 +9635,9 @@ export class AgentDelegationBroker {
       this.checkReceiptQuarantine(id);
       const retained = this.records.get(id);
       if (!retained) throw new Error('Unknown delegation record');
+      const hydrated = await this.recordForMutation(id, retained);
       const current =
-        retained.version === 3 ? await this.cardBaseline(retained) : retained;
+        hydrated.version === 3 ? await this.cardBaseline(hydrated) : hydrated;
       const transaction: PreparedRecordTransaction = {
         current,
         prepared: new WeakSet(),
@@ -8860,9 +9916,11 @@ export class AgentDelegationBroker {
    */
   private childIndex(parentId?: string): ReadonlyMap<string, string[]> {
     const createdAt = (record: StoredDelegation): number =>
-      record.version === 3
-        ? record.readMetadata.originAt
-        : (record.history?.[0]?.createdAt ?? record.createdAt);
+      isTerminalDelegationSummary(record)
+        ? record.summaryIndex.firstHistoricalTimestamp
+        : record.version === 3
+          ? record.readMetadata.originAt
+          : (record.history?.[0]?.createdAt ?? record.createdAt);
     const index = new Map<string, string[]>();
     for (const record of Array.from(this.records.values()).sort(
       (left, right) => createdAt(left) - createdAt(right),
@@ -8986,8 +10044,19 @@ export function projectStoredDelegationSnapshot(
     cancelledByUser,
     stoppedBy,
   } = record.state;
-  const resultIndex =
-    record.version === 3
+  const resultIndex = isTerminalDelegationSummary(record)
+    ? record.version === 3
+      ? record.latestResult?.runGeneration === record.state.runGeneration
+        ? record.latestResult.resultIndex
+        : undefined
+      : record.summaryIndex.legacyResultGenerations.includes(
+            record.state.runGeneration,
+          )
+        ? record.summaryIndex.resultMetadata.find(
+            (result) => result.runGeneration === record.state.runGeneration,
+          )?.resultIndex
+        : undefined
+    : record.version === 3
       ? record.latestResult?.runGeneration === record.state.runGeneration
         ? record.latestResult.resultIndex
         : undefined

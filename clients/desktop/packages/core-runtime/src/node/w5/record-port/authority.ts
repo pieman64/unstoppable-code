@@ -1,3 +1,5 @@
+import { isW5CommitOutcome } from '../commit-log/worker-contract';
+import { W5ProcessFileLockTimeoutError } from '../commit-log/errors';
 import {
   CORE_WORKSPACE_RECORDS_ERROR_KINDS,
   CORE_WORKSPACE_RECORDS_LIMITS,
@@ -151,12 +153,13 @@ function wireError(
   details: Record<string, CanopyJsonValue>,
   retry: CanopyRetryDirective,
   cause: unknown,
+  message = MESSAGES[code],
 ): CanopyOperationError {
   return new CanopyOperationError(
     {
       kind: CORE_WORKSPACE_RECORDS_ERROR_KINDS[code],
       code,
-      message: MESSAGES[code],
+      message,
       details,
       retry,
     },
@@ -196,14 +199,21 @@ function refusalWireError(
       const path = details.path;
       const target =
         typeof path === 'string' ? w5RecordTargetFor(root, path) : undefined;
+      const operation =
+        typeof details.operation === 'string' &&
+        /^[A-Za-z0-9_.-]{1,256}$/.test(details.operation)
+          ? details.operation
+          : undefined;
       return wireError(
         'core.workspaceRecords.unappliedChange',
         {
           ...(target ? { target: { ...target } } : {}),
           ...jsonField(details, 'commitId'),
+          ...(operation ? { operation } : {}),
         },
         NEVER,
         error,
+        `An earlier change (commit ${typeof details.commitId === 'number' ? details.commitId : 'unknown'}, ${operation ?? 'unknown operation'}) to ${target?.kind === 'worktrees' ? 'the worktree list' : target?.kind === 'manifest' ? 'the project record' : target ? 'the project list' : 'this project'} has not finished saving.`,
       );
     }
     case 'recovery-required':
@@ -276,6 +286,19 @@ export function toW5RecordWireError(
   root: string,
 ): CanopyOperationError {
   if (error instanceof CanopyOperationError) return error;
+  if (error instanceof W5ProcessFileLockTimeoutError) {
+    const target = w5RecordTargetFor(root, error.path);
+    return wireError(
+      'core.workspaceRecords.logUnavailable',
+      {
+        reason: 'process-lock-timeout',
+        ...(target ? { target: { ...target } } : {}),
+      },
+      NEVER,
+      error,
+      error.message,
+    );
+  }
   if (error instanceof W5FileWriteRefusedError) {
     const target = w5RecordTargetFor(root, error.path);
     return wireError(
@@ -464,6 +487,13 @@ export function createW5RecordAuthority(
       wire(async () => {
         const report = await host.recoveryReport();
         return {
+          ...(report.abandoned?.length
+            ? {
+                abandoned: report.abandoned
+                  .slice(0, CORE_WORKSPACE_RECORDS_LIMITS.evidenceRows)
+                  .map((entry) => ({ ...entry })),
+              }
+            : {}),
           applied: [...report.applied],
           recoveryRequired: [...report.recoveryRequired],
           recoveryRequiredDetails: (report.recoveryRequiredDetails ?? []).map(
@@ -528,6 +558,25 @@ export function createW5RecordAuthority(
               commitId: outcome.commitId,
               revisions: { ...outcome.revisions },
             };
+          case 'conflict': {
+            if (!isW5CommitOutcome(outcome))
+              throw canopyInternalError(
+                'The W5 conflict outcome is malformed.',
+              );
+            const conflict = outcome.conflicts[0];
+            const target =
+              conflict && w5RecordTargetFor(host.root, conflict.path);
+            if (!target)
+              throw canopyInternalError(
+                'The W5 conflict target cannot be mapped.',
+              );
+            throw wireError(
+              'core.workspaceRecords.fingerprintConflict',
+              { target: { ...target } },
+              AFTER_REFRESH,
+              outcome,
+            );
+          }
           case 'recovery-required':
             return {
               status: 'recovery-required',

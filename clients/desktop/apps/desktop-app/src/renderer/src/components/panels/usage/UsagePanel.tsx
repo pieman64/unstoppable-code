@@ -115,6 +115,8 @@ export interface UsagePanelProps {
   readonly variant: UsagePanelVariant;
   readonly projectId: string;
   readonly worktreeId: string;
+  /** Tab, host page and window visible; the clock runs only while true. */
+  readonly visible: boolean;
 }
 
 function isUsageAccountProvider(
@@ -179,6 +181,7 @@ export const UsagePanel = memo(function UsagePanel({
   variant,
   projectId,
   worktreeId,
+  visible,
 }: UsagePanelProps): JSX.Element {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const sizeMode = resolveUsagePanelSizeMode(useContainerSize(rootRef));
@@ -204,10 +207,14 @@ export const UsagePanel = memo(function UsagePanel({
     void initialize();
   }, [initialize]);
 
+  // A hidden panel keeps its clock stopped, so time-based limits re-render
+  // only once it is shown again, with the current time.
   useEffect(() => {
+    if (!visible) return;
+    setNowMs(Date.now());
     const interval = setInterval(() => setNowMs(Date.now()), 30_000);
     return (): void => clearInterval(interval);
-  }, []);
+  }, [visible]);
 
   // The active (or most-recently-active) chat provider for this worktree.
   // File tabs can be active, so the chat store retains the prior chat

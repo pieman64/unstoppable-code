@@ -2,6 +2,7 @@ import { type JSX, useCallback, useRef, useState } from 'react';
 import { CHAT_UNIT_LABEL } from '@canopy/protocol';
 import {
   ActionMenuRowStyle,
+  Button,
   DropdownMenuDivider,
   DropdownMenuItem,
   DropdownMenuItemIcon,
@@ -253,9 +254,11 @@ export function ShareSessionControl({
             : `Share a redacted, read-only copy of this ${CHAT_UNIT_LABEL} with your team or organization.`
         }
       >
-        <button
+        <Button
           ref={buttonRef}
-          type="button"
+          variant={isShared ? 'ghost-accent' : 'ghost-quiet'}
+          size="sm"
+          iconOnly
           disabled={!isShared && shareDisabled}
           onClick={(event): void => {
             if (isShared) {
@@ -268,14 +271,9 @@ export function ShareSessionControl({
           aria-pressed={isShared}
           data-testid={resolvedTestId}
           data-shared={isShared ? 'true' : 'false'}
-          className={`focus-ring flex h-6 w-6 items-center justify-center rounded-md border transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-            isShared
-              ? 'border-line-accent/30 bg-accent-subtle fg-accent'
-              : 'bg-fg-primary/[0.04] fg-primary/80 hover:bg-fg-primary/[0.08] hover:fg-primary'
-          }`}
         >
           <ShareIcon width={12} height={12} />
-        </button>
+        </Button>
       </ActionTooltip>
 
       {/* No unread badge here by design. This icon-button variant only ever

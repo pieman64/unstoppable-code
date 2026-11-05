@@ -1,14 +1,10 @@
+import type { LocalMemoryScopeRequest } from '@canopy/desktop-shared/types';
 import { readPreferencesFile } from '../../lib/preferences-store';
-import { getUserMemoryDir, getWorkspaceMemoryDir } from '../../lib/paths';
 import { isTrivialMemoryInput } from '../memory-context';
+import { localMemoryStore } from './memory-store';
 import { LOCAL_MEMORY_RECALL_BUDGET, renderLocalMemoryRecall } from './render';
 import { resolveLocalMemoryPolicy } from './policy';
-import {
-  readMemoryIndex,
-  readRecentInboxNoteEntries,
-  type RecentInboxNote,
-} from './store';
-import { recordUsageSoon } from './usage';
+import type { RecentInboxNote } from './store';
 
 const recentNotesBudget = {
   maxNotes: LOCAL_MEMORY_RECALL_BUDGET.recentNotesPerScope,
@@ -44,13 +40,14 @@ function topicKeysFor(
  * scope, so it runs when the batch is applied, never before the turn starts.
  */
 function recordInjectedUsage(
-  scopeDir: string,
+  scope: LocalMemoryScopeRequest,
   indexExcerpt: string,
   notes: RecentInboxNote[],
   parse: TopicKeyParser,
 ): void {
-  recordUsageSoon(
-    scopeDir,
+  const scopeDir = localMemoryStore.resolve(scope).dir;
+  localMemoryStore.recordUsageSoon(
+    scope,
     notes.map((note) => note.fileKey),
     indexExcerpt === ''
       ? undefined
@@ -86,23 +83,25 @@ export async function prepareLocalMemoryContext(options: {
   if (policy.kind === 'blocked') return null;
   // Private memory keeps this project's chats away from user-scope memory.
   const userMemoryExcluded = policy.kind === 'scoped' && policy.privateMemory;
-  const userDir = getUserMemoryDir();
-  const workspaceDir =
-    policy.kind === 'scoped' ? getWorkspaceMemoryDir(policy.workspaceId) : null;
+  const userScope: LocalMemoryScopeRequest = { scope: 'user' };
+  const workspaceScope: LocalMemoryScopeRequest | null =
+    policy.kind === 'scoped'
+      ? { scope: 'workspace', workspaceId: policy.workspaceId }
+      : null;
   const [userIndex, workspaceIndex, userRecent, workspaceRecent] =
     await Promise.all([
       userMemoryExcluded
         ? Promise.resolve({ text: '', truncated: false })
-        : readMemoryIndex(userDir),
-      workspaceDir === null
+        : localMemoryStore.readIndex(userScope),
+      workspaceScope === null
         ? Promise.resolve({ text: '', truncated: false })
-        : readMemoryIndex(workspaceDir),
+        : localMemoryStore.readIndex(workspaceScope),
       userMemoryExcluded
         ? Promise.resolve([])
-        : readRecentInboxNoteEntries(userDir, recentNotesBudget),
-      workspaceDir === null
+        : localMemoryStore.readRecentNotes(userScope, recentNotesBudget),
+      workspaceScope === null
         ? Promise.resolve([])
-        : readRecentInboxNoteEntries(workspaceDir, recentNotesBudget),
+        : localMemoryStore.readRecentNotes(workspaceScope, recentNotesBudget),
     ]);
   const rendered = renderLocalMemoryRecall({
     userIndex,
@@ -117,18 +116,19 @@ export async function prepareLocalMemoryContext(options: {
   );
   // The Markdown parser stays off Electron's startup import path: it loads
   // on the first injection, and later imports resolve from the cache.
-  const { referencedTopicFileKeys } = await import('./topic-reference');
+  const { referencedTopicFileKeys } =
+    await import('@canopy/memory-consolidation/topic-reference');
   if (!userMemoryExcluded) {
     recordInjectedUsage(
-      userDir,
+      userScope,
       rendered.userIndex,
       injectedUserNotes,
       referencedTopicFileKeys,
     );
   }
-  if (workspaceDir !== null) {
+  if (workspaceScope !== null) {
     recordInjectedUsage(
-      workspaceDir,
+      workspaceScope,
       rendered.workspaceIndex,
       injectedWorkspaceNotes,
       referencedTopicFileKeys,

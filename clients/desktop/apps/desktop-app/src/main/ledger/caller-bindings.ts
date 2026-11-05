@@ -106,6 +106,37 @@ export interface LedgerCallerBindingRegistryOptions {
   now?: () => number;
 }
 
+function sameContainer(left: LedgerContainer, right: LedgerContainer): boolean {
+  switch (left.kind) {
+    case 'code_worktree':
+      return (
+        right.kind === 'code_worktree' &&
+        left.workspaceId === right.workspaceId &&
+        left.worktreeId === right.worktreeId
+      );
+    case 'cowork_entry':
+      return (
+        right.kind === 'cowork_entry' &&
+        left.workspaceId === right.workspaceId &&
+        left.entryId === right.entryId
+      );
+    case 'advisor_entry':
+      return (
+        right.kind === 'advisor_entry' &&
+        left.appWorkspaceId === right.appWorkspaceId &&
+        left.entryId === right.entryId
+      );
+    case 'global':
+      return (
+        right.kind === 'global' &&
+        left.owner.kind === right.owner.kind &&
+        (left.owner.kind !== 'organization' ||
+          (right.owner.kind === 'organization' &&
+            left.owner.organizationId === right.owner.organizationId))
+      );
+  }
+}
+
 /**
  * In-memory registry of trusted Ledger caller bindings. Host code registers
  * who is calling and receives an unguessable opaque ID, which it passes as
@@ -168,6 +199,24 @@ export class LedgerCallerBindingRegistry {
       return undefined;
     }
     return binding;
+  }
+
+  /**
+   * Live caller bindings for one container incarnation. This is a read-only
+   * view of the trusted host registrations, used to resolve running pipeline
+   * and delegate actors that are not owner-picker candidates.
+   */
+  listForScope(
+    container: LedgerContainer,
+    containerCreatedAt: string,
+  ): readonly LedgerCallerBinding[] {
+    const now = this.now();
+    return Array.from(this.bindings.values()).filter(
+      (binding) =>
+        sameContainer(binding.container, container) &&
+        binding.containerCreatedAt === containerCreatedAt &&
+        !isExpired(binding, now),
+    );
   }
 
   /** Revokes one binding. Returns whether it was live. */

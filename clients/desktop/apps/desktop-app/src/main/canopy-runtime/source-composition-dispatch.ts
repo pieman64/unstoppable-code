@@ -31,9 +31,12 @@ import {
  * in-process call (compatibility debt in the CAN-5552 inventory).
  */
 
+// No IPC channel projects combine, split or retry (CAN-5710's cloud form).
 type ProjectedOperation = Exclude<
   CoreSourceCompositionCommandName,
-  'core.workspace.composition.combine' | 'core.workspace.composition.split'
+  | 'core.workspace.composition.combine'
+  | 'core.workspace.composition.split'
+  | 'core.workspace.composition.retry'
 >;
 
 function project<T>(

@@ -21,6 +21,8 @@
     "packages/agent-actions/src/**/*.tsx",
     "packages/agent-transcript/src/**/*.ts",
     "packages/agent-transcript/src/**/*.tsx",
+    "packages/memory-consolidation/src/**/*.ts",
+    "packages/memory-consolidation/src/**/*.tsx",
     "packages/core-runtime/src/**/*.ts",
     "packages/core-runtime/src/**/*.tsx",
     "packages/core-platform/src/**/*.ts",
@@ -49,5 +51,9 @@
     "packages/pipeline-interop/src/**/*.tsx",
     "packages/mcp-oauth-core/src/**/*.ts",
     "packages/mcp-oauth-core/src/**/*.tsx"
+  ],
+  "exclude": [
+    "node_modules",
+    "**/__scratch__/**"
   ]
 }

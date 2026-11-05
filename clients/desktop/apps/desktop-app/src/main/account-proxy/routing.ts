@@ -19,16 +19,15 @@ import {
   LOOPBACK_BROKER_AUTH_TOKEN,
 } from '../agents/gateway-broker-routes';
 import { getModelGatewayRequirementForOwner } from '../lib/model-gateway-state';
-import { loadAccountProxyCredentials } from '../lib/account-proxy-credential-store';
 import { recordAccountProxyResponse } from './attribution';
 import { ACCOUNT_PROXY_CODEX_PROVIDER_ID } from './codex-provider';
 import { isAccountProxyFlagEnabled } from './feature-flag';
+import { ACCOUNT_PROXY_OPEN_SERVER_TOKEN } from './client-key';
 import {
-  ACCOUNT_PROXY_OPEN_SERVER_TOKEN,
-  accountProxyClientKeyFingerprint,
-} from './client-key';
-import {
+  accountProxyClientKeyVersion,
   getAccountProxyRouteTarget,
+  loadAccountProxyClientKey,
+  revealAccountProxyClientKey,
   reportAccountProxyClientKeyRejected,
   type AccountProxyHarness,
   type AccountProxyRouteTarget,
@@ -199,19 +198,17 @@ export async function resolveAccountProxySessionRoute(
       // A stopped proxy on this device gets no key, so the broker forwards
       // nothing to the port it released.
       if (!isAccountProxyConnectionServing(target.connection)) return null;
-      const credentials = await loadAccountProxyCredentials(connectionId).catch(
-        () => null,
-      );
+      const clientKey = await loadAccountProxyClientKey(target.connection);
       if (!isAccountProxyConnectionServing(target.connection)) return null;
-      if (!credentials) return null;
-      return credentials.clientKey
-        ? {
-            token: credentials.clientKey,
-            credentialVersion: accountProxyClientKeyFingerprint(
-              credentials.clientKey,
-            ),
-          }
-        : ACCOUNT_PROXY_OPEN_SERVER_TOKEN;
+      if (clientKey === undefined) return null;
+      if (clientKey === null) return ACCOUNT_PROXY_OPEN_SERVER_TOKEN;
+      // Revealed last: a launch that ended meanwhile sends nothing.
+      const token = revealAccountProxyClientKey(clientKey);
+      if (token === null) return null;
+      return {
+        token,
+        credentialVersion: accountProxyClientKeyVersion(clientKey),
+      };
     },
     ...(options.checkpointQuota
       ? {}

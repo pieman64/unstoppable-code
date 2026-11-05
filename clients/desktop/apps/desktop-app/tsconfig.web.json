@@ -23,6 +23,7 @@
     "src/**/*.test.ts",
     "src/**/*.test.tsx",
     "src/**/__tests__/**",
+    "src/**/__scratch__/**",
     "../../packages/desktop-shared/src/node/**"
   ],
   "references": [

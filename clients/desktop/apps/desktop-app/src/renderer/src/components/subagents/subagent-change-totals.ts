@@ -131,9 +131,3 @@ export function useSubagentChangeTotals(
     [enabled, scope],
   );
 }
-
-/** Test-only cleanup for the process-local, bounded summary cache. */
-export function resetSubagentChangeTotalsForTests(): void {
-  totalsByNodeStatus.clear();
-  pendingReads.clear();
-}

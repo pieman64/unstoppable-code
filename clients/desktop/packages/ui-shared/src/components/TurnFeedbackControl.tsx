@@ -8,11 +8,8 @@ import {
 import type { TurnFeedbackRating } from '@canopy/protocol/turn-feedback';
 import { ThumbsDownIcon } from '../icons/ThumbsDownIcon';
 import { ThumbsUpIcon } from '../icons/ThumbsUpIcon';
-import {
-  CLASSIC_FOOTER_ICON_BUTTON_CLASS,
-  CLEAN_FOOTER_ICON_BUTTON_CLASS,
-  useCleanChatLook,
-} from './chat-look';
+import { Button } from './Button';
+import { CLEAN_ICON_BUTTON_VARIANT, useCleanChatLook } from './chat-look';
 import { DropdownMenuItem, DropdownMenuItemIcon } from './DropdownMenu';
 
 /**
@@ -42,10 +39,6 @@ export interface TurnFeedbackControlProps {
   renderTooltip?: (node: ReactElement, label: string) => ReactNode;
 }
 
-// Selected reads through a filled icon and a stronger tone, never a border.
-const SELECTED_CLASS =
-  'focus-ring flex h-6 w-6 pointer-coarse:h-11 pointer-coarse:w-11 items-center justify-center rounded-md fg-primary transition-colors hover:bg-fg-primary/[0.04] active:bg-fg-primary/[0.08]';
-
 /**
  * Turn-level thumbs up/down control (CAN-1521).
  *
@@ -65,16 +58,10 @@ export function TurnFeedbackControl({
   const wrap = (node: ReactElement, label: string): ReactNode =>
     renderTooltip ? renderTooltip(node, label) : node;
 
-  // Under the clean look the thumbs take the footer text's ink and the step
-  // icons' 14px size; a rating still reads through the filled icon.
+  // Both looks use the turn's 28px quiet icon button: tertiary ink at rest,
+  // full ink while pressed, and a rating reads through the filled icon. The
+  // clean look takes the step icons' 14px glyph.
   const clean = useCleanChatLook();
-  const restClass = clean
-    ? CLEAN_FOOTER_ICON_BUTTON_CLASS
-    : CLASSIC_FOOTER_ICON_BUTTON_CLASS;
-  const selectedClass = clean
-    ? // A variant, so it outranks the quiet base ink.
-      `${CLEAN_FOOTER_ICON_BUTTON_CLASS} aria-pressed:fg-primary`
-    : SELECTED_CLASS;
   const iconSize = clean ? '14' : '13';
   const upSelected = rating === 'up';
   const downSelected = rating === 'down';
@@ -124,15 +111,16 @@ export function TurnFeedbackControl({
       data-testid="turn-feedback-control"
       data-rating={rating ?? 'none'}
       data-sync-state={syncState ?? 'none'}
-      className="flex items-center gap-0.5"
+      className="flex items-center gap-0.5 pointer-coarse:gap-4"
     >
       {wrap(
-        <button
-          type="button"
+        <Button
+          variant={CLEAN_ICON_BUTTON_VARIANT}
+          size="sm"
+          iconOnly
           data-testid="turn-feedback-up"
           aria-label="Good response"
           aria-pressed={upSelected}
-          className={upSelected ? selectedClass : restClass}
           onClick={(): void => {
             onRate(upSelected ? null : 'up');
           }}
@@ -143,16 +131,17 @@ export function TurnFeedbackControl({
             aria-hidden="true"
             {...(upSelected ? { fill: 'currentColor' } : {})}
           />
-        </button>,
+        </Button>,
         'Good response',
       )}
       {wrap(
-        <button
-          type="button"
+        <Button
+          variant={CLEAN_ICON_BUTTON_VARIANT}
+          size="sm"
+          iconOnly
           data-testid="turn-feedback-down"
           aria-label="Bad response"
           aria-pressed={downSelected}
-          className={downSelected ? selectedClass : restClass}
           onClick={(): void => {
             onRate(downSelected ? null : 'down');
           }}
@@ -163,7 +152,7 @@ export function TurnFeedbackControl({
             aria-hidden="true"
             {...(downSelected ? { fill: 'currentColor' } : {})}
           />
-        </button>,
+        </Button>,
         'Bad response',
       )}
     </div>

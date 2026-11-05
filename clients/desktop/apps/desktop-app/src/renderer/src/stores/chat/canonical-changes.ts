@@ -17,7 +17,11 @@ import type {
   PersistedPendingQuestion,
 } from '@canopy/desktop-shared/types';
 import { resolveProviderModelConfig } from '@canopy/desktop-shared/types';
-import { overlayStreamBackedDelegationCard } from '@canopy/agent-transcript';
+import {
+  overlayStreamBackedDelegationCard,
+  type DelegatedAgentCallBlock,
+} from '@canopy/agent-transcript';
+import { stableStringify } from '@canopy/desktop-shared/lib/stable-hash';
 import {
   mergeAgentModelConfig,
   readCodexSpeedRecord,
@@ -65,6 +69,7 @@ import {
   SENDING_LEASE_MS,
   type ChatTab,
   type DelegationStreamScopeHints,
+  delegationStreamRunKey,
   type PendingQuestion,
   type SendingLease,
   type WorktreeChatState,
@@ -445,6 +450,12 @@ export function preserveRendererOnlyTabFields(
     ...(previous.accountProxyRouted !== undefined
       ? { accountProxyRouted: previous.accountProxyRouted }
       : {}),
+    // The Subagents picker's summary of an evicted transcript, kept until
+    // the transcript loads again.
+    ...(previous.evictedSubagentRoot !== undefined &&
+    next.transcriptLoaded === false
+      ? { evictedSubagentRoot: previous.evictedSubagentRoot }
+      : {}),
   };
   return reconcileProvisionalTerminalFirstSend(
     preservePendingUserMessages(
@@ -651,6 +662,17 @@ function resolveActiveTabId(tabs: ChatTab[], preferredId: string): string {
     : (tabs[0]?.id ?? '');
 }
 
+function sameCardExceptStreamRevision(
+  current: DelegatedAgentCallBlock,
+  next: DelegatedAgentCallBlock,
+): boolean {
+  const { streamRevision: currentRevision, ...currentCard } = current;
+  const { streamRevision: nextRevision, ...nextCard } = next;
+  void currentRevision;
+  void nextRevision;
+  return stableStringify(currentCard) === stableStringify(nextCard);
+}
+
 function applyOneChange(
   projection: CanonicalScopeProjection,
   change: ChatStateChange,
@@ -678,12 +700,17 @@ function applyOneChange(
                   block.runGeneration !== change.runGeneration
                 )
                   return block;
-                blocksChanged = true;
-                return overlayStreamBackedDelegationCard(
+                const overlaid = overlayStreamBackedDelegationCard(
                   block,
                   change.cardState,
                   change.streamRevision,
                 );
+                // Desktop's child pages read stream revisions from the stream
+                // hints, so an update that only advances the stream keeps the
+                // block, and the tab, as they are.
+                if (sameCardExceptStreamRevision(block, overlaid)) return block;
+                blocksChanged = true;
+                return overlaid;
               });
               if (!blocksChanged) return message;
               changed = true;
@@ -1067,7 +1094,11 @@ function applyDelegationHintChange(
   if (change.type !== 'delegation.card_state_updated') return projection;
   const current: DelegationStreamScopeHints = hints ?? { epoch: 0, runs: {} };
   const prefix = `${change.chatId}:${change.delegationId}:`;
-  const key = `${prefix}${change.runGeneration}`;
+  const key = delegationStreamRunKey(
+    change.chatId,
+    change.delegationId,
+    change.runGeneration,
+  );
   const entries = Object.entries(current.runs);
   const generations = entries.filter(([run]) => run.startsWith(prefix));
   // An event for an older run must not resurrect its retired generation.

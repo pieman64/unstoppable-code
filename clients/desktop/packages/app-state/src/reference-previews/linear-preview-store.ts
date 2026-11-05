@@ -8,6 +8,8 @@ import {
   isGitHubAvatarUrl,
   isGitHubItemNumber,
   isGitHubRepositoryName,
+  isLinearAvatarUrl,
+  isLinearStatusType,
   parseGitHubPullPreviewFacts,
   type GitHubPreview,
   type GitHubPreviewTarget,
@@ -438,8 +440,18 @@ function isLinearIssuePreview(value: unknown): value is LinearIssuePreview {
     isNullableString(Reflect.get(value, 'description')) &&
     isNullableString(Reflect.get(value, 'status')) &&
     isNullableString(Reflect.get(value, 'assignee')) &&
-    isNullableString(Reflect.get(value, 'project'))
+    isNullableString(Reflect.get(value, 'project')) &&
+    isAbsentOr(Reflect.get(value, 'statusType'), isLinearStatusType) &&
+    isAbsentOr(Reflect.get(value, 'assigneeAvatarUrl'), isLinearAvatarUrl)
   );
+}
+
+/** An optional field that, when set, passes `check`. */
+function isAbsentOr(
+  value: unknown,
+  check: (value: unknown) => boolean,
+): boolean {
+  return value === undefined || value === null || check(value);
 }
 
 const GITHUB_ITEM_STATES: readonly unknown[] = ['open', 'closed', 'merged'];

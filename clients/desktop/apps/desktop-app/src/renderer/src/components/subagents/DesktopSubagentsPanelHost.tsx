@@ -117,6 +117,7 @@ export function DesktopSubagentsPanelHost({
     : null;
   const treeQuery = useSubagentTree(scope, selectedRootId, {
     enabled: isVisible,
+    reloadEvictedTranscript: true,
   });
   const capabilities = useSubagentViewerCapabilities();
   const showWorkspaceDetails = subagentScopeShowsWorkspaceDetails(scope);

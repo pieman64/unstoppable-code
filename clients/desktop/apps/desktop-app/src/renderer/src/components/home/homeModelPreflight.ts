@@ -382,10 +382,3 @@ export function cachedHomeModelRefusal(
     return { ok: true };
   return evaluateHomeModelEligibility(selection, lastLoaded.facts);
 }
-
-/** Test-only: forget cached facts between cases. */
-export function resetHomeModelPreflightForTests(): void {
-  lastLoaded = null;
-  loadSequence = 0;
-  lastLoadedSequence = 0;
-}

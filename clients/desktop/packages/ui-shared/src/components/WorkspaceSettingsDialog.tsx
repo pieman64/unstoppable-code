@@ -17,6 +17,7 @@ import { WORKSPACE_LABEL } from '@canopy/protocol';
 import { Button } from './Button';
 import { ColorSwatchPicker } from './ColorSwatchPicker';
 import { DialogModal } from './DialogModal';
+import { InstructionsEditor } from './InstructionsEditor';
 import { Select, TextArea, TextInput } from './Field';
 import { SegmentedControl } from './SegmentedControl';
 import { SettingsDangerConfirmBlock } from './SettingsDangerConfirmBlock';
@@ -666,20 +667,19 @@ export function WorkspaceSettingsDialog({
           {activeTab === 'claude-md' && (
             // The editor fills the page, so its insets match on every side.
             <div className="my-2 flex min-h-48 flex-1 flex-col">
-              <TextArea
+              <InstructionsEditor
                 value={content}
-                aria-label={
+                label={
                   typeof claudeMdCopy?.title === 'string'
                     ? claudeMdCopy.title
                     : 'CLAUDE.md'
                 }
-                onChange={(event) => {
+                onChange={(next) => {
                   setJustSaved(false);
-                  setContent(event.target.value);
+                  setContent(next);
                 }}
                 spellCheck={false}
-                data-testid={testIds?.claudeMdTextarea}
-                className="flex-1"
+                textareaTestId={testIds?.claudeMdTextarea}
                 placeholder={
                   claudeMdCopy?.placeholder ??
                   `# ${WORKSPACE_LABEL} instructions\n\nGuidance for agents working in this ${WORKSPACE_LABEL.toLowerCase()}…`

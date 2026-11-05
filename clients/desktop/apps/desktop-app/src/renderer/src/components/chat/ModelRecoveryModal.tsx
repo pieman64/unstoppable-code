@@ -1,18 +1,10 @@
-import {
-  useCallback,
-  useEffect,
-  useId,
-  useRef,
-  useState,
-  type JSX,
-} from 'react';
+import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import type {
   AiCreditsScopeRequest,
   CanopyCloudAccountPublicState,
   ChatModel,
   NativeAiCreditsAvailability,
   AgentProviderAuthStatus,
-  CloudDailyCreditDripState,
 } from '@canopy/desktop-shared/types';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import {
@@ -25,7 +17,9 @@ import { isGatewayRoutableModel } from '@canopy/desktop-shared/lib/gateway-model
 import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
 import { lapsedOrgNames as lapsedOrgNamesFrom } from '@canopy/desktop-shared/lib/org-billing-state-parsing';
 import {
+  AI_CREDITS_GUEST_PURCHASE_LABEL,
   AI_CREDITS_PURCHASE_LABEL,
+  connectProviderLabel,
   DialogModal,
   LoadingSpinner,
   MODEL_LIBRARY_UNLOCK_COPY,
@@ -33,7 +27,6 @@ import {
   modelLibraryWaitingInBrowserBody,
   guestModelGateCopy,
   GuestModelGateContent,
-  GUEST_MODEL_GATE_DAILY_CREDITS_COPY,
 } from '@canopy/ui-shared';
 import { isCanopyCloudConnected } from '@/lib/canopy-cloud';
 import { mayChangeCanopyCloudIdentity } from '@/lib/canopyCloudAccountChange';
@@ -61,21 +54,13 @@ import { guestModelGateTitle, guestModelGateToast } from '@/lib/guest-cta-copy';
 import { AuthLoginModal } from '@/components/settings/AuthLoginModal';
 import type { ModelRecovery } from '@/lib/modelPickerRowGate';
 import type { GuestModelFallback } from '@/lib/guestModelFallback';
-import {
-  dailyFreeCreditsActionHint,
-  dailyFreeCreditsStartTomorrow,
-  dailyFreeCreditsTurnOnAction,
-  displayableDailyFreeCreditsCap,
-  formatCreditCount,
-  ErrorBanner,
-} from '@canopy/ui-shared/components';
+import { ErrorBanner } from '@canopy/ui-shared/components';
 import { GetAiCreditsCta } from './GetAiCreditsCta';
 import { CreditsRecoveryView } from './CreditsRecoveryView';
 import {
   trackCreditsRecoveryClick,
   type CreditsRecoveryAction,
 } from '@/lib/creditsRecoveryTelemetry';
-import { saveDailyCreditDripChoice } from '@/lib/daily-credit-drip';
 
 /**
  * CAN-2349 §3 — the ONE recovery modal.
@@ -118,8 +103,8 @@ export interface PendingModelRecovery {
   /**
    * CAN-4703 — the guest model a `needs-account` gate offers instead,
    * snapshotted with the rest of the click so the named model cannot change
-   * while the dialog is open. A credits-recoverable candidate still needs
-   * authoritative daily-credit eligibility in this modal.
+   * while the dialog is open. Only a model the guest can use right now is
+   * offered.
    */
   readonly guestFallback?: GuestModelFallback;
 }
@@ -280,25 +265,6 @@ function trackedUnlockRequestId(
     : undefined;
 }
 
-/**
- * CAN-5211 — where the guest gate's `daily-credits` fallback is.
- *
- * `enabling` saves the preference; `checking` re-reads the balance and asks
- * the host to select the fallback. Every `saved-*` state follows a save that
- * succeeded, so none of them offers to turn daily credits on again:
- * `saved-refresh-failed` and `saved-blocked` (the host refused the selection)
- * offer a check that never writes, and `saved-no-coverage` only says so.
- */
-type DailyCreditsFallbackState =
-  | 'idle'
-  | 'enabling'
-  | 'checking'
-  | 'save-failed'
-  | 'save-uncertain'
-  | 'saved-refresh-failed'
-  | 'saved-no-coverage'
-  | 'saved-blocked';
-
 /** What the account read says. Snapshotted, never derived from live props. */
 type AccountRead =
   | { readonly status: 'loading' }
@@ -308,14 +274,6 @@ type AccountRead =
       readonly status: 'settled';
       readonly availability: NativeAiCreditsAvailability;
       readonly guest: boolean;
-      /**
-       * A cloud credential (guest or signed in) is connected, so the daily
-       * free-credit drip can be turned on from here. `guest` is also true with
-       * no credential at all, so it cannot answer this.
-       */
-      readonly connected: boolean;
-      /** Authoritative route availability and preference, never an off default. */
-      readonly dailyCredits: CloudDailyCreditDripState | null;
       /**
        * Orgs that have lost the `teams` capability, read off the SAME account
        * snapshot as `guest`.
@@ -352,20 +310,14 @@ export function ModelRecoveryModal(
     props.aiCreditsScope,
     accountEpoch,
   ]);
-  const lifetimeRef = useRef({ key, valid: true, dailyCreditsBusy: false });
+  const lifetimeRef = useRef({ key, valid: true });
   if (lifetimeRef.current.key !== key) {
     lifetimeRef.current.valid = false;
-    lifetimeRef.current = { key, valid: true, dailyCreditsBusy: false };
+    lifetimeRef.current = { key, valid: true };
   }
   const lifetime = lifetimeRef.current;
   const isCurrentAttempt = useCallback(
     (): boolean => lifetime.valid,
-    [lifetime],
-  );
-  const onDailyCreditsBusyChange = useCallback(
-    (busy: boolean): void => {
-      lifetime.dailyCreditsBusy = busy;
-    },
     [lifetime],
   );
   useEffect(() => {
@@ -374,13 +326,8 @@ export function ModelRecoveryModal(
     const invalidate = (event: Event): void => {
       if (!mayChangeCanopyCloudIdentity(event)) return;
       // Explicit sign-in must keep its CTA and browser continuation mounted.
-      // The gate-close read already adopts the resulting account. An enable
-      // in flight must still be cancelled if another surface opens sign-in.
-      if (
-        useCloudConnectGateStore.getState().pending !== null &&
-        !lifetimeRef.current.dailyCreditsBusy
-      )
-        return;
+      // The gate-close read already adopts the resulting account.
+      if (useCloudConnectGateStore.getState().pending !== null) return;
       // Synchronous: a promise settling before the next render is stale too.
       lifetimeRef.current.valid = false;
       setAccountEpoch((epoch) => epoch + 1);
@@ -399,7 +346,6 @@ export function ModelRecoveryModal(
       key={key}
       {...props}
       isCurrentAttempt={isCurrentAttempt}
-      onDailyCreditsBusyChange={onDailyCreditsBusyChange}
     />
   );
 }
@@ -414,10 +360,8 @@ function ModelRecoveryAttempt({
   onUnlockPurchase,
   onUseGuestFallback,
   isCurrentAttempt,
-  onDailyCreditsBusyChange,
 }: ModelRecoveryModalProps & {
   readonly isCurrentAttempt: () => boolean;
-  readonly onDailyCreditsBusyChange: (busy: boolean) => void;
 }): JSX.Element | null {
   const modelLabel = getModelDisplayName(pending.model);
   const guestSignInRef = useRef<HTMLButtonElement | null>(null);
@@ -487,9 +431,6 @@ function ModelRecoveryAttempt({
     !needsGatewayRoute ||
     (gatewayRoutesKnown && isGatewayRoutableModel(pending.model));
   const [read, setRead] = useState<AccountRead>({ status: 'loading' });
-  /** The latest rendered read, for async work that must re-check it. */
-  const readRef = useRef(read);
-  readRef.current = read;
   const [loginOpen, setLoginOpen] = useState(false);
   const [signInBusy, setSignInBusy] = useState(false);
   const [retryBusy, setRetryBusy] = useState(false);
@@ -564,25 +505,6 @@ function ModelRecoveryAttempt({
    * not the same as visible.
    */
   const [commitRetryBusy, setCommitRetryBusy] = useState(false);
-  /**
-   * The "Turn on free daily AI Credits" action for a user who opted out of the
-   * daily drip. `saved` means the preference is on but the re-read still found
-   * no balance (the grant failed, or today's drip was already granted and
-   * spent): the action is hidden, since the preference is already saved, and
-   * the modal says when credits arrive instead of closing on a stale balance.
-   */
-  const [dailyDrip, setDailyDrip] = useState<
-    'idle' | 'busy' | 'error' | 'saved'
-  >('idle');
-  const dailyDripBusyRef = useRef(false);
-  /**
-   * CAN-5214 — the daily cap the opted-out offer names, from the authoritative
-   * preference read. Explanatory only: while it is unknown the offer shows the
-   * amount-less sentence and every action stays usable.
-   */
-  const [dailyDripCap, setDailyDripCap] = useState<number | null>(null);
-  /** Ties the opt-in button to the amount and terms printed under it. */
-  const dailyDripHintId = useId();
   /**
    * True while a credits branch is shown (CAN-4633), so the shared buttons
    * report clicks only from the no-credits state, not from the unlock,
@@ -677,31 +599,10 @@ function ModelRecoveryAttempt({
    */
   const [fallbackBusy, setFallbackBusy] = useState(false);
   const [fallbackError, setFallbackError] = useState<string | null>(null);
-  /**
-   * CAN-5211 — the `daily-credits` fallback's lifecycle. The in-flight latch
-   * is taken synchronously, before anything is awaited, so a double press or
-   * a press during a re-check starts nothing. Only the attempt holding the
-   * latch may release it.
-   */
-  const [dailyCreditsFallback, setDailyCreditsFallback] =
-    useState<DailyCreditsFallbackState>('idle');
-  /** Set once a retry can only re-check; the enable action never returns. */
-  const [dailyCreditsRecheckOnly, setDailyCreditsRecheckOnly] = useState(false);
-  const dailyCreditsInFlightRef = useRef(false);
-  const dailyCreditsAttemptRef = useRef(0);
-  /** The preference is known to be on: no later attempt writes it again. */
-  const dailyCreditsOnRef = useRef(false);
-  /** A save rejected without proof it failed: read before writing again. */
-  const dailyCreditsSaveUncertainRef = useRef(false);
   const handleUseGuestFallback = useCallback(
     (fallback: GuestModelFallback): void => {
       const selectFallback = onUseGuestFallbackRef.current;
-      if (
-        !selectFallback ||
-        commitInFlightRef.current ||
-        committedRef.current ||
-        dailyCreditsInFlightRef.current
-      )
+      if (!selectFallback || commitInFlightRef.current || committedRef.current)
         return;
       setFallbackBusy(true);
       setFallbackError(null);
@@ -731,7 +632,6 @@ function ModelRecoveryAttempt({
       // below is not ordered, so without this an older, staler answer can land
       // last and win.
       const seq = ++readSeqRef.current;
-      setDailyDripCap(null);
       let availability: NativeAiCreditsAvailability | null = null;
       let account: CanopyCloudAccountPublicState | null | undefined;
       // SHARED with `GetAiCreditsCta`'s post-connect read. Both wake on the same
@@ -762,14 +662,6 @@ function ModelRecoveryAttempt({
         pending.recovery.kind === 'needs-account'
           ? await refreshWorkModelLibraryAccess(aiCreditsScope)
           : undefined;
-      let dailyCredits: CloudDailyCreditDripState | null = null;
-      if (pending.guestFallback?.access === 'daily-credits') {
-        try {
-          dailyCredits = await window.api.loadCloudDailyCreditDrip();
-        } catch {
-          // Unknown eligibility never offers an enable operation.
-        }
-      }
       if (
         !mountedRef.current ||
         !isCurrentAttempt() ||
@@ -783,8 +675,7 @@ function ModelRecoveryAttempt({
       // both the old and new tests green while genuinely-uncovered users lose
       // their purchase CTA.
       if (!availability || availability.inconclusive === true) {
-        if (!dailyCreditsInFlightRef.current)
-          setRead({ status: 'inconclusive' });
+        setRead({ status: 'inconclusive' });
         return;
       }
       // Only the owner org's lapse can block this chat (CAN-3463); Personal
@@ -817,8 +708,6 @@ function ModelRecoveryAttempt({
         availability,
         guest,
         libraryPurchaseRequired,
-        connected: isCanopyCloudConnected(account),
-        dailyCredits,
         lapsedOrgs: lapsedOrgNamesFrom(
           orgBillingStates,
           orgBillingStates.map((state) => state.organizationId),
@@ -841,9 +730,8 @@ function ModelRecoveryAttempt({
       // no gateway route and still no provider login. That branch is cleared by
       // signing in to the provider, and nothing else.
       // CAN-3026 — a `needs-account` recovery is NOT a funding question, so
-      // coverage must not clear it. A guest may already be FUNDED (a guest who
-      // opted in to the daily free-credit drip tops up every day, like a
-      // signed-in free account), which makes `canSpendCredits` true for exactly
+      // coverage must not clear it. A guest may already be FUNDED, which makes
+      // `canSpendCredits` true for exactly
       // the principal this gate exists to stop — and committing on it here would
       // silently hand the guest the expensive model the row gate just refused.
       //
@@ -852,9 +740,9 @@ function ModelRecoveryAttempt({
       const guestAccountGateStands =
         pending.recovery.kind === 'needs-account' && nextRead.guest;
       // CAN-4028 — and neither may it clear a purchase lock. A signed-in
-      // non-payer's daily free credits make `canSpendCredits` true while the
-      // library stays locked, so committing here would select a model the
-      // server refuses on the next send.
+      // non-payer's balance can make `canSpendCredits` true while the library
+      // stays locked, so committing here would select a model the server
+      // refuses on the next send.
       if (
         !guestAccountGateStands &&
         !libraryPurchaseRequired &&
@@ -875,41 +763,7 @@ function ModelRecoveryAttempt({
         seq !== readSeqRef.current
       )
         return;
-      readRef.current = nextRead;
       setRead(nextRead);
-      // CAN-5214 — the opted-out offer names the daily cap. Read only for the
-      // credits-shaped recoveries that reach it, reuse this attempt's read when
-      // there is one, and never hold the settled read for it.
-      if (
-        nextRead.connected &&
-        creditsProvenToRunPendingModel &&
-        availability.dailyDripEnabled === false &&
-        (pending.recovery.kind === 'needs-credits' ||
-          pending.recovery.kind === 'needs-billing-source')
-      ) {
-        const reusable = pending.guestFallback?.access === 'daily-credits';
-        void (async (): Promise<void> => {
-          let state = dailyCredits;
-          if (!reusable) {
-            try {
-              state = await window.api.loadCloudDailyCreditDrip();
-            } catch {
-              // Unknown: the offer shows the amount-less sentence.
-            }
-          }
-          if (
-            !mountedRef.current ||
-            !isCurrentAttempt() ||
-            seq !== readSeqRef.current
-          )
-            return;
-          setDailyDripCap(
-            state?.available && state.resolved
-              ? displayableDailyFreeCreditsCap(state.preference.capCredits)
-              : null,
-          );
-        })();
-      }
       return nextRead;
       // `onCommit` is read through a ref (via the stable `commitModel`), NOT
       // taken as a dependency. Callers pass it as an inline arrow (`ModelPicker`
@@ -926,7 +780,6 @@ function ModelRecoveryAttempt({
       creditsProvenToRunPendingModel,
       pending.model,
       pending.recovery.kind,
-      pending.guestFallback?.access,
       isCurrentAttempt,
     ],
   );
@@ -1221,235 +1074,6 @@ function ModelRecoveryAttempt({
     })();
   }, [refreshAccountRead, trackRecoveryClick]);
 
-  /**
-   * Turn the daily drip on, wait for every AI-credits cache to hold the new
-   * balance, then re-run the same account read the modal opened with. Enabling
-   * grants today's drip server-side before the save resolves, so a covered
-   * re-read commits the pending model (and the host closes this modal) through
-   * the ordinary auto-commit path. Never a second PUT while one is in flight.
-   */
-  const handleTurnOnDailyDrip = useCallback((): void => {
-    if (dailyDripBusyRef.current) return;
-    trackRecoveryClick('drip_opt_in');
-    dailyDripBusyRef.current = true;
-    setDailyDrip('busy');
-    void (async (): Promise<void> => {
-      try {
-        const { refreshed } = await saveDailyCreditDripChoice(true);
-        await refreshed;
-      } catch {
-        dailyDripBusyRef.current = false;
-        if (mountedRef.current) setDailyDrip('error');
-        return;
-      }
-      await refreshAccountRead({ fresh: true });
-      dailyDripBusyRef.current = false;
-      if (mountedRef.current && !committedRef.current) setDailyDrip('saved');
-    })();
-  }, [refreshAccountRead, trackRecoveryClick]);
-
-  /**
-   * CAN-5211 — the guest gate's `daily-credits` fallback: turn free daily
-   * credits on (at most once), re-read the balance, and select the fallback
-   * through the host's guarded path only when credits can be spent.
-   *
-   * The host re-checks the fallback's row and never bypasses it. A row that
-   * still reads recoverable redirects into its own recovery, which re-reads
-   * the account and commits on the coverage this save produced, so neither
-   * path asks the guest to turn daily credits on a second time.
-   *
-   * Every retry after a successful save only re-checks. A save that rejected
-   * may still have landed, so the next attempt reads the preference before
-   * writing it again.
-   */
-  const handleDailyCreditsFallback = useCallback(
-    (fallback: GuestModelFallback): void => {
-      const selectFallback = onUseGuestFallbackRef.current;
-      if (
-        !selectFallback ||
-        dailyCreditsInFlightRef.current ||
-        commitInFlightRef.current ||
-        committedRef.current
-      )
-        return;
-      const current = readRef.current;
-      if (
-        !isCurrentAttempt() ||
-        current.status !== 'settled' ||
-        !current.guest ||
-        !current.connected
-      )
-        return;
-      const preference = current.dailyCredits;
-      const canEnable =
-        preference?.available === true &&
-        preference.resolved &&
-        preference.preference.capCredits > 0 &&
-        !preference.preference.enabled &&
-        current.availability.dailyDripEnabled === false;
-      if (
-        !dailyCreditsOnRef.current &&
-        !dailyCreditsSaveUncertainRef.current &&
-        !canEnable
-      )
-        return;
-      dailyCreditsInFlightRef.current = true;
-      onDailyCreditsBusyChange(true);
-      const attempt = ++dailyCreditsAttemptRef.current;
-      const isCurrent = (): boolean =>
-        mountedRef.current &&
-        isCurrentAttempt() &&
-        attempt === dailyCreditsAttemptRef.current;
-      const readPreference = async (): Promise<boolean | undefined> => {
-        try {
-          const state = await window.api.loadCloudDailyCreditDrip();
-          return state.available && state.resolved
-            ? state.preference.enabled
-            : undefined;
-        } catch {
-          return undefined;
-        }
-      };
-      setFallbackBusy(true);
-      setFallbackError(null);
-      void (async (): Promise<void> => {
-        try {
-          // Coverage can already be usable despite a recoverable row snapshot.
-          // The host still decides whether that model may actually be selected.
-          const alreadyCovered = resolveAiCreditsCoverage(
-            current.availability,
-            current.lapsedOrgs,
-          ).canSpendCredits;
-          if (
-            !dailyCreditsOnRef.current &&
-            dailyCreditsSaveUncertainRef.current
-          ) {
-            setDailyCreditsFallback('checking');
-            const enabled = await readPreference();
-            if (!isCurrent()) return;
-            if (enabled === undefined) {
-              setDailyCreditsRecheckOnly(true);
-              setDailyCreditsFallback('save-uncertain');
-              return;
-            }
-            dailyCreditsSaveUncertainRef.current = false;
-            dailyCreditsOnRef.current = enabled;
-          }
-          if (!dailyCreditsOnRef.current && !alreadyCovered) {
-            // Reconcile eligibility again at the operation, not just render.
-            const state = await window.api.loadCloudDailyCreditDrip();
-            if (!isCurrent()) return;
-            if (
-              !state.available ||
-              !state.resolved ||
-              state.preference.capCredits <= 0
-            ) {
-              await refreshAccountRead({ fresh: true });
-              return;
-            }
-            dailyCreditsOnRef.current = state.preference.enabled;
-            if (!dailyCreditsOnRef.current) {
-              setDailyCreditsFallback('enabling');
-              try {
-                const saved = await saveDailyCreditDripChoice(true, isCurrent);
-                if (!isCurrent()) return;
-                if (saved.accountChanged) {
-                  // The shared save helper conservatively fences every account
-                  // event. Identity changes already invalidated this attempt;
-                  // a same-account refresh can instead be reconciled by GET.
-                  const enabled = await readPreference();
-                  if (!isCurrent()) return;
-                  if (enabled !== true) {
-                    dailyCreditsSaveUncertainRef.current = true;
-                    setDailyCreditsRecheckOnly(true);
-                    setDailyCreditsFallback('save-uncertain');
-                    return;
-                  }
-                }
-                // Acknowledgement is independent of refresh success.
-                dailyCreditsOnRef.current = true;
-                await saved.refreshed;
-              } catch {
-                if (!isCurrent()) return;
-                const enabled = await readPreference();
-                if (!isCurrent()) return;
-                if (enabled === true) dailyCreditsOnRef.current = true;
-                else {
-                  dailyCreditsSaveUncertainRef.current = enabled === undefined;
-                  setDailyCreditsRecheckOnly(enabled === undefined);
-                  setDailyCreditsFallback(
-                    enabled === undefined ? 'save-uncertain' : 'save-failed',
-                  );
-                  return;
-                }
-              }
-            }
-          }
-          if (!isCurrent()) return;
-          setDailyCreditsFallback('checking');
-          // Read coverage and the account/lapse context together. A read from
-          // a different account or recovery cannot select or overwrite state.
-          const latest = await refreshAccountRead({ fresh: true });
-          if (!isCurrent()) return;
-          if (!latest || latest.status !== 'settled') {
-            setDailyCreditsRecheckOnly(true);
-            setDailyCreditsFallback(
-              dailyCreditsOnRef.current
-                ? 'saved-refresh-failed'
-                : 'save-uncertain',
-            );
-            return;
-          }
-          if (!latest.guest || !latest.connected) return;
-          if (
-            !resolveAiCreditsCoverage(latest.availability, latest.lapsedOrgs)
-              .canSpendCredits
-          ) {
-            setDailyCreditsFallback(
-              dailyCreditsOnRef.current ? 'saved-no-coverage' : 'idle',
-            );
-            return;
-          }
-          const blocked: { reason?: string } = {};
-          await runGuardedCommit(
-            () => selectFallback(fallback),
-            (reason) => {
-              blocked.reason = reason;
-            },
-          );
-          if (!isCurrent()) return;
-          if (blocked.reason !== undefined) {
-            setFallbackError(blocked.reason);
-            setDailyCreditsRecheckOnly(true);
-            setDailyCreditsFallback('saved-blocked');
-          }
-        } catch {
-          if (isCurrent()) {
-            setDailyCreditsRecheckOnly(true);
-            dailyCreditsSaveUncertainRef.current = !dailyCreditsOnRef.current;
-            setDailyCreditsFallback(
-              dailyCreditsOnRef.current
-                ? 'saved-refresh-failed'
-                : 'save-uncertain',
-            );
-          }
-        } finally {
-          if (isCurrent()) {
-            dailyCreditsInFlightRef.current = false;
-            onDailyCreditsBusyChange(false);
-            setFallbackBusy(false);
-          }
-        }
-      })();
-    },
-    [
-      isCurrentAttempt,
-      onDailyCreditsBusyChange,
-      refreshAccountRead,
-      runGuardedCommit,
-    ],
-  );
-
   const probeProviderAuth = useCallback(
     async (
       provider: 'claude' | 'codex',
@@ -1588,13 +1212,13 @@ function ModelRecoveryAttempt({
       : null;
 
   /**
-   * Provider sign-in. Beside AI Credits it is the user's own subscription, so
-   * it says so; where it is the only way out it stays a plain sign-in.
+   * CAN-4766 — connect the current model's provider. It keeps the provider
+   * sign-in flow (`AuthLoginModal`); only the label names the outcome.
    */
   const renderSignIn = (
     weight: 'primary' | 'secondary' = 'secondary',
     label: string = signInProvider
-      ? `Use my ${getProviderLabel(signInProvider)} subscription`
+      ? connectProviderLabel(getProviderLabel(signInProvider))
       : '',
   ): JSX.Element | null => {
     if (!signInProvider) return null;
@@ -1831,66 +1455,18 @@ function ModelRecoveryAttempt({
     // fallback button, so a snapshot without a host callback offers neither.
     const snapshotFallback =
       onUseGuestFallback === undefined ? undefined : pending.guestFallback;
-    // CAN-5211 — a `daily-credits` candidate is offered only to a connected
-    // guest whose settled read shows daily credits explicitly off, and only
-    // until they are saved on. An older server omits the field, and
-    // already-on credits that are spent have nothing to turn on.
-    //
-    // Once an attempt starts, the button that started it stays, busy, until
-    // the attempt settles, so the action never relabels mid-attempt.
-    const dailyCreditsOffer =
-      snapshotFallback?.access === 'daily-credits' &&
-      !dailyCreditsRecheckOnly &&
-      dailyCreditsFallback !== 'saved-no-coverage' &&
-      read.connected &&
-      read.dailyCredits?.available === true &&
-      read.dailyCredits.resolved &&
-      read.dailyCredits.preference.capCredits > 0 &&
-      ((!read.dailyCredits.preference.enabled &&
-        read.availability.dailyDripEnabled === false) ||
-        dailyCreditsFallback !== 'idle');
-    const fallback =
-      snapshotFallback?.access === 'now' || dailyCreditsOffer
-        ? snapshotFallback
-        : undefined;
-    // After a successful save, a retry only re-checks: it never writes.
-    const recheck =
-      snapshotFallback?.access === 'daily-credits' &&
-      dailyCreditsRecheckOnly &&
-      dailyCreditsFallback !== 'saved-no-coverage'
-        ? snapshotFallback
-        : undefined;
-    const fallbackStatus =
-      dailyCreditsFallback === 'saved-no-coverage'
-        ? GUEST_MODEL_GATE_DAILY_CREDITS_COPY.savedNoCoverage
-        : null;
-    const gateError =
-      dailyCreditsFallback === 'save-failed'
-        ? GUEST_MODEL_GATE_DAILY_CREDITS_COPY.saveFailed
-        : dailyCreditsFallback === 'save-uncertain'
-          ? GUEST_MODEL_GATE_DAILY_CREDITS_COPY.saveUncertain
-          : dailyCreditsFallback === 'saved-refresh-failed'
-            ? GUEST_MODEL_GATE_DAILY_CREDITS_COPY.savedRefreshFailed
-            : fallbackError;
-    const activateFallback = (selected: GuestModelFallback): void => {
-      if (selected.access === 'daily-credits')
-        handleDailyCreditsFallback(selected);
-      else handleUseGuestFallback(selected);
-    };
+    const fallback = snapshotFallback;
     const copy = guestModelGateCopy({
       modelLabel,
       appName: brandText.appName,
       access: thenPurchase ? 'needs_sign_in_then_purchase' : 'needs_sign_in',
-      ...(fallback === undefined
-        ? {}
-        : { fallbackLabel: fallback.label, fallbackAccess: fallback.access }),
+      ...(fallback === undefined ? {} : { fallbackLabel: fallback.label }),
     });
     return (
       <DialogModal
         inset="flush"
         onClose={(): void => {
-          if (!commitInFlightRef.current && !dailyCreditsInFlightRef.current)
-            onCancel();
+          if (!commitInFlightRef.current) onCancel();
         }}
         title={copy.title}
         maxWidth="sm"
@@ -1918,26 +1494,16 @@ function ModelRecoveryAttempt({
             : {
                 fallback: {
                   label: fallback.label,
-                  access: fallback.access,
-                  onActivate: (): void => activateFallback(fallback),
-                },
-              })}
-          {...(recheck === undefined
-            ? {}
-            : {
-                recheck: {
-                  onActivate: (): void => handleDailyCreditsFallback(recheck),
+                  onActivate: (): void => handleUseGuestFallback(fallback),
                 },
               })}
           dataTestId="model-recovery"
           bodyTestId="model-recovery-needs-account"
           dismissTestId="model-recovery-cancel"
           busy={fallbackBusy}
-          error={gateError}
-          status={fallbackStatus}
+          error={fallbackError}
           onDismiss={(): void => {
-            if (!dailyCreditsInFlightRef.current && !commitInFlightRef.current)
-              onCancel();
+            if (!commitInFlightRef.current) onCancel();
           }}
           renderSignIn={(label, className): JSX.Element => (
             <button
@@ -1951,11 +1517,7 @@ function ModelRecoveryAttempt({
                 // The purchase variant is the unlock action itself: it opens the
                 // shared sign-in gate, then checkout in the browser as soon as a
                 // real account exists, without a second ask in between.
-                if (
-                  dailyCreditsInFlightRef.current ||
-                  commitInFlightRef.current
-                )
-                  return;
+                if (commitInFlightRef.current) return;
                 if (thenPurchase) {
                   handleUnlockPurchase();
                   return;
@@ -1992,9 +1554,9 @@ function ModelRecoveryAttempt({
   // ---- CAN-4028: signed in, and a card purchase is what unlocks this model.
   //
   // Ahead of every credits branch for the same reason the guest branch is: a
-  // balance is not the missing thing. A non-payer's daily credits would
-  // otherwise land them on "Use {model}" or "Turn on free daily AI Credits",
-  // neither of which the server will honor for a locked model.
+  // balance is not the missing thing. A non-payer's balance would otherwise
+  // land them on "Use {model}", which the server will not honor for a locked
+  // model.
   //
   // Reached two ways: a signed-in row click (`needs-purchase`), and a guest
   // who signed in from the branch above and still needs the purchase. The
@@ -2263,154 +1825,44 @@ function ModelRecoveryAttempt({
 
   // ---- Native-only model with no provider login. Credits cannot route this
   // model at all, so offering a purchase would sell the user something that
-  // does not unblock them. Sign-in is the ONLY exit.
+  // does not unblock them. Connecting the provider is the ONLY exit.
   //
-  // Checked BEFORE the guest branch on purpose. That branch offers
-  // free-starting-credits framing and commits on coverage, which for a
-  // native-only model is a promise AI Credits can never keep — a guest would
-  // be told "new accounts start with free AI Credits" about a model those
-  // credits cannot pay for, and (once signed in) have it committed anyway.
+  // Checked BEFORE the guest branch on purpose. That branch offers a purchase
+  // after sign-in and commits on coverage, which for a native-only model is a
+  // promise AI Credits can never keep.
   if (!creditsCanRunPendingModel && signInProvider) {
     return shell(
       modelLabel,
       <span data-testid="model-recovery-native-only">
-        {`This model runs on your ${getProviderLabel(signInProvider)} subscription — ${brandText.appName} AI Credits can't pay for it. Sign in to ${getProviderLabel(signInProvider)} to use it.`}
+        {`This model runs on your ${getProviderLabel(signInProvider)} subscription — ${brandText.appName} AI Credits can't pay for it. ${connectProviderLabel(getProviderLabel(signInProvider))} to use it.`}
       </span>,
-      renderSignIn(
-        'primary',
-        `Sign in to ${getProviderLabel(signInProvider)}`,
-      ) ?? undefined,
+      renderSignIn('primary') ?? undefined,
     );
   }
 
-  // ---- Opted out of the daily free-credit drip. Turning it on is the cheapest
-  // way out and works for guests too, so it leads; buying stays secondary and
-  // only where purchasing is possible (never for guests). Case A keeps provider
-  // sign-in alongside, never instead, and case C keeps its billing-mode copy.
-  // Only an EXPLICIT `false` qualifies: an older server omits the field, and
-  // that keeps the branches below unchanged.
-  //
-  // CAN-5214 — the modal says why it opened and frames the exits as a choice;
-  // the amount and cost read with the body, so the actions stack with no
-  // text between them.
-  if (
-    read.connected &&
-    (read.availability.dailyDripEnabled === false || dailyDrip === 'saved')
-  ) {
-    const canBuy = !read.guest && coverage.showPurchase;
-    const offerTitle = billingModeIntent
-      ? BILLING_MODE_TITLE
-      : `Choose how to use ${modelLabel}`;
-    if (dailyDrip === 'saved') {
-      return shell(
-        offerTitle,
-        <span data-testid="model-recovery-daily-credits-saved" role="status">
-          {/* The Buy button already offers the purchase, so the line does not. */}
-          {dailyFreeCreditsStartTomorrow('AI Credits', { canBuy: false })}
-          {creditsRecoveryView}
-        </span>,
-        <>
-          {canBuy ? (
-            <GetAiCreditsCta
-              label={creditsLabel}
-              onCovered={handleCoveredFromCta}
-              {...purchaseTracking}
-              onGetCreditsClick={trackPurchaseClick}
-              dataTestId="model-recovery-get-credits"
-              buttonClassName={RECOVERY_BUTTON_PRIMARY}
-            />
-          ) : null}
-          {renderSignIn(canBuy ? 'secondary' : 'primary')}
-        </>,
-      );
-    }
-    const turnOnBusy = dailyDrip === 'busy';
-    return shell(
-      offerTitle,
-      <span
-        data-testid="model-recovery-daily-credits"
-        className="flex flex-col gap-2"
-      >
-        {/* One run of text: the hint follows the reason it opened. */}
-        <span>
-          <span data-testid="model-recovery-daily-credits-body">
-            {billingModeIntent
-              ? OUT_OF_CREDITS_BILLING_MODE_COPY
-              : OUT_OF_CREDITS_COPY}
-          </span>{' '}
-          <span
-            id={dailyDripHintId}
-            data-testid="model-recovery-daily-credits-offer"
-          >
-            {dailyFreeCreditsActionHint(
-              'AI Credits',
-              dailyDripCap === null ? null : formatCreditCount(dailyDripCap),
-              { isGuest: read.guest },
-            )}
-          </span>
-        </span>
-        {dailyDrip === 'error' ? (
-          <ErrorBanner
-            error="Couldn't save. Try again."
-            className=""
-            testId="model-recovery-daily-credits-error"
-          />
-        ) : null}
-        {creditsRecoveryView}
-      </span>,
-      <>
-        <button
-          type="button"
-          data-testid="model-recovery-turn-on-daily-credits"
-          disabled={turnOnBusy}
-          onClick={handleTurnOnDailyDrip}
-          aria-describedby={dailyDripHintId}
-          className={RECOVERY_BUTTON_PRIMARY}
-        >
-          {turnOnBusy && (
-            <LoadingSpinner
-              dataTestId="model-recovery-turn-on-daily-credits-spinner"
-              decorative
-            />
-          )}
-          {dailyFreeCreditsTurnOnAction('AI Credits')}
-        </button>
-        {canBuy ? (
-          <GetAiCreditsCta
-            label={creditsLabel}
-            onCovered={handleCoveredFromCta}
-            {...purchaseTracking}
-            onGetCreditsClick={trackPurchaseClick}
-            dataTestId="model-recovery-get-credits"
-            buttonClassName={RECOVERY_BUTTON_SECONDARY}
-          />
-        ) : null}
-        {renderSignIn()}
-      </>,
-    );
-  }
-
-  // ---- Guest / not connected. Free-credits framing, NOT purchase-first
-  // (CAN-1929): a guest who has never signed in gets credits by signing in, so
-  // leading with a purchase is both wrong and a worse offer.
+  // ---- Guest / not connected (CAN-4766). A guest can't buy before signing
+  // in, so the purchase action says both. Where the provider can run the
+  // model, connecting it leads; a gateway-only model offers the purchase alone.
   if (read.guest) {
     return shell(
       modelLabel,
       <span data-testid="model-recovery-guest">
-        {`Sign in to your ${brandText.appName} account to use ${modelLabel}.`}
+        {`Sign in, then buy AI Credits to use ${modelLabel}.`}
         {creditsRecoveryView}
       </span>,
       <>
+        {renderSignIn('primary')}
         <GetAiCreditsCta
-          label={`Sign in to use ${modelLabel}`}
+          label={AI_CREDITS_GUEST_PURCHASE_LABEL}
           onCovered={handleCoveredFromCta}
           onOpenedInApp={onCancel}
           onGetCreditsClick={(): void => trackRecoveryClick('account_sign_in')}
           {...(aiCreditsScope ? { aiCreditsScope } : {})}
           dataTestId="model-recovery-get-credits"
-          buttonClassName={RECOVERY_BUTTON_PRIMARY}
+          buttonClassName={
+            signInProvider ? RECOVERY_BUTTON_SECONDARY : RECOVERY_BUTTON_PRIMARY
+          }
         />
-        {renderSignIn()}
       </>,
     );
   }
@@ -2444,12 +1896,12 @@ function ModelRecoveryAttempt({
     );
   }
 
-  // ---- Ordinary self-serve. Case A offers provider sign-in ALONGSIDE credits,
-  // never instead; case B never offers it (a gateway-only model can never bill
-  // to a subscription, so "sign in to Claude" would not unblock anything).
+  // ---- Ordinary self-serve. Case A leads with connecting the provider and
+  // offers credits beside it (CAN-4766); case B never offers it (a
+  // gateway-only model can never bill to a subscription, so connecting Claude
+  // would not unblock anything).
   //
-  // A purchase is the way forward when one is possible, and then the modal
-  // leads with the missing balance, like the daily-credits offer above.
+  // When a purchase is possible, the modal leads with the missing balance.
   const purchaseTitle = billingModeIntent
     ? BILLING_MODE_TITLE
     : signInProvider && coverage.showPurchase
@@ -2465,11 +1917,12 @@ function ModelRecoveryAttempt({
         : signInProvider
           ? coverage.showPurchase
             ? OUT_OF_CREDITS_COPY
-            : `To use ${modelLabel}, sign in to ${getProviderLabel(signInProvider)} or add ${brandText.appName} AI Credits.`
+            : `To use ${modelLabel}, connect ${getProviderLabel(signInProvider)} or add ${brandText.appName} AI Credits.`
           : `This model runs on ${brandText.appName} AI Credits. Add credits to start using it.`}
       {creditsRecoveryView}
     </span>,
     <>
+      {renderSignIn('primary')}
       <GetAiCreditsCta
         label={
           coverage.showPurchase
@@ -2485,9 +1938,10 @@ function ModelRecoveryAttempt({
         onGetCreditsClick={trackPurchaseClick}
         {...(aiCreditsScope ? { aiCreditsScope } : {})}
         dataTestId="model-recovery-get-credits"
-        buttonClassName={RECOVERY_BUTTON_PRIMARY}
+        buttonClassName={
+          signInProvider ? RECOVERY_BUTTON_SECONDARY : RECOVERY_BUTTON_PRIMARY
+        }
       />
-      {renderSignIn()}
     </>,
   );
 }

@@ -6,7 +6,7 @@ import { LedgerStoreError } from './errors';
 import { rowText } from './rows';
 
 /** The schema version this build reads and writes. */
-export const LEDGER_SCHEMA_VERSION = 5;
+export const LEDGER_SCHEMA_VERSION = 6;
 
 const SCHEMA_VERSION_KEY = 'schema_version';
 const CURSOR_SECRET_KEY = 'cursor_secret';
@@ -303,6 +303,48 @@ function addGlobalBindings(db: DatabaseSync): void {
 }
 
 /**
+ * Schema version 6 adds local parent columns and temporal root membership.
+ * Membership is derived from the entry's first version and is not part of a
+ * projection or replication event. Historical parentless entries retain the
+ * first-version sequence as their initial root membership.
+ */
+const SCHEMA_VERSION_6_STATEMENTS: readonly string[] = [
+  'ALTER TABLE ledger_entries ADD COLUMN parent_entry_id TEXT',
+  'ALTER TABLE ledger_entry_versions ADD COLUMN parent_entry_id TEXT',
+  `CREATE INDEX ledger_entries_by_parent
+    ON ledger_entries (ledger_id, parent_entry_id)`,
+  `CREATE TABLE ledger_entry_roots (
+    entry_rowid INTEGER NOT NULL REFERENCES ledger_entries (entry_rowid) ON DELETE CASCADE,
+    ledger_id TEXT NOT NULL REFERENCES ledger_scopes (ledger_id) ON DELETE CASCADE,
+    root_entry_id TEXT NOT NULL,
+    from_sequence INTEGER NOT NULL CHECK (from_sequence >= 1),
+    to_sequence INTEGER,
+    CHECK (to_sequence IS NULL OR to_sequence > from_sequence)
+  ) STRICT`,
+  `CREATE INDEX ledger_entry_roots_by_ledger_root_sequence
+    ON ledger_entry_roots (ledger_id, root_entry_id, from_sequence)`,
+  `CREATE INDEX ledger_entry_roots_by_entry
+    ON ledger_entry_roots (entry_rowid)`,
+];
+
+function addEntryParents(db: DatabaseSync): void {
+  for (const statement of SCHEMA_VERSION_6_STATEMENTS) {
+    db.exec(statement);
+  }
+  db.exec(`
+    INSERT INTO ledger_entry_roots (
+      entry_rowid, ledger_id, root_entry_id, from_sequence, to_sequence
+    )
+    SELECT e.entry_rowid, e.ledger_id, e.entry_id,
+      (SELECT MIN(v.scope_sequence)
+       FROM ledger_entry_versions AS v
+       WHERE v.entry_rowid = e.entry_rowid), NULL
+    FROM ledger_entries AS e
+    WHERE e.parent_entry_id IS NULL
+  `);
+}
+
+/**
  * Ordered migration steps. Each runs in its own `BEGIN IMMEDIATE` transaction
  * that also records the new version, so a failure leaves the previous version
  * intact. A step that rewrites existing data must first copy the database
@@ -315,6 +357,7 @@ const LEDGER_SCHEMA_MIGRATIONS: readonly LedgerSchemaMigration[] = [
   { toVersion: 3, apply: addScopeSync },
   { toVersion: 4, apply: addPendingTitles },
   { toVersion: 5, apply: addGlobalBindings },
+  { toVersion: 6, apply: addEntryParents },
 ];
 
 function tableExists(db: DatabaseSync, name: string): boolean {

@@ -44,9 +44,12 @@ const KIND_BY_REASON: {
   readonly [Reason in LedgerStorageErrorReason]: CanopyErrorKind;
 } = {
   INVALID_INPUT: 'invalid_argument',
+  PARENT_INVALID: 'invalid_argument',
   NOT_FOUND: 'not_found',
   FORBIDDEN: 'permission_denied',
   TERMINAL_ENTRY: 'failed_precondition',
+  PARENT_CLOSED: 'failed_precondition',
+  OPEN_CHILDREN: 'failed_precondition',
   REVISION_CONFLICT: 'conflict',
   OWNER_UNAVAILABLE: 'failed_precondition',
   SCOPE_RETIRED: 'failed_precondition',
@@ -63,9 +66,12 @@ const MESSAGE_BY_REASON: {
   readonly [Reason in LedgerStorageErrorReason]: string;
 } = {
   INVALID_INPUT: 'The Feed request is invalid.',
+  PARENT_INVALID: 'The Feed parent is not valid for this item.',
   NOT_FOUND: 'The Feed item was not found.',
   FORBIDDEN: 'The caller may not perform this Feed operation.',
   TERMINAL_ENTRY: 'The Feed entry is closed and cannot change.',
+  PARENT_CLOSED: 'The Feed parent is closed.',
+  OPEN_CHILDREN: 'The Feed item has open children.',
   REVISION_CONFLICT: 'The Feed entry changed since it was read.',
   OWNER_UNAVAILABLE: 'The requested Feed owner is unavailable.',
   SCOPE_RETIRED: 'The Feed scope no longer accepts changes.',
@@ -112,9 +118,12 @@ function retryFor(
         ? { kind: 'same_idempotency_key' }
         : { kind: 'never' };
     case 'INVALID_INPUT':
+    case 'PARENT_INVALID':
     case 'NOT_FOUND':
     case 'FORBIDDEN':
     case 'TERMINAL_ENTRY':
+    case 'PARENT_CLOSED':
+    case 'OPEN_CHILDREN':
     case 'SCOPE_RETIRED':
     case 'IDEMPOTENCY_KEY_REUSED':
     case 'UNSUPPORTED_SCHEMA':
@@ -123,6 +132,15 @@ function retryFor(
 }
 
 function withoutCurrentEntry(details: LedgerErrorDetails): LedgerErrorDetails {
+  const withoutEntry: LedgerErrorDetails = {
+    reason: details.reason,
+    ...(details.field === undefined ? {} : { field: details.field }),
+    ...(details.limit === undefined ? {} : { limit: details.limit }),
+    ...(details.openChildEntryIds === undefined
+      ? {}
+      : { openChildEntryIds: details.openChildEntryIds }),
+  };
+  if (isBoundedCanopyJsonValue(withoutEntry)) return withoutEntry;
   return {
     reason: details.reason,
     ...(details.field === undefined ? {} : { field: details.field }),
@@ -151,7 +169,11 @@ export function boundLedgerErrorDetails(
   const parsed = LedgerErrorDetailsSchema.safeParse(plain);
   if (!parsed.success || parsed.data.reason !== reason) return { reason };
   const details = parsed.data;
-  if (details.currentEntry === undefined) return details;
+  if (details.currentEntry === undefined) {
+    return isBoundedCanopyJsonValue(details)
+      ? details
+      : withoutCurrentEntry(details);
+  }
   if (
     ledgerId === undefined ||
     details.currentEntry.scope.ledgerId !== ledgerId ||
@@ -165,6 +187,7 @@ export function boundLedgerErrorDetails(
 export interface LedgerErrorOptions {
   readonly field?: string;
   readonly limit?: number;
+  readonly openChildEntryIds?: readonly string[];
   readonly message?: string;
 }
 
@@ -182,6 +205,9 @@ export function ledgerOperationError(
       reason,
       ...(options.field === undefined ? {} : { field: options.field }),
       ...(options.limit === undefined ? {} : { limit: options.limit }),
+      ...(options.openChildEntryIds === undefined
+        ? {}
+        : { openChildEntryIds: [...options.openChildEntryIds] }),
     },
     retry: retryFor(reason, site),
   });

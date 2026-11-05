@@ -18,9 +18,9 @@ import {
 import { getChatTabLabel } from '@/lib/chatTabLabel';
 import { useChatStore, type ChatTab } from '@/stores/chatStore';
 import { hydratedKeys } from '@/stores/chat/hydration';
+import { subagentRootSummary } from '@/stores/chat/transcript-residency';
 import { useActivityStore } from '@/stores/activityStore';
 import { useDelegationActivityStore } from '@/stores/delegationActivityStore';
-import { loadedSubagentSummary } from '@canopy/agent-transcript/lib/subagent-tree/native-inputs';
 import {
   acquireWorkflowRun,
   getWorkflowRunCacheVersion,
@@ -29,10 +29,6 @@ import {
   workflowRunCacheKey,
 } from './workflow-run-cache';
 import { workflowAgentInputState } from './workflow-run-inputs';
-import {
-  collectWorkflowRunLocations,
-  hasWorkflowLaunches,
-} from './workflow-run-launches';
 import type { WorkflowRunLocation } from './workflow-run-launches';
 import { subagentScopeKey, type SubagentHostScope } from './subagent-scope';
 
@@ -309,8 +305,11 @@ function toRootChatSummary(
   const summaries: SubagentRootChatSummary[] = [];
   for (const tab of tabs) {
     if (tab.kind === 'file') continue;
-    const hasWorkflowLaunch = hasWorkflowLaunches(tab.messages);
-    const native = loadedSubagentSummary(tab.messages, (toolUseId) =>
+    const {
+      native,
+      hasWorkflowLaunches: hasWorkflowLaunch,
+      workflowLocations,
+    } = subagentRootSummary(tab, (toolUseId) =>
       backgroundStatuses.get(`${tab.id}\u0000${toolUseId}`),
     );
     const managed = rootsByChat.get(tab.id);
@@ -329,7 +328,7 @@ function toRootChatSummary(
       native.lastActivityAt,
     );
     let workflowLoading = false;
-    for (const location of collectWorkflowRunLocations(tab.messages)) {
+    for (const location of workflowLocations) {
       lastActivityAt = latestTimestamp(lastActivityAt, location.launchedAt);
       const entry = getWorkflowRunEntry(location);
       if (!entry.loaded) {
@@ -442,8 +441,8 @@ export function useSubagentRootChats(
     if (!enabled || !loaded.hydrated) return [];
     const locations = new Map<string, WorkflowRunLocation>();
     for (const tab of loaded.tabs) {
-      if (tab.kind === 'file' || !hasWorkflowLaunches(tab.messages)) continue;
-      for (const location of collectWorkflowRunLocations(tab.messages)) {
+      if (tab.kind === 'file') continue;
+      for (const location of subagentRootSummary(tab).workflowLocations) {
         const key = workflowRunCacheKey(location);
         if (!locations.has(key)) locations.set(key, location);
       }
@@ -506,13 +505,4 @@ export function useSubagentRootChats(
     rootChats,
     loading: enabled && (!loaded.hydrated || snapshot.loading),
   };
-}
-
-/** Test-only reset for the module-level root index. */
-export function resetSubagentRootChatsForTests(): void {
-  records.forEach((record: MutableRootChatsRecord): void => {
-    if (record.refreshTimer !== null) clearTimeout(record.refreshTimer);
-    record.unsubscribeActivity?.();
-  });
-  records.clear();
 }

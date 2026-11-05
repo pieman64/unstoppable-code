@@ -1,7 +1,7 @@
 import type { JSX } from 'react';
 
-import { CenteredLoadingSpinner } from './CenteredLoadingSpinner';
 import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
+import { Skeleton } from './Skeleton';
 import { ErrorBanner } from './StatusBlocks';
 import { Fact, FactList } from './FactList';
 import { pluginDisplayAuthor } from '../lib/official-marketplace-products';
@@ -83,6 +83,109 @@ function pluginSectionAuthor(
   return plugin ? pluginDisplayAuthor(server.marketplaceId, plugin) : undefined;
 }
 
+const SAMPLE_PLUGIN_SERVER: McpPluginSectionServer = {};
+
+const SAMPLE_PLUGIN_CONTEXT: McpPluginSectionContext = {
+  plugin: {
+    name: 'Issue tracker',
+    version: '1.2.0',
+    description: 'Reads and updates issues in your tracker',
+    author: 'Example',
+  },
+  marketplace: {
+    name: 'Team plugins',
+    description: 'Plugins shared across the team',
+  },
+};
+
+/** The plugin and marketplace facts. */
+function PluginSectionCard({
+  server,
+  context,
+}: {
+  server: McpPluginSectionServer;
+  context: McpPluginSectionContext;
+}): JSX.Element {
+  const author = pluginSectionAuthor(server, context.plugin);
+  return (
+    <div className="rounded-lg border bg-secondary/20 px-4 py-3">
+      {/* One label width for both lists, so their values line up. */}
+      <FactList labelWidth="6rem" rowGap="2" labelTone="secondary">
+        <Fact label="Plugin">
+          {context.plugin?.name ?? server.pluginName ?? '—'}
+          {context.plugin?.version ? ` · v${context.plugin.version}` : ''}
+        </Fact>
+        {context.plugin?.description && (
+          <Fact label="Description">{context.plugin.description}</Fact>
+        )}
+        {author && <Fact label="Author">{author}</Fact>}
+        {context.plugin?.category && (
+          <Fact label="Category">{context.plugin.category}</Fact>
+        )}
+        {context.plugin?.homepage && (
+          <Fact label="Homepage" fit="break-all">
+            <a
+              href={context.plugin.homepage}
+              target="_blank"
+              rel="noreferrer"
+              className="fg-accent hover:underline"
+            >
+              {context.plugin.homepage}
+            </a>
+          </Fact>
+        )}
+        {context.plugin?.externalSource?.url && (
+          <Fact label="Source" fit="break-all" mono>
+            <a
+              href={context.plugin.externalSource.url}
+              target="_blank"
+              rel="noreferrer"
+              className="fg-accent hover:underline"
+            >
+              {context.plugin.externalSource.url}
+            </a>
+            {context.plugin.externalSource.sha && (
+              <span className="ml-2 fg-secondary">
+                @{context.plugin.externalSource.sha.slice(0, 7)}
+              </span>
+            )}
+          </Fact>
+        )}
+      </FactList>
+      <FactList
+        labelWidth="6rem"
+        rowGap="2"
+        labelTone="secondary"
+        divided
+        placement="mt-2"
+      >
+        <Fact label="Marketplace">
+          {context.marketplace?.name ?? server.marketplaceId ?? '—'}
+        </Fact>
+        {context.marketplace?.description && (
+          <Fact label="About">{context.marketplace.description}</Fact>
+        )}
+        {context.marketplace?.sourceUrl && (
+          <Fact label="Source" fit="break-all" mono>
+            {context.marketplace.sourceType === 'github' ? (
+              <a
+                href={`https://github.com/${context.marketplace.sourceUrl}`}
+                target="_blank"
+                rel="noreferrer"
+                className="fg-accent hover:underline"
+              >
+                {context.marketplace.sourceUrl}
+              </a>
+            ) : (
+              context.marketplace.sourceUrl
+            )}
+          </Fact>
+        )}
+      </FactList>
+    </div>
+  );
+}
+
 /**
  * "Plugin & Marketplace" section of the MCP server details view: the plugin's
  * facts, then the marketplace's under a rule.
@@ -98,94 +201,28 @@ export function PluginSection({
   error: string | null;
   context: McpPluginSectionContext | null;
 }): JSX.Element {
-  const author = pluginSectionAuthor(server, context?.plugin);
   return (
     <div data-testid="mcp-server-details-plugin-section">
       <Heading level={3} variant="title" className="mb-2">
         Plugin & marketplace
       </Heading>
       {loading && (
-        <DelayedLoadingPlaceholder>
-          <CenteredLoadingSpinner className="my-12" />
+        <DelayedLoadingPlaceholder slowNote="Still loading the plugin…">
+          <Skeleton
+            loading
+            label="Loading plugin"
+            testId="mcp-server-details-plugin-loading"
+          >
+            <PluginSectionCard
+              server={SAMPLE_PLUGIN_SERVER}
+              context={SAMPLE_PLUGIN_CONTEXT}
+            />
+          </Skeleton>
         </DelayedLoadingPlaceholder>
       )}
       <ErrorBanner className="" error={error} />
       {!loading && !error && context && (
-        <div className="rounded-lg border bg-secondary/20 px-4 py-3">
-          {/* One label width for both lists, so their values line up. */}
-          <FactList labelWidth="6rem" rowGap="2" labelTone="secondary">
-            <Fact label="Plugin">
-              {context.plugin?.name ?? server.pluginName ?? '—'}
-              {context.plugin?.version ? ` · v${context.plugin.version}` : ''}
-            </Fact>
-            {context.plugin?.description && (
-              <Fact label="Description">{context.plugin.description}</Fact>
-            )}
-            {author && <Fact label="Author">{author}</Fact>}
-            {context.plugin?.category && (
-              <Fact label="Category">{context.plugin.category}</Fact>
-            )}
-            {context.plugin?.homepage && (
-              <Fact label="Homepage" fit="break-all">
-                <a
-                  href={context.plugin.homepage}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="fg-accent hover:underline"
-                >
-                  {context.plugin.homepage}
-                </a>
-              </Fact>
-            )}
-            {context.plugin?.externalSource?.url && (
-              <Fact label="Source" fit="break-all" mono>
-                <a
-                  href={context.plugin.externalSource.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="fg-accent hover:underline"
-                >
-                  {context.plugin.externalSource.url}
-                </a>
-                {context.plugin.externalSource.sha && (
-                  <span className="ml-2 fg-secondary">
-                    @{context.plugin.externalSource.sha.slice(0, 7)}
-                  </span>
-                )}
-              </Fact>
-            )}
-          </FactList>
-          <FactList
-            labelWidth="6rem"
-            rowGap="2"
-            labelTone="secondary"
-            divided
-            placement="mt-2"
-          >
-            <Fact label="Marketplace">
-              {context.marketplace?.name ?? server.marketplaceId ?? '—'}
-            </Fact>
-            {context.marketplace?.description && (
-              <Fact label="About">{context.marketplace.description}</Fact>
-            )}
-            {context.marketplace?.sourceUrl && (
-              <Fact label="Source" fit="break-all" mono>
-                {context.marketplace.sourceType === 'github' ? (
-                  <a
-                    href={`https://github.com/${context.marketplace.sourceUrl}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="fg-accent hover:underline"
-                  >
-                    {context.marketplace.sourceUrl}
-                  </a>
-                ) : (
-                  context.marketplace.sourceUrl
-                )}
-              </Fact>
-            )}
-          </FactList>
-        </div>
+        <PluginSectionCard server={server} context={context} />
       )}
     </div>
   );
@@ -280,6 +317,62 @@ export function McpConnectionFacts({
   );
 }
 
+const SAMPLE_CONFIGS: readonly McpStandaloneConfig[] = [
+  {
+    id: 'mcp-config-sample-1',
+    name: 'Default',
+    description: 'Connects with the shared workspace token',
+    enabled: true,
+    envVars: { API_URL: '' },
+    extraArgs: [],
+    extraHeaders: {},
+  },
+  {
+    id: 'mcp-config-sample-2',
+    name: 'Staging',
+    description: 'Points at the staging server',
+    enabled: false,
+    envVars: { API_URL: '' },
+    extraArgs: [],
+    extraHeaders: {},
+  },
+];
+
+/** One card per configuration: its name, state, description and keys. */
+function StandaloneConfigCards({
+  configs,
+}: {
+  configs: readonly McpStandaloneConfig[];
+}): JSX.Element {
+  return (
+    <div className="space-y-2">
+      {configs.map((config) => (
+        <div
+          key={config.id}
+          className="rounded-lg border bg-secondary/20 px-3 py-2"
+        >
+          <div className="mb-1 flex items-center gap-2">
+            <span className="text-s font-medium fg-primary">{config.name}</span>
+            <span
+              className={`rounded px-1.5 py-0.5 text-3xs font-medium ${
+                config.enabled
+                  ? 'bg-success-subtle fg-success'
+                  : 'bg-secondary fg-secondary'
+              }`}
+            >
+              {config.enabled ? 'Enabled' : 'Disabled'}
+            </span>
+          </div>
+          {config.description && (
+            <p className="mb-1 text-xs fg-secondary">{config.description}</p>
+          )}
+          <McpConfigFacts config={config} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /**
  * "Configurations" section of a standalone MCP server: one card per
  * configuration. The MCP details dialog and the desktop MCP page render it.
@@ -300,8 +393,14 @@ export function StandaloneConfigsSection({
         {serverData ? ` (${serverData.configs.length})` : ''}
       </Heading>
       {loading && (
-        <DelayedLoadingPlaceholder>
-          <CenteredLoadingSpinner className="my-12" />
+        <DelayedLoadingPlaceholder slowNote="Still loading configurations…">
+          <Skeleton
+            loading
+            label="Loading configurations"
+            testId="mcp-server-details-configs-loading"
+          >
+            <StandaloneConfigCards configs={SAMPLE_CONFIGS} />
+          </Skeleton>
         </DelayedLoadingPlaceholder>
       )}
       <ErrorBanner className="" error={error} />
@@ -310,35 +409,7 @@ export function StandaloneConfigsSection({
           {serverData.configs.length === 0 ? (
             <p className="text-xs italic fg-secondary">No configurations.</p>
           ) : (
-            <div className="space-y-2">
-              {serverData.configs.map((config) => (
-                <div
-                  key={config.id}
-                  className="rounded-lg border bg-secondary/20 px-3 py-2"
-                >
-                  <div className="mb-1 flex items-center gap-2">
-                    <span className="text-s font-medium fg-primary">
-                      {config.name}
-                    </span>
-                    <span
-                      className={`rounded px-1.5 py-0.5 text-3xs font-medium ${
-                        config.enabled
-                          ? 'bg-success-subtle fg-success'
-                          : 'bg-secondary fg-secondary'
-                      }`}
-                    >
-                      {config.enabled ? 'Enabled' : 'Disabled'}
-                    </span>
-                  </div>
-                  {config.description && (
-                    <p className="mb-1 text-xs fg-secondary">
-                      {config.description}
-                    </p>
-                  )}
-                  <McpConfigFacts config={config} />
-                </div>
-              ))}
-            </div>
+            <StandaloneConfigCards configs={serverData.configs} />
           )}
         </>
       )}

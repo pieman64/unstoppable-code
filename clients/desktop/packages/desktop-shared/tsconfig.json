@@ -11,7 +11,12 @@
     "types": ["node"]
   },
   "include": ["src/**/*.ts", "../../.cache/brand/**/*.ts"],
-  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/**/__tests__/**"],
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "src/**/__tests__/**",
+    "src/**/__scratch__/**"
+  ],
   "references": [
     {
       "path": "../code-graph"

@@ -18,6 +18,7 @@ import { createPortal } from 'react-dom';
 import { ABOVE_BROWSER_ATTRIBUTE } from '../lib/above-browser';
 import { trackInputModality, wasFocusVisible } from '../lib/input-modality';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
+import { Button, buttonClassName } from './Button';
 import { Kbd } from './Kbd';
 import { useTooltipEscape } from './tooltip-escape';
 import { useTooltipHandoff } from './tooltip-handoff';
@@ -596,19 +597,19 @@ export function Tooltip({
                     ? {}
                     : { target: '_blank', rel: 'noopener noreferrer' })}
                   data-testid={link.testId}
-                  className="fg-accent underline underline-offset-2 hover:fg-accent/80"
+                  className={buttonClassName({ variant: 'link' })}
                 >
                   {link.text ?? 'Learn more'}
                 </a>
               ) : (
-                <button
-                  type="button"
+                <Button
+                  variant="link"
                   onClick={link.onClick}
                   data-testid={link.testId}
-                  className="self-start fg-accent underline underline-offset-2 hover:fg-accent/80"
+                  className="self-start"
                 >
                   {link.text}
-                </button>
+                </Button>
               ))}
           </span>,
           portalBody,

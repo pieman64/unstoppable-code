@@ -4,7 +4,8 @@ import {
   OverviewListRow,
 } from './ArchivedOverviewRow';
 import { Button } from './Button';
-import { LoadingSpinner } from './LoadingSpinner';
+import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
+import { Skeleton } from './Skeleton';
 import { SearchField } from './SearchField';
 import { Notice, NoticeButton } from './Notice';
 import { TRY_AGAIN_LABEL } from './useRetry';
@@ -86,6 +87,71 @@ function GroupHeading({ children }: { children: ReactNode }): JSX.Element {
   );
 }
 
+/** The Removed group: each share with its Restore action. */
+function RemovedGroup({
+  items,
+  restoringIds,
+  onRestore,
+}: {
+  items: readonly RemovedPastShareItem[];
+  restoringIds: readonly string[];
+  onRestore: (id: string) => void;
+}): JSX.Element {
+  return (
+    <section data-testid={`${TEST_ID}-removed`}>
+      <GroupHeading>Removed</GroupHeading>
+      <div className="space-y-0.5">
+        {items.map((item) => {
+          const restoring = restoringIds.includes(item.id);
+          return (
+            <OverviewListRow
+              key={item.id}
+              testId={`${TEST_ID}-removed-row-${item.id}`}
+              state="removed"
+              busy={restoring}
+              leading={null}
+              title={item.title}
+              trailing={<OwnerLine name={item.ownerName} />}
+              date={formatDateOrEmpty(item.dismissedAt)}
+              dateTooltip={`Removed ${formatDateOrEmpty(item.dismissedAt)}`}
+              actionsReserve="inline"
+              actions={
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={restoring}
+                  onClick={(): void => onRestore(item.id)}
+                  data-testid={`${TEST_ID}-restore-${item.id}`}
+                >
+                  {restoring ? 'Restoring…' : 'Restore'}
+                </Button>
+              }
+            />
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+/** Plain removed shares the loading skeleton measures. */
+const SAMPLE_REMOVED: readonly RemovedPastShareItem[] = [
+  {
+    id: 'past-share-sample-1',
+    title: 'Release checklist',
+    ownerName: 'Sam Lee',
+    dismissedAt: '2026-01-02T00:00:00.000Z',
+  },
+  {
+    id: 'past-share-sample-2',
+    title: 'Onboarding notes',
+    ownerName: 'Alex Kim',
+    dismissedAt: '2026-01-01T00:00:00.000Z',
+  },
+];
+
+const noop = (): void => undefined;
+
 /**
  * The recipient's past shares: the ones they removed, which can be restored,
  * then the ones accepted on this computer. Pure and callback-driven; the host
@@ -163,12 +229,22 @@ export function SharedContainerPastSharesList({
           </Notice>
         )}
         {removedLoading && (
-          <div
-            className="flex items-center gap-2 px-2 py-2"
-            data-testid={`${TEST_ID}-removed-loading`}
-          >
-            <LoadingSpinner tone="secondary" />
-            <span className="text-xs fg-secondary">Loading removed shares</span>
+          // An auto-height box: the placeholder's full-height floor would
+          // otherwise push the Accepted group below the fold.
+          <div>
+            <DelayedLoadingPlaceholder slowNote="Still loading removed shares…">
+              <Skeleton
+                loading
+                label="Loading removed shares"
+                testId={`${TEST_ID}-removed-loading`}
+              >
+                <RemovedGroup
+                  items={SAMPLE_REMOVED}
+                  restoringIds={[]}
+                  onRestore={noop}
+                />
+              </Skeleton>
+            </DelayedLoadingPlaceholder>
           </div>
         )}
         {totalCount === 0 && !removedFailed && !removedLoading ? (
@@ -187,39 +263,11 @@ export function SharedContainerPastSharesList({
           </div>
         ) : null}
         {visibleRemoved.length > 0 && (
-          <section data-testid={`${TEST_ID}-removed`}>
-            <GroupHeading>Removed</GroupHeading>
-            <div className="space-y-0.5">
-              {visibleRemoved.map((item) => {
-                const restoring = restoringIds.includes(item.id);
-                return (
-                  <OverviewListRow
-                    key={item.id}
-                    testId={`${TEST_ID}-removed-row-${item.id}`}
-                    state="removed"
-                    busy={restoring}
-                    leading={null}
-                    title={item.title}
-                    trailing={<OwnerLine name={item.ownerName} />}
-                    date={formatDateOrEmpty(item.dismissedAt)}
-                    dateTooltip={`Removed ${formatDateOrEmpty(item.dismissedAt)}`}
-                    actionsReserve="inline"
-                    actions={
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        disabled={restoring}
-                        onClick={(): void => onRestore(item.id)}
-                        data-testid={`${TEST_ID}-restore-${item.id}`}
-                      >
-                        {restoring ? 'Restoring…' : 'Restore'}
-                      </Button>
-                    }
-                  />
-                );
-              })}
-            </div>
-          </section>
+          <RemovedGroup
+            items={visibleRemoved}
+            restoringIds={restoringIds}
+            onRestore={onRestore}
+          />
         )}
         {visibleAccepted.length > 0 && (
           <section data-testid={`${TEST_ID}-accepted`}>

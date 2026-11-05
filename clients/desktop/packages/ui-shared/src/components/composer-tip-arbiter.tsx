@@ -12,7 +12,7 @@ import {
 } from 'react';
 
 /** Highest priority first. Extend this list to introduce another tip kind. */
-export const COMPOSER_TIP_PRIORITY = ['plan-mode'] as const;
+export const COMPOSER_TIP_PRIORITY = ['plan-mode', 'github-star'] as const;
 export type ComposerTipKind = (typeof COMPOSER_TIP_PRIORITY)[number];
 
 interface ComposerTipArbiter {

@@ -1,4 +1,5 @@
 import type { JSX, KeyboardEvent, MouseEvent, ReactNode } from 'react';
+import { Button } from './Button';
 
 export interface PlanActionButtonRowItem {
   /** Visible label. */
@@ -17,12 +18,9 @@ export interface PlanActionButtonRowProps {
   trailing?: ReactNode;
 }
 
-/** The sky-tinted plan card action's look, shared with its Copy plan. */
-export const PLAN_ACTION_BUTTON_CLASS =
-  'focus-ring inline-flex items-center gap-1.5 rounded-md border border-sky-500/20 bg-sky-500/10 px-2.5 py-1 text-2xs font-medium fg-primary transition-colors hover:bg-sky-500/18 disabled:cursor-not-allowed disabled:opacity-50';
-
 /**
- * Sky-tinted action button used inside the plan card. Pure display.
+ * A plan card action: the 28px `secondary` `compact` capsule, like the card's
+ * Copy plan. Pure display.
  */
 function PlanActionButton({
   item,
@@ -30,8 +28,9 @@ function PlanActionButton({
   item: PlanActionButtonRowItem;
 }): JSX.Element {
   return (
-    <button
-      type="button"
+    <Button
+      variant="secondary"
+      size="compact"
       data-testid={item.dataTestId}
       onClick={(event: MouseEvent<HTMLButtonElement>): void => {
         event.stopPropagation();
@@ -43,11 +42,10 @@ function PlanActionButton({
         }
       }}
       disabled={item.disabled}
-      className={PLAN_ACTION_BUTTON_CLASS}
     >
       {item.icon}
       {item.label}
-    </button>
+    </Button>
   );
 }
 

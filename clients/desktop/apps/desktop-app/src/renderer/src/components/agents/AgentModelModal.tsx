@@ -18,6 +18,7 @@ import {
 } from '@canopy/protocol/agents';
 import {
   Button,
+  Chip,
   ChoiceList,
   ChoiceListRow,
   FieldError,
@@ -26,10 +27,10 @@ import {
   FormField,
   TextArea,
   TextInput,
+  Tooltip,
 } from '@canopy/ui-shared/components';
 import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
 import { PluginsIcon } from '@canopy/ui-shared/icons';
-import { CloseIcon as AppCatalogCloseIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { DialogModal } from '../shared/DialogModal';
 import { ModelPicker } from '../chat/ModelPicker';
 import { ChatPluginsModal } from '../chat/ChatPluginsModal';
@@ -522,23 +523,20 @@ export function AgentModelModal({
           {pluginChips.length > 0 ? (
             <div className="mt-2 flex flex-wrap gap-1.5">
               {pluginChips.map((chip) => (
-                <span
+                <Tooltip
                   key={chip.key}
-                  className="inline-flex items-center gap-1 rounded-md border bg-fg-primary/[0.04] px-2 py-0.5 text-2xs fg-primary"
-                  title={`${chip.title} — ${chip.subtitle}`}
+                  label={`${chip.title} — ${chip.subtitle}`}
+                  className="max-w-full"
                 >
-                  <span className="font-medium">{chip.title}</span>
-                  <span className="fg-secondary">{chip.subtitle}</span>
-                  <button
-                    type="button"
+                  <Chip
+                    onRemove={chip.remove}
+                    removeLabel={`Remove ${chip.title}`}
                     disabled={submitting}
-                    onClick={chip.remove}
-                    className="focus-ring rounded p-0.5 fg-secondary hover:fg-primary disabled:opacity-50"
-                    aria-label={`Remove ${chip.title}`}
                   >
-                    <AppCatalogCloseIcon width="10" height="10" />
-                  </button>
-                </span>
+                    <span className="font-medium">{chip.title}</span>{' '}
+                    <span className="fg-secondary">{chip.subtitle}</span>
+                  </Chip>
+                </Tooltip>
               ))}
             </div>
           ) : (

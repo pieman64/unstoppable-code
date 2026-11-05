@@ -5,8 +5,10 @@
  * Browser-safe; it reads only the model catalog, to keep a Claude interface
  * mode for a Claude model alone. Conversion is lossless or refused: an action
  * whose settings the steps can't carry exactly stays native. Every local ID,
- * local plugin selection, attachment and Agent is a pipeline input or an
- * automation model preference, never a YAML literal; the prompt stays literal
+ * attachment, Agent and local plugin selection is a pipeline input or an
+ * automation model or plugin collection preference, never a YAML literal:
+ * local plugin selections are the automation's preferences for a plugin
+ * collection the YAML names with no defaults. The prompt stays literal
  * in the YAML (`literal_text`), so sharing, which strips input values, keeps
  * it. A run restriction isn't converted: a valid one is the chat action's own
  * single context, which desktop main checks before it drops it (CAN-5479).
@@ -32,6 +34,7 @@ import type {
   Pipeline,
   PipelineAgentModelAliasPreference,
   PipelineInputDef,
+  PipelinePluginCollectionPreference,
   Step,
 } from '../types/pipeline';
 import { parseAgentRouteModelId } from '@canopy/protocol/agents';
@@ -56,6 +59,12 @@ const STEP = {
 /** The longest wait the reply step allows; the native watcher has no limit. */
 const REPLY_TIMEOUT_MINUTES = '720';
 
+/**
+ * The automation input that keeps a composer scheduled send's `purpose`
+ * through conversion (CAN-5479).
+ */
+const SCHEDULED_SEND_INPUT = 'purpose';
+
 /** A Work Entry title is at most this long (`create-bot-entry`). */
 const ENTRY_TITLE_MAX = 200;
 
@@ -65,6 +74,19 @@ const ENTRY_TITLE_MAX = 200;
  * Agent, and the local Agent id stays out of the YAML.
  */
 export const CHAT_AUTOMATION_MODEL_ALIAS = 'chat_model';
+
+/**
+ * The plugin collection local plugin selections convert to: the YAML names
+ * it with no defaults, and the automation's plugin collection preferences
+ * hold the selections, so they stay out of the YAML (CAN-5479).
+ */
+export const CHAT_AUTOMATION_PLUGIN_COLLECTION = 'chat_plugins';
+
+/** The automation's plugin collection preferences for its owned pipeline. */
+export type ChatAutomationPluginCollectionPreferences = Record<
+  string,
+  PipelinePluginCollectionPreference
+>;
 
 /** The automation's model preferences for its owned pipeline's alias. */
 export type ChatAutomationModelAliasPreferences = Record<
@@ -86,7 +108,10 @@ export type ChatAutomationAction = Extract<
 export type ChatAutomationConversionRefusal =
   /** Not one of the four chat actions. */
   | 'not_a_chat_action'
-  /** A D4 send, the Home scheduled task or a legacy standalone chat. */
+  /**
+   * A D4 send (a usage-limit resume or an agent's scheduled send), the Home
+   * scheduled task or a legacy standalone chat.
+   */
   | 'native_send'
   /** Settings D11 refuses for a run an agent's automation starts. */
   | 'agent_settings'
@@ -151,6 +176,7 @@ function hasLocalPluginSelections(action: ChatAutomationAction): boolean {
     selections.skillRefs.length > 0 ||
     selections.pluginRefs.length > 0 ||
     (selections.mcpServerRefs?.length ?? 0) > 0 ||
+    (selections.mcpHttpAuthPreferences?.length ?? 0) > 0 ||
     (selections.unresolvedCapabilities?.length ?? 0) > 0
   );
 }
@@ -177,10 +203,13 @@ export function convertibleChatAutomation(
   ): ChatAutomationConvertibility => ({ convertible: false, reason });
   const { action } = activity;
   if (!isChatAutomationAction(action)) return refuse('not_a_chat_action');
-  // D4, the Home scheduled task and legacy standalone chats (5c-1, 5c-2).
+  // D4, the Home scheduled task and legacy standalone chats (5c-1, 5c-2). A
+  // person's composer scheduled send converts (CAN-5479), keeping its
+  // `purpose` as an automation input so the edit form still treats it as
+  // composer-authored.
   if (action.type === 'worktree_session_prompt') {
     if (
-      action.purpose !== undefined ||
+      action.purpose === 'usage_limit_resume' ||
       activity.agentScheduledSend !== undefined ||
       action.workspaceId === STANDALONE_CHAT_PROJECT_ID
     )
@@ -269,12 +298,10 @@ function settingsInputs(action: ChatAutomationAction): Record<string, string> {
 
 /**
  * Send step inputs whose values are local, so they are automation inputs, as
- * target IDs are: local plugin selections, and a session prompt's composer
- * payload (absolute attachment paths, their prompt contexts, legacy file
- * references and voice input).
+ * target IDs are: a session prompt's composer payload (absolute attachment
+ * paths, their prompt contexts, legacy file references and voice input).
  */
 const VALUE_INPUTS = [
-  'plugin_selections',
   'attachment_paths',
   'attachment_prompt_contexts',
   'file_references',
@@ -284,10 +311,6 @@ const VALUE_INPUTS = [
 /** The automation inputs the send step reads with `VALUE_INPUTS`. */
 function valueInputs(action: ChatAutomationAction): Record<string, string> {
   const values: Record<string, string> = {};
-  if (action.pluginSelections && hasLocalPluginSelections(action))
-    values.plugin_selections = JSON.stringify(
-      normalizePluginSelections(action.pluginSelections),
-    );
   if (action.type !== 'worktree_session_prompt') return values;
   if (action.attachmentPaths !== undefined)
     values.attachment_paths = JSON.stringify(action.attachmentPaths);
@@ -300,6 +323,41 @@ function valueInputs(action: ChatAutomationAction): Record<string, string> {
     values.file_references = JSON.stringify(action.fileReferences);
   if (action.inputMode !== undefined) values.input_mode = action.inputMode;
   return values;
+}
+
+/**
+ * The automation's preferences for its plugin collection: the action's local
+ * selections, exactly as the preference store keeps them. None when it
+ * selects nothing.
+ */
+function pluginCollectionPreferences(
+  action: ChatAutomationAction,
+): ChatAutomationPluginCollectionPreferences | undefined {
+  if (!action.pluginSelections || !hasLocalPluginSelections(action))
+    return undefined;
+  const {
+    collectionIds,
+    skillRefs,
+    pluginRefs,
+    mcpServerRefs,
+    mcpHttpAuthPreferences,
+    unresolvedCapabilities,
+  } = normalizePluginSelections(action.pluginSelections);
+  return {
+    [CHAT_AUTOMATION_PLUGIN_COLLECTION]: {
+      disabledDefaultKeys: [],
+      extraSelections: {
+        collectionIds,
+        skillRefs,
+        pluginRefs,
+        mcpServerRefs: mcpServerRefs ?? [],
+        mcpHttpAuthPreferences: mcpHttpAuthPreferences ?? [],
+        ...(unresolvedCapabilities !== undefined
+          ? { unresolvedCapabilities }
+          : {}),
+      },
+    },
+  };
 }
 
 /** The prompt, kept literal so the runner never evaluates it. */
@@ -356,6 +414,9 @@ function sendStep(
       ...target,
       ...textInputs(action),
       ...settingsInputs(action),
+      ...(pluginCollectionPreferences(action) !== undefined
+        ? { plugin_collection_id: CHAT_AUTOMATION_PLUGIN_COLLECTION }
+        : {}),
       ...values,
       ...(options.replaceEmptyChat ? { replace_empty_chat: 'true' } : {}),
       ...(options.newChat ? { new_chat: 'true' } : {}),
@@ -542,6 +603,11 @@ function steps(
             : { project_id: action.workspaceId }),
           task_id: action.worktreeId,
           chat_id: action.chatId,
+          // No step reads it; the edit form does, to keep a composer's send
+          // read-only, so the reverse restores it (CAN-5479).
+          ...(action.purpose === 'scheduled_send'
+            ? { [SCHEDULED_SEND_INPUT]: action.purpose }
+            : {}),
         },
         steps: advisor
           ? [sendStep(action, target)]
@@ -563,6 +629,7 @@ export function chatAutomationToPipeline(activity: ConvertibleActivity): {
   pipeline: Pipeline;
   inputs: Record<string, string>;
   modelAliasPreferences?: ChatAutomationModelAliasPreferences;
+  pluginCollectionPreferences?: ChatAutomationPluginCollectionPreferences;
 } {
   const verdict = convertibleChatAutomation(activity);
   if (!verdict.convertible)
@@ -573,6 +640,7 @@ export function chatAutomationToPipeline(activity: ConvertibleActivity): {
   const built = steps(activity, action);
   const inputs = { ...built.inputs, ...valueInputs(action) };
   const agent = isAgentModel(action.model) ? action.model : undefined;
+  const plugins = pluginCollectionPreferences(action);
   return {
     pipeline: {
       name: activity.name,
@@ -582,6 +650,17 @@ export function chatAutomationToPipeline(activity: ConvertibleActivity): {
         ? {
             model_aliases: [
               { id: CHAT_AUTOMATION_MODEL_ALIAS, name: 'Chat agent' },
+            ],
+          }
+        : {}),
+      ...(plugins !== undefined
+        ? {
+            plugin_collections: [
+              {
+                id: CHAT_AUTOMATION_PLUGIN_COLLECTION,
+                name: 'Chat plugins',
+                defaults: [],
+              },
             ],
           }
         : {}),
@@ -595,6 +674,7 @@ export function chatAutomationToPipeline(activity: ConvertibleActivity): {
           },
         }
       : {}),
+    ...(plugins !== undefined ? { pluginCollectionPreferences: plugins } : {}),
   };
 }
 
@@ -638,10 +718,31 @@ function aliasAgent(
   return mode === 'agent' && typeof agentId === 'string' ? agentId : undefined;
 }
 
+/** The local selections an automation's plugin collection preferences hold. */
+function collectionSelections(
+  preferences: Readonly<Record<string, unknown>> | undefined,
+): ChatTabPluginSelections | undefined {
+  const preference: unknown = preferences?.[CHAT_AUTOMATION_PLUGIN_COLLECTION];
+  if (typeof preference !== 'object' || preference === null) return undefined;
+  const extras: unknown = Reflect.get(preference, 'extraSelections');
+  if (typeof extras !== 'object' || extras === null) return undefined;
+  const { mcpServerRefs, mcpHttpAuthPreferences, ...selections } =
+    normalizePluginSelections(extras);
+  // The store keeps an empty list; the action had none.
+  return {
+    ...selections,
+    ...((mcpServerRefs?.length ?? 0) > 0 ? { mcpServerRefs } : {}),
+    ...((mcpHttpAuthPreferences?.length ?? 0) > 0
+      ? { mcpHttpAuthPreferences }
+      : {}),
+  };
+}
+
 /** The action fields the send step carries, through the step's own parser. */
 function sendFields(
   send: Record<string, string>,
   inputs: Readonly<Record<string, string>>,
+  pluginPreferences: Readonly<Record<string, unknown>> | undefined,
 ): {
   prompt: string;
   promptReferences?: ConfiguredPromptReference[];
@@ -669,7 +770,17 @@ function sendFields(
   }
   const parsed = parseSendAgentMessageInputs(values);
   if (!parsed.ok || parsed.value.text.kind !== 'inline') return null;
-  const { settings } = parsed.value;
+  const { pluginCollectionId } = parsed.value;
+  const settings = { ...parsed.value.settings };
+  if (pluginCollectionId !== undefined) {
+    const selections = collectionSelections(pluginPreferences);
+    if (
+      pluginCollectionId !== CHAT_AUTOMATION_PLUGIN_COLLECTION ||
+      selections === undefined
+    )
+      return null;
+    settings.pluginSelections = selections;
+  }
   const modelConfig: AgentModelConfig = {
     ...(settings.thinkingEffort !== undefined
       ? { thinkingLevel: settings.thinkingEffort }
@@ -724,6 +835,7 @@ function candidate(
   inputs: Readonly<Record<string, string>>,
   isCoworkProject: (projectId: string) => boolean,
   modelAliasPreferences: Readonly<Record<string, unknown>> | undefined,
+  pluginCollectionPreferences: Readonly<Record<string, unknown>> | undefined,
 ): { name: string; action: AutomationAction } | null {
   const job = pipeline.jobs[CHAT_AUTOMATION_JOB];
   if (!job) return null;
@@ -731,7 +843,7 @@ function candidate(
   const send = stringWith(job.steps.find((step) => step.id === STEP.send));
   const firstWith = stringWith(first);
   if (!first || !send || !firstWith) return null;
-  const fields = sendFields(send, inputs);
+  const fields = sendFields(send, inputs, pluginCollectionPreferences);
   if (!fields) return null;
   if (fields.model === CHAT_AUTOMATION_MODEL_ALIAS) {
     const agent = aliasAgent(pipeline, modelAliasPreferences);
@@ -823,6 +935,9 @@ function candidate(
             chatId: inputs.chat_id,
             ...common,
             ...composer,
+            ...(inputs[SCHEDULED_SEND_INPUT] === 'scheduled_send'
+              ? { purpose: 'scheduled_send' as const }
+              : {}),
           },
         };
       if (inputs.bot_id !== undefined)
@@ -903,20 +1018,23 @@ export function ownedPipelineToChatAction(
   isCoworkProject: (projectId: string) => boolean,
   /** The automation's `modelAliasPreferences`, which name its Agent. */
   modelAliasPreferences?: Readonly<Record<string, unknown>>,
+  /** The automation's `pluginCollectionPreferences`, which hold its plugins. */
+  pluginCollectionPreferences?: Readonly<Record<string, unknown>>,
 ): ChatAutomationAction | null {
   const found = candidate(
     pipeline,
     inputs,
     isCoworkProject,
     modelAliasPreferences,
+    pluginCollectionPreferences,
   );
   if (!found || !isChatAutomationAction(found.action)) return null;
   const activity = { name: found.name, action: found.action };
   if (!convertibleChatAutomation(activity).convertible) return null;
   const regenerated = chatAutomationToPipeline(activity);
   // The pipeline's name is the automation's own; everything else must match,
-  // so any hand edit (a step, env, defaults, a model preference) keeps the
-  // pipeline as it is.
+  // so any hand edit (a step, env, defaults, a model or plugin collection
+  // preference) keeps the pipeline as it is.
   return sameJson(regenerated.pipeline, {
     ...pipeline,
     name: regenerated.pipeline.name,
@@ -925,6 +1043,10 @@ export function ownedPipelineToChatAction(
     sameJson(
       regenerated.modelAliasPreferences ?? {},
       modelAliasPreferences ?? {},
+    ) &&
+    sameJson(
+      regenerated.pluginCollectionPreferences ?? {},
+      pluginCollectionPreferences ?? {},
     )
     ? found.action
     : null;

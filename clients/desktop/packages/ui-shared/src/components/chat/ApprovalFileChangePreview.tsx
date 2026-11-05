@@ -1,5 +1,6 @@
 import { useMemo, type JSX } from 'react';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
+import { Button } from '../Button';
 import {
   APPROVAL_FILE_CHANGE_COMPACT_LIMITS,
   APPROVAL_FILE_CHANGE_EXPANDED_LIMITS,
@@ -275,14 +276,16 @@ export function ApprovalFileChangePreview({
         </div>
       )}
       {canExpand && (
-        <button
-          type="button"
-          data-testid="approval-file-change-expand"
-          onClick={onExpand}
-          className="mt-1 text-2xs fg-accent underline-offset-2 transition-colors hover:underline"
-        >
-          {expansion.action}
-        </button>
+        // The link action takes the size of the copy around it.
+        <div className="mt-1 text-2xs">
+          <Button
+            variant="link"
+            data-testid="approval-file-change-expand"
+            onClick={onExpand}
+          >
+            {expansion.action}
+          </Button>
+        </div>
       )}
     </div>
   );

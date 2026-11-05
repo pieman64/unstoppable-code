@@ -243,7 +243,7 @@ const ALL_NAV_ITEMS: NavItem[] = [
   {
     key: 'git',
     label: 'Git',
-    icon: <BranchIcon size="md" />,
+    icon: <BranchIcon size="sm" />,
   },
   {
     key: 'applications',

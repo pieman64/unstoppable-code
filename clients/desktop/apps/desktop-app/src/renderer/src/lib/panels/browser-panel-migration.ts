@@ -82,11 +82,6 @@ export const STALE_BROWSER_PANEL_TOAST =
 /** Worktree keys whose migration is parked in recovery mode. */
 const pendingRecoveries = new Set<string>();
 
-/** Test-only: clears module state. */
-export function resetBrowserPanelMigrationForTests(): void {
-  pendingRecoveries.clear();
-}
-
 export function hasPendingBrowserMigrationRecovery(
   worktreeKey: string,
 ): boolean {

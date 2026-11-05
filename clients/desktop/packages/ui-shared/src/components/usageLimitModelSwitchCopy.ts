@@ -78,12 +78,12 @@ export function usageLimitModelSwitchPurchaseMessage({
   scheduledForLabel,
 }: UsageLimitModelSwitchPurchaseMessageInput): string {
   const buy = targetModelLabel
-    ? `Get AI Credits to continue on ${targetModelLabel}`
-    : 'Get AI Credits and choose a model that can';
+    ? `Buy AI Credits to continue on ${targetModelLabel}`
+    : 'Buy AI Credits and choose a model that can';
   if (scheduledForLabel) {
     const buyNow = targetModelLabel
       ? buy
-      : 'Get AI Credits and choose a model that can run on them';
+      : 'Buy AI Credits and choose a model that can run on them';
     return `This chat resumes automatically at ${scheduledForLabel}. ${notRoutableSentence(modelLabel)} ${buyNow} to keep going now.`;
   }
   const wait = resetsLabel

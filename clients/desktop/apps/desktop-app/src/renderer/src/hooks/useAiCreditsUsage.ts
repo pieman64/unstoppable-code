@@ -143,12 +143,6 @@ export function refreshAiCreditsAfterChargedTurn(): void {
   );
 }
 
-/** Test seam: drop any scheduled settlement re-reads. */
-export function cancelAiCreditsSettlementRefreshForTests(): void {
-  settlementTimers.forEach(clearTimeout);
-  settlementTimers = [];
-}
-
 // Drop the cache whenever the cloud account connection changes (connect,
 // disconnect, or API-key change all dispatch this event). Registered once at
 // module load so usage re-reads no matter which surface mounts the hook.

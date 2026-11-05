@@ -22,6 +22,8 @@ import type {
   LedgerErrorReason,
   LedgerGlobalOwner,
   LedgerOwnerCandidatePage,
+  LedgerRollupItem,
+  LedgerRootChatFilter,
   LedgerSourceAvailability,
   LedgerStatus,
   LedgerUpdateEntryParams,
@@ -30,6 +32,8 @@ import type {
   LedgerMirrorActorLabel,
   LedgerMirrorEntry,
   LedgerMirrorEntryResponse,
+  LedgerMirrorEntryResponseV2,
+  LedgerMirrorEntryV2,
   LedgerScopeKind,
 } from '../ledger-sync';
 
@@ -118,6 +122,11 @@ export interface LedgerViewFilters {
   readonly statuses: readonly LedgerStatus[];
   /** `you` keeps the entries the person reading owns. */
   readonly owner: 'anyone' | 'you';
+  /**
+   * Work from one line of agents: the Feed panel's root chat picker and its
+   * Root activity only switch. Absent or null shows everyone's.
+   */
+  readonly rootChat?: LedgerRootChatFilter | null;
 }
 
 export interface LedgerViewSearchRequest {
@@ -309,6 +318,13 @@ export interface LedgerFeedRequest {
    * displaces a search a list is paging.
    */
   readonly peek?: boolean;
+  /**
+   * Narrows the Feed to these of this device's scopes. Rows of other
+   * devices and teammates never match, so the read stays on this device.
+   */
+  readonly ledgerIds?: readonly string[];
+  /** Narrows the Feed to this one scope of this device, as a panel shows it. */
+  readonly scope?: LedgerViewScope;
 }
 
 /** Where a Feed row was written. */
@@ -383,6 +399,107 @@ export interface LedgerFeedEntryRequest {
 }
 
 // ---------------------------------------------------------------------------
+// Feed variant E (L06–L10, L12): the Operations table of this device's
+// operations and top-level tasks, and where their owners run, so a view can
+// read their live state from the host's canonical chat state.
+// ---------------------------------------------------------------------------
+
+/**
+ * Where an actor of this device's scopes runs. Logical IDs only: a host maps
+ * it to its own chat, delegation and pipeline state.
+ */
+export type LedgerViewActorHost =
+  | {
+      readonly kind: 'chat';
+      readonly projectId: string;
+      readonly worktreeId: string;
+      readonly chatId: string;
+    }
+  | {
+      /** A managed delegate, with the chat its delegation tree started from. */
+      readonly kind: 'delegation';
+      readonly projectId: string;
+      readonly worktreeId: string;
+      readonly delegationId: string;
+      readonly rootChatId: string | null;
+    }
+  | {
+      readonly kind: 'pipeline';
+      readonly projectId: string;
+      readonly worktreeId: string;
+      readonly executionId: string;
+    };
+
+/** One Operations row: an operation, or a top-level task with no operation. */
+export interface LedgerFeedWorkRow {
+  readonly ledgerId: string;
+  readonly scope: LedgerViewScope;
+  readonly scopeKind: LedgerScopeKind;
+  readonly scopeArchived: boolean;
+  /** The project's and task's names for the work path; null when unknown here. */
+  readonly projectName: string | null;
+  readonly taskName: string | null;
+  /** The item and its leaf-task rollup, from `core.ledger.rollups.list`. */
+  readonly item: LedgerRollupItem;
+  /**
+   * The task's chat, which Message writes to when the person owns the item;
+   * null when the task has none.
+   */
+  readonly chatId: string | null;
+  /**
+   * Finished before the two-working-day window, with no open leaves; only
+   * with `includeOlder`. The Feed lists it once the person shows older rows.
+   */
+  readonly older?: true;
+}
+
+export interface LedgerFeedWorkRequest {
+  /**
+   * Also returns Completed and Failed rows older than the two-working-day
+   * window, each marked `older`.
+   */
+  readonly includeOlder: boolean;
+  /** Reads past the host's short-lived cache. */
+  readonly refresh?: boolean;
+  /** Only this scope's operations and top-level tasks, as a panel shows them. */
+  readonly scope?: LedgerViewScope;
+}
+
+export interface LedgerFeedWorkPage {
+  /** Newest last activity first. */
+  readonly rows: readonly LedgerFeedWorkRow[];
+  /** Labels for every actor the rows name. */
+  readonly actors: readonly LedgerActorLabel[];
+  /**
+   * Where each actor that owns a row or one of its open leaves runs, by actor
+   * ID. Only this device's actors; one with no live session here is absent.
+   */
+  readonly actorHosts: Readonly<Record<string, LedgerViewActorHost>>;
+  /** How many Completed and Failed rows are older than the window. */
+  readonly olderCount: number;
+  /** The rollup read stopped at its bound, so some rows are missing. */
+  readonly truncated: boolean;
+}
+
+const LEDGER_FEED_COMPLETED_WORKING_DAYS = 2;
+
+/**
+ * The start of the window of Completed rows the Operations table shows: two
+ * working days back from `now` in local time, skipping Saturday and Sunday, so
+ * on a Monday Friday's finished work still shows.
+ */
+export function ledgerFeedCompletedCutoff(now: Date): Date {
+  const cutoff = new Date(now.getTime());
+  let counted = 0;
+  while (counted < LEDGER_FEED_COMPLETED_WORKING_DAYS) {
+    cutoff.setDate(cutoff.getDate() - 1);
+    const day = cutoff.getDay();
+    if (day !== 0 && day !== 6) counted += 1;
+  }
+  return cutoff;
+}
+
+// ---------------------------------------------------------------------------
 // The cloud mirror's rows as the Feed reads them. Every host that reads the
 // mirror (the desktop Feed for other devices and teammates, the web Feed for
 // everything) maps them the same way.
@@ -430,7 +547,7 @@ export function ledgerFeedSearchFilters(
 
 /** A mirror row: another device's or a teammate's, read only. */
 export function ledgerFeedRowFromMirror(
-  entry: LedgerMirrorEntry,
+  entry: LedgerMirrorEntry | LedgerMirrorEntryV2,
 ): LedgerFeedRow {
   const {
     ledgerId,
@@ -486,7 +603,7 @@ export function ledgerMirrorHistoryRevision(cursor: string): number | null {
 
 /** A mirror entry as the read-only detail shows it. */
 export function ledgerViewEntryFromMirror(
-  response: LedgerMirrorEntryResponse,
+  response: LedgerMirrorEntryResponse | LedgerMirrorEntryResponseV2,
 ): LedgerViewEntry {
   return {
     entry: {

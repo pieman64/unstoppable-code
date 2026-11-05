@@ -32,6 +32,7 @@ jest.mock('../plugins/shareable-plugin-resolution', () => ({
 
 import { recoverOrphanedPipelineExecutions } from '@canopy/desktop-shared/node/pipelines/executor/crash-recovery';
 import * as fs from 'node:fs';
+import { spawn } from 'node:child_process';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
@@ -4294,6 +4295,117 @@ describe('pipeline-executor', () => {
       ),
     ).toBe(true);
   }, 20_000);
+
+  it('preserves a cancellation request when a foreign resume is refused', async () => {
+    const child = spawn(
+      process.execPath,
+      ['-e', 'setInterval(() => {}, 1000)'],
+      { stdio: 'ignore' },
+    );
+    try {
+      const state = createInitialState(
+        normalizePipeline({
+          name: 'Foreign resume',
+          on: 'dispatch',
+          jobs: { build: { steps: [{ id: 'build', run: 'echo ok' }] } },
+        }),
+        { cwd: tempDir, pipelineId: 'foreign-resume', runtime },
+        'foreign-resume',
+      );
+      state.status = 'running';
+      state.owner_pid = child.pid;
+      await saveExecutionState(state, runtime.executionsDir);
+      const target = path.join(runtime.executionsDir, state.id + '.json');
+      const marker = path.join(runtime.executionsDir, state.id + '.cancel');
+      fs.writeFileSync(marker, 'cancel');
+      const bytes = fs.readFileSync(target, 'utf8');
+      await expect(
+        resumePipeline(state.id, { cwd: tempDir, runtime }),
+      ).rejects.toMatchObject({ reason: 'owned_by_other_process' });
+      expect(fs.readFileSync(target, 'utf8')).toBe(bytes);
+      expect(fs.readFileSync(marker, 'utf8')).toBe('cancel');
+    } finally {
+      const exited = new Promise<void>((resolve) =>
+        child.once('exit', () => resolve()),
+      );
+      child.kill();
+      await exited;
+    }
+  });
+
+  it('keeps the cancellation request when another live process leaves a run pending', async () => {
+    const child = spawn(
+      process.execPath,
+      ['-e', 'setInterval(() => {}, 1000)'],
+      { stdio: 'ignore' },
+    );
+    try {
+      const state = createInitialState(
+        normalizePipeline({
+          name: 'Foreign pending cancellation',
+          on: 'dispatch',
+          jobs: { build: { steps: [{ id: 'build', run: 'echo ok' }] } },
+        }),
+        { cwd: tempDir, pipelineId: 'foreign-pending', runtime },
+        'foreign-pending',
+      );
+      state.owner_pid = child.pid;
+      await saveExecutionState(state, runtime.executionsDir);
+      const target = path.join(runtime.executionsDir, state.id + '.json');
+      const bytes = fs.readFileSync(target, 'utf8');
+      const result = await cancelPipelineExecution(state.id, runtime);
+      expect(result.status).toBe('pending');
+      expect(fs.readFileSync(target, 'utf8')).toBe(bytes);
+      expect(
+        fs.readFileSync(
+          path.join(runtime.executionsDir, state.id + '.cancel'),
+          'utf8',
+        ),
+      ).toBe('cancel');
+    } finally {
+      const exited = new Promise<void>((resolve) =>
+        child.once('exit', () => resolve()),
+      );
+      child.kill();
+      await exited;
+    }
+  }, 30_000);
+
+  it('leaves a run owned by another live process running when it does not settle after cancellation', async () => {
+    const child = spawn(
+      process.execPath,
+      ['-e', 'setInterval(() => {}, 1000)'],
+      { stdio: 'ignore' },
+    );
+    try {
+      const state = createInitialState(
+        normalizePipeline({
+          name: 'Foreign owner cancellation',
+          on: 'dispatch',
+          jobs: { build: { steps: [{ id: 'build', run: 'echo ok' }] } },
+        }),
+        { cwd: tempDir, pipelineId: 'foreign-owner', runtime },
+        'foreign-owner',
+      );
+      state.status = 'running';
+      state.owner_pid = child.pid;
+      await saveExecutionState(state, runtime.executionsDir);
+      const target = path.join(runtime.executionsDir, state.id + '.json');
+      const bytes = fs.readFileSync(target, 'utf8');
+      const result = await cancelPipelineExecution(state.id, runtime);
+      expect(result.status).toBe('running');
+      expect(fs.readFileSync(target, 'utf8')).toBe(bytes);
+      expect(
+        fs.existsSync(path.join(runtime.executionsDir, state.id + '.cancel')),
+      ).toBe(true);
+    } finally {
+      const exited = new Promise<void>((resolve) =>
+        child.once('exit', () => resolve()),
+      );
+      child.kill();
+      await exited;
+    }
+  }, 30_000);
 
   it('does not treat a running execution as orphaned while its owner process is alive', async () => {
     const pipeline: Pipeline = {

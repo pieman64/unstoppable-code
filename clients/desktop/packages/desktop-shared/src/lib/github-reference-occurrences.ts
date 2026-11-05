@@ -57,6 +57,18 @@ const ITEM_NUMBER_RE = /^[1-9]\d{0,9}$/;
 const QUALIFIED_RE =
   /(?<![A-Za-z0-9_./@#-])([A-Za-z0-9-]{1,39})\/([A-Za-z0-9_.-]{1,100})#([1-9]\d{0,9})(?![A-Za-z0-9_#/@-]|\.\d)/g;
 const BARE_RE = /(?<![A-Za-z0-9_&/#.-])#([1-9]\d{0,9})(?![A-Za-z0-9_-]|\.\d)/g;
+// A bare `#N` is a GitHub item only with evidence: a PR or issue word right
+// before it ("PR #12", "fixes #12"), a squash-merge title's `(#12)`, or a
+// list continuing an accepted reference ("#12, #13 and #14"). Numbering in
+// prose such as "Done-when #1:" or "step #2" stays plain.
+const BARE_CUE_RE =
+  /(?:(?:^|[^A-Za-z0-9_])(?:PRs?|pull requests?|pulls?|issues?|fix(?:es|ed)?|close[sd]?|resolve[sd]?|merged?|reverts?|reverted|refs?)\s*|\(\s*)$/i;
+const BARE_CUE_LOOKBEHIND = 20;
+// Markdown emphasis, code and strikethrough delimiters never separate a cue
+// from its number: `**PR** #12` and `PR **#12**` read as "PR #12".
+const MARKDOWN_DELIMITER_RE = /[*_`~]/g;
+const BARE_LIST_SEPARATOR_RE =
+  /^\s*(?:,\s*(?:(?:and|or)\s+)?|(?:and|or)\s+|&\s*)$/i;
 
 // GitHub site routes that can never be an owner, so `/orgs/acme` or
 // `/settings/tokens` is not mistaken for a repository.
@@ -212,7 +224,10 @@ function mask(text: string, spans: readonly Span[]): string {
  * `owner/repo#N` outside URLs, then `#N` outside both, so a full reference
  * always outranks a bare number and occurrences never overlap.
  */
-function collectOccurrences(text: string): GitHubReferenceOccurrence[] {
+function collectOccurrences(
+  text: string,
+  bareNumbers: ReadonlySet<number> | undefined,
+): GitHubReferenceOccurrence[] {
   const occurrences: GitHubReferenceOccurrence[] = [];
   const urlSpans = findUrlSpans(text);
   for (const { start, end } of urlSpans) {
@@ -242,9 +257,36 @@ function collectOccurrences(text: string): GitHubReferenceOccurrence[] {
   }
 
   const withoutReferences = mask(withoutUrls, qualifiedSpans);
+  const ends = occurrences.map((occurrence) => occurrence.end);
+  ends.sort((left, right) => left - right);
+  let endIndex = 0;
+  let previousEnd = -1;
   for (const match of Array.from(withoutReferences.matchAll(BARE_RE))) {
     const number = Number(match[1]);
     if (!isGitHubItemNumber(number)) continue;
+    while (endIndex < ends.length && ends[endIndex] <= match.index) {
+      previousEnd = Math.max(previousEnd, ends[endIndex]);
+      endIndex += 1;
+    }
+    if (bareNumbers) {
+      if (!bareNumbers.has(number)) continue;
+    } else {
+      const continuesList =
+        previousEnd >= 0 &&
+        match.index - previousEnd <= BARE_CUE_LOOKBEHIND &&
+        BARE_LIST_SEPARATOR_RE.test(
+          text
+            .slice(previousEnd, match.index)
+            .replace(MARKDOWN_DELIMITER_RE, ''),
+        );
+      const cued = BARE_CUE_RE.test(
+        text
+          .slice(Math.max(0, match.index - BARE_CUE_LOOKBEHIND), match.index)
+          .replace(MARKDOWN_DELIMITER_RE, ''),
+      );
+      if (!continuesList && !cued) continue;
+    }
+    previousEnd = match.index + match[0].length;
     occurrences.push({
       start: match.index,
       end: match.index + match[0].length,
@@ -261,11 +303,19 @@ function collectOccurrences(text: string): GitHubReferenceOccurrence[] {
  */
 export function scanGitHubReferenceOccurrences(
   text: string,
+  options: {
+    /**
+     * Bare numbers already accepted from the whole block's text. A renderer
+     * scanning one inline text node at a time passes these, because the cue
+     * ("PR", "fixes") may sit in a sibling node such as `**PR** #12`.
+     */
+    readonly bareNumbers?: ReadonlySet<number>;
+  } = {},
 ): ScannedGitHubReferences {
   if (text.length > MAX_TEXT_LENGTH) {
     return { occurrences: [], complete: false };
   }
-  const occurrences = collectOccurrences(text).sort(
+  const occurrences = collectOccurrences(text, options.bareNumbers).sort(
     (left, right) => left.start - right.start,
   );
   return {

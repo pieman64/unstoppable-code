@@ -25,7 +25,7 @@ import type {
   FileTreeEntry,
   FileTreeRoot,
 } from '@canopy/desktop-shared/types';
-import { HeaderActionButton } from '@canopy/ui-shared/components';
+import { Button, HeaderActionButton } from '@canopy/ui-shared/components';
 import { ChangesIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
   useActivitySectionChrome,
@@ -241,14 +241,18 @@ function useChangedFilesFilterChrome(
 
   const moreFilesRow =
     filter.hiddenCount > 0 ? (
-      <button
-        type="button"
-        data-testid="changed-files-more-files"
-        onClick={() => setFilterMenuOpen(true)}
-        className="w-full px-3 py-1 text-left text-xs fg-tertiary transition-colors hover:fg-secondary"
-      >
-        {`${filter.hiddenCount} more file${filter.hiddenCount === 1 ? '' : 's'}…`}
-      </button>
+      // The shared Changed Files list's "Show N more files" control: a small
+      // ghost button at the list's start edge.
+      <div className="flex flex-col items-start">
+        <Button
+          variant="ghost"
+          size="sm"
+          data-testid="changed-files-more-files"
+          onClick={() => setFilterMenuOpen(true)}
+        >
+          {`${filter.hiddenCount} more file${filter.hiddenCount === 1 ? '' : 's'}…`}
+        </Button>
+      </div>
     ) : null;
 
   return { filter, filterAction, moreFilesRow };

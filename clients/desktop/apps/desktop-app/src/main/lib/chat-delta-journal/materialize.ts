@@ -106,6 +106,29 @@ async function applyPatch(
     );
     rewriteFields = 'format4-committed';
   }
+  if (
+    fields === 'format4-verify' &&
+    effect.patches.length === 0 &&
+    effect.removedMessageIds.length === 0 &&
+    split > 0 &&
+    effect.activeTailCount > 0
+  ) {
+    const activeIds = new Set(tail.slice(split).map((message) => message.id));
+    const suffixAnchors = capturedAnchors
+      ? new Map(Array.from(capturedAnchors).filter(([id]) => activeIds.has(id)))
+      : undefined;
+    if (
+      await log.tryAppendPatch(
+        effect.chatId,
+        tail,
+        effect.activeTailCount,
+        rewriteRevision(toRevision, effect.priorTranscriptRevision),
+        rewriteFields,
+        suffixAnchors,
+      )
+    )
+      return;
+  }
   await mkdir(workDirectory, { recursive: true });
   // Stage the surviving rows first: the replacement must not read the log it
   // is rewriting, and a long history must not be held in memory.

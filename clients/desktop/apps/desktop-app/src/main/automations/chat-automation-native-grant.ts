@@ -28,17 +28,29 @@ import type {
   PipelineNativeGrantAuthority,
 } from '../pipelines/pipeline-local-metadata-store';
 
-/** Selections that choose something, normalized; else none. */
+/**
+ * Selections that choose something, normalized, with an empty optional list
+ * the same as none: a plugin collection's stored selections always carry
+ * them (CAN-5479). Else no selections.
+ */
 function chosenSelections(
   selections: ChatTabPluginSelections | undefined,
 ): ChatTabPluginSelections | undefined {
   if (selections === undefined) return undefined;
-  const normalized = normalizePluginSelections(selections);
-  return normalized.collectionIds.length > 0 ||
-    normalized.skillRefs.length > 0 ||
-    normalized.pluginRefs.length > 0 ||
-    (normalized.mcpServerRefs?.length ?? 0) > 0
-    ? normalized
+  const { mcpServerRefs, mcpHttpAuthPreferences, ...normalized } =
+    normalizePluginSelections(selections);
+  const chosen: ChatTabPluginSelections = {
+    ...normalized,
+    ...((mcpServerRefs?.length ?? 0) > 0 ? { mcpServerRefs } : {}),
+    ...((mcpHttpAuthPreferences?.length ?? 0) > 0
+      ? { mcpHttpAuthPreferences }
+      : {}),
+  };
+  return chosen.collectionIds.length > 0 ||
+    chosen.skillRefs.length > 0 ||
+    chosen.pluginRefs.length > 0 ||
+    (chosen.mcpServerRefs?.length ?? 0) > 0
+    ? chosen
     : undefined;
 }
 

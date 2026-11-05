@@ -605,7 +605,7 @@ export const QueuedMessageRow = forwardRef<
       data-dragging={reorder?.dragging ? '' : undefined}
       className={`flex h-9 min-w-0 items-center gap-2.5 text-s ${
         ROW_SURFACE_CLASS[surface]
-      } ${reorder?.dragging ? 'cursor-grabbing' : ''} ${className}`}
+      } ${className}`}
     >
       {reorder ? (
         // The drag handle: the row's leading slot, the shared quiet icon
@@ -630,15 +630,14 @@ export const QueuedMessageRow = forwardRef<
             data-testid="queued-message-drag-handle"
             data-no-double-click-edit
             className={`-mx-1.75 touch-none ${
-              reorder.unavailableReason === undefined
-                ? 'cursor-grab active:cursor-grabbing'
-                : ''
+              reorder.unavailableReason === undefined ? 'cursor-default' : ''
             }`}
           >
             <RowIcon icon={DragHandleIcon} strokePx={DRAG_HANDLE_STROKE_PX} />
           </Button>
         </Tooltip>
       ) : null}
+      {surface === 'drawer' ? settingsHeldWarning : null}
       {leading ? (
         <span className="flex min-w-0 max-w-1/2 shrink-0">{leading}</span>
       ) : null}
@@ -666,7 +665,7 @@ export const QueuedMessageRow = forwardRef<
         </span>
       ) : null}
       <span className="flex shrink-0 items-center">
-        {settingsHeldWarning}
+        {surface === 'drawer' ? null : settingsHeldWarning}
         {steerButton ? (
           steerBlockedByCapabilityChange ? (
             <ActionTooltip

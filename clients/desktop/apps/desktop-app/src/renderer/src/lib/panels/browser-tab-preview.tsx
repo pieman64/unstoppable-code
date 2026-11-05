@@ -89,7 +89,7 @@ function scaleToPreview(image: HTMLImageElement): string | null {
 
 const previews = new Map<string, BrowserTabPreview>();
 const listeners = new Set<() => void>();
-let scaler: BrowserTabPreviewScaler = scaleToPreview;
+const scaler: BrowserTabPreviewScaler = scaleToPreview;
 
 function notify(): void {
   listeners.forEach((listener) => listener());
@@ -139,15 +139,6 @@ export function useBrowserTabPreview(
   browserId: string,
 ): BrowserTabPreview | undefined {
   return useSyncExternalStore(subscribe, () => previews.get(browserId));
-}
-
-/** Test seam: swap the canvas scaler (jsdom has no canvas) and clear state. */
-export function resetBrowserTabPreviewsForTests(
-  nextScaler: BrowserTabPreviewScaler = scaleToPreview,
-): void {
-  previews.clear();
-  scaler = nextScaler;
-  notify();
 }
 
 function DesktopBrowserTabPreview({

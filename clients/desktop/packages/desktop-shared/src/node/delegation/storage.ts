@@ -45,6 +45,7 @@ import {
   encodeStoredDelegationV3,
 } from './record-v3';
 import { DelegationReadMetadataError } from './record-read-metadata';
+import { isTerminalDelegationSummary } from './terminal-summary';
 
 export const DELEGATION_STORAGE_RECORD_MAX_BYTES = 32 * 1024 * 1024;
 const DELEGATION_STORAGE_TEXT_MAX_CHARACTERS = 16 * 1024 * 1024;
@@ -735,6 +736,17 @@ const storedDelegationRecord = (
   return name === `${record.state.delegationId}.json` ? record : undefined;
 };
 
+/** A point read treats invalid retained data as an error, never as absence. */
+function storedDelegationRecordStrict(
+  text: string,
+  name: string,
+): StoredDelegation {
+  const record = storedDelegationRecord(text, name);
+  if (record === undefined)
+    throw new Error('Invalid retained delegation record');
+  return record;
+}
+
 function storedDelegationFile(
   record: StoredDelegation,
 ): PrivateDelegationRecordFile {
@@ -766,7 +778,10 @@ function storedDelegationFile(
 
 /** Private local records only. Loaded records grant no execution or delivery authority. */
 export class FileDelegationStorage implements DelegationStorage {
-  constructor(private readonly directory: string) {
+  constructor(
+    private readonly directory: string,
+    private readonly options: { readonly create?: boolean } = {},
+  ) {
     if (!path.isAbsolute(directory))
       throw new Error('Delegation storage must be absolute');
   }
@@ -828,10 +843,15 @@ export class FileDelegationStorage implements DelegationStorage {
 
   /** One delegation's record, without loading the others. */
   async loadOne(delegationId: string): Promise<StoredDelegation | undefined> {
-    if (!/^[A-Za-z0-9_-]{1,128}$/.test(delegationId)) return undefined;
-    await this.prepareDirectory();
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(delegationId))
+      throw new Error('Invalid delegation record name');
+    if (!(await this.prepareDirectory({ create: false }))) return undefined;
+    let record: StoredDelegation | undefined;
     try {
-      return await this.read(`${delegationId}.json`, storedDelegationRecord);
+      record = await this.read(
+        `${delegationId}.json`,
+        storedDelegationRecordStrict,
+      );
     } catch (error) {
       if (
         typeof error === 'object' &&
@@ -842,6 +862,11 @@ export class FileDelegationStorage implements DelegationStorage {
         return undefined;
       throw error;
     }
+    if (record === undefined)
+      throw new Error('Invalid retained delegation record');
+    // Observation-only callers need the decoded durable shape unchanged.
+    // Broker hydration performs normalization before its revision fence.
+    return record;
   }
 
   /**
@@ -887,13 +912,24 @@ export class FileDelegationStorage implements DelegationStorage {
     record: StoredDelegation | PrivateDelegationRecordFile,
     progress?: { replaced: boolean },
   ): Promise<void> {
+    if (
+      !(record instanceof PrivateDelegationRecordFile) &&
+      isTerminalDelegationSummary(record)
+    )
+      throw new Error(
+        'Terminal delegation summaries cannot be committed as records',
+      );
     const { name, bytes } =
       record instanceof PrivateDelegationRecordFile
         ? record
         : storedDelegationFile(record);
     if (bytes.byteLength > DELEGATION_STORAGE_RECORD_MAX_BYTES)
       throw new Error('Delegation record exceeds its byte bound');
-    await this.prepareDirectory();
+    const directoryReady = await this.prepareDirectory({
+      create: this.options.create ?? true,
+    });
+    if (!directoryReady)
+      throw new Error('Delegation storage directory is missing');
     const temporary = path.join(this.directory, `${randomUUID()}.pending`);
     try {
       const file = await fs.open(temporary, 'wx', 0o600);

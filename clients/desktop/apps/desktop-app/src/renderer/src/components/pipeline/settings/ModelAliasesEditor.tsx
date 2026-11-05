@@ -13,6 +13,7 @@ import { TextField } from '../shared/TextField';
 import { TextAreaField } from '../shared/TextAreaField';
 import { SelectField } from '../shared/SelectField';
 import { Tooltip } from '@canopy/ui-shared';
+import { Button } from '@canopy/ui-shared/components';
 import {
   ChevronRightMediumIcon as AppCatalogChevronRightMediumIcon,
   CloseIcon as AppCatalogCloseIcon,
@@ -174,49 +175,45 @@ function ModelAliasItem({
 
   return (
     <div className="rounded-md border bg-secondary/30">
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        className="flex w-full items-start gap-2 px-3 py-2.5 text-left hover:bg-fg-primary/[0.04]"
-      >
-        <AppCatalogChevronRightMediumIcon
-          width="12"
-          height="12"
-          className={`mt-1 shrink-0 fg-secondary transition-transform ${
-            expanded ? 'rotate-90' : ''
-          }`}
-          aria-hidden="true"
-        />
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-s font-medium fg-primary">
-            {alias.name || alias.id}
+      {/* The remove action sits beside the toggle, not inside it. */}
+      <div className="flex items-start">
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="flex min-w-0 flex-1 items-start gap-2 px-3 py-2.5 text-left hover:bg-fg-primary/[0.04]"
+        >
+          <AppCatalogChevronRightMediumIcon
+            width="12"
+            height="12"
+            className={`mt-1 shrink-0 fg-secondary transition-transform ${
+              expanded ? 'rotate-90' : ''
+            }`}
+            aria-hidden="true"
+          />
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-s font-medium fg-primary">
+              {alias.name || alias.id}
+            </div>
+            <div className="truncate text-xs fg-secondary">{summary}</div>
           </div>
-          <div className="truncate text-xs fg-secondary">{summary}</div>
-        </div>
+        </button>
+        {/* The padding centers the 28px action on the title line. */}
         {!readonly && (
-          <Tooltip label="Remove model alias">
-            <span
-              role="button"
-              tabIndex={0}
-              onClick={(e) => {
-                e.stopPropagation();
-                onRemove();
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onRemove();
-                }
-              }}
-              aria-label="Remove model alias"
-              className="ml-2 p-1 fg-secondary hover:fg-destructive transition-colors rounded cursor-pointer"
-            >
-              <AppCatalogCloseIcon width="14" height="14" />
-            </span>
-          </Tooltip>
+          <span className="flex shrink-0 p-1.5">
+            <Tooltip label="Remove model alias">
+              <Button
+                variant="ghost-quiet"
+                size="sm"
+                iconOnly
+                onClick={onRemove}
+                aria-label="Remove model alias"
+              >
+                <AppCatalogCloseIcon width="14" height="14" />
+              </Button>
+            </Tooltip>
+          </span>
         )}
-      </button>
+      </div>
 
       {expanded && (
         <div className="border-t p-3 space-y-3">
@@ -444,14 +441,9 @@ export function ModelAliasesEditor({
       )}
 
       {!readonly && (
-        <button
-          type="button"
-          onClick={addAlias}
-          className="w-full px-3 py-2 text-xs font-medium border border-dashed rounded-md
-            fg-secondary hover:fg-primary hover:bg-secondary transition-colors"
-        >
-          + Add model alias
-        </button>
+        <Button size="compact" onClick={addAlias}>
+          Add model alias
+        </Button>
       )}
     </div>
   );

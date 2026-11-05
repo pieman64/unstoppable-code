@@ -20,6 +20,7 @@ import { useScriptActions } from '@canopy/app-state/script-actions';
 import {
   Button,
   Checkbox,
+  DelayedLoadingPlaceholder,
   Disclosure,
   ErrorBanner,
   LoadingSpinner,
@@ -29,6 +30,7 @@ import {
   EmptyStateRow,
   StatusLabel,
   Heading,
+  Skeleton,
 } from '@canopy/ui-shared/components';
 import {
   REPLAY_BLOCK_CLASS,
@@ -418,13 +420,22 @@ function ScriptActionsReviewBody({
           }}
         />
       ) : (
-        <div
-          className="flex items-center gap-2 py-4 text-s fg-secondary"
-          data-testid="script-actions-loading"
-        >
-          <LoadingSpinner tone="tertiary" decorative />
-          Loading scripts…
-        </div>
+        <DelayedLoadingPlaceholder slowNote="Still loading scripts…">
+          <Skeleton
+            loading
+            label="Loading scripts"
+            testId="script-actions-loading"
+          >
+            <PendingSection
+              groups={SAMPLE_GROUPS}
+              pending={SAMPLE_PENDING}
+              selection={EMPTY_SELECTION}
+              disabled={false}
+              onSelectionChange={noop}
+              renderPreferences={(): null => null}
+            />
+          </Skeleton>
+        </DelayedLoadingPlaceholder>
       );
   } else {
     body = (
@@ -600,6 +611,40 @@ function ScriptActionsReviewBody({
     </section>
   );
 }
+
+function sampleScript(id: string, name: string, command: string): ScriptAction {
+  return {
+    id,
+    kind: 'detected',
+    name,
+    command,
+    multiline: false,
+    repoId: null,
+    repoName: null,
+    packagePath: null,
+    target: { kind: 'workspace-root' },
+    source: {
+      kind: 'package-json',
+      file: 'package.json',
+      entry: name,
+      line: null,
+    },
+    revision: '1',
+    status: 'pending',
+    shortcut: null,
+    pinned: false,
+  };
+}
+
+/** Plain scripts the loading skeleton measures, under Needs review. */
+const SAMPLE_PENDING: readonly ScriptAction[] = [
+  sampleScript('script-actions-skeleton-1', 'test', 'pnpm test'),
+  sampleScript('script-actions-skeleton-2', 'build', 'pnpm build'),
+];
+const SAMPLE_GROUPS = groupScriptActions(SAMPLE_PENDING);
+const EMPTY_SELECTION: ScriptReviewSelection = new Map();
+
+const noop = (): void => undefined;
 
 function ScanStatusLine({
   snapshot,

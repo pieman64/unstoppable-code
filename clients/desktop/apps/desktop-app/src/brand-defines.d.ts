@@ -19,6 +19,7 @@ declare const __CANOPY_SOURCE_BUILD__: boolean;
 declare const __CANOPY_E2E__: boolean;
 declare const __CANOPY_POSTHOG_ENABLED__: boolean;
 declare const __CANOPY_OLLAMA_ENABLED__: boolean;
+declare const __CANOPY_OLLAMA_PLATFORM__: NodeJS.Platform;
 declare const __CANOPY_DESKTOP_SIDEBAR_SHADOW__: boolean;
 declare const __CANOPY_DESKTOP_SHARED_SIDEBAR__: boolean;
 declare const __CANOPY_UD_OAUTH_ENV__: string;

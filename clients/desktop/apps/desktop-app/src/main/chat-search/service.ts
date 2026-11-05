@@ -248,6 +248,12 @@ export interface ChatSearchServiceOptions {
   /** Creates the worker-backed indexer; replaceable so tests can fail it. */
   threadedIndexerFactory?: (dbPath: string) => ThreadedChatSearchIndexer;
   debounceMs?: number;
+  /**
+   * The window a parent chat's child stream changes collect in before their
+   * search documents are reconciled. Defaults to `debounceMs` when that is
+   * set, else {@link CHILD_SEARCH_WINDOW_MS}.
+   */
+  childSearchWindowMs?: number;
   broadcastDebounceMs?: number;
   broadcastUpdated?: () => void;
   /**
@@ -490,6 +496,12 @@ const CHAT_SEARCH_INDEXER_RECOVERY_MAX_DELAY_MS = 10 * 60_000;
 
 /** Bounded retries for a child set that changed while it was staged. */
 const CHILD_RECONCILE_RETRIES = 2;
+/**
+ * Delegates commit child rows many times a second, and each reconcile takes
+ * several turns of the scope's storage lease, so a parent's changes collect
+ * for this long: child search results lag by up to this window.
+ */
+export const CHILD_SEARCH_WINDOW_MS = 2_000;
 /** SQL narrowing a catalog page to the given chats, bound after the time. */
 function chatIdFilter(chatIds: readonly string[] | undefined): string {
   return chatIds === undefined
@@ -509,6 +521,7 @@ export class ChatSearchService {
   private readonly hiddenLiveScopes = new Set<string>();
   private readonly dbPath: string;
   private readonly debounceMs: number;
+  private readonly childSearchWindowMs: number;
   private readonly broadcastDebounceMs: number;
   private readonly broadcastUpdated: () => void;
   private readonly pendingUpdates = new Map<string, PendingUpdate>();
@@ -555,6 +568,10 @@ export class ChatSearchService {
     this.resolveWorkspaceOwner =
       options.resolveWorkspaceOwner ?? resolvePersistedWorkspaceOwner;
     this.debounceMs = options.debounceMs ?? 500;
+    this.childSearchWindowMs =
+      options.childSearchWindowMs ??
+      options.debounceMs ??
+      CHILD_SEARCH_WINDOW_MS;
     this.broadcastDebounceMs =
       options.broadcastDebounceMs ?? DEFAULT_BROADCAST_DEBOUNCE_MS;
     this.broadcastUpdated =
@@ -1630,8 +1647,12 @@ export class ChatSearchService {
     const { projectId, worktreeId } = event.scope;
     if (this.closed || this.isScopeDeleted(projectId, worktreeId)) return;
     const generation = this.worktreeGeneration(projectId, worktreeId);
+    const key = `child:${JSON.stringify([projectId, worktreeId, event.parentChatId])}`;
+    // A pending reconcile reads the parent's current children when it runs,
+    // so later changes join it instead of postponing it.
+    if (this.pendingUpdates.has(key)) return;
     this.enqueue(
-      `child:${JSON.stringify([projectId, worktreeId, event.parentChatId])}`,
+      key,
       async () => {
         const isCurrent = (): boolean =>
           !this.closed &&
@@ -1678,6 +1699,10 @@ export class ChatSearchService {
             );
         }
       },
+      undefined,
+      undefined,
+      [],
+      this.childSearchWindowMs,
     );
   }
 
@@ -2545,6 +2570,7 @@ export class ChatSearchService {
     liveTabsUpdate?: PendingLiveTabsUpdate,
     waiter?: PendingUpdateWaiter,
     inheritedWaiters: readonly PendingUpdateWaiter[] = [],
+    delayMs = this.debounceMs,
   ): void {
     if (this.closed) {
       settleWaiters(inheritedWaiters);
@@ -2575,7 +2601,7 @@ export class ChatSearchService {
           this.settleRunningUpdate(key, pending, { error });
         },
       );
-    }, this.debounceMs);
+    }, delayMs);
     timer.unref?.();
     this.pendingUpdates.set(key, { timer, task, liveTabsUpdate, waiters });
   }

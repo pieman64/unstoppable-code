@@ -8,7 +8,7 @@ import {
   LoadingButton,
   Notice,
   SearchField,
-  SettingsListSkeleton,
+  Skeleton,
   ToggleSwitch,
 } from '@canopy/ui-shared/components';
 import type { OrgProjectDetail } from '@canopy/protocol/org-projects';
@@ -281,7 +281,7 @@ export function TeamProjectsRepositories({
         )}
         {loading && repositories.length === 0 && (
           <DelayedLoadingPlaceholder>
-            <SettingsListSkeleton avatarShape="square" />
+            <RepositoryListSkeleton />
           </DelayedLoadingPlaceholder>
         )}
         {!loading && !listError && repositories.length === 0 && (
@@ -299,48 +299,19 @@ export function TeamProjectsRepositories({
         )}
         {visible.length > 0 && (
           <ul className="flex flex-col divide-y">
-            {visible.map((repository) => {
-              const line = projectLine(repository);
-              return (
-                <li
-                  key={repository.id}
-                  data-testid={`team-projects-repository-${repository.id}`}
-                  aria-busy={pending.has(repository.id)}
-                  className="flex items-center gap-4 py-3 text-s"
-                >
-                  <span className="flex min-w-0 flex-1 flex-col gap-1">
-                    <RepositoryLabel
-                      owner={repository.owner}
-                      name={repository.name}
-                      data-testid={`team-projects-repository-label-repo-${repository.id}`}
-                    />
-                    {line && (
-                      <span
-                        className={
-                          blockClassName === ''
-                            ? 'break-words fg-secondary'
-                            : `break-words fg-secondary ${blockClassName}`
-                        }
-                      >
-                        {line}
-                      </span>
-                    )}
-                  </span>
-                  <span className="flex shrink-0 items-center gap-2 fg-secondary">
-                    <span aria-hidden="true">Hide</span>
-                    <ToggleSwitch
-                      dataTestId={`team-projects-repository-hide-${repository.id}`}
-                      label={`Hide ${repository.fullName}`}
-                      checked={pending.get(repository.id) ?? repository.hidden}
-                      disabled={disabled || pending.has(repository.id)}
-                      onChange={(): void => {
-                        void setHidden(repository, !repository.hidden);
-                      }}
-                    />
-                  </span>
-                </li>
-              );
-            })}
+            {visible.map((repository) => (
+              <RepositoryRow
+                key={repository.id}
+                repository={repository}
+                blockClassName={blockClassName}
+                busy={pending.has(repository.id)}
+                checked={pending.get(repository.id) ?? repository.hidden}
+                disabled={disabled || pending.has(repository.id)}
+                onChange={(): void => {
+                  void setHidden(repository, !repository.hidden);
+                }}
+              />
+            ))}
           </ul>
         )}
         {nextCursor && (
@@ -360,5 +331,123 @@ export function TeamProjectsRepositories({
         )}
       </div>
     </DialogModal>
+  );
+}
+
+interface RepositoryRowProps {
+  repository: OrganizationRepository;
+  /** The host's session-replay block token; '' when the host has none. */
+  blockClassName: string;
+  busy: boolean;
+  /** Whether the repository reads as hidden, including a pending change. */
+  checked: boolean;
+  disabled: boolean;
+  onChange: () => void;
+}
+
+/** One repository: its name, its project line, and its Hide switch. */
+function RepositoryRow({
+  repository,
+  blockClassName,
+  busy,
+  checked,
+  disabled,
+  onChange,
+}: RepositoryRowProps): JSX.Element {
+  const line = projectLine(repository);
+  return (
+    <li
+      data-testid={`team-projects-repository-${repository.id}`}
+      aria-busy={busy}
+      className="flex items-center gap-4 py-3 text-s"
+    >
+      <span className="flex min-w-0 flex-1 flex-col gap-1">
+        <RepositoryLabel
+          owner={repository.owner}
+          name={repository.name}
+          data-testid={`team-projects-repository-label-repo-${repository.id}`}
+        />
+        {line && (
+          <span
+            className={
+              blockClassName === ''
+                ? 'break-words fg-secondary'
+                : `break-words fg-secondary ${blockClassName}`
+            }
+          >
+            {line}
+          </span>
+        )}
+      </span>
+      <span className="flex shrink-0 items-center gap-2 fg-secondary">
+        <span aria-hidden="true">Hide</span>
+        <ToggleSwitch
+          dataTestId={`team-projects-repository-hide-${repository.id}`}
+          label={`Hide ${repository.fullName}`}
+          checked={checked}
+          disabled={disabled}
+          onChange={onChange}
+        />
+      </span>
+    </li>
+  );
+}
+
+const noop = (): void => undefined;
+
+/** Sample repositories for the loading state: plain, of the loaded shape. */
+const SAMPLE_REPOSITORIES: readonly OrganizationRepository[] = [
+  {
+    id: 1,
+    fullName: 'sample/repository',
+    owner: 'sample',
+    name: 'repository',
+    defaultBranch: 'main',
+    private: false,
+    archived: false,
+    htmlUrl: '',
+    hidden: false,
+    project: null,
+  },
+  {
+    id: 2,
+    fullName: 'sample/another',
+    owner: 'sample',
+    name: 'another',
+    defaultBranch: 'main',
+    private: false,
+    archived: false,
+    htmlUrl: '',
+    hidden: false,
+    project: null,
+  },
+];
+
+/**
+ * The repository list while it loads: the real rows with sample repositories
+ * inside `Skeleton`, so skullet measures them into bars in place.
+ */
+function RepositoryListSkeleton(): JSX.Element {
+  return (
+    <Skeleton
+      loading
+      label="Loading repositories"
+      testId="settings-skeleton-list"
+      className="w-full"
+    >
+      <ul className="flex flex-col divide-y">
+        {SAMPLE_REPOSITORIES.map((repository) => (
+          <RepositoryRow
+            key={repository.id}
+            repository={repository}
+            blockClassName=""
+            busy={false}
+            checked={false}
+            disabled={false}
+            onChange={noop}
+          />
+        ))}
+      </ul>
+    </Skeleton>
   );
 }

@@ -13,6 +13,40 @@ export interface LinearIssuePreviewRequest {
   readonly workspaceSlug?: string;
 }
 
+/** Linear's workflow state kinds. */
+export const LINEAR_STATUS_TYPES = [
+  'triage',
+  'backlog',
+  'unstarted',
+  'started',
+  'completed',
+  'canceled',
+] as const;
+
+export type LinearStatusType = (typeof LINEAR_STATUS_TYPES)[number];
+
+export function isLinearStatusType(value: unknown): value is LinearStatusType {
+  return LINEAR_STATUS_TYPES.some((type) => type === value);
+}
+
+/** Bounds an avatar URL for display and transport. */
+const LINEAR_AVATAR_URL_MAX_LENGTH = 2_048;
+
+/** A Linear avatar a card may load: an https URL of a sane length. */
+export function isLinearAvatarUrl(value: unknown): value is string {
+  if (
+    typeof value !== 'string' ||
+    value.length > LINEAR_AVATAR_URL_MAX_LENGTH
+  ) {
+    return false;
+  }
+  try {
+    return new URL(value).protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 export interface LinearIssuePreview {
   readonly identifier: string;
   readonly title: string;
@@ -21,7 +55,17 @@ export interface LinearIssuePreview {
   /** Bounded plain-text excerpt of the description. */
   readonly description: string | null;
   readonly status: string | null;
+  /**
+   * The status's workflow kind, which picks its glyph. Absent from reads made
+   * before it was added.
+   */
+  readonly statusType?: LinearStatusType | null;
   readonly assignee: string | null;
+  /**
+   * The assignee's Linear avatar: an https URL. Absent from reads made before
+   * it was added.
+   */
+  readonly assigneeAvatarUrl?: string | null;
   readonly project: string | null;
   /** ISO timestamp of the provider's last update. */
   readonly updatedAt: string;

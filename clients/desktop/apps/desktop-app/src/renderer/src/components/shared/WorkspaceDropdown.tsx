@@ -10,6 +10,7 @@ import {
 } from 'react';
 import type { SidebarItem } from '@canopy/desktop-shared/types';
 import {
+  Button,
   FloatingPickerMenu,
   PickerMenuFooter,
   PickerMenuList,
@@ -403,11 +404,14 @@ export function WorkspaceDropdown({
       </PickerTrigger>
 
       {clearable && (
-        // Seated exactly over the swatch it replaces — the trigger's own
-        // horizontal padding, which differs per variant. The holder places
-        // it; the tooltip wraps the button inside.
+        // Centred over the swatch it replaces — the trigger's own horizontal
+        // padding, which differs per variant, less half the 12px the 28px
+        // button is wider than the 16px swatch. The holder places it and, on
+        // a fine pointer, shows it only while the trigger is hovered or
+        // focused; the tooltip wraps the button inside. It swaps with the
+        // swatch instantly: no fade either way.
         <span
-          className={`absolute top-1/2 inline-flex -translate-y-1/2 ${
+          className={`absolute top-1/2 inline-flex -translate-x-1.5 -translate-y-1/2 pointer-fine:opacity-0 pointer-fine:focus-within:opacity-100 pointer-fine:group-hover/picker-trigger:opacity-100 pointer-fine:group-focus-within/picker-trigger:opacity-100 ${
             capsule ? 'left-2.5' : 'left-2'
           }`}
         >
@@ -422,19 +426,16 @@ export function WorkspaceDropdown({
             }
             suppressed={isOpen}
           >
-            <button
-              type="button"
+            <Button
+              variant="ghost-quiet"
+              size="sm"
+              iconOnly
               onClick={handleClear}
               aria-label={`Clear ${selectedDisplayName}`}
               data-testid={`${testIdPrefix}-clear`}
-              // The visible chip stays 16px to sit exactly over the swatch, but
-              // the pressable area is widened to the 24px minimum — on a coarse
-              // pointer this is the only affordance in that slot. It swaps with
-              // the swatch instantly: no fade either way.
-              className="focus-ring relative inline-flex h-4 w-4 items-center justify-center rounded-full fg-tertiary after:absolute after:-inset-1 after:content-[''] hover:fg-secondary pointer-fine:opacity-0 pointer-fine:group-hover/picker-trigger:opacity-100 pointer-fine:group-focus-within/picker-trigger:opacity-100"
             >
               <ClearFilledIcon size={16} aria-hidden="true" />
-            </button>
+            </Button>
           </Tooltip>
         </span>
       )}

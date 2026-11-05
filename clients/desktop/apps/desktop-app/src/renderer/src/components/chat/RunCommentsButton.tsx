@@ -1,7 +1,11 @@
 import type { JSX } from 'react';
 import { ActionTooltip } from '@/components/shared/ActionTooltip';
 import { openRunComments } from '@/stores/runCommentsStore';
-import { Count } from '@canopy/ui-shared/components';
+import {
+  Button,
+  CLEAN_ICON_BUTTON_VARIANT,
+  Count,
+} from '@canopy/ui-shared/components';
 import { MessageIcon as AppCatalogMessageIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { formatBadgeCount } from '@canopy/ui-shared/lib';
 
@@ -35,8 +39,10 @@ export function RunCommentsButton({
       description="Read and reply to comments reviewers left on this shared run."
     >
       <span className="relative inline-flex">
-        <button
-          type="button"
+        <Button
+          variant={unreadCount > 0 ? 'ghost-accent' : CLEAN_ICON_BUTTON_VARIANT}
+          size="sm"
+          iconOnly
           onClick={(): void => {
             openRunComments({ projectId, worktreeId, chatId, title });
           }}
@@ -45,14 +51,9 @@ export function RunCommentsButton({
           data-unread-count={String(unreadCount)}
           // Footer rows keep the unread accent instead of the muted icon look.
           data-attention={unreadCount > 0 ? '' : undefined}
-          className={`focus-ring flex h-6 w-6 items-center justify-center rounded-md border transition-colors ${
-            unreadCount > 0
-              ? 'border-line-accent/30 bg-accent-subtle fg-accent'
-              : 'bg-fg-primary/[0.04] fg-primary/80 hover:bg-fg-primary/[0.08] hover:fg-primary'
-          }`}
         >
-          <AppCatalogMessageIcon width="14" height="14" aria-hidden="true" />
-        </button>
+          <AppCatalogMessageIcon aria-hidden="true" />
+        </Button>
         {unreadCount > 0 && (
           <Count
             value={unreadCount}

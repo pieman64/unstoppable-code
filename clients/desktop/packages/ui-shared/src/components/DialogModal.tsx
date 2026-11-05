@@ -8,6 +8,7 @@ import {
 import { createPortal } from 'react-dom';
 import { focusableWithin } from '../lib/focusable';
 import { Button } from './Button';
+import { floatingSurfaceAnchor } from './FloatingMenu';
 import { useOverlayEscape } from './useOverlayEscape';
 import { CloseIcon as AppCatalogCloseIcon } from '../icons/AppIcons';
 
@@ -87,25 +88,73 @@ const maxWidthClasses: Record<string, string> = {
 };
 
 let nextFocusTrapId = 0;
-const focusTrapStacks = new WeakMap<Document, number[]>();
+/** Frames to keep retrying a focus return into a shell that is still inert. */
+const INERT_RESTORE_ATTEMPTS = 10;
 
-function addFocusTrap(doc: Document, trapId: number): void {
+interface FocusTrapEntry {
+  readonly id: number;
+  readonly card: Element;
+  /** The pane a `containment="parent"` dialog covers; null for the window. */
+  readonly pane: Element | null;
+}
+
+const focusTrapStacks = new WeakMap<Document, FocusTrapEntry[]>();
+
+function addFocusTrap(
+  doc: Document,
+  trapId: number,
+  card: Element,
+  pane: Element | null,
+): void {
   const stack = focusTrapStacks.get(doc) ?? [];
-  stack.push(trapId);
+  stack.push({ id: trapId, card, pane });
   focusTrapStacks.set(doc, stack);
 }
 
 function removeFocusTrap(doc: Document, trapId: number): void {
   const stack = focusTrapStacks.get(doc);
   if (!stack) return;
-  const index = stack.lastIndexOf(trapId);
+  const index = stack.map((entry) => entry.id).lastIndexOf(trapId);
   if (index !== -1) stack.splice(index, 1);
   if (stack.length === 0) focusTrapStacks.delete(doc);
 }
 
-function isTopmostFocusTrap(doc: Document, trapId: number): boolean {
+/** The element is the card of a trapping dialog under `trapId`'s. */
+function isTrapBelow(doc: Document, trapId: number, element: Element): boolean {
+  const stack = focusTrapStacks.get(doc) ?? [];
+  const index = stack.map((entry) => entry.id).lastIndexOf(trapId);
+  return stack
+    .slice(0, Math.max(0, index))
+    .some((entry) => entry.card === element);
+}
+
+/**
+ * Whether this trap handles a Tab pressed with focus on `active`. A dialog
+ * over one pane handles only Tab from inside its pane, and does so even when
+ * a dialog over another pane opened after it; anything opened over the whole
+ * window after it takes Tab first, and so does a later dialog over the same
+ * pane. A window-wide trap yields to later traps except pane dialogs whose
+ * pane does not hold focus.
+ */
+function ownsTab(
+  doc: Document,
+  trapId: number,
+  active: Element | null,
+): boolean {
   const stack = focusTrapStacks.get(doc);
-  return stack?.[stack.length - 1] === trapId;
+  if (!stack) return false;
+  const index = stack.map((entry) => entry.id).lastIndexOf(trapId);
+  const own = stack[index];
+  if (!own) return false;
+  if (own.pane !== null && !(active !== null && own.pane.contains(active)))
+    return false;
+  return stack
+    .slice(index + 1)
+    .every(
+      (above) =>
+        above.pane !== null &&
+        !(active !== null && above.pane.contains(active)),
+    );
 }
 
 /**
@@ -130,11 +179,10 @@ export type DialogModalVariant =
 
 export type DialogInset = 'section' | 'flush';
 
-interface DialogModalProps {
+interface DialogModalBaseProps {
   onClose: () => void;
   /** Card shape. Default keeps the classic header; see {@link DialogModalVariant}. */
   variant?: DialogModalVariant;
-  title: DialogTitle;
   /**
    * Optional subtitle shown below the title. A node, so a caller can block
    * one value in it (such as a person's name) from session replay.
@@ -210,6 +258,11 @@ interface DialogModalProps {
   inset?: DialogInset;
   /** Stable test ID placed on the dialog card element */
   dataTestId?: string;
+  /**
+   * The id of the body element that describes the dialog (a page's alert
+   * text, a load failure's reason), read with the title when it opens.
+   */
+  ariaDescribedBy?: string;
   /** Optional actions rendered at the right end of the subtitle row */
   headerActions?: ReactNode;
   /**
@@ -231,6 +284,16 @@ interface DialogModalProps {
   closeButtonAppearance?: 'default' | 'compact';
   /** Extra classes on the full-screen backdrop/overlay element */
   overlayClassName?: string;
+  /** Stable test ID on the scrim. */
+  overlayDataTestId?: string;
+  /**
+   * `window` (default): the scrim covers the window, portaled to the body.
+   * `parent`: the scrim covers only the nearest positioned ancestor and is
+   * rendered in place, for a dialog that blocks one pane while the rest of
+   * the app stays usable (a page's alert in the in-app browser pane). Focus,
+   * Escape and motion are the same.
+   */
+  containment?: 'window' | 'parent';
   /**
    * Where the card sits vertically (default: `center`). `top` pins its top
    * edge a viewport-relative gap below the window's top, so a dialog whose
@@ -292,6 +355,261 @@ interface DialogModalProps {
   noEnterAnimation?: boolean;
 }
 
+interface DialogModalWithHeaderProps extends DialogModalBaseProps {
+  /** The dialog's own header row: title, subtitle, actions and Close. */
+  header?: 'default';
+  title: DialogTitle;
+}
+
+interface DialogModalContentHeaderProps extends DialogModalBaseProps {
+  /**
+   * `content`: the body draws its own header (a detail page with its title,
+   * back control and actions), so the dialog draws none and is named by the
+   * body's heading, whose id is `titleId`. Escape, the scrim and focus work
+   * as for every dialog; the body owns its own way to close.
+   */
+  header: 'content';
+  title?: never;
+  titleId: string;
+  subtitle?: never;
+  headerActions?: never;
+  topRightActions?: never;
+}
+
+type DialogModalProps =
+  | DialogModalWithHeaderProps
+  | DialogModalContentHeaderProps;
+
+/**
+ * The floating surface was opened, at some depth, from a control inside
+ * `surface`: its anchor is there, or inside another floating surface that
+ * was.
+ */
+/**
+ * Where focus really is: a floating surface draws at the page body, so follow
+ * its anchors back to the control that opened it.
+ */
+function floatingOrigin(element: Element): Element {
+  let current = element;
+  for (let depth = 0; depth < 8; depth += 1) {
+    const menu = current.closest('.canopy-floating-menu');
+    const anchor = menu ? floatingSurfaceAnchor(menu) : null;
+    if (!anchor) return current;
+    current = anchor;
+  }
+  return current;
+}
+
+function ownedBySurface(menu: Element, surface: HTMLElement): boolean {
+  let current: Element | null = menu;
+  for (let depth = 0; current && depth < 8; depth += 1) {
+    const anchor = floatingSurfaceAnchor(current);
+    if (!anchor) return false;
+    if (surface.contains(anchor)) return true;
+    current = anchor.closest('.canopy-floating-menu');
+  }
+  return false;
+}
+
+interface ModalFocusTrapOptions {
+  readonly enabled: boolean;
+  /** Focus the surface itself rather than its first control. */
+  readonly focusSurface: boolean;
+  readonly initialFocusRef: RefObject<HTMLElement | null> | undefined;
+  readonly restoreFocusRef: RefObject<HTMLElement | null> | undefined;
+  readonly restoreFocusWhen: (() => boolean) | undefined;
+  readonly containment: 'window' | 'parent';
+  readonly ownerDocument: Document | undefined;
+}
+
+/**
+ * The modal focus contract shared by {@link DialogModal} and
+ * {@link WindowPage}: while enabled, focus moves into the surface, Tab and
+ * Shift+Tab stay inside it, and on disable focus goes back where it was (or
+ * to a named fallback).
+ */
+function useModalFocusTrap(
+  cardRef: RefObject<HTMLElement | null>,
+  {
+    enabled,
+    focusSurface,
+    initialFocusRef,
+    restoreFocusRef,
+    restoreFocusWhen,
+    containment,
+    ownerDocument,
+  }: ModalFocusTrapOptions,
+): void {
+  const focusTrapIdRef = useRef<number | null>(null);
+  if (focusTrapIdRef.current === null) {
+    nextFocusTrapId += 1;
+    focusTrapIdRef.current = nextFocusTrapId;
+  }
+
+  // Read through a latest-ref so the effect depends on `trapFocus` alone. With
+  // `initialFocusRef` in the dep array, a caller passing an inline conditional
+  // (`enabled ? aRef : bRef`) would tear the trap down and rebuild it mid-
+  // dialog: cleanup would restore focus, then the new run would re-capture
+  // `previouslyFocused` from whatever happened to be focused INSIDE the dialog,
+  // so closing would strand focus there instead of returning it.
+  const initialFocusRefRef = useRef(initialFocusRef);
+  initialFocusRefRef.current = initialFocusRef;
+  const restoreFocusWhenRef = useRef(restoreFocusWhen);
+  restoreFocusWhenRef.current = restoreFocusWhen;
+  const restoreFocusRefRef = useRef(restoreFocusRef);
+  restoreFocusRefRef.current = restoreFocusRef;
+  const containmentRef = useRef(containment);
+  containmentRef.current = containment;
+  const focusCardRef = useRef(focusSurface);
+  focusCardRef.current = focusSurface;
+
+  useEffect(() => {
+    if (!enabled) return;
+    const card = cardRef.current;
+    if (!card) return;
+    const doc = card.ownerDocument;
+    const previouslyFocused = doc.activeElement;
+    const trapId = focusTrapIdRef.current;
+    if (trapId === null) return;
+    // The pane a pane dialog covers: its scrim's positioned parent.
+    const pane =
+      containmentRef.current === 'parent'
+        ? (card.parentElement?.parentElement ?? null)
+        : null;
+    addFocusTrap(doc, trapId, card, pane);
+
+    // Resolve the named target against the focusable set rather than trusting
+    // it. A caller naturally names a semantic target ("the Cancel button"),
+    // which can be `disabled` at mount — `ConfirmDialog` disables Cancel while
+    // busy, so a dialog opened already-busy would `focus()` a disabled node,
+    // silently no-op, and strand focus on `<body>` inside an `aria-modal`
+    // surface: exactly the failure the trap exists to prevent.
+    const focusables = focusableWithin(card);
+    const named = initialFocusRefRef.current?.current;
+    const initial = focusCardRef.current
+      ? card
+      : named !== null && named !== undefined && focusables.includes(named)
+        ? named
+        : focusables[0];
+    initial?.focus();
+
+    // Capture phase so the dialog claims Tab before anything underneath it.
+    // A const arrow rather than a function declaration: declarations hoist, so
+    // TypeScript drops the `if (!card) return` narrowing inside one.
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Tab' || !ownsTab(doc, trapId, doc.activeElement))
+        return;
+      const focusables = focusableWithin(card);
+      if (focusables.length === 0) {
+        // Nothing to move to; leaving Tab alone would walk the page behind an
+        // `aria-modal` surface, which is the whole failure being closed here.
+        event.preventDefault();
+        return;
+      }
+      const active = doc.activeElement;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      // A menu, listbox or popover opened from one of this surface's own
+      // controls draws at the page body; the trap knows it by its anchor,
+      // with or without `aria-controls`. One opened from inside such a
+      // surface (a select in a filters popover) handles Tab itself.
+      const menu = active?.closest('.canopy-floating-menu');
+      const anchor = menu ? floatingSurfaceAnchor(menu) : null;
+      if (menu && anchor && card.contains(anchor)) {
+        // A popover keeps Tab inside itself.
+        if (menu.getAttribute('role') === 'dialog') return;
+        // A menu or listbox closes on Tab with focus back on its trigger,
+        // and Tab moves on from there, so the trap judges the boundary by
+        // the trigger: past the last (or before the first) control it wraps.
+        const atBoundary = (control: HTMLElement): boolean =>
+          anchor === control || anchor.contains(control);
+        if (event.shiftKey ? atBoundary(first) : atBoundary(last)) {
+          event.preventDefault();
+          (event.shiftKey ? last : first).focus();
+        }
+        return;
+      }
+      if (menu && ownedBySurface(menu, card)) return;
+      // A dialog that does not trap (a report or follow-up opened over a
+      // page) draws beside this card at the body. Tab inside it, or in a menu
+      // opened from it, belongs to that dialog; pulling it back here would put
+      // focus behind it.
+      const otherDialog = active
+        ? floatingOrigin(active).closest('[role="dialog"][aria-modal="true"]')
+        : null;
+      if (
+        otherDialog &&
+        otherDialog !== card &&
+        !card.contains(otherDialog) &&
+        !otherDialog.contains(card) &&
+        !isTrapBelow(doc, trapId, otherDialog)
+      )
+        return;
+      // The card itself is not a Tab stop, so Tab from it enters the controls
+      // the same way Tab from behind the dialog does.
+      const inside =
+        active !== null && active !== card && card.contains(active);
+      if (event.shiftKey) {
+        if (!inside || active === first) {
+          event.preventDefault();
+          last.focus();
+        }
+        return;
+      }
+      if (!inside || active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    doc.addEventListener('keydown', handleKeyDown, true);
+    return (): void => {
+      doc.removeEventListener('keydown', handleKeyDown, true);
+      removeFocusTrap(doc, trapId);
+      const active = doc.activeElement;
+      // Only reclaim focus we still own. A caller that reopens its own surface
+      // as the dialog resolves has already placed focus deliberately, and
+      // pulling it back to the pre-dialog element would fight that.
+      const stillOurs =
+        active === null || active === doc.body || card.contains(active);
+      if (!stillOurs || restoreFocusWhenRef.current?.() === false) return;
+
+      // The confirmed action often REMOVES the control that opened the dialog —
+      // removing a member, revoking a key, deleting a row. Focusing a detached
+      // node is a silent no-op that leaves focus on `<body>`, which is the
+      // exact failure this trap exists to prevent, just moved to the exit. Fall
+      // back to a target the caller named, then to the still-mounted overlay
+      // host, so focus always lands somewhere real.
+      const restoreTarget =
+        previouslyFocused !== null &&
+        previouslyFocused !== doc.body &&
+        isRestorable(previouslyFocused, doc, ownerDocument)
+          ? previouslyFocused
+          : resolveFallbackFocus(restoreFocusRefRef.current, doc);
+      // The shell behind a window page stays inert until it re-renders, so
+      // a target there cannot take focus yet: try again on the next frames
+      // while focus is still nowhere.
+      const restore = (attempt: number): void => {
+        if (!restoreTarget) return;
+        restoreTarget.focus();
+        const view = doc.defaultView;
+        if (
+          doc.activeElement === restoreTarget ||
+          attempt >= INERT_RESTORE_ATTEMPTS ||
+          !view ||
+          restoreTarget.closest('[inert]') === null
+        )
+          return;
+        view.requestAnimationFrame((): void => {
+          const current = doc.activeElement;
+          if (current === null || current === doc.body) restore(attempt + 1);
+        });
+      };
+      restore(0);
+    };
+  }, [cardRef, enabled, ownerDocument]);
+}
+
 export function CloseButton({
   onClick,
   disabled = false,
@@ -322,6 +640,7 @@ export function CloseButton({
 export function DialogModal({
   onClose,
   variant = 'default',
+  header = 'default',
   title,
   subtitle,
   titleId,
@@ -338,6 +657,7 @@ export function DialogModal({
   headerSpacing = 'default',
   inset = 'section',
   dataTestId,
+  ariaDescribedBy,
   headerActions,
   topRightActions,
   footer,
@@ -345,6 +665,8 @@ export function DialogModal({
   headerAlignment = 'start',
   closeButtonAppearance = 'default',
   overlayClassName = '',
+  overlayDataTestId,
+  containment = 'window',
   placement = 'center',
   closeOnEscape = closeOnBackdrop,
   ownerDocument,
@@ -420,11 +742,6 @@ export function DialogModal({
       ? 'h-full sm:h-auto'
       : '';
   const cardRef = useRef<HTMLDivElement | null>(null);
-  const focusTrapIdRef = useRef<number | null>(null);
-  if (focusTrapIdRef.current === null) {
-    nextFocusTrapId += 1;
-    focusTrapIdRef.current = nextFocusTrapId;
-  }
 
   // A mounted dialog must remain the top Escape boundary even when it is not
   // dismissible. Dropping it from the shared overlay stack would expose a
@@ -438,142 +755,23 @@ export function DialogModal({
     ownerDocument,
   );
 
-  // Read through a latest-ref so the effect depends on `trapFocus` alone. With
-  // `initialFocusRef` in the dep array, a caller passing an inline conditional
-  // (`enabled ? aRef : bRef`) would tear the trap down and rebuild it mid-
-  // dialog: cleanup would restore focus, then the new run would re-capture
-  // `previouslyFocused` from whatever happened to be focused INSIDE the dialog,
-  // so closing would strand focus there instead of returning it.
-  const initialFocusRefRef = useRef(initialFocusRef);
-  initialFocusRefRef.current = initialFocusRef;
-  const restoreFocusWhenRef = useRef(restoreFocusWhen);
-  restoreFocusWhenRef.current = restoreFocusWhen;
-  const restoreFocusRefRef = useRef(restoreFocusRef);
-  restoreFocusRefRef.current = restoreFocusRef;
   const focusCard = trapFocus && initialFocus === 'dialog';
-  const focusCardRef = useRef(focusCard);
-  focusCardRef.current = focusCard;
-
-  useEffect(() => {
-    if (!trapFocus) return;
-    const card = cardRef.current;
-    if (!card) return;
-    const doc = card.ownerDocument;
-    const previouslyFocused = doc.activeElement;
-    const trapId = focusTrapIdRef.current;
-    if (trapId === null) return;
-    addFocusTrap(doc, trapId);
-
-    // Resolve the named target against the focusable set rather than trusting
-    // it. A caller naturally names a semantic target ("the Cancel button"),
-    // which can be `disabled` at mount — `ConfirmDialog` disables Cancel while
-    // busy, so a dialog opened already-busy would `focus()` a disabled node,
-    // silently no-op, and strand focus on `<body>` inside an `aria-modal`
-    // surface: exactly the failure the trap exists to prevent.
-    const focusables = focusableWithin(card);
-    const named = initialFocusRefRef.current?.current;
-    const initial = focusCardRef.current
-      ? card
-      : named !== null && named !== undefined && focusables.includes(named)
-        ? named
-        : focusables[0];
-    initial?.focus();
-
-    // Capture phase so the dialog claims Tab before anything underneath it.
-    // A const arrow rather than a function declaration: declarations hoist, so
-    // TypeScript drops the `if (!card) return` narrowing inside one.
-    const handleKeyDown = (event: KeyboardEvent): void => {
-      if (event.key !== 'Tab' || !isTopmostFocusTrap(doc, trapId)) return;
-      const focusables = focusableWithin(card);
-      if (focusables.length === 0) {
-        // Nothing to move to; leaving Tab alone would walk the page behind an
-        // `aria-modal` surface, which is the whole failure being closed here.
-        event.preventDefault();
-        return;
-      }
-      const active = doc.activeElement;
-      const first = focusables[0];
-      const last = focusables[focusables.length - 1];
-      // A dropdown opened from the dialog draws its menu at the page body.
-      // Tab there closes the menu with focus back on its trigger, and Tab
-      // moves on from the trigger, so the trap judges the boundary by the
-      // trigger: past the last (or before the first) control it wraps.
-      // A menu with no trigger linked in this dialog falls through to the
-      // ordinary wrap below.
-      const menu = active?.closest('.canopy-floating-menu');
-      const trigger = menu
-        ? Array.from(card.querySelectorAll('[aria-controls]')).find(
-            (element) => element.getAttribute('aria-controls') === menu.id,
-          )
-        : undefined;
-      if (trigger) {
-        if (event.shiftKey ? trigger === first : trigger === last) {
-          event.preventDefault();
-          (event.shiftKey ? last : first).focus();
-        }
-        return;
-      }
-      // A dialog that does not trap (a report or follow-up opened over a
-      // page) draws beside this card at the body. Tab inside it belongs to
-      // that dialog; pulling it back here would put focus behind it.
-      const otherDialog = active?.closest('[role="dialog"][aria-modal="true"]');
-      if (
-        otherDialog &&
-        otherDialog !== card &&
-        !card.contains(otherDialog) &&
-        !otherDialog.contains(card)
-      )
-        return;
-      // The card itself is not a Tab stop, so Tab from it enters the controls
-      // the same way Tab from behind the dialog does.
-      const inside =
-        active !== null && active !== card && card.contains(active);
-      if (event.shiftKey) {
-        if (!inside || active === first) {
-          event.preventDefault();
-          last.focus();
-        }
-        return;
-      }
-      if (!inside || active === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-
-    doc.addEventListener('keydown', handleKeyDown, true);
-    return (): void => {
-      doc.removeEventListener('keydown', handleKeyDown, true);
-      removeFocusTrap(doc, trapId);
-      const active = doc.activeElement;
-      // Only reclaim focus we still own. A caller that reopens its own surface
-      // as the dialog resolves has already placed focus deliberately, and
-      // pulling it back to the pre-dialog element would fight that.
-      const stillOurs =
-        active === null || active === doc.body || card.contains(active);
-      if (!stillOurs || restoreFocusWhenRef.current?.() === false) return;
-
-      // The confirmed action often REMOVES the control that opened the dialog —
-      // removing a member, revoking a key, deleting a row. Focusing a detached
-      // node is a silent no-op that leaves focus on `<body>`, which is the
-      // exact failure this trap exists to prevent, just moved to the exit. Fall
-      // back to a target the caller named, then to the still-mounted overlay
-      // host, so focus always lands somewhere real.
-      const restoreTarget =
-        previouslyFocused !== null &&
-        previouslyFocused !== doc.body &&
-        isRestorable(previouslyFocused, doc, ownerDocument)
-          ? previouslyFocused
-          : resolveFallbackFocus(restoreFocusRefRef.current, doc);
-      restoreTarget?.focus();
-    };
-  }, [trapFocus, ownerDocument]);
+  useModalFocusTrap(cardRef, {
+    enabled: trapFocus,
+    focusSurface: focusCard,
+    initialFocusRef,
+    restoreFocusRef,
+    restoreFocusWhen,
+    containment,
+    ownerDocument,
+  });
 
   const overlay: JSX.Element = (
     <div
       data-canopy-browser-native-overlay="true"
       data-canopy-overlay-root="modal"
-      className={`fixed inset-0 z-modal flex ${placementClass} justify-center bg-overlay-scrim ${overlayPadClass} ${overlayClassName}`}
+      data-testid={overlayDataTestId}
+      className={`${containment === 'parent' ? 'absolute' : 'fixed'} inset-0 z-modal flex ${placementClass} justify-center bg-overlay-scrim ${overlayPadClass} ${overlayClassName}`}
       onClick={closeOnBackdrop ? onClose : undefined}
     >
       {/* `electron-no-drag`: a card (a page's header and Close above all) can
@@ -585,41 +783,46 @@ export function DialogModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby={id}
+        aria-describedby={ariaDescribedBy}
         data-testid={dataTestId}
         tabIndex={focusCard ? -1 : undefined}
         className={`electron-no-drag w-full ${widthClass} ${heightClass} flex flex-col overflow-hidden ${radiusClass} bg-card shadow-xl ${focusCard ? 'outline-none' : ''} ${className}`}
         style={{ maxHeight: resolvedMaxHeight, height, minHeight }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div
-          className={`flex ${headerAlignment === 'center' ? 'items-center' : 'items-start'} justify-between ${headerPadClass} ${borderClass}`}
-        >
-          <div className="min-w-0 flex-1">
-            <h2 id={id} className={titleClass}>
-              {title}
-            </h2>
-            {(subtitle || headerActions) && (
-              <div className="mt-0.5 flex items-center gap-3">
-                {subtitle && <p className="text-s fg-secondary">{subtitle}</p>}
-                {headerActions && (
-                  <div className="ml-auto flex items-center gap-2">
-                    {headerActions}
-                  </div>
-                )}
-              </div>
-            )}
+        {header === 'content' ? null : (
+          <div
+            className={`flex ${headerAlignment === 'center' ? 'items-center' : 'items-start'} justify-between ${headerPadClass} ${borderClass}`}
+          >
+            <div className="min-w-0 flex-1">
+              <h2 id={id} className={titleClass}>
+                {title}
+              </h2>
+              {(subtitle || headerActions) && (
+                <div className="mt-0.5 flex items-center gap-3">
+                  {subtitle && (
+                    <p className="text-s fg-secondary">{subtitle}</p>
+                  )}
+                  {headerActions && (
+                    <div className="ml-auto flex items-center gap-2">
+                      {headerActions}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              {topRightActions}
+              {renderCloseButton ? (
+                <CloseButton
+                  onClick={onClose}
+                  disabled={closeButtonDisabled}
+                  appearance={closeButtonAppearance}
+                />
+              ) : null}
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            {topRightActions}
-            {renderCloseButton ? (
-              <CloseButton
-                onClick={onClose}
-                disabled={closeButtonDisabled}
-                appearance={closeButtonAppearance}
-              />
-            ) : null}
-          </div>
-        </div>
+        )}
         {scrollableBody ? (
           <div
             // Above a footer the body keeps 4px under its last control, so
@@ -657,6 +860,97 @@ export function DialogModal({
 
   // Portal so ancestor overflow/transform/stacking contexts cannot clip or
   // re-anchor the modal, including iOS Safari's fixed-in-scroll quirk (CAN-1294).
+  if (containment === 'parent') return overlay;
   const targetContainer = portalContainer ?? targetDocument?.body;
   return targetContainer ? createPortal(overlay, targetContainer) : overlay;
+}
+
+interface WindowPageProps {
+  /** Shown. With `keepMounted`, a closed page stays mounted, hidden and inert. */
+  readonly open?: boolean;
+  /** Escape closes it (the topmost overlay first); Back is the caller's. */
+  readonly onClose: () => void;
+  /**
+   * Keep the page mounted while closed, so a half-finished form survives
+   * closing and reopening (Settings). It is then inert, ignores the pointer
+   * and leaves the accessibility tree; the caller hides its content once its
+   * own exit motion ends.
+   */
+  readonly keepMounted?: boolean;
+  readonly 'aria-label'?: string;
+  readonly 'aria-labelledby'?: string;
+  /** For the trigger's `aria-controls`. */
+  readonly id?: string;
+  readonly dataTestId?: string;
+  /** First focus target; defaults to the first focusable control. */
+  readonly initialFocusRef?: RefObject<HTMLElement | null>;
+  /** Where focus goes on close when the control that opened it is gone. */
+  readonly restoreFocusRef?: RefObject<HTMLElement | null>;
+  /**
+   * `false` renders in place, for a page whose host already sits outside
+   * the app shell (Settings, mounted beside the shell at the app's root).
+   */
+  readonly portal?: boolean;
+  readonly children: ReactNode;
+}
+
+/**
+ * A page that takes over the whole window, over the app: Settings and
+ * project settings, each a rail beside a card. Unlike `DialogModal
+ * variant="page"` there is no scrim or card of its own; the caller draws the
+ * page edge to edge. It is modal: it portals to the body (so a hidden, inert
+ * shell beneath never takes it along) unless `portal={false}`, sits on the
+ * modal layer, moves focus
+ * in on open and keeps Tab inside, closes on Escape, and sends focus back on
+ * close. A live in-app browser page yields beneath it while it shows.
+ */
+export function WindowPage({
+  open = true,
+  onClose,
+  keepMounted = false,
+  'aria-label': ariaLabel,
+  'aria-labelledby': ariaLabelledBy,
+  id,
+  dataTestId,
+  initialFocusRef,
+  restoreFocusRef,
+  portal = true,
+  children,
+}: WindowPageProps): JSX.Element | null {
+  const pageRef = useRef<HTMLDivElement | null>(null);
+  useOverlayEscape(open, onClose);
+  useModalFocusTrap(pageRef, {
+    enabled: open,
+    focusSurface: false,
+    initialFocusRef,
+    restoreFocusRef,
+    restoreFocusWhen: undefined,
+    containment: 'window',
+    ownerDocument: undefined,
+  });
+  if (!open && !keepMounted) return null;
+  const page = (
+    <div
+      ref={pageRef}
+      id={id}
+      // A closed page stays mounted: it must not read as an open dialog to
+      // anything that looks for one (the browser pane yielding, the release
+      // highlights waiting for open modals to clear).
+      role={open ? 'dialog' : undefined}
+      aria-modal={open ? 'true' : undefined}
+      aria-label={ariaLabel}
+      aria-labelledby={ariaLabelledBy}
+      aria-hidden={open ? undefined : 'true'}
+      inert={!open}
+      data-canopy-browser-native-overlay={open ? 'true' : undefined}
+      data-canopy-overlay-root={open ? 'modal' : undefined}
+      data-testid={dataTestId}
+      className={`fixed inset-0 z-modal flex ${open ? '' : 'pointer-events-none'}`}
+    >
+      {children}
+    </div>
+  );
+  return !portal || typeof document === 'undefined'
+    ? page
+    : createPortal(page, document.body);
 }

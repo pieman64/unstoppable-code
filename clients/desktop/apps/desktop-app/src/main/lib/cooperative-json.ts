@@ -203,6 +203,12 @@ export function nativeJsonText(
 
 export interface CooperativeJsonWriteOptions {
   pretty: boolean;
+  /**
+   * Values are already serialized, bounded JSON text. Writes them verbatim
+   * rather than serializing again; callers own JSON validity and row limits.
+   * This mode retains the same durability and instrumentation seam.
+   */
+  serializedValues?: boolean;
   separator?: string;
   trailingSeparator?: boolean;
   append?: boolean;
@@ -309,6 +315,15 @@ export async function writeJsonValuesCooperatively(
     let valueIndex = 0;
     for await (const value of iterateAsync(values)) {
       if (valueIndex > 0) append(options.separator ?? '');
+      if (options.serializedValues) {
+        if (typeof value !== 'string')
+          throw new TypeError('Serialized JSON values must be strings');
+        append(value);
+        if (buffer.length >= JSON_WRITE_CHUNK_CHARS) await flush();
+        await yieldIfNeeded();
+        valueIndex += 1;
+        continue;
+      }
       const native = nativeJsonText(
         value,
         options.pretty,
@@ -488,4 +503,20 @@ export async function writeJsonValuesCooperatively(
     await handle.close();
   }
   return bytesWritten;
+}
+
+/** Write bounded, already serialized values without another JSON walk. */
+export function writeSerializedJsonValuesCooperatively(
+  filePath: string,
+  values: Iterable<string> | AsyncIterable<string>,
+  options: Omit<
+    CooperativeJsonWriteOptions,
+    'pretty' | 'nativeMaxChars' | 'serializedValues'
+  >,
+): Promise<number> {
+  return writeJsonValuesCooperatively(filePath, values, {
+    ...options,
+    pretty: false,
+    serializedValues: true,
+  });
 }

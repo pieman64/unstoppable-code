@@ -29,12 +29,14 @@ import {
   chatMessageLinkUrlProps,
   InlineTextSkeleton,
   LinearIssuePreviewCard,
+  linearStatusGlyph,
   RichHoverTooltip,
   WordBoundaryTruncatedText,
   type LinearIssuePreviewCardView,
   TRANSCRIPT_LINK_CLASS,
   INLINE_CHIP_CLASS,
   INLINE_CHIP_ICON_CLASS,
+  PREVIEW_CARD_SURFACE,
 } from '@canopy/ui-shared/components';
 import { LinearIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { useWatchWhileVisible } from './reference-preview-visibility';
@@ -120,6 +122,42 @@ function LinearReferencePreviewContent({
  * that fits. A bare identifier keeps its text node, so a selection made
  * before the title arrives survives.
  */
+/**
+ * The chip's glyph: the issue's status once its preview has loaded, in the
+ * status ink; the Linear mark before then.
+ */
+function LinearChipGlyph({
+  request,
+}: {
+  request: LinearIssuePreviewRequest;
+}): JSX.Element {
+  // The preview object itself: stable until the view changes.
+  const preview = useLinearPreviewStore((state) => {
+    const view = state.views[linearPreviewKey(request)];
+    return view?.status === 'ready' ? view.preview : null;
+  });
+  const glyph = preview
+    ? linearStatusGlyph(preview.statusType, preview.status)
+    : null;
+  if (!glyph) {
+    return (
+      <LinearIcon
+        aria-hidden="true"
+        className={INLINE_CHIP_ICON_CLASS}
+        exactSize
+      />
+    );
+  }
+  const { Icon } = glyph;
+  return (
+    <Icon
+      aria-hidden="true"
+      className={`${INLINE_CHIP_ICON_CLASS} ${glyph.ink}`}
+      exactSize
+    />
+  );
+}
+
 function ReferenceLabel({
   request,
   expandTitle,
@@ -142,7 +180,7 @@ function ReferenceLabel({
   const pending = slot !== null && typeof slot !== 'string' ? slot : null;
   return (
     <>
-      <LinearIcon aria-hidden="true" className={INLINE_CHIP_ICON_CLASS} />
+      <LinearChipGlyph request={request} />
       {(title !== null || pending?.kind === 'pending') && !bare
         ? request.identifier
         : children}
@@ -292,7 +330,7 @@ function SupportedLinearReference({
   const label =
     mode === 'hover' ? (
       <>
-        <LinearIcon aria-hidden="true" className={INLINE_CHIP_ICON_CLASS} />
+        <LinearChipGlyph request={request} />
         {children}
       </>
     ) : (
@@ -328,8 +366,7 @@ function SupportedLinearReference({
       openDelay={OPEN_DELAY_MS}
       focusOpenDelay={0}
       dismissOnEscape
-      surfacePadding="card"
-      surfaceClassName="w-80 max-w-[calc(100vw-16px)]"
+      {...PREVIEW_CARD_SURFACE}
       triggerWrapperClassName="inline!"
     >
       {trigger}

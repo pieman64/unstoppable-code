@@ -4,6 +4,7 @@ import {
   type JSX,
   type ReactNode,
 } from 'react';
+import { Button } from './Button';
 
 export interface MobileTopBarButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   /**
@@ -15,33 +16,32 @@ export interface MobileTopBarButtonProps extends ButtonHTMLAttributes<HTMLButton
 }
 
 /**
- * The 44px touch-target icon button used by mobile top bars.
+ * The icon button used by mobile top bars: the 36px `lg` ghost icon button.
+ * On a touch screen its hit area grows 4px on each side, to 44 × 44, so a
+ * thumb gets the full target without a 44px visible size.
  *
- * Deliberately NOT `HeaderActionButton`: that primitive is `h-7` desktop
- * geometry wrapped in a tooltip, which is neither the size a thumb needs nor a
- * behavior a touch surface can use. This one owns only geometry — the class
- * string that was previously inlined at three call sites (the `/chat` shell's
- * menu and right-panel buttons and the App Advisor overlay's close button).
- *
- * The `pointer-coarse:min-*` floors are carried because two of those three call
- * sites had them; they are inert next to the explicit `h-11 w-11`, so adopting
- * this primitive is a visual no-op at the third.
+ * Deliberately NOT `HeaderActionButton`: that primitive is desktop header
+ * geometry wrapped in a tooltip, a behavior a touch surface can't use (the
+ * `/chat` shell's menu, new chat and right-panel buttons, and the App Advisor
+ * overlay's close button).
  */
 export const MobileTopBarButton = forwardRef<
   HTMLButtonElement,
   MobileTopBarButtonProps
 >(function MobileTopBarButton(
-  { type = 'button', className = '', children, ...rest },
+  { className = '', children, ...rest },
   ref,
 ): JSX.Element {
   return (
-    <button
+    <Button
       {...rest}
       ref={ref}
-      type={type}
-      className={`focus-ring flex h-11 w-11 shrink-0 items-center justify-center rounded-md fg-secondary transition-colors hover:bg-fg-primary/[0.08] hover:fg-primary pointer-coarse:min-h-11 pointer-coarse:min-w-11 ${className}`.trim()}
+      variant="ghost"
+      size="lg"
+      iconOnly
+      className={className}
     >
       {children}
-    </button>
+    </Button>
   );
 });

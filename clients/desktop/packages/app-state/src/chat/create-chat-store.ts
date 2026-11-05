@@ -1,4 +1,5 @@
 import { retainPortalToolPartMetadata } from '@canopy/protocol/portal';
+import { createContext, useContext, useEffect, useRef } from 'react';
 import { create } from 'zustand';
 import type {
   CanopyClient,
@@ -56,6 +57,24 @@ const EMPTY_WAITING_DELEGATION_IDS: readonly string[] = Object.freeze([]);
 /** Debounce window for settings persistence, mirroring the desktop 500ms save. */
 const PERSIST_DEBOUNCE_MS = 500;
 
+/** Unretained, eligible threads kept resident, most recently released first. */
+export const CHAT_THREAD_RELEASED_ALLOWANCE = 8;
+
+// Whether a transcript still holds a send awaiting its echo. A later send
+// replaces the per-chat binding, so the rows themselves are the record.
+// Cached per array: idle threads keep theirs, streaming ones are never checked.
+const optimisticPresence = new WeakMap<readonly PortalChatMessage[], boolean>();
+const hasOptimisticMessage = (
+  messages: readonly PortalChatMessage[],
+): boolean => {
+  let present = optimisticPresence.get(messages);
+  if (present === undefined) {
+    present = messages.some(isOptimisticMessage);
+    optimisticPresence.set(messages, present);
+  }
+  return present;
+};
+
 const normalizeOptimisticLocalId = (localId: string): string =>
   localId.startsWith(OPTIMISTIC_ID_PREFIX)
     ? localId
@@ -70,6 +89,8 @@ export interface ChatRoute {
 
 /** Optional authoritative host state supplied with a transcript snapshot. */
 export interface ChatHydrationOptions {
+  /** Generation the host captured when it started the hydration request. */
+  readonly residencyGeneration?: number;
   /** Replace the transcript exactly instead of merging a late history page. */
   readonly replaceMessages?: boolean;
   readonly status?: ChatThreadStatus;
@@ -86,6 +107,10 @@ export interface ChatHydrationOptions {
 /** Live state for one chat thread, keyed by `chatId`. */
 export interface ChatThreadState {
   readonly chatId: string;
+  /** Set when the thread's transcript was evicted; absent when complete. */
+  readonly historyIncomplete?: true;
+  /** Mirrors `getResidencyGeneration(chatId)` once nonzero. */
+  readonly residencyGeneration?: number;
   /** Messages ordered by `createdAtMs` ascending. */
   readonly messages: readonly PortalChatMessage[];
   /** Turn groups with completed-group object identity preserved across frames. */
@@ -203,6 +228,10 @@ export interface ChatStoreState {
   readonly threads: Readonly<Record<string, ChatThreadState>>;
   /** Chats whose composer settings have received at least one seed. */
   readonly seededSettingsChatIds?: Readonly<Record<string, true>>;
+  /** Retain transcript residency until the returned idempotent release is called. */
+  retainThread(chatId: string): () => void;
+  /** Monotonic per-chat residency generation; zero until first eviction/reset. */
+  getResidencyGeneration(chatId: string): number;
   /**
    * Merge authoritative snapshot/history messages into a thread. Existing live
    * and optimistic frames are retained so a late full-history response can
@@ -680,6 +709,68 @@ function deriveStatus(
 export function createChatStore(
   client: CanopyClient,
 ): ClientStore<ChatStoreState> {
+  interface ThreadHandle {
+    chatId: string;
+    live: boolean;
+  }
+
+  const interestHandlesByChatId = new Map<string, Set<ThreadHandle>>();
+  const residencyGenerations = new Map<string, number>();
+  const releasedMru: string[] = [];
+  const releasedMruIds = new Set<string>();
+  const partialResidents = new Set<string>();
+  const protectedResidents = new Set<string>();
+  const inFlightPersistCounts = new Map<string, number>();
+  const persistEpochs = new Map<string, number>();
+  const externallyReferencedMessageIds = new Map<string, number>();
+  let disposed = false;
+  let storeLifetime = 0;
+  let triggerCleanup: ((chatId: string) => void) | null = null;
+
+  const bumpResidencyGeneration = (chatId: string): number => {
+    const generation = (residencyGenerations.get(chatId) ?? 0) + 1;
+    residencyGenerations.set(chatId, generation);
+    return generation;
+  };
+
+  const threadHasTranscript = (thread: ChatThreadState): boolean =>
+    thread.messages.length > 0 || thread.turnGroups.length > 0;
+
+  const addReleasedMru = (chatId: string, front = true): void => {
+    partialResidents.delete(chatId);
+    protectedResidents.delete(chatId);
+    if (releasedMruIds.has(chatId)) {
+      const index = releasedMru.indexOf(chatId);
+      if (index >= 0) releasedMru.splice(index, 1);
+    } else {
+      releasedMruIds.add(chatId);
+    }
+    if (front) releasedMru.unshift(chatId);
+    else releasedMru.push(chatId);
+  };
+
+  const removeResidencyCandidate = (chatId: string): void => {
+    if (releasedMruIds.delete(chatId)) {
+      const index = releasedMru.indexOf(chatId);
+      if (index >= 0) releasedMru.splice(index, 1);
+    }
+    partialResidents.delete(chatId);
+    protectedResidents.delete(chatId);
+  };
+
+  const addExternalReference = (messageId: string): void => {
+    externallyReferencedMessageIds.set(
+      messageId,
+      (externallyReferencedMessageIds.get(messageId) ?? 0) + 1,
+    );
+  };
+
+  const removeExternalReference = (messageId: string): void => {
+    const count = externallyReferencedMessageIds.get(messageId) ?? 0;
+    if (count <= 1) externallyReferencedMessageIds.delete(messageId);
+    else externallyReferencedMessageIds.set(messageId, count - 1);
+  };
+
   // Turn-group caches are mutable and live outside Zustand state, one per chat
   // — the same role `useRef` plays in the desktop renderer.
   const caches = new Map<string, TurnGroupCache>();
@@ -696,6 +787,7 @@ export function createChatStore(
   const persistTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const semanticTimers = new Map<string, ReturnType<typeof setTimeout>>();
   let pending: ChatStoreState | undefined;
+  const pendingTouchedChatIds = new Set<string>();
   const repairedSemanticSignatures = new Map<string, string>();
   const lastAuthoritativeArrivalAt = new Map<string, number>();
 
@@ -775,6 +867,50 @@ export function createChatStore(
     string,
     { optimisticLocalId: string; userMessageId: string }
   >();
+  const putOptimisticOwner = (
+    chatId: string,
+    owner: {
+      localId: string;
+      turnUserMessageId: string;
+      baselineSeq: number;
+      baseline: Pick<ChatThreadState, 'status' | 'error' | 'turnActive'>;
+    },
+  ): void => {
+    const previous = optimisticRaiseOwners.get(chatId);
+    if (previous) removeExternalReference(previous.turnUserMessageId);
+    optimisticRaiseOwners.set(chatId, owner);
+    addExternalReference(owner.turnUserMessageId);
+  };
+  const updateOptimisticOwnerTurnId = (
+    owner: { turnUserMessageId: string },
+    messageId: string,
+  ): void => {
+    if (owner.turnUserMessageId === messageId) return;
+    removeExternalReference(owner.turnUserMessageId);
+    owner.turnUserMessageId = messageId;
+    addExternalReference(messageId);
+  };
+  const removeOptimisticOwner = (chatId: string): void => {
+    const previous = optimisticRaiseOwners.get(chatId);
+    if (!previous) return;
+    optimisticRaiseOwners.delete(chatId);
+    removeExternalReference(previous.turnUserMessageId);
+  };
+  const putOptimisticBinding = (
+    chatId: string,
+    binding: { optimisticLocalId: string; userMessageId: string },
+  ): void => {
+    const previous = optimisticSendBindings.get(chatId);
+    if (previous) removeExternalReference(previous.userMessageId);
+    optimisticSendBindings.set(chatId, binding);
+    addExternalReference(binding.userMessageId);
+  };
+  const removeOptimisticBinding = (chatId: string): void => {
+    const previous = optimisticSendBindings.get(chatId);
+    if (!previous) return;
+    optimisticSendBindings.delete(chatId);
+    removeExternalReference(previous.userMessageId);
+  };
   // Echoes whose identity bindings were already consumed, per chat. A
   // consumed echo stays in the transcript, so no text-skew match site may
   // mistake it for the authoritative counterpart of a NEW same-text send.
@@ -831,6 +967,7 @@ export function createChatStore(
     store: null,
   };
   const doPersist = (chatId: string): void => {
+    if (disposed) return;
     const thread = holder.store?.getState().threads[chatId];
     if (!thread) {
       return;
@@ -849,7 +986,31 @@ export function createChatStore(
     };
     // Best-effort: a failed persist must not crash the store. The adopt ticket
     // wires real error surfacing; until then the adapters are inert.
-    void client.command('chat.persistTabSettings', args).catch((): void => {});
+    const lifetime = storeLifetime;
+    const persistEpoch = persistEpochs.get(chatId) ?? 0;
+    inFlightPersistCounts.set(
+      chatId,
+      (inFlightPersistCounts.get(chatId) ?? 0) + 1,
+    );
+    const settled = (): void => {
+      if (
+        disposed ||
+        lifetime !== storeLifetime ||
+        persistEpoch !== (persistEpochs.get(chatId) ?? 0)
+      ) {
+        return;
+      }
+      const count = inFlightPersistCounts.get(chatId) ?? 0;
+      if (count <= 1) inFlightPersistCounts.delete(chatId);
+      else inFlightPersistCounts.set(chatId, count - 1);
+      triggerCleanup?.(chatId);
+    };
+    try {
+      const persist = client.command('chat.persistTabSettings', args);
+      void Promise.resolve(persist).then(settled, settled);
+    } catch {
+      settled();
+    }
   };
 
   const cancelPersist = (chatId: string): void => {
@@ -871,446 +1032,721 @@ export function createChatStore(
 
   const store: ClientStore<ChatStoreState> = create<ChatStoreState>(
     (rawSet, get) => {
+      const isRetained = (chatId: string): boolean =>
+        (interestHandlesByChatId.get(chatId)?.size ?? 0) > 0;
+
+      const isEligibleForEviction = (
+        state: ChatStoreState,
+        chatId: string,
+      ): boolean => {
+        const thread = state.threads[chatId];
+        if (
+          !thread ||
+          isRetained(chatId) ||
+          thread.status === 'streaming' ||
+          thread.turnActive ||
+          thread.queuedMessages.length > 0 ||
+          optimisticRaiseOwners.has(chatId) ||
+          optimisticSendBindings.has(chatId) ||
+          hasOptimisticMessage(thread.messages) ||
+          persistTimers.has(chatId) ||
+          (inFlightPersistCounts.get(chatId) ?? 0) > 0
+        ) {
+          return false;
+        }
+        // Few ids are referenced at a time; look them up in the cached index
+        // instead of walking the transcript on every streaming frame.
+        if (externallyReferencedMessageIds.size === 0) return true;
+        const index = indexMessages(thread.messages);
+        for (const messageId of Array.from(
+          externallyReferencedMessageIds.keys(),
+        )) {
+          if (index.has(messageId)) return false;
+        }
+        return true;
+      };
+
+      const applyThreadGenerations = (
+        state: ChatStoreState,
+        chatIds: readonly string[],
+      ): ChatStoreState => {
+        let threads: Record<string, ChatThreadState> | null = null;
+        for (const chatId of chatIds) {
+          const generation = residencyGenerations.get(chatId) ?? 0;
+          const thread = (threads ?? state.threads)[chatId];
+          if (
+            thread &&
+            generation > 0 &&
+            thread.residencyGeneration !== generation
+          ) {
+            threads ??= { ...state.threads };
+            threads[chatId] = { ...thread, residencyGeneration: generation };
+          }
+        }
+        return threads ? { ...state, threads } : state;
+      };
+
+      const noteResidencyMutation = (
+        previous: ChatStoreState,
+        next: ChatStoreState,
+        chatIds: readonly string[],
+      ): void => {
+        for (const chatId of chatIds) {
+          const thread = next.threads[chatId];
+          if (!thread) {
+            removeResidencyCandidate(chatId);
+          } else if (isRetained(chatId)) {
+            removeResidencyCandidate(chatId);
+          } else if (!previous.threads[chatId]) {
+            addReleasedMru(chatId);
+          } else if (
+            !releasedMruIds.has(chatId) &&
+            threadHasTranscript(thread)
+          ) {
+            partialResidents.add(chatId);
+          }
+        }
+      };
+
+      const cleanupEvictedThreads = (state: ChatStoreState): ChatStoreState => {
+        if (disposed) return state;
+        if (
+          releasedMru.length <= CHAT_THREAD_RELEASED_ALLOWANCE &&
+          partialResidents.size === 0 &&
+          protectedResidents.size === 0
+        ) {
+          return state;
+        }
+
+        let nextState = state;
+        let threads: Record<string, ChatThreadState> | null = null;
+        const stateThread = (chatId: string): ChatThreadState | undefined =>
+          (threads ?? nextState.threads)[chatId];
+        const evict = (chatId: string): void => {
+          const thread = stateThread(chatId);
+          if (!thread || !threadHasTranscript(thread)) return;
+          const generation = bumpResidencyGeneration(chatId);
+          const semanticTimer = semanticTimers.get(chatId);
+          if (semanticTimer !== undefined) clearTimeout(semanticTimer);
+          semanticTimers.delete(chatId);
+          repairedSemanticSignatures.delete(chatId);
+          lastAuthoritativeArrivalAt.delete(chatId);
+          consumedBindingEchoes.delete(chatId);
+          caches.delete(chatId);
+          threads ??= { ...nextState.threads };
+          threads[chatId] = {
+            ...thread,
+            messages: [],
+            turnGroups: [],
+            historyIncomplete: true,
+            residencyGeneration: generation,
+          };
+        };
+
+        const priorMru = releasedMru.slice();
+        releasedMru.length = 0;
+        releasedMruIds.clear();
+        let eligibleResidents = 0;
+        for (const chatId of priorMru) {
+          const thread = stateThread(chatId);
+          if (!thread || isRetained(chatId) || !threadHasTranscript(thread)) {
+            protectedResidents.delete(chatId);
+            continue;
+          }
+          if (!isEligibleForEviction(nextState, chatId)) {
+            releasedMru.push(chatId);
+            releasedMruIds.add(chatId);
+            protectedResidents.add(chatId);
+            continue;
+          }
+          if (eligibleResidents < CHAT_THREAD_RELEASED_ALLOWANCE) {
+            eligibleResidents += 1;
+            releasedMru.push(chatId);
+            releasedMruIds.add(chatId);
+            protectedResidents.delete(chatId);
+            continue;
+          }
+          evict(chatId);
+          protectedResidents.delete(chatId);
+          partialResidents.delete(chatId);
+        }
+
+        for (const chatId of Array.from(partialResidents)) {
+          const thread = stateThread(chatId);
+          if (!thread || isRetained(chatId) || !threadHasTranscript(thread)) {
+            partialResidents.delete(chatId);
+            protectedResidents.delete(chatId);
+            continue;
+          }
+          if (!isEligibleForEviction(nextState, chatId)) {
+            protectedResidents.add(chatId);
+            continue;
+          }
+          evict(chatId);
+          partialResidents.delete(chatId);
+          protectedResidents.delete(chatId);
+        }
+
+        if (threads) nextState = { ...nextState, threads };
+        return nextState;
+      };
+
+      const processUpdate = (
+        previous: ChatStoreState,
+        next: ChatStoreState,
+        touchedChatIds: readonly string[],
+      ): ChatStoreState => {
+        if (disposed) return next;
+        const withGenerations = applyThreadGenerations(next, touchedChatIds);
+        noteResidencyMutation(previous, withGenerations, touchedChatIds);
+        for (const chatId of touchedChatIds) {
+          if (!releasedMruIds.has(chatId) && !partialResidents.has(chatId)) {
+            continue;
+          }
+          if (isEligibleForEviction(withGenerations, chatId)) {
+            protectedResidents.delete(chatId);
+          } else {
+            protectedResidents.add(chatId);
+          }
+        }
+        return cleanupEvictedThreads(withGenerations);
+      };
+
       const commit = (): void => {
         const next = pending;
         pending = undefined;
-        if (next) rawSet(next);
+        if (next) {
+          const touched = Array.from(pendingTouchedChatIds).reverse();
+          pendingTouchedChatIds.clear();
+          rawSet(processUpdate(get(), next, touched));
+        }
       };
       const set = (
         update: (state: ChatStoreState) => Partial<ChatStoreState>,
+        touchedChatIds: readonly string[] = [],
       ): void => {
         if (chatBatchDepth === 0) {
-          rawSet(update);
+          const previous = get();
+          const patch = update(previous);
+          const next =
+            patch === previous ? previous : { ...previous, ...patch };
+          rawSet(processUpdate(previous, next, touchedChatIds));
           return;
         }
         const previous = pending ?? get();
         const patch = update(previous);
         pending = patch === previous ? previous : { ...previous, ...patch };
+        for (const chatId of touchedChatIds) pendingTouchedChatIds.add(chatId);
         pendingChatCommits.add(commit);
       };
       const patchThread = (
         chatId: string,
         patch: Partial<ChatThreadState>,
+        markSettingsSeeded = false,
       ): void => {
-        set((state) => {
-          const prev = state.threads[chatId] ?? emptyThread(chatId);
-          return {
-            threads: { ...state.threads, [chatId]: { ...prev, ...patch } },
-          };
-        });
+        set(
+          (state) => {
+            const prev = state.threads[chatId] ?? emptyThread(chatId);
+            return {
+              threads: { ...state.threads, [chatId]: { ...prev, ...patch } },
+              ...(markSettingsSeeded
+                ? {
+                    seededSettingsChatIds: {
+                      ...(state.seededSettingsChatIds ?? {}),
+                      [chatId]: true as const,
+                    },
+                  }
+                : {}),
+            };
+          },
+          [chatId],
+        );
+      };
+
+      triggerCleanup = (chatId): void => {
+        set((state) => state, [chatId]);
       };
 
       return {
         threads: {},
         seededSettingsChatIds: {},
 
+        retainThread(chatId): () => void {
+          if (disposed) return (): void => {};
+          const handle: ThreadHandle = { chatId, live: true };
+          const handles =
+            interestHandlesByChatId.get(chatId) ?? new Set<ThreadHandle>();
+          handles.add(handle);
+          interestHandlesByChatId.set(chatId, handles);
+          removeResidencyCandidate(chatId);
+          return (): void => {
+            if (!handle.live) return;
+            handle.live = false;
+            if (disposed) return;
+            const currentHandles = interestHandlesByChatId.get(handle.chatId);
+            currentHandles?.delete(handle);
+            if (currentHandles?.size === 0) {
+              interestHandlesByChatId.delete(handle.chatId);
+              const current = pending ?? holder.store?.getState() ?? get();
+              const thread = current.threads[handle.chatId];
+              if (thread && threadHasTranscript(thread)) {
+                addReleasedMru(handle.chatId);
+              }
+            }
+            set((state) => state, [handle.chatId]);
+          };
+        },
+
+        getResidencyGeneration(chatId): number {
+          return residencyGenerations.get(chatId) ?? 0;
+        },
+
         hydrate(chatId, messages, options): void {
           const arrivalSeq = ++authoritativeSeq;
           let authoritativeContentChanged = false;
-          set((state) => {
-            // Dedupe by messageId (last-wins) before ordering: snapshot inputs can
-            // legitimately carry the same logical message twice (e.g. a cached
-            // live frame plus its history re-push), and rendering both would
-            // duplicate transcript rows. Live ingest already upserts by id;
-            // hydrate must apply the same identity rule.
-            const byId = new Map<string, PortalChatMessage>();
-            for (const message of messages) {
-              byId.set(
-                message.messageId,
-                retainMessageMetadata(message, byId.get(message.messageId)),
-              );
-            }
-            const prev = state.threads[chatId] ?? emptyThread(chatId);
-            const previousById = new Map(
-              prev.messages.map((message) => [message.messageId, message]),
-            );
-            const owner = optimisticRaiseOwners.get(chatId);
-            const ownedOptimistic = owner
-              ? prev.messages.find(
-                  (message) =>
-                    message.messageId === owner.localId &&
-                    isOptimisticMessage(message),
-                )
-              : undefined;
-            const binding = optimisticSendBindings.get(chatId);
-            const incoming = Array.from(byId.values()).map((message) => {
-              const previous =
-                previousById.get(message.messageId) ??
-                (message.role === 'user' &&
-                binding?.userMessageId === message.messageId
-                  ? previousById.get(binding.optimisticLocalId)
-                  : message.role === 'user' && message.attachments === undefined
-                    ? prev.messages.find(
-                        (candidate) =>
-                          isOptimisticMessage(candidate) &&
-                          hasAuthoritativeMatch(
-                            withoutConsumedEchoes(chatId, [message]),
-                            candidate,
-                          ),
-                      )
-                    : undefined);
-              return retainMessageMetadata(message, previous);
-            });
-            const authoritativeIncoming = incoming.filter(
-              (message) => !isOptimisticMessage(message),
-            );
-            // Identity-bound reconcile (bindOptimisticSend): a snapshot carrying
-            // the bound authoritative echo supersedes the bound optimistic row
-            // regardless of the text-skew window, consuming the binding.
-            const boundEcho = binding
-              ? authoritativeIncoming.find(
-                  (message) =>
-                    message.role === 'user' &&
-                    message.messageId === binding.userMessageId,
-                )
-              : undefined;
-            if (binding && boundEcho) {
-              optimisticSendBindings.delete(chatId);
-              rememberConsumedEcho(chatId, boundEcho);
-            }
-            // A consumed bound echo is excluded from EVERY text-skew match —
-            // including the raise-owner reconciliation below: when the bound
-            // row is not the owner (two same-text in-flight sends), letting the
-            // consumed echo text-match the surviving send would rebind its turn
-            // lifecycle onto the wrong turn. The bound-is-owner case is handled
-            // explicitly by the first branch.
-            const textMatchCandidates = withoutConsumedEchoes(
-              chatId,
-              authoritativeIncoming,
-              boundEcho,
-            );
-            const reconcilesOwnedOptimistic =
-              ownedOptimistic !== undefined &&
-              hasAuthoritativeMatch(textMatchCandidates, ownedOptimistic);
-            const authoritativeEcho = reconcilesOwnedOptimistic
-              ? textMatchCandidates.find((message) =>
-                  hasAuthoritativeMatch([message], ownedOptimistic),
-                )
-              : undefined;
-            if (
-              owner &&
-              boundEcho &&
-              binding?.optimisticLocalId === owner.localId
-            ) {
-              owner.turnUserMessageId = boundEcho.messageId;
-            } else if (owner && authoritativeEcho) {
-              owner.turnUserMessageId = authoritativeEcho.messageId;
-            }
-            if (owner?.turnUserMessageId.startsWith(OPTIMISTIC_ID_PREFIX)) {
-              const streamingTimers = authoritativeIncoming
-                .filter(
-                  (message) =>
-                    message.status === 'streaming' &&
-                    turnTimerUserMessageId(message) !== undefined &&
-                    isNewOrSupersedingMessage(
-                      previousById.get(message.messageId),
-                      message,
-                    ),
-                )
-                .sort((a, b) => messageRevision(a) - messageRevision(b));
-              const newestStreamingTimer =
-                streamingTimers[streamingTimers.length - 1];
-              const timerUserMessageId = newestStreamingTimer
-                ? turnTimerUserMessageId(newestStreamingTimer)
-                : undefined;
-              if (timerUserMessageId) {
-                owner.turnUserMessageId = timerUserMessageId;
-              }
-            }
-            const endsOwnedTurn = authoritativeIncoming.some(
-              (message) =>
-                isNewOrSupersedingMessage(
-                  previousById.get(message.messageId),
-                  message,
-                ) &&
-                ((isTerminalTurnTimerFrame(message) &&
-                  turnTimerUserMessageId(message) ===
-                    owner?.turnUserMessageId) ||
-                  (message.role === 'assistant' &&
-                    message.status === 'failed')),
-            );
-            const suppliesAuthoritativeRuntimeState =
-              options?.status !== undefined ||
-              options?.error !== undefined ||
-              options?.turnActive !== undefined;
-            // Preserve optimistic rows until history confirms them. Same-id live
-            // rows stay below unless history carries a newer revision, so a late
-            // prefix cannot rewind the live tail. The identity-bound row is
-            // confirmed by its bound echo regardless of skew; other optimistic
-            // rows match against `textMatchCandidates` (bound echo excluded,
-            // see above).
-            const retained = prev.messages.filter(
-              (message) =>
-                !isOptimisticMessage(message) ||
-                (!hasAuthoritativeMatch(textMatchCandidates, message) &&
-                  !(
-                    boundEcho !== undefined &&
-                    message.messageId === binding?.optimisticLocalId
-                  )),
-            );
-            const mergedById = new Map(
-              retained.map((message) => [message.messageId, message]),
-            );
-            // Same clientRequestId = same user message: the cloud send path
-            // echoes it under a client-minted id while a later hydrate carries
-            // the canonical uuid. Unify onto the incoming (canonical) identity
-            // so future refetches keep matching one row instead of duplicating.
-            const retainedUserIdByClientRequestId = new Map<string, string>();
-            for (const message of retained) {
-              if (
-                message.role === 'user' &&
-                !isOptimisticMessage(message) &&
-                message.clientRequestId !== undefined
-              ) {
-                retainedUserIdByClientRequestId.set(
-                  message.clientRequestId,
+          const hasStaleGeneration =
+            options?.residencyGeneration !== undefined &&
+            options.residencyGeneration !==
+              (residencyGenerations.get(chatId) ?? 0);
+          const fenceTranscript = hasStaleGeneration && !isRetained(chatId);
+          const hydrationMessages = fenceTranscript ? [] : messages;
+          const replaceMessages = fenceTranscript
+            ? false
+            : options?.replaceMessages;
+          const clearsIncompleteHistory =
+            !hasStaleGeneration &&
+            (messages.length > 0 || options?.replaceMessages === true);
+          set(
+            (state) => {
+              // Dedupe by messageId (last-wins) before ordering: snapshot inputs can
+              // legitimately carry the same logical message twice (e.g. a cached
+              // live frame plus its history re-push), and rendering both would
+              // duplicate transcript rows. Live ingest already upserts by id;
+              // hydrate must apply the same identity rule.
+              const byId = new Map<string, PortalChatMessage>();
+              for (const message of hydrationMessages) {
+                byId.set(
                   message.messageId,
+                  retainMessageMetadata(message, byId.get(message.messageId)),
                 );
               }
-            }
-            const replacements: PortalChatMessage[] = [];
-            for (const message of incoming) {
-              const existing = mergedById.get(message.messageId);
-              if (!existing) {
-                const echoId =
+              const prev = state.threads[chatId] ?? emptyThread(chatId);
+              const previousById = new Map(
+                prev.messages.map((message) => [message.messageId, message]),
+              );
+              const owner = optimisticRaiseOwners.get(chatId);
+              const ownedOptimistic = owner
+                ? prev.messages.find(
+                    (message) =>
+                      message.messageId === owner.localId &&
+                      isOptimisticMessage(message),
+                  )
+                : undefined;
+              const binding = optimisticSendBindings.get(chatId);
+              const incoming = Array.from(byId.values()).map((message) => {
+                const previous =
+                  previousById.get(message.messageId) ??
+                  (message.role === 'user' &&
+                  binding?.userMessageId === message.messageId
+                    ? previousById.get(binding.optimisticLocalId)
+                    : message.role === 'user' &&
+                        message.attachments === undefined
+                      ? prev.messages.find(
+                          (candidate) =>
+                            isOptimisticMessage(candidate) &&
+                            hasAuthoritativeMatch(
+                              withoutConsumedEchoes(chatId, [message]),
+                              candidate,
+                            ),
+                        )
+                      : undefined);
+                return retainMessageMetadata(message, previous);
+              });
+              const authoritativeIncoming = incoming.filter(
+                (message) => !isOptimisticMessage(message),
+              );
+              // Identity-bound reconcile (bindOptimisticSend): a snapshot carrying
+              // the bound authoritative echo supersedes the bound optimistic row
+              // regardless of the text-skew window, consuming the binding.
+              const boundEcho = binding
+                ? authoritativeIncoming.find(
+                    (message) =>
+                      message.role === 'user' &&
+                      message.messageId === binding.userMessageId,
+                  )
+                : undefined;
+              if (binding && boundEcho) {
+                removeOptimisticBinding(chatId);
+                rememberConsumedEcho(chatId, boundEcho);
+              }
+              // A consumed bound echo is excluded from EVERY text-skew match —
+              // including the raise-owner reconciliation below: when the bound
+              // row is not the owner (two same-text in-flight sends), letting the
+              // consumed echo text-match the surviving send would rebind its turn
+              // lifecycle onto the wrong turn. The bound-is-owner case is handled
+              // explicitly by the first branch.
+              const textMatchCandidates = withoutConsumedEchoes(
+                chatId,
+                authoritativeIncoming,
+                boundEcho,
+              );
+              const reconcilesOwnedOptimistic =
+                ownedOptimistic !== undefined &&
+                hasAuthoritativeMatch(textMatchCandidates, ownedOptimistic);
+              const authoritativeEcho = reconcilesOwnedOptimistic
+                ? textMatchCandidates.find((message) =>
+                    hasAuthoritativeMatch([message], ownedOptimistic),
+                  )
+                : undefined;
+              if (
+                owner &&
+                boundEcho &&
+                binding?.optimisticLocalId === owner.localId
+              ) {
+                updateOptimisticOwnerTurnId(owner, boundEcho.messageId);
+              } else if (owner && authoritativeEcho) {
+                updateOptimisticOwnerTurnId(owner, authoritativeEcho.messageId);
+              }
+              if (owner?.turnUserMessageId.startsWith(OPTIMISTIC_ID_PREFIX)) {
+                const streamingTimers = authoritativeIncoming
+                  .filter(
+                    (message) =>
+                      message.status === 'streaming' &&
+                      turnTimerUserMessageId(message) !== undefined &&
+                      isNewOrSupersedingMessage(
+                        previousById.get(message.messageId),
+                        message,
+                      ),
+                  )
+                  .sort((a, b) => messageRevision(a) - messageRevision(b));
+                const newestStreamingTimer =
+                  streamingTimers[streamingTimers.length - 1];
+                const timerUserMessageId = newestStreamingTimer
+                  ? turnTimerUserMessageId(newestStreamingTimer)
+                  : undefined;
+                if (timerUserMessageId) {
+                  updateOptimisticOwnerTurnId(owner, timerUserMessageId);
+                }
+              }
+              const endsOwnedTurn = authoritativeIncoming.some(
+                (message) =>
+                  isNewOrSupersedingMessage(
+                    previousById.get(message.messageId),
+                    message,
+                  ) &&
+                  ((isTerminalTurnTimerFrame(message) &&
+                    turnTimerUserMessageId(message) ===
+                      owner?.turnUserMessageId) ||
+                    (message.role === 'assistant' &&
+                      message.status === 'failed')),
+              );
+              const suppliesAuthoritativeRuntimeState =
+                options?.status !== undefined ||
+                options?.error !== undefined ||
+                options?.turnActive !== undefined;
+              // Preserve optimistic rows until history confirms them. Same-id live
+              // rows stay below unless history carries a newer revision, so a late
+              // prefix cannot rewind the live tail. The identity-bound row is
+              // confirmed by its bound echo regardless of skew; other optimistic
+              // rows match against `textMatchCandidates` (bound echo excluded,
+              // see above).
+              const retained = prev.messages.filter(
+                (message) =>
+                  !isOptimisticMessage(message) ||
+                  (!hasAuthoritativeMatch(textMatchCandidates, message) &&
+                    !(
+                      boundEcho !== undefined &&
+                      message.messageId === binding?.optimisticLocalId
+                    )),
+              );
+              const mergedById = new Map(
+                retained.map((message) => [message.messageId, message]),
+              );
+              // Same clientRequestId = same user message: the cloud send path
+              // echoes it under a client-minted id while a later hydrate carries
+              // the canonical uuid. Unify onto the incoming (canonical) identity
+              // so future refetches keep matching one row instead of duplicating.
+              const retainedUserIdByClientRequestId = new Map<string, string>();
+              for (const message of retained) {
+                if (
                   message.role === 'user' &&
                   !isOptimisticMessage(message) &&
                   message.clientRequestId !== undefined
-                    ? retainedUserIdByClientRequestId.get(
-                        message.clientRequestId,
-                      )
-                    : undefined;
-                const withAttachments = retainMessageMetadata(
-                  message,
-                  echoId === undefined ? undefined : mergedById.get(echoId),
-                );
-                if (echoId !== undefined && echoId !== message.messageId) {
-                  mergedById.delete(echoId);
-                }
-                mergedById.set(message.messageId, withAttachments);
-              } else if (supersedesCachedMessage(existing, message)) {
-                mergedById.set(
-                  message.messageId,
-                  retainMessageMetadata(message, existing),
-                );
-                if (
-                  messageRevision(message) >=
-                  (prev.lastEventAt ?? Number.NEGATIVE_INFINITY)
                 ) {
-                  replacements.push(message);
+                  retainedUserIdByClientRequestId.set(
+                    message.clientRequestId,
+                    message.messageId,
+                  );
                 }
-              } else if (
-                messageRevision(message) === messageRevision(existing)
-              ) {
-                mergedById.set(
-                  message.messageId,
-                  refreshPresentationOrder(
-                    retainMessageMetadata(existing, message),
+              }
+              const replacements: PortalChatMessage[] = [];
+              for (const message of incoming) {
+                const existing = mergedById.get(message.messageId);
+                if (!existing) {
+                  const echoId =
+                    message.role === 'user' &&
+                    !isOptimisticMessage(message) &&
+                    message.clientRequestId !== undefined
+                      ? retainedUserIdByClientRequestId.get(
+                          message.clientRequestId,
+                        )
+                      : undefined;
+                  const withAttachments = retainMessageMetadata(
                     message,
-                  ),
+                    echoId === undefined ? undefined : mergedById.get(echoId),
+                  );
+                  if (echoId !== undefined && echoId !== message.messageId) {
+                    mergedById.delete(echoId);
+                  }
+                  mergedById.set(message.messageId, withAttachments);
+                } else if (supersedesCachedMessage(existing, message)) {
+                  mergedById.set(
+                    message.messageId,
+                    retainMessageMetadata(message, existing),
+                  );
+                  if (
+                    messageRevision(message) >=
+                    (prev.lastEventAt ?? Number.NEGATIVE_INFINITY)
+                  ) {
+                    replacements.push(message);
+                  }
+                } else if (
+                  messageRevision(message) === messageRevision(existing)
+                ) {
+                  mergedById.set(
+                    message.messageId,
+                    refreshPresentationOrder(
+                      retainMessageMetadata(existing, message),
+                      message,
+                    ),
+                  );
+                }
+              }
+              const merged = replaceMessages
+                ? incoming.map((message) =>
+                    retainMessageMetadata(
+                      message,
+                      mergedById.get(message.messageId),
+                    ),
+                  )
+                : Array.from(mergedById.values());
+              // REG-2981: an accepted queue row names the host user-message id it
+              // stands for. When this tab bound an optimistic bubble to that id,
+              // the row supersedes the bubble — drop it so a queued send has
+              // exactly one representation instead of bubble plus queue entry.
+              // The match is on that exact id, so an in-flight outbox row (which
+              // supersedes nothing) keeps rendering normally.
+              const supersededOptimisticId =
+                binding !== undefined &&
+                (options?.queuedMessages ?? []).some(
+                  (message) =>
+                    message.supersedesUserMessageId === binding.userMessageId,
+                )
+                  ? binding.optimisticLocalId
+                  : undefined;
+              if (supersededOptimisticId !== undefined) {
+                removeOptimisticBinding(chatId);
+              }
+              const ordered = orderMessages(
+                supersededOptimisticId === undefined
+                  ? merged
+                  : merged.filter(
+                      (message) => message.messageId !== supersededOptimisticId,
+                    ),
+              );
+              const messagesUnchanged =
+                ordered.length === prev.messages.length &&
+                ordered.every(
+                  (message, index) => message === prev.messages[index],
+                );
+              authoritativeContentChanged =
+                state.threads[chatId] === undefined || !messagesUnchanged;
+              let hydratedState = prev;
+              const lifecycleAdditions = owner
+                ? authoritativeIncoming.filter(
+                    (message) =>
+                      ((isTurnTimerFrame(message) &&
+                        turnTimerUserMessageId(message) ===
+                          owner.turnUserMessageId) ||
+                        (message.role === 'assistant' &&
+                          message.status === 'failed')) &&
+                      isNewOrSupersedingMessage(
+                        previousById.get(message.messageId),
+                        message,
+                      ) &&
+                      !replacements.includes(message),
+                  )
+                : [];
+              const runtimeFrames = [...replacements, ...lifecycleAdditions]
+                .filter(
+                  (message) =>
+                    !owner ||
+                    !isTurnTimerFrame(message) ||
+                    turnTimerUserMessageId(message) === owner.turnUserMessageId,
+                )
+                .sort((a, b) => messageRevision(a) - messageRevision(b));
+              for (const message of runtimeFrames) {
+                hydratedState = {
+                  ...hydratedState,
+                  ...deriveStatus(hydratedState, message),
+                };
+              }
+              const status = options?.status ?? hydratedState.status;
+              const error =
+                options?.status !== undefined
+                  ? (options.error ?? null)
+                  : (options?.error ?? hydratedState.error);
+              const turnActive =
+                options?.turnActive ?? hydratedState.turnActive;
+              if (
+                owner &&
+                arrivalSeq > owner.baselineSeq &&
+                (endsOwnedTurn || suppliesAuthoritativeRuntimeState)
+              ) {
+                removeOptimisticOwner(chatId);
+              }
+              // The superseded bubble also held this thread's optimistic runtime
+              // raise (status/turnActive), which is what shows Stop in the
+              // composer. Release it with the bubble: the later ACK rollback
+              // returns early once the bubble is gone, and the authoritative
+              // RUNNING/terminal frames carry the canonical id, so neither would
+              // ever clear a stale owner. Read after the authoritative-state
+              // branch above, so this only fires when nothing else cleared it.
+              const supersededOwner =
+                supersededOptimisticId === undefined
+                  ? undefined
+                  : optimisticRaiseOwners.get(chatId);
+              const supersededBaseline =
+                supersededOwner !== undefined &&
+                supersededOwner.localId === supersededOptimisticId
+                  ? supersededOwner.baseline
+                  : undefined;
+              if (supersededBaseline !== undefined) {
+                removeOptimisticOwner(chatId);
+              }
+              const queuedMessages =
+                options?.queuedMessages ?? prev.queuedMessages;
+              const requestedWaitingDelegationIds =
+                options?.waitingDelegationIds;
+              const waitingDelegationIds =
+                requestedWaitingDelegationIds === undefined ||
+                sameStringArray(
+                  prev.waitingDelegationIds,
+                  requestedWaitingDelegationIds,
+                )
+                  ? prev.waitingDelegationIds
+                  : requestedWaitingDelegationIds;
+              const inputDelivery =
+                options?.inputDelivery ?? prev.inputDelivery;
+              const steeringCapabilities =
+                options !== undefined &&
+                Object.prototype.hasOwnProperty.call(
+                  options,
+                  'steeringCapabilities',
+                )
+                  ? options.steeringCapabilities
+                  : prev.steeringCapabilities;
+              const route = options?.route
+                ? prev.route &&
+                  prev.route.scope === options.route.scope &&
+                  prev.route.workspaceLocalId ===
+                    options.route.workspaceLocalId &&
+                  prev.route.worktreeLocalId === options.route.worktreeLocalId
+                  ? prev.route
+                  : options.route
+                : prev.route;
+              const planMode = options?.settings?.planMode ?? prev.planMode;
+              const proposalMode =
+                options?.settings?.proposalMode ?? prev.proposalMode;
+              const thinkingLevel =
+                options?.settings?.thinkingLevel ?? prev.thinkingLevel;
+              const pendingPlanExit = options?.settings
+                ? options.settings.pendingPlanExit
+                : prev.pendingPlanExit;
+
+              // Snapshot arrays are rebuilt whenever the portal projection changes,
+              // including unrelated chats. If neither the transcript nor explicit
+              // host state changed, retain every existing reference so a frame for
+              // another chat cannot defeat incremental rendering.
+              if (
+                messagesUnchanged &&
+                status === prev.status &&
+                error === prev.error &&
+                turnActive === prev.turnActive &&
+                queuedMessages === prev.queuedMessages &&
+                waitingDelegationIds === prev.waitingDelegationIds &&
+                inputDelivery === prev.inputDelivery &&
+                steeringCapabilities === prev.steeringCapabilities &&
+                route === prev.route &&
+                planMode === prev.planMode &&
+                proposalMode === prev.proposalMode &&
+                thinkingLevel === prev.thinkingLevel &&
+                pendingPlanExit === prev.pendingPlanExit &&
+                (!clearsIncompleteHistory || prev.historyIncomplete !== true)
+              ) {
+                return state;
+              }
+
+              let turnGroups = prev.turnGroups;
+              if (!messagesUnchanged || turnActive !== prev.turnActive) {
+                // Older history can be inserted before completed groups, so a
+                // transcript change resets the cache. An activity-only change
+                // reuses it while recomputing the latest group's fold state.
+                const cache = cacheFor(chatId);
+                if (!messagesUnchanged) {
+                  cache.chatId = '';
+                  cache.completedGroups = new Map();
+                }
+                turnGroups = computeIncrementalTurnGroups(
+                  chatId,
+                  messagesUnchanged ? prev.messages : ordered,
+                  cache,
+                  turnActive,
                 );
               }
-            }
-            const merged = options?.replaceMessages
-              ? incoming.map((message) =>
-                  retainMessageMetadata(
-                    message,
-                    mergedById.get(message.messageId),
-                  ),
-                )
-              : Array.from(mergedById.values());
-            // REG-2981: an accepted queue row names the host user-message id it
-            // stands for. When this tab bound an optimistic bubble to that id,
-            // the row supersedes the bubble — drop it so a queued send has
-            // exactly one representation instead of bubble plus queue entry.
-            // The match is on that exact id, so an in-flight outbox row (which
-            // supersedes nothing) keeps rendering normally.
-            const supersededOptimisticId =
-              binding !== undefined &&
-              (options?.queuedMessages ?? []).some(
-                (message) =>
-                  message.supersedesUserMessageId === binding.userMessageId,
-              )
-                ? binding.optimisticLocalId
-                : undefined;
-            if (supersededOptimisticId !== undefined) {
-              optimisticSendBindings.delete(chatId);
-            }
-            const ordered = orderMessages(
-              supersededOptimisticId === undefined
-                ? merged
-                : merged.filter(
-                    (message) => message.messageId !== supersededOptimisticId,
-                  ),
-            );
-            const messagesUnchanged =
-              ordered.length === prev.messages.length &&
-              ordered.every(
-                (message, index) => message === prev.messages[index],
-              );
-            authoritativeContentChanged =
-              state.threads[chatId] === undefined || !messagesUnchanged;
-            let hydratedState = prev;
-            const lifecycleAdditions = owner
-              ? authoritativeIncoming.filter(
-                  (message) =>
-                    ((isTurnTimerFrame(message) &&
-                      turnTimerUserMessageId(message) ===
-                        owner.turnUserMessageId) ||
-                      (message.role === 'assistant' &&
-                        message.status === 'failed')) &&
-                    isNewOrSupersedingMessage(
-                      previousById.get(message.messageId),
-                      message,
-                    ) &&
-                    !replacements.includes(message),
-                )
-              : [];
-            const runtimeFrames = [...replacements, ...lifecycleAdditions]
-              .filter(
-                (message) =>
-                  !owner ||
-                  !isTurnTimerFrame(message) ||
-                  turnTimerUserMessageId(message) === owner.turnUserMessageId,
-              )
-              .sort((a, b) => messageRevision(a) - messageRevision(b));
-            for (const message of runtimeFrames) {
-              hydratedState = {
-                ...hydratedState,
-                ...deriveStatus(hydratedState, message),
-              };
-            }
-            const status = options?.status ?? hydratedState.status;
-            const error =
-              options?.status !== undefined
-                ? (options.error ?? null)
-                : (options?.error ?? hydratedState.error);
-            const turnActive = options?.turnActive ?? hydratedState.turnActive;
-            if (
-              owner &&
-              arrivalSeq > owner.baselineSeq &&
-              (endsOwnedTurn || suppliesAuthoritativeRuntimeState)
-            ) {
-              optimisticRaiseOwners.delete(chatId);
-            }
-            // The superseded bubble also held this thread's optimistic runtime
-            // raise (status/turnActive), which is what shows Stop in the
-            // composer. Release it with the bubble: the later ACK rollback
-            // returns early once the bubble is gone, and the authoritative
-            // RUNNING/terminal frames carry the canonical id, so neither would
-            // ever clear a stale owner. Read after the authoritative-state
-            // branch above, so this only fires when nothing else cleared it.
-            const supersededOwner =
-              supersededOptimisticId === undefined
-                ? undefined
-                : optimisticRaiseOwners.get(chatId);
-            const supersededBaseline =
-              supersededOwner !== undefined &&
-              supersededOwner.localId === supersededOptimisticId
-                ? supersededOwner.baseline
-                : undefined;
-            if (supersededBaseline !== undefined) {
-              optimisticRaiseOwners.delete(chatId);
-            }
-            const queuedMessages =
-              options?.queuedMessages ?? prev.queuedMessages;
-            const requestedWaitingDelegationIds = options?.waitingDelegationIds;
-            const waitingDelegationIds =
-              requestedWaitingDelegationIds === undefined ||
-              sameStringArray(
-                prev.waitingDelegationIds,
-                requestedWaitingDelegationIds,
-              )
-                ? prev.waitingDelegationIds
-                : requestedWaitingDelegationIds;
-            const inputDelivery = options?.inputDelivery ?? prev.inputDelivery;
-            const steeringCapabilities =
-              options !== undefined &&
-              Object.prototype.hasOwnProperty.call(
-                options,
-                'steeringCapabilities',
-              )
-                ? options.steeringCapabilities
-                : prev.steeringCapabilities;
-            const route = options?.route
-              ? prev.route &&
-                prev.route.scope === options.route.scope &&
-                prev.route.workspaceLocalId ===
-                  options.route.workspaceLocalId &&
-                prev.route.worktreeLocalId === options.route.worktreeLocalId
-                ? prev.route
-                : options.route
-              : prev.route;
-            const planMode = options?.settings?.planMode ?? prev.planMode;
-            const proposalMode =
-              options?.settings?.proposalMode ?? prev.proposalMode;
-            const thinkingLevel =
-              options?.settings?.thinkingLevel ?? prev.thinkingLevel;
-            const pendingPlanExit = options?.settings
-              ? options.settings.pendingPlanExit
-              : prev.pendingPlanExit;
-
-            // Snapshot arrays are rebuilt whenever the portal projection changes,
-            // including unrelated chats. If neither the transcript nor explicit
-            // host state changed, retain every existing reference so a frame for
-            // another chat cannot defeat incremental rendering.
-            if (
-              messagesUnchanged &&
-              status === prev.status &&
-              error === prev.error &&
-              turnActive === prev.turnActive &&
-              queuedMessages === prev.queuedMessages &&
-              waitingDelegationIds === prev.waitingDelegationIds &&
-              inputDelivery === prev.inputDelivery &&
-              steeringCapabilities === prev.steeringCapabilities &&
-              route === prev.route &&
-              planMode === prev.planMode &&
-              proposalMode === prev.proposalMode &&
-              thinkingLevel === prev.thinkingLevel &&
-              pendingPlanExit === prev.pendingPlanExit
-            ) {
-              return state;
-            }
-
-            let turnGroups = prev.turnGroups;
-            if (!messagesUnchanged || turnActive !== prev.turnActive) {
-              // Older history can be inserted before completed groups, so a
-              // transcript change resets the cache. An activity-only change
-              // reuses it while recomputing the latest group's fold state.
-              const cache = cacheFor(chatId);
-              if (!messagesUnchanged) {
-                cache.chatId = '';
-                cache.completedGroups = new Map();
-              }
-              turnGroups = computeIncrementalTurnGroups(
-                chatId,
-                messagesUnchanged ? prev.messages : ordered,
-                cache,
+              const {
+                historyIncomplete: previousHistoryIncomplete,
+                ...completeHistoryPrev
+              } = prev;
+              const threadBase = clearsIncompleteHistory
+                ? completeHistoryPrev
+                : prev;
+              const thread: ChatThreadState = {
+                ...threadBase,
+                messages: messagesUnchanged ? prev.messages : ordered,
+                turnGroups,
+                status,
+                error,
                 turnActive,
-              );
-            }
-            const thread: ChatThreadState = {
-              ...prev,
-              messages: messagesUnchanged ? prev.messages : ordered,
-              turnGroups,
-              status,
-              error,
-              turnActive,
-              queuedMessages,
-              waitingDelegationIds,
-              inputDelivery,
-              steeringCapabilities,
-              route,
-              planMode,
-              proposalMode,
-              thinkingLevel,
-              pendingPlanExit,
-              ...(supersededBaseline ?? {}),
-            };
-            return { threads: { ...state.threads, [chatId]: thread } };
-          });
+                queuedMessages,
+                waitingDelegationIds,
+                inputDelivery,
+                steeringCapabilities,
+                route,
+                planMode,
+                proposalMode,
+                thinkingLevel,
+                pendingPlanExit,
+                ...(!clearsIncompleteHistory &&
+                previousHistoryIncomplete === true
+                  ? { historyIncomplete: true as const }
+                  : {}),
+                ...(supersededBaseline ?? {}),
+              };
+              return { threads: { ...state.threads, [chatId]: thread } };
+            },
+            [chatId],
+          );
           if (authoritativeContentChanged) {
-            lastAuthoritativeArrivalAt.set(chatId, Date.now());
+            const currentThread = holder.store?.getState().threads[chatId];
+            if (
+              currentThread?.historyIncomplete === true &&
+              !threadHasTranscript(currentThread)
+            ) {
+              lastAuthoritativeArrivalAt.delete(chatId);
+            } else {
+              lastAuthoritativeArrivalAt.set(chatId, Date.now());
+            }
             scheduleSemanticCheck(chatId);
           }
         },
@@ -1318,22 +1754,36 @@ export function createChatStore(
         reset(chatId): void {
           consumedBindingEchoes.delete(chatId);
           cancelPersist(chatId);
+          persistEpochs.set(chatId, (persistEpochs.get(chatId) ?? 0) + 1);
+          inFlightPersistCounts.delete(chatId);
+          bumpResidencyGeneration(chatId);
+          removeResidencyCandidate(chatId);
           caches.delete(chatId);
-          optimisticRaiseOwners.delete(chatId);
-          optimisticSendBindings.delete(chatId);
+          removeOptimisticOwner(chatId);
+          removeOptimisticBinding(chatId);
           const semanticTimer = semanticTimers.get(chatId);
           if (semanticTimer !== undefined) clearTimeout(semanticTimer);
           semanticTimers.delete(chatId);
           repairedSemanticSignatures.delete(chatId);
           lastAuthoritativeArrivalAt.delete(chatId);
-          set((state) => {
-            if (!(chatId in state.threads)) {
-              return state;
-            }
-            const threads = { ...state.threads };
-            delete threads[chatId];
-            return { threads };
-          });
+          set(
+            (state) => {
+              const hasThread = chatId in state.threads;
+              const hasSeededSettings =
+                state.seededSettingsChatIds?.[chatId] === true;
+              if (!hasThread && !hasSeededSettings) {
+                return state;
+              }
+              const threads = { ...state.threads };
+              delete threads[chatId];
+              const seededSettingsChatIds = {
+                ...(state.seededSettingsChatIds ?? {}),
+              };
+              delete seededSettingsChatIds[chatId];
+              return { threads, seededSettingsChatIds };
+            },
+            [chatId],
+          );
         },
 
         ingestMessageEvent(event): void {
@@ -1344,181 +1794,186 @@ export function createChatStore(
           const arrivalSeq = isAuthoritative
             ? ++authoritativeSeq
             : authoritativeSeq;
-          set((state) => {
-            const { chatId } = event;
-            const prev = state.threads[chatId] ?? emptyThread(chatId);
-            const attachmentBinding = optimisticSendBindings.get(chatId);
-            const attachmentSource =
-              event.message.role === 'user' &&
-              event.message.attachments === undefined
-                ? prev.messages.find(
-                    (candidate) =>
-                      candidate.messageId === event.message.messageId ||
-                      (attachmentBinding?.userMessageId ===
-                      event.message.messageId
-                        ? candidate.messageId ===
-                          attachmentBinding.optimisticLocalId
-                        : isOptimisticMessage(candidate) &&
-                          hasAuthoritativeMatch(
-                            withoutConsumedEchoes(chatId, [event.message]),
-                            candidate,
-                          )),
-                  )
+          set(
+            (state) => {
+              const { chatId } = event;
+              const prev = state.threads[chatId] ?? emptyThread(chatId);
+              const attachmentBinding = optimisticSendBindings.get(chatId);
+              const attachmentSource =
+                event.message.role === 'user' &&
+                event.message.attachments === undefined
+                  ? prev.messages.find(
+                      (candidate) =>
+                        candidate.messageId === event.message.messageId ||
+                        (attachmentBinding?.userMessageId ===
+                        event.message.messageId
+                          ? candidate.messageId ===
+                            attachmentBinding.optimisticLocalId
+                          : isOptimisticMessage(candidate) &&
+                            hasAuthoritativeMatch(
+                              withoutConsumedEchoes(chatId, [event.message]),
+                              candidate,
+                            )),
+                    )
+                  : undefined;
+              const message = retainMessageMetadata(
+                event.message,
+                attachmentSource,
+              );
+              const existingMessageIndex =
+                indexMessages(prev.messages).get(message.messageId) ?? -1;
+              const existingMessage =
+                existingMessageIndex >= 0
+                  ? prev.messages[existingMessageIndex]
+                  : undefined;
+              const owner = optimisticRaiseOwners.get(chatId);
+              const ownedIndex = owner
+                ? indexMessages(prev.messages).get(owner.localId)
                 : undefined;
-            const message = retainMessageMetadata(
-              event.message,
-              attachmentSource,
-            );
-            const existingMessageIndex =
-              indexMessages(prev.messages).get(message.messageId) ?? -1;
-            const existingMessage =
-              existingMessageIndex >= 0
-                ? prev.messages[existingMessageIndex]
-                : undefined;
-            const owner = optimisticRaiseOwners.get(chatId);
-            const ownedIndex = owner
-              ? indexMessages(prev.messages).get(owner.localId)
-              : undefined;
-            const ownedMessage =
-              ownedIndex === undefined ? undefined : prev.messages[ownedIndex];
-            const ownedOptimistic =
-              ownedMessage && isOptimisticMessage(ownedMessage)
-                ? ownedMessage
-                : undefined;
-            if (
-              owner?.turnUserMessageId.startsWith(OPTIMISTIC_ID_PREFIX) &&
-              message.status === 'streaming' &&
-              isNewOrSupersedingMessage(existingMessage, message)
-            ) {
-              const timerUserMessageId = turnTimerUserMessageId(message);
-              if (timerUserMessageId) {
-                owner.turnUserMessageId = timerUserMessageId;
+              const ownedMessage =
+                ownedIndex === undefined
+                  ? undefined
+                  : prev.messages[ownedIndex];
+              const ownedOptimistic =
+                ownedMessage && isOptimisticMessage(ownedMessage)
+                  ? ownedMessage
+                  : undefined;
+              if (
+                owner?.turnUserMessageId.startsWith(OPTIMISTIC_ID_PREFIX) &&
+                message.status === 'streaming' &&
+                isNewOrSupersedingMessage(existingMessage, message)
+              ) {
+                const timerUserMessageId = turnTimerUserMessageId(message);
+                if (timerUserMessageId) {
+                  updateOptimisticOwnerTurnId(owner, timerUserMessageId);
+                }
               }
-            }
-            const advancesTurnLifecycle =
-              isAuthoritative &&
-              isAuthoritativeTurnLifecycleFrame(message) &&
-              isNewOrSupersedingMessage(existingMessage, message) &&
-              (!isTurnTimerFrame(message) ||
-                owner === undefined ||
-                turnTimerUserMessageId(message) === owner.turnUserMessageId);
-            // Same clientRequestId = same user message: when a late echo arrives
-            // after the canonical row already hydrated (under the server uuid),
-            // keep that authoritative row instead of adding a second copy. The
-            // canonical data and id survive so future refetches keep matching it.
-            const requestDuplicateIndex =
-              message.role === 'user' &&
-              !isOptimisticMessage(message) &&
-              message.clientRequestId !== undefined &&
-              existingMessageIndex < 0
-                ? prev.messages.findIndex(
-                    (candidate) =>
-                      candidate.role === 'user' &&
-                      !isOptimisticMessage(candidate) &&
-                      candidate.clientRequestId === message.clientRequestId,
-                  )
-                : -1;
-            let messages =
-              requestDuplicateIndex >= 0
-                ? upsertMessage(
-                    prev.messages,
-                    retainMessageMetadata(
-                      prev.messages[requestDuplicateIndex],
-                      message,
-                    ),
-                    requestDuplicateIndex,
-                  )
-                : upsertMessage(prev.messages, message, existingMessageIndex);
-            // An authoritative frame supersedes any matching optimistic echo.
-            if (isAuthoritative && message.role === 'user') {
-              // Identity-bound reconcile first (bindOptimisticSend): the frame
-              // carrying the bound `userMessageId` removes the bound optimistic
-              // row regardless of the text-skew window, consuming the binding.
-              // The owner rebinding below then observes the removal exactly as
-              // it does for a text-skew reconcile.
-              const binding = optimisticSendBindings.get(chatId);
-              const consumesBinding =
-                binding !== undefined &&
+              const advancesTurnLifecycle =
+                isAuthoritative &&
+                isAuthoritativeTurnLifecycleFrame(message) &&
+                isNewOrSupersedingMessage(existingMessage, message) &&
+                (!isTurnTimerFrame(message) ||
+                  owner === undefined ||
+                  turnTimerUserMessageId(message) === owner.turnUserMessageId);
+              // Same clientRequestId = same user message: when a late echo arrives
+              // after the canonical row already hydrated (under the server uuid),
+              // keep that authoritative row instead of adding a second copy. The
+              // canonical data and id survive so future refetches keep matching it.
+              const requestDuplicateIndex =
                 message.role === 'user' &&
-                message.messageId === binding.userMessageId;
-              if (consumesBinding) {
-                optimisticSendBindings.delete(chatId);
-                rememberConsumedEcho(chatId, message);
-                messages = messages.filter(
-                  (candidate) =>
-                    candidate.messageId !== binding.optimisticLocalId ||
-                    !isOptimisticMessage(candidate),
-                );
-              } else {
-                // Text-skew fallback ONLY for frames that did not consume an
-                // identity binding: a bound echo has exactly one optimistic
-                // counterpart, and letting it also text-match would collapse a
-                // genuinely repeated identical send into it.
-                messages = reconcileOptimistic(messages, message);
+                !isOptimisticMessage(message) &&
+                message.clientRequestId !== undefined &&
+                existingMessageIndex < 0
+                  ? prev.messages.findIndex(
+                      (candidate) =>
+                        candidate.role === 'user' &&
+                        !isOptimisticMessage(candidate) &&
+                        candidate.clientRequestId === message.clientRequestId,
+                    )
+                  : -1;
+              let messages =
+                requestDuplicateIndex >= 0
+                  ? upsertMessage(
+                      prev.messages,
+                      retainMessageMetadata(
+                        prev.messages[requestDuplicateIndex],
+                        message,
+                      ),
+                      requestDuplicateIndex,
+                    )
+                  : upsertMessage(prev.messages, message, existingMessageIndex);
+              // An authoritative frame supersedes any matching optimistic echo.
+              if (isAuthoritative && message.role === 'user') {
+                // Identity-bound reconcile first (bindOptimisticSend): the frame
+                // carrying the bound `userMessageId` removes the bound optimistic
+                // row regardless of the text-skew window, consuming the binding.
+                // The owner rebinding below then observes the removal exactly as
+                // it does for a text-skew reconcile.
+                const binding = optimisticSendBindings.get(chatId);
+                const consumesBinding =
+                  binding !== undefined &&
+                  message.role === 'user' &&
+                  message.messageId === binding.userMessageId;
+                if (consumesBinding) {
+                  removeOptimisticBinding(chatId);
+                  rememberConsumedEcho(chatId, message);
+                  messages = messages.filter(
+                    (candidate) =>
+                      candidate.messageId !== binding.optimisticLocalId ||
+                      !isOptimisticMessage(candidate),
+                  );
+                } else {
+                  // Text-skew fallback ONLY for frames that did not consume an
+                  // identity binding: a bound echo has exactly one optimistic
+                  // counterpart, and letting it also text-match would collapse a
+                  // genuinely repeated identical send into it.
+                  messages = reconcileOptimistic(messages, message);
+                }
+                const reconciledOwnedOptimistic =
+                  ownedOptimistic !== undefined &&
+                  !messages.some(
+                    (candidate) => candidate.messageId === owner?.localId,
+                  );
+                if (owner && reconciledOwnedOptimistic) {
+                  updateOptimisticOwnerTurnId(owner, message.messageId);
+                }
               }
-              const reconciledOwnedOptimistic =
-                ownedOptimistic !== undefined &&
-                !messages.some(
-                  (candidate) => candidate.messageId === owner?.localId,
-                );
-              if (owner && reconciledOwnedOptimistic) {
-                owner.turnUserMessageId = message.messageId;
+              const runtimeState =
+                owner &&
+                isTurnTimerFrame(message) &&
+                turnTimerUserMessageId(message) !== owner.turnUserMessageId
+                  ? {
+                      status: prev.status,
+                      error: prev.error,
+                      turnActive: prev.turnActive,
+                    }
+                  : deriveStatus(prev, message);
+              const { status, error, turnActive } = runtimeState;
+              const turnGroups = computeIncrementalTurnGroups(
+                chatId,
+                messages,
+                cacheFor(chatId),
+                turnActive,
+              );
+              if (
+                owner &&
+                arrivalSeq > owner.baselineSeq &&
+                advancesTurnLifecycle &&
+                (isTerminalTurnTimerFrame(message) ||
+                  (message.role === 'assistant' && message.status === 'failed'))
+              ) {
+                removeOptimisticOwner(chatId);
               }
-            }
-            const runtimeState =
-              owner &&
-              isTurnTimerFrame(message) &&
-              turnTimerUserMessageId(message) !== owner.turnUserMessageId
-                ? {
-                    status: prev.status,
-                    error: prev.error,
-                    turnActive: prev.turnActive,
-                  }
-                : deriveStatus(prev, message);
-            const { status, error, turnActive } = runtimeState;
-            const turnGroups = computeIncrementalTurnGroups(
-              chatId,
-              messages,
-              cacheFor(chatId),
-              turnActive,
-            );
-            if (
-              owner &&
-              arrivalSeq > owner.baselineSeq &&
-              advancesTurnLifecycle &&
-              (isTerminalTurnTimerFrame(message) ||
-                (message.role === 'assistant' && message.status === 'failed'))
-            ) {
-              optimisticRaiseOwners.delete(chatId);
-            }
-            // Reuse the previous route object when the scope/ids are unchanged so
-            // `thread.route` keeps referential identity across the streaming
-            // frames of a turn (a downstream `React.memo` can then skip on it).
-            const nextRoute: ChatRoute = {
-              scope: event.scope,
-              workspaceLocalId: event.workspaceLocalId,
-              worktreeLocalId: event.worktreeLocalId,
-            };
-            const route =
-              prev.route &&
-              prev.route.scope === nextRoute.scope &&
-              prev.route.workspaceLocalId === nextRoute.workspaceLocalId &&
-              prev.route.worktreeLocalId === nextRoute.worktreeLocalId
-                ? prev.route
-                : nextRoute;
-            const thread: ChatThreadState = {
-              ...prev,
-              chatId,
-              messages,
-              turnGroups,
-              status,
-              error,
-              turnActive,
-              lastEventAt: message.updatedAtMs ?? message.createdAtMs,
-              route,
-            };
-            return { threads: { ...state.threads, [chatId]: thread } };
-          });
+              // Reuse the previous route object when the scope/ids are unchanged so
+              // `thread.route` keeps referential identity across the streaming
+              // frames of a turn (a downstream `React.memo` can then skip on it).
+              const nextRoute: ChatRoute = {
+                scope: event.scope,
+                workspaceLocalId: event.workspaceLocalId,
+                worktreeLocalId: event.worktreeLocalId,
+              };
+              const route =
+                prev.route &&
+                prev.route.scope === nextRoute.scope &&
+                prev.route.workspaceLocalId === nextRoute.workspaceLocalId &&
+                prev.route.worktreeLocalId === nextRoute.worktreeLocalId
+                  ? prev.route
+                  : nextRoute;
+              const thread: ChatThreadState = {
+                ...prev,
+                chatId,
+                messages,
+                turnGroups,
+                status,
+                error,
+                turnActive,
+                lastEventAt: message.updatedAtMs ?? message.createdAtMs,
+                route,
+              };
+              return { threads: { ...state.threads, [chatId]: thread } };
+            },
+            [event.chatId],
+          );
           if (
             event.message.status !== 'streaming' ||
             isAuthoritativeTurnLifecycleFrame(event.message)
@@ -1527,44 +1982,62 @@ export function createChatStore(
         },
 
         addOptimisticUserMessage(chatId, args): void {
-          set((state) => {
-            const prev = state.threads[chatId] ?? emptyThread(chatId);
-            const optimistic = makeOptimisticUserMessage({ chatId, ...args });
-            // Raise the working indicator at send time. The authoritative
-            // `turn_timer` streaming frame only arrives after the full host
-            // round trip (send command → desktop turn start → relay), and until
-            // then the transcript showed no progress and the composer offered
-            // Send instead of Stop — so follow-up sends silently queued behind
-            // an invisible active turn. Terminal timer frames (or a failed
-            // assistant frame) lower/replace this exactly as they do for an
-            // authoritative raise.
-            //
-            // The inserted optimistic ID owns this temporary raise until a
-            // post-baseline authoritative ingest/hydration takes over, or the
-            // matching pre-host send rejection rolls it back. Ownership uses a
-            // store-local arrival generation, never host/client timestamps.
-            const raised: Pick<
-              ChatThreadState,
-              'status' | 'error' | 'turnActive'
-            > = { status: 'streaming', error: null, turnActive: true };
-            // Late-echo guard: if the authoritative frame already arrived (server
-            // faster than the UI), inserting the echo now would strand it — its
-            // reconciliation pass already ran against an empty optimistic set.
-            // The turn is in flight either way, so the indicator still raises.
-            // No `computeIncrementalTurnGroups` here: messages are unchanged on
-            // this path, so only the runtime status fields are patched.
-            const lateEchoCandidates = withoutConsumedEchoes(
-              chatId,
-              prev.messages,
-            );
-            if (hasAuthoritativeMatch(lateEchoCandidates, optimistic)) {
-              const authoritativeEcho = lateEchoCandidates.find((message) =>
-                hasAuthoritativeMatch([message], optimistic),
+          set(
+            (state) => {
+              const prev = state.threads[chatId] ?? emptyThread(chatId);
+              const optimistic = makeOptimisticUserMessage({ chatId, ...args });
+              // Raise the working indicator at send time. The authoritative
+              // `turn_timer` streaming frame only arrives after the full host
+              // round trip (send command → desktop turn start → relay), and until
+              // then the transcript showed no progress and the composer offered
+              // Send instead of Stop — so follow-up sends silently queued behind
+              // an invisible active turn. Terminal timer frames (or a failed
+              // assistant frame) lower/replace this exactly as they do for an
+              // authoritative raise.
+              //
+              // The inserted optimistic ID owns this temporary raise until a
+              // post-baseline authoritative ingest/hydration takes over, or the
+              // matching pre-host send rejection rolls it back. Ownership uses a
+              // store-local arrival generation, never host/client timestamps.
+              const raised: Pick<
+                ChatThreadState,
+                'status' | 'error' | 'turnActive'
+              > = { status: 'streaming', error: null, turnActive: true };
+              // Late-echo guard: if the authoritative frame already arrived (server
+              // faster than the UI), inserting the echo now would strand it — its
+              // reconciliation pass already ran against an empty optimistic set.
+              // The turn is in flight either way, so the indicator still raises.
+              // No `computeIncrementalTurnGroups` here: messages are unchanged on
+              // this path, so only the runtime status fields are patched.
+              const lateEchoCandidates = withoutConsumedEchoes(
+                chatId,
+                prev.messages,
               );
-              optimisticRaiseOwners.set(chatId, {
+              if (hasAuthoritativeMatch(lateEchoCandidates, optimistic)) {
+                const authoritativeEcho = lateEchoCandidates.find((message) =>
+                  hasAuthoritativeMatch([message], optimistic),
+                );
+                putOptimisticOwner(chatId, {
+                  localId: optimistic.messageId,
+                  turnUserMessageId:
+                    authoritativeEcho?.messageId ?? optimistic.messageId,
+                  baselineSeq: authoritativeSeq,
+                  baseline: {
+                    status: prev.status,
+                    error: prev.error,
+                    turnActive: prev.turnActive,
+                  },
+                });
+                return {
+                  threads: {
+                    ...state.threads,
+                    [chatId]: { ...prev, ...raised },
+                  },
+                };
+              }
+              putOptimisticOwner(chatId, {
                 localId: optimistic.messageId,
-                turnUserMessageId:
-                  authoritativeEcho?.messageId ?? optimistic.messageId,
+                turnUserMessageId: optimistic.messageId,
                 baselineSeq: authoritativeSeq,
                 baseline: {
                   status: prev.status,
@@ -1572,34 +2045,22 @@ export function createChatStore(
                   turnActive: prev.turnActive,
                 },
               });
+              const messages = upsertMessage(prev.messages, optimistic);
+              const turnGroups = computeIncrementalTurnGroups(
+                chatId,
+                messages,
+                cacheFor(chatId),
+                raised.turnActive,
+              );
               return {
-                threads: { ...state.threads, [chatId]: { ...prev, ...raised } },
+                threads: {
+                  ...state.threads,
+                  [chatId]: { ...prev, messages, turnGroups, ...raised },
+                },
               };
-            }
-            optimisticRaiseOwners.set(chatId, {
-              localId: optimistic.messageId,
-              turnUserMessageId: optimistic.messageId,
-              baselineSeq: authoritativeSeq,
-              baseline: {
-                status: prev.status,
-                error: prev.error,
-                turnActive: prev.turnActive,
-              },
-            });
-            const messages = upsertMessage(prev.messages, optimistic);
-            const turnGroups = computeIncrementalTurnGroups(
-              chatId,
-              messages,
-              cacheFor(chatId),
-              raised.turnActive,
-            );
-            return {
-              threads: {
-                ...state.threads,
-                [chatId]: { ...prev, messages, turnGroups, ...raised },
-              },
-            };
-          });
+            },
+            [chatId],
+          );
         },
 
         bindOptimisticSend(chatId, args): void {
@@ -1611,10 +2072,11 @@ export function createChatStore(
           // Latest binding per chat wins: a newer send's identity supersedes an
           // unconsumed older one (whose echo, if it ever lands, still reconciles
           // through the text-skew fallback or stays as authoritative history).
-          optimisticSendBindings.set(chatId, {
+          putOptimisticBinding(chatId, {
             optimisticLocalId,
             userMessageId: args.userMessageId,
           });
+          set((state) => state, [chatId]);
         },
 
         rollbackOptimisticSend(chatId, args): void {
@@ -1624,64 +2086,83 @@ export function createChatStore(
           // Scoped to the exact localId so a newer send's binding survives.
           const binding = optimisticSendBindings.get(chatId);
           if (binding?.optimisticLocalId === optimisticLocalId) {
-            optimisticSendBindings.delete(chatId);
+            removeOptimisticBinding(chatId);
           }
-          set((state) => {
-            const prev = state.threads[chatId];
-            if (!prev) {
-              return state;
-            }
-            const owner = optimisticRaiseOwners.get(chatId);
-            if (owner?.localId !== optimisticLocalId) {
-              return state;
-            }
-            const ownedOptimistic = prev.messages.find(
-              (message) =>
-                message.messageId === optimisticLocalId &&
-                isOptimisticMessage(message),
-            );
-            if (!ownedOptimistic) {
-              return state;
-            }
+          set(
+            (state) => {
+              const prev = state.threads[chatId];
+              if (!prev) {
+                return state;
+              }
+              const owner = optimisticRaiseOwners.get(chatId);
+              if (owner?.localId !== optimisticLocalId) {
+                return state;
+              }
+              const ownedOptimistic = prev.messages.find(
+                (message) =>
+                  message.messageId === optimisticLocalId &&
+                  isOptimisticMessage(message),
+              );
+              if (!ownedOptimistic) {
+                return state;
+              }
 
-            optimisticRaiseOwners.delete(chatId);
-            const messages = prev.messages.filter(
-              (message) => message.messageId !== optimisticLocalId,
-            );
-            const turnGroups = computeIncrementalTurnGroups(
-              chatId,
-              messages,
-              cacheFor(chatId),
-              owner.baseline.turnActive,
-            );
-            return {
-              threads: {
-                ...state.threads,
-                [chatId]: {
-                  ...prev,
-                  messages,
-                  turnGroups,
-                  ...owner.baseline,
+              removeOptimisticOwner(chatId);
+              const messages = prev.messages.filter(
+                (message) => message.messageId !== optimisticLocalId,
+              );
+              const turnGroups = computeIncrementalTurnGroups(
+                chatId,
+                messages,
+                cacheFor(chatId),
+                owner.baseline.turnActive,
+              );
+              return {
+                threads: {
+                  ...state.threads,
+                  [chatId]: {
+                    ...prev,
+                    messages,
+                    turnGroups,
+                    ...owner.baseline,
+                  },
                 },
-              },
-            };
-          });
+              };
+            },
+            [chatId],
+          );
         },
 
         adoptThread(sourceChatId, targetChatId): void {
           if (sourceChatId === targetChatId) {
             return;
           }
+          const hadPendingPersist = persistTimers.has(sourceChatId);
           cancelPersist(sourceChatId);
           caches.delete(sourceChatId);
+          removeResidencyCandidate(sourceChatId);
+          const sourceHandles = interestHandlesByChatId.get(sourceChatId);
+          if (sourceHandles?.size) {
+            const targetHandles =
+              interestHandlesByChatId.get(targetChatId) ??
+              new Set<ThreadHandle>();
+            for (const handle of Array.from(sourceHandles)) {
+              handle.chatId = targetChatId;
+              targetHandles.add(handle);
+            }
+            interestHandlesByChatId.set(targetChatId, targetHandles);
+            interestHandlesByChatId.delete(sourceChatId);
+          }
+          if (isRetained(targetChatId)) removeResidencyCandidate(targetChatId);
+          else addReleasedMru(targetChatId);
           // The send identity binding follows the thread (the App Advisor
           // first-send adoption): the echo will arrive under the canonical chat
           // id, so the binding must be waiting there. Latest-per-chat still
           // wins if the target already carried one.
           const carriedBinding = optimisticSendBindings.get(sourceChatId);
           if (carriedBinding) {
-            optimisticSendBindings.delete(sourceChatId);
-            optimisticSendBindings.set(targetChatId, carriedBinding);
+            removeOptimisticBinding(sourceChatId);
+            putOptimisticBinding(targetChatId, carriedBinding);
           }
           const carriedConsumed = consumedBindingEchoes.get(sourceChatId);
           if (carriedConsumed?.length) {
@@ -1692,178 +2173,186 @@ export function createChatStore(
               pruneConsumedEchoes([...existing, ...carriedConsumed]),
             );
           }
-          set((state) => {
-            const source = state.threads[sourceChatId];
-            if (!source) {
-              return state;
-            }
-            const target =
-              state.threads[targetChatId] ?? emptyThread(targetChatId);
-            const sourceMessages = source.messages.map((message) =>
-              message.chatId === targetChatId
-                ? message
-                : { ...message, chatId: targetChatId },
-            );
-            // Identify the bound echo FIRST: like ingest and hydrate, a
-            // consumed bound echo is excluded from every text-skew match in
-            // this merge — both the per-message reconcile and the owner
-            // fallback below — so it can never collapse a second same-text
-            // in-flight send during adoption.
-            const binding = optimisticSendBindings.get(targetChatId);
-            const boundEcho = binding
-              ? target.messages.find(
-                  (message) =>
-                    !isOptimisticMessage(message) &&
-                    message.role === 'user' &&
-                    message.messageId === binding.userMessageId,
-                )
-              : undefined;
-            const targetConsumed = consumedEchoIdsFor(targetChatId);
-            let messages = sourceMessages;
-            for (const message of target.messages) {
-              messages = upsertMessage(messages, message);
-              if (
-                !isOptimisticMessage(message) &&
-                message !== boundEcho &&
-                !targetConsumed?.has(message.messageId)
-              ) {
-                messages = reconcileOptimistic(messages, message);
+          set(
+            (state) => {
+              const source = state.threads[sourceChatId];
+              if (!source) {
+                return state;
               }
-            }
-            messages = orderMessages(messages);
-
-            // Identity-bound reconcile against frames the target already holds:
-            // when the canonical echo won the race and landed before adoption,
-            // the bound optimistic row is superseded here regardless of skew.
-            if (binding && boundEcho) {
-              optimisticSendBindings.delete(targetChatId);
-              rememberConsumedEcho(targetChatId, boundEcho);
-              messages = messages.filter(
-                (message) =>
-                  message.messageId !== binding.optimisticLocalId ||
-                  !isOptimisticMessage(message),
+              const target =
+                state.threads[targetChatId] ?? emptyThread(targetChatId);
+              const sourceMessages = source.messages.map((message) =>
+                message.chatId === targetChatId
+                  ? message
+                  : { ...message, chatId: targetChatId },
               );
-            }
-
-            const owner = optimisticRaiseOwners.get(sourceChatId);
-            if (owner) {
-              const ownedOptimistic = sourceMessages.find(
-                (message) =>
-                  message.messageId === owner.localId &&
-                  isOptimisticMessage(message),
-              );
-              const authoritativeEcho =
-                (binding?.optimisticLocalId === owner.localId
-                  ? boundEcho
-                  : undefined) ??
-                (ownedOptimistic
-                  ? target.messages.find(
-                      (message) =>
-                        message !== boundEcho &&
-                        !targetConsumed?.has(message.messageId) &&
-                        hasAuthoritativeMatch([message], ownedOptimistic),
-                    )
-                  : undefined);
-              if (authoritativeEcho) {
-                owner.turnUserMessageId = authoritativeEcho.messageId;
-              } else if (
-                owner.turnUserMessageId.startsWith(OPTIMISTIC_ID_PREFIX)
-              ) {
-                const streamingTimers = target.messages
-                  .filter(
+              // Identify the bound echo FIRST: like ingest and hydrate, a
+              // consumed bound echo is excluded from every text-skew match in
+              // this merge — both the per-message reconcile and the owner
+              // fallback below — so it can never collapse a second same-text
+              // in-flight send during adoption.
+              const binding = optimisticSendBindings.get(targetChatId);
+              const boundEcho = binding
+                ? target.messages.find(
                     (message) =>
-                      message.status === 'streaming' &&
-                      turnTimerUserMessageId(message) !== undefined,
+                      !isOptimisticMessage(message) &&
+                      message.role === 'user' &&
+                      message.messageId === binding.userMessageId,
                   )
-                  .sort((a, b) => messageRevision(a) - messageRevision(b));
-                const streamingTimer =
-                  streamingTimers[streamingTimers.length - 1];
-                const timerUserMessageId = streamingTimer
-                  ? turnTimerUserMessageId(streamingTimer)
-                  : undefined;
-                if (timerUserMessageId) {
-                  owner.turnUserMessageId = timerUserMessageId;
+                : undefined;
+              const targetConsumed = consumedEchoIdsFor(targetChatId);
+              let messages = sourceMessages;
+              for (const message of target.messages) {
+                messages = upsertMessage(messages, message);
+                if (
+                  !isOptimisticMessage(message) &&
+                  message !== boundEcho &&
+                  !targetConsumed?.has(message.messageId)
+                ) {
+                  messages = reconcileOptimistic(messages, message);
                 }
               }
-              optimisticRaiseOwners.delete(sourceChatId);
-              const ownedTurnEnded = target.messages.some(
-                (message) =>
-                  (isTerminalTurnTimerFrame(message) &&
-                    turnTimerUserMessageId(message) ===
-                      owner.turnUserMessageId) ||
-                  (message.role === 'assistant' && message.status === 'failed'),
-              );
-              if (!ownedTurnEnded) {
-                optimisticRaiseOwners.set(targetChatId, owner);
-              }
-            }
+              messages = orderMessages(messages);
 
-            let runtimeState: Pick<
-              ChatThreadState,
-              'status' | 'error' | 'turnActive'
-            > = {
-              status: source.status,
-              error: source.error,
-              turnActive: source.turnActive,
-            };
-            for (const message of target.messages
-              .slice()
-              .sort((a, b) => messageRevision(a) - messageRevision(b))) {
-              if (
-                owner &&
-                isTurnTimerFrame(message) &&
-                turnTimerUserMessageId(message) !== owner.turnUserMessageId
-              ) {
-                continue;
+              // Identity-bound reconcile against frames the target already holds:
+              // when the canonical echo won the race and landed before adoption,
+              // the bound optimistic row is superseded here regardless of skew.
+              if (binding && boundEcho) {
+                removeOptimisticBinding(targetChatId);
+                rememberConsumedEcho(targetChatId, boundEcho);
+                messages = messages.filter(
+                  (message) =>
+                    message.messageId !== binding.optimisticLocalId ||
+                    !isOptimisticMessage(message),
+                );
               }
-              runtimeState = deriveStatus(
-                { ...source, ...runtimeState },
-                message,
-              );
-            }
 
-            const targetCache = cacheFor(targetChatId);
-            targetCache.chatId = '';
-            targetCache.completedGroups = new Map();
-            const turnGroups = computeIncrementalTurnGroups(
-              targetChatId,
-              messages,
-              targetCache,
-              runtimeState.turnActive,
-            );
-            const thread: ChatThreadState = {
-              ...target,
-              chatId: targetChatId,
-              messages,
-              turnGroups,
-              ...runtimeState,
-              queuedMessages: target.queuedMessages,
-              waitingDelegationIds: target.waitingDelegationIds,
-              inputDelivery: target.inputDelivery,
-              steeringCapabilities: target.steeringCapabilities,
-              lastEventAt:
-                target.lastEventAt === undefined
-                  ? source.lastEventAt
-                  : source.lastEventAt === undefined
-                    ? target.lastEventAt
-                    : Math.max(target.lastEventAt, source.lastEventAt),
-              planMode: source.planMode,
-              proposalMode: source.proposalMode,
-              thinkingLevel: source.thinkingLevel,
-              pendingPlanExit: source.pendingPlanExit,
-              route: target.route ?? source.route,
-            };
-            const threads = { ...state.threads, [targetChatId]: thread };
-            delete threads[sourceChatId];
-            const seededSettingsChatIds = {
-              ...(state.seededSettingsChatIds ?? {}),
-            };
-            if (seededSettingsChatIds[sourceChatId]) {
-              seededSettingsChatIds[targetChatId] = true;
-            }
-            delete seededSettingsChatIds[sourceChatId];
-            return { threads, seededSettingsChatIds };
-          });
+              const owner = optimisticRaiseOwners.get(sourceChatId);
+              if (owner) {
+                const ownedOptimistic = sourceMessages.find(
+                  (message) =>
+                    message.messageId === owner.localId &&
+                    isOptimisticMessage(message),
+                );
+                const authoritativeEcho =
+                  (binding?.optimisticLocalId === owner.localId
+                    ? boundEcho
+                    : undefined) ??
+                  (ownedOptimistic
+                    ? target.messages.find(
+                        (message) =>
+                          message !== boundEcho &&
+                          !targetConsumed?.has(message.messageId) &&
+                          hasAuthoritativeMatch([message], ownedOptimistic),
+                      )
+                    : undefined);
+                if (authoritativeEcho) {
+                  updateOptimisticOwnerTurnId(
+                    owner,
+                    authoritativeEcho.messageId,
+                  );
+                } else if (
+                  owner.turnUserMessageId.startsWith(OPTIMISTIC_ID_PREFIX)
+                ) {
+                  const streamingTimers = target.messages
+                    .filter(
+                      (message) =>
+                        message.status === 'streaming' &&
+                        turnTimerUserMessageId(message) !== undefined,
+                    )
+                    .sort((a, b) => messageRevision(a) - messageRevision(b));
+                  const streamingTimer =
+                    streamingTimers[streamingTimers.length - 1];
+                  const timerUserMessageId = streamingTimer
+                    ? turnTimerUserMessageId(streamingTimer)
+                    : undefined;
+                  if (timerUserMessageId) {
+                    updateOptimisticOwnerTurnId(owner, timerUserMessageId);
+                  }
+                }
+                removeOptimisticOwner(sourceChatId);
+                const ownedTurnEnded = target.messages.some(
+                  (message) =>
+                    (isTerminalTurnTimerFrame(message) &&
+                      turnTimerUserMessageId(message) ===
+                        owner.turnUserMessageId) ||
+                    (message.role === 'assistant' &&
+                      message.status === 'failed'),
+                );
+                if (!ownedTurnEnded) {
+                  putOptimisticOwner(targetChatId, owner);
+                }
+              }
+
+              let runtimeState: Pick<
+                ChatThreadState,
+                'status' | 'error' | 'turnActive'
+              > = {
+                status: source.status,
+                error: source.error,
+                turnActive: source.turnActive,
+              };
+              for (const message of target.messages
+                .slice()
+                .sort((a, b) => messageRevision(a) - messageRevision(b))) {
+                if (
+                  owner &&
+                  isTurnTimerFrame(message) &&
+                  turnTimerUserMessageId(message) !== owner.turnUserMessageId
+                ) {
+                  continue;
+                }
+                runtimeState = deriveStatus(
+                  { ...source, ...runtimeState },
+                  message,
+                );
+              }
+
+              const targetCache = cacheFor(targetChatId);
+              targetCache.chatId = '';
+              targetCache.completedGroups = new Map();
+              const turnGroups = computeIncrementalTurnGroups(
+                targetChatId,
+                messages,
+                targetCache,
+                runtimeState.turnActive,
+              );
+              const thread: ChatThreadState = {
+                ...target,
+                chatId: targetChatId,
+                messages,
+                turnGroups,
+                ...runtimeState,
+                queuedMessages: target.queuedMessages,
+                waitingDelegationIds: target.waitingDelegationIds,
+                inputDelivery: target.inputDelivery,
+                steeringCapabilities: target.steeringCapabilities,
+                lastEventAt:
+                  target.lastEventAt === undefined
+                    ? source.lastEventAt
+                    : source.lastEventAt === undefined
+                      ? target.lastEventAt
+                      : Math.max(target.lastEventAt, source.lastEventAt),
+                planMode: source.planMode,
+                proposalMode: source.proposalMode,
+                thinkingLevel: source.thinkingLevel,
+                pendingPlanExit: source.pendingPlanExit,
+                route: target.route ?? source.route,
+              };
+              const threads = { ...state.threads, [targetChatId]: thread };
+              delete threads[sourceChatId];
+              const seededSettingsChatIds = {
+                ...(state.seededSettingsChatIds ?? {}),
+              };
+              if (seededSettingsChatIds[sourceChatId]) {
+                seededSettingsChatIds[targetChatId] = true;
+              }
+              delete seededSettingsChatIds[sourceChatId];
+              return { threads, seededSettingsChatIds };
+            },
+            [sourceChatId, targetChatId],
+          );
+          if (hadPendingPersist) schedulePersist(targetChatId);
         },
 
         seedTabSettings(chatId, settings, options): void {
@@ -1894,39 +2383,46 @@ export function createChatStore(
         },
 
         setPlanMode(chatId, planMode): void {
-          patchThread(chatId, { planMode });
+          patchThread(chatId, { planMode }, true);
           schedulePersist(chatId);
         },
 
         setProposalMode(chatId, proposalMode): void {
-          patchThread(chatId, { proposalMode });
+          patchThread(chatId, { proposalMode }, true);
           schedulePersist(chatId);
         },
 
         setThinkingLevel(chatId, thinkingLevel): void {
-          patchThread(chatId, { thinkingLevel });
+          patchThread(chatId, { thinkingLevel }, true);
           schedulePersist(chatId);
         },
 
         cycleThinkingLevel(chatId, providerType, supportedLevels): void {
-          set((state) => {
-            const prev = state.threads[chatId] ?? emptyThread(chatId);
-            const thinkingLevel = advanceThinkingLevel(
-              prev.thinkingLevel,
-              supportedLevels ?? providerFallbackThinkingLevels(providerType),
-            );
-            return {
-              threads: {
-                ...state.threads,
-                [chatId]: { ...prev, thinkingLevel },
-              },
-            };
-          });
+          set(
+            (state) => {
+              const prev = state.threads[chatId] ?? emptyThread(chatId);
+              const thinkingLevel = advanceThinkingLevel(
+                prev.thinkingLevel,
+                supportedLevels ?? providerFallbackThinkingLevels(providerType),
+              );
+              return {
+                threads: {
+                  ...state.threads,
+                  [chatId]: { ...prev, thinkingLevel },
+                },
+                seededSettingsChatIds: {
+                  ...(state.seededSettingsChatIds ?? {}),
+                  [chatId]: true,
+                },
+              };
+            },
+            [chatId],
+          );
           schedulePersist(chatId);
         },
 
         setPendingPlanExit(chatId, pendingPlanExit): void {
-          patchThread(chatId, { pendingPlanExit });
+          patchThread(chatId, { pendingPlanExit }, true);
           schedulePersist(chatId);
         },
 
@@ -1941,12 +2437,15 @@ export function createChatStore(
 
   let unsubscribe: (() => void) | null = null;
   store[CLIENT_STORE_ACTIVATE] = (): void => {
+    disposed = false;
     if (unsubscribe) return;
     unsubscribe = client.subscribe('chat.message', (event) => {
       store.getState().ingestMessageEvent(event);
     });
   };
   store[CLIENT_STORE_DISPOSE] = (): void => {
+    disposed = true;
+    storeLifetime += 1;
     unsubscribe?.();
     unsubscribe = null;
     persistTimers.forEach((timer) => clearTimeout(timer));
@@ -1959,6 +2458,17 @@ export function createChatStore(
     optimisticSendBindings.clear();
     consumedBindingEchoes.clear();
     caches.clear();
+    for (const handles of Array.from(interestHandlesByChatId.values())) {
+      for (const handle of Array.from(handles)) handle.live = false;
+    }
+    interestHandlesByChatId.clear();
+    releasedMru.length = 0;
+    releasedMruIds.clear();
+    partialResidents.clear();
+    protectedResidents.clear();
+    inFlightPersistCounts.clear();
+    persistEpochs.clear();
+    externallyReferencedMessageIds.clear();
   };
 
   return store;
@@ -1981,4 +2491,57 @@ export function useChatStore<TSelected>(
   selector: (state: ChatStoreState) => TSelected,
 ): TSelected {
   return useChatStoreApi()(selector);
+}
+
+/**
+ * Whether the enclosing chat view is shown. Hosts that keep hidden panes
+ * mounted provide `false` for them, so those panes stop retaining threads.
+ */
+export const ChatThreadVisibleContext = createContext(true);
+
+/** Retain one chat transcript while the calling component is mounted and shown. */
+export function useRetainChatThread(chatId: string | null | undefined): void {
+  const store = useChatStoreApi();
+  const visible = useContext(ChatThreadVisibleContext);
+  useEffect(() => {
+    if (!visible || chatId === null || chatId === undefined) return;
+    return store.getState().retainThread(chatId);
+  }, [chatId, store, visible]);
+}
+
+/** Retain a stable set of chat transcripts while enabled and shown. */
+export function useRetainChatThreads(
+  chatIds: readonly string[],
+  enabled = true,
+): void {
+  const store = useChatStoreApi();
+  const visible = useContext(ChatThreadVisibleContext);
+  // Chat ids never contain NUL, so the joined key round-trips the stable set.
+  const chatIdsKey =
+    enabled && visible
+      ? Array.from(new Set(chatIds)).sort().join('\u0000')
+      : '';
+  const heldRef = useRef(new Map<string, () => void>());
+  useEffect(() => {
+    const held = heldRef.current;
+    const next = new Set(chatIdsKey === '' ? [] : chatIdsKey.split('\u0000'));
+    // Retain additions before releasing departures, so a set change never
+    // leaves a chat that is still shown unretained and evictable.
+    for (const chatId of Array.from(next)) {
+      if (!held.has(chatId))
+        held.set(chatId, store.getState().retainThread(chatId));
+    }
+    for (const [chatId, release] of Array.from(held)) {
+      if (next.has(chatId)) continue;
+      held.delete(chatId);
+      release();
+    }
+  }, [chatIdsKey, store]);
+  useEffect(() => {
+    const held = heldRef.current;
+    return (): void => {
+      for (const release of Array.from(held.values())) release();
+      held.clear();
+    };
+  }, [store]);
 }

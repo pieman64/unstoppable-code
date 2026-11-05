@@ -11,10 +11,20 @@ export { CanopyTransportError };
  */
 export const CANOPY_DEFAULT_MAX_FRAME_BYTES = 8 * 1024 * 1024;
 
+/**
+ * 512 MiB: about V8's longest string, so any JSON message one process can
+ * encode at all fits once a peer reassembles message parts.
+ */
+export const CANOPY_MAX_MESSAGE_BYTES = 512 * 1024 * 1024;
+
 const HEADER_BYTES = 4;
 const JSON_OBJECT_TAG = 0x7b; // '{'
 const JSON_ARRAY_TAG = 0x5b; // '['
 const CHANNEL_DATA_TAG = 0x00;
+const MESSAGE_PART_TAG = 0x01;
+const MESSAGE_PART_FINAL = 0x01;
+/** Tag and flags ahead of a message part's bytes. */
+const MESSAGE_PART_OVERHEAD_BYTES = 2;
 
 function frameError(
   kind: 'invalid_argument' | 'resource_exhausted',
@@ -107,6 +117,42 @@ export function encodeCanopyJsonFrame(
   );
 }
 
+/**
+ * One JSON object as a single frame when it fits, else as consecutive message
+ * parts (`u32` length, `0x01`, flags, UTF-8 bytes; the last part's flags are
+ * `0x01`) of at most `maxMessageBytes` in all. Returned as one buffer so a
+ * single write keeps the parts together.
+ */
+export function encodeCanopyJsonMessage(
+  value: object,
+  maxFrameBytes = CANOPY_DEFAULT_MAX_FRAME_BYTES,
+  maxMessageBytes = maxFrameBytes,
+): Buffer {
+  if (Array.isArray(value))
+    throw frameError('invalid_argument', 'Frames carry one JSON object.');
+  const body = Buffer.from(stringifyJsonSafe(value), 'utf8');
+  if (body.length <= maxFrameBytes)
+    return withLengthPrefix(body, maxFrameBytes);
+  if (body.length > maxMessageBytes)
+    throw frameError(
+      'resource_exhausted',
+      `Message of ${body.length} bytes exceeds the ${Math.max(maxFrameBytes, maxMessageBytes)}-byte cap.`,
+    );
+  const partBytes = maxFrameBytes - MESSAGE_PART_OVERHEAD_BYTES;
+  if (partBytes < 1)
+    throw frameError('invalid_argument', 'Frames are too small for parts.');
+  const frames: Buffer[] = [];
+  for (let offset = 0; offset < body.length; offset += partBytes) {
+    const end = Math.min(offset + partBytes, body.length);
+    const header = Buffer.allocUnsafe(HEADER_BYTES + 2);
+    header.writeUInt32BE(end - offset + MESSAGE_PART_OVERHEAD_BYTES, 0);
+    header[HEADER_BYTES] = MESSAGE_PART_TAG;
+    header[HEADER_BYTES + 1] = end === body.length ? MESSAGE_PART_FINAL : 0;
+    frames.push(header, body.subarray(offset, end));
+  }
+  return Buffer.concat(frames);
+}
+
 /** `u32` length, `0x00`, `u8` channel-id length, ASCII channel id, raw bytes. */
 export function encodeCanopyChannelDataFrame(
   channelId: string,
@@ -124,6 +170,20 @@ export function encodeCanopyChannelDataFrame(
 
 const utf8 = new TextDecoder('utf-8', { fatal: true });
 
+function decodeJson(body: Buffer): CanopyDecodedFrame {
+  if (body[0] !== JSON_OBJECT_TAG && body[0] !== JSON_ARRAY_TAG)
+    throw frameError('invalid_argument', 'Unknown frame type.');
+  let value: unknown;
+  try {
+    value = JSON.parse(utf8.decode(body));
+  } catch {
+    throw frameError('invalid_argument', 'Frame is not valid UTF-8 JSON.');
+  }
+  if (typeof value !== 'object' || value === null)
+    throw frameError('invalid_argument', 'Frames carry one JSON object.');
+  return { type: 'json', value, byteLength: body.length };
+}
+
 function decodeBody(body: Buffer): CanopyDecodedFrame {
   if (body[0] === CHANNEL_DATA_TAG) {
     const idEnd = 2 + (body[1] ?? 0);
@@ -138,31 +198,31 @@ function decodeBody(body: Buffer): CanopyDecodedFrame {
       bytes: new Uint8Array(body.subarray(idEnd)),
     };
   }
-  if (body[0] !== JSON_OBJECT_TAG && body[0] !== JSON_ARRAY_TAG)
-    throw frameError('invalid_argument', 'Unknown frame type.');
-  let value: unknown;
-  try {
-    value = JSON.parse(utf8.decode(body));
-  } catch {
-    throw frameError('invalid_argument', 'Frame is not valid UTF-8 JSON.');
-  }
-  if (typeof value !== 'object' || value === null)
-    throw frameError('invalid_argument', 'Frames carry one JSON object.');
-  return { type: 'json', value, byteLength: body.length };
+  return decodeJson(body);
 }
 
 /**
- * Reassembles frames across arbitrary chunk boundaries. Any error is fatal to
- * the connection: the stream position can no longer be trusted.
+ * Reassembles frames across arbitrary chunk boundaries, and a message's parts
+ * into its one JSON frame. Any error is fatal to the connection: the stream
+ * position can no longer be trusted.
  */
 export class CanopyFrameDecoder {
   private chunks: Buffer[] = [];
   private buffered = 0;
   private bodyLength: number | null = null;
+  private parts: Buffer[] = [];
+  private partBytes = 0;
 
   constructor(
     private readonly maxFrameBytes = CANOPY_DEFAULT_MAX_FRAME_BYTES,
+    /** Parts of one message may total this much; one frame unless raised. */
+    private maxMessageBytes = maxFrameBytes,
   ) {}
+
+  /** Raises or lowers the message cap for parts not yet joined. */
+  setMaxMessageBytes(bytes: number): void {
+    this.maxMessageBytes = bytes;
+  }
 
   /** Appends and decodes every complete frame. */
   push(chunk: Uint8Array): CanopyDecodedFrame[] {
@@ -181,6 +241,32 @@ export class CanopyFrameDecoder {
 
   /** Decodes the next complete frame, or returns null until more bytes arrive. */
   nextFrame(): CanopyDecodedFrame | null {
+    for (let body = this.nextBody(); body; body = this.nextBody()) {
+      if (body[0] !== MESSAGE_PART_TAG) {
+        if (this.parts.length)
+          throw frameError('invalid_argument', 'Message parts interleaved.');
+        return decodeBody(body);
+      }
+      if (body.length <= MESSAGE_PART_OVERHEAD_BYTES)
+        throw frameError('invalid_argument', 'Empty message part.');
+      this.partBytes += body.length - MESSAGE_PART_OVERHEAD_BYTES;
+      if (this.partBytes > this.maxMessageBytes)
+        throw frameError(
+          'resource_exhausted',
+          `Message exceeds the ${this.maxMessageBytes}-byte cap.`,
+        );
+      this.parts.push(Buffer.from(body.subarray(MESSAGE_PART_OVERHEAD_BYTES)));
+      if (body[1] === MESSAGE_PART_FINAL) {
+        const message = Buffer.concat(this.parts, this.partBytes);
+        this.parts = [];
+        this.partBytes = 0;
+        return decodeJson(message);
+      }
+    }
+    return null;
+  }
+
+  private nextBody(): Buffer | null {
     if (this.bodyLength === null) {
       if (this.buffered < HEADER_BYTES) return null;
       const length = this.flatten().readUInt32BE(0);
@@ -201,7 +287,7 @@ export class CanopyFrameDecoder {
     this.chunks = rest.length ? [rest] : [];
     this.buffered = rest.length;
     this.bodyLength = null;
-    return decodeBody(all.subarray(HEADER_BYTES, frameEnd));
+    return all.subarray(HEADER_BYTES, frameEnd);
   }
 
   private flatten(): Buffer {

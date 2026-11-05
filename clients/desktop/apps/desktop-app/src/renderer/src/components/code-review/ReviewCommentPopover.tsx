@@ -24,8 +24,6 @@ export interface ReviewCommentPopoverProps {
   annotationDiscussLabel?: string;
   onClearAnnotation?: () => void;
   onClose: () => void;
-  onMouseEnter?: () => void;
-  onMouseLeave?: () => void;
 }
 
 /**
@@ -50,8 +48,6 @@ export function ReviewCommentPopover({
   annotationDiscussLabel,
   onClearAnnotation,
   onClose,
-  onMouseEnter,
-  onMouseLeave,
 }: ReviewCommentPopoverProps): JSX.Element {
   // Compose mode seeds an initial quoted line when opened from the annotation
   // popover's "Discuss" action (which passes `annotation` even though `mode`
@@ -79,10 +75,14 @@ export function ReviewCommentPopover({
   return (
     <ReviewPopoverShell
       anchorRect={anchorRect}
-      containerClassName="rounded-lg shadow-xl"
+      label={
+        mode === 'compose'
+          ? 'Add comment'
+          : mode === 'thread'
+            ? 'Comment thread'
+            : 'Annotation'
+      }
       onClose={onClose}
-      onMouseEnter={onMouseEnter}
-      onMouseLeave={onMouseLeave}
       dataTestId={dataTestId}
     >
       {mode === 'compose' && (

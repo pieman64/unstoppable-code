@@ -5,6 +5,8 @@
 // here, and the harness in `golden/` fixes them for every host. Any change
 // to a stored line or an aggregated read fails the snapshot.
 import { join } from 'node:path';
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import type {
   CostScopeRef,
   CostScopeView,
@@ -398,5 +400,71 @@ describe('observability golden: pipeline output chunking', () => {
     expect(captures).toHaveLength(3);
     expect(captures[1]).toBe(captures[0]);
     expect(captures[2]).toBe(captures[0]);
+  });
+});
+
+// Every boot loads its own module graph, and each scenario's host stays
+// referenced until the file ends. A disposed host that kept its incarnations
+// held every graph the file loaded, which ran a CI Jest worker out of heap.
+describe('observability golden: disposed hosts', () => {
+  const RELEASE_ROUNDS = 20;
+  const isGc = (value: unknown): value is () => void =>
+    typeof value === 'function';
+
+  /**
+   * Boots and disposes a host in its own frame, so only the host and the weak
+   * references outlive it: one to each incarnation's service and one to a
+   * module from its isolated graph.
+   */
+  async function bootAndDispose(
+    boots: number,
+  ): Promise<{ host: DesktopHost; booted: WeakRef<object>[] }> {
+    useGoldenTimers();
+    try {
+      const host = createDesktopHost(setCurrentService);
+      const booted: WeakRef<object>[] = [];
+      try {
+        for (let boot = 0; boot < boots; boot += 1) {
+          const ingest = await host.boot();
+          await ingest.start();
+          const incarnation = host.incarnations.at(-1);
+          if (!incarnation) throw new Error('Expected a booted incarnation');
+          booted.push(
+            new WeakRef(incarnation.service),
+            new WeakRef(incarnation.attribution),
+          );
+        }
+      } finally {
+        await disposeAll(host);
+      }
+      return { host, booted };
+    } finally {
+      restoreGoldenEnvironment(setCurrentService);
+    }
+  }
+
+  it('releases every incarnation the host booted', async () => {
+    const { host, booted } = await bootAndDispose(2);
+    // Let the job that created the references end so it holds nothing.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    setFlagsFromString('--expose-gc');
+    const gc: unknown = runInNewContext('gc');
+    if (!isGc(gc)) throw new Error('Expected V8 to expose gc');
+    const live = (): boolean[] =>
+      booted.map((ref) => ref.deref() !== undefined);
+    gc();
+    for (
+      let round = 0;
+      round < RELEASE_ROUNDS && live().includes(true);
+      round += 1
+    ) {
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 50);
+      });
+      gc();
+    }
+    expect(live()).toEqual([false, false, false, false]);
+    // The host stays referenced to here, as a scenario's capture is.
+    expect(host.incarnations).toHaveLength(0);
   });
 });

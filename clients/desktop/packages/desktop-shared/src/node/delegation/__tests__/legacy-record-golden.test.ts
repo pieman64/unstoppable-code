@@ -512,13 +512,15 @@ async function captureLegacyGoldens(
     finalText: 'v1 fixture result',
   });
   const v1Stored = await storedRecord(v1Harness.storage, v1Id);
+  // Install the legacy fixture only after its previous owner is closed. A
+  // live broker now rejects replacement files that mismatch its summary.
+  await v1Harness.broker.close();
   await v1Harness.storage.commit({
     ...v1Stored,
     version: 1,
     state: { ...v1Stored.state, approvalPending: true },
   });
   v1BeforeOwnedUpdate = await recordBytes(v1Harness.recordsDirectory, v1Id);
-  await v1Harness.broker.close();
   const v1Restarted = createFileHarness(
     temporaryRoot,
     'v1-owned-update',
@@ -974,9 +976,22 @@ async function captureLegacyGoldens(
   );
   const restart = createFileHarness(
     temporaryRoot,
-    'restart-records',
+    'restart-recovered-records',
     resumableOptions({ capacity: 1 }),
   );
+  // A crash leaves the old process unable to write. Give recovery an exact
+  // durable snapshot without letting the still-live fixture broker later
+  // overwrite the recovered generation during its own cleanup.
+  await restart.storage.prepareDirectory();
+  for (const record of await restartInitial.storage.load())
+    await writeFile(
+      path.join(restart.recordsDirectory, `${record.state.delegationId}.json`),
+      await recordBytes(
+        restartInitial.recordsDirectory,
+        record.state.delegationId,
+      ),
+      { mode: 0o600 },
+    );
   await restart.broker.initialize();
   const inFlightSnapshot = snapshotOf(restart.broker, inFlightId);
   const neverDispatchedSnapshot = snapshotOf(restart.broker, neverDispatchedId);

@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
@@ -67,7 +67,15 @@ test.describe('chat tool-call live turn', () => {
     );
 
     // Phase 1: real git worktree (plain `ts-pnpm-vite` fixture).
-    seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+    const seeded = seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+    const reportPath = path.join(
+      seeded.workspaces[0].worktreePath,
+      'canopy-report.md',
+    );
+    const resultsPath = path.join(
+      seeded.workspaces[0].worktreePath,
+      'canopy-results.csv',
+    );
     seedWorkspaceApprovals({
       userDataDir,
       workspaceId: WORKSPACE_ID,
@@ -96,6 +104,22 @@ test.describe('chat tool-call live turn', () => {
               {
                 name: 'mcp__canopy__GetScriptOutput',
                 input: { scriptId: SCRIPT_ID },
+              },
+            ],
+            stopReason: 'tool_use',
+          },
+          {
+            toolCalls: [
+              {
+                name: 'Write',
+                input: {
+                  file_path: reportPath,
+                  content: '# Tool output report\n',
+                },
+              },
+              {
+                name: 'Write',
+                input: { file_path: resultsPath, content: 'result,42\n' },
               },
             ],
             stopReason: 'tool_use',
@@ -152,6 +176,17 @@ test.describe('chat tool-call live turn', () => {
       await expect(panel.getByText(FOLLOW_UP_REPLY).first()).toBeVisible({
         timeout: 90_000,
       });
+
+      // Tool-created files must remain reachable from the transcript summary.
+      const files = panel.getByTestId('turn-files').last();
+      const disclosure = files.locator('button[aria-expanded="false"]');
+      if (await disclosure.count()) await disclosure.press('Enter');
+      await files
+        .getByRole('button', { name: /^(?:Open )?canopy-report\.md$/ })
+        .click();
+      const viewer = window.getByTestId('file-viewer');
+      await expect(viewer).toContainText('canopy-report.md');
+      expect(readFileSync(reportPath, 'utf8')).toBe('# Tool output report\n');
     } finally {
       await closeCanopy(electronApp, userDataDir);
     }

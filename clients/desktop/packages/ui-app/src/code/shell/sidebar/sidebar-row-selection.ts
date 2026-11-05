@@ -6,8 +6,12 @@ import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react';
  * A selection holds one kind of row: a gesture on a row of another kind
  * replaces it, so a rail never mixes worktrees and chats.
  * Separate from navigation: selecting rows never moves the open row.
- * A plain row click navigates and ends the selection (the rows clear it),
- * and so does a click anywhere else (the bulk hook listens for it).
+ * The gestures follow a macOS Finder list: a plain row click navigates, ends
+ * the selection, and anchors the row it opened (the rows call `anchor`);
+ * Cmd-click toggles one row and re-anchors there; Shift-click (with or
+ * without Cmd) selects from the anchor to the row, replacing the previous
+ * Shift range but keeping earlier picks; Shift+Up/Down move that range's far
+ * end. A click anywhere else ends it too (the bulk hook listens for it).
  */
 
 /** What a selectable row is; a selection holds rows of one kind. */
@@ -55,13 +59,20 @@ export type SidebarSelectionRows = ReadonlyMap<
 interface SidebarSelectionAnchor {
   readonly listId: string;
   readonly key: string;
+  /** The anchored row's kind, set when a plain click anchors without a pick. */
+  readonly kind?: SidebarRowKind;
 }
 
 export interface SidebarRowSelectionState {
   readonly keys: ReadonlySet<string>;
   /** The kind every selected key has; absent exactly when `keys` is empty. */
   readonly kind?: SidebarRowKind;
+  /** Where Shift ranges start: the last plain or Cmd-clicked row. */
   readonly anchor?: SidebarSelectionAnchor;
+  /** The far end of the current Shift range, which Shift+arrows move. */
+  readonly lead?: string;
+  /** The picks made before the current Shift range, which a new range keeps. */
+  readonly base?: ReadonlySet<string>;
 }
 
 export type SidebarRowSelectionAction =
@@ -70,6 +81,8 @@ export type SidebarRowSelectionAction =
       readonly listId: string;
       readonly key: string;
       readonly kind: SidebarRowKind;
+      /** The rows open now; a Cmd-click seeds the anchor only while it is one. */
+      readonly openKeys?: ReadonlySet<string>;
     }
   | {
       readonly type: 'selectRange';
@@ -77,6 +90,15 @@ export type SidebarRowSelectionAction =
       readonly key: string;
       readonly kind: SidebarRowKind;
       readonly rows: readonly SidebarSelectionRow[];
+    }
+  /** A plain click: no selection, with Shift ranges starting at `key`. */
+  | {
+      readonly type: 'anchor';
+      readonly listId: string;
+      readonly key: string;
+      readonly kind: SidebarRowKind;
+      /** Moves only the anchor, keeping the picks (Shift+Arrow in a new list). */
+      readonly keepKeys?: boolean;
     }
   | {
       readonly type: 'selectAllInList';
@@ -136,10 +158,22 @@ function withKeys(
   keys: ReadonlySet<string>,
   kind: SidebarRowKind | undefined,
   anchor: SidebarSelectionAnchor | undefined,
+  range?: { readonly lead: string; readonly base: ReadonlySet<string> },
 ): SidebarRowSelectionState {
-  if (keys.size === 0)
-    return anchor === undefined ? { keys } : { keys, anchor };
-  return anchor === undefined ? { keys, kind } : { keys, kind, anchor };
+  const state: SidebarRowSelectionState =
+    keys.size === 0 || kind === undefined ? { keys } : { keys, kind };
+  if (anchor === undefined) return state;
+  return range === undefined
+    ? { ...state, anchor }
+    : { ...state, anchor, lead: range.lead, base: range.base };
+}
+
+/** The selectable rows of one kind, in the order the list renders them. */
+function selectableOfKind(
+  rows: readonly SidebarSelectionRow[],
+  kind: SidebarRowKind,
+): readonly SidebarSelectionRow[] {
+  return rows.filter((row) => row.selectable && row.kind === kind);
 }
 
 /** A gesture on a row of another kind starts from an empty selection. */
@@ -157,12 +191,26 @@ function toggleKey(
   listId: string,
   key: string,
   kind: SidebarRowKind,
+  openKeys: ReadonlySet<string> | undefined,
 ): SidebarRowSelectionState {
   const base = forKind(state, kind);
   const keys = new Set(base.keys);
+  // Finder: Cmd-click after a plain click keeps the row that click opened.
+  const anchor = base.anchor;
+  if (
+    keys.size === 0 &&
+    anchor !== undefined &&
+    anchor.listId === listId &&
+    anchor.kind === kind &&
+    anchor.key !== key &&
+    // Navigation outside the rail can leave the anchor on a closed row.
+    openKeys?.has(anchor.key) === true
+  ) {
+    keys.add(anchor.key);
+  }
   if (keys.has(key)) keys.delete(key);
   else keys.add(key);
-  return withKeys(keys, kind, { listId, key });
+  return withKeys(keys, kind, { listId, key }, { lead: key, base: keys });
 }
 
 function selectRange(
@@ -172,7 +220,7 @@ function selectRange(
   kind: SidebarRowKind,
   rows: readonly SidebarSelectionRow[],
 ): SidebarRowSelectionState {
-  const selectable = rows.filter((row) => row.selectable && row.kind === kind);
+  const selectable = selectableOfKind(rows, kind);
   const targetIndex = selectable.findIndex((row) => row.key === key);
   if (targetIndex === -1) return state;
   const base = forKind(state, kind);
@@ -181,17 +229,55 @@ function selectRange(
     anchor?.listId === listId
       ? selectable.findIndex((row) => row.key === anchor.key)
       : -1;
-  const keys = new Set(base.keys);
   // No usable anchor (none yet, another list, another kind, or no longer
   // selectable): select the one row and anchor there.
   if (anchor === undefined || anchorIndex === -1) {
+    const keys = new Set(base.keys);
     keys.add(key);
-    return withKeys(keys, kind, { listId, key });
+    return withKeys(keys, kind, { listId, key }, { lead: key, base: keys });
   }
+  // The previous Shift range from this anchor is replaced; picks made
+  // before it stay.
+  const kept = base.base ?? base.keys;
+  const keys = new Set(kept);
   const from = Math.min(anchorIndex, targetIndex);
   const to = Math.max(anchorIndex, targetIndex);
   for (const row of selectable.slice(from, to + 1)) keys.add(row.key);
-  return withKeys(keys, kind, anchor);
+  return withKeys(keys, kind, anchor, { lead: key, base: kept });
+}
+
+/** Whether Shift ranges in `listId` for `kind` start at the state's anchor. */
+function anchoredIn(
+  state: SidebarRowSelectionState,
+  listId: string,
+  kind: SidebarRowKind,
+): boolean {
+  if (state.anchor?.listId !== listId) return false;
+  return (state.kind ?? state.anchor.kind ?? kind) === kind;
+}
+
+/**
+ * The row Shift+Up/Down moves the current range's far end to: one selectable
+ * row past the lead (or the anchor, or `fromKey` with neither), clamped to
+ * the list. `undefined` when there is nothing to move.
+ */
+function sidebarSelectionStepTarget(
+  state: SidebarRowSelectionState,
+  listId: string,
+  fromKey: string,
+  step: 1 | -1,
+  rows: readonly SidebarSelectionRow[],
+  kind: SidebarRowKind,
+): string | undefined {
+  const selectable = selectableOfKind(rows, kind);
+  const lead = anchoredIn(state, listId, kind)
+    ? (state.lead ?? state.anchor?.key ?? fromKey)
+    : fromKey;
+  const index = selectable.findIndex((row) => row.key === lead);
+  if (index === -1) return undefined;
+  const next =
+    selectable[Math.max(0, Math.min(selectable.length - 1, index + step))];
+  return next?.key;
 }
 
 function selectAll(
@@ -201,9 +287,7 @@ function selectAll(
 ): SidebarRowSelectionState {
   const base = forKind(state, kind);
   const keys = new Set(base.keys);
-  for (const row of rows) {
-    if (row.selectable && row.kind === kind) keys.add(row.key);
-  }
+  for (const row of selectableOfKind(rows, kind)) keys.add(row.key);
   if (base === state && keys.size === state.keys.size) return state;
   return withKeys(keys, kind, base.anchor);
 }
@@ -218,7 +302,20 @@ function prune(
       ? state.anchor
       : undefined;
   if (keys.size === state.keys.size && anchor === state.anchor) return state;
-  return withKeys(keys, state.kind, anchor);
+  // A vanished range end falls back to the anchor, so the range keeps its
+  // earlier picks instead of treating every selected row as one.
+  const lead =
+    state.lead !== undefined && visibleKeys.has(state.lead)
+      ? state.lead
+      : anchor?.key;
+  const range =
+    lead === undefined || state.base === undefined
+      ? undefined
+      : {
+          lead,
+          base: new Set([...state.base].filter((key) => visibleKeys.has(key))),
+        };
+  return withKeys(keys, state.kind, anchor, range);
 }
 
 export function sidebarRowSelectionReducer(
@@ -227,7 +324,13 @@ export function sidebarRowSelectionReducer(
 ): SidebarRowSelectionState {
   switch (action.type) {
     case 'toggle':
-      return toggleKey(state, action.listId, action.key, action.kind);
+      return toggleKey(
+        state,
+        action.listId,
+        action.key,
+        action.kind,
+        action.openKeys,
+      );
     case 'selectRange':
       return selectRange(
         state,
@@ -235,6 +338,27 @@ export function sidebarRowSelectionReducer(
         action.key,
         action.kind,
         action.rows,
+      );
+    case 'anchor':
+      if (action.keepKeys === true) {
+        const kept = forKind(state, action.kind);
+        return withKeys(
+          kept.keys,
+          kept.keys.size === 0 ? undefined : action.kind,
+          { listId: action.listId, key: action.key, kind: action.kind },
+          { lead: action.key, base: kept.keys },
+        );
+      }
+      // An empty selection keeps its key set, so anchoring on navigation
+      // does not re-render the rows.
+      return withKeys(
+        state.keys.size === 0 ? state.keys : new Set(),
+        undefined,
+        {
+          listId: action.listId,
+          key: action.key,
+          kind: action.kind,
+        },
       );
     case 'selectAllInList':
       return selectAll(state, action.kind, action.rows);
@@ -257,7 +381,7 @@ export interface SidebarRowSelection {
   readonly keys: ReadonlySet<string>;
   /** The kind of the selected rows; `undefined` while nothing is selected. */
   readonly kind: SidebarRowKind | undefined;
-  /** True while any row is selected: selected rows show the accent tint. */
+  /** True while any row is selected: selected rows take the open row's fill. */
   readonly active: boolean;
   readonly count: number;
   readonly isSelected: (key: string) => boolean;
@@ -266,6 +390,17 @@ export interface SidebarRowSelection {
   /** Shift-click: from the anchor to `key` over the list's rendered rows. */
   readonly selectRange: (listId: string, key: string) => void;
   readonly selectAllInList: (listId: string) => void;
+  /** A plain click on `key`: clears the selection and anchors Shift there. */
+  readonly anchor: (listId: string, key: string) => void;
+  /**
+   * Shift+Up/Down from the focused `key`: moves the Shift range's far end one
+   * row and returns that row's key, for the caller to focus.
+   */
+  readonly extend: (
+    listId: string,
+    key: string,
+    step: 1 | -1,
+  ) => string | undefined;
   readonly clear: () => void;
   readonly replace: (keys: readonly string[]) => void;
 }
@@ -289,16 +424,18 @@ export function useSidebarRowSelection(
   // that becomes unselectable (hidden, removal withdrawn) leaves it. Kinds
   // cover every reported row, so a selected row that turned unselectable can
   // still be toggled off.
-  const { visibleKeys, kindByKey } = useMemo(() => {
+  const { visibleKeys, kindByKey, openKeys } = useMemo(() => {
     const keys = new Set<string>();
     const kinds = new Map<string, SidebarRowKind>();
+    const open = new Set<string>();
     for (const listRows of rows.values()) {
       for (const row of listRows) {
         kinds.set(row.key, row.kind);
         if (row.selectable) keys.add(row.key);
+        if (row.open === true) open.add(row.key);
       }
     }
-    return { visibleKeys: keys, kindByKey: kinds };
+    return { visibleKeys: keys, kindByKey: kinds, openKeys: open };
   }, [rows]);
 
   useEffect(() => {
@@ -316,9 +453,9 @@ export function useSidebarRowSelection(
       if (!keysRef.current.has(key) && !visibleKeys.has(key)) return;
       const kind = kindByKey.get(key);
       if (kind === undefined) return;
-      dispatch({ type: 'toggle', listId, key, kind });
+      dispatch({ type: 'toggle', listId, key, kind, openKeys });
     },
-    [visibleKeys, kindByKey],
+    [visibleKeys, kindByKey, openKeys],
   );
   const selectRange = useCallback(
     (listId: string, key: string): void => {
@@ -342,6 +479,46 @@ export function useSidebarRowSelection(
       dispatch({ type: 'selectAllInList', kind, rows: listRows });
     },
     [rowsFor],
+  );
+  const anchor = useCallback(
+    (listId: string, key: string): void => {
+      const kind = kindByKey.get(key);
+      if (kind === undefined) return;
+      dispatch({ type: 'anchor', listId, key, kind });
+    },
+    [kindByKey],
+  );
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const extend = useCallback(
+    (listId: string, key: string, step: 1 | -1): string | undefined => {
+      const kind = kindByKey.get(key);
+      if (kind === undefined) return undefined;
+      const listRows = rowsFor(listId);
+      const target = sidebarSelectionStepTarget(
+        stateRef.current,
+        listId,
+        key,
+        step,
+        listRows,
+        kind,
+      );
+      if (target === undefined) return undefined;
+      const current = stateRef.current;
+      // No anchor in this list yet: the focused row anchors the range.
+      if (!anchoredIn(current, listId, kind)) {
+        dispatch({ type: 'anchor', listId, key, kind, keepKeys: true });
+      }
+      dispatch({
+        type: 'selectRange',
+        listId,
+        key: target,
+        kind,
+        rows: listRows,
+      });
+      return target;
+    },
+    [kindByKey, rowsFor],
   );
   const clear = useCallback((): void => dispatch({ type: 'clear' }), []);
   // A batch's completion calls `replace` from the render that confirmed it,
@@ -372,10 +549,14 @@ export function useSidebarRowSelection(
       toggle,
       selectRange,
       selectAllInList,
+      anchor,
+      extend,
       clear,
       replace,
     }),
     [
+      anchor,
+      extend,
       state.keys,
       state.kind,
       toggle,

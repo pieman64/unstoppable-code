@@ -61,13 +61,13 @@ import { useSidebarPageHandoffStore } from '@/stores/sidebarPageHandoffStore';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import {
   ArchivedContainersNavLink,
-  LoadingSpinner,
   summarizeCommandFailure,
 } from '@canopy/ui-shared';
 import { openArchivedOverviewSurface } from '@/lib/archivedContainerNavigation';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { resolveNavigationTarget } from '@/lib/navigation/page-availability';
 import { useDesktopPendingProjects } from './desktopPendingProjects';
+import { SidebarProjectsSkeleton } from './SidebarProjectsSkeleton';
 import { useHomeComposerStore } from '@/stores/homeComposerStore';
 import { TeardownFailedError, useProjectsStore } from '@/stores/projectsStore';
 import { finishWorktreeArchive } from '@/components/worktree/finishWorktreeArchive';
@@ -1773,16 +1773,7 @@ export function DesktopSharedSidebarHost({
         className="group/section min-h-px"
         data-testid="sidebar-section-code"
       >
-        <div
-          role="status"
-          className="flex flex-col items-center gap-2 px-1 pt-2"
-          data-testid="sidebar-section-code-loading"
-        >
-          <span className="text-s font-normal fg-secondary">
-            Loading projects
-          </span>
-          <LoadingSpinner tone="secondary" />
-        </div>
+        <SidebarProjectsSkeleton />
       </div>
     );
   }

@@ -217,7 +217,12 @@ type ChatAutomationPipeline = ReturnType<typeof chatAutomationToPipeline>;
 /** The action that runs `pipeline` as the owned pipeline `pipelineId`. */
 function ownedPipelineAction(
   pipelineId: string,
-  { pipeline, inputs, modelAliasPreferences }: ChatAutomationPipeline,
+  {
+    pipeline,
+    inputs,
+    modelAliasPreferences,
+    pluginCollectionPreferences,
+  }: ChatAutomationPipeline,
 ): AutomationAction {
   return {
     type: 'worktree_pipeline',
@@ -228,6 +233,8 @@ function ownedPipelineAction(
     inputs,
     // An Agent runs through the pipeline's model alias.
     ...(modelAliasPreferences ? { modelAliasPreferences } : {}),
+    // Local plugin selections, through the pipeline's plugin collection.
+    ...(pluginCollectionPreferences ? { pluginCollectionPreferences } : {}),
   };
 }
 

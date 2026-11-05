@@ -15,7 +15,7 @@ import {
 import {
   DelayedLoadingPlaceholder,
   ErrorBanner,
-  SettingsFormSkeleton,
+  Skeleton,
   type LabsExperimentRowView,
 } from '@canopy/ui-shared/components';
 import { useSettingsClient } from '../host';
@@ -34,6 +34,25 @@ function parseExperiments(value: unknown): AccountLabsExperiment[] {
   if (!parsed.success) throw new Error('Invalid account Labs response');
   return parsed.data.experiments;
 }
+
+/**
+ * A sample experiment for the loading state. It never shows: `Skeleton`
+ * measures the real section rendered with it into bars.
+ */
+const SAMPLE_PORT: LabsSettingsPort = {
+  rows: [
+    {
+      id: 'sample-experiment',
+      name: 'Sample experiment',
+      description: 'Try a page before it ships.',
+      checked: false,
+      disabled: true,
+      group: 'pages',
+    },
+  ],
+  error: null,
+  onToggle: () => undefined,
+};
 
 /**
  * Account Labs over the `account.labs.*` settings operations, for hosts
@@ -156,7 +175,15 @@ export function AccountLabsSection(): JSX.Element {
   if (experiments === null)
     return (
       <DelayedLoadingPlaceholder>
-        <SettingsFormSkeleton rows={1} />
+        <Skeleton
+          loading
+          label="Loading experiments"
+          testId="settings-skeleton-form"
+        >
+          <LabsSettingsPortProvider value={SAMPLE_PORT}>
+            <LabsSettingsSection />
+          </LabsSettingsPortProvider>
+        </Skeleton>
       </DelayedLoadingPlaceholder>
     );
   if (experiments.length === 0)

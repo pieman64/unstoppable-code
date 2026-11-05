@@ -13,6 +13,7 @@ import {
   type ReactNode,
 } from 'react';
 import { SearchBar } from '@canopy/ui-shared/components/SearchBar';
+import { PaneSheet } from '@canopy/ui-shared/components/Sheet';
 import { createDomSearchExecutor } from '@canopy/ui-shared/lib/dom-search-highlight';
 
 interface PreviewSearchContextValue {
@@ -312,11 +313,13 @@ export function FilePreviewSearch({
         {header}
         <div className="relative flex min-h-0 flex-1 flex-col">
           {enabled && opened && !headless && (
-            <div
-              data-testid="file-preview-search-drawer"
+            <PaneSheet
+              placement="top-end"
+              width="search"
+              padding="controls"
               role="search"
               aria-label="Find in preview"
-              className="absolute right-2 top-2 z-20 w-90 max-w-[calc(100%-1rem)] rounded-lg bg-quaternary p-2 shadow-lg"
+              data-testid="file-preview-search-drawer"
             >
               <SearchBar
                 query={query}
@@ -339,7 +342,7 @@ export function FilePreviewSearch({
                 autoFocus
                 label="Find in preview"
               />
-            </div>
+            </PaneSheet>
           )}
           <style>{`::highlight(${names.matches}) { background-color: color-mix(in srgb, var(--fg-warning) 35%, transparent); color: inherit; } ::highlight(${names.active}) { background-color: color-mix(in srgb, var(--fg-warning) 65%, transparent); }`}</style>
           <div

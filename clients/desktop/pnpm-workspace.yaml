@@ -5,6 +5,7 @@ packages:
   - packages/plugin-interop
   - packages/agent-actions
   - packages/agent-transcript
+  - packages/memory-consolidation
   - packages/core-runtime
   - packages/core-platform
   - packages/core-transport
@@ -46,8 +47,21 @@ allowBuilds:
 patchedDependencies:
   '@datadog/electron-sdk@0.2.0': patches/@datadog__electron-sdk@0.2.0.patch
   builder-util-runtime@9.5.1: patches/builder-util-runtime@9.5.1.patch
+  electron-vite@5.0.0: patches/electron-vite@5.0.0.patch
+  playwright-core@1.64.1: patches/playwright-core@1.64.1.patch
 permissions:
   dotenv:
     skills: false
   fallow:
     skills: false
+minimumReleaseAgeExclude:
+  - '@better-auth/core@1.7.16'
+  - '@better-auth/drizzle-adapter@1.7.16'
+  - '@better-auth/kysely-adapter@1.7.16'
+  - '@better-auth/memory-adapter@1.7.16'
+  - '@better-auth/mongo-adapter@1.7.16'
+  - '@better-auth/prisma-adapter@1.7.16'
+  - '@better-auth/telemetry@1.7.16'
+  - better-auth@1.7.16
+  - better-call@1.4.5
+  - electron@45.2.2

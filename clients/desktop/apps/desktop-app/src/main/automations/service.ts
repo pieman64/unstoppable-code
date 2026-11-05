@@ -6339,7 +6339,12 @@ export class AutomationsService {
 
   private async persistAndNotify(file: AutomationsFile): Promise<void> {
     await this.writeFile(file);
-    this.surfaces?.onChange?.(await contextSnapshot(file));
+    try {
+      this.surfaces?.onChange?.(await contextSnapshot(file));
+    } catch (error) {
+      // Surface refresh failures must not interrupt an already-persisted run.
+      logMainProcessError('Failed to notify automation surfaces', error);
+    }
   }
 
   private enqueueMutation<T>(fn: () => Promise<T>): Promise<T> {

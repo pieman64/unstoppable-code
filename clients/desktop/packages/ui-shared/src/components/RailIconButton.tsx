@@ -5,6 +5,7 @@ import {
   type ReactNode,
 } from 'react';
 import type { AppIcon } from '../icons/AppIcons';
+import { Button, type ButtonVariant } from './Button';
 import { Tooltip } from './Tooltip';
 
 /**
@@ -30,40 +31,76 @@ export interface RailIconButtonProps extends Omit<
   /** App glyph size. Defaults to 16px; optical exceptions can override. */
   iconSize?: number;
   iconClassName?: string;
-  /** Compact is 24px; row matches the canonical 32px sidebar item height. */
+  /**
+   * `compact` is the 28px `sm` icon-only `Button`; `row` the 32px `md` one,
+   * the canonical sidebar item height.
+   */
   size?: RailIconButtonSize;
   /** Reveal the control only when its `group/sidebar-item` header is hovered. */
   revealOnItemHover?: boolean;
-  /** Preserve an accessible touch target on coarse-pointer layouts. */
+  /**
+   * Hold a 44px square slot on coarse-pointer layouts. The `Button`'s own hit
+   * area already grows to 44px there; this keeps the row's layout.
+   */
   coarsePointerTarget?: boolean;
   /**
-   * Keep a 44px minimum height on every pointer, not only coarse ones, for a
+   * Hold a 44px minimum height on every pointer, not only coarse ones, for a
    * header laid out for touch.
    */
   touchTarget?: boolean;
-  /** Opt into a tone-specific hover surface; the default is icon-only hover. */
+  /**
+   * Opt into a tone-specific hover surface; the default is icon-only hover.
+   * Only the `section` and `destructive` tones read it: the `Button` tones
+   * always have their hover surface.
+   */
   hoverSurface?: boolean;
   tone?: RailIconButtonTone;
   /** Visible tooltip text. Defaults to `title`, then `aria-label`. */
   tooltipLabel?: ReactNode;
 }
 
-const TONE_CLASS_NAMES: Record<RailIconButtonTone, string> = {
-  neutral: 'fg-tertiary hover:bg-subtle hover:fg-primary',
+/**
+ * The tones a `Button` variant draws (docs/design/buttons.md): `neutral` is
+ * the quiet ghost repeated on every row, `secondary` the ghost over a raised
+ * or hovered surface, `warning` the quiet warning action. Each always has
+ * its hover surface, so `hoverSurface` does not change them.
+ */
+const BUTTON_TONE_VARIANTS: Record<
+  Exclude<RailIconButtonTone, NativeTone>,
+  ButtonVariant
+> = {
+  neutral: 'ghost-quiet',
+  secondary: 'ghost-overlay',
+  warning: 'ghost-warning',
+};
+
+/**
+ * The two tones no `Button` variant draws stay a native button with the
+ * same 28px/32px circle: `section` rests in the section header's quaternary
+ * ink, and `destructive` rests in tertiary ink and turns destructive only
+ * under the pointer (`ghost-destructive` is destructive at rest).
+ */
+type NativeTone = 'section' | 'destructive';
+
+const NATIVE_SIZE_CLASS_NAMES: Record<RailIconButtonSize, string> = {
+  compact: 'h-7 w-7 rounded-full',
+  row: 'h-8 w-8 rounded-full',
+};
+
+const NATIVE_TONE_CLASS_NAMES: Record<NativeTone, string> = {
   section: 'fg-quaternary hover:bg-subtle hover:fg-primary',
-  secondary: 'fg-secondary hover:bg-subtle',
-  warning: 'fg-warning hover:bg-warning-subtle hover:fg-warning',
   destructive: 'fg-tertiary hover:bg-destructive-subtle hover:fg-destructive',
 };
 
 /** Without a hover surface only the ink answers the pointer. */
-const QUIET_TONE_CLASS_NAMES: Record<RailIconButtonTone, string> = {
-  neutral: 'fg-tertiary hover:fg-primary',
+const QUIET_NATIVE_TONE_CLASS_NAMES: Record<NativeTone, string> = {
   section: 'fg-quaternary hover:fg-primary',
-  secondary: 'fg-secondary',
-  warning: 'fg-tertiary hover:fg-primary',
   destructive: 'fg-tertiary hover:fg-primary',
 };
+
+function isNativeTone(tone: RailIconButtonTone): tone is NativeTone {
+  return tone === 'section' || tone === 'destructive';
+}
 
 /** Canonical compact icon action for sidebar and rail item headers. */
 export const RailIconButton = forwardRef<
@@ -92,33 +129,52 @@ export const RailIconButton = forwardRef<
   const resolvedTooltipLabel = tooltipLabel ?? title ?? ariaLabel;
   const revealClassName =
     'inline-flex opacity-0 pointer-events-none transition-opacity group-hover/sidebar-item:opacity-100 group-hover/sidebar-item:pointer-events-auto group-focus-within/sidebar-item:opacity-100 group-focus-within/sidebar-item:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto pointer-coarse:opacity-100 pointer-coarse:pointer-events-auto';
-  const revealControlClassName = revealOnItemHover
-    ? 'opacity-0 group-hover/sidebar-item:opacity-100 group-focus-within/sidebar-item:opacity-100 focus:opacity-100 pointer-coarse:opacity-100'
-    : '';
-  const sizeClassName =
-    size === 'row' ? 'h-8 w-8 rounded-row' : 'h-6 w-6 rounded-md';
-  const hoverClassName = hoverSurface
-    ? TONE_CLASS_NAMES[tone]
-    : QUIET_TONE_CLASS_NAMES[tone];
+  const glyph = <Icon size={iconSize} className={iconClassName} />;
+  // The 44px floors. A native button grows to them itself; a `Button` sizes
+  // itself, so its slot holds them while its own hit area reaches 44px on a
+  // coarse pointer.
+  const floorClassName = `${coarsePointerTarget ? 'pointer-coarse:min-h-11 pointer-coarse:min-w-11' : ''} ${touchTarget ? 'min-h-11' : ''}`;
+  const native = isNativeTone(tone);
+
+  const button = native ? (
+    <button
+      ref={ref}
+      type={type}
+      aria-label={ariaLabel}
+      className={`focus-ring inline-flex shrink-0 items-center justify-center border-0 bg-transparent transition-[color,background-color,opacity] disabled:cursor-not-allowed disabled:opacity-30 ${NATIVE_SIZE_CLASS_NAMES[size]} ${
+        hoverSurface
+          ? NATIVE_TONE_CLASS_NAMES[tone]
+          : QUIET_NATIVE_TONE_CLASS_NAMES[tone]
+      } ${floorClassName} ${className}`}
+      {...props}
+    >
+      {glyph}
+    </button>
+  ) : (
+    <Button
+      ref={ref}
+      type={type}
+      variant={BUTTON_TONE_VARIANTS[tone]}
+      size={size === 'row' ? 'md' : 'sm'}
+      iconOnly
+      aria-label={ariaLabel ?? ''}
+      // Without a 44px slot to hold it, the Button's coarse-pointer hit area
+      // would reach over the controls beside it (header clusters 2px apart,
+      // the account footer), so it keeps its own 28px/32px target, as the
+      // native rail buttons did. Switches to Button's `touchArea` (#7528).
+      className={`${coarsePointerTarget ? '' : 'pointer-coarse:before:hidden'} ${className}`}
+      {...props}
+    >
+      {glyph}
+    </Button>
+  );
 
   const control = (
     <Tooltip
       label={resolvedTooltipLabel}
       disabled={resolvedTooltipLabel == null || resolvedTooltipLabel === ''}
     >
-      <button
-        ref={ref}
-        type={type}
-        aria-label={ariaLabel}
-        className={`focus-ring inline-flex shrink-0 items-center justify-center border-0 bg-transparent transition-[color,background-color,opacity] disabled:cursor-not-allowed disabled:opacity-30 ${sizeClassName} ${hoverClassName} ${revealControlClassName} ${
-          coarsePointerTarget
-            ? 'pointer-coarse:min-h-11 pointer-coarse:min-w-11'
-            : ''
-        }${touchTarget ? ' min-h-11' : ''} ${className}`}
-        {...props}
-      >
-        <Icon size={iconSize} className={iconClassName} />
-      </button>
+      {button}
     </Tooltip>
   );
 
@@ -127,7 +183,9 @@ export const RailIconButton = forwardRef<
   // applying both utilities to Tooltip's wrapper makes the control visible at
   // rest regardless of the row's hover state.
   return (
-    <span className={revealOnItemHover ? revealClassName : 'inline-flex'}>
+    <span
+      className={`${revealOnItemHover ? revealClassName : 'inline-flex'} shrink-0 items-center justify-center ${native ? '' : floorClassName}`}
+    >
       {control}
     </span>
   );

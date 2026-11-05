@@ -603,6 +603,21 @@ export function createCanopyDispatcher(
         end('error', canopyStreamBufferExhaustedError().payload);
       return { ...cursor };
     };
+    const endDeclared = (
+      outcome: 'completed' | 'cancelled' | 'error',
+      error?: CanopyErrorPayload,
+    ): void => {
+      // Mirrors translateCanopyHandlerError: handler errors must match the operation's declared error schema.
+      const declared =
+        !error || !definition || definition.error.safeParse(error).success;
+      end(
+        outcome,
+        declared
+          ? error
+          : canopyInternalError('The operation returned an invalid error.')
+              .payload,
+      );
+    };
     const sink = {
       buffered: (): number => queue.length,
       emit(
@@ -638,20 +653,27 @@ export function createCanopyDispatcher(
           return parsed.data;
         });
       },
-      end(
+      end: endDeclared,
+      endAt(
+        cursor: CanopyStreamCursor,
         outcome: 'completed' | 'cancelled' | 'error',
         error?: CanopyErrorPayload,
       ): void {
-        // Mirrors translateCanopyHandlerError: handler errors must match the operation's declared error schema.
-        const declared =
-          !error || !definition || definition.error.safeParse(error).success;
-        end(
-          outcome,
-          declared
-            ? error
-            : canopyInternalError('The operation returned an invalid error.')
-                .payload,
-        );
+        if (terminal) return;
+        const parsed = CanopyStreamCursorSchema.safeParse(cursor);
+        if (
+          !parsed.success ||
+          cursorSource === 'allocated' ||
+          ((cursorSource === 'supplied' || acceptedCursor !== null) &&
+            (parsed.data.daemonEpoch !== lastCursor.daemonEpoch ||
+              parsed.data.sequence < lastCursor.sequence))
+        ) {
+          end('error', canopyInvalidHandlerResultError().payload);
+          return;
+        }
+        cursorSource = 'supplied';
+        lastCursor = parsed.data;
+        endDeclared(outcome, error);
       },
     };
     const handler = handlers.streams[name];

@@ -603,19 +603,6 @@ function assertSuccessfulElectronTerminalResult(observation, details) {
     throw new ElectronTerminalResultError(observation, details);
 }
 
-let playwrightTargetClosedClassifier;
-
-export function isPlaywrightTargetClosedError(error) {
-  if (!playwrightTargetClosedClassifier) {
-    const require = createRequire(import.meta.url);
-    const packagePath = require.resolve('playwright-core/package.json');
-    ({ isTargetClosedError: playwrightTargetClosedClassifier } = require(
-      path.join(path.dirname(packagePath), 'lib/client/errors.js'),
-    ));
-  }
-  return playwrightTargetClosedClassifier(error);
-}
-
 export function registerSupervisedProcessTree(
   electronApp,
   supervisedTreePid,
@@ -963,6 +950,9 @@ function createLaunchObserver(record) {
 }
 
 function rendererEntryIdentity(value) {
+  // Electron 45 can expose the window before Playwright sees its first
+  // commit, so `page.url()` is still empty: not the entry yet, keep waiting.
+  if (!URL.canParse(value)) return null;
   const url = new URL(value);
   url.hash = '';
   return url.href;
@@ -1970,9 +1960,10 @@ export function seedRendererCodeCacheScheme(userDataDir, env = process.env) {
  * With the switch on, Electron gets `--user-data-dir` inside the run's
  * profile. Chromium's origin-keyed storage, its code cache and the renderer
  * origin record live in `sessionData`, which E2E's later `userData` redirect
- * does not move; without this, an on run would migrate the host-wide default
- * profile that every off run (and every concurrent run) shares. Off, the args
- * are today's. A caller's own `--user-data-dir` wins.
+ * does not move; without this, an on run would migrate a profile that off
+ * runs also use. Off, the args are unchanged, and `platformElectronArgs`
+ * chooses the profile: the run's directory on macOS and Windows, its
+ * `electron-profile` on Linux. A caller's own `--user-data-dir` wins.
  */
 function assertLinuxUiIdentity(options) {
   const uid = (options.uid ?? (() => process.getuid?.()))();
@@ -1993,8 +1984,20 @@ export function platformElectronArgs(
   electronArgs = [],
   options = {},
 ) {
-  if ((options.platform ?? process.platform) !== 'linux')
-    return ['--use-mock-keychain', ...electronArgs];
+  if ((options.platform ?? process.platform) !== 'linux') {
+    // Electron 45 writes a Session's cookies only inside Chromium's startup
+    // profile, and E2E moves `userData` to the run's directory only after
+    // ready. Starting Chromium there keeps browser logins across restarts.
+    // A caller's own `--user-data-dir` wins.
+    const ownProfile = electronArgs.some((arg) =>
+      arg.startsWith('--user-data-dir='),
+    );
+    return [
+      '--use-mock-keychain',
+      ...(ownProfile ? [] : [`--user-data-dir=${userDataDir}`]),
+      ...electronArgs,
+    ];
+  }
   assertLinuxUiIdentity(options);
   const values = new Map();
   const rest = [];
@@ -2341,7 +2344,7 @@ async function launchCanopyUnmeasured(options) {
         electronArgs,
         launcherSourcePath: path.join(
           path.dirname(packagePath),
-          'lib/server/electron/electron.js',
+          'lib/coreBundle.js',
         ),
         launcherVersion: JSON.parse(readFileSync(packagePath, 'utf8')).version,
       });
@@ -2368,6 +2371,8 @@ async function launchCanopyUnmeasured(options) {
               ...(options.applicationArgs ?? []),
             ],
             env: electronEnv,
+            // Playwright adds --no-sandbox to Linux Electron launches without this.
+            chromiumSandbox: true,
             ...(options.recordVideoDir
               ? { recordVideo: { dir: options.recordVideoDir } }
               : {}),

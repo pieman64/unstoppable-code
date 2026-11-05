@@ -25,7 +25,7 @@ import {
   canRetryMatrixJob,
   canRetryMatrixVariant,
 } from '@/lib/execution-actions';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, ListRow } from '@canopy/ui-shared/components';
 
 function isSettledJobStatus(status: string): boolean {
   return ['success', 'failure', 'cancelled', 'skipped'].includes(status);
@@ -207,23 +207,19 @@ function PipelineJobViewComponent({
             const definition = state.job_definitions[variantJobId];
             const result = state.jobs[variantJobId];
             return (
-              <div
-                key={variantJobId}
-                className="flex items-center rounded-md hover:bg-fg-primary/[0.04]"
-              >
-                <button
-                  type="button"
+              <div key={variantJobId} className="flex items-center">
+                <ListRow
+                  className="min-w-0 flex-1"
                   onClick={() => onSelectMatrixVariant?.(variantJobId)}
-                  className="flex min-w-0 flex-1 items-center justify-between px-3 py-2 text-left"
+                  trailing={
+                    <>
+                      {JSON.stringify(definition.matrix?.values ?? {})} ·{' '}
+                      {result.status}
+                    </>
+                  }
                 >
-                  <span className="min-w-0 truncate text-s fg-primary">
-                    {definition.name}
-                  </span>
-                  <span className="ml-3 text-xs fg-secondary">
-                    {JSON.stringify(definition.matrix?.values ?? {})} ·{' '}
-                    {result.status}
-                  </span>
-                </button>
+                  {definition.name}
+                </ListRow>
                 {archived ? null : !isSettledJobStatus(result.status) ? (
                   <Button
                     variant="ghost-destructive"

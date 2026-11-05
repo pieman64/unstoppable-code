@@ -9,9 +9,9 @@ import {
   enqueueBackgroundHelperTask,
 } from '../../lib/background-helper-queue';
 import { logMainProcessWarn } from '../../lib/main-process-logging';
-import { getUserMemoryDir, getWorkspaceMemoryDir } from '../../lib/paths';
 import { readPreferencesFile } from '../../lib/preferences-store';
 import { broadcastLocalMemoryChanged } from './change-events';
+import { localMemoryScopeDir } from './scope-resolver';
 import {
   beginLocalMemoryConsolidationRun,
   endLocalMemoryConsolidationRun,
@@ -438,9 +438,7 @@ export interface ManualConsolidationOutcome {
 }
 
 function scopeDirectory(request: LocalMemoryScopeRequest): string {
-  return request.scope === 'user'
-    ? getUserMemoryDir()
-    : getWorkspaceMemoryDir(request.workspaceId);
+  return localMemoryScopeDir(request);
 }
 
 async function runConsolidationTask(

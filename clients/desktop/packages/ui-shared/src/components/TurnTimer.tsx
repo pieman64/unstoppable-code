@@ -197,7 +197,7 @@ export function TurnFooterReveal({
   return (
     <span
       {...props}
-      className={`flex items-center gap-0.5${reveal ? ` ${reveal}` : ''}`}
+      className={`flex items-center gap-0.5 pointer-coarse:gap-4${reveal ? ` ${reveal}` : ''}`}
     >
       {children}
     </span>
@@ -295,10 +295,10 @@ export function TurnFooterRow({
   const clean = useCleanChatLook();
   const className =
     variant === 'actions'
-      ? `group/footer flex justify-end gap-0.5 ${clean ? CLEAN_TURN_FOOTER_CONTROLS_CLASSNAME : `-mt-1.5 ${TURN_FOOTER_CONTROLS_CLASSNAME}`}`
+      ? `group/footer flex justify-end gap-0.5 pointer-coarse:gap-4 ${clean ? CLEAN_TURN_FOOTER_CONTROLS_CLASSNAME : `-mt-1.5 ${TURN_FOOTER_CONTROLS_CLASSNAME}`}`
       : clean
-        ? `group/footer flex min-h-7 items-center gap-1.5 text-s fg-secondary ${inset ? 'px-3' : ''} ${hostTurnGap ? 'mb-3' : 'mb-5'} ${CLEAN_TURN_FOOTER_CONTROLS_CLASSNAME}`
-        : `group/footer flex min-h-5 items-center gap-1.5 text-2xs leading-none fg-tertiary ${inset ? 'px-3 -mt-1.5' : '-mt-1'} ${hostTurnGap ? 'mb-3' : 'mb-5'} ${TURN_FOOTER_CONTROLS_CLASSNAME}`;
+        ? `group/footer flex min-h-7 items-center gap-1.5 pointer-coarse:gap-4 text-s fg-secondary ${inset ? 'px-3' : ''} ${hostTurnGap ? 'mb-3' : 'mb-5'} ${CLEAN_TURN_FOOTER_CONTROLS_CLASSNAME}`
+        : `group/footer flex min-h-5 items-center gap-1.5 pointer-coarse:gap-4 text-2xs leading-none fg-tertiary ${inset ? 'px-3 -mt-1.5' : '-mt-1'} ${hostTurnGap ? 'mb-3' : 'mb-5'} ${TURN_FOOTER_CONTROLS_CLASSNAME}`;
   return (
     <div
       {...props}
@@ -784,7 +784,9 @@ export function TurnTimer({
         </span>
       )}
       {!clean && trailing != null && (
-        <span className={`flex items-center gap-1.5 ${reveal}`}>
+        <span
+          className={`flex items-center gap-1.5 pointer-coarse:gap-4 ${reveal}`}
+        >
           {trailing}
         </span>
       )}
@@ -800,19 +802,19 @@ export function TurnTimer({
             data-testid="turn-actions"
             // Leading the row, the first icon (not its 28px button) lines up
             // with the reply's text.
-            className={`flex items-center gap-0.5${showLabel ? '' : ' -ml-1.75'}`}
+            className={`flex items-center gap-0.5 pointer-coarse:gap-4${showLabel ? '' : ' -ml-1.75'}`}
           >
             {copyAction}
             <span
               data-testid="turn-actions-reveal"
-              className={`flex items-center gap-0.5${reveal ? ` ${reveal}` : ''}`}
+              className={`flex items-center gap-0.5 pointer-coarse:gap-4${reveal ? ` ${reveal}` : ''}`}
             >
               {trailing}
               {moreMenu}
               {stampAccessory != null && (
                 <span
                   data-testid="turn-timer-stamp-accessory"
-                  className="flex shrink-0 items-center gap-0.5"
+                  className="flex shrink-0 items-center gap-0.5 pointer-coarse:gap-4"
                 >
                   {stampAccessory}
                 </span>

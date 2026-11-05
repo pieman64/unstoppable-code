@@ -3,11 +3,11 @@
 import { useEffect, useRef, type JSX, type RefObject } from 'react';
 import {
   Button,
-  CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
   LoadingSpinner,
   Notice,
   NoticeButton,
+  Skeleton,
 } from '@canopy/ui-shared/components';
 import { GitHubIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { withPrivacyClass } from '../account/privacy-class';
@@ -370,9 +370,15 @@ export function Identity({ login }: { login: string }): JSX.Element {
   );
 }
 
+const SAMPLE_STATUS: StatusLine = {
+  title: 'Connected',
+  detail: 'Cloud projects can use your repositories',
+};
+
 /**
  * The first read of the connection, before there is anything to describe:
- * one centered spinner after the shared delay, never loading copy.
+ * after the shared delay, the status line and account it will show, drawn
+ * from plain samples inside the measured `Skeleton`, never loading copy.
  */
 export function ConnectionLoadingView({
   controller,
@@ -383,9 +389,37 @@ export function ConnectionLoadingView({
   return (
     <div data-testid="github-cloud-loading" className="flex min-h-16">
       <DelayedLoadingPlaceholder>
-        <CenteredLoadingSpinner />
+        <Skeleton
+          loading
+          label="Loading GitHub connection"
+          testId="github-cloud-loading-skeleton"
+        >
+          <div className="flex flex-col gap-4">
+            <p className="text-s">
+              <StatusText status={SAMPLE_STATUS} />
+            </p>
+            <Identity login="octocat" />
+          </div>
+        </Skeleton>
       </DelayedLoadingPlaceholder>
     </div>
+  );
+}
+
+/** The status line's words: its title, then its detail, quieter. */
+function StatusText({ status }: { status: StatusLine }): JSX.Element {
+  return (
+    <>
+      <span className="font-medium fg-primary">
+        {status.detail ? `${status.title}.` : status.title}
+      </span>
+      {status.detail ? (
+        <>
+          {' '}
+          <span className="fg-tertiary">{status.detail}</span>
+        </>
+      ) : null}
+    </>
   );
 }
 
@@ -410,15 +444,7 @@ export function StatusView({
       {status.progress ? (
         <LoadingSpinner decorative quiet className="mr-2 align-middle" />
       ) : null}
-      <span className="font-medium fg-primary">
-        {status.detail ? `${status.title}.` : status.title}
-      </span>
-      {status.detail ? (
-        <>
-          {' '}
-          <span className="fg-tertiary">{status.detail}</span>
-        </>
-      ) : null}
+      <StatusText status={status} />
     </p>
   );
 }

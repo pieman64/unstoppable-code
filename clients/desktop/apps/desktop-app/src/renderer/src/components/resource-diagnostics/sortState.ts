@@ -22,7 +22,3 @@ export function setResourceDiagnosticsSortState(
 ): void {
   stickySort = next;
 }
-
-export function __resetResourceDiagnosticsSortForTests(): void {
-  stickySort = { ...DEFAULT_SORT };
-}

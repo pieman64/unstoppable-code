@@ -130,13 +130,6 @@ export function initPipelinePanelSync(): void {
   });
 }
 
-/** Test-only: runs a pending (scheduled) sweep synchronously. */
-export function flushPipelinePanelSyncForTests(): void {
-  if (!pendingSweep) return;
-  pendingSweep = false;
-  runSweep();
-}
-
 /** Test-only: tears down the subscription and clears module state. */
 export function resetPipelinePanelSyncForTests(): void {
   unsubscribePanels?.();

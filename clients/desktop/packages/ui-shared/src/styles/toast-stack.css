@@ -30,8 +30,8 @@
  * Swiping (`toast-swipe.ts`) moves a card by `--toast-swipe-x` /
  * `--toast-swipe-y`: it follows the input with no transition while
  * `data-swipe-dragging`, then leaves (`data-swipe-flung`) or returns
- * (`data-swipe-settling`) on a transition it times to the release speed,
- * `--toast-swipe-ms` / `--toast-swipe-ease`.
+ * (`data-swipe-settling`) with a short, monotonic ease-out. The controller
+ * sets `--toast-swipe-ms` / `--toast-swipe-ease` for each transition.
  *
  * Motion is transform and opacity only, except the clip height a card
  * animates to when the deck spreads. The shared reduced-motion rule in
@@ -124,9 +124,13 @@
   --toast-scale: 1;
   --toast-y: calc(
     var(--toast-dir) *
-      (var(--toast-offset-y) + var(--toast-index) * var(--toast-gap))
+      (
+        var(--canopy-toast-offset-y, var(--toast-offset-y)) +
+          var(--toast-index) * var(--toast-gap)
+      )
   );
   height: var(--toast-height, auto);
+  transition-duration: 180ms, 400ms, 150ms;
 }
 
 /* A swiped card follows the input: no transform lag. */
@@ -134,7 +138,7 @@
   transition-duration: 0ms, 400ms, 150ms;
 }
 
-/* Back to its place, starting at the speed it was let go. */
+/* A cancelled swipe returns promptly without carrying momentum away first. */
 .canopy-toast[data-swipe-settling] {
   transition:
     transform var(--toast-swipe-ms) var(--toast-swipe-ease),
@@ -151,6 +155,11 @@
     opacity calc(var(--toast-swipe-ms) * 0.25) linear
       calc(var(--toast-swipe-ms) * 0.75),
     height 150ms ease-out;
+}
+
+/* Outgoing and hidden cards never block the next card under a still pointer. */
+.canopy-toast:is([data-swipe-flung], [data-ending-style], [data-limited]) {
+  pointer-events: none;
 }
 
 /* In from the side, clear of the corner's inset. A card has no measured

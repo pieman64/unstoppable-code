@@ -2,6 +2,10 @@ import {
   normalizeOnboardingTipDismissals,
   type OnboardingTipDismissals,
 } from '@canopy/protocol/onboarding-tips';
+import {
+  parseSuggestionsState,
+  type SuggestionsState,
+} from '@canopy/protocol/suggestions';
 import { ipcTranscriptReadClient } from './ipc-transcript-read-client';
 import { isVoiceDictationPlatform } from '@canopy/desktop-shared/platform-capabilities';
 import { subscribeToChatEvents } from '@/lib/chatEventFanout';
@@ -106,6 +110,19 @@ async function loadOnboardingTipDismissals(): Promise<OnboardingTipDismissals> {
   return normalizeOnboardingTipDismissals(preferences.onboardingTipsDismissed);
 }
 
+/** Reads the master switch, dismissals and corner cap (CAN-4343). */
+async function loadSuggestionsState(): Promise<SuggestionsState> {
+  const preferences = await window.api.loadPreferences();
+  if (preferences.__error) {
+    throw new Error('Preferences could not be loaded.');
+  }
+  const state = parseSuggestionsState(preferences.suggestions);
+  if (state === null) {
+    throw new Error('This host does not store suggestion preferences.');
+  }
+  return state;
+}
+
 /**
  * Build the desktop capability set for a given platform. Desktop runs the full
  * local-first app, so everything is enabled except voice dictation, which is
@@ -151,6 +168,11 @@ export function createDesktopCapabilities(
     scriptActions: true,
     // Tip dismissals live in the desktop preferences (CAN-4904).
     onboardingTips: true,
+    // Device-to-device windows have no suggestions capability negotiation.
+    // Their local preload method cannot prove an older controlled host supports it.
+    suggestions:
+      typeof window === 'undefined' ||
+      window.api?.remoteControl?.getContext().mode !== 'remote',
     // Source list/detail and plugin installs run over `window.plugins`; the
     // shared gate still requires the wired `marketplaceSources` member.
     marketplaceSources: true,
@@ -183,6 +205,7 @@ export function createDesktopCapabilities(
     customSkillEdit: true,
     automations: true,
     watchers: true,
+    chatWatchers: true,
     workflowManagement: true,
     // Main owns plan proposals, deferred reloads, and split startup. The
     // shared derivation still applies each provider's own limits.
@@ -204,6 +227,8 @@ export function createDesktopCapabilities(
     worktreeBranching: true,
     worktreeMetadata: true,
     turnFeedback: true,
+    // Stars the brand's repository with the bundled GitHub CLI's account.
+    sourceRepositoryStar: true,
     // Install update emails (CAN-2334) go through the settings IPC pair,
     // which rejects without a signed-in non-guest account.
     installUpdateEmails: true,
@@ -220,6 +245,7 @@ export function createDesktopCapabilities(
     delegationMessaging: true,
     nativeSubagentInterrupt: true,
     ledger: true,
+    ledgerLiveAgentStates: true,
     // The Feed merges this device's Ledger with the mirror, and its own
     // entries change here.
     ledgerFeed: true,
@@ -1112,6 +1138,7 @@ export class IpcCanopyClient implements CanopyClient {
     'onboardingTips.get': async () => ({
       dismissed: await loadOnboardingTipDismissals(),
     }),
+    'suggestions.get': () => loadSuggestionsState(),
   };
 
   private readonly commandHandlers: CommandHandlers = {
@@ -1815,6 +1842,7 @@ export class IpcCanopyClient implements CanopyClient {
         throw new Error('Plan not found.');
       }
     },
+    'sourceRepository.star': () => window.api.starSourceRepository(),
     // Turn-level thumbs up/down (CAN-1521). Both main-process handlers
     // resolve rather than reject — an unreachable cloud queues the rating in
     // the local outbox instead of failing the click.
@@ -1845,6 +1873,8 @@ export class IpcCanopyClient implements CanopyClient {
     // serialized preferences write, so a Portal dismissal is never dropped.
     'onboardingTips.update': (update) =>
       window.api.updateOnboardingTips(update),
+    // Main stamps the time inside the serialized preferences write.
+    'suggestions.update': (update) => window.api.updateSuggestions(update),
     'turnFeedback.detail': async (args) => {
       await window.api.submitTurnFeedbackDetail({
         clientUserMessageId: args.clientUserMessageId,

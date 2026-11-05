@@ -8,11 +8,12 @@
  *   resting place it resists, like an overscrolled list.
  * - Nothing is decided until the input ends. The card leaves if it has gone a
  *   quarter of its width (or half its height) toward the screen edge, or is
- *   moving that way quickly; a quick flick back keeps it. A host's trackpad
- *   swipe also commits once the card is half off, so a long coast does not
- *   have to run out first.
- * - The card leaves, or returns, at the speed it was let go: a CSS transition
- *   whose curve starts at that speed. Base UI waits for it before unmounting.
+ *   moving that way quickly; a quick flick back keeps it. Trackpad input
+ *   uses the same release decision, so crossing a distance never prevents
+ *   the user from pulling the card back before releasing.
+ * - A dismissed card leaves at its release speed. A cancelled swipe returns
+ *   promptly without overshoot. Both use interruptible CSS transitions.
+ *   Base UI waits for the exit before unmounting.
  *   A leaving card goes all the way past the window edge, opaque until it is
  *   nearly there.
  * - The rest of the stack closes up shortly after the card starts to leave.
@@ -67,7 +68,7 @@ export interface ToastSwipeGesture {
    * speed the input had, not one diluted by the wait.
    */
   end(inputEndedAt?: number): void;
-  /** The gesture has ended (by `end`, or by committing on its own). */
+  /** The gesture has ended through `end`. */
   readonly ended: boolean;
 }
 
@@ -86,8 +87,6 @@ const DISMISS_FRACTION_X = 0.25;
 const DISMISS_FRACTION_Y = 0.5;
 /** Release speed toward the edge that dismisses whatever the distance, px/ms. */
 const FLING_PX_PER_MS = 0.3;
-/** A host-driven swipe commits mid-stream once the card is this far off. */
-const COMMIT_FRACTION = 0.5;
 /** Resistance past the resting place (0.55 is iOS's overscroll). */
 const RUBBER_BAND = 0.55;
 /** A drag owns the pointer (and is no longer a click) past this, px. */
@@ -99,9 +98,11 @@ const FRAME_MS = 16;
 /** Release speed is measured over the input of this window, ms. */
 const VELOCITY_WINDOW_MS = 80;
 const EXIT_MS: readonly [number, number] = [160, 320];
-const SETTLE_MS: readonly [number, number] = [220, 360];
-/** The rest of the stack starts closing up this long after the exit starts. */
-const REFLOW_DELAY_MS = 90;
+const SETTLE_MS = 180;
+/** A cancelled swipe must not pull a notification across the work surface. */
+const MAX_OVERSCROLL_PX = 48;
+/** Advance the live deck as soon as dismissal commits; exit can finish behind it. */
+const REFLOW_DELAY_MS = 0;
 /** Card size before layout (tests, a card not drawn yet): the stack's width. */
 const FALLBACK_SIZE: Record<'x' | 'y', number> = {
   x: IN_APP_NOTIFICATION_WIDTH_PX,
@@ -167,13 +168,15 @@ function isElementNode(target: EventTarget | null): target is Element {
 export function toastSwipeRubberBand(input: number, size: number): number {
   if (input >= 0 || size <= 0) return input;
   const over = -input;
-  return -(1 - 1 / ((over * RUBBER_BAND) / size + 1)) * size;
+  const limit = Math.min(size, MAX_OVERSCROLL_PX);
+  return -(1 - 1 / ((over * RUBBER_BAND) / limit + 1)) * limit;
 }
 
 function unRubberBand(shown: number, size: number): number {
   if (shown >= 0 || size <= 0) return shown;
-  const x = Math.min(-shown, size * 0.99);
-  return -((size / RUBBER_BAND) * (1 / (1 - x / size) - 1));
+  const limit = Math.min(size, MAX_OVERSCROLL_PX);
+  const x = Math.min(-shown, limit * 0.99);
+  return -((limit / RUBBER_BAND) * (1 / (1 - x / limit) - 1));
 }
 
 /**
@@ -435,7 +438,7 @@ export function attachToastSwipe(
     setTimeout(() => onDismiss(toastId), delay);
   };
 
-  const settle = (g: Gesture, velocity: number): void => {
+  const settle = (g: Gesture): void => {
     const { card, axis } = g;
     const shown = shownOf(g);
     card.removeAttribute('data-swipe-dragging');
@@ -448,15 +451,10 @@ export function attachToastSwipe(
       clearSwipeState(card);
       return;
     }
-    const [min, max] = SETTLE_MS;
-    const duration = clamp(min + Math.abs(shown) * 0.8, min, max);
-    // Speed toward the resting place, as a multiple of the average; negative
-    // carries on a little first.
-    const towardRest = shown > 0 ? -velocity : velocity;
-    const easing = speedEase(
-      (towardRest * duration) / Math.abs(shown),
-      [0.25, 1],
-    );
+    // A cancelled swipe goes straight home; release momentum must not carry
+    // it farther away first. Keep this curve monotonic and interruptible.
+    const duration = SETTLE_MS;
+    const easing: Easing = [0.22, 1, 0.36, 1];
     card.style.setProperty('--toast-swipe-ms', `${duration.toFixed(0)}ms`);
     card.style.setProperty('--toast-swipe-ease', easingCss(easing));
     card.setAttribute('data-swipe-settling', '');
@@ -500,7 +498,7 @@ export function attachToastSwipe(
     ) {
       exit(g, velocity);
     } else {
-      settle(g, velocity);
+      settle(g);
     }
   };
 
@@ -581,7 +579,7 @@ export function attachToastSwipe(
     if (g === null || g.hostDriven) return;
     gesture = null;
     g.ended = true;
-    settle(g, 0);
+    settle(g);
   };
 
   /**
@@ -688,7 +686,7 @@ export function attachToastSwipe(
       // A click that wobbled a few px: the card goes back, the click stays.
       gesture = null;
       g.ended = true;
-      settle(g, 0);
+      settle(g);
       return;
     }
     // The press was a drag, not a click on the card.
@@ -728,7 +726,6 @@ export function attachToastSwipe(
         move(step: number): void {
           if (g.ended) return;
           track(g, g.input + step);
-          if (shownOf(g) >= g.size * COMMIT_FRACTION) finish(g);
         },
         wouldDismiss(): boolean {
           return toastSwipeDismisses(

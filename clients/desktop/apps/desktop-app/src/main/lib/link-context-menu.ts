@@ -134,7 +134,7 @@ export function runLinkContextMenuAction(
 ): void {
   switch (id) {
     case 'copyLink':
-      clipboard.writeText(url);
+      void clipboard.writeText(url).catch(() => undefined);
       return;
     case 'openInBrowser':
       void deps.openInBrowser(url).then(

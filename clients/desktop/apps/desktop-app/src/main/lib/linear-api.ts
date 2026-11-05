@@ -64,8 +64,8 @@ const ISSUE_PREVIEW_QUERY = `query referencePreviewIssue($id: String!) {
     description
     url
     updatedAt
-    state { name }
-    assignee { displayName name }
+    state { name type }
+    assignee { displayName name avatarUrl }
     project { name }
   }
 }`;
@@ -170,10 +170,14 @@ export interface LinearIssuePreviewNode {
   readonly description: string | null;
   readonly url: string | null;
   readonly updatedAt: string | null;
-  readonly state: { readonly name: string | null } | null;
+  readonly state: {
+    readonly name: string | null;
+    readonly type: string | null;
+  } | null;
   readonly assignee: {
     readonly displayName: string | null;
     readonly name: string | null;
+    readonly avatarUrl: string | null;
   } | null;
   readonly project: { readonly name: string | null } | null;
 }
@@ -523,12 +527,16 @@ function readNullableString(value: unknown): string | null {
 function readPreviewNode(value: unknown): LinearIssuePreviewNode | null {
   if (!isRecord(value)) return null;
   const state = isRecord(value.state)
-    ? { name: readNullableString(value.state.name) }
+    ? {
+        name: readNullableString(value.state.name),
+        type: readNullableString(value.state.type),
+      }
     : null;
   const assignee = isRecord(value.assignee)
     ? {
         displayName: readNullableString(value.assignee.displayName),
         name: readNullableString(value.assignee.name),
+        avatarUrl: readNullableString(value.assignee.avatarUrl),
       }
     : null;
   const project = isRecord(value.project)

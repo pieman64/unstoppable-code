@@ -59,16 +59,13 @@ declare const __CANOPY_GOOGLE_OAUTH_CLIENT_SECRET__: string | undefined;
 declare const __CANOPY_E2E__: boolean;
 
 /**
- * Build-time gate for Ollama support. A compile-time literal per build:
- * `true` for macOS and Windows builds and `false` for other desktop platforms.
- * Overridable for local/testing via the
- * `CANOPY_OLLAMA_ENABLED` env var at build time. The preload bridge reads this
- * to gate the Ollama `CanopyApi` surface and the initial Ollama model catalog;
- * the renderer reads it to gate Ollama UI. Must resolve identically across
- * main, preload, and renderer. The `electron.vite.config.ts` `define` that
- * injects the per-build value is owned by the backend build configuration.
+ * Build policy for Ollama, enabled by default and overridable with
+ * CANOPY_OLLAMA_ENABLED. The shared capability helper combines it with the
+ * runtime platform identifier: process.platform in main/preload and
+ * window.platform in the renderer. The build host does not determine support.
  */
 declare const __CANOPY_OLLAMA_ENABLED__: boolean;
+declare const __CANOPY_OLLAMA_PLATFORM__: NodeJS.Platform;
 
 declare namespace NodeJS {
   interface Process {

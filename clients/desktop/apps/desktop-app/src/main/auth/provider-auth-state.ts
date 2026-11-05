@@ -25,7 +25,7 @@ import {
   fetchMockControlPlaneRecord,
   getMockLlmOrigin,
 } from '../lib/e2e-mock-control-plane';
-import { readClaudeOauthCredentials } from './claude-oauth-credentials';
+import { readClaudeOauthPlanMetadata } from './claude-oauth-credentials';
 import { peekCursorRuntimeAvailability } from '../cursor/runtime-availability';
 import { invalidateProviderAuthSessions } from '../agents/session-manager';
 import { invalidateCodexSpeedCatalog } from '../model-routing/codex-account-models';
@@ -690,7 +690,7 @@ async function enrichClaudePlanTypeWithTier(
     return status;
   }
   try {
-    const credentials = await readClaudeOauthCredentials();
+    const credentials = await readClaudeOauthPlanMetadata();
     const rateLimitTier = credentials?.rateLimitTier;
     return {
       ...status,
@@ -1250,6 +1250,26 @@ export function peekProviderNativeAuthAvailability(): PortalChatProviderAvailabi
     availability.codex = codexAuthStatusCache.status.authenticated;
   }
   return availability;
+}
+
+/**
+ * Whether the last Claude sign-in check settled without an answer while this
+ * process has never confirmed a sign-in. A retained confirmed sign-in is
+ * spread into the failure status, so `authenticated` is `true` whenever one
+ * exists. Read-only and TTL-free, like
+ * {@link peekProviderNativeAuthAvailability}; a cold cache is `false` (the
+ * probe is still pending, not inconclusive).
+ *
+ * This only ranks the default lane a fresh chat is seeded with. Routing a
+ * session that already runs a Claude model still fails closed toward the
+ * subscription on the same answer ({@link isProviderNativelyAuthenticated}).
+ */
+export function peekClaudeAuthInconclusiveWithoutSignIn(): boolean {
+  return (
+    claudeAuthStatusCache !== null &&
+    claudeAuthStatusCache.status.probeFailed === true &&
+    claudeAuthStatusCache.status.authenticated !== true
+  );
 }
 
 /**

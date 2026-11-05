@@ -182,13 +182,3 @@ export function useAccountProxyLiveRefresh(enabled: boolean): void {
     return (): void => window.clearInterval(timer);
   }, [enabled]);
 }
-
-/** Test-only: drop the subscription and reset the store. */
-export function resetAccountProxyStoreForTest(): void {
-  unsubscribe?.();
-  unsubscribe = null;
-  refreshInFlight = null;
-  refreshingUsage = false;
-  usageRefreshQueued = false;
-  useAccountProxyStore.setState({ status: null, refreshing: false });
-}

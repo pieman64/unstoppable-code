@@ -21,8 +21,11 @@ import { trackInputModality, wasFocusVisible } from '../lib/input-modality';
 import { isImeComposing, useTooltipEscape } from './tooltip-escape';
 import { useTooltipHandoff } from './tooltip-handoff';
 import { escapeStartedInBoundary } from './useOverlayEscape';
+import { computeFloatingMenuPosition } from './FloatingMenu';
 
 const TOOLTIP_GAP = 6;
+/** First-hover delay for item previews, shared by worktrees, chats and files. */
+export const ITEM_PREVIEW_OPEN_DELAY_MS = 500;
 const VIEWPORT_PADDING = 8;
 const INTERACTIVE_CLOSE_GRACE_MS = 120;
 /** Keys that open an interactive surface from its trigger by default. */
@@ -33,13 +36,18 @@ const DEFAULT_TRIGGER_OPEN_KEYS: readonly string[] = ['Enter', ' '];
  * wrap, the same inset as {@link Tooltip}; `default` (8px by 6px) is the
  * multi-line surface; `relaxed` (10px by 6px) is the composer chip tooltips'
  * label-and-description pair; `card` (12px by 8px) holds a titled card such as
- * a pull request's details.
+ * a pull request's details. `frame` (4px all round) holds sections with
+ * their own inset and nested corners, as a menu holds its rows (a diff
+ * preview's header and diff well); `flush` holds sections that run to the
+ * card's edges (an attachment preview's header rule).
  */
 export type RichHoverTooltipSurfacePadding =
   | 'compact'
   | 'default'
   | 'relaxed'
-  | 'card';
+  | 'card'
+  | 'frame'
+  | 'flush';
 
 const SURFACE_PADDING_CLASS_NAMES: Record<
   RichHoverTooltipSurfacePadding,
@@ -49,6 +57,8 @@ const SURFACE_PADDING_CLASS_NAMES: Record<
   default: 'px-2 py-1.5',
   relaxed: 'px-2.5 py-1.5',
   card: 'px-3 py-2',
+  frame: 'p-1',
+  flush: 'p-0',
 };
 
 /**
@@ -790,21 +800,14 @@ function RichHoverTooltipController({
     }
 
     if (placement === 'below-start') {
-      const below = rect.bottom + placementGap;
-      const above = rect.top - placementGap - tooltipHeight;
-      const top =
-        below + tooltipHeight <= viewportHeight - VIEWPORT_PADDING ||
-        above < VIEWPORT_PADDING
-          ? below
-          : above;
-      const maxLeft = viewportWidth - tooltipWidth - VIEWPORT_PADDING;
-      const left =
-        rect.left <= maxLeft
-          ? Math.max(VIEWPORT_PADDING, rect.left)
-          : Math.max(
-              VIEWPORT_PADDING,
-              Math.min(rect.right - tooltipWidth, maxLeft),
-            );
+      const { top, left } = belowStartPosition({
+        rect,
+        width: tooltipWidth,
+        height: tooltipHeight,
+        viewportWidth,
+        viewportHeight,
+        gap: placementGap,
+      });
       setPosition((previous) => {
         if (previous && previous.top === top && previous.left === left) {
           return previous;
@@ -1027,5 +1030,497 @@ function RichHoverTooltipController({
       {trigger}
       {surface}
     </span>
+  );
+}
+
+interface HoverCardRect {
+  readonly top: number;
+  readonly right: number;
+  readonly bottom: number;
+  readonly left: number;
+}
+
+interface HoverCardPosition {
+  readonly top: number;
+  readonly left: number;
+}
+
+/**
+ * Under the anchor with left edges aligned; near the right edge, right edges
+ * aligned instead (or clamped when neither fits). Flips above when there is
+ * no room below and room above; fitting neither, it is clamped 8px inside
+ * the window.
+ */
+function belowStartPosition({
+  rect,
+  width,
+  height,
+  viewportWidth,
+  viewportHeight,
+  gap,
+}: {
+  rect: HoverCardRect;
+  width: number;
+  height: number;
+  viewportWidth: number;
+  viewportHeight: number;
+  gap: number;
+}): HoverCardPosition {
+  const below = rect.bottom + gap;
+  const above = rect.top - gap - height;
+  const preferred =
+    below + height <= viewportHeight - VIEWPORT_PADDING ||
+    above < VIEWPORT_PADDING
+      ? below
+      : above;
+  // Fitting neither side, it stays inside the window, over the anchor if it
+  // must, rather than running off the bottom.
+  const top = Math.max(
+    VIEWPORT_PADDING,
+    Math.min(preferred, viewportHeight - height - VIEWPORT_PADDING),
+  );
+  const maxLeft = viewportWidth - width - VIEWPORT_PADDING;
+  const left =
+    rect.left <= maxLeft
+      ? Math.max(VIEWPORT_PADDING, rect.left)
+      : Math.max(VIEWPORT_PADDING, Math.min(rect.right - width, maxLeft));
+  return { top, left };
+}
+
+const FLOATING_MENU_SURFACE_SELECTOR = '.canopy-floating-menu';
+/** Between a menu's edge and a card beside it, as between a menu and its submenu. */
+const BESIDE_MENU_GAP = 8;
+/** Between a badge and the card under it: the menu gap. */
+const HOVER_CARD_GAP = 4;
+
+function boxesIntersect(first: HoverCardRect, second: HoverCardRect): boolean {
+  return (
+    first.left < second.right &&
+    first.right > second.left &&
+    first.top < second.bottom &&
+    first.bottom > second.top
+  );
+}
+
+/**
+ * Beside the floating menu that holds `row`, vertically centred on the row.
+ * The candidates come from the menu's surface, not the row: beside a "More"
+ * flyout, "left of the row" is exactly where the parent menu sits. Right of
+ * the surface, then left, taking the first that fits the window without
+ * covering another open menu; failing that, the first clamped side that
+ * covers no other menu. Menus still awaiting their first position sit hidden
+ * at 0,0 and are skipped.
+ */
+function besideMenuPosition(
+  row: Element,
+  width: number,
+  height: number,
+): HoverCardPosition {
+  const view = row.ownerDocument.defaultView ?? window;
+  const rowRect = row.getBoundingClientRect();
+  const maxLeft = Math.max(
+    VIEWPORT_PADDING,
+    view.innerWidth - width - VIEWPORT_PADDING,
+  );
+  const maxTop = Math.max(
+    VIEWPORT_PADDING,
+    view.innerHeight - height - VIEWPORT_PADDING,
+  );
+  const centeredTop = rowRect.top + rowRect.height / 2 - height / 2;
+  const top = Math.min(Math.max(VIEWPORT_PADDING, centeredTop), maxTop);
+  const surface = row.closest(FLOATING_MENU_SURFACE_SELECTOR);
+  const surfaceRect = surface?.getBoundingClientRect() ?? rowRect;
+  const otherMenus = Array.from(
+    row.ownerDocument.querySelectorAll(FLOATING_MENU_SURFACE_SELECTOR),
+  )
+    .filter(
+      (element) =>
+        element !== surface &&
+        element.getAttribute('data-positioned') !== 'false',
+    )
+    .map((element) => element.getBoundingClientRect())
+    .filter((rect) => rect.width > 0 && rect.height > 0);
+  const coversOtherMenu = (left: number): boolean =>
+    otherMenus.some((menu) =>
+      boxesIntersect(
+        { left, top, right: left + width, bottom: top + height },
+        menu,
+      ),
+    );
+  const fitsViewport = (left: number): boolean =>
+    left >= VIEWPORT_PADDING && left <= maxLeft;
+  const clamp = (left: number): number =>
+    Math.min(Math.max(VIEWPORT_PADDING, left), maxLeft);
+  const rightOfSurface = surfaceRect.right + BESIDE_MENU_GAP;
+  const leftOfSurface = surfaceRect.left - BESIDE_MENU_GAP - width;
+  const left =
+    [rightOfSurface, leftOfSurface].find(
+      (candidate) => fitsViewport(candidate) && !coversOtherMenu(candidate),
+    ) ??
+    [clamp(leftOfSurface), clamp(rightOfSurface)].find(
+      (candidate) => !coversOtherMenu(candidate),
+    ) ??
+    clamp(leftOfSurface);
+  return { top, left };
+}
+
+interface RichHoverCardBaseProps {
+  readonly children: ReactNode;
+  readonly id?: string;
+  readonly dataTestId?: string;
+  /**
+   * `tooltip` when the trigger names the card with `aria-describedby`. A card
+   * that only previews what the trigger already says has no role.
+   */
+  readonly role?: 'tooltip';
+  readonly tone?: 'default' | 'inverse';
+  readonly elevation?: 'tooltip' | 'menu';
+  readonly surfacePadding?: RichHoverTooltipSurfacePadding;
+  readonly surfaceWidth?: RichHoverTooltipSurfaceWidth;
+  /** Width classes (`w-*`, `min-w-*`, `max-w-*`), as for {@link RichHoverTooltip}. */
+  readonly surfaceClassName?: string;
+}
+
+interface RichHoverCardAtRectProps extends RichHoverCardBaseProps {
+  /**
+   * The trigger's box, measured by a caller that tracks its own hover and
+   * focus (a sidebar row's status badges). The card hangs under it, left
+   * edges aligned, and flips above when there is no room below.
+   */
+  readonly anchorRect: HoverCardRect;
+  /** The window the trigger is in (default: the global document). */
+  readonly ownerDocument?: Document;
+  /** Distance below (or above) the anchor; defaults to 4px. */
+  readonly placementGap?: number;
+  readonly placement?: 'below-start';
+  readonly anchorRef?: never;
+  readonly anchorPoint?: never;
+  readonly interactive?: never;
+  readonly onMouseEnter?: never;
+  readonly onMouseLeave?: never;
+}
+
+interface RichHoverCardBesideMenuProps extends RichHoverCardBaseProps {
+  /**
+   * A row inside a floating menu. The card sits beside the menu's surface,
+   * right then left, never over another open menu, centred on the row.
+   */
+  readonly anchorRef: RefObject<HTMLElement | null>;
+  readonly placement: 'beside-menu';
+  readonly anchorRect?: never;
+  readonly anchorPoint?: never;
+  readonly ownerDocument?: never;
+  readonly placementGap?: never;
+  readonly interactive?: never;
+  readonly onMouseEnter?: never;
+  readonly onMouseLeave?: never;
+}
+
+interface RichHoverCardAtControlProps extends RichHoverCardBaseProps {
+  /**
+   * The control the card previews (a changed file, an attachment). The card
+   * is centred on it, 8px above or below: `above` and `below` flip only when
+   * the card does not fit and the other side has more room, `auto` takes the
+   * side with more room. Its height is capped to the room it gets, so a long
+   * body scrolls inside it. `left` and `right` sit beside the control, cap
+   * width to its gutter, and flip when that gutter cannot fit a readable card.
+   */
+  readonly anchorRef: RefObject<HTMLElement | null>;
+  readonly placement: 'above' | 'below' | 'auto' | 'left' | 'right';
+  /**
+   * The card holds controls the pointer moves onto (an Open or Edit action):
+   * it takes the pointer, reports `onMouseEnter` and `onMouseLeave` so the
+   * caller can keep it open while the pointer crosses over, and makes a live
+   * in-app browser page yield beneath it.
+   */
+  readonly interactive?: boolean;
+  readonly onMouseEnter?: () => void;
+  readonly onMouseLeave?: () => void;
+  readonly anchorRect?: never;
+  readonly anchorPoint?: never;
+  readonly ownerDocument?: never;
+  readonly placementGap?: never;
+}
+
+interface RichHoverCardAtPointProps extends RichHoverCardBaseProps {
+  /**
+   * A point in `ownerDocument`'s viewport, such as where a context menu was:
+   * the card's top-left corner sits there, pulled back inside the window
+   * near an edge as the menu would be.
+   */
+  readonly anchorPoint: { readonly x: number; readonly y: number };
+  readonly ownerDocument: Document;
+  readonly placement: 'at-point';
+  readonly anchorRect?: never;
+  readonly anchorRef?: never;
+  readonly placementGap?: never;
+  readonly interactive?: never;
+  readonly onMouseEnter?: never;
+  readonly onMouseLeave?: never;
+}
+
+export type RichHoverCardProps =
+  | RichHoverCardAtRectProps
+  | RichHoverCardBesideMenuProps
+  | RichHoverCardAtControlProps
+  | RichHoverCardAtPointProps;
+
+/** A card at a point keeps this far inside the window, as a context menu does. */
+const POINT_VIEWPORT_PADDING = 4;
+
+/** Between a control and the card that previews it. */
+const AT_CONTROL_GAP = 8;
+
+interface HoverCardPlacedPosition extends HoverCardPosition {
+  readonly maxHeight?: number;
+  readonly maxWidth?: number;
+}
+
+/**
+ * The rich hover surface for a caller that decides when it shows: a status
+ * badge whose row tracks hover and focus itself, a menu row's detail card, or
+ * a preview hovering over a control. Mounted means shown. Like
+ * {@link RichHoverTooltip} it portals into the anchor's window, sits on the
+ * tooltip layer, ignores the pointer unless `interactive` (content that
+ * scrolls opts back in with `pointer-events-auto`), and re-places itself when
+ * the window resizes or scrolls or the card's content changes size. It takes
+ * no focus, so Escape and dismissal stay with the caller's trigger.
+ */
+export function RichHoverCard(props: RichHoverCardProps): JSX.Element | null {
+  const {
+    children,
+    id,
+    dataTestId,
+    role,
+    tone = 'default',
+    elevation = 'tooltip',
+    surfacePadding = 'default',
+    surfaceWidth,
+    surfaceClassName,
+  } = props;
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const [position, setPosition] = useState<HoverCardPlacedPosition | null>(
+    null,
+  );
+  const placement = props.placement ?? 'below-start';
+  const anchorRef = props.anchorRef;
+  const anchorRect = props.anchorRect;
+  const pointX = props.anchorPoint?.x;
+  const pointY = props.anchorPoint?.y;
+  const placementGap = props.placementGap ?? HOVER_CARD_GAP;
+  const atControl =
+    placement === 'above' ||
+    placement === 'below' ||
+    placement === 'auto' ||
+    placement === 'left' ||
+    placement === 'right';
+  const interactive = atControl && props.interactive === true;
+  const doc =
+    (anchorRef ? anchorRef.current?.ownerDocument : props.ownerDocument) ??
+    (typeof document === 'undefined' ? undefined : document);
+
+  const updatePosition = useCallback((): void => {
+    const card = cardRef.current;
+    if (!card) return;
+    const view = card.ownerDocument.defaultView ?? window;
+    let next: HoverCardPlacedPosition;
+    if (placement === 'at-point') {
+      if (pointX === undefined || pointY === undefined) return;
+      const inside = (start: number, size: number, extent: number): number =>
+        Math.max(
+          POINT_VIEWPORT_PADDING,
+          Math.min(start, extent - size - POINT_VIEWPORT_PADDING),
+        );
+      next = {
+        top: inside(pointY, card.offsetHeight, view.innerHeight),
+        left: inside(pointX, card.offsetWidth, view.innerWidth),
+      };
+    } else if (placement === 'beside-menu') {
+      const row = anchorRef?.current;
+      if (!row) return;
+      next = besideMenuPosition(row, card.offsetWidth, card.offsetHeight);
+    } else if (placement === 'left' || placement === 'right') {
+      const control = anchorRef?.current;
+      if (!control) return;
+      const rect = control.getBoundingClientRect();
+      const leftRoom = Math.max(
+        0,
+        rect.left - AT_CONTROL_GAP - VIEWPORT_PADDING,
+      );
+      const rightRoom = Math.max(
+        0,
+        view.innerWidth - rect.right - AT_CONTROL_GAP - VIEWPORT_PADDING,
+      );
+      const preferredRoom = placement === 'left' ? leftRoom : rightRoom;
+      const otherRoom = placement === 'left' ? rightRoom : leftRoom;
+      const side =
+        preferredRoom < 160 && otherRoom > preferredRoom
+          ? placement === 'left'
+            ? 'right'
+            : 'left'
+          : placement;
+      const room = side === 'left' ? leftRoom : rightRoom;
+      const maxWidth = Math.min(
+        Math.max(160, room),
+        view.innerWidth - 2 * VIEWPORT_PADDING,
+      );
+      const width = Math.min(card.offsetWidth, maxWidth);
+      next = {
+        left: Math.min(
+          Math.max(
+            VIEWPORT_PADDING,
+            side === 'left'
+              ? rect.left - AT_CONTROL_GAP - width
+              : rect.right + AT_CONTROL_GAP,
+          ),
+          view.innerWidth - width - VIEWPORT_PADDING,
+        ),
+        top: Math.max(
+          VIEWPORT_PADDING,
+          Math.min(
+            rect.top + (rect.height - card.offsetHeight) / 2,
+            view.innerHeight - card.offsetHeight - VIEWPORT_PADDING,
+          ),
+        ),
+        maxWidth,
+        maxHeight: view.innerHeight - 2 * VIEWPORT_PADDING,
+      };
+    } else if (
+      placement === 'above' ||
+      placement === 'below' ||
+      placement === 'auto'
+    ) {
+      const control = anchorRef?.current;
+      if (!control) return;
+      const rect = control.getBoundingClientRect();
+      const side =
+        placement === 'auto'
+          ? rect.top >= view.innerHeight - rect.bottom
+            ? 'top'
+            : 'bottom'
+          : placement === 'above'
+            ? 'top'
+            : 'bottom';
+      // The natural height, not the capped one, decides the side.
+      const placed = computeFloatingMenuPosition({
+        anchorRect: rect,
+        menuWidth: card.offsetWidth,
+        menuHeight: card.scrollHeight,
+        viewportWidth: view.innerWidth,
+        viewportHeight: view.innerHeight,
+        placement: side === 'top' ? 'top-center' : 'bottom-center',
+        allowFlip: placement !== 'auto',
+        gap: AT_CONTROL_GAP,
+        viewportPadding: VIEWPORT_PADDING,
+      });
+      next = {
+        top: placed.top,
+        left: placed.left,
+        maxHeight: placed.maxHeight,
+      };
+    } else {
+      if (!anchorRect) return;
+      next = belowStartPosition({
+        rect: anchorRect,
+        width: card.offsetWidth,
+        height: card.offsetHeight,
+        viewportWidth: view.innerWidth,
+        viewportHeight: view.innerHeight,
+        gap: placementGap,
+      });
+    }
+    setPosition((previous) =>
+      previous?.top === next.top &&
+      previous.left === next.left &&
+      previous.maxWidth === next.maxWidth &&
+      previous.maxHeight === next.maxHeight
+        ? previous
+        : next,
+    );
+  }, [anchorRect, anchorRef, placement, placementGap, pointX, pointY]);
+
+  useLayoutEffect((): (() => void) | void => {
+    updatePosition();
+    const view = cardRef.current?.ownerDocument.defaultView;
+    if (!view) return;
+    // A second pass once the card's fonts and rows have laid out.
+    const frame = view.requestAnimationFrame(updatePosition);
+    return (): void => view.cancelAnimationFrame(frame);
+  }, [updatePosition]);
+
+  // A caller may point the same ref at another control (hovering from one
+  // changed file straight onto the next); re-place when the element changes.
+  const placedAnchorRef = useRef<HTMLElement | null>(null);
+  useLayoutEffect((): void => {
+    const anchor = anchorRef?.current ?? null;
+    if (anchor === placedAnchorRef.current) return;
+    placedAnchorRef.current = anchor;
+    updatePosition();
+  });
+
+  useEffect((): (() => void) | void => {
+    const card = cardRef.current;
+    const view = card?.ownerDocument.defaultView;
+    if (!card || !view) return;
+    let frame: number | null = null;
+    const schedule = (): void => {
+      if (frame !== null) return;
+      frame = view.requestAnimationFrame((): void => {
+        frame = null;
+        updatePosition();
+      });
+    };
+    view.addEventListener('resize', schedule);
+    view.addEventListener('scroll', schedule, { capture: true, passive: true });
+    const observer =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(schedule);
+    observer?.observe(card);
+    return (): void => {
+      view.removeEventListener('resize', schedule);
+      view.removeEventListener('scroll', schedule, { capture: true });
+      observer?.disconnect();
+      if (frame !== null) view.cancelAnimationFrame(frame);
+    };
+  }, [updatePosition]);
+
+  const body = doc?.body;
+  if (!body) return null;
+  return createPortal(
+    <div
+      ref={cardRef}
+      id={id}
+      role={role}
+      data-testid={dataTestId}
+      {...(interactive ? { 'data-canopy-browser-native-overlay': 'true' } : {})}
+      onMouseEnter={interactive ? props.onMouseEnter : undefined}
+      onMouseLeave={interactive ? props.onMouseLeave : undefined}
+      className={`${interactive ? 'pointer-events-auto' : 'pointer-events-none'} fixed z-tooltip ${
+        atControl ? 'flex flex-col overflow-hidden ' : ''
+      }${richHoverTooltipSurfaceClassName({
+        elevation,
+        tone,
+        surfacePadding,
+        surfaceWidth,
+      })} ${surfaceClassName ?? (surfaceWidth ? '' : 'min-w-45 max-w-80')}`}
+      style={
+        position
+          ? {
+              top: position.top,
+              left: position.left,
+              ...(position.maxWidth === undefined
+                ? {}
+                : { maxWidth: position.maxWidth }),
+              ...(position.maxHeight === undefined
+                ? {}
+                : { maxHeight: position.maxHeight }),
+            }
+          : { visibility: 'hidden', top: 0, left: 0 }
+      }
+    >
+      {children}
+    </div>,
+    body,
   );
 }

@@ -69,6 +69,11 @@ export function getPipelinePackageInstallStorePath(): string {
   return join(getDataDir(), 'pipeline-package-installs.json');
 }
 
+/** `<data>/pipeline-install-intents/`, one record per unfinished install. */
+export function getPipelineInstallIntentsDir(): string {
+  return join(getDataDir(), 'pipeline-install-intents');
+}
+
 export function getPipelinePackageDismissalStorePath(): string {
   return join(getDataDir(), 'pipeline-package-dismissals.json');
 }

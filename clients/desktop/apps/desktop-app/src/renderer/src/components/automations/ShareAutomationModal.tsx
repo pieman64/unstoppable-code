@@ -106,6 +106,7 @@ const SHARE_SCOPES: readonly ShareResourceScope[] = [
 const automationLinks = createShareLinkResolver(
   automationSharePath,
   resolveSharedAutomationUrl,
+  'automation',
 );
 const INSTALLED_ANALYSIS_EXPIRES_AT = '9999-12-31T23:59:59.999Z';
 const DESCRIPTION_TOO_LONG_ERROR =
@@ -372,48 +373,63 @@ export function ShareAutomationModal({
     [addPipelineDependency, addablePipelines, offersPipelineAdd],
   );
 
-  const loadExistingShare = useCallback(async () => {
-    if (!activity.remote) {
-      setDescriptionLoading(false);
+  const loadExistingShare = useCallback(
+    async (assertCurrent?: () => void) => {
+      if (!activity.remote) {
+        setDescriptionLoading(false);
+        assertCurrent?.();
+        setRemoteDetail(null);
+        assertCurrent?.();
+        setRemoteLink(null);
+        assertCurrent?.();
+        setRemoteMissing(false);
+        return { status: 'ready' } as const;
+      }
+      setDescriptionLoading(true);
+      assertCurrent?.();
       setRemoteDetail(null);
+      assertCurrent?.();
       setRemoteLink(null);
-      setRemoteMissing(false);
-      return { status: 'ready' } as const;
-    }
-    setDescriptionLoading(true);
-    setRemoteDetail(null);
-    setRemoteLink(null);
-    try {
-      const detail = await api.getShared(activity.remote.remoteId);
-      setRemoteDetail(detail);
-      setRemoteLink(await automationLinks.linkFromDetail(detail));
-      setDescription(detail.automation.description);
-      if (
-        activity.targetRequirement === undefined &&
-        !activity.targetRequirementCleared
-      )
-        setDeclaredTargetContexts(
-          detail.automation.targetRequirement?.contexts,
-        );
-      setRemoteMissing(false);
-      return { status: 'ready' } as const;
-    } catch (error: unknown) {
-      const missing =
-        readSharedResourceErrorStatus(error) === 404 &&
-        (await missingRemoteShareCanBeRecreated(activity.remote?.accountId));
-      setRemoteMissing(missing);
-      return missing
-        ? ({ status: 'ready' } as const)
-        : existingShareLoadFailure('automation', error);
-    } finally {
-      setDescriptionLoading(false);
-    }
-  }, [
-    activity.remote,
-    activity.targetRequirement,
-    activity.targetRequirementCleared,
-    api,
-  ]);
+      try {
+        const detail = await api.getShared(activity.remote.remoteId);
+        assertCurrent?.();
+        setRemoteDetail(detail);
+        const refreshedLink = await automationLinks.linkFromDetail(detail);
+
+        assertCurrent?.();
+
+        setRemoteLink(refreshedLink);
+        setDescription(detail.automation.description);
+        if (
+          activity.targetRequirement === undefined &&
+          !activity.targetRequirementCleared
+        )
+          setDeclaredTargetContexts(
+            detail.automation.targetRequirement?.contexts,
+          );
+        assertCurrent?.();
+        setRemoteMissing(false);
+        return { status: 'ready' } as const;
+      } catch (error: unknown) {
+        const missing =
+          readSharedResourceErrorStatus(error) === 404 &&
+          (await missingRemoteShareCanBeRecreated(activity.remote?.accountId));
+        assertCurrent?.();
+        setRemoteMissing(missing);
+        return missing
+          ? ({ status: 'ready' } as const)
+          : existingShareLoadFailure('automation', error);
+      } finally {
+        setDescriptionLoading(false);
+      }
+    },
+    [
+      activity.remote,
+      activity.targetRequirement,
+      activity.targetRequirementCleared,
+      api,
+    ],
+  );
 
   useEffect(() => {
     if (!needsCuratedKey || !pipelineAction) {
@@ -896,6 +912,7 @@ export function ShareAutomationModal({
         detail = await create();
       }
 
+      input.assertAllowed?.();
       let shareUrl: string | undefined;
       let publicLinkFailed = false;
       if (input.scope === 'public') {
@@ -905,10 +922,13 @@ export function ShareAutomationModal({
           detail = { ...detail, publicShare: published };
           const link = await automationLinks.resolveLink({
             kind: 'public',
+            id: detail.id,
             sharePath: published.sharePath,
           });
           shareUrl = link.url;
+          input.assertAllowed?.();
           setRemoteLink(link);
+          input.assertAllowed?.();
           window.dispatchEvent(
             new Event(AUTOMATION_PUBLIC_SHARE_CHANGED_EVENT),
           );
@@ -918,6 +938,7 @@ export function ShareAutomationModal({
       } else {
         if (revokePublicShare) {
           detail = { ...detail, publicShare: null };
+          input.assertAllowed?.();
           window.dispatchEvent(
             new Event(AUTOMATION_PUBLIC_SHARE_CHANGED_EVENT),
           );
@@ -928,11 +949,15 @@ export function ShareAutomationModal({
             id: detail.id,
           });
           shareUrl = link.url;
+          input.assertAllowed?.();
           setRemoteLink(link);
         }
       }
+      input.assertAllowed?.();
       pendingShared.current = detail;
+      input.assertAllowed?.();
       setRemoteDetail(detail);
+      input.assertAllowed?.();
       setRemoteMissing(false);
       return {
         ...(shareUrl ? { shareUrl } : {}),
@@ -953,22 +978,30 @@ export function ShareAutomationModal({
     ],
   );
 
-  const retryPublicLink =
-    useCallback(async (): Promise<ShareResourceOutcome> => {
+  const retryPublicLink = useCallback(
+    async (assertCurrent?: () => void): Promise<ShareResourceOutcome> => {
+      assertCurrent?.();
       const detail = pendingShared.current;
       if (!detail) return { publicLinkFailed: true };
       const published = await api.publishPublicShare(detail.id);
       const next = { ...detail, publicShare: published };
+      assertCurrent?.();
       pendingShared.current = next;
+      assertCurrent?.();
       setRemoteDetail(next);
+      assertCurrent?.();
       window.dispatchEvent(new Event(AUTOMATION_PUBLIC_SHARE_CHANGED_EVENT));
       const link = await automationLinks.resolveLink({
         kind: 'public',
+        id: detail.id,
         sharePath: published.sharePath,
       });
+      assertCurrent?.();
       setRemoteLink(link);
       return { shareUrl: link.url };
-    }, [api]);
+    },
+    [api],
+  );
 
   const handleCompleted = useCallback((): void => {
     if (!pendingShared.current) return;
@@ -1239,15 +1272,22 @@ export function ShareAutomationModal({
       ? { audience: activity.remote.shareScope }
       : undefined;
 
-  const revokePublicLink = useCallback(async (): Promise<void> => {
-    if (!remoteDetail?.publicShare) return;
-    await api.revokePublicShare(remoteDetail.id);
-    setRemoteDetail({ ...remoteDetail, publicShare: null });
-    window.dispatchEvent(new Event(AUTOMATION_PUBLIC_SHARE_CHANGED_EVENT));
-  }, [api, remoteDetail]);
+  const revokePublicLink = useCallback(
+    async (assertCurrent?: () => void): Promise<void> => {
+      assertCurrent?.();
+      if (!remoteDetail?.publicShare) return;
+      await api.revokePublicShare(remoteDetail.id);
+      assertCurrent?.();
+      setRemoteDetail({ ...remoteDetail, publicShare: null });
+      assertCurrent?.();
+      window.dispatchEvent(new Event(AUTOMATION_PUBLIC_SHARE_CHANGED_EVENT));
+    },
+    [api, remoteDetail],
+  );
 
   return (
     <DesktopShareResourceDialog
+      marketplace={{ kind: 'automation', resourceKey: activity.id }}
       resourceNoun="automation"
       testIdPrefix="share-automation"
       requiredCapability={

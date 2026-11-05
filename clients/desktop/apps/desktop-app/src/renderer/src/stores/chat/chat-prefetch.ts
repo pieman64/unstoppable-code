@@ -7,22 +7,37 @@ import {
   warmUpChat,
 } from '@/lib/chat-interest';
 import { chatInterestRefKey } from '@/lib/chat-interest/tracker';
+import { resolveAttentionLanding } from './attention-landing';
 import { chatScopeKey } from './revisioned-sync';
 import { chatStoreApi } from './store-ref';
 import type { ChatState } from './state';
 import type { ChatTab } from './types';
 import { catchUpStaleChat, isStaleChatCatchUpRunning } from './stale-catch-up';
 
-/** What a click would show: a chat, or a worktree's active chat. */
+/** What a click would show: a chat, or a worktree's active/landing chat. */
 export type ChatPrefetchTarget =
   | ({ kind: 'chat' } & ChatInterestChatRef)
-  | { kind: 'worktree'; projectId: string; worktreeId: string };
+  | {
+      kind: 'worktree';
+      projectId: string;
+      worktreeId: string;
+      /** Resolve the implicit entry destination instead of its active tab. */
+      attentionLanding?: boolean;
+    };
 
 /** Pointer intents wait for a short dwell; keyboard focus acts at once. */
 export type ChatPrefetchSource = 'pointer' | 'focus';
 
 export interface ChatPrefetchHost {
-  getState(): Pick<ChatState, 'worktreeChats' | 'chatStateSync'>;
+  getState(): Pick<
+    ChatState,
+    | 'worktreeChats'
+    | 'chatStateSync'
+    | 'hiddenChatTabIds'
+    | 'pendingQuestions'
+    | 'pendingApprovals'
+    | 'pendingPlanExits'
+  >;
   subscribe(callback: () => void): () => void;
   focused(): readonly ChatInterestChatRef[];
   isCatchingUp(target: ChatInterestChatRef): boolean;
@@ -54,6 +69,7 @@ function targetKey(target: ChatPrefetchTarget): string {
     target.projectId,
     target.worktreeId,
     target.kind === 'chat' ? target.chatId : null,
+    target.kind === 'worktree' && target.attentionLanding === true,
   ]);
 }
 
@@ -98,8 +114,22 @@ export function startChatPrefetch(host: ChatPrefetchHost): () => void {
       const result = await host.hydrate(target.projectId, target.worktreeId);
       if (result !== 'installed' || !allowed()) return;
     }
-    const state = host.getState().worktreeChats[scope];
-    const chatId = target.kind === 'chat' ? target.chatId : state?.activeTabId;
+    const chatState = host.getState();
+    const state = chatState.worktreeChats[scope];
+    let chatId = target.kind === 'chat' ? target.chatId : state?.activeTabId;
+    if (target.kind === 'worktree' && target.attentionLanding && state) {
+      chatId =
+        resolveAttentionLanding({
+          projectId: target.projectId,
+          worktreeId: target.worktreeId,
+          tabs: state.tabs,
+          activeTabId: state.activeTabId,
+          hiddenChatTabIds: chatState.hiddenChatTabIds,
+          pendingQuestions: chatState.pendingQuestions,
+          pendingApprovals: chatState.pendingApprovals,
+          pendingPlanExits: chatState.pendingPlanExits,
+        }).tabId ?? state.activeTabId;
+    }
     if (!chatId) return;
     const ref: ChatInterestChatRef = {
       projectId: target.projectId,

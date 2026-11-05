@@ -529,7 +529,11 @@ export class OperationLedger {
         patch: {
           status: terminal.status,
           outcome:
-            terminal.status === 'completed' ? (terminal.outcome ?? null) : null,
+            terminal.status === 'completed' ||
+            (current.kind === 'worker.agent.helper.run' &&
+              terminal.status === 'cancelled')
+              ? (terminal.outcome ?? null)
+              : null,
           error: terminal.status === 'failed' ? (terminal.error ?? null) : null,
           ...(terminal.restart ? { restart: terminal.restart } : {}),
         },

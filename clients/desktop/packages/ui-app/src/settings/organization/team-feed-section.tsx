@@ -20,6 +20,7 @@ import {
   Button,
   buttonClassName,
   CenteredLoadingSpinner,
+  Chip,
   DelayedLoadingPlaceholder,
   FilterDropdown,
   PageSearchControls,
@@ -28,9 +29,9 @@ import {
   EmptyState,
   ErrorBanner,
   SearchEmptyState,
-  SettingsListSkeleton,
   Dot,
   StatusGlyph,
+  TextLinkButton,
   Tooltip,
 } from '@canopy/ui-shared/components';
 import type { FeedItem, FeedItemType } from '@canopy/protocol';
@@ -55,6 +56,7 @@ import {
 } from './team-api';
 import { useSettingsLoadFailure } from '../errors';
 import { FeedActorProfileLinksProvider, FeedItemCard } from './team-feed-cards';
+import { TeamFeedSkeleton } from './team-feed-skeleton';
 import { TeamPageHeaderActions } from './team-page-header-slot';
 import { useViewerDataSharing } from './use-viewer-data-sharing';
 import { OrganizationDataSharingOptIn } from './web-data-sharing-opt-in';
@@ -628,15 +630,14 @@ export function TeamFeedSection({
           </PageSearchControls>
         )}
         {hasActiveFilters && (
-          <button
-            type="button"
-            data-settings-control="link"
-            onClick={clearFilters}
-            data-testid="team-feed-clear-filters"
-            className="shrink-0 whitespace-nowrap text-s font-medium fg-accent hover:underline"
-          >
-            Clear filters
-          </button>
+          <span className="shrink-0 whitespace-nowrap text-s">
+            <TextLinkButton
+              onClick={clearFilters}
+              data-testid="team-feed-clear-filters"
+            >
+              Clear filters
+            </TextLinkButton>
+          </span>
         )}
       </PageSearchRow>
 
@@ -649,21 +650,14 @@ export function TeamFeedSection({
         {FEED_ITEM_TYPES.map((type) => {
           const active = selectedTypes.has(type);
           return (
-            <button
+            <Chip
               key={type}
-              type="button"
-              data-settings-control="chip"
               onClick={() => toggleType(type)}
-              aria-pressed={active}
-              data-testid={`team-feed-type-${type}`}
-              className={`rounded-full border px-2.5 py-1 text-xs font-medium transition-colors ${
-                active
-                  ? 'border-line-accent bg-accent fg-emphasis'
-                  : 'bg-card fg-secondary hover:bg-secondary'
-              }`}
+              selected={active}
+              actionTestId={`team-feed-type-${type}`}
             >
               {FEED_TYPE_LABELS[type]}
-            </button>
+            </Chip>
           );
         })}
       </div>
@@ -674,7 +668,7 @@ export function TeamFeedSection({
   if (!initialLoaded) {
     body = (
       <DelayedLoadingPlaceholder slowNote="Still loading the timeline…">
-        <SettingsListSkeleton />
+        <TeamFeedSkeleton orgId={orgId} label="Loading the timeline" />
       </DelayedLoadingPlaceholder>
     );
   } else if (items.length === 0) {

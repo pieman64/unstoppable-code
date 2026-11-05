@@ -9,6 +9,7 @@ import {
   type PipelineDefinitionCopy,
   type PipelineDefinitionInstall,
   type PipelineDefinitionRemote,
+  type PipelineDefinitionRemoteReader,
   type PipelineDefinitionSourcePort,
   type PipelineDefinitionWritePort,
 } from '@canopy/core-runtime/node/pipeline';
@@ -25,6 +26,7 @@ import {
 } from '@canopy/protocol/pipelines';
 import { WORKSPACE_ROOT_REPO_ID } from '@canopy/protocol/ui-labels';
 import { CANOPY_CLOUD_SERVER_ID } from '@canopy/desktop-shared/constants/canopy-cloud';
+import { hashPipelinePackageYaml } from '@canopy/desktop-shared/node';
 import {
   createStoredPipelineDefinitionPort,
   createStoredPipelineDefinitionWriter,
@@ -33,6 +35,7 @@ import {
 import { backgroundExecutionDeniedMessage } from '@canopy/desktop-shared/lib/automation-context-copy';
 import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
 import type { PipelineInfo } from '@canopy/desktop-shared/types/pipeline';
+import { logMainProcessWarn } from '../lib/main-process-logging';
 import { isPathInside } from '../lib/path-safety';
 import { readPreferencesFile } from '../lib/preferences-store';
 import { notifyDesktopInventoryChanged } from '../services/desktop-inventory-sync-signals';
@@ -57,6 +60,7 @@ import {
   filterStoredPipelineContexts,
   readProjectPipelineOwner,
 } from './pipeline-install-context';
+import { beginPipelineInstallIntent } from './pipeline-install-intents';
 import {
   deleteUserPipelineLocalMetadata,
   isPipelineLocalMetadataReadable,
@@ -65,6 +69,7 @@ import {
 import {
   copyPackageInstall,
   dropPackageInstallInBackground,
+  readPublicPipelineShareRemote,
   removePackageInstall,
 } from './pipeline-package-service';
 import {
@@ -417,6 +422,16 @@ function remoteKeepingMessages(
   return {
     document: remote.document,
     remoteVersion: remote.remoteVersion,
+    ...(remote.installTarget
+      ? {
+          installTarget: () =>
+            (remote.installTarget?.() ?? Promise.resolve(null)).catch(
+              (error: unknown) => {
+                throw remoteSourceError(error);
+              },
+            ),
+        }
+      : {}),
     ...(remote.packageManifest
       ? {
           packageManifest: () =>
@@ -435,10 +450,100 @@ function remoteKeepingMessages(
 }
 
 /**
+ * Public shares as a remote core installs from: the share page's reviewed
+ * revision, installed with its package, receipt and subscription.
+ */
+function publicShareRemoteReader(): PipelineDefinitionRemoteReader {
+  return {
+    source: 'publicShare',
+    remote: async (
+      definitionId,
+      context,
+    ): Promise<PipelineDefinitionRemote | null> => {
+      let remote: Awaited<ReturnType<typeof readPublicPipelineShareRemote>>;
+      try {
+        remote = await readPublicPipelineShareRemote(
+          definitionId,
+          context.expectedRemoteVersion,
+        );
+      } catch (error) {
+        throw remoteSourceError(error);
+      }
+      if (!remote) return null;
+      const share = remote;
+      return remoteKeepingMessages({
+        document: {
+          name: share.name,
+          description: share.description,
+          icon: share.icon,
+          format: 'yaml',
+          text: share.rawPipeline,
+        },
+        remoteVersion: share.remoteVersion,
+        installTarget: () => share.installTarget(),
+        packageManifest: () => share.packageManifest(),
+        install: async (write): Promise<PipelineDefinitionSourceDocument> => {
+          const info = await share.install(write);
+          return {
+            ...infoEntry(info, 'user'),
+            revision: info.revision ?? 0,
+            format: 'yaml',
+            text: write.text,
+          };
+        },
+      });
+    },
+  };
+}
+
+/**
+ * Pipelines a capability package carries, as a remote core installs from
+ * while an automation's Stage A install runs.
+ */
+function packagedPipelineRemoteReader(): PipelineDefinitionRemoteReader {
+  return {
+    source: 'package',
+    remote: async (definitionId): Promise<PipelineDefinitionRemote | null> => {
+      const { readPackagedPipelineRemote } =
+        await import('./automation-pipeline-install');
+      let remote: Awaited<ReturnType<typeof readPackagedPipelineRemote>>;
+      try {
+        remote = await readPackagedPipelineRemote(definitionId);
+      } catch (error) {
+        throw remoteSourceError(error);
+      }
+      if (!remote) return null;
+      const packaged = remote;
+      return remoteKeepingMessages({
+        document: {
+          name: packaged.name,
+          description: packaged.description,
+          icon: packaged.icon,
+          format: 'yaml',
+          text: packaged.rawPipeline,
+        },
+        remoteVersion: packaged.remoteVersion,
+        install: async (write): Promise<PipelineDefinitionSourceDocument> => {
+          const info = await packaged.install(write);
+          return {
+            ...infoEntry(info, 'user'),
+            revision: info.revision ?? 0,
+            format: 'yaml',
+            text: write.text,
+          };
+        },
+      });
+    },
+  };
+}
+
+/**
  * Installs a share as a user pipeline with its provenance, all or nothing:
  * the install receipt, a replaced pipeline's dropped package install and the
  * subscription ledger entry follow the definition, and a failure restores a
  * replaced pipeline or removes a created one before undoing the receipt.
+ * Each write is noted in the install's intent record first, so an exit
+ * partway is rolled back at startup instead of leaving an unlinked copy.
  */
 export async function installSharedPipeline(
   detail: SharedPipelineDetail,
@@ -463,6 +568,7 @@ export async function installSharedPipeline(
   const previousRaw = write.replaces
     ? localPipelines.getPipelineText(id)
     : undefined;
+  const intent = await beginPipelineInstallIntent('shared');
   let savedDefinition = false;
   let savedId = id;
   let undoReceipt: (() => Promise<void>) | undefined;
@@ -475,6 +581,11 @@ export async function installSharedPipeline(
         !previousRaw.data)
     )
       throw new Error('Workflow unavailable (unknown-provenance)');
+    await intent.noteDefinition({
+      definitionId: id,
+      change: write.replaces ? 'replaced' : 'created',
+      contentHash: hashPipelinePackageYaml(write.text),
+    });
     savedDefinition = write.replaces;
     const result = localPipelines.savePipeline(
       {
@@ -493,10 +604,20 @@ export async function installSharedPipeline(
     savedId = result.data.id;
     if (result.data.id !== id)
       throw new Error('Pipeline create identity mismatch');
-    await recordSharedPipelineInstall(detail, id, (undo) => {
-      undoReceipt = undo;
-    });
-    if (write.replaces) await removePackageInstall(id);
+    await recordSharedPipelineInstall(
+      detail,
+      id,
+      (undo) => {
+        undoReceipt = undo;
+      },
+      (effect) => intent.noteReceipt(id, effect),
+    );
+    if (write.replaces) {
+      await intent.noteInstallRecord(id, null);
+      await removePackageInstall(id);
+    }
+    // The install is committed; its subscription is best effort.
+    await intent.finish();
     recordSharedItemInstall({
       kind: 'pipeline',
       remoteId: detail.id,
@@ -527,6 +648,19 @@ export async function installSharedPipeline(
       await undoReceipt?.();
     } catch (rollbackError) {
       failures.push(errorMessage(rollbackError));
+    }
+    // The intent record undoes what the steps above left; it stays for
+    // startup recovery when it cannot. Its failure is news only when the
+    // steps above reported none.
+    try {
+      await intent.rollBack();
+    } catch (rollbackError) {
+      if (failures.length > 1)
+        logMainProcessWarn(
+          '[pipelines] Install intent rollback failed',
+          rollbackError,
+        );
+      else failures.push(errorMessage(rollbackError));
     }
     throw new PipelineDefinitionSourceError(
       isPipelineContextDenial(error)
@@ -923,6 +1057,7 @@ function errorMessage(error: unknown): string {
 export function createDesktopPipelineDefinitionService(): PipelineDefinitionService {
   return createPipelineDefinitionService({
     ports: [storedPort(), projectPort(), curatedPort(), sharedPort()],
+    remotes: [publicShareRemoteReader(), packagedPipelineRemoteReader()],
     writer: desktopPipelineDefinitionWriter(),
     setDefinitionEnabled: recordPipelineEnabled,
     disabledDefinitionIds: async () =>

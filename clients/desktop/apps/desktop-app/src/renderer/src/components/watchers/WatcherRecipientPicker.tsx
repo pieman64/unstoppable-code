@@ -15,6 +15,7 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import type { JSX, SVGProps } from 'react';
 import type { AppAdvisorWatcherDestination } from '@canopy/desktop-shared/types';
 import {
+  Button,
   FloatingPickerMenu,
   PickerMenuOption,
   PickerMenuOptionCheck,
@@ -132,17 +133,20 @@ export function WatcherRecipientPicker({
 
   return (
     <div className="electron-no-drag relative">
-      <button
+      {/* A dropdown is a field: the 28px rounded rectangle, like
+          `SettingsSelect`, not the capsule of the actions beside it. */}
+      <Button
         ref={triggerRef}
-        type="button"
+        size="field"
+        variant="secondary"
         disabled={isDisabled}
         onClick={(): void => setOpen((prev) => !prev)}
         aria-haspopup="listbox"
         aria-expanded={open}
         data-testid={`${dataTestId}-trigger`}
-        className="focus-ring inline-flex h-7 min-w-48 max-w-72 items-center justify-between gap-2 rounded-lg border bg-popover px-2 text-xs fg-primary transition-colors hover:bg-fg-primary/[0.06] disabled:cursor-not-allowed disabled:opacity-50"
+        className="min-w-48 max-w-72"
       >
-        <span className="flex min-w-0 items-center gap-1.5">
+        <span className="flex min-w-0 flex-1 items-center gap-1.5">
           {selected && (
             <RecipientGroupIcon
               groupKey={selected.groupKey}
@@ -164,7 +168,7 @@ export function WatcherRecipientPicker({
           aria-hidden="true"
           className="shrink-0 fg-secondary"
         />
-      </button>
+      </Button>
 
       <FloatingPickerMenu
         open={open}

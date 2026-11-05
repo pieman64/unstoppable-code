@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { pruneDamagedCopies } from '@canopy/desktop-shared/node/lib/damaged-copies';
 import {
   createDirectoryDurably,
   writeFileAtomically,
@@ -157,6 +158,7 @@ async function confirmLastGood(filePath: string, bytes: Buffer): Promise<void> {
   }
 }
 
+/** Keeps `bytes` once as a damaged copy, with at most the newest five. */
 async function keepDamagedCopy(filePath: string, bytes: Buffer): Promise<void> {
   const folder = dirname(filePath);
   for (const name of await readdir(folder)) {
@@ -174,6 +176,12 @@ async function keepDamagedCopy(filePath: string, bytes: Buffer): Promise<void> {
       admittedWriter: MIGRATIONS_WRITER,
     },
   );
+  await pruneDamagedCopies({
+    directory: folder,
+    prefix: 'migrations.damaged-',
+    suffix: '.json',
+    uniqueTail: true,
+  });
 }
 
 /**

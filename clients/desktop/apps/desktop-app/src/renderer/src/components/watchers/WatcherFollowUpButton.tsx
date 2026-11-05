@@ -8,7 +8,7 @@
 import { useRef, useState, type JSX } from 'react';
 import { AssignmentAddIcon, AssignmentIcon } from '@canopy/ui-shared/icons';
 import { Popover, Tooltip } from '@canopy/ui-shared';
-import { TextArea } from '@canopy/ui-shared/components';
+import { Button, TextArea } from '@canopy/ui-shared/components';
 
 export interface WatcherFollowUpButtonProps {
   value: string;
@@ -35,23 +35,22 @@ export function WatcherFollowUpButton({
   return (
     <div className="electron-no-drag relative inline-flex">
       <Tooltip label="Set follow-up instructions">
-        <button
+        <Button
           ref={triggerRef}
-          type="button"
+          // Set, it takes the accent ink beside the filled glyph; unset, the
+          // routine secondary surface.
+          variant={hasInstruction ? 'ghost-accent' : 'secondary'}
+          size="sm"
+          iconOnly
           onClick={(): void => setOpen((prev) => !prev)}
           aria-haspopup="dialog"
           aria-expanded={open}
           aria-label="Set follow-up instructions"
           data-testid={`${dataTestId}-trigger`}
           data-has-instruction={hasInstruction ? 'true' : 'false'}
-          className={`focus-ring inline-flex h-7 w-7 items-center justify-center rounded-lg border transition-colors ${
-            hasInstruction
-              ? 'border-line-accent/40 bg-accent-subtle fg-accent hover:bg-accent-subtle/80'
-              : 'bg-popover fg-secondary hover:bg-fg-primary/[0.06] hover:fg-primary'
-          }`}
         >
           <Icon width={15} height={15} aria-hidden="true" />
-        </button>
+        </Button>
       </Tooltip>
 
       <Popover

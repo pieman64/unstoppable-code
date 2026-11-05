@@ -110,7 +110,7 @@ export async function runGit(args: string[], cwd?: string): Promise<string> {
   return stdout.trim();
 }
 
-function normalizeWorktree(value: unknown): WorktreeData | null {
+export function normalizeWorktree(value: unknown): WorktreeData | null {
   if (!isRecord(value)) {
     return null;
   }

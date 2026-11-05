@@ -379,11 +379,3 @@ export function runModelUnlockPolling(requestId: string): () => void {
     if (timer !== null) clearTimeout(timer);
   };
 }
-
-/** Test-only: resets module state between Jest cases. */
-export function resetModelUnlockIntentForTests(): void {
-  handlers = {};
-  confirmedListener = null;
-  checkInFlight = null;
-  useModelUnlockIntentStore.setState({ intent: null, phase: null });
-}

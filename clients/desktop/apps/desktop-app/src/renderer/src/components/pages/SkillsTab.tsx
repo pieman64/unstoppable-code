@@ -1,3 +1,5 @@
+import { SharedByYou } from '../plugins/SharedByYou';
+import { useCloudOrigin } from '@/lib/cloud-origin';
 import {
   Heading,
   SegmentedControl,
@@ -30,9 +32,8 @@ import {
 } from '@/lib/sharedSkillImport';
 import { SKILLS_CHANGED_EVENT, notifySkillsChanged } from '@/lib/skillsChanged';
 import { resolveSharedResourceErrorMessage } from '@/lib/sharedResourceErrors';
-import { brand, brandText } from '@/lib/brand';
+import { brandText } from '@/lib/brand';
 import { copyTextToClipboard } from '@/lib/clipboard';
-import { resolveSharedSkillUrl } from '@/lib/share-links';
 import { postShareToast } from '@/lib/share-toast';
 import {
   isSkillEditorSaveEnabled,
@@ -94,21 +95,19 @@ import {
   MarketplaceUnshareAction,
   useMarketplaceUnshare,
   useResourceContext,
-  useSharedByYouCopyLinkMenuItem,
+  useMarketplaceCopyLinkMenuItem,
   type UseMarketplaceUnshareOptions,
 } from '@canopy/ui-app/capability';
 import {
   sharedByYouAudienceCount,
-  sharedByYouScopedLink,
+  marketplaceShareLink,
+  marketplaceLinkAccess,
   type SharedByYouCopyLinkPort,
 } from '@canopy/ui-app/sharing';
 import { marketplaceUnshareMenuLabel } from '@canopy/ui-shared/lib/marketplace-unshare';
 import {
-  PUBLISH_PUBLIC_LINK_LABEL,
-  PUBLISHING_PUBLIC_LINK_LABEL,
-} from '@canopy/ui-shared/lib/shared-by-you';
-import {
   DetailActionBar,
+  DetailMoreMenu,
   DetailActionSlotsProvider,
   DetailPageActions,
   MarketplaceShareButton,
@@ -121,10 +120,10 @@ import {
 } from '@canopy/ui-shared/components';
 import { ErrorBanner, LoadingPlaceholder } from '../shared';
 import {
-  CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
   Notice,
   NoticeButton,
+  Skeleton,
 } from '@canopy/ui-shared/components';
 import { Tooltip } from '@canopy/ui-shared';
 import {
@@ -133,11 +132,7 @@ import {
   CloseIcon as AppCatalogCloseIcon,
   PlusIcon as AppCatalogPlusIcon,
   DocumentPencilIcon as AppCatalogDocumentPencilIcon,
-  Link as AppCatalogLink,
   ArrowUpRightIcon,
-  CopyIcon,
-  GlobeIcon,
-  RefreshIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 
 // ---------------------------------------------------------------------------
@@ -414,15 +409,16 @@ export function AddSkillsModal({
                   {modalStep.source}
                 </span>
               </p>
-              <button
-                type="button"
-                onClick={() => toggleAll(modalStep.response.skills)}
-                className="text-xs fg-accent hover:underline"
-              >
-                {selectedNames.size === modalStep.response.skills.length
-                  ? 'Deselect all'
-                  : 'Select all'}
-              </button>
+              <span className="text-xs">
+                <Button
+                  variant="link"
+                  onClick={() => toggleAll(modalStep.response.skills)}
+                >
+                  {selectedNames.size === modalStep.response.skills.length
+                    ? 'Deselect all'
+                    : 'Select all'}
+                </Button>
+              </span>
             </div>
 
             {/* A long list scrolls inside the box instead of the dialog. */}
@@ -875,6 +871,12 @@ interface SkillEditorInitialValues {
   files?: Array<{ path: string; content: string; editable?: boolean }>;
 }
 
+/** The fields a skill editor skeleton starts from. */
+type SkillEditorSampleValues = Pick<
+  SkillEditorInitialValues,
+  'name' | 'description' | 'body'
+>;
+
 interface UseSkillEditorStateResult {
   name: string;
   description: string;
@@ -957,10 +959,14 @@ const SKILL_EDITOR_FIELDS: readonly SkillEditorField[] = [
   'files',
 ];
 
-function useSkillEditorState(): UseSkillEditorStateResult {
-  const [name, setNameValue] = useState('');
-  const [description, setDescriptionValue] = useState('');
-  const [body, setBodyValue] = useState('');
+function useSkillEditorState(
+  initial?: SkillEditorSampleValues,
+): UseSkillEditorStateResult {
+  const [name, setNameValue] = useState(initial?.name ?? '');
+  const [description, setDescriptionValue] = useState(
+    initial?.description ?? '',
+  );
+  const [body, setBodyValue] = useState(initial?.body ?? '');
   const [shownErrors, setShownErrors] = useState<SkillEditorShownErrors>({});
   const [focusRequest, setFocusRequest] =
     useState<SkillEditorFocusRequest | null>(null);
@@ -1726,6 +1732,59 @@ function SkillEditPageUnsavedGuard({
   return prompt ? <UnsavedChangesDialog name={name} {...prompt} /> : null;
 }
 
+const SAMPLE_SKILL_EDITOR_VALUES: SkillEditorSampleValues = {
+  name: 'release-notes',
+  description: 'Drafts release notes from the pull requests merged this week.',
+  body: 'Collect the merged pull requests since the last tag.\n\nGroup them by area and write one line for each.',
+};
+
+/** A shared skill's SKILL.md, plain, for the read view's skeleton. */
+const SAMPLE_SHARED_SKILL_CONTENT: {
+  frontmatter: Record<string, unknown>;
+  body: string;
+} = {
+  frontmatter: {},
+  body: SAMPLE_SKILL_EDITOR_VALUES.body,
+};
+
+const rejectSampleFileRead = (): Promise<never> =>
+  Promise.reject(new Error('Sample skills have no files.'));
+
+interface SkillEditorBodySkeletonProps {
+  label: string;
+  testId: string;
+  headerHint: JSX.Element | string;
+  enableFiles?: boolean;
+  dialog?: boolean;
+}
+
+/**
+ * A skill that has not loaded: `SkillEditorBody` itself, rendered from plain
+ * sample fields inside the measured `Skeleton`, so the bars sit where the
+ * fields will. Wrap it in `DelayedLoadingPlaceholder` so a fast read never
+ * flashes it.
+ */
+function SkillEditorBodySkeleton({
+  label,
+  testId,
+  headerHint,
+  enableFiles = false,
+  dialog = false,
+}: SkillEditorBodySkeletonProps): JSX.Element {
+  const sample = useSkillEditorState(SAMPLE_SKILL_EDITOR_VALUES);
+  return (
+    <Skeleton loading label={label} testId={testId}>
+      <SkillEditorBody
+        state={sample}
+        nameAutoFocus={false}
+        headerHint={headerHint}
+        enableFiles={enableFiles}
+        dialog={dialog}
+      />
+    </Skeleton>
+  );
+}
+
 /**
  * Custom skill authoring: name, description, advanced metadata, SKILL.md
  * content, supporting files, preview, validation, and save. One
@@ -1959,9 +2018,25 @@ export function CustomSkillEditor({
     : isEdit
       ? 'Save changes'
       : 'Create skill';
+  const headerHint = (
+    <>
+      Custom skills are saved locally and shown as{' '}
+      <span className="inline-flex items-center gap-1.5 align-middle">
+        <Badge>custom</Badge>
+        <span className="fg-primary font-medium">{brandText.appName}</span>
+      </span>{' '}
+      in the skills list.
+    </>
+  );
   const fields = loading ? (
     <DelayedLoadingPlaceholder slowNote="Still loading skill…">
-      <CenteredLoadingSpinner className="my-12" />
+      <SkillEditorBodySkeleton
+        label="Loading skill"
+        testId="skill-editor-loading"
+        headerHint={headerHint}
+        enableFiles
+        dialog={presentation === 'modal'}
+      />
     </DelayedLoadingPlaceholder>
   ) : (
     <SkillEditorBody
@@ -1970,16 +2045,7 @@ export function CustomSkillEditor({
       enableFiles
       textEntryEscapeBoundary={presentation === 'page'}
       dialog={presentation === 'modal'}
-      headerHint={
-        <>
-          Custom skills are saved locally and shown as{' '}
-          <span className="inline-flex items-center gap-1.5 align-middle">
-            <Badge>custom</Badge>
-            <span className="fg-primary font-medium">{brandText.appName}</span>
-          </span>{' '}
-          in the skills list.
-        </>
-      }
+      headerHint={headerHint}
     />
   );
 
@@ -2186,6 +2252,7 @@ export function SharedSkillDetailModal({
   renderSharedByYou?: (
     detail: SharedSkillDetail,
     refresh: () => Promise<void>,
+    refreshAfterPublish: () => Promise<void>,
   ) => ReactNode;
 }): JSX.Element {
   const [detail, setDetail] = useState<DesktopSharedSkillDetail | null>(null);
@@ -2214,9 +2281,6 @@ export function SharedSkillDetailModal({
   const [loading, setLoading] = useState(true);
   const [sourceReadCount, setSourceReadCount] = useState(0);
   const [saving, setSaving] = useState(false);
-  const [publicShareBusy, setPublicShareBusy] = useState(false);
-  const [publicShareUrl, setPublicShareUrl] = useState<string | null>(null);
-  const [publicShareCopied, setPublicShareCopied] = useState(false);
   const [error, setError] = useState('');
 
   const editor = useSkillEditorState();
@@ -2224,10 +2288,6 @@ export function SharedSkillDetailModal({
   editorRef.current = editor;
 
   const isEdit = mode === 'edit' && summary.canUpdate;
-  // Shared by you renders the public-link row only outside edit mode and
-  // for a share the viewer can delete; otherwise the legacy control stays.
-  const sharedByYouOwnsPublicLink =
-    renderSharedByYou !== undefined && !isEdit && detail?.canDelete === true;
   // Shared by you lists the owner's audiences, so the header leaves them out
   // (CAN-5224). The row's facts stand in while the detail loads, avoiding a
   // flash; the loaded detail decides, and a failed load renders no card.
@@ -2381,22 +2441,6 @@ export function SharedSkillDetailModal({
     return null;
   };
 
-  useEffect(() => {
-    let cancelled = false;
-    setPublicShareCopied(false);
-    const sharePath = detail?.publicShare?.sharePath;
-    if (!sharePath) {
-      setPublicShareUrl(null);
-      return undefined;
-    }
-    void resolveSharedSkillUrl(sharePath).then((url) => {
-      if (!cancelled) setPublicShareUrl(url);
-    });
-    return (): void => {
-      cancelled = true;
-    };
-  }, [detail?.publicShare?.sharePath]);
-
   const refreshDetail = async (): Promise<void> => {
     try {
       const nextDetail = await window.skills.getShared(summary.id);
@@ -2418,64 +2462,23 @@ export function SharedSkillDetailModal({
     await refreshDetail();
   };
 
-  // Fall back to the server-minted relative path when the cloud base URL
-  // cannot be resolved, so the link stays visible and copyable.
-  const publicShareLink =
-    publicShareUrl ?? detail?.publicShare?.sharePath ?? null;
-
-  // The owner's member link (CAN-5452), from the loaded detail only: a load
-  // for another skill clears `detail`, so a stale link is never offered.
-  const copyScopedLinkItem = useSharedByYouCopyLinkMenuItem(
-    !isEdit && !loading && detail?.id === summary.id
-      ? sharedByYouScopedLink(detail, personalOrganizationId, {
-          scheme: brand.internalName,
-          kind: 'skill',
-          shareId: detail.id,
-        })
+  const cloudOrigin = useCloudOrigin();
+  const canonicalLink = detail
+    ? marketplaceShareLink(cloudOrigin, 'skill', detail.id)
+    : null;
+  const linkAccess = detail
+    ? marketplaceLinkAccess(detail, personalOrganizationId)
+    : null;
+  const copyScopedLinkItem = useMarketplaceCopyLinkMenuItem(
+    !isEdit &&
+      !loading &&
+      detail?.id === summary.id &&
+      canonicalLink &&
+      linkAccess
+      ? { link: canonicalLink, access: linkAccess }
       : null,
     SHARED_SKILL_COPY_LINK_PORT,
   );
-
-  const handlePublishPublicShare = async (): Promise<void> => {
-    if (!detail || publicShareBusy) return;
-    setPublicShareBusy(true);
-    setError('');
-    try {
-      // The mutation result is the local source of truth; the follow-up
-      // refresh is best-effort so a transient getShared failure cannot leave
-      // the row contradicting the completed server mutation.
-      const publicShare = await window.skills.publishPublicShare(detail.id);
-      const nextDetail = { ...detail, publicShare };
-      setDetail(nextDetail);
-      onUpdated(nextDetail);
-      await refreshDetail();
-    } catch (err: unknown) {
-      setError(
-        `Failed to publish public link. ${resolveSharedResourceErrorMessage(err)}`,
-      );
-    } finally {
-      setPublicShareBusy(false);
-    }
-  };
-
-  const handleRevokePublicShare = async (): Promise<void> => {
-    if (!detail || publicShareBusy) return;
-    setPublicShareBusy(true);
-    setError('');
-    try {
-      await window.skills.revokePublicShare(detail.id);
-      const nextDetail = { ...detail, publicShare: null };
-      setDetail(nextDetail);
-      onUpdated(nextDetail);
-      await refreshDetail();
-    } catch (err: unknown) {
-      setError(
-        `Failed to remove public link. ${resolveSharedResourceErrorMessage(err)}`,
-      );
-    } finally {
-      setPublicShareBusy(false);
-    }
-  };
 
   const handleSave = async (): Promise<void> => {
     if (!isEdit || !detail || saving) return;
@@ -2603,6 +2606,14 @@ export function SharedSkillDetailModal({
           editButton
         ) : (
           <>
+            {copyScopedLinkItem && (
+              <DetailMoreMenu
+                name={summary.name}
+                items={[copyScopedLinkItem]}
+                triggerTestId="plugins-entry-detail-more"
+                menuTestId="plugins-entry-detail-menu"
+              />
+            )}
             {!loading && detail && renderUnshare?.(detail)}
             {!loading && loadedUnshare && (
               <MarketplaceUnshareAction {...loadedUnshare} />
@@ -2706,72 +2717,6 @@ export function SharedSkillDetailModal({
         <div className={page ? 'px-5' : 'px-6'}>
           <ErrorBanner error={error} />
         </div>
-        {!page &&
-          !loading &&
-          detail &&
-          (summary.canUpdate || detail.publicShare) && (
-            <div className="mx-6 mb-3 flex flex-wrap items-center gap-2 rounded-lg border bg-secondary px-3 py-2 text-xs">
-              <span className="font-medium fg-primary">Public link</span>
-              {!detail.publicShare ? (
-                summary.canUpdate && (
-                  <Button
-                    size="compact"
-                    data-testid="shared-skill-publish-public-link"
-                    disabled={publicShareBusy}
-                    onClick={() => void handlePublishPublicShare()}
-                  >
-                    {publicShareBusy
-                      ? PUBLISHING_PUBLIC_LINK_LABEL
-                      : PUBLISH_PUBLIC_LINK_LABEL}
-                  </Button>
-                )
-              ) : (
-                <>
-                  {publicShareLink && (
-                    <>
-                      <span className="min-w-0 flex-1 truncate fg-secondary">
-                        {publicShareLink}
-                      </span>
-                      <Button
-                        size="compact"
-                        data-testid="shared-skill-copy-public-link"
-                        onClick={() => {
-                          void copyTextToClipboard(publicShareLink).then(
-                            (ok) => {
-                              if (ok) setPublicShareCopied(true);
-                            },
-                          );
-                        }}
-                      >
-                        {publicShareCopied ? 'Copied' : 'Copy link'}
-                      </Button>
-                    </>
-                  )}
-                  {summary.canUpdate && !detail.publicShare.upToDate && (
-                    <Button
-                      size="compact"
-                      data-testid="shared-skill-update-public-link"
-                      disabled={publicShareBusy}
-                      onClick={() => void handlePublishPublicShare()}
-                    >
-                      Update link to latest version
-                    </Button>
-                  )}
-                  {summary.canUpdate && !sharedByYouOwnsPublicLink && (
-                    <Button
-                      variant="ghost-destructive"
-                      size="compact"
-                      data-testid="shared-skill-remove-public-link"
-                      disabled={publicShareBusy}
-                      onClick={() => void handleRevokePublicShare()}
-                    >
-                      Remove public link
-                    </Button>
-                  )}
-                </>
-              )}
-            </div>
-          )}
         {!loading && detail?.savedFrom && (
           <p
             data-testid="shared-skill-detail-saved-from"
@@ -2791,7 +2736,38 @@ export function SharedSkillDetailModal({
         )}
         {loading ? (
           <DelayedLoadingPlaceholder slowNote="Still loading shared skill…">
-            <CenteredLoadingSpinner className="my-12" />
+            {isEdit ? (
+              <SkillEditorBodySkeleton
+                label="Loading shared skill"
+                testId="shared-skill-detail-loading"
+                headerHint={`Edits are saved to ${brandText.appName} Cloud.`}
+                dialog={!page}
+              />
+            ) : (
+              <Skeleton
+                loading
+                label="Loading shared skill"
+                testId="shared-skill-detail-loading"
+              >
+                <SkillReadDetail
+                  skill={{ sourceId: 'cloud-shared', name: summary.name }}
+                  inset={page ? 'page' : 'dialog'}
+                  {...(page
+                    ? {
+                        hostHeader: {
+                          title: summary.name,
+                          description: summary.description,
+                        },
+                      }
+                    : {})}
+                  content={SAMPLE_SHARED_SKILL_CONTENT}
+                  files={[]}
+                  loading={false}
+                  error=""
+                  readFile={rejectSampleFileRead}
+                />
+              </Skeleton>
+            )}
           </DelayedLoadingPlaceholder>
         ) : isEdit ? (
           <SkillEditorBody
@@ -2827,13 +2803,32 @@ export function SharedSkillDetailModal({
             }
           />
         )}
-        {renderSharedByYou && !loading && detail && !isEdit && (
+        {(renderSharedByYou || !page) && !loading && detail && !isEdit && (
           <div
             className={
               page ? 'px-5 pt-6 empty:hidden' : 'px-6 pt-6 empty:hidden'
             }
           >
-            {renderSharedByYou(detail, handleSharedByYouPublicLinkRemoved)}
+            {renderSharedByYou ? (
+              renderSharedByYou(
+                detail,
+                handleSharedByYouPublicLinkRemoved,
+                refreshDetail,
+              )
+            ) : (
+              <SharedByYou
+                kind="skill"
+                shareId={detail.id}
+                name={detail.name}
+                facts={detail}
+                onRefresh={refreshDetail}
+                onUnshared={(audience): void => {
+                  if (audience.id === 'public')
+                    void handleSharedByYouPublicLinkRemoved();
+                  else onClose();
+                }}
+              />
+            )}
           </div>
         )}
       </div>
@@ -2880,53 +2875,6 @@ export function SharedSkillDetailModal({
       });
     // Copy link leads the link actions; it never publishes or changes access.
     if (copyScopedLinkItem) moreItems.push(copyScopedLinkItem);
-    if (!isEdit && !loading && detail) {
-      if (!detail.publicShare && summary.canUpdate)
-        moreItems.push({
-          id: 'publish-public-link',
-          label: publicShareBusy
-            ? PUBLISHING_PUBLIC_LINK_LABEL
-            : PUBLISH_PUBLIC_LINK_LABEL,
-          icon: <GlobeIcon width={14} height={14} aria-hidden />,
-          testId: 'shared-skill-publish-public-link',
-          disabled: publicShareBusy,
-          onSelect: () => void handlePublishPublicShare(),
-        });
-      if (detail.publicShare && publicShareLink)
-        moreItems.push({
-          id: 'copy-public-link',
-          label: publicShareCopied ? 'Copied' : 'Copy public link',
-          icon: <CopyIcon width={14} height={14} aria-hidden />,
-          testId: 'shared-skill-copy-public-link',
-          onSelect: () => {
-            void copyTextToClipboard(publicShareLink).then((ok) => {
-              if (ok) setPublicShareCopied(true);
-            });
-          },
-        });
-      if (
-        detail.publicShare &&
-        summary.canUpdate &&
-        !detail.publicShare.upToDate
-      )
-        moreItems.push({
-          id: 'update-public-link',
-          label: 'Update public link',
-          icon: <RefreshIcon width={14} height={14} aria-hidden />,
-          testId: 'shared-skill-update-public-link',
-          disabled: publicShareBusy,
-          onSelect: () => void handlePublishPublicShare(),
-        });
-      if (detail.publicShare && summary.canUpdate && !sharedByYouOwnsPublicLink)
-        moreItems.push({
-          id: 'remove-public-link',
-          label: 'Remove public link',
-          icon: <AppCatalogLink width={14} height={14} aria-hidden />,
-          testId: 'shared-skill-remove-public-link',
-          disabled: publicShareBusy,
-          onSelect: () => void handleRevokePublicShare(),
-        });
-    }
     // Provenance reads the freshest facts: the loaded detail, else the row.
     const provenance = sharedSkillDetailHeader(
       detail ?? summary,
@@ -2956,14 +2904,14 @@ export function SharedSkillDetailModal({
         ) : null,
         // The installed copy is one click away, not only in the ⋯ menu.
         !isEdit && showInstalled && onOpenInstalled ? (
-          <button
-            type="button"
+          <Button
+            key="open-installed"
+            variant="link"
             data-testid="shared-skill-detail-open-installed"
             onClick={() => onOpenInstalled(installed.skillName)}
-            className="focus-ring rounded-sm fg-accent underline-offset-2 hover:underline"
           >
             Open
-          </button>
+          </Button>
         ) : null,
         !loading && detail?.publicShare && !audienceListedBelow
           ? 'Public link'

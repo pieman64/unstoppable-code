@@ -893,7 +893,7 @@ function TurnGroupViewImpl({
                       completionStatus={outcome}
                       alwaysVisible
                     >
-                      <span className="flex items-center gap-0.5">
+                      <span className="flex items-center gap-0.5 pointer-coarse:gap-4">
                         {feedback}
                         {actions}
                       </span>

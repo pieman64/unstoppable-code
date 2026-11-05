@@ -79,6 +79,14 @@ interface RegistryHead {
   readonly currentSegmentBytes: number;
 }
 
+/** An identity's appended entries, durable in its segments, before its head. */
+interface StagedAppend {
+  readonly identity: RegistryIdentity;
+  readonly directory: string;
+  readonly appendedEffects: readonly DelegationRegistryJournalEffect[];
+  readonly nextHead: RegistryHead;
+}
+
 interface ChatManifest {
   readonly version: 1;
   readonly chatId: string;
@@ -1263,6 +1271,19 @@ export class DelegationRegistryStore {
     }
   }
 
+  /** Holds every identity's lock, taken in one fixed order. */
+  private serializeAll<T>(
+    identities: readonly RegistryIdentity[],
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const [first, ...rest] = [...identities].sort((left, right) =>
+      identityKey(left).localeCompare(identityKey(right)),
+    );
+    return first === undefined
+      ? operation()
+      : this.serialize(first, () => this.serializeAll(rest, operation));
+  }
+
   private async getLocator(
     identity: RegistryIdentity,
     category: string,
@@ -1472,236 +1493,268 @@ export class DelegationRegistryStore {
     if (effects.length === 0) return;
     for (const effect of effects) validateEffect(effect, chatId);
     await this.serialize(identity, async () => {
-      const identityKeyValue = identityKey(identity);
-      const directory = identityRoot(this.transcriptsRoot, identity);
-      let nextHead = await this.loadHead(identity);
-      await this.rebuildIndexes(identity, nextHead);
-      const indexedEffects: Array<{
-        effect: DelegationRegistryJournalEffect;
-        locator: Locator;
-        resultOrdinal: number;
-        generationOrdinal: number;
-      }> = [];
-      const segmentChunks = new Map<
-        number,
-        { offset: number; chunks: Buffer[]; length: number }
-      >();
-      const appendedEffects: DelegationRegistryJournalEffect[] = [];
+      const staged = await this.stageAppend(identity, effects);
+      if (staged) await this.publishStaged(chatId, [staged]);
+    });
+  }
 
-      for (const effect of effects) {
-        if (effect.kind === 'delegation-receipt') {
-          const prior = await this.readByLocator(
-            identity,
-            'receipt',
-            receiptLocatorKey(effect.entry),
-            nextHead,
-          );
-          if (prior) {
-            if (
-              canonicalDelegationJson(prior) !==
-              canonicalDelegationJson(effect.entry)
-            )
-              fail('conflict', 'Receipt identity conflicts with stored entry');
-            continue;
-          }
-        }
-        if (effect.kind === 'delegation-generation') {
-          const existing = await this.readByLocator(
-            identity,
-            'generation',
-            generationLocatorKey(effect.entry.runGeneration),
-            nextHead,
-          );
-          if (existing) {
-            if (!sameGenerationIdentity(existing, effect.entry))
-              fail(
-                'conflict',
-                'Generation registration conflicts with stored entry',
-              );
-            continue;
-          }
-        } else if (effectForResult(effect)) {
-          const byIndex = await this.readByLocator(
-            identity,
-            'result',
-            resultLocatorKey(effect.entry.resultIndex),
-            nextHead,
-          );
-          const bySettlement = await this.readByLocator(
-            identity,
-            'settlement',
-            settlementLocatorKey(effect.entry.settlementKey),
-            nextHead,
-          );
-          const byGeneration = await this.readByLocator(
-            identity,
-            'result-generation',
-            generationLocatorKey(effect.entry.runGeneration),
-            nextHead,
-          );
-          const prior = byIndex ?? bySettlement ?? byGeneration;
-          if (prior) {
-            if (
-              canonicalDelegationJson(prior) !==
-              canonicalDelegationJson(effect.entry)
-            )
-              fail(
-                'conflict',
-                'Delegation result identity conflicts with stored entry',
-              );
-            continue;
-          }
+  /**
+   * Make an identity's new entries durable in its segments and index them,
+   * without publishing its head. Undefined when every effect is stored.
+   */
+  private async stageAppend(
+    identity: RegistryIdentity,
+    effects: readonly DelegationRegistryJournalEffect[],
+  ): Promise<StagedAppend | undefined> {
+    const directory = identityRoot(this.transcriptsRoot, identity);
+    let nextHead = await this.loadHead(identity);
+    await this.rebuildIndexes(identity, nextHead);
+    const indexedEffects: Array<{
+      effect: DelegationRegistryJournalEffect;
+      locator: Locator;
+      resultOrdinal: number;
+      generationOrdinal: number;
+    }> = [];
+    const segmentChunks = new Map<
+      number,
+      { offset: number; chunks: Buffer[]; length: number }
+    >();
+    const appendedEffects: DelegationRegistryJournalEffect[] = [];
+
+    for (const effect of effects) {
+      if (effect.kind === 'delegation-receipt') {
+        const prior = await this.readByLocator(
+          identity,
+          'receipt',
+          receiptLocatorKey(effect.entry),
+          nextHead,
+        );
+        if (prior) {
           if (
-            nextHead.lastResultIndex !== undefined &&
-            effect.entry.resultIndex !== nextHead.lastResultIndex + 1
+            canonicalDelegationJson(prior) !==
+            canonicalDelegationJson(effect.entry)
+          )
+            fail('conflict', 'Receipt identity conflicts with stored entry');
+          continue;
+        }
+      }
+      if (effect.kind === 'delegation-generation') {
+        const existing = await this.readByLocator(
+          identity,
+          'generation',
+          generationLocatorKey(effect.entry.runGeneration),
+          nextHead,
+        );
+        if (existing) {
+          if (!sameGenerationIdentity(existing, effect.entry))
+            fail(
+              'conflict',
+              'Generation registration conflicts with stored entry',
+            );
+          continue;
+        }
+      } else if (effectForResult(effect)) {
+        const byIndex = await this.readByLocator(
+          identity,
+          'result',
+          resultLocatorKey(effect.entry.resultIndex),
+          nextHead,
+        );
+        const bySettlement = await this.readByLocator(
+          identity,
+          'settlement',
+          settlementLocatorKey(effect.entry.settlementKey),
+          nextHead,
+        );
+        const byGeneration = await this.readByLocator(
+          identity,
+          'result-generation',
+          generationLocatorKey(effect.entry.runGeneration),
+          nextHead,
+        );
+        const prior = byIndex ?? bySettlement ?? byGeneration;
+        if (prior) {
+          if (
+            canonicalDelegationJson(prior) !==
+            canonicalDelegationJson(effect.entry)
           )
             fail(
               'conflict',
-              'Delegation result index is not the next stored result',
+              'Delegation result identity conflicts with stored entry',
             );
-        } else if (effect.kind === 'child-admission') {
-          let storedCount = 0;
-          for (const item of effect.items) {
-            const key = admissionLocatorKey(
-              effect.target.runGeneration,
-              item.id,
-              item.itemRevision,
-            );
-            const existing = await this.readByLocator(
-              identity,
-              'admission',
-              key,
-              nextHead,
-            );
-            if (!existing) continue;
-            if (
-              canonicalDelegationJson(existing) !==
-              canonicalDelegationJson(item)
-            )
-              fail(
-                'conflict',
-                'Child admission metadata conflicts with stored entry',
-              );
-            storedCount += 1;
-          }
-          if (storedCount === effect.items.length) continue;
-          if (storedCount > 0)
-            fail('conflict', 'Partial child-admission checkpoint conflict');
+          continue;
         }
+        if (
+          nextHead.lastResultIndex !== undefined &&
+          effect.entry.resultIndex !== nextHead.lastResultIndex + 1
+        )
+          fail(
+            'conflict',
+            'Delegation result index is not the next stored result',
+          );
+      } else if (effect.kind === 'child-admission') {
+        let storedCount = 0;
+        for (const item of effect.items) {
+          const key = admissionLocatorKey(
+            effect.target.runGeneration,
+            item.id,
+            item.itemRevision,
+          );
+          const existing = await this.readByLocator(
+            identity,
+            'admission',
+            key,
+            nextHead,
+          );
+          if (!existing) continue;
+          if (
+            canonicalDelegationJson(existing) !== canonicalDelegationJson(item)
+          )
+            fail(
+              'conflict',
+              'Child admission metadata conflicts with stored entry',
+            );
+          storedCount += 1;
+        }
+        if (storedCount === effect.items.length) continue;
+        if (storedCount > 0)
+          fail('conflict', 'Partial child-admission checkpoint conflict');
+      }
 
-        const sequence = nextHead.highWater + 1;
-        const segment = Math.floor((sequence - 1) / SEGMENT_ENTRY_LIMIT);
-        let segmentBatch = segmentChunks.get(segment);
-        if (!segmentBatch) {
-          const previousSegment =
-            nextHead.highWater === 0
-              ? -1
-              : Math.floor((nextHead.highWater - 1) / SEGMENT_ENTRY_LIMIT);
-          const offset =
-            segment === previousSegment ? nextHead.currentSegmentBytes : 0;
-          segmentBatch = { offset, chunks: [], length: 0 };
-          segmentChunks.set(segment, segmentBatch);
-        }
-        const previousDigest = nextHead.entriesSha256;
-        const entriesSha256 = sha256(
-          `${previousDigest}\n${canonicalDelegationJson(effect)}`,
+      const sequence = nextHead.highWater + 1;
+      const segment = Math.floor((sequence - 1) / SEGMENT_ENTRY_LIMIT);
+      let segmentBatch = segmentChunks.get(segment);
+      if (!segmentBatch) {
+        const previousSegment =
+          nextHead.highWater === 0
+            ? -1
+            : Math.floor((nextHead.highWater - 1) / SEGMENT_ENTRY_LIMIT);
+        const offset =
+          segment === previousSegment ? nextHead.currentSegmentBytes : 0;
+        segmentBatch = { offset, chunks: [], length: 0 };
+        segmentChunks.set(segment, segmentBatch);
+      }
+      const previousDigest = nextHead.entriesSha256;
+      const entriesSha256 = sha256(
+        `${previousDigest}\n${canonicalDelegationJson(effect)}`,
+      );
+      const record: SegmentRecord = {
+        version: 1,
+        sequence,
+        effect,
+        previousDigest,
+        entriesSha256,
+      };
+      const line = Buffer.from(`${canonicalDelegationJson(record)}\n`, 'utf8');
+      if (line.length > DELEGATION_REGISTRY_MAX_ENTRY_BYTES + 1024)
+        fail(
+          'invalid_request',
+          'Delegation registry record exceeds segment limit',
         );
-        const record: SegmentRecord = {
+      const offset = segmentBatch.offset + segmentBatch.length;
+      segmentBatch.chunks.push(line);
+      segmentBatch.length += line.length;
+      indexedEffects.push({
+        effect,
+        locator: {
           version: 1,
           sequence,
-          effect,
-          previousDigest,
-          entriesSha256,
-        };
-        const line = Buffer.from(
-          `${canonicalDelegationJson(record)}\n`,
-          'utf8',
-        );
-        if (line.length > DELEGATION_REGISTRY_MAX_ENTRY_BYTES + 1024)
-          fail(
-            'invalid_request',
-            'Delegation registry record exceeds segment limit',
-          );
-        const offset = segmentBatch.offset + segmentBatch.length;
-        segmentBatch.chunks.push(line);
-        segmentBatch.length += line.length;
-        indexedEffects.push({
-          effect,
-          locator: {
-            version: 1,
-            sequence,
-            segment,
-            offset,
-            length: line.length,
-          },
-          resultOrdinal: nextHead.resultCount,
-          generationOrdinal: nextHead.generationCount,
-        });
-        appendedEffects.push(effect);
-        nextHead = {
-          version: 1,
-          ...headOwnerFields(identity),
-          highWater: sequence,
-          entriesSha256,
-          lastResultIndex: effectForResult(effect)
-            ? effect.entry.resultIndex
-            : nextHead.lastResultIndex,
-          resultCount: nextHead.resultCount + (effectForResult(effect) ? 1 : 0),
-          generationCount:
-            nextHead.generationCount +
-            (effect.kind === 'delegation-generation' ? 1 : 0),
-          admissionCount:
-            nextHead.admissionCount +
-            (effect.kind === 'child-admission' ? effect.items.length : 0),
-          currentSegmentBytes: offset + line.length,
-        };
-      }
+          segment,
+          offset,
+          length: line.length,
+        },
+        resultOrdinal: nextHead.resultCount,
+        generationOrdinal: nextHead.generationCount,
+      });
+      appendedEffects.push(effect);
+      nextHead = {
+        version: 1,
+        ...headOwnerFields(identity),
+        highWater: sequence,
+        entriesSha256,
+        lastResultIndex: effectForResult(effect)
+          ? effect.entry.resultIndex
+          : nextHead.lastResultIndex,
+        resultCount: nextHead.resultCount + (effectForResult(effect) ? 1 : 0),
+        generationCount:
+          nextHead.generationCount +
+          (effect.kind === 'delegation-generation' ? 1 : 0),
+        admissionCount:
+          nextHead.admissionCount +
+          (effect.kind === 'child-admission' ? effect.items.length : 0),
+        currentSegmentBytes: offset + line.length,
+      };
+    }
 
-      if (indexedEffects.length === 0) return;
-      // Segments never exist without a head: a crash before the final head
-      // leaves high-water 0, and recovery replays the journal over it.
-      const publishedHead = await this.loadHead(identity);
-      if (publishedHead.highWater === 0)
-        await writeAtomic(
-          join(directory, 'head.json'),
-          Buffer.from(`${JSON.stringify(publishedHead)}\n`, 'utf8'),
-        );
-      await mkdirDurable(join(directory, 'segments'));
-      let createdSegment = false;
-      for (const [segment, batch] of Array.from(segmentChunks.entries())) {
-        const path = segmentPath(directory, segment);
-        await truncate(path, batch.offset).catch((error: unknown) => {
-          if (isRecord(error) && error.code === 'ENOENT') {
-            createdSegment = true;
-            return;
-          }
-          throw error;
-        });
-        const handle = await open(path, 'a', 0o600);
-        try {
-          await handle.write(Buffer.concat(batch.chunks));
-          await handle.sync();
-        } finally {
-          await handle.close();
-        }
-      }
-      // A head may reference a new segment only once its entry is durable.
-      if (createdSegment) await fsyncDirectory(join(directory, 'segments'));
-      for (const indexed of indexedEffects)
-        await this.indexEffect(
-          directory,
-          indexed.effect,
-          indexed.locator,
-          indexed.resultOrdinal,
-          indexed.generationOrdinal,
-        );
-      await this.updateManifest(chatId, identity, appendedEffects);
+    if (indexedEffects.length === 0) return undefined;
+    // Segments never exist without a head: a crash before the final head
+    // leaves high-water 0, and recovery replays the journal over it.
+    const publishedHead = await this.loadHead(identity);
+    if (publishedHead.highWater === 0)
       await writeAtomic(
         join(directory, 'head.json'),
-        Buffer.from(`${JSON.stringify(nextHead)}\n`, 'utf8'),
+        Buffer.from(`${JSON.stringify(publishedHead)}\n`, 'utf8'),
       );
-      this.remember(identityKeyValue, nextHead);
-    });
+    await mkdirDurable(join(directory, 'segments'));
+    let createdSegment = false;
+    for (const [segment, batch] of Array.from(segmentChunks.entries())) {
+      const path = segmentPath(directory, segment);
+      await truncate(path, batch.offset).catch((error: unknown) => {
+        if (isRecord(error) && error.code === 'ENOENT') {
+          createdSegment = true;
+          return;
+        }
+        throw error;
+      });
+      const handle = await open(path, 'a', 0o600);
+      try {
+        await handle.write(Buffer.concat(batch.chunks));
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+    }
+    // A head may reference a new segment only once its entry is durable.
+    if (createdSegment) await fsyncDirectory(join(directory, 'segments'));
+    for (const indexed of indexedEffects)
+      await this.indexEffect(
+        directory,
+        indexed.effect,
+        indexed.locator,
+        indexed.resultOrdinal,
+        indexed.generationOrdinal,
+      );
+    return { identity, directory, appendedEffects, nextHead };
+  }
+
+  /**
+   * Publish staged appends of one chat: its manifest once, then each head.
+   * The manifest is never behind a published head, so a replay that finds
+   * an effect already stored never leaves the snapshot digest unchanged.
+   * A crash after the manifest folds the replayed effects in again, as a
+   * crash between one identity's manifest and head always could.
+   */
+  private async publishStaged(
+    chatId: string,
+    staged: readonly StagedAppend[],
+  ): Promise<void> {
+    await this.updateManifest(
+      chatId,
+      staged.flatMap(({ identity, appendedEffects }) =>
+        appendedEffects.map((effect) => ({ identity, effect })),
+      ),
+    );
+    const settled = await Promise.allSettled(
+      staged.map(async ({ identity, directory, nextHead }) => {
+        await writeAtomic(
+          join(directory, 'head.json'),
+          Buffer.from(`${JSON.stringify(nextHead)}\n`, 'utf8'),
+        );
+        this.remember(identityKey(identity), nextHead);
+      }),
+    );
+    for (const result of settled)
+      if (result.status === 'rejected') throw result.reason;
   }
 
   private async indexEffect(
@@ -1782,8 +1835,10 @@ export class DelegationRegistryStore {
 
   private async updateManifest(
     chatId: string,
-    identity: RegistryIdentity,
-    effects: readonly DelegationRegistryJournalEffect[],
+    effects: ReadonlyArray<{
+      readonly identity: RegistryIdentity;
+      readonly effect: DelegationRegistryJournalEffect;
+    }>,
   ): Promise<void> {
     const path = join(chatRoot(this.transcriptsRoot, chatId), 'manifest.json');
     const value = await readJson(path);
@@ -1804,7 +1859,7 @@ export class DelegationRegistryStore {
       revision = value.revision;
     }
     let digest = previous;
-    for (const effect of effects)
+    for (const { identity, effect } of effects)
       digest = sha256(
         `${digest}\n${canonicalDelegationJson({ identity, effect })}`,
       );
@@ -1991,6 +2046,91 @@ export class DelegationRegistryStore {
   public async checkpoint(
     checkpoint: DelegationRegistryCheckpoint,
   ): Promise<DelegationRegistryCheckpoint> {
+    await this.assertCheckpoint(checkpoint);
+    const key = identityKey(checkpoint.identity);
+    const pending = this.overlays.get(key)?.effects ?? [];
+    if (pending.length === 0) return checkpoint;
+    const initialHead = await this.loadHead(checkpoint.identity);
+    try {
+      await this.appendBatch(
+        checkpoint.identity.chatId,
+        checkpoint.identity,
+        pending,
+      );
+    } catch (error) {
+      await this.retainUncommitted(checkpoint.identity, pending, initialHead);
+      throw error;
+    }
+    this.overlays.delete(key);
+    await this.writeCheckpointFile(checkpoint);
+    return checkpoint;
+  }
+
+  /**
+   * Checkpoint several identities of one chat together: their segments and
+   * indexes in parallel, the chat manifest once, then their heads (see
+   * `publishStaged`). Validation and failure handling match `checkpoint`.
+   */
+  public async checkpointChat(
+    checkpoints: readonly DelegationRegistryCheckpoint[],
+  ): Promise<void> {
+    const chatId = checkpoints[0]?.identity.chatId;
+    const work: Array<{
+      checkpoint: DelegationRegistryCheckpoint;
+      pending: DelegationRegistryJournalEffect[];
+      initialHead: RegistryHead;
+    }> = [];
+    for (const checkpoint of checkpoints) {
+      await this.assertCheckpoint(checkpoint);
+      if (checkpoint.identity.chatId !== chatId)
+        fail('invalid_request', 'Registry checkpoints must share a chat');
+      const pending =
+        this.overlays.get(identityKey(checkpoint.identity))?.effects ?? [];
+      if (pending.length === 0) continue;
+      for (const effect of pending)
+        validateEffect(effect, checkpoint.identity.chatId);
+      work.push({
+        checkpoint,
+        pending,
+        initialHead: await this.loadHead(checkpoint.identity),
+      });
+    }
+    if (chatId === undefined || work.length === 0) return;
+    try {
+      await this.serializeAll(
+        work.map(({ checkpoint }) => checkpoint.identity),
+        async () => {
+          const settled = await Promise.allSettled(
+            work.map(({ checkpoint, pending }) =>
+              this.stageAppend(checkpoint.identity, pending),
+            ),
+          );
+          const staged: StagedAppend[] = [];
+          // Every identity has stopped writing before a failure propagates.
+          for (const result of settled) {
+            if (result.status === 'rejected') throw result.reason;
+            if (result.value) staged.push(result.value);
+          }
+          if (staged.length) await this.publishStaged(chatId, staged);
+        },
+      );
+    } catch (error) {
+      for (const { checkpoint, pending, initialHead } of work)
+        await this.retainUncommitted(checkpoint.identity, pending, initialHead);
+      throw error;
+    }
+    for (const { checkpoint } of work)
+      this.overlays.delete(identityKey(checkpoint.identity));
+    const written = await Promise.allSettled(
+      work.map(({ checkpoint }) => this.writeCheckpointFile(checkpoint)),
+    );
+    for (const result of written)
+      if (result.status === 'rejected') throw result.reason;
+  }
+
+  private async assertCheckpoint(
+    checkpoint: DelegationRegistryCheckpoint,
+  ): Promise<void> {
     if (this.options.pendingEffects)
       fail('invalid_request', 'A replay-overlay registry store is read-only');
     validateIdentity(checkpoint.identity);
@@ -2009,50 +2149,46 @@ export class DelegationRegistryStore {
         'conflict',
         'Delegation registry checkpoint does not match stored high-water',
       );
-    const key = identityKey(checkpoint.identity);
-    const pending = this.overlays.get(key)?.effects ?? [];
-    if (pending.length === 0) return checkpoint;
-    const initialHead = await this.loadHead(checkpoint.identity);
-    try {
-      await this.appendBatch(
-        checkpoint.identity.chatId,
-        checkpoint.identity,
-        pending,
-      );
-    } catch (error) {
-      const currentHead = await this.loadHead(checkpoint.identity);
-      const committed = currentHead.highWater - initialHead.highWater;
-      if (committed > 0) {
-        const remaining = pending.slice(committed);
-        const overlay = this.overlays.get(key);
-        if (overlay) {
-          overlay.effects.length = 0;
-          overlay.byGeneration.clear();
-          overlay.resultsByIndex.clear();
-          overlay.resultsBySettlement.clear();
-          overlay.resultsByGeneration.clear();
-          overlay.resultsByGenerationSequence.clear();
-          overlay.admissions.clear();
-          overlay.receipts.clear();
-          overlay.resultOrdinals.length = 0;
-          overlay.generationOrdinals.length = 0;
-          overlay.highWater = 0;
-          overlay.entriesSha256 = EMPTY_DIGEST;
-          overlay.lastResultIndex = undefined;
-          for (const effect of remaining)
-            this.addOverlayEffect(overlay, effect, currentHead);
-        }
-      }
-      throw error;
-    }
-    this.overlays.delete(key);
+  }
+
+  /** After a failed checkpoint, keep only the effects its head did not take. */
+  private async retainUncommitted(
+    identity: RegistryIdentity,
+    pending: readonly DelegationRegistryJournalEffect[],
+    initialHead: RegistryHead,
+  ): Promise<void> {
+    const currentHead = await this.loadHead(identity);
+    const committed = currentHead.highWater - initialHead.highWater;
+    if (committed <= 0) return;
+    const remaining = pending.slice(committed);
+    const overlay = this.overlays.get(identityKey(identity));
+    if (!overlay) return;
+    overlay.effects.length = 0;
+    overlay.byGeneration.clear();
+    overlay.resultsByIndex.clear();
+    overlay.resultsBySettlement.clear();
+    overlay.resultsByGeneration.clear();
+    overlay.resultsByGenerationSequence.clear();
+    overlay.admissions.clear();
+    overlay.receipts.clear();
+    overlay.resultOrdinals.length = 0;
+    overlay.generationOrdinals.length = 0;
+    overlay.highWater = 0;
+    overlay.entriesSha256 = EMPTY_DIGEST;
+    overlay.lastResultIndex = undefined;
+    for (const effect of remaining)
+      this.addOverlayEffect(overlay, effect, currentHead);
+  }
+
+  private async writeCheckpointFile(
+    checkpoint: DelegationRegistryCheckpoint,
+  ): Promise<void> {
     const directory = identityRoot(this.transcriptsRoot, checkpoint.identity);
     await mkdir(directory, { recursive: true });
     await writeAtomic(
       join(directory, 'checkpoint.json'),
       Buffer.from(`${JSON.stringify(checkpoint)}\n`, 'utf8'),
     );
-    return checkpoint;
   }
 
   public async receipt(

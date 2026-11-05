@@ -3,16 +3,16 @@ import { replayBlockClassFor } from '@canopy/desktop-instrumentation/posthog-rep
 import {
   CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
-  InlineTextSkeleton,
   ChoiceList,
   ChoiceListRow,
   SettingsBackButton,
-  SettingsFormSkeleton,
   SettingsRowsGroup,
   SettingsRowsRow,
   SettingsRowsSection,
   SettingsRowsSubRow,
+  Skeleton,
   TextArea,
+  ToggleSwitch,
   TextInput,
   SegmentedControl,
   type SegmentedControlProps,
@@ -145,6 +145,51 @@ export function SettingsPage({
   );
 }
 
+const noop = (): void => undefined;
+
+const DEFAULT_LOADING_ROWS = 3;
+
+const SAMPLE_SETTING_ROWS = [
+  { label: 'Email updates', description: 'Send a summary once a week' },
+  { label: 'Sound', description: 'Play a sound when a task ends' },
+  { label: 'Show previews', description: 'Show message text in alerts' },
+] as const;
+
+/**
+ * Setting rows with switches, as plain samples for the measured skeleton:
+ * skullet draws bars over them, unseen, so the loaded rows replace them in
+ * place.
+ */
+function SampleSettingRows({ rows }: { readonly rows: number }): JSX.Element {
+  const count = Math.max(1, Math.floor(rows));
+  return (
+    <SettingsRowsGroup>
+      {Array.from({ length: count }, (_, index) => {
+        const sample =
+          SAMPLE_SETTING_ROWS[index % SAMPLE_SETTING_ROWS.length] ??
+          SAMPLE_SETTING_ROWS[0];
+        return (
+          <SettingsRowsRow
+            key={index}
+            label={sample.label}
+            description={sample.description}
+            control={
+              <ToggleSwitch
+                checked={false}
+                label={sample.label}
+                onChange={noop}
+              />
+            }
+          />
+        );
+      })}
+    </SettingsRowsGroup>
+  );
+}
+
+/** A plain sample of one description line, measured into one bar. */
+const SAMPLE_DESCRIPTION = 'A short sample description';
+
 interface SettingsLoadingProps {
   /**
    * `form` stands in for setting rows. `spinner` is for a page whose shape
@@ -165,7 +210,7 @@ interface SettingsLoadingProps {
  */
 export function SettingsLoading({
   variant = 'form',
-  rows,
+  rows = DEFAULT_LOADING_ROWS,
   // Every loading body is findable while it holds its space, before the
   // delayed placeholder shows; page-specific ids also end in `-loading`.
   dataTestId = 'settings-loading',
@@ -184,17 +229,24 @@ export function SettingsLoading({
   return (
     <div data-testid={dataTestId}>
       <DelayedLoadingPlaceholder>
-        <SettingsFormSkeleton rows={rows} />
+        <Skeleton
+          loading
+          label="Loading settings"
+          testId="settings-skeleton-form"
+          className="w-full"
+        >
+          <SampleSettingRows rows={rows} />
+        </Skeleton>
       </DelayedLoadingPlaceholder>
     </div>
   );
 }
 
 /**
- * A row's description or status line that has not arrived: one bar on the
- * text's own line, so the row keeps its height when the text lands. It shows
- * after the shared delay and announces "Loading" to assistive technology
- * only. It is inline, so it fits inside a description's text.
+ * A row's description or status line that has not arrived: a sample line
+ * measured into one bar on the text's own line, so the row keeps its height
+ * when the text lands. It shows after the shared delay and announces
+ * "Loading" to assistive technology only.
  */
 export function SettingsDescriptionLoading({
   dataTestId,
@@ -203,13 +255,10 @@ export function SettingsDescriptionLoading({
 }): JSX.Element {
   const visible = useDelayedFlag(true, LOADING_PLACEHOLDER_DELAY_MS);
   return (
-    <span
-      role="status"
-      data-testid={dataTestId}
-      className={visible ? undefined : 'invisible'}
-    >
-      <span className="sr-only">Loading</span>
-      <InlineTextSkeleton active className="w-40" />
+    <span className={visible ? undefined : 'invisible'}>
+      <Skeleton loading label="Loading" testId={dataTestId}>
+        <span>{SAMPLE_DESCRIPTION}</span>
+      </Skeleton>
     </span>
   );
 }

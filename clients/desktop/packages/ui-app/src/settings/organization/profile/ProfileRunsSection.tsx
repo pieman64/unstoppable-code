@@ -4,14 +4,46 @@ import { type JSX } from 'react';
 import {
   DelayedLoadingPlaceholder,
   ErrorBanner,
-  SettingsListSkeleton,
   Heading,
+  Skeleton,
 } from '@canopy/ui-shared/components';
+import type { TelemetryExpensiveRun } from '@canopy/protocol/telemetry';
 import { MostExpensiveRuns } from '../statistics/MostExpensiveRuns';
 import { useMemberUsage } from './useMemberUsage';
 import { UsageRangeSelect } from './UsageRangeSelect';
 import { useSettingsPrivacy } from '../../host';
 import { joinClassNames } from '../join-class-names';
+
+/** A plain sample run: a short label, no tokens and no pull request. */
+function sampleExpensiveRun(
+  sessionId: string,
+  label: string,
+): TelemetryExpensiveRun {
+  return {
+    sessionId,
+    turnCount: 3,
+    label,
+    provider: 'claude',
+    model: null,
+    totalCostUsd: 1,
+    startedAtIso: '2026-01-01T12:00:00.000Z',
+    worktreeId: sessionId,
+    branchName: 'main',
+    prUrl: null,
+    authorName: 'Sample',
+    status: 'SUCCESS',
+    eventType: 'WORKTREE_CHAT',
+    durationMs: null,
+    inputTokens: 0,
+    outputTokens: 0,
+  };
+}
+
+/** Plain sample rows the loading skeleton measures. */
+const SAMPLE_EXPENSIVE_RUNS: readonly TelemetryExpensiveRun[] = [
+  sampleExpensiveRun('sample-run-1', 'Fix the checkout test'),
+  sampleExpensiveRun('sample-run-2', 'Clean up billing'),
+];
 
 interface ProfileRunsSectionProps {
   orgId: string;
@@ -80,7 +112,15 @@ export function ProfileRunsSection({
       {loading && !usage ? (
         <div data-testid="profile-runs-loading">
           <DelayedLoadingPlaceholder>
-            <SettingsListSkeleton />
+            <Skeleton
+              loading
+              label="Loading sessions"
+              testId="settings-skeleton-list"
+            >
+              <div className="rounded-xl bg-card p-4 shadow-sm">
+                <MostExpensiveRuns runs={SAMPLE_EXPENSIVE_RUNS} />
+              </div>
+            </Skeleton>
           </DelayedLoadingPlaceholder>
         </div>
       ) : error ? null : !usage ? (

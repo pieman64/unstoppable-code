@@ -38,7 +38,7 @@ export function resolveDemoFfmpeg(env = process.env) {
     }
     return override;
   }
-  const { registry } = require('playwright-core/lib/server/registry/index');
+  const { registry } = require('playwright-core/lib/coreBundle').registry;
   const executable = registry.findExecutable('ffmpeg');
   const ffmpegPath = executable?.executablePath();
   if (!ffmpegPath || !existsSync(ffmpegPath)) {

@@ -665,6 +665,25 @@ export function createCodeGraphWorktreeBuildService(
 }
 
 /**
+ * Stops a worktree key's fingerprint and builds together and resolves once
+ * each of their hosts has exited. The build stop must not wait behind the
+ * fingerprint host's exit: a build left running meanwhile could finish after
+ * the caller counted it as canceled.
+ */
+export async function cancelCodeGraphWorktreeHosts(
+  key: string,
+  schedulers: {
+    readonly fingerprints: { cancel(key: string): Promise<void> };
+    readonly builds: { cancel(key: string): Promise<void> };
+  },
+): Promise<void> {
+  await Promise.all([
+    schedulers.fingerprints.cancel(key),
+    schedulers.builds.cancel(key),
+  ]);
+}
+
+/**
  * Worktree generations a host has started and not yet seen settle, so a
  * worktree's builds can be stopped while they prepare, before any queue item
  * names them. Each generation registers before it resolves its scope.

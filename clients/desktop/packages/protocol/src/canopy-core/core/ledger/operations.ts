@@ -10,6 +10,7 @@ import {
 import { LEDGER_LIMITS } from './limits';
 import {
   LedgerActorLabelSchema,
+  LedgerActorRefSchema,
   LedgerAddEntryParamsObjectSchema,
   LedgerCommandReceiptSchema,
   LedgerContentSchema,
@@ -22,13 +23,16 @@ import {
   LedgerMutationSchema,
   LedgerOpaqueIdSchema,
   LedgerOwnerCandidatePageSchema,
+  LedgerRollupScopeSchema,
   LedgerSearchEntriesParamsSchema,
   LedgerSequenceSchema,
   LedgerSourceAvailabilitySchema,
+  LedgerStatusSchema,
   LedgerSyncStateSchema,
   LedgerTitleSchema,
   LedgerUpdateEntryParamsObjectSchema,
   LedgerUuidSchema,
+  ledgerCoreUpdateHasMutation,
   limitLedgerRequest,
 } from './schemas';
 
@@ -118,10 +122,20 @@ export const LedgerEntryGetResultSchema = z.strictObject({
 export type LedgerEntryGetResult = z.output<typeof LedgerEntryGetResultSchema>;
 
 export const LedgerOwnersListParamsSchema = limitLedgerRequest(
-  z.strictObject({
-    limit: z.int().min(1).max(LEDGER_LIMITS.ownersPageMax).optional(),
-    cursor: LedgerCursorSchema.optional(),
-  }),
+  z
+    .strictObject({
+      limit: z.int().min(1).max(LEDGER_LIMITS.ownersPageMax).optional(),
+      cursor: LedgerCursorSchema.optional(),
+      delegationId: z.string().min(1).max(128).optional(),
+    })
+    .refine(
+      (params) =>
+        params.delegationId === undefined || params.cursor === undefined,
+      {
+        message: 'An exact delegation filter cannot be combined with a cursor',
+        path: ['cursor'],
+      },
+    ),
 );
 export type LedgerOwnersListParams = z.output<
   typeof LedgerOwnersListParamsSchema
@@ -159,6 +173,79 @@ export type LedgerChangesListResult = z.output<
   typeof LedgerChangesListResultSchema
 >;
 
+export const LedgerRollupsListParamsSchema = limitLedgerRequest(
+  z.strictObject({
+    ledgerIds: z
+      .array(LedgerUuidSchema)
+      .min(1)
+      .max(LEDGER_LIMITS.rollupsLedgerIdsMax),
+    cursor: LedgerCursorSchema.optional(),
+  }),
+);
+export type LedgerRollupsListParams = z.output<
+  typeof LedgerRollupsListParamsSchema
+>;
+
+export const LedgerRollupsListResultSchema = z
+  .strictObject({
+    scopes: z.array(LedgerRollupScopeSchema),
+    nextCursor: LedgerCursorSchema.optional(),
+  })
+  .superRefine((result, context): void => {
+    const itemCount = result.scopes.reduce(
+      (count, scope): number => count + scope.items.length,
+      0,
+    );
+    if (itemCount > LEDGER_LIMITS.rollupsPageMax) {
+      context.addIssue({
+        code: 'custom',
+        message: `Rollup pages may contain at most ${LEDGER_LIMITS.rollupsPageMax} items`,
+        path: ['scopes'],
+      });
+    }
+  });
+export type LedgerRollupsListResult = z.output<
+  typeof LedgerRollupsListResultSchema
+>;
+
+/**
+ * A managed delegation's work in the caller's ledger: every entry it or one of
+ * its own delegates (at any depth) authored or owns, or owned until its
+ * session ended and the sweep handed it back. The Ledger expands the
+ * delegation's descendants and maps them to its actors.
+ */
+export const LedgerWorkSummaryGetParamsSchema = limitLedgerRequest(
+  z.strictObject({
+    delegationId: z.string().min(1).max(128),
+  }),
+);
+export type LedgerWorkSummaryGetParams = z.output<
+  typeof LedgerWorkSummaryGetParamsSchema
+>;
+
+export const LedgerWorkSummaryOpenEntrySchema = z.strictObject({
+  entryId: LedgerUuidSchema,
+  status: LedgerStatusSchema,
+  owner: LedgerActorRefSchema,
+});
+export type LedgerWorkSummaryOpenEntry = z.output<
+  typeof LedgerWorkSummaryOpenEntrySchema
+>;
+
+export const LedgerWorkSummaryGetResultSchema = z.strictObject({
+  /** Entries by status; a status with none is left out. */
+  counts: z.partialRecord(LedgerStatusSchema, z.int().min(1)),
+  /** Open entries, most recently updated first; titles stay out. */
+  open: z
+    .array(LedgerWorkSummaryOpenEntrySchema)
+    .max(LEDGER_LIMITS.workSummaryOpenEntriesMax),
+  /** Every open entry, including those `open` leaves out. */
+  openTotal: z.int().min(0),
+});
+export type LedgerWorkSummaryGetResult = z.output<
+  typeof LedgerWorkSummaryGetResultSchema
+>;
+
 /**
  * Keyed instructions carry their idempotency key in `_meta`, as the operation
  * catalog's wire request does. Callers also pass it as request metadata, which
@@ -181,8 +268,8 @@ export const LedgerEntryUpdateParamsSchema = limitLedgerRequest(
   LedgerUpdateEntryParamsObjectSchema.extend({
     _meta: LedgerKeyedRequestMetadataSchema,
   }).refine(
-    (value): boolean => value.status !== undefined || value.owner !== undefined,
-    'At least one of status or owner is required',
+    ledgerCoreUpdateHasMutation,
+    'At least one of status, owner or parentEntryId is required',
   ),
 );
 export type LedgerEntryUpdateParams = z.output<
@@ -271,6 +358,28 @@ export const LEDGER_QUERY_DEFINITIONS = {
     placement: 'core-only',
     params: LedgerChangesListParamsSchema,
     result: LedgerChangesListResultSchema,
+    error: LedgerQueryErrorSchema,
+    idempotency: 'inherent',
+    requiredGrants: [LEDGER_GRANTS.read],
+  }),
+  'core.ledger.rollups.list': defineCanopyQuery({
+    plane: 'core',
+    domain: 'ledger',
+    version: 1,
+    placement: 'core-only',
+    params: LedgerRollupsListParamsSchema,
+    result: LedgerRollupsListResultSchema,
+    error: LedgerQueryErrorSchema,
+    idempotency: 'inherent',
+    requiredGrants: [LEDGER_GRANTS.read],
+  }),
+  'core.ledger.workSummary.get': defineCanopyQuery({
+    plane: 'core',
+    domain: 'ledger',
+    version: 1,
+    placement: 'core-only',
+    params: LedgerWorkSummaryGetParamsSchema,
+    result: LedgerWorkSummaryGetResultSchema,
     error: LedgerQueryErrorSchema,
     idempotency: 'inherent',
     requiredGrants: [LEDGER_GRANTS.read],

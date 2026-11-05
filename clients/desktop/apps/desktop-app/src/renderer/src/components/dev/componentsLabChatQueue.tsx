@@ -1,0 +1,111 @@
+import type { ComponentsLabEntry } from './componentsLabCatalog';
+import {
+  QueuedMessageActionsSpecimen,
+  QueuedMessageReasonSpecimen,
+  QueuedMessageRowSpecimen,
+  QueuedMessageSettingsHeldWarningSpecimen,
+} from './componentsLabChatQueueRows';
+import { StepWordsSpecimen } from './componentsLabChatStepWords';
+import {
+  PlanCopyActionSpecimen,
+  StatusAnnouncerSpecimen,
+  StepRowSpecimen,
+  SteeringRequestTitleSpecimen,
+  TaskStopButtonSpecimen,
+} from './componentsLabChatQueueSteps';
+
+const CHAT = 'packages/ui-shared/src/components/chat';
+
+/** Queued messages, steering, steps and task controls in chat. */
+export const CHAT_QUEUE_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
+  {
+    id: 'chat-queued-message-row',
+    name: 'QueuedMessageRow',
+    group: 'Unified',
+    note: 'One compact row per queued message: drag handle, leading label, files, one line of text, status, Steer, Send now and a more menu, in the tray and drawer surfaces.',
+    source: `${CHAT}/QueuedMessageRow.tsx`,
+    prs: [],
+    View: QueuedMessageRowSpecimen,
+  },
+  {
+    id: 'chat-queued-message-actions',
+    name: 'QueuedMessageActions',
+    group: 'Unified',
+    note: 'The action strip on a queued-message bubble: Edit and Clear in its corner, Steer, Interrupt, Try again and Run now under it, each hidden or disabled by the row’s state.',
+    source: `${CHAT}/QueuedMessageActions.tsx`,
+    prs: [],
+    View: QueuedMessageActionsSpecimen,
+  },
+  {
+    id: 'chat-queued-message-reason',
+    name: 'QueuedMessageReason',
+    group: 'Unified',
+    note: 'Why a queued message is waiting: a free-text reason, or a host reason in the stacked or inline layout.',
+    source: `${CHAT}/QueuedMessageReason.tsx`,
+    prs: [],
+    View: QueuedMessageReasonSpecimen,
+  },
+  {
+    id: 'chat-queued-message-settings-held-warning',
+    name: 'QueuedMessageSettingsHeldWarning',
+    group: 'Unified',
+    note: 'A focusable warning beside Steer and Interrupt that names the settings waiting for background work and what each action does.',
+    source: `${CHAT}/QueuedMessageSettingsHeldWarning.tsx`,
+    prs: [],
+    View: QueuedMessageSettingsHeldWarningSpecimen,
+  },
+  {
+    id: 'chat-plan-copy-action',
+    name: 'PlanCopyAction',
+    group: 'Unified',
+    note: 'The one Copy plan control in four looks; it stays in view but inert, with the reason, when the plan text is loading, missing or truncated.',
+    source: `${CHAT}/PlanCopyAction.tsx`,
+    prs: [],
+    View: PlanCopyActionSpecimen,
+  },
+  {
+    id: 'chat-status-announcer',
+    name: 'StatusAnnouncer',
+    group: 'Unified',
+    note: 'A polite, visually hidden live region that speaks each announcement and clears it after four seconds.',
+    source: `${CHAT}/StatusAnnouncer.tsx`,
+    prs: [],
+    View: StatusAnnouncerSpecimen,
+  },
+  {
+    id: 'chat-task-stop-button',
+    name: 'TaskStopButton',
+    group: 'Unified',
+    note: 'Always-visible Stop for a running task row in the chip, row and drawer looks; it reads Stopping and disables while the stop is in flight.',
+    source: `${CHAT}/TaskStopButton.tsx`,
+    prs: [],
+    View: TaskStopButtonSpecimen,
+  },
+  {
+    id: 'chat-step-row',
+    name: 'StepRow',
+    group: 'Unified',
+    note: 'The clean look’s one quiet row for every agent step: icon, words, detail, a shimmer while running, a failure in words and a chevron when it opens.',
+    source: `${CHAT}/StepRow.tsx`,
+    prs: [],
+    View: StepRowSpecimen,
+  },
+  {
+    id: 'chat-step-words',
+    name: 'Step words',
+    group: 'Unified',
+    note: 'The helpers behind every step row: the icon per step kind, the counted and the clean-look summaries, and the kind a tool call counts as.',
+    source: `${CHAT}/step-words.tsx`,
+    prs: [],
+    View: StepWordsSpecimen,
+  },
+  {
+    id: 'chat-steering-request-title',
+    name: 'SteeringRequestTitle',
+    group: 'Unified',
+    note: 'The title row above a delegate’s steering request, in the block and inline layouts, with or without the delegate named.',
+    source: `${CHAT}/SteeringRequestTitle.tsx`,
+    prs: [],
+    View: SteeringRequestTitleSpecimen,
+  },
+];

@@ -85,6 +85,10 @@ test('launches the built Electron shell', async ({}, testInfo) => {
     }
 
     const window = await electronApp.firstWindow();
+    // Electron 45 can expose the window before its first commit (blank URL).
+    await expect
+      .poll(() => window.url(), { timeout: 30_000 })
+      .not.toMatch(/^(about:blank)?$/);
     await window.waitForLoadState('domcontentloaded');
     await expect
       .poll(() => getWindowViewportSize(window))
@@ -153,6 +157,10 @@ test('can skip applying the default viewport size', async () => {
 
   try {
     const window = await electronApp.firstWindow();
+    // Electron 45 can expose the window before its first commit (blank URL).
+    await expect
+      .poll(() => window.url(), { timeout: 30_000 })
+      .not.toMatch(/^(about:blank)?$/);
     await window.waitForLoadState('domcontentloaded');
     await expect
       .poll(() => getWindowViewportSize(window))

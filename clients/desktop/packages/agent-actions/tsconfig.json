@@ -11,7 +11,11 @@
     "types": []
   },
   "include": ["src/**/*.ts", "src/**/*.json"],
-  "exclude": ["src/**/*.test.ts", "src/**/__tests__/**"],
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/__tests__/**",
+    "src/**/__scratch__/**"
+  ],
   "references": [
     {
       "path": "../protocol"

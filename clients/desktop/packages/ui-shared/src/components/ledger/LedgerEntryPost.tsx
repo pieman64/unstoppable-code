@@ -1,6 +1,6 @@
 'use client';
 
-import { memo, type JSX, type ReactNode } from 'react';
+import { memo, type JSX, type MouseEvent, type ReactNode } from 'react';
 import type {
   LedgerActorLabel,
   LedgerEntrySearchItem,
@@ -11,6 +11,8 @@ import {
   ledgerEntryShowsStatus,
   ledgerSourceAction,
 } from '../../lib/ledger-display';
+import { markdownToPlainText } from '../../lib/markdown-plain-text';
+import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import { LedgerActorAvatar } from './LedgerActorAvatar';
 import {
   LedgerEntryActions,
@@ -91,7 +93,24 @@ function actionSlotsForOpenEntry(
   return { ...base, sourceAction };
 }
 
-/** A complete entry row, with its details and thread in the list column. */
+/**
+ * The first paragraph of an entry's content as one line of plain text, a
+ * resting row's preview.
+ */
+function restingPreview(content: string): string {
+  return markdownToPlainText(
+    content.trim().split(/\r?\n\s*\r?\n/u, 1)[0] ?? '',
+  );
+}
+
+/**
+ * A complete entry row, with its details and thread in the list column. The
+ * Feed page and its panel share one layout. Resting, a row is its title with
+ * the status and time, then (on the page) who recorded it and where, then a
+ * line of its content. Open, the same title and byline lead the whole entry
+ * and its details. The title opens and closes the row; a click elsewhere on a
+ * resting row opens it.
+ */
 export const LedgerEntryPost = memo(function LedgerEntryPost({
   entry,
   context,
@@ -103,6 +122,7 @@ export const LedgerEntryPost = memo(function LedgerEntryPost({
   canAddCorrection = true,
 }: LedgerEntryPostProps): JSX.Element {
   const activeOpen = open?.entryId === entry.entryId ? open : null;
+  const isOpen = activeOpen !== null;
   const attribution = details?.attribution;
   const readOnly = slots?.readOnlyNote !== undefined;
   const actionSlots = actionSlotsForOpenEntry(
@@ -110,7 +130,7 @@ export const LedgerEntryPost = memo(function LedgerEntryPost({
     activeOpen,
     canAddCorrection,
   );
-  const size = context.density === 'page' ? 'large' : 'small';
+  const pageDensity = context.density === 'page';
   const onShowEntry = context.onShowEntry;
   const supersedesEntryId = entry.supersedesEntryId;
   const onShowCorrectedEntry =
@@ -119,39 +139,79 @@ export const LedgerEntryPost = memo(function LedgerEntryPost({
     supersedesEntryId === undefined
       ? undefined
       : (): void => onShowEntry(supersedesEntryId);
+  const toggleOpen = (): void =>
+    context.onToggleOpen(isOpen ? null : entry.entryId);
+  const onRowClick = (event: MouseEvent<HTMLElement>): void => {
+    if (!(event.target instanceof Element)) return;
+    if (event.target.closest('button, a, input, textarea, select') !== null) {
+      return;
+    }
+    // The replies and correction box under the row are their own rows.
+    if (event.target.closest('[data-row-thread]') !== null) return;
+    // An open row closes only from its summary, so selecting text in its
+    // body or details never closes it.
+    if (isOpen && event.target.closest('[data-row-summary]') === null) return;
+    toggleOpen();
+  };
+  const preview = isOpen ? '' : restingPreview(entry.content);
 
   return (
     <article
       data-testid="ledger-entry-row"
       data-entry-id={entry.entryId}
       data-origin={attribution?.kind}
-      aria-current={activeOpen === null ? undefined : 'true'}
-      className={`flex gap-3 ${context.density === 'page' ? 'py-4' : 'py-3'}`}
+      aria-current={isOpen ? 'true' : undefined}
+      onClick={onRowClick}
+      className={`flex gap-3 ${pageDensity ? 'py-4' : 'py-3'}`}
     >
-      <LedgerEntryTypeAvatar type={entry.type} size={size} />
+      <LedgerEntryTypeAvatar
+        type={entry.type}
+        size={pageDensity ? 'large' : 'small'}
+      />
       <div className="flex min-w-0 flex-1 flex-col gap-2">
-        <LedgerEntryHeader
-          entry={entry}
-          actors={context.actors}
-          density={context.density}
-          now={context.now}
-          timeField={context.timeField}
-          details={details}
-          statusControl={readOnly ? undefined : slots?.statusControl}
-          ownerControl={readOnly ? undefined : slots?.ownerControl}
-        />
-        <LedgerEntryBody
-          entry={entry}
-          density={context.density}
-          onOpenFile={(file): void => context.onOpenFile(entry, file)}
-        />
-        <LedgerEntryActions
-          slots={actionSlots}
-          detailsOpen={activeOpen !== null}
-          onToggleDetails={(): void =>
-            context.onToggleOpen(activeOpen === null ? entry.entryId : null)
-          }
-        />
+        <div
+          data-row-summary
+          data-testid="ledger-entry-row-summary"
+          className="flex min-w-0 flex-col gap-1"
+        >
+          <LedgerEntryHeader
+            entry={entry}
+            actors={context.actors}
+            density={context.density}
+            now={context.now}
+            timeField={context.timeField}
+            details={details}
+            statusControl={readOnly ? undefined : slots?.statusControl}
+            ownerControl={readOnly ? undefined : slots?.ownerControl}
+            expanded={isOpen}
+            byline={pageDensity || isOpen}
+          />
+          {preview !== '' && (
+            <div
+              data-testid="ledger-entry-resting-preview"
+              className={`min-w-0 truncate fg-secondary ${pageDensity ? 'text-s' : 'text-xs leading-5'}`}
+            >
+              <span className={REPLAY_BLOCK_CLASS}>{preview}</span>
+            </div>
+          )}
+        </div>
+        {isOpen && (
+          <LedgerEntryBody
+            entry={entry}
+            density={context.density}
+            onOpenFile={(file): void => context.onOpenFile(entry, file)}
+            title={null}
+          />
+        )}
+        {/* Resting, the actions stay for keyboards and screen readers: Show
+            details is how they open the row. */}
+        <div className={isOpen ? undefined : 'sr-only'}>
+          <LedgerEntryActions
+            slots={actionSlots}
+            detailsOpen={isOpen}
+            onToggleDetails={toggleOpen}
+          />
+        </div>
         {activeOpen !== null && (
           <LedgerEntryOpenArea
             entry={entry}
@@ -163,7 +223,9 @@ export const LedgerEntryPost = memo(function LedgerEntryPost({
             onShowCorrectedEntry={onShowCorrectedEntry}
           />
         )}
-        {children}
+        <div data-row-thread className="contents">
+          {children}
+        </div>
       </div>
     </article>
   );

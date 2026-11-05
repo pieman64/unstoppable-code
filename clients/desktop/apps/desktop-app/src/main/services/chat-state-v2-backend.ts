@@ -1,3 +1,7 @@
+import {
+  isInputLedger,
+  shareInputLedgerText,
+} from './chat-input-delivery-state';
 import { validateDelegationReceiptEntry } from '@canopy/desktop-shared/node/delegation/receipt-reply';
 import {
   chooseSettlementCardDraft,
@@ -434,6 +438,11 @@ export interface V2Commit {
   state: CanonicalChatState;
   record: ChatJournalRecord;
   applied: boolean;
+  /**
+   * Chats whose prepared transcript writes are proven additions only. Missing
+   * means callers must treat the commit conservatively.
+   */
+  appendOnlyChatIds?: readonly string[];
   promotedVisuals?: PromotedVisual[];
 }
 /** A commit admitted for group commit ({@link ChatStateV2Backend.admit}). */
@@ -481,6 +490,13 @@ export interface TranscriptConsumeOptions {
    * storage (publication, a resumed archive), which carry no delegate logs.
    */
   readonly inlineDelegationChildren?: boolean;
+  /**
+   * Skip active rows whose id is already committed, as the full compatibility
+   * view does, while holding only the active ids.
+   */
+  readonly excludeCommittedActiveEchoes?: boolean;
+  /** A missing chat or a file tab yields no rows instead of failing. */
+  readonly skipNonChatTabs?: boolean;
 }
 
 interface Delta {
@@ -1046,6 +1062,8 @@ export interface ChatStateV2BackendOptions {
     /** Lets journal-mtime fingerprints follow a checkpoint's rotation. */
     onCheckpointed?: (rotation: DeltaJournalCheckpointRotation) => void;
     checkpointJournalBytes?: number;
+    /** See {@link ChatDeltaJournalWriterOptions.incrementalStreamMetadata}. */
+    incrementalStreamMetadata?: boolean;
     /** Overrides {@link LARGE_JOURNAL_RECORD_BYTES}; tests use it. */
     largeRecordBytes?: number;
     promotionRetry?: PromotionRetryOptions;
@@ -1463,6 +1481,68 @@ function metadataState(
   };
 }
 
+/**
+ * A view's private copy of `indexes`, except each tab's turn history: those
+ * fields hold megabytes in long chats and every writer replaces them through
+ * a spread, never edits them, so views share them with the committed indexes.
+ */
+function cloneSharingTurnHistory(
+  indexes: ChatStorageIndexes,
+): ChatStorageIndexes {
+  const withoutHistory = ({
+    turnDiffs: _turnDiffs,
+    inputDelivery: _inputDelivery,
+    agentArtifactCarryByTurn: _carry,
+    ...entry
+  }: ChatIndexEntry): ChatIndexEntry => {
+    void _turnDiffs;
+    void _inputDelivery;
+    void _carry;
+    return entry;
+  };
+  const withHistory = (
+    copy: ChatIndexEntry,
+    { turnDiffs, inputDelivery, agentArtifactCarryByTurn }: ChatIndexEntry,
+  ): ChatIndexEntry => ({
+    ...copy,
+    ...(turnDiffs === undefined ? {} : { turnDiffs }),
+    ...(inputDelivery === undefined ? {} : { inputDelivery }),
+    ...(agentArtifactCarryByTurn === undefined
+      ? {}
+      : { agentArtifactCarryByTurn }),
+  });
+  const copy = structuredClone({
+    ...indexes,
+    live: { ...indexes.live, tabs: indexes.live.tabs.map(withoutHistory) },
+    archive: {
+      ...indexes.archive,
+      archived: indexes.archive.archived.map((entry) => ({
+        ...entry,
+        tab: withoutHistory(entry.tab),
+      })),
+    },
+  });
+  return {
+    ...copy,
+    live: {
+      ...copy.live,
+      tabs: copy.live.tabs.map((tab, index) =>
+        withHistory(tab, indexes.live.tabs[index] ?? tab),
+      ),
+    },
+    archive: {
+      ...copy.archive,
+      archived: copy.archive.archived.map((entry, index) => ({
+        ...entry,
+        tab: withHistory(
+          entry.tab,
+          indexes.archive.archived[index]?.tab ?? entry.tab,
+        ),
+      })),
+    },
+  };
+}
+
 function allEntries(indexes: ChatStorageIndexes): ChatIndexEntry[] {
   return [
     ...indexes.live.tabs,
@@ -1480,6 +1560,136 @@ function boundedIds(
     set.add(id);
   }
   return Array.from(set).slice(-limit);
+}
+
+/** A load may introduce independent strings in every live and archived ledger. */
+function shareLoadedInputLedgerText(
+  indexes: ChatStorageIndexes,
+): ChatStorageIndexes {
+  for (const tab of indexes.live.tabs) shareInputLedgerText(tab.inputDelivery);
+  for (const entry of indexes.archive.archived)
+    shareInputLedgerText(entry.tab.inputDelivery);
+  return indexes;
+}
+
+interface InputLedgerTextChange {
+  archived: boolean;
+  index: number;
+  previous: ChatIndexEntry | undefined;
+}
+
+function inputHiddenTextHolder(payload: unknown): object | undefined {
+  if (!isRecord(payload)) return undefined;
+  const context: unknown = Reflect.get(payload, 'hiddenContext');
+  return isRecord(context) ? context : undefined;
+}
+
+function rememberInputText(
+  holder: object | undefined,
+  key: string,
+  parents: Map<string, string>,
+): void {
+  if (!holder) return;
+  const descriptor = Object.getOwnPropertyDescriptor(holder, key);
+  if (
+    descriptor &&
+    'value' in descriptor &&
+    typeof descriptor.value === 'string'
+  )
+    parents.set(descriptor.value, descriptor.value);
+}
+
+function retainInputTextProperty(
+  holder: object | undefined,
+  key: string,
+  parents: ReadonlyMap<string, string>,
+): void {
+  if (!holder) return;
+  const descriptor = Object.getOwnPropertyDescriptor(holder, key);
+  if (
+    !descriptor ||
+    !('value' in descriptor) ||
+    descriptor.writable !== true ||
+    typeof descriptor.value !== 'string'
+  )
+    return;
+  const parent = parents.get(descriptor.value);
+  if (parent !== undefined)
+    Reflect.defineProperty(holder, key, { ...descriptor, value: parent });
+}
+
+/**
+ * The journal retains its checkpoint graph until rotation. Reuse equal parent
+ * strings from the previous canonical row so a replacement row does not keep
+ * another flat copy alive alongside that checkpoint. Never retain a text table.
+ */
+function retainPreviousInputText(ledger: unknown, previous: unknown): void {
+  try {
+    if (
+      !isInputLedger(previous) ||
+      !isInputLedger(ledger) ||
+      ledger.rows === previous.rows
+    )
+      return;
+    const previousRows = new Map(previous.rows.map((row) => [row.id, row]));
+    for (const row of ledger.rows) {
+      const previousRow = previousRows.get(row.id);
+      if (!previousRow || row === previousRow) continue;
+      const submittedParents = new Map<string, string>();
+      const hiddenParents = new Map<string, string>();
+      rememberInputText(
+        inputHiddenTextHolder(previousRow.payload),
+        'text',
+        hiddenParents,
+      );
+      for (const attempt of previousRow.attempts) {
+        rememberInputText(attempt, 'submittedText', submittedParents);
+        rememberInputText(
+          inputHiddenTextHolder(attempt.payloadSnapshot),
+          'text',
+          hiddenParents,
+        );
+      }
+      retainInputTextProperty(
+        inputHiddenTextHolder(row.payload),
+        'text',
+        hiddenParents,
+      );
+      for (const attempt of row.attempts) {
+        retainInputTextProperty(attempt, 'submittedText', submittedParents);
+        retainInputTextProperty(
+          inputHiddenTextHolder(attempt.payloadSnapshot),
+          'text',
+          hiddenParents,
+        );
+      }
+    }
+  } catch {
+    // Host-owned malformed, frozen or exotic values cannot reject a commit.
+  }
+}
+
+/** Commit projections preserve tab order; visit only changed ledger positions. */
+function shareChangedInputLedgerText(
+  indexes: ChatStorageIndexes,
+  changes: readonly InputLedgerTextChange[],
+): ChatStorageIndexes {
+  for (const change of changes) {
+    const tab = change.archived
+      ? indexes.archive.archived[change.index]?.tab
+      : indexes.live.tabs[change.index];
+    if (
+      tab &&
+      (!change.previous || tab.inputDelivery !== change.previous.inputDelivery)
+    ) {
+      retainPreviousInputText(
+        tab.inputDelivery,
+        change.previous?.inputDelivery,
+      );
+      shareInputLedgerText(tab.inputDelivery);
+    }
+  }
+  return indexes;
 }
 
 /** Canonical metadata ownership plus explicit per-chat transcript views. */
@@ -1619,6 +1829,9 @@ export class ChatStateV2Backend {
       ...(settings.checkpointJournalBytes !== undefined
         ? { checkpointJournalBytes: settings.checkpointJournalBytes }
         : {}),
+      ...(settings.incrementalStreamMetadata
+        ? { incrementalStreamMetadata: true }
+        : {}),
     });
     this.journal = journal;
     this.storage.transcripts.setActiveProjection((chatId) =>
@@ -1678,13 +1891,15 @@ export class ChatStateV2Backend {
       // finish the checkpoint before anything reads those rows.
       if (journal.hasCommittedRowChanges()) await journal.checkpoint();
       await this.removeStrayJournal();
-      const indexes = await this.projectedIndexes(journal);
+      const indexes = shareLoadedInputLedgerText(
+        await this.projectedIndexes(journal),
+      );
       this.reportInvalidVisualOwnerLedger(indexes);
       return indexes;
     }
     if (this.journal) this.closeJournal();
     if (this.options.deltaJournal) await this.removeStrayJournal();
-    const indexes = await this.storage.load();
+    const indexes = shareLoadedInputLedgerText(await this.storage.load());
     this.reportInvalidVisualOwnerLedger(indexes);
     return indexes;
   }
@@ -1710,6 +1925,11 @@ export class ChatStateV2Backend {
     }
   }
 
+  /**
+   * Child/registry projections leave ledger identities unchanged. Fresh loads
+   * and checkpoints share every ledger; ordinary transactions share only the
+   * changed positions collected by their existing tab-conversion pass.
+   */
   private async projectedIndexes(
     journal: ChatDeltaJournalWriter,
   ): Promise<ChatStorageIndexes> {
@@ -1725,11 +1945,40 @@ export class ChatStateV2Backend {
 
   private async checkpointJournal(
     journal: ChatDeltaJournalWriter,
+    currentWriteChats: ReadonlySet<string> = new Set(),
   ): Promise<ChatStorageIndexes> {
+    // Current transaction writes are counted by committed() after this call.
+    // Other active projections have already been counted, but their physical
+    // sidecars are only now materialized. Capture no transcript rows here.
+    const identities = new Map<string, string | undefined>();
+    for (const chatId of journal.journaledChatIds()) {
+      if (currentWriteChats.has(chatId)) continue;
+      try {
+        identities.set(
+          chatId,
+          await this.artifactMaintenance.identityIfCached(chatId),
+        );
+      } catch {
+        identities.set(chatId, undefined);
+      }
+    }
+    const rebase = async (): Promise<void> => {
+      for (const [chatId, identity] of Array.from(identities))
+        try {
+          await this.artifactMaintenance.checkpointedJournal(chatId, identity);
+        } catch {
+          try {
+            await this.artifactMaintenance.invalidate(chatId);
+          } catch {
+            // Cleanup accounting cannot reject a durable checkpoint.
+          }
+        }
+    };
     const onCheckpointed = this.options.deltaJournal?.onCheckpointed;
     if (!onCheckpointed) {
       await journal.checkpoint();
-      return journal.indexes();
+      await rebase();
+      return shareLoadedInputLedgerText(journal.indexes());
     }
     // Admitted records reach the journal first, so the rotation below covers
     // exactly the committed state the earlier modification time stamped.
@@ -1740,6 +1989,7 @@ export class ChatStateV2Backend {
     const path = join(this.store.directory, journalFile);
     const previousMtimeNs = await journalMtimeNs(path);
     await journal.checkpoint();
+    await rebase();
     const mtimeNs = await journalMtimeNs(path);
     if (
       previousMtimeNs !== undefined &&
@@ -1747,7 +1997,7 @@ export class ChatStateV2Backend {
       mtimeNs !== previousMtimeNs
     )
       onCheckpointed({ previousMtimeNs, mtimeNs });
-    return journal.indexes();
+    return shareLoadedInputLedgerText(journal.indexes());
   }
 
   /**
@@ -1903,7 +2153,9 @@ export class ChatStateV2Backend {
       const journal = await this.openJournal();
       // Loading the projection is read-only. In particular, do not call
       // loadIndexes(): its recovery path may checkpoint committed child rows.
-      this.indexes = await this.projectedIndexes(journal);
+      this.indexes = shareLoadedInputLedgerText(
+        await this.projectedIndexes(journal),
+      );
     }
     const writer = this.journal;
     if (!writer || !writer.isOpen())
@@ -2745,6 +2997,35 @@ export class ChatStateV2Backend {
     },
     rawMutationKey?: string,
   ): Promise<{ applied: boolean; revision: number }> {
+    const { durable, ...result } = await this.admitChildStream(
+      target,
+      mutationId,
+      rows,
+      settle,
+      rawMutationKey,
+    );
+    await durable;
+    return result;
+  }
+
+  /**
+   * Format-4 child admission through group commit: the record joins the
+   * journal's next batch, and `durable` settles once that batch is synced.
+   * The caller must not acknowledge or publish it before then. The parent's
+   * delete fence is checked as the record is queued (`beforeAdmit`): a
+   * checkpoint, which retires the fence, first makes every queued record
+   * durable, and this admission's fence lease is held until its record is.
+   */
+  public async admitChildStream(
+    target: TranscriptTarget,
+    mutationId: string,
+    rows: readonly DelegationChildRow[],
+    settle?: {
+      key: string;
+      descriptorUpdate: TranscriptStreamDescriptorUpdate;
+    },
+    rawMutationKey?: string,
+  ): Promise<{ applied: boolean; revision: number; durable: Promise<void> }> {
     return this.serial(async () => {
       const validated = TranscriptTargetSchema.parse(target);
       if (validated.kind !== 'delegation')
@@ -2766,6 +3047,7 @@ export class ChatStateV2Backend {
       const fence = this.storage.transcripts.childDeleteFence;
       const lease = fence.acquire(validated.chatId);
       if (!lease) throw new Error('Child stream parent was deleted');
+      let durable: Promise<void> | undefined;
       try {
         const journal = this.journal;
         if (!journal) throw new Error('Format-4 journal is unavailable');
@@ -2786,7 +3068,7 @@ export class ChatStateV2Backend {
             ),
           },
         };
-        const result = await journal.commit({
+        const admitted = await journal.admit({
           expectedRevision: current.live.revision,
           next,
           writes: [],
@@ -2801,15 +3083,21 @@ export class ChatStateV2Backend {
               ...(settle ? { settle } : {}),
             },
           ],
-          beforePublish: () => {
+          beforeAdmit: () => {
             if (fence.isDeleted(validated.chatId, lease.generation))
               throw new Error('Child stream parent was deleted');
           },
         });
+        durable = admitted.durable;
         this.indexes = await this.projectedIndexes(journal);
-        return { applied: result.applied, revision: result.revision };
+        return {
+          applied: admitted.result.applied,
+          revision: admitted.result.revision,
+          durable: admitted.durable,
+        };
       } finally {
-        lease.release();
+        if (durable) void durable.then(lease.release, lease.release);
+        else lease.release();
       }
     });
   }
@@ -3153,7 +3441,7 @@ export class ChatStateV2Backend {
       if (await this.store.journalFile().catch(() => 'unknown')) throw error;
     }
     this.closeJournal();
-    this.indexes = await this.storage.load();
+    this.indexes = shareLoadedInputLedgerText(await this.storage.load());
     this.reportInvalidVisualOwnerLedger(this.indexes);
     return true;
   }
@@ -3631,7 +3919,15 @@ export class ChatStateV2Backend {
       await this.reclaimStreamOrphans();
       await this.refuseStreamCopyCollisions(selected);
       const visualOwners = new VisualOwnerLedgerView(current.recovery);
+      const previousEntries = new Map(
+        allEntries(current).map((tab) => [tab.id, tab]),
+      );
       const convert = (tab: PersistedChatTab): ChatIndexEntry => {
+        const previous = previousEntries.get(tab.id);
+        if (!previous || tab.inputDelivery !== previous.inputDelivery) {
+          retainPreviousInputText(tab.inputDelivery, previous?.inputDelivery);
+          shareInputLedgerText(tab.inputDelivery);
+        }
         const entry = capturedEntries.get(tab.id);
         if (!entry) throw new Error('Restore metadata targets an unknown chat');
         const copy = { ...tab };
@@ -4924,7 +5220,7 @@ export class ChatStateV2Backend {
   public async hasMessage(chatId: string, messageId: string): Promise<boolean> {
     return this.serial(async () => {
       if (!this.indexes) {
-        this.indexes = await this.storage.load();
+        this.indexes = shareLoadedInputLedgerText(await this.storage.load());
         this.reportInvalidVisualOwnerLedger(this.indexes);
       }
       if (!allEntries(this.indexes).some((entry) => entry.id === chatId))
@@ -5176,7 +5472,17 @@ export class ChatStateV2Backend {
     options: TranscriptConsumeOptions = {},
   ): Promise<T> {
     return this.serial(async () => {
-      await this.requireChat(chatId);
+      if (options.skipNonChatTabs) {
+        this.indexes ??= await this.loadIndexes();
+        if (
+          !allEntries(this.indexes).some(
+            (entry) => entry.id === chatId && entry.kind !== 'file',
+          )
+        )
+          return consume(
+            (async function* (): AsyncGenerator<PersistedChatMessage> {})(),
+          );
+      } else await this.requireChat(chatId);
       const transcript = this.storage.transcripts;
       const overlay = (
         messages: readonly PersistedChatMessage[],
@@ -5188,8 +5494,18 @@ export class ChatStateV2Backend {
         this.portableStreamChildren(chatId, run);
       const active = await transcript.activeMessages(chatId);
       const stored = async function* (): AsyncGenerator<PersistedChatMessage> {
-        yield* transcript.iterate(chatId);
-        yield* active;
+        if (!options.excludeCommittedActiveEchoes) {
+          yield* transcript.iterate(chatId);
+          yield* active;
+          return;
+        }
+        const uncommitted = new Set(active.map((message) => message.id));
+        for await (const message of transcript.iterate(chatId)) {
+          uncommitted.delete(message.id);
+          yield message;
+        }
+        for (const message of active)
+          if (uncommitted.has(message.id)) yield message;
       };
       const rows = async function* (): AsyncGenerator<PersistedChatMessage> {
         if (!options.inlineDelegationChildren) {
@@ -5273,7 +5589,7 @@ export class ChatStateV2Backend {
     selection: ChatReadSelection,
   ): Promise<CanonicalChatState> {
     recordChatStorageIndexClone();
-    const state = metadataState(structuredClone(indexes), true);
+    const state = metadataState(cloneSharingTurnHistory(indexes), true);
     const selected = new Set(selection.chatIds ?? []);
     for (const tab of [
       ...state.tabsFile.tabs,
@@ -5708,6 +6024,8 @@ export class ChatStateV2Backend {
       let durable: Promise<void> | undefined;
       let commandResult: V2Commit['record']['commandResult'];
       let promotedVisuals: PromotedVisual[] = [];
+      const preparedAppendOnlyChats = new Set<string>();
+      let appendOnlyChatIds: string[] = [];
       try {
         for (const mutation of mutations) {
           if (mutation.type === 'message.upserted') {
@@ -5863,15 +6181,23 @@ export class ChatStateV2Backend {
           metadataState(current, false),
           metadataMutations,
         );
-        const convert = ({
-          messages: _messages,
-          transcriptLoaded: _loaded,
-          transcriptWindow: _window,
-          ...tab
-        }: PersistedChatTab): ChatIndexEntry => {
+        const inputLedgerTextChanges: InputLedgerTextChange[] = [];
+        const convert = (
+          {
+            messages: _messages,
+            transcriptLoaded: _loaded,
+            transcriptWindow: _window,
+            ...tab
+          }: PersistedChatTab,
+          index: number,
+          archived: boolean,
+        ): ChatIndexEntry => {
           void _messages;
           void _loaded;
           void _window;
+          const previous = oldEntries.get(tab.id);
+          if (!previous || tab.inputDelivery !== previous.inputDelivery)
+            inputLedgerTextChanges.push({ archived, index, previous });
           return {
             ...tab,
             transcript: oldEntries.get(tab.id)?.transcript ?? {
@@ -5884,15 +6210,17 @@ export class ChatStateV2Backend {
             ...nextState.tabsFile,
             version: 2,
             revision,
-            tabs: nextState.tabsFile.tabs.map(convert),
+            tabs: nextState.tabsFile.tabs.map((tab, index) =>
+              convert(tab, index, false),
+            ),
             runtimeByChatId: nextState.runtimeByChatId,
           },
           archive: {
             version: 2,
             revision,
-            archived: nextState.archivesFile.archived.map((entry) => ({
+            archived: nextState.archivesFile.archived.map((entry, index) => ({
               ...entry,
-              tab: convert(entry.tab),
+              tab: convert(entry.tab, index, true),
             })),
           },
           // Every recovery field this commit changes is reassigned below, never
@@ -6019,6 +6347,7 @@ export class ChatStateV2Backend {
           currentMessagesByChatId,
           viewTabs,
           options.rewriteReason,
+          preparedAppendOnlyChats,
         );
         for (const write of writes)
           if (write.kind === 'delete') visualOwners.removeChat(write.chatId);
@@ -6059,18 +6388,72 @@ export class ChatStateV2Backend {
             journalWrites = undefined;
           }
         }
+        if (!journalWrites && fields === 'format4' && forms.patches.size > 0) {
+          // A size/insertion demotion uses V2 writes, not the journal patch
+          // forms. Restore its replacement semantics only on that fallback.
+          const previous = new Map(
+            allEntries(current).map((tab) => [tab.id, tab]),
+          );
+          for (let index = 0; index < writes.length; index++) {
+            const write = writes[index];
+            if (write?.kind !== 'append') continue;
+            const patch = forms.patches.get(write.chatId);
+            if (!patch) continue;
+            const chatId = write.chatId;
+            const transcript = this.storage.transcripts;
+            writes[index] = {
+              chatId,
+              kind: 'replace',
+              activeTailCount: patch.activeTailCount,
+              messages:
+                (async function* (): AsyncGenerator<PersistedChatMessage> {
+                  yield* transcript.iterate(chatId);
+                  yield* patch.tail;
+                })(),
+            };
+            const committed = previous.get(chatId)?.transcript;
+            if (committed && committed.committedMessageCount > 0)
+              fullRewrites.push({
+                chatId,
+                reason: options.rewriteReason ?? 'mixed_active',
+                committedRows: committed.committedMessageCount,
+                committedBytes: committed.committedByteLength,
+                patchedRows: 0,
+                removedRows: 0,
+                patchedBlockTypes: [],
+                activeTail: true,
+              });
+          }
+        }
+        appendOnlyChatIds = writes.flatMap((write, index) => {
+          if (
+            !preparedAppendOnlyChats.has(write.chatId) ||
+            !Array.isArray(write.messages) ||
+            (write.kind !== 'append' && write.kind !== 'active')
+          )
+            return [];
+          const effect = journalWrites?.[index];
+          const equivalent =
+            !journalWrites ||
+            (effect?.chatId === write.chatId &&
+              (effect.kind === 'append' ||
+                effect.kind === 'active' ||
+                effect.kind === 'active-upsert' ||
+                (effect.kind === 'patch' &&
+                  effect.patches.length === 0 &&
+                  effect.removedMessageIds.length === 0)));
+          return equivalent ? [write.chatId] : [];
+        });
         const beforeArtifactIdentities = new Map<string, string>();
-        if (!journalWrites)
-          for (const write of writes)
-            try {
-              const identity = await this.artifactMaintenance.identityIfCached(
-                write.chatId,
-              );
-              if (identity)
-                beforeArtifactIdentities.set(write.chatId, identity);
-            } catch {
-              // Derived accounting cannot reject the canonical transaction.
-            }
+        for (const write of writes)
+          try {
+            const identity = await this.artifactMaintenance.identityIfCached(
+              write.chatId,
+            );
+            if (identity) beforeArtifactIdentities.set(write.chatId, identity);
+          } catch {
+            // Derived accounting cannot reject the canonical transaction.
+          }
         // The scope commit is serialized. Observe only its application/checkpoint,
         // correlate by chat, and release the bounded observer on either outcome.
         // Never retain measurements for recovery or emit before durability.
@@ -6094,20 +6477,24 @@ export class ChatStateV2Backend {
               created,
               options,
               group,
+              inputLedgerTextChanges,
             );
             this.indexes = committed.indexes;
             durable = committed.durable;
           } else
-            this.indexes = await this.storage.commit(
-              baseRevision,
-              indexes,
-              writes,
-              created,
-              () => {
-                options.beforePublish?.();
-                checkCopySources();
-              },
-              options.preparePublish,
+            this.indexes = shareChangedInputLedgerText(
+              await this.storage.commit(
+                baseRevision,
+                indexes,
+                writes,
+                created,
+                () => {
+                  options.beforePublish?.();
+                  checkCopySources();
+                },
+                options.preparePublish,
+              ),
+              inputLedgerTextChanges,
             );
         } finally {
           stopObserving();
@@ -6127,24 +6514,31 @@ export class ChatStateV2Backend {
         if (durable) {
           // Group commit: counted and reported once, when the commit's batch
           // is durable. Batches settle in commit order.
-          durable = durable.then(markCommitted);
+          durable = durable.then(markCommitted, async (error: unknown) => {
+            for (const write of writes)
+              try {
+                await this.artifactMaintenance.invalidate(write.chatId);
+              } catch {
+                // The failed journal remains a reclamation fence.
+              }
+            throw error;
+          });
           // The caller observes the outcome; a failure before it does must
           // not surface as an unhandled rejection.
           durable.catch(() => undefined);
         } else markCommitted();
         for (const write of writes)
           try {
-            // A journaled write leaves the files as they were; the next scan
-            // after its checkpoint rebuilds the chat's references.
-            if (journalWrites)
-              await this.artifactMaintenance.invalidate(write.chatId);
-            else
-              await this.artifactMaintenance.committed(
-                write.chatId,
-                write,
-                previousActive.get(write.chatId) ?? [],
-                beforeArtifactIdentities.get(write.chatId),
-              );
+            // Active records count their logical projection in commit order;
+            // the journal fence forbids unlink until a trusted checkpoint
+            // rebases the physical identity. Rewrites still reset the filter.
+            await this.artifactMaintenance.committed(
+              write.chatId,
+              write,
+              previousActive.get(write.chatId) ?? [],
+              beforeArtifactIdentities.get(write.chatId),
+              { journalPending: this.pendingJournalRecords() > 0 },
+            );
           } catch {
             try {
               await this.artifactMaintenance.invalidate(write.chatId);
@@ -6238,6 +6632,7 @@ export class ChatStateV2Backend {
             ...(commandResult ? { commandResult } : {}),
           },
           ...(promotedVisuals.length > 0 ? { promotedVisuals } : {}),
+          ...(appendOnlyChatIds.length > 0 ? { appendOnlyChatIds } : {}),
         },
         ...(durable ? { durable } : {}),
       };
@@ -6268,6 +6663,7 @@ export class ChatStateV2Backend {
     created: CreatedArtifacts,
     options: V2MutationOptions,
     group: boolean,
+    inputLedgerTextChanges: readonly InputLedgerTextChange[],
   ): Promise<{ indexes: ChatStorageIndexes; durable?: Promise<void> }> {
     const startedAt = performance.now();
     const input = {
@@ -6297,8 +6693,18 @@ export class ChatStateV2Backend {
         throw new Error('Delta journal already holds this mutation');
       recordCommit();
       if (options.checkpoint === true || journal.hasCommittedRowChanges())
-        return { indexes: await this.checkpointJournal(journal) };
-      return { indexes: await this.projectedIndexes(journal) };
+        return {
+          indexes: await this.checkpointJournal(
+            journal,
+            new Set(writes.map((write) => write.chatId)),
+          ),
+        };
+      return {
+        indexes: shareChangedInputLedgerText(
+          await this.projectedIndexes(journal),
+          inputLedgerTextChanges,
+        ),
+      };
     }
     const admitted = await journal.admit(input);
     if (!admitted.result.applied)
@@ -6307,9 +6713,17 @@ export class ChatStateV2Backend {
       // A checkpoint applies records the journal holds durably.
       await admitted.durable;
       recordCommit();
-      return { indexes: await this.checkpointJournal(journal) };
+      return {
+        indexes: await this.checkpointJournal(
+          journal,
+          new Set(writes.map((write) => write.chatId)),
+        ),
+      };
     }
-    const indexes = await this.projectedIndexes(journal);
+    const indexes = shareChangedInputLedgerText(
+      await this.projectedIndexes(journal),
+      inputLedgerTextChanges,
+    );
     return { indexes, durable: admitted.durable.then(recordCommit) };
   }
 
@@ -6329,6 +6743,7 @@ export class ChatStateV2Backend {
     >,
     viewTabs?: ReadonlyMap<string, PersistedChatTab>,
     rewriteReason?: ChatMutationOptions['rewriteReason'],
+    appendOnlyChats?: Set<string>,
   ): Promise<ChatTranscriptWrite[]> {
     const artifacts = this.storage.transcripts.artifacts;
     /** A committed row's stored form: format 4 offloads its final fields. */
@@ -6612,6 +7027,54 @@ export class ChatStateV2Backend {
         removedFromActive &&
         ((isActive && committedPrefixCount === 0) || tail.length === 0);
       if (removedFromActive && !canReplaceOnlyActive) rewrite = true;
+      // Reuse admission's exact membership facts, never a bounded read view.
+      // A final append may still replace an active row, so its kind alone
+      // is insufficient (notably a settlement that replaces final output).
+      const addsOnly =
+        !rewrite &&
+        !removedFromActive &&
+        removed.size === 0 &&
+        patches.size === 0 &&
+        committedInsertions.size === 0 &&
+        (change?.upserts.size ?? 0) > 0 &&
+        Array.from(change?.upserts.keys() ?? []).every((id) => added.has(id));
+      if (
+        old &&
+        forms &&
+        fields === 'format4' &&
+        mixedCommittedAndActive &&
+        !rewrite &&
+        patches.size === 0 &&
+        removed.size === 0 &&
+        committedInsertions.size === 0
+      ) {
+        let appendOnly = true;
+        for (const message of tail)
+          if (
+            await this.storage.transcripts.hasCommittedMessage(id, message.id)
+          ) {
+            appendOnly = false;
+            break;
+          }
+        if (appendOnly) {
+          if (addsOnly) appendOnlyChats?.add(id);
+          // Keep the format-4 patch encoding, but neither build a history
+          // generator nor report a rewrite for its guarded append checkpoint.
+          forms.patches.set(id, {
+            patches: [],
+            removedMessageIds: [],
+            tail,
+            activeTailCount,
+          });
+          writes.push({
+            chatId: id,
+            kind: 'append',
+            messages: tail,
+            activeTailCount,
+          });
+          continue;
+        }
+      }
       if (rewrite || (mixedCommittedAndActive && this.isDeltaJournal())) {
         const committed = old?.transcript;
         if (committed && committed.committedMessageCount > 0)
@@ -6675,6 +7138,7 @@ export class ChatStateV2Backend {
           })(),
         });
       } else if (changed || (!isActive && active.length)) {
+        if (addsOnly && !canReplaceOnlyActive) appendOnlyChats?.add(id);
         if (old)
           forms?.active.set(id, {
             previous: active,

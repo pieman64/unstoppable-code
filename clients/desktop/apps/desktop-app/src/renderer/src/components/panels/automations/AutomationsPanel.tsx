@@ -49,6 +49,8 @@ import {
   Notice,
   NoticeButton,
   DataTable,
+  IconToggleButton,
+  ListRow,
   SearchField,
   SegmentedControl,
   Tooltip,
@@ -193,27 +195,25 @@ function UpcomingSection({
   }
   return (
     <ul
-      className="flex flex-col divide-y"
+      className="flex flex-col px-1"
       data-testid="automations-panel-upcoming-list"
     >
       {entries.map((entry) => (
         <li key={entry.key}>
-          <button
-            type="button"
+          <ListRow
             onClick={(): void => onOpen(entry.activity)}
             data-testid={`automations-panel-upcoming-${entry.key}`}
-            className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-fg-primary/[0.04]"
+            trailing={entry.occursAt.toLocaleString()}
           >
-            <Badge muted={!entry.withinSoonWindow}>
-              {formatTimeUntil(now, entry.occursAt)}
-            </Badge>
-            <span className="min-w-0 flex-1 truncate text-xs fg-primary">
-              {entry.activity.name || 'Untitled workflow'}
+            <span className="flex min-w-0 items-center gap-2">
+              <Badge muted={!entry.withinSoonWindow}>
+                {formatTimeUntil(now, entry.occursAt)}
+              </Badge>
+              <span className="min-w-0 truncate">
+                {entry.activity.name || 'Untitled workflow'}
+              </span>
             </span>
-            <span className="shrink-0 text-2xs fg-secondary">
-              {entry.occursAt.toLocaleString()}
-            </span>
-          </button>
+          </ListRow>
         </li>
       ))}
     </ul>
@@ -816,22 +816,14 @@ export const AutomationsPanel = memo(function AutomationsPanel({
         </div>
         <div className="flex shrink-0 items-center gap-1">
           {!isCowork && (
-            <Tooltip label={worktreeToggleLabel}>
-              <button
-                type="button"
-                aria-pressed={worktreeOnly}
-                aria-label={worktreeToggleLabel}
-                onClick={(): void => setWorktreeOnly((prev) => !prev)}
-                data-testid="automations-panel-worktree-toggle"
-                className={`focus-ring inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
-                  worktreeOnly
-                    ? 'bg-accent-subtle fg-accent'
-                    : 'fg-secondary hover:bg-fg-primary/[0.06] hover:fg-primary'
-                }`}
-              >
-                <BranchIcon width={14} height={14} aria-hidden="true" />
-              </button>
-            </Tooltip>
+            <IconToggleButton
+              pressed={worktreeOnly}
+              label={worktreeToggleLabel}
+              tooltip={worktreeToggleLabel}
+              icon={<BranchIcon width={14} height={14} aria-hidden="true" />}
+              onClick={(): void => setWorktreeOnly((prev) => !prev)}
+              testId="automations-panel-worktree-toggle"
+            />
           )}
           {projectId !== APP_ADVISOR_PROJECT_ID && (
             <Tooltip label="New workflow">

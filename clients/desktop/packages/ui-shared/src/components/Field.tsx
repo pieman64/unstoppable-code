@@ -291,7 +291,18 @@ export function FieldError({
 export interface TextAreaProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {
   /** Monospace for code, commands, and patterns. */
   readonly mono?: boolean;
+  /**
+   * `field` (the default) is the form field. `composer` is the editor of a
+   * composer prompt's text row where the chat's own composer is not there
+   * to supply one (the Feed's plan reply): the composer's text with no
+   * field edge, one line that grows with what is typed, never resized.
+   */
+  readonly variant?: 'field' | 'composer';
 }
+
+/** The composer prompt's text row: the composer's text, no field edge. */
+const COMPOSER_TEXT_AREA_CLASS =
+  'block w-full resize-none bg-transparent text-s fg-primary outline-none field-sizing-content placeholder:fg-tertiary disabled:cursor-not-allowed';
 
 /**
  * Multi-line field. Keeps native vertical resizing; `field-resize-grip`
@@ -301,8 +312,9 @@ export interface TextAreaProps extends TextareaHTMLAttributes<HTMLTextAreaElemen
 export const TextArea = forwardRef<HTMLTextAreaElement, TextAreaProps>(
   function TextArea(
     {
-      rows = 2,
+      rows,
       mono = false,
+      variant = 'field',
       className = '',
       'aria-describedby': ariaDescribedBy,
       ...props
@@ -313,11 +325,14 @@ export const TextArea = forwardRef<HTMLTextAreaElement, TextAreaProps>(
       props.id,
       ariaDescribedBy,
     );
-    const treatment = `${FIELD_CLASS} field-resize-grip resize-y${mono ? ' font-mono' : ''}`;
+    const treatment =
+      variant === 'composer'
+        ? COMPOSER_TEXT_AREA_CLASS
+        : `${FIELD_CLASS} field-resize-grip resize-y${mono ? ' font-mono' : ''}`;
     return (
       <textarea
         ref={ref}
-        rows={rows}
+        rows={rows ?? (variant === 'composer' ? 1 : 2)}
         className={withPlacement(treatment, className)}
         aria-describedby={describedBy}
         {...props}

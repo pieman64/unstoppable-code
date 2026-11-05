@@ -72,7 +72,6 @@ import {
   SIDEBAR_NAV_ICON_CLASSNAME,
   sidebarNavIconItemClassName,
   sidebarNavItemClassName,
-  SkeletonBlock,
   Tooltip,
   useDropdownMenuRowStyle,
   useIsMobile,
@@ -96,6 +95,7 @@ import { CreateWorkspaceDialog } from './CreateWorkspaceDialog';
 import { SidebarPipelineStatusPopover } from './SidebarPipelineStatusPopover';
 import { SidebarTerminalStatusPopover } from './SidebarTerminalStatusPopover';
 import { SortableWorkspacesSidebar } from './SortableWorkspacesSidebar';
+import { SidebarProjectsSkeleton } from './SidebarProjectsSkeleton';
 import { newWorktreeIdsAfterSnapshot } from './workspace-sections-model';
 import {
   StandaloneChatsSidebarSection,
@@ -478,7 +478,7 @@ export interface SidebarSurfaceProps {
    */
   readonly getWorktreeBatchRemovalFacts?: GetWorktreeBatchRemovalFacts;
   /**
-   * The batch confirm offers Preserve local / Delete local, applied to every
+   * The batch confirm offers the keep-local-branch switch, applied to every
    * included worktree. Only hosts whose removal takes a branch choice set it.
    */
   readonly worktreeBatchBranchChoice?: boolean;
@@ -682,6 +682,15 @@ export interface SidebarSurfaceProps {
   ) => void;
   /** Host-owned availability; omitted/false keeps repository attachment hidden. */
   readonly isAddRepositoryAvailable?: (
+    workspaceLocalId: string,
+    worktreeLocalId: string,
+  ) => boolean;
+  /**
+   * The row holds a saved Add repository attempt to resume or cancel: the
+   * item stays enabled through the active-work rule, which the attempt
+   * itself may be what keeps busy.
+   */
+  readonly isAddRepositoryResumable?: (
     workspaceLocalId: string,
     worktreeLocalId: string,
   ) => boolean;
@@ -2624,8 +2633,13 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
     );
     const splitPrBlockers =
       props.getSplitPrBlockers?.(workspace.localId, worktree.localId) ?? [];
+    // The row's own client answers: a cloud repository worktree grants it
+    // per row while the composite's instance-wide set does not.
+    const rowRepositoryAttachment = capabilitiesOf(
+      worktree.localId,
+    ).worktreeRepositoryAttachment;
     const addRepositoryAvailable =
-      capabilities.worktreeRepositoryAttachment === true &&
+      rowRepositoryAttachment === true &&
       props.isAddRepositoryAvailable?.(workspace.localId, worktree.localId) ===
         true &&
       props.onAddRepositoryRequested !== undefined;
@@ -2725,6 +2739,11 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
         splitPrBlockers,
         groupingAction,
         addRepositoryAvailable,
+        addRepositoryResumable:
+          props.isAddRepositoryResumable?.(
+            workspace.localId,
+            worktree.localId,
+          ) === true,
         hasActiveSession:
           worktree.isStreaming === true ||
           props.hasActiveWorktreeSession?.(
@@ -2758,7 +2777,7 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
         pipelines: capabilities.pipelines,
         worktreeSplitPr: capabilities.worktreeSplitPr,
         worktreeBranchGrouping: capabilities.worktreeBranchGrouping,
-        worktreeRepositoryAttachment: capabilities.worktreeRepositoryAttachment,
+        worktreeRepositoryAttachment: rowRepositoryAttachment,
         removal: {
           behavior: rowRemoval ? 'archive' : false,
           presentation: rowRemovalPresentation,
@@ -3006,21 +3025,9 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
             testIds?.worktreeDirectShow,
             'portal-worktree-show-button',
           ),
-          toggleSelection: worktreeTestId(
-            undefined,
-            'portal-worktree-actions-toggle-selection',
-          ),
           bulkPin: worktreeTestId(
             undefined,
             'portal-worktree-actions-bulk-pin',
-          ),
-          bulkHide: worktreeTestId(
-            undefined,
-            'portal-worktree-actions-bulk-hide',
-          ),
-          bulkNotifications: worktreeTestId(
-            undefined,
-            'portal-worktree-actions-bulk-notifications',
           ),
           bulkArchive: worktreeTestId(
             undefined,
@@ -3029,10 +3036,6 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
           bulkDelete: worktreeTestId(
             undefined,
             'portal-worktree-actions-bulk-delete',
-          ),
-          clearSelection: worktreeTestId(
-            undefined,
-            'portal-worktree-actions-clear-selection',
           ),
           notifications: worktreeTestId(
             testIds?.worktreeNotifications,
@@ -4355,15 +4358,7 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
         {props.workspacesSectionCollapsible &&
         workspacesSectionCollapsed ? null : contentState ===
           'waiting' ? null : contentState === 'loading' ? (
-          <div
-            role="status"
-            aria-label="Loading projects"
-            data-testid={testIds?.loading}
-            className="space-y-3 px-2 py-1"
-          >
-            <SkeletonBlock height="title" width="2/3" />
-            <SkeletonBlock height="title" width="3/4" />
-          </div>
+          <SidebarProjectsSkeleton testId={testIds?.loading} />
         ) : contentState === 'empty' &&
           (props.pendingProjects?.length ?? 0) === 0 ? (
           <div className="px-2">

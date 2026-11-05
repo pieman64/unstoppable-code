@@ -664,22 +664,6 @@ export function buildCurrentUiStateSnapshot(
     };
   }
 
-  const dailyCreditDripSlice = readObject(slices['settings.dailyCreditDrip']);
-  if (dailyCreditDripSlice) {
-    const settings = snapshot.settings ?? {
-      open: nav.settingsOpen,
-      section: nav.settingsInitialSection,
-    };
-    snapshot.settings = {
-      ...settings,
-      dailyCreditDrip: {
-        loaded: readBoolean(dailyCreditDripSlice.loaded) ?? false,
-        available: readBoolean(dailyCreditDripSlice.available) ?? false,
-        enabled: readBoolean(dailyCreditDripSlice.enabled) ?? false,
-        decided: readBoolean(dailyCreditDripSlice.decided) ?? false,
-      },
-    };
-  }
   const managedDelegationSlice = readObject(
     slices['settings.managedDelegation'],
   );

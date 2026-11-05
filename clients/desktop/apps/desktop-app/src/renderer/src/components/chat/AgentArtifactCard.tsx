@@ -99,7 +99,7 @@ export const AgentArtifactCard = memo(function AgentArtifactCard({
   const wrapTrigger = useCallback(
     (trigger: ReactElement<TooltipTriggerProps>): JSX.Element => (
       <RichHoverTooltip
-        content={<AgentArtifactTooltip receipt={receipt} />}
+        content={<AgentArtifactTooltip receipt={receipt} model={model} />}
         // CAPABILITY_TILE_CELL_CLASS, spelled out: this prop takes only a
         // static class string.
         triggerWrapperClassName="h-full w-full supports-[grid-template-rows:subgrid]:row-span-2 supports-[grid-template-rows:subgrid]:grid supports-[grid-template-rows:subgrid]:grid-rows-subgrid"
@@ -107,7 +107,7 @@ export const AgentArtifactCard = memo(function AgentArtifactCard({
         {trigger}
       </RichHoverTooltip>
     ),
-    [receipt],
+    [model, receipt],
   );
   return (
     // Fills the Agent activity grid cell and passes its rows through, so
@@ -118,6 +118,9 @@ export const AgentArtifactCard = memo(function AgentArtifactCard({
         action={action}
         testId={`agent-artifact-${receipt.kind}`}
         wrapTrigger={wrapTrigger}
+        // The rich card already names the status; a second tooltip on the
+        // glyph would open two surfaces on one hover.
+        statusTooltip={false}
         accessory={
           shareTarget && !model.removed ? (
             <ShareActionButton

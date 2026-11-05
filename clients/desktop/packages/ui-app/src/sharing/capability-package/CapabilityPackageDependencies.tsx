@@ -108,9 +108,6 @@ function AnalysisFailureReason({
   );
 }
 
-const DISCLOSURE_CLASS =
-  'focus-ring rounded text-xs fg-secondary underline-offset-2 hover:fg-primary hover:underline';
-
 interface CapabilityPackageDependenciesProps {
   /** Reference mode lists recipient setup without claiming files are copied. */
   mode?: 'package' | 'reference';
@@ -312,17 +309,20 @@ function IncludedFilesHelp({
         </div>
       }
     >
-      <button
-        type="button"
+      <Button
+        variant="ghost"
+        size="sm"
+        iconOnly
         aria-label={HELP_LABEL}
         data-testid={`${testIdPrefix}-dependencies-help`}
         onClick={(): void => {
           setOpen(true);
         }}
-        className="focus-ring shrink-0 rounded p-0.5 fg-secondary transition-colors hover:fg-primary"
+        // The 28px circle overhangs the summary line rather than growing it.
+        className="-my-1"
       >
         <QuestionMarkIcon aria-hidden="true" />
-      </button>
+      </Button>
     </RichHoverTooltip>
   );
 }
@@ -585,18 +585,19 @@ export function CapabilityPackageDependencies({
         }
         toggle={
           hasOptionalFiles ? (
-            <button
-              type="button"
-              aria-expanded={expanded}
-              aria-controls={detailsId}
-              onClick={(): void => {
-                setExpanded((open) => !open);
-              }}
-              data-testid={`${testIdPrefix}-dependencies-toggle`}
-              className={`${DISCLOSURE_CLASS} shrink-0`}
-            >
-              {expanded ? HIDE_FILES_LABEL : CHOOSE_FILES_LABEL}
-            </button>
+            <span className="shrink-0 text-xs">
+              <Button
+                variant="link"
+                aria-expanded={expanded}
+                aria-controls={detailsId}
+                onClick={(): void => {
+                  setExpanded((open) => !open);
+                }}
+                data-testid={`${testIdPrefix}-dependencies-toggle`}
+              >
+                {expanded ? HIDE_FILES_LABEL : CHOOSE_FILES_LABEL}
+              </Button>
+            </span>
           ) : null
         }
       />
@@ -856,31 +857,29 @@ function DependencyRow({
               {executableFiles}
             </p>
           )}
-          <div className="flex flex-wrap gap-3">
+          <div className="flex flex-wrap gap-3 text-xs">
             {bindings.length > 0 && (
-              <button
-                type="button"
+              <Button
+                variant="link"
                 aria-expanded={showSteps}
                 onClick={(): void => {
                   setShowSteps((open) => !open);
                 }}
-                className={DISCLOSURE_CLASS}
               >
                 Used by {bindings.length}{' '}
                 {bindings.length === 1 ? 'step' : 'steps'}
-              </button>
+              </Button>
             )}
             {reason && (
-              <button
-                type="button"
+              <Button
+                variant="link"
                 aria-expanded={showReason}
                 onClick={(): void => {
                   setShowReason((open) => !open);
                 }}
-                className={DISCLOSURE_CLASS}
               >
                 Why is this included?
-              </button>
+              </Button>
             )}
           </div>
           {showSteps && bindings.length > 0 && (

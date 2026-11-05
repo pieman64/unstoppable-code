@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { Tooltip } from '@canopy/ui-shared';
+import { ListRow, Tooltip } from '@canopy/ui-shared/components';
 import { InfoIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { orgOutsideRepositoryTooltipText } from '@canopy/desktop-shared/lib/org-multi-repo-copy';
 import type { OrgRepositoryEligibility } from './orgRepositoryEligibility';
@@ -21,16 +21,15 @@ export function ExistingRepoOption({
   const outside = eligibility?.repositories[repoPath] === 'outside';
   return (
     <div className="flex w-full items-center gap-2">
-      <button
-        type="button"
+      <ListRow
         disabled={outside}
         onClick={() => onAdd(repoPath, name)}
         data-testid="workspace-settings-existing-repo"
-        className="focus-ring flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+        className="min-w-0 flex-1"
+        description={repoPath}
       >
-        <span className="font-medium fg-primary">{name}</span>
-        <span className="min-w-0 flex-1 truncate fg-secondary">{repoPath}</span>
-      </button>
+        {name}
+      </ListRow>
       {outside && eligibility !== null && (
         // The reason sits on the icon, so the tooltip anchors to it.
         <Tooltip

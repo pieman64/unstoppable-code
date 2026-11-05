@@ -301,7 +301,7 @@ export function CodeGraphTab(): JSX.Element {
                   onSearchQueryChange={setSearchQuery}
                   label="Projects"
                   testIdPrefix="code-graph-workspace-picker"
-                  listMaxHeightClassName="max-h-72"
+                  listHeight="medium"
                 />
               ) : (
                 <p

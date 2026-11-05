@@ -1,9 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type JSX } from 'react';
-import { createPortal } from 'react-dom';
-import {
-  getInitialBadgePopoverPosition,
-  getMeasuredBadgePopoverPosition,
-} from './ChatPreviewPopover';
+import { BADGE_HOVER_CARD_SURFACE } from './ChatPreviewPopover';
+import { RichHoverCard } from './RichHoverTooltip';
 import type { WorktreePipelineStatus } from './WorktreeRow';
 import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
 import { formatElapsed, getElapsedMs } from '../lib/pipeline-timing-display';
@@ -130,16 +127,12 @@ export function PipelineStatusPopover({
   onListBlur,
   onListDismiss,
   onScrollableListReady,
-}: PipelineStatusPopoverProps): JSX.Element {
-  const popoverRef = useRef<HTMLDivElement>(null);
+}: PipelineStatusPopoverProps): JSX.Element | null {
   const listRef = useRef<HTMLDivElement>(null);
   const wasScrollableRef = useRef(false);
   const listHasFocusRef = useRef(false);
   const onListBlurRef = useRef(onListBlur);
   onListBlurRef.current = onListBlur;
-  const [position, setPosition] = useState<{ top: number; left: number }>(
-    getInitialBadgePopoverPosition(anchorRect),
-  );
   const [listMaxHeight, setListMaxHeight] = useState<number | null>(null);
   const [nowMs, setNowMs] = useState<number>(Date.now());
 
@@ -159,8 +152,8 @@ export function PipelineStatusPopover({
 
   // Entry rows are variable height (the runtime and job lines are
   // conditional), so the scroll bound is measured off the rendered rows rather
-  // than assumed from a fixed row height. Runs before the positioning effect
-  // below so the popover is placed against its clamped height.
+  // than assumed from a fixed row height. The card re-places itself when the
+  // clamp changes its height.
   useLayoutEffect((): void => {
     const list = listRef.current;
     if (!list || entries.length <= MAX_VISIBLE_ENTRIES) {
@@ -185,19 +178,6 @@ export function PipelineStatusPopover({
     // display:none ancestor); leaving the list unclamped beats collapsing it.
     setListMaxHeight(measured > 0 ? measured : null);
   }, [entries]);
-
-  useLayoutEffect((): void => {
-    const el = popoverRef.current;
-    if (!el) return;
-
-    setPosition(
-      getMeasuredBadgePopoverPosition(
-        anchorRect,
-        el.offsetHeight,
-        el.offsetWidth,
-      ),
-    );
-  }, [anchorRect, listMaxHeight]);
 
   const statusLabel = pipelineStatusDisplayLabel(status);
   const isScrollable = listMaxHeight !== null;
@@ -231,12 +211,12 @@ export function PipelineStatusPopover({
     }
   }, [isScrollable, onScrollableListReady]);
 
-  return createPortal(
-    <div
-      ref={popoverRef}
-      data-testid="pipeline-status-popover"
-      className="pointer-events-none fixed z-tooltip min-w-40 max-w-65 rounded-lg bg-popover px-3 py-2 shadow-lg"
-      style={{ top: position.top, left: position.left }}
+  return (
+    <RichHoverCard
+      anchorRect={anchorRect}
+      dataTestId="pipeline-status-popover"
+      {...BADGE_HOVER_CARD_SURFACE}
+      surfaceClassName="min-w-40 max-w-65"
     >
       {/* Header stays put; only the entry list below it scrolls. */}
       <div
@@ -353,7 +333,6 @@ export function PipelineStatusPopover({
           })}
         </div>
       )}
-    </div>,
-    document.body,
+    </RichHoverCard>
   );
 }

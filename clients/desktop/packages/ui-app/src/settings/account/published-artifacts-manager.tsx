@@ -8,6 +8,7 @@ import {
   EmptyState,
   ErrorBanner,
   SearchField,
+  TabBar,
 } from '@canopy/ui-shared/components';
 import {
   MAX_FEATURED_ARTIFACTS,
@@ -421,29 +422,17 @@ function AddWorkDialog({
           something from your profile to feature more.
         </p>
       )}
-      <div
-        className="flex gap-1 border-b"
-        role="tablist"
-        aria-label="Work type"
-      >
-        {PROFILE_ARTIFACT_PATH_KINDS.map((tabKind) => (
-          <button
-            key={tabKind}
-            type="button"
-            role="tab"
-            aria-selected={kind === tabKind}
-            onClick={() => setKind(tabKind)}
-            data-testid={`add-work-tab-${tabKind}`}
-            className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
-              kind === tabKind
-                ? 'border-fg-primary fg-primary'
-                : 'border-transparent fg-secondary hover:fg-primary'
-            }`}
-          >
-            {KIND_TAB_LABELS[tabKind]}
-          </button>
-        ))}
-      </div>
+      <TabBar
+        items={PROFILE_ARTIFACT_PATH_KINDS.map((tabKind) => ({
+          id: tabKind,
+          label: KIND_TAB_LABELS[tabKind],
+          dataTestId: `add-work-tab-${tabKind}`,
+        }))}
+        value={kind}
+        onChange={(next): void => setKind(next)}
+        label="Work type"
+        density="compact"
+      />
 
       <SearchField
         value={query}

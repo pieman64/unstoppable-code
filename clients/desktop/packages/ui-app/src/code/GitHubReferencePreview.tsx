@@ -34,10 +34,12 @@ import {
   usePrHoverCards,
   TRANSCRIPT_LINK_CLASS,
   INLINE_CHIP_CLASS,
+  INLINE_CHIP_GITHUB_ICON_CLASS,
   INLINE_CHIP_ICON_CLASS,
 } from '@canopy/ui-shared/components';
 import {
   GitHubReferencePreviewCard,
+  gitHubItemStatus,
   type GitHubReferencePreviewCardLayout,
   type GitHubReferencePreviewCardView,
 } from '@canopy/ui-shared/components/GitHubReferencePreviewCard';
@@ -176,9 +178,45 @@ function GitHubReferenceLabel({
   });
   return (
     <>
-      <GitHubIcon aria-hidden="true" className={INLINE_CHIP_ICON_CLASS} />
+      <GitHubChipGlyph target={target} />
       {resolvable && !bare ? label : children}
     </>
+  );
+}
+
+/**
+ * The chip's glyph: the item's status once its preview has loaded, in the
+ * status ink; the GitHub mark before then, and for a repository.
+ */
+function GitHubChipGlyph({
+  target,
+}: {
+  target: GitHubPreviewTarget;
+}): JSX.Element {
+  const preview = useLinearPreviewStore((state) => {
+    const view = state.githubViews[githubPreviewKey(target)];
+    return view?.status === 'ready' && view.preview.kind === 'item'
+      ? view.preview
+      : null;
+  });
+  const status = preview ? gitHubItemStatus(preview) : null;
+  if (!status?.Icon) {
+    return (
+      <GitHubIcon
+        aria-hidden="true"
+        className={INLINE_CHIP_GITHUB_ICON_CLASS}
+        exactSize
+      />
+    );
+  }
+  const { Icon } = status;
+  return (
+    <Icon
+      aria-hidden="true"
+      className={`${INLINE_CHIP_ICON_CLASS} ${status.ink}`}
+      exactSize
+      data-status={status.kind}
+    />
   );
 }
 
@@ -314,7 +352,7 @@ function SupportedGitHubReference({
   const content =
     mode === 'hover' ? (
       <>
-        <GitHubIcon aria-hidden="true" className={INLINE_CHIP_ICON_CLASS} />
+        <GitHubChipGlyph target={stableTarget} />
         {children}
       </>
     ) : (

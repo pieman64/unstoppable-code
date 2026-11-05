@@ -4,7 +4,7 @@ import type { LocalMemoryScopeRequest } from '@canopy/desktop-shared/types';
 import {
   findChatHistoryProfileIndexLine,
   isChatHistoryProfileTopic,
-} from './chat-history-profile';
+} from '@canopy/memory-consolidation/chat-history-profile';
 import type { RunConsolidationResult } from './consolidation-task';
 import {
   inspectImportState,

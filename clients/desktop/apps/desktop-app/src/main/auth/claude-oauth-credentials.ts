@@ -1,3 +1,4 @@
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { Buffer } from 'node:buffer';
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
@@ -7,8 +8,8 @@ import { getMockApiKey, getMockLlmOrigin } from '../lib/e2e-mock-control-plane';
 import { getEnhancedEnv } from '../pipelines/config-paths';
 
 /**
- * Claude stores OAuth credentials in macOS Keychain and, on current Windows
- * releases, `.claude/.credentials.json` under the user/config directory.
+ * Claude stores OAuth credentials in macOS Keychain and, on Linux and current
+ * Windows releases, `.claude/.credentials.json` under the user/config directory.
  * Legacy Windows releases used Credential Manager. Beyond the access token the
  * credential carries two plan signals:
  *
@@ -19,10 +20,13 @@ import { getEnhancedEnv } from '../pipelines/config-paths';
  *   descriptor, not a contractual billing API, so callers should treat its
  *   exact format defensively.
  */
-export interface ClaudeOauthCredentials {
-  accessToken: string;
+export interface ClaudeOauthPlanMetadata {
   subscriptionType?: string;
   rateLimitTier?: string;
+}
+
+export interface ClaudeOauthCredentials extends ClaudeOauthPlanMetadata {
+  accessToken: string;
 }
 
 export type ClaudeOauthCredentialsReadFailureReason =
@@ -30,7 +34,8 @@ export type ClaudeOauthCredentialsReadFailureReason =
   | 'username_unavailable'
   | 'credential_not_found'
   | 'credential_read_failed'
-  | 'credential_parse_failed';
+  | 'credential_parse_failed'
+  | 'credential_expired';
 
 export type ClaudeOauthCredentialsReadFailureSource =
   | 'credentials_file'
@@ -43,8 +48,17 @@ export type ClaudeOauthCredentialsReadResult =
     }
   | {
       status: 'failure';
-      reason: ClaudeOauthCredentialsReadFailureReason;
+      reason: Exclude<
+        ClaudeOauthCredentialsReadFailureReason,
+        'credential_expired'
+      >;
       source?: ClaudeOauthCredentialsReadFailureSource;
+    }
+  | {
+      status: 'failure';
+      reason: 'credential_expired';
+      source?: ClaudeOauthCredentialsReadFailureSource;
+      planMetadata: ClaudeOauthPlanMetadata;
     };
 
 const CLAUDE_CODE_CREDENTIALS_SERVICE = 'Claude Code-credentials';
@@ -109,23 +123,39 @@ function runExecFile(
 
 function parseClaudeOauthCredentialsJson(
   raw: string,
-): ClaudeOauthCredentials | null {
+  source: ClaudeOauthCredentialsReadFailureSource,
+): ClaudeOauthCredentialsReadResult {
   const parsed = safeJsonParse(raw.trim());
-  if (!parsed) {
-    return null;
-  }
-
-  const oauthValue = parsed['claudeAiOauth'];
+  const oauthValue = parsed?.['claudeAiOauth'];
   const oauth = isRecord(oauthValue) ? oauthValue : null;
-  const accessToken = oauth ? readStringField(oauth, 'accessToken') : undefined;
-  if (!oauth || !accessToken) {
-    return null;
+  const accessToken = oauth
+    ? readStringField(oauth, 'accessToken')?.trim()
+    : undefined;
+  const expiresAt = oauth?.['expiresAt'];
+  if (
+    !oauth ||
+    !accessToken ||
+    (expiresAt !== undefined &&
+      expiresAt !== null &&
+      (typeof expiresAt !== 'number' || !Number.isFinite(expiresAt)))
+  ) {
+    return { status: 'failure', reason: 'credential_parse_failed', source };
   }
-
-  return {
-    accessToken,
+  const planMetadata: ClaudeOauthPlanMetadata = {
     subscriptionType: readStringField(oauth, 'subscriptionType'),
     rateLimitTier: readStringField(oauth, 'rateLimitTier'),
+  };
+  if (typeof expiresAt === 'number' && expiresAt <= Date.now()) {
+    return {
+      status: 'failure',
+      reason: 'credential_expired',
+      source,
+      planMetadata,
+    };
+  }
+  return {
+    status: 'success',
+    credentials: { accessToken, ...planMetadata },
   };
 }
 
@@ -174,7 +204,10 @@ function withOauthTokenFallback(
   }
   return {
     status: 'success',
-    credentials: { accessToken: oauthToken },
+    credentials: {
+      ...(result.reason === 'credential_expired' ? result.planMetadata : {}),
+      accessToken: oauthToken,
+    },
   };
 }
 
@@ -289,9 +322,15 @@ async function readWindowsCredentialManagerClaudeOauthCredentials(): Promise<Cla
     }
 
     for (const candidate of decodeWindowsCredentialBlob(encodedCredential)) {
-      const credentials = parseClaudeOauthCredentialsJson(candidate);
-      if (credentials) {
-        return { status: 'success', credentials };
+      const result = parseClaudeOauthCredentialsJson(
+        candidate,
+        'credential_store',
+      );
+      if (
+        result.status === 'success' ||
+        result.reason === 'credential_expired'
+      ) {
+        return result;
       }
     }
     return {
@@ -308,27 +347,26 @@ async function readWindowsCredentialManagerClaudeOauthCredentials(): Promise<Cla
   }
 }
 
-async function readWindowsClaudeOauthCredentials(): Promise<ClaudeOauthCredentialsReadResult> {
+async function readClaudeOauthCredentialsFile(): Promise<ClaudeOauthCredentialsReadResult> {
   try {
     const raw = await readFile(getClaudeCredentialsFilePath(), 'utf8');
-    const credentials = parseClaudeOauthCredentialsJson(raw);
-    return credentials
-      ? { status: 'success', credentials }
-      : {
-          status: 'failure',
-          reason: 'credential_parse_failed',
-          source: 'credentials_file',
-        };
+    return parseClaudeOauthCredentialsJson(raw, 'credentials_file');
   } catch (error) {
-    if (!isFileNotFoundError(error)) {
-      return {
-        status: 'failure',
-        reason: 'credential_read_failed',
-        source: 'credentials_file',
-      };
-    }
+    return {
+      status: 'failure',
+      reason: isFileNotFoundError(error)
+        ? 'credential_not_found'
+        : 'credential_read_failed',
+      source: 'credentials_file',
+    };
   }
+}
 
+async function readWindowsClaudeOauthCredentials(): Promise<ClaudeOauthCredentialsReadResult> {
+  const result = await readClaudeOauthCredentialsFile();
+  if (result.status === 'success' || result.reason !== 'credential_not_found') {
+    return result;
+  }
   // Claude Code used keytar-backed Windows Credential Manager entries before
   // moving native Windows credentials to `.credentials.json`. Keep a fallback
   // for users who have not yet re-authenticated with a current release.
@@ -355,14 +393,24 @@ export async function readClaudeOauthCredentialsResult(): Promise<ClaudeOauthCre
 
   const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN?.trim() || undefined;
 
-  if (process.platform === 'win32') {
+  const platform = hostOperatingSystem();
+  if (platform === 'linux') {
+    // A runtime-exported token takes precedence; never inspect a credential
+    // file when the Linux session already supplied one.
+    if (oauthToken) {
+      return { status: 'success', credentials: { accessToken: oauthToken } };
+    }
+    return readClaudeOauthCredentialsFile();
+  }
+
+  if (platform === 'win32') {
     return withOauthTokenFallback(
       await readWindowsClaudeOauthCredentials(),
       oauthToken,
     );
   }
 
-  if (process.platform !== 'darwin') {
+  if (platform !== 'darwin') {
     return withOauthTokenFallback(
       { status: 'failure', reason: 'unsupported_platform' },
       oauthToken,
@@ -397,15 +445,8 @@ export async function readClaudeOauthCredentialsResult(): Promise<ClaudeOauthCre
         env: getEnhancedEnv({ environment: false }),
       },
     );
-    const credentials = parseClaudeOauthCredentialsJson(stdout);
     return withOauthTokenFallback(
-      credentials
-        ? { status: 'success', credentials }
-        : {
-            status: 'failure',
-            reason: 'credential_parse_failed',
-            source: 'credential_store',
-          },
+      parseClaudeOauthCredentialsJson(stdout, 'credential_store'),
       oauthToken,
     );
   } catch {
@@ -421,12 +462,21 @@ export async function readClaudeOauthCredentialsResult(): Promise<ClaudeOauthCre
 }
 
 /**
- * Read the stored Claude OAuth credentials from the OS credential store, or
- * `null` when unavailable (unsupported platform, not logged in, or a read
- * failure). Cross-platform: macOS Keychain, the current Windows credentials
- * file, and a legacy Windows Credential Manager fallback.
+ * Read plan metadata independently of token freshness. Expired credentials
+ * remain unusable by bearer consumers; plan enrichment receives no token.
  */
-export async function readClaudeOauthCredentials(): Promise<ClaudeOauthCredentials | null> {
+export async function readClaudeOauthPlanMetadata(): Promise<ClaudeOauthPlanMetadata | null> {
   const result = await readClaudeOauthCredentialsResult();
-  return result.status === 'success' ? result.credentials : null;
+  const metadata =
+    result.status === 'success'
+      ? result.credentials
+      : result.reason === 'credential_expired'
+        ? result.planMetadata
+        : null;
+  return metadata === null
+    ? null
+    : {
+        subscriptionType: metadata.subscriptionType,
+        rateLimitTier: metadata.rateLimitTier,
+      };
 }

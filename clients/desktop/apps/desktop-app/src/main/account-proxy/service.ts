@@ -7,7 +7,7 @@ import { getSecureStorageFailure } from '../lib/secure-storage-policy';
 // address after five wrong keys, so once the server answers 401 or blocks us,
 // refreshes return the stored error until the user connects with a new key.
 
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   accountProxyNoUsableAccountsMessage,
   countReadyAccountProxyAccounts,
@@ -45,6 +45,10 @@ import {
   type AccountProxyKeyRejection,
 } from '../lib/account-proxy-credential-store';
 import {
+  revealLocalAccountProxyKey,
+  type LocalAccountProxyKey,
+} from './local-launch-keys';
+import {
   readPreferencesFile,
   updatePreferencesFile,
 } from '../lib/preferences-store';
@@ -73,6 +77,7 @@ import {
 import {
   AccountProxyManagementError,
   requestAccountProxyManagement,
+  type AccountProxyManagementKey,
 } from './management-client';
 import {
   parseClaudeOAuthProfilePlanType,
@@ -81,6 +86,8 @@ import {
   type AccountProxyUsageReadResult,
 } from './usage';
 import {
+  clearLocalAccountProxyLeftovers,
+  getLocalAccountProxyLaunch,
   getLocalAccountProxyPort,
   getLocalAccountProxyRuntime,
   isLocalAccountProxyStarting,
@@ -97,6 +104,67 @@ const KEY_REJECTED_CODES: ReadonlySet<AccountProxyErrorCode> =
 
 /** How long the proxy blocks an address after five wrong keys. */
 const PROXY_BLOCK_MS = 30 * 60_000;
+
+/** A server's client key, or the handle of a local launch's client key. */
+export type AccountProxyClientKey = string | LocalAccountProxyKey;
+
+/**
+ * The keys requests to `connection` use. A server's are the ones stored for
+ * it. The proxy on this device's belong to its running launch, are never
+ * stored, and exist only while it serves the connection's port (CAN-4406).
+ */
+interface ConnectionKeys {
+  readonly managementKey: AccountProxyManagementKey;
+  /** Null for a server without client keys, which accepts every request. */
+  readonly clientKey: AccountProxyClientKey | null;
+  readonly keyRejection?: AccountProxyKeyRejection | null;
+}
+
+async function loadConnectionKeys(
+  connection: AccountProxyConnection,
+): Promise<ConnectionKeys | null> {
+  if (connection.kind !== 'local') {
+    return loadAccountProxyCredentials(connection.id);
+  }
+  const launch = getLocalAccountProxyLaunch();
+  if (!launch || launch.port !== portOf(connection)) return null;
+  return {
+    managementKey: launch.keys.management,
+    clientKey: launch.keys.client,
+    keyRejection: null,
+  };
+}
+
+/**
+ * The client key requests to `connection` send now: null for a server that
+ * takes every request, undefined when there is none, such as the proxy on
+ * this device while it is stopped.
+ */
+export async function loadAccountProxyClientKey(
+  connection: AccountProxyConnection,
+): Promise<AccountProxyClientKey | null | undefined> {
+  const keys = await loadConnectionKeys(connection).catch(() => null);
+  return keys ? keys.clientKey : undefined;
+}
+
+/**
+ * The value to send for `key`, or null once the local launch it belongs to
+ * has ended. Only the senders call this; everything else holds the handle.
+ */
+export function revealAccountProxyClientKey(
+  key: AccountProxyClientKey,
+): string | null {
+  return typeof key === 'string' ? key : revealLocalAccountProxyKey(key);
+}
+
+/** Names a client key in logs and broker callbacks without revealing it. */
+export function accountProxyClientKeyVersion(
+  key: AccountProxyClientKey,
+): string {
+  return typeof key === 'string'
+    ? accountProxyClientKeyFingerprint(key)
+    : key.fingerprint;
+}
 
 function keyRejectionOf(
   error: unknown,
@@ -564,9 +632,9 @@ export async function fetchAccountProxyUsage(
     return invalidUsageRead();
   }
 
-  let credentials: Awaited<ReturnType<typeof loadAccountProxyCredentials>>;
+  let credentials: ConnectionKeys | null;
   try {
-    credentials = await loadAccountProxyCredentials(connection.id);
+    credentials = await loadConnectionKeys(connection);
   } catch {
     return invalidUsageRead();
   }
@@ -692,9 +760,13 @@ export async function fetchAccountProxyUsage(
   }
 }
 
-async function hasStoredKey(connectionId: string): Promise<boolean> {
+async function hasStoredKey(
+  connection: AccountProxyConnection,
+): Promise<boolean> {
+  // The proxy on this device makes its keys when it starts.
+  if (connection.kind === 'local') return true;
   try {
-    return (await loadAccountProxyCredentials(connectionId)) !== null;
+    return (await loadAccountProxyCredentials(connection.id)) !== null;
   } catch (error) {
     if (getSecureStorageFailure(error)) throw error;
     return false;
@@ -722,7 +794,7 @@ async function buildStatus(settings: Settings): Promise<AccountProxyStatus> {
     return { ...base, ...empty, state: 'not-configured' };
   }
   try {
-    if (!(await hasStoredKey(settings.connection.id))) {
+    if (!(await hasStoredKey(settings.connection))) {
       return { ...base, ...empty, state: 'needs-key' };
     }
   } catch (error) {
@@ -757,7 +829,7 @@ async function buildStatus(settings: Settings): Promise<AccountProxyStatus> {
 
 async function readServer(
   connection: AccountProxyConnection,
-  managementKey: string,
+  managementKey: AccountProxyManagementKey,
   signal?: AbortSignal,
 ): Promise<Omit<Snapshot, 'connectionId' | 'error'>> {
   const request = {
@@ -837,9 +909,9 @@ async function refreshSnapshot(settings: Settings): Promise<void> {
     error: errorOf(error),
   });
   let next: Snapshot | null;
-  let sentKey: string | null = null;
+  let sentKey: AccountProxyManagementKey | null = null;
   try {
-    const credentials = await loadAccountProxyCredentials(connection.id);
+    const credentials = await loadConnectionKeys(connection);
     // The proxy on this device can stop while the key is read.
     if (
       generation !== startedGeneration ||
@@ -918,7 +990,7 @@ async function refreshSnapshot(settings: Settings): Promise<void> {
  */
 async function recordKeyRejection(
   connectionId: string,
-  rejectedKey: string,
+  rejectedKey: AccountProxyManagementKey,
   error: unknown,
   next: Snapshot,
 ): Promise<void> {
@@ -927,6 +999,8 @@ async function recordKeyRejection(
   startNewGeneration();
   rejectedAt = Date.now();
   snapshot = next;
+  // A launch's key is stored nowhere; the next start makes new ones.
+  if (typeof rejectedKey !== 'string') return;
   await markAccountProxyKeyRejected(
     connectionId,
     { code, at: rejectedAt },
@@ -1148,7 +1222,7 @@ let routeRefresh: Promise<void> | null = null;
 export interface AccountProxyRouteTarget {
   readonly connection: AccountProxyConnection;
   /** Null for a server without client keys, which accepts every request. */
-  readonly clientKey: string | null;
+  readonly clientKey: AccountProxyClientKey | null;
   /** Send session ids so the server keeps a chat on one account. */
   readonly keepChatOnOneAccount: boolean;
   /** Accounts for this harness that can take a request now. */
@@ -1208,21 +1282,19 @@ export async function getAccountProxyRouteTarget(
   // sessions; they use their usual billing instead.
   if (snapshot?.connectionId !== connection.id || snapshot.error) return null;
   const startedGeneration = generation;
-  const credentials = await loadAccountProxyCredentials(connection.id).catch(
-    () => null,
-  );
+  const credentials = await loadConnectionKeys(connection).catch(() => null);
   if (!credentials) return null;
   // The proxy on this device can stop while the keys are read.
   if (!isLocalConnectionRunning(connection)) return null;
   let clientKey = credentials.clientKey;
   if (
     !clientKey ||
-    suspectClientKeys.has(accountProxyClientKeyFingerprint(clientKey))
+    suspectClientKeys.has(accountProxyClientKeyVersion(clientKey))
   ) {
-    // The proxy on this device takes the key written into its config, so
-    // there is nothing to repair through its management API; a restart
-    // writes it again.
-    if (connection.kind === 'local') return null;
+    // The proxy on this device takes the key its launch wrote into its
+    // config, so there is nothing to repair through its management API; a
+    // restart makes new keys.
+    if (clientKey !== null && typeof clientKey !== 'string') return null;
     // Connections made before this device had its own key get one now, a
     // key the proxy refused is checked and replaced, and an open server is
     // checked again in case it started requiring keys.
@@ -1430,7 +1502,7 @@ export function findAccountProxyAccount(
 
 interface ManagementTarget {
   readonly connection: AccountProxyConnection;
-  readonly managementKey: string;
+  readonly managementKey: AccountProxyManagementKey;
 }
 
 /** The connection a management change goes to, once it may be sent. */
@@ -1452,9 +1524,15 @@ async function managementConnection(): Promise<AccountProxyConnection> {
 
 async function managementKeyOf(
   connection: AccountProxyConnection,
-): Promise<string> {
-  const credentials = await loadAccountProxyCredentials(connection.id);
-  if (!credentials) throw new Error('Add the management key first.');
+): Promise<AccountProxyManagementKey> {
+  const credentials = await loadConnectionKeys(connection);
+  if (!credentials) {
+    throw new Error(
+      connection.kind === 'local'
+        ? 'Start the proxy on this device first.'
+        : 'Add the management key first.',
+    );
+  }
   return credentials.managementKey;
 }
 
@@ -1730,15 +1808,6 @@ function portOf(connection: AccountProxyConnection): number | null {
   }
 }
 
-function generateManagementKey(): string {
-  // The proxy keeps a bcrypt hash of it, and bcrypt takes at most 72 bytes.
-  return `canopy-mk-${randomBytes(24).toString('hex')}`;
-}
-
-function generateClientKey(): string {
-  return `canopy-${randomBytes(24).toString('hex')}`;
-}
-
 /**
  * Start the proxy for a local connection and point the connection at the
  * port it got. A port taken by another program moves the proxy, and sessions
@@ -1750,7 +1819,6 @@ async function startLocalConnection(
 ): Promise<void> {
   watchLocalRuntime();
   const { localRoutingStrategy } = await readSettings();
-  const credentials = await loadAccountProxyCredentials(connection.id);
   // Stopped since the start was asked for. A stop made after this point is
   // queued behind the start and undoes it.
   if (lifecycle !== localLifecycle) {
@@ -1759,23 +1827,24 @@ async function startLocalConnection(
       'The account proxy was stopped while it started.',
     );
   }
-  if (!credentials?.clientKey) {
-    throw new LocalAccountProxyError(
-      'local-failed',
-      'The keys for the proxy on this device are missing. Set it up again.',
-    );
-  }
+  const launchBefore = getLocalAccountProxyLaunch()?.keys.epoch ?? null;
   const port = await startLocalAccountProxy({
-    managementKey: credentials.managementKey,
-    clientKey: credentials.clientKey,
     preferredPort: portOf(connection),
     routingStrategy: localRoutingStrategy,
   });
-  // The proxy now takes the client key from the config just written, so one
-  // it refused before is usable again.
-  suspectClientKeys.delete(
-    accountProxyClientKeyFingerprint(credentials.clientKey),
-  );
+  // A refusal recorded against an earlier launch's key says nothing about
+  // a new launch's keys. A start that found the proxy running kept its keys,
+  // and the refusal with them.
+  const launchAfter = getLocalAccountProxyLaunch()?.keys.epoch ?? null;
+  if (
+    launchAfter !== null &&
+    launchAfter !== launchBefore &&
+    snapshot?.connectionId === connection.id &&
+    snapshot.error &&
+    KEY_REJECTED_CODES.has(snapshot.error.code)
+  ) {
+    snapshot = { ...snapshot, error: null };
+  }
   // Turned off, disconnected, or replaced while the proxy started. Only a
   // start nothing has superseded stops it; otherwise the proxy running now
   // belongs to the newer start.
@@ -1809,7 +1878,7 @@ async function startLocalConnection(
 
 /**
  * "Run on this device": make the proxy on this device the connection, in
- * place of any server, with keys generated here, and start it. A failed
+ * place of any server, and start it. Each start makes its own keys. A failed
  * download or start keeps the connection, so the settings can offer Retry.
  */
 export async function setUpLocalAccountProxy(): Promise<AccountProxyConnectResult> {
@@ -1840,8 +1909,6 @@ export async function setUpLocalAccountProxy(): Promise<AccountProxyConnectResul
       url: localUrl(port),
     };
     const replacing = connection !== null;
-    // The new keys are saved before the current connection is removed, so a
-    // failure to save them keeps that connection and its keys.
     const saved = await withPersistenceLock(async () => {
       // A disconnect or a server connect made while this ran wins.
       if (attempt !== connectAttempt) {
@@ -1850,14 +1917,6 @@ export async function setUpLocalAccountProxy(): Promise<AccountProxyConnectResul
           message: 'unexpected',
         };
         return superseded;
-      }
-      try {
-        await saveAccountProxyCredentials(created.id, {
-          managementKey: generateManagementKey(),
-          clientKey: generateClientKey(),
-        });
-      } catch (error) {
-        return errorOf(error);
       }
       if (replacing) await removeCurrentConnection();
       await updatePreferencesFile((preferences) => ({
@@ -1870,39 +1929,6 @@ export async function setUpLocalAccountProxy(): Promise<AccountProxyConnectResul
     });
     if (saved) return { ok: false, error: saved };
     connection = created;
-  } else {
-    // Keys that were lost leave the proxy unable to start; it is the only
-    // thing that uses them, so new ones replace them. Keys that cannot be
-    // read now are kept.
-    let credentials: Awaited<ReturnType<typeof loadAccountProxyCredentials>>;
-    try {
-      credentials = await loadAccountProxyCredentials(connection.id);
-    } catch (error) {
-      return { ok: false, error: errorOf(error) };
-    }
-    if (!credentials?.clientKey) {
-      const id = connection.id;
-      const failed = await withPersistenceLock(async () => {
-        if (attempt !== connectAttempt) {
-          const superseded: AccountProxyError = {
-            code: 'unexpected',
-            message: 'unexpected',
-          };
-          return superseded;
-        }
-        try {
-          await saveAccountProxyCredentials(id, {
-            managementKey: generateManagementKey(),
-            clientKey: generateClientKey(),
-          });
-        } catch (error) {
-          return errorOf(error);
-        }
-        startNewGeneration();
-        return null;
-      });
-      if (failed) return { ok: false, error: failed };
-    }
   }
   if (attempt !== connectAttempt) return connectError('unexpected');
   // A stop made while this set up keeps the proxy from starting again later.
@@ -1938,14 +1964,6 @@ export async function controlLocalAccountProxy(
     );
   }
   if (request.action !== 'stop') {
-    const credentials = await loadAccountProxyCredentials(connection.id).catch(
-      () => undefined,
-    );
-    if (credentials === null || (credentials && !credentials.clientKey)) {
-      // Keys that are gone are made again; setup also starts the proxy.
-      if (lifecycle === localLifecycle) await setUpLocalAccountProxy();
-      return publish();
-    }
     // A failed start is shown in the status; the request itself succeeds.
     await startLocalConnection(connection, lifecycle).catch(() => undefined);
   }
@@ -1985,8 +2003,15 @@ export async function initializeLocalAccountProxy(): Promise<void> {
   watchLocalRuntime();
   // Taken before any wait, so a stop made meanwhile cancels this start.
   const lifecycle = localLifecycle;
+  // A proxy an earlier run left behind holds keys that died with that run.
+  await clearLocalAccountProxyLeftovers().catch(() => undefined);
   const settings = await readSettings();
   const connection = settings.connection;
+  // Earlier versions stored keys for the proxy on this device; launches no
+  // longer read them.
+  if (connection?.kind === 'local') {
+    await deleteAccountProxyCredentials(connection.id).catch(() => undefined);
+  }
   if (
     lifecycle === localLifecycle &&
     settings.optedIn &&
@@ -2085,7 +2110,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 async function runningLocalTarget(): Promise<{
   readonly connection: AccountProxyConnection;
-  readonly managementKey: string;
+  readonly managementKey: AccountProxyManagementKey;
   readonly signal: AbortSignal;
 }> {
   // Taken before any wait, so a stop meanwhile is seen after it.
@@ -2100,13 +2125,14 @@ async function runningLocalTarget(): Promise<{
   if (getLocalAccountProxyPort() === null) {
     throw new Error('Start the proxy on this device first.');
   }
-  const credentials = await loadAccountProxyCredentials(connection.id);
-  if (!credentials) throw new Error('Set up the proxy on this device again.');
-  // A key the proxy refused is not sent again.
-  if (keyRejected() || activeKeyRejection(credentials.keyRejection)) {
+  // The running launch's key; a launch that ended has none.
+  const credentials = await loadConnectionKeys(connection);
+  if (!credentials) throw new Error('Start the proxy on this device first.');
+  // A key the proxy refused is not sent again; a restart makes new keys.
+  if (keyRejected()) {
     throw new AccountProxyManagementError(
       'unauthorized',
-      'The proxy on this device refused its key. Set it up again.',
+      'The proxy on this device refused its key. Restart it.',
     );
   }
   // The key goes only to the proxy still serving the port it was read for.
@@ -2149,7 +2175,7 @@ function signInUrl(
  */
 async function recordSignInKeyRejection(
   connectionId: string,
-  key: string,
+  key: AccountProxyManagementKey,
   error: unknown,
 ): Promise<void> {
   if (!keyRejectionOf(error)) return;
@@ -2183,8 +2209,10 @@ async function pollSignIn(pending: PendingSignIn): Promise<void> {
     | { readonly kind: 'wait' }
     | { readonly kind: 'ok' }
     | { readonly kind: 'failed'; readonly message: string } = { kind: 'wait' };
-  let sent: { readonly connectionId: string; readonly key: string } | null =
-    null;
+  let sent: {
+    readonly connectionId: string;
+    readonly key: AccountProxyManagementKey;
+  } | null = null;
   try {
     const { connection, managementKey, signal } = await runningLocalTarget();
     sent = { connectionId: connection.id, key: managementKey };
@@ -2213,7 +2241,7 @@ async function pollSignIn(pending: PendingSignIn): Promise<void> {
     if (keyRejectionOf(error)) {
       outcome = {
         kind: 'failed',
-        message: 'The proxy on this device refused its key. Set it up again.',
+        message: 'The proxy on this device refused its key. Restart it.',
       };
       if (sent) {
         await recordSignInKeyRejection(sent.connectionId, sent.key, error);
@@ -2424,8 +2452,10 @@ export async function completeRemoteAccountProxySignIn(
   // The controlling computer already stopped listening after sending it.
   pending.callbackSent = true;
   releaseRemoteSignIn(pending, { notify: false });
-  let sent: { readonly connectionId: string; readonly key: string } | null =
-    null;
+  let sent: {
+    readonly connectionId: string;
+    readonly key: AccountProxyManagementKey;
+  } | null = null;
   try {
     const { connection, managementKey, signal } = await runningLocalTarget();
     if (connection.id !== pending.connectionId || signIn !== pending) {

@@ -2139,7 +2139,9 @@ export function createCodeGraphBuildScheduler(
    * exit-wait-preserving across ALL kill paths: a key whose record is already
    * gone (an earlier cancel, the watchdog, or a protocol-failure kill) but
    * whose worker has not exited yet returns that still-pending wait (see
-   * {@link pendingExitWaits}) rather than resolving vacuously. Resolves
+   * {@link pendingExitWaits}) rather than resolving vacuously, and a worker
+   * that answered but has not exited yet is stopped and waited for the same
+   * way. Resolves
    * immediately for keys with no live worker, preparing repair or pending exit, never
    * rejects, and falls through after {@link CHILD_EXIT_WAIT_MS} so no caller
    * can hang on a zombie non-repair worker. Repair cleanup deliberately remains
@@ -2175,6 +2177,13 @@ export function createCodeGraphBuildScheduler(
       supersession.canceled = true;
     }
     const record = builds.get(key);
+    // A worker answers before it exits, so one whose record is gone may still
+    // hold the database.
+    for (const child of unconfirmedWriterExits.get(key)?.keys() ?? []) {
+      if (child === record?.child) continue;
+      void registerExitWait(key, child);
+      killChild(child);
+    }
     if (record !== undefined) {
       // An eager seed waiting on this drain must not start.
       if (record.draining) record.drainCanceled = true;

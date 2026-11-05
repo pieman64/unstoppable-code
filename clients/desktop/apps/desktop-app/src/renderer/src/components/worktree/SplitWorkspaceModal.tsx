@@ -166,28 +166,31 @@ function SelectionToggleButton({
 }: SelectionToggleButtonProps): JSX.Element {
   const Icon =
     kind === 'split' ? SplitIcon : kind === 'archive' ? ArchiveIcon : TrashIcon;
-  const selectedClassName =
-    kind === 'split'
-      ? 'bg-accent fg-emphasis'
+  // At rest every choice is quiet; the chosen one takes its kind's tone and,
+  // through `pressedHover`, keeps that tone's hover fill while pressed.
+  const variant = !selected
+    ? 'ghost-quiet'
+    : kind === 'split'
+      ? 'ghost-accent'
       : kind === 'delete'
-        ? 'bg-destructive fg-emphasis'
-        : 'bg-secondary fg-primary';
+        ? 'ghost-destructive'
+        : 'ghost';
   return (
     <ActionTooltip title={tooltipTitle} description={tooltipDescription}>
-      <button
-        type="button"
+      <Button
+        variant={variant}
+        size="sm"
+        iconOnly
+        pressedHover
         disabled={disabled}
         aria-pressed={selected}
         aria-label={tooltipTitle}
         onClick={onSelect}
-        className={`focus-ring rounded-md p-1.5 transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-          selected ? selectedClassName : 'fg-secondary hover:fg-primary'
-        }`}
         data-testid={testId}
         data-selected={selected ? 'true' : 'false'}
       >
         <Icon className="h-4 w-4" />
-      </button>
+      </Button>
     </ActionTooltip>
   );
 }

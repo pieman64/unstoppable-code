@@ -5,6 +5,7 @@ import {
   type TurnFeedbackReason,
 } from '@canopy/protocol/turn-feedback';
 import { Button } from './Button';
+import { Chip } from './Chip';
 import { DialogModal } from './DialogModal';
 import { TextArea } from './Field';
 
@@ -88,22 +89,16 @@ export function TurnFeedbackDialog({
           {TURN_FEEDBACK_REASONS.map((code) => {
             const selected = reason === code;
             return (
-              <button
+              <Chip
                 key={code}
-                type="button"
-                aria-pressed={selected}
-                data-testid={`turn-feedback-reason-${code}`}
+                selected={selected}
+                actionTestId={`turn-feedback-reason-${code}`}
                 onClick={(): void => {
                   setReason(selected ? undefined : code);
                 }}
-                className={`focus-ring rounded-full border px-3 py-1 text-xs transition-colors ${
-                  selected
-                    ? 'border-line-accent bg-accent fg-emphasis'
-                    : 'fg-secondary hover:bg-fg-primary/[0.06] hover:fg-primary'
-                }`}
               >
                 {REASON_LABELS[code]}
-              </button>
+              </Chip>
             );
           })}
         </div>

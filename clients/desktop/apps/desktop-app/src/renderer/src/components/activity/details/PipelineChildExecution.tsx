@@ -1,9 +1,8 @@
 import type { ExecutionSummary } from '@canopy/desktop-shared/types/pipeline';
 import type { JSX } from 'react';
-import { ChevronIcon } from '@canopy/ui-shared/icons';
 import { Tooltip } from '@canopy/ui-shared';
 import { MaximizeIcon as AppCatalogMaximizeIcon } from '@canopy/ui-shared/icons/AppIcons';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, Disclosure } from '@canopy/ui-shared/components';
 
 function EnlargeIcon(): JSX.Element {
   return <AppCatalogMaximizeIcon width="14" height="14" aria-hidden="true" />;
@@ -30,18 +29,20 @@ export function PipelineChildExecution({
   renderChildExecution,
   onDrillIntoChild,
 }: PipelineChildExecutionProps): JSX.Element {
+  // The drill-in action sits at the end of the toggle's row, centred on it,
+  // while the child run opens full width under both.
   return (
-    <>
-      <div className="mt-1 flex items-center gap-1">
-        <button
-          type="button"
-          onClick={onToggle}
-          className="flex flex-1 items-center gap-1 rounded-md px-2.5 py-1 text-2xs fg-info/80 transition-colors hover:bg-fg-primary/[0.04] hover:fg-info"
-        >
-          <ChevronIcon open={expanded} />
-          {child.pipeline_name}
-        </button>
-        {onDrillIntoChild !== undefined && (
+    <div className="relative mt-1">
+      <Disclosure
+        open={expanded}
+        onOpenChange={onToggle}
+        label={child.pipeline_name}
+        dataTestId={`pipeline-step-child-${stepId}`}
+      >
+        {renderChildExecution(child.id)}
+      </Disclosure>
+      {onDrillIntoChild !== undefined && (
+        <div className="absolute -top-1 right-0">
           <Tooltip label="Open in full view">
             <Button
               variant="ghost"
@@ -56,9 +57,8 @@ export function PipelineChildExecution({
               <EnlargeIcon />
             </Button>
           </Tooltip>
-        )}
-      </div>
-      {expanded && renderChildExecution(child.id)}
-    </>
+        </div>
+      )}
+    </div>
   );
 }

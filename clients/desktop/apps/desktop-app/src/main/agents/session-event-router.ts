@@ -235,7 +235,12 @@ function delegationSnapshotIdentity(
   )
     return undefined;
   const { delegationId, runGeneration, sequence } = data.delegation;
-  return { key: `${delegationId}:${String(runGeneration)}`, sequence };
+  return {
+    key: `${delegationId}:${String(runGeneration)}${
+      data.canopy_replay === true ? ':replay' : ''
+    }`,
+    sequence,
+  };
 }
 
 /** Codex's normalized publication can precede its raw turn.started frame. */

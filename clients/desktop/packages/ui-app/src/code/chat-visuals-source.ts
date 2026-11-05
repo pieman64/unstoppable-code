@@ -151,9 +151,3 @@ export function collectChatVisualOwners(
   }
   return owners;
 }
-
-/** Test-only: forget every published source and reveal request. */
-export function resetChatVisualsSourcesForTests(): void {
-  entries.clear();
-  nextRevealRequest = 1;
-}

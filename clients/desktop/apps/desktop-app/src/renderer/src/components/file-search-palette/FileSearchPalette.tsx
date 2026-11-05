@@ -10,18 +10,24 @@ import {
 import { useShallow } from 'zustand/shallow';
 import { useChatStore } from '@/stores/chatStore';
 import { useFileTabUiStore } from '@/stores/fileTabUiStore';
-import { getWorktreeCacheKey, useFileListStore } from '@/stores/fileListStore';
+import {
+  getWorktreeCacheKey,
+  useFileListStore,
+  useRetainFileIndex,
+} from '@/stores/fileListStore';
 import { searchFiles, type FileSearchResult } from '@/lib/fuzzySearch';
-import { LoadingSpinner } from '@/components/shared/loading/spinners/LoadingSpinner';
 import { getFilenameMatchedIndices } from './file-search-palette-helpers';
 import { shouldFetchFileSearchPaletteEntry } from './file-search-palette-state';
 import { HighlightedSegments, splitMatchSegments } from '@canopy/ui-shared';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
+  DelayedLoadingPlaceholder,
   DialogModal,
   ErrorState,
   KeyHintFooter,
+  ListRow,
   SearchField,
+  Skeleton,
 } from '@canopy/ui-shared/components';
 import { pickerKeyHints } from '@canopy/ui-shared/lib/shortcuts';
 import { isCoworkWorkspaceFileRoot } from '@canopy/ui-shared/lib/file-root-groups';
@@ -32,6 +38,43 @@ interface FileSearchPaletteProps {
 }
 
 const RESULT_PAGE_SIZE = 50;
+
+/** Plain files the loading skeleton lays out as result rows. */
+const SAMPLE_RESULTS = [
+  { filename: 'index.ts', path: 'src/index.ts', repo: 'storefront' },
+  {
+    filename: 'checkout.tsx',
+    path: 'src/checkout/checkout.tsx',
+    repo: 'storefront',
+  },
+  { filename: 'README.md', path: 'README.md', repo: 'storefront' },
+] as const;
+
+/**
+ * The result list while the file index loads: the same `ListRow` rows, from
+ * sample files, measured inside `Skeleton`.
+ */
+function FileSearchResultsSkeleton(): JSX.Element {
+  return (
+    <DelayedLoadingPlaceholder slowNote="Still loading files…">
+      <Skeleton
+        loading
+        label="Loading files"
+        testId="file-search-palette-loading"
+      >
+        <ul className="px-2 py-2">
+          {SAMPLE_RESULTS.map((sample) => (
+            <li key={sample.path}>
+              <ListRow description={sample.path} trailing={sample.repo}>
+                {sample.filename}
+              </ListRow>
+            </li>
+          ))}
+        </ul>
+      </Skeleton>
+    </DelayedLoadingPlaceholder>
+  );
+}
 
 export function FileSearchPalette({
   initialQuery,
@@ -59,6 +102,7 @@ export function FileSearchPalette({
         selectedWorktree.worktreeId,
       )
     : null;
+  useRetainFileIndex(cacheKey);
 
   const { entry, error, isLoading, fetchFileIndex } = useFileListStore(
     useShallow((state) => ({
@@ -348,11 +392,7 @@ export function FileSearchPalette({
               Select a worktree to search files
             </div>
           )}
-          {showLoading && (
-            <div className="flex items-center justify-center px-4 py-8">
-              <LoadingSpinner tone="secondary" />
-            </div>
-          )}
+          {showLoading && <FileSearchResultsSkeleton />}
           {error && <ErrorState space="panel" message={error} />}
           {showEmpty && (
             <div className="px-4 py-8 text-center text-s fg-secondary">
@@ -362,7 +402,7 @@ export function FileSearchPalette({
             </div>
           )}
           {!showLoading && !error && allResults.length > 0 && (
-            <ul role="listbox" aria-label="Files" className="py-2">
+            <ul role="listbox" aria-label="Files" className="px-2 py-2">
               {results.map((result, visibleIndex) => {
                 const index = renderedVisibleStart + visibleIndex;
                 const isSelected = index === selectedIndex;
@@ -385,10 +425,10 @@ export function FileSearchPalette({
                       }
                     }}
                   >
-                    <button
-                      type="button"
+                    <ListRow
                       role="option"
                       aria-selected={isSelected}
+                      selected={isSelected}
                       data-testid="file-search-palette-result"
                       data-path={result.relativePath}
                       onMouseEnter={() =>
@@ -398,21 +438,10 @@ export function FileSearchPalette({
                         }))
                       }
                       onClick={() => handleSelect(result)}
-                      className={`flex w-full items-center justify-between gap-4 px-4 py-2 text-left transition-colors ${
-                        isSelected
-                          ? 'bg-accent-subtle fg-accent'
-                          : 'fg-primary hover:bg-secondary'
-                      }`}
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-s font-medium">
-                          <HighlightedSegments segments={filenameSegments} />
-                        </div>
-                        <div className="mt-0.5 truncate text-xs fg-secondary">
-                          <HighlightedSegments segments={pathSegments} />
-                        </div>
-                      </div>
-                      <span className="shrink-0 rounded-full bg-secondary px-2 py-0.5 text-2xs fg-secondary">
+                      description={
+                        <HighlightedSegments segments={pathSegments} />
+                      }
+                      trailing={
                         <span
                           className={
                             isCoworkWorkspaceFileRoot({
@@ -425,8 +454,10 @@ export function FileSearchPalette({
                         >
                           {result.repoName}
                         </span>
-                      </span>
-                    </button>
+                      }
+                    >
+                      <HighlightedSegments segments={filenameSegments} />
+                    </ListRow>
                   </li>
                 );
               })}

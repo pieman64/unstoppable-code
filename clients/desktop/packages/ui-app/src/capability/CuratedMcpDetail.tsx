@@ -11,7 +11,6 @@ import {
   ErrorBanner,
   Button,
   ExternalTextLink,
-  CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
   McpServerLogo,
   Notice,
@@ -19,6 +18,7 @@ import {
   PluginConnectionRouteSection,
   EmptyStateRow,
   Heading,
+  Skeleton,
 } from '@canopy/ui-shared/components';
 import {
   MCP_PROVIDER_CONNECTOR_LABELS,
@@ -234,6 +234,35 @@ export function CuratedMcpDetail<T extends McpDetailEntry>({
   );
 }
 
+/** The tool chips, one per tool the server reports. */
+function ToolChips({
+  toolNames,
+}: {
+  toolNames: readonly string[];
+}): JSX.Element {
+  return (
+    <div className="flex flex-wrap gap-1">
+      {toolNames.map((tool) => (
+        <span
+          key={tool}
+          data-testid="mcp-browse-tool-chip"
+          className="inline-block rounded bg-secondary px-1.5 py-0.5 text-3xs fg-primary"
+        >
+          {tool}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/** Plain tool names the loading skeleton measures. */
+const SAMPLE_TOOL_NAMES: readonly string[] = [
+  'search_issues',
+  'create_issue',
+  'list_projects',
+  'add_comment',
+];
+
 /**
  * Tools the installed server reports. Inside a route the section heading
  * already separates it, so only the single-route layout draws a divider.
@@ -264,11 +293,15 @@ function CuratedMcpTools({
           Tools appear after you add this server.
         </p>
       ) : toolsLoading ? (
-        <div data-testid="mcp-browse-tools-loading">
-          <DelayedLoadingPlaceholder slowNote="Still loading tools…">
-            <CenteredLoadingSpinner className="my-12" />
-          </DelayedLoadingPlaceholder>
-        </div>
+        <DelayedLoadingPlaceholder slowNote="Still loading tools…">
+          <Skeleton
+            loading
+            label="Loading tools"
+            testId="mcp-browse-tools-loading"
+          >
+            <ToolChips toolNames={SAMPLE_TOOL_NAMES} />
+          </Skeleton>
+        </DelayedLoadingPlaceholder>
       ) : toolsError ? (
         <ErrorBanner
           className=""
@@ -278,17 +311,7 @@ function CuratedMcpTools({
       ) : toolNames === null || toolNames.length === 0 ? (
         <EmptyStateRow title="No tools discovered yet" />
       ) : (
-        <div className="flex flex-wrap gap-1">
-          {toolNames.map((tool) => (
-            <span
-              key={tool}
-              data-testid="mcp-browse-tool-chip"
-              className="inline-block rounded bg-secondary px-1.5 py-0.5 text-3xs fg-primary"
-            >
-              {tool}
-            </span>
-          ))}
-        </div>
+        <ToolChips toolNames={toolNames} />
       )}
     </div>
   );

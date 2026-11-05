@@ -1,4 +1,11 @@
 import * as fs from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+import { damagedCopyPath, pruneDamagedCopies } from '../../lib/damaged-copies';
+import {
+  ensurePrivateLockDirectory,
+  withOwnerLockFile,
+} from '../../lib/owner-lock-file';
+import { isKnownOrphanedExecution } from './owner-fence';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
 import {
@@ -54,6 +61,270 @@ import {
 } from './execution-pause-clock';
 
 export const CURRENT_EXECUTION_STATE_VERSION = 10;
+export type ExecutionStateWriteRefusal =
+  | 'owned_by_other_process'
+  | 'newer_version'
+  | 'unreadable'
+  | 'damaged_copy_failed';
+
+const EXECUTION_STATE_REFUSAL_MESSAGES: Record<
+  ExecutionStateWriteRefusal,
+  string
+> = {
+  owned_by_other_process:
+    'Another process is running this workflow run, so it was not changed.',
+  newer_version:
+    'This workflow run was saved by a newer version. Update to change it.',
+  unreadable:
+    "This workflow run's saved state could not be read, so it was not changed.",
+  damaged_copy_failed:
+    "This workflow run's saved state is damaged and could not be set aside, so it was not changed.",
+};
+
+export class ExecutionStateWriteRefusedError extends Error {
+  public readonly code = 'EXECUTION_STATE_WRITE_REFUSED' as const;
+  public constructor(
+    public readonly executionId: string,
+    public readonly reason: ExecutionStateWriteRefusal,
+  ) {
+    super(EXECUTION_STATE_REFUSAL_MESSAGES[reason]);
+    this.name = 'ExecutionStateWriteRefusedError';
+  }
+}
+
+export function isExecutionStateWriteRefusal(
+  error: unknown,
+  reason?: ExecutionStateWriteRefusal,
+): error is ExecutionStateWriteRefusedError {
+  return (
+    error instanceof ExecutionStateWriteRefusedError &&
+    (reason === undefined || error.reason === reason)
+  );
+}
+
+export const EXECUTION_STATE_LOCK_TIMEOUT_MESSAGE =
+  'Timed out waiting for another process to finish saving this workflow run.';
+const EXECUTION_LOCK_DIRECTORY = '.locks';
+const EXECUTION_LOCK_MAX_WAIT_MS = 30_000;
+const INSTALLED_STATE_CACHE_LIMIT = 512;
+
+type InstalledExecutionState =
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'unreadable' }
+  | { readonly kind: 'damaged' }
+  | { readonly kind: 'newer' }
+  | {
+      readonly kind: 'ok';
+      readonly status: ExecutionState['status'];
+      readonly ownerPid?: number;
+      readonly ownerStartIdentity?: string;
+    };
+
+interface CachedInstall {
+  readonly signature: string;
+  readonly state: Extract<InstalledExecutionState, { kind: 'ok' }>;
+}
+const installedStateCache = new Map<string, CachedInstall>();
+const pendingExecutionWrites = new Map<string, Promise<unknown>>();
+
+function getExecutionLockPath(
+  executionId: string,
+  executionsDir: string,
+): string {
+  validateId(executionId, 'executionId');
+  return path.join(
+    path.resolve(executionsDir),
+    EXECUTION_LOCK_DIRECTORY,
+    `${executionId}.lock`,
+  );
+}
+
+async function withExecutionWriteLock<T>(
+  executionId: string,
+  executionsDir: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const lockPath = getExecutionLockPath(executionId, executionsDir);
+  const run = async (): Promise<T> => {
+    await fs.mkdir(executionsDir, { recursive: true });
+    await ensurePrivateLockDirectory(path.dirname(lockPath));
+    return withOwnerLockFile(lockPath, operation, {
+      maxWaitMs: EXECUTION_LOCK_MAX_WAIT_MS,
+      timeoutMessage: EXECUTION_STATE_LOCK_TIMEOUT_MESSAGE,
+    });
+  };
+  const previous = pendingExecutionWrites.get(lockPath) ?? Promise.resolve();
+  const pending = previous.then(run, run);
+  pendingExecutionWrites.set(lockPath, pending);
+  try {
+    return await pending;
+  } finally {
+    if (pendingExecutionWrites.get(lockPath) === pending)
+      pendingExecutionWrites.delete(lockPath);
+  }
+}
+
+function rememberInstalledState(
+  statePath: string,
+  signature: string | null,
+  state: ExecutionState,
+): void {
+  const key = path.resolve(statePath);
+  installedStateCache.delete(key);
+  if (signature === null) return;
+  installedStateCache.set(key, {
+    signature,
+    state: {
+      kind: 'ok',
+      status: state.status,
+      ownerPid: state.owner_pid,
+      ownerStartIdentity: state.owner_start_identity,
+    },
+  });
+  if (installedStateCache.size > INSTALLED_STATE_CACHE_LIMIT) {
+    const oldest = installedStateCache.keys().next().value;
+    if (oldest !== undefined) installedStateCache.delete(oldest);
+  }
+}
+
+function forgetInstalledState(statePath: string): void {
+  installedStateCache.delete(path.resolve(statePath));
+}
+
+async function readInstalledExecutionState(
+  executionId: string,
+  executionsDir: string,
+): Promise<InstalledExecutionState> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(
+      getExecutionStatePath(executionId, executionsDir),
+      'utf8',
+    );
+  } catch (error) {
+    return {
+      kind: fileErrorCode(error) === 'ENOENT' ? 'absent' : 'unreadable',
+    };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { kind: 'damaged' };
+  }
+  if (!isRecord(parsed)) return { kind: 'damaged' };
+  if (
+    typeof parsed.version === 'number' &&
+    Number.isInteger(parsed.version) &&
+    parsed.version > CURRENT_EXECUTION_STATE_VERSION
+  )
+    return { kind: 'newer' };
+  try {
+    const state = parseExecutionStateDocument(
+      parsed,
+      executionId,
+      executionsDir,
+    );
+    return {
+      kind: 'ok',
+      status: state.status,
+      ownerPid: state.owner_pid,
+      ownerStartIdentity: state.owner_start_identity,
+    };
+  } catch {
+    return { kind: 'damaged' };
+  }
+}
+
+async function refuseForeignExecutionOwner(
+  executionId: string,
+  installed: Extract<InstalledExecutionState, { kind: 'ok' }>,
+): Promise<void> {
+  if (
+    (installed.status === 'pending' || installed.status === 'running') &&
+    installed.ownerPid !== undefined &&
+    installed.ownerPid !== process.pid &&
+    !(await isKnownOrphanedExecution({
+      owner_pid: installed.ownerPid,
+      owner_start_identity: installed.ownerStartIdentity,
+    }))
+  ) {
+    throw new ExecutionStateWriteRefusedError(
+      executionId,
+      'owned_by_other_process',
+    );
+  }
+}
+
+async function admitExecutionWrite(
+  executionId: string,
+  executionsDir: string,
+): Promise<void> {
+  const statePath = getExecutionStatePath(executionId, executionsDir);
+  const signature = await readStateFileSignature(statePath);
+  const cached = installedStateCache.get(path.resolve(statePath));
+  const installed =
+    signature !== null && cached?.signature === signature
+      ? cached.state
+      : await readInstalledExecutionState(executionId, executionsDir);
+  switch (installed.kind) {
+    case 'absent':
+      return;
+    case 'unreadable':
+      throw new ExecutionStateWriteRefusedError(executionId, 'unreadable');
+    case 'newer':
+      throw new ExecutionStateWriteRefusedError(executionId, 'newer_version');
+    case 'damaged':
+      try {
+        await fs.copyFile(
+          statePath,
+          damagedCopyPath(statePath),
+          fsConstants.COPYFILE_EXCL,
+        );
+      } catch {
+        throw new ExecutionStateWriteRefusedError(
+          executionId,
+          'damaged_copy_failed',
+        );
+      }
+      await pruneDamagedCopies(statePath);
+      return;
+    case 'ok':
+      await refuseForeignExecutionOwner(executionId, installed);
+  }
+}
+
+export async function deleteExecutionState(
+  executionId: string,
+  executionsDir: string,
+): Promise<void> {
+  await withExecutionWriteLock(executionId, executionsDir, async () => {
+    const installed = await readInstalledExecutionState(
+      executionId,
+      executionsDir,
+    );
+    if (installed.kind === 'unreadable' || installed.kind === 'damaged')
+      throw new ExecutionStateWriteRefusedError(executionId, 'unreadable');
+    if (installed.kind === 'newer')
+      throw new ExecutionStateWriteRefusedError(executionId, 'newer_version');
+    if (installed.kind === 'ok')
+      await refuseForeignExecutionOwner(executionId, installed);
+    const statePath = getExecutionStatePath(executionId, executionsDir);
+    for (const filePath of [
+      statePath,
+      getExecutionCancellationPath(executionId, executionsDir),
+    ]) {
+      try {
+        await fs.unlink(filePath);
+      } catch (error) {
+        if (fileErrorCode(error) !== 'ENOENT') throw error;
+      }
+    }
+    await pruneDamagedCopies(statePath, 0);
+    forgetInstalledState(statePath);
+  });
+}
+
 /**
  * State files can each be megabytes. Parsing a few at a time keeps a cold
  * listing from holding dozens of parsed documents in the main-process heap at
@@ -1188,12 +1459,10 @@ function summaryInitiator(
   return rest;
 }
 
-export async function saveExecutionState(
+function prepareExecutionStateForInstall(
   state: ExecutionState,
   executionsDir: string,
-): Promise<void> {
-  await fs.mkdir(executionsDir, { recursive: true });
-  const targetPath = getExecutionStatePath(state.id, executionsDir);
+): ExecutionState {
   const currentState =
     state.version === CURRENT_EXECUTION_STATE_VERSION
       ? state
@@ -1213,12 +1482,57 @@ export async function saveExecutionState(
     ...modelConfigEnv(persistedState),
   };
   validateCurrentExecutionState(persistedState, executionsDir);
-  const content = JSON.stringify(persistedState, null, 2);
-  // Preserve the non-fsync policy; atomic installation is not writer coordination.
-  await writeFileAtomically(targetPath, content, {
-    encoding: 'utf8',
-    durable: false,
-  });
+  return persistedState;
+}
+
+export interface SaveExecutionStateOptions {
+  readonly cancellation?: 'clear_before';
+}
+
+async function installUnderLock(
+  persistedState: ExecutionState,
+  executionsDir: string,
+  options?: SaveExecutionStateOptions,
+): Promise<void> {
+  const targetPath = getExecutionStatePath(persistedState.id, executionsDir);
+  await admitExecutionWrite(persistedState.id, executionsDir);
+  if (options?.cancellation === 'clear_before') {
+    try {
+      await fs.unlink(
+        getExecutionCancellationPath(persistedState.id, executionsDir),
+      );
+    } catch (error) {
+      if (fileErrorCode(error) !== 'ENOENT') throw error;
+    }
+  }
+  try {
+    await writeFileAtomically(
+      targetPath,
+      JSON.stringify(persistedState, null, 2),
+      { encoding: 'utf8', durable: false },
+    );
+    rememberInstalledState(
+      targetPath,
+      await readStateFileSignature(targetPath),
+      persistedState,
+    );
+  } catch (error) {
+    forgetInstalledState(targetPath);
+    throw error;
+  }
+}
+
+export async function saveExecutionState(
+  state: ExecutionState,
+  executionsDir: string,
+  options?: SaveExecutionStateOptions,
+): Promise<void> {
+  await fs.mkdir(executionsDir, { recursive: true });
+  getExecutionStatePath(state.id, executionsDir);
+  const persistedState = prepareExecutionStateForInstall(state, executionsDir);
+  await withExecutionWriteLock(state.id, executionsDir, () =>
+    installUnderLock(persistedState, executionsDir, options),
+  );
 }
 
 function assertPathInsideExecution(
@@ -1472,77 +1786,86 @@ export async function loadExecutionState(
       getExecutionStatePath(executionId, executionsDir),
       'utf8',
     );
-    const parsed = JSON.parse(raw) as Partial<ExecutionState> & {
-      version?: unknown;
-    };
-    if (
-      parsed.version !== 1 &&
-      parsed.version !== 2 &&
-      parsed.version !== 3 &&
-      parsed.version !== 4 &&
-      parsed.version !== 5 &&
-      parsed.version !== 6 &&
-      parsed.version !== 7 &&
-      parsed.version !== 8 &&
-      parsed.version !== 9 &&
-      parsed.version !== 10
-    ) {
-      throw new Error(
-        `Unsupported execution state version: ${String(parsed.version)}`,
-      );
-    }
-    if (parsed.id !== executionId) {
-      throw new Error(
-        `Execution state identity mismatch: expected "${executionId}"`,
-      );
-    }
-    if (
-      parsed.shutdown_checkpoint &&
-      (!UUID_PATTERN.test(parsed.shutdown_checkpoint.id) ||
-        !isIsoDate(parsed.shutdown_checkpoint.detected_at))
-    )
-      delete parsed.shutdown_checkpoint;
-    if (
-      parsed.child_pipeline_authorizations !== undefined &&
-      (!Array.isArray(parsed.child_pipeline_authorizations) ||
-        !parsed.child_pipeline_authorizations.every(
-          (entry: unknown): boolean =>
-            isRecord(entry) &&
-            typeof entry.request === 'string' &&
-            typeof entry.identity === 'string' &&
-            typeof entry.contentHash === 'string',
-        ))
-    ) {
-      throw new Error('Invalid persisted child pipeline authorizations');
-    }
-    parsed.inputs_persisted = parsed.inputs !== undefined;
-    parsed.inputs = parsed.inputs ?? {};
-    parsed.rerun_context = normalizeRerunContext(parsed.rerun_context);
-    parsed.shared_pipeline_source = normalizeSharedPipelineSource(
-      parsed.shared_pipeline_source,
-    );
-    parsed.curated_pipeline_source = normalizeCuratedPipelineSource(
-      parsed.curated_pipeline_source,
-    );
-    parsed.initiation_source = normalizeUsageInitiationSource(
-      parsed.initiation_source,
-    );
-    parsed.initiator = normalizeExecutionInitiator(parsed.initiator);
-    parsed.agent_origin = normalizeAgentChatAddress(parsed.agent_origin);
-    const typedState = parsed as ExecutionState;
-    if (typedState.version === 7) {
-      validateForeachState(asLegacyV7State(typedState), executionsDir);
-    }
-    const migrated = migrateExecutionStateToCurrent(typedState);
-    normalizeRecoveryCheckpoints(migrated, executionsDir);
-    validateCurrentExecutionState(migrated, executionsDir);
-    return migrated;
+    const parsed: unknown = JSON.parse(raw);
+    return parseExecutionStateDocument(parsed, executionId, executionsDir);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return null;
     }
     throw error;
   }
+}
+
+function parseExecutionStateDocument(
+  document: unknown,
+  executionId: string,
+  executionsDir: string,
+): ExecutionState {
+  const parsed = document as Partial<ExecutionState> & {
+    version?: unknown;
+  };
+  if (
+    parsed.version !== 1 &&
+    parsed.version !== 2 &&
+    parsed.version !== 3 &&
+    parsed.version !== 4 &&
+    parsed.version !== 5 &&
+    parsed.version !== 6 &&
+    parsed.version !== 7 &&
+    parsed.version !== 8 &&
+    parsed.version !== 9 &&
+    parsed.version !== 10
+  ) {
+    throw new Error(
+      `Unsupported execution state version: ${String(parsed.version)}`,
+    );
+  }
+  if (parsed.id !== executionId) {
+    throw new Error(
+      `Execution state identity mismatch: expected "${executionId}"`,
+    );
+  }
+  if (
+    parsed.shutdown_checkpoint &&
+    (!UUID_PATTERN.test(parsed.shutdown_checkpoint.id) ||
+      !isIsoDate(parsed.shutdown_checkpoint.detected_at))
+  )
+    delete parsed.shutdown_checkpoint;
+  if (
+    parsed.child_pipeline_authorizations !== undefined &&
+    (!Array.isArray(parsed.child_pipeline_authorizations) ||
+      !parsed.child_pipeline_authorizations.every(
+        (entry: unknown): boolean =>
+          isRecord(entry) &&
+          typeof entry.request === 'string' &&
+          typeof entry.identity === 'string' &&
+          typeof entry.contentHash === 'string',
+      ))
+  ) {
+    throw new Error('Invalid persisted child pipeline authorizations');
+  }
+  parsed.inputs_persisted = parsed.inputs !== undefined;
+  parsed.inputs = parsed.inputs ?? {};
+  parsed.rerun_context = normalizeRerunContext(parsed.rerun_context);
+  parsed.shared_pipeline_source = normalizeSharedPipelineSource(
+    parsed.shared_pipeline_source,
+  );
+  parsed.curated_pipeline_source = normalizeCuratedPipelineSource(
+    parsed.curated_pipeline_source,
+  );
+  parsed.initiation_source = normalizeUsageInitiationSource(
+    parsed.initiation_source,
+  );
+  parsed.initiator = normalizeExecutionInitiator(parsed.initiator);
+  parsed.agent_origin = normalizeAgentChatAddress(parsed.agent_origin);
+  const typedState = parsed as ExecutionState;
+  if (typedState.version === 7) {
+    validateForeachState(asLegacyV7State(typedState), executionsDir);
+  }
+  const migrated = migrateExecutionStateToCurrent(typedState);
+  normalizeRecoveryCheckpoints(migrated, executionsDir);
+  validateCurrentExecutionState(migrated, executionsDir);
+  return migrated;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1717,21 +2040,26 @@ export async function setExecutionHidden(
   hidden: boolean,
   executionsDir: string,
 ): Promise<ExecutionState | null> {
-  const state = await loadExecutionState(executionId, executionsDir);
-  if (!state) {
-    return null;
-  }
+  return withExecutionWriteLock(executionId, executionsDir, async () => {
+    const state = await loadExecutionState(executionId, executionsDir);
+    if (!state) {
+      return null;
+    }
 
-  const next: ExecutionState = hidden
-    ? { ...state, hidden: true }
-    : ((): ExecutionState => {
-        const copy = { ...state };
-        delete copy.hidden;
-        return copy;
-      })();
+    const next: ExecutionState = hidden
+      ? { ...state, hidden: true }
+      : ((): ExecutionState => {
+          const copy = { ...state };
+          delete copy.hidden;
+          return copy;
+        })();
 
-  await saveExecutionState(next, executionsDir);
-  return next;
+    await installUnderLock(
+      prepareExecutionStateForInstall(next, executionsDir),
+      executionsDir,
+    );
+    return next;
+  });
 }
 
 export async function requestExecutionCancellation(

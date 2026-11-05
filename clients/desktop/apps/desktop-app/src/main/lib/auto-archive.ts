@@ -31,6 +31,7 @@ import {
   subscribeChatSessionActivity,
 } from '../agents/session-manager';
 import { getAppAdvisorWatcherService } from '../app-advisor/watchers';
+import { projectOwnedChatAutomation } from '../automations/owned-chat-projection';
 import { getAutomationsService } from '../automations/service';
 import {
   getActivePipelineExecutionHandles,
@@ -326,7 +327,9 @@ export function collectScheduledAutomationTargetKeys(
   const keys = new Set<string>();
   for (const activity of activities) {
     if (!activity.enabled && !runningActivityIds.has(activity.id)) continue;
-    addAutomationTarget(keys, activity.action);
+    // A converted chat automation stores a global pipeline whose inputs name
+    // its destination; read it as the chat action it stands for (CAN-5479).
+    addAutomationTarget(keys, projectOwnedChatAutomation(activity).action);
   }
   return keys;
 }

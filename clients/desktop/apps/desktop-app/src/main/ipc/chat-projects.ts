@@ -3,13 +3,13 @@ import {
   toShareOperationResult,
   withShareStage,
 } from '../sharing/share-operation-result';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
 import { isChatTabPluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
 import {
   IPC_CHANNELS,
   type ChatProjectClaudeMdRequest,
+  type ChatProjectClaudeMdResponse,
+  type SaveChatProjectClaudeMdResult,
   type ChatProjectData,
   type ChatProjectListResponse,
   type CreateChatProjectRequest,
@@ -31,7 +31,10 @@ import {
   type SaveChatProjectClaudeMdRequest,
   type UpdateChatProjectRequest,
 } from '@canopy/desktop-shared/types';
-import { syncChatProjectAgentsMd } from '../lib/chat-project-utils';
+import {
+  loadChatProjectInstructions,
+  saveChatProjectInstructions,
+} from '../lib/chat-project-instructions';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 import {
   projectedWorkspaceMetadataCommands,
@@ -128,10 +131,15 @@ async function listChatProjects(): Promise<ChatProjectListResponse> {
   return { projects: await listCoworkWorkspacesAsChatProjects() };
 }
 
-async function requireChatProject(projectId: string): Promise<ChatProjectData> {
+async function requireChatProject(
+  projectId: string,
+  provisionDefaults = true,
+): Promise<ChatProjectData> {
   validateId(projectId, 'projectId');
   const workspaceId = resolveCoworkWorkspaceId(projectId);
-  const projects = await listCoworkWorkspacesAsChatProjects();
+  const projects = await listCoworkWorkspacesAsChatProjects(undefined, {
+    provisionDefaults,
+  });
   const project = projects.find((entry) => entry.id === workspaceId);
   if (!project) {
     throw new Error('Chat project not found');
@@ -242,31 +250,23 @@ async function deleteChatProject(
   });
 }
 
-async function loadChatProjectClaudeMd(projectId: string): Promise<string> {
-  await requireChatProject(projectId);
+async function loadChatProjectClaudeMd(
+  projectId: string,
+): Promise<ChatProjectClaudeMdResponse> {
+  await requireChatProject(projectId, false);
   const workspaceId = resolveCoworkWorkspaceId(projectId);
-  try {
-    return await readFile(
-      join(getCoworkWorkspaceRootDir(workspaceId), 'CLAUDE.md'),
-      'utf8',
-    );
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return '';
-    }
-    throw error;
-  }
+  return loadChatProjectInstructions(getCoworkWorkspaceRootDir(workspaceId));
 }
 
 async function saveChatProjectClaudeMd(
   req: SaveChatProjectClaudeMdRequest,
-): Promise<void> {
-  const project = await requireChatProject(req.projectId);
+): Promise<SaveChatProjectClaudeMdResult> {
+  const project = await requireChatProject(req.projectId, false);
   const workspaceId = resolveCoworkWorkspaceId(project.id);
-  const rootDir = getCoworkWorkspaceRootDir(workspaceId);
-  await mkdir(rootDir, { recursive: true });
-  await writeFile(join(rootDir, 'CLAUDE.md'), req.content, 'utf8');
-  await syncChatProjectAgentsMd(project.id);
+  return saveChatProjectInstructions(
+    getCoworkWorkspaceRootDir(workspaceId),
+    req,
+  );
 }
 
 function validatedTemplateShareRequest(
@@ -814,7 +814,7 @@ export function registerChatProjectHandlers(runtime: {
     },
   );
 
-  registerIpcHandler<[ChatProjectClaudeMdRequest], string>(
+  registerIpcHandler<[ChatProjectClaudeMdRequest], ChatProjectClaudeMdResponse>(
     IPC_CHANNELS.chatProjectLoadClaudeMd,
     async (_event, req) =>
       serializeChatProjectOperation(() =>
@@ -822,10 +822,10 @@ export function registerChatProjectHandlers(runtime: {
       ),
   );
 
-  registerIpcHandler<[SaveChatProjectClaudeMdRequest], void>(
-    IPC_CHANNELS.chatProjectSaveClaudeMd,
-    async (_event, req) => {
-      await serializeChatProjectOperation(() => saveChatProjectClaudeMd(req));
-    },
-  );
+  registerIpcHandler<
+    [SaveChatProjectClaudeMdRequest],
+    SaveChatProjectClaudeMdResult
+  >(IPC_CHANNELS.chatProjectSaveClaudeMd, async (_event, req) => {
+    return serializeChatProjectOperation(() => saveChatProjectClaudeMd(req));
+  });
 }

@@ -123,11 +123,3 @@ export function loadTerminalPanelPreferences(): Promise<TerminalPanelPreferences
     });
   return panelPreferencesInFlight;
 }
-
-/** Test seam — drops the cache so each case starts cold. */
-export function __resetTerminalShellProfilesForTests(): void {
-  cached = null;
-  inFlight = null;
-  cachedPanelPreferences = null;
-  panelPreferencesInFlight = null;
-}

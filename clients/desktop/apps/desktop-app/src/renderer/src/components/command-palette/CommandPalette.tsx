@@ -19,6 +19,7 @@ import {
   DialogModal,
   Kbd,
   KeyHintFooter,
+  ListRow,
   SearchEmptyState,
   SearchField,
   ErrorBanner,
@@ -913,14 +914,14 @@ export function CommandPalette({
               actionTestId="command-palette-empty-clear"
             />
           ) : (
-            <ul role="listbox" aria-label="Results" className="py-1">
+            <ul role="listbox" aria-label="Results" className="px-2 py-1">
               {ranking.sections.map((section, sectionIdx) => (
                 <li
                   key={section.id}
                   data-testid="command-palette-section"
                   data-palette-section={section.id}
                 >
-                  <div className="px-4 pb-1 pt-3 text-2xs font-semibold fg-secondary">
+                  <div className="px-2 pb-1 pt-3 text-2xs font-semibold fg-secondary">
                     {section.label}
                   </div>
                   <ul role="group" aria-label={section.label}>
@@ -949,21 +950,16 @@ export function CommandPalette({
                             ref={(node): void => registerRef(index, node)}
                             key={`show-more:${section.id}`}
                           >
-                            <button
-                              type="button"
+                            <ListRow
                               role="option"
                               aria-selected={index === selectedIndex}
+                              selected={index === selectedIndex}
                               data-testid="command-palette-show-more"
                               onMouseEnter={(): void => handleHover(index)}
                               onClick={(): void => activateEntry(entry)}
-                              className={`w-full px-4 py-2 text-left text-s transition-colors ${
-                                index === selectedIndex
-                                  ? 'bg-accent-subtle fg-accent'
-                                  : 'fg-secondary hover:bg-secondary'
-                              }`}
                             >
                               Show {section.truncated} more
-                            </button>
+                            </ListRow>
                           </li>
                         );
                       })()}

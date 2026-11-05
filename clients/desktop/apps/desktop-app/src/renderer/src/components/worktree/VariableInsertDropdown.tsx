@@ -1,6 +1,7 @@
 import { useId, useRef, useState, type JSX } from 'react';
 import {
   ActionMenuRowStyle,
+  Button,
   DropdownMenuItem,
   FloatingMenu,
   Tooltip,
@@ -37,24 +38,23 @@ export function VariableInsertDropdown({
 
   return (
     <div>
-      <button
+      <Button
         ref={buttonRef}
-        type="button"
+        size="compact"
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
         onClick={() => {
           if (variables.length > 0) setOpen((current) => !current);
         }}
-        className="focus-ring flex w-full items-center justify-between gap-3 rounded-lg border bg-card/30 px-3 py-2 text-left text-xs font-medium fg-primary hover:bg-accent-subtle/30"
       >
-        <span>Insert variable</span>
+        Insert variable
         <AppCatalogChevronDownMediumIcon
           width="12"
           height="12"
           className={`fg-secondary transition-transform ${open ? 'rotate-180' : ''}`}
         />
-      </button>
+      </Button>
 
       <FloatingMenu
         open={open && variables.length > 0}

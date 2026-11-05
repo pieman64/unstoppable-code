@@ -428,15 +428,3 @@ export function ensureModelUnlockConfirmationBalance(
     }
   };
 }
-
-/** Test-only: resets module state between Jest cases. */
-export function resetModelUnlockConfirmationForTests(): void {
-  cancelBalanceRun();
-  sessionAccountKey = undefined;
-  seenRequestIds.clear();
-  useModelUnlockConfirmationStore.setState({
-    accountReady: true,
-    confirmation: null,
-    balance: null,
-  });
-}

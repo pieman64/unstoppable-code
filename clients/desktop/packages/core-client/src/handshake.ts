@@ -34,12 +34,16 @@ export interface CanopyInitializeParamsInput {
   readonly clientVersion: string;
   readonly protocolVersions: readonly number[];
   readonly clientCapabilities: readonly string[];
+  /** Largest reply this client reassembles from message parts, if any. */
+  readonly maxMessageBytes?: number;
 }
 
 export interface CanopyAcceptedInitialize {
   readonly runtime: InitializeRuntime;
   readonly identity: CanopyRuntimeIdentity;
   readonly manifest: CanopyEffectiveManifest;
+  /** Largest request the daemon reassembles from message parts, if it said. */
+  readonly peerMaxMessageBytes: number | null;
 }
 
 function failure(
@@ -64,6 +68,9 @@ export function buildCanopyInitializeParams(
       version: options.clientVersion,
       protocolVersions: [...options.protocolVersions],
       capabilities: [...options.clientCapabilities],
+      ...(options.maxMessageBytes !== undefined && {
+        maxMessageBytes: options.maxMessageBytes,
+      }),
     },
   });
   if (!parsed.success)
@@ -118,7 +125,8 @@ export function acceptCanopyInitializeResult(
       'internal',
       'core.runtime.initialize returned a malformed result: it must carry runtime.buildVersion and capabilities.operations, events, and streams.',
     );
-  const { runtime, selectedProtocolVersion, capabilities } = parsed.data;
+  const { runtime, selectedProtocolVersion, capabilities, limits } =
+    parsed.data;
   const offered = [...options.protocolVersions];
   if (!offered.includes(selectedProtocolVersion))
     throw versionMismatch(
@@ -147,6 +155,12 @@ export function acceptCanopyInitializeResult(
     }),
     identity,
     manifest: createManifest(capabilities),
+    peerMaxMessageBytes:
+      typeof limits.maxMessageBytes === 'number' &&
+      Number.isSafeInteger(limits.maxMessageBytes) &&
+      limits.maxMessageBytes > 0
+        ? limits.maxMessageBytes
+        : null,
   };
 }
 

@@ -2,7 +2,7 @@ import {
   clipAtBoundaries,
   LOCAL_MEMORY_MORE_MARKER,
   type BoundaryClip,
-} from './boundary-truncation';
+} from '@canopy/memory-consolidation/boundary-truncation';
 
 /** Size limits for the memory block injected into each chat turn. */
 export const LOCAL_MEMORY_RECALL_BUDGET = {

@@ -398,7 +398,7 @@ async function openUnauthenticatedPricingPage(
 }
 
 /**
- * Where a Get AI Credits billing open went. `'settings'`: Billing opened
+ * Where a Buy AI Credits billing open went. `'settings'`: Billing opened
  * inside Settings and the user has NOT left the app. `'web'`: a browser page
  * opened (signed-in billing, or the unauthenticated pricing fallback).
  * `'failed'`: nothing opened.
@@ -431,14 +431,8 @@ function rereadAiCreditsWhenSettingsCloses(): void {
   stopSettingsCloseReread = unsubscribe;
 }
 
-/** Test-only: drops a pending Settings-close re-read between Jest cases. */
-export function resetSettingsCloseRereadForTests(): void {
-  stopSettingsCloseReread?.();
-  stopSettingsCloseReread = null;
-}
-
 /**
- * Where a Get AI Credits click may open billing (CAN-5159). `'auto'`: Settings
+ * Where a Buy AI Credits click may open billing (CAN-5159). `'auto'`: Settings
  * → Billing in-app when hosted settings are openable, otherwise the browser.
  * `'browser'`: always the browser, for inline chat banners that must keep the
  * purchase hand-off (waiting state, Check again, arrival) in the chat.
@@ -518,7 +512,7 @@ export async function openBillingPage(
 }
 
 /**
- * The connect-gate context for every Get AI Credits click (CAN-4691). The
+ * The connect-gate context for every Buy AI Credits click (CAN-4691). The
  * gate shows the toast as it closes, before the billing page opens, so it
  * names where that page will open. Call it at click time: whether hosted
  * settings are openable can change between render and click. A `'browser'`
@@ -530,7 +524,7 @@ export function getAiCreditsConnectContext(
   const opensSettings =
     options.destination !== 'browser' && hostedSettingsOpenable();
   return {
-    title: 'Get AI Credits',
+    title: 'Buy AI Credits',
     subtitle: `Connect your ${brandText.appName} account to add AI Credits.`,
     toastMessage: opensSettings
       ? "You're connected. Opening Billing in Settings so you can add AI Credits."
@@ -539,7 +533,7 @@ export function getAiCreditsConnectContext(
 }
 
 /**
- * The one "Get AI Credits" click handler, shared by every surface that offers
+ * The one "Buy AI Credits" click handler, shared by every surface that offers
  * the purchase action (CAN-2413): the composer's `NoBillingSourceBanner` and
  * the in-transcript `CanopyProxyErrorNotice`.
  *

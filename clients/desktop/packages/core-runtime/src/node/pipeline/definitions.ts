@@ -38,6 +38,8 @@ import {
 } from '@canopy/protocol/canopy-core';
 import {
   isSharedPipelineLocalId,
+  parsePackagedPipelineId,
+  parsePublicPipelineShareId,
   type PipelinePackageManifestV1,
 } from '@canopy/protocol/pipelines';
 import { CanopyOperationError } from '../../runtime/errors';
@@ -114,16 +116,58 @@ export interface PipelineDefinitionSourcePort {
   remote?(
     source: PipelineDefinitionSource,
     definitionId: string,
-    context: PipelineDefinitionSourceContext,
+    context: PipelineDefinitionRemoteContext,
+  ): Promise<PipelineDefinitionRemote | null>;
+}
+
+/**
+ * Where an import reads a remote revision from: a source definitions also
+ * resolve from, or one only installs read and no definition id names: a
+ * public share, or a pipeline a capability package carries.
+ */
+export type PipelineDefinitionRemoteSource =
+  | Extract<PipelineDefinitionSource, 'curated' | 'shared'>
+  | 'publicShare'
+  | 'package';
+
+/** A remote's read for an import. */
+export interface PipelineDefinitionRemoteContext extends PipelineDefinitionSourceContext {
+  /**
+   * The version the caller reviewed, which a remote may forward so the
+   * remote itself refuses a changed revision; core still compares it.
+   */
+  readonly expectedRemoteVersion: string | null;
+}
+
+/** A host binding for a remote only installs read from. */
+export interface PipelineDefinitionRemoteReader {
+  readonly source: Exclude<
+    PipelineDefinitionRemoteSource,
+    PipelineDefinitionSource
+  >;
+  /** The current revision of the remote, or `null` when it has none. */
+  remote(
+    definitionId: string,
+    context: PipelineDefinitionRemoteContext,
   ): Promise<PipelineDefinitionRemote | null>;
 }
 
 /** A remote revision a source offers for install. */
 export interface PipelineDefinitionRemote {
   /** The display fields an install keeps and the exact bytes it stores. */
-  readonly document: PipelineDefinitionSourceDocument;
-  /** The content hash an import pins with `expectedRemoteVersion`. */
+  readonly document: Pick<
+    PipelineDefinitionSourceDocument,
+    'name' | 'description' | 'icon' | 'format' | 'text'
+  > &
+    Partial<PipelineDefinitionSourceDocument>;
+  /** The version an import pins with `expectedRemoteVersion`. */
   readonly remoteVersion: string;
+  /**
+   * The user definition an earlier install of this remote holds, which an
+   * import naming no `definitionId` updates in place rather than adding a
+   * copy; `null` adds one. Read once the package is prepared.
+   */
+  installTarget?(): Promise<string | null>;
   /**
    * The package the revision ships with, prepared once the version pin has
    * passed. A curated revision is validated against it with the rule the
@@ -258,6 +302,8 @@ export class PipelineDefinitionSourceError extends Error {
 
 export interface PipelineDefinitionServiceOptions {
   readonly ports: readonly PipelineDefinitionSourcePort[];
+  /** Remotes only installs read, such as public shares. */
+  readonly remotes?: readonly PipelineDefinitionRemoteReader[];
   /** Ids the host has disabled; every other definition is enabled. */
   readonly disabledDefinitionIds?: () => Promise<ReadonlySet<string>>;
   /** Host normalization inputs, such as the platform's default shell. */
@@ -352,6 +398,17 @@ export function pipelineDefinitionSourcesForId(
   if (isSharedPipelineLocalId(definitionId)) return ['shared'];
   if (definitionId.startsWith('project--')) return ['project'];
   return ['user', 'bundled'];
+}
+
+/** The remote an import id installs from, or `null` for a local id. */
+export function pipelineDefinitionRemoteSourceForId(
+  definitionId: string,
+): PipelineDefinitionRemoteSource | null {
+  if (definitionId.startsWith('curated:')) return 'curated';
+  if (isSharedPipelineLocalId(definitionId)) return 'shared';
+  if (parsePublicPipelineShareId(definitionId) !== null) return 'publicShare';
+  if (parsePackagedPipelineId(definitionId) !== null) return 'package';
+  return null;
 }
 
 export function pipelineDefinitionChecksum(text: string): string {
@@ -966,39 +1023,62 @@ export function createPipelineDefinitionService(
     },
 
     async import(params, signal): Promise<PipelineDefinitionImportResult> {
-      const replaced = params.definitionId ?? null;
-      writerFor(replaced);
-      const [source] = pipelineDefinitionSourcesForId(
+      const named = params.definitionId ?? null;
+      writerFor(named);
+      const source = pipelineDefinitionRemoteSourceForId(
         params.remoteDefinitionId,
       );
-      if (source !== 'curated' && source !== 'shared')
+      if (source === null)
         throw new CanopyOperationError({
           kind: 'invalid_argument',
-          message: `Only curated and shared workflows can be installed: ${params.remoteDefinitionId}`,
+          message: `Only curated, shared, public share and packaged workflows can be installed: ${params.remoteDefinitionId}`,
           retry: { kind: 'never' },
         });
       // A curated import always adds a new editable copy; no existing
       // definition is replaced by one.
-      if (source === 'curated' && replaced !== null)
+      if (source === 'curated' && named !== null)
         throw new CanopyOperationError({
           kind: 'invalid_argument',
           message: 'A curated workflow is installed as a new copy.',
           retry: { kind: 'never' },
         });
-      const port = portFor(source);
-      if (!port?.remote)
-        throw pipelineDefinitionError(
-          'core.pipeline.sourceUnavailable',
-          'This host cannot install workflows from this source.',
-        );
-      const readRemote = port.remote.bind(port);
       const context = { scope: params.targetScope, signal };
+      const readContext = {
+        ...context,
+        expectedRemoteVersion: params.expectedRemoteVersion,
+      };
+      let readRemote: () => Promise<PipelineDefinitionRemote | null>;
+      if (source === 'publicShare' || source === 'package') {
+        const reader = options.remotes?.find(
+          (candidate) => candidate.source === source,
+        );
+        if (!reader)
+          throw pipelineDefinitionError(
+            'core.pipeline.sourceUnavailable',
+            'This host cannot install workflows from this source.',
+          );
+        readRemote = (): Promise<PipelineDefinitionRemote | null> =>
+          reader.remote(params.remoteDefinitionId, {
+            ...readContext,
+            sources: [],
+          });
+      } else {
+        const port = portFor(source);
+        if (!port?.remote)
+          throw pipelineDefinitionError(
+            'core.pipeline.sourceUnavailable',
+            'This host cannot install workflows from this source.',
+          );
+        const readPortRemote = port.remote.bind(port);
+        readRemote = (): Promise<PipelineDefinitionRemote | null> =>
+          readPortRemote(source, params.remoteDefinitionId, {
+            ...readContext,
+            sources: [source],
+          });
+      }
       let remote: PipelineDefinitionRemote | null;
       try {
-        remote = await readRemote(source, params.remoteDefinitionId, {
-          ...context,
-          sources: [source],
-        });
+        remote = await readRemote();
       } catch (error) {
         throw toOperationError(error, 'The workflow could not be read.');
       }
@@ -1016,16 +1096,28 @@ export function createPipelineDefinitionService(
           `Workflow changed since it was reviewed: ${params.remoteDefinitionId}`,
         );
       const text = remote.document.text;
-      if (source === 'curated') {
-        let packageManifest: PipelinePackageManifestV1 | undefined;
+      let packageManifest: PipelinePackageManifestV1 | undefined;
+      try {
+        packageManifest = await remote.packageManifest?.();
+      } catch (error) {
+        throw toOperationError(
+          error,
+          'The workflow package could not be installed.',
+        );
+      }
+      // A caller's named definition first, then the one an earlier install
+      // of this remote holds, else a new copy. Read after the package, so
+      // the copy is current when the install writes it.
+      let replaced = named;
+      if (replaced === null && remote.installTarget) {
         try {
-          packageManifest = await remote.packageManifest?.();
+          replaced = await remote.installTarget();
         } catch (error) {
-          throw toOperationError(
-            error,
-            'The workflow package could not be installed.',
-          );
+          throw toOperationError(error, 'The workflow could not be read.');
         }
+        writerFor(replaced);
+      }
+      if (source === 'curated') {
         // The rule the catalog applied at publication: packaged `project/`
         // actions and child pipelines must be bound by the manifest.
         try {

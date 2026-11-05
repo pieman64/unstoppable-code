@@ -68,6 +68,90 @@ async function validDestination(
   }
 }
 
+/**
+ * Package directories in use by an install that has not recorded them yet,
+ * and the queue each directory's publication and removal run through. Both
+ * are per process: Electron's single-instance lock keeps other writers out.
+ */
+const packageLeases = new Map<string, Set<symbol>>();
+const packageQueues = new Map<string, Promise<void>>();
+
+function packageDestination(packagesRoot: string, digest: string): string {
+  return path.resolve(packagesRoot, 'packages', digestDirectoryName(digest));
+}
+
+async function withPackageQueue<T>(
+  destination: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = packageQueues.get(destination) ?? Promise.resolve();
+  const run = previous.then(operation);
+  const settled = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  packageQueues.set(destination, settled);
+  try {
+    return await run;
+  } finally {
+    if (packageQueues.get(destination) === settled)
+      packageQueues.delete(destination);
+  }
+}
+
+export interface PipelinePackageLease {
+  release(): void;
+}
+
+/**
+ * Keeps a package directory from being removed by another install's
+ * rollback until this install has recorded it (or given up). Take it before
+ * installing or verifying the package; release it once the install record is
+ * written or the install is rolled back.
+ */
+export function leasePipelinePackage(
+  packagesRoot: string,
+  digest: string,
+): PipelinePackageLease {
+  const destination = packageDestination(packagesRoot, digest);
+  const token = Symbol(destination);
+  const leases = packageLeases.get(destination) ?? new Set<symbol>();
+  leases.add(token);
+  packageLeases.set(destination, leases);
+  return {
+    release(): void {
+      const current = packageLeases.get(destination);
+      current?.delete(token);
+      if (current?.size === 0) packageLeases.delete(destination);
+    },
+  };
+}
+
+/**
+ * A rollback's removal of the package directory it created at
+ * `destination` (as `onCreated` reported it). The directory stays when an
+ * install record names it (`isRecorded`) or another install holds a lease on
+ * it; the check and the removal run in the directory's queue, so no install
+ * verifies the directory while it is being removed. `lease` is the caller's
+ * own, which does not count. True when removed.
+ */
+export async function removePipelinePackageUnlessRetained(input: {
+  destination: string;
+  lease?: PipelinePackageLease;
+  isRecorded(): Promise<boolean>;
+}): Promise<boolean> {
+  const destination = path.resolve(input.destination);
+  input.lease?.release();
+  const leased = (): boolean => (packageLeases.get(destination)?.size ?? 0) > 0;
+  return withPackageQueue(destination, async () => {
+    if (leased() || (await input.isRecorded())) return false;
+    // A lease taken while the record lookup ran also keeps it.
+    if (leased()) return false;
+    await fs.rm(destination, { recursive: true, force: true });
+    return true;
+  });
+}
+
 export interface InstallPipelinePackageInput {
   packagesRoot: string;
   digest: string;
@@ -81,10 +165,19 @@ export async function installPipelinePackageAtomically(
   input: InstallPipelinePackageInput,
 ): Promise<string> {
   assertValidPipelinePackage(input.manifest, input.digest);
-  const packageRoot = path.join(input.packagesRoot, 'packages');
-  const destination = path.join(packageRoot, digestDirectoryName(input.digest));
+  const destination = packageDestination(input.packagesRoot, input.digest);
+  return withPackageQueue(destination, () =>
+    installPackageDirectory(input, destination),
+  );
+}
+
+async function installPackageDirectory(
+  input: InstallPipelinePackageInput,
+  destination: string,
+): Promise<string> {
+  const packageRoot = path.dirname(destination);
   if (await exists(destination)) {
-    if (await verifyCachedPipelinePackage(destination, input.digest)) {
+    if (await verifyPackageDirectory(destination, input.digest)) {
       return destination;
     }
     await fs.rm(destination, { recursive: true, force: true });
@@ -142,7 +235,7 @@ export async function installPipelinePackageAtomically(
     await fs.writeFile(sentinelPath, input.digest, 'utf8');
     await fsyncFile(sentinelPath);
     if (await exists(destination)) {
-      if (await verifyCachedPipelinePackage(destination, input.digest)) {
+      if (await verifyPackageDirectory(destination, input.digest)) {
         return destination;
       }
       await fs.rm(destination, { recursive: true, force: true });
@@ -152,7 +245,7 @@ export async function installPipelinePackageAtomically(
       await fs.rename(staging, destination);
       input.onCreated?.(destination);
     } catch (error) {
-      if (await verifyCachedPipelinePackage(destination, input.digest)) {
+      if (await verifyPackageDirectory(destination, input.digest)) {
         return destination;
       }
       throw error;
@@ -163,7 +256,21 @@ export async function installPipelinePackageAtomically(
   }
 }
 
+/**
+ * The verified manifest of a cached package directory, or null. It runs in
+ * the directory's queue, so it never verifies a directory a rollback is
+ * removing or an install is still publishing.
+ */
 export async function verifyCachedPipelinePackage(
+  packagePath: string,
+  digest: string,
+): Promise<PipelinePackageManifestV1 | null> {
+  return withPackageQueue(path.resolve(packagePath), () =>
+    verifyPackageDirectory(packagePath, digest),
+  );
+}
+
+async function verifyPackageDirectory(
   packagePath: string,
   digest: string,
 ): Promise<PipelinePackageManifestV1 | null> {

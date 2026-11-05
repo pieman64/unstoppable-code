@@ -52,8 +52,21 @@ Stream-end placeholder cursors must not seed event recovery.
 A stream is routable as soon as its open reply is read, and an `onFrame`
 option sees every frame. Frames are routed by `subscriptionId` and validated
 against the stream's schemas: a malformed frame ends only that stream as
-`internal`, unknown subscriptions are dropped without a reply, and a reused
-active subscription id fails the session closed.
+`internal`, unknown subscriptions are never answered, and a reused active
+subscription id fails the session closed.
+
+- Frames can outrun their open reply: the POST plus SSE binding carries them
+  on separate legs. While any open waits for its reply, frames of unknown
+  subscriptions are held, up to 16 MiB of encoded bytes in all, not charged
+  to the connection budget. The reply that registers a subscription replays
+  its held frames in order before any later frame; once no open waits, the
+  rest are dropped, so an error reply drops them. When the bound is passed,
+  every open then waiting ends on registration with `resource_exhausted` at
+  its accepted cursor, so a resume from it skips nothing.
+- A stream ended locally, or opened by a call abandoned before its reply, is
+  an orphan: the core still serves it, so its frames are dropped, never held,
+  until the core ends it. Up to 1,024 orphans are tracked; the oldest past
+  that is forgotten.
 
 - Consume by push (`onFrame`) or pull (`frames`), not both. Listener errors
   are contained. Leaving the iterator early keeps the stream live, buffering,

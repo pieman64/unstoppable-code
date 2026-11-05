@@ -6,6 +6,7 @@ import {
 } from '@canopy/desktop-shared/types';
 import {
   ArchivedChatsCard,
+  ListRow,
   type ArchivedChatsCardItem,
 } from '@canopy/ui-shared/components';
 import { AgentProviderIcon } from '@/lib/providerUi';
@@ -264,14 +265,9 @@ export function ArchivedChatsPopover({
             ))}
           </div>
           {overflow > 0 && (
-            <button
-              type="button"
-              onClick={onOpenModal}
-              data-testid="chat-tab-archive-more"
-              className="w-full rounded-md px-3 py-2 text-left text-xs font-medium fg-secondary transition-colors hover:bg-fg-primary/[0.04] hover:fg-primary"
-            >
+            <ListRow onClick={onOpenModal} data-testid="chat-tab-archive-more">
               {overflow} more…
-            </button>
+            </ListRow>
           )}
         </div>
       )}

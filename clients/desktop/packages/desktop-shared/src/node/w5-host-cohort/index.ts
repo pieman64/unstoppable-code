@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, realpathSync, unlinkSync } from 'node:fs';
 import {
-  chmod,
   link,
   lstat,
   mkdir,
@@ -18,6 +17,7 @@ import type {
   PlatformProcessInspection,
   PlatformSecureFileServices,
 } from '@canopy/core-runtime';
+import { ensureW5PrivateRuntimeDirectory } from '@canopy/core-platform/w5-process-file-lock';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import {
   decodeMaintenanceRecord,
@@ -272,32 +272,11 @@ async function maintenanceLiveness(
  * Maintenance verifies `runtime` and `hosts` through the platform helper,
  * ACLs included, before it trusts the member list.
  */
-async function ensureOwnPrivateDirectory(path: string): Promise<void> {
-  const stat = await lstat(path);
-  if (
-    !stat.isDirectory() ||
-    (await realpath(path)) !== path ||
-    stat.uid !== process.getuid?.()
-  )
-    throw new W5HostCohortRefusedError('runtime-unavailable');
-  if ((stat.mode & 0o077) !== 0)
-    // An exposed directory that cannot be tightened is not private.
-    await chmod(path, 0o700).catch((error: unknown) => {
-      throw new W5HostCohortRefusedError('runtime-unavailable', error);
-    });
-}
-
-/** Creates `path` if absent, then checks it before anything is created inside. */
 async function ensureRuntimeDirectory(path: string): Promise<void> {
-  await mkdir(path, { recursive: true, mode: 0o700 }).catch((error: unknown) =>
-    refuseCreate(error, path),
-  );
   try {
-    await ensureOwnPrivateDirectory(path);
+    await ensureW5PrivateRuntimeDirectory(path);
   } catch (error) {
-    // Ownership, links and modes never degrade, whatever the errno.
-    if (error instanceof W5HostCohortRefusedError) throw error;
-    throw new W5HostCohortRefusedError('runtime-unavailable', error);
+    refuseCreate(error, path);
   }
 }
 

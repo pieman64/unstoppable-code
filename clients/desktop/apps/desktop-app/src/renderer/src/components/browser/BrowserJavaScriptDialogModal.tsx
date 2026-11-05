@@ -9,7 +9,11 @@ import {
 import type { BrowserJavaScriptDialog } from '@canopy/desktop-shared/types/browser';
 import { Button } from '@/components/shared/Button';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
-import { ErrorBanner, TextInput, Heading } from '@canopy/ui-shared/components';
+import {
+  DialogModal,
+  ErrorBanner,
+  TextInput,
+} from '@canopy/ui-shared/components';
 
 interface BrowserJavaScriptDialogModalProps {
   browserId: string;
@@ -91,21 +95,6 @@ export function BrowserJavaScriptDialogModal({
     [browserId, dialog.id, dialog.type, promptText, submitting],
   );
 
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent): void => {
-      if (event.key !== 'Escape' || submitting) {
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      void respond(dialog.type === 'alert');
-    };
-    window.addEventListener('keydown', handleKeyDown, true);
-    return (): void => {
-      window.removeEventListener('keydown', handleKeyDown, true);
-    };
-  }, [dialog.type, respond, submitting]);
-
   const handleSubmit = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
     void respond(true);
@@ -119,53 +108,26 @@ export function BrowserJavaScriptDialogModal({
       ? 'Changes you made may not be saved.'
       : '');
 
+  const formId = `browser-dialog-form-${dialog.id}`;
+  // The shared dialog over the browser pane only: Escape answers it as
+  // Cancel (OK for an alert), the scrim does not, and focus stays inside.
   return (
-    <div
-      className="electron-no-drag absolute inset-0 z-modal flex items-center justify-center bg-overlay-scrim p-4"
-      data-canopy-browser-native-overlay="true"
-      data-testid="browser-javascript-dialog-backdrop"
-    >
-      <form
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={`browser-dialog-title-${dialog.id}`}
-        aria-describedby={`browser-dialog-message-${dialog.id}`}
-        className="flex w-full max-w-md flex-col overflow-hidden rounded-xl bg-card shadow-xl"
-        data-testid="browser-javascript-dialog"
-        onSubmit={handleSubmit}
-      >
-        <div className="border-b px-5 py-4">
-          <Heading
-            level={2}
-            variant="title"
-            truncate
-            id={`browser-dialog-title-${dialog.id}`}
-            title={dialog.url}
-          >
-            {dialogOrigin(dialog.url)}
-          </Heading>
-        </div>
-        <div className="flex flex-col gap-4 px-5 py-4">
-          {/* The page writes this message, so it is blocked like the page. */}
-          <p
-            id={`browser-dialog-message-${dialog.id}`}
-            className={`${POSTHOG_REPLAY_BLOCK_CLASS} whitespace-pre-wrap break-words text-s fg-primary`}
-          >
-            {message}
-          </p>
-          {dialog.type === 'prompt' && (
-            <TextInput
-              ref={inputRef}
-              type="text"
-              value={promptText}
-              disabled={submitting}
-              aria-label="Response"
-              onChange={(event): void => setPromptText(event.target.value)}
-            />
-          )}
-          <ErrorBanner error={error} className="" />
-        </div>
-        <div className="flex justify-end gap-2 border-t px-5 py-3">
+    <DialogModal
+      containment="parent"
+      title={<span title={dialog.url}>{dialogOrigin(dialog.url)}</span>}
+      titleId={`browser-dialog-title-${dialog.id}`}
+      onClose={(): void => void respond(dialog.type === 'alert')}
+      closeOnBackdrop={false}
+      closeOnEscape={!submitting}
+      showCloseButton={false}
+      maxWidth="md"
+      trapFocus
+      initialFocusRef={dialog.type === 'prompt' ? inputRef : primaryButtonRef}
+      dataTestId="browser-javascript-dialog"
+      ariaDescribedBy={`browser-dialog-message-${dialog.id}`}
+      overlayDataTestId="browser-javascript-dialog-backdrop"
+      footer={
+        <>
           {showCancel && (
             <Button
               type="button"
@@ -179,13 +141,35 @@ export function BrowserJavaScriptDialogModal({
           <Button
             ref={primaryButtonRef}
             type="submit"
+            form={formId}
             variant="primary"
             disabled={submitting}
           >
             {primaryLabel(dialog)}
           </Button>
-        </div>
+        </>
+      }
+    >
+      <form id={formId} className="flex flex-col gap-4" onSubmit={handleSubmit}>
+        {/* The page writes this message, so it is blocked like the page. */}
+        <p
+          id={`browser-dialog-message-${dialog.id}`}
+          className={`${POSTHOG_REPLAY_BLOCK_CLASS} whitespace-pre-wrap break-words text-s fg-primary`}
+        >
+          {message}
+        </p>
+        {dialog.type === 'prompt' && (
+          <TextInput
+            ref={inputRef}
+            type="text"
+            value={promptText}
+            disabled={submitting}
+            aria-label="Response"
+            onChange={(event): void => setPromptText(event.target.value)}
+          />
+        )}
+        <ErrorBanner error={error} className="" />
       </form>
-    </div>
+    </DialogModal>
   );
 }

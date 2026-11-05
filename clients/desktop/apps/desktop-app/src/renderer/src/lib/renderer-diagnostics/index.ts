@@ -1,9 +1,9 @@
 /**
- * This renderer's frame and delivery diagnostics: long animation frames and
- * the chat and terminal deliveries it applies, aggregated per 30-second
- * window and sent to main on the `local`
- * `observability:record-renderer-summary` channel (recorded on this computer
- * only, as `renderer_frame_summary`).
+ * This renderer's frame and delivery diagnostics: long animation frames of
+ * at least 1 s with the largest focused chat's committed-row bucket, and the
+ * chat and terminal deliveries it applies, aggregated per 30-second window
+ * and sent to main on the local `observability:record-renderer-summary` channel
+ * (recorded on this computer only, as `renderer_frame_summary`).
  *
  * Started once per renderer ({@link useRendererDiagnostics} in `App.tsx` and
  * `AppAdvisorWindowApp.tsx`). Delivery sites call the `record…Applied`
@@ -12,6 +12,7 @@
 import { useEffect } from 'react';
 import type { RendererDiagnosticsSummary } from '@canopy/desktop-shared/types/observability';
 import { getChatInterest, subscribeChatInterest } from '@/lib/chat-interest';
+import { useChatStore } from '@/stores/chatStore';
 import { readRemoteControlContext } from '@/stores/remoteControlStore';
 import {
   RENDERER_DIAGNOSTICS_WINDOW_MS,
@@ -39,6 +40,34 @@ function sendSummary(summary: RendererDiagnosticsSummary): void {
   } catch {
     // A diagnostic that cannot be sent is dropped.
   }
+}
+
+/** Largest committed transcript row count among this window's focused chats. */
+export function readFocusedChatRowCount(): number | null {
+  const interest = getChatInterest();
+  if (interest === null || interest.focused.length === 0) return null;
+
+  const worktreeChats = useChatStore.getState().worktreeChats;
+  let largest: number | null = null;
+  for (const ref of interest.focused) {
+    const scope = worktreeChats[`${ref.projectId}/${ref.worktreeId}`];
+    const tab = scope?.tabs.find((candidate) => candidate.id === ref.chatId);
+    // The descriptor's committed rows only: `messageCount` also counts the
+    // uncommitted active suffix, and `messages` holds only loaded pages.
+    const committedMessageCount = tab?.transcript?.committedMessageCount;
+    if (
+      typeof committedMessageCount !== 'number' ||
+      !Number.isFinite(committedMessageCount) ||
+      committedMessageCount < 0
+    ) {
+      continue;
+    }
+    largest =
+      largest === null
+        ? committedMessageCount
+        : Math.max(largest, committedMessageCount);
+  }
+  return largest;
 }
 
 /** Observe long animation frames where supported; returns a disconnect. */
@@ -71,6 +100,7 @@ export function startRendererDiagnostics(): () => void {
     // The preload's window context: `remote` when main opened this window to
     // show another computer (its `--canopy-remote-window=` argument).
     remoteWindow: readRemoteControlContext().mode === 'remote',
+    focusedChatRowCount: readFocusedChatRowCount,
     send: sendSummary,
   });
   aggregator.setInterest(getChatInterest());

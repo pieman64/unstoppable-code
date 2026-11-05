@@ -85,11 +85,6 @@ const existenceCache = new Map<
   { expiresAt: number; exists: Promise<boolean> }
 >();
 
-export function resetTurnFileRootsCacheForTests(): void {
-  rootsCache.clear();
-  existenceCache.clear();
-}
-
 function existsAsFile(
   target: ShowFilesWorkspaceTarget,
   absolutePath: string,

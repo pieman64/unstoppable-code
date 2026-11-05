@@ -341,7 +341,10 @@ async function generatedContentOwner(
           'Runtime.callFunctionOn',
           {
             objectId,
-            functionDeclaration: 'function() { return this.parentElement; }',
+            // Chromium 156 resolves a ::before box to a CSSPseudoElement,
+            // whose originating element is `element`, not `parentElement`.
+            functionDeclaration:
+              'function() { return this.parentElement ?? this.element ?? null; }',
             objectGroup: group,
           },
           sessionId,

@@ -74,6 +74,7 @@ const RESERVED_OBJECT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const PLUGIN_COLLECTION_ACTIONS = new Set([
   'builtin/agent-prompt',
   'builtin/agent-resume',
+  'builtin/send-agent-message',
 ]);
 const MODEL_ALIAS_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 const RESERVED_AGENT_PLUGIN_COLLECTION_PREFIX = '__canopy_agent_model__:';

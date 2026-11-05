@@ -1,10 +1,14 @@
-import { Button, Heading } from '@canopy/ui-shared/components';
+import {
+  Button,
+  DelayedLoadingPlaceholder,
+  Heading,
+  Skeleton,
+} from '@canopy/ui-shared/components';
 import { useCallback, useEffect, useId, useState, type JSX } from 'react';
 import type {
   ChatTabPluginSelections,
   RecommendedPluginItem,
 } from '@canopy/desktop-shared/types';
-import { LoadingSpinner } from '../shared';
 import { hasVisibleRecommendedPluginItems } from '@/lib/recommendedPlugins';
 import { useProjectsStore } from '@/stores/projectsStore';
 
@@ -37,6 +41,45 @@ type LoadState =
   | { kind: 'loading' }
   | { kind: 'ready'; items: RecommendedPluginItem[] }
   | { kind: 'error'; message: string };
+
+/**
+ * Plain recommendations the loading skeleton lays out: the row list itself,
+ * one installed row and one missing row, so the bars sit where the rows will.
+ */
+const SAMPLE_ITEMS: RecommendedPluginItem[] = [
+  {
+    key: 'skeleton-review',
+    kind: 'skill',
+    displayName: 'Code review',
+    displaySource: 'github.com/acme/skills',
+    ref: {
+      type: 'skill',
+      source: { type: 'builtin', id: 'app' },
+      skill_name: 'code-review',
+    },
+    installed: true,
+    selectedByDefault: true,
+    optedOut: false,
+    installState: 'installed',
+    action: 'none',
+  },
+  {
+    key: 'skeleton-release',
+    kind: 'skill',
+    displayName: 'Release notes',
+    displaySource: 'github.com/acme/skills',
+    ref: {
+      type: 'skill',
+      source: { type: 'builtin', id: 'app' },
+      skill_name: 'release-notes',
+    },
+    installed: false,
+    selectedByDefault: false,
+    optedOut: false,
+    installState: 'installable',
+    action: 'install-and-select',
+  },
+];
 
 type RowAction = 'install-and-select' | 'select' | 'suggest-again';
 
@@ -391,10 +434,15 @@ export function RecommendedPluginsSettingsPanel({
     return (
       <div className="rounded-lg border p-3 space-y-2">
         {headerCopy}
-        <div className="flex items-center gap-2 text-xs fg-secondary">
-          <LoadingSpinner tone="secondary" />
-          <span>Loading recommendations…</span>
-        </div>
+        <DelayedLoadingPlaceholder slowNote="Still loading recommendations…">
+          <Skeleton
+            loading
+            label="Loading recommendations"
+            testId="recommended-plugins-loading"
+          >
+            {renderRowList(SAMPLE_ITEMS)}
+          </Skeleton>
+        </DelayedLoadingPlaceholder>
       </div>
     );
   }

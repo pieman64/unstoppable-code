@@ -2,6 +2,7 @@ import { type JSX, useEffect, useState } from 'react';
 import type { UsageTabSummaryResponse } from '@canopy/desktop-shared/types';
 import { InfoIcon } from '@canopy/ui-shared/icons';
 import { useObservabilityStore } from '@/stores/observabilityStore';
+import { useObservabilityEntriesInterest } from '@/lib/chat-interest';
 import { useEarlyAccessTitle } from '@/lib/earlyAccessTitles';
 import { RefreshSpinner } from '@/components/shared/loading';
 import { Disclosure, ErrorBanner, Heading } from '@canopy/ui-shared/components';
@@ -19,6 +20,7 @@ export function MetricsTab({
   spec,
   retentionDays,
 }: MetricsTabProps): JSX.Element {
+  useObservabilityEntriesInterest();
   const title = useEarlyAccessTitle(spec.title);
   const loadUsageTabSummary = useObservabilityStore(
     (s) => s.loadUsageTabSummary,

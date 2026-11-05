@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { AI_GATEWAY_MODEL_CATALOG_VERSION } from '../../ai-gateway-catalog-versions.mjs';
 
 const packageConfig = JSON.parse(
   readFileSync(
@@ -60,14 +61,9 @@ function gatewayCatalogModels(section, recommendedHarness) {
 // Mirror every package-owned gateway ID so normal E2E startup exercises the
 // live catalog merge instead of silently making native models non-routable.
 // Reading package.json keeps this fixture aligned when the model list changes.
-//
-// `version` must track AI_GATEWAY_MODEL_CATALOG_VERSION in
-// packages/protocol/src/ai-gateway-models. It cannot be imported here (this is
-// a plain .mjs fixture), so bump it by hand: the client rejects any catalog
-// whose version is not current, which drops every model's gateway route and
-// fails the AI Credits specs rather than erroring on the version itself.
+// It serves the wire version a current server returns to this build.
 export const AI_GATEWAY_MODEL_CATALOG = Object.freeze({
-  version: 8,
+  version: AI_GATEWAY_MODEL_CATALOG_VERSION,
   models: Object.freeze([
     ...gatewayCatalogModels(packageConfig['claude-code'], 'claude'),
     ...gatewayCatalogModels(packageConfig.codex, 'codex'),

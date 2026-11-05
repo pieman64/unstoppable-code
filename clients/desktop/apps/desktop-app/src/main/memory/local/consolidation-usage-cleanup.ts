@@ -1,6 +1,9 @@
 import { access, readdir } from 'node:fs/promises';
 import { isAbsolute, join, relative, sep } from 'node:path';
-import { memoryFileIdentity, topicIdentity } from './topic-identity';
+import {
+  memoryFileIdentity,
+  topicIdentity,
+} from '@canopy/memory-consolidation/topic-identity';
 import { deleteUsageEntries } from './usage';
 
 const TOPICS_PREFIX = 'topics/';

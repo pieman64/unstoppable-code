@@ -65,6 +65,8 @@ export const CANONICAL_DEFINITIONS = {
       idempotency: 'inherent',
       params: z.strictObject({
         count: z.number().int().nonnegative(),
+        // Ticks sent ahead of the open reply, as the POST plus SSE legs race.
+        early: z.number().int().nonnegative().optional(),
         hold: z.boolean().optional(),
         cursor: CanopyStreamCursorSchema.nullable().optional(),
       }),
@@ -142,8 +144,9 @@ export interface CanonicalCoreServer {
  * Plays a canonical core on `server`: answers `core.runtime.initialize`
  * (overridable by a handler) and runs handlers concurrently, so replies can
  * land out of order. Serves `core.test.ticks` after any handler for it, which
- * may throw, return a replacement open result, or return nothing: `count`
- * ticks follow the open reply, then an end unless `hold` is set.
+ * may throw, return a replacement open result, or return nothing: `early`
+ * ticks precede the open reply and `count` follow it, then an end unless
+ * `hold` is set.
  */
 export function serveCanonicalCore(
   server: CanopyFramedConnection,
@@ -191,13 +194,16 @@ export function serveCanonicalCore(
     const { id, params } = request;
     const subscriptionId = subscriptionIdFor(id);
     streams.set(subscriptionId, sequence);
+    const early = typeof params.early === 'number' ? params.early : 0;
+    for (let tick = 0; tick < early; tick += 1)
+      await emit(subscriptionId, { tick });
     await send({
       jsonrpc: '2.0',
       id,
       result: { subscriptionId, acceptedCursor: params.cursor ?? null },
     });
     const count = typeof params.count === 'number' ? params.count : 0;
-    for (let tick = 0; tick < count; tick += 1)
+    for (let tick = early; tick < early + count; tick += 1)
       await emit(subscriptionId, { tick });
     if (params.hold !== true) await end(subscriptionId);
   };

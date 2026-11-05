@@ -320,9 +320,10 @@ export async function ensureDefaultCoworkWorkspace(
  */
 export async function listCoworkWorkspacesAsChatProjects(
   sidebarSnapshot?: SidebarItemsSnapshot,
+  options: { provisionDefaults?: boolean } = {},
 ): Promise<ChatProjectData[]> {
   const context = getWorkspaceContextService().getState().context;
-  if (context.kind === 'organization') {
+  if (options.provisionDefaults !== false && context.kind === 'organization') {
     detachedWorkCallback(() =>
       import('./org-cowork-binding-deps').then(
         ({ startOrgDefaultCoworkProvisioning }) =>
@@ -342,6 +343,7 @@ export async function listCoworkWorkspacesAsChatProjects(
   const indexProvesDefaultMissing =
     indexAuthority === 'ok' || indexAuthority === 'absent';
   if (
+    options.provisionDefaults !== false &&
     indexProvesDefaultMissing &&
     !coworkItems.some((item) => item.id === DEFAULT_COWORK_WORKSPACE_ID)
   ) {
@@ -430,7 +432,7 @@ export async function createCoworkWorkspaceFromTemplate(
     template.instructions,
     'utf8',
   );
-  // Same pairing the interactive save path uses (`saveChatProjectClaudeMd`):
+  // Template seeding retains the managed-home CLAUDE.md pairing convention:
   // a CLAUDE.md write is only half the contract. Without the AGENTS.md
   // symlink/copy, an installed template's instructions never reach a Codex
   // session in the new workspace until the user re-saves them by hand.

@@ -1,5 +1,11 @@
 # Live browser-agent benchmark
 
+> **No runner.** The golden-only test cut ([golden tests](../../../../../docs/golden-tests.md))
+> deleted `browser-agent-bench.spec.ts`, its Playwright config and the
+> `bench:browser-agent*` scripts. The harness, evaluator and scenarios below
+> stay; restoring the benchmark means restoring its spec outside the committed
+> tree.
+
 A manually run benchmark for the in-app browser tools. Each scenario sends a
 real prompt to a real model in an E2E Canopy instance. It then grades the
 result and records how efficiently the agent got there. Use it to tune browser

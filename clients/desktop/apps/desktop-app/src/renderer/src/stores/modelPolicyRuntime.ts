@@ -278,13 +278,3 @@ export function setRendererActiveWorkOwner(
   bumpRendererModelFactsVersion();
   return true;
 }
-
-/** Test-only reset so a spec can re-enter the pre-hydration state. */
-export function resetRendererModelPolicyForTests(): void {
-  currentPolicyIndex = EMPTY_POLICY_INDEX;
-  currentGatewayIndex = EMPTY_GATEWAY_INDEX;
-  currentActiveOwner = undefined;
-  currentPolicyHydrated = false;
-  recomputeOwnerFacts();
-  bumpRendererModelFactsVersion();
-}

@@ -5,13 +5,15 @@ import { CapabilityGate } from './CapabilityGate';
 
 /** Copy for repeat-task skill suggestions; the Notice gallery quotes it. */
 export const SKILL_SUGGESTION_COPY = {
-  title: (count: number): string => `You've asked for this ${count} times`,
+  title: (count: number): string =>
+    `You've asked for this ${count} ${count === 1 ? 'time' : 'times'}`,
   promptMessage: "Turn it into a skill so it's one step next time.",
   chainMessage: (skillCount: number): string =>
     `Turn these ${skillCount} skills into one skill.`,
   create: 'Create skill',
   dismiss: 'Dismiss',
   dismissLabel: 'Dismiss skill suggestion',
+  dismissForever: 'Don’t show again',
   modalTitle: 'Suggested skills',
   viewSuggestions: 'View suggestions',
   askedCount: (count: number): string => `Asked ${count} times`,
@@ -28,7 +30,12 @@ export interface SkillSuggestionBannerProps {
   readonly chainSkills?: readonly string[];
   readonly onCreate: () => void;
   readonly onDismiss: () => void;
-  /** Disables both actions while a resolution is in flight. */
+  /**
+   * Don't show again: retires skill suggestions as a category (CAN-4343).
+   * Omitted where the host keeps no suggestion preferences.
+   */
+  readonly onDismissForever?: () => void;
+  /** Disables the actions while a resolution is in flight. */
   readonly busy?: boolean;
 }
 
@@ -42,6 +49,7 @@ export function SkillSuggestionBanner({
   chainSkills = [],
   onCreate,
   onDismiss,
+  onDismissForever,
   busy = false,
 }: SkillSuggestionBannerProps): JSX.Element {
   return (
@@ -52,16 +60,22 @@ export function SkillSuggestionBanner({
         title={SKILL_SUGGESTION_COPY.title(count)}
         data-testid="skill-suggestion-banner"
         data-suggestion-kind={kind}
+        onDismiss={() => {
+          if (!busy) onDismiss();
+        }}
+        dismissLabel={SKILL_SUGGESTION_COPY.dismissLabel}
+        dismissTestId="skill-suggestion-banner-dismiss"
         actions={
           <>
-            <NoticeButton
-              data-testid="skill-suggestion-banner-dismiss"
-              aria-label={SKILL_SUGGESTION_COPY.dismissLabel}
-              disabled={busy}
-              onClick={onDismiss}
-            >
-              {SKILL_SUGGESTION_COPY.dismiss}
-            </NoticeButton>
+            {onDismissForever ? (
+              <NoticeButton
+                data-testid="skill-suggestion-banner-dismiss-forever"
+                disabled={busy}
+                onClick={onDismissForever}
+              >
+                {SKILL_SUGGESTION_COPY.dismissForever}
+              </NoticeButton>
+            ) : null}
             <NoticeButton
               variant="primary"
               data-testid="skill-suggestion-banner-create"

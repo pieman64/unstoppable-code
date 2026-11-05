@@ -6,6 +6,7 @@ import {
 } from '@canopy/protocol/agent-artifacts';
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual, TextDecoder } from 'node:util';
+import { StringDecoder } from 'node:string_decoder';
 import {
   copyFile,
   mkdir,
@@ -58,8 +59,8 @@ import {
 import { MAX_TRANSCRIPT_ROW_BYTES } from './chat-transcript-prefix-replace';
 import {
   FieldSpool,
-  SPOOL_MAX_STRING_CODE_UNITS,
   SPOOL_YIELD_BYTES,
+  Utf8FieldEncoder,
   yieldToEventLoop,
 } from './chat-transcript-field-spool';
 import {
@@ -70,6 +71,45 @@ import {
 import { fsyncDirectory } from './fsync-directory';
 import { isErrnoException } from './type-guards';
 import { isPersistedChatBlock } from './persisted-chat-message-validation';
+
+/**
+ * Stage the text of a UTF-8 file, then a held high surrogate, as the exact
+ * code units of a new spool, and remove the file. The file holds the clean
+ * prefix of a body, so decoding it is lossless.
+ */
+async function spoolUtf8Prefix(
+  directory: string,
+  encodedPath: string,
+  held: string,
+  signal: AbortSignal | undefined,
+): Promise<FieldSpool> {
+  const spool = await FieldSpool.create(directory);
+  try {
+    const reader = await open(encodedPath, 'r');
+    try {
+      const decoder = new StringDecoder('utf8');
+      const raw = Buffer.allocUnsafe(256 * 1024);
+      for (let position = 0; ; ) {
+        signal?.throwIfAborted();
+        const { bytesRead } = await reader.read(raw, 0, raw.length, position);
+        if (bytesRead === 0) break;
+        position += bytesRead;
+        const text = decoder.write(raw.subarray(0, bytesRead));
+        if (text.length > 0) await spool.append(text, signal);
+      }
+      const rest = decoder.end();
+      if (rest.length > 0) await spool.append(rest, signal);
+    } finally {
+      await reader.close();
+    }
+    await rm(encodedPath, { force: true });
+    if (held.length > 0) await spool.append(held, signal);
+    return spool;
+  } catch (error) {
+    await spool.discard();
+    throw error;
+  }
+}
 
 /**
  * How {@link ChatTranscriptArtifacts.externalize} treats body fields; callers
@@ -1425,13 +1465,11 @@ export class ChatTranscriptArtifacts {
     await mkdir(directory, { recursive: true });
     await fsyncDirectory(join(this.transcriptsRoot, 'tool-output'));
     await fsyncDirectory(this.transcriptsRoot);
-    const spool = await FieldSpool.create(directory);
     const encodedPath = join(directory, `.${randomUUID()}.tmp`);
     let encodedHandle: FileHandle | undefined;
+    let spool: FieldSpool | undefined;
     try {
-      for await (const chunk of chunks) await spool.append(chunk, signal);
-      const encoding = await spool.finish(signal);
-      const hash = createHash('sha256');
+      let hash = createHash('sha256');
       let byteLength = 0;
       let bytesSinceYield = 0;
       const consume = async (bytes: Buffer): Promise<void> => {
@@ -1444,20 +1482,53 @@ export class ChatTranscriptArtifacts {
         byteLength += bytes.length;
         bytesSinceYield += bytes.length;
       };
-      if (encoding === 'utf-16le') {
-        // The staged code units already are the artifact's exact bytes.
-        for await (const bytes of spool.rawChunks(signal)) await consume(bytes);
-      } else {
-        encodedHandle = await open(encodedPath, 'wx', 0o600);
-        const buffer = Buffer.allocUnsafe(SPOOL_MAX_STRING_CODE_UNITS * 3);
-        for await (const text of spool.strings(signal)) {
-          const written = buffer.write(text, 0, buffer.length, 'utf8');
-          if (written !== Buffer.byteLength(text, 'utf8'))
-            throw new Error('Staged transcript field exceeded its encoder');
-          const bytes = buffer.subarray(0, written);
-          await consume(bytes);
-          await encodedHandle.writeFile(bytes);
+      // A body without an unpaired surrogate is stored as UTF-8, so it is
+      // encoded and hashed as it arrives. One that turns out to hold one is
+      // stored as its exact UTF-16LE code units: the clean prefix written so
+      // far decodes losslessly into a spool, which takes the rest.
+      const encodedFile = await open(encodedPath, 'wx', 0o600);
+      encodedHandle = encodedFile;
+      const encoder = new Utf8FieldEncoder();
+      for await (const chunk of chunks) {
+        signal?.throwIfAborted();
+        if (!spool && encoder.accept(chunk)) {
+          await encoder.encode(chunk, async (bytes) => {
+            await consume(bytes);
+            await encodedFile.writeFile(bytes);
+          });
+          continue;
         }
+        if (!spool) {
+          await encodedFile.close();
+          encodedHandle = undefined;
+          spool = await spoolUtf8Prefix(
+            directory,
+            encodedPath,
+            encoder.held,
+            signal,
+          );
+        }
+        await spool.append(chunk, signal);
+      }
+      if (!spool && !encoder.finish()) {
+        await encodedFile.close();
+        encodedHandle = undefined;
+        spool = await spoolUtf8Prefix(
+          directory,
+          encodedPath,
+          encoder.held,
+          signal,
+        );
+      }
+      let encoding: 'utf-8' | 'utf-16le' = 'utf-8';
+      if (spool) {
+        encoding = await spool.finish(signal);
+        if (encoding !== 'utf-16le')
+          throw new Error('Staged transcript field lost its surrogate');
+        // The staged code units already are the artifact's exact bytes.
+        hash = createHash('sha256');
+        byteLength = 0;
+        for await (const bytes of spool.rawChunks(signal)) await consume(bytes);
       }
       const sha256 = hash.digest('hex');
       const ref: PersistedToolOutputReference = {
@@ -1470,14 +1541,14 @@ export class ChatTranscriptArtifacts {
       };
       signal?.throwIfAborted();
       if (await this.syncIfVerified(chatId, ref)) return ref;
-      const temporary = encodedHandle ? encodedPath : spool.path;
-      if (encodedHandle) await encodedHandle.sync();
-      else await spool.sync();
+      const temporary = spool ? spool.path : encodedPath;
+      if (spool) await spool.sync();
+      else await encodedHandle?.sync();
       recordChatStorageFileWrite(temporary, byteLength, false);
       recordChatStorageFileSync(temporary);
       await encodedHandle?.close();
       encodedHandle = undefined;
-      await spool.close();
+      await spool?.close();
       signal?.throwIfAborted();
       await this.publishTemporary(chatId, temporary, ref, created);
       return ref;
@@ -1487,7 +1558,7 @@ export class ChatTranscriptArtifacts {
         await encodedHandle?.close();
       } finally {
         await rm(encodedPath, { force: true });
-        await spool.discard();
+        await spool?.discard();
       }
     }
   }

@@ -1,3 +1,4 @@
+import type { W5FileConflict } from './apply';
 import {
   W5_CAPTURE_LIMITS,
   type W5CaptureEvidence,
@@ -11,6 +12,7 @@ import {
   KEYED_RECEIPT_RETRY_WINDOW_MS,
   type KeyedReceiptKey,
 } from '../../../kernel/keyed-receipt';
+import { isCleanConflictEvidence } from './apply-evidence';
 import { openW5CommitLogDatabase } from './database';
 import { W5CommitLogError, W5CommitRefusedError } from './errors';
 import { fingerprintW5File } from './fingerprint';
@@ -647,12 +649,11 @@ export class W5CommitLog {
    * refusal changes nothing.
    */
   commit(request: W5CommitRequest): W5CommitResult {
+    this.refuseListReservation(request);
     const result = this.transaction((): W5CommitResult => {
       const replay = this.replayOrAdmitKey(request);
       if (replay) return replay;
-      this.refuseUnlessReservationIsHeld(request);
-      this.refuseStaleRevisions(request.expectedRevisions ?? []);
-      this.refuseUnappliedChanges(request.files);
+      this.refuseUndecidableCommit(request);
       return this.recordCommit(request);
     });
     if (result.status === 'committed') {
@@ -660,6 +661,34 @@ export class W5CommitLog {
       if (this.commitsSinceCompaction >= W5_COMPACTION_INTERVAL) this.compact();
     }
     return result;
+  }
+
+  /**
+   * The typed refusals a decision would raise, in order, deciding nothing: a
+   * file recheck must not hide why this commit could never have been decided.
+   */
+  refuseInadmissibleCommit(request: W5CommitRequest): void {
+    this.refuseListReservation(request);
+    this.refuseUndecidableCommit(request);
+  }
+
+  /** This low-level repository operation has never owned external effects. */
+  private refuseListReservation(request: W5CommitRequest): void {
+    // Composite/reserved producers must use their semantic operation name.
+    if (
+      request.operation === 'w5.worktree_list.write' &&
+      request.reservationId !== undefined
+    )
+      throw new W5CommitRefusedError(
+        'invalid-state',
+        'A list update cannot complete a worktree operation reservation.',
+      );
+  }
+
+  private refuseUndecidableCommit(request: W5CommitRequest): void {
+    this.refuseUnlessReservationIsHeld(request);
+    this.refuseStaleRevisions(request.expectedRevisions ?? []);
+    this.refuseUnappliedChanges(request.files);
   }
 
   /**
@@ -846,6 +875,16 @@ export class W5CommitLog {
       });
   }
 
+  /** Local paths for an explicit retry's execution-owner lock. */
+  recoveryCommitPaths(commitId: number): string[] {
+    return this.db
+      .prepare(
+        'SELECT path FROM w5_commit_files WHERE commit_id = ? ORDER BY path',
+      )
+      .all(commitId)
+      .map((row) => asText(row.path));
+  }
+
   /** Commits waiting for manual recovery, oldest first. */
   listRecoveryRequiredCommitIds(): number[] {
     return this.db
@@ -855,6 +894,39 @@ export class W5CommitLog {
       )
       .all()
       .map((row) => asInteger(row.commit_id));
+  }
+
+  /** Local recovery evidence, never a wire DTO. Invalid JSON remains ineligible. */
+  listRecoveryRequiredCommits(): Array<{
+    commitId: number;
+    operation: string;
+    hasReceipt: boolean;
+    fileCount: number;
+    diagnostics: { conflicts: W5FileConflict[]; written: string[] } | undefined;
+  }> {
+    return this.db
+      .prepare(
+        `SELECT c.commit_id, c.operation, c.diagnostics_json,
+      EXISTS(SELECT 1 FROM w5_receipts r WHERE r.commit_id = c.commit_id) AS has_receipt,
+      (SELECT COUNT(*) FROM w5_commit_files f WHERE f.commit_id = c.commit_id) AS file_count
+      FROM w5_commits c WHERE c.state = 'recovery-required' ORDER BY c.commit_id`,
+      )
+      .all()
+      .map((row) => {
+        let evidence: unknown;
+        try {
+          evidence = parseJson(asNullableText(row.diagnostics_json));
+        } catch {
+          evidence = undefined;
+        }
+        return {
+          commitId: asInteger(row.commit_id),
+          operation: asText(row.operation),
+          hasReceipt: asInteger(row.has_receipt) !== 0,
+          fileCount: asInteger(row.file_count),
+          diagnostics: isCleanConflictEvidence(evidence) ? evidence : undefined,
+        };
+      });
   }
 
   /** Content-free apply diagnostics for the host's launch report. */
@@ -871,7 +943,12 @@ export class W5CommitLog {
       )
       .all()
       .map((row) => {
-        const value: unknown = parseJson(asNullableText(row.diagnostics_json));
+        let value: unknown;
+        try {
+          value = parseJson(asNullableText(row.diagnostics_json));
+        } catch {
+          value = undefined;
+        }
         const diagnostics =
           typeof value === 'object' && value !== null ? value : {};
         const conflicts: unknown = Reflect.get(diagnostics, 'conflicts');
@@ -1060,17 +1137,28 @@ export class W5CommitLog {
    * that has not reached them yet, so it waits until that one is applied.
    */
   private refuseUnappliedChanges(files: readonly W5FileChange[]): void {
+    // Unresolved commits first: starting from the path index walks the file's
+    // whole history on every commit. IN keeps two index searches (a range
+    // pair would scan the index under ORDER BY); state allows only these two
+    // values besides 'applied'.
     const pending = this.db.prepare(
-      `SELECT c.commit_id FROM w5_commit_files f JOIN w5_commits c USING (commit_id)
-        WHERE f.path = ? AND c.state != 'applied' LIMIT 1`,
+      `SELECT c.commit_id, c.operation
+        FROM w5_commits c INDEXED BY w5_commits_by_state CROSS JOIN w5_commit_files f
+          ON f.commit_id = c.commit_id AND f.path = ?
+        WHERE c.state IN ('committed', 'recovery-required')
+        ORDER BY c.commit_id LIMIT 1`,
     );
     for (const file of files) {
       const row = pending.get(file.path);
       if (row) {
         throw new W5CommitRefusedError(
           'unapplied-change',
-          'An earlier change to this project has not finished saving.',
-          { path: file.path, commitId: asInteger(row.commit_id) },
+          `An earlier change (commit ${asInteger(row.commit_id)}, ${asText(row.operation)}) to ${file.path} has not finished saving.`,
+          {
+            path: file.path,
+            commitId: asInteger(row.commit_id),
+            operation: asText(row.operation),
+          },
         );
       }
     }

@@ -2472,11 +2472,11 @@ const searchLedgerEntriesToolName =
 const LEDGER_PLAN_MODE_TOOL_NOTE =
   'Allowed in Plan mode as bookkeeping; it does not edit files or run commands.';
 
-export const ADD_LEDGER_ENTRY_DESCRIPTION = `Add one entry to this chat's Feed, a concise record of noteworthy work for future readers. Use TASK for scoped, multi-step work (default status TODO), ACTION for a significant or unexpected action (default IN_PROGRESS), and DECISION or OBSERVATION for a choice or useful finding (default INFO). Keep the title and content brief; put extensive notes in files and list them in referenceFiles. owner defaults to "self"; to assign another owner, pass { actorId, eligibilityToken } from SearchFeedEntries / ${searchLedgerEntriesToolName} with includeAssignableOwners. Set supersedesEntryId to record a correction to an earlier entry. After an uncertain failure, retry with the same requestKey or search for the entry first. ${appName} records the scope, author and time. ${LEDGER_PLAN_MODE_TOOL_NOTE}`;
+export const ADD_LEDGER_ENTRY_DESCRIPTION = `Add one entry to this chat's Feed, a concise record of noteworthy work for future readers. Plan with one OPERATION per independent work line. Use parentEntryId to put TASKs under operations and subtasks under tasks (operation > task > subtask); ACTION, DECISION and OBSERVATION entries may also sit under an operation or task. Operations are top-level. Use TASK for scoped, multi-step work (default status TODO), ACTION for a significant or unexpected action (default IN_PROGRESS), and DECISION or OBSERVATION for a choice or useful finding (default INFO). Keep the title and content brief; put extensive notes in files and list them in referenceFiles. owner defaults to "self"; to assign another owner, pass { actorId, eligibilityToken } from SearchFeedEntries / ${searchLedgerEntriesToolName} with includeAssignableOwners. Set supersedesEntryId to record a correction to an earlier entry. After an uncertain failure, retry with the same requestKey or search for the entry first. ${appName} records the scope, author and time. ${LEDGER_PLAN_MODE_TOOL_NOTE}`;
 
-export const SEARCH_LEDGER_ENTRIES_DESCRIPTION = `Search this chat's Feed. Filter by query words, entryIds (up to 25), owner or author ("self" or { actorId }), types, statuses, attribution, and created/updated time bounds; sort by created_desc (default) or updated_desc; page with limit (default 30, maximum 100) and cursor. At the start of a turn or resumed task, search with owner "self" and statuses TODO, IN_PROGRESS, BLOCKED and NEEDS_REVIEW. Results include each entry's revision for UpdateFeedEntry. Set includeAssignableOwners to also list the owners you can assign, with eligibility tokens (page them with ownersCursor). Read-only.`;
+export const SEARCH_LEDGER_ENTRIES_DESCRIPTION = `Search this chat's Feed. Filter by query words, entryIds (up to 25), owner or author ("self" or { actorId }), types, statuses, attribution, and created/updated time bounds; sort by created_desc (default) or updated_desc; page with limit (default 30, maximum 100) and cursor. Use parentEntryId for direct children or null for top-level entries, rootEntryId for an entry and its whole subtree, and authorIn for entries by any listed author. At the start of a turn or resumed task, search with owner "self" and statuses TODO, IN_PROGRESS, BLOCKED and NEEDS_REVIEW. Results include each entry's revision for UpdateFeedEntry. Set includeAssignableOwners to also list the owners you can assign, with eligibility tokens (page them with ownersCursor). Read-only.`;
 
-export const UPDATE_LEDGER_ENTRY_DESCRIPTION = `Change the status and/or owner of an open entry in this chat's Feed that you own. Pass entryId and the expectedRevision you last read. Nothing else about an entry can change, and Completed, Failed and Info entries cannot change at all: add a new entry with supersedesEntryId for a correction. If the entry changed since you read it, the current entry is returned instead: reconsider before retrying rather than overwriting. owner accepts "self" or { actorId, eligibilityToken } from SearchFeedEntries / ${searchLedgerEntriesToolName} with includeAssignableOwners; assignment records responsibility and does not start another session. After an uncertain failure, retry with the same requestKey or search first. ${LEDGER_PLAN_MODE_TOOL_NOTE}`;
+export const UPDATE_LEDGER_ENTRY_DESCRIPTION = `Change the status, owner and/or parent of an open entry in this chat's Feed that you own. Pass entryId and the expectedRevision you last read. Use parentEntryId to move it in the operation > task > subtask hierarchy or null to make it top-level. Nothing else about an entry can change, and Completed, Failed and Info entries cannot change at all: add a new entry with supersedesEntryId for a correction. Closing an entry with open children requires openChildren: complete, fail or detach; detach moves the open children and their subtrees to top level. If the entry changed since you read it, the current entry is returned instead: reconsider before retrying rather than overwriting. owner accepts "self" or { actorId, eligibilityToken } from SearchFeedEntries / ${searchLedgerEntriesToolName} with includeAssignableOwners; assignment records responsibility and does not start another session. After an uncertain failure, retry with the same requestKey or search first. ${LEDGER_PLAN_MODE_TOOL_NOTE}`;
 
 const LEDGER_OWNER_TARGET_DESCRIPTION =
   '"self", or { actorId, eligibilityToken } from SearchFeedEntries with includeAssignableOwners.';
@@ -2485,14 +2485,16 @@ const LEDGER_REQUEST_KEY_DESCRIPTION =
 
 const ADD_LEDGER_ENTRY_PROPERTY_DESCRIPTIONS: Readonly<Record<string, string>> =
   {
-    type: 'TASK, ACTION, DECISION or OBSERVATION.',
+    type: 'OPERATION, TASK, ACTION, DECISION or OBSERVATION.',
+    parentEntryId:
+      'Parent operation or task ID; use the operation > task > subtask hierarchy.',
     title: 'Brief single-line title.',
     content: 'Brief plain-text details.',
     highlights: 'Optional short key points.',
     referenceFiles:
       'Files that hold longer notes: { rootId, path, startLine? } with path relative to the root.',
     status:
-      'Initial status. Defaults to TODO for TASK, IN_PROGRESS for ACTION and INFO otherwise.',
+      'Initial status. Defaults to TODO for OPERATION and TASK, IN_PROGRESS for ACTION, and INFO for DECISION or OBSERVATION.',
     owner: LEDGER_OWNER_TARGET_DESCRIPTION,
     supersedesEntryId: 'The earlier entry this one corrects.',
     requestKey: LEDGER_REQUEST_KEY_DESCRIPTION,
@@ -2518,6 +2520,10 @@ const SEARCH_LEDGER_ENTRIES_PROPERTY_DESCRIPTIONS: Readonly<
   includeAssignableOwners:
     'Also list the owners you can assign, with eligibility tokens.',
   ownersCursor: 'owners.nextCursor from the previous owners page.',
+  parentEntryId:
+    'Find the direct children of this entry; use null for top-level entries.',
+  rootEntryId: 'Return this entry and its full subtree.',
+  authorIn: 'Match entries authored by any of these actor IDs.',
 };
 
 const UPDATE_LEDGER_ENTRY_PROPERTY_DESCRIPTIONS: Readonly<
@@ -2527,6 +2533,10 @@ const UPDATE_LEDGER_ENTRY_PROPERTY_DESCRIPTIONS: Readonly<
   expectedRevision: 'The revision you last read.',
   status: 'New status.',
   owner: LEDGER_OWNER_TARGET_DESCRIPTION,
+  parentEntryId:
+    'Set the new parent entry ID, or null to move this entry to the top level.',
+  openChildren:
+    'When closing a parent with open children, choose complete, fail or detach; detach moves them and their subtrees to the top level.',
   requestKey: LEDGER_REQUEST_KEY_DESCRIPTION,
 };
 

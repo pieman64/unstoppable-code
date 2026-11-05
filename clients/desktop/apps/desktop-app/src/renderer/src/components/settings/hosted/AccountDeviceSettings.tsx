@@ -1,8 +1,10 @@
 import type { JSX, ReactNode } from 'react';
 import type { AccountSettingsPage } from '@canopy/protocol/settings';
 import {
-  LoadingIndicator,
+  DelayedLoadingPlaceholder,
   NoticeShapeProvider,
+  Skeleton,
+  ToggleSwitch,
 } from '@canopy/ui-shared/components';
 import { SettingsCard } from '@canopy/ui-shared/components/settings/SettingsCard';
 import { ProviderAuthPanel } from '@/components/auth/ProviderAuthPanel';
@@ -18,6 +20,7 @@ import {
 } from '../NotificationDeviceSections';
 import { useNotificationSettings } from '../notification-settings';
 import { PersonalCatalogRows } from '../PersonalCatalogSettings';
+import { SettingsRow } from '../SettingsLayout';
 
 /**
  * Desktop-only "On this computer" sections under a hosted account page
@@ -109,6 +112,61 @@ function ProfilePageDeviceSettings(): JSX.Element | null {
   );
 }
 
+const noop = (): void => undefined;
+
+/** Plain notification rows the loading skeleton lays out. */
+const SAMPLE_NOTIFICATION_ROWS = [
+  {
+    label: 'Show in-app banners',
+    description: 'Banners inside the app for the events you choose below.',
+  },
+  {
+    label: 'Send OS notifications',
+    description:
+      'Native desktop notifications while the app is in the background.',
+  },
+  {
+    label: 'Skip when focused',
+    description: 'No OS notification while this window is in front.',
+  },
+] as const;
+
+/**
+ * The notifications card while preferences load: the "On this computer"
+ * card and its switch rows, from sample rows. No switch shows a value the
+ * user did not choose: the skeleton draws over them unseen.
+ */
+function NotificationsDeviceSkeleton(): JSX.Element {
+  return (
+    <DelayedLoadingPlaceholder slowNote="Still loading notification settings…">
+      <Skeleton
+        loading
+        label="Loading notification settings"
+        testId="account-device-settings-loading"
+      >
+        <SettingsCard title="On this computer">
+          <DeviceCardRows>
+            {SAMPLE_NOTIFICATION_ROWS.map((row) => (
+              <SettingsRow
+                key={row.label}
+                label={row.label}
+                description={row.description}
+                control={
+                  <ToggleSwitch
+                    checked={false}
+                    label={row.label}
+                    onChange={noop}
+                  />
+                }
+              />
+            ))}
+          </DeviceCardRows>
+        </SettingsCard>
+      </Skeleton>
+    </DelayedLoadingPlaceholder>
+  );
+}
+
 function NotificationsPageDeviceSettings(): JSX.Element {
   const settings = useNotificationSettings();
   return (
@@ -166,14 +224,7 @@ function NotificationsPageDeviceSettings(): JSX.Element {
           </SettingsCard>
         </>
       ) : (
-        // No toggle shows a default the user did not choose.
-        <div
-          className="text-s fg-secondary"
-          role="status"
-          data-testid="account-device-settings-loading"
-        >
-          <LoadingIndicator />
-        </div>
+        <NotificationsDeviceSkeleton />
       )}
     </DeviceSettingsRegion>
   );

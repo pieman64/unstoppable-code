@@ -33,6 +33,64 @@ import type {
 import { getWorktreeDataDir } from '../../lib/paths';
 import type { DelegationRecoveryLoaderOptions } from './record-reader-contract';
 
+export interface DelegationReplayEvidence {
+  readonly anchored: ReadonlySet<number>;
+  readonly loggedRuns: ReadonlySet<string>;
+}
+
+/**
+ * Summarize one leased parent scan. Keep only retained-run lookup keys and
+ * matches, never parent messages or a transcript-sized message-id index.
+ * The caller excludes committed-id active echoes before this consumer runs.
+ * Stream descriptor overlays need not be expanded: they preserve the anchor
+ * and storage identity fields inspected here.
+ */
+export async function scanDelegationReplayEvidence(
+  messages: AsyncIterable<PersistedChatMessage>,
+  transcripts: readonly AgentDelegationTranscript[],
+): Promise<DelegationReplayEvidence> {
+  const turns = new Map<string, number[]>();
+  const tools = new Map<string, number[]>();
+  const delegations = new Map<string, number[]>();
+  const wantedRuns = new Set<string>();
+  const add = (
+    map: Map<string, number[]>,
+    key: string,
+    index: number,
+  ): void => {
+    const indices = map.get(key);
+    if (indices) indices.push(index);
+    else map.set(key, [index]);
+  };
+  transcripts.forEach((transcript, index): void => {
+    add(turns, transcript.parentTurnId, index);
+    add(tools, transcript.parentToolCallId, index);
+    add(delegations, transcript.delegationId, index);
+    wantedRuns.add(
+      `${transcript.delegationId}:${String(transcript.runGeneration)}`,
+    );
+  });
+  const anchored = new Set<number>();
+  const loggedRuns = new Set<string>();
+  const match = (indices: readonly number[] | undefined): void => {
+    for (const index of indices ?? []) anchored.add(index);
+  };
+  // Do not stop after the first anchor: a later card may supply a logged
+  // storage marker for that same run, including an older run generation.
+  for await (const message of messages) {
+    match(turns.get(message.id));
+    for (const block of message.blocks) {
+      if (block.type === 'tool_use') match(tools.get(block.toolUseId));
+      if (block.type !== 'delegated_agent_call') continue;
+      match(delegations.get(block.delegationId));
+      if (block.transcriptStore !== DELEGATION_TRANSCRIPT_CHAT_LOG) continue;
+      const key = `${block.delegationId}:${String(block.runGeneration)}`;
+      if (wantedRuns.has(key)) loggedRuns.add(key);
+    }
+  }
+  return { anchored, loggedRuns };
+}
+
 export function delegationTranscriptHasRetainedAnchor(
   messages: readonly PersistedChatMessage[],
   transcript: {
@@ -88,7 +146,12 @@ export function delegationRecoveryMutations(
     }
   }
   const recover = (tab: PersistedChatTab): PersistedChatTab => {
-    if (tab.kind === 'file') return tab;
+    // A chat no record names is unchanged, and a caller may not have read it.
+    if (
+      tab.kind === 'file' ||
+      !scopedRecords.some(({ record }) => record.parent.chatId === tab.id)
+    )
+      return tab;
     let state = {
       messages: tab.messages,
       status: 'idle' as const,
@@ -246,40 +309,68 @@ export function delegationRecoveryMutations(
   return mutations;
 }
 
+async function retainedDelegationRecords(scope: {
+  projectId: string;
+  worktreeId: string;
+}): Promise<StoredDelegation[]> {
+  const directory = path.join(
+    getWorktreeDataDir(scope.projectId, scope.worktreeId),
+    'delegation',
+    'runs',
+  );
+  await stat(directory);
+  const records = await new FileDelegationStorage(directory).load();
+  return records.filter(
+    (record) => !hasLiveDelegations(record.parent.sessionKey),
+  );
+}
+
+function warnUnrecoverable(error: unknown): void {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === 'ENOENT'
+  )
+    return;
+  // The optional child registry must not make an otherwise valid chat unreadable.
+  logMainProcessWarn(
+    '[delegation] Unable to recover retained child transcript',
+    error,
+  );
+}
+
+/** The records startup recovery may restore; none when they cannot be read. */
+export async function loadDelegationRecoveryRecords(scope: {
+  projectId: string;
+  worktreeId: string;
+}): Promise<StoredDelegation[]> {
+  try {
+    return await retainedDelegationRecords(scope);
+  } catch (error) {
+    warnUnrecoverable(error);
+    return [];
+  }
+}
+
+/** Pass `records` from loadDelegationRecoveryRecords to read the registry once. */
 export async function loadDelegationRecoveryMutations(
   scope: { projectId: string; worktreeId: string },
   tabs: ChatTabsFile,
   archives: ArchivedChatsFile,
   options?: DelegationRecoveryLoaderOptions,
+  records?: readonly StoredDelegation[],
 ): Promise<ChatCoreMutation[]> {
   try {
-    const directory = path.join(
-      getWorktreeDataDir(scope.projectId, scope.worktreeId),
-      'delegation',
-      'runs',
-    );
-    await stat(directory);
-    const records = await new FileDelegationStorage(directory).load();
     return delegationRecoveryMutations(
       scope,
       tabs,
       archives,
-      records.filter((record) => !hasLiveDelegations(record.parent.sessionKey)),
+      records ?? (await retainedDelegationRecords(scope)),
       options?.readMetadata,
     );
   } catch (error) {
-    if (
-      typeof error === 'object' &&
-      error !== null &&
-      'code' in error &&
-      error.code === 'ENOENT'
-    )
-      return [];
-    // The optional child registry must not make an otherwise valid chat unreadable.
-    logMainProcessWarn(
-      '[delegation] Unable to recover retained child transcript',
-      error,
-    );
+    warnUnrecoverable(error);
     return [];
   }
 }

@@ -9,14 +9,17 @@ import {
 } from './ComposerPrompt';
 
 export interface ComposerPromptTextRowProps {
-  /** Keep the editor mounted when its prompt is collapsed. */
+  /**
+   * Keep the editor mounted when its prompt is collapsed: the row adds no box
+   * of its own, so the editor lays out as if the row were not there.
+   */
   readonly plain?: boolean;
   /**
    * Leads the row with a pen in the answers' numbers column, when typing is
    * one more answer.
    */
   readonly withPen: boolean;
-  /** The composer's editor, microphone, and send. */
+  /** The composer's editor (or a plain textarea), microphone, and send. */
   readonly children: ReactNode;
 }
 
@@ -36,7 +39,7 @@ export function ComposerPromptTextRow({
       ref={rowRef}
       className={
         plain
-          ? undefined
+          ? 'contents'
           : withPen
             ? COMPOSER_PROMPT_TEXT_ROW_WITH_GLYPH_CLASS
             : COMPOSER_PROMPT_TEXT_ROW_CLASS
@@ -49,7 +52,7 @@ export function ComposerPromptTextRow({
           className={COMPOSER_PROMPT_ROW_GLYPH_CLASS}
           onMouseDown={(event): void => {
             const input = rowRef.current?.querySelector(
-              '[contenteditable="true"]',
+              '[contenteditable="true"], textarea',
             );
             if (!(input instanceof HTMLElement)) return;
             event.preventDefault();

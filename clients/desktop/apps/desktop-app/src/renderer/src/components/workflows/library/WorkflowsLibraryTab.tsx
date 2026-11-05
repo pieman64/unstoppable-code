@@ -1,3 +1,4 @@
+import { pipelineShareLinkItemId } from '@/lib/workflows/library-projection';
 import {
   useCallback,
   useEffect,
@@ -10,6 +11,7 @@ import {
   type SetStateAction,
 } from 'react';
 import { useCapabilities } from '@canopy/app-state';
+import { useResourceContext } from '@canopy/ui-app/capability';
 import {
   availableWorkflowTriggerKinds,
   countLibraryFacets,
@@ -37,8 +39,13 @@ import {
 } from '@canopy/ui-shared/components';
 import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
 import { copyTextToClipboard } from '@/lib/clipboard';
-import { resolveSharedPipelineUrl } from '@/lib/share-links';
-import { pipelineShareLinkPath } from '@/lib/workflows/library-projection';
+import { resolveCloudOrigin, useCloudOrigin } from '@/lib/cloud-origin';
+import {
+  marketplaceShareLink,
+  marketplaceLinkAccess,
+  copyMarketplaceLink,
+} from '@canopy/ui-app/sharing';
+import { postShareToast } from '@/lib/share-toast';
 import { openPipelineRuns } from '@/lib/workflows/open-pipeline-runs';
 import { automationLibraryKey } from '@/lib/workflows/run-feed';
 import { useAutomationsStore } from '@/stores/automationsStore';
@@ -168,6 +175,7 @@ export function WorkflowsLibraryTab({
   newWorkflow,
 }: WorkflowsLibraryTabProps): JSX.Element {
   const capabilities = useCapabilities();
+  const { personalOrganizationId } = useResourceContext();
   const filters = useWorkflowsViewStore((state) => state.libraryFilters);
   const sort = useWorkflowsViewStore((state) => state.librarySort);
   const pageNumber = useWorkflowsViewStore((state) => state.libraryPage);
@@ -247,6 +255,25 @@ export function WorkflowsLibraryTab({
   const page = useMemo(
     () => pageLibraryRows(sorted, pageNumber),
     [pageNumber, sorted],
+  );
+  const cloudOrigin = useCloudOrigin();
+  const visibleRows = useMemo(
+    () =>
+      page.rows.map((row) => {
+        if (!row.actions.includes('copy-link')) return row;
+        const target = targets.get(row.key);
+        const itemId =
+          target?.kind === 'pipeline'
+            ? pipelineShareLinkItemId(target.pipeline)
+            : undefined;
+        return marketplaceShareLink(cloudOrigin, 'pipeline', itemId)
+          ? row
+          : {
+              ...row,
+              actions: row.actions.filter((action) => action !== 'copy-link'),
+            };
+      }),
+    [cloudOrigin, page.rows, targets],
   );
   const projectOptions = useMemo(
     () =>
@@ -442,7 +469,17 @@ export function WorkflowsLibraryTab({
           }
           return;
         case 'duplicate':
-          if (target.kind === 'pipeline') {
+          if (target.kind === 'automation') {
+            void withBusy(
+              row.key,
+              `Couldn't duplicate ${row.name}`,
+              async () => {
+                throwIfAutomationFailed(
+                  await automations.duplicate(target.activity),
+                );
+              },
+            );
+          } else if (target.kind === 'pipeline') {
             void withBusy(row.key, `Couldn't duplicate ${row.name}`, () =>
               pipelines.duplicate(target.pipeline),
             );
@@ -454,14 +491,27 @@ export function WorkflowsLibraryTab({
           return;
         case 'copy-link': {
           if (target.kind !== 'pipeline') return;
-          const sharePath = pipelineShareLinkPath(target.pipeline);
-          if (sharePath === undefined) return;
+          const itemId = pipelineShareLinkItemId(target.pipeline);
+          const access = marketplaceLinkAccess(
+            target.pipeline,
+            personalOrganizationId,
+          );
+          if (!itemId || !access) return;
           void withBusy(row.key, "Couldn't copy the share link", async () => {
-            const url = await resolveSharedPipelineUrl(sharePath);
-            if (!(await copyTextToClipboard(url ?? sharePath))) {
+            const url = marketplaceShareLink(
+              await resolveCloudOrigin(),
+              'pipeline',
+              itemId,
+            );
+            if (
+              !url ||
+              !(await copyMarketplaceLink(url, access, {
+                write: copyTextToClipboard,
+                notify: postShareToast,
+              }))
+            ) {
               throw new Error("The clipboard isn't available.");
             }
-            useGitHubStore.getState().addToast('Share link copied.', 'success');
           });
           return;
         }
@@ -476,6 +526,7 @@ export function WorkflowsLibraryTab({
       onRunPipeline,
       openRow,
       openShareInMarketplace,
+      personalOrganizationId,
       pipelines,
       targets,
       viewRuns,
@@ -571,7 +622,7 @@ export function WorkflowsLibraryTab({
         />
       ) : (
         <WorkflowsLibraryTable
-          rows={page.rows}
+          rows={visibleRows}
           now={now}
           onOpen={openRow}
           onAction={handleAction}

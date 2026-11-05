@@ -73,7 +73,6 @@ import {
   PipelineIcon,
   TerminalBorderedIcon,
 } from '@canopy/ui-shared/icons';
-import { ChevronDownMediumIcon as AppCatalogChevronDownMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
 import type { AutomationScope } from '@/hooks/useAutomationScope';
 import { ProjectIcon } from '@/components/shared/ProjectIcon';
 import { Tooltip } from '@canopy/ui-shared';
@@ -87,6 +86,7 @@ import {
   Notice,
   NoticeButton,
   ErrorBanner,
+  Disclosure,
   SegmentedControl as SharedSegmentedControl,
   TextArea,
   TextInput,
@@ -1244,126 +1244,114 @@ export function ActivityFormBody({
               </div>
             ) : null}
             {!formReadOnly && (
-              <div
-                data-testid="automations-form-if-command-section"
-                className="rounded-md border bg-base/40"
-              >
-                <button
-                  type="button"
-                  onClick={(): void => setIfCommandOpen((open) => !open)}
-                  data-testid="automations-form-if-command-toggle"
-                  className="focus-ring flex w-full items-center justify-between px-3 py-2 text-left text-xs font-medium fg-primary"
-                >
-                  <span>
+              <Disclosure
+                variant="box"
+                label={
+                  <>
                     If command <span className="fg-secondary">(optional)</span>
-                  </span>
-                  <AppCatalogChevronDownMediumIcon
-                    width="12"
-                    height="12"
-                    className={`fg-secondary transition-transform ${ifCommandOpen ? 'rotate-180' : ''}`}
+                  </>
+                }
+                open={ifCommandOpen}
+                onOpenChange={setIfCommandOpen}
+                dataTestId="automations-form-if-command-section"
+                toggleTestId="automations-form-if-command-toggle"
+              >
+                <p className="text-2xs fg-secondary">
+                  Runs before the action. Exit 0 runs the action; any non-zero
+                  exit skips it. Standard output is available to prompts as{' '}
+                  <code className="font-mono">
+                    {`{{${AUTOMATION_IF_CMD_OUTPUT_VAR_NAMES[0] ?? 'AUTOMATION_IF_CMD_OUTPUT'}}}`}
+                  </code>
+                  . To prevent duplicate processing, print{' '}
+                  <code className="font-mono">
+                    {`${AUTOMATION_IF_CMD_IDEMPOTENCY_KEY_VAR_NAMES[0] ?? 'IDEMPOTENCY_KEY'}=value`}
+                  </code>{' '}
+                  on its own stdout line; automations will be skipped if a
+                  recent run used the same key. Scope defaults to this
+                  automation only; print{' '}
+                  <code className="font-mono">
+                    {`${AUTOMATION_IF_CMD_IDEMPOTENCY_SCOPE_VAR_NAMES[0] ?? 'IDEMPOTENCY_SCOPE'}=global`}
+                  </code>{' '}
+                  to compare against all automations. Idempotency lines are
+                  stripped from prompt output.
+                </p>
+                <div className="flex items-start gap-2">
+                  <TextArea
+                    mono
+                    aria-label="If command"
+                    value={state.ifCommand}
+                    onChange={(event): void =>
+                      update('ifCommand', event.target.value)
+                    }
+                    disabled={ifCommandGenerating}
+                    rows={2}
+                    spellCheck={false}
+                    placeholder="e.g. test -f ~/ready-to-run.txt"
+                    data-testid="automations-form-if-command"
+                    className="min-w-0 flex-1"
                   />
-                </button>
-                {ifCommandOpen && (
-                  <div className="flex flex-col gap-2 border-t px-3 py-2">
-                    <p className="text-2xs fg-secondary">
-                      Runs before the action. Exit 0 runs the action; any
-                      non-zero exit skips it. Standard output is available to
-                      prompts as{' '}
-                      <code className="font-mono">
-                        {`{{${AUTOMATION_IF_CMD_OUTPUT_VAR_NAMES[0] ?? 'AUTOMATION_IF_CMD_OUTPUT'}}}`}
-                      </code>
-                      . To prevent duplicate processing, print{' '}
-                      <code className="font-mono">
-                        {`${AUTOMATION_IF_CMD_IDEMPOTENCY_KEY_VAR_NAMES[0] ?? 'IDEMPOTENCY_KEY'}=value`}
-                      </code>{' '}
-                      on its own stdout line; automations will be skipped if a
-                      recent run used the same key. Scope defaults to this
-                      automation only; print{' '}
-                      <code className="font-mono">
-                        {`${AUTOMATION_IF_CMD_IDEMPOTENCY_SCOPE_VAR_NAMES[0] ?? 'IDEMPOTENCY_SCOPE'}=global`}
-                      </code>{' '}
-                      to compare against all automations. Idempotency lines are
-                      stripped from prompt output.
-                    </p>
-                    <div className="flex items-start gap-2">
-                      <TextArea
-                        mono
-                        aria-label="If command"
-                        value={state.ifCommand}
-                        onChange={(event): void =>
-                          update('ifCommand', event.target.value)
-                        }
-                        disabled={ifCommandGenerating}
-                        rows={2}
-                        spellCheck={false}
-                        placeholder="e.g. test -f ~/ready-to-run.txt"
-                        data-testid="automations-form-if-command"
-                        className="min-w-0 flex-1"
-                      />
-                      {/* A 36px cell centers the 28px button 4px below the
+                  {/* A 36px cell centers the 28px button 4px below the
                           field's top edge, level with its first line. */}
-                      <span className="flex h-9 shrink-0 items-center">
-                        <Tooltip label="Generate if command">
-                          <Button
-                            variant="ghost"
-                            size="compact"
-                            iconOnly
-                            aria-label="Generate if command"
-                            disabled={ifCommandGenerating}
-                            onClick={(): void => {
-                              setIfCommandAssistantOpen((open) => !open);
-                              setIfCommandWarning(null);
-                            }}
-                            data-testid="automations-form-if-command-assistant"
-                          >
-                            <AppAdvisorIcon className="h-4 w-4" />
-                          </Button>
-                        </Tooltip>
-                      </span>
-                    </div>
-                    {ifCommandAssistantOpen && !ifCommandGenerating && (
-                      <div className="flex items-center gap-2">
-                        <TextInput
-                          type="text"
-                          aria-label="Describe the gate"
-                          value={ifCommandAssistantText}
-                          onChange={(event): void =>
-                            setIfCommandAssistantText(event.target.value)
-                          }
-                          onKeyDown={(event): void => {
-                            if (event.key !== 'Enter') return;
-                            event.preventDefault();
-                            void handleGenerateIfCommand();
-                          }}
-                          placeholder="Describe the gate in natural language"
-                          data-testid="automations-form-if-command-natural-language"
-                          className="min-w-0 flex-1"
-                        />
-                        <Button
-                          size="compact"
-                          disabled={ifCommandAssistantText.trim().length === 0}
-                          onClick={() => void handleGenerateIfCommand()}
-                          data-testid="automations-form-if-command-generate"
-                        >
-                          Generate
-                        </Button>
-                      </div>
-                    )}
-                    {ifCommandGenerating && (
-                      <div className="text-xs fg-secondary">Generating…</div>
-                    )}
-                    {ifCommandWarning && !ifCommandGenerating && (
-                      <Notice
-                        intent="attention"
-                        role="alert"
-                        data-testid="automations-form-if-command-warning"
+                  <span className="flex h-9 shrink-0 items-center">
+                    <Tooltip label="Generate if command">
+                      <Button
+                        variant="ghost"
+                        size="compact"
+                        iconOnly
+                        aria-label="Generate if command"
+                        disabled={ifCommandGenerating}
+                        onClick={(): void => {
+                          setIfCommandAssistantOpen((open) => !open);
+                          setIfCommandWarning(null);
+                        }}
+                        data-testid="automations-form-if-command-assistant"
                       >
-                        {ifCommandWarning}
-                      </Notice>
-                    )}
+                        <AppAdvisorIcon className="h-4 w-4" />
+                      </Button>
+                    </Tooltip>
+                  </span>
+                </div>
+                {ifCommandAssistantOpen && !ifCommandGenerating && (
+                  <div className="flex items-center gap-2">
+                    <TextInput
+                      type="text"
+                      aria-label="Describe the gate"
+                      value={ifCommandAssistantText}
+                      onChange={(event): void =>
+                        setIfCommandAssistantText(event.target.value)
+                      }
+                      onKeyDown={(event): void => {
+                        if (event.key !== 'Enter') return;
+                        event.preventDefault();
+                        void handleGenerateIfCommand();
+                      }}
+                      placeholder="Describe the gate in natural language"
+                      data-testid="automations-form-if-command-natural-language"
+                      className="min-w-0 flex-1"
+                    />
+                    <Button
+                      size="compact"
+                      disabled={ifCommandAssistantText.trim().length === 0}
+                      onClick={() => void handleGenerateIfCommand()}
+                      data-testid="automations-form-if-command-generate"
+                    >
+                      Generate
+                    </Button>
                   </div>
                 )}
-              </div>
+                {ifCommandGenerating && (
+                  <div className="text-xs fg-secondary">Generating…</div>
+                )}
+                {ifCommandWarning && !ifCommandGenerating && (
+                  <Notice
+                    intent="attention"
+                    role="alert"
+                    data-testid="automations-form-if-command-warning"
+                  >
+                    {ifCommandWarning}
+                  </Notice>
+                )}
+              </Disclosure>
             )}
           </>
         )}
@@ -1844,30 +1832,20 @@ function SegmentedControl<T extends string>({
   return (
     <div className="flex flex-col gap-1 text-xs fg-secondary">
       <span>{label}</span>
-      <div
-        role="radiogroup"
-        data-testid={testId}
-        className="inline-flex flex-wrap items-center gap-0.5 rounded-md border bg-fg-primary/[0.03] p-0.5"
-      >
-        {options.map((option) => (
-          <button
-            key={option.value}
-            type="button"
-            role="radio"
-            aria-checked={value === option.value}
-            disabled={disabled}
-            data-testid={`${testId}-${option.value}`}
-            onClick={(): void => onChange(option.value)}
-            className={`focus-ring rounded px-2.5 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
-              value === option.value
-                ? 'bg-card fg-primary'
-                : 'fg-secondary hover:fg-primary'
-            }`}
-          >
-            {option.label}
-          </button>
-        ))}
-      </div>
+      <SharedSegmentedControl
+        value={value ?? null}
+        options={options.map((option) => ({
+          value: option.value,
+          label: option.label,
+          dataTestId: `${testId}-${option.value}`,
+        }))}
+        onChange={onChange}
+        label={label}
+        shape="capsule"
+        width="content"
+        disabled={disabled}
+        dataTestId={testId}
+      />
     </div>
   );
 }

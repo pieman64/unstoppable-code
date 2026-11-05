@@ -1,4 +1,5 @@
 import type { LedgerFeedState } from '@canopy/app-state';
+import type { LedgerFeedWorkState } from '@canopy/app-state/ledger-feed';
 import type { AppAdvisorJson } from '@canopy/desktop-shared/types';
 import {
   isLedgerTaskViewScope,
@@ -11,6 +12,11 @@ interface FeedComposerUiState {
   readonly draftProjectId?: string;
   readonly draftWorktreeId?: string;
 }
+
+type FeedWorkUiState = Pick<
+  LedgerFeedWorkState,
+  'statusFilter' | 'sort' | 'openIds' | 'olderShown'
+>;
 
 function composerUiState(
   composer: LedgerFeedState['composer'],
@@ -44,9 +50,22 @@ function selectedScopeUiState(
  * project and task chosen for it. A draft set aside is not on screen, so it
  * is not reported. Entry text never leaves the page this way.
  */
-export function ledgerFeedUiState(state: LedgerFeedState): AppAdvisorJson {
+export function ledgerFeedUiState(
+  state: LedgerFeedState,
+  work: FeedWorkUiState,
+  needsYouCount: number,
+): AppAdvisorJson {
   return {
     audience: state.audience,
+    statusFilter: work.statusFilter,
+    sort: `${work.sort.column}:${work.sort.direction}`,
+    openRowCount: work.openIds.length,
+    olderShown: work.olderShown,
+    showTeammates: state.showTeammates,
+    onlyThisDevice: state.onlyThisDevice,
+    live: state.live,
+    activityShownCount: state.activityShownCount,
+    needsYouCount,
     listStatus: state.list.status,
     rowCount: state.list.rows.length,
     hasMore: state.list.hasMore,

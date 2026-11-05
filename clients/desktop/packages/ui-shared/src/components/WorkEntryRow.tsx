@@ -60,6 +60,7 @@ import { SIDEBAR_INDICATOR_BLUE } from '../lib/operational-status-colors';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import {
   resolveSelectionClick,
+  focusSelectionRow,
   resolveSelectionKey,
   shiftMouseDownSuppressesTextSelection,
 } from '../lib/sidebar-row-selection-gestures';
@@ -78,16 +79,19 @@ export type WorkEntryRowStatus = 'active' | 'done';
 export const WORK_ENTRY_SELECTION_ROW_ATTR = 'data-worktree-selection-row';
 
 /**
- * The row's part in the rail's bulk selection (CAN-3975). Command-click
- * (Ctrl-click off macOS) toggles, Shift-click ranges, `x` toggles the focused
+ * The row's part in the rail's bulk selection (CAN-3975), with macOS Finder
+ * rules. Command-click (Ctrl-click off macOS) toggles, Shift-click ranges
+ * from the anchor, Shift+Up/Down extend the range, `x` toggles the focused
  * row, Cmd/Ctrl+A selects the list, and Esc clears. A plain click opens the
- * entry and ends an active selection.
+ * entry, ends an active selection, and anchors Shift ranges on this row.
  */
 export interface WorkEntryRowMultiSelect {
-  /** This row is in the selection: the accent tint and an sr-only label. */
+  /** This row is in the selection: the open row's fill and an sr-only label. */
   readonly selected: boolean;
   /** The row can join the selection. */
   readonly selectable: boolean;
+  /** The row's selection key, which Shift+Up/Down focus finds rows by. */
+  readonly rowKey: string;
   /** Any row in the rail is selected: a plain click opens and clears. */
   readonly active: boolean;
   /** Esc clears the selection; off while a batch runs. */
@@ -95,6 +99,10 @@ export interface WorkEntryRowMultiSelect {
   readonly onToggle: () => void;
   readonly onSelectRange: () => void;
   readonly onSelectAll: () => void;
+  /** A plain click: clears the selection and anchors Shift ranges here. */
+  readonly onAnchor: () => void;
+  /** Shift+Up/Down: moves the range's far end; the key of the row to focus. */
+  readonly onExtend: (step: 1 | -1) => string | undefined;
   readonly onClear: () => void;
 }
 
@@ -226,6 +234,8 @@ export interface WorkEntryRowProps {
   multiSelect?: WorkEntryRowMultiSelect;
   /** Opens the Work Entry. Runs on click, Enter, and Space. */
   onOpen?: () => void;
+  /** Host-neutral intent to open this row; does not select or move focus. */
+  onIntent?: (phase: 'start' | 'end', source: 'pointer' | 'focus') => void;
   /**
    * Shows the hover Delete button. The host confirms and removes; omit it on
    * a surface that cannot delete.
@@ -343,6 +353,7 @@ function WorkEntryRowImpl({
   drag,
   multiSelect: multiSelectProp,
   onOpen,
+  onIntent,
   onDelete,
   deleteDisabledReason,
   hoverActions = 'classic',
@@ -457,15 +468,31 @@ function WorkEntryRowImpl({
     if (isInteractiveTarget(event.target, event.currentTarget)) return;
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
+      // Opening from the keyboard moves the anchor like a plain click, so a
+      // later Cmd-click never seeds a row that is no longer open.
+      if (multiSelect !== undefined && !multiSelect.active) {
+        if (multiSelect.selectable) multiSelect.onAnchor();
+        else multiSelect.onClear();
+      }
       onOpen?.();
       return;
     }
-    if (multiSelect === undefined) return;
+    // While the row's menu is open, Esc closes the menu, not the selection.
+    if (multiSelect === undefined || menuOpen) return;
     const intent = resolveSelectionKey(event, multiSelect);
     if (intent === null) return;
     event.preventDefault();
     if (intent === 'toggle') multiSelect.onToggle();
-    else if (intent === 'select-all') multiSelect.onSelectAll();
+    else if (intent === 'extend-up' || intent === 'extend-down') {
+      const target = multiSelect.onExtend(intent === 'extend-up' ? -1 : 1);
+      if (target !== undefined) {
+        focusSelectionRow(
+          event.currentTarget,
+          WORK_ENTRY_SELECTION_ROW_ATTR,
+          target,
+        );
+      }
+    } else if (intent === 'select-all') multiSelect.onSelectAll();
     else multiSelect.onClear();
   };
 
@@ -487,7 +514,8 @@ function WorkEntryRowImpl({
       else multiSelect.onSelectRange();
       return;
     }
-    if (intent === 'open-and-clear') multiSelect.onClear();
+    if (multiSelect.selectable) multiSelect.onAnchor();
+    else multiSelect.onClear();
     onOpen?.();
   };
 
@@ -519,6 +547,18 @@ function WorkEntryRowImpl({
     close: closeMenu,
     testIdFor,
   };
+  const intentHandlers = onIntent
+    ? {
+        onPointerEnter: (): void => onIntent('start', 'pointer'),
+        onPointerLeave: (): void => onIntent('end', 'pointer'),
+        onFocus: (event: FocusEvent<HTMLDivElement>): void => {
+          if (event.target === event.currentTarget) onIntent('start', 'focus');
+        },
+        onBlur: (event: FocusEvent<HTMLDivElement>): void => {
+          if (event.target === event.currentTarget) onIntent('end', 'focus');
+        },
+      }
+    : undefined;
 
   return (
     <div
@@ -534,8 +574,9 @@ function WorkEntryRowImpl({
       data-sidebar-selected-pin-disabled={disableSelectedPin ? '' : undefined}
       data-sidebar-selected-pin-seat={selectedPinSeat}
       data-entry-status={isDone ? 'done' : 'active'}
+      {...intentHandlers}
       {...(multiSelect !== undefined
-        ? { [WORK_ENTRY_SELECTION_ROW_ATTR]: '' }
+        ? { [WORK_ENTRY_SELECTION_ROW_ATTR]: multiSelect.rowKey }
         : {})}
       data-multiselected={multiSelected || undefined}
       onClick={handleClick}
@@ -561,7 +602,7 @@ function WorkEntryRowImpl({
       onKeyDown={handleKeyDown}
       className={`group group/sidebar-item relative flex ${touchTarget ? 'min-h-11' : 'h-8'} w-full cursor-default items-center gap-1.5 rounded-row px-1.5 py-0 text-left text-s transition-opacity ${
         dragBinding ? 'touch-none select-none' : ''
-      } ${multiSelected ? 'bg-accent-subtle fg-primary' : selected ? 'bg-muted fg-primary' : `fg-secondary hover:bg-subtle${menuOpen && marksRowWhileMenuOpen ? ' bg-subtle' : ''}`} ${
+      } ${multiSelected ? 'bg-muted fg-primary' : selected ? 'bg-muted fg-primary' : `fg-secondary hover:bg-subtle${menuOpen && marksRowWhileMenuOpen ? ' bg-subtle' : ''}`} ${
         removing ? 'pointer-events-none opacity-50' : ''
       } ${dragBinding?.isDragging === true ? 'opacity-50' : ''}`}
     >
@@ -688,7 +729,7 @@ function WorkEntryRowImpl({
 }
 
 /**
- * The title's share of the action reserve, 24px per revealed rail button.
+ * The title's share of the action reserve, 28px per revealed rail button.
  * The title carries it only while no status renders; otherwise the status
  * slot's margin does, so the status slides left beside the revealed buttons.
  * On a coarse pointer a metadata badge (pin or shared) keeps its footprint
@@ -703,24 +744,24 @@ function titleReserveClassName(
   if (hasTrailingStatus || actionCount === 0) return '';
   if (actionCount === 1) {
     return hasMetadataBadge
-      ? 'group-hover/sidebar-item:pr-6 group-focus-within/sidebar-item:pr-6'
-      : 'group-hover/sidebar-item:pr-6 group-focus-within/sidebar-item:pr-6 pointer-coarse:pr-6';
+      ? 'group-hover/sidebar-item:pr-7 group-focus-within/sidebar-item:pr-7'
+      : 'group-hover/sidebar-item:pr-7 group-focus-within/sidebar-item:pr-7 pointer-coarse:pr-6';
   }
   return hasMetadataBadge
-    ? 'group-hover/sidebar-item:pr-12 group-focus-within/sidebar-item:pr-12'
-    : 'group-hover/sidebar-item:pr-12 group-focus-within/sidebar-item:pr-12 pointer-coarse:pr-12';
+    ? 'group-hover/sidebar-item:pr-14 group-focus-within/sidebar-item:pr-14'
+    : 'group-hover/sidebar-item:pr-14 group-focus-within/sidebar-item:pr-14 pointer-coarse:pr-12';
 }
 
 /**
- * The compact title reserve: the two 24px hover buttons plus their 2px gap
- * (52px) on hover, and the touch-only ••• on a coarse pointer.
+ * The compact title reserve: the two 28px hover buttons plus their 2px gap
+ * (60px with the inset) on hover, and the touch-only ••• on a coarse pointer.
  */
 function compactTitleReserveClassName(
   coarseActionCount: number,
   hasMetadataBadge: boolean,
 ): string {
   const hover =
-    'group-hover/sidebar-item:pr-13 group-focus-within/sidebar-item:pr-13';
+    'group-hover/sidebar-item:pr-15 group-focus-within/sidebar-item:pr-15';
   return coarseActionCount > 0 && !hasMetadataBadge
     ? `${hover} pointer-coarse:pr-6`
     : hover;
@@ -907,9 +948,9 @@ export function WorkEntryRowTrailingStatus({
     <span
       className={
         actionCount === 2
-          ? 'inline-flex h-5 shrink-0 items-center justify-end -mr-0.5 pointer-fine:group-hover:mr-11.5 pointer-fine:group-focus-within:mr-11.5 pointer-coarse:mr-11.5'
+          ? 'inline-flex h-5 shrink-0 items-center justify-end -mr-0.5 pointer-fine:group-hover:mr-13.5 pointer-fine:group-focus-within:mr-13.5 pointer-coarse:mr-11.5'
           : actionCount === 1
-            ? 'inline-flex h-5 shrink-0 items-center justify-end -mr-0.5 pointer-fine:group-hover:mr-5.5 pointer-fine:group-focus-within:mr-5.5 pointer-coarse:mr-5.5'
+            ? 'inline-flex h-5 shrink-0 items-center justify-end -mr-0.5 pointer-fine:group-hover:mr-6.5 pointer-fine:group-focus-within:mr-6.5 pointer-coarse:mr-5.5'
             : 'inline-flex h-5 shrink-0 items-center justify-end -mr-0.5'
       }
       data-testid={testIdFor('-status-slot')}
@@ -1045,7 +1086,7 @@ function WorkEntryRowCompactActions({
   testIdFor,
 }: WorkEntryRowCompactActionsProps): JSX.Element {
   const slot = (
-    <span aria-hidden="true" className="w-6 shrink-0 pointer-coarse:hidden" />
+    <span aria-hidden="true" className="w-7 shrink-0 pointer-coarse:hidden" />
   );
   return (
     <span className="pointer-events-none absolute inset-y-0 right-1.5 flex items-center gap-0.5">

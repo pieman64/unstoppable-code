@@ -3,7 +3,7 @@ import {
   BACKGROUND_HELPER_PRIORITIES,
   enqueueBackgroundHelperTask,
 } from '../../lib/background-helper-queue';
-import { getUserMemoryDir } from '../../lib/paths';
+import { localMemoryScopeDir } from './scope-resolver';
 import { readPreferencesFile } from '../../lib/preferences-store';
 import { broadcastLocalMemoryChanged } from './change-events';
 import {
@@ -180,7 +180,7 @@ export async function refreshChatHistoryProfile(
   const input = typeof source === 'function' ? await source() : source;
   const prepared = prepareChatHistoryProfileInput(input);
   if (!prepared) return { status: 'no-titles' };
-  const scopeDir = getUserMemoryDir();
+  const scopeDir = localMemoryScopeDir({ scope: 'user' });
   const state = await readChatHistoryProfileState(scopeDir);
   if (state?.inputHash === prepared.inputHash) return { status: 'unchanged' };
   return enqueueBackgroundHelperTask({

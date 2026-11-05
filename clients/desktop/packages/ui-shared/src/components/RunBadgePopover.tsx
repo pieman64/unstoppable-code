@@ -1,9 +1,6 @@
-import { useLayoutEffect, useRef, useState, type JSX } from 'react';
-import { createPortal } from 'react-dom';
-import {
-  getInitialBadgePopoverPosition,
-  getMeasuredBadgePopoverPosition,
-} from './ChatPreviewPopover';
+import type { JSX } from 'react';
+import { BADGE_HOVER_CARD_SURFACE } from './ChatPreviewPopover';
+import { RichHoverCard } from './RichHoverTooltip';
 
 export interface RunBadgeRow {
   id: string;
@@ -34,30 +31,13 @@ export function RunBadgePopover({
   rows,
   heading,
   emptyText,
-}: RunBadgePopoverProps): JSX.Element {
-  const popoverRef = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState<{ top: number; left: number }>(
-    getInitialBadgePopoverPosition(anchorRect),
-  );
-
-  useLayoutEffect((): void => {
-    const el = popoverRef.current;
-    if (!el) return;
-    setPosition(
-      getMeasuredBadgePopoverPosition(
-        anchorRect,
-        el.offsetHeight,
-        el.offsetWidth,
-      ),
-    );
-  }, [anchorRect]);
-
-  return createPortal(
-    <div
-      ref={popoverRef}
-      data-testid="worktree-row-script-popover"
-      className="pointer-events-none fixed z-tooltip min-w-40 max-w-65 rounded-lg bg-popover px-3 py-2 shadow-lg"
-      style={{ top: position.top, left: position.left }}
+}: RunBadgePopoverProps): JSX.Element | null {
+  return (
+    <RichHoverCard
+      anchorRect={anchorRect}
+      dataTestId="worktree-row-script-popover"
+      {...BADGE_HOVER_CARD_SURFACE}
+      surfaceClassName="min-w-40 max-w-65"
     >
       <div className="mb-1 text-3xs font-semibold fg-secondary">{heading}</div>
       {rows.length === 0 ? (
@@ -77,7 +57,6 @@ export function RunBadgePopover({
           ))}
         </div>
       )}
-    </div>,
-    document.body,
+    </RichHoverCard>
   );
 }

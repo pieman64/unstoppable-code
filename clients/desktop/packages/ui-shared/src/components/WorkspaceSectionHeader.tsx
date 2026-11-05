@@ -299,17 +299,17 @@ export interface WorkspaceSectionHeaderProps {
 /**
  * Hover-yield padding for the name button, indexed by how many trailing
  * controls reveal on a fine pointer. Static strings so Tailwind can see every
- * class; 24px per control, 4px for the slot's gaps and inset.
+ * class; 28px per control, 4px for the slot's gaps and inset.
  * The layout group survives rest, so a focused trailing control keeps its
  * reserved space even after the hover-reveal group has been retired.
  */
 const DEFERRED_ACTION_PADDING: readonly string[] = [
   '',
-  'pointer-fine:group-hover/sidebar-item:pr-7 pointer-fine:group-focus-within/sidebar-item:pr-7 pointer-fine:group-has-[[data-workspace-header-actions]:focus-within]/workspace-header:pr-7',
-  'pointer-fine:group-hover/sidebar-item:pr-13 pointer-fine:group-focus-within/sidebar-item:pr-13 pointer-fine:group-has-[[data-workspace-header-actions]:focus-within]/workspace-header:pr-13',
-  'pointer-fine:group-hover/sidebar-item:pr-19 pointer-fine:group-focus-within/sidebar-item:pr-19 pointer-fine:group-has-[[data-workspace-header-actions]:focus-within]/workspace-header:pr-19',
-  'pointer-fine:group-hover/sidebar-item:pr-25 pointer-fine:group-focus-within/sidebar-item:pr-25 pointer-fine:group-has-[[data-workspace-header-actions]:focus-within]/workspace-header:pr-25',
-  'pointer-fine:group-hover/sidebar-item:pr-31 pointer-fine:group-focus-within/sidebar-item:pr-31 pointer-fine:group-has-[[data-workspace-header-actions]:focus-within]/workspace-header:pr-31',
+  'pointer-fine:group-hover/sidebar-item:pr-8 pointer-fine:group-focus-within/sidebar-item:pr-8 pointer-fine:group-has-[[data-workspace-header-actions]:focus-within]/workspace-header:pr-8',
+  'pointer-fine:group-hover/sidebar-item:pr-15 pointer-fine:group-focus-within/sidebar-item:pr-15 pointer-fine:group-has-[[data-workspace-header-actions]:focus-within]/workspace-header:pr-15',
+  'pointer-fine:group-hover/sidebar-item:pr-22 pointer-fine:group-focus-within/sidebar-item:pr-22 pointer-fine:group-has-[[data-workspace-header-actions]:focus-within]/workspace-header:pr-22',
+  'pointer-fine:group-hover/sidebar-item:pr-29 pointer-fine:group-focus-within/sidebar-item:pr-29 pointer-fine:group-has-[[data-workspace-header-actions]:focus-within]/workspace-header:pr-29',
+  'pointer-fine:group-hover/sidebar-item:pr-36 pointer-fine:group-focus-within/sidebar-item:pr-36 pointer-fine:group-has-[[data-workspace-header-actions]:focus-within]/workspace-header:pr-36',
 ];
 
 export function WorkspaceSectionHeader({

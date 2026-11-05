@@ -16,7 +16,7 @@ import { WorktreeStatusIndicator } from './WorktreeStatusIndicator';
 import { useTerminalActivityStore } from '@/stores/terminalActivityStore';
 import { useDragToScroll } from '@/hooks/useDragToScroll';
 import { EyeOffIcon } from '@canopy/ui-shared/icons';
-import { ChevronDownMediumIcon as AppCatalogChevronDownMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { Disclosure } from '@canopy/ui-shared/components';
 import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
 import { ProjectIcon } from '../shared/ProjectIcon';
 import {
@@ -323,34 +323,24 @@ export function WorktreeKanbanBoard({
                 visibleCards.map((card) => renderCard(status, card))
               )}
               {hiddenCards.length > 0 && (
-                <div className="mt-1" data-testid="hidden-worktrees-section">
-                  <button
-                    type="button"
-                    onClick={(): void =>
-                      setHiddenExpandedByStatus((prev) => ({
-                        ...prev,
-                        [status]: !prev[status],
-                      }))
-                    }
-                    className="focus-ring flex w-full items-center gap-1.5 px-1 py-1 text-xs fg-secondary hover:fg-primary"
-                  >
-                    <AppCatalogChevronDownMediumIcon
-                      width="12"
-                      height="12"
-                      className={`transition-transform ${hiddenExpanded ? 'rotate-0' : '-rotate-90'}`}
-                    />
-                    <EyeOffIcon width={12} height={12} />
-                    <span>Hidden {WORKTREE_UNIT_LABEL_PLURAL}</span>
-                    <span className="rounded-full bg-secondary px-1.5 py-0.5 text-3xs leading-none">
-                      {hiddenCards.length}
-                    </span>
-                  </button>
-                  {hiddenExpanded && (
-                    <div className="mt-1 flex flex-col gap-1">
-                      {hiddenCards.map((card) => renderCard(status, card))}
-                    </div>
-                  )}
-                </div>
+                <Disclosure
+                  label={`Hidden ${WORKTREE_UNIT_LABEL_PLURAL}`}
+                  leadingIcon={<EyeOffIcon width={12} height={12} />}
+                  meta={hiddenCards.length}
+                  open={hiddenExpanded}
+                  onOpenChange={(next): void =>
+                    setHiddenExpandedByStatus((prev) => ({
+                      ...prev,
+                      [status]: next,
+                    }))
+                  }
+                  dataTestId="hidden-worktrees-section"
+                  className="mt-1"
+                >
+                  <div className="flex flex-col gap-1">
+                    {hiddenCards.map((card) => renderCard(status, card))}
+                  </div>
+                </Disclosure>
               )}
             </div>
           </section>

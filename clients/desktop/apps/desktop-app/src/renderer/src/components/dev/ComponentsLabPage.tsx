@@ -111,10 +111,7 @@ function OverviewCard({
       data-testid={`components-lab-card-${entry.id}`}
       className="flex min-w-0 flex-col items-center gap-3"
     >
-      <div
-        data-ss-fill
-        className="pointer-events-none aspect-4/3 w-full overflow-hidden rounded-row"
-      >
+      <div className="pointer-events-none aspect-4/3 w-full overflow-hidden rounded-row">
         <LabOverviewContext.Provider value>
           {Stage ? <Stage /> : null}
         </LabOverviewContext.Provider>
@@ -237,7 +234,7 @@ export function ComponentsLabPage(): JSX.Element {
             {overview ? (
               <div
                 data-testid="components-lab-overview"
-                className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,22rem),1fr))] gap-x-8 gap-y-10"
+                className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,22rem),35rem))] gap-x-8 gap-y-10"
               >
                 {COMPONENTS_LAB_ENTRIES.filter(
                   (entry) => entry.group === 'Unified' && entry.Stage,

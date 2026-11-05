@@ -4,7 +4,9 @@ import type {
   ChatStateChange,
   PersistedCommandReceipt,
 } from '@canopy/desktop-shared/types';
+import type { DelegationChildRow } from '@canopy/agent-transcript';
 import type { PersistedToolOutputReference } from '@canopy/agent-transcript/types';
+import type { TranscriptStreamDescriptor } from '@canopy/protocol/canopy-core';
 import type { CanonicalChatState } from './chat-state-reducer';
 import type { writeSyncedJsonTemp } from '../lib/chat-state-journal';
 import type { LegacyChatRevisionGapRecovery } from '../lib/legacy-chat-migration';
@@ -58,6 +60,13 @@ export interface ChatStateCommit {
    * rule.
    */
   transcriptResets?: readonly string[];
+  /**
+   * Chats whose delegation state advanced the revision without a change a
+   * window shows (a stream's registration or opening, rows on a stream with
+   * no card state, a receipt). Their unchanged transcript descriptors stand
+   * in for the change, so the revision chain has no gap to resync over.
+   */
+  advancedChatIds?: readonly string[];
 }
 
 export interface ChatMutationOptions {
@@ -225,3 +234,28 @@ export class ChatStateRepositoryLoadError
     }
   }
 }
+
+/**
+ * Prepares a child stream write inside the scope lease turn that commits it:
+ * receives the stream's descriptor (undefined when it is not registered) and
+ * a point read of a stored row at that descriptor's revision, and returns the
+ * rows to commit. Returning none commits nothing; throwing refuses the write.
+ */
+export type ChildStreamWritePreparation = (
+  descriptor: TranscriptStreamDescriptor | undefined,
+  storedRow: (messageId: string) => Promise<DelegationChildRow | undefined>,
+) => Promise<readonly DelegationChildRow[]>;
+
+/** The outcome of a prepared child stream write. */
+export type PreparedChildStreamCommit =
+  | {
+      readonly committed: false;
+      readonly prepared: TranscriptStreamDescriptor | undefined;
+    }
+  | {
+      readonly committed: true;
+      readonly prepared: TranscriptStreamDescriptor | undefined;
+      readonly applied: boolean;
+      readonly revision: number;
+      readonly descriptor: TranscriptStreamDescriptor;
+    };

@@ -1,6 +1,7 @@
+import { focusPipelineAssistantComposer } from '@/lib/pipelineAssistantEvents';
 import { type JSX, useCallback, useEffect, useRef, useState } from 'react';
 import { LoadingSpinner } from '../shared/loading/spinners/LoadingSpinner';
-import type { ValidationIssue } from '../../lib/pipelineEditor';
+import { createJobId, type ValidationIssue } from '../../lib/pipelineEditor';
 import {
   Notice,
   NoticeButton,
@@ -43,10 +44,10 @@ function clampSettingsWidth(w: number): number {
 }
 
 /**
- * Placement for the notices that sit between the drag strip and the editor
- * toolbar: inset from the window edge and stacked with a small gap.
+ * Placement for the notices above the editor: the full width of the content
+ * below them (CAN-4319), stacked with a small gap.
  */
-const EDITOR_NOTICE_PLACEMENT = 'mx-4 mb-2 shrink-0';
+const EDITOR_NOTICE_PLACEMENT = 'mb-2 shrink-0';
 
 /** One notice per validation severity, listing every issue at `path: message`. */
 function ValidationIssuesNotice({
@@ -115,17 +116,17 @@ export function PipelineEditorNotices({
       {session.duplicateError}
     </Notice>
   );
-  const publicShareRow = pipelineInfo?.source === 'shared' &&
-    ((pipelineInfo.canUpdate && pipelineInfo.remoteId) ||
-      (!pipelineInfo.canUpdate && pipelineInfo.publicShare)) && (
+  const publicShareRow =
+    pipelineInfo?.source === 'shared' && pipelineInfo.remoteId ? (
       <PipelinePublicShareRow
-        remoteId={pipelineInfo.remoteId ?? ''}
-        initialShare={pipelineInfo.publicShare}
-        canManage={
-          pipelineInfo.canUpdate === true && Boolean(pipelineInfo.remoteId)
-        }
+        remoteId={pipelineInfo.remoteId}
+        name={pipelineInfo.name}
+        readFacts={{
+          shareScope: pipelineInfo.shareScope,
+          publicShare: pipelineInfo.publicShare,
+        }}
       />
-    );
+    ) : null;
   const errorNotice = session.error && (
     <Notice intent="destructive" className={EDITOR_NOTICE_PLACEMENT}>
       {session.error}
@@ -323,6 +324,27 @@ export function PipelineEditorBody({
     [editor],
   );
 
+  // The editable flow (CAN-4319) adds a step to the selected job, and the
+  // first job of an empty workflow, then selects what it added so its panel
+  // opens for editing.
+  const handleAddFlowStep = useCallback(
+    (jobId: string): void => {
+      const job = editor.pipeline?.jobs[jobId];
+      if (!job) return;
+      const stepIndex = job.steps.length;
+      editor.addStep(jobId);
+      editor.setSelection({ type: 'step', jobId, stepIndex });
+    },
+    [editor],
+  );
+
+  const handleAddFirstFlowJob = useCallback((): void => {
+    if (!editor.pipeline) return;
+    const jobId = createJobId(Object.keys(editor.pipeline.jobs));
+    editor.addJob();
+    editor.setSelection({ type: 'job', jobId });
+  }, [editor]);
+
   if (editor.loading) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -408,6 +430,13 @@ export function PipelineEditorBody({
                   }
                   onSelectJob={handleSelectFlowJob}
                   onSelectStep={handleSelectFlowStep}
+                  {...(editor.readonly
+                    ? {}
+                    : {
+                        onAddStep: handleAddFlowStep,
+                        onAddFirstJob: handleAddFirstFlowJob,
+                        onAskAssistant: focusPipelineAssistantComposer,
+                      })}
                 />
               ) : null}
             </div>
@@ -462,6 +491,7 @@ export function PipelineEditorBody({
                       allJobIds={Object.keys(editor.pipeline.jobs)}
                       onChange={editor.updateJob}
                       onRenameJob={editor.renameJob}
+                      onRemove={editor.removeJob}
                       onClose={() => editor.setSelection({ type: 'none' })}
                       readonly={editor.readonly}
                     />

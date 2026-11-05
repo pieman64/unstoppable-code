@@ -32,6 +32,7 @@ import {
   hasDelegatedAgentCapabilityEntries,
 } from './delegated-agent-copy';
 import { TaskStopButton } from './TaskStopButton';
+import { Button } from '../Button';
 import { Disclosure } from '../Disclosure';
 import { StatusLabel } from '../StatusLabel';
 import { Fact, FactList } from '../FactList';
@@ -53,6 +54,8 @@ export interface DelegatedAgentCardProps {
   onCopyNativeSessionId?: (id: string) => void;
   /** Opens this managed subagent's chat from its expanded details. */
   onOpenChat?: () => void;
+  /** Reports committed expansion changes and a final collapse on unmount. */
+  onExpandedChange?: (expanded: boolean) => void;
   /**
    * Stops this delegation and the tasks it started. Resolves `true` once the
    * host accepted the stop, keeping the control in its working state until
@@ -109,16 +112,15 @@ function DelegatedAgentChanges({
             <StatusLabel>{DELEGATED_AGENT_CHANGES_FAILED_LABEL}</StatusLabel>
           </p>
         )}
-        <button
-          type="button"
-          className="fg-secondary underline"
+        <Button
+          variant="link"
           data-testid="delegated-agent-show-changes"
           onClick={read}
         >
           {state.kind === 'failed'
             ? DELEGATED_AGENT_CHANGES_RETRY_LABEL
             : DELEGATED_AGENT_SHOW_CHANGES_LABEL}
-        </button>
+        </Button>
       </div>
     );
   const { files, omittedFiles } = state.changes;
@@ -147,9 +149,9 @@ function DelegatedAgentChanges({
       {omittedFiles ? (
         <p>{delegatedAgentChangesShownLabel(files.length)}</p>
       ) : null}
-      <button type="button" className="underline" onClick={read}>
+      <Button variant="link" onClick={read}>
         {DELEGATED_AGENT_REFRESH_CHANGES_LABEL}
-      </button>
+      </Button>
     </div>
   );
 }
@@ -185,6 +187,7 @@ export const DelegatedAgentCard = memo(function DelegatedAgentCard({
   children,
   onCopyNativeSessionId,
   onOpenChat,
+  onExpandedChange,
   onStop,
   hasLiveDescendants = false,
   onLoadChanges,
@@ -243,6 +246,7 @@ export const DelegatedAgentCard = memo(function DelegatedAgentCard({
         }
         expandLabel="Expand delegated task"
         collapseLabel="Collapse delegated task"
+        onExpandedChange={onExpandedChange}
         headerStatus={
           nested ? (
             <span
@@ -380,16 +384,15 @@ export const DelegatedAgentCard = memo(function DelegatedAgentCard({
               !snapshot.workspaceDiscarded &&
               onLoadChanges && <DelegatedAgentChanges load={onLoadChanges} />}
             {snapshot.nativeSessionId && onCopyNativeSessionId && (
-              <button
-                type="button"
-                className="fg-secondary underline"
+              <Button
+                variant="link"
                 onClick={() => {
                   if (snapshot.nativeSessionId)
                     onCopyNativeSessionId(snapshot.nativeSessionId);
                 }}
               >
                 Copy native session ID
-              </button>
+              </Button>
             )}
             {snapshot.error && (
               <p>

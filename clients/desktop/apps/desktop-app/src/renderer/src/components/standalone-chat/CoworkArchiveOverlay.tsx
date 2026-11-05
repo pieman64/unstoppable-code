@@ -11,7 +11,11 @@
  * same stacking context, while staying below semantic app overlay tiers.
  */
 import { useCallback, useEffect, type JSX } from 'react';
-import { Button } from '@canopy/ui-shared/components';
+import {
+  Button,
+  DelayedLoadingPlaceholder,
+  Skeleton,
+} from '@canopy/ui-shared/components';
 import { useShallow } from 'zustand/react/shallow';
 import type { StandaloneChatMeta } from '@canopy/desktop-shared/types';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
@@ -24,9 +28,22 @@ import {
 import { StandaloneArchiveViewer } from '@/components/standalone-chat/StandaloneArchiveViewer';
 import { ArchivedContainerView } from '@/components/archive/ArchivedContainerView';
 import { ArchivedContainersOverviewPage } from '@/components/archive/ArchivedContainersOverviewPage';
-import { LoadingSpinner } from '@/components/shared/loading/spinners/LoadingSpinner';
 
 const SUMMARY_LOADING = '__loading__';
+
+const SAMPLE_ARCHIVE_TIME = '2026-01-01T12:00:00.000Z';
+
+/** A plain archive the loading skeleton lays out in the viewer. */
+const SAMPLE_ARCHIVE_META: StandaloneChatMeta = {
+  id: 'archive-skeleton',
+  title: 'Fix the flaky checkout test',
+  description: '',
+  createdAt: SAMPLE_ARCHIVE_TIME,
+  archivedAt: SAMPLE_ARCHIVE_TIME,
+};
+
+const SAMPLE_ARCHIVE_SUMMARY =
+  'The retry test raced the payment stub. It now waits on the settled event instead of a fixed timeout, and the suite passes.';
 
 export interface CoworkArchiveOverlayProps {
   /**
@@ -169,12 +186,21 @@ export function CoworkArchiveOverlay({
         </Button>
       </div>
       {activeSummary === SUMMARY_LOADING ? (
-        <div className="flex flex-1 items-center justify-center">
-          <div className="flex flex-col items-center gap-3 fg-secondary">
-            <LoadingSpinner tone="secondary" />
-            <span className="text-sm">Loading archive…</span>
-          </div>
-        </div>
+        <DelayedLoadingPlaceholder slowNote="Still loading archive…">
+          <Skeleton
+            loading
+            label="Loading archive"
+            testId="cowork-archive-overlay-loading"
+            className="flex min-h-0 flex-1 flex-col"
+          >
+            <StandaloneArchiveViewer
+              summary={SAMPLE_ARCHIVE_SUMMARY}
+              meta={SAMPLE_ARCHIVE_META}
+              tab={null}
+              legacySummaryOnly
+            />
+          </Skeleton>
+        </DelayedLoadingPlaceholder>
       ) : (
         <StandaloneArchiveViewer
           transcriptScope={activeArchiveData?.transcriptScope}

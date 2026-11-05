@@ -118,14 +118,3 @@ export function subscribeAgentVisualNeedsClick(
     needsClickListeners.delete(listener);
   };
 }
-
-/** Test-only: forget typing, the pointer, and refused visuals. */
-export function resetAgentVisualFocusForTests(ownerDocument: Document): void {
-  hostKeyRecord(ownerDocument).at = 0;
-  const pointer = hostPointerRecord(ownerDocument);
-  pointer.event = null;
-  pointer.at = null;
-  pointer.before = null;
-  visualsNeedingClick.clear();
-  for (const listener of [...needsClickListeners]) listener();
-}

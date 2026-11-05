@@ -1,6 +1,7 @@
 import { assertStorageWriteAllowed, STORAGE_OWNERSHIP } from '../../storage';
 // Explicit commit-log modules only: the commit-log index loads node:sqlite,
 // which only the worker opens.
+import type { W5ProcessFileLock } from './commit-log/apply';
 import type {
   W5CaptureRequest,
   W5CaptureResult,
@@ -12,12 +13,16 @@ import type {
   W5ReservationFailureDiagnostics,
   W5Resource,
 } from './commit-log/commit-log';
-import { W5CommitRefusedError } from './commit-log/errors';
+import {
+  W5CommitRefusedError,
+  W5FileWriteRefusedError,
+} from './commit-log/errors';
 import { fingerprintW5File } from './commit-log/fingerprint';
 import {
   workspaceCreationDiagnosticsSchema,
   type WorkspaceCreationDiagnostics,
 } from './commit-log/reservation-diagnostics';
+import { isW5CommitOutcome } from './commit-log/worker-contract';
 import type {
   W5CommitOutcome,
   W5HostRecoveryReport,
@@ -39,14 +44,7 @@ import {
 import type { W5StorageAdmission } from './storage-binding';
 import type { W5StorageTarget } from './storage-target';
 
-/** Refused before the durable decision: the repository's read is stale. */
-export class W5FileWriteRefusedError extends Error {
-  readonly reason = 'fingerprint-conflict';
-  constructor(readonly path: string) {
-    super('This was changed since it was read. Reload and try again.');
-    this.name = 'W5FileWriteRefusedError';
-  }
-}
+export { W5FileWriteRefusedError } from './commit-log/errors';
 
 /** A caller precondition refused by SQLite, distinct from a file conflict. */
 export class W5RevisionConflictError extends Error {
@@ -106,6 +104,8 @@ export type W5StorageWriteAdmission = <T>(
 ) => Promise<T>;
 
 export interface W5CommitLogFileStoreBindings {
+  /** For hosts without execution-owner exclusion. Never combine both layers. */
+  processLock?: W5ProcessFileLock;
   /**
    * Resolved once per recovery attempt. Return the same object for the same
    * host: stores sharing a host share its final-decision queue by identity.
@@ -228,6 +228,8 @@ export function createW5CommitLogFileStore(
     const attempt = (async (): Promise<W5CommitLogHostPort> => {
       const host = await bindings.getHost();
       const report = await host.recoveryReport();
+      for (const entry of report.abandoned ?? [])
+        warn('W5 launch abandoned clean conflict', { ...entry });
       for (const commitId of report.recoveryRequired) {
         const detail = report.recoveryRequiredDetails?.find(
           (entry) => entry.commitId === commitId,
@@ -322,46 +324,66 @@ export function createW5CommitLogFileStore(
         contents,
         previousFingerprint: fingerprintW5File(previousRaw),
       }));
-      await preflightW5Files(readThroughHost, changes);
-      let outcome: W5CommitOutcome;
-      try {
-        options.beforeDecision?.();
-        outcome = await host.commit({
-          operation: options.operation,
-          receipt: options.receipt,
-          reservationId: options.reservationId,
-          expectedRevisions: options.expectedRevisions,
-          advance,
-          files: changes,
-          outcome: options.outcome ?? null,
-        });
-      } catch (error) {
-        // A failed worker call may have left a durable, unapplied decision.
-        // The next read/queued preflight must await recovery again.
-        ready = undefined;
-        if (
-          error instanceof W5CommitRefusedError &&
-          error.reason === 'revision-conflict'
-        ) {
-          const { resource, expected, actual } = error.details;
+      const decide = async (): Promise<void> => {
+        await preflightW5Files(readThroughHost, changes);
+        let outcome: W5CommitOutcome;
+        try {
+          options.beforeDecision?.();
+          outcome = await host.commit({
+            operation: options.operation,
+            receipt: options.receipt,
+            reservationId: options.reservationId,
+            expectedRevisions: options.expectedRevisions,
+            advance,
+            files: changes,
+            outcome: options.outcome ?? null,
+          });
+        } catch (error) {
+          // A failed worker call may have left a durable, unapplied decision.
+          // The next read/queued preflight must await recovery again.
+          ready = undefined;
           if (
-            typeof resource === 'string' &&
-            typeof expected === 'number' &&
-            typeof actual === 'number'
+            error instanceof W5CommitRefusedError &&
+            error.reason === 'revision-conflict'
           ) {
-            throw new W5RevisionConflictError(resource, expected, actual);
+            const { resource, expected, actual } = error.details;
+            if (
+              typeof resource === 'string' &&
+              typeof expected === 'number' &&
+              typeof actual === 'number'
+            ) {
+              throw new W5RevisionConflictError(resource, expected, actual);
+            }
           }
+          throw error;
         }
-        throw error;
-      }
-      // Returned, not thrown: the worker answered, so recovery stays valid.
-      if (outcome.status === 'recovery-required') {
-        throw new W5CommitRefusedError(
-          'recovery-required',
-          'This change was saved but did not finish and needs recovery.',
-          { commitId: outcome.commitId },
+        // Returned, not thrown: the worker answered, so recovery stays valid.
+        if (outcome.status === 'conflict') {
+          if (!isW5CommitOutcome(outcome))
+            throw new Error('Invalid W5 conflict outcome');
+          const conflict = outcome.conflicts[0];
+          if (!conflict) throw new Error('Invalid empty W5 conflict outcome');
+          warn('W5 clean apply conflict abandoned', {
+            commitId: outcome.commitId,
+            operation: options.operation,
+            path: conflict.path,
+          });
+          throw new W5FileWriteRefusedError(conflict.path);
+        }
+        if (outcome.status === 'recovery-required') {
+          throw new W5CommitRefusedError(
+            'recovery-required',
+            'This change was saved but did not finish and needs recovery.',
+            { commitId: outcome.commitId },
+          );
+        }
+      };
+      if (bindings.processLock && changes.length)
+        await bindings.processLock(
+          changes.map((file) => file.path),
+          decide,
         );
-      }
+      else await decide();
     });
   }
 

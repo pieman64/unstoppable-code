@@ -218,6 +218,7 @@ export const DESKTOP_OPERATIONS = {
       'role',
       'count',
       'surface',
+      'fallback',
     ],
     renamedContextKeys: { surface: 'composer_surface' },
   },
@@ -272,6 +273,9 @@ export const DESKTOP_OPERATIONS = {
       // The daily-drip outcome main last saw, on `no_credits` failures only
       // (CAN-4633).
       'daily_credit_grant_status',
+      // The selection the turn started with; `model` is the one that served
+      // it (CAN-5233). May be an Agent id, like `chat:message_send.model`.
+      'requested_model',
     ],
   },
   'canopy.chat_message_send': {

@@ -62,6 +62,9 @@ export function delegationReceiptAckToResult(
         ? {}
         : { partialText: value.partialText }),
       ...(value.finalText === undefined ? {} : { finalText: value.finalText }),
+      ...(value.workspaceObservation === undefined
+        ? {}
+        : { workspaceObservation: value.workspaceObservation }),
       ...(value.control === undefined
         ? {}
         : {

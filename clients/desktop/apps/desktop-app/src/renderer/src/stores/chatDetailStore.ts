@@ -118,16 +118,3 @@ export function useChatDetailPreference(): ChatDetail {
   }, []);
   return detail;
 }
-
-/** Test-only: forget the subscription and return the store to its defaults. */
-export function resetChatDetailStoreForTest(): void {
-  subscribed = false;
-  canonicalReadVersion += 1;
-  mutationGeneration += 1;
-  pendingSaves = 0;
-  lastConfirmed = DEFAULT_CHAT_DETAIL;
-  useChatDetailStore.setState({
-    detail: DEFAULT_CHAT_DETAIL,
-    hydrated: false,
-  });
-}

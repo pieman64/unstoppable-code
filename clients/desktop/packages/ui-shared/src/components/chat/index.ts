@@ -34,6 +34,10 @@ export * from './TurnResumeNotice';
 export * from './MessageEditEntry';
 export * from './MessageEditCard';
 export * from './AskUserQuestionCard';
+export * from './ToolApprovalCard';
+export * from './ToolApprovalDock';
+export * from './ApprovalContentModal';
+export * from './approval-content-preview';
 export * from './ask-user-question-presentation';
 export * from './ask-user-question-answers';
 export {

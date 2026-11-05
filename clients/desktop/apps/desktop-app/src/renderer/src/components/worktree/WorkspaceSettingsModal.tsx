@@ -1,8 +1,11 @@
 import {
   Button,
+  DelayedLoadingPlaceholder,
+  Disclosure,
   Heading,
   SegmentedControl,
   type SegmentedControlOption,
+  Skeleton,
 } from '@canopy/ui-shared/components';
 import { resolveHookComposerContext } from '@/lib/configurationComposerTargets';
 import {
@@ -104,12 +107,7 @@ import { useGitHubStore } from '@/stores/githubStore';
 import { HookActionEditor } from './HookActionEditor';
 import { ScriptConfigEditor } from './ScriptConfigEditor';
 import { ScriptActionsSettingsSection } from '../script-actions/ScriptActionsSettingsSection';
-import {
-  CopyButton,
-  DialogModal,
-  GitHubRepoPicker,
-  LoadingSpinner,
-} from '../shared';
+import { CopyButton, DialogModal, GitHubRepoPicker } from '../shared';
 import {
   AutoArchiveSettingsControl,
   PrivateMemoryCard,
@@ -144,7 +142,6 @@ import {
   PlanModeIcon,
   PluginsIcon,
   RepoIcon,
-  ChevronRightMediumIcon as AppCatalogChevronRightMediumIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { WorkspaceEnvironmentTab } from './WorkspaceEnvironmentTab';
 import { ExistingRepoOption } from './ExistingRepoOption';
@@ -294,6 +291,133 @@ function getWorkspaceRootScriptPlaceholder(
 ): string {
   return WORKSPACE_ROOT_SCRIPT_PLACEHOLDERS[scriptName];
 }
+
+const noop = (): void => undefined;
+
+/** Sample setup scripts the loading skeleton lays out as the script editors. */
+const SAMPLE_SOURCE_SCRIPTS = [
+  {
+    label: 'Before setup',
+    scriptName: 'before-setup',
+    command: 'pnpm install',
+  },
+  {
+    label: 'After setup',
+    scriptName: 'after-setup',
+    command: 'pnpm run build',
+  },
+] as const;
+
+/** Sample timeout the skeleton's script editors show. */
+const SAMPLE_SCRIPT_TIMEOUT_SECONDS = 300;
+
+/**
+ * The source-controlled scripts while canopy.json loads: the "Project root"
+ * box and its script editors, rendered from sample scripts.
+ */
+function SourceScriptsSkeleton(): JSX.Element {
+  return (
+    <DelayedLoadingPlaceholder slowNote="Still loading scripts…">
+      <Skeleton
+        loading
+        label="Loading scripts"
+        testId="workspace-settings-scripts-loading"
+      >
+        <div className="flex flex-col gap-3 rounded-lg border p-3">
+          <Heading level={4} variant="title">
+            Project root
+          </Heading>
+          {SAMPLE_SOURCE_SCRIPTS.map((sample) => (
+            <ScriptConfigEditor
+              key={sample.scriptName}
+              label={sample.label}
+              scriptName={sample.scriptName}
+              command={sample.command}
+              onCommandChange={noop}
+              onTimeoutSecondsChange={noop}
+              rows={3}
+              defaultTimeoutSeconds={SAMPLE_SCRIPT_TIMEOUT_SECONDS}
+            />
+          ))}
+        </div>
+      </Skeleton>
+    </DelayedLoadingPlaceholder>
+  );
+}
+
+/**
+ * The source-controlled hooks while canopy.json loads: the "Project root"
+ * box and the add-action form the hook editor opens with, built from the
+ * same field primitives (the editor itself needs live chat context).
+ */
+function SourceHooksSkeleton(): JSX.Element {
+  return (
+    <DelayedLoadingPlaceholder slowNote="Still loading hooks…">
+      <Skeleton
+        loading
+        label="Loading hooks"
+        testId="workspace-settings-hooks-loading"
+      >
+        <div className="flex flex-col gap-3 rounded-lg border p-3">
+          <Heading level={4} variant="title">
+            Project root
+          </Heading>
+          <div className="flex flex-col gap-2 rounded-lg border border-dashed p-3">
+            <p className="text-s font-medium fg-primary">Add hook action</p>
+            <div className="grid gap-3 md:grid-cols-2">
+              <FormField label="Trigger">
+                {(control) => (
+                  <TextInput
+                    {...control}
+                    density="settings"
+                    value="Pull request opened"
+                    onChange={noop}
+                  />
+                )}
+              </FormField>
+              <FormField label="Action type">
+                {(control) => (
+                  <TextInput
+                    {...control}
+                    density="settings"
+                    value="Start a chat"
+                    onChange={noop}
+                  />
+                )}
+              </FormField>
+            </div>
+          </div>
+        </div>
+      </Skeleton>
+    </DelayedLoadingPlaceholder>
+  );
+}
+
+/**
+ * The source-controlled plugin recommendations while canopy.json loads: the
+ * selector's helper line. The plugin table below it keeps its own loading
+ * state once the selector mounts.
+ */
+function SourcePluginsSkeleton({
+  helperText,
+}: {
+  helperText: string;
+}): JSX.Element {
+  return (
+    <DelayedLoadingPlaceholder slowNote="Still loading plugins…">
+      <Skeleton
+        loading
+        label="Loading plugins"
+        testId="workspace-settings-plugins-loading"
+      >
+        <p className="px-6 pt-3 text-xs fg-secondary">{helperText}</p>
+      </Skeleton>
+    </DelayedLoadingPlaceholder>
+  );
+}
+
+const SOURCE_PLUGINS_HELPER_TEXT =
+  'These recommendations are saved to canopy.json. They are offered when worktrees or scoped child-repo chats are created, but they do not change local chat defaults until a user applies them.';
 
 export function WorkspaceSettingsModal({
   isOpen,
@@ -2621,23 +2745,29 @@ export function WorkspaceSettingsModal({
                             {existingSourceControlState.sourceControlNote}
                           </span>
                         )}
-                      <button
-                        type="button"
-                        onClick={() => handleToggleRemoveRepo(repo.id)}
-                        disabled={hasActiveWorktrees}
-                        className={`focus-ring rounded px-1.5 py-0.5 text-xs ${
+                      <span
+                        className={
                           markedForRemoval
-                            ? 'fg-secondary hover:fg-primary'
-                            : 'fg-secondary opacity-0 hover:fg-destructive group-hover:opacity-100'
-                        } disabled:cursor-not-allowed disabled:opacity-50`}
-                        aria-label={
-                          markedForRemoval
-                            ? `Undo remove ${repo.name}`
-                            : `Remove ${repo.name}`
+                            ? undefined
+                            : 'opacity-0 focus-within:opacity-100 group-hover:opacity-100'
                         }
                       >
-                        {markedForRemoval ? 'Undo' : 'Remove'}
-                      </button>
+                        <Button
+                          variant={
+                            markedForRemoval ? 'ghost' : 'ghost-destructive'
+                          }
+                          size="compact"
+                          onClick={() => handleToggleRemoveRepo(repo.id)}
+                          disabled={hasActiveWorktrees}
+                          aria-label={
+                            markedForRemoval
+                              ? `Undo remove ${repo.name}`
+                              : `Remove ${repo.name}`
+                          }
+                        >
+                          {markedForRemoval ? 'Undo' : 'Remove'}
+                        </Button>
+                      </span>
                     </div>
                   );
                 })}
@@ -2683,14 +2813,16 @@ export function WorkspaceSettingsModal({
                           {add.sourceControlNote}
                         </span>
                       )}
-                    <button
-                      type="button"
-                      onClick={() => handleUndoPendingAdd(add.repoPath)}
-                      className="focus-ring rounded px-1.5 py-0.5 text-xs fg-secondary opacity-0 hover:fg-destructive group-hover:opacity-100"
-                      aria-label={`Remove pending ${add.name}`}
-                    >
-                      Remove
-                    </button>
+                    <span className="opacity-0 focus-within:opacity-100 group-hover:opacity-100">
+                      <Button
+                        variant="ghost-destructive"
+                        size="compact"
+                        onClick={() => handleUndoPendingAdd(add.repoPath)}
+                        aria-label={`Remove pending ${add.name}`}
+                      >
+                        Remove
+                      </Button>
+                    </span>
                   </div>
                 ))}
               </div>
@@ -2711,9 +2843,7 @@ export function WorkspaceSettingsModal({
             scriptEditMode === 'source' &&
             !hasLoadedWorkspaceSettingsData &&
             !workspaceSettingsLoadError ? (
-              <div className="flex items-center justify-center py-8">
-                <LoadingSpinner tone="secondary" />
-              </div>
+              <SourceScriptsSkeleton />
             ) : workspace.sourceRepoPath &&
               !isTemporaryWorkspace &&
               scriptEditMode === 'source' &&
@@ -3405,522 +3535,502 @@ export function WorkspaceSettingsModal({
                   };
                   const isCollapsed = collapsedRepoScripts.has(repo.id);
                   return (
-                    <div
+                    <Disclosure
                       key={repo.id}
-                      className="rounded-lg border p-3 space-y-3"
+                      variant="box"
+                      label={repo.name}
+                      open={!isCollapsed}
+                      onOpenChange={(): void =>
+                        setCollapsedRepoScripts((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(repo.id)) {
+                            next.delete(repo.id);
+                          } else {
+                            next.add(repo.id);
+                          }
+                          return next;
+                        })
+                      }
+                      dataTestId={`workspace-settings-repo-scripts-${repo.id}`}
                     >
-                      <button
-                        type="button"
-                        className="flex w-full items-center gap-2 text-left"
-                        onClick={(): void =>
-                          setCollapsedRepoScripts((prev) => {
-                            const next = new Set(prev);
-                            if (next.has(repo.id)) {
-                              next.delete(repo.id);
-                            } else {
-                              next.add(repo.id);
-                            }
-                            return next;
-                          })
-                        }
-                      >
-                        <AppCatalogChevronRightMediumIcon
-                          width="14"
-                          height="14"
-                          className={`shrink-0 fg-secondary transition-transform ${isCollapsed ? '' : 'rotate-90'}`}
+                      <div className="flex flex-col gap-3">
+                        <ScriptConfigEditor
+                          label="Setup script"
+                          scriptName="setup"
+                          command={getEditableScriptValue(scripts, 'setup')}
+                          timeoutSeconds={getEditableScriptTimeoutSeconds(
+                            scripts,
+                            'setup',
+                          )}
+                          shell={getEditableScriptShell(scripts, 'setup')}
+                          interactive={getEditableScriptInteractive(
+                            scripts,
+                            'setup',
+                          )}
+                          onInteractiveChange={(next) =>
+                            setActiveRepoScriptsForTab((prev) => ({
+                              ...prev,
+                              [repo.id]: setEditableScriptInteractive(
+                                prev[repo.id] ?? {},
+                                'setup',
+                                next,
+                              ),
+                            }))
+                          }
+                          onCommandChange={(nextValue) =>
+                            setActiveRepoScriptsForTab((prev) => ({
+                              ...prev,
+                              [repo.id]: setEditableScriptValue(
+                                prev[repo.id] ?? {},
+                                'setup',
+                                nextValue,
+                              ),
+                            }))
+                          }
+                          onTimeoutSecondsChange={(nextTimeout) =>
+                            setActiveRepoScriptsForTab((prev) => ({
+                              ...prev,
+                              [repo.id]: setEditableScriptTimeoutSeconds(
+                                prev[repo.id] ?? {},
+                                'setup',
+                                nextTimeout,
+                              ),
+                            }))
+                          }
+                          onShellChange={(nextShell) =>
+                            setActiveRepoScriptsForTab((prev) => ({
+                              ...prev,
+                              [repo.id]: setEditableScriptShell(
+                                prev[repo.id] ?? {},
+                                'setup',
+                                nextShell,
+                              ),
+                            }))
+                          }
+                          placeholder={
+                            '# Runs after worktree creation\nnpm install'
+                          }
+                          rows={3}
+                          defaultTimeoutSeconds={defaultScriptTimeoutSeconds}
+                          devServerPatterns={getEditableScriptDevServerPatterns(
+                            scripts,
+                            'setup',
+                          )}
+                          onDevServerPatternsChange={(next) =>
+                            setActiveRepoScriptsForTab((prev) => ({
+                              ...prev,
+                              [repo.id]: setEditableScriptDevServerPatterns(
+                                prev[repo.id] ?? {},
+                                'setup',
+                                next,
+                              ),
+                            }))
+                          }
+                          devServerPatternsValidityScopeKey={`${scriptEditMode}:repo:${repo.id}:setup`}
+                          onDevServerPatternsValidityChange={makeDevServerValidityHandler(
+                            `${scriptEditMode}:repo:${repo.id}:setup`,
+                          )}
                         />
-                        <Heading level={4} variant="title">
-                          {repo.name}
-                        </Heading>
-                      </button>
-                      {!isCollapsed && (
-                        <>
-                          <ScriptConfigEditor
-                            label="Setup script"
-                            scriptName="setup"
-                            command={getEditableScriptValue(scripts, 'setup')}
-                            timeoutSeconds={getEditableScriptTimeoutSeconds(
-                              scripts,
-                              'setup',
-                            )}
-                            shell={getEditableScriptShell(scripts, 'setup')}
-                            interactive={getEditableScriptInteractive(
-                              scripts,
-                              'setup',
-                            )}
-                            onInteractiveChange={(next) =>
-                              setActiveRepoScriptsForTab((prev) => ({
-                                ...prev,
-                                [repo.id]: setEditableScriptInteractive(
-                                  prev[repo.id] ?? {},
-                                  'setup',
-                                  next,
-                                ),
-                              }))
-                            }
-                            onCommandChange={(nextValue) =>
-                              setActiveRepoScriptsForTab((prev) => ({
-                                ...prev,
-                                [repo.id]: setEditableScriptValue(
-                                  prev[repo.id] ?? {},
-                                  'setup',
-                                  nextValue,
-                                ),
-                              }))
-                            }
-                            onTimeoutSecondsChange={(nextTimeout) =>
-                              setActiveRepoScriptsForTab((prev) => ({
-                                ...prev,
-                                [repo.id]: setEditableScriptTimeoutSeconds(
-                                  prev[repo.id] ?? {},
-                                  'setup',
-                                  nextTimeout,
-                                ),
-                              }))
-                            }
-                            onShellChange={(nextShell) =>
-                              setActiveRepoScriptsForTab((prev) => ({
-                                ...prev,
-                                [repo.id]: setEditableScriptShell(
-                                  prev[repo.id] ?? {},
-                                  'setup',
-                                  nextShell,
-                                ),
-                              }))
-                            }
-                            placeholder={
-                              '# Runs after worktree creation\nnpm install'
-                            }
-                            rows={3}
-                            defaultTimeoutSeconds={defaultScriptTimeoutSeconds}
-                            devServerPatterns={getEditableScriptDevServerPatterns(
-                              scripts,
-                              'setup',
-                            )}
-                            onDevServerPatternsChange={(next) =>
-                              setActiveRepoScriptsForTab((prev) => ({
-                                ...prev,
-                                [repo.id]: setEditableScriptDevServerPatterns(
-                                  prev[repo.id] ?? {},
-                                  'setup',
-                                  next,
-                                ),
-                              }))
-                            }
-                            devServerPatternsValidityScopeKey={`${scriptEditMode}:repo:${repo.id}:setup`}
-                            onDevServerPatternsValidityChange={makeDevServerValidityHandler(
-                              `${scriptEditMode}:repo:${repo.id}:setup`,
-                            )}
-                          />
-                          <ScriptConfigEditor
-                            label="Teardown script"
-                            scriptName="teardown"
-                            command={getEditableScriptValue(
-                              scripts,
-                              'teardown',
-                            )}
-                            timeoutSeconds={getEditableScriptTimeoutSeconds(
-                              scripts,
-                              'teardown',
-                            )}
-                            shell={getEditableScriptShell(scripts, 'teardown')}
-                            onCommandChange={(nextValue) =>
-                              setActiveRepoScriptsForTab((prev) => ({
-                                ...prev,
-                                [repo.id]: setEditableScriptValue(
-                                  prev[repo.id] ?? {},
-                                  'teardown',
-                                  nextValue,
-                                ),
-                              }))
-                            }
-                            onTimeoutSecondsChange={(nextTimeout) =>
-                              setActiveRepoScriptsForTab((prev) => ({
-                                ...prev,
-                                [repo.id]: setEditableScriptTimeoutSeconds(
-                                  prev[repo.id] ?? {},
-                                  'teardown',
-                                  nextTimeout,
-                                ),
-                              }))
-                            }
-                            onShellChange={(nextShell) =>
-                              setActiveRepoScriptsForTab((prev) => ({
-                                ...prev,
-                                [repo.id]: setEditableScriptShell(
-                                  prev[repo.id] ?? {},
-                                  'teardown',
-                                  nextShell,
-                                ),
-                              }))
-                            }
-                            placeholder={
-                              '# Runs before worktree archive\nnpm run clean'
-                            }
-                            rows={3}
-                            defaultTimeoutSeconds={defaultScriptTimeoutSeconds}
-                            devServerPatterns={getEditableScriptDevServerPatterns(
-                              scripts,
-                              'teardown',
-                            )}
-                            onDevServerPatternsChange={(next) =>
-                              setActiveRepoScriptsForTab((prev) => ({
-                                ...prev,
-                                [repo.id]: setEditableScriptDevServerPatterns(
-                                  prev[repo.id] ?? {},
-                                  'teardown',
-                                  next,
-                                ),
-                              }))
-                            }
-                            devServerPatternsValidityScopeKey={`${scriptEditMode}:repo:${repo.id}:teardown`}
-                            onDevServerPatternsValidityChange={makeDevServerValidityHandler(
-                              `${scriptEditMode}:repo:${repo.id}:teardown`,
-                            )}
-                          />
-                          <ScriptConfigEditor
-                            label="Launch script"
-                            scriptName="launch"
-                            command={getEditableScriptValue(scripts, 'launch')}
-                            timeoutSeconds={getEditableScriptTimeoutSeconds(
-                              scripts,
-                              'launch',
-                            )}
-                            shell={getEditableScriptShell(scripts, 'launch')}
-                            interactive={getEditableScriptInteractive(
-                              scripts,
-                              'launch',
-                            )}
-                            onInteractiveChange={(next) =>
-                              setActiveRepoScriptsForTab((prev) => ({
-                                ...prev,
-                                [repo.id]: setEditableScriptInteractive(
-                                  prev[repo.id] ?? {},
-                                  'launch',
-                                  next,
-                                ),
-                              }))
-                            }
-                            onCommandChange={(nextValue) =>
-                              setActiveRepoScriptsForTab((prev) => ({
-                                ...prev,
-                                [repo.id]: setEditableScriptValue(
-                                  prev[repo.id] ?? {},
-                                  'launch',
-                                  nextValue,
-                                ),
-                              }))
-                            }
-                            onTimeoutSecondsChange={(nextTimeout) =>
-                              setActiveRepoScriptsForTab((prev) => ({
-                                ...prev,
-                                [repo.id]: setEditableScriptTimeoutSeconds(
-                                  prev[repo.id] ?? {},
-                                  'launch',
-                                  nextTimeout,
-                                ),
-                              }))
-                            }
-                            onShellChange={(nextShell) =>
-                              setActiveRepoScriptsForTab((prev) => ({
-                                ...prev,
-                                [repo.id]: setEditableScriptShell(
-                                  prev[repo.id] ?? {},
-                                  'launch',
-                                  nextShell,
-                                ),
-                              }))
-                            }
-                            placeholder={'# Triggered manually\nnpm run dev'}
-                            rows={3}
-                            defaultTimeoutSeconds={defaultScriptTimeoutSeconds}
-                            devServerPatterns={getEditableScriptDevServerPatterns(
-                              scripts,
-                              'launch',
-                            )}
-                            onDevServerPatternsChange={(next) =>
-                              setActiveRepoScriptsForTab((prev) => ({
-                                ...prev,
-                                [repo.id]: setEditableScriptDevServerPatterns(
-                                  prev[repo.id] ?? {},
-                                  'launch',
-                                  next,
-                                ),
-                              }))
-                            }
-                            devServerPatternsValidityScopeKey={`${scriptEditMode}:repo:${repo.id}:launch`}
-                            onDevServerPatternsValidityChange={makeDevServerValidityHandler(
-                              `${scriptEditMode}:repo:${repo.id}:launch`,
-                            )}
-                          />
-                          <div className="space-y-3 rounded-lg border p-3">
-                            <div>
-                              <p className="text-xs font-medium fg-primary">
-                                Custom scripts
-                              </p>
-                              <p className="mt-1 text-2xs fg-secondary">
-                                Repo-specific ad hoc scripts.
-                              </p>
-                            </div>
-                            {customScripts.map((script) => (
-                              <div
-                                key={script.name}
-                                className="rounded-lg border p-3"
-                              >
-                                <div className="mb-2 flex items-center justify-between gap-3">
-                                  <span className="text-xs font-medium fg-primary">
-                                    {script.name}
-                                  </span>
-                                  <Button
-                                    variant="ghost-destructive"
-                                    size="compact"
-                                    onClick={() =>
-                                      setActiveRepoScriptsForTab((prev) => ({
-                                        ...prev,
-                                        [repo.id]: removeEditableScript(
-                                          prev[repo.id] ?? {},
-                                          script.name,
-                                        ),
-                                      }))
-                                    }
-                                  >
-                                    Remove
-                                  </Button>
-                                </div>
-                                <ScriptConfigEditor
-                                  label="Command"
-                                  scriptName={script.name}
-                                  command={script.command}
-                                  timeoutSeconds={script.timeoutSeconds}
-                                  shell={script.shell}
-                                  interactive={script.interactive === true}
-                                  onInteractiveChange={(next) =>
+                        <ScriptConfigEditor
+                          label="Teardown script"
+                          scriptName="teardown"
+                          command={getEditableScriptValue(scripts, 'teardown')}
+                          timeoutSeconds={getEditableScriptTimeoutSeconds(
+                            scripts,
+                            'teardown',
+                          )}
+                          shell={getEditableScriptShell(scripts, 'teardown')}
+                          onCommandChange={(nextValue) =>
+                            setActiveRepoScriptsForTab((prev) => ({
+                              ...prev,
+                              [repo.id]: setEditableScriptValue(
+                                prev[repo.id] ?? {},
+                                'teardown',
+                                nextValue,
+                              ),
+                            }))
+                          }
+                          onTimeoutSecondsChange={(nextTimeout) =>
+                            setActiveRepoScriptsForTab((prev) => ({
+                              ...prev,
+                              [repo.id]: setEditableScriptTimeoutSeconds(
+                                prev[repo.id] ?? {},
+                                'teardown',
+                                nextTimeout,
+                              ),
+                            }))
+                          }
+                          onShellChange={(nextShell) =>
+                            setActiveRepoScriptsForTab((prev) => ({
+                              ...prev,
+                              [repo.id]: setEditableScriptShell(
+                                prev[repo.id] ?? {},
+                                'teardown',
+                                nextShell,
+                              ),
+                            }))
+                          }
+                          placeholder={
+                            '# Runs before worktree archive\nnpm run clean'
+                          }
+                          rows={3}
+                          defaultTimeoutSeconds={defaultScriptTimeoutSeconds}
+                          devServerPatterns={getEditableScriptDevServerPatterns(
+                            scripts,
+                            'teardown',
+                          )}
+                          onDevServerPatternsChange={(next) =>
+                            setActiveRepoScriptsForTab((prev) => ({
+                              ...prev,
+                              [repo.id]: setEditableScriptDevServerPatterns(
+                                prev[repo.id] ?? {},
+                                'teardown',
+                                next,
+                              ),
+                            }))
+                          }
+                          devServerPatternsValidityScopeKey={`${scriptEditMode}:repo:${repo.id}:teardown`}
+                          onDevServerPatternsValidityChange={makeDevServerValidityHandler(
+                            `${scriptEditMode}:repo:${repo.id}:teardown`,
+                          )}
+                        />
+                        <ScriptConfigEditor
+                          label="Launch script"
+                          scriptName="launch"
+                          command={getEditableScriptValue(scripts, 'launch')}
+                          timeoutSeconds={getEditableScriptTimeoutSeconds(
+                            scripts,
+                            'launch',
+                          )}
+                          shell={getEditableScriptShell(scripts, 'launch')}
+                          interactive={getEditableScriptInteractive(
+                            scripts,
+                            'launch',
+                          )}
+                          onInteractiveChange={(next) =>
+                            setActiveRepoScriptsForTab((prev) => ({
+                              ...prev,
+                              [repo.id]: setEditableScriptInteractive(
+                                prev[repo.id] ?? {},
+                                'launch',
+                                next,
+                              ),
+                            }))
+                          }
+                          onCommandChange={(nextValue) =>
+                            setActiveRepoScriptsForTab((prev) => ({
+                              ...prev,
+                              [repo.id]: setEditableScriptValue(
+                                prev[repo.id] ?? {},
+                                'launch',
+                                nextValue,
+                              ),
+                            }))
+                          }
+                          onTimeoutSecondsChange={(nextTimeout) =>
+                            setActiveRepoScriptsForTab((prev) => ({
+                              ...prev,
+                              [repo.id]: setEditableScriptTimeoutSeconds(
+                                prev[repo.id] ?? {},
+                                'launch',
+                                nextTimeout,
+                              ),
+                            }))
+                          }
+                          onShellChange={(nextShell) =>
+                            setActiveRepoScriptsForTab((prev) => ({
+                              ...prev,
+                              [repo.id]: setEditableScriptShell(
+                                prev[repo.id] ?? {},
+                                'launch',
+                                nextShell,
+                              ),
+                            }))
+                          }
+                          placeholder={'# Triggered manually\nnpm run dev'}
+                          rows={3}
+                          defaultTimeoutSeconds={defaultScriptTimeoutSeconds}
+                          devServerPatterns={getEditableScriptDevServerPatterns(
+                            scripts,
+                            'launch',
+                          )}
+                          onDevServerPatternsChange={(next) =>
+                            setActiveRepoScriptsForTab((prev) => ({
+                              ...prev,
+                              [repo.id]: setEditableScriptDevServerPatterns(
+                                prev[repo.id] ?? {},
+                                'launch',
+                                next,
+                              ),
+                            }))
+                          }
+                          devServerPatternsValidityScopeKey={`${scriptEditMode}:repo:${repo.id}:launch`}
+                          onDevServerPatternsValidityChange={makeDevServerValidityHandler(
+                            `${scriptEditMode}:repo:${repo.id}:launch`,
+                          )}
+                        />
+                        <div className="space-y-3 rounded-lg border p-3">
+                          <div>
+                            <p className="text-xs font-medium fg-primary">
+                              Custom scripts
+                            </p>
+                            <p className="mt-1 text-2xs fg-secondary">
+                              Repo-specific ad hoc scripts.
+                            </p>
+                          </div>
+                          {customScripts.map((script) => (
+                            <div
+                              key={script.name}
+                              className="rounded-lg border p-3"
+                            >
+                              <div className="mb-2 flex items-center justify-between gap-3">
+                                <span className="text-xs font-medium fg-primary">
+                                  {script.name}
+                                </span>
+                                <Button
+                                  variant="ghost-destructive"
+                                  size="compact"
+                                  onClick={() =>
                                     setActiveRepoScriptsForTab((prev) => ({
                                       ...prev,
-                                      [repo.id]: setEditableScriptInteractive(
+                                      [repo.id]: removeEditableScript(
+                                        prev[repo.id] ?? {},
+                                        script.name,
+                                      ),
+                                    }))
+                                  }
+                                >
+                                  Remove
+                                </Button>
+                              </div>
+                              <ScriptConfigEditor
+                                label="Command"
+                                scriptName={script.name}
+                                command={script.command}
+                                timeoutSeconds={script.timeoutSeconds}
+                                shell={script.shell}
+                                interactive={script.interactive === true}
+                                onInteractiveChange={(next) =>
+                                  setActiveRepoScriptsForTab((prev) => ({
+                                    ...prev,
+                                    [repo.id]: setEditableScriptInteractive(
+                                      prev[repo.id] ?? {},
+                                      script.name,
+                                      next,
+                                    ),
+                                  }))
+                                }
+                                onCommandChange={(nextValue) =>
+                                  setActiveRepoScriptsForTab((prev) => ({
+                                    ...prev,
+                                    [repo.id]: setEditableScriptValue(
+                                      prev[repo.id] ?? {},
+                                      script.name,
+                                      nextValue,
+                                    ),
+                                  }))
+                                }
+                                onTimeoutSecondsChange={(nextTimeout) =>
+                                  setActiveRepoScriptsForTab((prev) => ({
+                                    ...prev,
+                                    [repo.id]: setEditableScriptTimeoutSeconds(
+                                      prev[repo.id] ?? {},
+                                      script.name,
+                                      nextTimeout,
+                                    ),
+                                  }))
+                                }
+                                onShellChange={(nextShell) =>
+                                  setActiveRepoScriptsForTab((prev) => ({
+                                    ...prev,
+                                    [repo.id]: setEditableScriptShell(
+                                      prev[repo.id] ?? {},
+                                      script.name,
+                                      nextShell,
+                                    ),
+                                  }))
+                                }
+                                rows={3}
+                                defaultTimeoutSeconds={
+                                  defaultScriptTimeoutSeconds
+                                }
+                                devServerPatterns={script.devServerPatterns}
+                                onDevServerPatternsChange={(next) =>
+                                  setActiveRepoScriptsForTab((prev) => ({
+                                    ...prev,
+                                    [repo.id]:
+                                      setEditableScriptDevServerPatterns(
                                         prev[repo.id] ?? {},
                                         script.name,
                                         next,
                                       ),
-                                    }))
-                                  }
-                                  onCommandChange={(nextValue) =>
-                                    setActiveRepoScriptsForTab((prev) => ({
-                                      ...prev,
-                                      [repo.id]: setEditableScriptValue(
-                                        prev[repo.id] ?? {},
-                                        script.name,
-                                        nextValue,
-                                      ),
-                                    }))
-                                  }
-                                  onTimeoutSecondsChange={(nextTimeout) =>
-                                    setActiveRepoScriptsForTab((prev) => ({
-                                      ...prev,
-                                      [repo.id]:
-                                        setEditableScriptTimeoutSeconds(
-                                          prev[repo.id] ?? {},
-                                          script.name,
-                                          nextTimeout,
-                                        ),
-                                    }))
-                                  }
-                                  onShellChange={(nextShell) =>
-                                    setActiveRepoScriptsForTab((prev) => ({
-                                      ...prev,
-                                      [repo.id]: setEditableScriptShell(
-                                        prev[repo.id] ?? {},
-                                        script.name,
-                                        nextShell,
-                                      ),
-                                    }))
-                                  }
-                                  rows={3}
-                                  defaultTimeoutSeconds={
-                                    defaultScriptTimeoutSeconds
-                                  }
-                                  devServerPatterns={script.devServerPatterns}
-                                  onDevServerPatternsChange={(next) =>
-                                    setActiveRepoScriptsForTab((prev) => ({
-                                      ...prev,
-                                      [repo.id]:
-                                        setEditableScriptDevServerPatterns(
-                                          prev[repo.id] ?? {},
-                                          script.name,
-                                          next,
-                                        ),
-                                    }))
-                                  }
-                                  devServerPatternsValidityScopeKey={`${scriptEditMode}:repo:${repo.id}:custom:${script.name}`}
-                                  onDevServerPatternsValidityChange={makeDevServerValidityHandler(
-                                    `${scriptEditMode}:repo:${repo.id}:custom:${script.name}`,
-                                  )}
-                                />
-                              </div>
-                            ))}
-                            <div className="rounded-lg border border-dashed p-3">
-                              <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
-                                <FormField label="Script name">
-                                  {(control) => (
-                                    <TextInput
-                                      {...control}
-                                      density="settings"
-                                      value={draft.name}
-                                      onChange={(event) =>
-                                        setNewRepoScripts((prev) => ({
-                                          ...prev,
-                                          [repo.id]: {
-                                            ...draft,
-                                            name: event.target.value,
-                                          },
-                                        }))
-                                      }
-                                      placeholder="dev-server"
-                                    />
-                                  )}
-                                </FormField>
-                                <div className="flex items-end">
-                                  <Button
-                                    size="compact"
-                                    onClick={() => {
-                                      const scriptName = normalizeScriptName(
-                                        draft.name,
-                                      );
-                                      if (
-                                        !scriptName ||
-                                        draft.command.trim().length === 0
-                                      ) {
-                                        return;
-                                      }
-                                      if (hasInvalidDevServerPatterns) {
-                                        return;
-                                      }
-                                      setActiveRepoScriptsForTab((prev) => {
-                                        const repoEditable =
-                                          prev[repo.id] ?? {};
-                                        const entry: EditableScript = {
-                                          command: draft.command,
-                                        };
-                                        if (
-                                          draft.timeoutSeconds !== undefined
-                                        ) {
-                                          entry.timeoutSeconds =
-                                            draft.timeoutSeconds;
-                                        }
-                                        if (
-                                          draft.devServerPatterns !==
-                                            undefined &&
-                                          draft.devServerPatterns.length > 0
-                                        ) {
-                                          entry.devServerPatterns =
-                                            draft.devServerPatterns;
-                                        }
-                                        if (draft.shell !== undefined) {
-                                          entry.shell = draft.shell;
-                                        }
-                                        if (draft.interactive) {
-                                          entry.interactive = true;
-                                        }
-                                        return {
-                                          ...prev,
-                                          [repo.id]: {
-                                            ...repoEditable,
-                                            [scriptName]: entry,
-                                          },
-                                        };
-                                      });
+                                  }))
+                                }
+                                devServerPatternsValidityScopeKey={`${scriptEditMode}:repo:${repo.id}:custom:${script.name}`}
+                                onDevServerPatternsValidityChange={makeDevServerValidityHandler(
+                                  `${scriptEditMode}:repo:${repo.id}:custom:${script.name}`,
+                                )}
+                              />
+                            </div>
+                          ))}
+                          <div className="rounded-lg border border-dashed p-3">
+                            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+                              <FormField label="Script name">
+                                {(control) => (
+                                  <TextInput
+                                    {...control}
+                                    density="settings"
+                                    value={draft.name}
+                                    onChange={(event) =>
                                       setNewRepoScripts((prev) => ({
                                         ...prev,
                                         [repo.id]: {
-                                          name: '',
-                                          command: '',
-                                          timeoutSeconds: undefined,
-                                          devServerPatterns: undefined,
-                                          shell: undefined,
-                                          interactive: false,
+                                          ...draft,
+                                          name: event.target.value,
                                         },
-                                      }));
-                                    }}
-                                    disabled={
-                                      !normalizeScriptName(draft.name) ||
-                                      !draft.command.trim() ||
-                                      hasInvalidDevServerPatterns
+                                      }))
                                     }
-                                  >
-                                    Add script
-                                  </Button>
-                                </div>
-                              </div>
-                              <div className="mt-3">
-                                <ScriptConfigEditor
-                                  label="Command"
-                                  scriptName={
-                                    normalizeScriptName(draft.name) ??
-                                    'new-script'
-                                  }
-                                  command={draft.command}
-                                  timeoutSeconds={draft.timeoutSeconds}
-                                  shell={draft.shell}
-                                  interactive={draft.interactive}
-                                  onInteractiveChange={(interactive) =>
-                                    setNewRepoScripts((prev) => ({
-                                      ...prev,
-                                      [repo.id]: { ...draft, interactive },
-                                    }))
-                                  }
-                                  onCommandChange={(nextValue) =>
-                                    setNewRepoScripts((prev) => ({
-                                      ...prev,
-                                      [repo.id]: {
-                                        ...draft,
-                                        command: nextValue,
-                                      },
-                                    }))
-                                  }
-                                  onTimeoutSecondsChange={(nextTimeout) =>
-                                    setNewRepoScripts((prev) => ({
-                                      ...prev,
-                                      [repo.id]: {
-                                        ...draft,
-                                        timeoutSeconds: nextTimeout,
-                                      },
-                                    }))
-                                  }
-                                  onShellChange={(nextShell) =>
-                                    setNewRepoScripts((prev) => ({
-                                      ...prev,
-                                      [repo.id]: {
-                                        ...draft,
-                                        shell: nextShell,
-                                      },
-                                    }))
-                                  }
-                                  placeholder="npm run storybook"
-                                  rows={3}
-                                  defaultTimeoutSeconds={
-                                    defaultScriptTimeoutSeconds
-                                  }
-                                  devServerPatterns={draft.devServerPatterns}
-                                  onDevServerPatternsChange={(next) =>
+                                    placeholder="dev-server"
+                                  />
+                                )}
+                              </FormField>
+                              <div className="flex items-end">
+                                <Button
+                                  size="compact"
+                                  onClick={() => {
+                                    const scriptName = normalizeScriptName(
+                                      draft.name,
+                                    );
+                                    if (
+                                      !scriptName ||
+                                      draft.command.trim().length === 0
+                                    ) {
+                                      return;
+                                    }
+                                    if (hasInvalidDevServerPatterns) {
+                                      return;
+                                    }
+                                    setActiveRepoScriptsForTab((prev) => {
+                                      const repoEditable = prev[repo.id] ?? {};
+                                      const entry: EditableScript = {
+                                        command: draft.command,
+                                      };
+                                      if (draft.timeoutSeconds !== undefined) {
+                                        entry.timeoutSeconds =
+                                          draft.timeoutSeconds;
+                                      }
+                                      if (
+                                        draft.devServerPatterns !== undefined &&
+                                        draft.devServerPatterns.length > 0
+                                      ) {
+                                        entry.devServerPatterns =
+                                          draft.devServerPatterns;
+                                      }
+                                      if (draft.shell !== undefined) {
+                                        entry.shell = draft.shell;
+                                      }
+                                      if (draft.interactive) {
+                                        entry.interactive = true;
+                                      }
+                                      return {
+                                        ...prev,
+                                        [repo.id]: {
+                                          ...repoEditable,
+                                          [scriptName]: entry,
+                                        },
+                                      };
+                                    });
                                     setNewRepoScripts((prev) => ({
                                       ...prev,
                                       [repo.id]: {
-                                        ...draft,
-                                        devServerPatterns: next,
+                                        name: '',
+                                        command: '',
+                                        timeoutSeconds: undefined,
+                                        devServerPatterns: undefined,
+                                        shell: undefined,
+                                        interactive: false,
                                       },
-                                    }))
+                                    }));
+                                  }}
+                                  disabled={
+                                    !normalizeScriptName(draft.name) ||
+                                    !draft.command.trim() ||
+                                    hasInvalidDevServerPatterns
                                   }
-                                  devServerPatternsValidityScopeKey={`${scriptEditMode}:repo:${repo.id}:new-script-draft`}
-                                  onDevServerPatternsValidityChange={makeDevServerValidityHandler(
-                                    `${scriptEditMode}:repo:${repo.id}:new-script-draft`,
-                                  )}
-                                />
+                                >
+                                  Add script
+                                </Button>
                               </div>
                             </div>
+                            <div className="mt-3">
+                              <ScriptConfigEditor
+                                label="Command"
+                                scriptName={
+                                  normalizeScriptName(draft.name) ??
+                                  'new-script'
+                                }
+                                command={draft.command}
+                                timeoutSeconds={draft.timeoutSeconds}
+                                shell={draft.shell}
+                                interactive={draft.interactive}
+                                onInteractiveChange={(interactive) =>
+                                  setNewRepoScripts((prev) => ({
+                                    ...prev,
+                                    [repo.id]: { ...draft, interactive },
+                                  }))
+                                }
+                                onCommandChange={(nextValue) =>
+                                  setNewRepoScripts((prev) => ({
+                                    ...prev,
+                                    [repo.id]: {
+                                      ...draft,
+                                      command: nextValue,
+                                    },
+                                  }))
+                                }
+                                onTimeoutSecondsChange={(nextTimeout) =>
+                                  setNewRepoScripts((prev) => ({
+                                    ...prev,
+                                    [repo.id]: {
+                                      ...draft,
+                                      timeoutSeconds: nextTimeout,
+                                    },
+                                  }))
+                                }
+                                onShellChange={(nextShell) =>
+                                  setNewRepoScripts((prev) => ({
+                                    ...prev,
+                                    [repo.id]: {
+                                      ...draft,
+                                      shell: nextShell,
+                                    },
+                                  }))
+                                }
+                                placeholder="npm run storybook"
+                                rows={3}
+                                defaultTimeoutSeconds={
+                                  defaultScriptTimeoutSeconds
+                                }
+                                devServerPatterns={draft.devServerPatterns}
+                                onDevServerPatternsChange={(next) =>
+                                  setNewRepoScripts((prev) => ({
+                                    ...prev,
+                                    [repo.id]: {
+                                      ...draft,
+                                      devServerPatterns: next,
+                                    },
+                                  }))
+                                }
+                                devServerPatternsValidityScopeKey={`${scriptEditMode}:repo:${repo.id}:new-script-draft`}
+                                onDevServerPatternsValidityChange={makeDevServerValidityHandler(
+                                  `${scriptEditMode}:repo:${repo.id}:new-script-draft`,
+                                )}
+                              />
+                            </div>
                           </div>
-                        </>
-                      )}
-                    </div>
+                        </div>
+                      </div>
+                    </Disclosure>
                   );
                 })}
               </>
@@ -3946,9 +4056,7 @@ export function WorkspaceSettingsModal({
             hookEditMode === 'source' &&
             !hasLoadedWorkspaceSettingsData &&
             !workspaceSettingsLoadError ? (
-              <div className="flex items-center justify-center py-8">
-                <LoadingSpinner tone="secondary" />
-              </div>
+              <SourceHooksSkeleton />
             ) : workspace.sourceRepoPath &&
               !isTemporaryWorkspace &&
               hookEditMode === 'source' &&
@@ -4127,9 +4235,9 @@ export function WorkspaceSettingsModal({
             !isTemporaryWorkspace &&
             pluginEditMode === 'source' ? (
               !hasLoadedWorkspaceSettingsData && !workspaceSettingsLoadError ? (
-                <div className="flex items-center justify-center py-8">
-                  <LoadingSpinner tone="secondary" />
-                </div>
+                <SourcePluginsSkeleton
+                  helperText={SOURCE_PLUGINS_HELPER_TEXT}
+                />
               ) : workspaceSettingsLoadError ? (
                 <div className="rounded-lg border bg-secondary/30 p-4 text-s">
                   <p className="font-medium fg-primary">
@@ -4151,7 +4259,7 @@ export function WorkspaceSettingsModal({
                 <ShareablePluginSelector
                   selections={sourcePlugins}
                   onChange={setSourcePlugins}
-                  helperText="These recommendations are saved to canopy.json. They are offered when worktrees or scoped child-repo chats are created, but they do not change local chat defaults until a user applies them."
+                  helperText={SOURCE_PLUGINS_HELPER_TEXT}
                 />
               )
             ) : (

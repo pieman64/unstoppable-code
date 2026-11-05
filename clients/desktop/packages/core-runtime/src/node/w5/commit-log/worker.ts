@@ -4,6 +4,7 @@ import {
   recoverW5CommitLog,
   type W5DurabilityPort,
   type W5RecoveryReport,
+  type W5ProcessFileLock,
 } from './apply';
 import type { W5ConfinedFileReaderSource } from './capture-contract';
 import { W5CommitLog } from './commit-log';
@@ -34,7 +35,7 @@ import {
  * opener; a commit whose files were not yet written is finished by the next
  * worker's recovery.
  *
- * Nothing here logs. Error messages are fixed text or the commit log's own,
+ * Launch heals log only commit ID and operation locally. Error messages are fixed text or the commit log's own,
  * which carry no file contents. Each host's worker entry supplies its
  * durability, trusted OS and, on win32, its handle-confined reader; this body
  * reads no platform.
@@ -43,6 +44,8 @@ import {
 export interface W5CommitLogWorkerHost {
   /** The host's durable writes and folder syncs. */
   readonly durability: W5DurabilityPort;
+  /** Host filesystem exclusion, composed at the execution owner. */
+  readonly processLock?: W5ProcessFileLock;
   /** Trusted host OS, for capture; never taken from a request. */
   readonly os: NodeJS.Platform | null;
   /** win32: the host's handle-confined capture reads; without it capture refuses. */
@@ -151,6 +154,15 @@ export async function runW5CommitLogWorker(
     recovery = await recoverW5CommitLog(log, {
       root: data.root,
       durability: host.durability,
+      processLock: host.processLock,
+      healCleanConflictOperations:
+        data.healCleanConflictOperations === undefined
+          ? undefined
+          : new Set(data.healCleanConflictOperations),
+      onAbandoned: (entry) =>
+        process.stderr.write(
+          `W5 launch abandoned clean conflict: commit ${entry.commitId}, ${entry.operation}\n`,
+        ),
     });
     const details = log.listRecoveryRequiredCommitDiagnostics();
     if (details.length > 0) recovery.recoveryRequiredDetails = details;
@@ -175,6 +187,7 @@ export async function runW5CommitLogWorker(
       host.durability,
       host.os,
       host.confinedReader,
+      host.processLock,
     ),
   );
   report(port, {

@@ -158,13 +158,3 @@ export const useSlowActionStore = create<SlowActionState>((set, get) => ({
     }));
   },
 }));
-
-export function __resetSlowActionStoreForTests(): void {
-  disposeSlowActionSubscription();
-  useSlowActionStore.setState({
-    initialized: false,
-    loading: true,
-    records: [],
-    error: null,
-  });
-}

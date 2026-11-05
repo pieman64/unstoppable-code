@@ -1,5 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import {
+  isSuggestionAllowed,
+  subscribeSuggestionsGate,
+  suggestionsGateRevision,
+} from '../lib/suggestions-gate';
+import {
   shareTargetKey,
   type SkillShareTarget as ShareTarget,
   type SkillShareNudgeOrigin,
@@ -21,6 +26,17 @@ interface PendingEntry {
 }
 /** Separate durable once-ever suppression from the banner currently displayed in one window. */
 export class SkillShareNudgeState {
+  constructor(
+    private readonly isAllowed: () => boolean = (): boolean => true,
+    private readonly gateRevision: () => number = (): number => 0,
+  ) {}
+  private generation = 0;
+  clearAll(): void {
+    this.generation += 1;
+    const entries = Array.from(this.pending.values());
+    this.pending.clear();
+    for (const entry of entries) this.changed(entry.origin);
+  }
   private readonly pending = new Map<string, PendingEntry>();
   private readonly listeners = new Set<
     (origin: SkillShareNudgeOrigin) => void
@@ -50,9 +66,25 @@ export class SkillShareNudgeState {
     target: ShareTarget,
     isLive: () => boolean,
   ): Promise<void> {
+    if (!this.isAllowed()) return Promise.resolve();
+    const generation = this.generation;
+    const revision = this.gateRevision();
     return this.enqueue(async () => {
+      if (
+        !this.isAllowed() ||
+        generation !== this.generation ||
+        revision !== this.gateRevision()
+      )
+        return;
       const result = await recordSkillUse(shareTargetKey(target));
-      if (!result.shouldEvaluateNudge || !isLive()) return;
+      if (
+        !result.shouldEvaluateNudge ||
+        !isLive() ||
+        !this.isAllowed() ||
+        generation !== this.generation ||
+        revision !== this.gateRevision()
+      )
+        return;
       const key = originKey(origin);
       const existing = this.pending.get(key);
       if (
@@ -135,4 +167,10 @@ export class SkillShareNudgeState {
     if (this.pending.delete(key)) this.changed(origin);
   }
 }
-export const skillShareNudgeState = new SkillShareNudgeState();
+export const skillShareNudgeState = new SkillShareNudgeState(
+  () => isSuggestionAllowed('skill-share'),
+  () => suggestionsGateRevision('skill-share'),
+);
+subscribeSuggestionsGate(() => {
+  if (!isSuggestionAllowed('skill-share')) skillShareNudgeState.clearAll();
+});

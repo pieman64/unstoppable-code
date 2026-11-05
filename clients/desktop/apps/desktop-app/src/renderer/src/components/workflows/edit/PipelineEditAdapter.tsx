@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -7,6 +8,7 @@ import {
   type ReactNode,
 } from 'react';
 import { useCapabilities } from '@canopy/app-state';
+import { pipelineAssistantSelection } from '@/components/pipeline/pipelineAssistantSuggestions';
 import type { WorkflowEditSection } from '@canopy/desktop-shared/types';
 import {
   getTriggerTypes,
@@ -353,6 +355,77 @@ export function PipelineEditAdapter({
     [info, pipelines, toggling],
   );
 
+  // The page's bar names the open pipeline, renames included, a read-only
+  // one opens on the editor alone, and the assistant's empty chat offers
+  // what fits it (CAN-4319).
+  const { reportEdit } = pipelines;
+  const editTitle = session.loading
+    ? null
+    : session.name || 'Untitled workflow';
+  const editReadOnly = session.readOnly;
+  const isDraft = session.isDraft;
+  const jobCount = session.pipeline
+    ? Object.keys(session.pipeline.jobs).length
+    : 0;
+  const validationIssueCount = session.validationErrors.length;
+  const selection = pipelineAssistantSelection(
+    session.pipeline,
+    session.editor.selection,
+  );
+  const selectionKind = selection?.kind;
+  const selectionLabel = selection?.label;
+  const selectionJobLabel = selection?.jobLabel;
+  const duplicateRef = useRef(session.duplicate);
+  duplicateRef.current = session.duplicate;
+  const canDuplicateCopy = editReadOnly && session.canDuplicate;
+  const editDetails = useMemo(
+    () =>
+      editTitle === null
+        ? null
+        : {
+            title: editTitle,
+            readOnly: editReadOnly,
+            ...(isDraft
+              ? {}
+              : {
+                  assistant: {
+                    name: editTitle,
+                    readOnly: editReadOnly,
+                    jobCount,
+                    validationIssueCount,
+                    selection:
+                      selectionKind !== undefined &&
+                      selectionLabel !== undefined &&
+                      selectionJobLabel !== undefined
+                        ? {
+                            kind: selectionKind,
+                            label: selectionLabel,
+                            jobLabel: selectionJobLabel,
+                          }
+                        : null,
+                    ...(canDuplicateCopy
+                      ? { duplicate: (): void => duplicateRef.current() }
+                      : {}),
+                  },
+                }),
+          },
+    [
+      editTitle,
+      editReadOnly,
+      isDraft,
+      jobCount,
+      validationIssueCount,
+      selectionKind,
+      selectionLabel,
+      selectionJobLabel,
+      canDuplicateCopy,
+    ],
+  );
+  useEffect(() => {
+    reportEdit(editDetails);
+  }, [editDetails, reportEdit]);
+  useEffect(() => (): void => reportEdit(null), [reportEdit]);
+
   if (!session.loading && session.notFound) {
     return <WorkflowEditNotFound kind="pipeline" backLabel={backLabel} />;
   }
@@ -485,10 +558,8 @@ export function PipelineEditAdapter({
         onSectionChange={setSection}
         renderSection={renderSection}
         targetKey={targetKey}
-        assistant={{
-          open: pipelines.assistant.open,
-          onToggle: pipelines.assistant.toggle,
-        }}
+        // The page's bar (CAN-4319) holds the way back and the actions.
+        pageBar={{ actionsTarget: pipelines.editActionsTarget }}
         notices={
           owner ||
           // The editor shows its own load, save and Raw errors on Definition.

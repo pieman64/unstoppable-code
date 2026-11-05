@@ -33,3 +33,4 @@ export {
   type LocalWorkerDispatchRequest,
   type LocalWorkerDispatchResult,
 } from './local-worker';
+export { KeyedOutcomes, MAX_KEYED_OUTCOMES } from './keyed-outcomes';

@@ -5,6 +5,10 @@ import type {
   ChatInputDeliveryRow,
 } from '@canopy/protocol/portal';
 import type { ChatSendMessageRequest } from '@canopy/desktop-shared/types';
+import {
+  inputSettingsKey,
+  isInputLedger,
+} from '@canopy/desktop-shared/chat-input-delivery';
 import { isGeneratedInputRequest } from './chat-input-request-kind';
 
 export type InputLedger = ChatInputDeliveryLedger<ChatSendMessageRequest>;
@@ -22,13 +26,226 @@ export type InputHistoryVerdict =
   | { kind: 'not-found' }
   | { kind: 'unreadable' };
 
-export {
-  inputSettingsKey,
-  isInputLedger,
-} from '@canopy/desktop-shared/chat-input-delivery';
+export { inputSettingsKey, isInputLedger };
 
 const SUPERSEDED_PICKUP_REASON =
   'A superseded delivery attempt was picked up. Review the provider transcript before retrying this message.';
+
+interface StringPropertyLocation {
+  holder: object;
+  key: string;
+  value: string;
+}
+
+interface InputTextShareAttempt {
+  createdAt: number;
+  order: number;
+  submittedText: StringPropertyLocation | undefined;
+  hiddenText: StringPropertyLocation | undefined;
+}
+
+interface StringPropertyWrite {
+  location: StringPropertyLocation;
+  expectedValue: string;
+  replacement: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isUnknownArray(value: unknown): value is unknown[] {
+  return Array.isArray(value);
+}
+
+function ownDataValue(target: object, key: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(target, key);
+  return descriptor && 'value' in descriptor ? descriptor.value : undefined;
+}
+
+function stringPropertyLocation(
+  target: object,
+  key: string,
+): StringPropertyLocation | undefined {
+  const descriptor = Object.getOwnPropertyDescriptor(target, key);
+  if (
+    !descriptor ||
+    !('value' in descriptor) ||
+    typeof descriptor.value !== 'string'
+  )
+    return undefined;
+  return { holder: target, key, value: descriptor.value };
+}
+
+function hiddenTextLocation(
+  payload: unknown,
+): StringPropertyLocation | undefined {
+  if (!isRecord(payload)) return undefined;
+  const context = ownDataValue(payload, 'hiddenContext');
+  if (!isRecord(context)) return undefined;
+  return stringPropertyLocation(context, 'text');
+}
+
+function ownArrayLength(value: object): number | undefined {
+  const descriptor = Object.getOwnPropertyDescriptor(value, 'length');
+  return descriptor &&
+    'value' in descriptor &&
+    typeof descriptor.value === 'number'
+    ? descriptor.value
+    : undefined;
+}
+
+function isLaterAttempt(
+  candidate: InputTextShareAttempt,
+  previous: InputTextShareAttempt,
+): boolean {
+  return (
+    candidate.createdAt > previous.createdAt ||
+    (candidate.createdAt === previous.createdAt &&
+      candidate.order > previous.order)
+  );
+}
+
+function planRowTextSharing(
+  row: Record<string, unknown>,
+): StringPropertyWrite[] {
+  const payload = ownDataValue(row, 'payload');
+  const payloadHiddenText = hiddenTextLocation(payload);
+  const attemptsValue = ownDataValue(row, 'attempts');
+  if (!isUnknownArray(attemptsValue)) return [];
+  const attemptCount = ownArrayLength(attemptsValue);
+  if (attemptCount === undefined) return [];
+
+  const attempts: InputTextShareAttempt[] = [];
+  for (let index = 0; index < attemptCount; index += 1) {
+    const attemptValue = ownDataValue(attemptsValue, String(index));
+    if (!isRecord(attemptValue)) continue;
+    const createdAt = ownDataValue(attemptValue, 'createdAt');
+    if (
+      typeof createdAt !== 'number' ||
+      !Number.isSafeInteger(createdAt) ||
+      createdAt < 0
+    )
+      continue;
+    const snapshot = ownDataValue(attemptValue, 'payloadSnapshot');
+    attempts.push({
+      createdAt,
+      order: index,
+      submittedText: stringPropertyLocation(attemptValue, 'submittedText'),
+      hiddenText: hiddenTextLocation(snapshot),
+    });
+  }
+
+  let sourceHiddenText = payloadHiddenText;
+  if (!sourceHiddenText) {
+    let newestSnapshotText: InputTextShareAttempt | undefined;
+    for (const candidate of attempts) {
+      if (!candidate.hiddenText) continue;
+      if (!newestSnapshotText || isLaterAttempt(candidate, newestSnapshotText))
+        newestSnapshotText = candidate;
+    }
+    sourceHiddenText = newestSnapshotText?.hiddenText;
+  }
+
+  const writes: StringPropertyWrite[] = [];
+  if (sourceHiddenText) {
+    const originalHiddenText = sourceHiddenText.value;
+    const requiredPrefix = `${originalHiddenText}\n\n`;
+    let newestMatchingParent: InputTextShareAttempt | undefined;
+    for (const candidate of attempts) {
+      if (!candidate.submittedText?.value.startsWith(requiredPrefix)) continue;
+      if (
+        !newestMatchingParent ||
+        isLaterAttempt(candidate, newestMatchingParent)
+      )
+        newestMatchingParent = candidate;
+    }
+    const canonicalHiddenText = newestMatchingParent?.submittedText
+      ? newestMatchingParent.submittedText.value.slice(
+          0,
+          originalHiddenText.length,
+        )
+      : originalHiddenText;
+    const hiddenTextLocations: StringPropertyLocation[] = [];
+    if (payloadHiddenText?.value === originalHiddenText)
+      hiddenTextLocations.push(payloadHiddenText);
+    for (const candidate of attempts) {
+      if (candidate.hiddenText?.value === originalHiddenText)
+        hiddenTextLocations.push(candidate.hiddenText);
+    }
+    for (const location of hiddenTextLocations) {
+      writes.push({
+        location,
+        expectedValue: originalHiddenText,
+        replacement: canonicalHiddenText,
+      });
+    }
+  }
+
+  const newestBySubmittedText = new Map<string, InputTextShareAttempt>();
+  for (const candidate of attempts) {
+    const submittedText = candidate.submittedText;
+    if (!submittedText) continue;
+    const previous = newestBySubmittedText.get(submittedText.value);
+    if (!previous || isLaterAttempt(candidate, previous))
+      newestBySubmittedText.set(submittedText.value, candidate);
+  }
+  for (const candidate of attempts) {
+    const submittedText = candidate.submittedText;
+    if (!submittedText) continue;
+    const newest = newestBySubmittedText.get(submittedText.value);
+    if (!newest?.submittedText) continue;
+    writes.push({
+      location: submittedText,
+      expectedValue: submittedText.value,
+      replacement: newest.submittedText.value,
+    });
+  }
+  return writes;
+}
+
+function applyTextShareWrite(write: StringPropertyWrite): void {
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(
+      write.location.holder,
+      write.location.key,
+    );
+    if (
+      !descriptor ||
+      !('value' in descriptor) ||
+      descriptor.writable !== true ||
+      typeof descriptor.value !== 'string' ||
+      descriptor.value !== write.expectedValue
+    )
+      return;
+    Reflect.defineProperty(write.location.holder, write.location.key, {
+      ...descriptor,
+      value: write.replacement,
+    });
+  } catch {
+    return;
+  }
+}
+
+/** Share equal hidden-context and submitted strings within each valid ledger row. */
+export function shareInputLedgerText(ledger: unknown): void {
+  try {
+    if (!isInputLedger(ledger)) return;
+    const rowsValue = ownDataValue(ledger, 'rows');
+    if (!isUnknownArray(rowsValue)) return;
+    const rowCount = ownArrayLength(rowsValue);
+    if (rowCount === undefined) return;
+
+    const writes: StringPropertyWrite[] = [];
+    for (let index = 0; index < rowCount; index += 1) {
+      const row = ownDataValue(rowsValue, String(index));
+      if (isRecord(row)) writes.push(...planRowTextSharing(row));
+    }
+    for (const write of writes) applyTextShareWrite(write);
+  } catch {
+    return;
+  }
+}
 
 /** Whether a row may use provider history to resolve an unconfirmed send. */
 export function isHistoryCandidate(

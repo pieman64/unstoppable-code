@@ -3,6 +3,8 @@ import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import type { PortableChildRow, TranscriptBlockEntry } from '@canopy/app-core';
 import {
   DelegationChildRowNotice,
+  repeatsCardResult,
+  type DelegationChildRowDisplay,
   type DelegationChildRowEntry,
   type ToolOutputIdentity,
 } from '@canopy/ui-app';
@@ -263,6 +265,7 @@ export function renderDelegationChildRows(
   entries: readonly DelegationChildRowEntry[],
   card: DelegatedAgentCallBlock,
   renderSubBlock: (block: DisplayBlock, index: number) => ReactNode,
+  shown?: DelegationChildRowDisplay,
 ): ReactNode {
   const validated = entries.map((entry) => desktopMessage(entry.row));
   const prepared = prepareWindow(validated);
@@ -281,16 +284,21 @@ export function renderDelegationChildRows(
     const validatedRow = validated[index];
     const message = validatedRow.message;
     const author = message.delegationAuthor;
-    const blocks = (byId.get(entry.key) ?? []).map((block): DisplayBlock => {
-      if (block.type !== 'tool_use') return block;
-      const locator = prepared.originalResults.get(block.toolUseId);
-      return {
-        ...block,
-        ...(block.result && locator
-          ? { result: { ...block.result, ...locator } }
-          : {}),
-      };
-    });
+    const blocks = (byId.get(entry.key) ?? [])
+      .filter(
+        (block) =>
+          !(block.type === 'text' && repeatsCardResult(block.text, shown)),
+      )
+      .map((block): DisplayBlock => {
+        if (block.type !== 'tool_use') return block;
+        const locator = prepared.originalResults.get(block.toolUseId);
+        return {
+          ...block,
+          ...(block.result && locator
+            ? { result: { ...block.result, ...locator } }
+            : {}),
+        };
+      });
     const standalone = message.blocks.flatMap((block, ordinal) =>
       block.type === 'tool_result' &&
       !prepared.paired.has(JSON.stringify([message.id, ordinal]))

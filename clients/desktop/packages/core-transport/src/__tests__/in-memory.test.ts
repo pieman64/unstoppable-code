@@ -16,6 +16,7 @@ import {
   createInMemoryFramedPair,
   encodeCanopyChannelDataFrame,
   encodeCanopyJsonFrame,
+  encodeCanopyJsonMessage,
   type CanopyByteChannel,
   type CanopyFramedConnection,
   type CanopyFramedPair,
@@ -149,6 +150,83 @@ describe('in-memory framed pair', () => {
     clientWire.write(Buffer.from([0, 0, 0x10, 0]));
     expect(await errorKind(server.receive())).toBe('resource_exhausted');
     expect(await errorKind(client.receive())).toBe('resource_exhausted');
+  });
+
+  it('carries a message over the frame cap in parts once the peer reassembles it', async () => {
+    const { client, server } = await pair({
+      maxFrameBytes: 1_024,
+      maxMessageBytes: 64 * 1_024,
+    });
+    expect(server.maxMessageBytes).toBe(64 * 1_024);
+    const big: CanopyJsonRpcMessage = {
+      jsonrpc: '2.0',
+      id: 1,
+      result: 'ü'.repeat(20_000),
+    };
+    await server.send(big);
+    await client.send(request(2));
+    expect(await client.receive()).toEqual(big);
+    expect(await server.receive()).toMatchObject({ id: 2 });
+    // Over the peer's cap the send is refused and the connection stays open.
+    expect(
+      await errorKind(
+        server.send({ jsonrpc: '2.0', id: 3, result: 'x'.repeat(70_000) }),
+      ),
+    ).toBe('resource_exhausted');
+    await server.send(request(4));
+    expect(await client.receive()).toMatchObject({ id: 4 });
+  });
+
+  it('joins no more than one frame of parts before the peer authenticates', async () => {
+    const [clientWire, serverWire] = duplexPair();
+    const accepting = createCanopyFramedConnection(serverWire, {
+      role: 'server',
+      auth: { secret: 'secret', dataRootHash: '0'.repeat(64) },
+      maxFrameBytes: 1_024,
+      maxMessageBytes: 64 * 1_024,
+    });
+    // Parts of an envelope larger than one frame, with no auth.response.
+    clientWire.write(
+      encodeCanopyJsonMessage(
+        { jsonrpc: '2.0', id: 1, result: 'x'.repeat(4_096) },
+        1_024,
+        64 * 1_024,
+      ),
+    );
+    expect(await errorKind(accepting)).toBe('resource_exhausted');
+    clientWire.destroy();
+  });
+
+  it('splits only after the peer says how large a message it reassembles', async () => {
+    const [clientWire, serverWire] = duplexPair();
+    const auth = { secret: 'secret', dataRootHash: '0'.repeat(64) };
+    const options = { maxFrameBytes: 1_024, maxMessageBytes: 64 * 1_024 };
+    const [client, server] = await Promise.all([
+      createCanopyFramedConnection(clientWire, {
+        ...options,
+        role: 'client',
+        auth,
+      }),
+      createCanopyFramedConnection(serverWire, {
+        ...options,
+        role: 'server',
+        auth,
+      }),
+    ]);
+    try {
+      const big: CanopyJsonRpcMessage = {
+        jsonrpc: '2.0',
+        id: 1,
+        result: 'x'.repeat(4_096),
+      };
+      expect(await errorKind(server.send(big))).toBe('resource_exhausted');
+      server.allowPeerMessageBytes?.(client.maxMessageBytes ?? 0);
+      await server.send(big);
+      expect(await client.receive()).toEqual(big);
+    } finally {
+      client.close();
+      server.close();
+    }
   });
 
   it('ignores bytes a peer keeps writing after a fatal frame', async () => {

@@ -4,6 +4,7 @@ import type {
   AgentAuditHistoryRequest,
   AgentAuditTranscriptRequest,
   AgentAuditTranscriptResponse,
+  AgentObservabilitySnapshot,
   AgentProviderType,
   AgentUsageOverview,
   UsageMetricsRequest,
@@ -61,6 +62,7 @@ interface ObservabilityState {
   recentEntries: AgentAuditEntry[];
   historyEntries: AgentAuditEntry[];
   transcriptCache: Record<string, CachedTranscript>;
+  transcriptCacheVersion: number;
   nextCursor?: string;
   activeHistoryRequest: AgentAuditHistoryRequest | null;
   usage: AgentUsageOverview;
@@ -109,6 +111,8 @@ interface ObservabilityState {
   loadUsageTabSummary: (
     request: UsageTabSummaryRequest,
   ) => Promise<UsageTabSummaryResponse>;
+  applySnapshot: (snapshot: AgentObservabilitySnapshot) => void;
+  clearEntryCaches: () => void;
 }
 
 function usageTimeseriesCacheKey(request: UsageTimeseriesRequest): string {
@@ -305,6 +309,34 @@ function invalidateUsageDetailCaches(
   };
 }
 
+function snapshotState(
+  state: ObservabilityState,
+  snapshot: AgentObservabilitySnapshot,
+): Partial<ObservabilityState> {
+  return {
+    recentEntries: snapshot.recentEntries,
+    transcriptCache: invalidateTranscriptCache(
+      state.transcriptCache,
+      snapshot.recentEntries,
+    ),
+    transcriptCacheVersion: state.transcriptCacheVersion + 1,
+    usage: snapshot.usage,
+    retentionDays: snapshot.retentionDays,
+    ...invalidateUsageDetailCaches(state),
+  };
+}
+
+function clearEntryCaches(
+  state: ObservabilityState,
+): Pick<ObservabilityState, 'transcriptCache' | 'transcriptCacheVersion'> &
+  ReturnType<typeof invalidateUsageDetailCaches> {
+  return {
+    transcriptCache: {},
+    transcriptCacheVersion: state.transcriptCacheVersion + 1,
+    ...invalidateUsageDetailCaches(state),
+  };
+}
+
 export const useObservabilityStore = create<ObservabilityState>((set, get) => ({
   initialized: false,
   loadingHistory: false,
@@ -312,6 +344,7 @@ export const useObservabilityStore = create<ObservabilityState>((set, get) => ({
   recentEntries: [],
   historyEntries: [],
   transcriptCache: {},
+  transcriptCacheVersion: 0,
   nextCursor: undefined,
   activeHistoryRequest: null,
   usage: defaultUsage(),
@@ -352,23 +385,7 @@ export const useObservabilityStore = create<ObservabilityState>((set, get) => ({
             set((state) => {
               switch (event.type) {
                 case 'snapshot':
-                  return {
-                    recentEntries: event.snapshot.recentEntries,
-                    transcriptCache: invalidateTranscriptCache(
-                      state.transcriptCache,
-                      event.snapshot.recentEntries,
-                    ),
-                    usageTimeseriesCache: {},
-                    usageTimeseriesVersion: state.usageTimeseriesVersion + 1,
-                    usageMetricsCache: {},
-                    usageMetricsVersion: state.usageMetricsVersion + 1,
-                    usageMetricsViewCache: {},
-                    usageMetricsViewVersion: state.usageMetricsViewVersion + 1,
-                    usageTabSummaryCache: {},
-                    usageTabSummaryVersion: state.usageTabSummaryVersion + 1,
-                    usage: event.snapshot.usage,
-                    retentionDays: event.snapshot.retentionDays,
-                  };
+                  return snapshotState(state, event.snapshot);
                 case 'entries': {
                   const nextRecent = state.recentEntries.filter(
                     (entry) =>
@@ -396,6 +413,7 @@ export const useObservabilityStore = create<ObservabilityState>((set, get) => ({
                       state.transcriptCache,
                       event.entries,
                     ),
+                    transcriptCacheVersion: state.transcriptCacheVersion + 1,
                     usageTimeseriesCache: {},
                     usageTimeseriesVersion: state.usageTimeseriesVersion + 1,
                     usageMetricsCache: {},
@@ -457,6 +475,14 @@ export const useObservabilityStore = create<ObservabilityState>((set, get) => ({
       next.delete(provider);
       set({ refreshingProviders: next });
     }
+  },
+
+  applySnapshot: (snapshot): void => {
+    set((state) => snapshotState(state, snapshot));
+  },
+
+  clearEntryCaches: (): void => {
+    set((state) => clearEntryCaches(state));
   },
 
   refreshProviderUsageDetails: async (
@@ -522,6 +548,7 @@ export const useObservabilityStore = create<ObservabilityState>((set, get) => ({
           state.transcriptCache,
           response.entries,
         ),
+        transcriptCacheVersion: state.transcriptCacheVersion + 1,
       }));
     } finally {
       if (requestSequence === historyRequestSequence) {
@@ -553,6 +580,7 @@ export const useObservabilityStore = create<ObservabilityState>((set, get) => ({
           state.transcriptCache,
           response.entries,
         ),
+        transcriptCacheVersion: state.transcriptCacheVersion + 1,
       }));
     } finally {
       if (requestSequence === historyRequestSequence) {
@@ -580,16 +608,20 @@ export const useObservabilityStore = create<ObservabilityState>((set, get) => ({
       return cached.response;
     }
 
+    const transcriptCacheVersion = get().transcriptCacheVersion;
     const response = await window.api.observability.loadTranscript(request);
-    set((state) => ({
-      transcriptCache: {
-        ...state.transcriptCache,
-        [entry.id]: {
-          response,
-          loadedAt: now,
+    set((state) => {
+      if (state.transcriptCacheVersion !== transcriptCacheVersion) return {};
+      return {
+        transcriptCache: {
+          ...state.transcriptCache,
+          [entry.id]: {
+            response,
+            loadedAt: now,
+          },
         },
-      },
-    }));
+      };
+    });
     return response;
   },
 

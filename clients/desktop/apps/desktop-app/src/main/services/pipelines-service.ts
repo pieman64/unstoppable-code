@@ -641,6 +641,7 @@ export async function getPortalExistingPipelineShare(request: {
   try {
     return toPortalExistingShare(
       await loadSharedPipeline(pipelineInfo.remote.remoteId),
+      { kind: 'pipeline', itemId: pipelineInfo.remote.remoteId },
     );
   } catch (error) {
     if (

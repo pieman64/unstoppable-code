@@ -19,7 +19,7 @@ import {
   SunIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { BrowserDownloadsButton } from './BrowserDownloadsButton';
-import { TextInput } from '@canopy/ui-shared/components';
+import { Button, TextInput } from '@canopy/ui-shared/components';
 
 interface BrowserBarProps {
   browserId: string;
@@ -94,15 +94,16 @@ export function BrowserBar({
           </IconButton>
           {isLoading ? (
             <Tooltip label="Stop loading">
-              <button
-                type="button"
+              <Button
+                variant="ghost-destructive"
+                size="sm"
+                iconOnly
                 data-testid="browser-stop"
                 onClick={handleStop}
                 aria-label="Stop loading"
-                className="shrink-0 rounded p-1 fg-destructive/70 transition-colors hover:bg-destructive-subtle hover:fg-destructive"
               >
                 <StopIcon size={14} />
-              </button>
+              </Button>
             </Tooltip>
           ) : (
             <IconButton
@@ -176,22 +177,19 @@ export function BrowserBar({
               </IconButton>
 
               <Tooltip label={pickLabel}>
-                <button
-                  type="button"
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  pressedHover
                   onClick={handlePick}
                   aria-label={pickLabel}
                   aria-pressed={snapshot.pickMode}
-                  className={`browser-bar-pick-button ${
-                    snapshot.pickMode
-                      ? 'bg-accent-subtle fg-accent'
-                      : 'fg-secondary hover:bg-muted/40 hover:fg-primary'
-                  }`}
                 >
                   <PickIcon size={14} />
                   <span className="browser-bar-pick-label">
                     {CHAT_UNIT_LABEL}
                   </span>
-                </button>
+                </Button>
               </Tooltip>
 
               <IconButton onClick={handleScreenshot} label="Capture screenshot">
@@ -201,16 +199,14 @@ export function BrowserBar({
               <BrowserDownloadsButton browserId={browserId} />
 
               <Tooltip label={inspectorLabel}>
-                <button
-                  type="button"
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  iconOnly
+                  pressedHover
                   onClick={onToggleInspector}
                   aria-label={inspectorLabel}
                   aria-pressed={inspectorOpen}
-                  className={`relative flex shrink-0 items-center rounded p-1 transition-colors ${
-                    inspectorOpen
-                      ? 'bg-muted/60 fg-primary'
-                      : 'fg-secondary hover:bg-muted/40 hover:fg-primary'
-                  }`}
                 >
                   <DetailsIcon size={14} />
                   {errorCount > 0 && (
@@ -222,7 +218,7 @@ export function BrowserBar({
                       className="absolute -right-1 -top-1"
                     />
                   )}
-                </button>
+                </Button>
               </Tooltip>
             </>
           )}
@@ -256,23 +252,23 @@ function IconButton({
 }: IconButtonProps): JSX.Element {
   // The tooltip handlers live on the wrapper span, so a disabled button
   // (e.g. Back with no history) still explains itself on hover.
+  // The toolbar's 28px ghost icon button. An on/off control (theme, record) passes
+  // `active`: it is announced as pressed and holds its hover look while on.
   return (
     <Tooltip label={label}>
-      <button
-        type="button"
+      <Button
+        variant="ghost"
+        size="sm"
+        iconOnly
         data-testid={dataTestId}
         onClick={onClick}
         disabled={disabled}
         aria-label={label}
         aria-pressed={active}
-        className={`shrink-0 rounded p-1 transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-          active
-            ? 'bg-muted/60 fg-primary'
-            : 'fg-secondary hover:bg-muted/40 hover:fg-primary'
-        }`}
+        pressedHover={active !== undefined}
       >
         {children}
-      </button>
+      </Button>
     </Tooltip>
   );
 }

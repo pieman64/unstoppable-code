@@ -58,8 +58,12 @@ export function createCoreLedgerQueryHandlers(
       service.getEntry(params, context),
     'core.ledger.owners.list': (params, context) =>
       service.listOwners(params, context),
+    'core.ledger.workSummary.get': (params, context) =>
+      service.getWorkSummary(params, context),
     'core.ledger.changes.list': (params, context) =>
       service.listChanges(params, context),
+    'core.ledger.rollups.list': (params, context) =>
+      service.listRollups(params, context),
   };
 }
 

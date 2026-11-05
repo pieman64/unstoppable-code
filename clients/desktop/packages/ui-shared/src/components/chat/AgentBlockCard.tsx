@@ -2,7 +2,7 @@ import {
   THINKING_LEVEL_LABELS,
   isThinkingLevel,
 } from '@canopy/protocol/thinking';
-import { useState, type JSX, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react';
 import { AgentIcon, MinusIcon, PlusIcon } from '../../icons';
 import { useCleanChatLook } from '../chat-look';
 import { StepRow } from './StepRow';
@@ -83,6 +83,8 @@ export interface AgentBlockCardProps {
   metadata?: ReactNode;
   /** Opens this subagent's chat from its expanded details. */
   onOpenChat?: () => void;
+  /** Reports committed expansion changes and a final collapse on unmount. */
+  onExpandedChange?: (expanded: boolean) => void;
   /** Leading header content, rendered before the agent label. */
   headerStatus?: ReactNode;
   /**
@@ -189,6 +191,7 @@ export function AgentBlockCard({
   usageOverride,
   metadata,
   onOpenChat,
+  onExpandedChange,
   headerStatus,
   headerTrailing,
   headerAction,
@@ -198,6 +201,29 @@ export function AgentBlockCard({
   const [isExpanded, setIsExpanded] = useState(false);
   const [showResult, setShowResult] = useState(false);
   const [showPrompt, setShowPrompt] = useState(false);
+  const onExpandedChangeRef = useRef(onExpandedChange);
+  const lastReportedExpansion = useRef(false);
+
+  useEffect((): void => {
+    onExpandedChangeRef.current = onExpandedChange;
+  }, [onExpandedChange]);
+
+  useEffect((): void => {
+    if (lastReportedExpansion.current !== isExpanded) {
+      lastReportedExpansion.current = isExpanded;
+      onExpandedChangeRef.current?.(isExpanded);
+    }
+  }, [isExpanded]);
+
+  useEffect(
+    (): (() => void) => (): void => {
+      if (lastReportedExpansion.current) {
+        lastReportedExpansion.current = false;
+        onExpandedChangeRef.current?.(false);
+      }
+    },
+    [],
+  );
 
   const preview =
     description && description.length > 80

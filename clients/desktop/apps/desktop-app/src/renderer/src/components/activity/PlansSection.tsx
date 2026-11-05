@@ -4,6 +4,7 @@ import type {
   TrackedPlanData,
 } from '@canopy/desktop-shared/types';
 import {
+  Disclosure,
   HeaderActionButton,
   Markdown,
   PlanProvenance,
@@ -65,7 +66,6 @@ import {
   PipelineIcon,
   PlanModeIcon,
   PlusIcon,
-  ChevronRightMediumIcon as AppCatalogChevronRightMediumIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { Button } from '@canopy/ui-shared/components';
 
@@ -218,20 +218,23 @@ function PlanCard({
           sourceFilePath={plan.sourceFilePath}
         />
         {!readOnly && navigationExecution && !executionHasOutcomeLink ? (
-          <button
-            type="button"
+          // A link inside the meta line, like the status notes beside it.
+          <Button
+            variant="link"
             data-testid={`activity-plan-execution-${plan.id}`}
             onClick={(event): void => {
               event.stopPropagation();
               onOpenExecution(navigationExecution.id);
             }}
-            className="focus-ring inline-flex min-w-0 max-w-full items-center gap-1 rounded-md px-1.5 py-0.5 text-2xs fg-info transition-colors hover:bg-fg-primary/[0.06]"
+            className="min-w-0 max-w-full"
           >
-            <PipelineIcon width={11} height={11} className="shrink-0" />
-            <span className="truncate">
-              {navigationExecution.pipeline_name}
+            <span className="inline-flex min-w-0 max-w-full items-center gap-1">
+              <PipelineIcon width={11} height={11} className="shrink-0" />
+              <span className="truncate">
+                {navigationExecution.pipeline_name}
+              </span>
             </span>
-          </button>
+          </Button>
         ) : null}
       </div>
 
@@ -721,26 +724,19 @@ export function PlansSection(): JSX.Element {
 
             {hiddenPlans.length > 0 && (
               <div className={frameless ? 'shrink-0' : 'mt-1'}>
-                <button
-                  type="button"
-                  onClick={(): void => setHiddenExpanded(!hiddenExpanded)}
-                  className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs fg-secondary transition-colors hover:bg-fg-primary/[0.04] hover:fg-secondary"
-                  data-testid="activity-plans-hidden-toggle"
+                <Disclosure
+                  open={hiddenExpanded}
+                  onOpenChange={setHiddenExpanded}
+                  leadingIcon={<EyeOffIcon />}
+                  label={`${hiddenPlans.length} hidden`}
+                  dataTestId="activity-plans-hidden"
+                  toggleTestId="activity-plans-hidden-toggle"
                 >
-                  <AppCatalogChevronRightMediumIcon
-                    width="12"
-                    height="12"
-                    className={`shrink-0 transition-transform ${hiddenExpanded ? 'rotate-90' : ''}`}
-                  />
-                  <EyeOffIcon />
-                  <span>{hiddenPlans.length} hidden</span>
-                </button>
-                {hiddenExpanded && (
                   <div
                     className={
                       frameless
-                        ? `mt-2 ${FRAMELESS_HIDDEN_GROUP_MAX_H} space-y-2 overflow-y-auto`
-                        : 'mt-2 max-h-76 space-y-2 overflow-y-auto'
+                        ? `${FRAMELESS_HIDDEN_GROUP_MAX_H} space-y-2 overflow-y-auto`
+                        : 'max-h-76 space-y-2 overflow-y-auto'
                     }
                   >
                     {hiddenPlans.map((plan) => (
@@ -767,7 +763,7 @@ export function PlansSection(): JSX.Element {
                       />
                     ))}
                   </div>
-                )}
+                </Disclosure>
               </div>
             )}
           </div>

@@ -69,6 +69,7 @@ import { buildModelCatalogOption } from '@canopy/desktop-shared/lib/model-catalo
 import { getModelFamilyMetadata } from '@canopy/desktop-shared/model-config';
 import {
   AI_CREDITS_PURCHASE_LABEL,
+  connectProviderLabel,
   ModelPickerMenu,
   MODEL_PICKER_AUTO_REASONS,
   MODEL_PICKER_ROW_CUE_COPY,
@@ -632,8 +633,8 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
     providerAvailability === undefined
       ? undefined
       : resolveModelLibraryLock(isGuest, libraryAccess);
-  // CAN-5028 — the `Free AI Credits` tag describes the personal wallet, so
-  // organization-owned work keeps the plain tag whatever its access reads.
+  // CAN-5028 — the access describes the personal wallet, so organization-owned
+  // work forwards none. The credits tag always reads `AI Credits` (CAN-4769).
   const libraryLabelAccess = useComposerWorkIsPersonal(
     aiCreditsScope?.kind === 'work' ? aiCreditsScope.projectId : undefined,
   )
@@ -1644,16 +1645,6 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
             ...(cue?.kind === 'library-lock' ? { keepsOrder: true } : {}),
           },
         };
-      if (cue?.kind === 'needs-daily-credits')
-        return {
-          disabled: false,
-          locked: {
-            hint: MODEL_PICKER_ROW_CUE_COPY.needsDailyCreditsHint,
-            label: MODEL_PICKER_ROW_CUE_COPY.needsDailyCredits,
-            onUnlock: recover(recovery),
-            keepsOrder: true,
-          },
-        };
       if (cue?.kind === 'needs-provider-sign-in')
         return {
           disabled: false,
@@ -1661,9 +1652,7 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
             hint: MODEL_PICKER_ROW_CUE_COPY.needsProviderSignInHint(
               cue.providerLabel,
             ),
-            label: MODEL_PICKER_ROW_CUE_COPY.needsProviderSignIn(
-              cue.providerLabel,
-            ),
+            label: MODEL_PICKER_ROW_CUE_COPY.needsProviderSignIn,
             onUnlock: recover(recovery),
             keepsOrder: true,
           },
@@ -3009,7 +2998,7 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
                         }
                       }}
                     >
-                      {`Sign in to ${getProviderLabel(billing.provider)}`}
+                      {connectProviderLabel(getProviderLabel(billing.provider))}
                     </Button>
                   ) : null}
                 </div>

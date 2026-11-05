@@ -1,3 +1,10 @@
+import {
+  marketplaceShareLinkUrl,
+  marketplaceShareOrigin,
+  isMarketplaceBrowserLink,
+  marketplacePublicLinkPinnedAt,
+  type MarketplaceShareLinkKind,
+} from '@canopy/protocol/marketplace';
 import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
 import type { PortalSharingExistingShare } from '@canopy/protocol/portal';
 import type { ShareRemoteMetadata, ShareScope } from '@canopy/protocol/sharing';
@@ -106,12 +113,37 @@ export async function preserveOrganizationPublicLink(
 }
 
 /** Project a Cloud detail into the neutral state consumed by Portal UI. */
-export function toPortalExistingShare(detail: {
-  shareScope?: ShareScope;
-  publicShare?: { upToDate?: boolean; sharePath?: string } | null;
-  owner?: ExistingShareOwner | null;
-}): PortalSharingExistingShare {
+export function toPortalExistingShare(
+  detail: {
+    shareScope?: ShareScope;
+    publicShare?: {
+      upToDate?: boolean;
+      sharePath?: string;
+      updatedAt?: string;
+    } | null;
+    owner?: ExistingShareOwner | null;
+  },
+  binding?: { kind: MarketplaceShareLinkKind; itemId: string },
+): PortalSharingExistingShare {
   const publicUrl = portalPublicUrl(detail.publicShare?.sharePath);
+  let linkUrl: string | null = null;
+  if (
+    binding &&
+    (detail.publicShare ||
+      detail.shareScope === 'team' ||
+      detail.shareScope === 'organization')
+  ) {
+    try {
+      linkUrl = marketplaceShareLinkUrl(
+        getCanopyCloudBaseUrl(),
+        binding.kind,
+        binding.itemId,
+      );
+    } catch {
+      /* Missing configuration or invalid item identity leaves no link. */
+    }
+  }
+  const pinnedAt = marketplacePublicLinkPinnedAt(detail.publicShare?.updatedAt);
   const owner = detail.owner;
   const target =
     owner && (owner.type === 'team' || owner.type === 'organization')
@@ -141,6 +173,8 @@ export function toPortalExistingShare(detail: {
       ? { publicLinkStale: true }
       : {}),
     ...(publicUrl !== undefined ? { publicUrl } : {}),
+    ...(linkUrl !== null ? { linkUrl } : {}),
+    ...(pinnedAt !== undefined ? { publicLinkPinnedAt: pinnedAt } : {}),
   };
 }
 
@@ -151,7 +185,12 @@ export function toPortalExistingShare(detail: {
 function portalPublicUrl(sharePath: string | undefined): string | undefined {
   if (sharePath === undefined || sharePath.length === 0) return undefined;
   try {
-    return new URL(sharePath, getCanopyCloudBaseUrl()).toString();
+    const origin = marketplaceShareOrigin(getCanopyCloudBaseUrl());
+    if (!origin) return undefined;
+    const link = new URL(sharePath, origin).toString();
+    return isMarketplaceBrowserLink(link) && new URL(link).origin === origin
+      ? link
+      : undefined;
   } catch {
     // An unconfigured origin opens the dialog without the link.
     return undefined;

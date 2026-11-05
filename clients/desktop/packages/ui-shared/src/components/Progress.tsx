@@ -1,7 +1,8 @@
 import type { JSX } from 'react';
-import type { StatusGlyphState } from '../lib/status-glyph';
+import { STATUS_GLYPHS, type StatusGlyphState } from '../lib/status-glyph';
 import { SpinnerStyleProvider } from './spinner-style';
 import { StatusGlyph } from './StatusGlyph';
+import { ThinkingSpinner } from './ThinkingSpinner';
 
 /**
  * The one progress set (docs/design/feedback.md#progress): a labelled 6px
@@ -229,6 +230,8 @@ export interface ProgressStep {
 }
 
 export interface ProgressStepsProps {
+  /** Compact inline job strips use six-pixel dots; full step rows use glyphs. */
+  readonly appearance?: 'glyphs' | 'dots';
   /**
    * The steps in order, grouped into stages. Steps in one stage run side by
    * side and sit 3px apart; a short rule separates one stage from the next.
@@ -255,6 +258,7 @@ function isFinished(state: StatusGlyphState): boolean {
  */
 export function ProgressSteps({
   stages,
+  appearance = 'glyphs',
   label,
   className,
   dataTestId,
@@ -268,6 +272,7 @@ export function ProgressSteps({
       <span
         className={`inline-flex shrink-0 items-center gap-1${className ? ` ${className}` : ''}`}
         data-testid={dataTestId}
+        data-progress-appearance={appearance}
         role={named ? 'progressbar' : undefined}
         aria-label={label}
         aria-valuemin={named ? 0 : undefined}
@@ -295,7 +300,34 @@ export function ProgressSteps({
                     data-progress-step={step.id}
                     data-status-glyph-state={step.state}
                   >
-                    <StatusGlyph state={step.state} size={12} />
+                    {appearance === 'glyphs' ? (
+                      <StatusGlyph state={step.state} size={12} />
+                    ) : step.state === 'running' ? (
+                      <ThinkingSpinner sizePx={6} tone="secondary" />
+                    ) : (
+                      <svg
+                        width={6}
+                        height={6}
+                        viewBox="0 0 6 6"
+                        aria-hidden="true"
+                        className={
+                          STATUS_GLYPHS[step.state].ink || 'fg-tertiary'
+                        }
+                      >
+                        <circle
+                          cx={3}
+                          cy={3}
+                          r={2.5}
+                          fill={
+                            step.state === 'queued' ||
+                            step.state === 'cancelled'
+                              ? 'none'
+                              : 'currentColor'
+                          }
+                          stroke="currentColor"
+                        />
+                      </svg>
+                    )}
                   </span>
                 ))}
               </span>

@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, type JSX } from 'react';
-import { Notice, NoticeButton } from '@canopy/ui-shared/components';
+import {
+  useSuggestionCornerOffer,
+  type SuggestionCornerModel,
+} from '@canopy/ui-app/suggestions';
 import { PluginsIcon, SkillIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
   shareTargetKey,
@@ -27,7 +30,7 @@ export const SKILL_SHARE_NUDGE_COPY = {
   skillMessage: 'Share it so others can use it too.',
   pluginMessage: 'Share the plugin so others can use its skills too.',
   action: 'Share',
-  dismissLabel: 'Dismiss share suggestion',
+  notNow: 'Not now',
 } as const;
 
 type Evaluation =
@@ -52,11 +55,13 @@ interface SkillShareNudgeBannerProps {
 /**
  * Suggests sharing a skill or plugin the user keeps reaching for (CAN-3611).
  *
- * Main owns the count and the once-ever state; this banner only decides
- * whether the chat's pending target can honestly be suggested right now. It
- * reports `shown` once it is really displayed, so a hidden, streaming,
- * background or host-less surface never spends the one suggestion. Unknown
- * data keeps the target pending and is retried when the cache changes.
+ * Main owns the count and the once-ever state; this producer only decides
+ * whether the chat's pending target can honestly be suggested right now, and
+ * offers it to the shared suggestion corner (CAN-4343) while its composer is
+ * on screen. It reports `shown` only once the corner really displays it, so a
+ * hidden, streaming, background, host-less or refused offer never spends the
+ * one suggestion. Unknown data keeps the target pending and is retried when
+ * the cache changes.
  */
 export function SkillShareNudgeBanner({
   projectId,
@@ -159,7 +164,6 @@ export function SkillShareNudgeBanner({
     [projectId, worktreeId, chatId],
   );
 
-  const pendingState = pending?.state ?? null;
   const status = evaluation?.status ?? null;
   const locallySettled =
     resolutionIntent !== undefined && resolutionIntent !== 'shown';
@@ -186,14 +190,13 @@ export function SkillShareNudgeBanner({
     }
   }, [locallySettled, pending, report, status]);
 
-  // Spend the one suggestion only when the banner is really on screen. A
-  // composer mounted behind another page becomes visible without any of this
-  // banner's inputs changing, so the check runs after every render while the
-  // target is still unreported; `report` sends each resolution once.
+  // Offer only while this composer is on screen. A composer mounted behind
+  // another page becomes visible without any of this producer's inputs
+  // changing, so the check runs after every render.
+  const [composerShown, setComposerShown] = useState(false);
   useEffect(() => {
-    if (!pending || !visible || pendingState !== 'pending') return;
-    if (!isComposerVisible()) return;
-    report(pending, pending.target, 'shown');
+    const shown = visible && isComposerVisible();
+    if (shown !== composerShown) setComposerShown(shown);
   });
 
   // Only a completed share counts, whichever entry point it came from.
@@ -211,34 +214,72 @@ export function SkillShareNudgeBanner({
     });
   }, [pending, report]);
 
-  if (!pending || !visible || evaluation?.status !== 'eligible') return null;
-
-  const isPlugin = pending.target.kind === 'plugin';
-  const handleDismiss = (): void => {
-    report(pending, pending.target, 'dismissed');
-  };
-
+  if (
+    !pending ||
+    !visible ||
+    !composerShown ||
+    evaluation?.status !== 'eligible'
+  )
+    return null;
   return (
-    <Notice
-      intent="neutral"
-      icon={
-        isPlugin ? (
+    <SkillShareNudgeOffer
+      // A new pending target is a new offer: callbacks never act on another.
+      key={pending.id}
+      pending={pending}
+      displayName={evaluation.displayName}
+      origin={{ projectId, worktreeId, chatId }}
+      report={report}
+    />
+  );
+}
+
+interface SkillShareNudgeOfferProps {
+  pending: PendingSkillShareNudge;
+  displayName: string;
+  origin: { projectId: string; worktreeId: string; chatId: string };
+  report: (
+    current: PendingSkillShareNudge,
+    target: ShareTarget,
+    resolution: SkillShareNudgeResolution,
+  ) => void;
+}
+
+/** One pending target's corner card. */
+function SkillShareNudgeOffer({
+  pending,
+  displayName,
+  origin,
+  report,
+}: SkillShareNudgeOfferProps): null {
+  const { projectId, worktreeId, chatId } = origin;
+  const model = useMemo((): SuggestionCornerModel => {
+    const isPlugin = pending.target.kind === 'plugin';
+    const dismiss = (): void => {
+      report(pending, pending.target, 'dismissed');
+    };
+    return {
+      suggestionId: 'skill-share',
+      // Data reloads and streaming can hide this target briefly after it
+      // showed; it comes back without spending a new cap window.
+      itemKey: pending.id,
+      presentable: true,
+      card: {
+        testId: 'skill-share-nudge-banner',
+        attributes: { 'data-share-kind': pending.target.kind },
+        icon: isPlugin ? (
           <PluginsIcon size={16} aria-hidden="true" />
         ) : (
           <SkillIcon size={16} aria-hidden="true" />
-        )
-      }
-      title={SKILL_SHARE_NUDGE_COPY.title(evaluation.displayName)}
-      data-testid="skill-share-nudge-banner"
-      data-share-kind={pending.target.kind}
-      onDismiss={handleDismiss}
-      dismissLabel={SKILL_SHARE_NUDGE_COPY.dismissLabel}
-      dismissTestId="skill-share-nudge-banner-dismiss"
-      actions={
-        <NoticeButton
-          variant="primary"
-          data-testid="skill-share-nudge-banner-share"
-          onClick={(event) => {
+        ),
+        title: SKILL_SHARE_NUDGE_COPY.title(displayName),
+        body: isPlugin
+          ? SKILL_SHARE_NUDGE_COPY.pluginMessage
+          : SKILL_SHARE_NUDGE_COPY.skillMessage,
+        primaryAction: {
+          label: SKILL_SHARE_NUDGE_COPY.action,
+          testId: 'skill-share-nudge-banner-share',
+          onClick: (event) => {
+            // The dialog opens in the document that shows the card.
             requestShare(pending.target, {
               source: 'usage_nudge',
               ownerDocument: event.currentTarget.ownerDocument,
@@ -249,15 +290,27 @@ export function SkillShareNudgeBanner({
                 pendingId: pending.id,
               },
             });
-          }}
-        >
-          {SKILL_SHARE_NUDGE_COPY.action}
-        </NoticeButton>
-      }
-    >
-      {isPlugin
-        ? SKILL_SHARE_NUDGE_COPY.pluginMessage
-        : SKILL_SHARE_NUDGE_COPY.skillMessage}
-    </Notice>
-  );
+          },
+        },
+        secondaryAction: {
+          label: SKILL_SHARE_NUDGE_COPY.notNow,
+          testId: 'skill-share-nudge-banner-dismiss',
+          onClick: dismiss,
+        },
+      },
+      // Not now settles this target; Don't show again also retires sharing
+      // suggestions for good through the shared dismissal.
+      permanentDismiss: {
+        testId: 'skill-share-nudge-banner-dismiss-forever',
+        onDismissed: dismiss,
+      },
+      onShown: () => {
+        if (pending.state === 'pending') {
+          report(pending, pending.target, 'shown');
+        }
+      },
+    };
+  }, [pending, displayName, projectId, worktreeId, chatId, report]);
+  useSuggestionCornerOffer('skill-share', model);
+  return null;
 }

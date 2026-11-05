@@ -56,9 +56,9 @@ import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { DownloadIcon } from '@canopy/ui-shared/icons';
 import { Button, Tooltip } from '@canopy/ui-shared/components';
 import {
-  CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
   FilesTreeRefreshButton,
+  Skeleton,
   useIconStyle,
 } from '@canopy/ui-shared/components';
 import {
@@ -67,6 +67,17 @@ import {
   PlusIcon as CentralPlusIcon,
   SearchIcon as CentralSearchIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
+
+/** Plain tree rows the loading skeleton measures: two folders, two files. */
+const SAMPLE_TREE_ENTRIES: readonly {
+  readonly name: string;
+  readonly isDir: boolean;
+}[] = [
+  { name: 'docs', isDir: true },
+  { name: 'src', isDir: true },
+  { name: 'package.json', isDir: false },
+  { name: 'README.md', isDir: false },
+];
 
 export interface FilesTabMutations {
   readonly onCreateFile: (parentDir: string, name: string) => Promise<void>;
@@ -994,21 +1005,31 @@ export function FilesTab({
         {editor !== null && editor.mode !== 'rename' && editorRow}
         {searchActive ? (
           searchBody
+        ) : (entries.length === 0 || emptyState !== undefined) && loading ? (
+          <DelayedLoadingPlaceholder slowNote="Still loading files…">
+            <Skeleton
+              loading
+              label="Loading files"
+              testId="activity-files-loading"
+            >
+              {SAMPLE_TREE_ENTRIES.map((entry) => (
+                <FileTreeRow
+                  key={entry.name}
+                  label={entry.name}
+                  depth={0}
+                  isDirectory={entry.isDir}
+                  touchTarget={touchTarget}
+                />
+              ))}
+            </Skeleton>
+          </DelayedLoadingPlaceholder>
         ) : entries.length === 0 || emptyState !== undefined ? (
           <div
             className="px-4 py-6 text-center text-xs fg-secondary"
-            data-testid={
-              loading ? 'activity-files-loading' : 'activity-files-empty'
-            }
+            data-testid="activity-files-empty"
           >
-            {loading ? (
-              <DelayedLoadingPlaceholder>
-                <CenteredLoadingSpinner />
-              </DelayedLoadingPlaceholder>
-            ) : (
-              (emptyState ??
-              (statusBar === undefined ? 'No files loaded.' : null))
-            )}
+            {emptyState ??
+              (statusBar === undefined ? 'No files loaded.' : null)}
           </div>
         ) : (
           entries.map((entry) => {

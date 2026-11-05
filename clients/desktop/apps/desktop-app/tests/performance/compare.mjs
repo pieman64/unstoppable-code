@@ -61,6 +61,8 @@ Interleaved driver (runs both builds, one fresh launch per sample):
   --warmup <n>                       Unrecorded launches per side and scenario first (default 1)
   --release-like                     Launch each checkout's production out/ bundle instead of out-e2e/
   --order <abba|alternate>           Side order per sample (default abba)
+  --baseline-format4 <unset|1>       E2E only: unset or set CANOPY_E2E_CHAT_FORMAT4 for baseline
+  --candidate-format4 <unset|1>       E2E only: unset or set CANOPY_E2E_CHAT_FORMAT4 for candidate
   --w5-store-arms <baseline>,<candidate> W5 store arm of each side (in-process or daemon-record-port); both sides launch the candidate build
   --output-dir <path>                Artifact directory (default .performance/desktop/interleaved-<time>)
   Other workload options, such as --chats, are passed to both sides.
@@ -291,6 +293,11 @@ export function formatWorkComparisonLines(result, { limit = Infinity } = {}) {
 const DEFAULT_INTERLEAVED_REPEAT = 7;
 const INTERLEAVED_ORDERS = Object.freeze(['abba', 'alternate']);
 const SIDES = Object.freeze(['baseline', 'candidate']);
+const CHAT_FORMAT4_ENV = 'CANOPY_E2E_CHAT_FORMAT4';
+const INTERLEAVED_FORMAT4_OPTIONS = Object.freeze({
+  '--baseline-format4': 'baseline',
+  '--candidate-format4': 'candidate',
+});
 
 /** Runner options that take no value. */
 const RUNNER_FLAGS = new Set([
@@ -458,6 +465,7 @@ export function parseInterleavedArgs(argv) {
     // `{ baseline, candidate }` W5 store arms of one build (CAN-5532).
     w5StoreArms: null,
     verdictOptions: {},
+    format4Options: {},
     runnerArgs: [],
     runnerOptions: [],
   };
@@ -474,6 +482,12 @@ export function parseInterleavedArgs(argv) {
       const parsed = readText(argv, index, option);
       index = parsed.nextIndex;
       INTERLEAVED_VALUE_OPTIONS[option](plan, parsed.value);
+    } else if (Object.hasOwn(INTERLEAVED_FORMAT4_OPTIONS, option)) {
+      const parsed = readText(argv, index, option);
+      index = parsed.nextIndex;
+      if (parsed.value !== 'unset' && parsed.value !== '1')
+        throw new Error(`${option} expects unset or 1`);
+      plan.format4Options[INTERLEAVED_FORMAT4_OPTIONS[option]] = parsed.value;
     } else if (raw.startsWith('--')) {
       index = forwardRunnerOption(argv, index, plan);
     } else {
@@ -488,8 +502,28 @@ export function parseInterleavedArgs(argv) {
     throw new Error(
       'The interleaved driver needs an explicit --scenarios list',
     );
+  if (plan.releaseLike && Object.keys(plan.format4Options).length > 0)
+    throw new Error('The format 4 options cannot be used with --release-like');
   validatePlan(plan);
   return plan;
+}
+
+/** Apply only this E2E chat-format switch and keep its safe provenance value. */
+export function interleavedSideEnvironment(
+  plan,
+  side,
+  inheritedEnvironment = process.env,
+) {
+  const env = { ...inheritedEnvironment };
+  if (Object.hasOwn(plan.format4Options, side)) {
+    const value = plan.format4Options[side];
+    if (value === 'unset') delete env[CHAT_FORMAT4_ENV];
+    else env[CHAT_FORMAT4_ENV] = value;
+  }
+  return {
+    env,
+    provenance: { [CHAT_FORMAT4_ENV]: env[CHAT_FORMAT4_ENV] ?? null },
+  };
 }
 
 /**
@@ -757,6 +791,7 @@ export function readLaunchArtifact(output, launch, description) {
 
 /** One runner process: one launch of one scenario on one side. */
 function runSideOnce(plan, roots, { side, scenario, output, label }) {
+  const sideEnvironment = interleavedSideEnvironment(plan, side);
   const loadAverage = os.loadavg().map((value) => roundMetric(value, 2));
   console.log(
     `[interleave] ${label} ${scenario} ${side} (load average ${loadAverage.join(' ')})`,
@@ -778,7 +813,12 @@ function runSideOnce(plan, roots, { side, scenario, output, label }) {
           '--label',
           `interleaved ${side} ${label}`,
         ],
-        { cwd: repoRoot, env: process.env, stdio: 'inherit', shell: false },
+        {
+          cwd: repoRoot,
+          env: sideEnvironment.env,
+          stdio: 'inherit',
+          shell: false,
+        },
       ),
     `The ${side} ${label} run of ${scenario}`,
   );
@@ -875,7 +915,13 @@ function runInterleavedComparison(plan) {
       scenarioConfigs: plan.scenarioConfigs,
       scenarios: plan.scenarios,
       label: `interleaved ${side}`,
-      interleaved: { side, order: plan.order, runId, warmup: plan.warmup },
+      interleaved: {
+        side,
+        order: plan.order,
+        runId,
+        warmup: plan.warmup,
+        environment: interleavedSideEnvironment(plan, side).provenance,
+      },
     });
     writeJson(path.join(outputDir, `${side}.json`), combined[side]);
   }

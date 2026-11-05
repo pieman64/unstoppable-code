@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { basename, delimiter, isAbsolute, join, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { BRAND } from '@canopy/brand/current';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { getBrandEnv } from '@canopy/desktop-shared/brand/env';
 import { isOllamaSupportedOnPlatform } from '@canopy/desktop-shared/platform-capabilities';
 import type {
@@ -65,7 +66,7 @@ function nowIso(): string {
 function isSupportedInstallPlatform(): boolean {
   return (
     isOllamaSupportedOnPlatform() &&
-    (process.platform === 'darwin' || process.platform === 'win32')
+    (hostOperatingSystem() === 'darwin' || hostOperatingSystem() === 'win32')
   );
 }
 
@@ -125,7 +126,7 @@ export function execFileBounded(
         encoding: 'utf8',
         timeout: options.timeoutMs,
         killSignal: 'SIGKILL',
-        windowsHide: options.windowsHide ?? process.platform === 'win32',
+        windowsHide: options.windowsHide ?? hostOperatingSystem() === 'win32',
         maxBuffer: COMMAND_OUTPUT_LIMIT_BYTES,
       },
       (error, stdout, stderr) => {
@@ -193,7 +194,17 @@ export async function validateOllamaExecutable(
         error: 'The selected path is not an executable file.',
       });
     }
-    await access(trimmed, constants.X_OK).catch(() => undefined);
+    try {
+      await access(trimmed, constants.X_OK);
+    } catch {
+      return createStatus({
+        ready: false,
+        path: trimmed,
+        version: null,
+        source,
+        error: 'The selected path is not an executable file.',
+      });
+    }
     const result = await execFileBounded(trimmed, ['--version'], {
       timeoutMs: VALIDATION_TIMEOUT_MS,
       allowNonZeroExit: true,
@@ -229,7 +240,7 @@ export async function validateOllamaExecutable(
 }
 
 function normalizeCandidatePath(value: string): string {
-  if (process.platform === 'win32') {
+  if (hostOperatingSystem() === 'win32') {
     return value.toLowerCase();
   }
   return value;
@@ -276,9 +287,9 @@ export function isSafeOllamaPathDirectory(
 
 function getPathCandidates(): string[] {
   const names =
-    process.platform === 'win32' ? ['ollama.exe', 'ollama'] : ['ollama'];
+    hostOperatingSystem() === 'win32' ? ['ollama.exe', 'ollama'] : ['ollama'];
   const rawPath =
-    process.platform === 'darwin'
+    hostOperatingSystem() === 'darwin' || hostOperatingSystem() === 'linux'
       ? getLoginShellPath()
       : (process.env.PATH ?? '');
   const workingDirectory = process.cwd();
@@ -297,7 +308,7 @@ function getPathCandidates(): string[] {
 }
 
 function getKnownLocationCandidates(): string[] {
-  if (process.platform === 'darwin') {
+  if (hostOperatingSystem() === 'darwin') {
     const home = process.env.HOME ?? '';
     return [
       '/Applications/Ollama.app/Contents/Resources/ollama',
@@ -318,7 +329,7 @@ function getKnownLocationCandidates(): string[] {
     ];
   }
 
-  if (process.platform === 'win32') {
+  if (hostOperatingSystem() === 'win32') {
     return [
       process.env.LOCALAPPDATA
         ? join(process.env.LOCALAPPDATA, 'Programs', 'Ollama', 'ollama.exe')
@@ -330,6 +341,10 @@ function getKnownLocationCandidates(): string[] {
         ? join(process.env['ProgramFiles(x86)'], 'Ollama', 'ollama.exe')
         : '',
     ].filter(Boolean);
+  }
+
+  if (hostOperatingSystem() === 'linux') {
+    return ['/usr/local/bin/ollama', '/usr/bin/ollama'];
   }
 
   return [];
@@ -549,7 +564,9 @@ async function installOllamaInner(
 ): Promise<OllamaInstallationStatus> {
   if (!isSupportedInstallPlatform()) {
     return createUnavailableOllamaInstallationStatus(
-      "Ollama isn't available on this platform.",
+      isOllamaSupportedOnPlatform() && hostOperatingSystem() === 'linux'
+        ? 'Automatic Ollama installation is unavailable on Linux. Install Ollama manually, then refresh detection or browse for its executable.'
+        : "Ollama isn't available on this platform.",
     );
   }
 
@@ -575,9 +592,14 @@ async function installOllamaInner(
   const tempDir = await createTempDir(`${BRAND.id}-ollama-`);
   try {
     const downloadUrl =
-      process.platform === 'darwin'
+      hostOperatingSystem() === 'darwin'
         ? OLLAMA_MACOS_DOWNLOAD_URL
-        : OLLAMA_WINDOWS_DOWNLOAD_URL;
+        : hostOperatingSystem() === 'win32'
+          ? OLLAMA_WINDOWS_DOWNLOAD_URL
+          : null;
+    if (!downloadUrl) {
+      throw new Error('Automatic Ollama installation is unsupported here.');
+    }
     const downloadPath = join(tempDir, basename(new URL(downloadUrl).pathname));
     report({
       phase: 'downloading',
@@ -596,7 +618,7 @@ async function installOllamaInner(
       message: 'Verifying the Ollama download...',
     });
     let installedExecutablePath: string | undefined;
-    if (process.platform === 'darwin') {
+    if (hostOperatingSystem() === 'darwin') {
       const extractDir = join(tempDir, 'extract');
       installedExecutablePath = await installMacOllamaPackage(
         downloadPath,
@@ -607,13 +629,15 @@ async function installOllamaInner(
             message: 'Installing Ollama...',
           }),
       );
-    } else {
+    } else if (hostOperatingSystem() === 'win32') {
       await installWindowsOllamaPackage(downloadPath, () =>
         report({
           phase: 'installing',
           message: 'Installing Ollama...',
         }),
       );
+    } else {
+      throw new Error('Automatic Ollama installation is unsupported here.');
     }
 
     report({

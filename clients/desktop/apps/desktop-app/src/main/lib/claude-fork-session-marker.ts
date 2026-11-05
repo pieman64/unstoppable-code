@@ -51,6 +51,7 @@ export async function consumePersistedClaudeForkSessionMarker(input: {
           return updatedTab;
         },
         `consume-claude-fork:${input.chatId}:${input.sessionId}`,
+        { metadataOnly: true },
       );
       if (!result.updated) return null;
       const updatedTab = result.tabsFile.tabs.find(

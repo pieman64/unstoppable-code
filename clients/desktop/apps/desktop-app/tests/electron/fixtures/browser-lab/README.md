@@ -10,14 +10,7 @@ that asks an agent for host data.
 [`browser-lab.mjs`](../../mock-server/routes/browser-lab.mjs) generates every
 page from constants plus bounded, HTML-escaped request values. It never reads
 the filesystem, clipboard, environment, or network, and every page contains
-only synthetic data. [`browser-lab.test.mjs`](../../mock-server/routes/browser-lab.test.mjs)
-covers every case, unsafe input, the limits, and namespace isolation.
-
-Run the tests with:
-
-```sh
-node --test apps/desktop-app/tests/electron/mock-server/routes/browser-lab.test.mjs
-```
+only synthetic data.
 
 ## Standalone listen API
 

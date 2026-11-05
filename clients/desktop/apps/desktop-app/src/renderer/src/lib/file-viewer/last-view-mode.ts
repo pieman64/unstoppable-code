@@ -171,9 +171,3 @@ export function resolveNewFileTabViewMode(
       : undefined)
   );
 }
-
-/** Test-only: forget every remembered choice. */
-export function resetFileViewModeMemoryForTests(): void {
-  rememberedModes.clear();
-  lastSequence = 0;
-}

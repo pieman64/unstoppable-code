@@ -117,6 +117,7 @@ import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { isMacPlatform } from '../../find/shortcut-target';
 import {
   resolveSelectionClick,
+  focusSelectionRow,
   resolveSelectionKey,
   shiftMouseDownSuppressesTextSelection,
 } from '@canopy/ui-shared/lib/sidebar-row-selection-gestures';
@@ -1961,6 +1962,10 @@ export function WorkspacesSidebarSections({
           workspace,
           renderedWorktrees,
           worktreeMultiSelect.isSelectable,
+          selected?.kind === 'worktree' &&
+            selected.workspaceLocalId === workspace.localId
+            ? selected.worktreeLocalId
+            : undefined,
         ),
       );
     }
@@ -2181,8 +2186,10 @@ export function WorkspacesSidebarSections({
           {...(rowSelected && !pinnedSurface
             ? { 'data-sidebar-selected-item': '' }
             : {})}
+          // Pinned copies keep the attribute empty, so Shift+Up/Down focus
+          // finds the in-flow row by its key.
           {...(multiSelection !== undefined
-            ? { [SIDEBAR_SELECTION_ROW_ATTR]: '' }
+            ? { [SIDEBAR_SELECTION_ROW_ATTR]: pinnedSurface ? '' : rowKey }
             : {})}
           variant="bare"
           // The frame owns keyboard activation; the shared row owns pointer
@@ -2223,8 +2230,8 @@ export function WorkspacesSidebarSections({
               : (event): void => {
                   // Cmd-click (Ctrl-click off macOS) toggles and Shift-click
                   // extends the bulk selection, without navigating, selecting
-                  // text, or opening a new tab. A plain click navigates and
-                  // leaves bulk mode, clearing the selection.
+                  // text, or opening a new tab. A plain click navigates,
+                  // clears the selection, and anchors Shift ranges here.
                   const intent = resolveSelectionClick(
                     event,
                     {
@@ -2238,7 +2245,13 @@ export function WorkspacesSidebarSections({
                     toggleRowSelection(intent === 'range');
                     return;
                   }
-                  if (intent === 'open-and-clear') multiSelection?.clear();
+                  if (rowSelectable) {
+                    multiSelection?.anchor(workspace.localId, rowKey);
+                  } else {
+                    // Also drops a stale anchor, so the next Cmd-click
+                    // never seeds a row that is no longer open.
+                    multiSelection?.clear();
+                  }
                   onSelectWorktree(workspace.localId, worktree.localId);
                 }
           }
@@ -2274,7 +2287,20 @@ export function WorkspacesSidebarSections({
                   if (intent === null) return;
                   event.preventDefault();
                   if (intent === 'toggle') toggleRowSelection(false);
-                  else if (intent === 'select-all') {
+                  else if (intent === 'extend-up' || intent === 'extend-down') {
+                    const target = multiSelection.extend(
+                      workspace.localId,
+                      rowKey,
+                      intent === 'extend-up' ? -1 : 1,
+                    );
+                    if (target !== undefined) {
+                      focusSelectionRow(
+                        event.currentTarget,
+                        SIDEBAR_SELECTION_ROW_ATTR,
+                        target,
+                      );
+                    }
+                  } else if (intent === 'select-all') {
                     multiSelection.selectAllInList(workspace.localId);
                   } else multiSelection.clear();
                 }

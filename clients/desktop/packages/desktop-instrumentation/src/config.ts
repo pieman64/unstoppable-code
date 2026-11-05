@@ -170,11 +170,26 @@ function readPrivacyLevel(
     : 'mask';
 }
 
+function getDatadogSessionSampleRate(
+  enabled: boolean,
+  env: string | undefined,
+): number {
+  // RUM sampling controls all session events, including handled errors.
+  if (enabled && env) return 100;
+  return typeof __CANOPY_DATADOG_SESSION_SAMPLE_RATE__ !== 'undefined'
+    ? readBuildNumber(__CANOPY_DATADOG_SESSION_SAMPLE_RATE__, 20)
+    : 20;
+}
+
 export function getDesktopInstrumentationConfig(): DesktopInstrumentationConfig {
   const datadogEnabled =
     typeof __CANOPY_DATADOG_ENABLED__ !== 'undefined'
       ? readBuildBoolean(__CANOPY_DATADOG_ENABLED__, false)
       : false;
+  const datadogEnv =
+    typeof __CANOPY_DATADOG_ENV__ !== 'undefined'
+      ? readBuildString(__CANOPY_DATADOG_ENV__)
+      : undefined;
   const posthogRequestedEnabled =
     typeof __CANOPY_POSTHOG_ENABLED__ !== 'undefined'
       ? readBuildBoolean(__CANOPY_POSTHOG_ENABLED__, false)
@@ -229,10 +244,7 @@ export function getDesktopInstrumentationConfig(): DesktopInstrumentationConfig 
         (typeof __CANOPY_DATADOG_SERVICE__ !== 'undefined'
           ? readBuildString(__CANOPY_DATADOG_SERVICE__)
           : undefined) ?? 'canopy-desktop',
-      env:
-        typeof __CANOPY_DATADOG_ENV__ !== 'undefined'
-          ? readBuildString(__CANOPY_DATADOG_ENV__)
-          : undefined,
+      env: datadogEnv,
       version:
         typeof __CANOPY_DATADOG_VERSION__ !== 'undefined'
           ? readBuildString(__CANOPY_DATADOG_VERSION__)
@@ -245,10 +257,10 @@ export function getDesktopInstrumentationConfig(): DesktopInstrumentationConfig 
         typeof __CANOPY_DATADOG_PROXY__ !== 'undefined'
           ? readBuildString(__CANOPY_DATADOG_PROXY__)
           : undefined,
-      sessionSampleRate:
-        typeof __CANOPY_DATADOG_SESSION_SAMPLE_RATE__ !== 'undefined'
-          ? readBuildNumber(__CANOPY_DATADOG_SESSION_SAMPLE_RATE__, 20)
-          : 20,
+      sessionSampleRate: getDatadogSessionSampleRate(
+        datadogEnabled,
+        datadogEnv,
+      ),
       sessionReplaySampleRate:
         typeof __CANOPY_DATADOG_SESSION_REPLAY_SAMPLE_RATE__ !== 'undefined'
           ? readBuildNumber(__CANOPY_DATADOG_SESSION_REPLAY_SAMPLE_RATE__, 0)

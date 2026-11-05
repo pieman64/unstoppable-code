@@ -1,5 +1,6 @@
 import { useId, type JSX } from 'react';
 import { InfoIcon } from '../icons/InfoIcon';
+import { Button } from './Button';
 import { Disclosure } from './Disclosure';
 import { SettingsRowsRow } from './settings/SettingsRows';
 import { ToggleSwitch, ToggleSwitchField } from './ToggleSwitch';
@@ -155,14 +156,16 @@ export function PrivateMemoryInlineToggle({
         dataTestId={`${dataTestId}-toggle`}
       />
       <Tooltip label={PRIVATE_MEMORY_EXPLANATION}>
-        <button
-          type="button"
+        <Button
+          variant="ghost-quiet"
+          size="sm"
+          iconOnly
           data-testid={`${dataTestId}-info`}
           aria-label={`About ${PRIVATE_MEMORY_LABEL}`}
-          className="focus-ring shrink-0 rounded-full fg-tertiary transition-colors hover:fg-primary"
+          className="-my-1.5"
         >
           <InfoIcon />
-        </button>
+        </Button>
       </Tooltip>
     </div>
   );

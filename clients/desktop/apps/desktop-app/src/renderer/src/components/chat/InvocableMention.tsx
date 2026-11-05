@@ -3,14 +3,23 @@ import { getDocument } from '@canopy/ui-shared/panels';
 import {
   INLINE_CHIP_CLASS,
   INLINE_CHIP_ICON_CLASS,
+  PREVIEW_CARD_SURFACE,
+  ReferenceHoverCard,
   RichHoverTooltip,
 } from '@canopy/ui-shared/components';
-import { SkillIcon } from '@canopy/ui-shared/icons';
+import { SkillIcon } from '@canopy/ui-shared/icons/AppIcons';
+import type { InvocableInventoryEntry } from '@canopy/desktop-shared/types';
 import type { InvocableMentionTarget } from '@/lib/invocableMentionIndex';
 import { useInvocableMentionContent } from '@/hooks/useInvocableMentionContent';
 import { InvocableDetailsModal } from './InvocableDetailsModal';
 
 const DESCRIPTION_LIMIT = 200;
+
+/** What the card names the item as, by its inventory kind. */
+const KIND_LABEL: Partial<Record<InvocableInventoryEntry['kind'], string>> = {
+  plugin_command: 'Command',
+  inherited_command: 'Command',
+};
 
 /** The chip itself: the tooltip's wrapper has no box (`contents`). */
 function chipInsideTrigger(trigger: HTMLElement): Element | null {
@@ -47,17 +56,16 @@ export const InvocableMention = memo(function InvocableMention({
           replay blocks: the skill's name and description are recorded. */}
       <RichHoverTooltip
         content={
-          <span className="block text-xs">
-            <span className="block truncate font-medium fg-primary">
-              {target.label}
-            </span>
-            {description ? (
-              <span className="mt-1 block fg-secondary">{description}</span>
-            ) : null}
-          </span>
+          <ReferenceHoverCard
+            testId="invocable-mention-card"
+            replayBlock={false}
+            icon={SkillIcon}
+            lead={target.label}
+            trailing={KIND_LABEL[target.entry.kind] ?? 'Skill'}
+            title={description || undefined}
+          />
         }
-        surfacePadding="card"
-        surfaceClassName="w-72"
+        {...PREVIEW_CARD_SURFACE}
         triggerDisplay="contents"
         getPlacementAnchor={chipInsideTrigger}
       >
@@ -72,7 +80,11 @@ export const InvocableMention = memo(function InvocableMention({
             setDetailsOpen(true);
           }}
         >
-          <SkillIcon aria-hidden="true" className={INLINE_CHIP_ICON_CLASS} />
+          <SkillIcon
+            aria-hidden="true"
+            className={INLINE_CHIP_ICON_CLASS}
+            exactSize
+          />
           {children}
         </button>
       </RichHoverTooltip>

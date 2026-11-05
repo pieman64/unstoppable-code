@@ -70,6 +70,12 @@ export type SendAgentMessageMode = 'queue' | 'steer';
 
 export interface SendAgentMessageInputs {
   target: SendAgentMessageTarget;
+  /**
+   * `plugin_collection_id`: a pipeline plugin collection the runner turns
+   * into `settings.pluginSelections` before the request is raised (CAN-5479).
+   * Never with `plugin_selections`.
+   */
+  pluginCollectionId?: string;
   /** `text`, or `text_file` read by the runner; never both. */
   text: { kind: 'inline'; text: string } | { kind: 'file'; path: string };
   mode: SendAgentMessageMode;
@@ -107,10 +113,13 @@ export interface SendAgentMessageInputs {
   newChat?: true;
 }
 
-/** After the runner: inline text, resolved model, absolute contained paths. */
+/**
+ * After the runner: inline text, resolved model, a plugin collection as
+ * selections, absolute contained paths.
+ */
 export interface ResolvedSendAgentMessageInputs extends Omit<
   SendAgentMessageInputs,
-  'text' | 'attachments'
+  'text' | 'attachments' | 'pluginCollectionId'
 > {
   text: string;
   /**
@@ -131,6 +140,7 @@ export const SEND_AGENT_MESSAGE_AUTHORITY_INPUTS = [
   'plan_mode',
   'plugins',
   'plugin_selections',
+  'plugin_collection_id',
 ] as const;
 
 export const SEND_AGENT_MESSAGE_INTERFACE_MODES: readonly ChatInterfaceMode[] =
@@ -334,6 +344,18 @@ function parsePluginSelections(
   return isPlainObject(parsed)
     ? { ok: true, value: normalizePluginSelections(parsed) }
     : failure(`${STEP} "plugin_selections" must be a JSON object`);
+}
+
+function parsePluginCollectionId(
+  inputs: Record<string, string | undefined>,
+): HostInputParse<string | undefined> {
+  const id = presentInput(inputs, 'plugin_collection_id');
+  if (id === undefined) return { ok: true, value: undefined };
+  return presentInput(inputs, 'plugin_selections') === undefined
+    ? { ok: true, value: id }
+    : failure(
+        `${STEP} "plugin_collection_id" and "plugin_selections" can't both be set`,
+      );
 }
 
 function parseAttachmentPaths(
@@ -624,6 +646,8 @@ export function parseSendAgentMessageInputs(
   }
   const settings = parseSettings(inputs);
   if (!settings.ok) return settings;
+  const pluginCollectionId = parsePluginCollectionId(inputs);
+  if (!pluginCollectionId.ok) return pluginCollectionId;
   if (settings.value.interfaceMode !== undefined && hasChat) {
     return failure(
       `${STEP} "interface_mode" applies only to a new chat; remove "chat_id" or "interface_mode"`,
@@ -679,6 +703,9 @@ export function parseSendAgentMessageInputs(
       text: text.value,
       mode: mode.value,
       settings: settings.value,
+      ...(pluginCollectionId.value !== undefined
+        ? { pluginCollectionId: pluginCollectionId.value }
+        : {}),
       ...(references.value !== undefined
         ? { textReferences: references.value }
         : {}),

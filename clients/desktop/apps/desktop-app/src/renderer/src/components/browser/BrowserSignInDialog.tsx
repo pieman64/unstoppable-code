@@ -7,10 +7,9 @@ import {
   type JSX,
 } from 'react';
 import { TextInput } from '@canopy/ui-shared';
-import { focusableWithin } from '@canopy/ui-shared/lib';
 import type { BrowserAuthRequest } from '@canopy/desktop-shared/types/browser';
 import { Button } from '@/components/shared/Button';
-import { Heading } from '@canopy/ui-shared/components';
+import { DialogModal } from '@canopy/ui-shared/components';
 
 function authRequestHost(origin: string): string {
   try {
@@ -51,41 +50,6 @@ export function BrowserSignInDialog({
     return (): void => cancelAnimationFrame(frameId);
   }, []);
 
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Tab') {
-        keepFocusInside(event);
-        return;
-      }
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      event.stopPropagation();
-      onClose();
-    };
-    // Tab wraps inside the dialog, and pulls focus in from the pane behind
-    // it; focus elsewhere in the app is left alone, as the dialog covers only
-    // this pane.
-    const keepFocusInside = (event: KeyboardEvent): void => {
-      const form = formRef.current;
-      const pane = form?.parentElement?.parentElement;
-      const active = document.activeElement;
-      if (!form || !pane || !(active instanceof Node) || !pane.contains(active))
-        return;
-      const focusables = focusableWithin(form);
-      const first = focusables[0];
-      const last = focusables[focusables.length - 1];
-      if (!first || !last) return;
-      const inside = form.contains(active);
-      if (inside && active !== (event.shiftKey ? first : last)) return;
-      event.preventDefault();
-      (event.shiftKey ? last : first).focus();
-    };
-    window.addEventListener('keydown', handleKeyDown, true);
-    return (): void => {
-      window.removeEventListener('keydown', handleKeyDown, true);
-    };
-  }, [onClose]);
-
   const answer = (choice: 'sign_in' | 'cancel'): void => {
     if (submitting) return;
     setSubmitting(true);
@@ -107,65 +71,38 @@ export function BrowserSignInDialog({
     answer('sign_in');
   };
 
+  const formId = `${titleId}-form`;
+  // The shared dialog over the browser pane only: Tab stays inside while
+  // focus is in the pane, Escape closes it, the scrim does not.
   return (
-    <div
-      className="electron-no-drag absolute inset-0 z-modal flex items-center justify-center bg-overlay-scrim p-4"
-      data-canopy-browser-native-overlay="true"
-      data-testid="browser-sign-in-dialog-backdrop"
-    >
-      <form
-        ref={formRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        className="flex w-full max-w-md flex-col overflow-hidden rounded-xl bg-card shadow-xl"
-        data-testid="browser-sign-in-dialog"
-        onSubmit={handleSubmit}
-      >
-        <div className="border-b px-5 py-4">
-          <Heading
-            level={2}
-            variant="title"
-            truncate
-            id={titleId}
-            title={request.origin}
-          >
-            {request.isProxy
-              ? `Sign in to the proxy ${host}`
-              : `Sign in to ${host}`}
-          </Heading>
-          {request.realm && (
-            <p
-              className="mt-1 truncate text-xs fg-tertiary"
-              title={request.realm}
-            >
-              {`“${request.realm}”`}
-            </p>
-          )}
-        </div>
-        <div className="flex flex-col gap-3 px-5 py-4">
-          <TextInput
-            ref={usernameRef}
-            aria-label="Username"
-            placeholder="Username"
-            autoComplete="username"
-            value={username}
-            disabled={submitting}
-            data-testid="browser-sign-in-username"
-            onChange={(event): void => setUsername(event.target.value)}
-          />
-          <TextInput
-            type="password"
-            aria-label="Password"
-            placeholder="Password"
-            autoComplete="current-password"
-            value={password}
-            disabled={submitting}
-            data-testid="browser-sign-in-password"
-            onChange={(event): void => setPassword(event.target.value)}
-          />
-        </div>
-        <div className="flex justify-end gap-2 border-t px-5 py-3">
+    <DialogModal
+      containment="parent"
+      title={
+        <span title={request.origin}>
+          {request.isProxy
+            ? `Sign in to the proxy ${host}`
+            : `Sign in to ${host}`}
+        </span>
+      }
+      titleId={titleId}
+      subtitle={
+        request.realm ? (
+          <span className="block truncate" title={request.realm}>
+            {`“${request.realm}”`}
+          </span>
+        ) : undefined
+      }
+      onClose={onClose}
+      closeOnBackdrop={false}
+      closeOnEscape
+      showCloseButton={false}
+      maxWidth="md"
+      trapFocus
+      initialFocusRef={usernameRef}
+      dataTestId="browser-sign-in-dialog"
+      overlayDataTestId="browser-sign-in-dialog-backdrop"
+      footer={
+        <>
           <Button
             type="button"
             variant="secondary"
@@ -177,14 +114,43 @@ export function BrowserSignInDialog({
           </Button>
           <Button
             type="submit"
+            form={formId}
             variant="primary"
             disabled={submitting}
             data-testid="browser-sign-in-submit"
           >
             Sign in
           </Button>
-        </div>
+        </>
+      }
+    >
+      <form
+        ref={formRef}
+        id={formId}
+        className="flex flex-col gap-3"
+        onSubmit={handleSubmit}
+      >
+        <TextInput
+          ref={usernameRef}
+          aria-label="Username"
+          placeholder="Username"
+          autoComplete="username"
+          value={username}
+          disabled={submitting}
+          data-testid="browser-sign-in-username"
+          onChange={(event): void => setUsername(event.target.value)}
+        />
+        <TextInput
+          type="password"
+          aria-label="Password"
+          placeholder="Password"
+          autoComplete="current-password"
+          value={password}
+          disabled={submitting}
+          data-testid="browser-sign-in-password"
+          onChange={(event): void => setPassword(event.target.value)}
+        />
       </form>
-    </div>
+    </DialogModal>
   );
 }

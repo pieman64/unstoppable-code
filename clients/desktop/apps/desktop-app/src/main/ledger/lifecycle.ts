@@ -1,5 +1,6 @@
 import type { Stats } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { isArchivedContainerManifest } from '@canopy/desktop-shared/lib/archived-container-contracts';
 import type { LedgerScopeRecord } from '@canopy/desktop-shared/node/ledger';
 // Only the pure time helper: the store itself runs in the storage worker.
@@ -53,6 +54,11 @@ import { ledgerContainerKey } from './scope-bindings';
 import { getLedgerStoreClient } from './storage-client';
 import { drainLedgerScopeBeforePurge, requestLedgerSync } from './sync-host';
 import { LedgerStorageHostError } from './storage-host';
+import {
+  registerLedgerSessionEndSink,
+  type LedgerSessionEndTransition,
+} from './session-end-sweep-ports';
+import { LedgerSessionEndSweep } from './session-end-sweep';
 
 /*
  * Keeps every local Ledger scope in step with its container (LD10, E04).
@@ -339,7 +345,13 @@ export function reconcileLedgerScopesAtStartup(): Promise<LedgerStartupPassOutco
  * finished, for example before Ledger storage shuts down. Never rejects.
  */
 export function whenLedgerLifecycleIdle(): Promise<void> {
-  return desktopLifecycle?.whenIdle() ?? Promise.resolve();
+  const lifecycleIdle = desktopLifecycle?.whenIdle();
+  const sessionEndIdle = desktopSessionEndSweep?.whenIdle();
+  if (lifecycleIdle === undefined) return sessionEndIdle ?? Promise.resolve();
+  if (sessionEndIdle === undefined) return lifecycleIdle;
+  return Promise.all([lifecycleIdle, sessionEndIdle]).then(
+    (): void => undefined,
+  );
 }
 
 /** Evicts the Ledger service state a scope lifecycle change can make stale. */
@@ -373,7 +385,8 @@ export type LedgerLifecycleOperation =
   | 'external_removal'
   | 'workspace_deletion'
   | 'intent_journal'
-  | 'reconcile';
+  | 'reconcile'
+  | 'session_end_sweep';
 
 /**
  * A lifecycle failure without content: no IDs, paths or entry text. The
@@ -484,6 +497,8 @@ export interface LedgerLifecycleOptions {
   readonly requestSync?: () => void;
   /** The durable intent journal beside the database. */
   readonly intents: LedgerLifecycleIntentJournal;
+  /** Desktop session-end replay; injected tests leave this absent. */
+  readonly sessionEndSweep?: Pick<LedgerSessionEndSweep, 'replay' | 'whenIdle'>;
   /** Runs between the batches of the startup pass. */
   readonly yieldToEventLoop?: () => Promise<void>;
   /** Scopes the startup pass settles between two yields. */
@@ -1585,6 +1600,7 @@ export class LedgerLifecycle {
       await Promise.all(this.hostWork);
     }
     await this.queue.whenIdle();
+    await this.options.sessionEndSweep?.whenIdle();
   }
 
   /**
@@ -2129,6 +2145,13 @@ export class LedgerLifecycle {
     // Every failure the pass records, so its outcome can report them.
     const recorded = new Set<string>();
     if (!(await this.replayIntents(step, recorded))) return 'incomplete';
+    try {
+      await this.options.sessionEndSweep?.replay();
+    } catch {
+      // The sweep retains and diagnoses its own work; it cannot gate scope or
+      // Summary reconciliation for this startup pass.
+      this.record('session_end_sweep', 'REPLAY_FAILED');
+    }
     // Global (workflow) Ledgers have no container: nothing retires them.
     const listed = (await step.store.listScopes()).filter(
       (scope) => scope.scope.container.kind !== 'global',
@@ -2869,6 +2892,30 @@ function recordLedgerLifecycleFailure(failure: LedgerLifecycleFailure): void {
 }
 
 let desktopLifecycle: LedgerLifecycle | undefined;
+let desktopSessionEndSweep: LedgerSessionEndSweep | undefined;
+
+function getDesktopLedgerSessionEndSweep(): LedgerSessionEndSweep {
+  desktopSessionEndSweep ??= new LedgerSessionEndSweep({
+    store: getLedgerStoreClient,
+    statDatabase: (): Promise<Stats> => stat(getLedgerDatabasePath()),
+    file: createLedgerLifecycleIntentFile(
+      join(dirname(getLedgerDatabasePath()), 'session-end-intents.json'),
+    ),
+    recordFailure: (code): void =>
+      recordLedgerLifecycleFailure({
+        operation: 'session_end_sweep',
+        reason: code,
+      }),
+    requestSync: requestLedgerSync,
+  });
+  return desktopSessionEndSweep;
+}
+
+// This module is imported during main-process lifecycle startup, before
+// session-ending hooks can run and before a Ledger operation handler is used.
+registerLedgerSessionEndSink((transition: LedgerSessionEndTransition) =>
+  getDesktopLedgerSessionEndSweep().record(transition),
+);
 
 function getDesktopLedgerLifecycle(): LedgerLifecycle {
   desktopLifecycle ??= new LedgerLifecycle({
@@ -2890,6 +2937,7 @@ function getDesktopLedgerLifecycle(): LedgerLifecycle {
           reason: 'QUARANTINED',
         }),
     }),
+    sessionEndSweep: getDesktopLedgerSessionEndSweep(),
   });
   return desktopLifecycle;
 }

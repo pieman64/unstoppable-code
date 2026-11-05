@@ -280,6 +280,7 @@ export interface FirstRunImportVisit {
   /** Emits the view and starts completion timing; once per visit. */
   begin(connections: ProviderConnections): void;
   markPickedFolder(): void;
+  /** The AI Credits account row was shown, in any of its states. */
   markCreditsOffered(): void;
   readonly pickedFolder: boolean;
   /** Folds a settled submission into the visit's totals. */

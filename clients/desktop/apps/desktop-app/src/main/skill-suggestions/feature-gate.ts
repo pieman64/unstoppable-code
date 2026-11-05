@@ -16,15 +16,16 @@ import { logMainProcessWarn } from '../lib/main-process-logging';
 export interface SkillSuggestionGateChange {
   enabled: boolean;
   /** What flipped: a flag change keeps data, a preference-off purges it. */
-  cause: 'flag' | 'preference';
+  cause: 'flag' | 'preference' | 'source';
 }
 type GateListener = (change: SkillSuggestionGateChange) => void;
 
 const FLAG_KEY = CLIENT_FEATURE_FLAGS.canopyDesktopSkillSuggestions.key;
 
-// Until main reads preferences at startup the preference counts as on; the
-// flag still has to be on for anything to run.
-let preferenceEnabled = true;
+// No work may start until the profile has been authoritatively read.
+let preferenceEnabled = false;
+let preferenceKnown = false;
+let sourceAllowed = true;
 let lastFlagEnabled: boolean | null = null;
 const listeners = new Set<GateListener>();
 let unsubscribeFlag: (() => void) | null = null;
@@ -43,7 +44,7 @@ export function isSkillSuggestionsPreferenceEnabled(): boolean {
 }
 
 export function isSkillSuggestionsEnabled(): boolean {
-  return preferenceEnabled && isSkillSuggestionsFlagEnabled();
+  return sourceAllowed && preferenceEnabled && isSkillSuggestionsFlagEnabled();
 }
 
 export function isSkillSuggestionScanEnabled(): boolean {
@@ -66,13 +67,22 @@ function emit(change: SkillSuggestionGateChange): void {
  * preference off (which purges data even while the flag is off).
  */
 export function setSkillSuggestionsPreference(enabled: boolean): void {
-  if (enabled === preferenceEnabled) return;
+  if (preferenceKnown && enabled === preferenceEnabled) return;
+  preferenceKnown = true;
   const before = isSkillSuggestionsEnabled();
   preferenceEnabled = enabled;
   const after = isSkillSuggestionsEnabled();
   if (!enabled || before !== after) {
     emit({ enabled: after, cause: 'preference' });
   }
+}
+
+/** Master/category eligibility pauses production without authorizing a purge. */
+export function setSkillSuggestionsSourceAllowed(allowed: boolean): void {
+  const before = isSkillSuggestionsEnabled();
+  sourceAllowed = allowed;
+  const after = isSkillSuggestionsEnabled();
+  if (before !== after) emit({ enabled: after, cause: 'source' });
 }
 
 export function onSkillSuggestionsGateChanged(
@@ -93,7 +103,7 @@ export function startSkillSuggestionsGate(): () => void {
     if (flag === lastFlagEnabled) return;
     lastFlagEnabled = flag;
     if (!preferenceEnabled) return;
-    emit({ enabled: flag, cause: 'flag' });
+    emit({ enabled: isSkillSuggestionsEnabled(), cause: 'flag' });
   });
   unsubscribeFlag = unsubscribe;
   return () => {
@@ -106,6 +116,8 @@ export function resetSkillSuggestionsGateForTests(): void {
   unsubscribeFlag?.();
   unsubscribeFlag = null;
   listeners.clear();
-  preferenceEnabled = true;
+  preferenceEnabled = false;
+  preferenceKnown = false;
+  sourceAllowed = true;
   lastFlagEnabled = null;
 }

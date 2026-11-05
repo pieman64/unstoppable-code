@@ -25,6 +25,7 @@ import { openFileInDiff } from '@/lib/panels/open-file-diff';
 import {
   Button,
   GroupedDiffStats,
+  ITEM_PREVIEW_OPEN_DELAY_MS,
   TURN_FILE_ROW_CLASS_NAME,
   formatTurnFilesHeading,
   TurnFilesSummaryView,
@@ -165,11 +166,13 @@ function FileCard({
   file,
   onClick,
   onMouseEnter,
+  onMouseMove,
   onMouseLeave,
 }: {
   file: ChangedFileInfo;
   onClick: () => void;
   onMouseEnter: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  onMouseMove: (e: React.MouseEvent<HTMLButtonElement>) => void;
   onMouseLeave: () => void;
 }): JSX.Element {
   const baseName = getBaseName(file.path);
@@ -186,6 +189,7 @@ function FileCard({
         type="button"
         onClick={onClick}
         onMouseEnter={onMouseEnter}
+        onMouseMove={onMouseMove}
         onMouseLeave={onMouseLeave}
         className={`focus-ring text-left ${TURN_FILE_ROW_CLASS_NAME}`}
         aria-label={file.path}
@@ -209,8 +213,9 @@ function FileCard({
       type="button"
       onClick={onClick}
       onMouseEnter={onMouseEnter}
+      onMouseMove={onMouseMove}
       onMouseLeave={onMouseLeave}
-      className="min-w-0 cursor-pointer rounded-md border bg-fg-primary/[0.02] px-2 py-1.5 text-left text-xs transition-colors hover:bg-fg-primary/[0.04]"
+      className="min-w-0 cursor-default rounded-md border bg-fg-primary/[0.02] px-2 py-1.5 text-left text-xs transition-colors hover:bg-fg-primary/[0.04]"
       // The hover diff popover already surfaces the full path; the native
       // title only doubled it (CAN-2799).
       aria-label={file.path}
@@ -234,7 +239,6 @@ function FileCard({
   );
 }
 
-const HOVER_OPEN_DELAY = 300;
 const HOVER_CLOSE_DELAY = 150;
 
 /**
@@ -319,10 +323,11 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
   // diff later, so the default is re-applied as the entries change until the
   // user has toggled the disclosure themselves.
   const defaultExpanded =
-    isLastTurnGroup && filesSettled && (clean || totalCount <= 10);
+    !clean && isLastTurnGroup && filesSettled && totalCount <= 10;
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
   const userToggledRef = useRef(false);
   const [hoveredFile, setHoveredFile] = useState<ChangedFileInfo | null>(null);
+  const [previewSide, setPreviewSide] = useState<'left' | 'right'>('right');
   const wasLastRef = useRef(isLastTurnGroup);
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const hoveredFileRef = useRef<ChangedFileInfo | null>(null);
@@ -364,9 +369,18 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
     }
   }, [isExpanded, closePopover]);
 
+  const updatePreviewSide = useCallback(
+    (el: HTMLElement, clientX: number): void => {
+      const rect = el.getBoundingClientRect();
+      setPreviewSide(clientX < rect.left + rect.width / 2 ? 'left' : 'right');
+    },
+    [],
+  );
+
   const handleCardMouseEnter = useCallback(
-    (file: ChangedFileInfo, el: HTMLElement): void => {
+    (file: ChangedFileInfo, el: HTMLElement, clientX: number): void => {
       if (!selectedWorktree) return;
+      updatePreviewSide(el, clientX);
       clearTimeout(hoverTimerRef.current);
       if (hoveredFileRef.current !== null) {
         // Already showing a popover — switch immediately
@@ -378,10 +392,10 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
           anchorElRef.current = el;
           hoveredFileRef.current = file;
           setHoveredFile(file);
-        }, HOVER_OPEN_DELAY);
+        }, ITEM_PREVIEW_OPEN_DELAY_MS);
       }
     },
-    [selectedWorktree],
+    [selectedWorktree, updatePreviewSide],
   );
 
   const handleCardMouseLeave = useCallback((): void => {
@@ -532,7 +546,7 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
           onUndo || (firstFile && selectedWorktree) ? (
             <span
               data-turn-files-actions=""
-              className="ml-auto flex shrink-0 items-center gap-3"
+              className="ml-auto flex shrink-0 items-center gap-2"
             >
               {onUndo && (
                 <Button variant="ghost-overlay" size="sm" onClick={onUndo}>
@@ -587,7 +601,14 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
                     }
                   }}
                   onMouseEnter={(event): void =>
-                    handleCardMouseEnter(file, event.currentTarget)
+                    handleCardMouseEnter(
+                      file,
+                      event.currentTarget,
+                      event.clientX,
+                    )
+                  }
+                  onMouseMove={(event): void =>
+                    updatePreviewSide(event.currentTarget, event.clientX)
                   }
                   onMouseLeave={handleCardMouseLeave}
                 />
@@ -606,6 +627,7 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
           projectId={selectedWorktree.projectId}
           worktreeId={selectedWorktree.worktreeId}
           anchorRef={anchorElRef}
+          placement={previewSide}
           onMouseEnter={handlePopoverMouseEnter}
           onMouseLeave={handlePopoverMouseLeave}
           onOpenModal={handleOpenModalFromPopover}

@@ -262,6 +262,26 @@ function summarizeRendererFrames(records) {
   const summaries = records
     .map((record) => record.rendererSummary)
     .filter((summary) => summary !== undefined);
+  const longFrames = summaries.flatMap((summary) =>
+    Array.isArray(summary.frames?.long) ? summary.frames.long : [],
+  );
+  const scripts = longFrames.flatMap((frame) =>
+    Array.isArray(frame.scripts) ? frame.scripts : [],
+  );
+  const focusedChatRows = {
+    0: 0,
+    1000: 0,
+    5000: 0,
+    20000: 0,
+    50000: 0,
+    null: 0,
+  };
+  for (const frame of longFrames) {
+    const bucket = String(frame.focusedChatRows);
+    if (Object.hasOwn(focusedChatRows, bucket)) {
+      focusedChatRows[bucket] += 1;
+    }
+  }
   const onChanges = sumOf(summaries, (s) => s.chatState?.onScreenChanges);
   const offChanges = sumOf(summaries, (s) => s.chatState?.offScreenChanges);
   const onApply =
@@ -275,6 +295,32 @@ function summarizeRendererFrames(records) {
     count: summaries.length,
     remoteWindowCount: summaries.filter((s) => s.remoteWindow === true).length,
     longFrames: sumOf(summaries, (s) => s.frames?.count),
+    longFrameDetails: {
+      count: longFrames.length,
+      maxDurationMs: Math.max(
+        0,
+        ...longFrames.map((frame) => frame.durationMs ?? 0),
+      ),
+      scriptMs: sumOf(longFrames, (frame) => frame.scriptMs),
+      renderMs: sumOf(longFrames, (frame) => frame.renderMs),
+      layoutMs: sumOf(longFrames, (frame) => frame.layoutMs),
+      deliveries: {
+        chatState: sumOf(longFrames, (frame) => frame.deliveries?.chatState),
+        chatEvent: sumOf(longFrames, (frame) => frame.deliveries?.chatEvent),
+        terminal: sumOf(longFrames, (frame) => frame.deliveries?.terminal),
+        deliveryMs: sumOf(longFrames, (frame) => frame.deliveries?.deliveryMs),
+      },
+      focusedChatRows,
+      scripts: {
+        invokerTypes: countBy(scripts.map((script) => script.invokerType)),
+        invokers: countBy(
+          scripts.map((script) =>
+            script.invoker === null ? 'null' : script.invoker,
+          ),
+        ),
+        sourceKinds: countBy(scripts.map((script) => script.sourceKind)),
+      },
+    },
     worstFrameP95Ms: Math.max(0, ...summaries.map((s) => s.frames?.p95Ms ?? 0)),
     worstFrameMaxMs: Math.max(0, ...summaries.map((s) => s.frames?.maxMs ?? 0)),
     terminalDeliveries: sumOf(summaries, (s) => s.terminal?.deliveries),
@@ -377,6 +423,13 @@ export function summarizeDiagnostics(records, sinceMs) {
         (entry.patchedBlockTypes[type] ?? 0) + rewrites;
   }
 
+  const rateAlerts = ofKind('chat_transcript_rewrite_rate_exceeded');
+  const rateAlertsByChatKey = new Map();
+  for (const record of rateAlerts) {
+    const key = record.chatTranscriptRewriteChatKey ?? 'unknown';
+    rateAlertsByChatKey.set(key, (rateAlertsByChatKey.get(key) ?? 0) + 1);
+  }
+
   const stalls = ofKind('main_event_loop_stall');
   const pressure = ofKind('resource_pressure_warning');
   const summary = {
@@ -413,6 +466,17 @@ export function summarizeDiagnostics(records, sinceMs) {
         0,
       ),
       chats: rewritesByKey.size,
+    },
+    rewriteRateAlerts: {
+      count: rateAlerts.length,
+      chats: rateAlertsByChatKey.size,
+      byChatKey: Object.fromEntries(rateAlertsByChatKey),
+      maxWindowBytes: Math.max(
+        0,
+        ...rateAlerts.map(
+          (record) => record.chatTranscriptRewriteRateCommittedBytes ?? 0,
+        ),
+      ),
     },
     eventLoopStalls: {
       count: stalls.length,

@@ -18,6 +18,7 @@ import {
 } from './calendarEvents';
 import type { CalendarView } from './calendarPreferences';
 import { RichHoverTooltip } from '@/components/shared/RichHoverTooltip';
+import { Button } from '@canopy/ui-shared/components';
 
 /** Max event chips shown per cell before collapsing into a "+N more" button. */
 export const MAX_CHIPS_PER_CELL = 3;
@@ -176,16 +177,19 @@ export function MonthGrid({
                 />
               ))}
               {moreCount > 0 && (
-                <button
-                  type="button"
-                  onClick={(): void => {
-                    onAnchorDateChange(day);
-                    onCalendarViewChange('day');
-                  }}
-                  className="focus-ring rounded px-1 py-0.5 text-left text-3xs font-medium fg-secondary transition-colors hover:bg-fg-primary/[0.06] hover:fg-primary"
-                >
-                  +{moreCount} more
-                </button>
+                // The link takes the cell's 3xs copy size; the inset lines it
+                // up with the chips' labels.
+                <div className="px-1 py-0.5 text-3xs">
+                  <Button
+                    variant="link"
+                    onClick={(): void => {
+                      onAnchorDateChange(day);
+                      onCalendarViewChange('day');
+                    }}
+                  >
+                    +{moreCount} more
+                  </Button>
+                </div>
               )}
             </div>
           );

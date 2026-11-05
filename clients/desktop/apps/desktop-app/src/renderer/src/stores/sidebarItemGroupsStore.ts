@@ -141,14 +141,6 @@ function placementRequestsFor(
     .map((request) => request.placement);
 }
 
-export function resetSidebarItemGroupPlacementRequestsForTests(): void {
-  placementRequests.clear();
-  for (const controller of Array.from(coworkPlacements.values()))
-    controller.dispose();
-  coworkPlacements.clear();
-  useSidebarItemGroupsStore.setState({ orderByScope: {} });
-}
-
 function confirmMembership(
   groups: SidebarItemGroupView[],
   destinationGroupId: string | null,

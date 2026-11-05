@@ -6,6 +6,7 @@ import {
   Button,
   Tooltip,
   DagProgressDots,
+  GroupedDiffStats,
   SpinnerStyleProvider,
   StatusGlyph,
   type DagJobMeta,
@@ -16,11 +17,12 @@ import {
   runStatusGlyphState,
   type StatusGlyphState,
 } from '@canopy/ui-shared/lib';
-import { PipelineIcon } from '@canopy/ui-shared/icons';
 import {
   GitHubIcon,
   CirclePauseIcon,
   StopFilledIcon,
+  PlayIcon,
+  PipelineIcon,
   GitPullRequestIcon,
   GitMergeQueueIcon,
   GitMergeIcon,
@@ -86,6 +88,11 @@ export interface BackgroundTrayRun {
   readonly repository: string | null;
   /** Its own word for its state, in place of the status label (Merged). */
   readonly statusLabel?: string;
+  /** Present only when the host has observed the pull request diff. */
+  readonly diffStats?: {
+    readonly insertions: number;
+    readonly deletions: number;
+  };
   /** Preserve PR lifecycle separately from the generic run status. */
   readonly pullRequestState?: 'open' | 'merge-queue' | 'merged' | 'closed';
   /** One quiet inspector line after the repository (a pull request's base). */
@@ -205,6 +212,8 @@ export interface GitHubPullRequestRowData {
   readonly repository: string;
   readonly number: number;
   readonly title?: string;
+  readonly additions?: number;
+  readonly deletions?: number;
   readonly state: 'open' | 'closed' | 'merged';
   readonly baseRefName: string;
   readonly queue: { readonly position: number | null } | null;
@@ -227,6 +236,9 @@ export function githubPullRequestBackgroundTrayRun(
   return {
     id,
     kind: 'github-pr',
+    ...(pr.additions !== undefined && pr.deletions !== undefined
+      ? { diffStats: { insertions: pr.additions, deletions: pr.deletions } }
+      : {}),
     pullRequestState:
       pr.state === 'open' && pr.queue !== null ? 'merge-queue' : pr.state,
     name: pr.title ? `#${pr.number} ${pr.title}` : `#${pr.number}`,
@@ -498,7 +510,7 @@ function runElapsedLabel(run: BackgroundTrayRun, now: number): string {
  * watcher, the question it waits on (three lines, D10) or its running job,
  * and Open run (Open on GitHub for a GitHub run).
  */
-export function RunRow({
+function LegacyRunRow({
   run,
   now,
   open,
@@ -508,7 +520,7 @@ export function RunRow({
   ...actions
 }: RunRowProps): JSX.Element {
   const presentation = useContext(DrawerRowPresentationContext);
-  const redesigned = presentation !== 'legacy';
+  const redesigned = false;
   const elapsedLabel = runElapsedLabel(run, now);
   const statusLabel = run.statusLabel ?? RUN_STATUS_LABELS[run.status];
   const { onOpen, onJobClick, renderWatcher } = actions;
@@ -610,10 +622,10 @@ export function RunRow({
         ) : run.kind === 'github' ? (
           <GitHubIcon size={14} aria-hidden="true" />
         ) : (
-          <PipelineIcon width={14} height={14} aria-hidden="true" />
+          <PipelineIcon size="sm" aria-hidden="true" />
         )
       }
-      running={run.status === 'running'}
+      running={run.kind !== 'github-pr' && run.status === 'running'}
       name={<span className={REPLAY_MASK_CLASS}>{run.name}</span>}
       headerAccessory={
         redesigned &&
@@ -803,6 +815,210 @@ export function RunRow({
       }
       listRef={listRef}
       topInset={topInset}
+    />
+  );
+}
+
+export function RunRow(props: RunRowProps): JSX.Element {
+  const presentation = useContext(DrawerRowPresentationContext);
+  return presentation === 'legacy' ? (
+    <LegacyRunRow {...props} />
+  ) : (
+    <DrawerRunRow {...props} />
+  );
+}
+
+/** The shared drawer keeps its summary intact; disclosure adds only new information. */
+function DrawerRunRow({
+  run,
+  now,
+  open,
+  onToggle,
+  listRef,
+  topInset,
+  ...actions
+}: RunRowProps): JSX.Element {
+  const { onOpen, onRespond, onResume, onStop, onJobClick, renderWatcher } =
+    actions;
+  const paused = run.status === 'paused';
+  const needsInput = run.status === 'needs-input';
+  const finished = isFinishedTrayRun(run.status);
+  const isPr = run.kind === 'github-pr';
+  const hasJobs = run.dag !== null && Object.keys(run.dag.jobs).length > 0;
+  const hasDetails =
+    !isPr && (hasJobs || Boolean(run.note) || Boolean(run.repository));
+  const prAppearance =
+    PR_STATE_APPEARANCE[
+      run.pullRequestState ??
+        (run.status === 'succeeded'
+          ? 'merged'
+          : run.status === 'cancelled'
+            ? 'closed'
+            : 'open')
+    ];
+  const Glyph = prAppearance.Icon;
+  const elapsed = runElapsedLabel(run, now);
+  const label = run.statusLabel ?? RUN_STATUS_LABELS[run.status];
+  const status = elapsed === label ? label : `${label} · ${elapsed}`;
+  const actionRunName = (
+    <span className="sr-only">
+      {' '}
+      <span className={REPLAY_MASK_CLASS}>{run.name}</span>
+    </span>
+  );
+  const action =
+    needsInput && onRespond ? (
+      <Button
+        variant="primary"
+        size="compact"
+        data-testid={`background-tray-run-${run.id}-respond`}
+        onClick={() => onRespond(run.id)}
+      >
+        Answer{actionRunName}
+      </Button>
+    ) : paused ? (
+      <span className="flex items-center gap-1">
+        {onOpen && (
+          <Button
+            variant="ghost-overlay"
+            size="compact"
+            data-testid="background-tray-row-open"
+            onClick={() => onOpen(run.id)}
+          >
+            Open run{actionRunName}
+          </Button>
+        )}
+        <Tooltip
+          label={
+            onResume ? 'Resume run' : 'Resume is not available in this view.'
+          }
+        >
+          <span className="inline-flex">
+            <Button
+              variant="ghost-overlay"
+              size="compact"
+              iconOnly
+              aria-label="Resume run"
+              disabled={!onResume}
+              aria-description={
+                onResume ? undefined : 'Resume is not available in this view.'
+              }
+              data-testid={`background-tray-run-${run.id}-resume`}
+              onClick={() => onResume?.(run.id)}
+            >
+              <PlayIcon size="sm" fill="currentColor" />
+              {actionRunName}
+            </Button>
+          </span>
+        </Tooltip>
+      </span>
+    ) : !finished && run.kind === 'pipeline' ? (
+      <Tooltip
+        label={onStop ? 'Stop run' : 'Stop is not available in this view.'}
+      >
+        <span className="inline-flex">
+          <Button
+            variant="ghost-overlay"
+            size="compact"
+            iconOnly
+            aria-label="Stop run"
+            disabled={!onStop}
+            aria-description={
+              onStop ? undefined : 'Stop is not available in this view.'
+            }
+            data-testid={`background-tray-run-${run.id}-stop`}
+            onClick={() => onStop?.(run.id)}
+          >
+            <StopFilledIcon size="sm" />
+          </Button>
+        </span>
+      </Tooltip>
+    ) : undefined;
+  return (
+    <DrawerRow
+      rowKey={`run:${run.id}`}
+      testId={`background-tray-run-${run.id}`}
+      listRef={listRef}
+      topInset={topInset}
+      glyph={
+        isPr ? (
+          <Glyph size="sm" className={prAppearance.color} />
+        ) : run.status !== 'running' ? (
+          <StatusGlyph state={RUN_GLYPH_STATES[run.status]} size={14} />
+        ) : run.kind === 'github' ? (
+          <GitHubIcon size="sm" />
+        ) : (
+          <PipelineIcon size="sm" />
+        )
+      }
+      name={<span className={REPLAY_MASK_CLASS}>{run.name}</span>}
+      detail={
+        isPr ? undefined : needsInput ? (
+          <span
+            className={REPLAY_BLOCK_CLASS}
+            data-testid="background-tray-run-question"
+          >
+            {run.question}
+          </span>
+        ) : paused ? (
+          'Paused'
+        ) : run.dag && hasJobs ? (
+          <span className={REPLAY_BLOCK_CLASS}>
+            <DagProgressDots tiers={run.dag.tiers} jobs={run.dag.jobs} />
+          </span>
+        ) : undefined
+      }
+      status={isPr || paused || needsInput ? undefined : status}
+      trailing={
+        isPr && run.diffStats ? (
+          <GroupedDiffStats
+            insertions={run.diffStats.insertions}
+            deletions={run.diffStats.deletions}
+          />
+        ) : undefined
+      }
+      headerAccessory={renderWatcher?.(run)}
+      running={run.kind !== 'github-pr' && run.status === 'running'}
+      attention={needsInput}
+      action={action}
+      openAction={
+        onOpen && !paused && !(needsInput && onRespond)
+          ? {
+              label: run.kind === 'pipeline' ? 'Open run' : 'Open on GitHub',
+              onClick: () => onOpen(run.id),
+            }
+          : undefined
+      }
+      inspector={
+        hasDetails
+          ? {
+              open,
+              onToggle,
+              render: () => (
+                <>
+                  {run.repository && (
+                    <p className={`${REPLAY_BLOCK_CLASS} text-xs fg-tertiary`}>
+                      {run.repository}
+                    </p>
+                  )}
+                  {run.note && (
+                    <p className={`${REPLAY_BLOCK_CLASS} text-xs fg-secondary`}>
+                      {run.note}
+                    </p>
+                  )}
+                  {run.dag && hasJobs && (
+                    <RunJobRows
+                      run={run}
+                      dag={run.dag}
+                      now={now}
+                      onJobClick={onJobClick}
+                    />
+                  )}
+                </>
+              ),
+            }
+          : undefined
+      }
     />
   );
 }

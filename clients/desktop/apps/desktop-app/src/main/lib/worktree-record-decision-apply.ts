@@ -513,7 +513,15 @@ function applyDiscovery(
   decision: WorktreeDiscoveryDecision,
 ): WorktreeData {
   if (decision.kind === 'discovery.environment') {
-    return { ...current, discovery: decision.discovery };
+    // Only chat tabs read a discovery's age, so an unchanged result keeps the
+    // row and skips rewriting the whole worktree list for a timestamp.
+    const { discoveredAt: _stored, ...stored } = current.discovery ?? {};
+    const { discoveredAt: _next, ...next } = decision.discovery;
+    void _stored;
+    void _next;
+    return current.discovery && isDeepStrictEqualData(stored, next)
+      ? current
+      : { ...current, discovery: decision.discovery };
   }
   const { sent } = decision;
   return current.branchPromptSent === sent

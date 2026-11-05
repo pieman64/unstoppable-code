@@ -96,8 +96,10 @@ export function PluginInstallStatusCell({
 
   if (needsInstall) {
     const button = (
-      <button
-        type="button"
+      <Button
+        variant={error ? 'ghost-destructive' : 'ghost-warning'}
+        size="sm"
+        iconOnly
         data-testid={`plugin-install-${pluginName}`}
         disabled={disabled}
         onClick={(e) => {
@@ -110,14 +112,9 @@ export function PluginInstallStatusCell({
         aria-label={
           error ? `Try again to install ${pluginName}` : `Install ${pluginName}`
         }
-        className={`focus-ring inline-flex items-center justify-center rounded p-1 transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-          error
-            ? 'fg-destructive hover:bg-destructive-subtle'
-            : 'fg-warning hover:bg-warning-subtle'
-        }`}
       >
         <DownloadIcon />
-      </button>
+      </Button>
     );
     return error ? <Tooltip label={error}>{button}</Tooltip> : button;
   }

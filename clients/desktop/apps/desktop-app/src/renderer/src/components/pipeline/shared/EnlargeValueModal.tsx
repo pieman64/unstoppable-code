@@ -1,9 +1,20 @@
 import { type JSX, useState, useEffect } from 'react';
-import { Button, TextArea, TextInput } from '@canopy/ui-shared/components';
+import {
+  Button,
+  SegmentedControl,
+  TextArea,
+  TextInput,
+  type SegmentedControlOption,
+} from '@canopy/ui-shared/components';
 import { DialogModal } from '../../shared/DialogModal';
 import type { PipelineScalar } from '@canopy/desktop-shared/types/pipeline';
 
 type ValueType = 'string' | 'number' | 'boolean';
+
+const BOOLEAN_OPTIONS: readonly SegmentedControlOption<'false' | 'true'>[] = [
+  { value: 'false', label: 'false' },
+  { value: 'true', label: 'true' },
+];
 
 interface EnlargeValueModalProps {
   inputKey: string;
@@ -53,17 +64,13 @@ export function EnlargeValueModal({
     >
       <div className="flex flex-col gap-4">
         {valueType === 'boolean' ? (
-          <button
-            type="button"
-            onClick={(): void => setBoolValue(!boolValue)}
-            className={`w-full px-4 py-3 text-s rounded-md border transition-colors text-left ${
-              boolValue
-                ? 'bg-accent-subtle border-line-accent fg-accent'
-                : 'bg-base fg-secondary'
-            }`}
-          >
-            {boolValue ? 'true' : 'false'}
-          </button>
+          <SegmentedControl
+            label={inputKey}
+            value={boolValue ? 'true' : 'false'}
+            options={BOOLEAN_OPTIONS}
+            onChange={(next): void => setBoolValue(next === 'true')}
+            width="fill"
+          />
         ) : valueType === 'number' ? (
           <TextInput
             type="number"

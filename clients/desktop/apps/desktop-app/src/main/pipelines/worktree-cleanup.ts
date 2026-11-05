@@ -1,6 +1,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import {
+  deleteExecutionState,
   listExecutionSummaries,
   listExecutionSummariesForArchival,
   loadExecutionState,
@@ -34,36 +35,11 @@ export async function deleteExecutionArtifacts(
   executionId: string,
   executionsDir: string,
 ): Promise<void> {
-  await Promise.all([
-    fs
-      .unlink(path.join(executionsDir, `${executionId}.json`))
-      .catch((error: unknown) => {
-        if (
-          typeof error === 'object' &&
-          error !== null &&
-          Reflect.get(error, 'code') === 'ENOENT'
-        ) {
-          return;
-        }
-        throw error instanceof Error ? error : new Error(String(error));
-      }),
-    fs
-      .unlink(path.join(executionsDir, `${executionId}.cancel`))
-      .catch((error: unknown) => {
-        if (
-          typeof error === 'object' &&
-          error !== null &&
-          Reflect.get(error, 'code') === 'ENOENT'
-        ) {
-          return;
-        }
-        throw error instanceof Error ? error : new Error(String(error));
-      }),
-    fs.rm(path.join(executionsDir, executionId), {
-      recursive: true,
-      force: true,
-    }),
-  ]);
+  await deleteExecutionState(executionId, executionsDir);
+  await fs.rm(path.join(executionsDir, executionId), {
+    recursive: true,
+    force: true,
+  });
 }
 
 function isCleanableStatus(status: ExecutionSummary['status']): boolean {

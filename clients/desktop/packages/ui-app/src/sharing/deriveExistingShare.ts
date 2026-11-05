@@ -1,3 +1,4 @@
+import { marketplacePublicLinkPinnedAt } from '@canopy/protocol/marketplace';
 import type { ShareScope } from '@canopy/protocol/sharing';
 import type { ShareTarget } from '@canopy/ui-shared/components';
 import type { ShareDialogLink } from './ShareDialogFrame';
@@ -37,7 +38,10 @@ export interface ExistingShareFacts {
   readonly shareScope?: ShareScope | null;
   readonly owner?: ExistingShareOwner | null;
   /** The public link, when one exists. */
-  readonly publicShare?: { readonly upToDate?: boolean } | null;
+  readonly publicShare?: {
+    readonly upToDate?: boolean;
+    readonly updatedAt?: string;
+  } | null;
   /** The share's current link, shown as Copy link. */
   readonly link?: ShareDialogLink | null;
 }
@@ -111,6 +115,13 @@ export function deriveExistingShare(
     audience: hasPublicLink ? 'public' : scope,
     ...(target && targetAudience ? { target, targetAudience } : {}),
     ...(facts.publicShare?.upToDate === false ? { publicLinkStale: true } : {}),
+    ...(marketplacePublicLinkPinnedAt(facts.publicShare?.updatedAt)
+      ? {
+          publicLinkPinnedAt: marketplacePublicLinkPinnedAt(
+            facts.publicShare?.updatedAt,
+          ),
+        }
+      : {}),
     ...(link ? { link } : {}),
   };
 }

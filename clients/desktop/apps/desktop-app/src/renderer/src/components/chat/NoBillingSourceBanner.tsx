@@ -17,6 +17,7 @@ import {
   POLICY_BILLING_DEAD_END_COPY,
   POLICY_ONLY_DEAD_END_COPY,
   QUEUED_MESSAGE_RETAINED_COPY,
+  connectProviderLabel,
   creditsOnlyDeadEndCopy,
   failedTurnCopy,
   noticeButtonClassName,
@@ -63,11 +64,14 @@ import type { BillingLane } from '@canopy/desktop-shared/lib/default-model-lane'
 /**
  * Button tiers mirror `AiCreditsUsageLimitBanner` so every recovery action
  * across every chat banner reads as one system: the house `Button` recipe,
- * `secondary` for the alternative route (sign in) and `primary` for the single
- * recommended action ("Get AI Credits"). The shared CTA takes a class string
- * rather than rendering `Button` itself, so it is handed the same recipe.
+ * `primary` for the single recommended action and `secondary` for the
+ * alternative. CAN-4766: "Connect {provider}" leads where it shows and
+ * "Buy AI Credits" follows; the purchase is primary only when it stands alone
+ * or a hand-off is waiting on it. The shared CTA takes a class string rather
+ * than rendering `Button` itself, so it is handed the same recipe.
  */
 const PRIMARY_BUTTON_CLASS = noticeButtonClassName('primary');
+const SECONDARY_BUTTON_CLASS = noticeButtonClassName('secondary');
 
 /** The purchases this banner confirms. The usage-limit banner owns its own. */
 const ARRIVAL_ORIGINS: readonly AiCreditsArrivalOrigin[] = [
@@ -86,7 +90,7 @@ export interface NoBillingSourceBannerProps {
    * True while `OrgLapsedBanner` is already explaining this same dead end
    * (CAN-2311 review round 3). See the sequencing note on that banner's
    * `onVisibleChange`: a lapsed org zeroes its credit pool, so its members trip
-   * this banner's condition too, and stacking the two hands the user "Get AI
+   * this banner's condition too, and stacking the two hands the user "Buy AI
    * Credits" directly above "Contact your org admin to restore your team". The
    * banner that names the cause goes first; this one takes over the moment that
    * one is dismissed or the org is restored, so the self-serve remedies are
@@ -306,7 +310,7 @@ export function NoBillingSourceBanner({
   // `missing: 'policy-allowance'` with NO lane named is a different dead end
   // from `creditsOnlyDeadEnd`: it means the org allowlist leaves nothing
   // runnable on ANY lane, credits included. Telling that user their org "only
-  // allows models that require AI Credits" — and offering a Get AI Credits CTA
+  // allows models that require AI Credits" — and offering a Buy AI Credits CTA
   // that cannot possibly unblock them — is both wrong and a spend prompt for
   // nothing. Their only route through is the org admin.
   //
@@ -421,13 +425,13 @@ export function NoBillingSourceBanner({
   // account's credit coverage says.
   const showContactAdmin = coverage.showContactAdmin || policyOnlyDeadEnd;
 
-  // A native login cannot run a gateway-only model, so offering "Sign in to
+  // A native login cannot run a gateway-only model, so offering "Connect
   // {provider}" there sends the user through an auth flow that leaves them
   // exactly as stuck. Credits are the only remedy for that model.
   //
   // `!nativeAuth` is the second half of the same rule (CAN-2413 review): on the
   // runtime path the user may ALREADY be signed in natively — that is the exact
-  // reported state — so "Sign in to Codex" asks them to redo something they
+  // reported state — so "Connect Codex" asks them to redo something they
   // have done. The derived path still shows it, since `derived` requires
   // `!nativeAuth` to be true in the first place.
   //
@@ -470,7 +474,7 @@ export function NoBillingSourceBanner({
   // false — the same flag combination as an inconclusive read. Without this
   // term the fallback treats "you can pay now" as "we could not tell", so a
   // user whose admin just restored their quota, or who topped up in another
-  // window, is handed an enabled "Get AI Credits" telling them to buy
+  // window, is handed an enabled "Buy AI Credits" telling them to buy
   // something they already have.
   const showFallbackCredits =
     coverageSettled &&
@@ -520,7 +524,7 @@ export function NoBillingSourceBanner({
   // Never render an empty actions row.
   const hasActions = showSignIn || showCreditsButton;
 
-  // Credits bought from this banner's Get AI Credits (CAN-5160), and from the
+  // Credits bought from this banner's Buy AI Credits (CAN-5160), and from the
   // model picker or its recovery dialog, which have no notice of their own.
   const arrival = useAiCreditsArrivalStore((s) =>
     selectAiCreditsArrivalForChat(s, target, ARRIVAL_ORIGINS),
@@ -629,7 +633,8 @@ export function NoBillingSourceBanner({
     <>
       {showSignIn && (
         <NoticeButton
-          variant="secondary"
+          // Connect leads; mid-purchase it steps back so Check again leads.
+          variant={visibleHandoff !== null ? 'secondary' : 'primary'}
           onClick={(): void => {
             trackCreditsRecoveryClick({
               surface: 'chat_banner',
@@ -639,10 +644,10 @@ export function NoBillingSourceBanner({
           }}
           data-testid="chat-input-no-billing-source-sign-in"
         >
-          {/* Mid-purchase, signing in is the way out if credits are slow. */}
+          {/* Mid-purchase, connecting is the way out if credits are slow. */}
           {visibleHandoff !== null
-            ? `Sign in to ${providerLabel} instead`
-            : `Sign in to ${providerLabel}`}
+            ? `${connectProviderLabel(providerLabel)} instead`
+            : connectProviderLabel(providerLabel)}
         </NoticeButton>
       )}
       {showReopenBilling && (
@@ -694,7 +699,13 @@ export function NoBillingSourceBanner({
             // re-reading it to explain the failure is a dead end and
             // the hand-off is the action the branch exists to offer.
             handoffOnInconclusiveRead={showFallbackCredits}
-            buttonClassName={PRIMARY_BUTTON_CLASS}
+            // Secondary beside Connect; primary alone or once a hand-off
+            // puts Check again on this button.
+            buttonClassName={
+              showSignIn && visibleHandoff === null
+                ? SECONDARY_BUTTON_CLASS
+                : PRIMARY_BUTTON_CLASS
+            }
             disabled={creditsDisabled}
             // This action bar is a horizontal, right-aligned row; the
             // default stacked hand-off block would re-flow it.
@@ -729,7 +740,7 @@ export function NoBillingSourceBanner({
 
   // Copy branches on WHICH trigger fired. The runtime signal means a turn
   // already failed, so the past tense is the accurate account; reusing the
-  // pre-flight "not signed in" line would also be plainly wrong for the case
+  // pre-flight "not connected" line would also be plainly wrong for the case
   // this exists to fix, where the user IS signed in natively. The derived copy
   // is untouched — keep it in step with the main-process backstop in
   // `claude-session.ts` / `codex-session.ts`, which describes the same dead

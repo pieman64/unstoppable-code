@@ -11,6 +11,7 @@
     ".": "./src/index.ts",
     "./host-platform": "./src/host-platform.ts",
     "./directory-flush": "./src/directory-flush.ts",
+    "./w5-process-file-lock": "./src/w5-process-file-lock.ts",
     "./w5-confined-read": "./src/w5-confined-read.ts",
     "./execution-host/*": "./src/execution-host/*.ts"
   },

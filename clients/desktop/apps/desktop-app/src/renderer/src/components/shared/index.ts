@@ -12,7 +12,6 @@ export { GitHubRepoPicker } from './GitHubRepoPicker';
 export { LoadingSpinner } from './loading';
 export { SearchIcon } from './SearchIcon';
 export { WorkspaceBadgeIcon } from './WorkspaceBadgeIcon';
-export { describeWorkspaceSubtitle } from './workspaceEntry';
 export {
   PlanDetectionRulesEditor,
   type PlanDetectionRulesEditorProps,

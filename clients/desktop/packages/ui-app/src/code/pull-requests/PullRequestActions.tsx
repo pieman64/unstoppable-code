@@ -85,43 +85,23 @@ export type PullRequestProgressRenderer = (
 const renderWithoutProgress: PullRequestProgressRenderer = (_target, trigger) =>
   trigger;
 
-/**
- * Every header action shares one shell — 28px tall, `rounded-md`, the same
- * padding, text size and gap — so Create PR, Commit & Push and Merge read as
- * one family instead of three unrelated pills. Only the TINT differs.
+/*
+ * Every header action is a `HeaderActionButton` (the `compact` capsule), so
+ * Create PR, Commit & Push and Merge read as one family. Only the tone
+ * differs: primary git actions (Commit / Commit & Push / Push / Pull / local
+ * Merge / Merge PR) take the accent ink like Create PR, so the one thing to
+ * do next stands out from the neutral controls beside it.
  *
- * No `disabled:opacity-60`: while an action runs it keeps its normal weight
- * and swaps its leading icon for a spinner (see `RunningActionIcon`), rather
- * than greying out and renaming itself, which read as "broken" mid-flight.
- */
-const HEADER_ACTION_BTN =
-  'electron-no-drag focus-ring inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-xs font-normal transition-colors';
-
-// Each shell pairs its `hover:` with the same `group-hover/gitaction:`
-// background: while an action runs, the cancel ✕ is an overlay INSIDE the
-// group but OUTSIDE the pill, so without the group-hover the pill would drop
-// its hover state the moment the pointer reaches the ✕. Outside a
-// `group/gitaction` (e.g. Split PR) the group-hover half simply never fires.
-const COMMIT_PUSH_BTN = `${HEADER_ACTION_BTN} fg-primary enabled:hover:bg-subtle enabled:group-hover/gitaction:bg-subtle`;
-
-// Primary git actions (Commit / Commit & Push / Push / Pull / local Merge /
-// Merge PR) keep the ghost shell but take the accent ink, like Create PR, so
-// the one thing to do next stands out from the neutral controls beside it.
-// Merge PR used the merged status ink before; it read as "already merged".
-const GIT_ACTION_ACCENT_BTN = `${HEADER_ACTION_BTN} fg-accent enabled:hover:bg-accent-subtle enabled:group-hover/gitaction:bg-accent-subtle`;
-
-/**
+ * Inside a `group/gitaction` each takes `groupHover`: while an action runs,
+ * the cancel ✕ is an overlay INSIDE the group but OUTSIDE the pill, so
+ * without it the pill would drop its hover state the moment the pointer
+ * reaches the ✕.
+ *
  * An action that applies but waits (DESIGN.md: disabled with its reason,
- * never hidden). `aria-disabled` keeps it focusable and hoverable, so its
- * tooltip can say why; it reads as unavailable at 60% under a not-allowed
- * cursor, the shared Button's treatment, and loses its hover wash.
+ * never hidden) is `aria-disabled`: it stays focusable and hoverable, so its
+ * tooltip can say why, and reads as unavailable at 60% under a not-allowed
+ * cursor, the shared Button's treatment.
  */
-const BLOCKED_ACTION =
-  'aria-disabled:cursor-not-allowed aria-disabled:opacity-60 aria-disabled:hover:bg-transparent aria-disabled:group-hover/gitaction:bg-transparent';
-
-// Warning variant of the primary merge button, shown when the PR has
-// unresolved review comments. The default state is GIT_ACTION_ACCENT_BTN.
-const MERGE_PR_WARNING_BTN = `${HEADER_ACTION_BTN} fg-warning hover:bg-warning-subtle group-hover/gitaction:bg-warning-subtle`;
 
 // Non-interactive status that replaces Merge while the PR sits in its base
 // branch's merge queue. Same footprint as the header actions so nothing shifts
@@ -353,28 +333,26 @@ export function PullRequestActions({
   const fixBlocked = plan.fixCi?.blockedReason;
   const ciFixButton =
     plan.fixCi === null ? null : (
-      <Tooltip label={fixBlocked ?? 'Fix failing CI checks'}>
-        <button
-          type="button"
-          onClick={
-            fixBlocked === undefined
-              ? (): void => onAction({ kind: 'fix-ci' })
-              : undefined
-          }
-          disabled={fixBlocked === undefined ? activity.startingCiFix : false}
-          aria-disabled={fixBlocked === undefined ? undefined : true}
-          data-testid="pr-status-bar-fix-ci"
-          aria-label="Fix failing CI checks"
-          className={`${HEADER_ACTION_BTN} fg-warning hover:bg-warning-subtle ${BLOCKED_ACTION}`}
-        >
-          {activity.startingCiFix ? (
-            <ThinkingSpinner tone="emphasis" quiet className="mr-1" />
-          ) : (
-            <ChatIcon className="h-4 w-4" />
-          )}
-          Fix
-        </button>
-      </Tooltip>
+      <HeaderActionButton
+        tone="warning"
+        tooltipLabel={fixBlocked ?? 'Fix failing CI checks'}
+        onClick={
+          fixBlocked === undefined
+            ? (): void => onAction({ kind: 'fix-ci' })
+            : undefined
+        }
+        disabled={fixBlocked === undefined ? activity.startingCiFix : false}
+        aria-disabled={fixBlocked === undefined ? undefined : true}
+        data-testid="pr-status-bar-fix-ci"
+        aria-label="Fix failing CI checks"
+      >
+        {activity.startingCiFix ? (
+          <ThinkingSpinner tone="emphasis" quiet className="mr-1" />
+        ) : (
+          <ChatIcon className="h-4 w-4" />
+        )}
+        Fix
+      </HeaderActionButton>
     );
 
   const localCommitRunning =
@@ -454,17 +432,15 @@ export function PullRequestActions({
         ) : (
           // Eligible but waiting: shown disabled with what it waits for,
           // as the PR card's Split does.
-          <Tooltip label={plan.splitPr.blockedReason}>
-            <button
-              type="button"
-              aria-disabled="true"
-              data-testid="split-pr-status-bar-button"
-              className={`${COMMIT_PUSH_BTN} ${BLOCKED_ACTION}`}
-            >
-              <SplitPrIcon className="h-4 w-4" />
-              Split PR
-            </button>
-          </Tooltip>
+          <HeaderActionButton
+            tone="neutral"
+            tooltipLabel={plan.splitPr.blockedReason}
+            aria-disabled="true"
+            data-testid="split-pr-status-bar-button"
+          >
+            <SplitPrIcon className="h-4 w-4" />
+            Split PR
+          </HeaderActionButton>
         ))}
 
       {/* Local-only Commit / Merge: repositories without an `origin`
@@ -577,8 +553,9 @@ export function PullRequestActions({
           <Tooltip suppressed={activity.mergingPr} label={plan.merge.help}>
             {renderProgress(
               { type: 'merge-pr' },
-              <button
-                type="button"
+              <HeaderActionButton
+                tone={plan.merge.warning ? 'warning' : 'accent'}
+                groupHover
                 onClick={
                   mergePrCancelOffered
                     ? onCancel
@@ -600,11 +577,6 @@ export function PullRequestActions({
                 aria-busy={mergeChatStarting || undefined}
                 data-testid="pr-status-bar-merge-pr"
                 data-merge-via={plan.merge.via}
-                className={`${
-                  plan.merge.warning
-                    ? MERGE_PR_WARNING_BTN
-                    : GIT_ACTION_ACCENT_BTN
-                } ${BLOCKED_ACTION}`}
               >
                 {activity.mergingPr || activity.mergeChecking ? (
                   <RunningActionIcon
@@ -619,7 +591,7 @@ export function PullRequestActions({
                   <GitMergeIcon className="h-4 w-4" />
                 )}
                 Merge
-              </button>,
+              </HeaderActionButton>,
               {
                 dataTestId: 'pr-status-bar-merge-pr-tooltip',
                 suppressed: plan.merge.onlyStartsChat,
@@ -687,17 +659,15 @@ export function PullRequestActions({
             </HeaderActionButton>
           </RichHoverTooltip>
         ) : (
-          <Tooltip label={plan.resolveConflicts.blockedReason}>
-            <button
-              type="button"
-              aria-disabled="true"
-              data-testid="pr-status-bar-resolve-conflicts"
-              className={`${COMMIT_PUSH_BTN} ${BLOCKED_ACTION}`}
-            >
-              <ChatIcon className="h-4 w-4" />
-              Resolve, commit &amp; push
-            </button>
-          </Tooltip>
+          <HeaderActionButton
+            tone="neutral"
+            tooltipLabel={plan.resolveConflicts.blockedReason}
+            aria-disabled="true"
+            data-testid="pr-status-bar-resolve-conflicts"
+          >
+            <ChatIcon className="h-4 w-4" />
+            Resolve, commit &amp; push
+          </HeaderActionButton>
         ))}
     </>
   );

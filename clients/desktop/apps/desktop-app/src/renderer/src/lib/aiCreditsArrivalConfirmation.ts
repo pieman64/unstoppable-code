@@ -17,7 +17,7 @@ import type { ChatBannerTarget } from '@/stores/aiCreditsBannerStore';
  * usage-limit banner or the No billing source banner (CAN-5160).
  *
  * Presentation state in renderer memory only. A browser hand-off is tracked
- * from the Get AI Credits click; the first covered return of a hand-off that
+ * from the Buy AI Credits click; the first covered return of a hand-off that
  * opened the browser records ONE confirmation for its chat. The notice reads
  * the personal balance again and names the observed increase when a
  * comparable baseline was read before the browser opened.
@@ -39,7 +39,7 @@ import type { ChatBannerTarget } from '@/stores/aiCreditsBannerStore';
  */
 
 /**
- * The surface whose Get AI Credits click started the hand-off. `model-picker`
+ * The surface whose Buy AI Credits click started the hand-off. `model-picker`
  * covers the picker's billing toggle and the recovery dialog it opens; they
  * have no notice of their own, so the No billing source banner, which every
  * composer mounts, confirms their purchases too.
@@ -700,24 +700,4 @@ export function selectAiCreditsArrivalEvidence(
     evidence.handoffId === handoffId
     ? evidence
     : null;
-}
-
-/** Test-only: resets module state between Jest cases. */
-export function resetAiCreditsArrivalForTests(): void {
-  cancelBalanceRun();
-  sessionAccountKey = undefined;
-  sessionGeneration++;
-  identifyingHandoffs.clear();
-  seenHandoffIds.clear();
-  latestSeqByScope.clear();
-  queued = null;
-  heldEvidence = null;
-  visibleSeq = 0;
-  visibleOwnerKey = null;
-  useAiCreditsArrivalStore.setState({
-    accountReady: true,
-    arrival: null,
-    evidence: null,
-    routed: false,
-  });
 }

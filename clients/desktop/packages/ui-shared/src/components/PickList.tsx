@@ -223,7 +223,7 @@ export function PickList<T>({
         aria-busy={loading || undefined}
       >
         {loading ? (
-          <PickerMenuSkeleton label={loadingLabel} rows={4} />
+          <PickerMenuSkeleton label={loadingLabel} rows={4} leading={false} />
         ) : visible.length === 0 ? (
           <PickerMenuState role="status">{emptyLabel}</PickerMenuState>
         ) : (

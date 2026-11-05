@@ -153,7 +153,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-async function snapshotFiles(root: string): Promise<FileSnapshot[]> {
+async function snapshotFiles(
+  root: string,
+  ignoredDirectory?: string,
+): Promise<FileSnapshot[]> {
   const files: FileSnapshot[] = [];
   const visit = async (directory: string): Promise<void> => {
     let entries;
@@ -166,6 +169,7 @@ async function snapshotFiles(root: string): Promise<FileSnapshot[]> {
     for (const entry of entries) {
       const absolute = join(directory, entry.name);
       if (entry.isDirectory()) {
+        if (directory === root && entry.name === ignoredDirectory) continue;
         await visit(absolute);
       } else if (entry.isFile()) {
         const [bytes, info] = await Promise.all([
@@ -192,11 +196,10 @@ async function expectNoStorageChanges(
   operation: () => Promise<unknown>,
 ): Promise<void> {
   // Diagnostics flushed late by an earlier step in the same test are not
-  // storage; every other file under the root must stay byte-identical.
-  const storageFiles = async (): Promise<FileSnapshot[]> =>
-    (await snapshotFiles(root)).filter(
-      (file) => !file.relativePath.startsWith('agent-observability/'),
-    );
+  // storage; every other file under the root must stay byte-identical. Prune
+  // them before traversal: a flush can rename its temp file after readdir.
+  const storageFiles = (): Promise<FileSnapshot[]> =>
+    snapshotFiles(root, 'agent-observability');
   const before = await storageFiles();
   await operation();
   const after = await storageFiles();

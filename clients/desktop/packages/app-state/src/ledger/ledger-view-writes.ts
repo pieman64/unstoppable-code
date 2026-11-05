@@ -19,6 +19,7 @@ import type {
   LedgerViewScope,
 } from '@canopy/protocol/ledger-view';
 import type { LedgerViewSelectOptions } from './create-ledger-view-store';
+import { readLedgerOpenDescendants } from './ledger-open-descendants';
 
 /*
  * The person's writes from a Ledger view: a new-entry draft, independent
@@ -41,6 +42,8 @@ export interface LedgerViewDraft {
   readonly status: LedgerStatus;
   /** Null keeps the person writing it as the owner ("You"). */
   readonly owner: LedgerOwnerCandidate | null;
+  /** An optional operation parent; scoped to the task this draft belongs to. */
+  readonly parent: { readonly entryId: string; readonly title: string } | null;
   /** The entry this one corrects; null for a new entry. */
   readonly supersedes: {
     readonly entryId: string;
@@ -120,6 +123,8 @@ export interface LedgerViewChangeRequest {
   readonly expectedRevision: number;
   readonly status?: LedgerStatus;
   readonly owner?: LedgerOwnerTarget;
+  /** Explicit resolution of open descendants when closing a parent. */
+  readonly openChildren?: 'complete' | 'detach';
 }
 
 export interface LedgerViewEntryChangeState {
@@ -149,6 +154,21 @@ export interface LedgerViewWriteSlice {
   readonly corrections: Readonly<Record<string, LedgerViewCorrectionState>>;
   readonly owners: LedgerViewOwnersState;
   readonly change: LedgerViewEntryChangeState;
+  /** A parent closure awaiting the person's explicit descendant disposition. */
+  readonly closeIntent: {
+    /** The operation or task being closed. */
+    readonly entryId: string;
+    /** The terminal status requested for the parent. */
+    readonly status: LedgerStatus;
+    /** Open descendants found, excluding the parent itself. */
+    readonly openCount: number;
+    /** More descendants may exist beyond the single bounded search page. */
+    readonly openCountIsLowerBound: boolean;
+  } | null;
+  /** Cancels closing, moves open descendants out, or completes them all. */
+  readonly resolveCloseIntent: (
+    choice: 'cancel' | 'detach' | 'complete',
+  ) => Promise<void>;
   /**
    * The last saved draft, when it was taken from elsewhere, so the Feed can
    * tell its draft saved here from one dropped here; null after a save of
@@ -246,8 +266,11 @@ export interface LedgerViewWriteContext {
   readonly get: () => LedgerViewWriteHostState;
   readonly set: (update: LedgerViewWriteUpdate) => void;
   readonly newRequestKey: () => string;
-  /** Re-reads the list in place. */
-  readonly refreshList: () => Promise<void>;
+  /**
+   * Re-reads the list in place. `ownEntryId` is an entry the person just
+   * saved, which shows at once rather than waiting as new activity.
+   */
+  readonly refreshList: (ownEntryId?: string) => Promise<void>;
   /**
    * Re-reads an entry's detail after a saved change, without a loading
    * state. What is shown is out of date until it succeeds, so a failed read
@@ -315,6 +338,7 @@ export function blankLedgerViewDraft(
     referenceFiles: [],
     status: LEDGER_DEFAULT_STATUS_BY_TYPE[type],
     owner: null,
+    parent: null,
     supersedes: null,
   };
 }
@@ -397,6 +421,11 @@ export function ledgerDraftAddParams(
             actorId: draft.owner.actor.actorId,
             eligibilityToken: draft.owner.eligibilityToken,
           },
+    ...(draft.type === 'TASK' &&
+    draft.supersedes === null &&
+    draft.parent !== null
+      ? { parentEntryId: draft.parent.entryId }
+      : {}),
     ...(draft.supersedes === null
       ? {}
       : { supersedesEntryId: draft.supersedes.entryId }),
@@ -444,6 +473,13 @@ export function createLedgerViewWriteSlice(
   let viewGeneration = 0;
   /** Changes sent and not yet answered, by entry. */
   const unanswered = new Map<string, LedgerViewChangeRequest>();
+  /** The checked revision and key retained while a close prompt is open. */
+  let pendingClose: LedgerViewChangeRequest | null = null;
+  /**
+   * Failed preflight reads must be retried before sending any closure: each
+   * request key, with its entry's parent (null for a top-level entry).
+   */
+  const uncheckedClosures = new Map<string, string | null>();
   /**
    * How a change went for an entry the person had left, kept until the entry
    * is shown again.
@@ -566,30 +602,11 @@ export function createLedgerViewWriteSlice(
     setSlice({ owners: { status: 'ready', candidates, problem: null } });
   };
 
-  const sendChange = async (
+  /** Shares notices, selection handling and refreshes for writes and failed preflights. */
+  const finishChange = async (
     request: LedgerViewChangeRequest,
+    result: LedgerViewResult<LedgerViewReceipt>,
   ): Promise<void> => {
-    const view = viewGeneration;
-    unanswered.set(request.entryId, request);
-    setSlice({
-      change: { saving: true, request, notice: null, message: null },
-    });
-    let result: LedgerViewResult<LedgerViewReceipt>;
-    try {
-      result = await client.updateEntry({
-        scope,
-        requestKey: request.requestKey,
-        params: {
-          entryId: request.entryId,
-          expectedRevision: request.expectedRevision,
-          ...(request.status === undefined ? {} : { status: request.status }),
-          ...(request.owner === undefined ? {} : { owner: request.owner }),
-        },
-      });
-    } catch (error) {
-      result = thrown(error);
-    }
-    if (view !== viewGeneration) return;
     unanswered.delete(request.entryId);
     const reason = result.status === 'ok' ? null : result.reason;
     // A conflict or a closed entry is never replayed: the person reviews
@@ -637,6 +654,80 @@ export function createLedgerViewWriteSlice(
     } else if (outcome.notice === 'owner_unavailable') {
       await loadOwners();
     }
+  };
+  const sendChange = async (
+    request: LedgerViewChangeRequest,
+  ): Promise<void> => {
+    const view = viewGeneration;
+    unanswered.set(request.entryId, request);
+    setSlice({
+      change: { saving: true, request, notice: null, message: null },
+    });
+    let result: LedgerViewResult<LedgerViewReceipt>;
+    try {
+      result = await client.updateEntry({
+        scope,
+        requestKey: request.requestKey,
+        params: {
+          entryId: request.entryId,
+          expectedRevision: request.expectedRevision,
+          ...(request.status === undefined ? {} : { status: request.status }),
+          ...(request.owner === undefined ? {} : { owner: request.owner }),
+          ...(request.openChildren === undefined
+            ? {}
+            : { openChildren: request.openChildren }),
+        },
+      });
+    } catch (error) {
+      result = thrown(error);
+    }
+    if (view !== viewGeneration) return;
+    await finishChange(request, result);
+  };
+
+  /** Counts open tasks under the entry before a terminal write; never closes unchecked. */
+  const checkClose = async (
+    request: LedgerViewChangeRequest,
+    parentEntryId: string | undefined,
+  ): Promise<void> => {
+    const status = request.status;
+    if (status === undefined) return;
+    const view = viewGeneration;
+    unanswered.set(request.entryId, request);
+    setSlice({
+      change: { saving: true, request, notice: null, message: null },
+    });
+    const result = await readLedgerOpenDescendants(
+      client,
+      scope,
+      request.entryId,
+      parentEntryId,
+    );
+    if (view !== viewGeneration) return;
+    if (result.status !== 'ok') {
+      uncheckedClosures.set(request.requestKey, parentEntryId ?? null);
+      await finishChange(request, result);
+      return;
+    }
+    uncheckedClosures.delete(request.requestKey);
+    const { count: openCount, lowerBound } = result.value;
+    if (openCount === 0) {
+      await sendChange(request);
+      return;
+    }
+    unanswered.delete(request.entryId);
+    pendingClose = request;
+    setSlice((state) => ({
+      closeIntent: {
+        entryId: request.entryId,
+        status,
+        openCount,
+        openCountIsLowerBound: lowerBound,
+      },
+      ...(state.selectedEntryId === request.entryId
+        ? { change: IDLE_CHANGE }
+        : {}),
+    }));
   };
 
   /**
@@ -751,7 +842,7 @@ export function createLedgerViewWriteSlice(
       } else {
         removeCorrection(slot.correctionEntryId);
       }
-      await context.refreshList();
+      await context.refreshList(savedEntryId);
       return savedEntryId;
     }
     const problem = problemOf(result);
@@ -811,6 +902,7 @@ export function createLedgerViewWriteSlice(
     corrections: EMPTY_LEDGER_VIEW_CORRECTIONS,
     owners: IDLE_OWNERS,
     change: IDLE_CHANGE,
+    closeIntent: null,
     savedAdopted: null,
     startEntry: (): void => {
       setSlice((state) =>
@@ -897,12 +989,33 @@ export function createLedgerViewWriteSlice(
     changeStatus: async (status): Promise<void> => {
       const entry = openSelectedEntry();
       if (entry === null || entry.status === status) return;
-      await sendChange({
+      // A later change replaces a close choice nobody answered, which a
+      // surface without the prompt could otherwise leave in the way.
+      if (get().closeIntent !== null) {
+        pendingClose = null;
+        setSlice({ closeIntent: null });
+      }
+      const request: LedgerViewChangeRequest = {
         entryId: entry.entryId,
         requestKey: newRequestKey(),
         expectedRevision: entry.revision,
         status,
-      });
+      };
+      if (
+        (entry.type === 'OPERATION' || entry.type === 'TASK') &&
+        isLedgerTerminalStatus(status)
+      ) {
+        await checkClose(request, entry.parentEntryId);
+      } else {
+        await sendChange(request);
+      }
+    },
+    resolveCloseIntent: async (choice): Promise<void> => {
+      const request = pendingClose;
+      pendingClose = null;
+      setSlice({ closeIntent: null });
+      if (choice === 'cancel' || request === null) return;
+      await sendChange({ ...request, openChildren: choice });
     },
     assignOwner: async (owner): Promise<void> => {
       const entry = openSelectedEntry();
@@ -964,7 +1077,12 @@ export function createLedgerViewWriteSlice(
       ) {
         return;
       }
-      await sendChange(change.request);
+      const parentEntryId = uncheckedClosures.get(change.request.requestKey);
+      if (parentEntryId !== undefined) {
+        await checkClose(change.request, parentEntryId ?? undefined);
+      } else {
+        await sendChange(change.request);
+      }
     },
     dismissChangeNotice: (): void => {
       setSlice((state) => (state.change.saving ? {} : { change: IDLE_CHANGE }));
@@ -986,6 +1104,8 @@ export function createLedgerViewWriteSlice(
       viewGeneration += 1;
       ownersGeneration += 1;
       unanswered.clear();
+      pendingClose = null;
+      uncheckedClosures.clear();
       outcomes.clear();
     },
   };

@@ -1,6 +1,12 @@
 'use client';
 
-import { useRef, type JSX, type ReactNode, type RefObject } from 'react';
+import {
+  useRef,
+  useState,
+  type JSX,
+  type ReactNode,
+  type RefObject,
+} from 'react';
 import { CheckIcon, CloseIcon, InfoIcon, WarningIcon } from '../icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import { Button } from './Button';
@@ -12,6 +18,10 @@ import {
   type SidebarBatchUnitLabel,
 } from './worktree-count-label';
 import { Heading } from './Heading';
+import {
+  KeepLocalBranchToggle,
+  DEFAULT_KEEP_LOCAL_BRANCH,
+} from './KeepLocalBranchToggle';
 
 export type SidebarBatchRemovalDialogMode = 'archive' | 'delete';
 
@@ -69,7 +79,7 @@ export interface SidebarBatchRemovalDialogProps {
    */
   readonly warning?: string;
   /**
-   * Preserve local / Delete local, applied to every included row. Without
+   * One keep-local-branch switch, applied to every included row. Without
    * it the confirm offers one `Archive N <unit>` / `Delete N <unit>`.
    */
   readonly branchChoice: boolean;
@@ -213,19 +223,17 @@ interface ConfirmSummaryProps {
   readonly warning?: string;
   readonly retentionSummary: string;
   readonly retentionDetail: string;
-  readonly branchChoice: boolean;
   readonly unitLabel: SidebarBatchUnitLabel;
   readonly testId: string;
 }
 
-/** What the removal does: the warning, retention, and branch choice. */
+/** What the removal does: the warning and retention. */
 function ConfirmSummary({
   mode,
   nothingRemovable,
   warning,
   retentionSummary,
   retentionDetail,
-  branchChoice,
   unitLabel,
   testId,
 }: ConfirmSummaryProps): JSX.Element {
@@ -263,12 +271,6 @@ function ConfirmSummary({
               </button>
             </RichHoverTooltip>
           </p>
-          {branchChoice && (
-            <p className="fg-tertiary">
-              Choose whether to keep the local Git branch. Delete local deletes
-              it for every worktree listed.
-            </p>
-          )}
         </>
       )}
     </div>
@@ -315,7 +317,6 @@ function ExcludedRows({
 interface ConfirmActionsProps {
   readonly mode: SidebarBatchRemovalDialogMode;
   readonly count: number;
-  readonly branchChoice: boolean;
   readonly unitLabel: SidebarBatchUnitLabel;
   readonly cancelRef: RefObject<HTMLButtonElement | null>;
   readonly testId: string;
@@ -323,11 +324,10 @@ interface ConfirmActionsProps {
   readonly onConfirm: (deleteBranch?: boolean) => void;
 }
 
-/** Cancel, then Preserve local / Delete local or one Archive/Delete N. */
+/** Cancel, then one Archive/Delete action. */
 function ConfirmActions({
   mode,
   count,
-  branchChoice,
   unitLabel,
   cancelRef,
   testId,
@@ -347,42 +347,18 @@ function ConfirmActions({
       >
         Cancel
       </Button>
-      {branchChoice ? (
-        <>
-          <Button
-            variant="outline"
-            size="lg"
-            className="ml-auto"
-            disabled={nothingRemovable}
-            onClick={(): void => onConfirm(false)}
-            data-testid={`${testId}-preserve-branch`}
-          >
-            Preserve local
-          </Button>
-          <Button
-            variant="destructive"
-            size="lg"
-            disabled={nothingRemovable}
-            onClick={(): void => onConfirm(true)}
-            data-testid={`${testId}-delete-branch`}
-          >
-            Delete local
-          </Button>
-        </>
-      ) : (
-        <Button
-          variant={mode === 'delete' ? 'destructive' : 'primary'}
-          size="lg"
-          className="ml-auto"
-          disabled={nothingRemovable}
-          onClick={(): void => onConfirm()}
-          data-testid={`${testId}-confirm`}
-        >
-          {nothingRemovable
-            ? verb
-            : `${verb} ${unitCountLabel(unitLabel, count)}`}
-        </Button>
-      )}
+      <Button
+        variant={mode === 'delete' ? 'destructive' : 'primary'}
+        size="lg"
+        className="ml-auto"
+        disabled={nothingRemovable}
+        onClick={(): void => onConfirm()}
+        data-testid={`${testId}-confirm`}
+      >
+        {nothingRemovable
+          ? verb
+          : `${verb} ${unitCountLabel(unitLabel, count)}`}
+      </Button>
     </>
   );
 }
@@ -409,6 +385,7 @@ export function SidebarBatchRemovalDialog({
   onDone,
 }: SidebarBatchRemovalDialogProps): JSX.Element {
   const cancelRef = useRef<HTMLButtonElement | null>(null);
+  const [keepBranch, setKeepBranch] = useState(DEFAULT_KEEP_LOCAL_BRANCH);
   const titleId = `${testId}-title`;
   const verb = mode === 'archive' ? 'Archive' : 'Delete';
   const count = rows.length;
@@ -454,7 +431,6 @@ export function SidebarBatchRemovalDialog({
               warning={warning}
               retentionSummary={retentionSummary}
               retentionDetail={retentionDetail}
-              branchChoice={branchChoice}
               unitLabel={unitLabel}
               testId={testId}
             />
@@ -504,17 +480,29 @@ export function SidebarBatchRemovalDialog({
           {phase === 'confirm' && excluded.length > 0 && (
             <ExcludedRows excluded={excluded} testId={testId} />
           )}
+          {phase === 'confirm' && branchChoice && !nothingRemovable && (
+            <KeepLocalBranchToggle
+              checked={keepBranch}
+              onChange={setKeepBranch}
+              dataTestId={`${testId}-keep-branch`}
+            >
+              {keepBranch
+                ? 'Each local branch stays in its project.'
+                : 'Each local branch is deleted from its project.'}
+            </KeepLocalBranchToggle>
+          )}
           <div className="flex items-center gap-2 pt-1">
             {phase === 'confirm' && (
               <ConfirmActions
                 mode={mode}
                 count={count}
-                branchChoice={branchChoice}
                 unitLabel={unitLabel}
                 cancelRef={cancelRef}
                 testId={testId}
                 onCancel={onCancel}
-                onConfirm={onConfirm}
+                onConfirm={(): void =>
+                  onConfirm(branchChoice ? !keepBranch : undefined)
+                }
               />
             )}
             {phase === 'results' && (

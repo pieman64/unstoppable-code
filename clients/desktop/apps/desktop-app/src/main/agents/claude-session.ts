@@ -699,7 +699,7 @@ async function resolveClaudeAiCreditsRouting(
       await emit({
         type: 'error',
         error:
-          "This model can't be used with AI Credits and you're not signed in to Claude. Sign in to Claude or pick a model covered by AI Credits.",
+          "This model can't be used with AI Credits and Claude isn't connected. Connect Claude or pick a model covered by AI Credits.",
       });
       // Abort rather than fall through to a native spawn — that would surface a
       // second raw provider auth failure on top of this clear message.
@@ -2558,12 +2558,13 @@ export class ClaudeCodeProvider implements AgentProvider {
           await import('./delegation/service');
         managedDelegation = await createManagedDelegationSession({
           harness: 'claude',
-          onTranscript: (delegation): void => {
+          onTranscript: (delegation, options): void => {
             void Promise.resolve(
               onEvent({
                 type: 'canopy_delegation',
                 delegation,
                 canopy_turn_user_message_id: delegation.parentTurnId,
+                ...(options?.replay ? { canopy_replay: true } : {}),
               }),
             ).catch((error: unknown) =>
               logMainProcessWarn(
@@ -3554,6 +3555,7 @@ export class ClaudeCodeProvider implements AgentProvider {
                 readSettings: readLedgerSettings,
               })
             : null;
+        managedDelegation?.setLedgerTools(ledger.tools ?? undefined);
         const authToken = randomBytes(32).toString('base64url');
         const proxyService = getMcpHttpProxyService();
         await proxyService.registerCanopyWorktreeSessionRoute({
@@ -3652,6 +3654,7 @@ export class ClaudeCodeProvider implements AgentProvider {
                   : {}),
               })
             : null;
+        managedDelegation?.setLedgerTools(ledger.tools ?? undefined);
         const authToken = randomBytes(32).toString('base64url');
         const proxyService = getMcpHttpProxyService();
         await proxyService.registerCanopyWorktreeSessionRoute({
@@ -4391,6 +4394,10 @@ export class ClaudeCodeProvider implements AgentProvider {
         // of the independently owned settings overwrite another.
         ...claudeNativeMemoryOptions(localMemoryEnabled, {
           ...thinkingOptions.settings,
+          // Claude applies settings-file env after its launch environment.
+          // Pin the selected proxy at the flag tier so ambient provider
+          // defaults cannot replace its broker URL or authentication.
+          ...(accountProxyRoute ? { env: accountProxyRoute.env } : {}),
           ...(approvalMode !== 'full-access'
             ? { permissions: { ask: ['*'] } }
             : {}),

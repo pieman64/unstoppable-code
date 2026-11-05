@@ -640,12 +640,3 @@ export function inspectStepLogInterest(key: string):
 export function getStepLogInterestCount(): number {
   return entriesByKey.size;
 }
-
-export function resetStepLogStoreForTests(): void {
-  entriesByKey.forEach((entry) => {
-    entry.released = true;
-  });
-  entriesByKey.clear();
-  entriesByExecution.clear();
-  listenersByKey.clear();
-}

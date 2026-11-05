@@ -51,6 +51,8 @@ import {
 
 /** Exact official Ollama download URL opened through the safe external browser. */
 const OLLAMA_DOWNLOAD_URL = 'https://ollama.com/download';
+/** Official manual installation instructions for Linux. */
+const OLLAMA_LINUX_DOWNLOAD_URL = 'https://ollama.com/download/linux';
 /** Official Ollama model list, opened through the safe external browser. */
 const OLLAMA_MODEL_LIST_URL = 'https://ollama.com/search';
 /** Loopback host used for every localhost-only Ollama connection. */
@@ -544,6 +546,10 @@ export function OllamaTab(): JSX.Element {
   }, [portInput]);
 
   const handleInstall = useCallback(async (): Promise<void> => {
+    // Linux installation is intentionally manual; never invoke the installer.
+    if (ollamaState?.installation.platform === 'linux') {
+      return;
+    }
     setError(null);
     setInstalling(true);
     setInstallProgress({
@@ -564,7 +570,7 @@ export function OllamaTab(): JSX.Element {
     } finally {
       setInstalling(false);
     }
-  }, []);
+  }, [ollamaState?.installation.platform]);
 
   const handleBrowse = useCallback(async (): Promise<void> => {
     setError(null);
@@ -603,8 +609,13 @@ export function OllamaTab(): JSX.Element {
   }, []);
 
   const handleDownload = useCallback((): void => {
-    void window.api.browser.openExternal({ url: OLLAMA_DOWNLOAD_URL });
-  }, []);
+    void window.api.browser.openExternal({
+      url:
+        ollamaState?.installation.platform === 'linux'
+          ? OLLAMA_LINUX_DOWNLOAD_URL
+          : OLLAMA_DOWNLOAD_URL,
+    });
+  }, [ollamaState?.installation.platform]);
 
   const handleRefresh = useCallback(async (): Promise<void> => {
     setRefreshing(true);
@@ -697,6 +708,7 @@ export function OllamaTab(): JSX.Element {
 
   const mode = ollamaState.mode;
   const installation = ollamaState.installation;
+  const isLinux = installation.platform === 'linux';
   // Effective port used in copy/commands: the current input when valid, else
   // the last-saved port.
   const effectivePort = parsePort(portInput) ?? ollamaState.port;
@@ -805,7 +817,7 @@ export function OllamaTab(): JSX.Element {
         disabled={busyAction === 'redetect'}
         data-testid="ollama-redetect"
       >
-        Detect again
+        {isLinux ? 'Refresh detection' : 'Detect again'}
       </Button>
     </>
   );
@@ -875,15 +887,25 @@ export function OllamaTab(): JSX.Element {
                 >
                   Detect again
                 </NoticeButton>
-                <NoticeButton
-                  variant="primary"
-                  onClick={() => {
-                    void handleInstall();
-                  }}
-                  data-testid="ollama-install"
-                >
-                  Install Ollama
-                </NoticeButton>
+                {isLinux ? (
+                  <NoticeButton
+                    variant="primary"
+                    onClick={handleDownload}
+                    data-testid="ollama-linux-instructions"
+                  >
+                    Linux installation instructions
+                  </NoticeButton>
+                ) : (
+                  <NoticeButton
+                    variant="primary"
+                    onClick={() => {
+                      void handleInstall();
+                    }}
+                    data-testid="ollama-install"
+                  >
+                    Install Ollama
+                  </NoticeButton>
+                )}
               </>
             }
           >
@@ -964,18 +986,30 @@ export function OllamaTab(): JSX.Element {
           {mode === 'managed' && managedView === 'not-found' && (
             <SettingsRow
               label="Ollama isn't installed"
-              description="Install it automatically, or use an existing installation."
+              description={
+                isLinux
+                  ? 'Install Ollama using the official Linux instructions, then refresh detection.'
+                  : 'Install it automatically, or use an existing installation.'
+              }
               dataTestId="ollama-managed-setup"
               control={
                 <Button
                   size="compact"
                   variant="primary"
-                  onClick={() => {
-                    void handleInstall();
-                  }}
-                  data-testid="ollama-install"
+                  onClick={
+                    isLinux
+                      ? handleDownload
+                      : () => {
+                          void handleInstall();
+                        }
+                  }
+                  data-testid={
+                    isLinux ? 'ollama-linux-instructions' : 'ollama-install'
+                  }
                 >
-                  Install Ollama
+                  {isLinux
+                    ? 'Linux installation instructions'
+                    : 'Install Ollama'}
                 </Button>
               }
             />
@@ -984,7 +1018,11 @@ export function OllamaTab(): JSX.Element {
           {mode === 'managed' && managedView === 'not-found' && (
             <SettingsRow
               label="Existing installation"
-              description="Detect Ollama again or select its executable."
+              description={
+                isLinux
+                  ? 'Refresh detection or select the Ollama executable.'
+                  : 'Detect Ollama again or select its executable.'
+              }
               control={installationActions}
             />
           )}

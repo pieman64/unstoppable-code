@@ -19,6 +19,7 @@ import {
   UsageIndicator,
   type UsageIndicatorUsage,
   buildPlanModeChip,
+  buildQuestionReadyChip,
   ComposerSendButton,
   defaultChatPlaceholder,
 } from '@canopy/ui-shared';
@@ -50,8 +51,8 @@ import {
 import {
   QuestionPrompt,
   QuestionSkipButton,
-} from '@/components/chat/QuestionPrompt';
-import { useQuestionPrompt } from '@/components/chat/useQuestionPrompt';
+} from '@canopy/ui-shared/components/chat/QuestionPrompt';
+import { useQuestionPrompt } from '@canopy/ui-shared/components/chat/useQuestionPrompt';
 import { QUESTION_PRESETS } from '@/components/pages/chatQuestionPlaygroundData';
 import { DirectoryPicker } from '@/components/chat/DirectoryPicker';
 import { ModelPicker } from '@/components/chat/ModelPicker';
@@ -62,7 +63,6 @@ import { VoiceInputButton } from '@/components/shared/VoiceInputButton';
 import { WatcherManagementButton } from '@/components/watchers/WatcherManagementButton';
 import {
   buildPlanReadyChip,
-  buildQuestionReadyChip,
   buildChatComposerPlusItems,
   CHAT_COMPOSER_MIN_TEXT_WIDTH_PX,
   ComposerStatusRow,

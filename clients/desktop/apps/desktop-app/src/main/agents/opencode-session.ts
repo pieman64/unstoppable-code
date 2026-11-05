@@ -230,10 +230,14 @@ export class OpenCodeProvider implements AgentProvider {
             approvalMode,
             planMode,
           }),
-          onTranscript: (delegation) => {
+          onTranscript: (delegation, options) => {
             void Promise.resolve(
               emit(
-                { type: 'canopy_delegation', delegation },
+                {
+                  type: 'canopy_delegation',
+                  delegation,
+                  ...(options?.replay ? { canopy_replay: true } : {}),
+                },
                 delegation.parentTurnId,
               ),
             ).catch((error: unknown) =>

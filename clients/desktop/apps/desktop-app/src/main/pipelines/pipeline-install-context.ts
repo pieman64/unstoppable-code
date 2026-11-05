@@ -91,10 +91,18 @@ async function assertPipelineInstallAccount(
     throw new Error('Workflow unavailable (access-removed)');
 }
 
+/** A receipt about to be recorded, for an install's intent record. */
+export interface PipelineInstallReceiptEffect {
+  accountId: string;
+  receipt: InstallReceipt;
+  previous: InstallReceipt | undefined;
+}
+
 export async function recordSharedPipelineInstall(
   detail: SharedPipelineDetail,
   localId: string,
   onRollback?: (undo: () => Promise<void>) => void,
+  beforeRecord?: (effect: PipelineInstallReceiptEffect) => Promise<void>,
 ): Promise<void> {
   if (!pipelineResourceContextEnabled()) return;
   const snapshot = await pipelineContextSnapshot();
@@ -108,6 +116,7 @@ export async function recordSharedPipelineInstall(
     snapshot,
     accountId,
     onRollback,
+    beforeRecord,
   );
 }
 
@@ -117,6 +126,7 @@ async function recordSharedPipelineInstallInContext(
   snapshot: string,
   accountId: string,
   onRollback?: (undo: () => Promise<void>) => void,
+  beforeRecord?: (effect: PipelineInstallReceiptEffect) => Promise<void>,
 ): Promise<void> {
   await assertPipelineContext({ owner: detail.owner });
   const owner = classifyResourceOwner(detail.owner, { strict: true });
@@ -135,10 +145,12 @@ async function recordSharedPipelineInstallInContext(
     hash: createHash('sha256').update(detail.rawPipeline).digest('hex'),
     authorizedAt: new Date().toISOString(),
   };
-  const previous = onRollback
-    ? await store.find('pipelines', detail.id)
-    : undefined;
+  const previous =
+    onRollback || beforeRecord
+      ? await store.find('pipelines', detail.id)
+      : undefined;
   await assertPipelineInstallAccount(snapshot, accountId);
+  await beforeRecord?.({ accountId, receipt, previous });
   if (onRollback) onRollback(() => store.rollbackInstall(receipt, previous));
   await store.record(receipt);
 }

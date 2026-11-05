@@ -1589,7 +1589,8 @@ function isLatestResult(
   );
 }
 
-function isLatestReceipt(
+/** Whether a stream record can store this receipt as its `latestReceipt`. */
+export function isLatestReceipt(
   value: unknown,
   chatId: string,
   delegationId: string,

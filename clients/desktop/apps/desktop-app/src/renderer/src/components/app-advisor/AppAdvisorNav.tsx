@@ -194,11 +194,9 @@ function AppAdvisorNavEntryRow({
     (menu: WorkEntryRowMenuContext): ReactNode => {
       // Rendered only while the menu is open.
       const selectionMenu = selectionBinding?.menuItemsFor(selectionKey, {
-        toggleSelection: `${rowTestId}-toggle-selection`,
         bulkPin: `${rowTestId}-bulk-pin`,
         bulkArchive: `${rowTestId}-bulk-archive`,
         bulkDelete: `${rowTestId}-bulk-delete`,
-        clearSelection: `${rowTestId}-clear-selection`,
       });
       const selectionItems = selectionMenu?.items ?? [];
       const runSelectionItem = (item: WorktreeMenuItem): void => {

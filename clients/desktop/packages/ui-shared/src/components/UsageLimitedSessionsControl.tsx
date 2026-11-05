@@ -1,6 +1,7 @@
 import { useRef, useState, type JSX } from 'react';
 import { DialogModal } from './DialogModal';
 import { Button } from './Button';
+import { ListRow } from './ListRow';
 import { UsageRow } from './UsageGroup';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 
@@ -121,34 +122,24 @@ export function UsageLimitedSessionsControl({
           <ul className="space-y-1" aria-busy={state.kind === 'loading'}>
             {sessions.map((session, index) => (
               <li key={session.id}>
-                <button
+                <ListRow
                   ref={index === 0 ? firstSessionRef : undefined}
-                  type="button"
                   data-testid={`${testIdPrefix}-waiting-session-${session.id}`}
                   onClick={(): void => {
                     setChooserOpen(false);
                     waiting?.onOpenSession(session);
                   }}
-                  className="focus-ring flex w-full items-center gap-3 rounded-md px-3 py-2 text-left transition-colors hover:bg-subtle"
-                >
-                  <span className="min-w-0 flex-1">
-                    <span
-                      className={`${REPLAY_MASK_CLASS} block truncate text-s fg-primary`}
-                    >
-                      {session.title}
-                    </span>
-                    {session.subtitle && (
-                      <span
-                        className={`${REPLAY_MASK_CLASS} block truncate text-xs fg-tertiary`}
-                      >
+                  description={
+                    session.subtitle ? (
+                      <span className={REPLAY_MASK_CLASS}>
                         {session.subtitle}
                       </span>
-                    )}
-                  </span>
-                  <span className="shrink-0 text-xs fg-secondary">
-                    {openActionLabel(session.kind)}
-                  </span>
-                </button>
+                    ) : undefined
+                  }
+                  trailing={openActionLabel(session.kind)}
+                >
+                  <span className={REPLAY_MASK_CLASS}>{session.title}</span>
+                </ListRow>
               </li>
             ))}
           </ul>

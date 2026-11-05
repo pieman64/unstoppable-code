@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type CSSProperties,
   type JSX,
   type MouseEvent,
   type ReactNode,
@@ -252,6 +253,10 @@ function ToastStackSync<T extends ToastStackItem>({
   return null;
 }
 
+interface ToastStackCardStyle extends CSSProperties {
+  readonly '--canopy-toast-offset-y': string;
+}
+
 function ToastStackCards<T extends ToastStackItem>({
   placement,
   renderToast,
@@ -313,14 +318,28 @@ function ToastStackCards<T extends ToastStackItem>({
       ? 0
       : frontHeight + (resting.length - 1) * TOAST_PEEK_PX;
 
+  // Base UI includes exiting cards in offsetY until they unmount. Exclude
+  // them immediately so the next live card fills the stationary cursor's slot.
+  const liveOffsets = new Map<string, number>();
+  let liveOffset = 0;
+  for (const toast of toasts) {
+    liveOffsets.set(toast.id, liveOffset);
+    if (toast.transitionStatus !== 'ending' && toast.limited !== true) {
+      liveOffset += toast.height ?? 0;
+    }
+  }
+
   return (
     <div
       ref={stackRef}
       className="canopy-toast-stack"
       style={{ height: `${String(reservedHeight)}px` }}
     >
-      {toasts.map((toast) =>
-        toast.data === undefined ? null : (
+      {toasts.map((toast) => {
+        const style: ToastStackCardStyle = {
+          '--canopy-toast-offset-y': `${String(liveOffsets.get(toast.id) ?? 0)}px`,
+        };
+        return toast.data === undefined ? null : (
           <Toast.Root
             key={toast.id}
             toast={toast}
@@ -328,6 +347,7 @@ function ToastStackCards<T extends ToastStackItem>({
             data-testid="toast-stack-card"
             data-toast-stack-id={toast.id}
             data-toast-intent={toast.data.item.intent}
+            style={style}
             // Base UI moves focus to the next card when one closes; keyboard
             // focus shows the shared ring, never the browser default outline.
             className="canopy-toast focus-ring pointer-events-auto rounded-2xl bg-quaternary shadow-xl"
@@ -336,8 +356,8 @@ function ToastStackCards<T extends ToastStackItem>({
               {renderToast(toast.data.item)}
             </Toast.Content>
           </Toast.Root>
-        ),
-      )}
+        );
+      })}
     </div>
   );
 }

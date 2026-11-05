@@ -1,4 +1,0 @@
-import { safeStorage } from 'electron';
-import { basename } from 'node:path';
-import { suffix } from './tiny';
-globalThis.helperResult = basename(safeStorage.encryptString('fixture')) + suffix;

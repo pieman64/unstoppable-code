@@ -1,15 +1,25 @@
+import { useSuggestionsClaimApi } from '@canopy/ui-app/suggestions';
 import { useDesktopFilesGuestGate } from '@/hooks/useDesktopFilesGuestGate';
 import {
   isPlanModeReadOnly,
   isGenuinePlanModeUse,
 } from '@canopy/ui-shared/lib/plan-mode-suggestion';
 import {
+  GitHubStarPrompt,
   PlanModeHint,
+  useGitHubStarPrompt,
   usePlanModeSuggestion,
   useComposerHintActivity,
 } from '@canopy/ui-app';
 import { getPlanModeHintStore } from '@/lib/planModeHint';
+import {
+  subscribePlanWorkflowRequests,
+  takePlanWorkflowRequest,
+} from '@/lib/chat/plan-workflow-request';
 import { trackPlanModeHintAction } from '@/lib/planModeHintTelemetry';
+import { getGitHubStarPromptStore } from '@/lib/githubStarPrompt';
+import { trackGitHubStarPromptAction } from '@/lib/githubStarPromptTelemetry';
+import { useGitHubStarPromptLogin } from '@/hooks/useGitHubStarPromptLogin';
 import {
   COMPACT_CHIPS_BREAKPOINT_REM,
   COMPACT_CHIPS_HYSTERESIS_REM,
@@ -38,7 +48,10 @@ import {
   getComposerAction,
 } from '@/lib/composerCommands';
 import { requestModelPickerOpen } from '@/lib/composerShortcutRequests';
-import { subscribeChatPanelReveal } from '@/lib/chatPanelReveal';
+import {
+  consumeChatPanelReveal,
+  subscribeChatPanelReveal,
+} from '@/lib/chatPanelReveal';
 import {
   lazy,
   memo,
@@ -57,7 +70,15 @@ import {
   type RefObject,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { QuestionPrompt, QuestionSkipButton } from './QuestionPrompt';
+import {
+  QuestionPrompt,
+  QuestionSkipButton,
+} from '@canopy/ui-shared/components/chat/QuestionPrompt';
+import { questionPromptPlaceholder } from '@canopy/ui-shared/components/chat/useQuestionPrompt';
+import {
+  setQuestionPromptClosed,
+  useQuestionPromptClosed,
+} from '@canopy/ui-shared/components/chat/question-prompt-progress';
 import { isTypingOutside } from './ComposerPrompt';
 import {
   useComposerQuestionPrompt,
@@ -66,7 +87,13 @@ import {
 } from './useComposerQuestionPrompt';
 import { useAppAdvisorStore } from '@/stores/appAdvisorStore';
 import { useComposerQuestions } from './useComposerQuestions';
-import { Editor, Node as SlateNode, type Descendant, Transforms } from 'slate';
+import {
+  Editor,
+  Element as SlateElement,
+  Node as SlateNode,
+  type Descendant,
+  Transforms,
+} from 'slate';
 import { ReactEditor } from 'slate-react';
 import {
   clearResumedChatUsageLimitBanner,
@@ -75,8 +102,10 @@ import {
   useChatStore as useLiveChatStore,
   useChatTabRenderState,
   type ChatRenderTarget,
+  type ChatTab,
   type PendingPlanExit,
 } from '@/stores/chatStore';
+import type { QueuedWithoutDispatchLocation } from '@/stores/chat/types';
 import {
   useChatSurfaceScope,
   useChatSurfaceStore,
@@ -121,7 +150,7 @@ import {
   getProjectPluginTombstones,
 } from '@/stores/chat/tab-utils';
 import { inheritedDefaultLayers } from '@/lib/chatPluginEditing';
-import { brandText } from '@/lib/brand';
+import { brandText, getBrandSourceRepository } from '@/lib/brand';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import { ipcCanopyClient } from '@/client/ipc-canopy-client';
 import { resolveComposerWorkflowGates } from './composer-workflow-gates';
@@ -156,6 +185,8 @@ import {
   getWorktreeCacheKey,
   isFileIndexStale,
   useFileListStore,
+  useRetainFileIndex,
+  withRetainedFileIndex,
 } from '@/stores/fileListStore';
 import { useShallow } from 'zustand/react/shallow';
 import {
@@ -175,7 +206,9 @@ import {
   type ChatModel,
   type ModelHarness,
   type ChatTabPluginSelections,
+  type FileIndexResponse,
   type FileReference,
+  type RepoFileIndex,
   type LinearTicketSearchResult,
   type ScheduledActivity,
   type SlashCommandData,
@@ -238,7 +271,7 @@ import { ModelUnlockPendingBanner } from './ModelUnlockPendingBanner';
 import { ModelGatewayKeyBanner } from './ModelGatewayKeyBanner';
 import { ApprovalsUpgradeNotice } from './ApprovalsUpgradeNotice';
 import { ToolApprovalDock } from './ToolApprovalDock';
-import { canApprovalTakeFocus } from './approval-focus-policy';
+import { canApprovalTakeFocus } from '@canopy/ui-shared/lib/approval-focus-policy';
 import { hasPendingApprovalForChat } from '@/stores/chat/pending-approvals';
 import { ChatBackgroundTray } from './ChatBackgroundTray';
 import { useComposerWorkDrawerLink } from './composer-work-drawer-context';
@@ -267,9 +300,12 @@ import {
   composerRecoveryKey,
   composerRecoveryStore,
   composerRecoveryTranscript,
+  handOffComposerRecoveryToQueue,
   restoreRejectedComposerInputs,
+  settleAcceptedComposerRecovery,
 } from '@/stores/composerRecoveryStore';
 import { draftHasContent } from '@/lib/chat-draft-content';
+import { useHeldQueueComposerRecovery } from '@/hooks/useHeldQueueComposerRecovery';
 import { useCatchingUpLag } from '@/stores/ingestionLagStore';
 import {
   isGatewayOnlyModel,
@@ -377,7 +413,6 @@ import {
   type ComposerActionHandlers,
   runComposerAction,
   buildPlanReadyChip,
-  buildQuestionReadyChip,
   buildChatComposerPlusItems,
 } from './ComposerLayout';
 import { useClaudeTuiChatsEnabled } from '@/lib/claude-tui-chats';
@@ -430,6 +465,7 @@ import {
   ComposerAccessUsage,
   nextCodexSpeed,
   buildPlanModeChip,
+  buildQuestionReadyChip,
   ComposerSendButton,
   defaultChatPlaceholder,
   planCopyStateFromMarkdown,
@@ -448,7 +484,6 @@ import { tabRequestedCodexSpeed } from '@/stores/chat/codex-speed';
 import { useContextualCodexSpeedControl } from '@/hooks/useContextualCodexSpeedControl';
 import { useCodexSpeedDowngrade } from '@/hooks/useCodexSpeedDowngrade';
 import { getDocument } from '@canopy/ui-shared/panels';
-import { useAppAdvisorWatchersStore } from '@/stores/appAdvisorWatchersStore';
 import { useAutoModelRoutingAvailability } from '@/hooks/useAutoModelRouting';
 import { chatAiCreditsScope } from '@/lib/aiCreditsScope';
 import { useAutomationsStore } from '@/stores/automationsStore';
@@ -457,8 +492,6 @@ import { useObservabilityStore } from '@/stores/observabilityStore';
 import { selectProviderUsageLimitResumeAt } from '@/lib/claudeUsageLimitResume';
 import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
 import { ScheduleMessageModal } from './ScheduleMessageModal';
-import { WatcherManagementButton } from '@/components/watchers/WatcherManagementButton';
-import { watchersForSubscriberDestination } from '@/components/watchers/watcherFilters';
 import {
   ATTACHMENT_IMPORT_ERROR_MESSAGE,
   addPendingAttachmentsAndRefreshIndex,
@@ -540,6 +573,160 @@ export interface ChatInputEditingState {
   ) => void;
   scheduledSendDraft?: { runAt: string };
   scheduleEnabled?: boolean;
+}
+
+export interface ComposerFileIndexOptions {
+  fileListKey: string | null;
+  projectId: string | undefined;
+  worktreeId: string | undefined;
+  menuOpen: boolean;
+  draftHasFileReferences: boolean;
+}
+
+export interface ComposerFileIndexState {
+  fileRepos: RepoFileIndex[];
+  fileIndexEntry: { data: FileIndexResponse; fetchedAt: number } | undefined;
+  fileIndexLoading: boolean;
+  /**
+   * Repos to rewrite a submission's file references with. A missing index is
+   * fetched under a lease first, so a send during its reload still rewrites.
+   */
+  resolveSubmissionFileRepos: (
+    hasFileReferences: boolean,
+  ) => Promise<RepoFileIndex[]>;
+}
+
+/**
+ * Detect file-reference pills in the Slate paragraph values used by the
+ * composer. The tree walk is linear and allocates nothing.
+ */
+export function composerValueHasFileReferences(
+  value: readonly Descendant[],
+): boolean {
+  for (const block of value) {
+    if (!SlateElement.isElement(block) || block.type !== 'paragraph') continue;
+    for (const child of block.children) {
+      if (SlateElement.isElement(child) && child.type === 'file-reference') {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Keeps the current worktree's full index resident for the mounted composer
+ * and loads it on demand for an open file menu or a draft containing file
+ * references. Plain empty composers do not load the index until the menu opens.
+ */
+export function useComposerFileIndex({
+  fileListKey,
+  projectId,
+  worktreeId,
+  menuOpen,
+  draftHasFileReferences,
+}: ComposerFileIndexOptions): ComposerFileIndexState {
+  useRetainFileIndex(fileListKey);
+
+  const { fileIndexEntry, fileIndexError, fileIndexLoading, fetchFileIndex } =
+    useFileListStore(
+      useShallow((state) => ({
+        fileIndexEntry:
+          fileListKey === null ? undefined : state.indexCache[fileListKey],
+        fileIndexError:
+          fileListKey === null ? undefined : state.indexErrors[fileListKey],
+        fileIndexLoading:
+          fileListKey === null ? false : state.indexLoading.has(fileListKey),
+        fetchFileIndex: state.fetchFileIndex,
+      })),
+    );
+
+  const fileRepos = useMemo(
+    () => fileIndexEntry?.data.repos ?? [],
+    [fileIndexEntry],
+  );
+
+  useEffect(() => {
+    if (
+      fileListKey === null ||
+      projectId === undefined ||
+      worktreeId === undefined ||
+      !menuOpen
+    ) {
+      return;
+    }
+    if (isFileIndexStale(fileIndexEntry)) {
+      void fetchFileIndex(projectId, worktreeId);
+    }
+  }, [
+    fetchFileIndex,
+    fileIndexEntry,
+    fileListKey,
+    menuOpen,
+    projectId,
+    worktreeId,
+  ]);
+
+  useEffect(() => {
+    if (
+      fileListKey === null ||
+      projectId === undefined ||
+      worktreeId === undefined ||
+      menuOpen ||
+      !draftHasFileReferences ||
+      fileIndexEntry !== undefined ||
+      fileIndexLoading ||
+      fileIndexError !== undefined
+    ) {
+      return;
+    }
+    void fetchFileIndex(projectId, worktreeId);
+  }, [
+    draftHasFileReferences,
+    fetchFileIndex,
+    fileIndexEntry,
+    fileIndexError,
+    fileIndexLoading,
+    fileListKey,
+    menuOpen,
+    projectId,
+    worktreeId,
+  ]);
+
+  const resolveSubmissionFileRepos = useCallback(
+    async (hasFileReferences: boolean): Promise<RepoFileIndex[]> => {
+      if (fileListKey === null) return [];
+      const cached = useFileListStore.getState().indexCache[fileListKey];
+      if (
+        cached !== undefined ||
+        !hasFileReferences ||
+        projectId === undefined ||
+        worktreeId === undefined
+      ) {
+        return cached?.data.repos ?? [];
+      }
+      return withRetainedFileIndex(
+        fileListKey,
+        async (): Promise<RepoFileIndex[]> => {
+          await useFileListStore
+            .getState()
+            .fetchFileIndex(projectId, worktreeId);
+          return (
+            useFileListStore.getState().indexCache[fileListKey]?.data.repos ??
+            []
+          );
+        },
+      );
+    },
+    [fileListKey, projectId, worktreeId],
+  );
+
+  return {
+    fileRepos,
+    fileIndexEntry,
+    fileIndexLoading,
+    resolveSubmissionFileRepos,
+  };
 }
 
 interface ChatInputProps {
@@ -944,21 +1131,6 @@ function ChatInputContent({
       chatId: tabId,
     };
   }, [selectedWorktree, tabId, targetOverride, useChatStore]);
-  const chatInputWatchers = useAppAdvisorWatchersStore(
-    useShallow((s) => {
-      if (!watcherDestination) return [];
-      return watchersForSubscriberDestination(s.watchers, watcherDestination);
-    }),
-  );
-
-  useEffect(() => {
-    const unsubscribe = useAppAdvisorWatchersStore.getState().subscribeBridge();
-    const watchersStore = useAppAdvisorWatchersStore.getState();
-    if (!watchersStore.hydrated && !watchersStore.loading) {
-      void watchersStore.hydrate();
-    }
-    return unsubscribe;
-  }, []);
 
   // Own the automations store from the chat surface so the usage-limit banner's
   // idempotency check and scheduled-message rows work without ever opening the
@@ -2139,20 +2311,17 @@ function ChatInputContent({
     onDeliveryChange,
     appAdvisorDelivery,
   );
-  const [closedQuestionRequestId, setClosedQuestionRequestId] = useState<
-    string | null
-  >(null);
+  const questionPromptClosed = useQuestionPromptClosed(
+    activeQuestion?.requestId,
+  );
   const questionPromptOpen =
-    activeQuestion !== undefined &&
-    closedQuestionRequestId !== activeQuestion.requestId;
+    activeQuestion !== undefined && !questionPromptClosed;
   const questionReady = activeQuestion !== undefined && !questionPromptOpen;
   /** The composer box is asking something: a question or a plan. */
   const promptOpen = questionPromptOpen || planCardOpen;
-  const questionPromptPlaceholder = questionPrompt.prompt.acceptsText
-    ? questionPrompt.prompt.kind === 'text'
-      ? (questionPrompt.prompt.question.placeholder ?? 'Type your answer')
-      : 'Or type your own answer'
-    : 'Send a message instead';
+  const questionPlaceholder = questionPromptPlaceholder(
+    questionPrompt.prompt.question,
+  );
 
   // Canonical runtime decides whether a turn is running (a pending sending
   // lease counts until main acknowledges it), never the tab's local status.
@@ -2321,7 +2490,6 @@ function ChatInputContent({
   ]);
   const projects = useProjectsStore((s) => s.projects);
   const discoveryLoading = useProjectsStore((s) => s.discoveryLoading);
-  const fetchFileIndex = useFileListStore((s) => s.fetchFileIndex);
 
   const childRepos = useMemo(() => {
     if (!selectedWorktree) return [];
@@ -2491,6 +2659,18 @@ function ChatInputContent({
   );
   const slashTypeaheadEnabled = composerCommands.length > 0 || isRefreshing;
 
+  const composerMenu = useComposerMenu(editor, {
+    enabled: !isTerminalMode && !readOnly,
+    dollar: isCodex,
+    // The scope is the composer's target only. A harness or provider switch
+    // commits in main after the picker already reads the new model, so a `/`
+    // typed in that window has Claude's rows open when the switch lands; the
+    // rows re-project from `commands` for the new harness, whereas a scope
+    // reset would dismiss the typed trigger and the menu would not return.
+    scopeKey: `${slashCommandTarget?.projectId}/${slashCommandTarget?.worktreeId}/${tab?.id}`,
+    onChange: () => setValue(structuredClone(editor.children)),
+  });
+
   const fileTypeaheadEnabled =
     Boolean(selectedWorktree) && !disableFileTypeahead;
   const fileListKey =
@@ -2500,16 +2680,19 @@ function ChatInputContent({
           selectedWorktree.worktreeId,
         )
       : null;
-  const { fileIndexEntry, fileIndexLoading } = useFileListStore(
-    useShallow((s) => ({
-      fileIndexEntry: fileListKey ? s.indexCache[fileListKey] : undefined,
-      fileIndexLoading: fileListKey ? s.indexLoading.has(fileListKey) : false,
-    })),
+  const draftHasFileReferences = useMemo(
+    () =>
+      composerValueHasFileReferences(value) || extraFileReferences.length > 0,
+    [extraFileReferences.length, value],
   );
-  const fileRepos = useMemo(
-    () => fileIndexEntry?.data.repos ?? [],
-    [fileIndexEntry],
-  );
+  const { fileIndexLoading, fileRepos, resolveSubmissionFileRepos } =
+    useComposerFileIndex({
+      fileListKey,
+      projectId: selectedWorktree?.projectId,
+      worktreeId: selectedWorktree?.worktreeId,
+      menuOpen: composerMenu.open,
+      draftHasFileReferences,
+    });
 
   // The `!` typeahead: approved repository scripts for the terminal-mode
   // draft. Selecting one only fills the box; the next Enter runs it.
@@ -2591,17 +2774,6 @@ function ChatInputContent({
     (query: string) => searchWorkspaceItemMentions(query, workspaceItemSources),
     [workspaceItemSources],
   );
-  const composerMenu = useComposerMenu(editor, {
-    enabled: !isTerminalMode && !readOnly,
-    dollar: isCodex,
-    // The scope is the composer's target only. A harness or provider switch
-    // commits in main after the picker already reads the new model, so a `/`
-    // typed in that window has Claude's rows open when the switch lands; the
-    // rows re-project from `commands` for the new harness, whereas a scope
-    // reset would dismiss the typed trigger and the menu would not return.
-    scopeKey: `${slashCommandTarget?.projectId}/${slashCommandTarget?.worktreeId}/${tab?.id}`,
-    onChange: () => setValue(structuredClone(editor.children)),
-  });
   // The menu opened: list the inventory cache again so the backend can
   // re-check the inherited Cursor folders (home skills, the Cursor app's
   // plugin cache), which no Canopy mutation marks stale. Answered from the
@@ -3433,7 +3605,7 @@ function ChatInputContent({
   // Choosing AI Credits from the usage-limit banner continues the interrupted
   // turn (CAN-4756). The "Using AI Credits" card offers the same send as
   // Continue while the interruption is unanswered: after credits arrive from
-  // Get AI Credits (routing only) or after a failed send.
+  // Buy AI Credits (routing only) or after a failed send.
   const {
     resume: resumeInterruptedTurnOnAiCredits,
     busy: continueOnAiCreditsBusy,
@@ -3705,7 +3877,10 @@ function ChatInputContent({
         return;
       }
       const inputMode = dictationInputModeRef.current;
-      const cwd = getCwdFromFileIndex(fileRepos, selectedRepoId);
+      const cwd = getCwdFromFileIndex(
+        await resolveSubmissionFileRepos(outboundReferences.length > 0),
+        selectedRepoId,
+      );
       const rewritten = rewriteFileReferencesForCwd(
         trimmedText,
         outboundReferences,
@@ -3771,8 +3946,8 @@ function ChatInputContent({
       buildWorktreeSessionDisplayFields,
       createAutomationActivity,
       editor,
-      fileRepos,
       pendingAttachments,
+      resolveSubmissionFileRepos,
       selectedRepoId,
       tab?.pendingRevertAttachmentPath,
       tabId,
@@ -3792,23 +3967,6 @@ function ChatInputContent({
       useChatStore.getState().setScheduledSendModalOpen(false);
     };
   }, [scheduleModalOpen, showScheduleControls, useChatStore]);
-
-  useEffect(() => {
-    if (!fileTypeaheadEnabled || !selectedWorktree || !composerMenu.open)
-      return;
-    if (isFileIndexStale(fileIndexEntry)) {
-      void fetchFileIndex(
-        selectedWorktree.projectId,
-        selectedWorktree.worktreeId,
-      );
-    }
-  }, [
-    fetchFileIndex,
-    fileIndexEntry,
-    composerMenu.open,
-    fileTypeaheadEnabled,
-    selectedWorktree,
-  ]);
 
   const syncEditorValue = useCallback(() => {
     setValue(structuredClone(editor.children));
@@ -4440,7 +4598,10 @@ function ChatInputContent({
       if (editingState) {
         const inputMode = dictationInputModeRef.current;
         dictationInputModeRef.current = 'typed';
-        const cwd = getCwdFromFileIndex(fileRepos, selectedRepoId);
+        const cwd = getCwdFromFileIndex(
+          await resolveSubmissionFileRepos(expanded.fileReferences.length > 0),
+          selectedRepoId,
+        );
         const rewritten = rewriteFileReferencesForCwd(
           expanded.text,
           expanded.fileReferences,
@@ -4513,7 +4674,10 @@ function ChatInputContent({
         }
       }
 
-      const cwd = getCwdFromFileIndex(fileRepos, selectedRepoId);
+      const cwd = getCwdFromFileIndex(
+        await resolveSubmissionFileRepos(expanded.fileReferences.length > 0),
+        selectedRepoId,
+      );
       const rewritten = rewriteFileReferencesForCwd(
         expanded.text,
         expanded.fileReferences,
@@ -4601,6 +4765,10 @@ function ChatInputContent({
         // An accepted new turn lifts a What's new hold on tips, and in a
         // worktree chat retires the beginner worktree tip (CAN-5005).
         noteOnboardingTurnSent({ worktreeChat: worktreeChatTarget !== null });
+        // App Advisor and terminal/pipeline sends do not count toward the
+        // GitHub star prompt (CAN-5604); a brand without one has no store.
+        if (!isAppAdvisorComposer && !isTerminalMode)
+          void getGitHubStarPromptStore()?.getState().noteTurnSent();
       };
       if (onSendMessage) {
         await onSendMessage(
@@ -4645,17 +4813,6 @@ function ChatInputContent({
                 recoverySubmissionGeneration,
               )
             : undefined;
-        const settleRecovery = (
-          settlement: 'accepted' | 'reserved-inputs-restored',
-        ): void => {
-          if (recoveryKey && recoveryGeneration !== undefined) {
-            composerRecoveryStore.settle(
-              recoveryKey,
-              recoveryGeneration,
-              settlement,
-            );
-          }
-        };
         const releaseRecovery = (): void => {
           if (recoveryKey && recoveryGeneration !== undefined) {
             composerRecoveryStore.release(recoveryKey, recoveryGeneration);
@@ -4678,7 +4835,19 @@ function ChatInputContent({
               retry: Boolean(tab?.failedFirstSend),
             });
           }
-          settleRecovery('accepted');
+          // Host queue acceptance hands recovery to the queue in the same
+          // tick. Settling first would let a refusal processed before this
+          // acknowledgement restore the queued prompt (CAN-5618).
+          settleAcceptedComposerRecovery(recoveryKey, recoveryGeneration);
+        };
+        const queueNativeSend = (
+          location: QueuedWithoutDispatchLocation,
+        ): void => {
+          handOffComposerRecoveryToQueue(
+            recoveryKey,
+            recoveryGeneration,
+            location,
+          );
         };
         const rejectNativeDispatch = (): void => {
           // Returning the send's own reservations is not a new user edit.
@@ -4719,6 +4888,7 @@ function ChatInputContent({
                   reservedRevertAttachmentPath: submittedRevertAttachmentPath,
                   userMessageId: recoveryUserMessageId,
                   onDispatchAccepted: acceptNativeSend,
+                  onQueuedWithoutDispatch: queueNativeSend,
                   onDispatchRejected: rejectNativeDispatch,
                   onPreDispatchRejected: rejectNativePreDispatch,
                 }
@@ -4729,6 +4899,7 @@ function ChatInputContent({
                   reservedRevertAttachmentPath: submittedRevertAttachmentPath,
                   userMessageId: recoveryUserMessageId,
                   onDispatchAccepted: acceptNativeSend,
+                  onQueuedWithoutDispatch: queueNativeSend,
                   onDispatchRejected: rejectNativeDispatch,
                   onPreDispatchRejected: rejectNativePreDispatch,
                 },
@@ -4764,7 +4935,6 @@ function ChatInputContent({
     editingScheduledSendDraft,
     editor,
     extraFileReferences,
-    fileRepos,
     handleScheduledSend,
     handleSendTerminalCommand,
     isResourceGuardBlocked,
@@ -4775,6 +4945,7 @@ function ChatInputContent({
     mentionProjectId,
     mergedFileReferences,
     pendingAttachments,
+    resolveSubmissionFileRepos,
     selectedWorktree,
     modelChangeKey,
     selectedRepoId,
@@ -4788,6 +4959,7 @@ function ChatInputContent({
     terminalCommand,
     sessionChatTarget,
     noteOnboardingTurnSent,
+    isAppAdvisorComposer,
     worktreeChatTarget,
     onSendMessage,
     useChatStore,
@@ -4943,6 +5115,72 @@ function ChatInputContent({
     tabId,
     useChatStore,
   ]);
+
+  // CAN-5618 backstop: a credit-held queue row is that prompt's only recovery
+  // copy. When a known held row leaves the queue (retried, sent after funding,
+  // or deleted), clear a composer draft that is exactly its text so a stale
+  // restored copy cannot send it again. Text alone cannot tell a restored
+  // draft from identical typed text; both are cleared. A skipped release is
+  // still consumed, never applied later.
+  const heldQueueEditingRef = useRef(isEditingQueued);
+  heldQueueEditingRef.current = isEditingQueued;
+  const heldQueueTab = (): ChatTab | undefined => {
+    const target = recoveryContextRef.current.target;
+    if (!target) return undefined;
+    return useChatStore
+      .getState()
+      .worktreeChats[
+        `${target.projectId}/${target.worktreeId}`
+      ]?.tabs.find((candidate) => candidate.id === target.chatId);
+  };
+  useHeldQueueComposerRecovery(composerRecoveryTargetKey, {
+    subscribe: useChatStore.subscribe,
+    readQueue: () => {
+      const { key, target } = recoveryContextRef.current;
+      if (!key || !target) return undefined;
+      const sync =
+        useChatStore.getState().chatStateSync[
+          `${target.projectId}/${target.worktreeId}`
+        ];
+      if (sync && sync.phase !== 'live') return undefined;
+      const liveTab = heldQueueTab();
+      return liveTab ? { key, rows: liveTab.queuedMessages } : undefined;
+    },
+    readDraft: () => {
+      const { key, target, terminal } = recoveryContextRef.current;
+      if (!target || prevTabIdRef.current !== target.chatId) return undefined;
+      const liveTab = heldQueueTab();
+      if (!liveTab) return undefined;
+      const state = useChatStore.getState();
+      const draft = serializeEditorValue(editor.children);
+      return {
+        key,
+        text: draft.text,
+        occupancy: {
+          attachments: (liveTab.pendingAttachments?.length ?? 0) > 0,
+          selections:
+            (state.pendingEditorSelections[target.chatId]?.length ?? 0) > 0,
+          revertAttachment: Boolean(liveTab.pendingRevertAttachmentPath),
+          fileReferences: draft.fileReferences.length > 0,
+          scheduledSend: Boolean(liveTab.scheduledSendDraft),
+          queuedEdit: heldQueueEditingRef.current,
+          terminal,
+          // Message-history browsing can stash an independent draft that
+          // unmount would otherwise save back after this editor was cleared.
+          stashedDraft: draftHasContent(
+            messageHistoryNavigationRef.current?.draft ?? [],
+          ),
+        },
+      };
+    },
+    clearDraft: () => {
+      const target = recoveryContextRef.current.target;
+      if (!target) return;
+      resetEditor(editor);
+      setValue(createEmptyValue());
+      useChatStore.getState().clearTabDraft(target.chatId);
+    },
+  });
 
   // Dictation owns the box's bottom row while it runs (see VoiceRecordingRow).
   const voiceRecording =
@@ -5323,15 +5561,12 @@ function ChatInputContent({
 
   // One line by default; anything else that lives in the box (attachments,
   // selections) needs the full layout. Chips beside + (Plan, a scheduled
-  // send, watchers) and the terminal mode label share the one line until
+  // send) and the terminal mode label share the one line until
   // they leave the text too little room; then they take the row under it.
   const composerSideContentKey = [
     planReady ? 'plan-ready' : planMode ? 'plan' : '',
     showScheduledSendDraft && scheduledSendDraft
       ? `scheduled:${scheduledSendDraft.runAt}:${scheduleSendError ?? ''}`
-      : '',
-    !isEditingQueued && watcherDestination !== null
-      ? `watchers:${chatInputWatchers.length}`
       : '',
     isTerminalMode
       ? `terminal:${terminalModeError ?? ''}:${scriptTypeahead.hint ?? ''}`
@@ -5345,9 +5580,6 @@ function ChatInputContent({
     planMode ||
     planReady ||
     (showScheduledSendDraft && scheduledSendDraft !== null) ||
-    (!isEditingQueued &&
-      watcherDestination !== null &&
-      chatInputWatchers.length > 0) ||
     isTerminalMode;
   const composerInline = useOneLineComposer({
     boxRef: dropContainerRef,
@@ -5463,35 +5695,49 @@ function ChatInputContent({
   }, []);
   const closeQuestionPrompt = useCallback((): void => {
     focusEditorAfterPlanCardRef.current = true;
-    setClosedQuestionRequestId(activeQuestion?.requestId ?? null);
-  }, [activeQuestion?.requestId]);
+    if (activeQuestion) setQuestionPromptClosed(activeQuestion.requestId, true);
+  }, [activeQuestion]);
   const reopenQuestionPrompt = useCallback((): void => {
     focusEditorAfterPlanCardRef.current = true;
-    setClosedQuestionRequestId(null);
-  }, []);
-  useEffect(
-    () =>
-      subscribeChatPanelReveal((target): void => {
-        if (
-          target.projectId !== composerProjectId ||
-          target.worktreeId !== composerWorktreeId ||
-          target.chatId !== tab?.id
-        )
-          return;
-        // Explicit navigation to pending attention also reopens a prompt the
-        // reader previously collapsed to its composer chip. Neither action
-        // resolves the pending question or plan.
-        reopenQuestionPrompt();
-        reopenPlanCard();
-      }),
-    [
-      composerProjectId,
-      composerWorktreeId,
-      tab?.id,
-      reopenQuestionPrompt,
-      reopenPlanCard,
-    ],
-  );
+    if (activeQuestion)
+      setQuestionPromptClosed(activeQuestion.requestId, false);
+  }, [activeQuestion]);
+  useEffect(() => {
+    const chatId = tab?.id;
+    if (!composerProjectId || !composerWorktreeId || !chatId) return undefined;
+    const revealTarget = {
+      projectId: composerProjectId,
+      worktreeId: composerWorktreeId,
+      chatId,
+    };
+    // Explicit navigation to pending attention also reopens a prompt the
+    // reader previously collapsed to its composer chip. Neither action
+    // resolves the pending question or plan. A reveal fired before this
+    // composer mounted (another worktree's chat) waits until its question is
+    // here, so a question that loads just after mount still opens.
+    const reveal = (): void => {
+      reopenQuestionPrompt();
+      reopenPlanCard();
+    };
+    if (activeQuestion && consumeChatPanelReveal(revealTarget)) reveal();
+    return subscribeChatPanelReveal((target): void => {
+      if (
+        target.projectId !== revealTarget.projectId ||
+        target.worktreeId !== revealTarget.worktreeId ||
+        target.chatId !== revealTarget.chatId
+      )
+        return;
+      consumeChatPanelReveal(target);
+      reveal();
+    });
+  }, [
+    composerProjectId,
+    composerWorktreeId,
+    tab?.id,
+    activeQuestion,
+    reopenQuestionPrompt,
+    reopenPlanCard,
+  ]);
   useEffect(() => {
     if (!focusEditorAfterPlanCardRef.current) return;
     focusEditorAfterPlanCardRef.current = false;
@@ -5566,6 +5812,35 @@ function ChatInputContent({
         }
       : null,
   );
+
+  // The Feed's Run it as a workflow opens this chat and asks for the same
+  // picker this prompt's answer opens.
+  const planWorkflowChatId = pendingExitChatId ?? tabId;
+  useEffect(() => {
+    if (
+      !planPipelineAllowed ||
+      !pendingExitProjectId ||
+      !pendingExitWorktreeId ||
+      !planWorkflowChatId
+    ) {
+      return undefined;
+    }
+    const target = {
+      projectId: pendingExitProjectId,
+      worktreeId: pendingExitWorktreeId,
+      chatId: planWorkflowChatId,
+    };
+    const take = (): void => {
+      if (takePlanWorkflowRequest(target)) setPipelineModalOpen(true);
+    };
+    take();
+    return subscribePlanWorkflowRequests(take);
+  }, [
+    planPipelineAllowed,
+    pendingExitProjectId,
+    pendingExitWorktreeId,
+    planWorkflowChatId,
+  ]);
 
   const handlePipelineRun = useCallback(
     async (
@@ -5907,10 +6182,6 @@ function ChatInputContent({
       });
   }, [handoffLoading, handleStaleSessionHandOff]);
 
-  const showChatInputWatcherButton =
-    !isEditingQueued &&
-    watcherDestination !== null &&
-    chatInputWatchers.length > 0;
   // Expanded, the editor sizes to its text like the one-line composer;
   // the density step only caps its height on short panels.
   const expandedEditorContainerClassName =
@@ -5971,6 +6242,7 @@ function ChatInputContent({
     composerShortcutsEnabled && !isEditingQueued && !readOnly,
   );
   const hint = usePlanModeSuggestion({
+    suggestionsClaimApi: useSuggestionsClaimApi(),
     text: serializedDraft.text,
     draftKey: `chat:${composerProjectId}:${composerWorktreeId}:${tabId}:${hintDraftSession}`,
     activationKey: effectiveProviderType,
@@ -6011,6 +6283,25 @@ function ChatInputContent({
     onShown: () => trackPlanModeHintAction('shown', 'chat'),
     onAccepted: () => trackPlanModeHintAction('accepted', 'chat'),
     onDismissed: () => trackPlanModeHintAction('dismissed', 'chat'),
+  });
+  // App Advisor never shows the star prompt; a brand without a source
+  // repository has no store, so nothing counts or shows there either.
+  const starPromptStore = isAppAdvisorComposer
+    ? null
+    : getGitHubStarPromptStore();
+  const starLogin = useGitHubStarPromptLogin(starPromptStore);
+  const starPrompt = useGitHubStarPrompt({
+    store: starPromptStore,
+    repository: getBrandSourceRepository(),
+    starLogin,
+    active: hintActivity.active && !isTerminalMode,
+    turnActive: isStreaming,
+    focusComposer: () => focusEditor(editor),
+    onShown: () => trackGitHubStarPromptAction('shown'),
+    onStarred: () => trackGitHubStarPromptAction('starred'),
+    onOpened: ({ fallback }) =>
+      trackGitHubStarPromptAction('opened', { fallback }),
+    onDismissed: () => trackGitHubStarPromptAction('dismissed'),
   });
   if (readOnly) {
     return (
@@ -6075,7 +6366,7 @@ function ChatInputContent({
         voiceRecording
           ? 'Start talking…'
           : questionPromptOpen
-            ? questionPromptPlaceholder
+            ? questionPlaceholder
             : planCardOpen
               ? 'No, explain what to do differently'
               : isEditingQueued
@@ -6233,20 +6524,6 @@ function ChatInputContent({
             compact={chipsCompact}
             onEdit={(): void => setScheduleModalOpen(true)}
             onClear={handleClearScheduledSend}
-          />
-        ) : null
-      }
-      watchersSlot={
-        !promptOpen && showChatInputWatcherButton && watcherDestination ? (
-          <WatcherManagementButton
-            watchers={chatInputWatchers}
-            modalTitle="Chat watchers"
-            modalEmptyMessage="No active watchers for this chat."
-            ariaLabel="Manage chat watchers"
-            dataTestId={`chat-input-watchers-${watcherDestination.chatId}`}
-            icon="bigtop"
-            tooltipTitle="WATCHING"
-            appearance="composer-chip"
           />
         ) : null
       }
@@ -6712,7 +6989,8 @@ function ChatInputContent({
           />
         )}
 
-        {/* Suggests sharing a skill or plugin this chat keeps using. Session
+        {/* Suggests sharing a skill or plugin this chat keeps using, in the
+              shared suggestion corner (renders nothing here). Session
               target so Cowork chats are covered too. */}
         {!isEditingQueued && sessionChatTarget && (
           <SkillShareNudgeBanner
@@ -6775,29 +7053,33 @@ function ChatInputContent({
       {compactQueue && (
         <>
           {!isEditingQueued && (
-            <div className="mx-4">
-              <ComposerNoticeStack>
-                <PlanModeHint hint={hint} appearance="notice" />
-                <OnboardingTipSlot
-                  placement="composer"
-                  appearance="notice"
-                  eligible={worktreeChatTarget ? WORKTREE_CHAT_TIPS : NO_TIPS}
-                  arrivalKey={worktreeChatTarget?.chatId ?? ''}
-                  {...(worktreeChatTarget && worktreeTipTranscript
-                    ? {
-                        worktreeChat: {
-                          chatId: worktreeChatTarget.chatId,
-                          workspaceLocalId: worktreeChatTarget.projectId,
-                          worktreeLocalId: worktreeChatTarget.worktreeId,
-                          transcript: worktreeTipTranscript,
-                        },
-                      }
-                    : {})}
-                  context={worktreeTipContext}
-                  data-testid="chat-input-onboarding-tip"
-                />
-              </ComposerNoticeStack>
-            </div>
+            <ComposerNoticeStack>
+              <PlanModeHint hint={hint} appearance="notice" />
+              <GitHubStarPrompt
+                prompt={starPrompt}
+                appName={brandText.appName}
+                starLogin={starLogin}
+                appearance="notice"
+              />
+              <OnboardingTipSlot
+                placement="composer"
+                appearance="notice"
+                eligible={worktreeChatTarget ? WORKTREE_CHAT_TIPS : NO_TIPS}
+                arrivalKey={worktreeChatTarget?.chatId ?? ''}
+                {...(worktreeChatTarget && worktreeTipTranscript
+                  ? {
+                      worktreeChat: {
+                        chatId: worktreeChatTarget.chatId,
+                        workspaceLocalId: worktreeChatTarget.projectId,
+                        worktreeLocalId: worktreeChatTarget.worktreeId,
+                        transcript: worktreeTipTranscript,
+                      },
+                    }
+                  : {})}
+                context={worktreeTipContext}
+                data-testid="chat-input-onboarding-tip"
+              />
+            </ComposerNoticeStack>
           )}
           {!isEditingQueued && bannerTarget ? (
             <ChatBackgroundTray target={bannerTarget}>
@@ -6836,6 +7118,11 @@ function ChatInputContent({
       {!compactQueue && !isEditingQueued && (
         <ComposerDrawer edge="top" data-testid="chat-input-composer-drawer">
           <PlanModeHint hint={hint} />
+          <GitHubStarPrompt
+            prompt={starPrompt}
+            appName={brandText.appName}
+            starLogin={starLogin}
+          />
           <OnboardingTipSlot
             placement="composer"
             eligible={worktreeChatTarget ? WORKTREE_CHAT_TIPS : NO_TIPS}

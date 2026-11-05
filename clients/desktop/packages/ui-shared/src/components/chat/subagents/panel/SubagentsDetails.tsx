@@ -45,6 +45,7 @@ import {
 } from '../../../../icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '../../../../lib/replay-privacy';
 import { Button } from '../../../Button';
+import { PaneSheet } from '../../../Sheet';
 import { ExecutionActionButton } from '../../../ExecutionActionButton';
 import { ErrorBanner } from '../../../StatusBlocks';
 import { SubagentChangesLabel } from '../common/SubagentChangesLabel';
@@ -468,11 +469,15 @@ export function SubagentsDrawer({
   ...props
 }: SubagentsDetailsProps & { readonly over: 'canvas' | 'list' }): JSX.Element {
   return (
-    <aside
+    <PaneSheet
+      placement="bottom"
+      start={over === 'canvas' ? 'controls' : 'edge'}
+      aria-label="Agent details"
       data-testid="subagents-drawer"
-      className={`absolute bottom-3 right-3 z-20 flex max-h-[min(70%,32rem)] min-w-0 flex-col gap-3 overflow-auto rounded-lg bg-popover p-3 shadow-lg ${over === 'canvas' ? 'left-14' : 'left-3'}`}
     >
-      <SubagentsDetailsBody {...props} />
-    </aside>
+      <div className="flex min-w-0 flex-col gap-3">
+        <SubagentsDetailsBody {...props} />
+      </div>
+    </PaneSheet>
   );
 }

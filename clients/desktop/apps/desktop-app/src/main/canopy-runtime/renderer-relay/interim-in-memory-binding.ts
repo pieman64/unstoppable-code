@@ -39,8 +39,11 @@ import {
   type RelayBindingProvider,
 } from './definitions';
 
-// Interim: replaced by the daemon binding (CAN-3729); durable capability
-// ownership and leases land with CAN-3767. Nothing here persists.
+// Interim: no renderer surface calls a daemon-served operation yet, so the
+// relay keeps this in-process provider until the W3 exit (CAN-3166); the
+// Files read reaches the daemon through the file-tree IPC handlers
+// (CAN-4305). Durable capability ownership and leases land with CAN-3767.
+// Nothing here persists.
 
 const INITIALIZE = 'core.runtime.initialize';
 const HEALTH = 'core.runtime.health.get';

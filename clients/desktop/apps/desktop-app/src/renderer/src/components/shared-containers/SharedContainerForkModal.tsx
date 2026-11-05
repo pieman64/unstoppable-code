@@ -44,7 +44,7 @@
  * guard stays authoritative for any race after that and refuses rather than
  * substituting another revision.
  */
-import { useEffect, useId, useMemo, useRef, useState, type JSX } from 'react';
+import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import type {
   SharedContainerAccess,
   SharedContainerForkDestination,
@@ -82,6 +82,7 @@ import {
   ChoiceList,
   ChoiceListRow,
   DialogFormField,
+  Disclosure,
   ErrorBanner,
   SettingsSelect,
   TextInput,
@@ -274,7 +275,6 @@ function SharedContainerForkReview({
   const [parentDirectory, setParentDirectory] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [showDetails, setShowDetails] = useState(false);
-  const detailsId = useId();
 
   // The revision under review, pinned once and replaced only by the user.
   const [reviewed, setReviewed] = useState<ReviewedRevision | null>(() =>
@@ -729,19 +729,14 @@ function SharedContainerForkReview({
                 </li>
               )}
             </ul>
-            <button
-              type="button"
-              aria-expanded={showDetails}
-              aria-controls={detailsId}
-              data-testid="shared-container-fork-details-toggle"
-              onClick={(): void => setShowDetails((open) => !open)}
-              className="focus-ring self-start rounded text-xs fg-secondary underline-offset-2 hover:fg-primary hover:underline"
+            <Disclosure
+              label={showDetails ? 'Hide details' : 'Show details'}
+              open={showDetails}
+              onOpenChange={setShowDetails}
+              dataTestId="shared-container-fork-details-disclosure"
+              toggleTestId="shared-container-fork-details-toggle"
             >
-              {showDetails ? 'Hide details' : 'Show details'}
-            </button>
-            {showDetails && (
               <ul
-                id={detailsId}
                 className="flex list-disc flex-col gap-1 pl-5 text-xs fg-secondary"
                 data-testid="shared-container-fork-details"
               >
@@ -771,7 +766,7 @@ function SharedContainerForkReview({
                     </li>
                   )}
               </ul>
-            )}
+            </Disclosure>
           </div>
         )}
 

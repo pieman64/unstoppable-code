@@ -1,7 +1,7 @@
 import type { ButtonHTMLAttributes, JSX, ReactNode } from 'react';
 import { SHARE_LANDER_BUTTON_CLASS_NAME } from '../lib/share-lander';
 import {
-  buttonClassName,
+  Button,
   isAriaDisabled,
   swallowUnavailableClick,
   type ButtonSize,
@@ -124,37 +124,55 @@ export function LoadingButton({
   type = 'button',
   ...buttonProps
 }: LoadingButtonProps): JSX.Element {
-  let resolvedClassName: string;
+  const onClick =
+    loading || isAriaDisabled(buttonProps['aria-disabled'])
+      ? swallowUnavailableClick
+      : buttonProps.onClick;
+  const content = (
+    <BusyLayers
+      busy={loading}
+      busyLabel={loadingLabel}
+      spinnerTestId={spinnerTestId}
+      presentation={presentation}
+    >
+      {children}
+    </BusyLayers>
+  );
   if (presentation === 'share-lander') {
-    resolvedClassName = className
-      ? `${SHARE_LANDER_BUTTON_CLASS_NAME} ${className}`
-      : SHARE_LANDER_BUTTON_CLASS_NAME;
-  } else {
-    resolvedClassName = buttonClassName({ variant, size, className });
+    // The public landers' squared control is not a house capsule, so it keeps
+    // its own element and recipe.
+    return (
+      <button
+        {...buttonProps}
+        type={type}
+        className={
+          className
+            ? `${SHARE_LANDER_BUTTON_CLASS_NAME} ${className}`
+            : SHARE_LANDER_BUTTON_CLASS_NAME
+        }
+        disabled={disabled}
+        aria-disabled={loading || buttonProps['aria-disabled']}
+        aria-busy={loading}
+        onClick={onClick}
+      >
+        {content}
+      </button>
+    );
   }
   return (
-    <button
+    <Button
       {...buttonProps}
       type={type}
-      className={resolvedClassName}
+      variant={variant}
+      size={size}
+      className={className}
       disabled={disabled}
       aria-disabled={loading || buttonProps['aria-disabled']}
       aria-busy={loading}
-      onClick={
-        loading || isAriaDisabled(buttonProps['aria-disabled'])
-          ? swallowUnavailableClick
-          : buttonProps.onClick
-      }
+      onClick={onClick}
     >
-      <BusyLayers
-        busy={loading}
-        busyLabel={loadingLabel}
-        spinnerTestId={spinnerTestId}
-        presentation={presentation}
-      >
-        {children}
-      </BusyLayers>
-    </button>
+      {content}
+    </Button>
   );
 }
 

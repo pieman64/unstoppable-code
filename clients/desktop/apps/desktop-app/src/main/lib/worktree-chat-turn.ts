@@ -3585,6 +3585,8 @@ async function dispatchHeldWorktreeChatTurn<
           chatId: options.chatId,
           provider: runtimeProviderType,
           model: runtimeModel,
+          // The selection (possibly an Agent id) before runtime expansion.
+          requestedModel: preparedSession.selectedModel ?? runtimeModel,
           modelSource: runtimeModel ? getModelSource(runtimeModel) : undefined,
           executionHarness: effectiveExecutionHarness,
           serviceTier:

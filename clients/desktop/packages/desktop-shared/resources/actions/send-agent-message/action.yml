@@ -45,7 +45,10 @@ inputs:
     description: JSON array of shareable plugin references to turn on. Optional.
     required: false
   plugin_selections:
-    description: JSON object of local plugin selections to turn on, as a chat automation stores them. Optional.
+    description: JSON object of local plugin selections to turn on, as a chat automation stores them. Optional; fails with plugin_collection_id.
+    required: false
+  plugin_collection_id:
+    description: A plugin collection from the workflow's plugin_collections to turn on. The chat resolves the collection's own collections. Optional; fails with plugin_selections.
     required: false
   interface_mode:
     description: canopy, claude-code or auto, for a new chat only. Optional; fails with chat_id.

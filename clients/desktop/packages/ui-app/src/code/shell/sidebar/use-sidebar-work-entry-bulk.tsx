@@ -335,11 +335,14 @@ export function workEntryRowMultiSelectProps(
   return {
     selected: selection.isSelected(key),
     selectable,
+    rowKey: key,
     active: selection.active,
     escapeClears: binding.escapeClears,
     onToggle: () => selection.toggle(listId, key),
     onSelectRange: () => selection.selectRange(listId, key),
     onSelectAll: () => selection.selectAllInList(listId),
+    onAnchor: () => selection.anchor(listId, key),
+    onExtend: (step) => selection.extend(listId, key, step),
     onClear: selection.clear,
   };
 }

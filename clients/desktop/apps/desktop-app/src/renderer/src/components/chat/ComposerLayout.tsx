@@ -9,7 +9,6 @@ import {
   FastModeIcon,
   PlanModeIcon,
   PluginsIcon,
-  QuestionMarkIcon,
   ScheduleIcon,
   TerminalBorderedIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
@@ -140,30 +139,6 @@ export function buildPlanReadyChip({
     ...(compact ? {} : { label: 'Plan ready' }),
     variant: 'capsule',
     dataTestId: 'chat-input-plan-ready-chip',
-  };
-}
-
-/**
- * The chip beside + while a question waits with its prompt closed: it reads
- * "Question" and reopens the prompt, as "Plan ready" does for a plan.
- */
-export function buildQuestionReadyChip({
-  onOpen,
-  compact = false,
-}: {
-  onOpen: () => void;
-  compact?: boolean;
-}): ChatComposerToolbarChipConfig {
-  return {
-    onClick: onOpen,
-    active: true,
-    activeTone: 'warning',
-    ariaLabel: 'Question waiting, answer it',
-    title: 'Answer the question',
-    icon: <QuestionMarkIcon width={16} height={16} />,
-    ...(compact ? {} : { label: 'Question' }),
-    variant: 'capsule',
-    dataTestId: 'chat-input-question-ready-chip',
   };
 }
 

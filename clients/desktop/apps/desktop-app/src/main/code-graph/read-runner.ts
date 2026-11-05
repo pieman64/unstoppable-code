@@ -2,9 +2,8 @@ import { totalmem } from 'node:os';
 import {
   flushCodeGraphQueryTelemetry,
   flushCodeGraphReadDiagnostics,
-  recordCodeGraphQueryTelemetry,
-  recordCodeGraphReadDiagnostic,
 } from '../lib/code-graph-telemetry';
+import { codeGraphReadRecorders } from './read-recorders';
 import { getExecutionHostPort } from '../execution-host/utility-process-host';
 import { codeGraphHostBudget } from '@canopy/code-graph/host/budgets';
 import {
@@ -48,8 +47,7 @@ const scheduler = createCodeGraphReadScheduler({
         totalMemoryBytes: totalmem(),
       }),
     }),
-  recordQueryTelemetry: (input) => recordCodeGraphQueryTelemetry(input),
-  recordReadDiagnostic: (input) => recordCodeGraphReadDiagnostic(input),
+  ...codeGraphReadRecorders,
   flushTelemetry: () => {
     flushCodeGraphQueryTelemetry();
     flushCodeGraphReadDiagnostics();

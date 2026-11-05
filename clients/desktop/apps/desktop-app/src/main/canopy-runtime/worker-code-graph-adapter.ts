@@ -74,14 +74,15 @@ export function createWorkerCodeGraphAdapter(
       import('../code-graph/build-runner'),
       import('../code-graph/fingerprint-runner'),
       import('../lib/code-graph-worker-builds'),
-    ]).then(([runner, fingerprints, builds]) => ({
+      import('@canopy/code-graph/host/worktree-build-service'),
+    ]).then(([runner, fingerprints, builds, generations]) => ({
       build: builds.buildCodeGraph,
       queueStatus: runner.getCodeGraphBuildQueueStatus,
       reorderQueue: runner.reorderCodeGraphGenerationQueue,
       cancelQueueItem: runner.cancelCodeGraphQueueItem,
       // As worktree cleanup does in process: generations still preparing,
-      // the fingerprint, then every build of the key, each resolving once
-      // its host has exited.
+      // then the fingerprint and every build of the key together, resolving
+      // once each host has exited.
       cancelWorktree: async (workspaceId, worktreeId) => {
         const key = `${workspaceId}/${worktreeId}`;
         const unqueued = builds.abortPreparingCodeGraphBuilds(
@@ -96,8 +97,10 @@ export function createWorkerCodeGraphAdapter(
               entry.worktreeId === worktreeId &&
               entry.workspaceIds.includes(workspaceId),
           ).length;
-        await fingerprints.cancelCodeGraphFingerprint(key);
-        await runner.cancelBuild(key);
+        await generations.cancelCodeGraphWorktreeHosts(key, {
+          fingerprints: { cancel: fingerprints.cancelCodeGraphFingerprint },
+          builds: { cancel: (buildKey) => runner.cancelBuild(buildKey) },
+        });
         return unqueued + queued;
       },
     })),

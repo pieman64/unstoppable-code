@@ -122,7 +122,6 @@ const env = {
     '',
   ),
   CANOPY_SKIP_BRAND_PREPARE: 'true',
-  CANOPY_JEST_BALANCE: 'false',
 };
 const run = (...args) =>
   execFileSync(process.execPath, args, { env, stdio: 'inherit' });
@@ -183,7 +182,7 @@ else if (mode === 'test') {
     'node_modules/jest/bin/jest.js',
     '--config',
     'jest.config.js',
-    // Match the private runner: recycle workers between files.
+    // Recycle workers between files to bound the heap.
     '--maxWorkers=2',
     '--workerIdleMemoryLimit=1MB',
     '--forceExit',

@@ -22,10 +22,12 @@ import type { CanopyClient } from '@canopy/app-core';
 import { useCanopyClient } from '@canopy/app-state';
 import {
   Button,
+  DelayedLoadingPlaceholder,
   Disclosure,
   ErrorBanner,
   LoadingSpinner,
   Notice,
+  Skeleton,
   ToggleSwitch,
   Heading,
 } from '@canopy/ui-shared/components';
@@ -594,11 +596,31 @@ function RepoRulesReviewFlow({
       );
       body = (
         <section className="space-y-4" data-testid="repo-rules-scanning">
-          <div className="flex items-center gap-3 py-6">
-            <LoadingSpinner tone="tertiary" decorative />
-            <Heading level={3} variant="title" ref={headingRef} tabIndex={-1}>
-              Scanning Cursor rules…
-            </Heading>
+          <Heading level={3} variant="title" ref={headingRef} tabIndex={-1}>
+            Scanning Cursor rules…
+          </Heading>
+          <div>
+            <DelayedLoadingPlaceholder slowNote="Still scanning Cursor rules…">
+              <Skeleton
+                loading
+                label="Scanning Cursor rules"
+                testId="repo-rules-scanning-skeleton"
+              >
+                <ul className="divide-y rounded-lg border">
+                  {SAMPLE_RULES.map((rule) => (
+                    <RuleRow
+                      key={rule.id}
+                      rule={rule}
+                      selected
+                      preview={null}
+                      disabled={false}
+                      onToggle={noop}
+                      onPreview={noop}
+                    />
+                  ))}
+                </ul>
+              </Skeleton>
+            </DelayedLoadingPlaceholder>
           </div>
           <div className="flex justify-end">
             <Button variant="ghost" onClick={onClose}>
@@ -1005,6 +1027,59 @@ function ReviewStep({
   );
 }
 
+/** Plain rules the scan's skeleton measures. */
+const SAMPLE_RULES: readonly RepoRuleProposal[] = [
+  {
+    id: 'repo-rules-skeleton-1',
+    repoId: 'repo-rules-skeleton',
+    path: '.cursor/rules/testing.mdc',
+    kind: 'always',
+    description: 'How to write and run tests',
+    globs: [],
+    scope: '',
+    hash: '',
+    bytes: 0,
+    selected: true,
+    flags: [],
+  },
+  {
+    id: 'repo-rules-skeleton-2',
+    repoId: 'repo-rules-skeleton',
+    path: '.cursor/rules/style.mdc',
+    kind: 'always',
+    description: 'Code style for the app',
+    globs: [],
+    scope: '',
+    hash: '',
+    bytes: 0,
+    selected: true,
+    flags: [],
+  },
+];
+
+/** A short rule file the preview's skeleton measures. */
+const SAMPLE_RULE_BODY = [
+  'Run the affected tests before each commit.',
+  'Keep test names short and plain.',
+  'Prefer one assertion per behavior.',
+].join('\n');
+
+const noop = (): void => undefined;
+
+/** A rule file's text, cut at the preview limit. */
+function RulePreviewText({ body }: { readonly body: string }): JSX.Element {
+  return (
+    <pre
+      className={`max-h-64 overflow-auto whitespace-pre-wrap rounded bg-secondary p-2 font-mono text-xs fg-secondary ${REPLAY_BLOCK_CLASS}`}
+      data-testid="repo-rules-preview"
+    >
+      {body.length > PREVIEW_CHAR_LIMIT
+        ? `${body.slice(0, PREVIEW_CHAR_LIMIT)}\n…`
+        : body || '(empty)'}
+    </pre>
+  );
+}
+
 function RuleRow({
   rule,
   selected,
@@ -1108,18 +1183,19 @@ function RuleRow({
       {preview ? (
         <div id={previewId}>
           {preview.kind === 'loading' ? (
-            <LoadingSpinner tone="tertiary" />
+            <DelayedLoadingPlaceholder slowNote="Still loading the rule…">
+              <Skeleton
+                loading
+                label="Loading the rule"
+                testId="repo-rules-preview-loading"
+              >
+                <RulePreviewText body={SAMPLE_RULE_BODY} />
+              </Skeleton>
+            </DelayedLoadingPlaceholder>
           ) : preview.kind === 'error' ? (
             <ErrorBanner className="" error={preview.message} />
           ) : (
-            <pre
-              className={`max-h-64 overflow-auto whitespace-pre-wrap rounded bg-secondary p-2 font-mono text-xs fg-secondary ${REPLAY_BLOCK_CLASS}`}
-              data-testid="repo-rules-preview"
-            >
-              {preview.body.length > PREVIEW_CHAR_LIMIT
-                ? `${preview.body.slice(0, PREVIEW_CHAR_LIMIT)}\n…`
-                : preview.body || '(empty)'}
-            </pre>
+            <RulePreviewText body={preview.body} />
           )}
         </div>
       ) : null}

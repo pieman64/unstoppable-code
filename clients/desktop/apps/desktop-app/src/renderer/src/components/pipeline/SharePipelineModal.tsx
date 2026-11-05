@@ -64,6 +64,7 @@ const SNAPSHOT_NOTE_LABEL =
 const pipelineLinks = createShareLinkResolver(
   pipelineSharePath,
   resolveSharedPipelineUrl,
+  'pipeline',
 );
 
 interface SharePipelineModalProps {
@@ -144,31 +145,41 @@ export function SharePipelineModal({
   const projectSourceUnavailable =
     contextEnabled && localPipelineInfo.source === 'project' && !sourcePipeline;
 
-  const loadExistingShare = useCallback(async () => {
-    setRemoteDetail(null);
-    setRemoteLink(null);
-    if (!localPipelineInfo.remote?.remoteId) {
-      return { status: 'ready' } as const;
-    }
-    try {
-      const result = await window.pipelines.getShared({
-        remoteId: localPipelineInfo.remote.remoteId,
-      });
-      if (result.success && result.data) {
-        setRemoteDetail(result.data);
-        setRemoteLink(await pipelineLinks.linkFromDetail(result.data));
+  const loadExistingShare = useCallback(
+    async (assertCurrent?: () => void) => {
+      assertCurrent?.();
+      setRemoteDetail(null);
+      assertCurrent?.();
+      setRemoteLink(null);
+      if (!localPipelineInfo.remote?.remoteId) {
         return { status: 'ready' } as const;
       }
-      return readSharedResourceErrorStatus(result.error) === 404 &&
-        (await missingRemoteShareCanBeRecreated(
-          localPipelineInfo.remote.accountId,
-        ))
-        ? ({ status: 'ready' } as const)
-        : existingShareLoadFailure('workflow', result.error);
-    } catch (error: unknown) {
-      return existingShareLoadFailure('workflow', error);
-    }
-  }, [localPipelineInfo.remote?.accountId, localPipelineInfo.remote?.remoteId]);
+      try {
+        const result = await window.pipelines.getShared({
+          remoteId: localPipelineInfo.remote.remoteId,
+        });
+        if (result.success && result.data) {
+          assertCurrent?.();
+          setRemoteDetail(result.data);
+          const refreshedLink = await pipelineLinks.linkFromDetail(result.data);
+
+          assertCurrent?.();
+
+          setRemoteLink(refreshedLink);
+          return { status: 'ready' } as const;
+        }
+        return readSharedResourceErrorStatus(result.error) === 404 &&
+          (await missingRemoteShareCanBeRecreated(
+            localPipelineInfo.remote.accountId,
+          ))
+          ? ({ status: 'ready' } as const)
+          : existingShareLoadFailure('workflow', result.error);
+      } catch (error: unknown) {
+        return existingShareLoadFailure('workflow', error);
+      }
+    },
+    [localPipelineInfo.remote?.accountId, localPipelineInfo.remote?.remoteId],
+  );
 
   const packagePort = useMemo(
     (): CapabilityPackageSharePort => ({
@@ -330,6 +341,7 @@ export function SharePipelineModal({
       }
 
       let detail = result.data;
+      input.assertAllowed?.();
       let shareUrl: string | undefined;
       let publicLinkFailed = false;
       if (input.scope === 'public') {
@@ -342,9 +354,11 @@ export function SharePipelineModal({
           detail = { ...detail, publicShare: published.data };
           const link = await pipelineLinks.resolveLink({
             kind: 'public',
+            id: result.data.id,
             sharePath: published.data.sharePath,
           });
           shareUrl = link.url;
+          input.assertAllowed?.();
           setRemoteLink(link);
         } else {
           publicLinkFailed = true;
@@ -356,11 +370,15 @@ export function SharePipelineModal({
             id: result.data.id,
           });
           shareUrl = link.url;
+          input.assertAllowed?.();
           setRemoteLink(link);
         }
       }
 
+      input.assertAllowed?.();
+
       pendingShared.current = { detail };
+      input.assertAllowed?.();
       setRemoteDetail(detail);
       return {
         ...(shareUrl ? { shareUrl } : {}),
@@ -376,8 +394,9 @@ export function SharePipelineModal({
     ],
   );
 
-  const retryPublicLink =
-    useCallback(async (): Promise<ShareResourceOutcome> => {
+  const retryPublicLink = useCallback(
+    async (assertCurrent?: () => void): Promise<ShareResourceOutcome> => {
+      assertCurrent?.();
       const pending = pendingShared.current;
       if (!pending) return { publicLinkFailed: true };
       const published = await window.pipelines.publishPublicShare(
@@ -388,13 +407,19 @@ export function SharePipelineModal({
       }
       const link = await pipelineLinks.resolveLink({
         kind: 'public',
+        id: pending.detail.id,
         sharePath: published.data.sharePath,
       });
+      assertCurrent?.();
       setRemoteLink(link);
+      assertCurrent?.();
       pending.detail = { ...pending.detail, publicShare: published.data };
+      assertCurrent?.();
       setRemoteDetail(pending.detail);
       return { shareUrl: link.url };
-    }, []);
+    },
+    [],
+  );
 
   const handleCompleted = useCallback((): void => {
     const pending = pendingShared.current;
@@ -431,18 +456,31 @@ export function SharePipelineModal({
       ? { audience: localPipelineInfo.remote.shareScope }
       : undefined;
 
-  const revokePublicLink = useCallback(async (): Promise<void> => {
-    if (!remoteDetail?.publicShare) return;
-    const result = await window.pipelines.revokePublicShare(remoteDetail.id);
-    if (!result.success) {
-      throw new Error(result.error ?? 'Could not remove the public link.');
-    }
-    setRemoteDetail({ ...remoteDetail, publicShare: null });
-    onPublicLinkRemoved?.();
-  }, [onPublicLinkRemoved, remoteDetail]);
+  const revokePublicLink = useCallback(
+    async (assertCurrent?: () => void): Promise<void> => {
+      assertCurrent?.();
+      if (!remoteDetail?.publicShare) return;
+      const result = await window.pipelines.revokePublicShare(remoteDetail.id);
+      if (!result.success) {
+        throw new Error(result.error ?? 'Could not remove the public link.');
+      }
+      assertCurrent?.();
+      setRemoteDetail({ ...remoteDetail, publicShare: null });
+      assertCurrent?.();
+      onPublicLinkRemoved?.();
+    },
+    [onPublicLinkRemoved, remoteDetail],
+  );
 
   return (
     <DesktopShareResourceDialog
+      marketplace={{
+        kind: 'pipeline',
+        resourceKey: JSON.stringify([
+          localPipelineInfo.id,
+          localPipelineInfo.filePath,
+        ]),
+      }}
       resourceNoun="workflow"
       testIdPrefix="share-pipeline"
       requiredCapability={PIPELINES_CRUD_CAPABILITY}

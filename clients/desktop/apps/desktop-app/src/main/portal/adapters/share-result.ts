@@ -1,3 +1,4 @@
+import { marketplaceShareOrigin } from '@canopy/protocol/marketplace';
 import type { PortalCommandEnvelope } from '@canopy/desktop-shared/types';
 import type { PortalShareResult } from '@canopy/protocol/portal';
 import { getCanopyCloudBaseUrl } from '../../canopy-cloud/config';
@@ -19,13 +20,21 @@ export function withPortalShareUrl<T extends { sharePath?: string }>(
     return result;
   }
   try {
+    const origin = marketplaceShareOrigin(getCanopyCloudBaseUrl());
+    if (
+      !origin ||
+      !result.sharePath.startsWith('/') ||
+      result.sharePath.startsWith('//') ||
+      /[\\\s]/.test(result.sharePath)
+    )
+      return result;
     return {
       ...result,
-      shareUrl: new URL(result.sharePath, getCanopyCloudBaseUrl()).toString(),
+      shareUrl: new URL(result.sharePath, origin).toString(),
     };
   } catch {
-    // An unconfigured or invalid origin leaves the browser on its legacy
-    // `sharePath` fallback rather than failing a share that succeeded.
+    // Missing or malformed publishing configuration cannot turn a successful
+    // mutation into failure. New browsers wait for an authoritative absolute link.
     return result;
   }
 }

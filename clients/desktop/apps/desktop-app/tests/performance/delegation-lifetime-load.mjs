@@ -427,6 +427,35 @@ async function measureHostReaders(count, options = {}) {
   return readers;
 }
 
+/** Every retained record's current generation, as a watch captures it. */
+function currentGenerations(records) {
+  return records.map((record) => ({
+    delegationId: record.state.delegationId,
+    runGeneration: record.state.runGeneration,
+  }));
+}
+
+/**
+ * The broker read a delegate watch makes at registration and catch-up
+ * (`watchTargetStates`), here over every retained record at once: the upper
+ * bound for watches covering them. App Advisor's startup reconcile, which
+ * calls it, stays blocked (above).
+ */
+async function measureWatchRead(broker, targets) {
+  const { result, metrics } = await measure(() =>
+    broker.watchTargetStates(targets),
+  );
+  if (result.length !== targets.length)
+    throw new Error('Watch read count mismatch');
+  return {
+    status: 'measured',
+    entrypoint: 'AgentDelegationBroker.watchTargetStates',
+    targets: targets.length,
+    settled: result.filter((state) => state.resultIndex !== null).length,
+    ...metrics,
+  };
+}
+
 function requireOk(result) {
   if (!result.ok)
     throw new Error(`${result.error.code}: ${result.error.message}`);
@@ -743,12 +772,17 @@ export async function runStreamSample(root, count, progress = () => undefined) {
       runtime,
       progress,
     );
+    // A clean quit drains the repository, which checkpoints the scope, so a
+    // restart reads no journal left by the previous run. Without this the
+    // first registry read pays the checkpoint of the whole seeding.
+    await backing.repository.flushScope(SCOPE);
     fixture.seedAndVerificationWallMs = performance.now() - seedStart;
     const loaded = await measure(() =>
       new runtime.FileDelegationStorage(directory).load(),
     );
     if (loaded.result.length !== count)
       throw new Error('V3 measured count mismatch');
+    const watchTargets = currentGenerations(loaded.result);
     loaded.result = undefined;
     const registry = new runtime.AgentRunnerRegistry();
     let runnerStarts = 0;
@@ -777,12 +811,14 @@ export async function runStreamSample(root, count, progress = () => undefined) {
       transcriptPort: backing.port,
     });
     let initialized;
+    let watchRead;
     try {
       initialized = await measure(() => broker.initialize());
       if (broker.retainedCount() !== count || runnerStarts !== 0)
         throw new Error(
           'V3 broker retained count mismatch or unexpected launch',
         );
+      watchRead = await measureWatchRead(broker, watchTargets);
     } finally {
       await broker.close();
     }
@@ -807,6 +843,7 @@ export async function runStreamSample(root, count, progress = () => undefined) {
       fixture,
       storageLoad: loaded.metrics,
       brokerInitialize: initialized.metrics,
+      brokerWatchRead: watchRead,
       afterClose,
       retainedCount: count,
       runnerStarts,
@@ -850,6 +887,7 @@ export async function runLegacySample(root, count, progress = () => undefined) {
     new FileDelegationStorage(directory).load(),
   );
   verifyDecoded(loaded.result, manifest);
+  const watchTargets = currentGenerations(loaded.result);
   loaded.result = undefined;
   const registry = new AgentRunnerRegistry();
   let runnerStarts = 0;
@@ -880,10 +918,12 @@ export async function runLegacySample(root, count, progress = () => undefined) {
     onError: (error) => errors.push(String(error)),
   });
   let initialized;
+  let watchRead;
   try {
     initialized = await measure(() => broker.initialize());
     if (broker.retainedCount() !== count || runnerStarts !== 0 || errors.length)
       throw new Error('Broker initialization did not preserve settled fixture');
+    watchRead = await measureWatchRead(broker, watchTargets);
   } finally {
     await broker.close();
   }
@@ -899,6 +939,7 @@ export async function runLegacySample(root, count, progress = () => undefined) {
     fixture,
     storageLoad: loaded.metrics,
     brokerInitialize: initialized.metrics,
+    brokerWatchRead: watchRead,
     afterClose,
     retainedCount: count,
     runnerStarts,

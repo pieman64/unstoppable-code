@@ -146,7 +146,12 @@ export function useLinearDecoration(
  */
 export interface GitHubCandidates {
   readonly qualified: boolean;
-  readonly bare: boolean;
+  /**
+   * Bare numbers the whole block's Markdown cues as PRs or issues. Inline
+   * text nodes are decorated one at a time, so they accept a bare `#N` by
+   * number from this set rather than re-reading a cue a sibling node holds.
+   */
+  readonly bareNumbers: ReadonlySet<number>;
 }
 
 /** What a block may decorate now. */
@@ -160,6 +165,8 @@ export interface GitHubDecoration {
     readonly owner: string;
     readonly repository: string;
   } | null;
+  /** Bare numbers the block cues; see {@link GitHubCandidates}. */
+  readonly bareNumbers: ReadonlySet<number>;
 }
 
 /**
@@ -169,9 +176,13 @@ export interface GitHubDecoration {
 export function scanGitHubCandidates(text: string): GitHubCandidates | null {
   const { occurrences, complete } = scanGitHubReferenceOccurrences(text);
   if (!complete || occurrences.length === 0) return null;
+  const bareNumbers = new Set<number>();
+  for (const occurrence of occurrences) {
+    if (occurrence.form === 'bare') bareNumbers.add(occurrence.number);
+  }
   return {
     qualified: occurrences.some((occurrence) => occurrence.form !== 'bare'),
-    bare: occurrences.some((occurrence) => occurrence.form === 'bare'),
+    bareNumbers,
   };
 }
 
@@ -205,13 +216,18 @@ export function useGitHubDecoration(
     connected &&
     candidates !== null &&
     resolved !== undefined &&
-    (candidates.qualified || (candidates.bare && resolved !== null));
+    (candidates.qualified ||
+      (candidates.bareNumbers.size > 0 && resolved !== null));
   return useMemo(
     () =>
       eligible && resolved !== undefined
-        ? { originRepository: resolved, mode }
+        ? {
+            originRepository: resolved,
+            mode,
+            bareNumbers: candidates?.bareNumbers ?? new Set<number>(),
+          }
         : null,
-    [eligible, resolved, mode],
+    [eligible, resolved, mode, candidates],
   );
 }
 
@@ -281,7 +297,9 @@ export function decorateReferences(
     }
   }
   if (github) {
-    const { occurrences, complete } = scanGitHubReferenceOccurrences(text);
+    const { occurrences, complete } = scanGitHubReferenceOccurrences(text, {
+      bareNumbers: github.bareNumbers,
+    });
     for (const occurrence of complete ? occurrences : []) {
       const piece = gitHubPiece(occurrence, github);
       if (!piece) continue;

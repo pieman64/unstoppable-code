@@ -904,6 +904,7 @@ async function oversizedPagedCases(): Promise<{ cases: OversizedCase[] }> {
   ];
   const cases: OversizedCase[] = [];
   for (const name of names) {
+    const records = new Map<string, StoredDelegation>();
     const runner = new FakeRunner('local-sdk');
     const registry = new AgentRunnerRegistry();
     registry.register({
@@ -917,7 +918,14 @@ async function oversizedPagedCases(): Promise<{ cases: OversizedCase[] }> {
       capacity: 2,
       storage: {
         load: (): Promise<readonly StoredDelegation[]> => Promise.resolve([]),
-        commit: (): Promise<void> => Promise.resolve(),
+        loadOne: (delegationId): Promise<StoredDelegation | undefined> => {
+          const record = records.get(delegationId);
+          return Promise.resolve(record ? structuredClone(record) : undefined);
+        },
+        commit: (record): Promise<void> => {
+          records.set(record.state.delegationId, structuredClone(record));
+          return Promise.resolve();
+        },
       },
       resolveRoute: (): Promise<
         AgentDelegationResult<ReturnType<typeof routeFixture>>

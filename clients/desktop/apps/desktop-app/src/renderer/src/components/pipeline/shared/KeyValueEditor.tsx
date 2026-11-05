@@ -5,7 +5,11 @@ import { TextField } from './TextField';
 import { EnlargeValueModal } from './EnlargeValueModal';
 import { ActionTooltip } from '@/components/shared/ActionTooltip';
 import { Tooltip } from '@canopy/ui-shared';
-import { Button } from '@canopy/ui-shared/components';
+import {
+  Button,
+  SegmentedControl,
+  type SegmentedControlOption,
+} from '@canopy/ui-shared/components';
 import {
   MaximizeIcon as AppCatalogMaximizeIcon,
   CloseIcon as AppCatalogCloseIcon,
@@ -20,6 +24,11 @@ const TYPE_LABELS: Record<ValueType, string> = {
 };
 
 const TYPE_ORDER: ValueType[] = ['string', 'number', 'boolean'];
+
+const BOOLEAN_OPTIONS: readonly SegmentedControlOption<'false' | 'true'>[] = [
+  { value: 'false', label: 'false' },
+  { value: 'true', label: 'true' },
+];
 
 interface KeyValueEditorProps {
   value: Record<string, PipelineScalar>;
@@ -85,9 +94,9 @@ export function KeyValueEditor({
     onChange({ ...value, [key]: newVal });
   }
 
-  function toggleBooleanValue(key: string): void {
-    const current = value[key];
-    onChange({ ...value, [key]: !current });
+  function setBooleanValue(key: string, next: boolean): void {
+    if (value[key] === next) return;
+    onChange({ ...value, [key]: next });
   }
 
   function cycleType(key: string): void {
@@ -176,18 +185,16 @@ export function KeyValueEditor({
             {/* Row 2: value input (full width) */}
             <div>
               {!stringOnly && valType === 'boolean' ? (
-                <button
-                  type="button"
-                  onClick={() => toggleBooleanValue(key)}
+                <SegmentedControl
+                  label={`Value for ${key}`}
+                  value={val ? 'true' : 'false'}
+                  options={BOOLEAN_OPTIONS}
+                  onChange={(next): void =>
+                    setBooleanValue(key, next === 'true')
+                  }
                   disabled={readonly}
-                  className={`w-full px-3 py-2 text-s rounded-md border transition-colors text-left ${
-                    val
-                      ? 'bg-accent-subtle border-line-accent fg-accent'
-                      : 'bg-base fg-secondary'
-                  } ${readonly ? 'opacity-70 cursor-not-allowed' : ''}`}
-                >
-                  {val ? 'true' : 'false'}
-                </button>
+                  width="fill"
+                />
               ) : valType === 'number' ? (
                 <TextField
                   value={String(val)}

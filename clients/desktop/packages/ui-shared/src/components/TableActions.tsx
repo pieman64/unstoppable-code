@@ -13,6 +13,7 @@
  * Consumers: the Automations page tables and the Pipelines management table.
  */
 import type { JSX, ReactNode } from 'react';
+import { Button } from './Button';
 import { Tooltip } from './Tooltip';
 
 export interface TableActionButtonProps {
@@ -51,16 +52,15 @@ export function TableActionButton({
   // The destructive tone marks the *armed* half of a two-step delete, so it has
   // to read at a glance with no hover: DESIGN.md forbids hiding required
   // feedback behind hover, and a tooltip label flip alone left the armed state
-  // communicated only by a faint tint on a 14px glyph. A solid fill plus a ring
-  // makes "the next click deletes" unmistakable from across the row.
-  const toneClasses =
-    tone === 'destructive'
-      ? 'bg-destructive fg-emphasis ring-2 ring-line-destructive/40 hover:bg-destructive-hover'
-      : 'fg-secondary hover:bg-fg-primary/[0.08] hover:fg-primary';
+  // communicated only by a faint tint on a 14px glyph. The solid destructive
+  // fill makes "the next click deletes" unmistakable from across the row; at
+  // rest the action is the quiet per-row ghost every list repeats.
   return (
     <Tooltip label={label}>
-      <button
-        type="button"
+      <Button
+        variant={tone === 'destructive' ? 'destructive' : 'ghost-quiet'}
+        size="sm"
+        iconOnly
         onClick={(event): void => {
           event.stopPropagation();
           onClick();
@@ -69,10 +69,9 @@ export function TableActionButton({
         aria-label={label}
         aria-pressed={ariaPressed}
         data-testid={testId}
-        className={`focus-ring rounded p-1.5 transition-colors disabled:opacity-50 ${toneClasses}`}
       >
         {children}
-      </button>
+      </Button>
     </Tooltip>
   );
 }
@@ -113,9 +112,12 @@ export function TableActionsCell({
   onFocusLeave,
   onEscape,
 }: TableActionsCellProps): JSX.Element {
+  // On a coarse pointer each icon Button's hit area reaches 8px past its
+  // circle, so the 16px gap lets neighbouring hit areas meet without
+  // overlapping: a tap meant for Edit can never land on an armed Delete.
   return (
     <div
-      className="flex items-center justify-end gap-0.5"
+      className="flex items-center justify-end gap-0.5 pointer-coarse:gap-4"
       data-testid={testId}
       onClick={(event): void => event.stopPropagation()}
       onBlur={

@@ -10,6 +10,7 @@ import {
   useCostInsightsEnabled,
 } from './CostInsightsGate';
 import { CostViewFrame, costRefreshFailureReason } from './CostViewFrame';
+import { SESSION_BREAKDOWN_VIEW_SAMPLE } from './cost-view-samples';
 import { useSessionBreakdownStore } from './use-cost-view-store';
 import {
   SessionBreakdownContent,
@@ -101,6 +102,7 @@ function SessionBreakdownWithStore({
       status={state.status}
       problem={state.problem}
       onRetry={retry}
+      loadingSample={SESSION_BREAKDOWN_VIEW_SAMPLE}
       testId="session-breakdown-view"
     >
       {(view) => (

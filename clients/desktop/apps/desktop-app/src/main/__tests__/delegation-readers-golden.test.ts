@@ -123,6 +123,27 @@ const mockGetCompatibilityArchives = jest.fn<
   Promise<ArchivedChatsFile>,
   [WorktreeScope, ChatReadSelection?]
 >(() => Promise.resolve({ version: 1, archived: [] }));
+/** The replay's one leased read, over the same compatibility rows. */
+async function mockConsumeTranscript<T>(
+  scope: WorktreeScope,
+  chatId: string,
+  _fullOutputs: boolean,
+  consume: (messages: AsyncIterable<PersistedChatMessage>) => Promise<T>,
+): Promise<T> {
+  const selection = { chatIds: [chatId], fullTranscript: true };
+  const tabs = await mockGetCompatibilityTabs(scope, selection);
+  const archives = await mockGetCompatibilityArchives(scope, selection);
+  const tab = [
+    ...tabs.tabs,
+    ...archives.archived.map((entry) => entry.tab),
+  ].find((candidate) => candidate.id === chatId && candidate.kind !== 'file');
+  return consume(
+    (async function* (): AsyncGenerator<PersistedChatMessage> {
+      for (const message of tab?.messages ?? [])
+        yield await Promise.resolve(message);
+    })(),
+  );
+}
 const mockReadDelegationItems = jest.fn<
   Promise<AgentDelegationTranscriptItem[]>,
   [
@@ -229,6 +250,7 @@ jest.mock('../services/chat-state-service', () => ({
         mockTrace.call('compatibility.tabs', undefined, args, () =>
           mockGetCompatibilityTabs(...args),
         ),
+      consumeTranscript: mockConsumeTranscript,
       getCompatibilityArchives: (
         ...args: Parameters<typeof mockGetCompatibilityArchives>
       ): ReturnType<typeof mockGetCompatibilityArchives> =>
@@ -256,6 +278,8 @@ jest.mock('../services/chat-state-service', () => ({
         mockForbiddenRead('openChildStream', args),
       commitChildStream: (...args: unknown[]): Promise<never> =>
         mockForbiddenRead('commitChildStream', args),
+      commitPreparedChildStream: (...args: unknown[]): Promise<never> =>
+        mockForbiddenRead('commitPreparedChildStream', args),
       readChildStreamContent: (...args: unknown[]): Promise<never> =>
         mockForbiddenRead('readChildStreamContent', args),
       childStreamCompatibilityPage: (...args: unknown[]): Promise<never> =>

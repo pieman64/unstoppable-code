@@ -11,6 +11,7 @@ import {
 import { isMenuOpenBodyFlagSet } from '../lib/menu-open-body-flag';
 import { ActionMenuRowStyle } from './ActionMenuItems';
 import { ARCHIVED_ROW_ACTIONS_VISIBLE_WIDE } from './ArchivedOverviewRow';
+import { Button } from './Button';
 import {
   DropdownMenuDivider,
   DropdownMenuItem,
@@ -76,30 +77,37 @@ export function ArchivedRowActionsMenu({
   const restoreBlocked = restoreBlockedReason !== undefined;
   return (
     <>
-      <button
-        ref={triggerRef}
-        type="button"
-        aria-label={`More actions for ${itemName}`}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-controls={open ? menuId : undefined}
-        data-testid={`${testIdPrefix}-actions`}
-        onPointerDown={() => {
-          // Another row's menu dismisses on this pointerdown and swallows
-          // the click that completes it, so opening on click alone would
-          // cost the user a second press when switching between rows.
-          if (!open && isMenuOpenBodyFlagSet(document)) setOpen(true);
-        }}
-        onClick={(event) => {
-          event.stopPropagation();
-          setOpen((value) => !value);
-        }}
-        className={`focus-ring pointer-events-none inline-flex h-6 w-6 items-center justify-center rounded fg-secondary opacity-0 transition-opacity hover:bg-fg-primary/[0.08] hover:fg-primary group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100 pointer-coarse:h-11 pointer-coarse:w-11 ${triggerClassName} ${
+      {/* The wrapper owns the reveal; the Button keeps the per-row action
+          look and its 44px coarse-pointer hit area. */}
+      <span
+        className={`inline-flex pointer-events-none opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100 ${triggerClassName} ${
           open ? 'pointer-events-auto opacity-100' : ''
         }`}
       >
-        <MoreHorizontalIcon className="h-3 w-3" aria-hidden="true" />
-      </button>
+        <Button
+          ref={triggerRef}
+          variant="ghost-quiet"
+          size="sm"
+          iconOnly
+          aria-label={`More actions for ${itemName}`}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-controls={open ? menuId : undefined}
+          data-testid={`${testIdPrefix}-actions`}
+          onPointerDown={() => {
+            // Another row's menu dismisses on this pointerdown and swallows
+            // the click that completes it, so opening on click alone would
+            // cost the user a second press when switching between rows.
+            if (!open && isMenuOpenBodyFlagSet(document)) setOpen(true);
+          }}
+          onClick={(event) => {
+            event.stopPropagation();
+            setOpen((value) => !value);
+          }}
+        >
+          <MoreHorizontalIcon className="h-3 w-3" aria-hidden="true" />
+        </Button>
+      </span>
       <FloatingMenu
         id={menuId}
         open={open}

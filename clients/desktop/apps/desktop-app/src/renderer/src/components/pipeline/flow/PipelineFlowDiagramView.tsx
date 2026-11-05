@@ -40,7 +40,8 @@ import {
   OPERATIONAL_STATUS_COLORS,
   runStatusGlyphState,
 } from '@canopy/ui-shared/lib';
-import { StatusGlyph } from '@canopy/ui-shared/components';
+import { Button, EmptyState, StatusGlyph } from '@canopy/ui-shared/components';
+import { PlusIcon, SparkleIcon } from '@canopy/ui-shared/icons/AppIcons';
 
 const STATUS_BORDER: Record<PipelineFlowStatus, string> = {
   success: OPERATIONAL_STATUS_COLORS.success.border,
@@ -73,6 +74,7 @@ function FlowStatusGlyph({
 interface FlowInteraction {
   onSelectJob?: (jobId: string) => void;
   onSelectStep?: (jobId: string, stepIndex: number) => void;
+  onAddStep?: (jobId: string) => void;
 }
 
 const FlowInteractionContext = createContext<FlowInteraction>({});
@@ -127,7 +129,9 @@ function PipelineJobNodeView({
   sourcePosition,
   targetPosition,
 }: NodeProps<PipelineJobNode>): JSX.Element {
-  const { onSelectJob, onSelectStep } = useContext(FlowInteractionContext);
+  const { onSelectJob, onSelectStep, onAddStep } = useContext(
+    FlowInteractionContext,
+  );
   const jobBorder = data.selected
     ? 'border-line-accent ring-1 ring-line-accent/60'
     : STATUS_BORDER[data.status];
@@ -167,7 +171,7 @@ function PipelineJobNodeView({
       {data.matrix !== undefined && (
         <MatrixSummaryBody jobId={data.jobId} summary={data.matrix} />
       )}
-      {data.steps.length > 0 && (
+      {(data.steps.length > 0 || data.canAddStep === true) && (
         <div
           className="flex flex-col border-t px-2"
           style={{
@@ -199,6 +203,23 @@ function PipelineJobNodeView({
               </button>
             );
           })}
+          {data.canAddStep === true && onAddStep && (
+            // `nodrag` keeps React Flow from treating the press as a drag.
+            <div className="nodrag flex shrink-0">
+              <Button
+                variant="ghost"
+                size="compact"
+                data-testid="pipeline-flow-add-step"
+                onClick={(e): void => {
+                  e.stopPropagation();
+                  onAddStep(data.jobId);
+                }}
+              >
+                <PlusIcon size="xs" aria-hidden="true" />
+                Add step
+              </Button>
+            </div>
+          )}
         </div>
       )}
       <Handle
@@ -262,16 +283,37 @@ export function PipelineFlowDiagram({
   selection,
   onSelectJob,
   onSelectStep,
+  onAddStep,
+  onAddFirstJob,
+  onAskAssistant,
 }: {
   source: PipelineFlowSource;
   selection?: PipelineFlowSelection;
   onSelectJob?: (jobId: string) => void;
   onSelectStep?: (jobId: string, stepIndex: number) => void;
+  /**
+   * An editable flow (CAN-4319): the selected job offers `Add step` under its
+   * steps.
+   */
+  onAddStep?: (jobId: string) => void;
+  /** An editable flow with no jobs offers its first one. */
+  onAddFirstJob?: () => void;
+  /**
+   * An empty flow points at the assistant beside it (CAN-4319): its first
+   * action puts the cursor in the assistant's composer.
+   */
+  onAskAssistant?: () => void;
 }): JSX.Element {
+  const addStepJobId = onAddStep ? selection?.jobId : undefined;
   const { nodes, edges } = useMemo(() => {
     const flow =
       source.kind === 'definition'
-        ? buildDefinitionFlow(source.pipeline, source.jobOrder)
+        ? buildDefinitionFlow(
+            source.pipeline,
+            source.jobOrder,
+            undefined,
+            addStepJobId !== undefined ? { addStepJobId } : {},
+          )
         : buildExecutionFlow(source.state, source.jobOrder);
     return {
       edges: flow.edges,
@@ -288,12 +330,50 @@ export function PipelineFlowDiagram({
         },
       })),
     };
-  }, [selection, source]);
+  }, [addStepJobId, selection, source]);
 
   const interaction = useMemo<FlowInteraction>(
-    () => ({ onSelectJob, onSelectStep }),
-    [onSelectJob, onSelectStep],
+    () => ({ onSelectJob, onSelectStep, onAddStep }),
+    [onAddStep, onSelectJob, onSelectStep],
   );
+
+  if (onAddFirstJob && source.kind === 'definition' && nodes.length === 0) {
+    return (
+      <div
+        className="flex h-full items-center justify-center p-6"
+        data-testid="pipeline-flow-empty"
+      >
+        <EmptyState
+          title="No jobs yet"
+          subtitle="Tell the assistant what it should do, and it builds the flow here."
+          action={
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              {onAskAssistant ? (
+                <Button
+                  variant="primary"
+                  size="compact"
+                  onClick={onAskAssistant}
+                  data-testid="pipeline-flow-ask-assistant"
+                >
+                  <SparkleIcon aria-hidden="true" />
+                  Describe it to the assistant
+                </Button>
+              ) : null}
+              <Button
+                variant="secondary"
+                size="compact"
+                onClick={onAddFirstJob}
+                data-testid="pipeline-flow-add-first-job"
+              >
+                <PlusIcon aria-hidden="true" />
+                Add the first job
+              </Button>
+            </div>
+          }
+        />
+      </div>
+    );
+  }
 
   return (
     <FlowInteractionContext.Provider value={interaction}>

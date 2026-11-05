@@ -3,6 +3,7 @@ import {
   type ReadEvidenceCursor,
   type ReadEvidenceSnapshot,
 } from '@canopy/desktop-shared/lib/bounded-read-evidence';
+import { useEffect } from 'react';
 import { create } from 'zustand';
 import type {
   FileIndexResponse,
@@ -260,6 +261,187 @@ type FilesRendererEvidenceEvent = {
 const filesEvidence = createBoundedReadEvidence<FilesRendererEvidenceEvent>();
 let filesRequestSequence = 0;
 
+/**
+ * Number of released full file indexes kept after their last consumer lets
+ * go. Indexes a visible consumer retains are always kept; past this allowance
+ * the oldest released entry is evicted and fetched again on demand.
+ */
+export const FILE_INDEX_RELEASED_ALLOWANCE = 2;
+
+// Residency bookkeeping lives outside Zustand state, so retaining or
+// releasing an index never re-renders a subscriber. Only an eviction writes.
+const fileIndexRetainCounts = new Map<string, number>();
+/** Released, unretained index keys, oldest first. */
+const releasedFileIndexKeys: string[] = [];
+
+function removeReleasedFileIndexKey(key: string): void {
+  const index = releasedFileIndexKeys.indexOf(key);
+  if (index !== -1) releasedFileIndexKeys.splice(index, 1);
+}
+
+function hasResidentFileIndexState(key: string): boolean {
+  const state = useFileListStore.getState();
+  return (
+    key in state.indexCache ||
+    key in state.indexErrors ||
+    state.indexLoading.has(key)
+  );
+}
+
+/**
+ * Drops released entries past the allowance, oldest first. An evicted entry
+ * that is still refreshing is fenced by the version bump, so its in-flight
+ * response cannot repopulate the cache.
+ */
+function enforceReleasedFileIndexAllowance(): void {
+  const evicted: string[] = [];
+  while (releasedFileIndexKeys.length > FILE_INDEX_RELEASED_ALLOWANCE) {
+    const key = releasedFileIndexKeys.shift();
+    if (key === undefined) break;
+    if ((fileIndexRetainCounts.get(key) ?? 0) > 0) continue;
+    evicted.push(key);
+  }
+  if (evicted.length === 0) return;
+  useFileListStore.setState((state) => {
+    const indexCache = { ...state.indexCache };
+    const indexErrors = { ...state.indexErrors };
+    const indexVersions = { ...state.indexVersions };
+    const indexLoading = new Set(state.indexLoading);
+    for (const key of evicted) {
+      delete indexCache[key];
+      delete indexErrors[key];
+      indexLoading.delete(key);
+      indexVersions[key] = (state.indexVersions[key] ?? 0) + 1;
+    }
+    return { indexCache, indexErrors, indexVersions, indexLoading };
+  });
+}
+
+/** Moves a key to the newest end of the released list when nothing retains it. */
+let releasedFileIndexEnforcementQueued = false;
+
+// A view switching keys releases its old key in the same React commit that
+// retains the new one, cleanups first. Enforcing after the commit keeps a key
+// that is being retained again.
+function scheduleReleasedFileIndexEnforcement(): void {
+  if (releasedFileIndexEnforcementQueued) return;
+  releasedFileIndexEnforcementQueued = true;
+  // A promise job rather than queueMicrotask, which fake timers replace.
+  void Promise.resolve().then((): void => {
+    releasedFileIndexEnforcementQueued = false;
+    enforceReleasedFileIndexAllowance();
+  });
+}
+
+function noteReleasedFileIndex(key: string): void {
+  if ((fileIndexRetainCounts.get(key) ?? 0) > 0) return;
+  removeReleasedFileIndexKey(key);
+  if (!hasResidentFileIndexState(key)) return;
+  releasedFileIndexKeys.push(key);
+  scheduleReleasedFileIndexEnforcement();
+}
+
+/**
+ * Keeps the full file index under `key` resident until the returned release
+ * runs. Counts are per key, so overlapping consumers share one entry; the
+ * release is idempotent. Retaining does not fetch: each consumer keeps its
+ * own fetch gate and fetches again when its entry is missing.
+ */
+export function retainFileIndex(key: string): () => void {
+  fileIndexRetainCounts.set(key, (fileIndexRetainCounts.get(key) ?? 0) + 1);
+  removeReleasedFileIndexKey(key);
+  let released = false;
+  return (): void => {
+    if (released) return;
+    released = true;
+    const count = (fileIndexRetainCounts.get(key) ?? 0) - 1;
+    if (count > 0) {
+      fileIndexRetainCounts.set(key, count);
+      return;
+    }
+    fileIndexRetainCounts.delete(key);
+    noteReleasedFileIndex(key);
+  };
+}
+
+/**
+ * Retains the index under `key` for as long as the calling component shows
+ * it. Pass `null` while nothing is shown.
+ */
+export function useRetainFileIndex(key: string | null): void {
+  useEffect((): (() => void) | undefined => {
+    if (key === null) return undefined;
+    return retainFileIndex(key);
+  }, [key]);
+}
+
+/**
+ * Holds a lease on `key` across an asynchronous fetch-then-read, so settling
+ * unretained fetches cannot evict the entry between the two. Releasing marks
+ * the entry as most recently used.
+ */
+export async function withRetainedFileIndex<T>(
+  key: string,
+  read: () => Promise<T>,
+): Promise<T> {
+  const release = retainFileIndex(key);
+  try {
+    return await read();
+  } finally {
+    release();
+  }
+}
+
+/**
+ * One versioned full-index read. A response commits only while its version is
+ * current; invalidation and eviction bump the version to discard it. An entry
+ * that commits while nothing retains it joins the released list.
+ */
+async function loadFileIndex(
+  key: string,
+  request: () => Promise<FileIndexResponse>,
+): Promise<void> {
+  const { getState, setState } = useFileListStore;
+  const version = (getState().indexVersions[key] ?? 0) + 1;
+
+  setState((state) => ({
+    indexVersions: { ...state.indexVersions, [key]: version },
+    indexErrors: omitKey(state.indexErrors, key),
+    indexLoading: new Set(state.indexLoading).add(key),
+  }));
+
+  let committed = false;
+  try {
+    const data = await request();
+    setState((state) => {
+      if ((state.indexVersions[key] ?? 0) !== version) return state;
+      committed = true;
+      return {
+        indexCache: {
+          ...state.indexCache,
+          [key]: { data, fetchedAt: Date.now() },
+        },
+        indexErrors: omitKey(state.indexErrors, key),
+        indexLoading: removeFromSet(state.indexLoading, key),
+      };
+    });
+  } catch (error: unknown) {
+    setState((state) => {
+      if ((state.indexVersions[key] ?? 0) !== version) return state;
+      committed = true;
+      return {
+        indexErrors: {
+          ...state.indexErrors,
+          [key]:
+            error instanceof Error ? error.message : 'Unable to load files.',
+        },
+        indexLoading: removeFromSet(state.indexLoading, key),
+      };
+    });
+  }
+  if (committed) noteReleasedFileIndex(key);
+}
+
 export const useFileListStore = create<FileListState>((set, get) => ({
   indexCache: {},
   indexErrors: {},
@@ -279,85 +461,19 @@ export const useFileListStore = create<FileListState>((set, get) => ({
   fileTreeExpandedPaths: {},
   fileTreeScrollPositions: {},
 
-  fetchFileIndex: async (projectId, worktreeId): Promise<void> => {
-    const key = getWorktreeCacheKey(projectId, worktreeId);
-    const version = (get().indexVersions[key] ?? 0) + 1;
+  fetchFileIndex: (projectId, worktreeId): Promise<void> =>
+    loadFileIndex(getWorktreeCacheKey(projectId, worktreeId), () =>
+      window.api.getFileIndex({ projectId, worktreeId }),
+    ),
 
-    set((state) => ({
-      indexVersions: { ...state.indexVersions, [key]: version },
-      indexErrors: omitKey(state.indexErrors, key),
-      indexLoading: new Set(state.indexLoading).add(key),
-    }));
-
-    try {
-      const data = await window.api.getFileIndex({ projectId, worktreeId });
-      set((state) => {
-        if ((state.indexVersions[key] ?? 0) !== version) return state;
-        return {
-          indexCache: {
-            ...state.indexCache,
-            [key]: { data, fetchedAt: Date.now() },
-          },
-          indexErrors: omitKey(state.indexErrors, key),
-          indexLoading: removeFromSet(state.indexLoading, key),
-        };
-      });
-    } catch (error: unknown) {
-      set((state) => {
-        if ((state.indexVersions[key] ?? 0) !== version) return state;
-        return {
-          indexErrors: {
-            ...state.indexErrors,
-            [key]:
-              error instanceof Error ? error.message : 'Unable to load files.',
-          },
-          indexLoading: removeFromSet(state.indexLoading, key),
-        };
-      });
-    }
-  },
-
-  fetchFileTreeIndex: async (projectId, worktreeId): Promise<void> => {
-    const key = getFileTreeIndexCacheKey(projectId, worktreeId);
-    const version = (get().indexVersions[key] ?? 0) + 1;
-
-    set((state) => ({
-      indexVersions: { ...state.indexVersions, [key]: version },
-      indexErrors: omitKey(state.indexErrors, key),
-      indexLoading: new Set(state.indexLoading).add(key),
-    }));
-
-    try {
-      const data = await window.api.getFileIndex({
+  fetchFileTreeIndex: (projectId, worktreeId): Promise<void> =>
+    loadFileIndex(getFileTreeIndexCacheKey(projectId, worktreeId), () =>
+      window.api.getFileIndex({
         projectId,
         worktreeId,
         purpose: 'file-explorer',
-      });
-      set((state) => {
-        if ((state.indexVersions[key] ?? 0) !== version) return state;
-        return {
-          indexCache: {
-            ...state.indexCache,
-            [key]: { data, fetchedAt: Date.now() },
-          },
-          indexErrors: omitKey(state.indexErrors, key),
-          indexLoading: removeFromSet(state.indexLoading, key),
-        };
-      });
-    } catch (error: unknown) {
-      set((state) => {
-        if ((state.indexVersions[key] ?? 0) !== version) return state;
-        return {
-          indexErrors: {
-            ...state.indexErrors,
-            [key]:
-              error instanceof Error ? error.message : 'Unable to load files.',
-          },
-          indexLoading: removeFromSet(state.indexLoading, key),
-        };
-      });
-    }
-  },
+      }),
+    ),
 
   fetchFileTreeRoots: (projectId, worktreeId): Promise<void> => {
     const key = getWorktreeCacheKey(projectId, worktreeId);
@@ -616,6 +732,9 @@ export const useFileListStore = create<FileListState>((set, get) => ({
     const explorerIndexKey = getFileTreeIndexCacheKey(projectId, worktreeId);
     const directoryPrefix = `${worktreeKey}::`;
     inFlightRootsRequests.delete(worktreeKey);
+    // The entries are dropped below; a later commit re-joins the released list.
+    removeReleasedFileIndexKey(worktreeKey);
+    removeReleasedFileIndexKey(explorerIndexKey);
 
     set((state) => {
       // Index
@@ -688,6 +807,7 @@ export const useFileListStore = create<FileListState>((set, get) => ({
 
   invalidateAll: (): void => {
     inFlightRootsRequests.clear();
+    releasedFileIndexKeys.length = 0;
     set((state) => {
       const bumpEvery = (
         versions: Record<string, number>,

@@ -333,14 +333,3 @@ export function useChatHeldRunKeys(
     [joined],
   );
 }
-
-export function resetChatBackgroundWorkStoreForTests(): void {
-  useChatBackgroundWorkStore.setState({
-    byChat: {},
-    agentsByChat: {},
-    agentLive: {},
-    pullRequestsByChat: {},
-    seenLive: {},
-    dismissed: {},
-  });
-}

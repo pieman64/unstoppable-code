@@ -19,7 +19,7 @@ import type {
   PipelinePluginCollectionPreference,
   PipelinePluginDefaultPreviewItem,
 } from '@canopy/desktop-shared/types/pipeline';
-import { ChevronIcon } from '@canopy/ui-shared/icons';
+import { Disclosure } from '@canopy/ui-shared/components';
 
 interface PipelinePluginCollectionEditorProps {
   collection: PipelinePluginCollection;
@@ -109,52 +109,37 @@ export function PipelinePluginCollectionEditor({
     // table still has a valid `onView` handler.
   }
 
-  const contentId = `pipeline-plugin-collection-${collection.id}-content`;
-
   return (
-    <div
-      className="rounded-lg border bg-fg-primary/[0.02]"
-      data-testid={`pipeline-plugin-collection-${collection.id}`}
-    >
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        aria-expanded={expanded}
-        aria-controls={contentId}
-        className="flex w-full items-start gap-2 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-fg-primary/[0.04]"
-      >
-        <span className="mt-0.5 fg-secondary">
-          <ChevronIcon open={expanded} />
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-s font-medium fg-primary">
-            {collection.name}
-          </span>
+    <Disclosure
+      variant="box"
+      open={expanded}
+      onOpenChange={setExpanded}
+      dataTestId={`pipeline-plugin-collection-${collection.id}`}
+      label={
+        <span className="flex min-w-0 flex-col">
+          <span className="truncate">{collection.name}</span>
           {collection.description && (
-            <span className="block truncate text-xs fg-secondary">
+            <span className="truncate text-xs font-normal fg-secondary">
               {collection.description}
             </span>
           )}
-          <span className="mt-0.5 block text-xs fg-secondary">
+          <span className="text-xs font-normal fg-secondary">
             {selectionSummary}
           </span>
         </span>
-      </button>
-      {expanded && (
-        <div id={contentId} className="border-t p-3">
-          <UnifiedTable
-            rows={annotatedRows}
-            sourceOptions={sourceOptions}
-            selectedKeys={selectedKeys}
-            onToggle={handleToggle}
-            onView={handleView}
-            showCollectionKind={true}
-            loading={loading}
-            defaultSelectedFilter="all"
-            hideSelectionSummary
-          />
-        </div>
-      )}
-    </div>
+      }
+    >
+      <UnifiedTable
+        rows={annotatedRows}
+        sourceOptions={sourceOptions}
+        selectedKeys={selectedKeys}
+        onToggle={handleToggle}
+        onView={handleView}
+        showCollectionKind={true}
+        loading={loading}
+        defaultSelectedFilter="all"
+        hideSelectionSummary
+      />
+    </Disclosure>
   );
 }

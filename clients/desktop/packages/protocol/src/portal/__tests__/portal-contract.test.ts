@@ -1,3 +1,4 @@
+import { parsePortalWatcher } from '../index';
 import {
   readChatWatcherFired,
   PORTAL_CAPABILITY_APP_ADVISOR,
@@ -2371,4 +2372,55 @@ it('registers collection update as an operation-specific long RPC', () => {
   expect(
     Reflect.get(portalContract, 'PORTAL_CAPABILITY_COLLECTION_UPDATES'),
   ).toBe('collection_updates_v1');
+});
+
+// app-advisor:watchers-changed observations feed the same paired watcher entity.
+describe('Watcher projection wire compatibility', () => {
+  const entity = {
+    id: 'watcher',
+    projectId: 'project',
+    worktreeId: 'branch',
+    chatId: 'chat',
+    trigger: 'worktree_pipeline_completion',
+    targetKind: 'worktree_pipeline',
+    status: 'active',
+    createdAt: '2026-10-27T12:00:00.000Z',
+    display: {
+      title: 'Build',
+      subtitle: 'Workflow completion',
+      watching: 'Tests',
+      watchingSubtitle: 'Project / branch',
+      status: 'Active',
+      details: [],
+    },
+  };
+
+  it('preserves observed PR diff counts and rejects invalid counts', () => {
+    const pullRequest = {
+      repository: 'acme/api',
+      number: 218,
+      title: 'Unify the work drawer',
+      url: 'https://github.com/acme/api/pull/218',
+      baseRefName: 'develop',
+      state: 'open',
+      queue: null,
+      observedAt: '2026-11-04T12:00:00Z',
+      additions: 128,
+      deletions: 42,
+    };
+    const parse = (
+      value: typeof pullRequest,
+    ): ReturnType<typeof parsePortalWatcher> =>
+      parsePortalWatcher({
+        ...entity,
+        githubPullRequestProgress: { pullRequests: [value] },
+      });
+    expect(
+      parse(pullRequest)?.githubPullRequestProgress?.pullRequests[0],
+    ).toEqual(pullRequest);
+    for (const count of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(parse({ ...pullRequest, additions: count })).toBeNull();
+      expect(parse({ ...pullRequest, deletions: count })).toBeNull();
+    }
+  });
 });

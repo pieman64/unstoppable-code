@@ -464,18 +464,20 @@ const AuthRecoveryRow = memo(function AuthRecoveryRow({
           <span className="shrink-0 fg-secondary">
             Finish signing in, then leave this open:
           </span>
-          <button
-            type="button"
+          <Button
+            variant="link"
             data-testid="auth-recovery-authorization-url"
             onClick={(): void => {
               void window.api.browser.openExternal({
                 url: recovery.authorizationUrl ?? '',
               });
             }}
-            className="focus-ring min-w-0 flex-1 truncate rounded-md px-1 py-0.5 text-left underline fg-accent"
+            className="min-w-0 flex-1"
           >
-            {recovery.authorizationUrl}
-          </button>
+            <span className="block truncate text-left">
+              {recovery.authorizationUrl}
+            </span>
+          </Button>
           <CopyButton
             value={recovery.authorizationUrl}
             dataTestId="auth-recovery-copy-url"

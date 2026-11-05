@@ -168,7 +168,18 @@ export {
   type DelegationChildPagesProps,
 } from './code/DelegationChildPages';
 export {
+  overlayManagedDelegationProgress,
+  type ManagedDelegationProgress,
+  type ManagedDelegationProgressOverlay,
+} from './code/managed-delegation-progress';
+export {
+  ManagedDelegationCard,
+  type ManagedDelegationCardProps,
+} from './code/ManagedDelegationCard';
+export {
   DelegationChildRowNotice,
+  repeatsCardResult,
+  type DelegationChildRowDisplay,
   type DelegationChildRowEntry,
 } from './code/delegation-child-rows';
 export {
@@ -312,6 +323,8 @@ export {
   backgroundTrayCounts,
   type BackgroundTrayCounts,
   type BackgroundTrayProps,
+  type BackgroundTrayWatcher,
+  type DeleteBackgroundTrayWatcher,
 } from './code/activity/background-tray/BackgroundTray';
 export {
   githubBackgroundTrayRun,
@@ -337,6 +350,7 @@ export {
   portalBackgroundProcessToTask,
   portalBackgroundTrayAgents,
   portalBackgroundTrayRuns,
+  portalBackgroundTrayWatchers,
 } from './code/activity/portal-background-tray-mapper';
 export {
   McpServersSectionBody,
@@ -626,7 +640,6 @@ export {
   bulkStateActions,
   deriveSelectionMenuItems,
   rowNeedsStateAction,
-  selectionToggleMenuItem,
   withSelectionGroupItems,
   type SidebarBulkNotificationState,
   type SidebarBulkRowState,
@@ -973,6 +986,20 @@ export {
   PlanModeHint,
   type PlanModeHintProps,
 } from './code/composer/PlanModeHint';
+export {
+  GitHubStarPromptProvider,
+  useGitHubStarPromptStore,
+} from './code/composer/GitHubStarPromptContext';
+export {
+  GITHUB_STAR_PROMPT_DONE_MS,
+  useGitHubStarPrompt,
+  type GitHubStarPromptOffer,
+  type UseGitHubStarPromptOptions,
+} from './code/composer/useGitHubStarPrompt';
+export {
+  GitHubStarPrompt,
+  type GitHubStarPromptProps,
+} from './code/composer/GitHubStarPrompt';
 
 export {
   DelegationRowBlocks,

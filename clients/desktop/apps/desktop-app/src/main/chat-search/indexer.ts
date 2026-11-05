@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 import { chatTabLabel } from '@canopy/protocol';
 import type { TranscriptTarget } from '@canopy/protocol/canopy-core';
 import {
@@ -172,6 +172,21 @@ function withImmediateTransaction<T>(db: DatabaseSync, fn: () => T): T {
     }
     throw error;
   }
+}
+
+/**
+ * The `chat_fts` rowids of the docs `docIds` selects. FTS5 cannot index
+ * `doc_id`, so a `doc_id` filter reads every indexed row; `chat_docs` records
+ * each doc's body and in-flight rowids instead. Read them before deleting or
+ * rewriting the `chat_docs` rows.
+ */
+function ftsRowidsOf(docIds: string): string {
+  return `WITH docs AS (${docIds})
+    SELECT body_fts_rowid AS fts_rowid FROM chat_docs
+    WHERE doc_id IN docs AND body_fts_rowid IS NOT NULL
+    UNION ALL
+    SELECT active_fts_rowid AS fts_rowid FROM chat_docs
+    WHERE doc_id IN docs AND active_fts_rowid IS NOT NULL`;
 }
 
 function parseTimestamp(value: string | undefined): number | null {
@@ -641,7 +656,7 @@ export class ChatSearchIndexer {
     const docId = `${projectId}/${worktreeId}/${chatId}/${source}`;
     withImmediateTransaction(this.db, () => {
       this.deleteChildDocuments(docId);
-      this.db.prepare('DELETE FROM chat_fts WHERE doc_id = ?').run(docId);
+      this.deleteFtsRows('SELECT ?', docId);
       this.db.prepare('DELETE FROM chat_docs WHERE doc_id = ?').run(docId);
     });
   }
@@ -649,7 +664,7 @@ export class ChatSearchIndexer {
   deleteDocById(docId: string): void {
     withImmediateTransaction(this.db, () => {
       this.deleteChildDocuments(docId);
-      this.db.prepare('DELETE FROM chat_fts WHERE doc_id = ?').run(docId);
+      this.deleteFtsRows('SELECT ?', docId);
       this.db.prepare('DELETE FROM chat_docs WHERE doc_id = ?').run(docId);
     });
   }
@@ -911,18 +926,15 @@ export class ChatSearchIndexer {
             throw new Error('Invalid staged child search document');
         }
 
-        this.db
-          .prepare(
-            `DELETE FROM chat_fts
-             WHERE doc_id IN (
-               SELECT doc_id FROM chat_docs
-               WHERE parent_doc_id = ? AND document_kind = 'chat-child'
-                 AND doc_id NOT IN (
-                   SELECT doc_id FROM chat_search_child_staging WHERE job = ?
-                 )
+        this.deleteFtsRows(
+          `SELECT doc_id FROM chat_docs
+           WHERE parent_doc_id = ? AND document_kind = 'chat-child'
+             AND doc_id NOT IN (
+               SELECT doc_id FROM chat_search_child_staging WHERE job = ?
              )`,
-          )
-          .run(parentDocId, job);
+          parentDocId,
+          job,
+        );
         this.db
           .prepare(
             `DELETE FROM chat_docs
@@ -965,9 +977,7 @@ export class ChatSearchIndexer {
           ) {
             throw new Error('Invalid staged child search document');
           }
-          this.db
-            .prepare('DELETE FROM chat_fts WHERE doc_id = ?')
-            .run(parsed.docId);
+          this.deleteFtsRows('SELECT ?', parsed.docId);
           this.writeDoc(parsed);
         }
         this.updateChildMetadataFromParent(parentDocId);
@@ -1014,7 +1024,7 @@ export class ChatSearchIndexer {
          WHERE d.doc_id = ? AND d.parent_doc_id = ?
            AND d.document_kind = 'chat-child'
            AND d.transcript_fingerprint = ?
-           AND EXISTS (SELECT 1 FROM chat_fts f WHERE f.doc_id = d.doc_id)`,
+           AND EXISTS (SELECT 1 FROM chat_fts f WHERE f.rowid = d.body_fts_rowid)`,
       )
       .get(childDocId, parentDocId, fingerprint);
     if (result === undefined) return false;
@@ -1070,15 +1080,12 @@ export class ChatSearchIndexer {
         const rememberParent = this.db.prepare(
           'INSERT INTO chat_search_retained_parents (job, doc_id) VALUES (?, ?)',
         );
-        const deleteFts = this.db.prepare(
-          'DELETE FROM chat_fts WHERE doc_id = ?',
-        );
         const iterator = docs[Symbol.iterator]();
         for (let row = iterator.next(); !row.done; row = iterator.next()) {
           const doc = row.value;
           if (!isChatSearchDoc(doc) || doc.documentKind === 'chat-child')
             throw new Error('Invalid parent search scope document');
-          deleteFts.run(doc.docId);
+          this.deleteFtsRows('SELECT ?', doc.docId);
           this.writeDoc(doc);
           rememberParent.run(job, doc.docId);
           this.updateChildMetadataFromParent(doc.docId);
@@ -1095,9 +1102,7 @@ export class ChatSearchIndexer {
                   ELSE d.doc_id
                 END
             )`;
-        this.db
-          .prepare(`DELETE FROM chat_fts WHERE doc_id IN (${obsoleteDocs})`)
-          .run(projectId, worktreeId, source, job);
+        this.deleteFtsRows(obsoleteDocs, projectId, worktreeId, source, job);
         this.db
           .prepare(`DELETE FROM chat_docs WHERE doc_id IN (${obsoleteDocs})`)
           .run(projectId, worktreeId, source, job);
@@ -1112,7 +1117,7 @@ export class ChatSearchIndexer {
   public upsertDoc(doc: ChatSearchDoc): void {
     if (!isChatSearchDoc(doc)) throw new Error('Invalid chat search document');
     withImmediateTransaction(this.db, () => {
-      this.db.prepare('DELETE FROM chat_fts WHERE doc_id = ?').run(doc.docId);
+      this.deleteFtsRows('SELECT ?', doc.docId);
       this.writeDoc(doc);
       if (doc.documentKind !== 'chat-child')
         this.updateChildMetadataFromParent(doc.docId);
@@ -1128,34 +1133,34 @@ export class ChatSearchIndexer {
     docId: string,
     fingerprint: string,
   ): IndexedChatSearchBodies | null {
-    const rows: unknown[] = this.db
+    const result: unknown = this.db
       .prepare(
-        `SELECT chat_fts.body AS body,
-                chat_fts.rowid IS chat_docs.active_fts_rowid AS active,
-                chat_docs.committed_fingerprint AS committed_fingerprint
-         FROM chat_docs
-         JOIN chat_fts ON chat_fts.doc_id = chat_docs.doc_id
-         WHERE chat_docs.doc_id = ? AND chat_docs.transcript_fingerprint = ?`,
+        `SELECT body_fts_rowid, active_fts_rowid, committed_fingerprint
+         FROM chat_docs WHERE doc_id = ? AND transcript_fingerprint = ?`,
       )
-      .all(docId, fingerprint);
-    let indexed: IndexedChatSearchBodies | null = null;
-    let activeBody: string | undefined;
-    for (const result of rows) {
-      const row = requireSqliteRow(result);
-      if (typeof row.body !== 'string') return null;
-      if (row.active === 1) {
-        activeBody = row.body;
-        continue;
-      }
-      indexed = {
-        body: row.body,
-        ...(typeof row.committed_fingerprint === 'string'
-          ? { committedFingerprint: row.committed_fingerprint }
-          : {}),
-      };
-    }
-    if (indexed === null) return null;
-    return activeBody === undefined ? indexed : { ...indexed, activeBody };
+      .get(docId, fingerprint);
+    if (result === undefined) return null;
+    const row = requireSqliteRow(result);
+    const body = this.ftsBody(sqliteRowid(row.body_fts_rowid));
+    if (body === null) return null;
+    const activeBody = this.ftsBody(sqliteRowid(row.active_fts_rowid));
+    return {
+      body,
+      ...(typeof row.committed_fingerprint === 'string'
+        ? { committedFingerprint: row.committed_fingerprint }
+        : {}),
+      ...(activeBody === null ? {} : { activeBody }),
+    };
+  }
+
+  private ftsBody(rowid: number | bigint | null): string | null {
+    if (rowid === null) return null;
+    const result: unknown = this.db
+      .prepare('SELECT body FROM chat_fts WHERE rowid = ?')
+      .get(rowid);
+    if (result === undefined) return null;
+    const row = requireSqliteRow(result);
+    return typeof row.body === 'string' ? row.body : null;
   }
 
   /** The committed prefix identity whose text the doc's body row holds. */
@@ -1182,17 +1187,21 @@ export class ChatSearchIndexer {
     return withImmediateTransaction(this.db, () => {
       const result: unknown = this.db
         .prepare(
-          `SELECT title, committed_fingerprint, active_fts_rowid
+          `SELECT title, committed_fingerprint, body_fts_rowid, active_fts_rowid
            FROM chat_docs WHERE doc_id = ?`,
         )
         .get(doc.docId);
       if (result === undefined) return false;
       const row = requireSqliteRow(result);
       if (row.committed_fingerprint !== expected) return false;
+      const bodyRowid = sqliteRowid(row.body_fts_rowid);
       const activeRowid = sqliteRowid(row.active_fts_rowid);
-      const committedRow = this.db
-        .prepare('SELECT 1 FROM chat_fts WHERE doc_id = ? AND rowid IS NOT ?')
-        .get(doc.docId, activeRowid);
+      const committedRow =
+        bodyRowid === null
+          ? undefined
+          : this.db
+              .prepare('SELECT 1 FROM chat_fts WHERE rowid = ?')
+              .get(bodyRowid);
       if (committedRow === undefined) return false;
       if (activeRowid !== null)
         this.db
@@ -1200,8 +1209,8 @@ export class ChatSearchIndexer {
           .run(activeRowid, doc.docId);
       if (row.title !== doc.title)
         this.db
-          .prepare('UPDATE chat_fts SET title = ? WHERE doc_id = ?')
-          .run(doc.title, doc.docId);
+          .prepare('UPDATE chat_fts SET title = ? WHERE rowid = ?')
+          .run(doc.title, bodyRowid);
       this.writeDocMetadata(doc);
       this.writeActiveRow(doc);
       this.updateChildMetadataFromParent(doc.docId);
@@ -1215,9 +1224,11 @@ export class ChatSearchIndexer {
     const result = this.db
       .prepare(
         `SELECT * FROM chat_docs WHERE doc_id = ?
-        AND EXISTS (SELECT 1 FROM chat_fts WHERE doc_id = ?)`,
+        AND EXISTS (
+          SELECT 1 FROM chat_fts WHERE rowid = chat_docs.body_fts_rowid
+        )`,
       )
-      .get(doc.docId, doc.docId);
+      .get(doc.docId);
     if (!result) return false;
     const row = requireSqliteRow(result);
     if (row.transcript_fingerprint !== doc.transcriptFingerprint) return false;
@@ -1243,9 +1254,7 @@ export class ChatSearchIndexer {
     return withImmediateTransaction(this.db, () => {
       this.writeDocMetadata(doc);
       if (row.title !== doc.title)
-        this.db
-          .prepare('UPDATE chat_fts SET title = ? WHERE doc_id = ?')
-          .run(doc.title, doc.docId);
+        this.setFtsTitle(doc.title, 'SELECT ?', doc.docId);
       this.updateChildMetadataFromParent(doc.docId);
       return true;
     });
@@ -1253,9 +1262,12 @@ export class ChatSearchIndexer {
 
   private writeDoc(doc: ChatSearchDoc): void {
     this.writeDocMetadata(doc);
-    this.db
+    const bodyRowid = this.db
       .prepare('INSERT INTO chat_fts (doc_id, title, body) VALUES (?, ?, ?)')
-      .run(doc.docId, doc.title, doc.body);
+      .run(doc.docId, doc.title, doc.body).lastInsertRowid;
+    this.db
+      .prepare('UPDATE chat_docs SET body_fts_rowid = ? WHERE doc_id = ?')
+      .run(bodyRowid, doc.docId);
     this.writeActiveRow(doc);
   }
 
@@ -1367,32 +1379,63 @@ export class ChatSearchIndexer {
            )`,
       )
       .run(parentDocId);
-    this.db
+    const parent: unknown = this.db
       .prepare(
-        `WITH parent AS (
-           SELECT doc_id, title FROM chat_docs
-           WHERE doc_id = ? AND document_kind = 'chat'
-         )
-         UPDATE chat_fts SET title = (SELECT title FROM parent)
-         WHERE title IS NOT (SELECT title FROM parent)
-           AND doc_id IN (
-             SELECT child.doc_id FROM chat_docs child, parent
-             WHERE child.parent_doc_id = parent.doc_id
-               AND child.document_kind = 'chat-child'
-           )`,
+        `SELECT title FROM chat_docs WHERE doc_id = ? AND document_kind = 'chat'`,
       )
-      .run(parentDocId);
+      .get(parentDocId);
+    if (parent === undefined) return;
+    const { title } = requireSqliteRow(parent);
+    if (typeof title === 'string')
+      this.setFtsTitle(
+        title,
+        `SELECT doc_id FROM chat_docs
+         WHERE parent_doc_id = ? AND document_kind = 'chat-child'`,
+        parentDocId,
+      );
+  }
+
+  /**
+   * Rowids are read before the rows are written: one FTS5 statement that both
+   * selects and deletes many rows ran 10-40x slower than one delete per rowid.
+   */
+  private ftsRowids(
+    docIds: string,
+    params: SQLInputValue[],
+  ): Array<number | bigint> {
+    return this.db
+      .prepare(ftsRowidsOf(docIds))
+      .all(...params)
+      .flatMap((result) => {
+        const rowid = sqliteRowid(requireSqliteRow(result).fts_rowid);
+        return rowid === null ? [] : [rowid];
+      });
+  }
+
+  private deleteFtsRows(docIds: string, ...params: SQLInputValue[]): void {
+    const remove = this.db.prepare('DELETE FROM chat_fts WHERE rowid = ?');
+    for (const rowid of this.ftsRowids(docIds, params)) remove.run(rowid);
+  }
+
+  /** Rewriting an FTS5 row re-tokenizes its body, so unchanged titles are skipped. */
+  private setFtsTitle(
+    title: string,
+    docIds: string,
+    ...params: SQLInputValue[]
+  ): void {
+    const update = this.db.prepare(
+      'UPDATE chat_fts SET title = ? WHERE rowid = ? AND title IS NOT ?',
+    );
+    for (const rowid of this.ftsRowids(docIds, params))
+      update.run(title, rowid, title);
   }
 
   private deleteChildDocuments(parentDocId: string): void {
-    this.db
-      .prepare(
-        `DELETE FROM chat_fts WHERE doc_id IN (
-           SELECT doc_id FROM chat_docs
-           WHERE parent_doc_id = ? AND document_kind = 'chat-child'
-         )`,
-      )
-      .run(parentDocId);
+    this.deleteFtsRows(
+      `SELECT doc_id FROM chat_docs
+       WHERE parent_doc_id = ? AND document_kind = 'chat-child'`,
+      parentDocId,
+    );
     this.db
       .prepare(
         `DELETE FROM chat_docs
@@ -1403,16 +1446,10 @@ export class ChatSearchIndexer {
 
   private deleteMatchingDocs(whereClause: string, params: string[]): void {
     withImmediateTransaction(this.db, () => {
-      const rows: unknown[] = this.db
-        .prepare(`SELECT doc_id FROM chat_docs WHERE ${whereClause}`)
-        .all(...params);
-      const deleteFts = this.db.prepare(
-        'DELETE FROM chat_fts WHERE doc_id = ?',
+      this.deleteFtsRows(
+        `SELECT doc_id FROM chat_docs WHERE ${whereClause}`,
+        ...params,
       );
-      for (const result of rows) {
-        const row = requireSqliteRow(result);
-        if (typeof row.doc_id === 'string') deleteFts.run(row.doc_id);
-      }
       this.db
         .prepare(`DELETE FROM chat_docs WHERE ${whereClause}`)
         .run(...params);

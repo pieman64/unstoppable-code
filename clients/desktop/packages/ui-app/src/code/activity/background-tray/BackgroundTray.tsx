@@ -53,6 +53,15 @@ import {
 } from './RunRow';
 import { TaskKindIcon, TaskRow } from './TaskRow';
 import {
+  WatcherRow,
+  type BackgroundTrayWatcher,
+  type DeleteBackgroundTrayWatcher,
+} from './WatcherRow';
+export type {
+  BackgroundTrayWatcher,
+  DeleteBackgroundTrayWatcher,
+} from './WatcherRow';
+import {
   CompletedWorkDialog,
   CompletedWorkTrigger,
 } from './CompletedWorkDialog';
@@ -94,6 +103,8 @@ export interface BackgroundTrayProps {
    * passes only runs it saw running and has not dismissed.
    */
   readonly runs?: readonly BackgroundTrayRun[];
+  readonly watchers?: readonly BackgroundTrayWatcher[];
+  readonly onDeleteWatcher?: DeleteBackgroundTrayWatcher;
   /** Opens a subagent's chat; absent, agent inspectors offer no Open chat. */
   readonly onOpenAgent?: (target: SubagentChatTarget) => void;
   /** Stops one delegate; resolves `true` once the host accepted it. */
@@ -179,7 +190,7 @@ const DOT_LABELS = {
   succeeded: 'Runs finished',
 } as const;
 
-type TrayGroup = 'needs-you' | 'running' | 'finished';
+type TrayGroup = 'needs-you' | 'running' | 'watching' | 'finished';
 
 const NO_AGENTS: readonly BackgroundTrayAgent[] = [];
 
@@ -192,6 +203,7 @@ function unlistedDelegatesLabel(count: number, listed: number): string {
 const GROUP_LABELS: Record<TrayGroup, string> = {
   'needs-you': 'Needs you',
   running: 'Running',
+  watching: 'Watching',
   finished: 'Finished',
 };
 
@@ -214,6 +226,8 @@ export function BackgroundTray({
   agents = NO_AGENTS,
   unlistedDelegations = 0,
   runs = [],
+  watchers = [],
+  onDeleteWatcher,
   onOpenAgent,
   onStopAgent,
   onViewTree,
@@ -255,7 +269,10 @@ export function BackgroundTray({
   }, []);
   // The detail owner survives closed tabs, but hidden rows need no clock.
   const now = useDrawerClock(
-    expanded && listVisible && (!renderWithDetails || expandedState),
+    tasks.length + agents.length + runs.length > 0 &&
+      expanded &&
+      listVisible &&
+      (!renderWithDetails || expandedState),
   );
   // A Claude agent's task is listed once, as its agent.
   const agentTaskIds = new Set(agents.map((agent) => agent.taskId));
@@ -278,7 +295,7 @@ export function BackgroundTray({
   }, [detailTask, detailTaskId, onSelectedTaskChange]);
 
   const {
-    text: summary,
+    text: workSummary,
     running,
     approvalAgents,
     runningAgents,
@@ -289,6 +306,12 @@ export function BackgroundTray({
     dot,
     labelled,
   } = summarizeDrawer(live, agents, runs, unlistedDelegations);
+  const summary = [
+    workSummary,
+    watchers.length > 0 ? `${watchers.length} watching` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
   // PR lifecycle history belongs to Pull requests, not completed work.
   const completedRuns = finishedRuns.filter((run) => run.kind !== 'github-pr');
   if (
@@ -334,7 +357,8 @@ export function BackgroundTray({
     inspectedKey !== null &&
     (live.some((task) => `task:${task.id}` === inspectedKey) ||
       agents.some((agent) => `agent:${agent.id}` === inspectedKey) ||
-      runs.some((run) => `run:${run.id}` === inspectedKey))
+      runs.some((run) => `run:${run.id}` === inspectedKey) ||
+      watchers.some((watcher) => `watcher:${watcher.id}` === inspectedKey))
       ? inspectedKey
       : null;
   if (inspectedKey !== null && openKey === null) setInspectedKey(null);
@@ -456,6 +480,16 @@ export function BackgroundTray({
     )),
     ...runningRuns.filter((run) => run.kind === 'pipeline').map(runRow),
   ];
+  const watcherRows = watchers.map((watcher) => (
+    <WatcherRow
+      key={`${chatId}:${watcher.id}`}
+      watcher={watcher}
+      open={openKey === `watcher:${watcher.id}`}
+      onToggle={(): void => toggleRow(`watcher:${watcher.id}`)}
+      onDelete={onDeleteWatcher}
+      listRef={listRef}
+    />
+  ));
   const groups: ReadonlyArray<{ group: TrayGroup; rows: ReactNode[] }> = [
     {
       group: 'needs-you' as const,
@@ -472,6 +506,7 @@ export function BackgroundTray({
         ...runningRuns.filter((run) => run.kind !== 'pipeline').map(runRow),
       ],
     },
+    { group: 'watching' as const, rows: watcherRows },
     { group: 'finished' as const, rows: finishedRuns.map(runRow) },
   ].filter(({ rows }) => rows.length > 0);
   const toggle = (): void => setExpanded((open) => !open);
@@ -549,8 +584,11 @@ export function BackgroundTray({
         <ul className="flex flex-col gap-px">{executionRows}</ul>
       ) : null,
     watching:
-      watchingRuns.length > 0 ? (
-        <ul className="flex flex-col gap-px">{watchingRuns.map(runRow)}</ul>
+      watchingRuns.length + watchers.length > 0 ? (
+        <ul className="flex flex-col gap-px">
+          {watchingRuns.map(runRow)}
+          {watcherRows}
+        </ul>
       ) : null,
     pullRequests:
       pullRequests.length > 0 ? (
@@ -568,17 +606,18 @@ export function BackgroundTray({
         />
       ) : null,
     controls: (
-      <>
+      <span className="inline-flex items-center gap-0">
         {viewTree}
         {stopAll}
         {stopAllWork}
-      </>
+      </span>
     ),
   };
   const counts = backgroundTrayCounts({
     tasks,
     agents,
     runs,
+    watchers,
     unlistedDelegations,
   });
   if (grouped)
@@ -642,7 +681,7 @@ export function BackgroundTray({
             className="flex flex-col"
             data-tray-group={group}
           >
-            {labelled && (
+            {(labelled || group === 'watching') && (
               <p
                 className="sticky top-0 z-10 flex h-7 items-end bg-depth px-2.75 pb-1 text-xs fg-tertiary"
                 data-testid="background-tray-group-label"
@@ -782,10 +821,11 @@ export function backgroundTrayCounts({
   tasks,
   agents = NO_AGENTS,
   runs = [],
+  watchers = [],
   unlistedDelegations = 0,
 }: Pick<
   BackgroundTrayProps,
-  'tasks' | 'agents' | 'runs' | 'unlistedDelegations'
+  'tasks' | 'agents' | 'runs' | 'watchers' | 'unlistedDelegations'
 >): BackgroundTrayCounts {
   const agentTaskIds = new Set(agents.map((agent) => agent.taskId));
   const live = tasks.filter(
@@ -799,7 +839,8 @@ export function backgroundTrayCounts({
       live.length +
       agents.length +
       (unlistedDelegations > 0 ? 1 : 0) +
-      runs.length,
+      runs.length +
+      watchers.length,
     needsYou:
       summary.approvalAgents.length +
       summary.needsInputRuns.length +
@@ -807,7 +848,9 @@ export function backgroundTrayCounts({
     running:
       summary.running -
       summary.runningRuns.filter((run) => run.kind !== 'pipeline').length,
-    watching: summary.runningRuns.filter((run) => run.kind === 'github').length,
+    watching:
+      summary.runningRuns.filter((run) => run.kind === 'github').length +
+      watchers.length,
     pullRequests: runs.filter((run) => run.kind === 'github-pr').length,
   };
 }

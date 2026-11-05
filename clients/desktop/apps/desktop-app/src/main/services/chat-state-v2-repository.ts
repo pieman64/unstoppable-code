@@ -137,6 +137,8 @@ import {
   type ChatStateCommitWaitStarter,
   type ChatStateStorageDiagnostic,
   type ChatStateTransactionContext,
+  type ChildStreamWritePreparation,
+  type PreparedChildStreamCommit,
 } from './chat-state-contracts';
 import type { ChatWaitOperation } from '../observability/chat-wait-diagnostics';
 
@@ -165,12 +167,26 @@ export interface ChatStateV2RepositoryOptions extends Omit<
   deltaJournalIdleCheckpointMs?: number;
   /** Delta-journal size checkpoint threshold; defaults to 4 MiB. */
   deltaJournalCheckpointBytes?: number;
+  /**
+   * Format 4 checkpoints restage only changed stream metadata. Off until a
+   * stable release carries the relaxed stream metadata readers.
+   */
+  deltaJournalIncrementalStreamMetadata?: boolean;
   /** Records estimated above this take the version 2 path (tests). */
   deltaJournalLargeRecordBytes?: number;
   /** First retry delay of a failed promotion (doubles); default 30 s. */
   deltaJournalPromotionRetryMs?: number;
   /** Retries of a failed promotion; default 5. */
   deltaJournalPromotionRetryLimit?: number;
+  /** Unload idle resident scopes after this delay; 0 disables unloading. */
+  idleScopeUnloadMs?: number;
+  /** Dynamic scope pin checked before an idle unload. */
+  isScopePinned?: (scope: ChatScopeKey) => boolean;
+  /**
+   * The host has admitted an operation for the scope. Checked only before an
+   * idle unload: a v1 migration must not wait on its own caller's admission.
+   */
+  hasAdmittedOperation?: (scope: ChatScopeKey) => boolean;
   /** Deterministic storage interruption seams used by V2 recovery tests. */
   testHooks?: {
     storageCheckpoint?: (
@@ -209,11 +225,49 @@ export interface ChildSearchDirtyNotification {
   target: Extract<TranscriptTarget, { kind: 'delegation' }>;
 }
 
+/**
+ * Cleanup is needed only when a mutation can remove a reachability root.
+ * An upsert is a replacement unless write preparation proves the whole
+ * chat write append-only; absence from a bounded view is not such proof.
+ */
+export function mutationCanDropArtifactReference(
+  mutation: ChatCoreMutation,
+  appendOnly = false,
+): boolean {
+  switch (mutation.type) {
+    case 'message.upserted':
+      return !appendOnly;
+    case 'tab.created':
+    case 'tab.removed':
+    case 'message.removed':
+    case 'messages.replaced':
+    case 'archive.upserted':
+    case 'archive.removed':
+      return true;
+    case 'tab.metadata_patched':
+    case 'tab.order_changed':
+    case 'tab.active_changed':
+    case 'pending_question.upserted':
+    case 'pending_question.removed':
+    case 'runtime.patched':
+    case 'archive.read_state_changed':
+      return false;
+    default: {
+      const unclassified: never = mutation;
+      return unclassified;
+    }
+  }
+}
+
+type DelegationStreamTarget = Extract<TranscriptTarget, { kind: 'delegation' }>;
+
 interface ScopeEntry {
   scope: ChatScopeKey;
   store: ChatStorageV2;
   paths: LegacyChatScopePaths;
   backend: ChatStateV2Backend;
+  /** True once this backend has loaded canonical state or a checkpoint-only read. */
+  backendResident: boolean;
   visualStaging?: VisualStagingStore;
   lifecycle: ChatScopeLifecycle;
   loading?: Promise<void>;
@@ -225,11 +279,18 @@ interface ScopeEntry {
    * Like the backend's own chain, it settles without the operation's result.
    */
   tail: Promise<void>;
+  /** Includes queued and running serialized/admission turns. */
+  inFlightTurns: number;
+  /** Delegate-log writes that continue after their scope lease is released. */
+  outOfLeaseReservations: number;
+  /** The one-shot idle unload timer. */
+  idleUnloadTimer?: ReturnType<typeof setTimeout>;
   /** Observers see applied commits strictly in revision order per scope. */
   publishTail: Promise<void>;
   /**
-   * Entries on `publishTail` not yet finished: commit publications and child
-   * search notifications. A commit's queue depth is the count ahead of it.
+   * Entries on `publishTail` not yet finished, including those not yet
+   * released: commit publications and child search notifications. A commit's
+   * queue depth is the count ahead of it.
    */
   pendingPublications: number;
   /** The commit publication at the head of `publishTail`, when one is. */
@@ -237,6 +298,8 @@ interface ScopeEntry {
   previewReaders: Set<CapturedTranscriptPreview>;
   previewCloseFailure?: boolean;
   maintenanceChats: Set<string>;
+  /** Cleanup intent survives active turns and records awaiting checkpoint. */
+  maintenanceDirtyChats: Set<string>;
   maintenanceDeferred: Set<string>;
   maintenanceCapacityChats: Set<string>;
   maintenanceImmediate?: ReturnType<typeof setImmediate>;
@@ -436,9 +499,9 @@ export class ChatStateV2Repository {
       parentChatId: target.chatId,
       target: { ...target },
     };
-    entry.pendingPublications += 1;
-    const publication = entry.publishTail.then((): void => {
-      try {
+    const publication = this.trackPublication(
+      entry,
+      entry.publishTail.then((): void => {
         for (const listener of Array.from(this.childSearchListeners)) {
           try {
             listener(event);
@@ -446,70 +509,113 @@ export class ChatStateV2Repository {
             /* A projection cannot reject durable admission. */
           }
         }
-      } finally {
-        entry.pendingPublications -= 1;
-      }
-    });
+      }),
+    );
     entry.publishTail = publication;
     await publication;
   }
 
   /**
    * A child stream write. The operation calls `noteBase` once the scope is
-   * loaded. If the write then advanced the scope revision of a delegation
-   * whose card has V2 state, the advance is published as a card change with
-   * the unchanged card state and the new stream revision. Subscribers that
-   * apply events in revision order (the renderer) then see no gap, so they do
-   * not resync the scope, and mounted readers learn of the new rows. A write
-   * before the card has state (registration, opening) stays unpublished.
+   * loaded. If the write then advanced the scope revision, the advance is
+   * published (`reserveStreamAdvance`): when the delegation's card has V2
+   * state, as a card change with the unchanged card state and the new stream
+   * revision. Subscribers that apply events in revision order (the renderer)
+   * then see no gap, so they do not resync the scope, and mounted readers
+   * learn of the new rows.
+   *
+   * A group-committed write calls `noteDurable` with its record's durability.
+   * The scope lease is released at admission, so other scope operations do
+   * not wait for the sync, and concurrent writes share one; the write is
+   * published, announced to search and answered only once it is durable.
+   * With `turn: 'admission'` the write does not first wait for the syncs of
+   * records admitted before it, as a transaction admission does not.
    */
   private async childSearchWrite<T>(
     scope: ChatScopeKey,
     target: TranscriptTarget,
-    operation: (noteBase: () => Promise<void>) => Promise<T>,
+    operation: (
+      noteBase: () => Promise<void>,
+      noteDurable: (durable: Promise<void>) => void,
+    ) => Promise<T>,
+    turn: 'serialized' | 'admission' = 'serialized',
   ): Promise<T> {
     const capturedScope = { ...scope };
     const capturedTarget = { ...target };
     const entry = this.entry(capturedScope);
-    const admitted = await this.serialized(entry, async () => {
-      let baseRevision: number | undefined;
-      const result = await operation(async (): Promise<void> => {
-        baseRevision ??= await entry.backend.revision();
-      });
-      const advance = await this.reserveStreamAdvance(
-        entry,
-        capturedScope,
-        capturedTarget,
-        baseRevision,
-      );
-      return {
-        result,
-        publication: advance?.publication,
-        dirty: this.reserveChildSearchDirty(
+    const admitted = await this.leaseTurn(
+      entry,
+      turn === 'admission',
+      async () => {
+        let baseRevision: number | undefined;
+        let durable: Promise<void> | undefined;
+        const result = await operation(
+          async (): Promise<void> => {
+            baseRevision ??= await entry.backend.revision();
+          },
+          (pending): void => {
+            durable = pending;
+          },
+        );
+        const advance = await this.reserveStreamAdvance(
           entry,
           capturedScope,
           capturedTarget,
-        ),
-      };
-    });
-    admitted.dirty.release();
+          baseRevision,
+          durable,
+        );
+        return {
+          result,
+          durable,
+          publication: advance?.publication,
+          dirty: this.reserveChildSearchDirty(
+            entry,
+            capturedScope,
+            capturedTarget,
+          ),
+        };
+      },
+    );
+    try {
+      await admitted.durable;
+    } finally {
+      // Always released: later publications queue behind it.
+      admitted.dirty.release();
+    }
     await admitted.publication;
     await admitted.dirty.publication;
     return admitted.result;
   }
 
+  /**
+   * Publishes a delegation write that advanced the scope revision: as a card
+   * change when the card has V2 state, otherwise as its chat's unchanged
+   * transcript descriptor (`advancedChatIds`). Every advance is published,
+   * so subscribers that chain events by revision never see a gap.
+   */
   private async reserveStreamAdvance(
     entry: ScopeEntry,
     scope: ChatScopeKey,
-    target: TranscriptTarget,
+    target: Pick<DelegationStreamTarget, 'chatId'> &
+      Partial<Pick<DelegationStreamTarget, 'delegationId' | 'runGeneration'>>,
     baseRevision: number | undefined,
+    durable?: Promise<void>,
   ): Promise<{ publication: Promise<void> } | undefined> {
-    if (baseRevision === undefined || target.kind !== 'delegation')
-      return undefined;
+    if (baseRevision === undefined) return undefined;
     const revision = await entry.backend.revision();
     if (revision === baseRevision) return undefined;
-    const descriptor = await entry.backend.childStreamDescriptor(target);
-    if (descriptor?.cardState?.version !== 2) return undefined;
+    const delegation =
+      target.delegationId !== undefined && target.runGeneration !== undefined
+        ? {
+            kind: 'delegation' as const,
+            chatId: target.chatId,
+            delegationId: target.delegationId,
+            runGeneration: target.runGeneration,
+          }
+        : undefined;
+    const descriptor = delegation
+      ? await entry.backend.childStreamDescriptor(delegation)
+      : undefined;
     // Reserved under the lease and wrapped, so an async return does not adopt
     // it; the caller awaits it after leaving the lease.
     const publication = this.reservePublication(
@@ -528,19 +634,23 @@ export class ChatStateV2Repository {
           occurredAt: new Date().toISOString(),
           mutations: [],
         },
-        cardChanges: [
-          {
-            type: 'delegation.card_state_updated',
-            chatId: target.chatId,
-            delegationId: target.delegationId,
-            runGeneration: target.runGeneration,
-            cardRevision: descriptor.cardState.cardRevision,
-            streamRevision: descriptor.streamRevision,
-            cardState: descriptor.cardState,
-          },
-        ],
+        ...(delegation && descriptor?.cardState?.version === 2
+          ? {
+              cardChanges: [
+                {
+                  type: 'delegation.card_state_updated' as const,
+                  chatId: delegation.chatId,
+                  delegationId: delegation.delegationId,
+                  runGeneration: delegation.runGeneration,
+                  cardRevision: descriptor.cardState.cardRevision,
+                  streamRevision: descriptor.streamRevision,
+                  cardState: descriptor.cardState,
+                },
+              ],
+            }
+          : { advancedChatIds: [target.chatId] }),
       },
-      undefined,
+      durable,
     );
     return { publication };
   }
@@ -563,9 +673,9 @@ export class ChatStateV2Repository {
             target: { ...target },
           }
         : undefined;
-    entry.pendingPublications += 1;
-    const publication = entry.publishTail.then(async (): Promise<void> => {
-      try {
+    const publication = this.trackPublication(
+      entry,
+      entry.publishTail.then(async (): Promise<void> => {
         await released;
         if (!event) return;
         for (const listener of Array.from(this.childSearchListeners)) {
@@ -575,10 +685,8 @@ export class ChatStateV2Repository {
             /* Durable state cannot be rolled back by a projection. */
           }
         }
-      } finally {
-        entry.pendingPublications -= 1;
-      }
-    });
+      }),
+    );
     entry.publishTail = publication;
     return { release, publication };
   }
@@ -737,6 +845,227 @@ export class ChatStateV2Repository {
     });
   }
 
+  private clearIdleUnloadTimer(entry: ScopeEntry): void {
+    if (entry.idleUnloadTimer) clearTimeout(entry.idleUnloadTimer);
+    entry.idleUnloadTimer = undefined;
+  }
+
+  private restartIdleUnloadTimer(entry: ScopeEntry): void {
+    this.clearIdleUnloadTimer(entry);
+    this.armIdleUnloadTimer(entry);
+  }
+
+  private armIdleUnloadTimer(entry: ScopeEntry): void {
+    const delay = this.options.idleScopeUnloadMs ?? 300_000;
+    // Eligibility checks transient blockers when the interval actually fires.
+    if (
+      delay <= 0 ||
+      entry.idleUnloadTimer ||
+      !this.accepting ||
+      this.scopes.get(entry.store.directory) !== entry ||
+      entry.inFlightTurns !== 0 ||
+      !entry.backendResident ||
+      (entry.lifecycle !== 'ready' && entry.lifecycle !== 'unloaded')
+    )
+      return;
+
+    entry.idleUnloadTimer = setTimeout(() => {
+      entry.idleUnloadTimer = undefined;
+      void this.serialized(entry, async (): Promise<void> => {
+        try {
+          await this.unloadIdleScope(entry);
+        } catch (error: unknown) {
+          this.recordIdleUnloadFailure(entry, error);
+        }
+      }).catch((error: unknown) => {
+        this.recordIdleUnloadFailure(entry, error);
+        this.armIdleUnloadTimer(entry);
+      });
+    }, delay);
+    entry.idleUnloadTimer.unref?.();
+  }
+
+  private hasRegistryLockForDirectory(directory: string): boolean {
+    const prefix = `[${JSON.stringify(directory)},`;
+    return (
+      Array.from(this.childTargetTails.keys()).some((key) =>
+        key.startsWith(prefix),
+      ) ||
+      Array.from(this.delegationTails.keys()).some((key) =>
+        key.startsWith(prefix),
+      )
+    );
+  }
+
+  /** Names each reason the scope cannot unload now; empty means eligible. */
+  private idleUnloadBlockers(entry: ScopeEntry, ownTurns: number): string[] {
+    const blockers: Array<[boolean, string]> = [
+      [!this.accepting, 'repository-draining'],
+      [this.scopes.get(entry.store.directory) !== entry, 'replaced'],
+      [
+        entry.lifecycle !== 'ready' &&
+          !(entry.lifecycle === 'unloaded' && entry.backendResident),
+        `lifecycle-${entry.lifecycle}`,
+      ],
+      [entry.loading !== undefined, 'loading'],
+      [entry.deleting !== 0, 'deleting'],
+      [entry.inFlightTurns !== ownTurns, 'turns'],
+      [entry.pendingPublications !== 0, 'publications'],
+      [entry.outOfLeaseReservations !== 0, 'delegate-log-appends'],
+      [
+        this.hasRegistryLockForDirectory(entry.store.directory),
+        'registry-lock',
+      ],
+      [entry.maintenanceChats.size !== 0, 'maintenance'],
+      [entry.maintenanceDirtyChats.size !== 0, 'maintenance-dirty'],
+      [entry.maintenanceDeferred.size !== 0, 'maintenance-deferred'],
+      [entry.maintenanceCapacityChats.size !== 0, 'maintenance-capacity'],
+      [entry.maintenanceImmediate !== undefined, 'maintenance-scheduled'],
+      [entry.maintenanceCapacityWake !== undefined, 'maintenance-wake'],
+      [entry.journalCheckpointQueued === true, 'journal-checkpoint'],
+      [entry.formatReconcileQueued === true, 'format-reconcile'],
+      [
+        entry.backend.pendingJournalDurability() !== undefined,
+        'journal-durability',
+      ],
+      [entry.previewReaders.size !== 0, 'preview-readers'],
+      [this.sweepLocks.has(entry.store.directory), 'visual-sweep'],
+    ];
+    return blockers.filter(([blocked]) => blocked).map(([, name]) => name);
+  }
+
+  private idleUnloadSynchronousEligible(entry: ScopeEntry): boolean {
+    return this.idleUnloadBlockers(entry, 1).length === 0;
+  }
+
+  /**
+   * Diagnostic view of every admitted scope and what keeps it resident. It
+   * reports the synchronous blockers, the pin and admitted host operations,
+   * not the host's asynchronous live check.
+   */
+  public residencySnapshot(): Array<{
+    scope: ChatScopeKey;
+    lifecycle: ChatScopeLifecycle;
+    backendResident: boolean;
+    blockers: string[];
+  }> {
+    return Array.from(this.scopes.values()).map((entry) => {
+      const blockers = this.idleUnloadBlockers(entry, 0);
+      if (this.isScopePinned(entry)) blockers.push('pinned');
+      if (this.hasAdmittedOperation(entry)) blockers.push('admitted-operation');
+      return {
+        scope: { ...entry.scope },
+        lifecycle: entry.lifecycle,
+        backendResident: entry.backendResident,
+        blockers,
+      };
+    });
+  }
+
+  private isScopePinned(entry: ScopeEntry): boolean {
+    try {
+      return this.options.isScopePinned?.({ ...entry.scope }) === true;
+    } catch {
+      return true;
+    }
+  }
+
+  private hasAdmittedOperation(entry: ScopeEntry): boolean {
+    try {
+      return this.options.hasAdmittedOperation?.({ ...entry.scope }) === true;
+    } catch {
+      return true;
+    }
+  }
+
+  private async idleUnloadEligible(entry: ScopeEntry): Promise<boolean> {
+    if (!this.idleUnloadSynchronousEligible(entry)) return false;
+
+    let hasLiveDependency = false;
+    try {
+      hasLiveDependency =
+        (await this.options.hasLiveDependency?.({ ...entry.scope })) ?? false;
+    } catch {
+      return false;
+    }
+    if (!this.idleUnloadSynchronousEligible(entry) || hasLiveDependency)
+      return false;
+    if (this.isScopePinned(entry) || this.hasAdmittedOperation(entry))
+      return false;
+    if (!this.idleUnloadSynchronousEligible(entry)) return false;
+
+    const checkpointOnlyRead =
+      entry.lifecycle === 'unloaded' &&
+      (await this.checkpointOnlyChildScope(entry));
+    if (!this.idleUnloadSynchronousEligible(entry)) return false;
+    const indexes = checkpointOnlyRead
+      ? await entry.store.indexes()
+      : await entry.backend.load();
+    if (!this.idleUnloadSynchronousEligible(entry)) return false;
+    if (
+      indexes.live.pendingQuestions?.length ||
+      Object.values(indexes.live.runtimeByChatId).some((runtime) =>
+        [
+          'queued',
+          'starting',
+          'streaming',
+          'awaiting_input',
+          'completing',
+        ].includes(runtime.status),
+      )
+    )
+      return false;
+
+    try {
+      hasLiveDependency =
+        (await this.options.hasLiveDependency?.({ ...entry.scope })) ?? false;
+    } catch {
+      return false;
+    }
+    if (!this.idleUnloadSynchronousEligible(entry) || hasLiveDependency)
+      return false;
+    return (
+      !this.isScopePinned(entry) &&
+      !this.hasAdmittedOperation(entry) &&
+      this.idleUnloadSynchronousEligible(entry)
+    );
+  }
+
+  private async unloadIdleScope(entry: ScopeEntry): Promise<void> {
+    if (!(await this.idleUnloadEligible(entry))) return;
+
+    this.cancelArtifactMaintenance(entry);
+    this.clearJournalIdleTimer(entry);
+    await this.closePreviewReaders(entry);
+    if (!(await this.idleUnloadEligible(entry))) return;
+
+    await entry.backend.disposeArtifactMaintenance();
+    if (!(await this.idleUnloadEligible(entry))) return;
+
+    await entry.backend.flush();
+    if (!(await this.idleUnloadEligible(entry))) return;
+
+    entry.backend = this.createBackend(entry.store, entry.scope);
+    entry.backendResident = false;
+    entry.visualStaging = undefined;
+    entry.maintenanceChats.clear();
+    entry.maintenanceDirtyChats.clear();
+    entry.maintenanceDeferred.clear();
+    entry.maintenanceCapacityChats.clear();
+    entry.maintenanceFailure = undefined;
+    entry.maintenanceFailedChatId = undefined;
+    entry.previewCloseFailure = false;
+    entry.lifecycle = 'unloaded';
+  }
+
+  private recordIdleUnloadFailure(entry: ScopeEntry, error: unknown): void {
+    this.recordArtifactMaintenanceFailure(entry, '', error);
+    // This was not a maintenance failure. Keep its diagnostic but do not let
+    // the reporting fields permanently block a later idle retry.
+    entry.maintenanceFailure = undefined;
+    entry.maintenanceFailedChatId = undefined;
+  }
+
   private clearJournalIdleTimer(entry: ScopeEntry): void {
     if (entry.journalIdleTimer) clearTimeout(entry.journalIdleTimer);
     entry.journalIdleTimer = undefined;
@@ -752,7 +1081,7 @@ export class ChatStateV2Repository {
       if (entry.lifecycle !== 'ready' || entry.deleting || !this.accepting)
         return;
       if (await entry.backend.checkpointPendingJournal('timer'))
-        await this.requestArtifactMaintenance(entry);
+        await this.requestDirtyArtifactMaintenance(entry);
     }).catch(() => {
       // A failed checkpoint leaves the records journaled; the next commit
       // re-arms the triggers and a reload recovers the writer.
@@ -780,7 +1109,11 @@ export class ChatStateV2Repository {
       return;
     }
     this.clearJournalIdleTimer(entry);
-    if (entry.backend.pendingPrimaryRecordCount() === 0) return;
+    if (
+      entry.backend.pendingPrimaryRecordCount() === 0 &&
+      entry.maintenanceDirtyChats.size === 0
+    )
+      return;
     if (!entry.backend.journalIdleCheckpointWanted()) return;
     entry.journalIdleTimer = setTimeout(() => {
       entry.journalIdleTimer = undefined;
@@ -885,6 +1218,8 @@ export class ChatStateV2Repository {
     } finally {
       if (this.sweepLocks.get(scopeDirectory) === lock)
         this.sweepLocks.delete(scopeDirectory);
+      const entry = this.scopes.get(scopeDirectory);
+      if (entry) this.restartIdleUnloadTimer(entry);
     }
   }
 
@@ -911,6 +1246,40 @@ export class ChatStateV2Repository {
       }
     );
   }
+
+  private createBackend(
+    store: ChatStorageV2,
+    scope: ChatScopeKey,
+  ): ChatStateV2Backend {
+    return new ChatStateV2Backend(store, {
+      enableFormat4: this.options.enableFormat4,
+      deltaJournal: {
+        onBoundary: this.options.deltaJournalOnBoundary,
+        ...deltaJournalBackendOptions(this.options, (diagnostic): void =>
+          this.recordDeltaJournalDiagnostic(store.directory, diagnostic),
+        ),
+        onCheckpointed: (rotation): void => {
+          // A Work Entry summary is fingerprinted by its journal's
+          // modification time, which a checkpoint changes.
+          void import('../lib/cowork-work-entries')
+            .then(({ refreshWorkEntrySummaryStamp }) =>
+              refreshWorkEntrySummaryStamp(
+                scope.projectId,
+                scope.worktreeId,
+                rotation,
+              ),
+            )
+            .catch(() => undefined);
+        },
+      },
+      onVisualOwnerLedgerInvalid: ({ reason }): void =>
+        this.recordVisualOwnerLedgerInvalid(store.directory, scope, reason),
+      testHooks: {
+        storageCheckpoint: this.options.testHooks?.storageCheckpoint,
+      },
+    });
+  }
+
   private entry(scope: ChatScopeKey, readmit = true): ScopeEntry {
     const paths = this.resolve(scope);
     const store = ChatStorageV2.fromLegacyPaths(paths, {
@@ -928,40 +1297,18 @@ export class ChatStateV2Repository {
         scope,
         store,
         paths,
-        backend: new ChatStateV2Backend(store, {
-          enableFormat4: this.options.enableFormat4,
-          deltaJournal: {
-            onBoundary: this.options.deltaJournalOnBoundary,
-            ...deltaJournalBackendOptions(this.options, (diagnostic): void =>
-              this.recordDeltaJournalDiagnostic(store.directory, diagnostic),
-            ),
-            onCheckpointed: (rotation): void => {
-              // A Work Entry summary is fingerprinted by its journal's
-              // modification time, which a checkpoint changes.
-              void import('../lib/cowork-work-entries')
-                .then(({ refreshWorkEntrySummaryStamp }) =>
-                  refreshWorkEntrySummaryStamp(
-                    scope.projectId,
-                    scope.worktreeId,
-                    rotation,
-                  ),
-                )
-                .catch(() => undefined);
-            },
-          },
-          onVisualOwnerLedgerInvalid: ({ reason }): void =>
-            this.recordVisualOwnerLedgerInvalid(store.directory, scope, reason),
-          testHooks: {
-            storageCheckpoint: this.options.testHooks?.storageCheckpoint,
-          },
-        }),
+        backend: this.createBackend(store, scope),
+        backendResident: false,
         lifecycle: 'unloaded',
         deleting: 0,
         tail: Promise.resolve(),
+        inFlightTurns: 0,
+        outOfLeaseReservations: 0,
         publishTail: Promise.resolve(),
         pendingPublications: 0,
         previewReaders: new Set(),
         maintenanceChats: new Set(),
+        maintenanceDirtyChats: new Set(),
         maintenanceDeferred: new Set(),
         maintenanceCapacityChats: new Set(),
       };
@@ -984,12 +1331,24 @@ export class ChatStateV2Repository {
     entry: ScopeEntry,
     operation: () => Promise<T>,
   ): Promise<T> {
+    this.clearIdleUnloadTimer(entry);
+    entry.inFlightTurns += 1;
     const next = entry.tail.then(() => {
       const pending = entry.backend.pendingJournalDurability();
       return pending ? pending.then(operation, operation) : operation();
     });
-    entry.tail = settledLease(next);
-    return next;
+    const settled = next.then(
+      (result): T => {
+        this.finishTurn(entry);
+        return result;
+      },
+      (error: unknown): never => {
+        this.finishTurn(entry);
+        throw error;
+      },
+    );
+    entry.tail = settledLease(settled);
+    return settled;
   }
 
   /**
@@ -1002,9 +1361,37 @@ export class ChatStateV2Repository {
     entry: ScopeEntry,
     operation: () => Promise<T>,
   ): Promise<T> {
+    this.clearIdleUnloadTimer(entry);
+    entry.inFlightTurns += 1;
     const next = entry.tail.then(operation);
-    entry.tail = settledLease(next);
-    return next;
+    const settled = next.then(
+      (result): T => {
+        this.finishTurn(entry);
+        return result;
+      },
+      (error: unknown): never => {
+        this.finishTurn(entry);
+        throw error;
+      },
+    );
+    entry.tail = settledLease(settled);
+    return settled;
+  }
+
+  /** A scope lease turn; an admission turn does not wait for group commits. */
+  private leaseTurn<T>(
+    entry: ScopeEntry,
+    admission: boolean,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    return admission
+      ? this.admission(entry, operation)
+      : this.serialized(entry, operation);
+  }
+
+  private finishTurn(entry: ScopeEntry): void {
+    entry.inFlightTurns -= 1;
+    if (entry.inFlightTurns === 0) this.armIdleUnloadTimer(entry);
   }
 
   private async closePreviewReaders(entry: ScopeEntry): Promise<void> {
@@ -1155,7 +1542,10 @@ export class ChatStateV2Repository {
       }
       throw error;
     }
-    if (progress.complete) entry.maintenanceChats.delete(chatId);
+    if (progress.complete) {
+      entry.maintenanceChats.delete(chatId);
+      entry.maintenanceDirtyChats.delete(chatId);
+    }
     if (entry.maintenanceFailedChatId === chatId) {
       entry.maintenanceFailedChatId = undefined;
       entry.maintenanceFailure = undefined;
@@ -1190,6 +1580,15 @@ export class ChatStateV2Repository {
     if (!this.accepting || entry.lifecycle !== 'ready' || entry.deleting)
       return;
     try {
+      // Startup/import sweeps must survive a pending journal as well. The
+      // eligible probe can return no chats until its checkpoint is clear.
+      if (hints === undefined) {
+        const indexes = await entry.backend.load();
+        for (const tab of indexes.live.tabs)
+          entry.maintenanceDirtyChats.add(tab.id);
+        for (const archive of indexes.archive.archived)
+          entry.maintenanceDirtyChats.add(archive.tab.id);
+      }
       const tracked = hints
         ? new Set(hints)
         : new Set([
@@ -1203,6 +1602,7 @@ export class ChatStateV2Repository {
       for (const chatId of Array.from(tracked)) {
         if (
           !entry.maintenanceChats.has(chatId) &&
+          !entry.maintenanceDirtyChats.has(chatId) &&
           !entry.maintenanceDeferred.has(chatId) &&
           !entry.maintenanceCapacityChats.has(chatId) &&
           entry.maintenanceFailedChatId !== chatId
@@ -1210,6 +1610,7 @@ export class ChatStateV2Repository {
           continue;
         if (!entry.backend.artifactMaintenanceChatRetired(chatId)) continue;
         entry.maintenanceChats.delete(chatId);
+        entry.maintenanceDirtyChats.delete(chatId);
         entry.maintenanceDeferred.delete(chatId);
         entry.maintenanceCapacityChats.delete(chatId);
         if (entry.maintenanceFailedChatId === chatId) {
@@ -1222,13 +1623,21 @@ export class ChatStateV2Repository {
           this.recordArtifactMaintenanceFailure(entry, chatId, error);
         }
       }
-      for (const chatId of await entry.backend.pendingArtifactMaintenanceChats(
-        hints,
-      )) {
+      const pending =
+        await entry.backend.pendingArtifactMaintenanceChats(hints);
+      for (const chatId of pending) {
+        entry.maintenanceDirtyChats.add(chatId);
         entry.maintenanceDeferred.delete(chatId);
         entry.maintenanceCapacityChats.delete(chatId);
         entry.maintenanceChats.add(chatId);
       }
+      if (entry.backend.pendingJournalRecords() === 0)
+        for (const chatId of hints ?? Array.from(entry.maintenanceDirtyChats))
+          if (
+            !pending.includes(chatId) &&
+            entry.backend.artifactMaintenanceEligible(chatId)
+          )
+            entry.maintenanceDirtyChats.delete(chatId);
       if (!entry.maintenanceCapacityChats.size) {
         entry.maintenanceCapacityWake?.();
         entry.maintenanceCapacityWake = undefined;
@@ -1237,6 +1646,15 @@ export class ChatStateV2Repository {
     } catch (error) {
       this.recordArtifactMaintenanceFailure(entry, '', error);
     }
+  }
+  private async requestDirtyArtifactMaintenance(
+    entry: ScopeEntry,
+  ): Promise<void> {
+    if (entry.maintenanceDirtyChats.size > 0)
+      await this.requestArtifactMaintenance(
+        entry,
+        Array.from(entry.maintenanceDirtyChats),
+      );
   }
   private async load(scope: ChatScopeKey, entry: ScopeEntry): Promise<void> {
     if (entry.lifecycle === 'disposed' || entry.lifecycle === 'draining')
@@ -1286,13 +1704,21 @@ export class ChatStateV2Repository {
           // Verified in build:mac: Vite folds this local import into the packaged main bundle.
           const {
             hasDelegationRecoveryRecords,
+            loadDelegationRecoveryRecords,
             loadDelegationRecoveryMutations,
           } = await import('../agents/delegation/recovery');
-          if (await hasDelegationRecoveryRecords(scope)) {
-            const chatIds = [
-              ...indexes.live.tabs.map((tab) => tab.id),
-              ...indexes.archive.archived.map((archive) => archive.tab.id),
-            ];
+          const records = (await hasDelegationRecoveryRecords(scope))
+            ? await loadDelegationRecoveryRecords(scope)
+            : [];
+          // Recovery changes only the parent chat of a retained record.
+          const parents = new Set(
+            records.map((record) => record.parent.chatId),
+          );
+          const chatIds = [
+            ...indexes.live.tabs.map((tab) => tab.id),
+            ...indexes.archive.archived.map((archive) => archive.tab.id),
+          ].filter((chatId) => parents.has(chatId));
+          if (chatIds.length > 0) {
             const state = await entry.backend.state({
               chatIds,
               fullTranscript: true,
@@ -1303,6 +1729,7 @@ export class ChatStateV2Repository {
               state.tabsFile,
               state.archivesFile,
               { readMetadata: this.options.delegationReadMetadata },
+              records,
             );
             if (mutations.length > 0) {
               const digest = createHash('sha256')
@@ -1317,6 +1744,7 @@ export class ChatStateV2Repository {
             }
           }
           entry.lifecycle = 'ready';
+          entry.backendResident = true;
           // Always promote writable scopes after any pending
           // version 2 transaction and the recovery above.
           await this.tryPromote(entry);
@@ -1402,35 +1830,55 @@ export class ChatStateV2Repository {
     } catch {
       // Diagnostics cannot change the publication they observe.
     }
-    entry.pendingPublications += 1;
-    const publication = entry.publishTail.then(async (): Promise<void> => {
-      entry.publishingWait = wait;
-      try {
-        if (durable) {
-          wait?.phase('required_durability');
-          try {
-            await durable;
-          } catch {
-            wait?.failPhase();
-            wait?.finish('failed');
-            return;
-          }
-        }
+    const publication = this.trackPublication(
+      entry,
+      entry.publishTail.then(async (): Promise<void> => {
+        entry.publishingWait = wait;
         try {
-          if (diagnostic) this.recordStorageDiagnostic(entry, diagnostic);
-          await this.onCommit?.(commit, wait);
-          wait?.finish('completed');
-        } catch {
-          // Post-commit observers cannot reject a durable commit.
-          wait?.finish('failed');
+          if (durable) {
+            wait?.phase('required_durability');
+            try {
+              await durable;
+            } catch {
+              wait?.failPhase();
+              wait?.finish('failed');
+              return;
+            }
+          }
+          try {
+            if (diagnostic) this.recordStorageDiagnostic(entry, diagnostic);
+            await this.onCommit?.(commit, wait);
+            wait?.finish('completed');
+          } catch {
+            // Post-commit observers cannot reject a durable commit.
+            wait?.finish('failed');
+          }
+        } finally {
+          if (entry.publishingWait === wait) entry.publishingWait = undefined;
         }
-      } finally {
-        entry.pendingPublications -= 1;
-        if (entry.publishingWait === wait) entry.publishingWait = undefined;
-      }
-    });
+      }),
+    );
     entry.publishTail = publication;
     return publication;
+  }
+
+  /** Count both reserved and currently running publications as scope users. */
+  private trackPublication(
+    entry: ScopeEntry,
+    publication: Promise<void>,
+  ): Promise<void> {
+    this.clearIdleUnloadTimer(entry);
+    entry.pendingPublications += 1;
+    void publication.then(
+      (): void => this.finishPublication(entry),
+      (): void => this.finishPublication(entry),
+    );
+    return publication;
+  }
+
+  private finishPublication(entry: ScopeEntry): void {
+    entry.pendingPublications -= 1;
+    if (entry.pendingPublications === 0) this.restartIdleUnloadTimer(entry);
   }
   private assertWritable(
     entry: ScopeEntry,
@@ -1673,20 +2121,32 @@ export class ChatStateV2Repository {
         providerAdmission,
       );
       if (result.applied) {
-        const affected: string[] = [];
+        const appendOnly = new Set(result.appendOnlyChatIds ?? []);
         for (const mutation of result.record.mutations) {
-          if ('chatId' in mutation) affected.push(mutation.chatId);
+          if (
+            !mutationCanDropArtifactReference(
+              mutation,
+              'chatId' in mutation && appendOnly.has(mutation.chatId),
+            )
+          )
+            continue;
+          if ('chatId' in mutation)
+            entry.maintenanceDirtyChats.add(mutation.chatId);
           else if (mutation.type === 'tab.created')
-            affected.push(mutation.tab.id);
+            entry.maintenanceDirtyChats.add(mutation.tab.id);
           else if (mutation.type === 'tab.removed')
-            affected.push(mutation.tabId);
+            entry.maintenanceDirtyChats.add(mutation.tabId);
           else if (mutation.type === 'archive.upserted')
-            affected.push(mutation.entry.tab.id);
+            entry.maintenanceDirtyChats.add(mutation.entry.tab.id);
         }
-        if (affected.length)
-          await this.requestArtifactMaintenance(entry, affected);
+        // Runtime/status commits only resume previously deferred destructive
+        // work; they cannot make a clean chat's references obsolete. This also
+        // avoids rediscovery after a bounded maintenance slot was evicted.
+        await this.requestDirtyArtifactMaintenance(entry);
       }
       const commit = { ...result, ...scope };
+      // Prepared-write proof is backend-internal, not a new broadcast field.
+      delete commit.appendOnlyChatIds;
       const deletedChatIds = result.applied
         ? removedVisualChats(result.record.mutations, result.state)
         : [];
@@ -2064,6 +2524,9 @@ export class ChatStateV2Repository {
     const target = TranscriptTargetSchema.parse(args[0].target);
     if (target.kind !== 'delegation')
       throw new Error('Only delegation targets have a registry');
+    // prepareCardStateUpdate accepts only CardStateDraft (no artifact refs)
+    // and preserves the stored canonical answer, so status drafts cannot
+    // drop a root. Settlements below retain their full-scan cleanup trigger.
     return this.withDelegation(scope, target.chatId, target.delegationId, () =>
       this.withChildStreamTarget(scope, target, () =>
         this.withCardStatePublication(scope, target, () =>
@@ -2087,18 +2550,30 @@ export class ChatStateV2Repository {
     );
   }
 
-  public appendDelegationReceipt(
+  public async appendDelegationReceipt(
     scope: ChatScopeKey,
     ...args: Parameters<DelegationRegistryOperations['appendDelegationReceipt']>
-  ): ReturnType<DelegationRegistryOperations['appendDelegationReceipt']> {
+  ): Promise<
+    Awaited<ReturnType<DelegationRegistryOperations['appendDelegationReceipt']>>
+  > {
     const entry = this.entry(scope);
-    return this.serialized(entry, async () => {
+    const admitted = await this.serialized(entry, async () => {
       this.assertWritable(entry);
       // Replay must remain read-only even when no journal exists.
       await this.loadChildReadScope(scope, entry);
       this.assertWritable(entry);
-      return entry.backend.appendDelegationReceipt(...args);
+      const baseRevision = await entry.backend.revision();
+      const result = await entry.backend.appendDelegationReceipt(...args);
+      const advance = await this.reserveStreamAdvance(
+        entry,
+        scope,
+        { chatId: args[0].chatId },
+        baseRevision,
+      );
+      return { result, publication: advance?.publication };
     });
+    await admitted.publication;
+    return admitted.result;
   }
 
   private settleRegistryOperation(
@@ -2118,7 +2593,13 @@ export class ChatStateV2Repository {
       // Only a genuinely new settlement takes the existing load/promotion path.
       await this.load(scope, entry);
       this.assertWritable(entry);
-      return entry.backend.settleDelegationResult(input);
+      const revision = await entry.backend.revision();
+      const result = await entry.backend.settleDelegationResult(input);
+      if ((await entry.backend.revision()) !== revision) {
+        entry.maintenanceDirtyChats.add(input.target.chatId);
+        await this.requestDirtyArtifactMaintenance(entry);
+      }
+      return result;
     });
   }
 
@@ -2134,48 +2615,14 @@ export class ChatStateV2Repository {
       await this.loadChildReadScope(scope, entry);
       const baseRevision = await entry.backend.revision();
       const result = await operation();
-      const revision = await entry.backend.revision();
-      if (revision === baseRevision)
-        return {
-          result,
-          dirty: this.reserveChildSearchDirty(entry, scope, target),
-        };
-      const descriptor = await entry.backend.childStreamDescriptor(target);
-      if (target.kind !== 'delegation' || descriptor?.cardState?.version !== 2)
-        return {
-          result,
-          dirty: this.reserveChildSearchDirty(entry, scope, target),
-        };
-      const commit: ChatStateCommit = {
-        ...scope,
-        baseRevision,
-        revision,
-        applied: true,
-        state: await entry.backend.state({ chatIds: [] }),
-        record: {
-          v: 1,
-          revision,
-          mutationId: randomUUID(),
-          source: 'automation',
-          occurredAt: new Date().toISOString(),
-          mutations: [],
-        },
-        cardChanges: [
-          {
-            type: 'delegation.card_state_updated',
-            chatId: target.chatId,
-            delegationId: target.delegationId,
-            runGeneration: target.runGeneration,
-            cardRevision: descriptor.cardState.cardRevision,
-            streamRevision: descriptor.streamRevision,
-            cardState: descriptor.cardState,
-          },
-        ],
-      };
-      this.scheduleJournalWork(entry);
+      const advance =
+        target.kind === 'delegation'
+          ? await this.reserveStreamAdvance(entry, scope, target, baseRevision)
+          : undefined;
+      if (advance) this.scheduleJournalWork(entry);
       return {
         result,
-        publication: this.reservePublication(entry, commit, undefined),
+        publication: advance?.publication,
         dirty: this.reserveChildSearchDirty(entry, scope, target),
       };
     });
@@ -2200,6 +2647,7 @@ export class ChatStateV2Repository {
     if (await this.checkpointOnlyChildScope(entry)) {
       this.assertWritable(entry);
       if (entry.loadError) throw entry.loadError;
+      entry.backendResident = true;
       return;
     }
     await this.load(scope, entry);
@@ -2236,20 +2684,22 @@ export class ChatStateV2Repository {
     delegationId: string,
     operation: () => Promise<T>,
   ): Promise<T> {
+    const entry = this.entry(scope);
     const key = canonicalJson([
-      this.entry(scope).store.directory,
+      entry.store.directory,
       scope.projectId,
       scope.worktreeId,
       chatId,
       delegationId,
     ]);
-    return this.withRegistryLock(this.delegationTails, key, operation);
+    return this.withRegistryLock(this.delegationTails, key, operation, entry);
   }
 
   private async withRegistryLock<T>(
     tails: Map<string, Promise<void>>,
     key: string,
     operation: () => Promise<T>,
+    entry: ScopeEntry,
   ): Promise<T> {
     const previous = tails.get(key) ?? Promise.resolve();
     let release: () => void = () => undefined;
@@ -2258,12 +2708,14 @@ export class ChatStateV2Repository {
     });
     const tail = previous.catch(() => undefined).then(() => lock);
     tails.set(key, tail);
+    this.clearIdleUnloadTimer(entry);
     await previous.catch(() => undefined);
     try {
       return await operation();
     } finally {
       release();
       if (tails.get(key) === tail) tails.delete(key);
+      this.restartIdleUnloadTimer(entry);
     }
   }
 
@@ -2280,13 +2732,14 @@ export class ChatStateV2Repository {
     const validated = TranscriptTargetSchema.parse(target);
     if (validated.kind !== 'delegation')
       throw new Error('Only delegation targets can be serialized');
+    const entry = this.entry(scope);
     const key = canonicalJson([
-      this.entry(scope).store.directory,
+      entry.store.directory,
       scope.projectId,
       scope.worktreeId,
       validated,
     ]);
-    return this.withRegistryLock(this.childTargetTails, key, operation);
+    return this.withRegistryLock(this.childTargetTails, key, operation, entry);
   }
 
   /** Register a complete target once, or return its current descriptor. */
@@ -2410,6 +2863,43 @@ export class ChatStateV2Repository {
     revision: number;
     descriptor: TranscriptStreamDescriptor;
   }> {
+    const committed = await this.commitChildRows(
+      scope,
+      target,
+      mutationKey,
+      () => Promise.resolve(rows),
+      true,
+    );
+    if (!committed.committed) throw new Error('Child rows were not committed');
+    return {
+      applied: committed.applied,
+      revision: committed.revision,
+      descriptor: committed.descriptor,
+    };
+  }
+
+  /**
+   * Prepares and commits a child write in one admission turn of the scope
+   * lease: the stream's descriptor and stored rows are read, and the rows to
+   * commit chosen, in the turn that commits them. Separate reads each waited
+   * a pass of the scope's queue, which concurrent delegates keep long.
+   */
+  public commitPreparedChildStream(
+    scope: ChatScopeKey,
+    target: TranscriptTarget,
+    mutationKey: string,
+    prepare: ChildStreamWritePreparation,
+  ): Promise<PreparedChildStreamCommit> {
+    return this.commitChildRows(scope, target, mutationKey, prepare, false);
+  }
+
+  private async commitChildRows(
+    scope: ChatScopeKey,
+    target: TranscriptTarget,
+    mutationKey: string,
+    prepare: ChildStreamWritePreparation,
+    commitWhenEmpty: boolean,
+  ): Promise<PreparedChildStreamCommit> {
     const validated = TranscriptTargetSchema.parse(target);
     if (validated.kind !== 'delegation')
       throw new Error('Only delegation targets accept child rows');
@@ -2417,25 +2907,51 @@ export class ChatStateV2Repository {
       .update(canonicalJson({ target: validated, mutationKey }))
       .digest('hex');
     const entry = this.entry(scope);
-    return this.childSearchWrite(scope, validated, async (noteBase) => {
-      this.assertWritable(entry);
-      await this.load(scope, entry);
-      await noteBase();
-      this.assertWritable(entry);
-      await entry.backend.childStreamDescriptor(validated);
-      this.assertWritable(entry);
-      const result = await entry.backend.commitChildStream(
-        validated,
-        mutationId,
-        rows,
-        undefined,
-        mutationKey,
-      );
-      const descriptor = await entry.backend.childStreamDescriptor(validated);
-      if (descriptor === undefined)
-        throw new Error('Child stream disappeared after commit');
-      return { ...result, descriptor };
-    });
+    return this.childSearchWrite(
+      scope,
+      validated,
+      async (noteBase, noteDurable): Promise<PreparedChildStreamCommit> => {
+        this.assertWritable(entry);
+        // Preparation reads as a reader does, so a write that commits
+        // nothing, such as a replay, leaves a checkpoint-only scope as it is.
+        await this.loadChildReadScope(scope, entry);
+        const prepared = await entry.backend.childStreamDescriptor(validated);
+        const rows = await prepare(prepared, (messageId) =>
+          entry.backend.childStreamMessage(
+            validated,
+            messageId,
+            normalizedChildPin(prepared, prepared?.streamRevision ?? 0),
+          ),
+        );
+        if (rows.length === 0 && !commitWhenEmpty)
+          return { committed: false, prepared };
+        this.assertWritable(entry);
+        await this.load(scope, entry);
+        await noteBase();
+        this.assertWritable(entry);
+        await entry.backend.childStreamDescriptor(validated);
+        this.assertWritable(entry);
+        const { durable, ...result } = await entry.backend.admitChildStream(
+          validated,
+          mutationId,
+          rows,
+          undefined,
+          mutationKey,
+        );
+        noteDurable(durable);
+        // Existing child rows may be revised (including their body references).
+        // Brand-new rows only add roots; unknown/revised rows are conservative.
+        if (result.applied && rows.some((row) => row.itemRevision > 0)) {
+          entry.maintenanceDirtyChats.add(validated.chatId);
+          await this.requestDirtyArtifactMaintenance(entry);
+        }
+        const descriptor = await entry.backend.childStreamDescriptor(validated);
+        if (descriptor === undefined)
+          throw new Error('Child stream disappeared after commit');
+        return { committed: true, prepared, ...result, descriptor };
+      },
+      'admission',
+    );
   }
 
   public listChildSearchDocuments(
@@ -2628,18 +3144,28 @@ export class ChatStateV2Repository {
     const listed = await this.serialized(entry, async () => {
       this.assertWritable(entry);
       await this.load(scope, entry);
-      return entry.backend.listsDelegationChat(chatId);
+      const exists = await entry.backend.listsDelegationChat(chatId);
+      if (exists) {
+        this.clearIdleUnloadTimer(entry);
+        entry.outOfLeaseReservations += 1;
+      }
+      return exists;
     });
     if (!listed) return false;
-    await entry.backend.appendDelegationLog(chatId, runs);
-    for (const run of runs)
-      await this.notifyChildSearchDirty(scope, {
-        kind: 'delegation',
-        chatId,
-        delegationId: run.run.delegationId,
-        runGeneration: run.run.runGeneration,
-      });
-    return true;
+    try {
+      await entry.backend.appendDelegationLog(chatId, runs);
+      for (const run of runs)
+        await this.notifyChildSearchDirty(scope, {
+          kind: 'delegation',
+          chatId,
+          delegationId: run.run.delegationId,
+          runGeneration: run.run.runGeneration,
+        });
+      return true;
+    } finally {
+      entry.outOfLeaseReservations -= 1;
+      this.restartIdleUnloadTimer(entry);
+    }
   }
   public async readDelegationItems(
     scope: ChatScopeKey,
@@ -3246,6 +3772,9 @@ export class ChatStateV2Repository {
       this.assertWritable(entry, options.allowDuringScopeDeletion);
       await this.load(scope, entry);
       await entry.backend.flush();
+      if (entry.backend.pendingJournalRecords() === 0)
+        this.clearJournalIdleTimer(entry);
+      await this.requestDirtyArtifactMaintenance(entry);
     });
   }
   public async runWithScopeDeletion<T>(
@@ -3253,6 +3782,7 @@ export class ChatStateV2Repository {
     operation: () => Promise<T>,
   ): Promise<T> {
     const entry = this.entry(scope);
+    this.clearIdleUnloadTimer(entry);
     entry.deleting++;
     this.cancelArtifactMaintenance(entry);
     try {
@@ -3274,10 +3804,12 @@ export class ChatStateV2Repository {
       entry.deleting--;
       this.armArtifactMaintenanceCapacity(entry);
       this.armArtifactMaintenance(entry);
+      this.restartIdleUnloadTimer(entry);
     }
   }
   public async deleteEmptyScope(scope: ChatScopeKey): Promise<void> {
     const entry = this.entry(scope);
+    this.clearIdleUnloadTimer(entry);
     await this.serialized(entry, async () => {
       await this.load(scope, entry);
       const index = await entry.backend.load();
@@ -3307,6 +3839,7 @@ export class ChatStateV2Repository {
   }
   public async evictScope(scope: ChatScopeKey): Promise<boolean> {
     const entry = this.entry(scope);
+    this.clearIdleUnloadTimer(entry);
     return this.serialized(entry, async () => {
       await this.load(scope, entry);
       const index = await entry.backend.load();
@@ -3362,6 +3895,7 @@ export class ChatStateV2Repository {
     ).directory;
     const entry = this.scopes.get(directory);
     if (!entry) return true;
+    this.clearIdleUnloadTimer(entry);
     if (entry.lifecycle !== 'recovery_error' || entry.deleting) return false;
     this.cancelArtifactMaintenance(entry);
     await this.closePreviewReaders(entry);
@@ -3377,6 +3911,7 @@ export class ChatStateV2Repository {
     await this.visualStagingSweep.stop();
     for (const entry of Array.from(this.scopes.values())) {
       this.cancelArtifactMaintenance(entry);
+      this.clearIdleUnloadTimer(entry);
       this.clearJournalIdleTimer(entry);
     }
     // A sweep stops at its next scope; the one it is sweeping finishes.

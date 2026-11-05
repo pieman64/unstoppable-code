@@ -16,6 +16,7 @@
 // clients (CAN-4302).
 
 import { createServer, request as httpRequest } from 'node:http';
+import { compareSync } from 'bcryptjs';
 
 export const FAKE_PROXY_MANAGEMENT_KEY = 'mk-e2e-management';
 
@@ -131,7 +132,9 @@ export const FAKE_PROXY_SIGNED_IN_ACCOUNT = signIn({
 
 /**
  * Options: `port` and `managementKey` (both optional) run it as the proxy on
- * a device; `signInAfterPolls` finishes a browser sign-in on that status
+ * a device; `managementKeyHash` checks the key against a bcrypt hash instead,
+ * as the proxy on this device does with the hash the app writes (CAN-4406);
+ * `signInAfterPolls` finishes a browser sign-in on that status
  * poll, adding {@link FAKE_PROXY_SIGNED_IN_ACCOUNT}.
  *
  * As in CLIProxyAPI 8.0.28, only a sign-in started with `is_webui` catches
@@ -144,6 +147,14 @@ export async function startFakeAccountProxy(options = {}) {
   const state = options.state ?? defaultFakeProxyState();
   const version = options.version ?? '8.0.27';
   const managementKey = options.managementKey ?? FAKE_PROXY_MANAGEMENT_KEY;
+  const managementKeyHash = options.managementKeyHash ?? null;
+  const acceptsManagementKey = (authorization) => {
+    if (!managementKeyHash) return authorization === `Bearer ${managementKey}`;
+    const token = authorization?.startsWith('Bearer ')
+      ? authorization.slice('Bearer '.length)
+      : null;
+    return token !== null && compareSync(token, managementKeyHash);
+  };
   const signInAfterPolls = options.signInAfterPolls ?? 2;
   /**
    * Browser sign-ins by state: how many status polls each has had, whether
@@ -324,7 +335,7 @@ export async function startFakeAccountProxy(options = {}) {
         send(200, { status: 'ok' });
         return;
       }
-      if (req.headers.authorization !== `Bearer ${managementKey}`) {
+      if (!acceptsManagementKey(req.headers.authorization)) {
         send(401, { error: 'invalid management key' });
         return;
       }

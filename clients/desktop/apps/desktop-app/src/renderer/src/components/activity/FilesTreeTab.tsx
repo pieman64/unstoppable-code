@@ -32,6 +32,7 @@ import {
   releaseFileTreeWatch,
 } from '@/lib/file-tree-watch';
 import { requestFilePanelPlacementBesideChat } from '@/lib/panels/chat-panel-sync';
+import { usePanelHostState } from '@/lib/panels/panel-host-context';
 import { useChatStore } from '@/stores/chatStore';
 import { worktreeKey } from '@/stores/chat/utils';
 import {
@@ -40,6 +41,7 @@ import {
   getFileTreeUiStateKey,
   getWorktreeCacheKey,
   useFileListStore,
+  useRetainFileIndex,
 } from '@/stores/fileListStore';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import {
@@ -583,10 +585,11 @@ function FolderRow({
       trailingAction={
         absolutePath ? (
           <Tooltip label={pt(uiText.fileManager.openItem)}>
-            <button
-              type="button"
+            <Button
+              variant="ghost-quiet"
+              size="sm"
+              iconOnly
               data-testid="files-tree-row-open-in-file-manager"
-              className="focus-ring rounded p-1 fg-secondary transition-colors hover:bg-fg-primary/[0.08] hover:fg-primary"
               aria-label={pt(uiText.fileManager.openItem)}
               onClick={(event): void => {
                 event.preventDefault();
@@ -595,7 +598,7 @@ function FolderRow({
               }}
             >
               <FolderIcon className="h-3 w-3" />
-            </button>
+            </Button>
           </Tooltip>
         ) : undefined
       }
@@ -716,10 +719,11 @@ const FileNodeRow = memo(function FileNodeRow({
       }
       trailingAction={
         <Tooltip label={pt(uiText.fileManager.openItem)}>
-          <button
-            type="button"
+          <Button
+            variant="ghost-quiet"
+            size="sm"
+            iconOnly
             data-testid="files-tree-row-open-in-file-manager"
-            className="focus-ring rounded p-1 fg-secondary transition-colors hover:bg-fg-primary/[0.08] hover:fg-primary"
             aria-label={pt(uiText.fileManager.openItem)}
             onClick={(event): void => {
               event.preventDefault();
@@ -728,7 +732,7 @@ const FileNodeRow = memo(function FileNodeRow({
             }}
           >
             <FolderIcon className="h-3 w-3" />
-          </button>
+          </Button>
         </Tooltip>
       }
     />
@@ -1122,6 +1126,8 @@ export function FilesTreeTab({
   onCurrentFileInitialReveal,
   onTreeModeChange,
 }: FilesTreeTabProps): JSX.Element {
+  const panelHostVisible = usePanelHostState().visible !== false;
+  const effectiveVisible = isVisible && panelHostVisible;
   // Read-only scopes (a shared-container recipient) browse and open files but
   // never rename, delete, move, paste, or open the mutate context menu.
   const readOnly = useWorkspaceIsReadOnly();
@@ -1535,6 +1541,7 @@ export function FilesTreeTab({
   const normalizedQuery = normalizeFileTreeSearchQuery(debouncedQuery);
   const searchActive = searchOpen && normalizedQuery.length > 0;
   searchActiveRef.current = searchActive;
+  useRetainFileIndex(effectiveVisible && searchActive ? indexCacheKey : null);
 
   // A new query means a new result set, so per-result collapse state starts
   // over. Skipped when nothing was collapsed, to avoid a pointless re-render.
@@ -1548,7 +1555,9 @@ export function FilesTreeTab({
   // searches. It includes paths excluded from Cmd+P/@ mentions because those
   // paths remain visible in the explorer.
   useEffect(() => {
-    if (!searchActive || !projectId || !worktreeId) return;
+    if (!effectiveVisible || !searchActive || !projectId || !worktreeId) {
+      return;
+    }
     if (
       !shouldFetchFilesTreeIndex(
         projectId,
@@ -1562,6 +1571,7 @@ export function FilesTreeTab({
     }
     void fetchFileTreeIndex(projectId, worktreeId);
   }, [
+    effectiveVisible,
     searchActive,
     projectId,
     worktreeId,
@@ -2083,7 +2093,7 @@ export function FilesTreeTab({
     // made every filesystem mutation visibly flash.
     markFileTreeStale(projectId, worktreeId);
     void fetchFileTreeRoots(projectId, worktreeId);
-    if (searchActive) {
+    if (searchActive && effectiveVisible) {
       void fetchFileTreeIndex(projectId, worktreeId);
     }
     // Re-fetch every visible directory so already-expanded folders refresh
@@ -2114,6 +2124,7 @@ export function FilesTreeTab({
     rootsLoading,
     markFileTreeStale,
     searchActive,
+    effectiveVisible,
     fetchFileTreeIndex,
     fetchFileTreeRoots,
     fetchFileTreeDirectory,
@@ -2127,7 +2138,7 @@ export function FilesTreeTab({
     const requests: Promise<void>[] = [
       fetchFileTreeRoots(projectId, worktreeId),
     ];
-    if (searchActive) {
+    if (searchActive && effectiveVisible) {
       requests.push(fetchFileTreeIndex(projectId, worktreeId));
     }
     if (!searchActive) {
@@ -2162,6 +2173,7 @@ export function FilesTreeTab({
     markFileTreeStale,
     projectId,
     searchActive,
+    effectiveVisible,
     worktreeId,
   ]);
   refreshVisibleDirectoriesRef.current = refreshVisibleDirectories;

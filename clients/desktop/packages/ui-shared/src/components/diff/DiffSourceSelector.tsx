@@ -1,4 +1,5 @@
 import type { JSX } from 'react';
+import { SegmentedControl } from '../SegmentedControl';
 
 /**
  * Diff source selection — which set of changes the diff viewer is currently
@@ -19,8 +20,6 @@ export interface DiffSourceSelectorProps {
   onChange: (next: DiffSource) => void;
   /** Optional override of the available options. Defaults to all three. */
   options?: DiffSourceSelectorOption[];
-  /** Optional override for the wrapper class. */
-  className?: string;
   /** Test ID hook for automation. */
   dataTestId?: string;
 }
@@ -39,32 +38,21 @@ export function DiffSourceSelector({
   value,
   onChange,
   options,
-  className,
   dataTestId,
 }: DiffSourceSelectorProps): JSX.Element {
   const resolved = options ?? DEFAULT_OPTIONS;
-  const wrapperClass = className ?? 'flex overflow-hidden rounded-md border';
   return (
-    <div className={wrapperClass} data-testid={dataTestId}>
-      {resolved.map((opt, index) => {
-        const selected = value === opt.value;
-        const dividerClass = index > 0 ? 'border-l' : '';
-        const stateClass = selected
-          ? 'bg-accent-subtle fg-accent'
-          : 'fg-secondary hover:fg-primary';
-        return (
-          <button
-            key={opt.value}
-            type="button"
-            data-testid={dataTestId ? `${dataTestId}-${opt.value}` : undefined}
-            aria-pressed={selected}
-            onClick={(): void => onChange(opt.value)}
-            className={`px-2.5 py-1 text-2xs transition-colors ${stateClass} ${dividerClass}`}
-          >
-            {opt.label}
-          </button>
-        );
-      })}
-    </div>
+    <SegmentedControl
+      value={value}
+      onChange={onChange}
+      label="Diff source"
+      width="content"
+      dataTestId={dataTestId}
+      options={resolved.map((opt) => ({
+        value: opt.value,
+        label: opt.label,
+        ...(dataTestId ? { dataTestId: `${dataTestId}-${opt.value}` } : {}),
+      }))}
+    />
   );
 }

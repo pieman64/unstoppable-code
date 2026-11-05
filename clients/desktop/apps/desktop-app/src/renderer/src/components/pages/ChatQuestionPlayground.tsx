@@ -1,6 +1,11 @@
 import { useEffect, useState, type JSX } from 'react';
 import { ChatContent } from '../chat/ChatContent';
-import { Button, Disclosure, Heading } from '@canopy/ui-shared/components';
+import {
+  Button,
+  Disclosure,
+  Heading,
+  ListRow,
+} from '@canopy/ui-shared/components';
 import { toActiveComposerView, toActiveTranscriptView } from '../chat/types';
 import { ChatSurfaceProvider } from '@/stores/chat/surface-store';
 import { createQuestionSandbox } from './chatQuestionSandbox';
@@ -103,16 +108,15 @@ export function ChatQuestionPlayground(): JSX.Element {
           </Heading>
           <div className="space-y-1">
             {QUESTION_PRESETS.map((item) => (
-              <button
+              <ListRow
                 key={item.id}
-                type="button"
                 aria-label={item.title}
                 aria-pressed={item.id === preset.id}
+                selected={item.id === preset.id}
                 onClick={() => startConversation(item.id)}
-                className={`focus-ring w-full rounded-lg px-3 py-2.5 text-left text-s ${item.id === preset.id ? 'bg-selected fg-primary' : 'fg-secondary hover:bg-secondary'}`}
               >
                 {item.title}
-              </button>
+              </ListRow>
             ))}
           </div>
         </div>

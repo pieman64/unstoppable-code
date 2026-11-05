@@ -60,7 +60,7 @@ export interface ShareDialogLifecycle {
 /** The resource's existing link, shown as Copy link in the footer. */
 export interface ShareDialogLink {
   readonly url: string;
-  readonly kind: 'public' | 'scoped';
+  readonly kind: 'public' | 'scoped' | 'item';
 }
 
 function capitalize(value: string): string {

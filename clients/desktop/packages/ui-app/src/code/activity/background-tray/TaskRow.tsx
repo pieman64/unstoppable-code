@@ -231,7 +231,7 @@ function DetailsInspector({
   const Subtitle = redesigned ? InspectorSubtitle : Fragment;
   return (
     <Subtitle>
-      {task.lastDescription !== null && (
+      {!redesigned && task.lastDescription !== null && (
         <p
           className={`${REPLAY_BLOCK_CLASS} ${redesigned ? '' : 'fg-secondary'}`}
         >
@@ -331,7 +331,8 @@ export function TaskRow({
           <span className={REPLAY_BLOCK_CLASS}>{detail}</span>
         )
       }
-      trailing={elapsed}
+      trailing={presentation === 'legacy' ? elapsed : undefined}
+      status={presentation !== 'legacy' ? elapsed : undefined}
       openAction={
         onOpenDetail
           ? {
@@ -353,7 +354,18 @@ export function TaskRow({
           />
         ) : undefined
       }
-      inspector={{ open, onToggle, render: renderInspector }}
+      inspector={
+        presentation === 'legacy' ||
+        task.kind === 'bash' ||
+        (task.kind === 'workflow' &&
+          Boolean(
+            actions?.getDetail?.(task)?.runId &&
+            actions?.subscribeWorkflowProgress,
+          )) ||
+        Boolean(task.summary && task.summary !== detail)
+          ? { open, onToggle, render: renderInspector }
+          : undefined
+      }
       listRef={listRef}
       topInset={topInset}
     />

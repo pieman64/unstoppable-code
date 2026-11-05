@@ -2,13 +2,12 @@ import { BADGE_BASE_CLASS, badgeClassName, type BadgeTone } from './badge';
 import type { OperationalStatus } from './operational-status-colors';
 
 /**
- * The two chip shapes that sit in a pipeline run row (and any other compact
- * activity row): a read-only STATUS BADGE and a clickable ACTION CHIP. Every
- * chip in the row composes one of these two builders so the row cannot drift
- * back into a mix of paddings, radii, and border utilities.
+ * Row chips and the house secondary surface. A pipeline run row (and any
+ * other compact activity row) shows a read-only STATUS BADGE beside its
+ * actions; the actions are `Button`s (through `ExecutionActionButton`).
  *
  * Status badges are the shared Badge capsule: a `*-subtle` tint and the
- * tone's strong ink, with no ring or border. Action chips never tint: they sit on the
+ * tone's strong ink, with no ring or border. Secondary controls sit on the
  * shared {@link SECONDARY_SURFACE_CLASS} and differ by ink only. Neither
  * uses a `border-<color>` utility, which the unlayered base border rule
  * paints over (CAN-2734).
@@ -144,21 +143,4 @@ const SECONDARY_TONE_INK: Record<SecondaryTone, string> = {
 /** The single `fg-*` role a secondary control paints for `tone`. */
 export function secondaryToneClassName(tone: SecondaryTone): string {
   return SECONDARY_TONE_INK[tone];
-}
-
-/**
- * 24px rounded-md button, 2xs label. Geometry only: the ring width, shadow,
- * and hover come from {@link SECONDARY_SURFACE_CLASS}.
- */
-export const ACTION_CHIP_BASE_CLASS =
-  'focus-ring inline-flex h-6 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-2xs font-medium transition-colors';
-
-export type ActionChipTone = Exclude<SecondaryTone, 'accent'>;
-
-/**
- * Full class string for an action chip: shared geometry plus the house
- * secondary surface plus the tone's ink. Disabled treatment is the caller's.
- */
-export function actionChipClassName(tone: ActionChipTone): string {
-  return `${ACTION_CHIP_BASE_CLASS} ${SECONDARY_SURFACE_CLASS} ${secondaryToneClassName(tone)}`;
 }

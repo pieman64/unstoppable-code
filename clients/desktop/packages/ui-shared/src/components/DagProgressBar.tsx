@@ -475,5 +475,11 @@ export const DagProgressDots = memo(function DagProgressDots({
       ),
     [tiers, jobs],
   );
-  return <ProgressSteps stages={stages} dataTestId="dag-progress-dots" />;
+  return (
+    <ProgressSteps
+      appearance="dots"
+      stages={stages}
+      dataTestId="dag-progress-dots"
+    />
+  );
 });

@@ -51,14 +51,6 @@ subscribePreferencesUpdated((prefs) => {
   useMergeQueueAgentHandlingStore.setState({ handling: handlingFrom(prefs) });
 });
 
-/** Test-only reset so specs can control the setting directly. */
-export function __resetMergeQueueAgentHandlingForTests(): void {
-  loadStarted = false;
-  useMergeQueueAgentHandlingStore.setState({
-    handling: DEFAULT_MERGE_QUEUE_AGENT_HANDLING,
-  });
-}
-
 /**
  * Reactive read of the merge queue agent handling setting. Triggers the
  * shared one-time load on first mount.

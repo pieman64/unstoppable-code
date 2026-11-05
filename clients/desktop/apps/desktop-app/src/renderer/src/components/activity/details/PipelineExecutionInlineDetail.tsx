@@ -24,7 +24,7 @@ import {
   resolveSelectedStep,
   type SelectedStepRef,
 } from '@/lib/pipelineAttemptTimeline';
-import { Badge, StatusGlyph } from '@canopy/ui-shared/components';
+import { Badge, Disclosure, StatusGlyph } from '@canopy/ui-shared/components';
 import { LoadingSpinner } from '../../shared/loading/spinners/LoadingSpinner';
 import { AnsiOutput } from '../AnsiOutput';
 import { PipelineTimer } from '../PipelineTimer';
@@ -280,22 +280,18 @@ function ChildPipelineToggle({
   if (!child) return null;
 
   return (
-    <>
-      <button
-        type="button"
-        onClick={(): void => onToggle(stepInstanceKey)}
-        className="mt-1 flex items-center gap-1 rounded-md px-2.5 py-1 text-2xs fg-info/80 transition-colors hover:bg-fg-primary/[0.04] hover:fg-info"
-      >
-        <ChevronIcon open={expandedChildSteps.has(stepInstanceKey)} />
-        {child.pipeline_name}
-      </button>
-      {expandedChildSteps.has(stepInstanceKey) && (
-        <ChildPipelineExpansion
-          childExecutionId={child.id}
-          childContext={childContext}
-        />
-      )}
-    </>
+    <Disclosure
+      className="mt-1"
+      open={expandedChildSteps.has(stepInstanceKey)}
+      onOpenChange={(): void => onToggle(stepInstanceKey)}
+      label={child.pipeline_name}
+      dataTestId={`pipeline-inline-child-${stepId}`}
+    >
+      <ChildPipelineExpansion
+        childExecutionId={child.id}
+        childContext={childContext}
+      />
+    </Disclosure>
   );
 }
 

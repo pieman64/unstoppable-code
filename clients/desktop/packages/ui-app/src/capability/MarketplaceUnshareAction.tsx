@@ -1,3 +1,4 @@
+import type { MarketplaceShareLinkKind } from '@canopy/protocol/marketplace';
 import {
   useCallback,
   useRef,
@@ -18,11 +19,10 @@ import {
   MarketplaceUnshareError,
   marketplaceUnshareErrorMessage,
   marketplaceUnshareMessage,
-  type MarketplaceUnshareKind,
 } from '@canopy/ui-shared/lib/marketplace-unshare';
 
 export interface MarketplaceUnshareActionProps {
-  readonly kind: MarketplaceUnshareKind;
+  readonly kind: MarketplaceShareLinkKind;
   /** The share's user-authored name, masked for session replay. */
   readonly name: string;
   /** The organization or team it is shared with, when known. */

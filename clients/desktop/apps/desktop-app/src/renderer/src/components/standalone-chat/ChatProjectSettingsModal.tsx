@@ -1,11 +1,27 @@
-import { useEffect, useMemo, useState, type JSX, type ReactNode } from 'react';
-import { Button, Heading } from '@canopy/ui-shared/components';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type JSX,
+  type ReactNode,
+} from 'react';
+import {
+  Button,
+  Heading,
+  InstructionsEditor,
+  Notice,
+  NoticeButton,
+} from '@canopy/ui-shared/components';
 import { offerLifecycleJournalQuarantine } from '@canopy/app-state';
 import {
   isDefaultCoworkWorkspaceId,
+  type ChatProjectClaudeMdResponse,
   type ChatProjectData,
   type ChatProjectTemplateDraft,
   type ChatTabPluginSelections,
+  type SaveChatProjectClaudeMdResult,
   type UpdateChatProjectRequest,
 } from '@canopy/desktop-shared/types';
 import { EMPTY_SELECTIONS, normalizeSelections } from '@/lib/pluginSelections';
@@ -107,6 +123,68 @@ function getDangerTabCopy(
   };
 }
 
+/** A refused or incomplete instructions save; the folder must be reloaded. */
+type InstructionsSaveIssue = Exclude<
+  SaveChatProjectClaudeMdResult,
+  { status: 'saved' }
+>;
+
+/**
+ * What Save does to the folder's instruction files, when that goes beyond
+ * editing the one file shown. Equal files are treated as mirrors by the
+ * shared layout policy, which is a content match, not proof of who made them.
+ */
+function InstructionsLayoutNotice({
+  instructions,
+}: {
+  instructions: ChatProjectClaudeMdResponse;
+}): JSX.Element | null {
+  if (instructions.layout === 'mirrors') {
+    return (
+      <Notice
+        shape="settings"
+        role="none"
+        title="Two matching files"
+        data-testid="chat-project-instructions-notice"
+      >
+        AGENTS.md and CLAUDE.md hold the same instructions. Save updates both
+        files.
+      </Notice>
+    );
+  }
+  if (instructions.layout === 'divergent') {
+    return (
+      <Notice
+        shape="settings"
+        role="none"
+        intent="attention"
+        title="CLAUDE.md is a separate file"
+        data-testid="chat-project-instructions-notice"
+      >
+        Save updates AGENTS.md only. CLAUDE.md stays unchanged and may give
+        Claude different instructions.
+      </Notice>
+    );
+  }
+  if (
+    instructions.layout === 'create-counterpart' &&
+    instructions.fileName === 'AGENTS.md'
+  ) {
+    return (
+      <Notice
+        shape="settings"
+        role="none"
+        title="Loaded from AGENTS.md"
+        data-testid="chat-project-instructions-notice"
+      >
+        Save writes your edits back to this file and creates CLAUDE.md only if
+        it doesn&apos;t exist.
+      </Notice>
+    );
+  }
+  return null;
+}
+
 interface ChatProjectSettingsModalProps {
   isOpen: boolean;
   project: ChatProjectData | null;
@@ -148,8 +226,19 @@ export function ChatProjectSettingsModal({
   const [description, setDescription] = useState('');
   const [color, setColor] = useState('');
   const [claudeMd, setClaudeMd] = useState('');
-  const [loadedClaudeMd, setLoadedClaudeMd] = useState('');
+  // The loaded file, its layout, and the revision Save must present. `null`
+  // while loading or after a failed load, when instructions are never saved.
+  const [instructions, setInstructions] =
+    useState<ChatProjectClaudeMdResponse | null>(null);
   const [claudeMdLoading, setClaudeMdLoading] = useState(false);
+  const [instructionsLoadFailed, setInstructionsLoadFailed] = useState(false);
+  const [instructionsSaveIssue, setInstructionsSaveIssue] =
+    useState<InstructionsSaveIssue | null>(null);
+  // Only the latest load may apply; closing, reopening, or switching
+  // projects advances it so a slower earlier response is dropped.
+  const instructionsLoadToken = useRef(0);
+  // Saves belong to an open project, independently of an in-place reload.
+  const instructionsSessionToken = useRef(0);
   const [plugins, setPlugins] =
     useState<ChatTabPluginSelections>(EMPTY_SELECTIONS);
   const [retentionDays, setRetentionDays] = useState(
@@ -187,18 +276,45 @@ export function ChatProjectSettingsModal({
     [claudeMd, color, description, name, plugins],
   );
 
+  const loadInstructions = useCallback(
+    async (projectId: string): Promise<void> => {
+      instructionsLoadToken.current += 1;
+      const token = instructionsLoadToken.current;
+      setClaudeMdLoading(true);
+      setInstructionsLoadFailed(false);
+      setError('');
+      setErrorDetails('');
+      try {
+        const loaded = await window.api.chatProject.loadClaudeMd({
+          projectId,
+        });
+        if (token !== instructionsLoadToken.current) return;
+        setInstructions(loaded);
+        setInstructionsSaveIssue(null);
+        setClaudeMd(loaded.content);
+      } catch (cause) {
+        if (token !== instructionsLoadToken.current) return;
+        // Keep any text on screen; without a loaded revision it is never saved.
+        setInstructions(null);
+        setInstructionsLoadFailed(true);
+        setError("Couldn't load this project's instructions. Try again.");
+        setErrorDetails(cause instanceof Error ? cause.message : '');
+      } finally {
+        if (token === instructionsLoadToken.current) {
+          setClaudeMdLoading(false);
+        }
+      }
+    },
+    [],
+  );
+
   useEffect(() => {
     if (!isOpen || !project) return;
-
-    let canceled = false;
 
     setActiveTab(initialTab);
     setName(project.name);
     setDescription(project.description ?? '');
     setColor(project.color ?? '');
-    setClaudeMd('');
-    setLoadedClaudeMd('');
-    setClaudeMdLoading(true);
     setPlugins(project.defaultPluginSelections ?? EMPTY_SELECTIONS);
     // Shared retention semantics: never-set, legacy `null`, and legacy `0`
     // all render as the 7-day default (deletion retention is always on).
@@ -220,38 +336,24 @@ export function ChatProjectSettingsModal({
     setConfirmingDelete(false);
     setError('');
     setErrorDetails('');
-
-    const loadClaudeMd = async (): Promise<void> => {
-      try {
-        const content = await window.api.chatProject.loadClaudeMd({
-          projectId: project.id,
-        });
-        if (canceled) {
-          return;
-        }
-        setClaudeMd((current) => (current === '' ? content : current));
-        setLoadedClaudeMd(content);
-      } catch (cause) {
-        if (canceled) {
-          return;
-        }
-        setClaudeMd('');
-        setLoadedClaudeMd('');
-        setError("Couldn't load CLAUDE.md. Try again.");
-        setErrorDetails(cause instanceof Error ? cause.message : '');
-      } finally {
-        if (!canceled) {
-          setClaudeMdLoading(false);
-        }
-      }
-    };
-
-    void loadClaudeMd();
-
-    return (): void => {
-      canceled = true;
-    };
   }, [initialTab, isOpen, project]);
+
+  // Keyed on the project's id, not the row: saving other settings reloads
+  // the row, which must not replace unsaved instruction edits or a notice.
+  const openProjectId = isOpen ? project?.id : undefined;
+  useEffect(() => {
+    if (openProjectId === undefined) return;
+    setIsSaving(false);
+    setClaudeMd('');
+    setInstructions(null);
+    setInstructionsLoadFailed(false);
+    setInstructionsSaveIssue(null);
+    void loadInstructions(openProjectId);
+    return (): void => {
+      instructionsLoadToken.current += 1;
+      instructionsSessionToken.current += 1;
+    };
+  }, [loadInstructions, openProjectId]);
 
   if (!isOpen || !project) return null;
   const currentProject = project;
@@ -262,7 +364,11 @@ export function ChatProjectSettingsModal({
   const nameDirty = name.trim() !== currentProject.name;
   const descriptionDirty = description !== (currentProject.description ?? '');
   const colorDirty = color !== (currentProject.color ?? '');
-  const claudeMdDirty = claudeMd !== loadedClaudeMd;
+  // Edits to the loaded text, whether or not they can be saved right now.
+  const claudeMdEdited =
+    instructions !== null && claudeMd !== instructions.content;
+  const claudeMdDirty =
+    claudeMdEdited && !claudeMdLoading && instructionsSaveIssue === null;
   const pluginsDirty =
     normalizeSelections(plugins) !==
     normalizeSelections(
@@ -301,6 +407,9 @@ export function ChatProjectSettingsModal({
 
   async function handleSave(): Promise<void> {
     if (!startPageValid) return;
+    const saveToken = instructionsSessionToken.current;
+    const isCurrentSave = (): boolean =>
+      saveToken === instructionsSessionToken.current;
     setIsSaving(true);
     setError('');
     setErrorDetails('');
@@ -326,26 +435,49 @@ export function ChatProjectSettingsModal({
           ...(alwaysShowDirty ? { alwaysShow } : {}),
           ...(startPageDirty ? { startPage: startPage ?? null } : {}),
         });
+        if (!isCurrentSave()) return;
         if (startPageDirty) {
           await useStartPageStore.getState().refreshProject(currentProject.id);
+          if (!isCurrentSave()) return;
         }
       }
-      if (claudeMdDirty) {
-        await window.api.chatProject.saveClaudeMd({
+      let savedInstructions = false;
+      if (claudeMdDirty && instructions !== null) {
+        const result = await window.api.chatProject.saveClaudeMd({
           projectId: currentProject.id,
           content: claudeMd,
+          revision: instructions.revision,
         });
-        setLoadedClaudeMd(claudeMd);
+        if (!isCurrentSave()) return;
+        if (result.status !== 'saved') {
+          // Keep the dialog and the text; the notice explains what was saved.
+          setInstructionsSaveIssue(result);
+          setActiveTab('instructions');
+          return;
+        }
+        savedInstructions = true;
+      } else if (instructionsSaveIssue !== null) {
+        // The other settings are saved, but unsaved instruction edits stay
+        // on screen until the folder is reloaded.
+        setActiveTab('instructions');
+        return;
       }
       // Last, so a refusal (the value became organization-managed) keeps
       // the dialog open on the reloaded value with everything else saved.
-      if (!(await privateMemory.save())) return;
+      if (!(await privateMemory.save())) {
+        if (!isCurrentSave()) return;
+        // The save used up the loaded revision; load the current one.
+        if (savedInstructions) void loadInstructions(currentProject.id);
+        return;
+      }
+      if (!isCurrentSave()) return;
       onClose();
     } catch (cause) {
+      if (!isCurrentSave()) return;
       setError("Couldn't save these settings. Try again.");
       setErrorDetails(cause instanceof Error ? cause.message : '');
     } finally {
-      setIsSaving(false);
+      if (isCurrentSave()) setIsSaving(false);
     }
   }
 
@@ -605,24 +737,72 @@ export function ChatProjectSettingsModal({
         )}
 
         {activeTab === 'instructions' && (
-          <div className="flex min-h-0 flex-1 flex-col">
-            <Heading level={3} variant="title" id="claude-md-label">
-              CLAUDE.md
-            </Heading>
-            <p id="claude-md-description" className="mt-1 text-xs fg-secondary">
-              Instructions for every chat in this project.
-            </p>
-            <TextArea
-              mono
-              value={claudeMd}
-              onChange={(event) => setClaudeMd(event.target.value)}
-              disabled={claudeMdLoading}
-              aria-labelledby="claude-md-label"
-              aria-describedby="claude-md-description"
-              className="mt-2 min-h-0 flex-1"
-              placeholder="# Project instructions&#10;&#10;Add project-specific CLAUDE.md content here…"
-            />
-          </div>
+          <InstructionsEditor
+            showHeading
+            label={instructions?.fileName ?? 'Instructions'}
+            description="Instructions for every chat in this project."
+            notices={
+              instructionsSaveIssue !== null ? (
+                <Notice
+                  shape="settings"
+                  intent={
+                    instructionsSaveIssue.status === 'conflict'
+                      ? 'attention'
+                      : 'destructive'
+                  }
+                  title={
+                    instructionsSaveIssue.status === 'conflict'
+                      ? 'Instructions not saved'
+                      : 'Instructions partly saved'
+                  }
+                  detail="Reloading replaces the text here with the files as they are now."
+                  actions={
+                    <NoticeButton
+                      variant="primary"
+                      busy={claudeMdLoading}
+                      busyLabel="Reloading…"
+                      disabled={isSaving}
+                      onClick={() => void loadInstructions(currentProject.id)}
+                    >
+                      Reload
+                    </NoticeButton>
+                  }
+                  data-testid="chat-project-instructions-save-issue"
+                >
+                  {instructionsSaveIssue.message}
+                </Notice>
+              ) : instructionsLoadFailed ? (
+                <Notice
+                  shape="settings"
+                  intent="destructive"
+                  role="none"
+                  title="Couldn't load instructions"
+                  actions={
+                    <NoticeButton
+                      variant="primary"
+                      busy={claudeMdLoading}
+                      busyLabel="Reloading…"
+                      disabled={isSaving}
+                      onClick={() => void loadInstructions(currentProject.id)}
+                    >
+                      Try again
+                    </NoticeButton>
+                  }
+                  data-testid="chat-project-instructions-load-failed"
+                >
+                  Editing is off until they load.
+                </Notice>
+              ) : instructions !== null ? (
+                <InstructionsLayoutNotice instructions={instructions} />
+              ) : null
+            }
+            mono
+            textareaTestId="chat-project-instructions-editor"
+            value={claudeMd}
+            onChange={setClaudeMd}
+            disabled={isSaving || claudeMdLoading || instructions === null}
+            placeholder={`# Project instructions\n\nAdd project-specific ${instructions?.fileName ?? 'CLAUDE.md'} content here…`}
+          />
         )}
 
         {activeTab === 'environment' && (
@@ -640,6 +820,11 @@ export function ChatProjectSettingsModal({
         {activeTab === 'share' &&
           (claudeMdLoading ? (
             <p className="text-xs fg-secondary">Loading sharing details…</p>
+          ) : instructionsLoadFailed ? (
+            <p className="text-xs fg-secondary">
+              Sharing needs this project&apos;s instructions. Load them from the
+              Instructions tab first.
+            </p>
           ) : (
             <WorkspaceTemplateShareTab
               projectId={currentProject.id}

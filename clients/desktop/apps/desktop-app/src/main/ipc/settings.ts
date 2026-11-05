@@ -27,6 +27,7 @@ import {
   type NativeAiCreditsAvailability,
   type AiCreditsScopeRequest,
   type GitHubCliStatus,
+  type StarSourceRepositoryResult,
   type GitHubPermissionsRequest,
   type GitHubPermissionsStatus,
   type LinearStatus,
@@ -161,7 +162,10 @@ import {
 import { registerIpcHandler } from './register';
 import type { DesktopIpcCallerResolver } from './file-tree';
 import type { CoreIntegrationDispatcher } from '../canopy-runtime/core-integration-adapter';
-import { getGitHubCliStatus } from '../canopy-runtime/github-integration-dispatch';
+import {
+  getGitHubCliStatus,
+  starSourceRepository,
+} from '../canopy-runtime/github-integration-dispatch';
 import { getFeatureFlagService } from '../feature-flags';
 import { getMockLlmOrigin } from '../lib/e2e-mock-control-plane';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
@@ -1931,6 +1935,12 @@ export function registerSettingsHandlers(runtime: {
     IPC_CHANNELS.settingsGitHubCliStatus,
     async (event): Promise<GitHubCliStatus> =>
       getGitHubCliStatus(runtime.dispatcher, runtime.resolveCaller(event)),
+  );
+
+  registerIpcHandler(
+    IPC_CHANNELS.settingsStarSourceRepository,
+    async (event): Promise<StarSourceRepositoryResult> =>
+      starSourceRepository(runtime.dispatcher, runtime.resolveCaller(event)),
   );
 
   registerIpcHandler(

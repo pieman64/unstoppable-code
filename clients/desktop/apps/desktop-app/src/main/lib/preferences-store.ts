@@ -1,7 +1,9 @@
 import { DATA_SHARING_OPT_IN_FEATURES } from '@canopy/protocol/canopy-server';
 import {
+  mergeGitHubStarPromptRecords,
   mergePlanModeHintRecords,
   migrateLegacyPlanModeHintRecord,
+  normalizeGitHubStarPromptRecord,
   normalizePlanModeHintRecord,
 } from '@canopy/protocol/onboarding';
 import {
@@ -16,12 +18,8 @@ import {
   compareReleaseVersions,
   parseReleaseVersion,
 } from '@canopy/protocol/release-notes';
+import { normalizeClaudeMaxTurns } from '@canopy/desktop-shared/constants/preferences';
 import {
-  DEFAULT_CLAUDE_MAX_TURNS,
-  normalizeClaudeMaxTurns,
-} from '@canopy/desktop-shared/constants/preferences';
-import {
-  defaultManagedDelegationLifetimeLimit,
   normalizeManagedDelegationMode,
   normalizeManagedDelegationMaxConcurrent,
   normalizeManagedDelegationMaxDepth,
@@ -53,12 +51,8 @@ import {
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { mcpHttpAuthTargetKey } from '@canopy/desktop-shared/lib/mcp-http-auth';
-import { isTerminalPresetImageDataUrl } from '@canopy/desktop-shared/lib/terminal-preset-images';
 import { isGatewayRoutableModel } from '@canopy/desktop-shared/lib/gateway-model-availability';
-import {
-  DEFAULT_BROWSER_SEARCH_ENGINE_ID,
-  normalizeCustomBrowserSearchEngines,
-} from '@canopy/desktop-shared/lib/browser-search-engines';
+import { normalizeCustomBrowserSearchEngines } from '@canopy/desktop-shared/lib/browser-search-engines';
 import {
   isAccountProxyRoutingStrategy,
   normalizeAccountProxyUrl,
@@ -71,57 +65,19 @@ import {
   isBillingLane,
   type BillingLane,
 } from '@canopy/desktop-shared/lib/default-model-lane';
-import { normalizePlanDetectionRule } from '@canopy/desktop-shared/plan-detection';
+import { isMergeQueueAgentHandling } from '@canopy/desktop-shared/types/github';
+import { reconcileSidebarNavLayout } from '@canopy/desktop-shared/lib/sidebar-nav-layout';
 import {
-  DEFAULT_MERGE_QUEUE_AGENT_HANDLING,
-  isMergeQueueAgentHandling,
-} from '@canopy/desktop-shared/types/github';
-import {
-  createDefaultSidebarNavLayout,
-  reconcileSidebarNavLayout,
-} from '@canopy/desktop-shared/lib/sidebar-nav-layout';
-import { TELEMETRY_SHARE_SCOPES } from '@canopy/protocol/telemetry';
-import { expandLegacyProfileRoles } from '@canopy/protocol/plugin-catalog';
-import {
-  DEFAULT_CLAUDE_MODEL,
-  DEFAULT_CODEX_MODEL,
-  DEFAULT_BRANCH_NAMING_MODEL,
-  DEFAULT_COMMIT_GENERATION_MODEL,
-  DEFAULT_PR_GENERATION_MODEL,
   DEFAULT_SUMMARY_MODEL,
   DEFAULT_HANDOFF_SUMMARY_MODEL,
   DEFAULT_LOCAL_MEMORY_MODEL,
   defaultLocalMemoryModel,
   defaultSummaryModel,
-  DEFAULT_APP_ADVISOR_MODEL,
-  DEFAULT_CRON_GENERATION_MODEL,
-  DEFAULT_IF_COMMAND_GENERATION_MODEL,
-  DEFAULT_PIPELINE_ADVISOR_MODEL,
-  DEFAULT_MCP_HTTP_AUTH_HANDLER,
-  DEFAULT_MCP_PROXY_PORT,
-  DEFAULT_OLLAMA_SERVER_PORT,
-  DEFAULT_HIDE_ANTHROPIC_NAV,
-  DEFAULT_CLAUDE_SESSION_IDLE_TIMEOUT_MINUTES,
-  DEFAULT_CODEX_APP_SERVER_IDLE_TIMEOUT_MINUTES,
-  DEFAULT_TERMINAL_DRAWER_ACTIVE_TAB_ID,
-  DEFAULT_TERMINAL_DRAWER_COLLAPSED,
-  DEFAULT_TERMINAL_DRAWER_HEIGHT,
   MAX_TERMINAL_DRAWER_HEIGHT,
   MIN_TERMINAL_DRAWER_HEIGHT,
-  THEME_NAMES,
-  COLOR_MODES,
-  SIDEBAR_APPEARANCES,
-  WORKTREE_DIFF_STATS_STYLES,
-  SCROLLBAR_BEHAVIORS,
-  CHAT_ENRICHMENT_MODES,
-  ATTRIBUTION_SOURCES,
-  PROFILE_ROLES,
-  AI_CREDITS_ROUTING_MODES,
-  CHAT_BILLING_FRAMEWORKS,
   IN_APP_NOTIFICATION_PLACEMENTS,
   OS_NOTIFICATION_CATEGORY_SOUNDS,
   OS_NOTIFICATION_TOP_LEVEL_SOUNDS,
-  createEmptyGlobalInstructionsConfig,
   getExecutionHarnessForModel,
   getModelSource,
   isNavigationMode,
@@ -135,23 +91,13 @@ import {
   type AgentProviderType,
   type ApprovalDefaults,
   type BranchDisplayMapping,
-  type BranchNamePrefixMode,
-  type BrowserDrawerTabId,
-  type ChatInterfaceMode,
   type ChatTabPluginSelections,
   type ChatModel,
   type CodeGraphPreferences,
-  type FileLabelBucket,
-  type FileLabelMatcher,
-  type PlanDetectionPreferences,
-  type PlanDetectionRule,
   type InAppNotificationPlacement,
   type InAppNotificationPreferences,
-  type LastActiveContext,
   type McpHttpAuthHandler,
   type McpHttpAuthPreference,
-  type AiCreditsRoutingMode,
-  type ChatBillingFramework,
   type McpHttpAuthTarget,
   type ModelDefaultsByProvider,
   type NotificationCategoryMap,
@@ -166,28 +112,13 @@ import {
   type PreferencesLoadErrorReason,
   type PreferencesLoadResult,
   type PreferencesProjectionOptions,
-  type PrInstructionMode,
   type ProviderModelSelection,
-  type TelemetrySharingPreferences,
-  type TelemetrySharingVisibility,
   type ThinkingLevel,
-  type TerminalPreset,
-  type TerminalPresetIcon,
-  type TerminalShellProfileId,
   type WindowBounds,
 } from '@canopy/desktop-shared/types';
 import {
-  DEFAULT_BYPASS_CODEX_APP_SERVER_IDLE_TIMEOUT_UNDER_CRITICAL_PRESSURE,
-  DEFAULT_MEMORY_DIAGNOSTICS_ENABLED,
-  DEFAULT_MEMORY_PRESSURE_CRITICAL_THRESHOLD_BYTES,
-  DEFAULT_MEMORY_PRESSURE_GUARD_ENABLED,
-  DEFAULT_MEMORY_PRESSURE_WARNING_THRESHOLD_BYTES,
-  DEFAULT_MAX_ACTIVE_CHAT_TURNS,
-  DEFAULT_MAX_ACTIVE_PIPELINE_EXECUTIONS,
-  DEFAULT_SIDEBAR_WIDTH,
   DEFAULT_GITHUB_CHAT_ENRICHMENT_MODE,
   DEFAULT_LINEAR_CHAT_ENRICHMENT_MODE,
-  DEFAULT_VOICE_DICTATION_ENABLED,
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
 } from '@canopy/desktop-shared/constants/preferences';
@@ -198,13 +129,10 @@ import {
 import {
   APPROVAL_DEFAULT_SURFACES,
   FAIL_CLOSED_APPROVAL_MODE,
-  createDefaultApprovalDefaults,
   createFailClosedApprovalDefaults,
   type ApprovalMode,
 } from '@canopy/desktop-shared/types';
-import { createDefaultFileIndexingPreferences } from '@canopy/protocol/file-indexing';
 import { normalizeFileIndexingPreferences } from '@canopy/core-runtime/node';
-import { BUILTIN_PLAN_DETECTION_RULE_IDS } from '@canopy/desktop-shared/plan-detection';
 import { normalizeGlobalInstructionsConfig } from '@canopy/desktop-shared/lib/global-instructions';
 import { getPreferencesFilePath } from '../lib/paths';
 import {
@@ -213,738 +141,63 @@ import {
   createPreferencesLastGoodPath,
 } from './preferences-file-paths';
 import { getResolvedCanopyDataDir } from '@canopy/desktop-shared/canopy-paths';
+import { pruneDamagedCopies } from '@canopy/desktop-shared/node/lib/damaged-copies';
 import { normalizeStringArray } from './string-utils';
+import { normalizePromotionalNotifications } from '@canopy/desktop-shared/lib/promotional-notifications';
+import {
+  normalizeSuggestionsState,
+  parseSuggestionsState,
+  SUGGESTION_IDS,
+} from '@canopy/protocol/suggestions';
+import { commitSuggestionsGate } from './suggestions-gate';
+import { normalizeOnboardingTipDismissals } from '@canopy/protocol/onboarding-tips';
+import { clampUiScale } from '@canopy/desktop-shared/lib/ui-scale';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
+import { toShortcutPlatform } from '@canopy/desktop-shared/lib/global-shortcut-accelerator';
+import { installPreferencesNormalizationEnvironment } from '@canopy/desktop-shared/node/preferences/normalization-environment';
+import { DEFAULT_PREFERENCES } from '@canopy/desktop-shared/node/preferences/defaults';
+import {
+  normalizeLastActiveContext,
+  isBrowserDrawerTabId,
+  isBranchNamePrefixMode,
+  isPrInstructionMode,
+  isThemeName,
+  isColorMode,
+  isSidebarAppearance,
+  isWorktreeDiffStatsStyle,
+  isScrollbarBehavior,
+  isChatEnrichmentMode,
+  buildOnboardingProfileFields,
+  isAiCreditsRoutingMode,
+  isChatBillingFramework,
+  normalizeTelemetrySharing,
+  normalizeString,
+  isChatInterfaceMode,
+  isBackgroundProcessMode,
+  createEmptyPluginSelections,
+  normalizeFileLabels,
+  normalizePlanDetectionPreferences,
+  normalizeGlobalFocusShortcut,
+  normalizeActivationQuietHours,
+  isTerminalShellProfileId,
+  normalizeTerminalPresets,
+  normalizeCodexCompatDisabledPlugins,
+  normalizeBoolean,
+} from '@canopy/desktop-shared/node/preferences/field-normalizers';
+import { isRecord } from './type-guards';
+export { DEFAULT_PREFERENCES } from '@canopy/desktop-shared/node/preferences/defaults';
+
+installPreferencesNormalizationEnvironment({
+  resolveAvailableModel: (model) => resolveAvailableModel(model),
+  ollamaEnabled: () => __CANOPY_OLLAMA_ENABLED__,
+  shortcutPlatform: () => toShortcutPlatform(hostOperatingSystem() ?? 'linux'),
+});
 
 /** Preferences sit in the data root itself (`getPreferencesFilePath`). */
 function createPreferencesFolderDurably(filePath: string): Promise<void> {
   const dataRoot = dirname(filePath);
   return createDirectoryDurably(dataRoot, { dataRoot });
 }
-
-const VALID_PREFIX_MODES = new Set<string>(['github', 'custom', 'none']);
-
-const VALID_PR_INSTRUCTION_MODES = new Set<string>(['replace', 'append']);
-
-const VALID_THEMES = new Set<string>(THEME_NAMES);
-const VALID_COLOR_MODES = new Set<string>(COLOR_MODES);
-const VALID_SIDEBAR_APPEARANCES = new Set<string>(SIDEBAR_APPEARANCES);
-const VALID_WORKTREE_DIFF_STATS_STYLES = new Set<string>(
-  WORKTREE_DIFF_STATS_STYLES,
-);
-const VALID_SCROLLBAR_BEHAVIORS = new Set<string>(SCROLLBAR_BEHAVIORS);
-const VALID_CHAT_ENRICHMENT_MODES = new Set<string>(CHAT_ENRICHMENT_MODES);
-const VALID_ATTRIBUTION_SOURCES = new Set<string>(ATTRIBUTION_SOURCES);
-const VALID_PROFILE_ROLES = new Set<string>(PROFILE_ROLES);
-
-const ONBOARDING_PROFILE_DETAIL_MAX_LENGTH = 256;
-const ONBOARDING_PROFILE_INTENT_MAX_LENGTH = 2000;
-const VALID_AI_CREDITS_ROUTING_MODES = new Set<string>(
-  AI_CREDITS_ROUTING_MODES,
-);
-const VALID_CHAT_BILLING_FRAMEWORKS = new Set<string>(CHAT_BILLING_FRAMEWORKS);
-// Derive from the canonical protocol scope vocabulary plus the Canopy-local
-// `off` sentinel so a new scope added to `TELEMETRY_SHARE_SCOPES` is accepted
-// automatically rather than being silently coerced to `off`.
-const VALID_TELEMETRY_SHARING_VISIBILITIES = new Set<string>([
-  'off',
-  ...TELEMETRY_SHARE_SCOPES,
-]);
-
-/**
- * Coerces a persisted `lastActiveContext` value to a valid `LastActiveContext`
- * or `null`. Malformed shapes (wrong/missing `kind`, missing or non-string
- * ids) normalize to `null` rather than throwing or partially trusting the
- * input.
- */
-function normalizeLastActiveContext(value: unknown): LastActiveContext | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-  if (
-    value.kind === 'worktree' &&
-    typeof value.workspaceId === 'string' &&
-    typeof value.worktreeId === 'string'
-  ) {
-    return {
-      kind: 'worktree',
-      workspaceId: value.workspaceId,
-      worktreeId: value.worktreeId,
-    };
-  }
-  if (value.kind === 'cowork' && typeof value.workspaceId === 'string') {
-    return {
-      kind: 'cowork',
-      workspaceId: value.workspaceId,
-      // Optional Work Entry id (cowork entries occupy the worktreeId slot).
-      // Round-trip it when present; older contexts simply omit it.
-      ...(typeof value.workEntryId === 'string'
-        ? { workEntryId: value.workEntryId }
-        : {}),
-    };
-  }
-  return null;
-}
-
-function isBrowserDrawerTabId(value: unknown): value is BrowserDrawerTabId {
-  return value === DEFAULT_TERMINAL_DRAWER_ACTIVE_TAB_ID || value === 'browser';
-}
-
-function isBranchNamePrefixMode(value: unknown): value is BranchNamePrefixMode {
-  return typeof value === 'string' && VALID_PREFIX_MODES.has(value);
-}
-
-function isPrInstructionMode(value: unknown): value is PrInstructionMode {
-  return typeof value === 'string' && VALID_PR_INSTRUCTION_MODES.has(value);
-}
-
-function isThemeName(value: unknown): value is PreferencesData['theme'] {
-  return typeof value === 'string' && VALID_THEMES.has(value);
-}
-
-function isColorMode(value: unknown): value is PreferencesData['colorMode'] {
-  return typeof value === 'string' && VALID_COLOR_MODES.has(value);
-}
-
-function isSidebarAppearance(
-  value: unknown,
-): value is NonNullable<PreferencesData['sidebarAppearance']> {
-  return typeof value === 'string' && VALID_SIDEBAR_APPEARANCES.has(value);
-}
-
-function isWorktreeDiffStatsStyle(
-  value: unknown,
-): value is NonNullable<PreferencesData['worktreeDiffStatsStyle']> {
-  return (
-    typeof value === 'string' && VALID_WORKTREE_DIFF_STATS_STYLES.has(value)
-  );
-}
-
-function isScrollbarBehavior(
-  value: unknown,
-): value is NonNullable<PreferencesData['scrollbarBehavior']> {
-  return typeof value === 'string' && VALID_SCROLLBAR_BEHAVIORS.has(value);
-}
-
-function isChatEnrichmentMode(
-  value: unknown,
-): value is NonNullable<PreferencesData['linearChatEnrichmentMode']> {
-  return typeof value === 'string' && VALID_CHAT_ENRICHMENT_MODES.has(value);
-}
-
-function isAttributionSourceId(
-  value: unknown,
-): value is NonNullable<PreferencesData['attributionSource']> {
-  return typeof value === 'string' && VALID_ATTRIBUTION_SOURCES.has(value);
-}
-
-function isProfileRoleId(
-  value: unknown,
-): value is NonNullable<PreferencesData['profileRole']> {
-  return typeof value === 'string' && VALID_PROFILE_ROLES.has(value);
-}
-
-function normalizeOptionalFreeText(
-  value: unknown,
-  maxLength: number,
-): string | undefined {
-  if (typeof value !== 'string') {
-    return undefined;
-  }
-  const trimmed = value.trim();
-  if (trimmed.length === 0) {
-    return undefined;
-  }
-  return trimmed.slice(0, maxLength);
-}
-
-/**
- * Onboarding profile answers (CAN-1009). All five fields are intentionally
- * absent until the user answers — skipping a step must stay distinguishable
- * from any concrete answer, so none of them get defaults.
- */
-function buildOnboardingProfileFields(
-  data: Partial<PreferencesData> | undefined,
-): Partial<PreferencesData> {
-  const attributionSourceDetail = normalizeOptionalFreeText(
-    data?.attributionSourceDetail,
-    ONBOARDING_PROFILE_DETAIL_MAX_LENGTH,
-  );
-  const profileRoleDetail = normalizeOptionalFreeText(
-    data?.profileRoleDetail,
-    ONBOARDING_PROFILE_DETAIL_MAX_LENGTH,
-  );
-  const profileIntent = normalizeOptionalFreeText(
-    data?.profileIntent,
-    ONBOARDING_PROFILE_INTENT_MAX_LENGTH,
-  );
-  const hasExplicitRoleList = Array.isArray(data?.profileRoles);
-  const rawRoles = hasExplicitRoleList
-    ? data.profileRoles?.filter(isProfileRoleId)
-    : isProfileRoleId(data?.profileRole)
-      ? [data.profileRole]
-      : [];
-  const profileRoles = expandLegacyProfileRoles(rawRoles ?? []);
-  // An explicit empty list means the user cleared their answer. It must stay
-  // authoritative over a stale legacy primary role across reloads.
-  const rolesWereCleared =
-    hasExplicitRoleList && data.profileRoles?.length === 0;
-  const requestedPrimary = isProfileRoleId(data?.profileRole)
-    ? expandLegacyProfileRoles([data.profileRole])[0]
-    : undefined;
-  const profileRole = rolesWereCleared
-    ? undefined
-    : requestedPrimary !== undefined && profileRoles.includes(requestedPrimary)
-      ? requestedPrimary
-      : profileRoles[0];
-  return {
-    ...(isAttributionSourceId(data?.attributionSource)
-      ? { attributionSource: data.attributionSource }
-      : {}),
-    ...(data?.attributionSource === 'other' &&
-    attributionSourceDetail !== undefined
-      ? { attributionSourceDetail }
-      : {}),
-    ...(profileRole !== undefined ? { profileRole } : {}),
-    ...(rolesWereCleared
-      ? { profileRoles: [] }
-      : profileRoles.length > 0
-        ? { profileRoles }
-        : {}),
-    ...(profileRole !== undefined && profileRoleDetail !== undefined
-      ? { profileRoleDetail }
-      : {}),
-    ...(profileIntent !== undefined ? { profileIntent } : {}),
-  };
-}
-
-function isAiCreditsRoutingMode(value: unknown): value is AiCreditsRoutingMode {
-  return typeof value === 'string' && VALID_AI_CREDITS_ROUTING_MODES.has(value);
-}
-
-function isChatBillingFramework(value: unknown): value is ChatBillingFramework {
-  return typeof value === 'string' && VALID_CHAT_BILLING_FRAMEWORKS.has(value);
-}
-
-function isTelemetrySharingVisibility(
-  value: unknown,
-): value is TelemetrySharingVisibility {
-  return (
-    typeof value === 'string' && VALID_TELEMETRY_SHARING_VISIBILITIES.has(value)
-  );
-}
-
-function normalizeTelemetrySharingVisibility(
-  value: unknown,
-): TelemetrySharingVisibility {
-  return isTelemetrySharingVisibility(value) ? value : 'off';
-}
-
-function normalizeTelemetrySharing(
-  value: unknown,
-): TelemetrySharingPreferences {
-  if (!isRecord(value)) {
-    return {
-      transcripts: 'off',
-      plans: 'off',
-      metadata: 'off',
-      summaries: 'off',
-    };
-  }
-  const metadata = normalizeTelemetrySharingVisibility(value.metadata);
-  return {
-    transcripts: normalizeTelemetrySharingVisibility(value.transcripts),
-    plans: normalizeTelemetrySharingVisibility(value.plans),
-    metadata,
-    // MIGRATION (summaries split): AI-generated worktree summaries used to ride
-    // on `metadata`, so a preferences file written before the split has no
-    // `summaries` key at all. Reading that absence back as `'off'` would
-    // silently stop summaries for every existing user, so an ABSENT key
-    // inherits the stored `metadata` value. A key that is present but
-    // unrecognized still coerces to `'off'` like every other visibility.
-    summaries:
-      value.summaries === undefined
-        ? metadata
-        : normalizeTelemetrySharingVisibility(value.summaries),
-  };
-}
-
-function normalizeString(value: unknown, fallback = ''): string {
-  return typeof value === 'string' ? value : fallback;
-}
-
-function isChatInterfaceMode(value: unknown): value is ChatInterfaceMode {
-  return value === 'canopy' || value === 'claude-code' || value === 'auto';
-}
-
-function isBackgroundProcessMode(
-  value: unknown,
-): value is PreferencesData['canopyBackgroundProcessesMode'] {
-  return value === 'canopy' || value === 'terminal';
-}
-
-function createDefaultModelDefaultsByProvider(): ModelDefaultsByProvider {
-  return {
-    claude: { model: DEFAULT_CLAUDE_MODEL, thinkingLevel: 'high' },
-    codex: { model: DEFAULT_CODEX_MODEL, thinkingLevel: 'high' },
-    ollama: null,
-    aiCredits: null,
-  };
-}
-
-function createEmptyPluginSelections(): ChatTabPluginSelections {
-  return {
-    collectionIds: [],
-    skillRefs: [],
-    pluginRefs: [],
-    mcpServerRefs: [],
-  };
-}
-
-function normalizeFileLabelMatcher(value: unknown): FileLabelMatcher | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-  const id = typeof value.id === 'string' ? value.id.trim() : '';
-  const pattern = typeof value.pattern === 'string' ? value.pattern.trim() : '';
-  if (!id || !pattern) {
-    return null;
-  }
-  return {
-    id,
-    pattern,
-    enabled: typeof value.enabled === 'boolean' ? value.enabled : true,
-    stopMatching:
-      typeof value.stopMatching === 'boolean' ? value.stopMatching : false,
-    builtin: typeof value.builtin === 'boolean' ? value.builtin : false,
-  };
-}
-
-/**
- * Shape validation only. The renderer merges the persisted array with the
- * seeded built-in buckets (`mergeFileLabelsWithBuiltins`) on read, so this
- * pass just drops malformed entries and dedupes ids; an empty array means
- * "seeded defaults, untouched".
- */
-function normalizeFileLabels(value: unknown): FileLabelBucket[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  const seenIds = new Set<string>();
-  const buckets: FileLabelBucket[] = [];
-  for (const entry of value) {
-    if (!isRecord(entry)) continue;
-    const id = typeof entry.id === 'string' ? entry.id.trim() : '';
-    const name = typeof entry.name === 'string' ? entry.name.trim() : '';
-    if (!id || !name || seenIds.has(id)) continue;
-    seenIds.add(id);
-    const rawMatchers = Array.isArray(entry.matchers) ? entry.matchers : [];
-    const seenMatcherIds = new Set<string>();
-    const matchers: FileLabelMatcher[] = [];
-    for (const rawMatcher of rawMatchers) {
-      const matcher = normalizeFileLabelMatcher(rawMatcher);
-      if (matcher && !seenMatcherIds.has(matcher.id)) {
-        seenMatcherIds.add(matcher.id);
-        matchers.push(matcher);
-      }
-    }
-    buckets.push({
-      id,
-      name,
-      enabled: typeof entry.enabled === 'boolean' ? entry.enabled : true,
-      stopFurtherLabels:
-        typeof entry.stopFurtherLabels === 'boolean'
-          ? entry.stopFurtherLabels
-          : false,
-      builtin: typeof entry.builtin === 'boolean' ? entry.builtin : false,
-      matchers,
-    });
-  }
-  return buckets;
-}
-
-function normalizePlanDetectionPreferences(
-  value: unknown,
-): PlanDetectionPreferences {
-  if (!isRecord(value)) {
-    return { disabledBuiltinRuleIds: [], customRules: [] };
-  }
-  const rawDisabled = Array.isArray(value.disabledBuiltinRuleIds)
-    ? value.disabledBuiltinRuleIds
-    : [];
-  const seenDisabled = new Set<string>();
-  const disabledBuiltinRuleIds: string[] = [];
-  for (const entry of rawDisabled) {
-    if (
-      typeof entry === 'string' &&
-      BUILTIN_PLAN_DETECTION_RULE_IDS.has(entry) &&
-      !seenDisabled.has(entry)
-    ) {
-      seenDisabled.add(entry);
-      disabledBuiltinRuleIds.push(entry);
-    }
-  }
-  const rawCustom = Array.isArray(value.customRules) ? value.customRules : [];
-  const seenIds = new Set<string>();
-  const customRules: PlanDetectionRule[] = [];
-  for (const entry of rawCustom) {
-    const normalized = normalizePlanDetectionRule(entry);
-    if (normalized && !seenIds.has(normalized.id)) {
-      seenIds.add(normalized.id);
-      customRules.push(normalized);
-    }
-  }
-  return { disabledBuiltinRuleIds, customRules };
-}
-
-/**
- * Windows close-to-tray defaults ON, matching Slack/Discord/Teams. Defaulting
- * it off would leave Windows with a settings toggle nobody discovers and no
- * background presence at all — the same failure mode as OS notifications
- * being off by default. The one-time tray disclosure plus the Settings toggle
- * keep it discoverable and reversible.
- */
-import { DEFAULT_ACTIVATION_QUIET_HOURS } from '../notifications/campaigns/quiet-hours';
-import {
-  DEFAULT_PROMOTIONAL_NOTIFICATIONS,
-  normalizePromotionalNotifications,
-} from '@canopy/desktop-shared/lib/promotional-notifications';
-import type { ActivationQuietHours } from '@canopy/desktop-shared/types';
-import { DEFAULT_GLOBAL_FOCUS_SHORTCUT_ENABLED } from '@canopy/desktop-shared/constants/preferences';
-import { normalizeOnboardingTipDismissals } from '@canopy/protocol/onboarding-tips';
-import {
-  GLOBAL_FOCUS_SHORTCUT_DEFAULT_ACCELERATOR,
-  toShortcutPlatform,
-  validateGlobalShortcut,
-} from '@canopy/desktop-shared/lib/global-shortcut-accelerator';
-import {
-  clampUiScale,
-  UI_SCALE_DEFAULT,
-} from '@canopy/desktop-shared/lib/ui-scale';
-
-const DEFAULT_CLOSE_TO_TRAY = true;
-
-/**
- * A saved OS focus shortcut (CAN-1963) is only kept when it would pass the
- * same validation the Settings recorder applies. Electron silently registers
- * unknown tokens as bare keys, so a corrupt value must never reach it as a
- * typing-stealing global hotkey; the default chord is the safe fallback.
- */
-function normalizeGlobalFocusShortcut(value: unknown): string {
-  if (typeof value !== 'string') {
-    return GLOBAL_FOCUS_SHORTCUT_DEFAULT_ACCELERATOR;
-  }
-  const validation = validateGlobalShortcut(
-    value,
-    toShortcutPlatform(process.platform),
-  );
-  return validation.ok
-    ? validation.accelerator
-    : GLOBAL_FOCUS_SHORTCUT_DEFAULT_ACCELERATOR;
-}
-
-function normalizeHour(value: unknown, fallback: number): number {
-  return typeof value === 'number' &&
-    Number.isInteger(value) &&
-    value >= 0 &&
-    value <= 23
-    ? value
-    : fallback;
-}
-
-function normalizeActivationQuietHours(value: unknown): ActivationQuietHours {
-  const fallback = DEFAULT_ACTIVATION_QUIET_HOURS;
-  if (typeof value !== 'object' || value === null) return { ...fallback };
-  const raw: Record<string, unknown> = { ...value };
-  return {
-    enabled: typeof raw.enabled === 'boolean' ? raw.enabled : fallback.enabled,
-    startHour: normalizeHour(raw.startHour, fallback.startHour),
-    endHour: normalizeHour(raw.endHour, fallback.endHour),
-  };
-}
-
-export const DEFAULT_PREFERENCES: PreferencesData = {
-  orgProjectDefaultDestinationRoot: undefined,
-  orgProjectCloneProtocol: 'https',
-  workspaceDefaultLayoutMode: 'advanced',
-  navigationMode: 'code',
-  worktreePanelPercent: 32,
-  activityPanelExpanded: false,
-  activityPanelWidthPercent: 25,
-  kanbanWorktreePanelPercent: 32,
-  kanbanActivityPanelExpanded: false,
-  kanbanActivityPanelWidthPercent: 25,
-  kanbanChatPanelVisible: false,
-  pipelineChatPanelVisible: true,
-  pipelineChatPanelWidthPercent: 30,
-  sidebarCollapsed: false,
-  sidebarProjectSortMode: 'manual',
-  sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
-  sidebarCodeSectionCollapsed: false,
-  sidebarCoworkSectionCollapsed: false,
-  sidebarNavLayout: createDefaultSidebarNavLayout(),
-  branchNamePrefixMode: 'github',
-  branchNameCustomPrefix: '',
-  deleteBranchOnArchive: true,
-  archiveOnMerge: true,
-  groupChildBranchesWithBase: true,
-  defaultChatProvider: 'claude',
-  defaultChatModelByProvider: createDefaultModelDefaultsByProvider(),
-  defaultWorktreeProvider: 'claude',
-  defaultWorktreeModelByProvider: createDefaultModelDefaultsByProvider(),
-  approvalDefaults: createDefaultApprovalDefaults(),
-  globalApprovalRules: [],
-  // Full Access is the product default, so a fresh profile is exactly the
-  // population that has never been told agents act without asking. Default the
-  // notice to NOT dismissed so a new install sees the one-time explainer once
-  // and can opt down from it; dismissing persists `true`. The approval-defaults
-  // migration separately re-arms it for an upgrading profile whose persisted
-  // posture it overwrites (CAN-3055).
-  approvalsUpgradeNoticeDismissed: false,
-  // Every onboarding tip shows once on a fresh profile (CAN-4904).
-  onboardingTipsDismissed: {},
-  summaryModel: DEFAULT_SUMMARY_MODEL,
-  summaryModelSetByUser: false,
-  summaryThinkingLevel: 'off',
-  handoffSummaryModel: DEFAULT_HANDOFF_SUMMARY_MODEL,
-  handoffSummaryThinkingLevel: 'off',
-  worktreeSummaryEnabled: true,
-  worktreeSummaryModel: 'haiku',
-  worktreeSummaryThinkingLevel: 'off',
-  planDiagramModel: 'haiku',
-  planDiagramThinkingLevel: 'off',
-  codeReviewModel: 'haiku',
-  codeReviewThinkingLevel: 'off',
-  prGenerationModel: DEFAULT_PR_GENERATION_MODEL,
-  prGenerationThinkingLevel: 'high',
-  prInstructions: '',
-  prInstructionMode: 'append',
-  commitGenerationModel: DEFAULT_COMMIT_GENERATION_MODEL,
-  commitGenerationThinkingLevel: 'high',
-  commitInstructions: '',
-  commitInstructionMode: 'append',
-  branchNamingModel: DEFAULT_BRANCH_NAMING_MODEL,
-  branchNamingThinkingLevel: 'off',
-  branchNamingInstructions: '',
-  globalInstructions: createEmptyGlobalInstructionsConfig(),
-  pipelineAdvisorEnabled: true,
-  orgMemoryInjectionEnabled: true,
-  // Local memory is enabled by default (CAN-2657); an explicit opt-out is
-  // persisted normally and keeps provider-native memory on harness defaults.
-  localMemoryEnabled: true,
-  localMemoryEnabledSetByUser: false,
-  localMemoryModel: DEFAULT_LOCAL_MEMORY_MODEL,
-  localMemoryModelSetByUser: false,
-  localMemoryThinkingLevel: 'high',
-  pipelineAdvisorModel: DEFAULT_PIPELINE_ADVISOR_MODEL,
-  pipelineAdvisorThinkingLevel: 'high',
-  disabledPipelineIds: [],
-  appAdvisorModel: DEFAULT_APP_ADVISOR_MODEL,
-  appAdvisorThinkingLevel: 'high',
-  cronGenerationModel: DEFAULT_CRON_GENERATION_MODEL,
-  cronGenerationThinkingLevel: 'medium',
-  ifCommandGenerationModel: DEFAULT_IF_COMMAND_GENERATION_MODEL,
-  ifCommandGenerationThinkingLevel: 'medium',
-  splitPrThresholdLines: 500,
-  splitPrEnabled: true,
-  splitPrPlannerModel: DEFAULT_CODEX_MODEL,
-  splitPrPlannerThinkingLevel: 'high',
-  disabledInstalledItems: [],
-  parkedCodexPlugins: [],
-  pendingInstalledItemUninstalls: [],
-  globalPluginSelections: createEmptyPluginSelections(),
-  initializedCuratedPluginDefaults: [],
-  appAdvisorPluginSelections: createEmptyPluginSelections(),
-  pipelineEditorPluginSelections: createEmptyPluginSelections(),
-  appAdvisorDialogBounds: null,
-  codexMultiAgentAppAdvisorEnabled: true,
-  providerModelConfigDefaults: {
-    codex: { fastMode: false },
-  },
-  codexFastModeDefaultEnabled: false,
-  branchNamingPluginSelections: createEmptyPluginSelections(),
-  commitGenerationPluginSelections: createEmptyPluginSelections(),
-  prGenerationPluginSelections: createEmptyPluginSelections(),
-  worktreeSummaryPluginSelections: createEmptyPluginSelections(),
-  codexCompatDisabledPlugins: [],
-  branchDisplayMappings: [],
-  reviewCommitMessage: false,
-  agentRebaseResolutionEnabled: false,
-  agentRebaseResolutionModel: null,
-  agentRebaseResolutionThinkingLevel: null,
-  mergeQueueAgentHandling: DEFAULT_MERGE_QUEUE_AGENT_HANDLING,
-  rtkEnabled: true,
-  autoRetryTransientErrorsChats: true,
-  autoRetryTransientErrorsPipelines: true,
-  scriptTimeoutMinutes: 5,
-  codexAppServerIdleTimeoutMinutes:
-    DEFAULT_CODEX_APP_SERVER_IDLE_TIMEOUT_MINUTES,
-  claudeSessionIdleTimeoutMinutes: DEFAULT_CLAUDE_SESSION_IDLE_TIMEOUT_MINUTES,
-  defaultChatInterfaceMode: 'canopy',
-  defaultStandaloneChatInterfaceMode: 'canopy',
-  defaultAppAdvisorInterfaceMode: 'canopy',
-  preventClaudeNativeCaffeinate: true,
-  claudeMaxTurns: DEFAULT_CLAUDE_MAX_TURNS,
-  maxActiveChatTurns: DEFAULT_MAX_ACTIVE_CHAT_TURNS,
-  maxActivePipelineExecutions: DEFAULT_MAX_ACTIVE_PIPELINE_EXECUTIONS,
-  canopyBackgroundProcessesMode: 'canopy',
-  pipelinesMode: 'canopy',
-  workerConcurrencyLimit: 5,
-  memoryPressureGuardEnabled: DEFAULT_MEMORY_PRESSURE_GUARD_ENABLED,
-  bypassCodexAppServerIdleTimeoutUnderCriticalPressure:
-    DEFAULT_BYPASS_CODEX_APP_SERVER_IDLE_TIMEOUT_UNDER_CRITICAL_PRESSURE,
-  memoryPressureWarningThresholdBytes:
-    DEFAULT_MEMORY_PRESSURE_WARNING_THRESHOLD_BYTES,
-  memoryPressureCriticalThresholdBytes:
-    DEFAULT_MEMORY_PRESSURE_CRITICAL_THRESHOLD_BYTES,
-  memoryDiagnosticsEnabled: DEFAULT_MEMORY_DIAGNOSTICS_ENABLED,
-  keepSystemAwakeWhileAgentsActive: true,
-  managedDelegationMaxConcurrent: 5,
-  managedDelegationMaxDepth: 1,
-  managedDelegationLifetimeLimit: defaultManagedDelegationLifetimeLimit(),
-  codexMultiAgentWorktreeChatsEnabled: false,
-  codexMultiAgentStandaloneChatsEnabled: false,
-  codexMaxConcurrentSubagents: null,
-  codexMultiAgentPipelinesEnabled: false,
-  deferredToolsWorktreeChatsEnabled: true,
-  deferredToolsStandaloneChatsEnabled: true,
-  deferredToolsAppAdvisorEnabled: true,
-  deferredToolsPipelineAssistantEnabled: true,
-  lastOpenApp: '',
-  disabledOpenApps: [],
-  lastSelectedWorktreeProjectId: '',
-  lastSelectedWorktreeId: '',
-  lastActiveContext: null,
-  executionDetailViewMode: 'list',
-  worktreeViewMode: 'list',
-  worktreeFilterHiddenWorkspaceIds: [],
-  auditRetentionDays: 7,
-  automationRunRetentionDays: 90,
-  aiCreditsRoutingMode: 'off',
-  theme: 'default',
-  colorMode: 'system',
-  sidebarAppearance: 'translucent',
-  worktreeDiffStatsStyle: 'short',
-  scrollbarBehavior: 'system',
-  singleDollarMath: true,
-  linearChatEnrichmentMode: DEFAULT_LINEAR_CHAT_ENRICHMENT_MODE,
-  githubChatEnrichmentMode: DEFAULT_GITHUB_CHAT_ENRICHMENT_MODE,
-  uiScale: UI_SCALE_DEFAULT,
-  // "Agents add to the Feed" (LD09) is on by default.
-  ledgerAgentRecordingEnabled: true,
-  // "Suggest automations for repeated tasks" (CAN-4009) is on by default.
-  repeatTaskAutomationSuggestionsEnabled: true,
-  // "Suggest skills for repeated requests" (CAN-385) is on by default.
-  skillSuggestionsEnabled: true,
-  rendererCodeCacheSchemeEnabled: false,
-  chatDetail: DEFAULT_CHAT_DETAIL,
-  remoteControlEnabled: true,
-  windowBounds: null,
-  windowMaximized: false,
-  windowFullScreen: false,
-  ollamaServerPort: DEFAULT_OLLAMA_SERVER_PORT,
-  // Transport contract: the shared `PreferencesData.ollamaConnectionMode` /
-  // `ollamaExecutablePath` fields default to `managed` / '' (not yet resolved).
-  // Final default placement and the load-time normalization/migration remain
-  // owned by the backend plan.
-  ollamaConnectionMode: 'managed',
-  ollamaExecutablePath: '',
-  mcpProxyPort: DEFAULT_MCP_PROXY_PORT,
-  hideAnthropicNav: DEFAULT_HIDE_ANTHROPIC_NAV,
-  fileAutoSave: false,
-  inAppBrowserLocalServersOnly: false,
-  inAppBrowserSearchEngineId: DEFAULT_BROWSER_SEARCH_ENGINE_ID,
-  inAppBrowserCustomSearchEngines: [],
-  openAppLinksInBuiltInBrowser: true,
-  useAsSystemDefaultBrowser: false,
-  inAppNotifications: {
-    enabled: true,
-    categories: {
-      chat: true,
-      script: true,
-      hook: true,
-      gitCommit: true,
-      gitPush: true,
-      prCreate: true,
-      pipeline: true,
-      terminal: true,
-      runComment: true,
-      activation: true,
-    },
-  },
-  terminalDrawerCollapsed: DEFAULT_TERMINAL_DRAWER_COLLAPSED,
-  terminalDrawerHeight: DEFAULT_TERMINAL_DRAWER_HEIGHT,
-  terminalDrawerActiveTabId: DEFAULT_TERMINAL_DRAWER_ACTIVE_TAB_ID,
-  disabledTerminalShellProfileIds: [],
-  terminalPresets: [],
-  osNotifications: {
-    enabled: false,
-    skipWhenFocused: true,
-    defaultSound: 'System',
-    categories: {
-      chat: true,
-      script: true,
-      hook: true,
-      gitCommit: true,
-      gitPush: true,
-      prCreate: true,
-      pipeline: true,
-      terminal: true,
-      runComment: true,
-      activation: true,
-    },
-    categorySounds: {
-      chat: 'Default',
-      script: 'Default',
-      hook: 'Default',
-      gitCommit: 'Default',
-      gitPush: 'Default',
-      prCreate: 'Default',
-      pipeline: 'Default',
-      terminal: 'Default',
-      runComment: 'Default',
-      activation: 'Default',
-    },
-  },
-  voiceDictationEnabled: DEFAULT_VOICE_DICTATION_ENABLED,
-  closeToTray: DEFAULT_CLOSE_TO_TRAY,
-  globalFocusShortcutEnabled: DEFAULT_GLOBAL_FOCUS_SHORTCUT_ENABLED,
-  globalFocusShortcut: GLOBAL_FOCUS_SHORTCUT_DEFAULT_ACCELERATOR,
-  activationQuietHours: DEFAULT_ACTIVATION_QUIET_HOURS,
-  promotionalNotifications: DEFAULT_PROMOTIONAL_NOTIFICATIONS,
-  mcpHttpAuthDefaultHandler: DEFAULT_MCP_HTTP_AUTH_HANDLER,
-  fileIndexing: createDefaultFileIndexingPreferences(),
-  planDetection: { disabledBuiltinRuleIds: [], customRules: [] },
-  fileLabels: [],
-  changedFilesHiddenLabelIds: [],
-  autoDownloadUpdates: true,
-  showDiagnosticsPill: true,
-  onboardingCompleted: [],
-  releaseHighlightsLastSeenVersion: null,
-  guestSessionCount: 0,
-  guestUpgradeNudgeLastShownSessionCount: 0,
-  planModeHint: { version: 1, generation: 0 },
-  telemetrySharing: {
-    transcripts: 'off',
-    plans: 'off',
-    metadata: 'off',
-    summaries: 'off',
-  },
-  personalWorkspaceCatalogSync: 'off',
-  personalCatalogOfferSeen: false,
-  personalCatalogNotice: null,
-  telemetrySharingPromptSeen: false,
-  // Transport contract: the shared `PreferencesData.gitExecutablePath` field
-  // defaults to '' (not yet resolved). Final default placement and the
-  // load-time normalization remain owned by the backend plan.
-  gitExecutablePath: '',
-  appAdvisorProjectAgentAccess:
-    normalizeAppAdvisorProjectAgentAccess(undefined),
-  codeGraph: {
-    mode: 'enabled',
-    selectedWorkspaceIds: [],
-    generationTimeoutMinutes: 30,
-  },
-};
 
 /**
  * Main and last-good carry the generation of the save that wrote them.
@@ -1066,92 +319,6 @@ let rendererRuntimeProjection: {
   result: PreferencesData;
 } | null = null;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-const TERMINAL_SHELL_PROFILE_IDS = new Set<string>([
-  'default',
-  'zsh',
-  'bash',
-  'cmd',
-  'powershell',
-  'git-bash',
-]);
-
-function isTerminalShellProfileId(
-  value: unknown,
-): value is TerminalShellProfileId {
-  return typeof value === 'string' && TERMINAL_SHELL_PROFILE_IDS.has(value);
-}
-
-function normalizeTerminalPresetImageDataUrl(
-  value: unknown,
-): string | undefined {
-  return isTerminalPresetImageDataUrl(value) ? value : undefined;
-}
-
-function normalizeTerminalPresetIcon(
-  value: unknown,
-): TerminalPresetIcon | undefined {
-  if (!isRecord(value)) return undefined;
-  if (
-    value.kind === 'character' &&
-    typeof value.value === 'string' &&
-    value.value.length > 0
-  ) {
-    return { kind: 'character', value: value.value.slice(0, 16) };
-  }
-  if (value.kind !== 'image') return undefined;
-
-  // `dataUrl` is the pre-themed persisted shape. Treat it as the light asset;
-  // the renderer's fallback rule still uses it in dark mode until the user
-  // optionally configures a dedicated dark image.
-  const lightDataUrl =
-    normalizeTerminalPresetImageDataUrl(value.lightDataUrl) ??
-    normalizeTerminalPresetImageDataUrl(value.dataUrl);
-  const darkDataUrl = normalizeTerminalPresetImageDataUrl(value.darkDataUrl);
-  if (!lightDataUrl && !darkDataUrl) return undefined;
-  return {
-    kind: 'image',
-    ...(lightDataUrl ? { lightDataUrl } : {}),
-    ...(darkDataUrl ? { darkDataUrl } : {}),
-  };
-}
-
-function normalizeTerminalPresets(value: unknown): TerminalPreset[] {
-  if (!Array.isArray(value)) return [];
-  const seen = new Set<string>();
-  const presets: TerminalPreset[] = [];
-  for (const candidate of value.slice(0, 50)) {
-    if (
-      !isRecord(candidate) ||
-      typeof candidate.id !== 'string' ||
-      candidate.id.length < 1 ||
-      candidate.id.length > 128 ||
-      seen.has(candidate.id) ||
-      typeof candidate.name !== 'string' ||
-      candidate.name.trim().length < 1 ||
-      typeof candidate.command !== 'string' ||
-      candidate.command.trim().length < 1 ||
-      !isTerminalShellProfileId(candidate.terminalProfileId)
-    ) {
-      continue;
-    }
-    const icon = normalizeTerminalPresetIcon(candidate.icon);
-    seen.add(candidate.id);
-    presets.push({
-      id: candidate.id,
-      name: candidate.name.trim().slice(0, 64),
-      terminalProfileId: candidate.terminalProfileId,
-      command: candidate.command.trim().slice(0, 4_000),
-      enabled: candidate.enabled !== false,
-      ...(icon ? { icon } : {}),
-    });
-  }
-  return presets;
-}
-
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -1168,26 +335,6 @@ function isMissingFileError(error: unknown): boolean {
   return (
     getErrorCode(error) === 'ENOENT' || getErrorMessage(error) === 'ENOENT'
   );
-}
-
-function normalizeCodexCompatDisabledPlugins(value: unknown): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-  for (const entry of normalizeStringArray(value)) {
-    const separatorIndex = entry.indexOf('/');
-    const normalized =
-      separatorIndex === -1
-        ? entry
-        : `${entry.slice(0, separatorIndex)}/${entry
-            .slice(separatorIndex + 1)
-            .toLowerCase()}`;
-    if (seen.has(normalized)) {
-      continue;
-    }
-    seen.add(normalized);
-    result.push(normalized);
-  }
-  return result;
 }
 
 function createPreferencesRecoveryError(
@@ -1601,6 +748,12 @@ async function recoverPreferencesFile(
       ),
     );
     backupWritten = true;
+    await pruneDamagedCopies({
+      directory: dirname(filePath),
+      prefix: 'preferences.backup-',
+      suffix: '.json',
+      uniqueTail: true,
+    });
     await writeTextFileAtomically(
       filePath,
       serializePreferencesFile(lastGood.preferences, lastGood.generation),
@@ -2010,10 +1163,6 @@ function normalizeBranchDisplayMappings(
         ? Math.max(0, Math.round(item.readonlyExampleCount))
         : 0,
   }));
-}
-
-function normalizeBoolean(value: unknown, fallback: boolean): boolean {
-  return typeof value === 'boolean' ? value : fallback;
 }
 
 function normalizeTwoPartRefs<T>(
@@ -2964,6 +2113,10 @@ export function normalizePreferences(
     data?.planModeHint === undefined
       ? migrateLegacyPlanModeHintRecord(data?.homeOnboardingSuggestions)
       : normalizePlanModeHintRecord(data.planModeHint);
+  const githubStarPrompt =
+    data?.githubStarPrompt === undefined
+      ? { version: 1 as const, promptsSent: 0 }
+      : normalizeGitHubStarPromptRecord(data.githubStarPrompt);
   const homeOnboardingSuggestions = preserveLegacyPlanModeInput(
     data?.homeOnboardingSuggestions,
   );
@@ -3613,10 +2766,16 @@ export function normalizePreferences(
         : DEFAULT_PREFERENCES.ledgerAgentRecordingEnabled,
     // On unless the user turned it off, as for preferences written before
     // the setting existed.
-    repeatTaskAutomationSuggestionsEnabled:
-      typeof data?.repeatTaskAutomationSuggestionsEnabled === 'boolean'
-        ? data.repeatTaskAutomationSuggestionsEnabled
-        : DEFAULT_PREFERENCES.repeatTaskAutomationSuggestionsEnabled,
+    suggestions: normalizeSuggestionsState(
+      data?.suggestions,
+      data?.repeatTaskAutomationSuggestionsEnabled,
+    ),
+    ...(typeof data?.repeatTaskAutomationSuggestionsEnabled === 'boolean'
+      ? {
+          repeatTaskAutomationSuggestionsEnabled:
+            data.repeatTaskAutomationSuggestionsEnabled,
+        }
+      : {}),
     skillSuggestionsEnabled:
       typeof data?.skillSuggestionsEnabled === 'boolean'
         ? data.skillSuggestionsEnabled
@@ -3825,6 +2984,7 @@ export function normalizePreferences(
       ? { homeOnboardingSuggestions }
       : {}),
     ...(planModeHint !== undefined ? { planModeHint } : {}),
+    ...(githubStarPrompt !== undefined ? { githubStarPrompt } : {}),
     ...buildOnboardingProfileFields(data),
     ...(typeof data?.guestConsentAcceptedAt === 'string' &&
     data.guestConsentAcceptedAt.trim().length > 0
@@ -4122,6 +3282,20 @@ async function readStoredPreferences(
         'Plan mode hint preferences contain an invalid or unsupported record.',
     };
   }
+  if (
+    parsed.preferences.githubStarPrompt !== undefined &&
+    normalizeGitHubStarPromptRecord(parsed.preferences.githubStarPrompt) ===
+      undefined
+  ) {
+    // As above: keep the original file, hide the prompt, refuse its updates.
+    lastPreferencesLoadError = {
+      timestamp: new Date().toISOString(),
+      filePath,
+      reason: 'parse',
+      message:
+        'GitHub star prompt preferences contain an invalid or unsupported record.',
+    };
+  }
   return {
     preferences: normalizePreferences(parsed.preferences, validation),
     generation: documentGeneration(parsed),
@@ -4314,7 +3488,53 @@ function normalizePreferenceUpdate(
       'Plan mode hint preferences could not be read; preferences were not changed.',
     );
   }
+  if (existing.githubStarPrompt === undefined) {
+    throw new Error(
+      'GitHub star prompt preferences could not be read; preferences were not changed.',
+    );
+  }
   const merged = { ...existing, ...patch };
+  // Keep downgrade data frozen. Only legacy-only patches affect the new gate.
+  if (typeof existing.repeatTaskAutomationSuggestionsEnabled === 'boolean') {
+    merged.repeatTaskAutomationSuggestionsEnabled =
+      existing.repeatTaskAutomationSuggestionsEnabled;
+  } else {
+    delete merged.repeatTaskAutomationSuggestionsEnabled;
+  }
+  if ('suggestions' in patch) {
+    const incoming = parseSuggestionsState(patch.suggestions);
+    if (incoming === null) throw new Error('Invalid suggestions preferences.');
+    // Even generic preference saves cannot forge dismissal/display times.
+    const now = new Date().toISOString();
+    const dismissed = { ...existing.suggestions.dismissed };
+    for (const id of SUGGESTION_IDS) {
+      if (dismissed[id] === undefined && incoming.dismissed[id] !== undefined)
+        dismissed[id] = now;
+    }
+    const previousAt = existing.suggestions.lastCornerShownAt;
+    const incomingAt = incoming.lastCornerShownAt;
+    const advances =
+      incomingAt !== undefined &&
+      (previousAt === undefined ||
+        Date.parse(incomingAt) > Date.parse(previousAt));
+    const lastCornerShownAt =
+      advances &&
+      (previousAt === undefined || Date.parse(now) > Date.parse(previousAt))
+        ? now
+        : previousAt;
+    merged.suggestions = {
+      enabled: incoming.enabled,
+      dismissed,
+      ...(lastCornerShownAt === undefined ? {} : { lastCornerShownAt }),
+    };
+  } else if (
+    typeof patch.repeatTaskAutomationSuggestionsEnabled === 'boolean'
+  ) {
+    merged.suggestions = {
+      ...existing.suggestions,
+      enabled: patch.repeatTaskAutomationSuggestionsEnabled,
+    };
+  }
   if ('planModeHint' in patch) {
     // This runs after the authoritative re-read, inside the main-owned queue.
     // A renderer-local queue cannot protect another window's stale snapshot.
@@ -4329,6 +3549,23 @@ function normalizePreferenceUpdate(
     }
     merged.planModeHint = mergePlanModeHintRecords(
       existing.planModeHint,
+      incoming,
+    );
+  }
+  if ('githubStarPrompt' in patch) {
+    // Same main-owned merge: a stale window cannot lower the count or
+    // resurrect a retired prompt.
+    if (peekPreferencesLoadError() !== null) {
+      throw new Error(
+        'Preferences could not be read; the GitHub star prompt was not changed.',
+      );
+    }
+    const incoming = normalizeGitHubStarPromptRecord(patch.githubStarPrompt);
+    if (incoming === undefined) {
+      throw new Error('Invalid GitHub star prompt preferences.');
+    }
+    merged.githubStarPrompt = mergeGitHubStarPromptRecords(
+      existing.githubStarPrompt,
       incoming,
     );
   }
@@ -4520,6 +3757,7 @@ export async function updatePreferencesFileWithPrevious(
     // lets ordering metadata become visible atomically with the durable value,
     // so the next queued updater cannot mistake a committed write for a still
     // pending one.
+    commitSuggestionsGate(normalized);
     onCommitted?.(normalized);
     return { previous: existing, next: normalized };
   });

@@ -47,6 +47,7 @@ const SHARE_SCOPES: readonly ShareResourceScope[] = [
 const collectionLinks = createShareLinkResolver(
   (id) => `/portal/plugins/collections/shared/${encodeURIComponent(id)}`,
   resolveSharedSkillUrl,
+  'collection',
 );
 
 interface ShareCollectionModalProps {
@@ -73,45 +74,58 @@ export function ShareCollectionModal({
   const [remoteDetail, setRemoteDetail] =
     useState<SharedCollectionDetail | null>(null);
   const [remoteLink, setRemoteLink] = useState<ShareDialogLink | null>(null);
+  const [reconciliationRevision, setReconciliationRevision] = useState(0);
   const preparedPayload = useRef<PreparedPayload | null>(null);
   const pendingShared = useRef<{ detail: SharedCollectionDetail } | null>(null);
 
-  const loadExistingShare = useCallback(async () => {
-    if (collection.mcpServers.length > 0) {
-      return {
-        status: 'blocked',
-        body: (
-          <ErrorBanner
-            className=""
-            error="Collections containing MCP servers cannot be shared."
-          />
-        ),
-      } satisfies ShareResourcePreflightResult;
-    }
-    setRemoteDetail(null);
-    setRemoteLink(null);
-    if (!collection.remote?.remoteId) return { status: 'ready' } as const;
-    try {
-      const detail = await window.collections.getShared(
-        collection.remote.remoteId,
-      );
-      setRemoteDetail(detail);
-      setRemoteLink(await collectionLinks.linkFromDetail(detail));
-      return { status: 'ready' } as const;
-    } catch (error: unknown) {
-      if (
-        readSharedResourceErrorStatus(error) === 404 &&
-        (await missingRemoteShareCanBeRecreated(collection.remote.accountId))
-      ) {
-        return { status: 'ready' } as const;
+  const loadExistingShare = useCallback(
+    async (assertCurrent?: () => void) => {
+      void reconciliationRevision;
+      if (collection.mcpServers.length > 0) {
+        return {
+          status: 'blocked',
+          body: (
+            <ErrorBanner
+              className=""
+              error="Collections containing MCP servers cannot be shared."
+            />
+          ),
+        } satisfies ShareResourcePreflightResult;
       }
-      return existingShareLoadFailure('collection', error);
-    }
-  }, [
-    collection.mcpServers.length,
-    collection.remote?.accountId,
-    collection.remote?.remoteId,
-  ]);
+      assertCurrent?.();
+      setRemoteDetail(null);
+      assertCurrent?.();
+      setRemoteLink(null);
+      if (!collection.remote?.remoteId) return { status: 'ready' } as const;
+      try {
+        const detail = await window.collections.getShared(
+          collection.remote.remoteId,
+        );
+        assertCurrent?.();
+        setRemoteDetail(detail);
+        const refreshedLink = await collectionLinks.linkFromDetail(detail);
+
+        assertCurrent?.();
+
+        setRemoteLink(refreshedLink);
+        return { status: 'ready' } as const;
+      } catch (error: unknown) {
+        if (
+          readSharedResourceErrorStatus(error) === 404 &&
+          (await missingRemoteShareCanBeRecreated(collection.remote.accountId))
+        ) {
+          return { status: 'ready' } as const;
+        }
+        return existingShareLoadFailure('collection', error);
+      }
+    },
+    [
+      reconciliationRevision,
+      collection.mcpServers.length,
+      collection.remote?.accountId,
+      collection.remote?.remoteId,
+    ],
+  );
 
   const packagePort = useMemo(
     (): CapabilityPackageSharePort => ({
@@ -161,126 +175,154 @@ export function ShareCollectionModal({
 
   const share = useCallback(
     async (input: ShareResourceShareInput): Promise<ShareResourceOutcome> => {
-      if (collection.mcpServers.length > 0)
-        throw new Error('Collections containing MCP servers cannot be shared.');
-      const payload = preparedPayload.current;
-      if (!payload) {
-        throw new Error('The collection is still being prepared. Try again.');
-      }
-      const selection = input.packageSelection;
-      let capabilityPackage: PipelinePackageRef | undefined;
-      let committedPackageUploadId: string | undefined;
-      if (selection) {
-        const committed = unwrapShareOperationResult(
-          await window.collections.commitCapabilityPackage({
-            analysisId: selection.analysisId,
-            selectedOptionalResourceIds: [
-              ...selection.selectedOptionalResourceIds,
-            ],
-          }),
-        );
-        capabilityPackage = committed.capabilityPackage;
-        committedPackageUploadId = committed.committedPackageUploadId;
-      }
-      const ownerFields = shareOwnerFields(input, remoteDetail);
-      const request = {
-        sourceCollectionId: collection.id,
-        rawCollection: payload.rawCollection,
-        ...(payload.customSkills.length > 0
-          ? { customSkills: payload.customSkills }
-          : {}),
-        ...ownerFields,
-        ...(selection === null
-          ? { capabilityPackage: null }
-          : capabilityPackage
-            ? { capabilityPackage }
-            : {}),
-        ...(committedPackageUploadId ? { committedPackageUploadId } : {}),
-      };
-
-      if (
-        input.scope !== 'public' &&
-        !input.preservePublicLink &&
-        remoteDetail?.publicShare
-      ) {
-        await window.collections.revokePublicShare(remoteDetail.id);
-      }
-      let detail: SharedCollectionDetail;
-      if (collection.remote) {
-        try {
-          input.assertAllowed?.();
-          detail = unwrapShareOperationResult(
-            await window.collections.updateShared({
-              collectionId: collection.remote.remoteId,
-              expectedContentHash:
-                remoteDetail?.contentHash ?? collection.remote.contentHash,
-              ...request,
+      let revocationStarted = false;
+      try {
+        if (collection.mcpServers.length > 0)
+          throw new Error(
+            'Collections containing MCP servers cannot be shared.',
+          );
+        const payload = preparedPayload.current;
+        if (!payload) {
+          throw new Error('The collection is still being prepared. Try again.');
+        }
+        const selection = input.packageSelection;
+        let capabilityPackage: PipelinePackageRef | undefined;
+        let committedPackageUploadId: string | undefined;
+        if (selection) {
+          const committed = unwrapShareOperationResult(
+            await window.collections.commitCapabilityPackage({
+              analysisId: selection.analysisId,
+              selectedOptionalResourceIds: [
+                ...selection.selectedOptionalResourceIds,
+              ],
             }),
           );
-        } catch (error: unknown) {
-          const status = readSharedResourceErrorStatus(error);
-          if (status === 409) throw new ShareConflictError();
-          if (
-            status !== 404 ||
-            !(await missingRemoteShareCanBeRecreated(
-              collection.remote.accountId,
-            ))
-          )
-            throw error;
+          capabilityPackage = committed.capabilityPackage;
+          committedPackageUploadId = committed.committedPackageUploadId;
+        }
+        const ownerFields = shareOwnerFields(input, remoteDetail);
+        const request = {
+          sourceCollectionId: collection.id,
+          rawCollection: payload.rawCollection,
+          ...(payload.customSkills.length > 0
+            ? { customSkills: payload.customSkills }
+            : {}),
+          ...ownerFields,
+          ...(selection === null
+            ? { capabilityPackage: null }
+            : capabilityPackage
+              ? { capabilityPackage }
+              : {}),
+          ...(committedPackageUploadId ? { committedPackageUploadId } : {}),
+        };
+
+        if (
+          input.scope !== 'public' &&
+          !input.preservePublicLink &&
+          remoteDetail?.publicShare
+        ) {
+          input.assertAllowed?.();
+          revocationStarted = true;
+          await window.collections.revokePublicShare(remoteDetail.id);
+          const remaining = { ...remoteDetail, publicShare: null };
+          input.assertAllowed?.();
+          setRemoteDetail(remaining);
+          const refreshedLink = await collectionLinks.linkFromDetail(remaining);
+
+          input.assertAllowed?.();
+
+          setRemoteLink(refreshedLink);
+        }
+        let detail: SharedCollectionDetail;
+        if (collection.remote) {
+          try {
+            input.assertAllowed?.();
+            detail = unwrapShareOperationResult(
+              await window.collections.updateShared({
+                collectionId: collection.remote.remoteId,
+                expectedContentHash:
+                  remoteDetail?.contentHash ?? collection.remote.contentHash,
+                ...request,
+              }),
+            );
+          } catch (error: unknown) {
+            const status = readSharedResourceErrorStatus(error);
+            if (status === 409) throw new ShareConflictError();
+            if (
+              status !== 404 ||
+              !(await missingRemoteShareCanBeRecreated(
+                collection.remote.accountId,
+              ))
+            )
+              throw error;
+            input.assertAllowed?.();
+            detail = unwrapShareOperationResult(
+              await window.collections.createShared(request),
+            );
+          }
+        } else {
           input.assertAllowed?.();
           detail = unwrapShareOperationResult(
             await window.collections.createShared(request),
           );
         }
-      } else {
-        input.assertAllowed?.();
-        detail = unwrapShareOperationResult(
-          await window.collections.createShared(request),
-        );
-      }
 
-      let shareUrl: string | undefined;
-      let publicLinkFailed = false;
-      if (input.scope === 'public') {
         input.assertAllowed?.();
-        try {
-          const publicShare = await window.collections.publishPublicShare(
-            detail.id,
-          );
-          detail = { ...detail, publicShare };
+        let shareUrl: string | undefined;
+        let publicLinkFailed = false;
+        if (input.scope === 'public') {
+          input.assertAllowed?.();
+          try {
+            const publicShare = await window.collections.publishPublicShare(
+              detail.id,
+            );
+            detail = { ...detail, publicShare };
+            const link = await collectionLinks.resolveLink({
+              kind: 'public',
+              id: detail.id,
+              sharePath: publicShare.sharePath,
+            });
+            shareUrl = link.url;
+            input.assertAllowed?.();
+            setRemoteLink(link);
+          } catch {
+            publicLinkFailed = true;
+          }
+        } else {
+          if (!input.preservePublicLink && remoteDetail?.publicShare) {
+            detail = { ...detail, publicShare: null };
+          }
           const link = await collectionLinks.resolveLink({
-            kind: 'public',
-            sharePath: publicShare.sharePath,
+            kind: 'scoped',
+            id: detail.id,
           });
           shareUrl = link.url;
+          input.assertAllowed?.();
           setRemoteLink(link);
-        } catch {
-          publicLinkFailed = true;
         }
-      } else {
-        if (!input.preservePublicLink && remoteDetail?.publicShare) {
-          detail = { ...detail, publicShare: null };
-        }
-        const link = await collectionLinks.resolveLink({
-          kind: 'scoped',
-          id: detail.id,
-        });
-        shareUrl = link.url;
-        setRemoteLink(link);
-      }
 
-      pendingShared.current = { detail };
-      setRemoteDetail(detail);
-      return {
-        ...(shareUrl ? { shareUrl } : {}),
-        ...(publicLinkFailed ? { publicLinkFailed: true } : {}),
-      };
+        input.assertAllowed?.();
+
+        pendingShared.current = { detail };
+        input.assertAllowed?.();
+        setRemoteDetail(detail);
+        return {
+          ...(shareUrl ? { shareUrl } : {}),
+          ...(publicLinkFailed ? { publicLinkFailed: true } : {}),
+        };
+      } catch (error: unknown) {
+        input.assertAllowed?.();
+        if (revocationStarted)
+          setReconciliationRevision((revision) => revision + 1);
+        throw error;
+      }
     },
     [collection, remoteDetail],
   );
 
-  const retryPublicLink =
-    useCallback(async (): Promise<ShareResourceOutcome> => {
+  const retryPublicLink = useCallback(
+    async (assertCurrent?: () => void): Promise<ShareResourceOutcome> => {
+      assertCurrent?.();
       const pending = pendingShared.current;
       if (!pending) return { publicLinkFailed: true };
       const publicShare = await window.collections.publishPublicShare(
@@ -288,20 +330,42 @@ export function ShareCollectionModal({
       );
       const link = await collectionLinks.resolveLink({
         kind: 'public',
+        id: pending.detail.id,
         sharePath: publicShare.sharePath,
       });
+      assertCurrent?.();
       setRemoteLink(link);
+      assertCurrent?.();
       pending.detail = { ...pending.detail, publicShare };
+      assertCurrent?.();
       setRemoteDetail(pending.detail);
       return { shareUrl: link.url };
-    }, []);
+    },
+    [],
+  );
 
-  const revokePublicLink = useCallback(async (): Promise<void> => {
-    if (!remoteDetail?.publicShare) return;
-    await window.collections.revokePublicShare(remoteDetail.id);
-    setRemoteDetail({ ...remoteDetail, publicShare: null });
-    setRemoteLink(null);
-  }, [remoteDetail]);
+  const revokePublicLink = useCallback(
+    async (assertCurrent?: () => void): Promise<void> => {
+      assertCurrent?.();
+      if (!remoteDetail?.publicShare) return;
+      try {
+        await window.collections.revokePublicShare(remoteDetail.id);
+        const remaining = { ...remoteDetail, publicShare: null };
+        assertCurrent?.();
+        setRemoteDetail(remaining);
+        const refreshedLink = await collectionLinks.linkFromDetail(remaining);
+
+        assertCurrent?.();
+
+        setRemoteLink(refreshedLink);
+      } catch (error: unknown) {
+        assertCurrent?.();
+        setReconciliationRevision((revision) => revision + 1);
+        throw error;
+      }
+    },
+    [remoteDetail],
+  );
 
   const handleCompleted = useCallback((): void => {
     const pending = pendingShared.current;
@@ -319,6 +383,7 @@ export function ShareCollectionModal({
 
   return (
     <DesktopShareResourceDialog
+      marketplace={{ kind: 'collection', resourceKey: collection.id }}
       resourceNoun="collection"
       testIdPrefix="share-collection"
       requiredCapability={COLLECTIONS_CRUD_CAPABILITY}

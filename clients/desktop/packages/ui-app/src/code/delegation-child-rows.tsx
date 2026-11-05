@@ -8,6 +8,22 @@ export interface DelegationChildRowEntry {
   readonly row: PortableChildRow;
 }
 
+/** What the card around the rows already shows. */
+export interface DelegationChildRowDisplay {
+  /** The card's result: a text block equal to it is not repeated. */
+  readonly finalText?: string;
+}
+
+/** Whether a child text block repeats the card's result, as hosts compare it. */
+export function repeatsCardResult(
+  text: string,
+  display: DelegationChildRowDisplay | undefined,
+): boolean {
+  return (
+    display?.finalText !== undefined && text.trim() === display.finalText.trim()
+  );
+}
+
 /** Pages are in chronological order; overlapping rows appear only once. */
 export function delegationChildRows(
   pages: readonly DelegationPage[],

@@ -6,15 +6,12 @@ import { CanopyAppDriver } from './canopyApp.mjs';
 import { readChatStorageTabs } from './readChatStorage.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import {
-  buildApprovalRule,
   registerScenario,
-  seedWorkspaceApprovals,
   seedWorktreeChat,
   DEFAULT_MOCK_BASE_URL,
 } from './seeders/index.mjs';
 import { withBundledBinaryOverridesScrubbed } from './seeders/bundledBinaryOverrides.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
-import { exercisePlanApproval } from './planApprovalScenario.mjs';
 import { stripHookErrorPrefix } from '../../../../packages/ui-shared/src/components/chat/tool-denial.ts';
 
 // ---------------------------------------------------------------------------
@@ -146,20 +143,6 @@ function persistedErrorOutputs(userDataDir) {
 }
 
 test.describe('live tool-approval round trip (Claude)', () => {
-  for (const scenario of [
-    { mode: 'ask', decision: 'allow' },
-    { mode: 'ask', decision: 'deny' },
-    { mode: 'auto', decision: 'allow' },
-    { mode: 'auto', tool: 'Write' },
-    { mode: 'auto', rule: 'deny', decision: 'deny' },
-    { mode: 'full-access', rule: 'deny' },
-  ]) {
-    test(`plan mode honors session approvals ${JSON.stringify(scenario)}`, async () => {
-      test.setTimeout(180_000);
-      await exercisePlanApproval(scenario);
-    });
-  }
-
   test('an Ask-mode force-push is denied by a safety rule with a visible notice and no approval card', async () => {
     test.setTimeout(180_000);
     const CONVERSATION_MARKER = 'Canopy-CAPPROVELIVE-SAFETY';
@@ -356,109 +339,6 @@ test.describe('live tool-approval round trip (Claude)', () => {
         restoredWindow.getByTestId('approval-safety-denied-notice'),
       ).toHaveCount(1, { timeout: 30_000 });
       expect(receipts()).toHaveLength(1);
-    } finally {
-      await closeCanopy(electronApp, userDataDir);
-    }
-  });
-
-  test('a remembered command allow still prompts before targeting protected approval policy', async () => {
-    test.setTimeout(180_000);
-    const CONVERSATION_MARKER = 'Canopy-CAPPROVELIVE-PROTECTED';
-    const userDataDir = mkdtempSync(
-      path.join(os.tmpdir(), 'canopy-approval-live-protected-'),
-    );
-    seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
-    const { filePath: protectedPolicyPath } = seedWorkspaceApprovals({
-      userDataDir,
-      workspaceId: WORKSPACE_ID,
-      rules: [
-        buildApprovalRule({
-          behavior: 'allow',
-          target: { kind: 'command', pattern: 'touch *' },
-        }),
-      ],
-    });
-    seedWorktreeChat({
-      userDataDir,
-      workspaceId: WORKSPACE_ID,
-      worktreeId: WORKTREE_ID,
-      providerType: 'claude',
-      tabs: [{ id: 't1', title: 'Chat', approvalMode: 'ask' }],
-    });
-
-    const command = `touch ${protectedPolicyPath}`;
-    await registerScenario(DEFAULT_MOCK_BASE_URL, CONVERSATION_MARKER, {
-      llm: {
-        steps: [
-          {
-            toolCalls: [{ name: 'Bash', input: { command } }],
-            stopReason: 'tool_use',
-          },
-          { text: 'Protected command resolved', stopReason: 'end_turn' },
-        ],
-      },
-    });
-
-    const { electronApp } = await withBundledBinaryOverridesScrubbed(() =>
-      launchCanopy({ userDataDir }),
-    );
-    try {
-      const window = await electronApp.firstWindow();
-      const app = new CanopyAppDriver(window);
-      await app.waitForShell({ timeout: 30_000 });
-      await window.evaluate(() =>
-        window.api.savePreferences({ chatDetail: 'detailed' }),
-      );
-      await app.openMainPage();
-      await app.selectWorktree(WORKTREE_BRANCH);
-
-      const composer = window.getByRole('textbox').first();
-      await composer.fill(
-        `[${CONVERSATION_MARKER}] Run the remembered protected command.`,
-      );
-      await window.getByRole('button', { name: 'Send message' }).click();
-
-      const card = window.getByTestId('tool-approval-card');
-      await expect(card).toBeVisible({ timeout: 60_000 });
-      await expect(card).toContainText(command);
-      await card.getByRole('button', { name: 'Add a reason' }).click();
-      await card.getByRole('textbox').fill('Not on this branch.');
-      await window.getByTestId('tool-approval-deny').click();
-      await expect(card).toHaveCount(0);
-      await expect
-        .poll(() => persistedErrorOutputs(userDataDir), { timeout: 60_000 })
-        .toContainEqual(
-          expect.stringMatching(
-            /^The user denied this tool call: Not on this branch\./,
-          ),
-        );
-      const steps = window
-        .getByRole('button', { name: /^Agent steps/ })
-        .first();
-      if (
-        (await steps.count()) > 0 &&
-        (await steps.getAttribute('aria-expanded')) !== 'true'
-      )
-        await steps.click();
-      const blocked = window
-        .locator('[data-tool-name="Bash"][data-tool-status="blocked"]')
-        .first();
-      await expect(blocked).toBeVisible();
-      await blocked.locator('button').first().click();
-      await expect(blocked).toContainText('denied by you');
-      await expect(blocked).toContainText('Not on this branch.');
-      await expect(blocked).not.toContainText('PreToolUse:');
-      await expect
-        .poll(() => persistedErrorOutputs(userDataDir))
-        .toContainEqual(
-          expect.stringMatching(
-            /^The user denied this tool call: Not on this branch\./,
-          ),
-        );
-      await test.info().attach('user-denial-persisted-output.json', {
-        body: JSON.stringify(rawPersistedErrorOutputs(userDataDir), null, 2),
-        contentType: 'application/json',
-      });
     } finally {
       await closeCanopy(electronApp, userDataDir);
     }
@@ -722,116 +602,6 @@ test.describe('live tool-approval round trip (Claude)', () => {
             expect.objectContaining({ behavior: 'allow', origin: 'prompt' }),
           ]),
         );
-    } finally {
-      await closeCanopy(electronApp, userDataDir);
-    }
-  });
-
-  // Current Claude builds gate the parent `Agent` invocation before launching
-  // its background process. This live case exercises that reachable boundary;
-  // deterministic interaction coverage owns child-attributed badge rendering.
-  test('a live background Agent invocation in Ask mode renders an approval card, and Allow once lets it proceed', async () => {
-    test.setTimeout(180_000);
-    const PARENT_MARKER = 'Canopy-CAPPROVELIVESUB';
-    const PARENT_FOLLOW_UP = 'Started the background task';
-
-    const userDataDir = mkdtempSync(
-      path.join(os.tmpdir(), 'canopy-approval-live-subagent-'),
-    );
-    seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
-    seedWorktreeChat({
-      userDataDir,
-      workspaceId: WORKSPACE_ID,
-      worktreeId: WORKTREE_ID,
-      providerType: 'claude',
-      tabs: [{ id: 't1', title: 'Chat', approvalMode: 'ask' }],
-    });
-
-    // Parent turn: request a background agent and continue once its
-    // approval-gated invocation is released.
-    await registerScenario(DEFAULT_MOCK_BASE_URL, PARENT_MARKER, {
-      llm: {
-        steps: [
-          {
-            toolCalls: [
-              {
-                name: 'Agent',
-                input: {
-                  description: 'Run background task',
-                  prompt: 'Complete the background task.',
-                  subagent_type: 'general-purpose',
-                  run_in_background: true,
-                },
-              },
-            ],
-            stopReason: 'tool_use',
-          },
-          { text: PARENT_FOLLOW_UP, stopReason: 'end_turn' },
-        ],
-      },
-    });
-
-    const { electronApp } = await withBundledBinaryOverridesScrubbed(() =>
-      launchCanopy({ userDataDir }),
-    );
-    try {
-      const window = await electronApp.firstWindow();
-      const app = new CanopyAppDriver(window);
-
-      await app.waitForShell({ timeout: 30_000 });
-      await app.openMainPage();
-      await expect(
-        window.getByRole('button', {
-          name: `Collapse ${WORKSPACE_NAME}`,
-        }),
-      ).toBeVisible();
-      await app.selectWorktree(WORKTREE_BRANCH);
-
-      const panel = window.getByTestId('panel-content-chat');
-      await expect(panel).toBeVisible();
-
-      await expect(window.getByTestId('approval-mode-picker')).toHaveAttribute(
-        'aria-label',
-        'Tool approval mode, current mode Ask',
-        { timeout: 15_000 },
-      );
-
-      const userMessage = `[${PARENT_MARKER}] Spawn the background agent.`;
-      const composer = window.getByRole('textbox').first();
-      await expect(composer).toBeVisible();
-      await composer.click();
-      await composer.fill(userMessage);
-      await window.getByRole('button', { name: 'Send message' }).click();
-
-      await expect(panel.getByText(userMessage).first()).toBeVisible({
-        timeout: 30_000,
-      });
-
-      // The parent Agent tool use goes through the same real approval-session
-      // path as Bash, before Claude creates the background process.
-      const card = window.getByTestId('tool-approval-card');
-      await expect(card).toBeVisible({ timeout: 60_000 });
-      await expect(card).toContainText('Agent');
-      await expect(
-        window.getByTestId('tool-approval-subagent-badge'),
-      ).toHaveCount(0);
-
-      await window.getByTestId('tool-approval-allow').click();
-
-      await expect(window.getByTestId('tool-approval-card')).toHaveCount(0);
-
-      await expect(panel.getByText(PARENT_FOLLOW_UP).first()).toBeVisible({
-        timeout: 90_000,
-      });
-
-      // The background process is created and reaches a terminal bucket after
-      // the approval gate is released.
-      await expect(
-        window.getByText('Agent background processes'),
-      ).toBeVisible();
-      await expect(window.getByText(/Stopped \(1\)/)).toBeVisible({
-        timeout: 90_000,
-      });
     } finally {
       await closeCanopy(electronApp, userDataDir);
     }

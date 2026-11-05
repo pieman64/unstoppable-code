@@ -1,21 +1,23 @@
-/** Intro sentence on the first-run page while it offers the daily AI Credits. */
-export const AGENT_CONNECTIONS_CREDITS_INTRO =
-  'Use free AI Credits, or connect a subscription you already have.';
-
 /**
- * The sentence that introduces Claude and Codex on Home's "Add your AI
- * providers" step and the first-run "Let's get started" page. By default it
- * promises no AI Credits: those are opt-in and asked for only where the user
- * can turn them on. Pass `offersCredits` only where the same section shows the
- * opt-in (the first-run account row). The host passes its brand's app name.
+ * Copy for the agent connections on the first-run "Let's get started" page:
+ * the intro above Claude, Codex and the account row, and each provider row's
+ * signed-out description. The host passes its brand's app name.
  */
 export function agentConnectionsIntro({
-  offersCredits = false,
   appName,
 }: {
-  readonly offersCredits?: boolean;
   readonly appName: string;
 }): string {
-  if (offersCredits) return AGENT_CONNECTIONS_CREDITS_INTRO;
   return `Bring your own subscription or use your ${appName} account.`;
 }
+
+/**
+ * A signed-out provider row's description. It says what connecting gets the
+ * user, since the row's status dot already shows that it is not connected.
+ */
+export const PROVIDER_ROW_DESCRIPTIONS: Readonly<
+  Record<'claude' | 'codex', string>
+> = {
+  claude: 'Use your existing Claude subscription.',
+  codex: 'Use your existing ChatGPT subscription.',
+};

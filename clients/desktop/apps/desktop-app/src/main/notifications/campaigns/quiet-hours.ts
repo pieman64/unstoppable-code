@@ -1,4 +1,5 @@
 import type { ActivationQuietHours } from '@canopy/desktop-shared/types';
+import { DEFAULT_ACTIVATION_QUIET_HOURS } from '@canopy/desktop-shared/constants/preferences';
 
 /**
  * Quiet hours for activation campaigns (CAN-2438 phase 5).
@@ -13,11 +14,7 @@ import type { ActivationQuietHours } from '@canopy/desktop-shared/types';
  * me at night" regardless of where the machine's clock is set.
  */
 
-export const DEFAULT_ACTIVATION_QUIET_HOURS: ActivationQuietHours = {
-  enabled: true,
-  startHour: 22,
-  endHour: 8,
-};
+export { DEFAULT_ACTIVATION_QUIET_HOURS };
 
 function isValidHour(value: number): boolean {
   return Number.isInteger(value) && value >= 0 && value <= 23;

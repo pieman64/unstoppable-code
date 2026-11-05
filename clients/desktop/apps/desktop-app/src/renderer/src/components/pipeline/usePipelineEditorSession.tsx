@@ -241,8 +241,9 @@ export function usePipelineEditorSession(
   const { requestShare, shareGateModal } = useShareAccess();
   const [duplicating, setDuplicating] = useState(false);
   const [duplicateError, setDuplicateError] = useState<string | null>(null);
+  // A read-only workflow opens on its flow, like an editable one (CAN-4319).
   const [readDetailView, setReadDetailView] = useState<'flowchart' | 'details'>(
-    'details',
+    'flowchart',
   );
   const [relatedDataRevision, setRelatedDataRevision] = useState(0);
 
@@ -272,7 +273,7 @@ export function usePipelineEditorSession(
     setRawYamlText('');
     rawYamlBaselineRef.current = '';
     setRawYamlError(null);
-    setReadDetailView('details');
+    setReadDetailView('flowchart');
     setEditorMainView('flowchart');
     setEditorTarget({
       pipelineId,

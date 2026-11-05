@@ -33,7 +33,7 @@ import { Tooltip } from '@canopy/ui-shared';
 import {
   Button,
   LoadingButton,
-  SkeletonBlock,
+  Skeleton,
   SlowLoadNote,
   StatusBadge,
   type StatusBadgeVariant,
@@ -77,7 +77,9 @@ type LoadStatus = 'loading' | 'ready' | 'error';
 /**
  * A value that has not loaded, in its own slot: hidden for the shared delay
  * so a fast load never flashes, then pulsing. The slot is laid out from the
- * start, so nothing moves when the skeleton or the value arrives.
+ * start, so nothing moves when the skeleton or the value arrives. Its child
+ * is the value's own control in `Skeleton` with a sample value, so skullet
+ * measures it into bars.
  */
 function McpLoadingValue({
   shown,
@@ -117,6 +119,24 @@ const MCP_ACCOUNT_AUTH_OPTION: McpAuthOption = {
   value: 'account',
   label: 'Account (via cloud)',
   dataTestId: 'settings-mcp-auth-account',
+};
+
+const noop = (): void => undefined;
+
+/**
+ * The sample a loading value is measured from: the defaults the page shows
+ * when the saved preferences say nothing.
+ */
+const SAMPLE_MCP_SETTINGS = {
+  authHandler: DEFAULT_MCP_HTTP_AUTH_HANDLER,
+  authDescription: MCP_HTTP_AUTH_CANOPY_DESCRIPTION,
+  port: String(DEFAULT_MCP_PROXY_PORT),
+  proxyStatus: 'stopped',
+} as const satisfies {
+  readonly authHandler: McpHttpAuthHandler;
+  readonly authDescription: string;
+  readonly port: string;
+  readonly proxyStatus: McpProxyStatus;
 };
 
 function isValidHandler(value: unknown): value is McpHttpAuthHandler {
@@ -332,15 +352,13 @@ export function McpTab(): JSX.Element {
             description={
               loading ? (
                 <McpLoadingValue shown={skeletonShown}>
-                  {/* The explanation's two lines at the column's measure. */}
-                  <span className="flex w-full flex-col">
-                    <span className="flex h-4.5 items-center">
-                      <SkeletonBlock height="meta" width="full" />
-                    </span>
-                    <span className="flex h-4.5 items-center">
-                      <SkeletonBlock height="meta" width="2/3" />
-                    </span>
-                  </span>
+                  <Skeleton
+                    loading
+                    label="Loading auth path"
+                    className="w-full"
+                  >
+                    <span>{SAMPLE_MCP_SETTINGS.authDescription}</span>
+                  </Skeleton>
                 </McpLoadingValue>
               ) : (
                 <span data-testid="settings-mcp-auth-description">
@@ -355,18 +373,15 @@ export function McpTab(): JSX.Element {
           >
             {loading ? (
               <McpLoadingValue shown={skeletonShown}>
-                {/* One row per choice, at the radio rows' height and gap. */}
-                <span className="flex flex-col gap-3">
-                  {authOptions.map((option) => (
-                    <span
-                      key={option.value}
-                      className="flex h-5 w-32 items-center gap-2.5"
-                    >
-                      <SkeletonBlock shape="dot" />
-                      <SkeletonBlock height="text" width="full" />
-                    </span>
-                  ))}
-                </span>
+                <Skeleton loading label="Loading auth path" className="w-full">
+                  <SettingsRadioGroup
+                    name="settings-mcp-auth-handler-sample"
+                    label="Default auth path"
+                    value={SAMPLE_MCP_SETTINGS.authHandler}
+                    options={authOptions}
+                    onChange={noop}
+                  />
+                </Skeleton>
               </McpLoadingValue>
             ) : (
               <SettingsRadioGroup
@@ -400,7 +415,19 @@ export function McpTab(): JSX.Element {
             control={
               loading ? (
                 <McpLoadingValue shown={skeletonShown}>
-                  <SkeletonBlock shape="control" />
+                  <Skeleton loading label="Loading proxy port">
+                    <span className="flex items-center gap-2">
+                      <SettingsTextField
+                        type="number"
+                        width="xs"
+                        value={SAMPLE_MCP_SETTINGS.port}
+                        readOnly
+                      />
+                      <Button size="compact" variant="secondary">
+                        Apply
+                      </Button>
+                    </span>
+                  </Skeleton>
                 </McpLoadingValue>
               ) : (
                 <>
@@ -476,7 +503,14 @@ export function McpTab(): JSX.Element {
               dataTestId="settings-mcp-proxy-status-loading"
               control={
                 <McpLoadingValue shown={skeletonShown}>
-                  <SkeletonBlock shape="badge" />
+                  <Skeleton loading label="Loading proxy status">
+                    <StatusBadge
+                      variant={statusBadgeVariant(
+                        SAMPLE_MCP_SETTINGS.proxyStatus,
+                      )}
+                      label={statusLabel(SAMPLE_MCP_SETTINGS.proxyStatus)}
+                    />
+                  </Skeleton>
                 </McpLoadingValue>
               }
             />

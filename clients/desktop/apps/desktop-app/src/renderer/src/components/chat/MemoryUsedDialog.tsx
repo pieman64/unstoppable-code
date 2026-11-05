@@ -403,9 +403,8 @@ function ViewInOrganizationMemoryButton({
   onOpened: () => void;
 }): JSX.Element {
   return (
-    <button
-      type="button"
-      className="focus-ring rounded-sm fg-accent hover:underline"
+    <Button
+      variant="link"
       data-testid="memory-used-fact-view-in-memory"
       onClick={(): void => {
         const opened = openAccountOrganizationPage({
@@ -418,7 +417,7 @@ function ViewInOrganizationMemoryButton({
       }}
     >
       View in organization memory
-    </button>
+    </Button>
   );
 }
 

@@ -9,28 +9,40 @@ import {
   type LedgerEntry,
   type LedgerGlobalOwner,
 } from '@canopy/protocol/canopy-core';
-import type { LedgerTaskViewScope } from '@canopy/protocol/ledger-view';
+import type {
+  LedgerTaskViewScope,
+  LedgerViewScope,
+} from '@canopy/protocol/ledger-view';
+import type { LedgerHandBackEntryInput } from '@canopy/desktop-shared/node/ledger';
 import { DESKTOP_LEDGER_TOOLS_HOST } from '../canopy-tools/ledger-tools-runtime';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
-import { LEDGER_USER_ACTOR_DISPLAY_NAME } from './actor-directory';
+import {
+  LEDGER_USER_ACTOR_DISPLAY_NAME,
+  LEDGER_USER_ACTOR_ORIGIN_KEY,
+  ledgerActorOriginKey,
+} from './actor-directory';
 import {
   getLedgerCallerBindingRegistry,
   type LedgerCallerBindingRegistration,
 } from './caller-bindings';
-import { withLedgerChangesWithheldForE2e } from './change-events';
+import {
+  notifyLedgerEntryChanged,
+  withLedgerChangesWithheldForE2e,
+} from './change-events';
 import { resolveDesktopGlobalLedgerScope } from './core-ledger-adapter';
 import {
   getLedgerPipelineAgentOwners,
   retireLedgerPipelineExecution,
 } from './pipeline-agent-owners';
 import { resolveLedgerContainerCreatedAt } from './scope-bindings';
+import { getLedgerStoreClient } from './storage-client';
 import { ledgerContainerForViewScope } from './view-scope';
 
 /*
  * E2E-only seeding for the Ledger panel specs. Every entry is written through
  * the desktop dispatcher, by the user, a chat, a pipeline agent or a managed
- * delegate, exactly as the panel and agent tools write; nothing reaches the
- * store directly.
+ * delegate, exactly as the panel and agent tools write. Session-end fixtures
+ * use the sweep's store hand-back command, including its change announcements.
  * Installed only in the E2E build (`__CANOPY_E2E__`).
  */
 
@@ -82,6 +94,28 @@ export interface E2eLedgerUpdateRequest {
    * them yet: an open panel keeps the earlier revision.
    */
   readonly quiet?: boolean;
+}
+
+export interface E2eLedgerHandBackRequest {
+  readonly scope: LedgerViewScope;
+  readonly entryId: string;
+  readonly reason: LedgerHandBackEntryInput['reason'];
+  readonly newOwner?:
+    | { readonly kind: 'user' }
+    | { readonly kind: 'chat'; readonly chatId: string };
+}
+
+/** The scope and author for the opt-in Phase 02 rollups fixture. */
+export interface E2eLedgerOperationsFixtureRequest {
+  readonly scope: LedgerViewScope;
+  readonly author: E2eLedgerAuthor;
+}
+
+/** Hierarchy returned by the E2E-only operations fixture seeder. */
+export interface E2eLedgerOperationsFixtureResult {
+  readonly operation: LedgerEntry;
+  readonly topLevelTask: LedgerEntry;
+  readonly entries: readonly LedgerEntry[];
 }
 
 /** The agent session the E2E build gives a seeded pipeline agent. */
@@ -295,6 +329,141 @@ export async function updateLedgerEntryForE2e(
   return request.quiet === true
     ? withLedgerChangesWithheldForE2e(update)
     : update();
+}
+
+/** Hands open work back through the real session-end store path. */
+export async function handBackLedgerEntryForE2e(
+  request: E2eLedgerHandBackRequest,
+): Promise<LedgerEntry> {
+  const recipient: E2eLedgerAuthor =
+    request.newOwner?.kind === 'chat'
+      ? { ...request.newOwner, displayName: 'Chat' }
+      : { kind: 'user' };
+  const originKey =
+    recipient.kind === 'chat'
+      ? ledgerActorOriginKey({ kind: 'chat', originKey: recipient.chatId })
+      : LEDGER_USER_ACTOR_ORIGIN_KEY;
+  // A normal read resolves the scope and ensures its recipient actor, exactly
+  // as the corresponding user or chat author does for seeded writes.
+  return runAs(request.scope, recipient, async (dispatcher, principalId) => {
+    const { entry } = await dispatcher.query(
+      'core.ledger.entry.get',
+      { entryId: request.entryId },
+      { caller: callerFor(principalId) },
+    );
+    const store = getLedgerStoreClient();
+    const actors = await store.listActors(entry.scope.ledgerId);
+    const recipientActor = actors.find(
+      (record) =>
+        record.actor.kind === recipient.kind && record.originKey === originKey,
+    );
+    if (recipientActor === undefined)
+      throw new Error('The Ledger recipient actor is unavailable.');
+    const input: LedgerHandBackEntryInput = {
+      ledgerId: entry.scope.ledgerId,
+      entryId: entry.entryId,
+      expectedRevision: entry.revision,
+      endedActorId: entry.owner.actorId,
+      newOwner: recipientActor.actor,
+      transitionAt: new Date().toISOString(),
+      reason: request.reason,
+      idempotencyKey: `e2e:${randomUUID()}`,
+    };
+    const receipt = await store.handBackEntry(input);
+    if (receipt.changed) {
+      notifyLedgerEntryChanged({
+        container: entry.scope.container,
+        ledgerId: entry.scope.ledgerId,
+        entryId: receipt.entry.entryId,
+        revision: receipt.entry.revision,
+      });
+      for (const change of receipt.relatedChanges ?? []) {
+        notifyLedgerEntryChanged({
+          container: entry.scope.container,
+          ledgerId: entry.scope.ledgerId,
+          ...change,
+        });
+      }
+    }
+    return receipt.entry;
+  });
+}
+
+/**
+ * Seeds an operation, nested tasks, and an ungrouped task through the normal
+ * Ledger dispatcher. This is an explicit E2E-only fixture; production
+ * producers and agent tool schemas do not expose operations or parents here.
+ */
+export async function seedLedgerOperationsFixtureForE2e(
+  request: E2eLedgerOperationsFixtureRequest,
+): Promise<E2eLedgerOperationsFixtureResult> {
+  const add = (params: unknown): Promise<LedgerEntry> =>
+    addLedgerEntryForE2e({ ...request, params });
+  const updateStatus = (
+    entry: LedgerEntry,
+    status: LedgerEntry['status'],
+  ): Promise<LedgerEntry> =>
+    updateLedgerEntryForE2e({
+      ...request,
+      params: {
+        entryId: entry.entryId,
+        expectedRevision: entry.revision,
+        status,
+      },
+    });
+
+  const operation = await add({
+    type: 'OPERATION',
+    title: 'E2E release operation',
+    content: 'Operations hierarchy fixture.',
+  });
+  const checklist = await add({
+    type: 'TASK',
+    title: 'Prepare release checklist',
+    content: 'Task nested under the operation.',
+    parentEntryId: operation.entryId,
+  });
+  const changelog = await add({
+    type: 'TASK',
+    title: 'Review the changelog',
+    content: 'Subtask nested under the checklist.',
+    parentEntryId: checklist.entryId,
+  });
+  const packageCheck = await add({
+    type: 'TASK',
+    title: 'Verify the package manifest',
+    content: 'Another subtask under the checklist.',
+    parentEntryId: checklist.entryId,
+  });
+  const smokeTest = await add({
+    type: 'TASK',
+    title: 'Run the release smoke test',
+    content: 'Another task nested under the operation.',
+    parentEntryId: operation.entryId,
+  });
+  const topLevelTask = await add({
+    type: 'TASK',
+    title: 'Triage an unrelated follow-up',
+    content: 'A task with no operation parent.',
+  });
+
+  const completedChangelog = await updateStatus(changelog, 'COMPLETED');
+  const blockedPackageCheck = await updateStatus(packageCheck, 'BLOCKED');
+  const failedSmokeTest = await updateStatus(smokeTest, 'FAILED');
+  const activeTopLevelTask = await updateStatus(topLevelTask, 'IN_PROGRESS');
+
+  return {
+    operation,
+    topLevelTask: activeTopLevelTask,
+    entries: [
+      operation,
+      checklist,
+      completedChangelog,
+      blockedPackageCheck,
+      failedSmokeTest,
+      activeTopLevelTask,
+    ],
+  };
 }
 
 export interface E2ePausedPipelineAgent {

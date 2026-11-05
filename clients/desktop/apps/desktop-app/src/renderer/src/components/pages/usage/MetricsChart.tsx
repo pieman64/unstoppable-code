@@ -5,6 +5,7 @@ import type {
   UsageMetricId,
 } from '@canopy/desktop-shared/types';
 import { useObservabilityStore } from '@/stores/observabilityStore';
+import { useObservabilityEntriesInterest } from '@/lib/chat-interest';
 import { useEarlyAccessTitle } from '@/lib/earlyAccessTitles';
 import {
   CenteredLoadingSpinner,
@@ -47,6 +48,7 @@ export function MetricsChart({
   spec,
   retentionDays,
 }: MetricsChartProps): JSX.Element {
+  useObservabilityEntriesInterest();
   const title = useEarlyAccessTitle(spec.title);
   const hasDistribution = spec.chartDistributionMetrics.length > 0;
   const [mode, setMode] = useState<ViewMode>('counts');

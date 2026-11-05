@@ -44,6 +44,8 @@ import {
 export const LEDGER_VIEW_PAGE_SIZE = 30;
 /** The most a live refresh re-reads in one request (the Ledger's maximum). */
 const LEDGER_VIEW_REFRESH_LIMIT = 100;
+/** Requests a refresh may add to reach the oldest shown row. */
+const LEDGER_VIEW_REFRESH_EXTRA_REQUESTS = 5;
 
 export type { LedgerViewProblem };
 
@@ -100,6 +102,18 @@ export interface LedgerViewState extends LedgerViewWriteSlice {
   /** Every actor label the loaded entries and detail name, by actor ID. */
   readonly actors: Readonly<Record<string, LedgerActorLabel>>;
   readonly scrollTop: number;
+  /** Whether committed new activity joins the list automatically; off by default. */
+  readonly live: boolean;
+  /** Distinct new entries withheld until activity is shown or Live resumes. */
+  readonly newActivityCount: number;
+  /** Whether pointer interaction temporarily prevents automatic insertion. */
+  readonly liveHeld: boolean;
+  /** Enables automatic insertion, showing pending activity unless held. */
+  readonly setLive: (on: boolean) => void;
+  /** Holds insertion while the pointer is over the list; release resumes Live. */
+  readonly holdLive: (held: boolean) => void;
+  /** Reads the newest page and clears the pending activity notice on success. */
+  readonly showNewActivity: () => Promise<void>;
   /** Reads the first page for the current query and filters. */
   readonly load: () => Promise<void>;
   /** Changes the query text; the caller decides when to `load`. */
@@ -169,6 +183,9 @@ export function ledgerViewSearchParams(
     ...(filters.types.length > 0 ? { types: [...filters.types] } : {}),
     ...(filters.statuses.length > 0 ? { statuses: [...filters.statuses] } : {}),
     ...(filters.owner === 'you' ? { owner: 'self' as const } : {}),
+    ...(filters.rootChat === undefined || filters.rootChat === null
+      ? {}
+      : { rootChat: filters.rootChat }),
     sort: 'created_desc',
     limit: page.limit,
     ...(page.cursor === undefined ? {} : { cursor: page.cursor }),
@@ -185,6 +202,8 @@ function appendPage(
 }
 
 export interface LedgerViewStoreOptions {
+  /** Entries per page; defaults to 30. */
+  readonly pageSize?: number;
   /** A new request key for each draft or change; random UUIDs by default. */
   readonly newRequestKey?: () => string;
 }
@@ -196,6 +215,11 @@ export function createLedgerViewStore(
 ): LedgerViewStore {
   // Each new request of a kind supersedes the previous one; a response is
   // applied only if no newer request of its kind started meanwhile.
+  const pageSize = options.pageSize ?? LEDGER_VIEW_PAGE_SIZE;
+  const pendingActivity = new Set<string>();
+  // Entries the person saved here: never held as new activity, even when
+  // their change arrives before the save returns.
+  const ownEntries = new Set<string>();
   let listGeneration = 0;
   let detailGeneration = 0;
   /**
@@ -203,6 +227,12 @@ export function createLedgerViewStore(
    * the entry, and no read has succeeded since.
    */
   let detailOutdated = false;
+  /**
+   * When the list last showed everything new: the newest entry it held. Rows
+   * created after it are new activity while Live is off or held; the list
+   * reads newest first, so this needs no event to say an entry is new.
+   */
+  let listTop: string | null = null;
   /** The refresh in flight, if any. */
   let refreshing: Promise<void> | null = null;
   let refreshQueued = false;
@@ -247,7 +277,7 @@ export function createLedgerViewStore(
       }));
       const result = await search(
         ledgerViewSearchParams(queryText, filters, {
-          limit: LEDGER_VIEW_PAGE_SIZE,
+          limit: pageSize,
         }),
       );
       if (generation !== listGeneration) return;
@@ -262,7 +292,11 @@ export function createLedgerViewStore(
         }));
         return;
       }
+      pendingActivity.clear();
+      ownEntries.clear();
+      listTop = result.value.entries[0]?.createdAt ?? null;
       set((state) => ({
+        newActivityCount: 0,
         list: {
           ...IDLE_LIST,
           status: 'ready',
@@ -282,22 +316,41 @@ export function createLedgerViewStore(
     const rereadLoaded = async (): Promise<void> => {
       const { list, queryText, filters } = get();
       const generation = ++listGeneration;
-      const wanted = Math.max(LEDGER_VIEW_PAGE_SIZE, list.entries.length);
-      // A bound in case pages stop making progress.
-      const maxRequests = Math.ceil(wanted / LEDGER_VIEW_REFRESH_LIMIT) + 1;
+      const wanted =
+        Math.max(pageSize, list.entries.length) + pendingActivity.size;
+      // New entries sort first and can push shown rows past `wanted`, so the
+      // read goes on until it reaches the oldest shown row, within a bound in
+      // case pages stop making progress.
+      const oldestShown =
+        list.entries[list.entries.length - 1]?.createdAt ?? null;
+      const maxRequests =
+        Math.ceil(wanted / LEDGER_VIEW_REFRESH_LIMIT) +
+        LEDGER_VIEW_REFRESH_EXTRA_REQUESTS;
       let entries: LedgerEntrySearchItem[] = [];
       let labels: LedgerActorLabel[] = [];
       let nextCursor: string | null = null;
       let hasMore = true;
       let audienceChangePending = list.audienceChangePending;
+      const readShown = (): boolean => {
+        const last = entries[entries.length - 1];
+        return (
+          oldestShown === null ||
+          (last !== undefined && last.createdAt <= oldestShown)
+        );
+      };
       for (
         let request = 0;
-        request < maxRequests && hasMore && entries.length < wanted;
+        request < maxRequests &&
+        hasMore &&
+        (entries.length < wanted || !readShown());
         request += 1
       ) {
         const result = await search(
           ledgerViewSearchParams(queryText, filters, {
-            limit: Math.min(LEDGER_VIEW_REFRESH_LIMIT, wanted - entries.length),
+            limit:
+              entries.length < wanted
+                ? Math.min(LEDGER_VIEW_REFRESH_LIMIT, wanted - entries.length)
+                : LEDGER_VIEW_REFRESH_LIMIT,
             ...(nextCursor === null ? {} : { cursor: nextCursor }),
           }),
         );
@@ -317,18 +370,62 @@ export function createLedgerViewStore(
           audienceChangePending = isAudienceChangePending(result.value);
         }
       }
-      set((state) => ({
-        list: {
-          ...state.list,
-          entries,
-          nextCursor,
-          hasMore,
-          loadingMore: false,
-          loadMoreProblem: null,
-          audienceChangePending,
-        },
-        actors: withActors(state.actors, labels),
-      }));
+      set((state) => {
+        const held = !state.live || state.liveHeld;
+        const shown = new Set(state.list.entries.map((entry) => entry.entryId));
+        // New activity is what this read holds that was created after the
+        // list last caught up, so it follows the search and filters and needs
+        // no event to have arrived first. The person's own entries show.
+        pendingActivity.clear();
+        if (held) {
+          for (const entry of entries) {
+            if (
+              !shown.has(entry.entryId) &&
+              !ownEntries.has(entry.entryId) &&
+              (listTop === null || entry.createdAt > listTop)
+            ) {
+              pendingActivity.add(entry.entryId);
+            }
+          }
+        }
+        const fresh = new Map(entries.map((entry) => [entry.entryId, entry]));
+        const withholding = held && pendingActivity.size > 0;
+        // The person's own new entries show at once, without revealing other
+        // activity held for the notice.
+        const ownAdds = entries.filter(
+          (entry) => !shown.has(entry.entryId) && ownEntries.has(entry.entryId),
+        );
+        // Newest first: a shown row the read went past, but didn't return,
+        // no longer matches. One older than the read reached stays, since the
+        // held list pages on from its own cursor.
+        const oldestRead = entries[entries.length - 1]?.createdAt ?? null;
+        const readPast = (entry: LedgerEntrySearchItem): boolean =>
+          !hasMore || (oldestRead !== null && entry.createdAt > oldestRead);
+        if (!withholding) listTop = entries[0]?.createdAt ?? listTop;
+        return {
+          list: {
+            ...state.list,
+            // Held rows keep their placement and snapshot cursor. Updates to
+            // shown rows still apply, even when new rows filled the read.
+            entries: withholding
+              ? [
+                  ...ownAdds,
+                  ...state.list.entries.flatMap((entry) => {
+                    const updated = fresh.get(entry.entryId);
+                    return updated ? [updated] : readPast(entry) ? [] : [entry];
+                  }),
+                ]
+              : entries,
+            nextCursor: withholding ? state.list.nextCursor : nextCursor,
+            hasMore: withholding ? state.list.hasMore : hasMore,
+            loadingMore: false,
+            loadMoreProblem: null,
+            audienceChangePending,
+          },
+          newActivityCount: pendingActivity.size,
+          actors: withActors(state.actors, labels),
+        };
+      });
     };
 
     /**
@@ -417,7 +514,13 @@ export function createLedgerViewStore(
       newRequestKey: options.newRequestKey ?? defaultLedgerRequestKey,
       // A failed list reads again once a write succeeded; an idle one waits
       // for its panel to read it.
-      refreshList: (): Promise<void> => {
+      refreshList: (ownEntryId): Promise<void> => {
+        if (ownEntryId !== undefined) {
+          ownEntries.add(ownEntryId);
+          if (pendingActivity.delete(ownEntryId)) {
+            set({ newActivityCount: pendingActivity.size });
+          }
+        }
         const { status } = get().list;
         if (status === 'ready') return refresh();
         return status === 'problem' ? load() : Promise.resolve();
@@ -445,6 +548,18 @@ export function createLedgerViewStore(
       detail: IDLE_DETAIL,
       actors: {},
       scrollTop: 0,
+      live: false,
+      newActivityCount: 0,
+      liveHeld: false,
+      setLive: (on): void => {
+        set({ live: on });
+        if (on && !get().liveHeld && get().newActivityCount > 0) void load();
+      },
+      holdLive: (held): void => {
+        set({ liveHeld: held });
+        if (!held && get().live && get().newActivityCount > 0) void load();
+      },
+      showNewActivity: load,
       load,
       setQueryText: (text): void => {
         set({ queryText: text });
@@ -474,7 +589,7 @@ export function createLedgerViewStore(
         const result = await search(
           ledgerViewSearchParams(queryText, filters, {
             cursor: list.nextCursor,
-            limit: LEDGER_VIEW_PAGE_SIZE,
+            limit: pageSize,
           }),
         );
         if (generation !== listGeneration) return;
@@ -649,7 +764,13 @@ export function createLedgerViewStore(
         detailOutdated = false;
         refreshQueued = false;
         writes.reset();
+        pendingActivity.clear();
+        ownEntries.clear();
         set((state) => ({
+          live: false,
+          liveHeld: false,
+          newActivityCount: 0,
+          closeIntent: null,
           queryText: '',
           filters: DEFAULT_LEDGER_VIEW_FILTERS,
           list: { ...IDLE_LIST, generation: state.list.generation },

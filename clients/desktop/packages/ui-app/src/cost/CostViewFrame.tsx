@@ -7,6 +7,7 @@ import {
   DelayedLoadingPlaceholder,
   Notice,
   NoticeButton,
+  Skeleton,
 } from '@canopy/ui-shared/components';
 
 /** A failed read's explanation, after the `Couldn't load cost.` title. */
@@ -34,6 +35,12 @@ export interface CostViewFrameProps<Value> {
   readonly onRetry: () => void;
   /** Rendered whenever a value exists, even while a re-read runs or after it failed. */
   readonly children: (value: Value) => ReactNode;
+  /**
+   * A plain value of the real shape: a few rows with short names. Given one,
+   * the first read draws `children(loadingSample)` as a measured skeleton, so
+   * a table's rows sit where the figures will.
+   */
+  readonly loadingSample?: Value;
   readonly testId?: string;
 }
 
@@ -49,6 +56,7 @@ export function CostViewFrame<Value>({
   problem,
   onRetry,
   children,
+  loadingSample,
   testId = 'cost-view',
 }: CostViewFrameProps<Value>): JSX.Element {
   if (value !== null) return <>{children(value)}</>;
@@ -65,6 +73,17 @@ export function CostViewFrame<Value>({
       </div>
     );
   }
+  if (loadingSample !== undefined) {
+    return (
+      <DelayedLoadingPlaceholder slowNote="Still loading cost…">
+        <Skeleton loading label="Loading cost" testId={`${testId}-loading`}>
+          {children(loadingSample)}
+        </Skeleton>
+      </DelayedLoadingPlaceholder>
+    );
+  }
+  // Without a sample (a chart, drawn on a canvas, has nothing to measure)
+  // the first read keeps the spinner.
   return (
     <div data-testid={`${testId}-loading`}>
       <DelayedLoadingPlaceholder slowNote="Still loading cost…">

@@ -6,10 +6,13 @@ import {
   type LedgerContainer,
   type LedgerEntriesSearchParams,
   type LedgerEntriesSearchResult,
+  type LedgerRollupItem,
+  type LedgerRollupsListParams,
+  type LedgerRollupsListResult,
 } from '@canopy/protocol/canopy-core';
 import type {
   LedgerMirrorAudience,
-  LedgerMirrorSearchRequest,
+  LedgerMirrorSearchRequestV2,
 } from '@canopy/protocol/ledger-sync';
 import {
   ledgerActorLabelFromMirror,
@@ -17,6 +20,7 @@ import {
   ledgerFeedSearchFilters,
   ledgerMirrorHistoryRevision,
   ledgerViewEntryFromMirror,
+  ledgerViewScopeKey,
   type LedgerFeedEntryRequest,
   type LedgerFeedNotice,
   type LedgerFeedPage,
@@ -26,7 +30,12 @@ import {
   type LedgerViewEntry,
   type LedgerViewResult,
   type LedgerViewScope,
+  type LedgerFeedWorkPage,
+  type LedgerFeedWorkRequest,
+  type LedgerViewActorHost,
 } from '@canopy/protocol/ledger-view';
+import { ledgerFeedCompletedCutoff } from '@canopy/protocol/ledger-view';
+import { mapWithConcurrency } from '../lib/concurrency';
 import type { LedgerMirrorReader } from './feed-client';
 
 /*
@@ -57,6 +66,10 @@ export const LEDGER_FEED_CACHE_MAX = 50;
 const SESSIONS_MAX = 20;
 /** Stream reads one page may make before it settles for what it has. */
 const READS_PER_PAGE_MAX = 64;
+/** A Feed work response stays bounded even when a device has many scopes. */
+export const LEDGER_FEED_WORK_ROW_MAX = 1_000;
+/** Scopes whose names and hosts one work page reads at once. */
+const WORK_CONTEXT_CONCURRENCY = 8;
 
 /** Who the Feed reads for. */
 export type LedgerFeedAccount =
@@ -78,6 +91,8 @@ export interface LedgerFeedLocalScope {
    */
   readonly containerCreatedAt: string;
   readonly archived: boolean;
+  /** The registry lifecycle state, when the host can provide it. */
+  readonly lifecycleState?: 'active' | 'archived' | 'retirement_pending';
 }
 
 /** The container incarnation a Feed read of this device's scope binds to. */
@@ -86,12 +101,41 @@ export interface LedgerFeedScopeIncarnation {
   readonly containerCreatedAt: string;
 }
 
+/** A rollup batch's binding scope; a global Ledger's view scope names it. */
+export interface LedgerFeedRollupsIncarnation extends LedgerFeedScopeIncarnation {
+  readonly ledgerId: string;
+}
+
 /** Reads one page of one local scope as the person using the Feed. */
 export type LedgerFeedScopeSearch = (
   scope: LedgerViewScope,
   params: LedgerEntriesSearchParams,
   incarnation: LedgerFeedScopeIncarnation,
 ) => Promise<LedgerViewResult<LedgerEntriesSearchResult>>;
+
+export interface LedgerFeedWorkContext {
+  readonly projectName: string | null;
+  readonly taskName: string | null;
+  /** Most recently active chat in the task scope, when one is available. */
+  readonly mostRecentChatId: string | null;
+  readonly actors: readonly LedgerActorLabel[];
+  readonly actorHosts: Readonly<Record<string, LedgerViewActorHost>>;
+}
+
+/** Reads this-device names and actor display/host metadata without writes. */
+export type LedgerFeedWorkContextReader = (
+  scope: LedgerFeedLocalScope,
+  actorIds: readonly string[],
+) => Promise<LedgerFeedWorkContext>;
+
+/** The main-process bridge to `core.ledger.rollups.list`. */
+export interface LedgerFeedWorkCall {
+  readonly listRollups: (
+    params: LedgerRollupsListParams,
+    /** The batch's first scope, which binds the person's caller. */
+    incarnation: LedgerFeedRollupsIncarnation,
+  ) => Promise<LedgerViewResult<LedgerRollupsListResult>>;
+}
 
 export interface LedgerFeedServiceOptions {
   readonly readAccount: () => Promise<LedgerFeedAccount>;
@@ -103,6 +147,8 @@ export interface LedgerFeedServiceOptions {
     ledgerId: string,
   ) => LedgerViewScope;
   readonly mirror: LedgerMirrorReader;
+  /** Main-process registries and read-only actor directory for work rows. */
+  readonly readWorkContext?: LedgerFeedWorkContextReader;
   readonly now?: () => number;
   readonly newSessionId?: () => string;
 }
@@ -162,6 +208,24 @@ interface FeedSession {
   /** Pages of one session are served one at a time. */
   queue: Promise<unknown>;
 }
+
+interface FeedWorkRecord {
+  readonly scope: LedgerFeedLocalScope;
+  readonly item: LedgerRollupItem;
+}
+
+interface FeedWorkRead {
+  readonly items: readonly FeedWorkRecord[];
+  readonly truncated: boolean;
+}
+
+const EMPTY_WORK_CONTEXT: LedgerFeedWorkContext = {
+  projectName: null,
+  taskName: null,
+  mostRecentChatId: null,
+  actors: [],
+  actorHosts: {},
+};
 
 const EXPIRED: LedgerViewResult<never> = {
   status: 'error',
@@ -259,12 +323,16 @@ function queryKey(request: LedgerFeedRequest): string {
   return JSON.stringify([
     request.audience,
     request.query.trim(),
+    request.scope === undefined ? null : ledgerViewScopeKey(request.scope),
     [...filters.types].sort(),
     [...filters.statuses].sort(),
     filters.owner,
     filters.author,
     filters.period,
     filters.includeArchived,
+    request.ledgerIds === undefined
+      ? null
+      : Array.from(new Set(request.ledgerIds)).sort(),
   ]);
 }
 
@@ -282,9 +350,14 @@ function parseCursor(
 export class LedgerFeedService {
   private readonly options: LedgerFeedServiceOptions;
   private readonly sessions = new Map<string, FeedSession>();
+  private cacheRevision = 0;
   private readonly cache = new Map<
     string,
     { readonly at: number; readonly page: LedgerFeedPage }
+  >();
+  private readonly workCache = new Map<
+    string,
+    { readonly at: number; readonly page: LedgerFeedWorkPage }
   >();
 
   constructor(options: LedgerFeedServiceOptions) {
@@ -328,6 +401,7 @@ export class LedgerFeedService {
     ) {
       return { status: 'ok', value: cached.page };
     }
+    const cacheRevision = this.cacheRevision;
     const session = await this.createSession(request, account, accountKey);
     if (session === null) return INVALID_SEARCH;
     this.keepSession(session);
@@ -336,7 +410,7 @@ export class LedgerFeedService {
       await this.servePage(session, 1, call),
       session.id,
     );
-    if (result.status === 'ok') {
+    if (result.status === 'ok' && cacheRevision === this.cacheRevision) {
       this.cache.delete(key);
       this.cache.set(key, { at: this.now(), page: result.value });
       while (this.cache.size > LEDGER_FEED_CACHE_MAX) {
@@ -346,6 +420,267 @@ export class LedgerFeedService {
       }
     }
     return result;
+  }
+
+  /**
+   * Reads this device's active-scope rollups for the Feed Operations table.
+   * The caller supplies the already-authorized dispatcher bridge; this
+   * method only batches existing `core.ledger.rollups.list` reads.
+   */
+  async listWork(
+    request: LedgerFeedWorkRequest,
+    call: LedgerFeedWorkCall,
+  ): Promise<LedgerViewResult<LedgerFeedWorkPage>> {
+    const account = await this.readAccount();
+    if (account === null) {
+      return {
+        status: 'error',
+        reason: 'UNKNOWN',
+        message: "Couldn't read your account. Try again.",
+      };
+    }
+
+    const accountKey = accountKeyOf(account);
+    const key = JSON.stringify([
+      accountKey,
+      request.includeOlder,
+      request.scope === undefined ? null : ledgerViewScopeKey(request.scope),
+    ]);
+    const cached = this.workCache.get(key);
+    if (
+      request.refresh !== true &&
+      cached !== undefined &&
+      this.now() - cached.at < LEDGER_FEED_CACHE_TTL_MS
+    ) {
+      return { status: 'ok', value: cached.page };
+    }
+
+    const cacheRevision = this.cacheRevision;
+    try {
+      const scopes = await this.options.listScopes();
+      const eligible = scopes.filter(
+        (scope) =>
+          this.matchesViewScope(scope, request.scope) &&
+          !scope.archived &&
+          scope.lifecycleState !== 'archived' &&
+          scope.lifecycleState !== 'retirement_pending' &&
+          (account.kind === 'signed_in'
+            ? scope.accountId === account.accountId
+            : scope.accountId === null),
+      );
+      const rollups = await this.readWorkRollups(eligible, call);
+      if (rollups.status !== 'ok') return rollups;
+
+      const value = await this.buildWorkPage(
+        rollups.value.items,
+        rollups.value.truncated,
+        request.includeOlder,
+      );
+      if (!(await this.isSignedIn(accountKey))) return ACCOUNT_CHANGED;
+
+      // A write/sync event that landed while the read was in flight must not
+      // let that now-stale result repopulate either cache.
+      if (cacheRevision === this.cacheRevision) {
+        this.workCache.delete(key);
+        this.workCache.set(key, { at: this.now(), page: value });
+        while (this.workCache.size > LEDGER_FEED_CACHE_MAX) {
+          const oldest = this.workCache.keys().next().value;
+          if (oldest === undefined) break;
+          this.workCache.delete(oldest);
+        }
+      }
+      return { status: 'ok', value };
+    } catch {
+      return {
+        status: 'error',
+        reason: 'UNKNOWN',
+        message: "Couldn't load work. Try again.",
+      };
+    }
+  }
+
+  private matchesViewScope(
+    scope: Pick<LedgerFeedLocalScope, 'container' | 'ledgerId'>,
+    requested: LedgerViewScope | undefined,
+  ): boolean {
+    if (requested === undefined) return true;
+    return (
+      ledgerViewScopeKey(
+        this.options.viewScope(scope.container, scope.ledgerId),
+      ) === ledgerViewScopeKey(requested)
+    );
+  }
+
+  private async readWorkRollups(
+    scopes: readonly LedgerFeedLocalScope[],
+    call: LedgerFeedWorkCall,
+  ): Promise<LedgerViewResult<FeedWorkRead>> {
+    const scopesByLedgerId = new Map(
+      scopes.map((scope) => [scope.ledgerId, scope] as const),
+    );
+    const items: FeedWorkRecord[] = [];
+    const seenItems = new Set<string>();
+    let truncated = false;
+
+    for (
+      let offset = 0;
+      offset < scopes.length && !truncated;
+      offset += LEDGER_LIMITS.rollupsLedgerIdsMax
+    ) {
+      const batch = scopes.slice(
+        offset,
+        offset + LEDGER_LIMITS.rollupsLedgerIdsMax,
+      );
+      const first = batch[0];
+      if (first === undefined) continue;
+      const batchIds = new Set(batch.map((scope) => scope.ledgerId));
+      const incarnation: LedgerFeedRollupsIncarnation = {
+        container: first.container,
+        containerCreatedAt: first.containerCreatedAt,
+        ledgerId: first.ledgerId,
+      };
+      let cursor: string | undefined;
+      const seenCursors = new Set<string>();
+
+      do {
+        const result = await call.listRollups(
+          {
+            ledgerIds: batch.map((scope) => scope.ledgerId),
+            ...(cursor === undefined ? {} : { cursor }),
+          },
+          incarnation,
+        );
+        if (result.status !== 'ok') return result;
+
+        for (const rollupScope of result.value.scopes) {
+          const scope = scopesByLedgerId.get(rollupScope.ledgerId);
+          if (scope === undefined || !batchIds.has(rollupScope.ledgerId)) {
+            continue;
+          }
+          for (const item of rollupScope.items) {
+            const key = `${rollupScope.ledgerId}\n${item.entryId}`;
+            if (seenItems.has(key)) continue;
+            seenItems.add(key);
+            if (items.length === LEDGER_FEED_WORK_ROW_MAX) {
+              truncated = true;
+              break;
+            }
+            items.push({ scope, item });
+          }
+          if (truncated) break;
+        }
+
+        cursor = result.value.nextCursor;
+        if (cursor !== undefined) {
+          if (seenCursors.has(cursor)) {
+            return {
+              status: 'error',
+              reason: 'UNKNOWN',
+              message: "Couldn't page through work. Try again.",
+            };
+          }
+          seenCursors.add(cursor);
+        }
+      } while (cursor !== undefined && !truncated);
+    }
+
+    return { status: 'ok', value: { items, truncated } };
+  }
+
+  private async buildWorkPage(
+    records: readonly FeedWorkRecord[],
+    truncated: boolean,
+    includeOlder: boolean,
+  ): Promise<LedgerFeedWorkPage> {
+    const cutoff = ledgerFeedCompletedCutoff(new Date(this.now())).getTime();
+    let olderCount = 0;
+    const visible: FeedWorkRecord[] = [];
+    const older = new Set<FeedWorkRecord>();
+    for (const record of records) {
+      if (isOlderCompletedWork(record.item, cutoff)) {
+        olderCount += 1;
+        if (!includeOlder) continue;
+        older.add(record);
+      }
+      visible.push(record);
+    }
+
+    const byLedger = new Map<string, FeedWorkRecord[]>();
+    for (const record of visible) {
+      const existing = byLedger.get(record.scope.ledgerId);
+      if (existing === undefined) byLedger.set(record.scope.ledgerId, [record]);
+      else existing.push(record);
+    }
+
+    const rows: LedgerFeedWorkPage['rows'][number][] = [];
+    const actors = new Map<string, LedgerActorLabel>();
+    const actorHosts: Record<string, LedgerViewActorHost> = {};
+    const scopeGroups = Array.from(byLedger.values());
+    const readWorkContext = this.options.readWorkContext;
+    // Names and hosts decorate rows; a scope whose context cannot be read
+    // still shows its rows, unnamed and without live state.
+    const contexts =
+      readWorkContext === undefined
+        ? scopeGroups.map((): LedgerFeedWorkContext => EMPTY_WORK_CONTEXT)
+        : await mapWithConcurrency(
+            scopeGroups,
+            WORK_CONTEXT_CONCURRENCY,
+            (scopeRecords): Promise<LedgerFeedWorkContext> => {
+              const first = scopeRecords[0];
+              if (first === undefined)
+                return Promise.resolve(EMPTY_WORK_CONTEXT);
+              return readWorkContext(
+                first.scope,
+                actorIdsOfRollups(scopeRecords.map(({ item }) => item)),
+              ).catch((): LedgerFeedWorkContext => EMPTY_WORK_CONTEXT);
+            },
+          );
+    for (let index = 0; index < scopeGroups.length; index += 1) {
+      const scopeRecords = scopeGroups[index];
+      const first = scopeRecords?.[0];
+      const context = contexts[index];
+      if (scopeRecords === undefined || first === undefined) continue;
+      if (context === undefined) continue;
+      const scope = first.scope;
+      const actorIds = actorIdsOfRollups(scopeRecords.map(({ item }) => item));
+      const expectedActors = new Set(actorIds);
+      for (const actor of context.actors) {
+        if (expectedActors.has(actor.actorId)) actors.set(actor.actorId, actor);
+      }
+      for (const [actorId, host] of Object.entries(context.actorHosts)) {
+        if (expectedActors.has(actorId)) actorHosts[actorId] = host;
+      }
+      for (const record of scopeRecords) {
+        const { item } = record;
+        const ownerHost = context.actorHosts[item.owner.actorId];
+        const chatId =
+          item.owner.kind === 'chat'
+            ? ownerHost?.kind === 'chat'
+              ? ownerHost.chatId
+              : null
+            : context.mostRecentChatId;
+        rows.push({
+          ledgerId: scope.ledgerId,
+          scope: this.options.viewScope(scope.container, scope.ledgerId),
+          scopeKind: scope.container.kind,
+          scopeArchived: scope.archived,
+          projectName: context.projectName,
+          taskName: context.taskName,
+          item,
+          chatId,
+          ...(older.has(record) ? { older: true } : {}),
+        });
+      }
+    }
+
+    rows.sort(compareWorkRows);
+    return {
+      rows,
+      actors: Array.from(actors.values()),
+      actorHosts,
+      olderCount,
+      truncated,
+    };
   }
 
   /**
@@ -444,7 +779,9 @@ export class LedgerFeedService {
 
   /** A local change: cached first pages may no longer be the newest. */
   invalidate(): void {
+    this.cacheRevision += 1;
     this.cache.clear();
+    this.workCache.clear();
   }
 
   private now(): number {
@@ -523,12 +860,24 @@ export class LedgerFeedService {
         (account.kind === 'signed_in'
           ? scope.accountId === account.accountId
           : scope.accountId === null) &&
+        scope.lifecycleState !== 'retirement_pending' &&
         (request.filters.includeArchived || !scope.archived),
     );
-    const streams: FeedStream[] = owned.map((scope) =>
+    const narrowed = owned.filter(
+      (scope) =>
+        this.matchesViewScope(scope, request.scope) &&
+        (request.ledgerIds === undefined ||
+          request.ledgerIds.includes(scope.ledgerId)),
+    );
+    const streams: FeedStream[] = narrowed.map((scope) =>
       this.localStream(scope, localParams.data),
     );
-    if (account.kind === 'signed_in' && request.audience !== 'this_device') {
+    if (
+      request.scope === undefined &&
+      request.ledgerIds === undefined &&
+      account.kind === 'signed_in' &&
+      request.audience !== 'this_device'
+    ) {
       // The local stream holds every scope this device has.
       const local = new Set(scopes.map((scope) => scope.ledgerId));
       const audiences: LedgerMirrorAudience[] =
@@ -631,7 +980,7 @@ export class LedgerFeedService {
       exhausted: false,
       floor: null,
       read: async (cursor): Promise<StreamRead> => {
-        const request: LedgerMirrorSearchRequest = {
+        const request: LedgerMirrorSearchRequestV2 = {
           ...filters,
           audience,
           sort: 'updated_desc',
@@ -779,6 +1128,58 @@ export class LedgerFeedService {
     }
     return null;
   }
+}
+
+function isOlderCompletedWork(item: LedgerRollupItem, cutoff: number): boolean {
+  if (item.status !== 'COMPLETED' && item.status !== 'FAILED') return false;
+  // Every open entry under it counts, an open parent task with done
+  // subtasks included, not only open leaves.
+  const openLeaves =
+    (item.leafCounts.TODO ?? 0) +
+    (item.leafCounts.IN_PROGRESS ?? 0) +
+    (item.leafCounts.BLOCKED ?? 0) +
+    (item.leafCounts.NEEDS_REVIEW ?? 0);
+  if (openLeaves > 0 || item.openDescendantCount > 0) return false;
+  const activity = Date.parse(item.lastActivityAt);
+  return Number.isFinite(activity) && activity < cutoff;
+}
+
+function actorIdsOfRollups(items: readonly LedgerRollupItem[]): string[] {
+  const actorIds = new Set<string>();
+  for (const item of items) {
+    actorIds.add(item.owner.actorId);
+    for (const leaf of [
+      item.currentLeaf,
+      item.firstBlockedLeaf,
+      item.firstFailedLeaf,
+      item.nextOpenLeaf,
+      item.firstReviewLeaf,
+    ]) {
+      if (leaf !== undefined) actorIds.add(leaf.owner.actorId);
+    }
+    for (const leaf of item.inProgressLeaves) {
+      actorIds.add(leaf.owner.actorId);
+    }
+    for (const leafOwner of item.openLeafOwners) {
+      actorIds.add(leafOwner.owner.actorId);
+    }
+  }
+  return Array.from(actorIds);
+}
+
+function compareWorkRows(
+  left: LedgerFeedWorkPage['rows'][number],
+  right: LedgerFeedWorkPage['rows'][number],
+): number {
+  const byActivity =
+    Date.parse(right.item.lastActivityAt) -
+    Date.parse(left.item.lastActivityAt);
+  if (byActivity !== 0 && Number.isFinite(byActivity)) return byActivity;
+  if (left.ledgerId !== right.ledgerId) {
+    return left.ledgerId < right.ledgerId ? -1 : 1;
+  }
+  if (left.item.entryId === right.item.entryId) return 0;
+  return left.item.entryId < right.item.entryId ? -1 : 1;
 }
 
 /** Returns a failed page's rows to the heads of the streams they came from. */

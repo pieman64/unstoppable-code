@@ -56,6 +56,8 @@
     "./lib/shortcuts": "./src/lib/shortcuts.ts",
     "./lib/above-browser": "./src/lib/above-browser.ts",
     "./lib/shortcut-platform": "./src/lib/shortcut-platform.ts",
+    "./lib/format-transfer-bytes": "./src/lib/format-transfer-bytes.ts",
+    "./lib/approval-focus-policy": "./src/lib/approval-focus-policy.ts",
     "./lib/usage-series-colors": "./src/lib/usage-series-colors.ts",
     "./lib/condensedCount": "./src/lib/condensedCount.ts",
     "./lib/badge": "./src/lib/badge.ts",
@@ -107,6 +109,9 @@
     "./components/chat/ComposerPrompt": "./src/components/chat/ComposerPrompt.ts",
     "./components/chat/ComposerPromptTextRow": "./src/components/chat/ComposerPromptTextRow.tsx",
     "./components/chat/ComposerIconButton": "./src/components/chat/ComposerIconButton.tsx",
+    "./components/chat/QuestionPrompt": "./src/components/chat/QuestionPrompt.tsx",
+    "./components/chat/useQuestionPrompt": "./src/components/chat/useQuestionPrompt.ts",
+    "./components/chat/question-prompt-progress": "./src/components/chat/question-prompt-progress.ts",
     "./lib/github-workflow-display": "./src/lib/github-workflow-display.ts"
   },
   "peerDependencies": {

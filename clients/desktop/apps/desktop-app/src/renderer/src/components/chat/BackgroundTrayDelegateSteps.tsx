@@ -11,11 +11,12 @@ type DelegatedAgentDisplayBlock = Extract<
 >;
 
 /**
- * Renders nothing. While its row is listed, reads a logged delegate's own
- * transcript (its log and live snapshot, as its card does) and publishes the
- * steps and live status for the composer's background drawer: the parent's
- * transcript has none of the steps. A stream-backed delegate's rows come
- * from paged child reads instead, so its row keeps showing its prompt.
+ * Renders nothing. While its row is listed, reads a delegate's own
+ * transcript (as its card does) and publishes its live status for the
+ * composer's background drawer, and a logged delegate's steps from its log
+ * and live snapshot: the parent's transcript has none of the steps. A
+ * stream-backed delegate's rows come from paged child reads instead, so its
+ * row keeps showing its prompt.
  */
 export const BackgroundTrayDelegateSteps = memo(
   function BackgroundTrayDelegateSteps({

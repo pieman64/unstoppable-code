@@ -86,7 +86,10 @@ import {
 import { WatcherFollowUpButton } from '@/components/watchers/WatcherFollowUpButton';
 import type { PipelineWatcherSelection } from './usePipelineRunWatcher';
 import type { AppAdvisorWatcherDestination } from '@canopy/desktop-shared/types';
-import { stableStringify } from './pipelineTriggerModalUtils';
+import {
+  rebaseDraftOnSaved,
+  stableStringify,
+} from './pipelineTriggerModalUtils';
 import {
   ChoiceField,
   DialogFormField,
@@ -95,7 +98,11 @@ import {
 } from '@canopy/ui-shared';
 import { pipelineSourceBadgeClassName } from '@canopy/ui-shared/lib';
 import { openCloudAccountSettings } from '@/lib/navigation/settings-destinations';
-import { Button, SegmentedControl } from '@canopy/ui-shared/components';
+import {
+  Button,
+  ListRow,
+  SegmentedControl,
+} from '@canopy/ui-shared/components';
 
 export interface PipelineRepoChoice {
   repoId: string;
@@ -373,42 +380,33 @@ function SharedPipelineSelector({
           const isSelected = info.id === selectedId;
           const isHydrating = info.id === hydrating;
           return (
-            <button
+            <ListRow
               key={info.id}
-              type="button"
               disabled={isHydrating}
+              selected={isSelected}
+              aria-current={isSelected ? 'true' : undefined}
               onClick={() => {
                 if (!info.remoteId) return;
                 void onSelect(info.remoteId, info.id);
               }}
-              className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors disabled:opacity-60 ${
-                isSelected
-                  ? 'bg-accent-subtle ring-1 ring-line-accent/40'
-                  : 'hover:bg-fg-primary/[0.06]'
-              }`}
-            >
-              <PipelineListIcon icon={info.icon} />
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="truncate text-s font-medium fg-primary">
-                    {info.name}
-                  </span>
+              icon={<PipelineListIcon icon={info.icon} />}
+              description={
+                info.description ? (
+                  <span title={info.description}>{info.description}</span>
+                ) : undefined
+              }
+              trailing={
+                <span className="inline-flex items-center gap-2">
                   <PipelineShareLabel
                     shareScope={info.shareScope}
                     owner={info.owner}
                   />
-                </div>
-                {info.description && (
-                  <div
-                    className="truncate text-xs fg-secondary"
-                    title={info.description}
-                  >
-                    {info.description}
-                  </div>
-                )}
-              </div>
-              {isHydrating && <LoadingSpinner />}
-            </button>
+                  {isHydrating && <LoadingSpinner />}
+                </span>
+              }
+            >
+              {info.name}
+            </ListRow>
           );
         })}
         {state.loadingMore && (
@@ -755,6 +753,9 @@ export function PipelineTriggerModal({
     null,
   );
   const selectionGeneration = useRef(0);
+  // Bumped when the selected workflow's defaults are reseeded, so a save that
+  // finishes afterwards leaves the newly selected workflow's state alone.
+  const defaultsGeneration = useRef(0);
   useEffect(() => {
     selectionGeneration.current += 1;
     setSharedHydratedById({});
@@ -775,6 +776,10 @@ export function PipelineTriggerModal({
   const debouncedSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
+  // Counts defaults saves still waiting for the store. Edits reset
+  // `saveDefaultsState`, so this alone keeps a second save (which would
+  // send a baseline the first save is about to replace) from starting.
+  const [defaultsSavesInFlight, setDefaultsSavesInFlight] = useState(0);
   const [saveDefaultsState, setSaveDefaultsState] = useState<
     | { status: 'idle' }
     | { status: 'saving' }
@@ -1330,6 +1335,7 @@ export function PipelineTriggerModal({
   // (with a locator) seed from stored prefs; inline pipelines start empty.
   useEffect(() => {
     let cancelled = false;
+    defaultsGeneration.current += 1;
     setSaveDefaultsState({ status: 'idle' });
     setCollectionError(null);
     setCollectionDraftSeededFor(null);
@@ -1563,11 +1569,18 @@ export function PipelineTriggerModal({
     collectionDraftSeeded &&
     aliasDraftSeeded &&
     collectionError === null &&
-    saveDefaultsState.status !== 'saving';
+    saveDefaultsState.status !== 'saving' &&
+    defaultsSavesInFlight === 0;
 
   const handleSaveDefaults = useCallback(async (): Promise<void> => {
     if (!selectedPipelineLocator) return;
+    // A reseed (another workflow selected, or the list reloaded) only stops
+    // this save from updating the view; both writes still complete.
+    const generation = defaultsGeneration.current;
+    const reseeded = (): boolean => generation !== defaultsGeneration.current;
     setSaveDefaultsState({ status: 'saving' });
+    setDefaultsSavesInFlight((count) => count + 1);
+    let failure: string | null = null;
     try {
       // Persist plugin-collection and model-alias defaults independently — they
       // live in separate stores. Either store may reject with `missing-locator`
@@ -1576,67 +1589,73 @@ export function PipelineTriggerModal({
         const result = await window.pipelines.savePluginCollectionPreferences({
           pipelinePreferenceLocator: selectedPipelineLocator,
           preferences: collectionDraft,
+          basePreferences: collectionDefaultsBaseline,
         });
         if (!result.success || !result.data) {
-          setSaveDefaultsState({
-            status: 'error',
-            message: result.error ?? 'Failed to save workflow defaults',
-          });
-          return;
-        }
-        if (result.data.ok === false) {
-          setSaveDefaultsState({
-            status: 'error',
-            message: 'This workflow cannot save defaults locally.',
-          });
-          return;
+          failure = result.error ?? 'Failed to save workflow defaults';
+        } else if (result.data.ok === false) {
+          failure = 'This workflow cannot save defaults locally.';
+        } else if (!reseeded()) {
+          // Another writer changed the stored defaults since this view loaded
+          // them; show what was saved, keeping edits made while it saved.
+          const merged = result.data.merged ? result.data.preferences : null;
+          if (merged) {
+            setCollectionDraft((current) =>
+              rebaseDraftOnSaved(current, collectionDraft, merged),
+            );
+          }
+          // The saved value is no longer a pending change.
+          setCollectionDefaultsBaseline(merged ?? collectionDraft);
         }
       }
-      if (hasAliases) {
+      if (failure === null && hasAliases) {
         // The draft may carry `reset` markers; the backend store strips them on
         // write, which deletes that alias's saved default.
-        const filteredAliasDraft = filterAliasPreferencesToAliases(
+        const submittedAliases = filterAliasPreferencesToAliases(
           aliasDraft,
           pipelineAliases,
         );
         const aliasResult = await window.pipelines.saveModelAliasPreferences({
           pipelinePreferenceLocator: selectedPipelineLocator,
-          preferences: filteredAliasDraft,
+          preferences: submittedAliases,
           aliasIds: pipelineAliases.map((alias) => alias.id),
+          basePreferences: aliasDefaultsBaseline,
         });
         if (!aliasResult.success || !aliasResult.data) {
-          setSaveDefaultsState({
-            status: 'error',
-            message: aliasResult.error ?? 'Failed to save workflow defaults',
-          });
-          return;
-        }
-        if (aliasResult.data.ok === false) {
-          setSaveDefaultsState({
-            status: 'error',
-            message: 'This workflow cannot save defaults locally.',
-          });
-          return;
+          failure = aliasResult.error ?? 'Failed to save workflow defaults';
+        } else if (aliasResult.data.ok === false) {
+          failure = 'This workflow cannot save defaults locally.';
+        } else if (!reseeded()) {
+          // The store's answer has no reset markers and includes any newer
+          // values it kept; a draft still holding saved resets would remove
+          // those values again on its next save.
+          const saved = aliasResult.data.preferences
+            ? filterAliasPreferencesToAliases(
+                aliasResult.data.preferences,
+                pipelineAliases,
+              )
+            : submittedAliases;
+          setAliasDraft((current) =>
+            rebaseDraftOnSaved(current, aliasDraft, saved),
+          );
+          setAliasDefaultsBaseline(saved);
         }
       }
-      // The current drafts are now the persisted defaults, so they are no longer
-      // a pending change — refresh the baselines to disable the save button.
-      setCollectionDefaultsBaseline(collectionDraft);
-      setAliasDefaultsBaseline(
-        filterAliasPreferencesToAliases(aliasDraft, pipelineAliases),
-      );
-      setSaveDefaultsState({ status: 'saved' });
     } catch (err: unknown) {
-      setSaveDefaultsState({
-        status: 'error',
-        message:
-          err instanceof Error
-            ? err.message
-            : 'Failed to save workflow defaults',
-      });
+      failure =
+        err instanceof Error ? err.message : 'Failed to save workflow defaults';
     }
+    setDefaultsSavesInFlight((count) => count - 1);
+    if (reseeded()) return;
+    setSaveDefaultsState(
+      failure === null
+        ? { status: 'saved' }
+        : { status: 'error', message: failure },
+    );
   }, [
+    aliasDefaultsBaseline,
     aliasDraft,
+    collectionDefaultsBaseline,
     collectionDraft,
     hasAliases,
     hasCollections,
@@ -1730,6 +1749,7 @@ export function PipelineTriggerModal({
   const saveModelAliasPreferencesAfterRun = useCallback(
     async (
       preferences: Record<string, PipelineModelAliasPreference> | undefined,
+      generation: number,
     ): Promise<void> => {
       if (!hasAliases || !selectedPipelineLocator) return;
 
@@ -1737,12 +1757,16 @@ export function PipelineTriggerModal({
         preferences ?? {},
         pipelineAliases,
       );
+      const reseeded = (): boolean => generation !== defaultsGeneration.current;
+      setDefaultsSavesInFlight((count) => count + 1);
       try {
         const aliasResult = await window.pipelines.saveModelAliasPreferences({
           pipelinePreferenceLocator: selectedPipelineLocator,
           preferences: filteredAliasDraft,
           aliasIds: pipelineAliases.map((alias) => alias.id),
+          basePreferences: aliasDefaultsBaseline,
         });
+        if (reseeded()) return;
 
         if (!aliasResult.success || !aliasResult.data) {
           setSaveDefaultsState({
@@ -1759,9 +1783,19 @@ export function PipelineTriggerModal({
           return;
         }
 
-        setAliasDefaultsBaseline(filteredAliasDraft);
+        const saved = aliasResult.data.preferences
+          ? filterAliasPreferencesToAliases(
+              aliasResult.data.preferences,
+              pipelineAliases,
+            )
+          : filteredAliasDraft;
+        setAliasDraft((current) =>
+          rebaseDraftOnSaved(current, filteredAliasDraft, saved),
+        );
+        setAliasDefaultsBaseline(saved);
         setSaveDefaultsState({ status: 'saved' });
       } catch (err: unknown) {
+        if (reseeded()) return;
         setSaveDefaultsState({
           status: 'error',
           message:
@@ -1769,9 +1803,16 @@ export function PipelineTriggerModal({
               ? err.message
               : 'Failed to save workflow defaults',
         });
+      } finally {
+        setDefaultsSavesInFlight((count) => count - 1);
       }
     },
-    [hasAliases, pipelineAliases, selectedPipelineLocator],
+    [
+      aliasDefaultsBaseline,
+      hasAliases,
+      pipelineAliases,
+      selectedPipelineLocator,
+    ],
   );
 
   const handleSelectPipeline = (id: string): void => {
@@ -1849,6 +1890,7 @@ export function PipelineTriggerModal({
 
     const payload = buildSubmitPayload(selectedInputDefs, inputValues);
     const collectionContext = buildCollectionContext();
+    const generation = defaultsGeneration.current;
     void (async (): Promise<void> => {
       await onRun(
         selectedPipeline.info.id,
@@ -1859,6 +1901,7 @@ export function PipelineTriggerModal({
       );
       await saveModelAliasPreferencesAfterRun(
         collectionContext.modelAliasPreferences,
+        generation,
       );
     })();
   };
@@ -2008,23 +2051,22 @@ export function PipelineTriggerModal({
                               );
                             };
                             return (
-                              <button
+                              <ListRow
                                 key={row.info.id}
-                                type="button"
                                 disabled={isHydrating}
+                                selected={isSelected}
+                                aria-current={isSelected ? 'true' : undefined}
                                 onClick={onClick}
-                                className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors disabled:opacity-60 ${
-                                  isSelected
-                                    ? 'bg-accent-subtle ring-1 ring-line-accent/40'
-                                    : 'hover:bg-fg-primary/[0.06]'
-                                }`}
-                              >
-                                <PipelineListIcon icon={row.info.icon} />
-                                <div className="min-w-0 flex-1">
-                                  <div className="flex items-center gap-2">
-                                    <span className="truncate text-s font-medium fg-primary">
-                                      {row.info.name}
+                                icon={<PipelineListIcon icon={row.info.icon} />}
+                                description={
+                                  row.info.description ? (
+                                    <span title={row.info.description}>
+                                      {row.info.description}
                                     </span>
+                                  ) : undefined
+                                }
+                                trailing={
+                                  <span className="inline-flex items-center gap-2">
                                     {row.info.source === 'shared' ? (
                                       <PipelineShareLabel
                                         shareScope={row.info.shareScope}
@@ -2037,18 +2079,12 @@ export function PipelineTriggerModal({
                                         {SOURCE_LABEL[row.info.source]}
                                       </span>
                                     )}
-                                  </div>
-                                  {row.info.description && (
-                                    <div
-                                      className="truncate text-xs fg-secondary"
-                                      title={row.info.description}
-                                    >
-                                      {row.info.description}
-                                    </div>
-                                  )}
-                                </div>
-                                {isHydrating && <LoadingSpinner />}
-                              </button>
+                                    {isHydrating && <LoadingSpinner />}
+                                  </span>
+                                }
+                              >
+                                {row.info.name}
+                              </ListRow>
                             );
                           })}
                           {shouldIncludeSharedRows(sourceFilter) &&

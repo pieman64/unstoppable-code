@@ -1,3 +1,4 @@
+import { basename } from 'node:path';
 import { captureW5Files } from './capture';
 import {
   isW5CaptureRequest,
@@ -6,8 +7,11 @@ import {
 import { workspaceCreationDiagnosticsSchema } from './reservation-diagnostics';
 import {
   applyW5Commit,
+  isCleanApplyConflict,
+  preflightW5CommitFiles,
   type W5DurabilityPort,
   type W5RecoveryReport,
+  type W5ProcessFileLock,
 } from './apply';
 import type {
   W5CommitLog,
@@ -15,7 +19,12 @@ import type {
   W5Resource,
   W5ReceiptKey,
 } from './commit-log';
-import { W5CommitLogError, W5CommitRefusedError } from './errors';
+import {
+  W5CommitLogError,
+  W5FileWriteRefusedError,
+  W5CommitRefusedError,
+  W5ProcessFileLockTimeoutError,
+} from './errors';
 import { isRecord } from './is-record';
 import type {
   W5CommitLogRequest,
@@ -45,6 +54,18 @@ class W5CommitLogRequestError extends Error {
 export function toW5CommitLogWorkerError(
   error: unknown,
 ): W5CommitLogWorkerError {
+  if (error instanceof W5FileWriteRefusedError)
+    return {
+      kind: 'fingerprint-conflict',
+      path: error.path,
+      message: error.message,
+    };
+  if (error instanceof W5ProcessFileLockTimeoutError)
+    return {
+      kind: 'process-lock-timeout',
+      path: error.path,
+      message: error.message,
+    };
   if (error instanceof W5CommitRefusedError) {
     return {
       kind: 'refused',
@@ -164,6 +185,7 @@ export class W5CommitLogRequestHandler {
     private readonly platform: NodeJS.Platform | null,
     /** The host's Windows handle confinement; without it Windows capture refuses. */
     private readonly confined?: W5ConfinedFileReaderSource,
+    private readonly processLock?: W5ProcessFileLock,
   ) {}
 
   async run(request: W5CommitLogRequest): Promise<unknown> {
@@ -194,8 +216,10 @@ export class W5CommitLogRequestHandler {
         return this.log.revision(first);
       case 'lookupReceipt':
         if (!isReceipt(first)) throw malformed();
-        await this.finishPendingCommits();
-        return this.log.lookupReceipt(first, first.fingerprint);
+        return this.lockPending([], async () => {
+          await this.finishPendingCommits();
+          return this.log.lookupReceipt(first, first.fingerprint);
+        });
       case 'reserve': {
         if (
           !isRecord(first) ||
@@ -251,7 +275,10 @@ export class W5CommitLogRequestHandler {
       }
       case 'commit':
         if (!isCommitRequest(first)) throw malformed();
-        return this.commit(first);
+        return this.lockPending(
+          first.files.map((file) => file.path),
+          () => this.commit(first),
+        );
       case 'resolveRecovery':
       case 'retryRecoveryRequiredCommit':
       case 'abandonRecoveryRequiredCommit':
@@ -279,7 +306,9 @@ export class W5CommitLogRequestHandler {
     }
     if (!isCommitId(id)) throw malformed();
     if (method === 'retryRecoveryRequiredCommit')
-      return this.retryRecoveryRequiredCommit(id);
+      return this.lockPending(this.log.recoveryCommitPaths(id), () =>
+        this.retryRecoveryRequiredCommit(id),
+      );
     this.log.abandonRecoveryRequiredCommit(id);
     return null;
   }
@@ -312,6 +341,27 @@ export class W5CommitLogRequestHandler {
     // written first, so a replay never reports an outcome they do not hold
     // and a later change never commits over it.
     await this.finishPendingCommits();
+    // Client preflight can become stale while waiting for this worker's lock.
+    // Recheck list-bearing decisions here before a keyed decision can wedge.
+    if (
+      this.processLock &&
+      request.files.some(
+        (file) => basename(file.path).toLowerCase() === 'worktrees.json',
+      )
+    ) {
+      const lookup = request.receipt
+        ? this.log.lookupReceipt(request.receipt, request.receipt.fingerprint)
+        : undefined;
+      if (
+        !lookup ||
+        lookup.status === 'none' ||
+        (lookup.status === 'in-progress' &&
+          lookup.reservationId === request.reservationId)
+      ) {
+        this.log.refuseInadmissibleCommit(request);
+        await preflightW5CommitFiles(request.files, this.data.root);
+      }
+    }
     const result = this.log.commit(request);
     if (result.status === 'replayed' || result.status === 'replay-expired')
       return result;
@@ -325,6 +375,19 @@ export class W5CommitLogRequestHandler {
       root: this.data.root,
       durability: this.durability,
     });
+    if (
+      isCleanApplyConflict(applied) &&
+      request.receipt === undefined &&
+      request.reservationId === undefined
+    ) {
+      this.log.abandonRecoveryRequiredCommit(result.commitId);
+      return {
+        status: 'conflict',
+        commitId: result.commitId,
+        revisions: result.revisions,
+        conflicts: applied.conflicts,
+      };
+    }
     return applied.status === 'applied'
       ? {
           status: 'applied',
@@ -337,6 +400,19 @@ export class W5CommitLogRequestHandler {
           revisions: result.revisions,
           apply: applied,
         };
+  }
+
+  /** Lock before the decision and hold until apply stops, independent of RPC lifetime. */
+  private lockPending<T>(
+    paths: readonly string[],
+    work: () => Promise<T>,
+  ): Promise<T> {
+    const pending = this.log
+      .listPendingCommits()
+      .flatMap((commit) => commit.files.map((file) => file.path));
+    return this.processLock
+      ? this.processLock([...paths, ...pending], work)
+      : work();
   }
 
   private async finishPendingCommits(): Promise<void> {

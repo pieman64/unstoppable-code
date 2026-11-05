@@ -5,6 +5,7 @@ import type {
   PanelIntentCallbacks,
   PanelTabModel,
 } from '../../panels/registry-types';
+import { TitlebarIconButton } from '../TitlebarIconButton';
 import { Tooltip } from '../Tooltip';
 import {
   ChevronRightMediumIcon,
@@ -114,19 +115,13 @@ export function PanelBranchCollapsedBar({
               callbacks.onMovePanel(dragged.panelId, group.groupId, 'center');
             }}
           >
-            <Tooltip label={`Expand ${label}`}>
-              <button
-                type="button"
-                className="canopy-panel-collapsed-expand"
-                data-testid={`panel-branch-expand-${group.groupId}`}
-                aria-label={`Expand ${label}`}
-                onClick={() =>
-                  callbacks.onCollapseGroup?.(group.groupId, false)
-                }
-              >
-                <ExpandIcon size={16} />
-              </button>
-            </Tooltip>
+            <TitlebarIconButton
+              surface="panelChrome"
+              icon={ExpandIcon}
+              data-testid={`panel-branch-expand-${group.groupId}`}
+              aria-label={`Expand ${label}`}
+              onClick={() => callbacks.onCollapseGroup?.(group.groupId, false)}
+            />
             {group.tabs.map((tab) => (
               <Tooltip
                 key={tab.panelId}

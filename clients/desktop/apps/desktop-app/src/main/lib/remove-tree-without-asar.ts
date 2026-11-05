@@ -1,3 +1,4 @@
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import type { RmOptions } from 'node:fs';
 import { lstat, readdir, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -58,6 +59,106 @@ export function fsWithoutAsar(): AsarFreeFs {
   return nodeFs;
 }
 
+/** Codes that mean something still holds the tree and may let go shortly. */
+const TRANSIENT_CODES: ReadonlySet<string> = new Set([
+  'EBUSY',
+  'ENOTEMPTY',
+  'ETXTBSY',
+]);
+
+/** Codes a retry cannot fix, mapped to what the failure means. */
+const PERMANENT_FAILURES: ReadonlyMap<string, string> = new Map([
+  ['EACCES', 'permission denied'],
+  ['EPERM', 'permission denied'],
+  ['EROFS', 'read-only filesystem'],
+  ['EXDEV', 'cross-device operation'],
+]);
+
+/** Node's default `retryDelay` for `fs.rm`. */
+const DEFAULT_RETRY_DELAY_MS = 100;
+
+/** A removal failure that retrying cannot fix, keeping the original error. */
+export class RemoveTreePermanentError extends Error {
+  readonly code: string;
+
+  constructor(message: string, code: string, cause: unknown) {
+    super(message);
+    this.name = 'RemoveTreePermanentError';
+    this.code = code;
+    Object.defineProperty(this, 'cause', { value: cause, configurable: true });
+  }
+}
+
+/**
+ * Reads `code` without `instanceof Error`: errors raised by the native fs
+ * binding can come from another realm (Jest, Electron).
+ */
+function errorCode(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null || !('code' in error)) {
+    return undefined;
+  }
+  return typeof error.code === 'string' ? error.code : undefined;
+}
+
+function causeMessage(error: unknown): string {
+  return typeof error === 'object' &&
+    error !== null &&
+    'message' in error &&
+    typeof error.message === 'string'
+    ? error.message
+    : String(error);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Linux removal with an explicit retry loop.
+ *
+ * Node's built-in `maxRetries` also retries EPERM, which on Linux is a
+ * permanent permission failure, so it is switched off and only the codes in
+ * {@link TRANSIENT_CODES} are retried, `maxRetries` times with Node's linear
+ * backoff.
+ */
+async function removeOnLinux(
+  remove: AsarFreeFs['rm'],
+  path: string,
+  options: RmOptions | undefined,
+): Promise<void> {
+  const maxRetries = options?.maxRetries ?? 0;
+  if (!Number.isSafeInteger(maxRetries) || maxRetries < 0) {
+    throw new RangeError('maxRetries must be a finite nonnegative integer.');
+  }
+  const retryDelay = Math.max(0, options?.retryDelay ?? DEFAULT_RETRY_DELAY_MS);
+  const attemptOptions: RmOptions = { ...options, maxRetries: 0 };
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await remove(path, attemptOptions);
+      return;
+    } catch (error) {
+      const code = errorCode(error);
+      const meaning =
+        code === undefined ? undefined : PERMANENT_FAILURES.get(code);
+      if (code !== undefined && meaning !== undefined) {
+        throw new RemoveTreePermanentError(
+          `Could not remove ${path}: ${meaning} (${code}): ${causeMessage(error)}`,
+          code,
+          error,
+        );
+      }
+      if (
+        code === undefined ||
+        !TRANSIENT_CODES.has(code) ||
+        attempt >= maxRetries
+      ) {
+        throw error;
+      }
+      await sleep(retryDelay * (attempt + 1));
+    }
+  }
+}
+
 /**
  * Removes a directory tree that may contain checkout contents.
  *
@@ -65,10 +166,20 @@ export function fsWithoutAsar(): AsarFreeFs {
  * them, and the parent `rmdir` then fails with ENOTEMPTY (for example
  * `node_modules/electron/dist/.../default_app.asar`). Removing through
  * {@link fsWithoutAsar} unlinks them as plain files.
+ *
+ * On Linux, retries are owned here: only EBUSY, ENOTEMPTY and ETXTBSY are
+ * retried (bounded by `maxRetries`/`retryDelay`), and permission, read-only
+ * and cross-device failures are reported at once as
+ * {@link RemoveTreePermanentError}. macOS and Windows keep Node's behavior.
  */
 export async function removeTreeWithoutAsar(
   path: string,
   options?: RmOptions,
 ): Promise<void> {
-  await fsWithoutAsar().rm(path, options);
+  const { rm: remove } = fsWithoutAsar();
+  if (hostOperatingSystem() === 'linux') {
+    await removeOnLinux(remove, path, options);
+    return;
+  }
+  await remove(path, options);
 }

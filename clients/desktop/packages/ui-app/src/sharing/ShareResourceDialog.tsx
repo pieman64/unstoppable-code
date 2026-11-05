@@ -1,5 +1,9 @@
 'use client';
 
+import { marketplacePublicLinkPinnedAt } from '@canopy/protocol/marketplace';
+import type { SharedLinkKind } from './marketplaceShareLink';
+import { formatMonthDay } from '@canopy/ui-shared/lib/billing-format';
+
 import { useResourceContext } from '../capability/ResourceContext';
 
 import {
@@ -10,6 +14,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
 } from 'react';
@@ -241,6 +246,8 @@ export interface ShareResourceExistingShare {
   readonly targetAudience?: 'team' | 'organization';
   /** The public link no longer reflects the local copy. */
   readonly publicLinkStale?: boolean;
+  /** Last snapshot update time from authoritative share facts. */
+  readonly publicLinkPinnedAt?: string;
   /**
    * The share's current link, shown as Copy link in the footer from the
    * moment the dialog opens. Hosts prefer the public link over a scoped one.
@@ -576,8 +583,16 @@ export interface ShareResourceDialogProps {
    * is exempt.
    */
   readonly keepsOrganizationOwnership?: boolean;
+  /** Explicit binding keeps Marketplace policy and copy out of other share dialogs. */
+  readonly marketplace?: {
+    readonly kind: SharedLinkKind;
+    /** Stable local source identity, independent of publication results. */
+    readonly resourceKey?: string;
+  };
   /** Resource eligibility checked before the scope controls render. */
-  readonly preflight?: () => Promise<ShareResourcePreflightResult>;
+  readonly preflight?: (
+    assertCurrent?: () => void,
+  ) => Promise<ShareResourcePreflightResult>;
   readonly loadAccount: () => Promise<ShareResourceAccount | null>;
   /**
    * Re-reads the account's access facts before a share and on Try again.
@@ -599,12 +614,14 @@ export interface ShareResourceDialogProps {
     input: ShareResourceShareInput,
   ) => Promise<ShareResourceOutcome>;
   /** Retries the public link after a `publicLinkFailed` outcome. */
-  readonly retryPublicLink?: () => Promise<ShareResourceOutcome>;
+  readonly retryPublicLink?: (
+    assertCurrent?: () => void,
+  ) => Promise<ShareResourceOutcome>;
   /**
    * Unpublishes an existing public share. With it, a resource whose
    * `existingShare` is Public offers Remove public link (behind a confirm).
    */
-  readonly revokePublicLink?: () => Promise<void>;
+  readonly revokePublicLink?: (assertCurrent?: () => void) => Promise<void>;
   /**
    * Opens organization setup for an account with no organization. Resolves
    * `false` (or rejects) when the page could not be opened, which keeps the
@@ -719,6 +736,7 @@ export function ShareResourceDialog({
   capabilityPackage,
   packageUnavailableNote = false,
   existingShare: rawExistingShare,
+  marketplace,
   keepsOrganizationOwnership = false,
   preflight,
   loadAccount,
@@ -761,7 +779,7 @@ export function ShareResourceDialog({
     : policyContext !== undefined || policyReady === false;
   // Ownership reads the raw share: the Personal renaming below is display only.
   const publicOwnerLocked =
-    keepsOrganizationOwnership &&
+    (keepsOrganizationOwnership || marketplace !== undefined) &&
     policyMayApply &&
     publicAudienceLocked(rawExistingShare, personalOrganizationId);
   const publicOwnerLockedRef = useRef(publicOwnerLocked);
@@ -782,6 +800,15 @@ export function ShareResourceDialog({
   const effectiveFreeAccess = account?.freeAccess ?? freeAccess;
   const copy: ShareResourceCopy = {
     ...shareResourceCopy(resourceNoun, { freeAccess: effectiveFreeAccess }),
+    ...(marketplace
+      ? {
+          scopeLegend: 'General access',
+          publicDescription:
+            'Anyone can open the link, and it can appear in public discovery.',
+          publicLockedHint:
+            "Organization shares can't be made public. Unshare it, then share it again as Public.",
+        }
+      : {}),
     ...copyOverrides,
   };
   const describeError = useCallback(
@@ -827,6 +854,12 @@ export function ShareResourceDialog({
     string | null
   >(null);
   const [uncertainBinding, setUncertainBinding] = useState<string | null>(null);
+  const mutationLifecycle = useRef({ active: true, generation: 0 });
+  const loadedAccountIdentity = useRef<string | null>(null);
+  const accountReload = useRef<Promise<void>>(Promise.resolve());
+  const accountReadPending = useRef(false);
+  const accountReadSucceeded = useRef(false);
+  const mutationPending = useRef(false);
   const lastAccountRefreshRef = useRef(0);
 
   const existingTarget = existingShare?.target ?? null;
@@ -863,13 +896,33 @@ export function ShareResourceDialog({
     // Reads can overlap (an ambient re-probe right after the dialog's own
     // refresh); only the latest one issued applies.
     let latest = 0;
-    const reload = (): void => {
+    const reload = (invalidateMutation = false): void => {
+      const interrupted = invalidateMutation && mutationPending.current;
+      if (invalidateMutation) mutationLifecycle.current.generation += 1;
       const read = ++latest;
       const superseded = (): boolean => cancelled || read !== latest;
       setAccountLoading(true);
-      loadAccount()
+      accountReadPending.current = true;
+      accountReadSucceeded.current = false;
+      accountReload.current = loadAccount()
         .then((next) => {
           if (superseded()) return;
+          accountReadSucceeded.current = true;
+          // Fence continuations immediately, even when React batches this
+          // account update with the response from the old account.
+          const identity = JSON.stringify([
+            next?.id,
+            next?.connected,
+            next?.capabilities,
+            next?.organizationOwnershipPolicy,
+          ]);
+          if (identity !== loadedAccountIdentity.current) {
+            mutationLifecycle.current.generation += 1;
+            loadedAccountIdentity.current = identity;
+          } else if (interrupted) {
+            // A signal can also follow a write whose response was discarded.
+            setPreflightAttempt((attempt) => attempt + 1);
+          }
           setAccount(next);
           lastAccountRefreshRef.current = Date.now();
           setRefusedOrganizationIds([]);
@@ -879,11 +932,21 @@ export function ShareResourceDialog({
         // using instead of collapsing it. A sign-out resolves, so it clears.
         .catch(() => undefined)
         .finally(() => {
-          if (!superseded()) setAccountLoading(false);
+          if (superseded()) return;
+          accountReadPending.current = false;
+          setAccountLoading(false);
+          if (interrupted) {
+            mutationPending.current = false;
+            setState({ status: 'idle' });
+            setRetryingPublic(false);
+            setRemovingPublic(false);
+            setFinishing(false);
+            setConfirmingRemovePublic(false);
+          }
         });
     };
     reload();
-    const unsubscribe = subscribeAccountChanged?.(reload);
+    const unsubscribe = subscribeAccountChanged?.((): void => reload(true));
     return (): void => {
       cancelled = true;
       unsubscribe?.();
@@ -911,6 +974,54 @@ export function ShareResourceDialog({
   }, [accountKey]);
   const accountIdentityRef = useRef(accountKey);
   accountIdentityRef.current = accountKey;
+  // A completed write belongs only to the context that initiated it. Keep
+  // publication facts out of this key: adopting a result must not cancel it.
+  const mutationContext = JSON.stringify([
+    marketplace?.kind,
+    marketplace?.resourceKey,
+    accountKey,
+    account?.connected,
+    account?.capabilities,
+    account?.organizationOwnershipPolicy,
+    ...(marketplace
+      ? [
+          policyReady,
+          policyMayApply,
+          personalOrganizationId,
+          audienceAvailability,
+        ]
+      : []),
+  ]);
+  const mutationContextRef = useRef(mutationContext);
+  mutationContextRef.current = mutationContext;
+  useLayoutEffect(() => {
+    const lifecycle = mutationLifecycle.current;
+    lifecycle.active = true;
+    lifecycle.generation += 1;
+    mutationPending.current = false;
+    setState({ status: 'idle' });
+    setRetryingPublic(false);
+    setRemovingPublic(false);
+    setFinishing(false);
+    setConfirmingRemovePublic(false);
+    setRemovePublicError(null);
+    setCopied(false);
+    return (): void => {
+      lifecycle.active = false;
+      lifecycle.generation += 1;
+    };
+  }, [mutationContext]);
+  const captureMutation = useCallback((): (() => boolean) => {
+    const generation = mutationLifecycle.current.generation;
+    return (): boolean =>
+      mutationLifecycle.current.active &&
+      mutationLifecycle.current.generation === generation;
+  }, []);
+  const reconcileObsoleteMutation = useCallback((): void => {
+    if (mutationLifecycle.current.active && !mutationPending.current) {
+      setPreflightAttempt((attempt) => attempt + 1);
+    }
+  }, []);
   const upgradePersonalId =
     account?.personalOrganizationId ?? personalOrganizationId;
   const canCreateTeam =
@@ -927,10 +1038,15 @@ export function ShareResourceDialog({
     if (!preflight || !accountReady) return undefined;
     let cancelled = false;
     setPreflightState({ status: 'checking' });
-    preflight()
+    const isCurrent = captureMutation();
+    preflight((): void => {
+      if (!isCurrent())
+        throw new Error('The sharing context changed. Try again.');
+    })
       .then((result) => {
         if (!cancelled) {
           setPreflightState(result);
+          if (result.status === 'ready') setUncertainBinding(null);
           if (result.status === 'blocked') setState({ status: 'idle' });
         }
       })
@@ -952,6 +1068,8 @@ export function ShareResourceDialog({
   }, [
     accountKey,
     accountReady,
+    captureMutation,
+    mutationContext,
     describeError,
     preflight,
     preflightAttempt,
@@ -1587,10 +1705,16 @@ export function ShareResourceDialog({
    */
   const complete = useCallback(
     async (completion: ShareCompletion): Promise<void> => {
+      const isCurrent = captureMutation();
+      mutationPending.current = true;
       setFinishing(true);
       try {
         await onCompleted?.();
       } catch (error: unknown) {
+        if (!isCurrent()) {
+          reconcileObsoleteMutation();
+          return;
+        }
         const rolledBack = isShareCompletionRolledBackError(error);
         if (rolledBack) updateModeRef.current = false;
         setState({
@@ -1602,7 +1726,14 @@ export function ShareResourceDialog({
         });
         return;
       } finally {
-        setFinishing(false);
+        if (isCurrent()) {
+          mutationPending.current = false;
+          setFinishing(false);
+        }
+      }
+      if (!isCurrent()) {
+        reconcileObsoleteMutation();
+        return;
       }
       if (completion.showSuccess) {
         setState({ status: 'success', completion });
@@ -1610,11 +1741,22 @@ export function ShareResourceDialog({
         onClose();
       }
     },
-    [describeError, onClose, onCompleted, resourceNoun],
+    [
+      captureMutation,
+      reconcileObsoleteMutation,
+      describeError,
+      onClose,
+      onCompleted,
+      resourceNoun,
+    ],
   );
 
   const handleShare = useCallback(async (): Promise<void> => {
-    if (!accountReady || scope === null) return;
+    if (!accountReady || scope === null || accountReadPending.current) return;
+    let isCurrent = captureMutation();
+    const initiatingContext = mutationContextRef.current;
+    const initiatingAccount = loadedAccountIdentity.current;
+    const initiatingBinding = bindingRef.current;
     if (scope === 'public' && publicOwnerLockedRef.current) {
       setValidationError(copy.publicLockedHint);
       return;
@@ -1654,14 +1796,37 @@ export function ShareResourceDialog({
       Date.now() - lastAccountRefreshRef.current > ACCESS_REFRESH_FRESH_MS
     ) {
       const refreshed = await refreshDestinationAccess('publish');
+      await accountReload.current;
+      if (!isCurrent()) {
+        if (
+          !mutationLifecycle.current.active ||
+          !accountReadSucceeded.current ||
+          initiatingAccount !== loadedAccountIdentity.current ||
+          initiatingContext !== mutationContextRef.current ||
+          initiatingBinding !== bindingRef.current
+        ) {
+          if (
+            mutationLifecycle.current.active &&
+            initiatingContext === mutationContextRef.current &&
+            initiatingBinding === bindingRef.current &&
+            !mutationPending.current
+          )
+            setState({ status: 'idle' });
+          return;
+        }
+        isCurrent = captureMutation();
+        setState({ status: 'sharing' });
+      }
       if (
         refreshed !== null &&
         resolveAccess(refreshed, []).status === 'lapsed'
       ) {
+        mutationPending.current = false;
         setState({ status: 'idle' });
         return;
       }
     }
+    mutationPending.current = true;
     let outcome: ShareResourceOutcome;
     try {
       outcome = await share({
@@ -1669,10 +1834,12 @@ export function ShareResourceDialog({
         ...(publicOwnerLocked && rawExistingShare?.audience === 'public'
           ? { preservePublicLink: true }
           : {}),
-        ...(keepsOrganizationOwnership && scope === 'public'
+        ...(marketplace || (keepsOrganizationOwnership && scope === 'public')
           ? {
               assertAllowed: (): void => {
-                if (publicOwnerLockedRef.current)
+                if (!isCurrent())
+                  throw new Error('The sharing context changed. Try again.');
+                if (scope === 'public' && publicOwnerLockedRef.current)
                   throw new Error(copy.publicLockedHint);
               },
             }
@@ -1687,6 +1854,11 @@ export function ShareResourceDialog({
         ...(packageActive ? { packageSelection: pkg.selection() } : {}),
       });
     } catch (error: unknown) {
+      if (!isCurrent()) {
+        reconcileObsoleteMutation();
+        return;
+      }
+      mutationPending.current = false;
       const failure =
         error instanceof ShareConflictError
           ? null
@@ -1756,6 +1928,11 @@ export function ShareResourceDialog({
       }
       return;
     }
+    if (!isCurrent()) {
+      reconcileObsoleteMutation();
+      return;
+    }
+    mutationPending.current = false;
     if (outcome.delivery === 'pending') {
       // Accepted but unconfirmed: close without completion, success copy or a
       // link, and never resubmit. The host's close path refreshes its lists.
@@ -1781,6 +1958,8 @@ export function ShareResourceDialog({
     });
   }, [
     accountReady,
+    captureMutation,
+    reconcileObsoleteMutation,
     complete,
     copy.conflict,
     copy.organizationValidationError,
@@ -1789,6 +1968,7 @@ export function ShareResourceDialog({
     describeError,
     effectiveFreeAccess,
     keepsOrganizationOwnership,
+    marketplace,
     onClose,
     onShareSucceeded,
     packageActive,
@@ -1807,7 +1987,7 @@ export function ShareResourceDialog({
   ]);
 
   const handleRetryPublic = useCallback((): void => {
-    if (!retryPublicLink) return;
+    if (!retryPublicLink || accountReadPending.current) return;
     if (publicOwnerLockedRef.current) {
       setState((current) =>
         current.status === 'partial'
@@ -1816,9 +1996,20 @@ export function ShareResourceDialog({
       );
       return;
     }
+    const isCurrent = captureMutation();
+    mutationPending.current = true;
     setRetryingPublic(true);
-    retryPublicLink()
+    retryPublicLink((): void => {
+      if (!isCurrent())
+        throw new Error('The sharing context changed. Try again.');
+      if (publicOwnerLockedRef.current) throw new Error(copy.publicLockedHint);
+    })
       .then(async (outcome) => {
+        if (!isCurrent()) {
+          reconcileObsoleteMutation();
+          return;
+        }
+        mutationPending.current = false;
         setRetryingPublic(false);
         if (outcome.publicLinkFailed === true) {
           setState({ status: 'partial', outcome });
@@ -1835,6 +2026,11 @@ export function ShareResourceDialog({
         });
       })
       .catch((error: unknown) => {
+        if (!isCurrent()) {
+          reconcileObsoleteMutation();
+          return;
+        }
+        mutationPending.current = false;
         // Keep the partial notice and Retry affordance, but explain why this
         // attempt failed instead of silently returning to the same state.
         setRetryingPublic(false);
@@ -1847,15 +2043,32 @@ export function ShareResourceDialog({
             : current,
         );
       });
-  }, [complete, copy.publicLockedHint, describeError, retryPublicLink]);
+  }, [
+    captureMutation,
+    reconcileObsoleteMutation,
+    complete,
+    copy.publicLockedHint,
+    describeError,
+    retryPublicLink,
+  ]);
 
   const handleRemovePublicLink = useCallback((): void => {
-    if (!revokePublicLink) return;
+    if (!revokePublicLink || accountReadPending.current) return;
+    const isCurrent = captureMutation();
+    mutationPending.current = true;
     setRemovePublicError(null);
     setRemovingPublic(true);
     setCopied(false);
-    revokePublicLink()
+    revokePublicLink((): void => {
+      if (!isCurrent())
+        throw new Error('The sharing context changed. Try again.');
+    })
       .then(() => {
+        if (!isCurrent()) {
+          reconcileObsoleteMutation();
+          return;
+        }
+        mutationPending.current = false;
         // The host clears its public share, so the dialog stays open and
         // falls back to the unshared state, including right after a share
         // whose completion has already run.
@@ -1868,6 +2081,11 @@ export function ShareResourceDialog({
         });
       })
       .catch((error: unknown) => {
+        if (!isCurrent()) {
+          reconcileObsoleteMutation();
+          return;
+        }
+        mutationPending.current = false;
         // The link is still there, so the dialog keeps its published state
         // and the trash icon to try again.
         setConfirmingRemovePublic(false);
@@ -1876,7 +2094,13 @@ export function ShareResourceDialog({
           `${copy.removePublicLinkFailed} ${describeError(error)}`.trim(),
         );
       });
-  }, [copy.removePublicLinkFailed, describeError, revokePublicLink]);
+  }, [
+    captureMutation,
+    reconcileObsoleteMutation,
+    copy.removePublicLinkFailed,
+    describeError,
+    revokePublicLink,
+  ]);
 
   const handleSetUpOrganization = useCallback((): void => {
     if (canCreateTeam && upgradePersonalId) {
@@ -1963,6 +2187,12 @@ export function ShareResourceDialog({
           (pkg.analysis?.manifest?.resources.length ?? 0) > 0,
       }),
     ...audienceDescriptions,
+    ...(marketplace
+      ? {
+          public:
+            'Anyone can open the link, and it can appear in public discovery.',
+        }
+      : {}),
   };
 
   const organizationSetupLabel = canCreateTeam
@@ -2156,6 +2386,18 @@ export function ShareResourceDialog({
           setAudience(next);
         }}
         legend={copy.scopeLegend}
+        labelForAudience={
+          marketplace
+            ? (audience): string =>
+                audience === 'team'
+                  ? 'Team'
+                  : audience === 'organization'
+                    ? 'Organization'
+                    : audience === 'public'
+                      ? 'Public'
+                      : 'Private'
+            : undefined
+        }
         descriptions={descriptions}
         {...(showPublicLockedHint || organizationSetupFailed
           ? {
@@ -2185,6 +2427,46 @@ export function ShareResourceDialog({
         disabled={isBusy || committed}
         dataTestId={`${p}-scope`}
       />
+
+      {marketplace && existingShare?.audience === 'public' && (
+        <div
+          className="flex items-center gap-3 text-xs fg-secondary"
+          data-testid={`${p}-public-link-version`}
+        >
+          <span>
+            {marketplacePublicLinkPinnedAt(existingShare.publicLinkPinnedAt)
+              ? `Public link shows the version from ${formatMonthDay(existingShare.publicLinkPinnedAt ?? '')}`
+              : 'Public link shows a pinned version.'}
+          </span>
+          {scope === 'public' &&
+            existingShare.publicLinkStale &&
+            !publicOwnerLocked && (
+              <Button
+                size="compact"
+                variant="ghost"
+                data-testid={`${p}-public-link-update`}
+                disabled={submitDisabled || committed}
+                onClick={() => void handleShare()}
+              >
+                Update
+              </Button>
+            )}
+        </div>
+      )}
+      {marketplace &&
+        scope === 'public' &&
+        !publicOwnerLocked &&
+        !existingPersonalOrganization &&
+        (existingShare?.audience === 'team' ||
+          existingShare?.audience === 'organization') && (
+          <p
+            className="text-xs fg-secondary"
+            data-testid={`${p}-public-update-notice`}
+          >
+            People with the link see this version. Press Update to share later
+            edits.
+          </p>
+        )}
 
       {scope === 'team' && (
         <OrgTeamPicker
@@ -2366,7 +2648,9 @@ export function ShareResourceDialog({
   // A locked owner can't refresh its public link through Public, so the
   // stale notice would ask for an update that cannot succeed.
   const showPublicLinkStale =
-    existingShare?.publicLinkStale === true && !publicOwnerLocked;
+    existingShare?.publicLinkStale === true &&
+    !publicOwnerLocked &&
+    !marketplace;
   const notesSection =
     notes !== undefined ||
     showPublicLinkStale ||
@@ -2396,7 +2680,11 @@ export function ShareResourceDialog({
     .shareUrl
     ? {
         url: completion.outcome.shareUrl,
-        kind: completion.completedScope === 'public' ? 'public' : 'scoped',
+        kind: marketplace
+          ? 'item'
+          : completion.completedScope === 'public'
+            ? 'public'
+            : 'scoped',
       }
     : undefined;
   // After a share, only the link it produced is offered: an earlier link of

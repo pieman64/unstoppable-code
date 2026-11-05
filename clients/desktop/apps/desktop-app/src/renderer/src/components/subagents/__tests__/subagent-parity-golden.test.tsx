@@ -54,6 +54,10 @@ import { resetSubagentTreeStoreForTests } from '../subagent-tree-store';
 import { useSubagentTree, type SubagentTreeQuery } from '../useSubagentTree';
 import type { SubagentHostScope } from '../subagent-scope';
 
+declare global {
+  var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
+}
+
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 const GOLDEN: Json = toJson(GOLDEN_FILE);

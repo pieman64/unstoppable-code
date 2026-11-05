@@ -18,6 +18,7 @@ import {
   accountProxyServingSignal,
   accountProxySettingsSignature,
   getAccountProxyRouteTarget,
+  revealAccountProxyClientKey,
 } from './service';
 
 const REQUEST_TIMEOUT_MS = 5_000;
@@ -65,11 +66,17 @@ export function parseAccountProxyCodexCatalog(
 export async function fetchAccountProxyCodexCatalog(): Promise<CodexSpeedRouteCatalogFetch | null> {
   const target = await getAccountProxyRouteTarget('codex');
   if (!target) return null;
+  const token =
+    target.clientKey === null
+      ? ACCOUNT_PROXY_OPEN_SERVER_TOKEN
+      : revealAccountProxyClientKey(target.clientKey);
+  // The proxy on this device stopped after the target was read.
+  if (token === null) return null;
   const url = new URL(`${target.connection.url}/v1/models`);
   url.searchParams.set('client_version', __DEP_CODEX_CLI__);
   const response = await fetch(url, {
     headers: {
-      authorization: `Bearer ${target.clientKey ?? ACCOUNT_PROXY_OPEN_SERVER_TOKEN}`,
+      authorization: `Bearer ${token}`,
       accept: 'application/json',
     },
     redirect: 'error',

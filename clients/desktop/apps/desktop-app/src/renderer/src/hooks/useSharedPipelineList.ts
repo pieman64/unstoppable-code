@@ -327,6 +327,18 @@ export function useSharedPipelineList(
     await fetchPage(undefined, 'refresh');
   }, [fetchPage]);
 
+  useEffect(() => {
+    const changed = (): void => {
+      void refreshShared();
+    };
+    window.addEventListener('canopy:pipeline-public-share-changed', changed);
+    return (): void =>
+      window.removeEventListener(
+        'canopy:pipeline-public-share-changed',
+        changed,
+      );
+  }, [refreshShared]);
+
   const loadMoreShared = useCallback(async (): Promise<void> => {
     if (loading || loadingMore || !nextCursor) return;
     await fetchPage(nextCursor, 'more');

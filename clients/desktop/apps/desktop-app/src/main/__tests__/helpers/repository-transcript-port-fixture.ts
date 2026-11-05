@@ -19,6 +19,7 @@ import { ChatStateService } from '../../services/chat-state-service';
 import { ChatStateV2Repository } from '../../services/chat-state-v2-repository';
 import { ChatDeltaJournalWriter } from '../../lib/chat-delta-journal/writer';
 import type {
+  DeltaJournalAdmission,
   DeltaJournalCommitInput,
   DeltaJournalCommitResult,
 } from '../../lib/chat-delta-journal/writer';
@@ -48,6 +49,8 @@ interface FixtureFaults {
   boundary?:
     | RegistryFailureBoundary
     | DelegationTranscriptRegistryFaultBoundary;
+  /** Holds the next journal batch before its sync until resolved. */
+  heldSync?: Promise<void>;
 }
 
 export interface RepositoryTranscriptPortFixture extends DelegationTranscriptPortConformanceFixture {
@@ -81,6 +84,8 @@ export interface RepositoryTranscriptPortFixture extends DelegationTranscriptPor
     phase: DelegationTranscriptPortFailurePhase,
   ) => void;
   readonly injectRegistryFailure: (boundary: RegistryFailureBoundary) => void;
+  /** Holds the next journal write before its sync; returns its release. */
+  readonly holdJournalSync: () => () => void;
   readonly close: () => Promise<void>;
 }
 
@@ -120,6 +125,7 @@ function createServices(
   root: string,
   scope: ChatScopeKey,
   faults: FixtureFaults,
+  incrementalStreamMetadata: boolean,
 ): FixtureServices {
   const repository = new ChatStateV2Repository({
     resolvePaths: (): {
@@ -132,7 +138,15 @@ function createServices(
       journal: join(root, 'journal.json'),
     }),
     enableFormat4: true,
+    ...(incrementalStreamMetadata
+      ? { deltaJournalIncrementalStreamMetadata: true }
+      : {}),
     deltaJournalOnBoundary: (boundary): Promise<void> => {
+      const held = faults.heldSync;
+      if (held !== undefined && boundary === 'record-written') {
+        faults.heldSync = undefined;
+        return held;
+      }
       const selected = faults.boundary;
       if (selected !== undefined && String(boundary) === selected) {
         faults.boundary = undefined;
@@ -201,6 +215,7 @@ async function storagePaths(root: string): Promise<string[]> {
  */
 export function createRepositoryTranscriptPortFixture(
   root: string,
+  options: { incrementalStreamMetadata?: boolean } = {},
 ): RepositoryTranscriptPortConformanceFactory {
   return Object.assign(
     async (): Promise<RepositoryTranscriptPortFixture> => {
@@ -231,7 +246,12 @@ export function createRepositoryTranscriptPortFixture(
       const faults: FixtureFaults = {};
       const services: FixtureServices[] = [];
       const createAndTrackServices = (): FixtureServices => {
-        const created = createServices(fixtureRoot, scope, faults);
+        const created = createServices(
+          fixtureRoot,
+          scope,
+          faults,
+          options.incrementalStreamMetadata === true,
+        );
         services.push(created);
         return created;
       };
@@ -512,22 +532,47 @@ export function createRepositoryTranscriptPortFixture(
         injectStorageFailure: (
           phase: DelegationTranscriptPortFailurePhase,
         ): void => {
+          // Fail the next child journal write: a solo commit (settlement,
+          // card state, registration) or a group-committed admission that
+          // carries child rows. Other records pass through.
           const commitSpy = jest.spyOn(
             ChatDeltaJournalWriter.prototype,
             'commit',
           );
+          const admitSpy = jest.spyOn(
+            ChatDeltaJournalWriter.prototype,
+            'admit',
+          );
           const commit = commitSpy.getMockImplementation();
-          if (commit === undefined)
+          const admit = admitSpy.getMockImplementation();
+          if (commit === undefined || admit === undefined)
             throw new Error(
-              'The child journal commit implementation is missing.',
+              'The child journal write implementation is missing.',
             );
-          commitSpy.mockImplementationOnce(async function (
+          let armed = true;
+          const inject = (): void => {
+            armed = false;
+            if (phase === 'before-write')
+              throw new Error('Injected pre-durable child stream failure');
+          };
+          commitSpy.mockImplementation(async function (
             this: ChatDeltaJournalWriter,
             input: DeltaJournalCommitInput,
           ): Promise<DeltaJournalCommitResult> {
-            if (phase === 'before-write')
-              throw new Error('Injected pre-durable child stream failure');
+            if (!armed) return commit.call(this, input);
+            inject();
             await commit.call(this, input);
+            throw new Error('Injected post-durable child stream failure');
+          });
+          admitSpy.mockImplementation(async function (
+            this: ChatDeltaJournalWriter,
+            input: DeltaJournalCommitInput,
+          ): Promise<DeltaJournalAdmission> {
+            if (!armed || !input.childWrites?.length)
+              return admit.call(this, input);
+            inject();
+            const admitted = await admit.call(this, input);
+            await admitted.durable;
             throw new Error('Injected post-durable child stream failure');
           });
         },
@@ -535,6 +580,13 @@ export function createRepositoryTranscriptPortFixture(
           if (faults.boundary !== undefined)
             throw new Error('A registry boundary failure is already armed.');
           faults.boundary = boundary;
+        },
+        holdJournalSync: (): (() => void) => {
+          let release: () => void = () => undefined;
+          faults.heldSync = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          return release;
         },
         close,
         dispose: close,

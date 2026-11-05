@@ -6051,6 +6051,10 @@ async function runStepBody(
               modelAliasPreferences: options.modelAliasPreferences,
             }),
           ),
+        pluginCollectionSelections: (id) => {
+          const snapshot = options.resolvedPluginCollections?.[id];
+          return snapshot?.chatSelections ?? snapshot?.selections;
+        },
         inputValues: rawInputValues,
         logFile,
         logMetadata,

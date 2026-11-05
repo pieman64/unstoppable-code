@@ -33,8 +33,8 @@ function regular(file) {
 }
 const LAUNCHER_POLICY = Object.freeze({
   policy: 'playwright-explicit-executable-macos-v1',
-  version: '1.58.2',
-  sha256: 'd230157151a460582734ae2ecac319b86f1b2b466864a083adfca71d4f80203c',
+  version: '1.64.1',
+  sha256: '829521b67ed7be90c7d6d6098ff39f2241562d47e4ad7ccab13710924a56001d',
 });
 function buildExpectedArgv({
   productMainEntryPath,

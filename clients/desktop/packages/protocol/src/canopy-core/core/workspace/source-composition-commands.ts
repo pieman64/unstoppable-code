@@ -20,14 +20,16 @@ import {
  * W7b-4): #15 `core.workspace.sourceRepo.initialize`, #16 `.type.convert`,
  * #17 `.sourceChanges.apply`, #18–20 `core.workspace.composition.combine`,
  * `.split` and `.promote`, #27 `core.worktree.branch.rename` and #29
- * `core.sharedContainer.fork`. The composition schemas conform unchanged to
- * their catalog pages; the other five are new pages traced from the desktop's
- * typed in-process requests (A5). Host paths, host-derived fields and the
+ * `core.sharedContainer.fork`. The composition schemas conform to their
+ * catalog pages; the other five are new pages traced from the desktop's
+ * typed in-process requests (A5). CAN-5710 adds, without changing the option
+ * form, the combine's worktree form and `core.workspace.composition.retry`,
+ * which the cloud's Add repository needs. Host paths, host-derived fields and the
  * caller's source never cross the wire. Only the desktop dispatcher serves
  * them, so, like the other W5 registries, they stay out of
  * CORE_INSTRUCTION_DEFINITIONS, whose daemon dispatcher requires a handler for
- * every definition. The web core never serves them: they run host-local
- * lifecycles.
+ * every definition. They run host-local lifecycles, so the web core serves
+ * none of them but the combine's worktree form and the retry (CAN-5710).
  */
 
 /** The workspace, worktree and repository id charset (`validateId`). */
@@ -254,12 +256,43 @@ const operationState = z.strictObject({
   ]),
 });
 
-export const CoreWorkspaceCompositionCombineParamsSchema = z.strictObject({
-  optionId: opaqueId,
-  expectedRevision: revision,
-  moveChats: z.boolean(),
-  _meta: keyedMeta,
-});
+/** The catalog page's form: a revision-bound composition option. */
+export const CoreWorkspaceCompositionCombineOptionParamsSchema = z.strictObject(
+  {
+    optionId: opaqueId,
+    expectedRevision: revision,
+    moveChats: z.boolean(),
+    _meta: keyedMeta,
+  },
+);
+
+/** The most projects one worktree combine adds (the cloud's selection bound). */
+export const CORE_WORKSPACE_COMPOSITION_COMBINE_MAX_ADDED = 8;
+
+/**
+ * The worktree form (CAN-5710): add the repositories of up to eight other
+ * projects to one worktree, which moves with its chats into a project that
+ * holds them all. `expectedRevision` is the worktree's revision. The work is
+ * durable: the result names an operation that `core.operation.get` follows
+ * and `core.operation.cancel` or `.composition.retry` act on.
+ */
+export const CoreWorkspaceCompositionCombineWorktreeParamsSchema =
+  z.strictObject({
+    worktreeId: opaqueId,
+    /** Distinct, in the order their repositories are added. */
+    addWorkspaceIds: z
+      .array(opaqueId)
+      .min(1)
+      .max(CORE_WORKSPACE_COMPOSITION_COMBINE_MAX_ADDED),
+    expectedRevision: revision,
+    moveChats: z.boolean(),
+    _meta: keyedMeta,
+  });
+
+export const CoreWorkspaceCompositionCombineParamsSchema = z.union([
+  CoreWorkspaceCompositionCombineOptionParamsSchema,
+  CoreWorkspaceCompositionCombineWorktreeParamsSchema,
+]);
 export type CoreWorkspaceCompositionCombineParams = z.output<
   typeof CoreWorkspaceCompositionCombineParamsSchema
 >;
@@ -273,6 +306,19 @@ export const CoreWorkspaceCompositionCombineResultSchema = z.strictObject({
 });
 export type CoreWorkspaceCompositionCombineResult = z.output<
   typeof CoreWorkspaceCompositionCombineResultSchema
+>;
+
+/**
+ * Retries a saved combine whose work failed and waits for the user (CAN-5710),
+ * then answers the operation as the combine does. Any other state is only
+ * read; a decided combine is never redone.
+ */
+export const CoreWorkspaceCompositionRetryParamsSchema = z.strictObject({
+  operationId: opaqueId,
+  _meta: keyedMeta,
+});
+export type CoreWorkspaceCompositionRetryParams = z.output<
+  typeof CoreWorkspaceCompositionRetryParamsSchema
 >;
 
 export const CoreWorkspaceCompositionSplitParamsSchema = z.strictObject({
@@ -501,6 +547,14 @@ export const CORE_SOURCE_COMPOSITION_INSTRUCTION_DEFINITIONS =
       requiredGrants: ['core.workspace.write'],
       params: CoreWorkspaceCompositionSplitParamsSchema,
       result: CoreWorkspaceCompositionSplitResultSchema,
+      error: CoreWorkspaceCompositionErrorSchema,
+    }),
+    'core.workspace.composition.retry': defineCanopyInstruction({
+      ...lifecycle,
+      domain: 'workspace',
+      requiredGrants: ['core.workspace.write'],
+      params: CoreWorkspaceCompositionRetryParamsSchema,
+      result: CoreWorkspaceCompositionCombineResultSchema,
       error: CoreWorkspaceCompositionErrorSchema,
     }),
     'core.workspace.composition.promote': defineCanopyInstruction({

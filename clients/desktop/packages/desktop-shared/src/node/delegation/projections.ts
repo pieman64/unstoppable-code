@@ -4,7 +4,9 @@ import {
   DELEGATE_OUTPUT_PAGE_MAX_LIMIT,
 } from './output-page';
 import {
+  CLAUDE_DELEGATION_SPAWN_FEED_SCHEMA,
   CLAUDE_DELEGATION_SPAWN_SCHEMA,
+  CODEX_DELEGATION_SPAWN_FEED_SCHEMA,
   CODEX_DELEGATION_SPAWN_SCHEMA,
   parseClaudeDelegationSpawn,
   parseCodexDelegationSpawn,
@@ -17,6 +19,8 @@ import {
   parseMessageDelegateRequest,
   parseRequestSteeringRequest,
   type AgentDelegationResult,
+  type AgentDelegationFeedAssignment,
+  type AgentDelegationFeedSummary,
   type AgentDelegationSnapshot,
   type AgentDelegationSpawnRequest,
   type DelegationListFilter,
@@ -39,6 +43,19 @@ import {
 export interface DelegationCapabilityDiscovery {
   readonly capabilities: readonly DelegationCapabilityChoice[];
   readonly capabilitiesTruncated?: boolean;
+}
+
+/** Host-owned Feed readers; shared projections never import Ledger services. */
+export interface DelegationFeedHooks {
+  readonly readFeedSummary: (
+    parent: DelegationParentContext,
+    delegationId: string,
+  ) => Promise<AgentDelegationFeedSummary | undefined>;
+  readonly readFeedAssignment: (
+    parent: DelegationParentContext,
+    task: AgentDelegationSpawnRequest,
+    delegationId: string,
+  ) => Promise<AgentDelegationFeedAssignment | undefined>;
 }
 
 export interface DelegationTool {
@@ -157,10 +174,11 @@ async function fitCodexDelegateOutput(
   parent: DelegationParentContext,
   request: GetDelegateOutputRequest,
   original: AgentDelegationResult<GetDelegateOutputValue>,
+  feed?: AgentDelegationFeedSummary,
 ): Promise<AgentDelegationResult<GetDelegateOutputValue>> {
   if (codexOutputFits(original)) return original;
   if (!original.ok || original.value.result === null) return original;
-  const page =
+  const pageRead =
     request.offset !== undefined || request.limit !== undefined
       ? original
       : await broker.getOutput(parent, {
@@ -169,6 +187,7 @@ async function fitCodexDelegateOutput(
           offset: 0,
           limit: DELEGATE_OUTPUT_PAGE_MAX_LIMIT,
         });
+  const page = withFeedSummary(pageRead, feed);
   if (!page.ok) return page;
   if (codexOutputFits(page)) return page;
   const result = page.value.result;
@@ -209,6 +228,26 @@ async function fitCodexDelegateOutput(
   return best ?? original;
 }
 
+function withFeedSummary(
+  result: AgentDelegationResult<GetDelegateOutputValue>,
+  feed: AgentDelegationFeedSummary | undefined,
+): AgentDelegationResult<GetDelegateOutputValue> {
+  return result.ok && feed !== undefined
+    ? { ok: true, value: { ...result.value, feed } }
+    : result;
+}
+
+function reportFeedError(
+  onError: ((error: unknown) => void) | undefined,
+  message: string,
+): void {
+  try {
+    onError?.(new Error(message));
+  } catch {
+    // Optional diagnostics must not turn a best-effort Feed read into failure.
+  }
+}
+
 /** Collision-free names are selected by the host's injected brand namespace. */
 export function createDelegationProjection(
   harness: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode',
@@ -230,6 +269,11 @@ export function createDelegationProjection(
       parent: DelegationParentContext,
       request: RequestSteeringRequest,
     ) => Promise<AgentDelegationResult<unknown>>;
+    /** Enable optional Feed task hand-off and result summaries for this parent. */
+    includeFeed?: boolean;
+    readFeedSummary?: DelegationFeedHooks['readFeedSummary'];
+    readFeedAssignment?: DelegationFeedHooks['readFeedAssignment'];
+    onError?: (error: unknown) => void;
   } = {},
 ): {
   readonly tools: readonly DelegationTool[];
@@ -255,6 +299,47 @@ export function createDelegationProjection(
     requestSteering: `${namespace}_request_steering`,
   };
   const delegationToolsEnabled = options.enableDelegationTools !== false;
+  const readSummary = async (
+    parent: DelegationParentContext,
+    delegationId: string,
+  ): Promise<AgentDelegationFeedSummary | undefined> => {
+    if (!options.includeFeed || !options.readFeedSummary) return undefined;
+    try {
+      return await options.readFeedSummary(parent, delegationId);
+    } catch {
+      reportFeedError(options.onError, 'Delegation Feed summary unavailable');
+      return undefined;
+    }
+  };
+  const withAssignment = async (
+    parent: DelegationParentContext,
+    task: AgentDelegationSpawnRequest,
+    result: AgentDelegationResult<AgentDelegationSnapshot>,
+  ): Promise<AgentDelegationResult<AgentDelegationSnapshot>> => {
+    if (
+      !result.ok ||
+      !task.taskIds?.length ||
+      !options.includeFeed ||
+      !options.readFeedAssignment
+    )
+      return result;
+    try {
+      const feedAssignment = await options.readFeedAssignment(
+        parent,
+        task,
+        result.value.delegationId,
+      );
+      return feedAssignment === undefined
+        ? result
+        : { ok: true, value: { ...result.value, feedAssignment } };
+    } catch {
+      reportFeedError(
+        options.onError,
+        'Delegation Feed assignment unavailable',
+      );
+      return result;
+    }
+  };
   return {
     tools: Object.freeze(
       [
@@ -339,13 +424,24 @@ export function createDelegationProjection(
                 : []),
               {
                 name: names.spawn,
-                description: options.developmentProbe
-                  ? 'Development probe: start a fresh read-only delegated task using a logical model. No provider process is launched.'
-                  : 'Start a delegated task using a logical model ID or configured Agent ID from List Delegates with includeModels: true. A configured Agent carries its model, system instructions and selected plugins, skills and MCP servers. Children start with your plugins, skills and MCP servers by default; set inherit_capabilities: false to start one without them (a configured Agent keeps its own). To give a child more, pass capabilities IDs from List Delegates with includeCapabilities: true. Grant writes explicitly with permissions.writePaths (relative files/directories, or a dot for the workspace); omitted grants allow read/search only. Parent approval settings always apply to commands and MCP tools too. isolation defaults to shared_worktree; choose worktree only when isolation is wanted. Supply a self-contained prompt with paths, scope and expected output. Every call returns a durable ID promptly. When the concurrency limit is reached, the task waits in a queue (phase queued, with its position) and starts automatically; set if_busy to reject to fail at once with capacity_exceeded instead. The lifetime limit refuses new tasks with lifetime_limit_reached instead of queueing. When a run finishes, its parent receives an automatic completion notice naming the delegate and status; use Get Delegate Output with the resultIndex from the notice to read the result. Reads share the live working tree and can observe parent edits; returned revision and dirty state describe launch-time observation, not an immutable snapshot.',
+                description: [
+                  options.developmentProbe
+                    ? 'Development probe: start a fresh read-only delegated task using a logical model. No provider process is launched.'
+                    : 'Start a delegated task using a logical model ID or configured Agent ID from List Delegates with includeModels: true. A configured Agent carries its model, system instructions and selected plugins, skills and MCP servers. Children start with your plugins, skills and MCP servers by default; set inherit_capabilities: false to start one without them (a configured Agent keeps its own). To give a child more, pass capabilities IDs from List Delegates with includeCapabilities: true. Grant writes explicitly with permissions.writePaths (relative files/directories, or a dot for the workspace); omitted grants allow read/search only. Parent approval settings always apply to commands and MCP tools too. isolation defaults to shared_worktree; choose worktree only when isolation is wanted. Supply a self-contained prompt with paths, scope and expected output. Every call returns a durable ID promptly. When the concurrency limit is reached, the task waits in a queue (phase queued, with its position) and starts automatically; set if_busy to reject to fail at once with capacity_exceeded instead. The lifetime limit refuses new tasks with lifetime_limit_reached instead of queueing. When a run finishes, its parent receives an automatic completion notice naming the delegate and status; use Get Delegate Output with the resultIndex from the notice to read the result. Reads share the live working tree and can observe parent edits; returned revision and dirty state describe launch-time observation, not an immutable snapshot.',
+                  ...(options.includeFeed
+                    ? [
+                        `Before delegating, add the delegate’s tasks and subtasks under their operation in Feed and pass their task UUIDs as ${harness === 'codex' ? 'task_ids' : 'taskIds'}; the delegate receives those tasks when admitted. After a delegate settles, read its Feed summary and resolve anything it left open.`,
+                      ]
+                    : []),
+                ].join(' '),
                 inputSchema:
                   harness !== 'codex'
-                    ? CLAUDE_DELEGATION_SPAWN_SCHEMA
-                    : CODEX_DELEGATION_SPAWN_SCHEMA,
+                    ? options.includeFeed
+                      ? CLAUDE_DELEGATION_SPAWN_FEED_SCHEMA
+                      : CLAUDE_DELEGATION_SPAWN_SCHEMA
+                    : options.includeFeed
+                      ? CODEX_DELEGATION_SPAWN_FEED_SCHEMA
+                      : CODEX_DELEGATION_SPAWN_SCHEMA,
               },
               {
                 name: names.output,
@@ -457,17 +553,34 @@ export function createDelegationProjection(
       if (name === names.spawn) {
         const parsed =
           harness !== 'codex'
-            ? parseClaudeDelegationSpawn(input)
-            : parseCodexDelegationSpawn(input);
-        return parsed.ok ? broker.spawn(parent, parsed.value) : parsed;
+            ? parseClaudeDelegationSpawn(input, {
+                includeFeed: options.includeFeed === true,
+              })
+            : parseCodexDelegationSpawn(input, {
+                includeFeed: options.includeFeed === true,
+              });
+        return parsed.ok
+          ? withAssignment(
+              parent,
+              parsed.value,
+              await broker.spawn(parent, parsed.value),
+            )
+          : parsed;
       }
       if (name === names.output) {
         const parsed = parseGetDelegateOutputRequest(input);
         if (!parsed.ok) return parsed;
         const result = await broker.getOutput(parent, parsed.value);
+        const firstPage =
+          parsed.value.offset === undefined || parsed.value.offset === 0;
+        const feed =
+          result.ok && firstPage
+            ? await readSummary(parent, parsed.value.delegationId)
+            : undefined;
+        const enriched = withFeedSummary(result, feed);
         return harness === 'codex'
-          ? fitCodexDelegateOutput(broker, parent, parsed.value, result)
-          : result;
+          ? fitCodexDelegateOutput(broker, parent, parsed.value, enriched, feed)
+          : enriched;
       }
       if (name === names.list) {
         if (!record(input)) return invalid;
@@ -537,9 +650,13 @@ export function createDelegationProjection(
           ? broker.requestStop(parent, input.delegationId, 'stopped_by_parent')
           : broker.stop(parent, input.delegationId, 'stopped_by_parent');
       const snapshot = broker.inspect(parent, input.delegationId);
-      return snapshot
-        ? { ok: true, value: snapshot }
-        : { ok: false, error: { ...DELEGATION_NOT_DESCENDANT_ERROR } };
+      if (!snapshot)
+        return { ok: false, error: { ...DELEGATION_NOT_DESCENDANT_ERROR } };
+      const feed = await readSummary(parent, input.delegationId);
+      return {
+        ok: true,
+        value: feed === undefined ? snapshot : { ...snapshot, feed },
+      };
     },
   };
 }

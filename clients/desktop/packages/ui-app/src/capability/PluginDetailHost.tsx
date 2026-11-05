@@ -39,8 +39,8 @@ import {
   DetailMoreMenu,
   useDetailMoreItemContributions,
   ExecutionActionButton,
-  InlineTextSkeleton,
   MarketplaceShareButton,
+  Skeleton,
   useDetailActionSlots,
   type DetailMoreMenuItem,
 } from '@canopy/ui-shared/components';
@@ -716,16 +716,17 @@ export function PluginDetailHost({
     (relatedItems.length > 0 && onOpenRelated ? (
       <section data-testid="plugin-detail-related">
         <PluginDetailSectionHeading>Related</PluginDetailSectionHeading>
-        {relatedItems.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            onClick={() => onOpenRelated(item.id)}
-            className="block text-s fg-accent"
-          >
-            {item.label}
-          </button>
-        ))}
+        <div className="flex flex-col items-start text-s">
+          {relatedItems.map((item) => (
+            <Button
+              key={item.id}
+              variant="link"
+              onClick={() => onOpenRelated(item.id)}
+            >
+              {item.label}
+            </Button>
+          ))}
+        </div>
       </section>
     ) : undefined);
 
@@ -799,6 +800,16 @@ export function PluginDetailHost({
   );
 }
 
+/**
+ * The health a loading row is measured from: a connected server with no
+ * recorded check and no configurations to test.
+ */
+const SAMPLE_MCP_HEALTH: PluginDetailMcpHealthTarget = {
+  targetKey: 'plugin-detail-mcp-health-skeleton',
+  accountConnectionStatus: 'CONNECTED',
+  configs: [],
+};
+
 /** One MCP server row's Status cell; `undefined` reads "Not configured yet". */
 function renderMcpServerHealth(
   health: PluginDetailMcpHealth,
@@ -817,7 +828,15 @@ function renderMcpServerHealth(
         />
       );
     case 'loading':
-      return <InlineTextSkeleton className="w-24" />;
+      return (
+        <Skeleton loading label={`Loading health for ${server.name}`}>
+          <McpServerHealthSection
+            presentation="inline"
+            label={`Health for ${server.name}`}
+            {...SAMPLE_MCP_HEALTH}
+          />
+        </Skeleton>
+      );
     case 'unavailable':
       return (
         <span

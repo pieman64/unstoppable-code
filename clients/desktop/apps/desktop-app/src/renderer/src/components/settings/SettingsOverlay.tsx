@@ -1,6 +1,5 @@
 import { sidebarPageTransitionDelay } from '@/components/sidebar/sidebar-page-transition';
 import { useCodeGraphExperimentEnabled } from '@/hooks/useCodeGraphExperimentEnabled';
-import { BROWSER_NATIVE_VIEW_OVERLAY_ATTRIBUTE } from '@/lib/browserNativeOverlay';
 import { useClaudeSettingsAvailable } from '@/lib/claude-settings-availability';
 import { localPlatform } from '@/lib/local-platform';
 import { useNavigationStore } from '@/stores/navigationStore';
@@ -13,7 +12,7 @@ import {
 } from '@canopy/desktop-shared/platform-capabilities';
 import {
   SettingsSaveBarSlotContext,
-  useOverlayEscape,
+  WindowPage,
 } from '@canopy/ui-shared/components';
 import {
   type ComponentType,
@@ -517,7 +516,6 @@ export function SettingsOverlay({
   // only while it is the topmost Escape-enabled overlay: a dialog opened above
   // it wins, and an overlay registered earlier underneath (the hidden shell
   // keeps its pages mounted) is left untouched.
-  useOverlayEscape(open, onClose);
 
   const [saveBarSlot, setSaveBarSlot] = useState<HTMLDivElement | null>(null);
   const content = (
@@ -569,48 +567,59 @@ export function SettingsOverlay({
     </div>
   );
 
+  // The shared window page: modal over the app, focus in on open and back on
+  // close, Escape closes it. It stays mounted while closed so unsaved state
+  // survives, and the page hides once the rail's exit motion ends.
   const overlay = (
-    <div
-      {...(open
-        ? { [BROWSER_NATIVE_VIEW_OVERLAY_ATTRIBUTE]: 'true' }
-        : undefined)}
-      inert={!open}
-      aria-hidden={open ? undefined : 'true'}
-      // Settings is controls and their labels, not text to copy, so a drag
-      // across a page selects nothing. Fields and values stay selectable
-      // through `.settings-page-overlay` in globals.css.
-      className={`settings-page-overlay fixed inset-0 z-modal flex select-none fg-primary ${
-        open ? '' : 'pointer-events-none'
-      } ${overlayVisible ? '' : 'invisible'}`}
-      data-open={open ? 'true' : 'false'}
-      data-settings-layout={'inset'}
-      data-testid="settings-overlay"
+    <WindowPage
+      open={open}
+      onClose={onClose}
+      keepMounted
+      portal={false}
+      aria-label="Settings"
     >
-      <div className="flex h-full shrink-0" data-testid="settings-sidebar-page">
-        <SettingsNav
-          activeSection={activeSection}
-          onNavigate={navigateLocal}
-          onClose={onClose}
-          renderHostedRail={
-            hostedSettingsAvailable ? renderHostedRail : undefined
-          }
-          localSelected={hostedLocation === null}
-          codeGraphEnabled={codeGraphExperimentEnabled}
-          claudeSettingsAvailable={claudeSettingsAvailable}
-          remoteAccessEnabled={remoteAccessEnabled}
-          width={sidebarWidth}
-          onResize={setSidebarWidth}
-        />
-      </div>
-      {/* Early access: the page is a card inset like the main window's, under
+      <div
+        // Settings is controls and their labels, not text to copy, so a drag
+        // across a page selects nothing. Fields and values stay selectable
+        // through `.settings-page-overlay` in globals.css.
+        // Visible from the render that opens it, so the window page can move
+        // focus in at once: `overlayVisible` only catches up in an effect.
+        className={`settings-page-overlay flex h-full w-full select-none fg-primary ${
+          open || overlayVisible ? '' : 'invisible'
+        }`}
+        data-open={open ? 'true' : 'false'}
+        data-settings-layout={'inset'}
+        data-testid="settings-overlay"
+      >
+        <div
+          className="flex h-full shrink-0"
+          data-testid="settings-sidebar-page"
+        >
+          <SettingsNav
+            activeSection={activeSection}
+            onNavigate={navigateLocal}
+            onClose={onClose}
+            renderHostedRail={
+              hostedSettingsAvailable ? renderHostedRail : undefined
+            }
+            localSelected={hostedLocation === null}
+            codeGraphEnabled={codeGraphExperimentEnabled}
+            claudeSettingsAvailable={claudeSettingsAvailable}
+            remoteAccessEnabled={remoteAccessEnabled}
+            width={sidebarWidth}
+            onResize={setSidebarWidth}
+          />
+        </div>
+        {/* Early access: the page is a card inset like the main window's, under
           the window's empty 46px top row, which drags the window. The row is
           always rendered (hidden without early access), so switching early
           access keeps the page mounted with its unsaved state. */}
-      <div className="flex min-w-0 flex-1 flex-col">
-        <div className={'electron-drag h-11.5 shrink-0'} />
-        {content}
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div className={'electron-drag h-11.5 shrink-0'} />
+          {content}
+        </div>
       </div>
-    </div>
+    </WindowPage>
   );
 
   if (hostedClient === null) return overlay;

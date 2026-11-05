@@ -6,11 +6,15 @@ import {
   prepareCodeReviewRegistry,
   runCodeReviewRegistryCleanup,
 } from './code-review-registry-scenario.mjs';
+import { perfettoTraceEvents } from './perfetto-trace.mjs';
 import { w5StoreScenarios } from './w5-store-scenario.mjs';
 import { w5StoreLaunchEnv } from './w5-store-arms.mjs';
 import { execFileSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import {
+  copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -27,17 +31,48 @@ import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { expect } from '@playwright/test';
+import {
+  AI_GATEWAY_MODEL_CATALOG_CACHE_VERSION,
+  AI_GATEWAY_MODEL_CATALOG_VERSION,
+} from '../electron/ai-gateway-catalog-versions.mjs';
 import { createBrowserLabServer } from '../electron/mock-server/routes/browser-lab.mjs';
 import {
   HOME_COWORK_PROMPT,
   registerHomeCoworkScenario,
 } from '../electron/cowork-summary-fixture.mjs';
+import {
+  MANY_CHAT_RESIDENCY_STREAM_CHAT_COUNT,
+  seedManyChatResidencyFixture,
+} from '../electron/many-chat-fixture.mjs';
+import {
+  SCOPE_RESIDENCY,
+  scopeResidencyWorktreeIds,
+  seedScopeResidencyFixture,
+} from './scope-residency-fixture.mjs';
 import { seedStressTranscript } from '../electron/stress-transcript-fixture.mjs';
 import {
   openStressEntry,
   openStressChat,
   inspectStressHistory,
 } from '../electron/stress-transcript-driver.mjs';
+import {
+  LAB_TRANSCRIPT_UPDATE_CADENCE_MS,
+  LAB_TRANSCRIPT_UPDATE_COUNT,
+  assertLabTranscriptUpdateProgress,
+  inspectLabTranscript,
+  labTranscriptDimensions,
+  labTranscriptLaunchEnvironment,
+  labTranscriptProvenance,
+  normalizeLabTranscriptReceipt,
+  readLabTranscriptActiveSession,
+  readLabTranscriptChatVisibility,
+  readLabTranscriptNativeWindowIdentity,
+  readPersistedLabTranscriptPage,
+  runLabTranscriptCheckpointProbe,
+  runSerializedLabTranscriptUpdates,
+  summarizeLabTranscriptCheckpoint,
+  updateLabTranscript,
+} from '../electron/lab-transcript-driver.mjs';
 import {
   CanopyAppDriver,
   closePanelTab,
@@ -52,6 +87,12 @@ import {
   seedArchiveActivityFixture,
 } from '../electron/seeders/archiveActivityFixture.mjs';
 import { seedDemoWorkspaces } from '../electron/demoWorkspaces.mjs';
+import { openBackgroundDrawer } from '../electron/backgroundDrawer.mjs';
+import {
+  installTranscriptRewriteObserver,
+  readTranscriptRewriteObserver,
+  stopTranscriptRewriteObserver,
+} from '../electron/delegationStorageWorkload.mjs';
 import {
   closeCanopy,
   launchCanopy,
@@ -121,8 +162,10 @@ import { prepareGitAttributionCapture } from './git-attribution.mjs';
 import { assessCodexSubagentThreadRouting } from './mixed-provider-validation.mjs';
 import { captureScenarioFailure } from './scenario-failure-diagnostics.mjs';
 import {
+  LEDGER_FIXTURE_COWORK_ID,
   ledgerFixtureSearches,
   ledgerUniqueCaseNumbers,
+  loadLedgerRepository,
   seedLedgerFixture,
 } from './ledger-fixture.mjs';
 import { seedCostIndexAudit } from './cost-index-fixture.mjs';
@@ -952,6 +995,210 @@ function seedPreexistingWorktrees(
     'utf8',
   );
   return persisted.worktrees.length;
+}
+
+export const MANY_WORKTREE_FILE_INDEX_WORKTREE_COUNT = 10;
+export const MANY_WORKTREE_FILE_INDEX_FILES_PER_WORKTREE = 10_000;
+export const MANY_WORKTREE_FILE_INDEX_FILES_PER_DIRECTORY = 100;
+export const MANY_WORKTREE_FILE_INDEX_DIRECTORY_COUNT =
+  MANY_WORKTREE_FILE_INDEX_FILES_PER_WORKTREE /
+  MANY_WORKTREE_FILE_INDEX_FILES_PER_DIRECTORY;
+const MANY_WORKTREE_FILE_INDEX_CORPUS_ROOT = 'perf-file-index-corpus';
+
+export function buildManyWorktreeFileIndexCorpus(
+  fileCount = MANY_WORKTREE_FILE_INDEX_FILES_PER_WORKTREE,
+) {
+  if (!Number.isInteger(fileCount) || fileCount < 1) {
+    throw new Error('File-index corpus size must be a positive integer');
+  }
+  return Array.from({ length: fileCount }, (_, index) => {
+    const directoryIndex = Math.floor(
+      index / MANY_WORKTREE_FILE_INDEX_FILES_PER_DIRECTORY,
+    );
+    const sectionIndex = Math.floor(directoryIndex / 10);
+    const batchIndex = directoryIndex % 10;
+    const ordinal = String(index).padStart(5, '0');
+    return {
+      relativePath: path.posix.join(
+        MANY_WORKTREE_FILE_INDEX_CORPUS_ROOT,
+        `section-${String(sectionIndex).padStart(2, '0')}`,
+        `batch-${String(batchIndex).padStart(2, '0')}`,
+        `index-file-${ordinal}.txt`,
+      ),
+      contents: `Deterministic file-index corpus entry ${ordinal}.\n`,
+    };
+  });
+}
+
+function countFilesRecursively(directory) {
+  const pendingDirectories = [directory];
+  let fileCount = 0;
+  while (pendingDirectories.length > 0) {
+    const currentDirectory = pendingDirectories.pop();
+    for (const entry of readdirSync(currentDirectory, {
+      withFileTypes: true,
+    })) {
+      const entryPath = path.join(currentDirectory, entry.name);
+      if (entry.isDirectory()) pendingDirectories.push(entryPath);
+      else if (entry.isFile()) fileCount += 1;
+    }
+  }
+  return fileCount;
+}
+
+function prepareManyWorktreeFileIndex(userDataDir) {
+  const seed = seedWorkspace(userDataDir);
+  const mainWorktreePath = seed.workspaces[0]?.worktreePath;
+  if (!mainWorktreePath) {
+    throw new Error('File-index fixture has no default Git worktree');
+  }
+
+  const corpus = buildManyWorktreeFileIndexCorpus();
+  const createdDirectories = new Set();
+  for (const file of corpus) {
+    const filePath = path.join(
+      mainWorktreePath,
+      ...file.relativePath.split('/'),
+    );
+    const directory = path.dirname(filePath);
+    if (!createdDirectories.has(directory)) {
+      mkdirSync(directory, { recursive: true });
+      createdDirectories.add(directory);
+    }
+    writeFileSync(filePath, file.contents, 'utf8');
+  }
+  execFileSync(
+    'git',
+    [
+      '-C',
+      mainWorktreePath,
+      'add',
+      '-f',
+      '--',
+      MANY_WORKTREE_FILE_INDEX_CORPUS_ROOT,
+    ],
+    { stdio: ['ignore', 'ignore', 'pipe'] },
+  );
+  execFileSync(
+    'git',
+    [
+      '-C',
+      mainWorktreePath,
+      '-c',
+      'user.name=Canopy Performance Harness',
+      '-c',
+      'user.email=performance@example.invalid',
+      'commit',
+      '--quiet',
+      '-m',
+      'Seed deterministic file-index corpus',
+    ],
+    { stdio: ['ignore', 'ignore', 'pipe'] },
+  );
+  // Worktrees track `main`, checked out at the project root. Fast-forward it
+  // to the corpus so each worktree has no diff, and the renderer does not
+  // hold 10,000 changed files per worktree beside its file index.
+  const corpusCommit = execFileSync(
+    'git',
+    ['-C', mainWorktreePath, 'rev-parse', 'HEAD'],
+    { encoding: 'utf8' },
+  ).trim();
+  const projectRoot = path.dirname(
+    execFileSync(
+      'git',
+      [
+        '-C',
+        mainWorktreePath,
+        'rev-parse',
+        '--path-format=absolute',
+        '--git-common-dir',
+      ],
+      { encoding: 'utf8' },
+    ).trim(),
+  );
+  execFileSync(
+    'git',
+    ['-C', projectRoot, 'merge', '--ff-only', '--quiet', corpusCommit],
+    { stdio: ['ignore', 'ignore', 'pipe'] },
+  );
+  const baseCommit = execFileSync(
+    'git',
+    ['-C', mainWorktreePath, 'rev-parse', 'main'],
+    { encoding: 'utf8' },
+  ).trim();
+  if (baseCommit !== corpusCommit) {
+    throw new Error('File-index fixture base branch does not hold the corpus');
+  }
+
+  const worktreesSeeded = seedPreexistingWorktrees(
+    userDataDir,
+    MANY_WORKTREE_FILE_INDEX_WORKTREE_COUNT,
+    seed,
+  );
+  if (worktreesSeeded < MANY_WORKTREE_FILE_INDEX_WORKTREE_COUNT) {
+    throw new Error(
+      `File-index fixture seeded ${worktreesSeeded} worktrees; expected ${MANY_WORKTREE_FILE_INDEX_WORKTREE_COUNT}`,
+    );
+  }
+  const workspaceDir = path.join(userDataDir, 'workspaces', WORKSPACE_ID);
+  const persisted = JSON.parse(
+    readFileSync(path.join(workspaceDir, 'worktrees.json'), 'utf8'),
+  );
+  const seededPaths = new Map(
+    seed.workspaces.map((workspace) => [workspace.id, workspace.worktreePath]),
+  );
+  const worktrees = persisted.worktrees
+    .slice(0, MANY_WORKTREE_FILE_INDEX_WORKTREE_COUNT)
+    .map((worktree) => ({
+      ...worktree,
+      worktreePath:
+        seededPaths.get(worktree.id) ??
+        path.join(workspaceDir, 'worktrees', worktree.id),
+    }));
+
+  for (const worktree of worktrees) {
+    const actualFileCount = countFilesRecursively(
+      path.join(worktree.worktreePath, MANY_WORKTREE_FILE_INDEX_CORPUS_ROOT),
+    );
+    if (actualFileCount !== MANY_WORKTREE_FILE_INDEX_FILES_PER_WORKTREE) {
+      throw new Error(
+        `File-index fixture ${worktree.id} contains ${actualFileCount} files; expected ${MANY_WORKTREE_FILE_INDEX_FILES_PER_WORKTREE}`,
+      );
+    }
+  }
+
+  return {
+    worktrees,
+    worktreesSeeded: worktrees.length,
+    filesPerWorktree: MANY_WORKTREE_FILE_INDEX_FILES_PER_WORKTREE,
+    filesPerDirectory: MANY_WORKTREE_FILE_INDEX_FILES_PER_DIRECTORY,
+    directoriesPerWorktree: MANY_WORKTREE_FILE_INDEX_DIRECTORY_COUNT,
+  };
+}
+
+export function buildManyWorktreeFileIndexCounters({
+  worktreesSeeded,
+  filesPerWorktree,
+  filesPerDirectory,
+  directoriesPerWorktree,
+  paletteOpenDurationsMs,
+  labWindow,
+}) {
+  if (!paletteOpenDurationsMs.length) {
+    throw new Error('File-index scenario visited no worktrees');
+  }
+  return {
+    worktreesSeeded,
+    filesPerWorktree,
+    filesPerDirectory,
+    directoriesPerWorktree,
+    totalFilesAcrossWorktrees: worktreesSeeded * filesPerWorktree,
+    worktreesVisited: paletteOpenDurationsMs.length,
+    averagePaletteOpenMs:
+      paletteOpenDurationsMs.reduce((total, duration) => total + duration, 0) /
+      paletteOpenDurationsMs.length,
+    labWindow,
+  };
 }
 
 export function buildCodeGraphFixtureSource(index, count) {
@@ -2160,51 +2407,19 @@ async function runPluginPicker({ page, app, config, tasks, fixture }) {
   };
 }
 
-/**
- * Read an exported integer constant out of a TypeScript source file.
- *
- * The warm-cache startup scenario has to write a catalog cache file that the
- * app will actually accept. A stale `cacheVersion`, or a model missing a field
- * the parser now requires, is discarded on read — which silently turns this
- * scenario into a cold-cache measurement that still reports itself as a warm
- * baseline. Hard-coded literals here cannot fail loudly the way the E2E
- * fixtures do, so read the real constants instead of copying them.
- */
-function readIntegerConstantFromSource(relativePath, constantName) {
-  const source = readFileSync(path.join(PERF_REPO_ROOT, relativePath), 'utf8');
-  const match = new RegExp(`export const ${constantName}\\s*=\\s*(\\d+)`).exec(
-    source,
-  );
-  if (!match) {
-    throw new Error(
-      `Could not read ${constantName} from ${relativePath}; the performance ` +
-        'catalog-cache fixture would silently degrade to a cold-cache run.',
-    );
-  }
-  return Number(match[1]);
-}
-
 function prepareStartupSettle(userDataDir, config) {
   const fixture = prepareLoadedUi(userDataDir, config);
   const catalogDirectory = path.join(userDataDir, '.cache', 'model-catalog');
   mkdirSync(catalogDirectory, { recursive: true });
-  const cacheVersion = readIntegerConstantFromSource(
-    'packages/desktop-shared/src/node/ai-gateway-model-catalog/cache.ts',
-    'AI_GATEWAY_MODEL_CATALOG_CACHE_VERSION',
-  );
-  const catalogVersion = readIntegerConstantFromSource(
-    'packages/protocol/src/ai-gateway-models/index.ts',
-    'AI_GATEWAY_MODEL_CATALOG_VERSION',
-  );
   writeFileSync(
     path.join(catalogDirectory, 'ai-gateway-v1.json'),
     `${JSON.stringify({
-      cacheVersion,
+      cacheVersion: AI_GATEWAY_MODEL_CATALOG_CACHE_VERSION,
       serverOrigin: 'http://127.0.0.1:9',
       brandApiNamespace: 'canopy',
       fetchedAt: new Date().toISOString(),
       catalog: {
-        version: catalogVersion,
+        version: AI_GATEWAY_MODEL_CATALOG_VERSION,
         models: [
           {
             id: 'performance-catalog-model',
@@ -5735,6 +5950,1045 @@ export function prepareTranscriptStreamWorkspace(userDataDir) {
   seedWorkspace(userDataDir);
 }
 
+const LAB_TRANSCRIPT_REQUEST_TAG = 'streaming-history';
+const LAB_TRANSCRIPT_STREAM_MARKER = 'Canopy-CLABTRANSCRIPT';
+// Both update bursts and the refocus must land inside one controlled stream.
+// Each legacy card patch rewrites the 130 MB chat, about 3 to 5 s per update.
+const LAB_TRANSCRIPT_MIN_STREAM_MS = 240_000;
+
+const LAB_CAPTURE_EVIDENCE_DELAY_MS = 35_000;
+const LAB_CAPTURE_MEMORY_DIAGNOSTICS_TIMEOUT_MS = 15_000;
+const LAB_CAPTURE_CHAT_ROW_BUCKETS = new Set([0, 1_000, 5_000, 20_000, 50_000]);
+
+/** Return whether `candidate` is lexically at or below `root`. */
+export function isPathWithinRoot(root, candidate) {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return (
+    relative === '' ||
+    (relative !== '..' &&
+      !relative.startsWith(`..${path.sep}`) &&
+      !path.isAbsolute(relative))
+  );
+}
+
+/**
+ * Resolve a path beneath a root, including any existing symlinks. Missing
+ * final segments are allowed only when the caller is about to create them.
+ */
+export function resolvePathWithinRoot(
+  root,
+  candidate,
+  { allowMissing = false } = {},
+) {
+  const absoluteRoot = path.resolve(root);
+  const absoluteCandidate = path.resolve(candidate);
+  if (!isPathWithinRoot(absoluteRoot, absoluteCandidate)) {
+    throw new Error(`Path escapes expected root: ${candidate}`);
+  }
+
+  const resolvedRoot = realpathSync(absoluteRoot);
+  let existingPath = absoluteCandidate;
+  const missingSegments = [];
+  let resolvedExistingPath;
+  while (true) {
+    try {
+      resolvedExistingPath = realpathSync(existingPath);
+      break;
+    } catch (error) {
+      if (!allowMissing || error.code !== 'ENOENT') throw error;
+      const parentPath = path.dirname(existingPath);
+      if (parentPath === existingPath) throw error;
+      missingSegments.unshift(path.basename(existingPath));
+      existingPath = parentPath;
+    }
+  }
+
+  const resolvedCandidate = path.resolve(
+    resolvedExistingPath,
+    ...missingSegments,
+  );
+  if (!isPathWithinRoot(resolvedRoot, resolvedCandidate)) {
+    throw new Error(`Path escapes expected root: ${candidate}`);
+  }
+  return resolvedCandidate;
+}
+
+export function labCaptureAttemptName(
+  scenarioName,
+  timestamp = new Date(),
+  randomHex = randomBytes(3).toString('hex'),
+) {
+  if (!/^[a-zA-Z0-9._-]+$/.test(scenarioName)) {
+    throw new Error('Lab capture scenario name contains unsafe characters');
+  }
+  if (!(timestamp instanceof Date) || Number.isNaN(timestamp.getTime())) {
+    throw new Error('Lab capture timestamp must be a valid Date');
+  }
+  if (!/^[a-f0-9]{6}$/i.test(randomHex)) {
+    throw new Error('Lab capture suffix must be six hexadecimal characters');
+  }
+  const compactTimestamp = timestamp
+    .toISOString()
+    .replace(/[-:]/g, '')
+    .replace('.', '');
+  return `${scenarioName}-${compactTimestamp}-${randomHex.toLowerCase()}`;
+}
+
+export function createLabCaptureAttemptDirectory(
+  captureDirectory,
+  scenarioName,
+  {
+    now = () => new Date(),
+    randomHex = () => randomBytes(3).toString('hex'),
+  } = {},
+) {
+  const captureRoot = realpathSync(captureDirectory);
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const name = labCaptureAttemptName(scenarioName, now(), randomHex());
+    const candidate = path.join(captureRoot, name);
+    if (!isPathWithinRoot(captureRoot, candidate)) {
+      throw new Error('Lab capture attempt path escaped its capture directory');
+    }
+    try {
+      mkdirSync(candidate, { recursive: false });
+      return resolvePathWithinRoot(captureRoot, candidate);
+    } catch (error) {
+      if (error.code === 'EEXIST') continue;
+      throw error;
+    }
+  }
+  throw new Error('Could not create a unique lab capture attempt directory');
+}
+
+export function classifyLabA1Summaries(lines, labWindow) {
+  const startedAt = Date.parse(labWindow?.startedAt);
+  const endedAt = Date.parse(labWindow?.endedAt);
+  if (
+    !Number.isFinite(startedAt) ||
+    !Number.isFinite(endedAt) ||
+    endedAt < startedAt
+  ) {
+    throw new Error(
+      'Lab capture window must have valid ordered ISO timestamps',
+    );
+  }
+
+  let summaryCount = 0;
+  let summariesInWindow = 0;
+  let longFrameCount = 0;
+  const focusedChatRows = [];
+  for (const line of lines) {
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (record?.kind !== 'renderer_frame_summary') continue;
+    summaryCount += 1;
+    const timestamp = Date.parse(record.timestamp);
+    const windowMs = record.rendererSummary?.windowMs;
+    if (
+      !Number.isFinite(timestamp) ||
+      !Number.isFinite(windowMs) ||
+      windowMs < 0 ||
+      timestamp - windowMs > endedAt ||
+      timestamp < startedAt
+    ) {
+      continue;
+    }
+
+    summariesInWindow += 1;
+    const longFrames = record.rendererSummary?.frames?.long;
+    if (!Array.isArray(longFrames)) continue;
+    longFrameCount += longFrames.length;
+    for (const frame of longFrames) {
+      const bucket = frame?.focusedChatRows;
+      if (bucket === null || LAB_CAPTURE_CHAT_ROW_BUCKETS.has(bucket)) {
+        focusedChatRows.push(bucket);
+      }
+    }
+  }
+
+  return {
+    summaryCount,
+    summariesInWindow,
+    longFrameCount,
+    focusedChatRows,
+    status:
+      longFrameCount > 0
+        ? 'long-frames'
+        : summariesInWindow > 0
+          ? 'no-long-frames'
+          : 'no-summaries',
+  };
+}
+
+export async function runOptInAfterMeasurementHook(
+  hook,
+  context,
+  env = process.env,
+) {
+  if (
+    typeof hook !== 'function' ||
+    env.CANOPY_PERF_LAB_CAPTURE_DIR === undefined
+  ) {
+    return undefined;
+  }
+  try {
+    return await hook(context);
+  } catch (error) {
+    return {
+      status: 'failed',
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+export function attachLabCaptureReceipt(record, receipt) {
+  return receipt === undefined ? record : { ...record, labCapture: receipt };
+}
+
+function ensureLabCaptureDirectory(captureDirectory) {
+  if (
+    typeof captureDirectory !== 'string' ||
+    !path.isAbsolute(captureDirectory)
+  ) {
+    throw new Error(
+      'CANOPY_PERF_LAB_CAPTURE_DIR must be an absolute path to a directory',
+    );
+  }
+  try {
+    if (existsSync(captureDirectory)) {
+      if (!statSync(captureDirectory).isDirectory()) {
+        throw new Error('the configured path is not a directory');
+      }
+    } else {
+      mkdirSync(captureDirectory, { recursive: true });
+    }
+    if (!statSync(captureDirectory).isDirectory()) {
+      throw new Error('the configured path is not a directory');
+    }
+    return realpathSync(captureDirectory);
+  } catch (error) {
+    throw new Error(
+      `Could not prepare CANOPY_PERF_LAB_CAPTURE_DIR (${captureDirectory}): ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+function copyLabAppEventFiles(dataDirectory, attemptDirectory) {
+  const sourceDirectory = path.join(
+    dataDirectory,
+    'agent-observability',
+    'diagnostics',
+    'app-events',
+  );
+  const destinationDirectory = path.join(attemptDirectory, 'app-events');
+  const resolvedDestination = resolvePathWithinRoot(
+    attemptDirectory,
+    destinationDirectory,
+    {
+      allowMissing: true,
+    },
+  );
+  mkdirSync(resolvedDestination, { recursive: false });
+
+  const resolvedSource = resolvePathWithinRoot(dataDirectory, sourceDirectory, {
+    allowMissing: true,
+  });
+  if (!existsSync(resolvedSource)) return [];
+  if (!statSync(resolvedSource).isDirectory()) {
+    throw new Error('App-events diagnostics path is not a directory');
+  }
+
+  const copiedFiles = [];
+  for (const entry of readdirSync(resolvedSource, { withFileTypes: true })) {
+    if (!entry.name.endsWith('.jsonl')) continue;
+    const sourcePath = resolvePathWithinRoot(
+      resolvedSource,
+      path.join(resolvedSource, entry.name),
+    );
+    if (!statSync(sourcePath).isFile()) continue;
+    const destinationPath = resolvePathWithinRoot(
+      attemptDirectory,
+      path.join(resolvedDestination, entry.name),
+      { allowMissing: true },
+    );
+    copyFileSync(sourcePath, destinationPath);
+    copiedFiles.push(destinationPath);
+  }
+  return copiedFiles;
+}
+
+function copyLabMemoryReport(dataDirectory, reportId, attemptDirectory) {
+  if (typeof reportId !== 'string' || reportId.length === 0) {
+    throw new Error('Memory diagnostics returned an invalid report ID');
+  }
+  const reportsDirectory = resolvePathWithinRoot(
+    dataDirectory,
+    path.join(dataDirectory, 'memory-reports'),
+  );
+  const sourceDirectory = resolvePathWithinRoot(
+    reportsDirectory,
+    path.join(reportsDirectory, reportId),
+  );
+  if (!statSync(sourceDirectory).isDirectory()) {
+    throw new Error('Memory diagnostics report path is not a directory');
+  }
+  const destinationDirectory = resolvePathWithinRoot(
+    attemptDirectory,
+    path.join(attemptDirectory, 'memory-report'),
+    { allowMissing: true },
+  );
+  mkdirSync(destinationDirectory, { recursive: false });
+
+  const files = [];
+  const copyDirectory = (source, destination, relativeDirectory = '') => {
+    for (const entry of readdirSync(source, { withFileTypes: true })) {
+      const sourcePath = path.join(source, entry.name);
+      const resolvedSourcePath = resolvePathWithinRoot(
+        sourceDirectory,
+        sourcePath,
+      );
+      const sourceStats = lstatSync(sourcePath);
+      if (sourceStats.isSymbolicLink()) {
+        throw new Error('Memory diagnostics report contains a symbolic link');
+      }
+      const relativeName = path.join(relativeDirectory, entry.name);
+      const destinationPath = path.join(destination, entry.name);
+      const resolvedDestinationPath = resolvePathWithinRoot(
+        attemptDirectory,
+        destinationPath,
+        { allowMissing: true },
+      );
+      if (sourceStats.isDirectory()) {
+        mkdirSync(resolvedDestinationPath, { recursive: false });
+        copyDirectory(
+          resolvedSourcePath,
+          resolvedDestinationPath,
+          relativeName,
+        );
+      } else if (sourceStats.isFile()) {
+        copyFileSync(resolvedSourcePath, resolvedDestinationPath);
+        files.push({
+          name: relativeName.split(path.sep).join('/'),
+          sizeBytes: statSync(resolvedDestinationPath).size,
+        });
+      } else {
+        throw new Error(
+          'Memory diagnostics report contains an unsupported file',
+        );
+      }
+    }
+  };
+  copyDirectory(sourceDirectory, destinationDirectory);
+  files.sort((left, right) => left.name.localeCompare(right.name));
+  return files;
+}
+
+async function captureLabTranscriptDiagnostics({
+  page,
+  counters,
+  scenarioName,
+  userDataDir,
+}) {
+  const captureDirectory = ensureLabCaptureDirectory(
+    process.env.CANOPY_PERF_LAB_CAPTURE_DIR,
+  );
+  const attemptDirectory = createLabCaptureAttemptDirectory(
+    captureDirectory,
+    scenarioName,
+  );
+  const labWindow = counters?.labWindow;
+  if (!labWindow?.startedAt || !labWindow?.endedAt) {
+    throw new Error('Lab transcript result is missing its measured window');
+  }
+
+  const elapsedMs = Date.now() - Date.parse(labWindow.endedAt);
+  await delay(Math.max(0, LAB_CAPTURE_EVIDENCE_DELAY_MS - elapsedMs));
+  const visibilityState = await page.evaluate(() => document.visibilityState);
+
+  // Copy the A1 evidence before the memory report introduces its own pause.
+  const dataDirectory = realpathSync(userDataDir);
+  const appEventFiles = copyLabAppEventFiles(dataDirectory, attemptDirectory);
+  const a1 = classifyLabA1Summaries(
+    appEventFiles.flatMap((file) =>
+      readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean),
+    ),
+    labWindow,
+  );
+
+  await page.evaluate(() =>
+    window.api.savePreferences({ memoryDiagnosticsEnabled: true }),
+  );
+  const statusDeadline = Date.now() + LAB_CAPTURE_MEMORY_DIAGNOSTICS_TIMEOUT_MS;
+  let memoryStatus;
+  while (Date.now() <= statusDeadline) {
+    memoryStatus = await page.evaluate(() =>
+      window.api.memoryDiagnostics.getStatus(),
+    );
+    if (memoryStatus?.enabled === true) break;
+    await delay(Math.min(250, Math.max(0, statusDeadline - Date.now())));
+  }
+  if (memoryStatus?.enabled !== true) {
+    throw new Error('Memory diagnostics did not enable within 15 seconds');
+  }
+
+  const report = await page.evaluate(() =>
+    window.api.memoryDiagnostics.createReport(),
+  );
+  if (!report?.ok) {
+    throw new Error(
+      `Memory diagnostics report failed: ${report?.message ?? report?.reason ?? 'unknown error'}`,
+    );
+  }
+  const reportSummary = report.report;
+  const files = copyLabMemoryReport(
+    dataDirectory,
+    reportSummary.reportId,
+    attemptDirectory,
+  );
+  const receipt = {
+    status: 'captured',
+    scenarioName,
+    attemptDirectory: path.basename(attemptDirectory),
+    labWindow,
+    visibilityState,
+    a1,
+    memoryReport: {
+      reportId: reportSummary.reportId,
+      fileCount: reportSummary.fileCount,
+      totalBytes: reportSummary.totalBytes,
+      durationMs: reportSummary.durationMs,
+      files,
+    },
+  };
+  const receiptPath = resolvePathWithinRoot(
+    attemptDirectory,
+    path.join(attemptDirectory, 'receipt.json'),
+    { allowMissing: true },
+  );
+  writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, {
+    flag: 'wx',
+  });
+  return receipt;
+}
+
+async function seedLabTranscriptFixture(userDataDir) {
+  prepareTranscriptStreamWorkspace(userDataDir);
+  const { LAB_TRANSCRIPT, seedLabTranscript } =
+    await import('../electron/lab-transcript-fixture.mjs');
+  if (!LAB_TRANSCRIPT || typeof seedLabTranscript !== 'function') {
+    throw new Error('The lab transcript fixture module is incomplete');
+  }
+
+  const fixture = await seedLabTranscript(userDataDir);
+  const dimensions = labTranscriptDimensions(fixture);
+  return { ...fixture, dimensions };
+}
+
+async function prepareLabTranscript(userDataDir, config) {
+  const fixture = await seedLabTranscriptFixture(userDataDir);
+  const streamMs = Math.max(
+    config.transcriptStreamMs,
+    LAB_TRANSCRIPT_MIN_STREAM_MS,
+  );
+  const text = buildTranscriptStreamText(
+    LAB_TRANSCRIPT_STREAM_MARKER,
+    config.transcriptStreamCharacters,
+  );
+  await registerScenario(
+    PERFORMANCE_MOCK_BASE_URL,
+    LAB_TRANSCRIPT_STREAM_MARKER,
+    {
+      llm: buildTranscriptStreamConversation(
+        LAB_TRANSCRIPT_STREAM_MARKER,
+        text,
+        { ...config, transcriptStreamMs: streamMs },
+      ),
+    },
+  );
+  return {
+    ...fixture,
+    marker: LAB_TRANSCRIPT_STREAM_MARKER,
+    requestTag: LAB_TRANSCRIPT_REQUEST_TAG,
+    providerFinalMarker: `${LAB_TRANSCRIPT_STREAM_MARKER} complete.`,
+    streamCharacters: text.length,
+    streamMs,
+  };
+}
+
+const prepareLabTranscriptCheckpoint = (userDataDir) =>
+  seedLabTranscriptFixture(userDataDir);
+
+async function openLabTranscriptEntry(page, fixture) {
+  await openMainPage(page);
+  const defaultToggle = page.getByTestId(
+    'sidebar-cowork-project-cowork-default-toggle',
+  );
+  if (
+    (await defaultToggle.count()) > 0 &&
+    (await defaultToggle.isVisible()) &&
+    (await defaultToggle.getAttribute('aria-expanded')) !== 'true'
+  ) {
+    await defaultToggle.click();
+  }
+  await page.getByTestId(`sidebar-work-entry-${fixture.entryId}`).click();
+  const chatTab = page.getByTestId(`panel-tab-panel-chat-${fixture.chatId}`);
+  await expect(chatTab).toBeVisible({ timeout: 30_000 });
+  await chatTab.click();
+  await expect(chatPanelForTab(page, fixture.chatId)).toBeVisible({
+    timeout: 30_000,
+  });
+  return chatPanelForTab(page, fixture.chatId);
+}
+
+async function assertLabProviderActive(page, fixture, label) {
+  const active = await readLabTranscriptActiveSession(page, fixture);
+  if (active.activeCount < 1) {
+    throw new Error(
+      `Lab transcript provider was not active ${label}; observed ${active.activeCount} active turns`,
+    );
+  }
+  return active;
+}
+
+async function startLabTranscriptStream({ page, config, tasks, fixture }) {
+  const panel = chatPanelForTab(page, fixture.chatId);
+  const userMessage = `[${fixture.marker}] [Canopy-Mock-Request:${fixture.requestTag}] Stream while transcript cards update.`;
+  await recordResponsiveTask(
+    tasks,
+    'lab_transcript_start_provider',
+    async () => {
+      await panel.getByRole('textbox').first().fill(userMessage);
+      await panel.getByRole('button', { name: 'Send message' }).click();
+      await expect(panel.getByText(userMessage, { exact: true })).toBeVisible({
+        timeout: 30_000,
+      });
+      await waitUntil(
+        async () =>
+          (await readLabTranscriptActiveSession(page, fixture)).activeCount > 0,
+        {
+          timeoutMs: 60_000,
+          label: 'lab transcript provider to become active',
+        },
+      );
+      await waitUntil(
+        () =>
+          scenarioLlmRequestCount(fixture.marker, fixture.requestTag).then(
+            (count) => count > 0,
+          ),
+        {
+          timeoutMs: 60_000,
+          label: 'lab transcript controlled provider request',
+        },
+      );
+      // Committed pages hold no in-progress text; the second provider request
+      // (after the tool results) is the one that streams the reply text.
+      await waitUntil(
+        async () => {
+          const active = await readLabTranscriptActiveSession(page, fixture);
+          if (active.activeCount < 1) {
+            throw new FatalWaitError(
+              'Lab transcript provider finished before its streamed text began',
+            );
+          }
+          const requests = await scenarioLlmRequestCount(
+            fixture.marker,
+            fixture.requestTag,
+          );
+          return requests >= 2;
+        },
+        {
+          timeoutMs: 60_000,
+          intervalMs: 50,
+          label: 'lab transcript streamed text request',
+        },
+      );
+    },
+    { chatId: fixture.chatId },
+    config.responsivenessBudgetMs,
+  );
+  const active = await assertLabProviderActive(
+    page,
+    fixture,
+    'after provider start',
+  );
+  const providerStreamStart = {
+    textStepRequested: true,
+    providerRequests: await scenarioLlmRequestCount(
+      fixture.marker,
+      fixture.requestTag,
+    ),
+    activeChatIds: active.activeChatIds,
+  };
+  return { userMessage, providerStreamStart };
+}
+
+/**
+ * Measures how long the focused chat takes to render streamed provider text
+ * past `afterCharacters`. A slow render is the workload's measured outcome,
+ * not a harness failure; the provider must still be active.
+ */
+async function measureLabStreamingPayload(
+  page,
+  fixture,
+  label,
+  { afterCharacters = 0, timeoutMs = 20_000 } = {},
+) {
+  const payload = chatPanelForTab(page, fixture.chatId)
+    .getByText(`Streaming transcript payload ${fixture.marker}`, {
+      exact: false,
+    })
+    .first();
+  const startedAtMs = performance.now();
+  let visibleTextCharacters = 0;
+  while (performance.now() - startedAtMs < timeoutMs) {
+    const active = await readLabTranscriptActiveSession(page, fixture);
+    if (active.activeCount < 1) {
+      throw new FatalWaitError(
+        `Lab transcript provider finished before ${label} could be measured`,
+      );
+    }
+    visibleTextCharacters =
+      (await payload.count()) > 0
+        ? ((await payload.textContent()) ?? '').length
+        : 0;
+    if (visibleTextCharacters > afterCharacters) break;
+    await delay(100);
+  }
+  return {
+    rendered: visibleTextCharacters > afterCharacters,
+    visibleTextCharacters,
+    waitedMs: performance.now() - startedAtMs,
+    timeoutMs,
+  };
+}
+
+async function runLabTranscriptUpdatePhase({
+  page,
+  electronApp,
+  fixture,
+  count,
+  labelPrefix,
+}) {
+  let providerActiveChecks = 0;
+  const result = await runSerializedLabTranscriptUpdates({
+    labelPrefix,
+    count,
+    update: async (label) => {
+      const activeBefore = await assertLabProviderActive(
+        page,
+        fixture,
+        `before ${label}`,
+      );
+      const receipt = await updateLabTranscript(electronApp, label);
+      const activeAfter = await assertLabProviderActive(
+        page,
+        fixture,
+        `after ${label}`,
+      );
+      providerActiveChecks += 2;
+      return {
+        ...receipt,
+        providerActiveBefore: activeBefore.activeCount,
+        providerActiveAfter: activeAfter.activeCount,
+      };
+    },
+  });
+  return { ...result, providerActiveChecks };
+}
+
+async function selectLabTranscriptTab(page, fixture, chatId) {
+  const tab = page.getByTestId(`panel-tab-panel-chat-${chatId}`);
+  await expect(tab).toBeVisible({ timeout: 30_000 });
+  await tab.click();
+  await expect(tab).toHaveAttribute('aria-selected', 'true');
+  if (chatId === fixture.chatId) {
+    await expect(chatPanelForTab(page, fixture.chatId)).toBeVisible();
+  }
+  return readLabTranscriptChatVisibility(page, fixture);
+}
+
+function assertHeadlessLabWindow(identity, label, startIdentity) {
+  if (!identity.available) {
+    throw new Error(`Lab transcript main native window was not found ${label}`);
+  }
+  if (identity.visible) {
+    throw new Error(`Lab transcript native window became visible ${label}`);
+  }
+  if (
+    startIdentity &&
+    identity.nativeWindowId !== startIdentity.nativeWindowId
+  ) {
+    throw new Error(
+      'Lab transcript changed its native main window during the run',
+    );
+  }
+}
+
+async function runLabTranscriptScenario({
+  page,
+  electronApp,
+  config,
+  tasks,
+  fixture,
+  variant,
+}) {
+  const before = await inspectLabTranscript(electronApp);
+  const provenance = labTranscriptProvenance(fixture, before);
+  const nativeWindowStart =
+    await readLabTranscriptNativeWindowIdentity(electronApp);
+  assertHeadlessLabWindow(nativeWindowStart, 'at start');
+
+  await openLabTranscriptEntry(page, fixture);
+  const labWindowStartedAt = new Date().toISOString();
+  const initialVisibility = await readLabTranscriptChatVisibility(
+    page,
+    fixture,
+  );
+  if (!initialVisibility.chatSelected || !initialVisibility.chatPanelVisible) {
+    throw new Error('Lab transcript chat did not open as the selected tab');
+  }
+
+  const focusedUpdateCount = variant === 'onscreen' ? 16 : 4;
+  const hiddenUpdateCount = LAB_TRANSCRIPT_UPDATE_COUNT - focusedUpdateCount;
+  let focusedUpdates;
+  let hiddenUpdates;
+  let focusedAfter;
+  let hiddenAfter;
+  let focusedVisibilityAfter;
+  let hiddenVisibilityAfter;
+  let providerStreamStart;
+  let focusedStreamText;
+
+  await recordStreamedReply(tasks, 'lab-focused-stream', async () => {
+    const started = await startLabTranscriptStream({
+      page,
+      config,
+      tasks,
+      fixture,
+    });
+    providerStreamStart = started.providerStreamStart;
+    focusedUpdates = await runLabTranscriptUpdatePhase({
+      page,
+      electronApp,
+      fixture,
+      count: focusedUpdateCount,
+      labelPrefix: 'lab-focused',
+    });
+    focusedStreamText = await measureLabStreamingPayload(
+      page,
+      fixture,
+      'focused streamed text',
+    );
+    focusedVisibilityAfter = await readLabTranscriptChatVisibility(
+      page,
+      fixture,
+    );
+    if (
+      !focusedVisibilityAfter.chatSelected ||
+      !focusedVisibilityAfter.chatPanelVisible
+    ) {
+      throw new Error(
+        'Lab transcript left the focused tab during its update burst',
+      );
+    }
+    focusedAfter = await inspectLabTranscript(electronApp);
+  });
+
+  const hiddenVisibility = await selectLabTranscriptTab(
+    page,
+    fixture,
+    fixture.leanId,
+  );
+  if (
+    hiddenVisibility.chatSelected ||
+    hiddenVisibility.chatPanelVisible ||
+    !hiddenVisibility.siblingSelected
+  ) {
+    throw new Error(
+      'Lab transcript chat remained visible behind its sibling tab',
+    );
+  }
+  await recordStreamedReply(tasks, 'lab-hidden-stream', async () => {
+    hiddenUpdates = await runLabTranscriptUpdatePhase({
+      page,
+      electronApp,
+      fixture,
+      count: hiddenUpdateCount,
+      labelPrefix: 'lab-hidden',
+    });
+    hiddenVisibilityAfter = await readLabTranscriptChatVisibility(
+      page,
+      fixture,
+    );
+    if (
+      hiddenVisibilityAfter.chatSelected ||
+      hiddenVisibilityAfter.chatPanelVisible ||
+      !hiddenVisibilityAfter.siblingSelected
+    ) {
+      throw new Error(
+        'Lab transcript left the hidden-tab state during its update burst',
+      );
+    }
+    hiddenAfter = await inspectLabTranscript(electronApp);
+  });
+  const hiddenProviderProgress = await assertLabProviderActive(
+    page,
+    fixture,
+    'after hidden updates',
+  );
+  const hiddenProgress = assertLabTranscriptUpdateProgress({
+    before: focusedAfter,
+    after: hiddenAfter,
+    updates: hiddenUpdates.updates,
+    expectedCount: hiddenUpdateCount,
+  });
+
+  const after = await inspectLabTranscript(electronApp);
+  const updates = [
+    ...(focusedUpdates?.updates ?? []),
+    ...(hiddenUpdates?.updates ?? []),
+  ];
+  const progress = assertLabTranscriptUpdateProgress({
+    before,
+    after,
+    updates,
+  });
+  const latestUpdateLabel = updates.at(-1)?.label;
+  if (!latestUpdateLabel) {
+    throw new Error('Lab transcript update receipt has no final update label');
+  }
+  const latestLegacySentinel = `lab-legacy-${latestUpdateLabel}`;
+
+  let catchupVisibility;
+  let catchupPartialEvidence;
+  let catchupSentinelEvidence;
+  await recordStreamedReply(tasks, 'lab-refocused-catchup', async () => {
+    catchupVisibility = await selectLabTranscriptTab(
+      page,
+      fixture,
+      fixture.chatId,
+    );
+    if (
+      !catchupVisibility.chatSelected ||
+      !catchupVisibility.chatPanelVisible
+    ) {
+      throw new Error('Lab transcript chat did not catch up after refocus');
+    }
+    const catchup = await measureLabStreamingPayload(
+      page,
+      fixture,
+      'refocused catch-up',
+      { afterCharacters: focusedStreamText.visibleTextCharacters },
+    );
+    catchupPartialEvidence = {
+      ...catchup,
+      focusedVisibleTextCharacters: focusedStreamText.visibleTextCharacters,
+    };
+    await waitUntil(
+      async () =>
+        (await readLabTranscriptActiveSession(page, fixture)).activeCount === 0,
+      {
+        timeoutMs: fixture.streamMs + 120_000,
+        label: 'lab transcript provider completion after refocus',
+      },
+    );
+    await expect(
+      chatPanelForTab(page, fixture.chatId).getByText(
+        fixture.providerFinalMarker,
+        { exact: false },
+      ),
+    ).toBeAttached({ timeout: 30_000 });
+    const streamSentinelInChat = chatPanelForTab(
+      page,
+      fixture.chatId,
+    ).getByText(progress.latestSentinel, { exact: false });
+    const legacySentinelInChat = chatPanelForTab(
+      page,
+      fixture.chatId,
+    ).getByText(latestLegacySentinel, { exact: false });
+    const streamSentinelRendered = (await streamSentinelInChat.count()) > 0;
+    if (streamSentinelRendered) {
+      await expect(streamSentinelInChat.first()).toBeAttached();
+    }
+    const legacySentinelRendered = (await legacySentinelInChat.count()) > 0;
+    if (legacySentinelRendered) {
+      await expect(legacySentinelInChat.first()).toBeAttached();
+    }
+    catchupSentinelEvidence = {
+      stream: streamSentinelRendered
+        ? 'rendered-chat-sentinel'
+        : 'canonical-reread-only',
+      legacy: legacySentinelRendered
+        ? 'rendered-chat-sentinel'
+        : 'canonical-reread-only',
+    };
+  });
+
+  // Reread from main's canonical store without reloading the renderer: a
+  // reload would reset the renderer monitor this measurement depends on.
+  const persistedRead = await readPersistedLabTranscriptPage(
+    page,
+    electronApp,
+    fixture,
+    {
+      latestSentinel: progress.latestSentinel,
+      latestLegacySentinel,
+      providerFinalMarker: fixture.providerFinalMarker,
+      target: before.target,
+    },
+  );
+  if (
+    !persistedRead.providerFinalMarkerRead ||
+    !persistedRead.streamSentinelRead ||
+    !persistedRead.legacySentinelRead
+  ) {
+    throw new Error(
+      `Lab transcript reread did not find the provider, child-stream and legacy-card writes: ${JSON.stringify(persistedRead)}`,
+    );
+  }
+  persistedRead.rereadBy = 'canonical-store-reread';
+  persistedRead.reloadOrRelaunch = false;
+  persistedRead.parentReadSource = 'window.api.chat.getTranscriptPage';
+  const reopenedVisibility = await readLabTranscriptChatVisibility(
+    page,
+    fixture,
+  );
+  const nativeWindowEnd =
+    await readLabTranscriptNativeWindowIdentity(electronApp);
+  assertHeadlessLabWindow(nativeWindowEnd, 'at end', nativeWindowStart);
+  if (
+    !reopenedVisibility.chatSelected ||
+    !reopenedVisibility.chatPanelVisible
+  ) {
+    throw new Error('Lab transcript chat was not the selected tab at the end');
+  }
+  persistedRead.chatVisibility = reopenedVisibility;
+
+  const labWindow = {
+    startedAt: labWindowStartedAt,
+    endedAt: new Date().toISOString(),
+  };
+  return {
+    ...provenance,
+    labWindow,
+    updateCount: progress.achievedCount,
+    legacyUpdateOutcomes: after.legacyOutcomes ?? null,
+    updateCadenceMs: LAB_TRANSCRIPT_UPDATE_CADENCE_MS,
+    focusedUpdateCount,
+    hiddenUpdateCount,
+    hiddenProgress: {
+      ...hiddenProgress,
+      activeProviderChatIds: hiddenProviderProgress.activeChatIds,
+      visible: hiddenVisibility,
+      providerActiveChecks: hiddenUpdates.providerActiveChecks,
+      chatVisibilityAfter: hiddenVisibilityAfter,
+    },
+    focusedWindow: {
+      label: 'lab-focused-stream',
+      chatVisibility: initialVisibility,
+      chatVisibilityEnd: focusedVisibilityAfter,
+      updateCount: focusedUpdates.achievedCount,
+      maxStartGapMs: focusedUpdates.maxStartGapMs,
+      providerActiveChecks: focusedUpdates.providerActiveChecks,
+      streamingTextAfterBurst: focusedStreamText,
+    },
+    // The provider stream is proven by its text request and by an active turn
+    // around every update; committed pages carry no in-progress text.
+    providerStream: {
+      ...providerStreamStart,
+      streamMs: fixture.streamMs,
+    },
+    hiddenWindow: {
+      label: 'lab-hidden-stream',
+      chatVisibility: hiddenVisibility,
+      updateCount: hiddenUpdates.achievedCount,
+      maxStartGapMs: hiddenUpdates.maxStartGapMs,
+    },
+    refocusedCatchup: {
+      label: 'lab-refocused-catchup',
+      chatVisibility: catchupVisibility,
+      partialProviderText: catchupPartialEvidence,
+      providerFinalMarker: fixture.providerFinalMarker,
+      sentinelEvidence: catchupSentinelEvidence,
+    },
+    persistedRead,
+    nativeWindow: { start: nativeWindowStart, end: nativeWindowEnd },
+    progress,
+  };
+}
+
+async function runLabTranscriptCheckpointScenario({
+  page,
+  electronApp,
+  tasks,
+  fixture,
+}) {
+  const before = await inspectLabTranscript(electronApp);
+  const provenance = labTranscriptProvenance(fixture, before);
+  const nativeWindowStart =
+    await readLabTranscriptNativeWindowIdentity(electronApp);
+  assertHeadlessLabWindow(nativeWindowStart, 'before checkpoint probe');
+
+  await openLabTranscriptEntry(page, fixture);
+  const visibility = await readLabTranscriptChatVisibility(page, fixture);
+  if (!visibility.chatSelected || !visibility.chatPanelVisible) {
+    throw new Error(
+      'Lab transcript checkpoint fixture did not load its primary chat',
+    );
+  }
+
+  const checkpointReceipt = await recordTask(
+    tasks,
+    'lab_transcript_checkpoint',
+    async () =>
+      summarizeLabTranscriptCheckpoint(
+        await runLabTranscriptCheckpointProbe({
+          electronApp,
+          fixture,
+          target: before.target,
+        }),
+      ),
+    { fixtureDimensions: fixture.dimensions },
+  );
+  const after = await inspectLabTranscript(electronApp);
+  if (
+    after.legacyUpdates !== before.legacyUpdates ||
+    after.streamUpdates - before.streamUpdates !==
+      checkpointReceipt.mutationCount ||
+    after.latestRevision <= before.latestRevision
+  ) {
+    throw new Error(
+      'Lab transcript checkpoint probe did not commit exactly its bounded child-only updates',
+    );
+  }
+  const nativeWindowEnd =
+    await readLabTranscriptNativeWindowIdentity(electronApp);
+  assertHeadlessLabWindow(
+    nativeWindowEnd,
+    'after checkpoint probe',
+    nativeWindowStart,
+  );
+  return {
+    ...provenance,
+    checkpointReceipt,
+    checkpointProbe: {
+      standalone: true,
+      providerStream: false,
+      legacyStatusUpdates: 0,
+      childRowMutations: checkpointReceipt.mutationCount,
+      fixtureLoaded: true,
+      chatVisibility: visibility,
+      inspectionBefore: normalizeLabTranscriptReceipt(before),
+      inspectionAfter: normalizeLabTranscriptReceipt(after),
+      nativeWindow: { start: nativeWindowStart, end: nativeWindowEnd },
+    },
+  };
+}
+
 async function prepareTranscriptStream(userDataDir, config, activeTurnOnly) {
   prepareTranscriptStreamWorkspace(userDataDir);
   const fixture = await seedStressTranscript(userDataDir, {
@@ -8091,6 +9345,696 @@ async function runManagedDelegationConcurrency({
   };
 }
 
+// ── Delegation restart cycles ───────────────────────────────────────────────
+//
+// One Claude parent in a worktree chat whose committed history is very long
+// and holds many settled legacy delegation cards. Each cycle starts a turn
+// that launches background delegates (one of them on Codex), stops the
+// parent turn with the composer's Stop while they run, stops every delegate
+// from the background drawer's Stop all, and waits for chat storage to go
+// quiet before the next cycle starts. The parent's committed JSONL is watched
+// in main: every full replacement of it rewrites the whole history, the cost
+// the foreground-first streaming follow-up set out to remove. Main's heap is
+// sampled across the cycles, and typing and navigation probes run while the
+// delegates are live.
+//
+// Run it with format 4 on (`CANOPY_E2E_CHAT_FORMAT4=1`, stream cards) and off
+// (legacy cards, production today) to compare the two card paths.
+
+const DELEGATION_CYCLES_CHAT_ID = 'delegation-cycles-parent';
+const DELEGATION_CYCLES_MARKER = 'Canopy-CDRCPARENT';
+const DELEGATION_CYCLES_EVIDENCE_FILE = 'delegation-cycles-evidence.txt';
+const DELEGATION_CYCLES_HEAP_KEY = '__CANOPY_PERF_DELEGATION_CYCLES_HEAP__';
+
+// A settled card validates against its route, as a real retained card does.
+const DELEGATION_CYCLES_HISTORY_ROUTE = Object.freeze({
+  selectedModelId: 'sonnet',
+  selectedModelLabel: 'Claude Sonnet',
+  runtimeModelId: 'claude-sonnet-4-6',
+  runtimeModelLabel: 'Claude Sonnet 4.6',
+  harnessId: 'claude',
+  runtimeKind: 'local-sdk',
+  runnerRegistrationId: 'claude-local',
+  runtimeVersion: '1',
+  adapterVersion: '1',
+  modelSource: 'test',
+  providerType: 'test',
+  assignmentRevision: 'a1',
+  billingAuthority: 'native',
+  aiCreditsRouted: false,
+  capabilities: ['read'],
+  supportedThinkingLevels: ['low'],
+  capabilitySnapshotHash: 'c1',
+  capabilityGeneration: 1,
+  policyRevision: 'p1',
+});
+
+export function delegationCycleTag(cycle) {
+  return `delegation-cycle-${cycle}`;
+}
+
+export function delegationCycleDelegates(config, cycle) {
+  return Array.from(
+    { length: config.delegationCyclesDelegates },
+    (_, index) => {
+      const harness = index === 1 ? 'codex' : 'claude';
+      return {
+        marker: `Canopy-CDRC${cycle}D${index + 1}`,
+        harness,
+        model: harness === 'claude' ? 'sonnet' : 'gpt-6.1-sol',
+        description: `Cycle ${cycle} review ${index + 1}`,
+      };
+    },
+  );
+}
+
+/**
+ * The mock LLM scripts for the parent and every delegate, by marker. The
+ * parent keeps one marker for its whole history, so each cycle's steps are
+ * keyed by that cycle's request tag. Pure, so the workload's shape is
+ * testable without a launch.
+ */
+export function delegationCycleScripts(config, evidencePath) {
+  const parentStepsByTag = {};
+  const scripts = {};
+  for (let cycle = 1; cycle <= config.delegationCycles; cycle += 1) {
+    const delegates = delegationCycleDelegates(config, cycle);
+    const spawn = {
+      toolCalls: delegates.map((delegate, index) => ({
+        id: `delegation-cycle-${cycle}-spawn-${index + 1}`,
+        name: claudeToolName('DelegateTask'),
+        input: {
+          model: delegate.model,
+          description: delegate.description,
+          prompt: `[${delegate.marker}] Read ${DELEGATION_CYCLES_EVIDENCE_FILE} repeatedly and report what changed. Scope: inspection only, no modifications.`,
+          run_in_background: true,
+        },
+      })),
+      stopReason: 'tool_use',
+    };
+    // Outlasts the cycle, so the composer's Stop always lands mid-stream.
+    const work = {
+      text: performanceStreamingText(
+        `Delegation cycle ${cycle} parent keeps working`,
+        config.chatReplyCharacters,
+      ),
+      stopReason: 'end_turn',
+      streamMs: config.delegationCyclesParentStreamMs,
+      chunkChars: 4,
+    };
+    // A stopped delegate's result can wake the parent; each wake ends at once.
+    const wake = {
+      text: `Noted the stopped reviews for cycle ${cycle}.`,
+      stopReason: 'end_turn',
+    };
+    parentStepsByTag[delegationCycleTag(cycle)] = [
+      spawn,
+      work,
+      ...Array.from({ length: delegates.length + 2 }, () => wake),
+    ];
+    for (const delegate of delegates) {
+      const steps = Array.from(
+        { length: config.delegationCyclesChildSteps },
+        (_, index) => ({
+          text: managedDelegationStepText(delegate.marker, index + 1),
+          streamMs: config.delegationCyclesChildStepMs,
+          chunkChars: 8,
+          toolCalls: [
+            delegate.harness === 'claude'
+              ? {
+                  id: `${delegate.marker}-read-${index + 1}`,
+                  name: 'Read',
+                  input: { file_path: evidencePath },
+                }
+              : {
+                  namespace: 'functions',
+                  name: 'exec_command',
+                  input: { cmd: `cat '${evidencePath}'` },
+                },
+          ],
+          stopReason: 'tool_use',
+        }),
+      );
+      steps.push({
+        text: `Finding for ${delegate.marker}.`,
+        stopReason: 'end_turn',
+      });
+      scripts[delegate.marker] = {
+        llm: {
+          steps,
+          ...(delegate.harness === 'codex'
+            ? { openAiStepCursor: 'completed-scenario-tool-calls' }
+            : {}),
+        },
+      };
+    }
+  }
+  scripts[DELEGATION_CYCLES_MARKER] = {
+    llm: {
+      steps: [{ text: 'Ready for the next cycle.', stopReason: 'end_turn' }],
+      stepsByRequestTag: parentStepsByTag,
+    },
+  };
+  return scripts;
+}
+
+/**
+ * Committed parent history: synthetic rich turns with a settled legacy
+ * delegation card after every few of them, as a long-running orchestrator
+ * chat accumulates. Deterministic for a given size.
+ */
+export function buildDelegationCycleHistory({
+  transcriptBytes,
+  historyCards,
+  messageBytes = 4 * 1024,
+}) {
+  const messageCount = Math.max(2, Math.ceil(transcriptBytes / messageBytes));
+  const messages = buildSyntheticTranscriptMessages({
+    transcriptId: DELEGATION_CYCLES_CHAT_ID,
+    messageCount,
+    messageBytes,
+    shape: 'rich',
+  });
+  const cards = Math.min(historyCards, Math.floor(messageCount / 2));
+  const every = cards > 0 ? Math.floor(messageCount / cards) : 0;
+  const history = [];
+  let lastUserId = null;
+  let added = 0;
+  for (const [index, message] of messages.entries()) {
+    history.push(message);
+    if (message.role === 'user') lastUserId = message.id;
+    if (
+      added < cards &&
+      lastUserId &&
+      message.role === 'assistant' &&
+      (index + 1) % every === 0
+    ) {
+      added += 1;
+      const delegationId = `delegation-cycles-history-${String(added).padStart(4, '0')}`;
+      history.push({
+        id: `delegated-agent-${delegationId}`,
+        role: 'assistant',
+        timestamp: message.timestamp + 1,
+        blocks: [
+          {
+            type: 'delegated_agent_call',
+            delegationId,
+            agentBlockId: `delegated-agent-${delegationId}`,
+            runGeneration: 1,
+            status: 'completed',
+            outputTruncated: false,
+            transcriptStore: 'chat-log-v1',
+            sequence: 4,
+            parentHarnessId: 'claude',
+            parentTurnId: lastUserId,
+            parentToolCallId: `spawn-${delegationId}`,
+            selectedModelId: 'sonnet',
+            runtimeModelId: 'claude-sonnet-4-6',
+            targetHarnessId: 'claude',
+            routeSnapshot: DELEGATION_CYCLES_HISTORY_ROUTE,
+            description: `Earlier review ${added}`,
+            prompt: `Review part ${added} of the earlier change.`,
+            executionMode: 'background',
+            finalText: syntheticText(`Earlier review ${added} finding`, 512),
+            createdAt: message.timestamp + 1,
+          },
+        ],
+      });
+    }
+  }
+  return { messages: history, historyCards: added };
+}
+
+async function prepareDelegationRestartCycles(userDataDir, config) {
+  const seed = seedWorkspace(userDataDir);
+  const worktreePath = seed.workspaces?.find(
+    (workspace) => workspace.id === WORKSPACE_ID,
+  )?.worktreePath;
+  if (!worktreePath) throw new Error('Missing the seeded demo worktree path');
+  const evidencePath = path.join(worktreePath, DELEGATION_CYCLES_EVIDENCE_FILE);
+  writeFileSync(
+    evidencePath,
+    syntheticText('Delegation cycle evidence', 4 * 1024),
+    'utf8',
+  );
+  writeFileSync(
+    path.join(userDataDir, 'preferences.json'),
+    JSON.stringify(
+      {
+        version: 1,
+        preferences: {
+          onboardingCompleted: ['v1'],
+          managedDelegationMode: 'explicit-only',
+          // Every cycle's delegates run at once; none waits in the queue.
+          managedDelegationMaxConcurrent: Math.max(
+            4,
+            config.delegationCyclesDelegates,
+          ),
+          defaultChatInterfaceMode: 'canopy',
+          defaultWorktreeProvider: 'claude',
+          defaultChatProvider: 'claude',
+          codexMultiAgentWorktreeChatsEnabled: false,
+          summaryModel: 'claude-haiku-4-5-20251001',
+          summaryModelSetByUser: true,
+        },
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+  // Normalize the tab as `seedWorktreeChat` does, then write the history
+  // straight into canonical V2 storage, so launch does not migrate it.
+  const { file: legacyChats } = seedWorktreeChat({
+    userDataDir,
+    workspaceId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    providerType: 'claude',
+    activeTabId: DELEGATION_CYCLES_CHAT_ID,
+    tabs: [
+      {
+        id: DELEGATION_CYCLES_CHAT_ID,
+        title: 'Delegation cycles',
+        kind: 'chat',
+        providerType: 'claude',
+        // Deterministic: delegates read without stopping on an approval.
+        approvalMode: 'full-access',
+        createdAt: '2026-07-01T12:00:00.000Z',
+      },
+    ],
+  });
+  const tab = legacyChats.tabs.find(
+    (entry) => entry.id === DELEGATION_CYCLES_CHAT_ID,
+  );
+  if (!tab) throw new Error('Delegation cycle chat tab was not seeded');
+  const history = buildDelegationCycleHistory({
+    transcriptBytes: config.delegationCyclesTranscriptBytes,
+    historyCards: config.delegationCyclesHistoryCards,
+  });
+  const workspaceRoot = path.join(userDataDir, 'workspaces', WORKSPACE_ID);
+  const { require: tsRequire } = await import('tsx/cjs/api');
+  const { ChatStorageV2 } = tsRequire(
+    '../../src/main/lib/chat-storage-v2.ts',
+    import.meta.url,
+  );
+  const storage = new ChatStorageV2(workspaceRoot, WORKTREE_ID);
+  await storage.migrate(async () => ({
+    revision: 1,
+    index: { activeTabId: DELEGATION_CYCLES_CHAT_ID, runtimeByChatId: {} },
+    recovery: {
+      receipts: [],
+      mutationIds: [],
+      removedTabIds: [],
+      removedArchiveEntryIds: [],
+      removedMessageIds: [],
+    },
+    chats: (async function* () {
+      yield {
+        metadata: Object.fromEntries(
+          Object.entries(tab).filter(([key]) => key !== 'messages'),
+        ),
+        messages: (async function* () {
+          yield* history.messages;
+        })(),
+      };
+    })(),
+  }));
+  const transcriptPath = path.join(
+    workspaceRoot,
+    'chat-storage-v2',
+    WORKTREE_ID,
+    'transcripts',
+    `${DELEGATION_CYCLES_CHAT_ID}.jsonl`,
+  );
+  const scripts = delegationCycleScripts(config, evidencePath);
+  for (const [marker, script] of Object.entries(scripts))
+    await registerScenario(PERFORMANCE_MOCK_BASE_URL, marker, script);
+  return {
+    transcriptPath,
+    seededMessages: history.messages.length,
+    seededHistoryCards: history.historyCards,
+    seededTranscriptBytes: statSync(transcriptPath).size,
+  };
+}
+
+/** Samples main's heap until stopped; the peak is a lower bound. */
+async function startMainHeapSampler(electronApp, intervalMs) {
+  await evaluateMainWithRetry(() =>
+    electronApp.evaluate(
+      (_electron, { key, interval }) => {
+        globalThis[key]?.stop?.();
+        const first = process.memoryUsage();
+        const state = {
+          samples: 0,
+          startHeapUsed: first.heapUsed,
+          startRss: first.rss,
+          peakHeapUsed: first.heapUsed,
+          peakRss: first.rss,
+        };
+        const sample = () => {
+          const usage = process.memoryUsage();
+          state.samples += 1;
+          state.peakHeapUsed = Math.max(state.peakHeapUsed, usage.heapUsed);
+          state.peakRss = Math.max(state.peakRss, usage.rss);
+        };
+        const timer = setInterval(sample, interval);
+        timer.unref?.();
+        globalThis[key] = {
+          stop() {
+            clearInterval(timer);
+            sample();
+            const end = process.memoryUsage();
+            return { ...state, endHeapUsed: end.heapUsed, endRss: end.rss };
+          },
+        };
+      },
+      { key: DELEGATION_CYCLES_HEAP_KEY, interval: intervalMs },
+    ),
+  );
+}
+
+async function stopMainHeapSampler(electronApp) {
+  return evaluateMainWithRetry(() =>
+    electronApp.evaluate(
+      (_electron, key) => globalThis[key]?.stop?.() ?? null,
+      DELEGATION_CYCLES_HEAP_KEY,
+    ),
+  );
+}
+
+/** Card rows in the committed parent, by store and status. */
+export function summarizeDelegationCycleCards(jsonl) {
+  const summary = { cards: 0, byStore: {}, byStatus: {} };
+  for (const line of jsonl.split('\n')) {
+    if (!line.includes('"delegated_agent_call"')) continue;
+    const row = JSON.parse(line);
+    for (const block of row.blocks ?? []) {
+      if (block?.type !== 'delegated_agent_call') continue;
+      if (block.delegationId?.startsWith('delegation-cycles-history-'))
+        continue;
+      summary.cards += 1;
+      const store = block.transcriptStore ?? 'unknown';
+      summary.byStore[store] = (summary.byStore[store] ?? 0) + 1;
+      const status = block.status ?? 'unknown';
+      summary.byStatus[status] = (summary.byStatus[status] ?? 0) + 1;
+    }
+  }
+  return summary;
+}
+
+function replacementDelta(before, after) {
+  const events = after.events.slice(before.events.length);
+  return {
+    full: events.filter((event) => event.kind === 'full').length,
+    prefixClone: events.filter((event) => event.kind === 'prefix-clone').length,
+    bytes: events.reduce((total, event) => total + (event.bytes ?? 0), 0),
+  };
+}
+
+/** Run keys the delegation monitor has seen so far. */
+function delegationRunKeys(page) {
+  return page.evaluate(() =>
+    Object.keys(window.__CANOPY_MANAGED_DELEGATION_PERF__?.state.runs ?? {}),
+  );
+}
+
+/** Statuses of the runs this cycle created, newest state per run. */
+function cycleRunStatuses(page, known) {
+  return page.evaluate((previous) => {
+    const state = window.__CANOPY_MANAGED_DELEGATION_PERF__?.state;
+    if (!state)
+      throw new Error('Managed delegation event monitor is not installed');
+    const seen = new Set(previous);
+    return Object.entries(state.runs)
+      .filter(([key]) => !seen.has(key))
+      .map(([, run]) => run.status);
+  }, known);
+}
+
+/**
+ * Every delegate of the cycle runs and has finished its first scripted read:
+ * its second model request answers that read's result.
+ */
+async function cycleDelegatesWorking(page, known, delegates) {
+  const statuses = await cycleRunStatuses(page, known);
+  if (
+    statuses.length < delegates.length ||
+    statuses.some((status) => status !== 'running')
+  )
+    return { ready: false, statuses };
+  const requests = await Promise.all(
+    delegates.map(async (delegate) => {
+      const { activity } = await getScenarioActivity(
+        PERFORMANCE_MOCK_BASE_URL,
+        delegate.marker,
+      );
+      return activity.llmRequests ?? 0;
+    }),
+  );
+  return { ready: requests.every((count) => count >= 2), statuses, requests };
+}
+
+async function waitForChatStorageQuiet(tasks, timeoutMs, label) {
+  if (!tasks.workSample) return;
+  let lastCommits;
+  let quietSince = performance.now();
+  await waitUntil(
+    async () => {
+      const sample = await tasks.workSample();
+      const commits = sample?.chatStorage?.counters?.commits;
+      if (commits !== lastCommits) {
+        lastCommits = commits;
+        quietSince = performance.now();
+      }
+      return performance.now() - quietSince >= 2_000;
+    },
+    { timeoutMs, label, intervalMs: 250 },
+  );
+}
+
+async function runDelegationRestartCycles({
+  page,
+  app,
+  electronApp,
+  config,
+  tasks,
+  fixture,
+}) {
+  const delegatesPerCycle = config.delegationCyclesDelegates;
+  const childRunMs =
+    config.delegationCyclesChildSteps * config.delegationCyclesChildStepMs;
+  const format4 = await evaluateMainWithRetry(() =>
+    electronApp.evaluate(() => process.env.CANOPY_E2E_CHAT_FORMAT4 === '1'),
+  );
+  await openMainPage(page);
+  await app.selectWorktree(WORKTREE_BRANCH, NO_ACTIVITY_RAIL);
+  await installManagedDelegationMonitor(page);
+  const parentTab = page.getByTestId(
+    `panel-tab-panel-chat-${DELEGATION_CYCLES_CHAT_ID}`,
+  );
+  const selectParent = async () => {
+    await parentTab.click();
+    await expect(parentTab).toHaveAttribute('aria-selected', 'true');
+  };
+  await selectParent();
+  const probeTabId = await createResponsivenessChat(page, tasks);
+  await selectParent();
+  await installTranscriptRewriteObserver(electronApp, fixture.transcriptPath);
+  await startMainHeapSampler(electronApp, 250);
+
+  const cycles = [];
+  try {
+    for (let cycle = 1; cycle <= config.delegationCycles; cycle += 1) {
+      const before = await readTranscriptRewriteObserver(electronApp);
+      const knownRuns = await delegationRunKeys(page);
+      const delegates = delegationCycleDelegates(config, cycle);
+      const panel = visibleChatPanel(page);
+      await recordResponsiveTask(
+        tasks,
+        'start_delegation_cycle',
+        async () => {
+          const message = `[${DELEGATION_CYCLES_MARKER}] [Canopy-Mock-Request:${delegationCycleTag(cycle)}] Cycle ${cycle}: delegate ${delegatesPerCycle} background reviews and keep working.`;
+          const composer = panel
+            .locator('[data-chat-composer-root]')
+            .getByRole('textbox')
+            .first();
+          await composer.fill(message);
+          await panel.getByRole('button', { name: 'Send message' }).click();
+          let last;
+          try {
+            await waitUntil(
+              async () => {
+                last = await cycleDelegatesWorking(page, knownRuns, delegates);
+                return last.ready;
+              },
+              {
+                timeoutMs: 120_000,
+                label: `cycle ${cycle} delegates to run and read`,
+                intervalMs: 250,
+              },
+            );
+          } catch (error) {
+            throw new Error(
+              `${error instanceof Error ? error.message : String(error)}; observed=${JSON.stringify(last)}`,
+            );
+          }
+        },
+        { cycle, delegates: delegatesPerCycle },
+        config.responsivenessBudgetMs,
+      );
+
+      await recordResponsiveTask(
+        tasks,
+        'type_during_delegation_cycle',
+        async () => {
+          const probeTab = page.getByTestId(probeTabId);
+          await probeTab.click();
+          await expect(probeTab).toHaveAttribute('aria-selected', 'true');
+          await typeDraftAndWaitForPaint(page, {
+            scenario: 'delegation-restart-cycles',
+            iteration: cycle,
+            characters: config.typingCharacters,
+          });
+        },
+        { cycle },
+        config.responsivenessBudgetMs,
+      );
+      await recordResponsiveTask(
+        tasks,
+        'return_to_delegating_parent',
+        async () => {
+          await selectParent();
+          await nextPaint(page);
+        },
+        { cycle },
+        config.responsivenessBudgetMs,
+      );
+
+      const parentPanel = visibleChatPanel(page);
+      await recordResponsiveTask(
+        tasks,
+        'stop_delegation_cycle_parent',
+        async () => {
+          await parentPanel.getByTestId('chat-stop-generation').click();
+          await waitUntil(
+            async () =>
+              !(await activeTurnSnapshot(page)).chatIds.includes(
+                DELEGATION_CYCLES_CHAT_ID,
+              ),
+            {
+              timeoutMs: 60_000,
+              label: `cycle ${cycle} parent turn to stop`,
+              intervalMs: 100,
+            },
+          );
+        },
+        { cycle },
+        config.responsivenessBudgetMs,
+      );
+      const beforeStopAll = await cycleRunStatuses(page, knownRuns);
+      if (beforeStopAll.some((status) => status !== 'running'))
+        throw new Error(
+          `Cycle ${cycle} delegates left running before Stop all: ${JSON.stringify(beforeStopAll)}`,
+        );
+
+      await recordResponsiveTask(
+        tasks,
+        'stop_delegation_cycle_delegates',
+        async () => {
+          const tray = await openBackgroundDrawer(parentPanel);
+          await tray.getByTestId('background-tray-stop-all').click();
+          await page.getByTestId('background-tray-stop-all-confirm').click();
+          let last;
+          try {
+            await waitUntil(
+              async () => {
+                last = await cycleRunStatuses(page, knownRuns);
+                return last.every((status) => status === 'cancelled');
+              },
+              {
+                timeoutMs: 60_000,
+                label: `cycle ${cycle} delegates to be cancelled`,
+                intervalMs: 100,
+              },
+            );
+          } catch (error) {
+            throw new Error(
+              `${error instanceof Error ? error.message : String(error)}; observed=${JSON.stringify(last)}`,
+            );
+          }
+        },
+        { cycle },
+        config.responsivenessBudgetMs,
+      );
+
+      // A stopped delegate's result can wake the parent; let that turn end
+      // and chat storage commit before the next cycle starts.
+      await recordTask(
+        tasks,
+        'delegation_cycle_settled',
+        async () => {
+          let idleSamples = 0;
+          await waitUntil(
+            async () => {
+              const turns = await activeTurnSnapshot(page);
+              idleSamples = turns.chatIds.includes(DELEGATION_CYCLES_CHAT_ID)
+                ? 0
+                : idleSamples + 1;
+              return idleSamples >= 3;
+            },
+            {
+              timeoutMs: 120_000,
+              label: `cycle ${cycle} parent to stay idle`,
+              intervalMs: 250,
+            },
+          );
+          await waitForChatStorageQuiet(
+            tasks,
+            childRunMs + 120_000,
+            `cycle ${cycle} chat storage to go quiet`,
+          );
+        },
+        { cycle },
+      );
+      const after = await readTranscriptRewriteObserver(electronApp);
+      cycles.push({
+        cycle,
+        parentReplacements: replacementDelta(before, after),
+      });
+    }
+  } finally {
+    await page
+      .evaluate(() => window.__CANOPY_MANAGED_DELEGATION_PERF__?.dispose?.())
+      .catch(() => undefined);
+  }
+
+  const mainHeap = await stopMainHeapSampler(electronApp);
+  const observed = await stopTranscriptRewriteObserver(electronApp);
+  const final = await managedDelegationSnapshot(page).catch(() => null);
+  const cards = summarizeDelegationCycleCards(
+    readFileSync(fixture.transcriptPath, 'utf8'),
+  );
+  const totals = replacementDelta({ events: [] }, observed);
+  return {
+    format4,
+    cycles: config.delegationCycles,
+    delegatesPerCycle,
+    seededMessages: fixture.seededMessages,
+    seededHistoryCards: fixture.seededHistoryCards,
+    seededTranscriptBytes: fixture.seededTranscriptBytes,
+    finalTranscriptBytes: statSync(fixture.transcriptPath).size,
+    parentFullReplacements: totals.full,
+    parentPrefixCloneReplacements: totals.prefixClone,
+    parentReplacementBytes: totals.bytes,
+    perCycle: cycles,
+    otherTranscriptRenames: observed.otherRenames,
+    mainHeap,
+    cycleCards: cards,
+    delegateStatuses: final?.statuses ?? null,
+    rendererDelegationEvents: final?.events ?? null,
+  };
+}
+
 // ── Multi-chat streaming ────────────────────────────────────────────────────
 //
 // Five worktrees, one chat each, alternating Claude and Codex. Both variants
@@ -8460,6 +10404,559 @@ function writeGateDirectory(gateDir, mode) {
     'deterministic gate payload '.repeat(8).trim(),
     'utf8',
   );
+}
+
+const MANY_CHAT_RESIDENCY_STREAM_INTERVAL_MS = 1_000;
+// Under the 64 KiB artifact threshold, so streamed reads stay inline.
+const MANY_CHAT_RESIDENCY_STREAM_OUTPUT_BYTES = 49_152;
+const MANY_CHAT_RESIDENCY_STREAM_STEPS = 10;
+
+async function prepareManyChatResidency(userDataDir) {
+  seedWorkspace(userDataDir);
+  const fixture = await seedManyChatResidencyFixture(userDataDir);
+  const runtimeDir = path.join(userDataDir, 'perf-many-chat-residency');
+  mkdirSync(runtimeDir, { recursive: true });
+  const gateScriptPath = path.join(runtimeDir, 'gate.sh');
+  writeFileSync(gateScriptPath, MULTI_CHAT_GATE_SCRIPT, { mode: 0o755 });
+  const largeOutputPath = path.join(runtimeDir, 'provider-output.txt');
+  const outputUnit = 'deterministic provider tool output for chat residency\n';
+  writeFileSync(
+    largeOutputPath,
+    outputUnit
+      .repeat(
+        Math.ceil(MANY_CHAT_RESIDENCY_STREAM_OUTPUT_BYTES / outputUnit.length),
+      )
+      .slice(0, MANY_CHAT_RESIDENCY_STREAM_OUTPUT_BYTES),
+    'utf8',
+  );
+
+  const streamConfig = {
+    multiChatStreamingMs:
+      MANY_CHAT_RESIDENCY_STREAM_INTERVAL_MS * MANY_CHAT_RESIDENCY_STREAM_STEPS,
+    multiChatStreamingToolIntervalMs: MANY_CHAT_RESIDENCY_STREAM_INTERVAL_MS,
+    // Every step reads the inline output, so each streamed chat carries it.
+    multiChatStreamingLargeOutputs: MANY_CHAT_RESIDENCY_STREAM_STEPS,
+  };
+  const streamChats = [];
+  for (
+    let index = 0;
+    index < MANY_CHAT_RESIDENCY_STREAM_CHAT_COUNT;
+    index += 1
+  ) {
+    const ordinal = index + 1;
+    const seededChat = fixture.chats[index];
+    const chat = {
+      ...seededChat,
+      index: ordinal,
+      key: `residency-${String(ordinal).padStart(2, '0')}`,
+      chatId: seededChat.id,
+      worktreeId: fixture.worktreeId,
+      providerType: 'claude',
+      // The mock provider only matches `[Canopy-C…]` markers.
+      marker: `Canopy-CMCR${String(ordinal).padStart(3, '0')}`,
+      gateDir: path.join(runtimeDir, 'gates', `residency-${ordinal}`),
+    };
+    writeGateDirectory(
+      chat.gateDir,
+      `auto ${MANY_CHAT_RESIDENCY_STREAM_INTERVAL_MS / 1_000}`,
+    );
+    const conversation = buildMultiChatClaudeConversation({
+      chat,
+      config: streamConfig,
+      gateScriptPath,
+      gateDir: chat.gateDir,
+      largeOutputPath,
+    });
+    await registerScenario(PERFORMANCE_MOCK_BASE_URL, chat.marker, {
+      llm: conversation.llm,
+    });
+    streamChats.push({
+      ...chat,
+      stepCount: conversation.stepCount,
+      largeOutputSteps: conversation.largeOutputSteps,
+    });
+  }
+
+  return {
+    ...fixture,
+    streamChats,
+    runtimeDir,
+    largeOutputBytes: statSync(largeOutputPath).size,
+    streamStepsPerChat: streamChats[0]?.stepCount ?? 0,
+  };
+}
+
+async function residencyChatTurnActive(page, chat) {
+  return page.evaluate(
+    async ({ projectId, worktreeId, chatId }) => {
+      const result = await window.api.chat.activeSessions({
+        projectId,
+        worktreeId,
+      });
+      return (result.sessions ?? []).some(
+        (session) => session.chatId === chatId && session.turnActive,
+      );
+    },
+    {
+      projectId: WORKSPACE_ID,
+      worktreeId: chat.worktreeId,
+      chatId: chat.chatId,
+    },
+  );
+}
+
+async function runManyChatResidency({ page, app, tasks, fixture }) {
+  const labWindowStartedAt = new Date().toISOString();
+  await openMainPage(page);
+  await app.selectWorktree(WORKTREE_BRANCH, NO_ACTIVITY_RAIL);
+  await expect
+    .poll(() => page.locator('[role="tab"][data-panel-kind="chat"]').count(), {
+      timeout: 30_000,
+    })
+    .toBe(fixture.chats.length);
+
+  const streamedChatIds = [];
+  const hiddenStreamingChatIds = new Set();
+  const streamsPerGroup = 3;
+  for (
+    let groupStart = 0;
+    groupStart < fixture.streamChats.length;
+    groupStart += streamsPerGroup
+  ) {
+    const group = fixture.streamChats.slice(
+      groupStart,
+      groupStart + streamsPerGroup,
+    );
+    let previousChat = null;
+    for (const chat of group) {
+      const tab = page.getByTestId(`panel-tab-panel-chat-${chat.chatId}`);
+      await tab.click();
+      await expect(tab).toHaveAttribute('aria-selected', 'true');
+      await expect(chatPanelForTab(page, chat.chatId)).toBeVisible({
+        timeout: 30_000,
+      });
+      if (previousChat && (await residencyChatTurnActive(page, previousChat))) {
+        hiddenStreamingChatIds.add(previousChat.chatId);
+      }
+
+      await recordTask(
+        tasks,
+        'start_many_chat_residency_stream',
+        async () => {
+          await sendMultiChatStreamingMessage({ page, app, chat });
+          await waitUntil(() => residencyChatTurnActive(page, chat), {
+            timeoutMs: 60_000,
+            label: `${chat.key} provider turn to become active`,
+          });
+        },
+        { chat: chat.index, providerType: chat.providerType },
+      );
+      streamedChatIds.push(chat.chatId);
+      previousChat = chat;
+    }
+
+    await recordTask(tasks, 'finish_many_chat_residency_stream_group', () =>
+      waitForMultiChatStreamsComplete(
+        page,
+        { chats: group },
+        MANY_CHAT_RESIDENCY_STREAM_INTERVAL_MS *
+          MANY_CHAT_RESIDENCY_STREAM_STEPS *
+          3 +
+          60_000,
+      ),
+    );
+  }
+
+  if (streamedChatIds.length < MANY_CHAT_RESIDENCY_STREAM_CHAT_COUNT) {
+    throw new Error(
+      `Expected at least ${MANY_CHAT_RESIDENCY_STREAM_CHAT_COUNT} streamed chats, observed ${streamedChatIds.length}`,
+    );
+  }
+  if (hiddenStreamingChatIds.size === 0) {
+    throw new Error('No provider stream continued while its chat was hidden');
+  }
+
+  const chatSwitchDurationsMs = [];
+  const visitedChatIds = [];
+  const streamedChatsById = new Map(
+    fixture.streamChats.map((chat) => [chat.chatId, chat]),
+  );
+  const visitOrder = [...fixture.chats.slice(1), fixture.chats[0]];
+  for (const chat of visitOrder) {
+    const startedAt = performance.now();
+    const tab = page.getByTestId(`panel-tab-panel-chat-${chat.id}`);
+    await tab.click();
+    await expect(tab).toHaveAttribute('aria-selected', 'true');
+    const panel = chatPanelForTab(page, chat.id);
+    await expect(panel).toBeVisible({ timeout: 30_000 });
+    await nextPaint(page);
+    await expect(panel.getByText(chat.renderMarker)).toBeVisible({
+      timeout: 30_000,
+    });
+    const streamedChat = streamedChatsById.get(chat.id);
+    if (streamedChat) {
+      await expect(
+        panel.getByText(`${streamedChat.marker} complete.`),
+      ).toBeVisible({ timeout: 30_000 });
+    }
+    chatSwitchDurationsMs.push({
+      chatId: chat.id,
+      durationMs: performance.now() - startedAt,
+    });
+    visitedChatIds.push(chat.id);
+  }
+  if (visitedChatIds.at(-1) !== fixture.chats[0].id) {
+    throw new Error('Many-chat residency navigation did not finish on chat 1');
+  }
+  await expect(
+    chatPanelForTab(page, fixture.chats[0].id).getByText(
+      fixture.chats[0].renderMarker,
+    ),
+  ).toBeVisible({ timeout: 30_000 });
+
+  const labWindowEndedAt = new Date().toISOString();
+  const averageChatSwitchMs =
+    chatSwitchDurationsMs.reduce(
+      (total, sample) => total + sample.durationMs,
+      0,
+    ) / chatSwitchDurationsMs.length;
+  return {
+    chatsSeeded: fixture.chats.length,
+    chatsStreamedInto: streamedChatIds.length,
+    streamedChatIds,
+    hiddenStreamingChats: hiddenStreamingChatIds.size,
+    chatsVisited: visitedChatIds.length,
+    visitedChatIds,
+    fixtureDigest: fixture.fixtureDigest,
+    fixtureDimensions: fixture.dimensions,
+    streamStepsPerChat: fixture.streamStepsPerChat,
+    providerToolOutputBytes: fixture.largeOutputBytes,
+    chatSwitchDurationsMs,
+    averageChatSwitchMs,
+    labWindow: {
+      startedAt: labWindowStartedAt,
+      endedAt: labWindowEndedAt,
+    },
+  };
+}
+
+const SCOPE_RESIDENCY_IDLE_UNLOAD_MS = 3_000;
+const SCOPE_RESIDENCY_IDLE_WAIT_MS = SCOPE_RESIDENCY_IDLE_UNLOAD_MS * 2 + 2_000;
+const SCOPE_RESIDENCY_HEAP_SAMPLE_COUNT = 5;
+const SCOPE_RESIDENCY_HEAP_SAMPLE_INTERVAL_MS = 200;
+const SCOPE_RESIDENCY_RENDER_TIMEOUT_MS = 30_000;
+const SCOPE_RESIDENCY_RENDERER_WARM_CHAT_LIMIT = 4;
+
+async function prepareScopeResidency(userDataDir) {
+  const seed = seedWorkspace(userDataDir);
+  const worktreeIds = scopeResidencyWorktreeIds(SCOPE_RESIDENCY.worktreeCount);
+  seedPreexistingWorktrees(userDataDir, worktreeIds.length + 1, seed);
+  const fixture = await seedScopeResidencyFixture(userDataDir, { worktreeIds });
+  return {
+    ...fixture,
+    idleUnloadMs: SCOPE_RESIDENCY_IDLE_UNLOAD_MS,
+    neutralWorktreeId: WORKTREE_ID,
+  };
+}
+
+async function scopeResidencyWaitForActiveChat(page, worktree) {
+  const chatId = worktree.activeChatId;
+  const tab = page.getByTestId(`panel-tab-panel-chat-${chatId}`);
+  await expect(tab).toHaveAttribute('aria-selected', 'true', {
+    timeout: SCOPE_RESIDENCY_RENDER_TIMEOUT_MS,
+  });
+  const panel = chatPanelForTab(page, chatId);
+  await expect(panel).toBeVisible({
+    timeout: SCOPE_RESIDENCY_RENDER_TIMEOUT_MS,
+  });
+  const chat = worktree.chats.find((candidate) => candidate.id === chatId);
+  if (!chat) {
+    throw new Error(
+      `Scope residency fixture has no active chat ${chatId} in ${worktree.worktreeId}`,
+    );
+  }
+  await expect(panel.getByText(chat.renderMarker)).toBeVisible({
+    timeout: SCOPE_RESIDENCY_RENDER_TIMEOUT_MS,
+  });
+  await nextPaint(page);
+}
+
+async function scopeResidencySampleMainHeap(electronApp, label) {
+  const samples = [];
+  for (let index = 0; index < SCOPE_RESIDENCY_HEAP_SAMPLE_COUNT; index += 1) {
+    if (index > 0) await delay(SCOPE_RESIDENCY_HEAP_SAMPLE_INTERVAL_MS);
+    const startedAtMs = performance.now();
+    const heap = await electronApp.evaluate(() => {
+      let forcedGc = false;
+      try {
+        const v8 = process.getBuiltinModule('node:v8');
+        const vm = process.getBuiltinModule('node:vm');
+        v8.setFlagsFromString('--expose-gc');
+        const gc = vm.runInNewContext('gc');
+        if (typeof gc === 'function') {
+          gc();
+          gc();
+          forcedGc = true;
+        }
+      } catch {
+        // Heap sampling remains useful when this runtime cannot expose GC.
+      }
+      const statistics = process.getHeapStatistics();
+      return {
+        usedHeapBytes: statistics.usedHeapSize * 1024,
+        totalHeapBytes: statistics.totalHeapSize * 1024,
+        heapLimitBytes: statistics.heapSizeLimit * 1024,
+        forcedGc,
+      };
+    });
+    const endedAtMs = performance.now();
+    if (
+      !Number.isFinite(heap?.usedHeapBytes) ||
+      heap.usedHeapBytes <= 0 ||
+      !Number.isFinite(heap?.heapLimitBytes) ||
+      heap.heapLimitBytes <= 0 ||
+      !Number.isFinite(heap?.totalHeapBytes) ||
+      heap.totalHeapBytes <= 0
+    ) {
+      throw new Error(`Scope residency ${label} main heap sample was invalid`);
+    }
+    samples.push({
+      ...heap,
+      sample: index + 1,
+      sampledAtMs: (startedAtMs + endedAtMs) / 2,
+      roundTripMs: endedAtMs - startedAtMs,
+    });
+  }
+
+  const sortedUsedHeapBytes = samples
+    .map(({ usedHeapBytes }) => usedHeapBytes)
+    .sort((left, right) => left - right);
+  const middle = Math.floor(sortedUsedHeapBytes.length / 2);
+  const medianUsedBytes =
+    sortedUsedHeapBytes.length % 2 === 0
+      ? (sortedUsedHeapBytes[middle - 1] + sortedUsedHeapBytes[middle]) / 2
+      : sortedUsedHeapBytes[middle];
+  return {
+    samples,
+    medianUsedBytes,
+    forcedGc: samples.every((sample) => sample.forcedGc),
+  };
+}
+
+async function scopeResidencyObserveChatInterest(electronApp, page) {
+  const browserWindow = await electronApp.browserWindow(page);
+  const webContentsId = await browserWindow.evaluate(
+    (win) => win.webContents.id,
+  );
+  return electronApp.evaluate((_electron, targetWebContentsId) => {
+    const entry = globalThis.__CANOPY_E2E_CHAT_INTEREST__
+      ?.list()
+      .find((candidate) => candidate.webContentsId === targetWebContentsId);
+    if (!entry) return null;
+    const { focused, warm } = entry.interest;
+    return {
+      focusedCount: focused.length,
+      warmCount: warm.length,
+      focusedChatIds: focused.map((ref) => ref.chatId),
+      warmChatIds: warm.map((ref) => ref.chatId),
+      warmWorktreeIds: [...new Set(warm.map((ref) => ref.worktreeId))],
+    };
+  }, webContentsId);
+}
+
+/**
+ * Evidence only: each chat-state scope's lifecycle and unload blockers from
+ * main. The unchanged code has no hook and reports null.
+ */
+async function scopeResidencyReadScopes(electronApp) {
+  try {
+    return await electronApp.evaluate(
+      () => globalThis.__CANOPY_E2E_CHAT_SCOPE_RESIDENCY__?.list() ?? null,
+    );
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** Evidence only: an unreadable interest hook never fails the workload. */
+async function scopeResidencyReadWarmChats(electronApp, page, fixture) {
+  let observed = null;
+  let observationError;
+  try {
+    observed = await scopeResidencyObserveChatInterest(electronApp, page);
+  } catch (error) {
+    observationError = error instanceof Error ? error.message : String(error);
+  }
+  return {
+    observed,
+    ...(observationError ? { observationError } : {}),
+    rendererWarmChatLimit: SCOPE_RESIDENCY_RENDERER_WARM_CHAT_LIMIT,
+    expectedWarmResidencyWorktrees: Math.min(
+      SCOPE_RESIDENCY_RENDERER_WARM_CHAT_LIMIT,
+      fixture.worktrees.length,
+    ),
+    oldestVisitedWorktreeId: fixture.worktrees[0]?.worktreeId ?? null,
+    oldestVisitedWorktreeExpectedCold: true,
+  };
+}
+
+async function runScopeResidency({ page, app, electronApp, tasks, fixture }) {
+  const labWindowStartedAt = new Date().toISOString();
+  await openMainPage(page);
+  await app.selectWorktree(fixture.neutralWorktreeId, NO_ACTIVITY_RAIL);
+  await nextPaint(page);
+  await delay(250);
+
+  const baseline = await scopeResidencySampleMainHeap(electronApp, 'baseline');
+  for (const worktree of fixture.worktrees) {
+    await recordTask(
+      tasks,
+      'scope_residency_visit',
+      async () => {
+        await app.selectWorktree(worktree.worktreeId, NO_ACTIVITY_RAIL);
+        await scopeResidencyWaitForActiveChat(page, worktree);
+      },
+      { worktreeId: worktree.worktreeId, chatId: worktree.activeChatId },
+    );
+  }
+
+  await app.selectWorktree(fixture.neutralWorktreeId, NO_ACTIVITY_RAIL);
+  await nextPaint(page);
+  const loaded = await scopeResidencySampleMainHeap(electronApp, 'loaded');
+  const warmChats = await scopeResidencyReadWarmChats(
+    electronApp,
+    page,
+    fixture,
+  );
+
+  await delay(SCOPE_RESIDENCY_IDLE_WAIT_MS);
+  const idle = await scopeResidencySampleMainHeap(electronApp, 'idle');
+  const scopesAfterIdle = await scopeResidencyReadScopes(electronApp);
+
+  const firstWorktree = fixture.worktrees[0];
+  await recordTask(
+    tasks,
+    'scope_residency_cold_return',
+    async () => {
+      await app.selectWorktree(firstWorktree.worktreeId, NO_ACTIVITY_RAIL);
+      await scopeResidencyWaitForActiveChat(page, firstWorktree);
+    },
+    {
+      worktreeId: firstWorktree.worktreeId,
+      chatId: firstWorktree.activeChatId,
+    },
+  );
+  const coldReturnMs = tasks.at(-1).durationMs;
+
+  await app.selectWorktree(fixture.neutralWorktreeId, NO_ACTIVITY_RAIL);
+  await nextPaint(page);
+  await recordTask(
+    tasks,
+    'scope_residency_warm_return',
+    async () => {
+      await app.selectWorktree(firstWorktree.worktreeId, NO_ACTIVITY_RAIL);
+      await scopeResidencyWaitForActiveChat(page, firstWorktree);
+    },
+    {
+      worktreeId: firstWorktree.worktreeId,
+      chatId: firstWorktree.activeChatId,
+    },
+  );
+  const warmReturnMs = tasks.at(-1).durationMs;
+  tasks.timings.scope_residency = {
+    cold_return_ms: coldReturnMs,
+    warm_return_ms: warmReturnMs,
+  };
+
+  const retainedAfterVisitsBytes =
+    loaded.medianUsedBytes - baseline.medianUsedBytes;
+  const retainedAfterIdleBytes =
+    idle.medianUsedBytes - baseline.medianUsedBytes;
+  const releasedByIdleBytes = loaded.medianUsedBytes - idle.medianUsedBytes;
+  tasks.extraWork.scopeResidency = {
+    retainedAfterIdleBytes,
+    retainedAfterVisitsBytes,
+    idleMedianUsedBytes: idle.medianUsedBytes,
+  };
+
+  return {
+    worktreesSeeded: fixture.worktrees.length,
+    worktreesVisited: fixture.worktrees.length,
+    fixtureDigest: fixture.fixtureDigest,
+    fixtureDimensions: fixture.dimensions,
+    idleUnloadMs: fixture.idleUnloadMs,
+    idleWaitMs: SCOPE_RESIDENCY_IDLE_WAIT_MS,
+    warmChats,
+    scopesAfterIdle,
+    mainHeap: {
+      baseline,
+      loaded,
+      idle,
+      retainedAfterVisitsBytes,
+      retainedAfterIdleBytes,
+      releasedByIdleBytes,
+    },
+    coldReturnMs,
+    warmReturnMs,
+    labWindow: {
+      startedAt: labWindowStartedAt,
+      endedAt: new Date().toISOString(),
+    },
+  };
+}
+
+async function openFileSearchPaletteFor(page, app, worktree) {
+  await app.selectWorktree(worktree.id, NO_ACTIVITY_RAIL);
+  const startedAt = performance.now();
+  await page.keyboard.press(
+    `${process.platform === 'darwin' ? 'Meta' : 'Control'}+P`,
+  );
+  const palette = page.getByTestId('file-search-palette');
+  await expect(palette).toBeVisible({ timeout: 30_000 });
+  await expect(
+    palette.getByTestId('file-search-palette-result').first(),
+  ).toBeVisible({ timeout: 60_000 });
+  const openMs = performance.now() - startedAt;
+
+  // Search for a known corpus entry as well as waiting for a visible result:
+  // this proves that this worktree's file index contains the seeded corpus.
+  await palette
+    .getByTestId('file-search-palette-input')
+    .fill('index-file-09999.txt');
+  await expect(
+    palette
+      .getByTestId('file-search-palette-result')
+      .filter({ hasText: 'index-file-09999.txt' }),
+  ).toBeVisible({ timeout: 30_000 });
+  await page.keyboard.press('Escape');
+  await expect(palette).toBeHidden();
+  return openMs;
+}
+
+async function runManyWorktreeFileIndex({ page, app, fixture }) {
+  await openMainPage(page);
+  const labWindowStartedAt = new Date().toISOString();
+  // A worktree's first diff stats arrive after its first visit and drop its
+  // file index. Field worktrees already have theirs, so warm every worktree
+  // once and measure the second pass, whose indexes nothing else drops.
+  for (const worktree of fixture.worktrees) {
+    await openFileSearchPaletteFor(page, app, worktree);
+  }
+  const paletteOpenDurationsMs = [];
+  for (const worktree of fixture.worktrees) {
+    paletteOpenDurationsMs.push(
+      await openFileSearchPaletteFor(page, app, worktree),
+    );
+  }
+  const labWindowEndedAt = new Date().toISOString();
+  return buildManyWorktreeFileIndexCounters({
+    ...fixture,
+    paletteOpenDurationsMs,
+    labWindow: {
+      startedAt: labWindowStartedAt,
+      endedAt: labWindowEndedAt,
+    },
+  });
 }
 
 async function prepareMultiChatStreaming(userDataDir, config, { sequential }) {
@@ -15389,6 +17886,8 @@ async function runGatedWorktrees({
  * measures the panel opening to its first page, searches typed into it, and
  * the renderer's own round trips for the first page, search and a local
  * commit, and for the Feed's first page, which reads every scope.
+ * `ledger-feed-overview` reuses those scopes with operation trees and measures
+ * navigation to the first painted Operations row and the work-list round trip.
  * `ledger-disabled-idle` starts with the Ledger off and checks that startup
  * and idle started no storage worker and created no database.
  */
@@ -15404,6 +17903,12 @@ export const LEDGER_ROUND_TRIP_BUDGETS_MS = Object.freeze({
   localCommitP95: 100,
   feedFirstPageP95: 200,
 });
+
+/** The Feed overview's first visible Operations row, in release-like builds. */
+export const LEDGER_FEED_OPERATIONS_FIRST_PAINT_BUDGET_MS = 200;
+
+/** The Feed panel's first Operations row after opening, in release-like builds. */
+export const LEDGER_PANEL_OPERATIONS_READY_BUDGET_MS = 200;
 
 const LEDGER_PANEL_GROUP_ID = 'group-chat';
 const LEDGER_PAGE_SIZE = 30;
@@ -15426,9 +17931,15 @@ const LEDGER_FEED_FIRST_PAGE_REQUEST = Object.freeze({
   refresh: true,
 });
 
+const LEDGER_FEED_WORK_REQUEST = Object.freeze({
+  includeOlder: false,
+  refresh: true,
+});
+
 /** The Ledger flag each Ledger scenario launches with, whatever is pinned. */
 const LEDGER_SCENARIO_FLAGS = Object.freeze({
   'ledger-panel': true,
+  'ledger-feed-overview': true,
   'ledger-disabled-idle': false,
 });
 
@@ -15481,7 +17992,7 @@ export function ledgerFixtureAccountId(releaseLike) {
   return releaseLike ? MOCK_GUEST_ACCOUNT_ID : null;
 }
 
-async function prepareLedgerPanel(
+async function prepareLedgerScopes(
   userDataDir,
   config,
   { releaseLike = false } = {},
@@ -15502,6 +18013,224 @@ async function prepareLedgerPanel(
     uniqueCases: ledgerUniqueCaseNumbers(config.ledgerScopeEntries),
   };
 }
+
+const LEDGER_FEED_OPERATION_STATUSES = Object.freeze([
+  'TODO',
+  'BLOCKED',
+  'FAILED',
+  'COMPLETED',
+]);
+
+const LEDGER_FEED_USER_DETAILS = Object.freeze({
+  harness: null,
+  model: null,
+  thinkingEffort: null,
+  mode: null,
+  pipelineExecutionId: null,
+  settingsRevision: null,
+  unavailableReason: 'not_applicable',
+});
+
+/**
+ * Adds Feed work to every scope created by `seedLedgerFixture`, through the
+ * same repository path and with the same scope/account identities. The
+ * operation trees and unattached tasks give the Feed page a representative
+ * Operations table without changing the large-entry Ledger workload.
+ */
+async function seedLedgerFeedOverviewWork({ userDataDir, accountId }) {
+  const startedAt = performance.now();
+  const LedgerRepository = await loadLedgerRepository();
+  const workspaceRoot = path.join(userDataDir, 'workspaces');
+  const worktreeManifest = JSON.parse(
+    readFileSync(
+      path.join(workspaceRoot, WORKSPACE_ID, 'worktrees.json'),
+      'utf8',
+    ),
+  );
+  const worktree = worktreeManifest.worktrees.find(
+    (candidate) => candidate.id === WORKTREE_ID,
+  );
+  if (typeof worktree?.createdAt !== 'string') {
+    throw new Error(`Ledger Feed fixture: ${WORKTREE_ID} has no creation time`);
+  }
+  const coworkEntries = JSON.parse(
+    readFileSync(
+      path.join(workspaceRoot, LEDGER_FIXTURE_COWORK_ID, 'work-entries.json'),
+      'utf8',
+    ),
+  ).entries;
+
+  let now = Date.now();
+  const repository = LedgerRepository.open({
+    databasePath: path.join(userDataDir, 'ledger', 'ledger.sqlite'),
+    now: () => new Date(now++),
+  });
+  let operationCount = 0;
+  let taskCount = 0;
+  let subtaskCount = 0;
+  try {
+    repository.database.exec('PRAGMA synchronous = OFF');
+    const scopeDescriptors = [
+      {
+        label: 'measured',
+        container: {
+          kind: 'code_worktree',
+          workspaceId: WORKSPACE_ID,
+          worktreeId: WORKTREE_ID,
+        },
+        containerCreatedAt: worktree.createdAt,
+      },
+      ...coworkEntries.map((entry) => ({
+        label: entry.id,
+        container: {
+          kind: 'cowork_entry',
+          workspaceId: LEDGER_FIXTURE_COWORK_ID,
+          entryId: entry.id,
+        },
+        containerCreatedAt: entry.createdAt,
+      })),
+    ];
+
+    for (const [scopeIndex, descriptor] of scopeDescriptors.entries()) {
+      const ledgerId = repository.bindScope({
+        authorityId: repository.authorityId,
+        container: descriptor.container,
+        containerCreatedAt: descriptor.containerCreatedAt,
+        accountId,
+      }).scope.scope.ledgerId;
+      const user = repository.registerActor({
+        ledgerId,
+        kind: 'user',
+        authorityId: repository.authorityId,
+        originKey: 'user:local',
+        displayName: 'You',
+      }).actor.actor;
+      const origin = { kind: 'user', ledgerId, userActorId: user.actorId };
+      const attribution = {
+        kind: 'user',
+        effectiveActor: user,
+        recordedBy: user,
+        executorDetails: LEDGER_FEED_USER_DETAILS,
+      };
+      const add = (params, key) =>
+        repository.addEntry({
+          ledgerId,
+          author: user,
+          authorDetails: LEDGER_FEED_USER_DETAILS,
+          origin,
+          attribution,
+          owner: user,
+          params,
+          idempotencyKey: `perf-ledger-feed-${String(scopeIndex)}-${key}`,
+        });
+
+      for (let operationIndex = 0; operationIndex < 3; operationIndex += 1) {
+        const operation = add(
+          {
+            type: 'OPERATION',
+            title: `${descriptor.label} operation ${String(operationIndex + 1)}`,
+            content: `Performance Operations row ${String(operationIndex + 1)} for ${descriptor.label}.`,
+          },
+          `operation-${String(operationIndex)}`,
+        );
+        operationCount += 1;
+
+        for (let taskIndex = 0; taskIndex < 3; taskIndex += 1) {
+          // The first task gets a subtask, so it stays open: the store
+          // refuses a child under a closed parent (PARENT_CLOSED).
+          const status =
+            taskIndex === 0
+              ? 'IN_PROGRESS'
+              : LEDGER_FEED_OPERATION_STATUSES[
+                  (scopeIndex + operationIndex + taskIndex) %
+                    LEDGER_FEED_OPERATION_STATUSES.length
+                ];
+          const task = add(
+            {
+              type: 'TASK',
+              title: `${descriptor.label} operation task ${String(taskIndex + 1)}`,
+              content: `A ${status.toLowerCase()} operation task for ${descriptor.label}.`,
+              status,
+              parentEntryId: operation.entry.entryId,
+            },
+            `operation-${String(operationIndex)}-task-${String(taskIndex)}`,
+          );
+          taskCount += 1;
+
+          if (taskIndex === 0) {
+            const subtaskStatus =
+              LEDGER_FEED_OPERATION_STATUSES[
+                (scopeIndex + operationIndex + taskIndex + 1) %
+                  LEDGER_FEED_OPERATION_STATUSES.length
+              ];
+            add(
+              {
+                type: 'TASK',
+                title: `${descriptor.label} operation subtask ${String(operationIndex + 1)}`,
+                content: `A ${subtaskStatus.toLowerCase()} nested task for ${descriptor.label}.`,
+                status: subtaskStatus,
+                parentEntryId: task.entry.entryId,
+              },
+              `operation-${String(operationIndex)}-subtask`,
+            );
+            subtaskCount += 1;
+          }
+        }
+      }
+
+      for (let taskIndex = 0; taskIndex < 2; taskIndex += 1) {
+        const status =
+          LEDGER_FEED_OPERATION_STATUSES[
+            (scopeIndex + taskIndex + 2) % LEDGER_FEED_OPERATION_STATUSES.length
+          ];
+        add(
+          {
+            type: 'TASK',
+            title: `${descriptor.label} ungrouped task ${String(taskIndex + 1)}`,
+            content: `A ${status.toLowerCase()} top-level task without an operation for ${descriptor.label}.`,
+            status,
+          },
+          `top-level-task-${String(taskIndex)}`,
+        );
+        taskCount += 1;
+      }
+    }
+  } finally {
+    repository.close();
+  }
+
+  return {
+    operationCount,
+    taskCount,
+    subtaskCount,
+    seedMs: Math.round(performance.now() - startedAt),
+  };
+}
+
+/**
+ * The Ledger scopes with operation trees in each: the Feed panel's
+ * Operations section and the Feed page's Operations table read the same work.
+ */
+async function prepareLedgerPanel(
+  userDataDir,
+  config,
+  { releaseLike = false } = {},
+) {
+  const fixture = await prepareLedgerScopes(userDataDir, config, {
+    releaseLike,
+  });
+  const operations = await seedLedgerFeedOverviewWork({
+    userDataDir,
+    accountId: ledgerFixtureAccountId(releaseLike),
+  });
+  return {
+    ...fixture,
+    ...operations,
+    seedMs: fixture.seedMs + operations.seedMs,
+  };
+}
+
+const prepareLedgerFeedOverview = prepareLedgerPanel;
 
 /**
  * Why a first Ledger read shows the scenario cannot measure the Ledger, or
@@ -15595,10 +18324,13 @@ async function runLedgerPanel({
 
   // The panel, opened to its first page of entries.
   let panel;
+  let openStartedAt = 0;
+  let operationsReadyMs = null;
   await recordResponsiveTask(
     tasks,
     'open_ledger_panel',
     async () => {
+      openStartedAt = await page.evaluate(() => performance.now());
       await openPanelAddMenu(page, LEDGER_PANEL_GROUP_ID);
       await page.getByTestId('panel-add-menu-item-ledger').click();
       panel = page.getByTestId('ledger-panel');
@@ -15610,6 +18342,44 @@ async function runLedgerPanel({
     { scopeEntries: fixture.scopeEntries },
     config.responsivenessBudgetMs,
   );
+
+  // The sectioned panel (Phase 06): its Operations rows after opening, and
+  // one operation opened to its tree. A build without sections skips both.
+  const sections = page.getByTestId('ledger-panel-sections');
+  if ((await sections.count()) > 0) {
+    const operationRow = sections.getByTestId('feed-operations-row').first();
+    await recordResponsiveTask(
+      tasks,
+      'ledger_panel_operations_ready',
+      async () => {
+        await expect(operationRow).toBeVisible({ timeout: 60_000 });
+        await nextPaint(page);
+        operationsReadyMs = await page.evaluate(
+          (startedAt) => performance.now() - startedAt,
+          openStartedAt,
+        );
+        return { performanceTaskMetrics: { operationsReadyMs } };
+      },
+      {
+        operations: fixture.operationCount,
+        budgetMs: LEDGER_PANEL_OPERATIONS_READY_BUDGET_MS,
+      },
+      config.responsivenessBudgetMs,
+    );
+    await recordResponsiveTask(
+      tasks,
+      'open_ledger_panel_operation',
+      async () => {
+        await operationRow.getByTestId('feed-operations-title').click();
+        await expect(
+          sections.getByTestId('feed-operations-tree').first(),
+        ).toBeVisible({ timeout: 60_000 });
+        await nextPaint(page);
+      },
+      { operations: fixture.operationCount },
+      config.responsivenessBudgetMs,
+    );
+  }
 
   // Searches typed into the panel, through its debounce to painted rows.
   const rows = panel.getByTestId('ledger-entry-row');
@@ -15744,6 +18514,10 @@ async function runLedgerPanel({
     verdicts.feedFirstPageP95Ms > LEDGER_ROUND_TRIP_BUDGETS_MS.feedFirstPageP95
       ? `Feed first page p95 ${verdicts.feedFirstPageP95Ms.toFixed(1)} ms`
       : null,
+    operationsReadyMs !== null &&
+    operationsReadyMs > LEDGER_PANEL_OPERATIONS_READY_BUDGET_MS
+      ? `panel Operations ready ${operationsReadyMs.toFixed(1)} ms`
+      : null,
   ].filter((miss) => miss !== null);
   if (releaseLike && misses.length > 0) {
     throw new Error(
@@ -15760,7 +18534,148 @@ async function runLedgerPanel({
     searchP95Ms: Math.round(verdicts.searchP95Ms * 10) / 10,
     localCommitP95Ms: Math.round(verdicts.localCommitP95Ms * 10) / 10,
     feedFirstPageP95Ms: Math.round(verdicts.feedFirstPageP95Ms * 10) / 10,
+    ...(operationsReadyMs === null
+      ? {}
+      : { operationsReadyMs: Math.round(operationsReadyMs * 10) / 10 }),
     budgetMisses: misses.length,
+  };
+}
+
+/** One Feed work-list IPC round trip, measured by the renderer that invokes it. */
+async function timedLedgerFeedWork(page) {
+  return page.evaluate(async (request) => {
+    const startedAt = performance.now();
+    const result = await window.api.ledger.listFeedWork(request);
+    const roundTripMs = performance.now() - startedAt;
+    if (result.status !== 'ok') {
+      throw new Error(
+        `Ledger listFeedWork failed: ${result.status} ${result.reason ?? ''}`,
+      );
+    }
+    return { roundTripMs, rows: result.value.rows.length };
+  }, LEDGER_FEED_WORK_REQUEST);
+}
+
+async function runLedgerFeedOverview({
+  page,
+  app,
+  config,
+  tasks,
+  fixture,
+  releaseLike,
+}) {
+  await openMainPage(page);
+  await app.selectWorktree(WORKTREE_BRANCH, NO_ACTIVITY_RAIL);
+  await expect(visibleChatPanel(page)).toBeVisible({ timeout: 30_000 });
+  if (releaseLike) {
+    // A production build mints its guest account at launch; wait for that
+    // identity without warming the Feed work-list cache before navigation.
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(async () => {
+            const account = await window.api.loadCanopyCloudAccount();
+            return account.account?.id ?? null;
+          }),
+        { timeout: 60_000 },
+      )
+      .toBe(MOCK_GUEST_ACCOUNT_ID);
+  }
+  const scope = { projectId: WORKSPACE_ID, worktreeId: WORKTREE_ID };
+  const unavailable = ledgerUnavailableReason(
+    await page.evaluate((request) => window.api.ledger.searchEntries(request), {
+      scope,
+      params: { limit: 1 },
+    }),
+    releaseLike,
+  );
+  if (unavailable !== null) throw new Error(unavailable);
+
+  const firstPaint = await recordResponsiveTask(
+    tasks,
+    'ledger_feed_operations_first_paint',
+    async () => {
+      const navigationStartedAt = await page.evaluate(() => performance.now());
+      await page.getByTestId('sidebar-nav-feed').click();
+      const operationsRow = page
+        .getByTestId('page-feed')
+        .getByTestId('feed-operations-row')
+        .first();
+      // A cold baseline-sized Ledger can take minutes; measure it against the
+      // budget rather than abort the scenario.
+      await expect(operationsRow).toBeVisible({ timeout: 180_000 });
+      await nextPaint(page);
+      const firstPaintMs = await page.evaluate(
+        (startedAt) => performance.now() - startedAt,
+        navigationStartedAt,
+      );
+      return {
+        firstPaintMs,
+        performanceTaskMetrics: {
+          feedOperationsFirstPaintMs: firstPaintMs,
+        },
+      };
+    },
+    {
+      operations: fixture.operationCount,
+      topLevelTasks: fixture.taskCount - fixture.operationCount * 3,
+      firstPaintBudgetMs: LEDGER_FEED_OPERATIONS_FIRST_PAINT_BUDGET_MS,
+    },
+    config.responsivenessBudgetMs,
+  );
+
+  const feedWorkRoundTrips = [];
+  for (let index = 0; index < config.ledgerRoundTrips; index += 1) {
+    const call = await recordResponsiveTask(
+      tasks,
+      'ledger_feed_work_round_trip',
+      async () => {
+        const value = await timedLedgerFeedWork(page);
+        return {
+          ...value,
+          performanceTaskMetrics: {
+            ledgerFeedWorkRoundTripMs: value.roundTripMs,
+          },
+        };
+      },
+      { iteration: index + 1, scopes: fixture.totalScopes },
+      config.responsivenessBudgetMs,
+    );
+    if (call.rows === 0) {
+      throw new Error(
+        'The Feed work list returned no Operations or top-level tasks',
+      );
+    }
+    feedWorkRoundTrips.push(call.roundTripMs);
+  }
+
+  const feedWorkP95Ms = ledgerP95(feedWorkRoundTrips);
+  const firstPaintBudgetMiss =
+    firstPaint.firstPaintMs > LEDGER_FEED_OPERATIONS_FIRST_PAINT_BUDGET_MS;
+  if (releaseLike && firstPaintBudgetMiss) {
+    throw new Error(
+      `Feed Operations first paint missed its ${String(LEDGER_FEED_OPERATIONS_FIRST_PAINT_BUDGET_MS)} ms budget in a release-like run: ${firstPaint.firstPaintMs.toFixed(1)} ms`,
+    );
+  }
+
+  return {
+    scopeEntries: fixture.scopeEntries,
+    totalScopes: fixture.totalScopes,
+    totalEntries:
+      fixture.totalEntries +
+      fixture.operationCount +
+      fixture.taskCount +
+      fixture.subtaskCount,
+    operationsSeeded: fixture.operationCount,
+    tasksSeeded: fixture.taskCount,
+    subtasksSeeded: fixture.subtaskCount,
+    seedMs: fixture.seedMs,
+    firstTablePaintMs: Math.round(firstPaint.firstPaintMs * 10) / 10,
+    firstTablePaintBudgetMs: LEDGER_FEED_OPERATIONS_FIRST_PAINT_BUDGET_MS,
+    firstTablePaintBudgetMisses: Number(firstPaintBudgetMiss),
+    feedWorkRoundTrips: feedWorkRoundTrips.length,
+    feedWorkRoundTripP95Ms: Math.round(feedWorkP95Ms * 10) / 10,
+    budgetEnforced: releaseLike,
   };
 }
 
@@ -16175,7 +19090,8 @@ function scriptFileName(url) {
 }
 
 /**
- * V8 compile and code-cache events from a Chromium JSON trace: per event
+ * V8 compile and code-cache events from a Chromium JSON trace, or the
+ * slices `perfettoTraceEvents` reads from a Perfetto one: per event
  * name, how many ran and their summed duration, how many were streamed, the
  * code-cache bytes consumed and produced, rejected caches, and the scripts
  * that took longest to compile. Whether a launch consumed a code cache is
@@ -16358,12 +19274,12 @@ async function readStartupClocks(electronApp, page) {
 /**
  * Opens the App Advisor window from the sidebar and times it from the click:
  * window created, DOMContentLoaded, React mount, workspace surface visible,
- * and bootstrap finished and painted. With `traceDir`, a Chromium trace of
+ * and bootstrap finished and painted. With `traceDir`, a Perfetto trace of
  * the opening records its V8 compile events.
  */
 async function measureAppAdvisorOpening({ electronApp, page, traceDir }) {
   const tracePath = traceDir
-    ? path.join(traceDir, 'app-advisor-trace.json')
+    ? path.join(traceDir, 'app-advisor-trace.pftrace')
     : null;
   if (tracePath) {
     await electronApp.evaluate(async ({ contentTracing }, categories) => {
@@ -16406,8 +19322,9 @@ async function measureAppAdvisorOpening({ electronApp, page, traceDir }) {
     await electronApp.evaluate(async ({ contentTracing }, destination) => {
       await contentTracing.stopRecording(destination);
     }, tracePath);
+    // Electron 45+ contentTracing writes Perfetto protobuf, not JSON.
     v8Compile = summarizeV8CompileTrace(
-      await readJsonTraceFile(tracePath, 30_000),
+      perfettoTraceEvents(readFileSync(tracePath)),
     );
   }
   return { timings, ...(v8Compile ? { v8Compile } : {}) };
@@ -17396,6 +20313,10 @@ const SCENARIOS = {
     prepare: prepareManagedDelegationConcurrency,
     run: runManagedDelegationConcurrency,
   },
+  'delegation-restart-cycles': {
+    prepare: prepareDelegationRestartCycles,
+    run: runDelegationRestartCycles,
+  },
   'multi-chat-streaming': {
     prepare: (userDataDir, config) =>
       prepareMultiChatStreaming(userDataDir, config, { sequential: false }),
@@ -17447,6 +20368,10 @@ const SCENARIOS = {
     prepare: prepareLedgerPanel,
     run: runLedgerPanel,
   },
+  'ledger-feed-overview': {
+    prepare: prepareLedgerFeedOverview,
+    run: runLedgerFeedOverview,
+  },
   'ledger-disabled-idle': {
     prepare: prepareLedgerDisabledIdle,
     run: runLedgerDisabledIdle,
@@ -17483,6 +20408,51 @@ const SCENARIOS = {
     prepare: prepareSkillSuggestionsBackfill,
     run: runSkillSuggestionsBackfill,
   },
+  'lab-transcript-onscreen': {
+    prepare: prepareLabTranscript,
+    run: (context) =>
+      runLabTranscriptScenario({ ...context, variant: 'onscreen' }),
+    afterMeasurement: captureLabTranscriptDiagnostics,
+    launchEnv: (fixture) =>
+      labTranscriptLaunchEnvironment(fixture.streamFixtureSpecPath),
+    headlessOnly: true,
+  },
+  'lab-transcript-offscreen': {
+    prepare: prepareLabTranscript,
+    run: (context) =>
+      runLabTranscriptScenario({ ...context, variant: 'offscreen' }),
+    afterMeasurement: captureLabTranscriptDiagnostics,
+    launchEnv: (fixture) =>
+      labTranscriptLaunchEnvironment(fixture.streamFixtureSpecPath),
+    headlessOnly: true,
+  },
+  'lab-transcript-checkpoint': {
+    prepare: prepareLabTranscriptCheckpoint,
+    run: runLabTranscriptCheckpointScenario,
+    launchEnv: (fixture) =>
+      labTranscriptLaunchEnvironment(fixture.streamFixtureSpecPath),
+    headlessOnly: true,
+  },
+  'many-chat-residency': {
+    prepare: prepareManyChatResidency,
+    run: runManyChatResidency,
+    afterMeasurement: captureLabTranscriptDiagnostics,
+    headlessOnly: true,
+  },
+  'scope-residency': {
+    prepare: prepareScopeResidency,
+    run: runScopeResidency,
+    launchEnv: () => ({
+      CANOPY_E2E_SCOPE_IDLE_UNLOAD_MS: String(SCOPE_RESIDENCY_IDLE_UNLOAD_MS),
+    }),
+    headlessOnly: true,
+  },
+  'many-worktree-file-index': {
+    prepare: prepareManyWorktreeFileIndex,
+    run: runManyWorktreeFileIndex,
+    afterMeasurement: captureLabTranscriptDiagnostics,
+    headlessOnly: true,
+  },
   'code-review-registry-cleanup': {
     prepare: prepareCodeReviewRegistry,
     run: (context) => runCodeReviewRegistryCleanup(context, { trace: false }),
@@ -17510,6 +20480,10 @@ const SCENARIOS = {
   },
 };
 
+export function scenarioHasAfterMeasurement(name) {
+  return typeof SCENARIOS[name]?.afterMeasurement === 'function';
+}
+
 const RELEASE_LIKE_E2E_PROVIDER_SCENARIOS = new Set([
   'frame-smoothness',
   'transcript-streaming-tail',
@@ -17522,6 +20496,11 @@ const RELEASE_LIKE_E2E_PROVIDER_SCENARIOS = new Set([
   'background-streaming',
   'chat-switch-catch-up',
   'managed-delegation-concurrency',
+  'delegation-restart-cycles',
+  'lab-transcript-onscreen',
+  'lab-transcript-offscreen',
+  'lab-transcript-checkpoint',
+  'many-chat-residency',
 ]);
 
 // Production builds have no E2E chat-event ingress to commit seeded events.
@@ -17539,6 +20518,7 @@ const RELEASE_LIKE_E2E_SCHEDULER_SCENARIOS = new Set([
 const RELEASE_LIKE_E2E_HOOK_SCENARIOS = new Set([
   'ledger-disabled-idle',
   'skill-suggestions-backfill',
+  'scope-residency',
   'w5-store-startup',
   'w5-store-reload',
   'w5-store-writes',
@@ -17660,6 +20640,9 @@ async function runPerformanceScenarioAttempt(
     options.releaseLikeRoot,
   );
   assertE2eRootSupported(options.releaseLike === true, options.e2eRoot);
+  const scenarioShowWindow = definition.headlessOnly
+    ? false
+    : options.showWindow;
   const userDataDir = mkdtempSync(
     path.join(performanceDataRootParent(), `canopy-perf-${name}-`),
   );
@@ -17708,7 +20691,7 @@ async function runPerformanceScenarioAttempt(
       CANOPY_GITHUB_API_BASE_URL: PERFORMANCE_MOCK_BASE_URL,
       CANOPY_LINEAR_API_BASE_URL: `${PERFORMANCE_MOCK_BASE_URL}/graphql`,
       CANOPY_E2E_CLOUD_BASE_URL: PERFORMANCE_MOCK_BASE_URL,
-      ...performanceWindowEnv(options),
+      ...performanceWindowEnv({ ...options, showWindow: scenarioShowWindow }),
       ...(diagnosticLaunch
         ? {
             CANOPY_PERFORMANCE_PROFILE_PLAIN_JS: '1',
@@ -17781,7 +20764,7 @@ async function runPerformanceScenarioAttempt(
       buildKind: options.releaseLike ? 'production' : undefined,
       rootPath: measuredBuildRootOption(options),
       viewportSize: options.studyViewportPreset ? options.viewport : VIEWPORT,
-      showWindow: options.showWindow,
+      showWindow: scenarioShowWindow,
       env: Object.keys(launchEnv).length > 0 ? launchEnv : undefined,
     });
     const launchStartedAt = performance.now();
@@ -17791,7 +20774,7 @@ async function runPerformanceScenarioAttempt(
       buildKind: options.releaseLike ? 'production' : undefined,
       rootPath: measuredBuildRootOption(options),
       viewportSize: options.studyViewportPreset ? options.viewport : VIEWPORT,
-      showWindow: options.showWindow,
+      showWindow: scenarioShowWindow,
       electronArgs: performanceElectronArgs(
         options.releaseLike,
         userDataDir,
@@ -17815,7 +20798,7 @@ async function runPerformanceScenarioAttempt(
     }
     const page = await getMainWindow(electronApp);
     const firstWindowMs = performance.now() - launchStartedAt;
-    if (options.showWindow !== false && !options.studyViewportPreset) {
+    if (scenarioShowWindow !== false && !options.studyViewportPreset) {
       await electronApp.evaluate(({ BrowserWindow }) => {
         for (const window of BrowserWindow.getAllWindows()) window.show();
       });
@@ -18004,6 +20987,15 @@ async function runPerformanceScenarioAttempt(
       // The scenario's own wall time; the startup journey below runs after
       // the measured window and reports its own duration.
       const durationMs = performance.now() - measuredStartedAt;
+      const labCapture = await runOptInAfterMeasurementHook(
+        definition.afterMeasurement,
+        {
+          page,
+          counters,
+          scenarioName: name,
+          userDataDir,
+        },
+      );
       const frameBudgets =
         tasks.streamedReplies.length > 0 || tasks.frameWindows.length > 0
           ? buildFrameBudgetReport(
@@ -18082,11 +21074,12 @@ async function runPerformanceScenarioAttempt(
         ...(diagnostics ? { diagnostics } : {}),
         ...(options.keepData ? { userDataDir } : {}),
       };
+      const completedRecord = attachLabCaptureReceipt(record, labCapture);
       // After every app read: the app is gone afterwards, and the closing
       // harness below finds it already exited.
       return definition.measureQuit
-        ? scenarioWithQuit(record, await measureAppQuit(electronApp))
-        : record;
+        ? scenarioWithQuit(completedRecord, await measureAppQuit(electronApp))
+        : completedRecord;
     } catch (error) {
       await diskIo?.stop();
       monitoring = await monitor?.stop().catch(() => undefined);

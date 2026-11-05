@@ -55,10 +55,6 @@ export function AutoArchiveToggleButton({
           target.chatId,
         ),
   );
-  const buttonClassName = enabled
-    ? 'focus-ring flex h-6 w-6 items-center justify-center rounded-md border border-line-accent/40 bg-accent-subtle fg-accent transition-colors hover:bg-accent-subtle/80'
-    : 'focus-ring flex h-6 w-6 items-center justify-center rounded-md border bg-fg-primary/[0.04] fg-primary/80 transition-colors hover:bg-fg-primary/[0.08] hover:fg-primary';
-
   const clean = useCleanChatLook();
   if (clean) {
     // Clean chat look: the turn actions' shared ghost button and one-line
@@ -87,7 +83,7 @@ export function AutoArchiveToggleButton({
           data-testid="auto-archive-toggle"
           data-delegates-live={hasLiveDelegates ? 'true' : undefined}
         >
-          <ArchiveIcon width="14" height="14" aria-hidden="true" />
+          <ArchiveIcon aria-hidden="true" />
         </Button>
       </Tooltip>
     );
@@ -108,9 +104,10 @@ export function AutoArchiveToggleButton({
           : 'This chat was marked for auto-archive, but will stay open unless you turn it back on before this turn finishes.'
       }
     >
-      <button
-        type="button"
-        className={buttonClassName}
+      <Button
+        variant={enabled ? 'ghost-accent' : CLEAN_ICON_BUTTON_VARIANT}
+        size="sm"
+        iconOnly
         onClick={onToggle}
         aria-pressed={enabled}
         aria-label={
@@ -121,8 +118,8 @@ export function AutoArchiveToggleButton({
         data-testid="auto-archive-toggle"
         data-delegates-live={hasLiveDelegates ? 'true' : undefined}
       >
-        <ArchiveIcon width="13" height="13" aria-hidden="true" />
-      </button>
+        <ArchiveIcon aria-hidden="true" />
+      </Button>
     </ActionTooltip>
   );
 }

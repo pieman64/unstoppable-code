@@ -1,5 +1,12 @@
-import type { SafetyDenyReason } from '@canopy/protocol/approvals';
-export type { SafetyDenyReason } from '@canopy/protocol/approvals';
+import type {
+  ApprovalRuleTarget,
+  SafetyDenyReason,
+} from '@canopy/protocol/approvals';
+export type {
+  ApprovalRuleScope,
+  ApprovalRuleTarget,
+  SafetyDenyReason,
+} from '@canopy/protocol/approvals';
 
 export type ApprovalMode = 'ask' | 'auto' | 'full-access';
 export const APPROVAL_MODES: readonly ApprovalMode[] = [
@@ -7,15 +14,6 @@ export const APPROVAL_MODES: readonly ApprovalMode[] = [
   'auto',
   'full-access',
 ];
-
-export type ApprovalRuleTarget =
-  | { kind: 'command'; pattern: string }
-  | { kind: 'file-write'; path: string }
-  | { kind: 'mcp'; server: string; tool?: string }
-  | { kind: 'network'; host: string }
-  | { kind: 'tool'; toolName: string }
-  /** In-app browser uploads to an origin; `path` is an optional workspace-relative glob. */
-  | { kind: 'browser-upload'; origin: string; path?: string };
 
 export type ApprovalRuleOrigin = 'prompt' | 'settings' | 'canopy-json';
 
@@ -26,8 +24,6 @@ export interface ApprovalRule {
   createdAt: string;
   origin: ApprovalRuleOrigin;
 }
-
-export type ApprovalRuleScope = 'session' | 'project' | 'global';
 
 export type ApprovalCheck =
   | {

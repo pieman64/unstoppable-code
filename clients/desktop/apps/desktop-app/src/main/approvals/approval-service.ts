@@ -692,6 +692,7 @@ export function createApprovalSession(
           sessionApprovalRules: [...(tab.sessionApprovalRules ?? []), rule],
         }),
         `approval-session-rule:${rule.id}`,
+        { metadataOnly: true },
       );
       if (!persisted.updated) {
         return false;

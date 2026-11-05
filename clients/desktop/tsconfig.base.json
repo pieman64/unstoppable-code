@@ -134,6 +134,12 @@
       ],
       "@canopy/mcp-oauth-core": [
         "./packages/mcp-oauth-core/src/index.ts"
+      ],
+      "@canopy/memory-consolidation": [
+        "./packages/memory-consolidation/src/index.ts"
+      ],
+      "@canopy/memory-consolidation/*": [
+        "./packages/memory-consolidation/src/*"
       ]
     }
   }

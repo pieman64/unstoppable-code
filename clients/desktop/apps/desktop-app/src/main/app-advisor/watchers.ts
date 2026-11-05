@@ -1966,6 +1966,14 @@ function isGitHubPullRequestSnapshot(
       value.state === 'merged') &&
     typeof value.url === 'string' &&
     (value.title === undefined || typeof value.title === 'string') &&
+    (value.additions === undefined ||
+      (typeof value.additions === 'number' &&
+        Number.isSafeInteger(value.additions) &&
+        value.additions >= 0)) &&
+    (value.deletions === undefined ||
+      (typeof value.deletions === 'number' &&
+        Number.isSafeInteger(value.deletions) &&
+        value.deletions >= 0)) &&
     typeof value.baseRefName === 'string' &&
     typeof value.headSha === 'string' &&
     (value.mergedAt === null || typeof value.mergedAt === 'string') &&
@@ -2612,6 +2620,8 @@ function githubPullRequestProgressForSummary(
       number: target.number,
       url: last.url,
       ...(last.title ? { title: last.title } : {}),
+      ...(last.additions !== undefined ? { additions: last.additions } : {}),
+      ...(last.deletions !== undefined ? { deletions: last.deletions } : {}),
       state: last.state,
       baseRefName: last.baseRefName,
       queue: last.queue

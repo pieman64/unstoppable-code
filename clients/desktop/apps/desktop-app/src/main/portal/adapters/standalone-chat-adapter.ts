@@ -40,6 +40,7 @@ import {
 import { readPortalChatCloudAttachmentRefs } from '../portal-chat-attachments';
 import { validateId } from '../../lib/validation';
 import { PortalServiceError } from '../../services/portal-service-error';
+import { noDispatchableModelSendMessage } from '../../lib/send-billing-refusal';
 
 export async function handlePortalStandaloneChatCreate(
   command: PortalCommandEnvelope<unknown>,
@@ -506,9 +507,7 @@ export async function handlePortalStandaloneChatSend(
       context.fail(
         command,
         'invalid_payload',
-        noDispatchableModel.missing === 'policy-allowance'
-          ? 'Your organization policy allows no model that can run this message.'
-          : 'No model is available to send this message. Add a billing source, then try again.',
+        noDispatchableModelSendMessage(noDispatchableModel.missing),
       );
       return;
     }

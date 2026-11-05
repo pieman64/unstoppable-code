@@ -193,7 +193,6 @@ import { resolveEnvironmentForRuntime } from '@canopy/desktop-shared/lib/user-en
 import {
   loadPipelineModelAliasPreferences,
   loadPipelinePluginCollectionPreferences,
-  normalizePipelineModelAliasPreferences,
   normalizePipelinePluginCollectionPreferences,
   savePipelineModelAliasPreferences,
   savePipelinePluginCollectionPreferences,
@@ -284,7 +283,6 @@ import {
   readDesktopPipeline,
   saveUserPipeline,
 } from '../canopy-runtime/pipeline-definition-dispatch';
-import { recordSharedItemInstall } from '../canopy-cloud/shared-item-subscriptions';
 import {
   analyzePackageRequest,
   cancelPackageAnalysis,
@@ -1153,9 +1151,10 @@ export function registerPipelineHandlers(): void {
           recordUserPipelineOwner(savedId, ownerContext);
         setUserPipelineAgentAuthor(savedId, null);
       };
-      if (pipelineResourceContextEnabled() && input.sourceRemoteId) {
+      if (input.sourceRemoteId) {
         // Core reads and validates the share itself, never the renderer's
-        // copy, and installs it with its receipt and subscription.
+        // copy, and installs it with its receipt (with resource contexts on)
+        // and subscription.
         try {
           validateId(input.sourceRemoteId, 'sourceRemoteId');
           const installed = await importRemotePipeline({
@@ -1202,17 +1201,6 @@ export function registerPipelineHandlers(): void {
           }),
       );
       if (result.success && result.data) recordUserSave(result.data.id);
-      if (result.success && result.data && input.sourceRemoteId) {
-        // Without organization projects the definition comes from the
-        // renderer and no server hash travels with it.
-        recordSharedItemInstall({
-          kind: 'pipeline',
-          remoteId: input.sourceRemoteId,
-          sourceKind: 'shared',
-          contentHash: null,
-          localId: result.data.id,
-        });
-      }
       return result;
     },
   );
@@ -1936,28 +1924,18 @@ export function registerPipelineHandlers(): void {
             data: { ok: false, reason: 'missing-locator' },
           };
         }
-        const normalizedPreferences = normalizePipelineModelAliasPreferences(
-          request.preferences,
-        );
-        const aliasIds = new Set(
-          (request.aliasIds ?? [])
-            .map((aliasId) => aliasId.trim())
-            .filter(Boolean),
-        );
-        const preferences =
-          aliasIds.size > 0
-            ? Object.fromEntries(
-                Object.entries(normalizedPreferences).filter(([aliasId]) =>
-                  aliasIds.has(aliasId),
-                ),
-              )
-            : normalizedPreferences;
-        await savePipelineModelAliasPreferences(
+        const saved = await savePipelineModelAliasPreferences(
           request.pipelinePreferenceLocator,
-          preferences,
+          request.preferences,
           'electron_main',
+          {
+            ...(request.aliasIds ? { aliasIds: request.aliasIds } : {}),
+            ...(request.basePreferences
+              ? { base: request.basePreferences }
+              : {}),
+          },
         );
-        return { success: true, data: { ok: true } };
+        return { success: true, data: { ok: true, ...saved } };
       } catch (error) {
         return {
           success: false,
@@ -1985,12 +1963,13 @@ export function registerPipelineHandlers(): void {
             data: { ok: false, reason: 'missing-locator' },
           };
         }
-        await savePipelinePluginCollectionPreferences(
+        const saved = await savePipelinePluginCollectionPreferences(
           request.pipelinePreferenceLocator,
-          normalizePipelinePluginCollectionPreferences(request.preferences),
+          request.preferences,
           'electron_main',
+          request.basePreferences ? { base: request.basePreferences } : {},
         );
-        return { success: true, data: { ok: true } };
+        return { success: true, data: { ok: true, ...saved } };
       } catch (error) {
         return {
           success: false,

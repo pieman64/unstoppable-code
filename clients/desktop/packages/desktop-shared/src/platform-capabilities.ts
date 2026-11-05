@@ -46,16 +46,27 @@ export function isCliPathManagementPlatform(
  * three agree, instead of each reading the raw compile-time
  * `__CANOPY_OLLAMA_ENABLED__` global.
  *
- * This merely wraps that global — whose per-build default (darwin **or** win32
- * enabled; other desktop platforms disabled, with the `CANOPY_OLLAMA_ENABLED`
- * env override winning) is set by the build gate in `electron.vite.config.ts`.
+ * The build gate in `electron.vite.config.ts` checks the running app's platform
+ * (process.platform in main/preload, window.platform in the renderer), allowing
+ * macOS, Windows and Linux independently of the build host. An explicit
+ * `CANOPY_OLLAMA_ENABLED=false` build override disables it on every platform.
  * The `typeof` guard keeps the helper safe in contexts where the define was not
  * injected (e.g. unit tests that never set the global), defaulting to enabled.
  */
 export function isOllamaSupportedOnPlatform(): boolean {
-  return typeof __CANOPY_OLLAMA_ENABLED__ === 'boolean'
-    ? __CANOPY_OLLAMA_ENABLED__
-    : true;
+  if (
+    typeof __CANOPY_OLLAMA_ENABLED__ === 'boolean' &&
+    !__CANOPY_OLLAMA_ENABLED__
+  ) {
+    return false;
+  }
+  // Outside the Electron build (including Jest), preserve the enabled default.
+  return (
+    typeof __CANOPY_OLLAMA_PLATFORM__ === 'undefined' ||
+    __CANOPY_OLLAMA_PLATFORM__ === 'darwin' ||
+    __CANOPY_OLLAMA_PLATFORM__ === 'win32' ||
+    __CANOPY_OLLAMA_PLATFORM__ === 'linux'
+  );
 }
 
 /**

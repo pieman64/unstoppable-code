@@ -41,7 +41,6 @@ import {
   OverlayScrollArea,
   RailTabBar,
   RefreshButton,
-  SkeletonBlock,
   type CollapsedIconColor,
   type RailTabBarTab,
 } from '@canopy/ui-shared/components';
@@ -98,6 +97,7 @@ import {
 } from './ActivityCardView';
 import { FilesTab, type FilesTabRoot } from './FilesTab';
 import { SummarySectionBody } from './SummarySectionBody';
+import { ActivitySectionSkeleton } from './ActivitySectionSkeleton';
 import { portalSummaryToSectionBodyProps } from './portal-summary-section-mapper';
 import {
   ChangedFilesSection,
@@ -1461,17 +1461,7 @@ export function ActivityPanel({
         hydrating: true,
       })
     ) {
-      return (
-        <div
-          role="status"
-          className="flex flex-col gap-2 py-1"
-          data-testid="activity-section-loading"
-        >
-          <span className="sr-only">Loading</span>
-          <SkeletonBlock width="2/3" />
-          <SkeletonBlock width="1/2" />
-        </div>
-      );
+      return <ActivitySectionSkeleton id={id} />;
     }
     switch (id) {
       case 'summary': {

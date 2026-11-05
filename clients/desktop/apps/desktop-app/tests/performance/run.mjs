@@ -105,6 +105,7 @@ function assertChatPrerequisite(scenarios) {
     'chats',
     'mixed-provider-agent-concurrency',
     'managed-delegation-concurrency',
+    'delegation-restart-cycles',
     'multi-chat-streaming',
     'multi-chat-streaming-sequential',
     'worktree-concurrency',
@@ -114,7 +115,8 @@ function assertChatPrerequisite(scenarios) {
   const requiredProviders = scenarios.some(
     (scenario) =>
       scenario === 'mixed-provider-agent-concurrency' ||
-      scenario === 'managed-delegation-concurrency',
+      scenario === 'managed-delegation-concurrency' ||
+      scenario === 'delegation-restart-cycles',
   )
     ? [
         {
@@ -360,6 +362,8 @@ async function main() {
       ...environmentMetadata(packageJson, options),
       windowVisible: options.showWindow,
       chatStoragePolicy: 'delta-journal',
+      // A0 provenance: preserve unset separately; the lab also reads main's resolved value.
+      CANOPY_E2E_CHAT_FORMAT4: process.env.CANOPY_E2E_CHAT_FORMAT4 ?? null,
       ...(options.rendererCodeCacheScheme
         ? { rendererCodeCacheSchemeEnabled: true }
         : {}),

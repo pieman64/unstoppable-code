@@ -52,14 +52,22 @@ import {
 } from './harness';
 import {
   createPipelineGoldenWorld,
+  GOLDEN_AUTOMATION_ENTRY_KEY,
+  GOLDEN_AUTOMATION_SHARE_ID,
+  GOLDEN_AUTOMATION_WORKER_KEY,
+  type GoldenAutomationPackage,
   GOLDEN_CURATED_KEY,
   GOLDEN_CURATED_YAML,
   GOLDEN_PROJECT_PIPELINE_FILE,
   GOLDEN_PROJECT_PIPELINE_ID,
+  GOLDEN_PUBLIC_PACKAGE_SHARE_ID,
+  GOLDEN_PUBLIC_SHARE_ID,
+  GOLDEN_PUBLIC_UPDATED_YAML,
   GOLDEN_SHARED_DISPATCH_REMOTE_ID,
   GOLDEN_SHARED_DISPATCH_YAML,
   GOLDEN_SHARED_REMOTE_ID,
   GOLDEN_SHARED_YAML,
+  GOLDEN_TEAM_SHARE_ID,
   GOLDEN_WORKSPACE_ID,
   GOLDEN_WORKTREE_ID,
   type GoldenWorld,
@@ -658,6 +666,7 @@ describe('installs from the curated catalog and shares', () => {
   async function capturedInstall(
     install: () => Promise<unknown>,
     idOf: (result: unknown) => string | undefined,
+    keep = false,
   ): Promise<unknown> {
     const before = new Set(
       (listStoredPipelines().data ?? []).map((info) => info.id),
@@ -675,13 +684,18 @@ describe('installs from the curated catalog and shares', () => {
       installedId === undefined
         ? undefined
         : world.normalize(await installedState(installedId));
-    for (const id of added) deleteStoredPipeline(id);
+    if (!keep) for (const id of added) deleteStoredPipeline(id);
     return { result, added: added.length, state };
   }
 
   const ipcId = (value: unknown): string | undefined => {
     const result = value as IPCResult<PipelineInfo>;
     return result.success ? result.data?.id : undefined;
+  };
+
+  const packageShareId = (value: unknown): string | undefined => {
+    const result = value as IPCResult<{ localPipelineId: string }>;
+    return result.success ? result.data?.localPipelineId : undefined;
   };
 
   it('imports a curated revision as a user definition and refuses a stale one', async () => {
@@ -797,5 +811,203 @@ describe('installs from the curated catalog and shares', () => {
     } finally {
       contexts.mockRestore();
     }
+  });
+
+  it('installs public package shares through pipelines:install-package-share, and shares without resource contexts through pipelines:save', async () => {
+    const installShare = (request: unknown): Promise<unknown> =>
+      invokeIpc(PIPELINE_CHANNELS.INSTALL_PACKAGE_SHARE, request);
+    const installedIds: string[] = [];
+    const kept = async (install: () => Promise<unknown>): Promise<unknown> => {
+      const captured = await capturedInstall(
+        async () => {
+          const result = await install();
+          const id = packageShareId(result);
+          if (id !== undefined && !installedIds.includes(id))
+            installedIds.push(id);
+          return result;
+        },
+        packageShareId,
+        true,
+      );
+      return captured;
+    };
+    // The fields the share landing page sends: the reviewed snapshot's own.
+    const saveShare = (sourceRemoteId: string): Promise<unknown> => {
+      const content = parsePipelineText(GOLDEN_SHARED_YAML);
+      return invokeIpc(PIPELINE_CHANNELS.SAVE, {
+        sourceRemoteId,
+        name: content.name,
+        description: content.description ?? '',
+        icon: content.icon ?? '',
+        content,
+      });
+    };
+    const firstPin = world.publicSharePin(GOLDEN_PUBLIC_SHARE_ID);
+    const definitionOnly = {
+      install: await kept(() => installShare(firstPin)),
+      reinstall: await kept(() => installShare(firstPin)),
+      stale: await kept(() =>
+        installShare({
+          ...firstPin,
+          expectedPipelineContentHash: '0'.repeat(64),
+        }),
+      ),
+      missing: await kept(() =>
+        installShare({ ...firstPin, externalId: 'public-missing' }),
+      ),
+      update: await (async (): Promise<unknown> => {
+        world.publishPublicShare(
+          GOLDEN_PUBLIC_SHARE_ID,
+          GOLDEN_PUBLIC_UPDATED_YAML,
+        );
+        return kept(() =>
+          installShare(world.publicSharePin(GOLDEN_PUBLIC_SHARE_ID)),
+        );
+      })(),
+    };
+    const packagePin = world.publicSharePin(GOLDEN_PUBLIC_PACKAGE_SHARE_ID);
+    const packaged = {
+      install: await kept(() => installShare(packagePin)),
+      reinstall: await kept(() => installShare(packagePin)),
+      changedDigest: await kept(() =>
+        installShare({
+          ...packagePin,
+          expectedPackageDigest: `pp:v1:${'A'.repeat(43)}`,
+        }),
+      ),
+    };
+    // A team share resolves through the scoped detail; this account has no
+    // organization context to receipt it in, so the install is refused and
+    // rolled back.
+    const scopedRefused = await kept(() =>
+      installShare({ ...firstPin, externalId: GOLDEN_TEAM_SHARE_ID }),
+    );
+    for (const id of installedIds.splice(0)) deleteStoredPipeline(id);
+    const contexts = jest
+      .spyOn(resourceLanes, 'pipelineResourceContextEnabled')
+      .mockReturnValue(false);
+    let withoutContexts: unknown;
+    try {
+      withoutContexts = {
+        publicInstall: await kept(() =>
+          installShare(world.publicSharePin(GOLDEN_PUBLIC_SHARE_ID)),
+        ),
+        packageInstall: await kept(() => installShare(packagePin)),
+        save: await capturedInstall(
+          () => saveShare(GOLDEN_SHARED_REMOTE_ID),
+          ipcId,
+        ),
+        saveMissing: await capturedInstall(
+          () => saveShare('shared-missing'),
+          ipcId,
+        ),
+      };
+    } finally {
+      contexts.mockRestore();
+      for (const id of installedIds.splice(0)) deleteStoredPipeline(id);
+    }
+    expect({
+      definitionOnly,
+      packaged,
+      scopedRefused,
+      withoutContexts,
+    }).toMatchSnapshot();
+  });
+
+  it("installs an automation package's pipelines and files through Stage A, and keeps, updates or refuses them", async () => {
+    const { installAutomationPipelines } =
+      await import('../../pipelines/automation-pipeline-install');
+    const { readPipelineAssetsManifest } =
+      await import('../../pipelines/pipeline-asset-install');
+    const { v1, v2, tampered } = world.automationPackages;
+    const stageA = (
+      automationPackage: GoldenAutomationPackage,
+      existing?: Record<string, { id: string; hash: string }>,
+    ): ReturnType<typeof installAutomationPipelines> =>
+      installAutomationPipelines({
+        remoteId: GOLDEN_AUTOMATION_SHARE_ID,
+        packageRef: { version: 1, digest: automationPackage.digest },
+        source: 'public',
+        stage: 'pipelines',
+        ...(existing
+          ? {
+              existingPipelines: Object.entries(existing).map(
+                ([key, { id, hash }]) => ({
+                  key,
+                  localPipelineId: id,
+                  expectedContentHash: hash,
+                }),
+              ),
+            }
+          : {}),
+      });
+    const ids: Record<string, string> = {};
+    // Each call's result and cloud requests, then what every installed
+    // pipeline holds after it, files included.
+    const step = async (
+      call: () => ReturnType<typeof installAutomationPipelines>,
+    ): Promise<unknown> => {
+      let response: Awaited<ReturnType<typeof call>> | undefined;
+      const result = await capture(async () => {
+        response = await call();
+        return response;
+      });
+      for (const pipeline of response?.pipelines ?? []) {
+        if (ids[pipeline.key] === undefined) {
+          ids[pipeline.key] = pipeline.localPipelineId;
+          world.replacements.push({
+            value: pipeline.localPipelineId,
+            token: `<${pipeline.key}>`,
+          });
+        }
+      }
+      const state: Record<string, unknown> = {};
+      for (const [key, id] of Object.entries(ids))
+        state[key] = {
+          ...((await installedState(id)) as Record<string, unknown>),
+          assets: await readPipelineAssetsManifest(id),
+        };
+      return { result, state: world.normalize(state) };
+    };
+    const installed = (
+      automationPackage: GoldenAutomationPackage,
+    ): Record<string, { id: string; hash: string }> => ({
+      [GOLDEN_AUTOMATION_ENTRY_KEY]: {
+        id: ids[GOLDEN_AUTOMATION_ENTRY_KEY] ?? '',
+        hash:
+          automationPackage.contentHashes[GOLDEN_AUTOMATION_ENTRY_KEY] ?? '',
+      },
+      [GOLDEN_AUTOMATION_WORKER_KEY]: {
+        id: ids[GOLDEN_AUTOMATION_WORKER_KEY] ?? '',
+        hash:
+          automationPackage.contentHashes[GOLDEN_AUTOMATION_WORKER_KEY] ?? '',
+      },
+    });
+    const before = (listStoredPipelines().data ?? []).length;
+    const results = {
+      install: await step(() => stageA(v1)),
+      retry: await step(() => stageA(v1)),
+      keep: await step(() => stageA(v1, installed(v1))),
+      update: await step(() => stageA(v2, installed(v1))),
+      editedRefused: await (async (): Promise<unknown> => {
+        const entryId = ids[GOLDEN_AUTOMATION_ENTRY_KEY] ?? '';
+        const edited = parsePipelineText(GOLDEN_USER_PIPELINE_YAML);
+        saveStoredPipeline({
+          id: entryId,
+          name: edited.name,
+          description: '',
+          icon: '',
+          content: edited,
+        });
+        return step(() => stageA(v1, installed(v2)));
+      })(),
+      tampered: await step(() => stageA(tampered)),
+      missing: await step(() =>
+        stageA({ digest: `pp:v1:${'A'.repeat(43)}`, contentHashes: {} }),
+      ),
+    };
+    const added = (listStoredPipelines().data ?? []).length - before;
+    for (const id of Object.values(ids)) deleteStoredPipeline(id);
+    expect({ ...results, added }).toMatchSnapshot();
   });
 });

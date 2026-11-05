@@ -64,6 +64,13 @@ export interface CanopyCapabilities {
    * `onboarding_tips_v1`; cloud chats have no store and leave it unset.
    */
   readonly onboardingTips?: boolean;
+  /**
+   * `suggestions.*` reads and writes the host's suggestion preferences
+   * (CAN-4343). Absent on cloud chats and Portal hosts without
+   * `suggestions_v1`: those clients keep pre-CAN-4343 behavior and make no
+   * suggestions calls.
+   */
+  readonly suggestions?: boolean;
   /** Chat operations wired by this target's adapter. Missing members deny. */
   readonly chatWorkflows?: {
     readonly planMode?: boolean;
@@ -155,6 +162,8 @@ export interface CanopyCapabilities {
   readonly chatVisuals?: boolean;
   /** Paired host projects sanitized watched GitHub progress. Default-deny. */
   readonly watchedGitHubItems?: boolean;
+  /** Paired host lists and deletes watchers subscribed to this chat. Default-deny. */
+  readonly chatWatchers?: boolean;
   /**
    * Host renders in a document whose clipboard can take a PNG plus HTML item,
    * for copying a diagram as a picture (CAN-5040). Optional and default-deny
@@ -337,6 +346,13 @@ export interface CanopyCapabilities {
    */
   readonly turnFeedback?: boolean;
   /**
+   * Host stars the brand's source repository in app through
+   * `sourceRepository.star`. Optional and default-deny: desktop reports
+   * `true` when its IPC is wired; the Portal and cloud chats leave it unset
+   * and the GitHub star prompt opens the repository URL instead.
+   */
+  readonly sourceRepositoryStar?: boolean;
+  /**
    * Host implements `account.installUpdateEmails.get` / `.set` (CAN-2334).
    * Optional and default-deny. Unconfigured (absent): the settings row
    * renders nothing. Configured but the backend is unavailable (signed out,
@@ -419,6 +435,13 @@ export interface CanopyCapabilities {
    * panel. Whether the Ledger is turned on is a separate, per-call check.
    */
   readonly ledger?: boolean;
+  /**
+   * Host can show the live state of the agents that own this device's Feed
+   * work (L12): turns, waits, background work and Catching up, projected
+   * from its canonical chat state. Optional and default-deny: unset shows
+   * the Feed's rows without live state.
+   */
+  readonly ledgerLiveAgentStates?: boolean;
   /**
    * Host can read the Feed: the account's entries, and its teammates', from
    * the mirror through a `LedgerFeedClient`. Optional and default-deny: a

@@ -28,7 +28,7 @@ export function recordChatStateApplied(
   startedAt: number,
 ): void {
   if (active === null) return;
-  active.recordChatState(event, performance.now() - startedAt);
+  active.recordChatState(event, startedAt, performance.now() - startedAt);
 }
 
 /** A `chat:event` was applied; `startedAt` from `performance.now()`. */
@@ -37,7 +37,7 @@ export function recordChatEventApplied(
   startedAt: number,
 ): void {
   if (active === null) return;
-  active.recordChatEvent(event, performance.now() - startedAt);
+  active.recordChatEvent(event, startedAt, performance.now() - startedAt);
 }
 
 /**
@@ -50,5 +50,10 @@ export function recordTerminalOutputApplied(
   startedAt: number,
 ): void {
   if (active === null) return;
-  active.recordTerminalOutput(terminalId, seq, performance.now() - startedAt);
+  active.recordTerminalOutput(
+    terminalId,
+    seq,
+    startedAt,
+    performance.now() - startedAt,
+  );
 }

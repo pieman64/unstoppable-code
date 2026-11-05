@@ -1,21 +1,27 @@
 'use client';
 
-import { useEffect, useRef, useState, type JSX } from 'react';
-import type { LedgerFilePicker } from '@canopy/app-core';
+import { useEffect, useId, useRef, useState, type JSX } from 'react';
+import type { LedgerClient, LedgerFilePicker } from '@canopy/app-core';
 import type { LedgerViewDraft, LedgerViewOwnersState } from '@canopy/app-state';
+import type { LedgerEntrySearchItem } from '@canopy/protocol/canopy-core';
 import {
   ledgerViewScopeKey,
   type LedgerTaskViewScope,
   type LedgerViewFileCandidate,
+  type LedgerViewScope,
 } from '@canopy/protocol/ledger-view';
 import {
   LedgerFileSearch,
+  FormField,
   LedgerOwnerPicker,
+  SettingsSelect,
 } from '@canopy/ui-shared/components';
+import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 
 /** Typing settles this long before a file search runs. */
 const FILE_SEARCH_DEBOUNCE_MS = 200;
 const FILE_SEARCH_LIMIT = 20;
+const OPERATION_OPTION_TEST_ID = 'feed-composer-operation-picker-option';
 
 export interface LedgerDraftFileSearchProps {
   readonly files: LedgerFilePicker;
@@ -144,5 +150,128 @@ export function LedgerDraftOwnerPicker({
         })
       }
     />
+  );
+}
+
+interface FoundOperations {
+  readonly scopeKey: string;
+  readonly entries: readonly LedgerEntrySearchItem[];
+  readonly pending: boolean;
+}
+
+export interface LedgerDraftOperationPickerProps {
+  readonly client: LedgerClient;
+  readonly scope: LedgerViewScope;
+  readonly draft: LedgerViewDraft;
+  readonly saving: boolean;
+  readonly onChange: (patch: Partial<LedgerViewDraft>) => void;
+}
+
+/** The open operation in this task that owns the new task. */
+export function LedgerDraftOperationPicker({
+  client,
+  scope,
+  draft,
+  saving,
+  onChange,
+}: LedgerDraftOperationPickerProps): JSX.Element {
+  const id = useId();
+  const scopeKey = ledgerViewScopeKey(scope);
+  const [found, setFound] = useState<FoundOperations>(() => ({
+    scopeKey,
+    entries: [],
+    pending: true,
+  }));
+  const searchGeneration = useRef(0);
+
+  useEffect(() => {
+    const generation = ++searchGeneration.current;
+    setFound({ scopeKey, entries: [], pending: true });
+    void client
+      .searchEntries({
+        scope,
+        params: {
+          types: ['OPERATION'],
+          statuses: ['TODO', 'IN_PROGRESS', 'BLOCKED', 'NEEDS_REVIEW'],
+          parentEntryId: null,
+          limit: 100,
+        },
+      })
+      .then(
+        (result): void => {
+          if (generation !== searchGeneration.current) return;
+          setFound({
+            scopeKey,
+            entries: result.status === 'ok' ? result.value.entries : [],
+            pending: false,
+          });
+        },
+        (): void => {
+          if (generation !== searchGeneration.current) return;
+          setFound({ scopeKey, entries: [], pending: false });
+        },
+      );
+    return (): void => {
+      searchGeneration.current += 1;
+    };
+  }, [client, scope, scopeKey]);
+
+  const entries = found.scopeKey === scopeKey ? found.entries : [];
+  const parentListed =
+    draft.parent !== null &&
+    entries.some((entry) => entry.entryId === draft.parent?.entryId);
+
+  return (
+    <FormField label="Operation" id={id}>
+      {(control) => (
+        <SettingsSelect
+          {...control}
+          data-testid="feed-composer-operation-picker"
+          aria-label="Operation"
+          width="fill"
+          value={draft.parent?.entryId ?? ''}
+          disabled={saving}
+          replayPrivacy={{ maskClassName: REPLAY_MASK_CLASS }}
+          options={[
+            {
+              value: '',
+              label: 'No operation',
+              testId: OPERATION_OPTION_TEST_ID,
+            },
+            ...(draft.parent !== null && !parentListed
+              ? [
+                  {
+                    value: draft.parent.entryId,
+                    label: draft.parent.title,
+                    testId: OPERATION_OPTION_TEST_ID,
+                  },
+                ]
+              : []),
+            ...entries.map((entry) => ({
+              value: entry.entryId,
+              label: entry.title,
+              testId: OPERATION_OPTION_TEST_ID,
+            })),
+          ]}
+          onValueChange={(selectedId) => {
+            if (selectedId.length === 0) {
+              onChange({ parent: null });
+              return;
+            }
+            const selected = entries.find(
+              (entry) => entry.entryId === selectedId,
+            );
+            if (selected !== undefined) {
+              onChange({
+                parent: { entryId: selected.entryId, title: selected.title },
+              });
+              return;
+            }
+            if (draft.parent?.entryId !== selectedId)
+              onChange({ parent: null });
+          }}
+        />
+      )}
+    </FormField>
   );
 }

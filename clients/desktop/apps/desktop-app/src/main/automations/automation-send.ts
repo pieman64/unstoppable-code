@@ -148,7 +148,8 @@ export function automationRefusalError(
  * is usage-limit resumes, composer, Orchestrator and agent scheduled sends,
  * and the Home composer's deferred `scheduled_task` prompt. A session prompt
  * saved against a legacy standalone chat project also stays: the shared port
- * resolves only indexed projects.
+ * resolves only indexed projects. A person's scheduled send keeps this path
+ * only until it converts to a pipeline (CAN-5479).
  */
 export function staysNativeAutomationSend(
   activity: Pick<ScheduledActivity, 'action' | 'agentScheduledSend'>,

@@ -77,8 +77,9 @@ interface ScreenShellProps {
 
 function ScreenShell({ children }: ScreenShellProps): JSX.Element {
   return (
+    // The window's whole content in place of the shell, not a layer over it.
     <div
-      className="fixed inset-0 z-modal flex items-center justify-center bg-base fg-primary"
+      className="flex h-screen w-full items-center justify-center overflow-hidden bg-base fg-primary"
       data-testid={
         window.platform === 'darwin'
           ? 'mac-git-required-screen'

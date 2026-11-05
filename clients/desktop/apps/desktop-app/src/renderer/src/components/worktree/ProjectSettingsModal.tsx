@@ -7,10 +7,13 @@ import {
 import {
   Button,
   ConfirmDialog,
+  DelayedLoadingPlaceholder,
   ErrorBanner,
   FieldError,
+  ListRow,
   PluginSelectionScopeHelp,
   SettingsSaveStatus,
+  Skeleton,
   ToggleSwitch,
   type SettingsSaveState,
   EmptyStateRow,
@@ -112,7 +115,7 @@ import {
 import { HookActionEditor } from './HookActionEditor';
 import { ScriptConfigEditor } from './ScriptConfigEditor';
 import { ScriptActionsSettingsSection } from '../script-actions/ScriptActionsSettingsSection';
-import { CopyButton, DialogModal, LoadingSpinner } from '../shared';
+import { CopyButton, DialogModal } from '../shared';
 import { PrivateMemoryCard } from '@canopy/ui-shared';
 import { PluginSelector } from '../shared/PluginSelector';
 import { ShareablePluginSelector } from '../shared/ShareablePluginSelector';
@@ -371,6 +374,42 @@ function shareablePluginRefKeyOrNull(ref: ShareablePluginRef): string | null {
   } catch {
     return null;
   }
+}
+
+/** Plain recommendations the loading skeleton lays out as plugin rows. */
+const SAMPLE_RECOMMENDED_PLUGINS = [
+  { title: 'Code review', subtitle: 'Skill · github.com/acme/skills' },
+  { title: 'Release notes', subtitle: 'Plugin · Acme marketplace' },
+] as const;
+
+const noop = (): void => undefined;
+
+function RecommendedPluginRow({
+  title,
+  subtitle,
+  onRemove,
+}: {
+  title: string;
+  subtitle: string;
+  onRemove: () => void;
+}): JSX.Element {
+  return (
+    <SettingsRow
+      label={title}
+      description={subtitle}
+      control={
+        <Button
+          size="compact"
+          variant="ghost"
+          iconOnly
+          aria-label={`Stop recommending ${title}`}
+          onClick={onRemove}
+        >
+          <TrashIcon aria-hidden={true} />
+        </Button>
+      }
+    />
+  );
 }
 
 function countPluginSelections(selections: ChatTabPluginSelections): number {
@@ -2416,15 +2455,13 @@ export function ProjectSettingsModal({
               />
             </SettingsRow>
           ) : (
-            <button
-              type="button"
+            <ListRow
               onClick={() => setAddingScript(true)}
-              className="focus-ring flex min-h-10 w-full cursor-default items-center gap-2 rounded-md text-left text-s fg-primary"
               data-testid="project-settings-add-script"
+              icon={<PlusIcon size={16} aria-hidden={true} />}
             >
-              <PlusIcon size={16} aria-hidden={true} className="fg-secondary" />
               Add script
-            </button>
+            </ListRow>
           )}
         </SettingsGroup>
       </SettingsSection>
@@ -2465,15 +2502,13 @@ export function ProjectSettingsModal({
               }
             />
           ))}
-          <button
-            type="button"
+          <ListRow
             onClick={() => setDrillIn({ kind: 'hook', trigger: null })}
-            className="focus-ring flex min-h-10 w-full cursor-default items-center gap-2 rounded-md text-left text-s fg-primary"
             data-testid="project-settings-add-hook"
+            icon={<PlusIcon size={16} aria-hidden={true} />}
           >
-            <PlusIcon size={16} aria-hidden={true} className="fg-secondary" />
             Add hook
-          </button>
+          </ListRow>
         </SettingsGroup>
       </SettingsSection>
     </>
@@ -2488,9 +2523,17 @@ export function ProjectSettingsModal({
   const pluginsPage =
     drillIn?.kind === 'recommended-plugins' ? (
       !hasLoadedWorkspaceSettingsData && !workspaceSettingsLoadError ? (
-        <div className="flex items-center justify-center py-8">
-          <LoadingSpinner tone="secondary" />
-        </div>
+        // The worktree row is already known; the plugin table below it
+        // keeps its own loading state once the recommendations arrive.
+        <DelayedLoadingPlaceholder slowNote="Still loading recommendations…">
+          <Skeleton
+            loading
+            label="Loading recommendations"
+            testId="project-settings-recommended-plugins-loading"
+          >
+            <SettingsGroup>{sourceWorktreeRow}</SettingsGroup>
+          </Skeleton>
+        </DelayedLoadingPlaceholder>
       ) : (
         <>
           <SettingsGroup>
@@ -2533,36 +2576,39 @@ export function ProjectSettingsModal({
                 description={workspaceSettingsLoadError}
               />
             ) : !hasLoadedWorkspaceSettingsData ? (
-              <div className="flex min-h-10 items-center">
-                <LoadingSpinner tone="secondary" />
-              </div>
+              <DelayedLoadingPlaceholder>
+                <Skeleton
+                  loading
+                  label="Loading recommendations"
+                  testId="project-settings-recommended-plugins-loading"
+                >
+                  {SAMPLE_RECOMMENDED_PLUGINS.map((sample) => (
+                    <RecommendedPluginRow
+                      key={sample.title}
+                      title={sample.title}
+                      subtitle={sample.subtitle}
+                      onRemove={noop}
+                    />
+                  ))}
+                </Skeleton>
+              </DelayedLoadingPlaceholder>
             ) : recommendedPlugins.length === 0 ? (
               <EmptyStateRow title="No recommended plugins yet." />
             ) : (
               recommendedPlugins.map(({ key, ref }) => {
                 const display = buildShareablePluginDisplay(ref);
                 return (
-                  <SettingsRow
+                  <RecommendedPluginRow
                     key={key}
-                    label={display.title}
-                    description={display.subtitle}
-                    control={
-                      <Button
-                        size="compact"
-                        variant="ghost"
-                        iconOnly
-                        aria-label={`Stop recommending ${display.title}`}
-                        onClick={() =>
-                          setSourcePlugins((current) =>
-                            current.filter(
-                              (candidate) =>
-                                shareablePluginRefKeyOrNull(candidate) !== key,
-                            ),
-                          )
-                        }
-                      >
-                        <TrashIcon aria-hidden={true} />
-                      </Button>
+                    title={display.title}
+                    subtitle={display.subtitle}
+                    onRemove={() =>
+                      setSourcePlugins((current) =>
+                        current.filter(
+                          (candidate) =>
+                            shareablePluginRefKeyOrNull(candidate) !== key,
+                        ),
+                      )
                     }
                   />
                 );

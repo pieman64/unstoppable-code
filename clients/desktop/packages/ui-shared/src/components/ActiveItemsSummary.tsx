@@ -4,8 +4,8 @@ import type { JSX } from 'react';
 import { CUSTOMIZE_LABEL } from '@canopy/protocol/ui-labels';
 import type { ActiveInstalledItemCounts } from '../lib/installed-item-status';
 import { Button } from './Button';
-import { InlineTextSkeleton } from './InlineTextSkeleton';
 import { SettingsRowsRow } from './settings/SettingsRows';
+import { Skeleton } from './Skeleton';
 import { StatusLabel } from './StatusLabel';
 
 /**
@@ -57,6 +57,32 @@ export interface ActiveItemsSummaryProps {
   readonly testId?: string;
 }
 
+/** The counts the loading line is measured from: a typical summary. */
+const SAMPLE_COUNTS: ActiveInstalledItemCounts = {
+  plugins: 2,
+  skills: 3,
+  mcpServers: 0,
+  collections: 0,
+};
+
+/** `2 plugins and 3 skills are active.`, or the empty line. */
+function ActiveItemsLine({
+  counts,
+}: {
+  readonly counts: ActiveInstalledItemCounts;
+}): JSX.Element {
+  const text = activeItemsSummaryText(counts);
+  const { plugins, skills, mcpServers, collections } = counts;
+  const total = plugins + skills + mcpServers + collections;
+  return (
+    <span className={text ? 'fg-primary' : 'fg-tertiary'}>
+      {text
+        ? `${text} ${total === 1 ? 'is' : 'are'} active.`
+        : 'Nothing is active yet.'}
+    </span>
+  );
+}
+
 export function ActiveItemsSummary({
   state,
   onManage,
@@ -64,20 +90,15 @@ export function ActiveItemsSummary({
 }: ActiveItemsSummaryProps): JSX.Element {
   let line: JSX.Element;
   if (state.kind === 'loading') {
-    line = <InlineTextSkeleton className="w-32" />;
+    line = (
+      <Skeleton loading label="Loading active items" className="inline-block">
+        <ActiveItemsLine counts={SAMPLE_COUNTS} />
+      </Skeleton>
+    );
   } else if (state.kind === 'error') {
     line = <StatusLabel>{state.message}</StatusLabel>;
   } else {
-    const text = activeItemsSummaryText(state.counts);
-    const { plugins, skills, mcpServers, collections } = state.counts;
-    const total = plugins + skills + mcpServers + collections;
-    line = (
-      <span className={text ? 'fg-primary' : 'fg-tertiary'}>
-        {text
-          ? `${text} ${total === 1 ? 'is' : 'are'} active.`
-          : 'Nothing is active yet.'}
-      </span>
-    );
+    line = <ActiveItemsLine counts={state.counts} />;
   }
   return (
     <SettingsRowsRow

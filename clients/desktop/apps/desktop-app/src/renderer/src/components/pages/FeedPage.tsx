@@ -1,27 +1,45 @@
-import { useCallback, useEffect, useMemo, useState, type JSX } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+  type JSX,
+} from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { LedgerFeedStore } from '@canopy/app-state';
+import type { LedgerFeedWorkStore } from '@canopy/app-state/ledger-feed';
+import { deriveNeedsYou } from '@canopy/app-state/ledger-feed';
+import type {
+  LedgerLiveSnapshot,
+  LedgerLiveStateSource,
+} from '@canopy/app-core';
 import type { LedgerViewScope } from '@canopy/protocol/ledger-view';
-import { LedgerFeedPage, type LedgerFeedLocal } from '@canopy/ui-app/ledger';
+import {
+  LedgerFeedPage,
+  LedgerFeedSections,
+  type LedgerFeedLocal,
+} from '@canopy/ui-app/ledger';
 import { useCanopyClient } from '@canopy/app-state';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
-import {
-  describeLedgerScope,
-  ledgerFeedAddableScopes,
-  type LedgerFeedScopeSources,
-} from '@/lib/ledger/ledger-feed-scopes';
+import { ledgerFeedAddableScopes } from '@/lib/ledger/ledger-feed-scopes';
 import { ledgerFeedUiState } from '@/lib/ledger/ledger-feed-ui-state';
 import { DESKTOP_LEDGER_FILE_PICKER } from '@/lib/ledger/ledger-file-picker';
-import { DESKTOP_LEDGER_NAVIGATOR } from '@/lib/ledger/ledger-navigator';
+import {
+  DESKTOP_LEDGER_NAVIGATOR,
+  openLedgerScope,
+} from '@/lib/ledger/ledger-navigator';
 import {
   desktopLedgerClient,
+  desktopLedgerFeedClient,
   ledgerFeedStore,
+  ledgerFeedWorkStore,
   ledgerViewScopeHasDraft,
   ledgerViewStoreForScope,
 } from '@/lib/ledger/ledger-view-stores';
-import { useProjectsStore } from '@/stores/projectsStore';
-import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
-import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
+import { desktopLedgerLiveStateSource } from '@/lib/ledger/ledger-live-state';
+import { DESKTOP_LEDGER_FEED_ANSWERS } from '@/lib/ledger/ledger-feed-answers';
+import { useLedgerScopeNames } from '@/lib/ledger/use-ledger-scope-names';
 import { PageTitlebar } from '../shared/PageTitlebar';
 
 /** Whether the window is on screen; the Feed looks for activity only then. */
@@ -40,8 +58,54 @@ function useDocumentVisible(): boolean {
 }
 
 /** Reports the Feed to App Advisor (see `ledgerFeedUiState`). */
-function FeedUiStateReporter({ store }: { store: LedgerFeedStore }): null {
-  const value = store(useShallow(ledgerFeedUiState));
+const EMPTY_LIVE_SNAPSHOT: LedgerLiveSnapshot = { agents: {}, waits: [] };
+
+function FeedUiStateReporter({
+  store,
+  workStore,
+  liveStateSource,
+  ledgerLiveAgentStates,
+}: {
+  readonly store: LedgerFeedStore;
+  readonly workStore: LedgerFeedWorkStore;
+  readonly liveStateSource: LedgerLiveStateSource;
+  readonly ledgerLiveAgentStates: boolean;
+}): null {
+  const { statusFilter, sort, openIds, olderShown, actorHosts, reviewRows } =
+    workStore(
+      useShallow((state) => ({
+        statusFilter: state.statusFilter,
+        sort: state.sort,
+        openIds: state.openIds,
+        olderShown: state.olderShown,
+        actorHosts: state.work.actorHosts,
+        reviewRows: state.reviews.rows,
+      })),
+    );
+  const subscribe = useCallback(
+    (listener: () => void): (() => void) =>
+      ledgerLiveAgentStates
+        ? liveStateSource.subscribe(listener)
+        : (): void => undefined,
+    [ledgerLiveAgentStates, liveStateSource],
+  );
+  const getSnapshot = useCallback(
+    (): LedgerLiveSnapshot =>
+      ledgerLiveAgentStates
+        ? liveStateSource.getSnapshot(actorHosts)
+        : EMPTY_LIVE_SNAPSHOT,
+    [actorHosts, ledgerLiveAgentStates, liveStateSource],
+  );
+  const snapshot = useSyncExternalStore(
+    subscribe,
+    getSnapshot,
+    (): LedgerLiveSnapshot => EMPTY_LIVE_SNAPSHOT,
+  );
+  const workUiState = { statusFilter, sort, openIds, olderShown };
+  const needsYouCount = deriveNeedsYou(snapshot, reviewRows).length;
+  const value = store(
+    useShallow((state) => ledgerFeedUiState(state, workUiState, needsYouCount)),
+  );
   useCurrentUiStateReporter('ledger.feed', value);
   return null;
 }
@@ -53,40 +117,8 @@ function FeedUiStateReporter({ store }: { store: LedgerFeedStore }): null {
  */
 export function FeedPage(): JSX.Element {
   const store = useMemo(() => ledgerFeedStore(), []);
-  const projects = useProjectsStore((state) => state.projects);
-  const organizations = useWorkspaceContextStore(
-    (state) => state.state.organizations,
-  );
-  const { workEntries, activeChatProjectId, sidebarEntriesByProject } =
-    useStandaloneChatStore(
-      useShallow((state) => ({
-        workEntries: state.workEntries,
-        activeChatProjectId: state.activeChatProjectId,
-        sidebarEntriesByProject: state.sidebarEntriesByProject,
-      })),
-    );
-  const sources = useMemo(
-    (): LedgerFeedScopeSources => ({
-      projects,
-      coworkEntries: {
-        ...sidebarEntriesByProject,
-        [activeChatProjectId]: workEntries,
-      },
-      organizations,
-    }),
-    [
-      projects,
-      sidebarEntriesByProject,
-      activeChatProjectId,
-      workEntries,
-      organizations,
-    ],
-  );
-  const describeScope = useCallback(
-    (scope: LedgerViewScope): string | null =>
-      describeLedgerScope(scope, sources),
-    [sources],
-  );
+  const workStore = useMemo(() => ledgerFeedWorkStore(), []);
+  const { sources, describeScope, scopeNames } = useLedgerScopeNames();
   const addableScopes = useMemo(
     () => ledgerFeedAddableScopes(sources),
     [sources],
@@ -105,18 +137,46 @@ export function FeedPage(): JSX.Element {
   );
   const { capabilities } = useCanopyClient();
   const visible = useDocumentVisible();
+  const onOpenScope = useCallback(
+    (scope: LedgerViewScope): void => {
+      store.getState().focusScope(scope);
+      void openLedgerScope(scope);
+    },
+    [store],
+  );
 
   return (
     <section className="flex h-full min-h-0 flex-col" data-testid="page-feed">
       <PageTitlebar />
-      <FeedUiStateReporter store={store} />
-      {/* The window keeps 32px below the Feed's scroller. */}
-      <div className="flex min-h-0 flex-1 flex-col pb-8">
+      <FeedUiStateReporter
+        store={store}
+        workStore={workStore}
+        liveStateSource={desktopLedgerLiveStateSource}
+        ledgerLiveAgentStates={capabilities.ledgerLiveAgentStates === true}
+      />
+      {/* The Feed's sections scroll as one page, their scrollbar at the
+          window's edge and their 32px bottom inside the scroller. */}
+      <div className="flex min-h-0 flex-1 flex-col">
         <LedgerFeedPage
           capabilities={capabilities}
           store={store}
           local={local}
           visible={visible}
+          sections={(heading) => (
+            <LedgerFeedSections
+              heading={heading}
+              local={local}
+              feedClient={desktopLedgerFeedClient}
+              activityStore={store}
+              workStore={workStore}
+              visible={visible}
+              liveStateSource={desktopLedgerLiveStateSource}
+              capabilities={capabilities}
+              answers={DESKTOP_LEDGER_FEED_ANSWERS}
+              scopeNames={scopeNames}
+              onOpenScope={onOpenScope}
+            />
+          )}
         />
       </div>
     </section>

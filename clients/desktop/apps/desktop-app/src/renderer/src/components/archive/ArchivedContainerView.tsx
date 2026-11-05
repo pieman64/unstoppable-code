@@ -59,11 +59,13 @@ import { InlineDeleteConfirm } from '@/components/activity/workspace-items-share
 import { LoadingSpinner } from '@/components/shared/loading/spinners/LoadingSpinner';
 import { AttachmentPreviewPopover } from '@/components/shared/AttachmentPreviewPopover';
 import { ArchivedAttachmentViewer } from './ArchivedAttachmentViewer';
-import { FileTypeIcon } from '@/components/shared/file-icons';
 import { useAttachmentHover } from '@/hooks/useAttachmentHover';
 import {
-  Button,
+  DelayedLoadingPlaceholder,
+  Disclosure,
+  ListRow,
   Markdown,
+  TabBar,
   TranscriptPagingControls,
 } from '@canopy/ui-shared/components';
 import {
@@ -77,6 +79,12 @@ import {
 } from '@canopy/ui-app/plan-markdown';
 import { PlanSourceMark } from '@/components/activity/PlanSourceMark';
 import { ArchivedExecutionRow } from './ArchivedExecutionRow';
+import { ArchivedAttachmentRow } from './ArchivedAttachmentRow';
+import {
+  ArchivedAttachmentListSkeleton,
+  ArchivedExecutionListSkeleton,
+  ArchivedNavListSkeleton,
+} from './ArchivedContainerViewSkeletons';
 import { PipelineExecutionDetailModal } from '@/components/activity/PipelineExecutionDetailModal';
 import { DiffBadge } from '@/components/worktree/DiffBadge';
 import { ChatIcon } from '@canopy/ui-shared/icons';
@@ -1037,38 +1045,26 @@ export function ArchivedContainerView({
       )}
 
       {showTabBar && (
-        <div className="flex shrink-0 items-center gap-1 border-b px-4 py-1.5">
-          {viewerTabs.map((tab) => {
-            // The Cost tab overlays the stored tab without replacing it.
-            const selected =
-              tab.id === 'cost'
-                ? costTabSelected
-                : !costTabSelected && effectiveTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                data-testid={`archived-container-tab-${tab.id}`}
-                aria-current={selected ? 'true' : undefined}
-                onClick={() => {
-                  if (tab.id === 'cost') {
-                    setCostTabScopeKey(retainedCostScopeKey);
-                    return;
-                  }
-                  setCostTabScopeKey(null);
-                  selectTab(tab.id);
-                }}
-                className={`focus-ring rounded px-2.5 py-1 text-xs transition-colors ${
-                  selected
-                    ? 'bg-fg-primary/[0.08] font-medium fg-primary'
-                    : 'fg-secondary hover:bg-fg-primary/[0.04] hover:fg-primary'
-                }`}
-              >
-                {tab.label}
-              </button>
-            );
-          })}
-        </div>
+        // The Cost tab overlays the stored tab without replacing it.
+        <TabBar
+          items={viewerTabs.map((tab) => ({
+            id: tab.id,
+            label: tab.label,
+            dataTestId: `archived-container-tab-${tab.id}`,
+          }))}
+          value={costTabSelected ? 'cost' : effectiveTab}
+          onChange={(next): void => {
+            if (next === 'cost') {
+              setCostTabScopeKey(retainedCostScopeKey);
+              return;
+            }
+            setCostTabScopeKey(null);
+            selectTab(next);
+          }}
+          label="Archive contents"
+          density="compact"
+          inset="dialog"
+        />
       )}
 
       {/* Body */}
@@ -1120,9 +1116,12 @@ export function ArchivedContainerView({
         </Suspense>
       ) : effectiveTab === 'chats' ? (
         chats === null ? (
-          <div className="flex min-h-30 flex-1 items-center justify-center">
-            <LoadingSpinner tone="secondary" />
-          </div>
+          <DelayedLoadingPlaceholder slowNote="Still loading chats…">
+            <ArchivedNavListSkeleton
+              label="Loading chats"
+              testId="archived-chats-loading"
+            />
+          </DelayedLoadingPlaceholder>
         ) : chats.length === 0 ? (
           <div className="flex min-h-30 flex-1 items-center justify-center text-sm fg-secondary">
             No chats were retained with this archive.
@@ -1144,86 +1143,54 @@ export function ArchivedContainerView({
                       : null;
                 const isSelected = chat.chatId === selectedChatId;
                 return (
-                  <button
+                  <ListRow
                     key={chat.chatId}
-                    type="button"
                     data-testid={`archived-chat-row-${chat.chatId}`}
                     onClick={() => selectChat(chat.chatId)}
-                    className={`focus-ring flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left transition-colors ${
-                      isSelected
-                        ? 'bg-fg-primary/[0.08]'
-                        : 'hover:bg-fg-primary/[0.04]'
-                    }`}
+                    selected={isSelected}
+                    aria-current={isSelected ? 'true' : undefined}
+                    icon={providerIcon ?? undefined}
                   >
-                    {providerIcon}
-                    <span
-                      className={`min-w-0 flex-1 truncate text-xs leading-snug ${
-                        isSelected ? 'font-medium fg-primary' : 'fg-primary/80'
-                      }`}
-                    >
-                      {getArchivedChatDisplayLabel(chat)}
-                    </span>
-                  </button>
+                    {getArchivedChatDisplayLabel(chat)}
+                  </ListRow>
                 );
               })}
               {archivedInnerChats.length > 0 && (
-                <div className={activeChats.length > 0 ? 'mt-1' : undefined}>
-                  <button
-                    type="button"
-                    data-testid="archived-inner-chats-toggle"
-                    aria-expanded={archivedChatsExpanded}
-                    onClick={() =>
-                      setArchivedChatsExpanded((expanded) => !expanded)
-                    }
-                    className="focus-ring flex w-full items-center gap-1.5 rounded-md px-2.5 py-2 text-left text-xs fg-secondary transition-colors hover:bg-fg-primary/[0.04] hover:fg-primary"
+                <div className={activeChats.length > 0 ? 'mt-1 pl-2' : 'pl-2'}>
+                  <Disclosure
+                    open={archivedChatsExpanded}
+                    onOpenChange={setArchivedChatsExpanded}
+                    label={`Archived (${archivedInnerChats.length})`}
+                    dataTestId="archived-inner-chats"
+                    toggleTestId="archived-inner-chats-toggle"
                   >
-                    <span
-                      aria-hidden="true"
-                      className={`transition-transform ${
-                        archivedChatsExpanded ? 'rotate-0' : '-rotate-90'
-                      }`}
-                    >
-                      ▾
-                    </span>
-                    <span>Archived ({archivedInnerChats.length})</span>
-                  </button>
-                  {archivedChatsExpanded &&
-                    archivedInnerChats.map((chat) => {
-                      const provider = toStandaloneRowProvider(
-                        chat.providerType,
-                      );
-                      const providerIcon =
-                        provider === 'codex'
-                          ? STANDALONE_CODEX_PROVIDER_ICON
-                          : provider === 'claude'
-                            ? STANDALONE_CLAUDE_PROVIDER_ICON
-                            : null;
-                      const isSelected = chat.chatId === selectedChatId;
-                      return (
-                        <button
-                          key={chat.chatId}
-                          type="button"
-                          data-testid={`archived-chat-row-${chat.chatId}`}
-                          onClick={() => selectChat(chat.chatId)}
-                          className={`focus-ring flex w-full items-center gap-2 rounded-md px-2.5 py-2 pl-5 text-left transition-colors ${
-                            isSelected
-                              ? 'bg-fg-primary/[0.08]'
-                              : 'hover:bg-fg-primary/[0.04]'
-                          }`}
-                        >
-                          {providerIcon}
-                          <span
-                            className={`min-w-0 flex-1 truncate text-xs leading-snug ${
-                              isSelected
-                                ? 'font-medium fg-primary'
-                                : 'fg-primary/80'
-                            }`}
+                    <div className="flex flex-col">
+                      {archivedInnerChats.map((chat) => {
+                        const provider = toStandaloneRowProvider(
+                          chat.providerType,
+                        );
+                        const providerIcon =
+                          provider === 'codex'
+                            ? STANDALONE_CODEX_PROVIDER_ICON
+                            : provider === 'claude'
+                              ? STANDALONE_CLAUDE_PROVIDER_ICON
+                              : null;
+                        const isSelected = chat.chatId === selectedChatId;
+                        return (
+                          <ListRow
+                            key={chat.chatId}
+                            data-testid={`archived-chat-row-${chat.chatId}`}
+                            onClick={() => selectChat(chat.chatId)}
+                            selected={isSelected}
+                            aria-current={isSelected ? 'true' : undefined}
+                            icon={providerIcon ?? undefined}
                           >
                             {getArchivedChatDisplayLabel(chat)}
-                          </span>
-                        </button>
-                      );
-                    })}
+                          </ListRow>
+                        );
+                      })}
+                    </div>
+                  </Disclosure>
                 </div>
               )}
             </div>
@@ -1307,9 +1274,9 @@ export function ArchivedContainerView({
       ) : effectiveTab === 'pipelines' ? (
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
           {executions === null ? (
-            <div className="flex min-h-30 items-center justify-center">
-              <LoadingSpinner tone="secondary" />
-            </div>
+            <DelayedLoadingPlaceholder slowNote="Still loading workflow runs…">
+              <ArchivedExecutionListSkeleton />
+            </DelayedLoadingPlaceholder>
           ) : topLevelExecutions.length === 0 ? (
             <div className="flex min-h-30 items-center justify-center text-sm fg-secondary">
               No workflow runs were retained with this archive.
@@ -1330,9 +1297,9 @@ export function ArchivedContainerView({
       ) : effectiveTab === 'attachments' ? (
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
           {attachments === null ? (
-            <div className="flex min-h-30 items-center justify-center">
-              <LoadingSpinner tone="secondary" />
-            </div>
+            <DelayedLoadingPlaceholder slowNote="Still loading attachments…">
+              <ArchivedAttachmentListSkeleton />
+            </DelayedLoadingPlaceholder>
           ) : attachments.length === 0 ? (
             <div className="flex min-h-30 items-center justify-center text-sm fg-secondary">
               No attachments were retained with this archive.
@@ -1340,10 +1307,10 @@ export function ArchivedContainerView({
           ) : (
             <div className="mx-auto flex w-full max-w-3xl flex-col gap-1.5">
               {attachments.map((attachment) => (
-                <div
+                <ArchivedAttachmentRow
                   key={attachment.filename}
-                  data-testid={`archived-attachment-row-${attachment.filename}`}
-                  className="group flex items-center gap-2 rounded-md border bg-fg-primary/[0.02] px-3 py-2 transition-colors hover:border-fg-primary/10"
+                  filename={attachment.filename}
+                  createdAt={attachment.createdAt}
                   onMouseEnter={(event): void =>
                     attachmentMouseEnter(
                       attachment.absolutePath,
@@ -1351,34 +1318,12 @@ export function ArchivedContainerView({
                     )
                   }
                   onMouseLeave={attachmentMouseLeave}
-                >
-                  <FileTypeIcon
-                    filename={attachment.filename}
-                    size={16}
-                    boxSize={14}
-                    className="shrink-0"
-                  />
-                  <span className="min-w-0 flex-1 truncate text-xs font-medium fg-primary">
-                    {attachment.filename}
-                  </span>
-                  <span className="shrink-0 text-2xs fg-secondary">
-                    {formatDateOrEmpty(attachment.createdAt)}
-                  </span>
-                  {/* Hover-revealed, and shown while focused inside. */}
-                  <span className="shrink-0 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
-                    <Button
-                      size="compact"
-                      data-testid={`archived-attachment-reveal-${attachment.filename}`}
-                      onClick={() =>
-                        void window.api.showInFinder({
-                          absolutePath: attachment.absolutePath,
-                        })
-                      }
-                    >
-                      Reveal
-                    </Button>
-                  </span>
-                </div>
+                  onReveal={() =>
+                    void window.api.showInFinder({
+                      absolutePath: attachment.absolutePath,
+                    })
+                  }
+                />
               ))}
               {hoveredPath && (
                 <AttachmentPreviewPopover
@@ -1400,9 +1345,12 @@ export function ArchivedContainerView({
           )}
         </div>
       ) : plans === null ? (
-        <div className="flex min-h-30 flex-1 items-center justify-center">
-          <LoadingSpinner tone="secondary" />
-        </div>
+        <DelayedLoadingPlaceholder slowNote="Still loading plans…">
+          <ArchivedNavListSkeleton
+            label="Loading plans"
+            testId="archived-plans-loading"
+          />
+        </DelayedLoadingPlaceholder>
       ) : plans.length === 0 ? (
         <div className="flex min-h-30 flex-1 items-center justify-center text-sm fg-secondary">
           No plans were retained with this archive.
@@ -1417,32 +1365,17 @@ export function ArchivedContainerView({
             {plans.map((plan) => {
               const isSelected = plan.id === selectedPlanId;
               return (
-                <button
+                <ListRow
                   key={plan.id}
-                  type="button"
                   data-testid={`archived-plan-row-${plan.id}`}
                   onClick={() => selectPlan(plan.id)}
-                  className={`focus-ring flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left transition-colors ${
-                    isSelected
-                      ? 'bg-fg-primary/[0.08]'
-                      : 'hover:bg-fg-primary/[0.04]'
-                  }`}
+                  selected={isSelected}
+                  icon={<PlanSourceMark source={plan.source} size={14} />}
                 >
-                  <PlanSourceMark
-                    source={plan.source}
-                    size={14}
-                    className="shrink-0"
-                  />
-                  <span
-                    className={`min-w-0 flex-1 truncate text-xs leading-snug ${
-                      isSelected ? 'font-medium fg-primary' : 'fg-primary/80'
-                    }`}
-                  >
-                    <Markdown options={INLINE_PLAN_MARKDOWN_OPTIONS}>
-                      {plan.title}
-                    </Markdown>
-                  </span>
-                </button>
+                  <Markdown options={INLINE_PLAN_MARKDOWN_OPTIONS}>
+                    {plan.title}
+                  </Markdown>
+                </ListRow>
               );
             })}
           </div>

@@ -110,7 +110,11 @@ import {
   publishChatBackgroundRuns,
   useChatHeldRunKeys,
 } from '@/stores/chatBackgroundWorkStore';
-import { getWorktreeCacheKey, useFileListStore } from '@/stores/fileListStore';
+import {
+  getWorktreeCacheKey,
+  useFileListStore,
+  useRetainFileIndex,
+} from '@/stores/fileListStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { isUserTurnBoundary } from '@canopy/agent-transcript/lib/turn-boundary';
@@ -135,7 +139,6 @@ import {
 import { DesktopAgentActivitySection } from './DesktopAgentActivitySection';
 import { WatchedRunCarryRecorder } from './useRecordWatchedRunCarry';
 import { BackgroundTrayDelegateSteps } from './BackgroundTrayDelegateSteps';
-import { DELEGATION_TRANSCRIPT_CHAT_LOG } from '@canopy/protocol/delegation';
 import { backgroundTrayAgents } from './background-tray-agents';
 import { useLiveAgentRunKeys } from './useLiveAgentRunKeys';
 import {
@@ -1360,6 +1363,7 @@ export function ChatMessageList({
   const fileListKey = worktreeTarget
     ? getWorktreeCacheKey(worktreeTarget.projectId, worktreeTarget.worktreeId)
     : null;
+  useRetainFileIndex(fileListKey);
   const { fileIndexEntry, fileIndexError, fileIndexLoading, fetchFileIndex } =
     useFileListStore(
       useShallow((state) => ({
@@ -3556,8 +3560,7 @@ export function ChatMessageList({
       ) : null}
       {backgroundWorkChatKey !== null &&
         activeAgents.map((block) =>
-          block.type === 'delegated_agent_call' &&
-          block.transcriptStore === DELEGATION_TRANSCRIPT_CHAT_LOG ? (
+          block.type === 'delegated_agent_call' ? (
             <BackgroundTrayDelegateSteps
               key={block.delegationId}
               chatKey={backgroundWorkChatKey}

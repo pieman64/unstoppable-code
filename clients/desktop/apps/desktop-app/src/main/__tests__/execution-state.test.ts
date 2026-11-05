@@ -24,6 +24,10 @@ import type {
   StepResult,
 } from '@canopy/desktop-shared/node/pipelines/executor/types';
 
+function listStateDirectory(dir: string): string[] {
+  return fs.readdirSync(dir).filter((name) => name !== '.locks');
+}
+
 describe('execution-state', () => {
   let tempDir: string;
 
@@ -149,7 +153,7 @@ describe('execution-state', () => {
       return { reached, release };
     }
 
-    it('keeps overlapping saves independent until each complete snapshot is installed', async () => {
+    it('serializes overlapping saves of one execution so the later snapshot installs last', async () => {
       const initial = makeState();
       await saveExecutionState(initial, tempDir);
       const target = path.join(tempDir, targetName);
@@ -174,33 +178,30 @@ describe('execution-state', () => {
         });
 
       const firstSave = saveExecutionState(first, tempDir);
-      // Settle the held writer before cleanup, including on assertion failure.
       const firstResult = Promise.allSettled([firstSave]);
+      let secondSave: Promise<void> | undefined;
       try {
         await Promise.race([staged.reached, firstSave]);
+        secondSave = saveExecutionState(second, tempDir);
+        await new Promise((resolve) => setImmediate(resolve));
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(sources).toHaveLength(1);
         expect(fs.readFileSync(target, 'utf8')).toBe(initialBytes);
-        await saveExecutionState(second, tempDir);
-        expect(fs.readFileSync(target, 'utf8')).toBe(stagedBytes[1]);
-        expect(await loadExecutionState(initial.id, tempDir)).toMatchObject({
-          pipeline_snapshot: { name: second.pipeline_snapshot.name },
-        });
-        expect(new Set(sources).size).toBe(2);
-        expect(
-          fs.readdirSync(tempDir).filter((name) => name.endsWith('.tmp')),
-        ).toHaveLength(1);
       } finally {
         proceed.release();
         await firstResult;
+        await secondSave;
       }
       await expect(firstSave).resolves.toBeUndefined();
-      expect(fs.readFileSync(target, 'utf8')).toBe(stagedBytes[0]);
+      expect(new Set(sources).size).toBe(2);
+      expect(fs.readFileSync(target, 'utf8')).toBe(stagedBytes[1]);
       expect(await loadExecutionState(initial.id, tempDir)).toMatchObject({
-        pipeline_snapshot: { name: first.pipeline_snapshot.name },
+        pipeline_snapshot: { name: second.pipeline_snapshot.name },
       });
-      expect(fs.readdirSync(tempDir)).toEqual([targetName]);
+      expect(listStateDirectory(tempDir)).toEqual([targetName]);
     });
 
-    it('preserves a newer checkpoint when a held writer later fails replacement', async () => {
+    it('installs a queued newer snapshot after a held writer fails replacement', async () => {
       const initial = makeState();
       await saveExecutionState(initial, tempDir);
       const target = path.join(tempDir, targetName);
@@ -225,27 +226,29 @@ describe('execution-state', () => {
         tempDir,
       );
       const firstResult = Promise.allSettled([firstSave]);
-      let committedBytes = '';
+      let secondSave: Promise<void> | undefined;
       try {
         await Promise.race([staged.reached, firstSave]);
-        await saveExecutionState(namedSnapshot(initial, 'newer'), tempDir);
-        committedBytes = fs.readFileSync(target, 'utf8');
+        secondSave = saveExecutionState(
+          namedSnapshot(initial, 'newer'),
+          tempDir,
+        );
       } finally {
         proceed.release();
         await firstResult;
+        await secondSave;
       }
 
       await expect(firstSave).rejects.toBe(failure);
       expect(renameSpy).toHaveBeenCalledTimes(2);
       expect(unlink).not.toHaveBeenCalledWith(target);
-      expect(fs.readFileSync(target, 'utf8')).toBe(committedBytes);
       expect(await loadExecutionState(initial.id, tempDir)).toMatchObject({
         pipeline_snapshot: { name: 'newer' },
       });
-      expect(fs.readdirSync(tempDir)).toEqual([targetName]);
+      expect(listStateDirectory(tempDir)).toEqual([targetName]);
     });
 
-    it('does not let a failed overlapping save clean up another writer’s staged snapshot', async () => {
+    it('cleans only its own staging when a queued save fails after a held writer succeeds', async () => {
       const initial = makeState();
       await saveExecutionState(initial, tempDir);
       const target = path.join(tempDir, targetName);
@@ -272,21 +275,25 @@ describe('execution-state', () => {
         tempDir,
       );
       const firstResult = Promise.allSettled([firstSave]);
+      let secondResult: Promise<PromiseSettledResult<void>[]> | undefined;
       try {
         await Promise.race([staged.reached, firstSave]);
-        await expect(
+        secondResult = Promise.allSettled([
           saveExecutionState(namedSnapshot(initial, 'failed'), tempDir),
-        ).rejects.toBe(failure);
+        ]);
         expect(fs.readFileSync(target, 'utf8')).toBe(initialBytes);
       } finally {
         proceed.release();
         await firstResult;
       }
       await expect(firstSave).resolves.toBeUndefined();
+      expect(await secondResult).toEqual([
+        { status: 'rejected', reason: failure },
+      ]);
       expect(await loadExecutionState(initial.id, tempDir)).toMatchObject({
         pipeline_snapshot: { name: 'survivor' },
       });
-      expect(fs.readdirSync(tempDir)).toEqual([targetName]);
+      expect(listStateDirectory(tempDir)).toEqual([targetName]);
     });
 
     it.each(['EEXIST', 'EIO', 'EPERM', 'EACCES', 'EBUSY'])(
@@ -310,7 +317,7 @@ describe('execution-state', () => {
 
         expect(unlink).not.toHaveBeenCalledWith(target);
         expect(fs.readFileSync(target, 'utf8')).toBe(initialBytes);
-        expect(fs.readdirSync(tempDir)).toEqual([targetName]);
+        expect(listStateDirectory(tempDir)).toEqual([targetName]);
         expect(rename).toHaveBeenCalledTimes(
           ['EPERM', 'EACCES', 'EBUSY'].includes(code) ? 6 : 1,
         );
@@ -349,7 +356,7 @@ describe('execution-state', () => {
         expect(await loadExecutionState(initial.id, tempDir)).toMatchObject({
           pipeline_snapshot: { name: 'replacement' },
         });
-        expect(fs.readdirSync(tempDir)).toEqual([targetName]);
+        expect(listStateDirectory(tempDir)).toEqual([targetName]);
       },
     );
 
@@ -383,7 +390,7 @@ describe('execution-state', () => {
 
         expect(rename).not.toHaveBeenCalled();
         expect(fs.readFileSync(target, 'utf8')).toBe(initialBytes);
-        expect(fs.readdirSync(tempDir)).toEqual([targetName]);
+        expect(listStateDirectory(tempDir)).toEqual([targetName]);
       },
     );
 
@@ -400,14 +407,18 @@ describe('execution-state', () => {
 
       await saveExecutionState(makeState(), tempDir);
 
-      expect(openSpy).toHaveBeenCalledTimes(1);
+      expect(
+        openSpy.mock.calls.filter(([filePath]) =>
+          /\.execution-1\.json\..+\.tmp$/.test(String(filePath)),
+        ),
+      ).toHaveLength(1);
       expect(openSpy).toHaveBeenCalledWith(
         expect.stringMatching(/\.execution-1\.json\..+\.tmp$/),
         'wx',
         undefined,
       );
       expect(sync).not.toHaveBeenCalled();
-      expect(fs.readdirSync(tempDir)).toEqual([targetName]);
+      expect(listStateDirectory(tempDir)).toEqual([targetName]);
     });
 
     it('preserves the checkpoint when staging cannot be opened', async () => {
@@ -427,7 +438,7 @@ describe('execution-state', () => {
 
       expect(rename).not.toHaveBeenCalled();
       expect(fs.readFileSync(target, 'utf8')).toBe(initialBytes);
-      expect(fs.readdirSync(tempDir)).toEqual([targetName]);
+      expect(listStateDirectory(tempDir)).toEqual([targetName]);
     });
 
     it('retains the install error when staging cleanup also fails, then allows a fresh save', async () => {
@@ -463,7 +474,7 @@ describe('execution-state', () => {
       expect(await listExecutionSummaries(tempDir)).toMatchObject([
         { id: initial.id, pipeline_name: 'recovered' },
       ]);
-      expect(fs.readdirSync(tempDir).sort()).toEqual(
+      expect(listStateDirectory(tempDir).sort()).toEqual(
         [...stagedFiles, targetName].sort(),
       );
     });
@@ -478,7 +489,7 @@ describe('execution-state', () => {
       expect(await loadExecutionState('execution-1', tempDir)).toMatchObject({
         id: 'execution-1',
       });
-      expect(fs.readdirSync(tempDir).sort()).toEqual([
+      expect(listStateDirectory(tempDir).sort()).toEqual([
         targetName,
         targetName + '.tmp',
       ]);
@@ -492,7 +503,7 @@ describe('execution-state', () => {
       await expect(saveExecutionState(makeState(), tempDir)).rejects.toBe(
         failure,
       );
-      expect(fs.readdirSync(tempDir)).toEqual([]);
+      expect(listStateDirectory(tempDir)).toEqual([]);
     });
   });
 

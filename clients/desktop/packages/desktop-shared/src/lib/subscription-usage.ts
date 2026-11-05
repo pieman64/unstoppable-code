@@ -17,6 +17,11 @@ function modelFamily(model: string): string | undefined {
   return undefined;
 }
 
+/** Whether a provider-reported surface names Claude Code (`cli` included). */
+export function isClaudeCodeSurface(surface: string): boolean {
+  return surfaceFamily(surface) === 'claude-code';
+}
+
 function surfaceFamily(surface: string): string | undefined {
   const normalized = surface.toLowerCase().replace(/[ _-]/g, '');
   if (normalized === 'claudecode' || normalized === 'cli') return 'claude-code';

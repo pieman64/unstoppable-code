@@ -11,7 +11,11 @@ import type {
   PersistedChatMessage,
 } from '@canopy/agent-transcript';
 import { projectCodexThreadItem } from '@canopy/desktop-shared/node/codex-runtime';
-import type { DelegationTranscriptChange } from '@canopy/desktop-shared/node/delegation/transcript-port';
+import { createHash } from 'node:crypto';
+import {
+  DELEGATION_REGISTRY_MAX_ID_LENGTH,
+  type DelegationTranscriptChange,
+} from '@canopy/desktop-shared/node/delegation/transcript-port';
 import type {
   CommandSpool,
   DelegationCommandSpools,
@@ -300,8 +304,17 @@ export class DelegationChildNormalizer {
     return value;
   }
 
+  /**
+   * One native item's identity in its segment. Its row id adds the card's
+   * block id, and the transcript registry admits ids up to its limit, so a
+   * longer identity (Copilot's nested message and tool ids) is hashed, stably.
+   */
   private scopedId(segment: string, nativeId: string): string {
-    return `${segment}::${nativeId}`;
+    const id = `${segment}::${nativeId}`;
+    return this.agentBlockId.length + 1 + id.length <=
+      DELEGATION_REGISTRY_MAX_ID_LENGTH
+      ? id
+      : `sha256:${createHash('sha256').update(id).digest('hex')}`;
   }
 
   private publish(): readonly DelegationTranscriptChange[] {

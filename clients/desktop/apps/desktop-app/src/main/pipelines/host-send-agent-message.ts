@@ -392,6 +392,8 @@ const AUTHORITY_SETTINGS: Record<
   plan_mode: (settings) => settings.planMode !== undefined,
   plugins: (settings) => (settings.plugins?.length ?? 0) > 0,
   plugin_selections: (settings) => settings.pluginSelections !== undefined,
+  // The runner sends a plugin collection as its selections.
+  plugin_collection_id: (settings) => settings.pluginSelections !== undefined,
 };
 
 /**

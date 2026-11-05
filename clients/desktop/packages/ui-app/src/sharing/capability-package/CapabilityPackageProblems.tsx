@@ -1,5 +1,6 @@
 import { useState, type JSX, type ReactNode } from 'react';
 import {
+  Button,
   Disclosure,
   ErrorBanner,
   Notice,
@@ -42,10 +43,6 @@ const CARD_CLASS =
 /** Lines a section up with the header copy: the 12px inset, 16px glyph, 8px gap. */
 const COPY_INSET_CLASS = 'pl-9 pr-3';
 const SECTION_CLASS = `border-t border-line-base py-2 ${COPY_INSET_CLASS}`;
-const TEXT_ACTION_CLASS =
-  'focus-ring rounded text-xs fg-secondary underline-offset-2 hover:fg-primary hover:underline';
-const INLINE_ACTION_CLASS =
-  'focus-ring rounded fg-secondary underline underline-offset-2 hover:fg-primary disabled:cursor-not-allowed disabled:opacity-40';
 
 const RESOLVED_TITLE = 'All problems resolved.';
 const UNDO_LABEL = 'Undo';
@@ -256,20 +253,19 @@ export function CapabilityPackageProblems({
       )}
 
       {(hidden > 0 || expanded) && problems.length > VISIBLE_LIMIT && (
-        <div className={SECTION_CLASS}>
-          <button
-            type="button"
+        <div className={`${SECTION_CLASS} text-xs`}>
+          <Button
+            variant="link"
             data-testid={`${testIdPrefix}-dependency-problems-show-all`}
             aria-expanded={expanded}
             onClick={(): void => {
               setExpanded((open) => !open);
             }}
-            className={TEXT_ACTION_CLASS}
           >
             {expanded
               ? SHOW_FEWER_LABEL
               : `Show all ${String(problems.length)} problems`}
-          </button>
+          </Button>
         </div>
       )}
 
@@ -293,17 +289,16 @@ export function CapabilityPackageProblems({
                     {dismissal.token} (
                     {dismissal.provider === 'claude' ? 'Claude' : 'Codex'})
                   </span>
-                  <button
-                    type="button"
+                  <Button
+                    variant="link"
                     data-testid={`${testIdPrefix}-dependency-problems-dismissed-undo-${dismissedInvocationSlug(dismissal)}`}
                     disabled={disabled}
                     onClick={(): void => {
                       onRestore(dismissal);
                     }}
-                    className={`${TEXT_ACTION_CLASS} disabled:opacity-40`}
                   >
                     {UNDO_LABEL}
-                  </button>
+                  </Button>
                 </li>
               ))}
             </ul>
@@ -355,17 +350,16 @@ function DismissedReferenceList({
                 <span className="min-w-0 truncate fg-primary">
                   {dismissal.token}
                 </span>
-                <button
-                  type="button"
+                <Button
+                  variant="link"
                   data-testid={`${testIdPrefix}-dependency-problems-dismissed-reference-undo-${slug}`}
                   disabled={disabled}
                   onClick={(): void => {
                     onRestore(dismissal);
                   }}
-                  className={`${TEXT_ACTION_CLASS} disabled:opacity-40`}
                 >
                   {UNDO_LABEL}
-                </button>
+                </Button>
               </li>
             );
           })}
@@ -447,16 +441,15 @@ function ProblemDetail({
     return <>{problem.detail}</>;
   }
   const link: ReactNode = (
-    <button
-      type="button"
+    <Button
+      variant="link"
       data-testid={`${testIdPrefix}-dependency-problems-dismiss-${problem.slug}`}
       aria-label={action.ariaLabel}
       disabled={disabled}
       onClick={action.dismiss}
-      className={INLINE_ACTION_CLASS}
     >
       {action.phrase}
-    </button>
+    </Button>
   );
   return (
     <>

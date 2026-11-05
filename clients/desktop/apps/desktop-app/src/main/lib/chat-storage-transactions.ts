@@ -25,6 +25,7 @@ import {
   ChatTranscriptLog,
   TranscriptStreamStore,
   readCompleteTranscriptMessages,
+  readCompleteTranscriptRows,
   prepareRowsWithActiveTail,
   transcriptFieldPolicy,
   type TranscriptFieldMode,
@@ -730,7 +731,7 @@ export class ChatStorageTransactions {
                 : Number.POSITIVE_INFINITY;
           const bytes = await writeJsonValuesCooperatively(
             this.payloadPath(transactionId, index),
-            (async function* (): AsyncGenerator<PersistedChatMessage> {
+            (async function* (): AsyncGenerator<string> {
               for await (const stored of prepareRowsWithActiveTail(
                 input,
                 activeTailCount,
@@ -745,12 +746,22 @@ export class ChatStorageTransactions {
                   );
                 },
               )) {
-                hash.update(JSON.stringify(stored)).update('\n');
+                const json = JSON.stringify(stored);
+                if (json === undefined)
+                  throw new Error(
+                    'Prepared transcript row is not serializable',
+                  );
+                hash.update(json).update('\n');
                 count += 1;
-                yield stored;
+                yield json;
               }
             })(),
-            { pretty: false, separator: '\n', trailingSeparator: true },
+            {
+              pretty: false,
+              serializedValues: true,
+              separator: '\n',
+              trailingSeparator: true,
+            },
           );
           payloadBytes.push(bytes);
           prepared.push({
@@ -1215,7 +1226,7 @@ export class ChatStorageTransactions {
       )
         throw new Error('Invalid replacement active suffix');
       const ids = new Set<string>();
-      const hash = createHash('sha256');
+      const rawHash = createHash('sha256');
       let count = 0;
       const bytes = payloadBytes?.[index];
       let rows: PersistedChatMessage[] | undefined;
@@ -1223,16 +1234,18 @@ export class ChatStorageTransactions {
         rows = [];
         retainable -= bytes;
       }
-      for await (const message of this.readPayload(
-        pending.transactionId,
-        index,
-        true,
+      recordChatStoragePayloadPass(true);
+      for await (const {
+        message,
+        bytes: jsonBytes,
+      } of readCompleteTranscriptRows(
+        this.payloadPath(pending.transactionId, index),
       )) {
         if (ids.has(message.id))
           throw new Error('Duplicate prepared message id');
         ids.add(message.id);
         rows?.push(message);
-        hash.update(JSON.stringify(message)).update('\n');
+        rawHash.update(jsonBytes).update('\n');
         count += 1;
         for await (const reference of this.transcripts.artifacts.referenceClosure(
           write.chatId,
@@ -1252,8 +1265,19 @@ export class ChatStorageTransactions {
                 ref,
               );
       }
-      if (count !== write.count || hash.digest('hex') !== write.sha256)
+      if (count !== write.count)
         throw new Error('Prepared transcript failed integrity validation');
+      if (rawHash.digest('hex') !== write.sha256) {
+        const canonicalHash = createHash('sha256');
+        for await (const message of this.readPayload(
+          pending.transactionId,
+          index,
+          true,
+        ))
+          canonicalHash.update(JSON.stringify(message)).update('\n');
+        if (canonicalHash.digest('hex') !== write.sha256)
+          throw new Error('Prepared transcript failed integrity validation');
+      }
       if (rows) validated.set(index, rows);
     }
     return validated;

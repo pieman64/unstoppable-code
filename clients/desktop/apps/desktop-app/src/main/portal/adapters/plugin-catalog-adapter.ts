@@ -652,6 +652,29 @@ export function handlePortalSharingExistingShare(
     });
     return;
   }
+  if (resourceType === 'plugin') {
+    const marketplaceId = requireStringField(payload, 'marketplaceId');
+    const pluginName = requireStringField(payload, 'pluginName');
+    if (marketplaceId === null || pluginName === null) {
+      context.fail(
+        command,
+        'invalid_payload',
+        'Existing plugin share request requires marketplaceId and pluginName.',
+      );
+      return;
+    }
+    completeOffLoop(command, context, async () => {
+      const { getPortalExistingPluginShare } =
+        await import('../../services/plugin-catalog-service');
+      return {
+        existingShare: await getPortalExistingPluginShare({
+          marketplaceId,
+          pluginName,
+        }),
+      };
+    });
+    return;
+  }
   if (resourceType === 'collection') {
     const collectionId = requireStringField(payload, 'collectionId');
     if (collectionId === null) {

@@ -1,3 +1,4 @@
+export { W5_LAUNCH_HEAL_OPERATIONS } from './apply-evidence';
 export {
   W5CommitLog,
   W5_RECEIPT_RETRY_WINDOW_MS,
@@ -19,6 +20,8 @@ export {
 } from './commit-log';
 export {
   applyW5Commit,
+  isCleanApplyConflict,
+  type W5ProcessFileLock,
   recoverW5CommitLog,
   type W5ApplyOptions,
   type W5ApplyResult,
@@ -34,6 +37,7 @@ export {
 export {
   W5CommitLogError,
   W5CommitRefusedError,
+  W5ProcessFileLockTimeoutError,
   type W5CommitLogErrorCode,
   type W5CommitRefusal,
 } from './errors';

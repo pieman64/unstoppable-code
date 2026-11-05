@@ -9,6 +9,7 @@
 
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { useEffect, useMemo } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import {
   APP_ADVISOR_PROJECT_ID,
   type AppAdvisorWatcherDestination,
@@ -19,7 +20,7 @@ import type {
   WatcherRecipientGroup,
   WatcherRecipientOption,
 } from './WatcherRecipientPicker';
-import type { ChatTab } from '@/stores/chatStore';
+import type { ChatTab, WorktreeChatState } from '@/stores/chatStore';
 
 const APP_ADVISOR_KEY_PREFIX = `${APP_ADVISOR_PROJECT_ID}/`;
 
@@ -37,47 +38,86 @@ function isDeliverableChatTab(tab: ChatTab): boolean {
   return tab.kind !== 'file' && tab.readOnly !== true;
 }
 
+const NO_FIELDS: readonly string[] = [];
+
+/** Entry id, chat id and title of each deliverable App Advisor tab, flat. */
+function appAdvisorRecipientFields(
+  worktreeChats: Readonly<Record<string, WorktreeChatState>>,
+): string[] {
+  const fields: string[] = [];
+  for (const [key, chat] of Object.entries(worktreeChats)) {
+    if (!key.startsWith(APP_ADVISOR_KEY_PREFIX)) continue;
+    const entryId = key.slice(APP_ADVISOR_KEY_PREFIX.length);
+    for (const tab of chat.tabs)
+      if (isDeliverableChatTab(tab)) fields.push(entryId, tab.id, tab.title);
+  }
+  return fields;
+}
+
+/** Chat id and title of each deliverable tab, flat. */
+function worktreeRecipientFields(
+  tabs: readonly ChatTab[] | undefined,
+): string[] {
+  const fields: string[] = [];
+  for (const tab of tabs ?? [])
+    if (isDeliverableChatTab(tab)) fields.push(tab.id, tab.title);
+  return fields;
+}
+
 export function useWatcherRecipientGroups(
   options: UseWatcherRecipientGroupsOptions = {},
 ): WatcherRecipientGroup[] {
-  const worktree = options.worktree ?? null;
+  const projectId = options.worktree?.projectId;
+  const worktreeId = options.worktree?.worktreeId;
+  const worktreeKey =
+    projectId === undefined || worktreeId === undefined
+      ? null
+      : `${projectId}/${worktreeId}`;
 
   // Ensure every App Advisor entry's tab slice is loaded in this window.
   useEffect(() => {
     void useAppAdvisorStore.getState().hydrateForNavigation();
   }, []);
 
-  // Aggregate across entry-keyed App Advisor slices. Subscribing to the
-  // whole map is acceptable here: this hook only mounts inside watcher
-  // pickers/modals, not hot chat surfaces.
-  const worktreeChats = useChatStore((state) => state.worktreeChats);
-  const worktreeTabs = worktree
-    ? worktreeChats?.[`${worktree.projectId}/${worktree.worktreeId}`]?.tabs
-    : undefined;
+  // The hook runs in hot chat surfaces (the composer's pipeline run watcher,
+  // the worktree manager), so it selects only the fields the groups show, flat
+  // for a shallow comparison: streamed content and runtime activity, which
+  // replace `worktreeChats` on every update, leave the selection equal.
+  const appAdvisorFields = useChatStore(
+    useShallow((state) => appAdvisorRecipientFields(state.worktreeChats)),
+  );
+  const worktreeFields = useChatStore(
+    useShallow((state) =>
+      worktreeKey === null
+        ? NO_FIELDS
+        : worktreeRecipientFields(state.worktreeChats[worktreeKey]?.tabs),
+    ),
+  );
   // The worktree's currently-active chat tab, used to mark the preferred
   // default recipient for the pipeline-run watcher picker.
-  const worktreeActiveTabId = worktree
-    ? worktreeChats?.[`${worktree.projectId}/${worktree.worktreeId}`]
-        ?.activeTabId
-    : undefined;
+  const worktreeActiveTabId = useChatStore((state) =>
+    worktreeKey === null
+      ? undefined
+      : state.worktreeChats[worktreeKey]?.activeTabId,
+  );
 
   return useMemo(() => {
     const groups: WatcherRecipientGroup[] = [];
 
     const appAdvisorOptions: WatcherRecipientOption[] = [];
-    for (const [key, chat] of Object.entries(worktreeChats ?? {})) {
-      if (!key.startsWith(APP_ADVISOR_KEY_PREFIX)) continue;
-      const entryId = key.slice(APP_ADVISOR_KEY_PREFIX.length);
-      for (const tab of chat.tabs) {
-        if (!isDeliverableChatTab(tab)) continue;
-        const destination: AppAdvisorWatcherDestination = {
-          projectId: APP_ADVISOR_PROJECT_ID,
-          worktreeId: entryId,
-          chatId: tab.id,
-          chatTitle: tab.title,
-        };
-        appAdvisorOptions.push({ destination, label: tabLabel(tab.title) });
-      }
+    for (let index = 0; index + 2 < appAdvisorFields.length; index += 3) {
+      const entryId = appAdvisorFields[index];
+      const chatId = appAdvisorFields[index + 1];
+      const title = appAdvisorFields[index + 2];
+      if (entryId === undefined || chatId === undefined || title === undefined)
+        continue;
+      const destination: AppAdvisorWatcherDestination = {
+        projectId: APP_ADVISOR_PROJECT_ID,
+        worktreeId: entryId,
+        chatId,
+        chatTitle: title,
+      };
+      appAdvisorOptions.push({ destination, label: tabLabel(title) });
     }
     groups.push({
       key: 'app-advisor',
@@ -85,22 +125,24 @@ export function useWatcherRecipientGroups(
       options: appAdvisorOptions,
     });
 
-    if (worktree) {
-      const worktreeOptions: WatcherRecipientOption[] = (worktreeTabs ?? [])
-        .filter(isDeliverableChatTab)
-        .map((tab) => {
-          const destination: AppAdvisorWatcherDestination = {
-            projectId: worktree.projectId,
-            worktreeId: worktree.worktreeId,
-            chatId: tab.id,
-            chatTitle: tab.title,
-          };
-          return {
-            destination,
-            label: tabLabel(tab.title),
-            preferredDefault: tab.id === worktreeActiveTabId,
-          };
+    if (projectId !== undefined && worktreeId !== undefined) {
+      const worktreeOptions: WatcherRecipientOption[] = [];
+      for (let index = 0; index + 1 < worktreeFields.length; index += 2) {
+        const chatId = worktreeFields[index];
+        const title = worktreeFields[index + 1];
+        if (chatId === undefined || title === undefined) continue;
+        const destination: AppAdvisorWatcherDestination = {
+          projectId,
+          worktreeId,
+          chatId,
+          chatTitle: title,
+        };
+        worktreeOptions.push({
+          destination,
+          label: tabLabel(title),
+          preferredDefault: chatId === worktreeActiveTabId,
         });
+      }
       groups.push({
         key: 'worktree',
         label: 'This worktree',
@@ -109,5 +151,11 @@ export function useWatcherRecipientGroups(
     }
 
     return groups;
-  }, [worktreeChats, worktreeTabs, worktreeActiveTabId, worktree]);
+  }, [
+    appAdvisorFields,
+    worktreeFields,
+    worktreeActiveTabId,
+    projectId,
+    worktreeId,
+  ]);
 }

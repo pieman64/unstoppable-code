@@ -8,6 +8,7 @@ import type {
   LedgerFindGlobalScopeInput,
   LedgerFindScopeInput,
   LedgerGetEntryInput,
+  LedgerHandBackEntryInput,
   LedgerListChangesInput,
   LedgerListReceiptKeysInput,
   LedgerOutboxEventRecord,
@@ -29,13 +30,17 @@ import type {
   LedgerSearchEntriesResult,
   LedgerSetScopeRepairInput,
   LedgerStorageCounts,
+  LedgerStoreCommandReceipt,
   LedgerUpdateEntryInput,
+  LedgerRollupsInput,
+  LedgerWorkSummaryInput,
 } from '@canopy/desktop-shared/node/ledger';
 import type {
   LedgerChangesListResult,
-  LedgerCommandReceipt,
   LedgerContainer,
   LedgerEntryGetResult,
+  LedgerRollupsListResult,
+  LedgerWorkSummaryGetResult,
 } from '@canopy/protocol/canopy-core';
 
 /** An entry read as it crosses the thread boundary: data only. */
@@ -81,6 +86,9 @@ export interface LedgerStorePurgeScopeResult {
  * Every method rejects with `LedgerStorageHostError`. Its `reason` is the
  * store's `LedgerErrorReason`, or `INTERNAL`. For a store error, `details`
  * holds the protocol `LedgerErrorDetails` from `LedgerStoreError.toDetails()`.
+ *
+ * Command receipts may carry the store-internal `relatedChanges`; the service
+ * announces them and strips the field before a receipt leaves the host.
  */
 export interface LedgerStoreClient {
   /** The writer authority minted with the database. */
@@ -104,7 +112,7 @@ export interface LedgerStoreClient {
     input: LedgerRegisterActorInput,
   ): Promise<LedgerRegisterActorResult>;
   listActors(ledgerId: string): Promise<LedgerActorRecord[]>;
-  addEntry(input: LedgerAddEntryInput): Promise<LedgerCommandReceipt>;
+  addEntry(input: LedgerAddEntryInput): Promise<LedgerStoreCommandReceipt>;
   /** Pending title-generation markers, oldest first. */
   listPendingTitles(): Promise<LedgerPendingTitleRecord[]>;
   /** Records a persisted title-generation attempt, if the marker still exists. */
@@ -115,10 +123,16 @@ export interface LedgerStoreClient {
   resolvePendingTitle(
     input: LedgerResolvePendingTitleInput,
   ): Promise<LedgerResolvePendingTitleResult>;
-  updateEntry(input: LedgerUpdateEntryInput): Promise<LedgerCommandReceipt>;
+  updateEntry(
+    input: LedgerUpdateEntryInput,
+  ): Promise<LedgerStoreCommandReceipt>;
+  /** Returns an open entry to its recipient after its current owner's session ends. */
+  handBackEntry(
+    input: LedgerHandBackEntryInput,
+  ): Promise<LedgerStoreCommandReceipt>;
   publishSummary(
     input: LedgerPublishSummaryInput,
-  ): Promise<LedgerCommandReceipt>;
+  ): Promise<LedgerStoreCommandReceipt>;
   /**
    * Which of the given idempotency keys already hold a receipt for the
    * operation in the ledger, in the order given.
@@ -129,6 +143,12 @@ export interface LedgerStoreClient {
     input: LedgerStoreSearchEntriesInput,
   ): Promise<LedgerSearchEntriesResult>;
   listChanges(input: LedgerListChangesInput): Promise<LedgerChangesListResult>;
+  /** Stable, cross-scope rollups for operations and top-level tasks. */
+  listRollups(input: LedgerRollupsInput): Promise<LedgerRollupsListResult>;
+  /** Bounded counts and open entries for a managed-delegation actor set. */
+  getWorkSummary(
+    input: LedgerWorkSummaryInput,
+  ): Promise<LedgerWorkSummaryGetResult>;
   getStorageCounts(): Promise<LedgerStorageCounts>;
   /**
    * Every scope, oldest first, for lifecycle reconciliation. Global scopes

@@ -1,6 +1,6 @@
 import type { JSX } from 'react';
 import { HeaderActionButton } from '../../../HeaderActionButton';
-import { ExecutionActionButton } from '../../../ExecutionActionButton';
+import { Button } from '../../../Button';
 import { SubagentIcon } from './SubagentIcon';
 
 export const SUBAGENT_VIEW_TREE_LABEL = 'View tree';
@@ -19,14 +19,14 @@ export function SubagentViewTreeAction({
 }: SubagentViewTreeActionProps): JSX.Element {
   if (appearance === 'section') {
     return (
-      <ExecutionActionButton
-        variant="text"
-        label={SUBAGENT_VIEW_TREE_LABEL}
-        ariaLabel={SUBAGENT_VIEW_TREE_LABEL}
-        dataTestId={dataTestId}
-        stopKeyDownPropagation={false}
+      <Button
+        variant="ghost-overlay"
+        size="compact"
+        data-testid={dataTestId}
         onClick={onClick}
-      />
+      >
+        {SUBAGENT_VIEW_TREE_LABEL}
+      </Button>
     );
   }
   return (

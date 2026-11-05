@@ -90,6 +90,7 @@ import {
   resolveLaneAwareDefaultSelection,
   type LaneCredentialScope,
 } from '../lib/default-model-lane-resolver';
+import { noDispatchableModelSendMessage } from '../lib/send-billing-refusal';
 import { writeChatTabsFile } from '../lib/chat-tabs';
 import {
   chatHasNativeBackgroundWork,
@@ -1976,9 +1977,7 @@ export async function sendStandaloneChatMessage(
       }
       if (policy.noDispatchableModel) {
         throw new Error(
-          policy.noDispatchableModel.missing === 'policy-allowance'
-            ? 'Your organization policy allows no model that can run this message.'
-            : 'No model is available to send this message. Add a billing source, then try again.',
+          noDispatchableModelSendMessage(policy.noDispatchableModel.missing),
         );
       }
       if (

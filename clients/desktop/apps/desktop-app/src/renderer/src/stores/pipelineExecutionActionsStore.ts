@@ -48,7 +48,3 @@ export function withInFlightId(
   }
   return next;
 }
-
-export function resetPipelineExecutionActionsStoreForTests(): void {
-  usePipelineExecutionActionsStore.setState(initialInFlight(), true);
-}

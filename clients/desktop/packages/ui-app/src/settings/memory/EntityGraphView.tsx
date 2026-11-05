@@ -21,7 +21,6 @@ import {
   Notice,
   SearchEmptyState,
   SettingsChartSkeleton,
-  SettingsListSkeleton,
   SearchField,
   SettingsSelect,
   TextInput,
@@ -47,6 +46,7 @@ import {
 } from '../host';
 import { fetchMemoryFactsBatch, fetchMemoryGraph } from './api';
 import { FactCard } from './FactCard';
+import { FactCardsSkeleton } from './FactCardsSkeleton';
 import { GraphRetrievalPanel } from './GraphRetrievalPanel';
 import { useMemoryErrorCopy } from './memory-error-copy';
 import {
@@ -540,7 +540,7 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
               />
             ) : selectedFacts.length === 0 ? (
               <DelayedLoadingPlaceholder className="mt-4">
-                <SettingsListSkeleton rows={2} />
+                <FactCardsSkeleton layout="column" />
               </DelayedLoadingPlaceholder>
             ) : (
               <div className="mt-4 space-y-3">

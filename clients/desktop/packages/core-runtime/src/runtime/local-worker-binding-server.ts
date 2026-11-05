@@ -7,9 +7,11 @@ import {
   type CanopyJsonRpcMessage,
   type CanopyJsonRpcNotification,
   type CanopyJsonRpcRequest,
+  type CanopyStreamCursor,
 } from '@canopy/protocol/canopy-core';
 import type { CanopyDispatcher, CanopyStreamHandle } from './types';
 import { hostExecutionOption } from './host-execution';
+import { streamPositionBefore } from './stream-position';
 import type { WorkerExecutorReceipts } from './worker-executor-receipts';
 import {
   type CanopyOperationError,
@@ -102,7 +104,25 @@ export function serveLocalWorkerBinding({
     } else replySends += 1;
     if (closed) return;
     try {
-      await connection.send(response);
+      await connection.send(response).catch((error: unknown) => {
+        // Refused before a byte was written, such as too large to send: the
+        // call fails on its own and the binding stays open.
+        if (
+          connection.signal.aborted ||
+          !('id' in response) ||
+          response.id === null
+        )
+          throw error;
+        const refusal = transportStopError(error);
+        return connection.send(
+          errorResponse(
+            response.id,
+            refusal.payload.kind === 'resource_exhausted'
+              ? refusal
+              : canopyInvalidHandlerResultError(),
+          ),
+        );
+      });
     } finally {
       const next = replyWaiters.shift();
       if (next) next();
@@ -115,6 +135,7 @@ export function serveLocalWorkerBinding({
     handle: CanopyStreamHandle<unknown, unknown>,
   ): Promise<void> => {
     const { subscriptionId } = handle.openResult;
+    let delivered: CanopyStreamCursor | undefined;
     for await (const frame of handle.frames) {
       if (closed) return;
       if (frame.kind === 'end') {
@@ -126,15 +147,50 @@ export function serveLocalWorkerBinding({
           params: { subscriptionId, ...without(frame, 'kind') },
         });
       }
-      await connection.send({
+      const refusal = await connection
+        .send({
+          jsonrpc: '2.0',
+          method: `${method}.item`,
+          params: {
+            subscriptionId,
+            cursor: frame.cursor,
+            itemId: `item-${frame.cursor.sequence}`,
+            occurredAt: new Date().toISOString(),
+            item: frame.item,
+          },
+        })
+        .then(
+          () => null,
+          (error: unknown) => {
+            if (connection.signal.aborted) throw error;
+            return transportStopError(error);
+          },
+        );
+      if (refusal === null) {
+        delivered = frame.cursor;
+        continue;
+      }
+      // Refused before a byte was written, such as larger than the core
+      // joins: only this stream ends, with the typed error (CAN-5684), at
+      // the position before the refused item, where the core's stream ends
+      // too (CAN-5696).
+      served.delete(id);
+      handle.close();
+      return connection.send({
         jsonrpc: '2.0',
-        method: `${method}.item`,
+        method: `${method}.end`,
         params: {
           subscriptionId,
-          cursor: frame.cursor,
-          itemId: `item-${frame.cursor.sequence}`,
-          occurredAt: new Date().toISOString(),
-          item: frame.item,
+          cursor: streamPositionBefore(
+            frame.cursor,
+            delivered,
+            handle.openResult.acceptedCursor,
+          ),
+          outcome: 'error',
+          error: (refusal.payload.kind === 'resource_exhausted'
+            ? refusal
+            : canopyInvalidHandlerResultError()
+          ).payload,
         },
       });
     }

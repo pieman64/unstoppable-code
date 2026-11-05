@@ -22,8 +22,6 @@ export interface ReviewLinePopoverProps {
   onDeleteStagedComment: (threadId: string, commentId: string) => void;
   onDiscussAnnotation: (annotationId: string) => void;
   onClose: () => void;
-  onMouseEnter?: () => void;
-  onMouseLeave?: () => void;
 }
 
 /**
@@ -43,8 +41,6 @@ export function ReviewLinePopover({
   onDeleteStagedComment,
   onDiscussAnnotation,
   onClose,
-  onMouseEnter,
-  onMouseLeave,
 }: ReviewLinePopoverProps): JSX.Element {
   const annotationCount = annotations.length;
   const threadCount = threads.length;
@@ -61,11 +57,8 @@ export function ReviewLinePopover({
   return (
     <ReviewPopoverShell
       anchorRect={anchorRect}
-      estHeight={320}
-      containerClassName="rounded-lg bg-popover shadow-xl"
+      label={header}
       onClose={onClose}
-      onMouseEnter={onMouseEnter}
-      onMouseLeave={onMouseLeave}
       dataTestId="review-line-popover"
     >
       {/* A single scroll container that sizes to content up to 60vh, then
@@ -73,7 +66,7 @@ export function ReviewLinePopover({
           `shrink-0` so a long list never squeezes them into header-only
           slivers (they keep their full body + reply composer). */}
       <div className="max-h-[60vh] overflow-auto">
-        <div className="sticky top-0 z-10 border-b bg-popover px-3 py-1.5 text-2xs font-medium fg-secondary">
+        <div className="sticky top-0 z-10 border-b bg-quaternary px-3 py-1.5 text-2xs font-medium fg-secondary">
           {header}
         </div>
         <div className="space-y-2 p-2">

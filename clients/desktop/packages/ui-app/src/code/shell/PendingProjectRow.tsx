@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { LoadingSpinner } from '@canopy/ui-shared/components';
+import { Button, LoadingSpinner } from '@canopy/ui-shared/components';
 import { FolderIcon } from '@canopy/ui-shared/icons/AppIcons';
 
 /**
@@ -25,9 +25,6 @@ export interface SidebarPendingProject {
   readonly onRetry?: () => void;
   readonly onDismiss?: () => void;
 }
-
-const ACTION_CLASS =
-  'focus-ring shrink-0 rounded text-xs fg-accent underline-offset-2 hover:underline disabled:cursor-default disabled:no-underline disabled:fg-quaternary';
 
 function defaultStatusText(project: SidebarPendingProject): string {
   if (project.status === 'failed') return `Couldn't clone ${project.name}`;
@@ -78,29 +75,30 @@ export function PendingProjectRow({
           {statusLine}
         </div>
         {hasActions && (
-          <div className="mt-1 flex items-center gap-3">
+          // The link actions take the size of the copy around them.
+          <div className="mt-1 flex items-center gap-3 text-xs">
             {failed && project.onRetry && (
-              <button
-                type="button"
+              <Button
+                variant="link"
                 disabled={project.retrying === true}
                 aria-label={`Try again for ${project.name}`}
                 data-testid={`sidebar-pending-project-retry-${project.id}`}
-                className={ACTION_CLASS}
+                className="shrink-0"
                 onClick={project.onRetry}
               >
                 Try again
-              </button>
+              </Button>
             )}
             {project.onDismiss && (
-              <button
-                type="button"
+              <Button
+                variant="link"
                 aria-label={`Dismiss ${project.name}`}
                 data-testid={`sidebar-pending-project-dismiss-${project.id}`}
-                className={ACTION_CLASS}
+                className="shrink-0"
                 onClick={project.onDismiss}
               >
                 Dismiss
-              </button>
+              </Button>
             )}
           </div>
         )}

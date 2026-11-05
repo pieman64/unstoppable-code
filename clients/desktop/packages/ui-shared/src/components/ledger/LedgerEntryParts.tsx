@@ -26,12 +26,15 @@ import {
   ledgerEntryShowsStatus,
   type LedgerSourceActionGlyph,
 } from '../../lib/ledger-display';
-import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
+import {
+  REPLAY_BLOCK_CLASS,
+  REPLAY_MASK_CLASS,
+} from '../../lib/replay-privacy';
 import { Button } from '../Button';
 import { Tooltip } from '../Tooltip';
+import { WorkPath } from '../WorkPath';
 import { LedgerActorGlyph } from './LedgerActorAvatar';
 import { LedgerStatusPill } from './LedgerStatusPill';
-import { LedgerEntryTypeLabel } from './LedgerEntryTypeLabel';
 import {
   ledgerActorReplayClass,
   ledgerAttributedActorName,
@@ -40,7 +43,7 @@ import {
 import type { LedgerDensity, LedgerEntrySlots } from './ledger-entry-slots';
 import { LedgerEntryMarkdown } from './ledger-entry-markdown';
 
-const ORIGIN_CLASS_NAME = 'inline-flex items-baseline gap-1';
+const ORIGIN_CLASS_NAME = 'inline-flex min-w-0 items-baseline gap-1';
 const ORIGIN_ICON_CLASS_NAME = 'shrink-0 self-center';
 
 export interface LedgerRelativeTimeProps {
@@ -69,13 +72,19 @@ export interface LedgerEntryHeaderProps {
   readonly details?: LedgerEntryRowDetails;
   readonly statusControl?: ReactNode;
   readonly ownerControl?: ReactNode;
+  /** An open entry: the title wraps, and the byline adds the owner and sync. */
+  readonly expanded?: boolean;
+  /** Who recorded the entry and where; a resting panel row leaves it out. */
+  readonly byline?: boolean;
 }
 
 /**
- * Heads an entry's row: what kind of entry it is and who owns it, with its
- * status at the trailing edge, so statuses line up down the column. Who
- * recorded it follows on a quieter line, behind the glyph of what recorded it
- * (a person, a chat, a delegate, a pipeline agent), then where and when.
+ * Heads an entry's row, the same on the Feed page and in its panel: the
+ * title, with the status and time at the trailing edge so they line up down
+ * the column. Who recorded it follows on a quieter line, behind the glyph of
+ * what recorded it (a person, a chat, a delegate, a pipeline agent), then
+ * where; an open entry adds its owner and how it syncs. The row's avatar is
+ * the type's glyph and names it on hover, so the header never prints it.
  */
 export function LedgerEntryHeader({
   entry,
@@ -86,33 +95,82 @@ export function LedgerEntryHeader({
   details,
   statusControl,
   ownerControl,
+  expanded = false,
+  byline = true,
 }: LedgerEntryHeaderProps): JSX.Element {
   const attribution = details?.attribution;
   const origin = rowOrigin(entry, details);
-  const time = entry[timeField];
   const syncState =
-    entry.syncState === 'mirrored' ? undefined : entry.syncState;
-  const hasStatus =
-    statusControl !== undefined || ledgerEntryShowsStatus(entry);
-  const hasOwner = ownerControl !== undefined || ledgerEntryShowsOwner(entry);
+    !expanded || entry.syncState === 'mirrored' ? undefined : entry.syncState;
+  const status =
+    statusControl ??
+    (ledgerEntryShowsStatus(entry) ? (
+      <LedgerStatusPill
+        status={entry.status}
+        data-testid="ledger-entry-row-status"
+      />
+    ) : null);
+  const showOwner =
+    expanded && (ownerControl !== undefined || ledgerEntryShowsOwner(entry));
   return (
     <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-      <div className="flex min-w-0 items-start gap-2">
+      <div className="flex min-w-0 items-baseline gap-2">
+        <div className="min-w-0 flex-1">
+          {entry.titlePending !== true && (
+            <LedgerEntryTitle
+              title={entry.title}
+              density={density}
+              compact={!expanded}
+            />
+          )}
+        </div>
+        {status}
+        <span className="shrink-0 text-2xs fg-tertiary">
+          <LedgerRelativeTime iso={entry[timeField]} now={now} />
+        </span>
+      </div>
+      {byline && (
+        // The gap spaces the separators: a flex item drops its own edge spaces.
         <div
-          // As tall as the status pill, so the type and the status share a center line.
-          className={`flex min-h-5 min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1 font-medium fg-primary ${density === 'page' ? 'text-s' : 'text-xs'}`}
+          data-testid="ledger-entry-row-byline"
+          className={`flex min-w-0 items-center gap-x-1 text-2xs fg-tertiary ${
+            expanded ? 'flex-wrap' : 'flex-nowrap overflow-hidden'
+          }`}
         >
-          {/* The row's avatar is the type's glyph, so the name stands alone. */}
-          <LedgerEntryTypeLabel type={entry.type} icon={false} />
-          {hasOwner && (
-            <div className="inline-flex min-w-0 items-center gap-x-2 text-2xs font-normal fg-secondary">
-              <span aria-hidden="true" className="fg-tertiary">
-                ·
+          <span className="inline-flex min-w-0 shrink items-center gap-1 fg-secondary">
+            <span
+              aria-hidden="true"
+              data-testid="ledger-entry-row-author-icon"
+              data-actor-kind={entry.author.kind}
+              className="inline-flex shrink-0"
+            >
+              <LedgerActorGlyph kind={entry.author.kind} size={12} />
+            </span>
+            <span
+              data-testid="ledger-entry-row-author"
+              className={`${ledgerActorReplayClass(entry.author.kind, attribution?.kind !== 'teammate')} min-w-0 truncate`}
+            >
+              {ledgerAttributedActorName(entry.author, actors, attribution)}
+            </span>
+          </span>
+          {origin !== null && (
+            <>
+              <span aria-hidden="true">·</span>
+              <span className="flex min-w-0 shrink items-center gap-x-1 overflow-hidden whitespace-nowrap">
+                {origin}
               </span>
+            </>
+          )}
+          {showOwner && (
+            <>
+              <span aria-hidden="true">·</span>
               {ownerControl !== undefined ? (
                 ownerControl
               ) : (
-                <span data-testid="ledger-entry-row-owner">
+                <span
+                  data-testid="ledger-entry-row-owner"
+                  className="fg-secondary"
+                >
                   Owner:{' '}
                   <LedgerActorNameText
                     kind={entry.owner.kind}
@@ -125,60 +183,24 @@ export function LedgerEntryHeader({
                   />
                 </span>
               )}
-            </div>
+            </>
+          )}
+          {syncState !== undefined && (
+            <>
+              <span aria-hidden="true">·</span>
+              <span
+                data-testid="ledger-entry-row-sync"
+                data-sync-state={syncState}
+                className={
+                  syncState === 'repair_needed' ? 'fg-attention' : undefined
+                }
+              >
+                {LEDGER_SYNC_STATE_LABELS[syncState]}
+              </span>
+            </>
           )}
         </div>
-        {hasStatus &&
-          (statusControl !== undefined ? (
-            statusControl
-          ) : (
-            <LedgerStatusPill
-              status={entry.status}
-              data-testid="ledger-entry-row-status"
-            />
-          ))}
-      </div>
-      {/* The gap spaces the separators: a flex item drops its own edge spaces. */}
-      <span className="flex min-w-0 flex-wrap items-center gap-x-1 text-2xs fg-tertiary">
-        <span className="inline-flex min-w-0 items-center gap-1 fg-secondary">
-          <span
-            aria-hidden="true"
-            data-testid="ledger-entry-row-author-icon"
-            data-actor-kind={entry.author.kind}
-            className="inline-flex shrink-0"
-          >
-            <LedgerActorGlyph kind={entry.author.kind} size={12} />
-          </span>
-          <span
-            data-testid="ledger-entry-row-author"
-            className={`${ledgerActorReplayClass(entry.author.kind, attribution?.kind !== 'teammate')} truncate`}
-          >
-            {ledgerAttributedActorName(entry.author, actors, attribution)}
-          </span>
-        </span>
-        {origin !== null && (
-          <>
-            <span aria-hidden="true">·</span>
-            {origin}
-          </>
-        )}
-        <span aria-hidden="true">·</span>
-        <LedgerRelativeTime iso={time} now={now} />
-        {syncState !== undefined && (
-          <>
-            <span aria-hidden="true">·</span>
-            <span
-              data-testid="ledger-entry-row-sync"
-              data-sync-state={syncState}
-              className={
-                syncState === 'repair_needed' ? 'fg-attention' : undefined
-              }
-            >
-              {LEDGER_SYNC_STATE_LABELS[syncState]}
-            </span>
-          </>
-        )}
-      </span>
+      )}
     </div>
   );
 }
@@ -188,6 +210,23 @@ function rowOrigin(
   details: LedgerEntryRowDetails | undefined,
 ): JSX.Element | null {
   const attribution = rowAttribution(entry, details?.attribution);
+  const workPath =
+    details?.workPath === undefined ? null : (
+      <span className={`min-w-0 text-2xs fg-secondary ${REPLAY_MASK_CLASS}`}>
+        <WorkPath parts={details.workPath} testId="ledger-entry-work-path" />
+      </span>
+    );
+  // A work path stands in for the context, after who recorded the row.
+  if (workPath !== null) {
+    if (attribution === null) return workPath;
+    return (
+      <>
+        {attribution}
+        <span aria-hidden="true">·</span>
+        {workPath}
+      </>
+    );
+  }
   const context = details?.context;
   if (context === undefined) return attribution;
   // A long context, such as an organization's name, truncates; the title
@@ -223,7 +262,10 @@ function rowAttribution(
       <span className={`${ORIGIN_CLASS_NAME} fg-secondary`}>
         <Icon size={12} aria-hidden="true" className={ORIGIN_ICON_CLASS_NAME} />
         <span className="sr-only">Teammate: </span>
-        <span data-testid="ledger-entry-row-teammate">
+        <span
+          data-testid="ledger-entry-row-teammate"
+          className="min-w-0 truncate"
+        >
           {/* The teammate's name is blocked from replay; the organization is not. */}
           {!ownEntry && (
             <>
@@ -245,7 +287,12 @@ function rowAttribution(
           className={ORIGIN_ICON_CLASS_NAME}
         />
         <span className="sr-only">Device: </span>
-        <span data-testid="ledger-entry-row-device">{attribution.label}</span>
+        <span
+          data-testid="ledger-entry-row-device"
+          className="min-w-0 truncate"
+        >
+          {attribution.label}
+        </span>
       </span>
     );
   }
@@ -275,16 +322,20 @@ export function LedgerActorNameText({
 export interface LedgerEntryTitleProps {
   readonly title: string;
   readonly density: LedgerDensity;
+  readonly compact?: boolean;
 }
 
 /** Shows an entry title as text. */
 export function LedgerEntryTitle({
   title,
   density,
+  compact = false,
 }: LedgerEntryTitleProps): JSX.Element {
   // Deliberately deviates from DESIGN.md's 400/450 weight hierarchy (Typography): Ledger entry titles use font-bold (500) so they read heavier than their content.
   // Entry text is agent-written from conversations: replay records a box.
-  const titleClassName = `${REPLAY_BLOCK_CLASS} min-w-0 break-words font-bold fg-primary ${density === 'page' ? 'text-m' : 'text-s'}`;
+  const titleClassName = compact
+    ? `${REPLAY_BLOCK_CLASS} min-w-0 flex-1 truncate whitespace-nowrap font-bold fg-primary ${density === 'page' ? 'text-m' : 'text-s'}`
+    : `${REPLAY_BLOCK_CLASS} min-w-0 break-words font-bold fg-primary ${density === 'page' ? 'text-m' : 'text-s'}`;
   return (
     <h3 data-testid="ledger-entry-row-title" className={titleClassName}>
       {title}

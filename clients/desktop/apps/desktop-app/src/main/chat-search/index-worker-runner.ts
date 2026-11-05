@@ -42,7 +42,7 @@ export class ChatSearchIndexWorkerRunner {
       name: 'chat-search-index',
     });
     this.worker.unref();
-    this.armTimeout();
+    this.armTimeout('startup');
     this.worker.on('message', (message: unknown): void =>
       this.receive(message),
     );
@@ -135,17 +135,18 @@ export class ChatSearchIndexWorkerRunner {
     if (!this.readyPath || this.failure || this.active) return;
     this.active = this.pending.shift();
     if (!this.active) return;
-    this.armTimeout();
+    this.armTimeout(this.active.request.method);
     try {
       this.worker.postMessage(this.active.request);
     } catch (error) {
       this.fail(error instanceof Error ? error : new Error(String(error)));
     }
   }
-  private armTimeout(): void {
+  private armTimeout(phase: string): void {
     this.clearTimeout();
     this.timer = setTimeout(
-      (): void => this.fail(new Error('Search index worker timed out')),
+      (): void =>
+        this.fail(new Error(`Search index worker timed out (${phase})`)),
       30_000,
     );
     this.timer.unref();

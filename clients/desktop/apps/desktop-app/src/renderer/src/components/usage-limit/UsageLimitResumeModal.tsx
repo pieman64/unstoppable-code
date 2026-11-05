@@ -1573,15 +1573,18 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
           </p>
         ) : null}
         <div className="flex items-center justify-between border-b px-6 py-2">
-          <button
-            type="button"
+          {/* Pulled out by its own inset so the label stays on the rows'
+              left edge. */}
+          <Button
+            variant="ghost"
+            size="compact"
             data-testid="usage-limit-resume-select-all"
             onClick={toggleAll}
             disabled={eligibleSessions.length === 0}
-            className="text-xs fg-secondary hover:fg-primary disabled:opacity-50"
+            className="-ml-3"
           >
             {allSelected ? 'Deselect all' : 'Select all'}
-          </button>
+          </Button>
           {gated ? (
             <span
               role="status"

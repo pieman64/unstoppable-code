@@ -36,3 +36,32 @@ export const IconShimmer = /* @__PURE__ */ React.memo(function IconShimmer(
     </AppIconBase>
   );
 });
+
+/**
+ * Merge queue: two queued dots waiting above a target ring, with the branch
+ * ring beside them. Drawn on Lucide's grid (2px round stroke), since Lucide
+ * has no merge-queue glyph; the dots use a 3.5 stroke so they read at 14px.
+ */
+export const IconMergeQueue = /* @__PURE__ */ React.memo(
+  function IconMergeQueue(props: AppIconBaseProps): JSX.Element {
+    return (
+      <AppIconBase
+        {...props}
+        viewBox="0 0 24 24"
+        artworkFamily="lucide"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        data-glyph="IconMergeQueue"
+      >
+        <path d="M6 4h.01" strokeWidth={3.5} />
+        <path d="M11 8h.01" strokeWidth={3.5} />
+        <path d="M6 9v6" />
+        <circle cx="6" cy="18" r="3" />
+        <circle cx="18" cy="13" r="3" />
+      </AppIconBase>
+    );
+  },
+);

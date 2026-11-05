@@ -94,6 +94,8 @@ export type ChatStorageFileClass =
   | 'journal'
   /** The delta journal of a version 3 scope (`delta-journal.log`). */
   | 'deltaJournal'
+  /** A delta-journal checkpoint's progress marker (`delta-checkpoint.json`). */
+  | 'checkpointMarker'
   | 'liveIndex'
   | 'archiveIndex'
   | 'recoveryIndex'
@@ -107,6 +109,8 @@ export type ChatStorageFileClass =
   | 'artifact'
   /** A delegated agent's transcript log (`transcripts/delegations/`). */
   | 'delegationLog'
+  /** The per-chat delegation result and generation registry. */
+  | 'delegationRegistry'
   | 'childTranscript'
   | 'childActiveSidecar'
   | 'childAppendStaging'
@@ -238,6 +242,7 @@ function classifyTranscriptFile(name: string): ChatStorageFileClass {
 }
 
 function classifyDelegationFile(path: readonly string[]): ChatStorageFileClass {
+  if (path[1] === 'registry') return 'delegationRegistry';
   const v2 = path.indexOf('v2');
   const name = path[path.length - 1] ?? '';
   const published = publishedName(name).replace(/\.checkpoint$/, '');
@@ -281,6 +286,7 @@ export function classifyChatStorageFile(
   if (area.startsWith('metadata-journal.jsonl')) return 'journal';
   if (area.startsWith('delta-journal.log')) return 'deltaJournal';
   if (area.startsWith('delta-journal-v2.log')) return 'deltaJournal';
+  if (area.startsWith('delta-checkpoint.json')) return 'checkpointMarker';
   if (area.startsWith('live-index.json')) return 'liveIndex';
   if (area.startsWith('archive-index.json')) return 'archiveIndex';
   if (area.startsWith('recovery-index.json')) return 'recoveryIndex';
@@ -291,6 +297,23 @@ export function classifyChatStorageFile(
     return classifyDelegationFile(segments.slice(root + 4));
   if (entry === 'message-index') return 'messageIndex';
   return classifyTranscriptFile(entry);
+}
+
+/** Where a synced chat-storage directory sits, for sync attribution. */
+function classifyChatStorageDirectory(path: string): string {
+  const segments = pathSegments(path).filter(Boolean);
+  const root = segments.lastIndexOf('chat-storage-v2');
+  if (root === -1) return 'manifest';
+  const [area, entry, ...rest] = segments.slice(root + 2);
+  if (area === undefined) return 'scope';
+  if (area !== 'transcripts')
+    return area === 'pending-transcripts' ? 'payload' : 'other';
+  if (entry === undefined) return 'transcripts';
+  if (entry === 'tool-output' || entry === 'visuals') return 'artifact';
+  if (entry === 'message-index') return 'messageIndex';
+  if (entry !== 'delegations') return 'other';
+  if (rest[1] === 'registry') return 'delegationRegistry';
+  return rest.includes('v2') ? 'childStream' : 'delegations';
 }
 
 /** Whether a file or directory belongs to canonical chat storage. */
@@ -326,22 +349,32 @@ export function recordChatStorageFileWrite(
 export function recordChatStorageFileSync(path: string): void {
   if (!isChatStoragePath(path)) return;
   counters.chatStorage.add('syncs.file', 1);
-  // A subset of `syncs.file`: delta-journal commits and segment rotations.
-  if (classifyChatStorageFile(path) === 'deltaJournal')
-    counters.chatStorage.add('syncs.file.deltaJournal', 1);
+  // Subsets of `syncs.file` by file role, such as delta-journal commits.
+  counters.chatStorage.add(
+    `syncs.file.${classifyChatStorageFile(path) ?? 'other'}`,
+    1,
+  );
   recordChatStorageScopeSync(path, 'file');
 }
 
 export function recordChatStorageDirectorySync(path: string): void {
   if (!isChatStoragePath(path)) return;
   counters.chatStorage.add('syncs.directory', 1);
+  counters.chatStorage.add(
+    `syncs.directory.${classifyChatStorageDirectory(path)}`,
+    1,
+  );
   recordChatStorageScopeSync(path, 'directory');
 }
 
 /** A rename that atomically published or replaced `path`. */
 export function recordChatStorageAtomicReplacement(path: string): void {
-  if (isChatStoragePath(path))
-    counters.chatStorage.add('atomicReplacements', 1);
+  if (!isChatStoragePath(path)) return;
+  counters.chatStorage.add('atomicReplacements', 1);
+  counters.chatStorage.add(
+    `atomicReplacements.${classifyChatStorageFile(path) ?? 'other'}`,
+    1,
+  );
 }
 
 /** One delta-journal checkpoint that published its index files. */

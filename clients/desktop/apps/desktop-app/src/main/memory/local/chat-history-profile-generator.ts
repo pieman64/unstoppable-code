@@ -6,7 +6,7 @@ import {
   finalizeObservedHelperTask,
   startObservedHelperTask,
 } from '../../lib/helper-observed-task';
-import { getUserMemoryDir } from '../../lib/paths';
+import { localMemoryScopeDir } from './scope-resolver';
 import {
   CHAT_HISTORY_PROFILE_RESULT_VALIDATION_SCHEMA,
   CHAT_HISTORY_PROFILE_SCHEMA,
@@ -41,7 +41,7 @@ export const generateChatHistoryProfile: ChatHistoryProfileGenerator = async (
       taskKey,
       kind: 'local-memory-chat-profile',
       label: 'Local Memory Chat Profile',
-      scopeDir: getUserMemoryDir(),
+      scopeDir: localMemoryScopeDir({ scope: 'user' }),
       helperModel,
       systemPrompt,
       userMessage,

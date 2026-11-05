@@ -7,7 +7,7 @@ import type {
 } from '@/lib/aiCreditsArrivalConfirmation';
 
 /**
- * The pending browser checkout of a chat banner's Get AI Credits (CAN-5534).
+ * The pending browser checkout of a chat banner's Buy AI Credits (CAN-5534).
  *
  * The hand-off used to live in the CTA instance, so switching chats reset it:
  * the waiting copy, Check again and Reopen billing disappeared, a fresh
@@ -461,19 +461,4 @@ export function reconcileAiCreditsHandoffAccount(
         : record;
   }
   if (dropped || Object.keys(next).length > 0) setRecords(next);
-}
-
-/** Test-only: resets module state between Jest cases. */
-export function resetAiCreditsHandoffsForTests(): void {
-  for (const id of arrivalHandles.keys()) releaseHandle(id);
-  openingLatches.clear();
-  knownAccountKey = undefined;
-  invalidatedIdentities.clear();
-  if (expiryTimer !== null) clearTimeout(expiryTimer);
-  expiryTimer = null;
-  useAiCreditsHandoffStore.setState({
-    records: {},
-    accountGeneration:
-      useAiCreditsHandoffStore.getState().accountGeneration + 1,
-  });
 }

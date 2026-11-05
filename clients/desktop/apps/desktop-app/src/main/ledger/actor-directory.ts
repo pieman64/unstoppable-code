@@ -11,15 +11,23 @@ import {
   type LedgerOwnerCandidatePage,
   type LedgerOwnerPipelineAgent,
 } from '@canopy/protocol/canopy-core';
+import type { LedgerViewActorHost } from '@canopy/protocol/ledger-view';
 import { chatDisplayLabel } from '@canopy/desktop-shared/lib/chat-display-label';
 import type { LedgerActorRecord } from '@canopy/desktop-shared/node/ledger';
 import { readChatTabsFile } from '../lib/chat-tabs-reader';
 import { isRecord } from '../lib/type-guards';
 import type { LedgerCallerActor } from './caller-bindings';
+import {
+  getLedgerCallerBindingRegistry,
+  type LedgerCallerBinding,
+  type LedgerCallerBindingRegistry,
+} from './caller-bindings';
 import type {
+  LedgerDelegateLineageOwner,
   LedgerDelegateLivenessSource,
   LedgerLiveDelegate,
 } from './delegate-owners';
+import { readLedgerNewDelegates } from './delegate-owners';
 import type { LedgerStoreClient } from './ledger-store-client';
 import type {
   LedgerPausedPipelineAgent,
@@ -105,6 +113,8 @@ export interface LedgerLiveChat {
   readonly title: string;
   /** Orders owner candidates; null when unknown. */
   readonly createdAt: string | null;
+  /** Latest persisted message time, absent when the chat has no messages. */
+  readonly lastActivityAt?: string;
 }
 
 /** Lists a container's live chats, idle ones included. */
@@ -163,8 +173,14 @@ export async function readLedgerContainerLiveChats(
   const tabs = await readChatTabsFile(projectId, worktreeId);
   return tabs.tabs
     .filter((tab) => tab.kind !== 'file')
-    .map(
-      (tab): LedgerLiveChat => ({
+    .map((tab): LedgerLiveChat => {
+      // Metadata only: the compatibility read may leave `messages` unloaded.
+      const lastMessageAt = tab.transcript?.lastMessageAt;
+      const lastActivityAt =
+        typeof lastMessageAt === 'number' && Number.isFinite(lastMessageAt)
+          ? new Date(lastMessageAt).toISOString()
+          : undefined;
+      return {
         chatId: tab.id,
         // An unnamed chat falls back to the Ledger's default name for chats.
         title: chatDisplayLabel({
@@ -174,8 +190,9 @@ export async function readLedgerContainerLiveChats(
           fallback: '',
         }),
         createdAt: typeof tab.createdAt === 'string' ? tab.createdAt : null,
-      }),
-    );
+        ...(lastActivityAt === undefined ? {} : { lastActivityAt }),
+      };
+    });
 }
 
 /** Invalidates outstanding owner eligibility tokens. */
@@ -209,6 +226,8 @@ export interface LedgerEligibilityClaim {
    * execution resumes, pauses again or is cancelled. Absent for other actors.
    */
   readonly checkpoint?: LedgerPipelineAgentCheckpoint;
+  /** A new delegate token is valid only for the chat/delegate that spawned it. */
+  readonly delegateOwner?: LedgerDelegateLineageOwner;
 }
 
 /** The checkpoint a paused pipeline agent's eligibility is bound to. */
@@ -250,6 +269,13 @@ function tokenMacInput(
       : [
           `checkpoint:${claim.checkpoint.checkpointId}`,
           `execution-generation:${String(claim.checkpoint.executionGeneration)}`,
+        ]),
+    ...(claim.delegateOwner === undefined
+      ? []
+      : [
+          claim.delegateOwner.kind === 'chat'
+            ? `delegate-owner:chat:${claim.delegateOwner.chatId}`
+            : `delegate-owner:managed_delegation:${claim.delegateOwner.delegationId}`,
         ]),
     ...fields,
   ].join('\n');
@@ -416,6 +442,8 @@ export interface LedgerOwnerCandidateEntry {
   readonly runGeneration?: number;
   /** A paused pipeline agent's checkpoint; its token binds it. */
   readonly checkpoint?: LedgerPipelineAgentCheckpoint;
+  /** New delegates are assignable only by the owner named here. */
+  readonly delegateOwner?: LedgerDelegateLineageOwner;
   /** Exactly which pause a paused pipeline agent is, for pickers. */
   readonly pipelineAgent?: LedgerOwnerPipelineAgent;
 }
@@ -429,6 +457,10 @@ export type LedgerOwnerSortKey = readonly [number, string, string];
 export interface LedgerOwnerPageRequest {
   /** Marks the caller's own candidate with `isSelf`. */
   readonly callerActorId: string;
+  /** Offers the caller's own not-yet-retained delegates only. */
+  readonly delegateOwner?: LedgerDelegateLineageOwner;
+  /** Restricts the page to the caller's exact requested delegate, if eligible. */
+  readonly delegationId?: string;
   readonly limit?: number;
   readonly cursor?: string;
 }
@@ -445,10 +477,23 @@ export interface LedgerActorDirectoryOptions {
   readonly liveDelegates?: LedgerDelegateLivenessSource;
   /** Paused pipeline agents; none when omitted. */
   readonly pipelineAgents?: LedgerPipelineAgentSource;
+  /** Running pipeline and delegate callers, including non-picker actors. */
+  readonly callerBindings?: Pick<LedgerCallerBindingRegistry, 'listForScope'>;
   /** Defaults to the app's eligibility state. */
   readonly eligibility?: LedgerOwnerEligibility;
   /** Epoch-millisecond clock for owner cursors. */
   readonly now?: () => number;
+}
+
+/** The scope fields required for read-only actor labels and host resolution. */
+export type LedgerActorReadScope = Pick<
+  LedgerBoundScope,
+  'ledgerId' | 'container' | 'containerCreatedAt'
+>;
+
+export interface LedgerActorWorkView {
+  readonly actors: readonly LedgerActorLabel[];
+  readonly actorHosts: Readonly<Record<string, LedgerViewActorHost>>;
 }
 
 function compareSortKeys(
@@ -492,6 +537,63 @@ function uniqueLiveChats(chats: readonly LedgerLiveChat[]): LedgerLiveChat[] {
     seen.add(chat.chatId);
     return true;
   });
+}
+
+/**
+ * A delegate actor's delegation and the chat its tree started from, from its
+ * live binding or else this device's delegation records; null when neither
+ * knows it.
+ */
+function delegateLineage(
+  record: LedgerActorRecord,
+  bindings: readonly LedgerCallerBinding[],
+  delegates: readonly LedgerLiveDelegate[],
+): {
+  readonly delegationId: string;
+  readonly rootChatId: string | null;
+} | null {
+  if (!record.originKey.startsWith(DELEGATE_ORIGIN_PREFIX)) return null;
+  const bindingOrigin = latestBindingForActor(
+    bindings,
+    record,
+    'managed_delegation',
+  )?.origin;
+  if (bindingOrigin?.kind === 'managed_delegation') {
+    return {
+      delegationId: record.originKey.slice(DELEGATE_ORIGIN_PREFIX.length),
+      rootChatId:
+        bindingOrigin.root.kind === 'chat' ? bindingOrigin.root.chatId : null,
+    };
+  }
+  const delegate = delegates.find(
+    (candidate) =>
+      ledgerActorOriginKey({
+        kind: 'managed_delegation',
+        originKey: candidate.delegationId,
+      }) === record.originKey,
+  );
+  return delegate === undefined
+    ? null
+    : { delegationId: delegate.delegationId, rootChatId: delegate.rootChatId };
+}
+
+function latestBindingForActor(
+  bindings: readonly LedgerCallerBinding[],
+  actor: LedgerActorRecord,
+  role: LedgerCallerBinding['role'],
+): LedgerCallerBinding | undefined {
+  let latest: LedgerCallerBinding | undefined;
+  for (const binding of bindings) {
+    if (
+      binding.role !== role ||
+      ledgerActorOriginKey(binding.actor) !== actor.originKey ||
+      (latest !== undefined && binding.registeredAt <= latest.registeredAt)
+    ) {
+      continue;
+    }
+    latest = binding;
+  }
+  return latest;
 }
 
 /**
@@ -662,6 +764,26 @@ export class LedgerActorDirectory {
     return this.byActorId.get(key) ?? null;
   }
 
+  private async actorRecordsFor(
+    scope: LedgerActorReadScope,
+    actorIds: readonly string[],
+  ): Promise<LedgerActorRecord[]> {
+    if (
+      actorIds.some(
+        (actorId) =>
+          this.byActorId.get(actorCacheKey(scope.ledgerId, actorId)) ===
+          undefined,
+      )
+    ) {
+      const actors = await this.options.store().listActors(scope.ledgerId);
+      for (const actor of actors) this.remember(copyActorRecord(actor));
+    }
+    return actorIds.flatMap((actorId): LedgerActorRecord[] => {
+      const record = this.byActorId.get(actorCacheKey(scope.ledgerId, actorId));
+      return record === undefined ? [] : [record];
+    });
+  }
+
   /**
    * The labels of the actors a read names, in the order first named. Reads
    * the ledger's actors at most once, when any is not cached; an ID the
@@ -670,20 +792,11 @@ export class LedgerActorDirectory {
    * registered snapshot remains the fallback and the name other devices see.
    */
   async labelsFor(
-    scope: LedgerBoundScope,
+    scope: LedgerActorReadScope,
     actorIds: readonly string[],
   ): Promise<LedgerActorLabel[]> {
     const unique = Array.from(new Set(actorIds));
-    const cached = (actorId: string): LedgerActorRecord | undefined =>
-      this.byActorId.get(actorCacheKey(scope.ledgerId, actorId));
-    if (unique.some((actorId) => cached(actorId) === undefined)) {
-      const actors = await this.options.store().listActors(scope.ledgerId);
-      for (const actor of actors) this.remember(copyActorRecord(actor));
-    }
-    const records = unique.flatMap((actorId): LedgerActorRecord[] => {
-      const record = cached(actorId);
-      return record === undefined ? [] : [record];
-    });
+    const records = await this.actorRecordsFor(scope, unique);
     const chatNames = new Map<string, string>();
     if (records.some((record) => record.actor.kind === 'chat')) {
       const chats = uniqueLiveChats(
@@ -713,11 +826,137 @@ export class LedgerActorDirectory {
   }
 
   /**
+   * Read labels and this-device hosts for a Feed work page. Unlike owner
+   * eligibility, host lookup includes running pipeline/delegate bindings;
+   * neither path registers actors or changes their eligibility.
+   */
+  async workViewFor(
+    scope: LedgerActorReadScope,
+    actorIds: readonly string[],
+  ): Promise<LedgerActorWorkView> {
+    const unique = Array.from(new Set(actorIds));
+    const records = await this.actorRecordsFor(scope, unique);
+    const hasChats = records.some(
+      (record) =>
+        record.actor.kind === 'chat' ||
+        record.actor.kind === 'managed_delegation',
+    );
+    const chats = hasChats
+      ? uniqueLiveChats(
+          await this.options
+            .liveChats(scope.container)
+            .catch((): readonly LedgerLiveChat[] => []),
+        )
+      : [];
+    const chatNames = new Map<string, string>();
+    const liveChatIds = new Set<string>();
+    for (const chat of chats) {
+      const originKey = ledgerActorOriginKey({
+        kind: 'chat',
+        originKey: chat.chatId,
+      });
+      chatNames.set(originKey, chat.title);
+      liveChatIds.add(originKey);
+    }
+    const bindings = (
+      this.options.callerBindings ?? getLedgerCallerBindingRegistry()
+    ).listForScope(scope.container, scope.containerCreatedAt);
+    const delegates =
+      (await this.options
+        .liveDelegates?.(scope.container)
+        .catch((): readonly LedgerLiveDelegate[] => [])) ?? [];
+    const paused = this.pausedPipelineAgents(scope);
+    const chatScope = chatScopeOf(scope.container);
+    const actorHosts: Record<string, LedgerViewActorHost> = {};
+    const actors: LedgerActorLabel[] = [];
+
+    for (const record of records) {
+      const chatName =
+        record.actor.kind === 'chat'
+          ? chatNames.get(record.originKey)
+          : undefined;
+      actors.push({
+        actorId: record.actor.actorId,
+        kind: record.actor.kind,
+        displayName:
+          chatName === undefined
+            ? record.displayName
+            : toLedgerDisplayName(chatName, record.displayName),
+      });
+      // A global (workflow) Ledger has no chats or task to host its actors.
+      if (chatScope === null) continue;
+      const { projectId, worktreeId } = chatScope;
+
+      if (record.actor.kind === 'chat' && liveChatIds.has(record.originKey)) {
+        const chatId = record.originKey.slice(CHAT_ORIGIN_PREFIX.length);
+        actorHosts[record.actor.actorId] = {
+          kind: 'chat',
+          projectId,
+          worktreeId,
+          chatId,
+        };
+        continue;
+      }
+
+      if (record.actor.kind === 'managed_delegation') {
+        const lineage = delegateLineage(record, bindings, delegates);
+        if (lineage !== null) {
+          actorHosts[record.actor.actorId] = {
+            kind: 'delegation',
+            projectId,
+            worktreeId,
+            ...lineage,
+          };
+        }
+        continue;
+      }
+
+      if (
+        record.actor.kind === 'pipeline_agent' &&
+        record.originKey.startsWith(PIPELINE_AGENT_ORIGIN_PREFIX)
+      ) {
+        const binding = latestBindingForActor(
+          bindings,
+          record,
+          'pipeline_agent',
+        );
+        const bindingOrigin = binding?.origin;
+        if (bindingOrigin?.kind === 'pipeline_agent') {
+          actorHosts[record.actor.actorId] = {
+            kind: 'pipeline',
+            projectId,
+            worktreeId,
+            executionId: bindingOrigin.executionId,
+          };
+          continue;
+        }
+        const agentSessionId = record.originKey.slice(
+          PIPELINE_AGENT_ORIGIN_PREFIX.length,
+        );
+        const agent = paused.find(
+          (candidate) => candidate.agentSessionId === agentSessionId,
+        );
+        if (agent !== undefined) {
+          actorHosts[record.actor.actorId] = {
+            kind: 'pipeline',
+            projectId,
+            worktreeId,
+            executionId: agent.executionId,
+          };
+        }
+      }
+    }
+
+    return { actors, actorHosts };
+  }
+
+  /**
    * Every assignable owner, in picker order, registering chats and delegates
    * as needed.
    */
   async listOwnerCandidates(
     scope: LedgerBoundScope,
+    delegateOwner?: LedgerDelegateLineageOwner,
   ): Promise<LedgerOwnerCandidateEntry[]> {
     const user = await this.ensureUser(scope);
     const chats = uniqueLiveChats(await this.liveChats(scope.container));
@@ -725,6 +964,18 @@ export class LedgerActorDirectory {
       await this.liveDelegates(scope.container),
       chats,
     );
+    const retainedDelegateIds = new Set(
+      delegates.map((delegate) => delegate.delegationId),
+    );
+    const newDelegates =
+      delegateOwner === undefined
+        ? []
+        : selectableDelegates(
+            await readLedgerNewDelegates(scope.container, delegateOwner),
+            chats,
+          ).filter(
+            (delegate) => !retainedDelegateIds.has(delegate.delegationId),
+          );
     const chatCandidates = await Promise.all(
       chats.map(async (chat): Promise<LedgerOwnerCandidateEntry> => {
         const record = await this.ensureChat(scope, chat);
@@ -781,9 +1032,29 @@ export class LedgerActorDirectory {
         },
       ),
     );
+    const newDelegateCandidates = await Promise.all(
+      newDelegates.map(async (delegate): Promise<LedgerOwnerCandidateEntry> => {
+        const displayName = toLedgerDisplayName(
+          delegate.description,
+          DEFAULT_DISPLAY_NAMES.managed_delegation,
+        );
+        return {
+          record: await this.ensureHostActor(scope, {
+            kind: 'managed_delegation',
+            originKey: delegate.delegationId,
+            displayName,
+          }),
+          displayName,
+          sortKey: [2, delegate.createdAt ?? '', delegate.delegationId],
+          runGeneration: delegate.runGeneration,
+          ...(delegateOwner === undefined ? {} : { delegateOwner }),
+        };
+      }),
+    );
     const candidates = [
       ...chatCandidates,
       ...delegateCandidates,
+      ...newDelegateCandidates,
       ...pipelineAgentCandidates,
     ];
     candidates.sort((left, right) =>
@@ -817,9 +1088,20 @@ export class LedgerActorDirectory {
       Math.max(1, request.limit ?? LEDGER_LIMITS.ownersPageDefault),
       LEDGER_LIMITS.ownersPageMax,
     );
-    const remaining = (await this.listOwnerCandidates(scope)).filter(
+    const candidates = await this.listOwnerCandidates(
+      scope,
+      request.delegateOwner,
+    );
+    const exactDelegateOrigin =
+      request.delegationId === undefined
+        ? undefined
+        : `${DELEGATE_ORIGIN_PREFIX}${request.delegationId}`;
+    const remaining = candidates.filter(
       (candidate) =>
-        after === null || compareSortKeys(candidate.sortKey, after) > 0,
+        (exactDelegateOrigin === undefined ||
+          (candidate.record.actor.kind === 'managed_delegation' &&
+            candidate.record.originKey === exactDelegateOrigin)) &&
+        (after === null || compareSortKeys(candidate.sortKey, after) > 0),
     );
     const page = remaining.slice(0, limit);
     const last = page[page.length - 1];
@@ -835,6 +1117,7 @@ export class LedgerActorDirectory {
               candidate.record,
               candidate.runGeneration,
               candidate.checkpoint,
+              candidate.delegateOwner,
             ),
             isSelf: candidate.record.actor.actorId === request.callerActorId,
             ...(candidate.pipelineAgent === undefined
@@ -843,7 +1126,9 @@ export class LedgerActorDirectory {
           }),
         ),
         nextCursor:
-          remaining.length > limit && last !== undefined
+          request.delegationId === undefined &&
+          remaining.length > limit &&
+          last !== undefined
             ? this.encodeOwnerCursor(scope, last.sortKey)
             : null,
       },
@@ -860,9 +1145,10 @@ export class LedgerActorDirectory {
     owner: LedgerActorRecord,
     runGeneration?: number,
     checkpoint?: LedgerPipelineAgentCheckpoint,
+    delegateOwner?: LedgerDelegateLineageOwner,
   ): string {
     return this.eligibility.issueToken(
-      claimFor(scope, owner, runGeneration, checkpoint),
+      claimFor(scope, owner, runGeneration, checkpoint, delegateOwner),
     );
   }
 
@@ -876,6 +1162,7 @@ export class LedgerActorDirectory {
     scope: LedgerBoundScope,
     owner: LedgerActorRecord,
     token: string,
+    delegateOwner?: LedgerDelegateLineageOwner,
   ): Promise<boolean> {
     if (owner.actor.kind === 'pipeline_agent') {
       const agent = this.pausedPipelineAgent(scope, owner);
@@ -892,10 +1179,28 @@ export class LedgerActorDirectory {
     }
     if (owner.actor.kind === 'managed_delegation') {
       const delegate = await this.retainedDelegate(scope, owner);
-      return (
-        delegate !== null &&
-        this.eligibility.checkToken(
+      if (delegate !== null) {
+        return this.eligibility.checkToken(
           claimFor(scope, owner, delegate.runGeneration),
+          token,
+        );
+      }
+      if (delegateOwner === undefined) return false;
+      const newDelegate = await this.newDelegateForOwner(
+        scope,
+        owner,
+        delegateOwner,
+      );
+      return (
+        newDelegate !== null &&
+        this.eligibility.checkToken(
+          claimFor(
+            scope,
+            owner,
+            newDelegate.runGeneration,
+            undefined,
+            delegateOwner,
+          ),
           token,
         )
       );
@@ -972,9 +1277,97 @@ export class LedgerActorDirectory {
     );
   }
 
+  /** A new delegate is assignable only for the exact owner that spawned it. */
+  private async newDelegateForOwner(
+    scope: LedgerBoundScope,
+    owner: LedgerActorRecord,
+    delegateOwner: LedgerDelegateLineageOwner,
+  ): Promise<LedgerLiveDelegate | null> {
+    if (!owner.originKey.startsWith(DELEGATE_ORIGIN_PREFIX)) return null;
+    const delegationId = owner.originKey.slice(DELEGATE_ORIGIN_PREFIX.length);
+    try {
+      const [chats, newDelegates] = await Promise.all([
+        this.options.liveChats(scope.container),
+        readLedgerNewDelegates(scope.container, delegateOwner),
+      ]);
+      return (
+        selectableDelegates(newDelegates, uniqueLiveChats(chats)).find(
+          (delegate) => delegate.delegationId === delegationId,
+        ) ?? null
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The actors on one root chat's line in this scope: the chat itself and the
+   * delegates whose tree it started, as far as this device knows their root
+   * (live bindings and delegation records). Read-only: registers nothing.
+   */
+  async rootChatActorIds(
+    scope: LedgerActorReadScope,
+    chatId: string,
+  ): Promise<string[]> {
+    const chatOrigin = ledgerActorOriginKey({
+      kind: 'chat',
+      originKey: chatId,
+    });
+    const records = await this.options.store().listActors(scope.ledgerId);
+    const actorIds = records.flatMap((record): string[] =>
+      record.actor.kind === 'chat' && record.originKey === chatOrigin
+        ? [record.actor.actorId]
+        : [],
+    );
+    const delegateRecords = records.filter(
+      (record) => record.actor.kind === 'managed_delegation',
+    );
+    if (delegateRecords.length === 0) return actorIds;
+    const bindings = (
+      this.options.callerBindings ?? getLedgerCallerBindingRegistry()
+    ).listForScope(scope.container, scope.containerCreatedAt);
+    const delegates =
+      (await this.options
+        .liveDelegates?.(scope.container)
+        .catch((): readonly LedgerLiveDelegate[] => [])) ?? [];
+    for (const record of delegateRecords) {
+      if (delegateLineage(record, bindings, delegates)?.rootChatId === chatId) {
+        actorIds.push(record.actor.actorId);
+      }
+    }
+    return actorIds;
+  }
+
+  /** Resolves durable delegation IDs only through their local-ledger origins. */
+  async managedDelegationActorIds(
+    scope: LedgerActorReadScope,
+    delegationIds: readonly string[],
+  ): Promise<string[]> {
+    const origins = new Set(
+      delegationIds.map((delegationId) =>
+        ledgerActorOriginKey({
+          kind: 'managed_delegation',
+          originKey: delegationId,
+        }),
+      ),
+    );
+    if (origins.size === 0) return [];
+    const actors = await this.options.store().listActors(scope.ledgerId);
+    return Array.from(
+      new Set(
+        actors.flatMap((actor): string[] =>
+          actor.actor.kind === 'managed_delegation' &&
+          origins.has(actor.originKey)
+            ? [actor.actor.actorId]
+            : [],
+        ),
+      ),
+    );
+  }
+
   /** The scope's paused pipeline agents, one row per agent session. */
   private pausedPipelineAgents(
-    scope: LedgerBoundScope,
+    scope: Pick<LedgerBoundScope, 'container' | 'containerCreatedAt'>,
   ): LedgerPausedPipelineAgent[] {
     const seen = new Set<string>();
     return (
@@ -1145,6 +1538,7 @@ function claimFor(
   owner: LedgerActorRecord,
   runGeneration?: number,
   checkpoint?: LedgerPipelineAgentCheckpoint,
+  delegateOwner?: LedgerDelegateLineageOwner,
 ): LedgerEligibilityClaim {
   return {
     ledgerId: scope.ledgerId,
@@ -1153,6 +1547,7 @@ function claimFor(
     originKey: owner.originKey,
     ...(runGeneration === undefined ? {} : { runGeneration }),
     ...(checkpoint === undefined ? {} : { checkpoint }),
+    ...(delegateOwner === undefined ? {} : { delegateOwner }),
   };
 }
 

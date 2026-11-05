@@ -24,6 +24,12 @@ export const LEDGER_LIMITS = {
   eligibilityTokenMaxLength: 512,
   displayNameMaxCodePoints: 256,
   evidenceEventIdsMax: 25,
+  rollupsLedgerIdsMax: 50,
+  rollupsPageMax: 200,
+  rollupOpenLeafOwnersMax: 10,
+  rollupInProgressLeavesMax: 10,
+  /** Open entries a work summary lists. */
+  workSummaryOpenEntriesMax: 10,
   /**
    * Actor labels in one read result: every author, owner and mutation actor
    * an entry page or an entry with a history page can name.

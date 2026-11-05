@@ -19,6 +19,7 @@ import type {
 import type { PortalProjectDeletionDiscardDescribePayload } from './project-deletion-discard';
 import type { WorkerFilesystemRootsListResult } from '../canopy-core/worker/filesystem';
 import type { TurnFileRecord } from '../turn-files';
+import type { SuggestionsUpdate } from '../suggestions';
 import type { OnboardingTipsUpdate } from '../onboarding-tips';
 import type { ChatPlanReviewApproval } from '../canopy-core/chat-plan-review';
 export {
@@ -299,6 +300,8 @@ export type PortalCommandType =
   | 'portal.app_advisor.dismiss_question'
   | 'portal.app_advisor.settings.get'
   | 'portal.app_advisor.settings.save'
+  | 'portal.suggestions.get'
+  | 'portal.suggestions.update'
   | 'portal.onboarding_tips.get'
   | 'portal.onboarding_tips.update'
   | 'portal.script_actions.list'
@@ -476,6 +479,8 @@ export const PORTAL_COMMAND_TYPES = [
   'portal.app_advisor.dismiss_question',
   'portal.app_advisor.settings.get',
   'portal.app_advisor.settings.save',
+  'portal.suggestions.get',
+  'portal.suggestions.update',
   'portal.onboarding_tips.get',
   'portal.onboarding_tips.update',
   'portal.script_actions.list',
@@ -689,6 +694,8 @@ export const PORTAL_SMALL_RPC_COMMAND_TYPES: ReadonlySet<PortalCommandType> =
     'portal.editor.list_invocables',
     'portal.chat.list_plugin_catalog',
     'portal.app_advisor.settings.get',
+    'portal.suggestions.get',
+    'portal.suggestions.update',
     'portal.onboarding_tips.get',
     'portal.onboarding_tips.update',
     'portal.workspace.claude_md.get',
@@ -1722,6 +1729,9 @@ export const PORTAL_CAPABILITY_WORKTREE_RETENTION =
  */
 export const PORTAL_CAPABILITY_PLUGIN_MUTATIONS = 'plugin_mutations' as const;
 
+/** Read-only plugin share preflight and canonical existing-share link fields. */
+export const PORTAL_CAPABILITY_PLUGIN_SHARE_PREFLIGHT =
+  'plugin_share_preflight_v1' as const;
 /**
  * Desktop serves `portal.installed_items.*` (CAN-4255). Pairing and the
  * generic {@link PORTAL_CAPABILITY_PLUGIN_MUTATIONS} do not imply it.
@@ -3467,6 +3477,7 @@ export type PortalSharingExistingSharePayload = {
   projectId: string;
 } & (
   | { resourceType: 'skill'; sourceId: string; skillName: string }
+  | { resourceType: 'plugin'; marketplaceId: string; pluginName: string }
   | { resourceType: 'collection'; collectionId: string }
   | {
       resourceType: 'pipeline';
@@ -3482,6 +3493,10 @@ export interface PortalSharingExistingShare {
   /** Owner scope, independent of the audience of a legacy public link. */
   targetAudience?: 'team' | 'organization';
   publicLinkStale?: boolean;
+  /** Canonical item URL from the connected desktop's publishing origin. */
+  linkUrl?: string;
+  /** ISO time of the last pinned snapshot update, never its creation time. */
+  publicLinkPinnedAt?: string;
   /** The public link's absolute URL, resolved against the desktop's cloud. */
   publicUrl?: string;
 }
@@ -5610,6 +5625,8 @@ export interface PortalCommandPayloadMap {
   'portal.app_advisor.dismiss_question': PortalAppAdvisorDismissQuestionPayload;
   'portal.app_advisor.settings.get': PortalAppAdvisorSettingsGetPayload;
   'portal.app_advisor.settings.save': PortalAppAdvisorSettingsSavePayload;
+  'portal.suggestions.get': Record<string, never>;
+  'portal.suggestions.update': SuggestionsUpdate;
   'portal.onboarding_tips.get': PortalOnboardingTipsGetPayload;
   'portal.onboarding_tips.update': OnboardingTipsUpdate;
   'portal.script_actions.list': ScriptActionsListRequest;
@@ -10031,6 +10048,9 @@ export * from './tool-part-occurrence';
 
 /** Review/preferences only; this does not grant interactive terminal access. */
 export const PORTAL_CAPABILITY_SCRIPT_ACTIONS = 'script_actions_v1';
+
+/** Paired-desktop suggestion preference reads and updates (CAN-4343). */
+export const PORTAL_CAPABILITY_SUGGESTIONS = 'suggestions_v1';
 
 /**
  * The paired desktop reads and writes onboarding tip dismissals (CAN-4904)

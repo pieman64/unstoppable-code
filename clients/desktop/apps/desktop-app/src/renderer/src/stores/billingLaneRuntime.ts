@@ -68,6 +68,8 @@ export function setRendererBillingLaneAvailability(
   // / CODEX_MODELS / AI_GATEWAY_MODELS) for facts that did not change.
   if (
     currentAvailability.claudeNativeAuth === availability.claudeNativeAuth &&
+    currentAvailability.claudeNativeAuthInconclusive ===
+      availability.claudeNativeAuthInconclusive &&
     currentAvailability.codexNativeAuth === availability.codexNativeAuth &&
     currentAvailability.creditsEligible === availability.creditsEligible
   ) {
@@ -144,14 +146,4 @@ export function getRendererCodexAccountModels(): ReadonlySet<string> | null {
 /** Content key of the account model ids; empty while the list is unknown. */
 export function getRendererCodexAccountModelsKey(): string {
   return currentCodexAccountModelsKey;
-}
-
-/** Test-only reset so a spec can re-enter the pre-hydration state. */
-export function resetRendererBillingLaneForTests(): void {
-  currentAvailability = UNKNOWN_AVAILABILITY;
-  currentLastResolvedLane = undefined;
-  currentGuestPrincipal = undefined;
-  currentCodexAccountModels = null;
-  currentCodexAccountModelsKey = '';
-  bumpLaneFactsVersion();
 }

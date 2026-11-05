@@ -3,6 +3,7 @@ import { utilityProcess } from 'electron';
 import { getAppWorkspacesRootDir, getWorkspacesRootDir } from './paths';
 import { getChatStateService } from '../services/chat-state-service';
 import { createElectronExecutionRuntime } from '../pipelines/execution-runtime';
+import { whenPipelineInstallsRecovered } from '../pipelines/pipeline-install-intents';
 import { configureDesktopPipelineOwnerFence } from '../pipelines/pipeline-owner-fence';
 import { sweepOrphanedPipelinesThroughLocalWorker } from '../pipelines/pipeline-worker-dispatch';
 import type { InterruptedWorkScan } from './interrupted-work-scan-worker';
@@ -54,7 +55,9 @@ let interruptedPipelineIds: string[] = [];
  * Recover interrupted chats before the first window can admit new work, and
  * find the pipeline executions the orphan sweep checks. The sweep runs
  * through core once the desktop runtime exists, still before any pipeline
- * can start (`sweepInterruptedPipelinesAtStartup`). Each item is retryable.
+ * can start (`sweepInterruptedPipelinesAtStartup`). Pipeline installs an
+ * exit interrupted are rolled back alongside; installs wait for that
+ * themselves. Each item is retryable.
  */
 export async function recoverInterruptedWorkAtStartup(): Promise<void> {
   const runtime = createElectronExecutionRuntime();
@@ -62,6 +65,7 @@ export async function recoverInterruptedWorkAtStartup(): Promise<void> {
   // identity resolves in the background, and runs that start first record
   // only their PID.
   configureDesktopPipelineOwnerFence().catch(() => undefined);
+  const installs = whenPipelineInstallsRecovered();
   const found = await scan(runtime.executionsDir);
   interruptedPipelineIds = found.pipelineIds;
   const errors = [...found.errors];
@@ -74,6 +78,7 @@ export async function recoverInterruptedWorkAtStartup(): Promise<void> {
       );
     }
   }
+  await installs;
   if (errors.length) throw new Error(errors.join('\n'));
 }
 

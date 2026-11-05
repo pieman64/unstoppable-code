@@ -56,6 +56,16 @@ export interface CanopyFramedConnection {
   readonly connectionId: string;
   /** Aborts when the connection closes; the reason's `payload` is the typed error. */
   readonly signal: AbortSignal;
+  /**
+   * Largest envelope this end reassembles from message parts. Absent on
+   * bindings without parts, which carry one frame per envelope.
+   */
+  readonly maxMessageBytes?: number;
+  /**
+   * The peer reassembles envelopes up to `bytes`, so `send` may split one
+   * across message parts instead of refusing it as `resource_exhausted`.
+   */
+  allowPeerMessageBytes?(bytes: number): void;
   /** Resolves once the frame is accepted by a bounded peer buffer (backpressure). */
   send(message: CanopyJsonRpcMessage): Promise<void>;
   /** Next validated envelope; rejects with the close reason or `cancelled`. */

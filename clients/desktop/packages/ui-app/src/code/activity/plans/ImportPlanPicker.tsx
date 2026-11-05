@@ -13,9 +13,10 @@ import {
   Button,
   DialogModal,
   ErrorState,
+  DelayedLoadingPlaceholder,
   HighlightedSegments,
-  LoadingSpinner,
   SearchField,
+  Skeleton,
   splitMatchSegments,
 } from '@canopy/ui-shared/components';
 import { ChevronRightMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
@@ -53,6 +54,65 @@ export type ImportPlanPickerItem =
   | { readonly kind: 'file'; readonly file: ImportPlanFileRow };
 
 export type ImportPlanPickerGroup = 'suggestions' | 'files';
+
+/** An option row's layout, shared by the listbox options and their skeleton. */
+const OPTION_ROW_CLASS =
+  'flex min-w-0 flex-1 items-center justify-between gap-3 px-6 py-2 text-left';
+
+/** A group's label above its options. */
+const GROUP_LABEL_CLASS = 'px-6 pb-1 pt-2 text-2xs font-medium fg-secondary';
+
+/** A file option's name, path and repository. */
+function FileOptionContent({
+  file,
+}: {
+  readonly file: ImportPlanFileRow;
+}): JSX.Element {
+  return (
+    <>
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-s font-medium">
+          <HighlightedSegments
+            segments={splitMatchSegments(
+              file.filename,
+              file.filenameMatchedIndices,
+            )}
+          />
+        </div>
+        <div className="mt-0.5 truncate text-xs fg-secondary">
+          <HighlightedSegments
+            segments={splitMatchSegments(
+              file.relativePath,
+              file.pathMatchedIndices,
+            )}
+          />
+        </div>
+      </div>
+      <span className="shrink-0 rounded-full bg-secondary px-2 py-0.5 text-2xs fg-secondary">
+        {file.repoName}
+      </span>
+    </>
+  );
+}
+
+function sampleFile(filename: string, relativePath: string): ImportPlanFileRow {
+  return {
+    key: `import-plan-skeleton-${filename}`,
+    filename,
+    relativePath,
+    repoId: 'import-plan-skeleton',
+    repoName: 'app',
+    filenameMatchedIndices: [],
+    pathMatchedIndices: [],
+  };
+}
+
+/** Plain plan files the loading skeleton measures. */
+const SAMPLE_FILES: readonly ImportPlanFileRow[] = [
+  sampleFile('plan.md', 'docs/plan.md'),
+  sampleFile('roadmap.md', 'docs/roadmap.md'),
+  sampleFile('notes.txt', 'notes.txt'),
+];
 
 export interface ImportPlanPickerProps {
   /** Pending suggestions in display order, already filtered by `query`. */
@@ -390,7 +450,7 @@ export function ImportPlanPicker({
           if (!importing) setSelectedKey(key);
         }}
         onDoubleClick={(): void => runPrimary(item)}
-        className={`flex min-w-0 flex-1 items-center justify-between gap-3 px-6 py-2 text-left transition-colors aria-disabled:opacity-50 ${
+        className={`${OPTION_ROW_CLASS} transition-colors aria-disabled:opacity-50 ${
           selected
             ? 'bg-accent-subtle fg-accent'
             : 'fg-primary hover:bg-secondary'
@@ -562,39 +622,14 @@ export function ImportPlanPicker({
                     aria-labelledby={`${titleId}-files`}
                     data-testid="import-plan-files-group"
                   >
-                    <div
-                      id={`${titleId}-files`}
-                      className="px-6 pb-1 pt-2 text-2xs font-medium fg-secondary"
-                    >
+                    <div id={`${titleId}-files`} className={GROUP_LABEL_CLASS}>
                       All files
                     </div>
                     {files.map((file) => (
                       <div key={file.key} role="none" className="flex">
                         {renderOption(
                           { kind: 'file', file },
-                          <>
-                            <div className="min-w-0 flex-1">
-                              <div className="truncate text-s font-medium">
-                                <HighlightedSegments
-                                  segments={splitMatchSegments(
-                                    file.filename,
-                                    file.filenameMatchedIndices,
-                                  )}
-                                />
-                              </div>
-                              <div className="mt-0.5 truncate text-xs fg-secondary">
-                                <HighlightedSegments
-                                  segments={splitMatchSegments(
-                                    file.relativePath,
-                                    file.pathMatchedIndices,
-                                  )}
-                                />
-                              </div>
-                            </div>
-                            <span className="shrink-0 rounded-full bg-secondary px-2 py-0.5 text-2xs fg-secondary">
-                              {file.repoName}
-                            </span>
-                          </>,
+                          <FileOptionContent file={file} />,
                           'import-plan-result',
                         )}
                       </div>
@@ -604,9 +639,24 @@ export function ImportPlanPicker({
               </div>
             )}
             {showFilesLoading && (
-              <div className="flex items-center justify-center px-6 py-8">
-                <LoadingSpinner tone="secondary" />
-              </div>
+              <DelayedLoadingPlaceholder slowNote="Still loading files…">
+                <Skeleton
+                  loading
+                  label="Loading files"
+                  testId="import-plan-files-loading"
+                >
+                  <div className="py-1">
+                    <div className={GROUP_LABEL_CLASS}>All files</div>
+                    {SAMPLE_FILES.map((file) => (
+                      <div key={file.key} className="flex">
+                        <div className={OPTION_ROW_CLASS}>
+                          <FileOptionContent file={file} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </Skeleton>
+              </DelayedLoadingPlaceholder>
             )}
             {error && <ErrorState space="panel" message={error} />}
             {showEmpty && (

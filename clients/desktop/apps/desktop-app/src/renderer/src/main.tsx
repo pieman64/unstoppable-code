@@ -4,6 +4,8 @@ import '@xyflow/react/dist/style.css';
 import { OrgProjectDeepLinkBridge } from '@/lib/openOrgProjectDeepLink';
 import { OrgProjectAddStoreBridge } from '@/lib/orgProjectCatalogAdd';
 import { OnboardingTipsPreferencesBridge } from '@/components/onboarding-tips/OnboardingTipsPreferencesBridge';
+import { SuggestionsPreferencesBridge } from '@/components/suggestions/SuggestionsPreferencesBridge';
+import { SuggestionsProvider } from '@canopy/ui-app/suggestions';
 import './styles/globals.css';
 import type { ComponentType } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -123,23 +125,27 @@ export function startRenderer(
         <CanopyClientProvider client={ipcCanopyClient}>
           <HostMermaidExportProvider notify={postDiagramExportToast}>
             <EarlyAccessUiProviders>
-              <DesktopTerminalRuntime />
-              <OrgProjectDeepLinkBridge />
-              <OrgProjectAddStoreBridge />
-              <OnboardingTipsPreferencesBridge />
-              {/* The desktop file-session controller owns file tabs only in
-                  the main window; the standalone App Advisor renderer has
-                  none. */}
-              {isMainSurface && <DesktopFileSessionRuntime />}
-              {/* Deletion and archive refusals open this review (CAN-5335). */}
-              {isMainSurface && (
-                <LifecycleJournalQuarantineHost client={ipcCanopyClient} />
-              )}
-              {/* A refused single-row removal offers a discard (CAN-5336). */}
-              {isMainSurface && <DesktopWorktreeDiscardHost />}
-              {/* A refused project deletion offers its discards (CAN-5337). */}
-              {isMainSurface && <DesktopProjectDeletionDiscardHost />}
-              <RootApp />
+              {/* One-at-a-time suggestions and their master switch (CAN-4343). */}
+              <SuggestionsProvider>
+                <DesktopTerminalRuntime />
+                <OrgProjectDeepLinkBridge />
+                <OrgProjectAddStoreBridge />
+                <OnboardingTipsPreferencesBridge />
+                <SuggestionsPreferencesBridge />
+                {/* The desktop file-session controller owns file tabs only in
+                    the main window; the standalone App Advisor renderer has
+                    none. */}
+                {isMainSurface && <DesktopFileSessionRuntime />}
+                {/* Deletion and archive refusals open this review (CAN-5335). */}
+                {isMainSurface && (
+                  <LifecycleJournalQuarantineHost client={ipcCanopyClient} />
+                )}
+                {/* A refused single-row removal offers a discard (CAN-5336). */}
+                {isMainSurface && <DesktopWorktreeDiscardHost />}
+                {/* A refused project deletion offers its discards (CAN-5337). */}
+                {isMainSurface && <DesktopProjectDeletionDiscardHost />}
+                <RootApp />
+              </SuggestionsProvider>
             </EarlyAccessUiProviders>
           </HostMermaidExportProvider>
         </CanopyClientProvider>

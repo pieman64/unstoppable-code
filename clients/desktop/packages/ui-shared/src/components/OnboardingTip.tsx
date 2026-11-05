@@ -15,7 +15,8 @@ export type OnboardingTipPlacement = 'inline' | 'composer';
 
 /** An optional verb that does what the tip describes (`Open Library`). */
 export interface OnboardingTipAction {
-  readonly label: string;
+  /** A node, so a private part (an account login) can be replay-blocked. */
+  readonly label: ReactNode;
   readonly onClick: () => void;
   readonly testId?: string;
   /** Names the subject when several tips share a verb (`Connect: Linear`). */
@@ -24,6 +25,8 @@ export interface OnboardingTipAction {
   readonly busy?: boolean;
   /** Shown while busy under the `text` loading style. */
   readonly busyText?: string;
+  /** `primary` when the verb is the tip's point (`Star on GitHub`). */
+  readonly variant?: 'primary' | 'secondary';
 }
 
 export interface OnboardingTipProps {
@@ -102,7 +105,7 @@ export function OnboardingTip({
     );
   const verb = action ? (
     <Button
-      variant="secondary"
+      variant={action.variant ?? 'secondary'}
       size="sm"
       aria-label={action.ariaLabel}
       aria-busy={action.busy || undefined}
@@ -156,7 +159,8 @@ export function OnboardingTip({
 
   if (placement === 'composer' && appearance === 'notice') {
     // A banner of its own: the composer notice, its glyph in the quiet ink,
-    // Got it (and the tip's verb) as the notice's actions, then its close.
+    // the tip's verb and Got it (unless the tip drops it) as the notice's
+    // actions, then its close.
     return (
       <Notice
         intent="neutral"
@@ -166,7 +170,7 @@ export function OnboardingTip({
           <>
             {action ? (
               <NoticeButton
-                variant="secondary"
+                variant={action.variant ?? 'secondary'}
                 aria-label={action.ariaLabel}
                 aria-busy={action.busy || undefined}
                 aria-disabled={action.busy || undefined}
@@ -183,13 +187,15 @@ export function OnboardingTip({
                 </BusyLabel>
               </NoticeButton>
             ) : null}
-            <NoticeButton
-              variant="secondary"
-              onClick={onDismiss}
-              data-testid={testId ? `${testId}-got-it` : undefined}
-            >
-              Got it
-            </NoticeButton>
+            {dismissLabel === null ? null : (
+              <NoticeButton
+                variant="secondary"
+                onClick={onDismiss}
+                data-testid={testId ? `${testId}-got-it` : undefined}
+              >
+                {dismissLabel}
+              </NoticeButton>
+            )}
           </>
         }
         onDismiss={onDismiss}

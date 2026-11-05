@@ -23,5 +23,6 @@
     "resolveJsonModule": true
   },
   "references": [{ "path": "../ui-shared" }],
-  "include": ["src/**/*.ts", "src/**/*.tsx"]
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "exclude": ["node_modules", "**/__scratch__/**"]
 }

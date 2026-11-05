@@ -4,8 +4,8 @@
  * host keeps choosing which arm applies; only the words live here.
  *
  * The credit term's casing differs per host on purpose ("AI Credits" on
- * desktop, "AI credits" on web; see `dailyFreeCredits.ts`), so each string
- * keeps the casing its host shows today.
+ * desktop, "AI credits" on web), so each string keeps the casing its host
+ * shows today.
  */
 
 /** A recovery notice's state (the title) and what follows it on the line. */
@@ -46,26 +46,18 @@ export function retainedMessageCopy(
 }
 
 /**
- * When the wallet next refills on its own, as a line in local time, or `null`
- * without a valid refill time.
+ * CAN-4769 — web chat is paid-only, so the recovery notice and the signed-out
+ * entry name the two ways to keep going: buy credits, or bring a Claude or
+ * ChatGPT subscription to the desktop app. Split so the host renders "desktop
+ * app" as a link. `leadWithoutPurchase` is for someone who cannot buy, so the
+ * line never tells them to.
  */
-export function creditsReplenishmentCopy(
-  replenishment: {
-    readonly kind: 'daily' | 'monthly';
-    readonly at: string;
-  } | null,
-): string | null {
-  if (replenishment === null) return null;
-  const at = new Date(replenishment.at);
-  if (!Number.isFinite(at.getTime())) return null;
-  const localTime = new Intl.DateTimeFormat(undefined, {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(at);
-  return replenishment.kind === 'daily'
-    ? `Daily credits refill ${localTime}.`
-    : `Monthly credits renew ${localTime}.`;
-}
+export const PAID_ACCESS_ALTERNATIVE_COPY = {
+  lead: 'Buy credits, or use the ',
+  leadWithoutPurchase: 'Or use the ',
+  link: 'desktop app',
+  tail: ' with your Claude or ChatGPT subscription.',
+} as const;
 
 /** The organization's model policy allows nothing the user can run. */
 export const POLICY_ONLY_DEAD_END_COPY: CreditsRecoveryCopy = {
@@ -101,7 +93,15 @@ export function failedTurnCopy(appName: string): CreditsRecoveryCopy {
   };
 }
 
-/** Before sending: no provider sign-in and no AI Credits to fall back on. */
+/**
+ * CAN-4766 — the action that connects a provider account, on every recovery
+ * surface that offers it. It names only the current model's provider.
+ */
+export function connectProviderLabel(providerLabel: string): string {
+  return `Connect ${providerLabel}`;
+}
+
+/** Before sending: no provider connected and no AI Credits to fall back on. */
 export function notSignedInCopy({
   appName,
   providerLabel,
@@ -110,7 +110,7 @@ export function notSignedInCopy({
   readonly providerLabel: string;
 }): CreditsRecoveryCopy {
   return {
-    title: `Not signed in to ${providerLabel}`,
+    title: `Not connected to ${providerLabel}`,
     message: `You have no ${appName} AI Credits to cover this chat either.`,
   };
 }

@@ -285,7 +285,7 @@ export const WorktreeActionsMenu = forwardRef<
       {reserveTrailingSlot && (
         <span
           aria-hidden="true"
-          className="w-6 shrink-0 pointer-coarse:hidden"
+          className="w-7 shrink-0 pointer-coarse:hidden"
         />
       )}
       {itemCount > 0 && (

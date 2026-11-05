@@ -555,6 +555,7 @@ exports[`observability golden: chat turns: Claude serves the golden aggregates 1
       "label": "Cowork Chat",
       "startedAt": "2026-10-20T09:03:00.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "tokens": {
         "input": 0,
         "output": 0,
@@ -626,6 +627,7 @@ exports[`observability golden: chat turns: Claude serves the golden aggregates 1
       "label": "Orchestrator",
       "startedAt": "2026-10-20T09:02:00.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "tokens": {
         "input": 0,
         "output": 0,
@@ -695,6 +697,7 @@ exports[`observability golden: chat turns: Claude serves the golden aggregates 1
       "label": "Code Chat",
       "startedAt": "2026-10-20T09:01:00.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "tokens": {
         "input": 400,
         "output": 120,
@@ -788,6 +791,7 @@ exports[`observability golden: chat turns: Claude serves the golden aggregates 1
       "label": "Code Chat",
       "startedAt": "2026-10-20T09:00:00.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "tokens": {
         "input": 1200,
         "output": 300,
@@ -888,6 +892,7 @@ exports[`observability golden: chat turns: Claude serves the golden aggregates 1
         "label": "Cowork Chat",
         "startedAt": "2026-10-20T09:03:00.000Z",
         "model": "claude-sonnet-4-6",
+        "requestedModel": "claude-sonnet-4-6",
         "tokens": {
           "input": 0,
           "output": 0,
@@ -959,6 +964,7 @@ exports[`observability golden: chat turns: Claude serves the golden aggregates 1
         "label": "Orchestrator",
         "startedAt": "2026-10-20T09:02:00.000Z",
         "model": "claude-sonnet-4-6",
+        "requestedModel": "claude-sonnet-4-6",
         "tokens": {
           "input": 0,
           "output": 0,
@@ -1028,6 +1034,7 @@ exports[`observability golden: chat turns: Claude serves the golden aggregates 1
         "label": "Code Chat",
         "startedAt": "2026-10-20T09:01:00.000Z",
         "model": "claude-sonnet-4-6",
+        "requestedModel": "claude-sonnet-4-6",
         "tokens": {
           "input": 400,
           "output": 120,
@@ -1121,6 +1128,7 @@ exports[`observability golden: chat turns: Claude serves the golden aggregates 1
         "label": "Code Chat",
         "startedAt": "2026-10-20T09:00:00.000Z",
         "model": "claude-sonnet-4-6",
+        "requestedModel": "claude-sonnet-4-6",
         "tokens": {
           "input": 1200,
           "output": 300,
@@ -2581,6 +2589,7 @@ exports[`observability golden: chat turns: Claude stores the golden records 1`] 
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:00:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 1200,
     "output": 300,
@@ -2657,6 +2666,7 @@ exports[`observability golden: chat turns: Claude stores the golden records 1`] 
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:00:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 1200,
     "output": 300,
@@ -2755,6 +2765,7 @@ exports[`observability golden: chat turns: Claude stores the golden records 1`] 
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:00:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 1200,
     "output": 300,
@@ -2853,6 +2864,7 @@ exports[`observability golden: chat turns: Claude stores the golden records 1`] 
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:01:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 400,
     "output": 120,
@@ -2929,6 +2941,7 @@ exports[`observability golden: chat turns: Claude stores the golden records 1`] 
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:01:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 400,
     "output": 120,
@@ -3023,6 +3036,7 @@ exports[`observability golden: chat turns: Claude stores the golden records 1`] 
   "label": "Orchestrator",
   "startedAt": "2026-10-20T09:02:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 0,
     "output": 0,
@@ -3093,6 +3107,7 @@ exports[`observability golden: chat turns: Claude stores the golden records 1`] 
   "label": "Cowork Chat",
   "startedAt": "2026-10-20T09:03:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 0,
     "output": 0,
@@ -3165,6 +3180,7 @@ exports[`observability golden: chat turns: Claude stores the golden records 1`] 
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:01:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 400,
     "output": 120,
@@ -3259,6 +3275,7 @@ exports[`observability golden: chat turns: Claude stores the golden records 1`] 
   "label": "Orchestrator",
   "startedAt": "2026-10-20T09:02:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 0,
     "output": 0,
@@ -3329,6 +3346,7 @@ exports[`observability golden: chat turns: Claude stores the golden records 1`] 
   "label": "Cowork Chat",
   "startedAt": "2026-10-20T09:03:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 0,
     "output": 0,
@@ -3406,6 +3424,7 @@ exports[`observability golden: chat turns: Claude stores the golden records 1`] 
       "label": "Cowork Chat",
       "startedAt": "2026-10-20T09:03:00.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "tokens": {
         "input": 0,
         "output": 0,
@@ -3477,6 +3496,7 @@ exports[`observability golden: chat turns: Claude stores the golden records 1`] 
       "label": "Orchestrator",
       "startedAt": "2026-10-20T09:02:00.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "tokens": {
         "input": 0,
         "output": 0,
@@ -3546,6 +3566,7 @@ exports[`observability golden: chat turns: Claude stores the golden records 1`] 
       "label": "Code Chat",
       "startedAt": "2026-10-20T09:01:00.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "tokens": {
         "input": 400,
         "output": 120,
@@ -3639,6 +3660,7 @@ exports[`observability golden: chat turns: Claude stores the golden records 1`] 
       "label": "Code Chat",
       "startedAt": "2026-10-20T09:00:00.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "tokens": {
         "input": 1200,
         "output": 300,
@@ -4515,6 +4537,7 @@ exports[`observability golden: chat turns: Codex serves the golden aggregates 1`
       "label": "Code Chat",
       "startedAt": "2026-10-20T09:01:00.000Z",
       "model": "gpt-6.1-sol",
+      "requestedModel": "gpt-6.1-sol",
       "tokens": {
         "input": 1000,
         "output": 200,
@@ -4623,6 +4646,7 @@ exports[`observability golden: chat turns: Codex serves the golden aggregates 1`
       "label": "Code Chat",
       "startedAt": "2026-10-20T09:00:00.000Z",
       "model": "gpt-6.1-sol",
+      "requestedModel": "gpt-6.1-sol",
       "tokens": {
         "input": 2000,
         "output": 400,
@@ -4733,6 +4757,7 @@ exports[`observability golden: chat turns: Codex serves the golden aggregates 1`
         "label": "Code Chat",
         "startedAt": "2026-10-20T09:01:00.000Z",
         "model": "gpt-6.1-sol",
+        "requestedModel": "gpt-6.1-sol",
         "tokens": {
           "input": 1000,
           "output": 200,
@@ -4841,6 +4866,7 @@ exports[`observability golden: chat turns: Codex serves the golden aggregates 1`
         "label": "Code Chat",
         "startedAt": "2026-10-20T09:00:00.000Z",
         "model": "gpt-6.1-sol",
+        "requestedModel": "gpt-6.1-sol",
         "tokens": {
           "input": 2000,
           "output": 400,
@@ -6041,6 +6067,7 @@ exports[`observability golden: chat turns: Codex stores the golden records 1`] =
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:00:00.000Z",
   "model": "gpt-6.1-sol",
+  "requestedModel": "gpt-6.1-sol",
   "tokens": {
     "input": 2000,
     "output": 400,
@@ -6149,6 +6176,7 @@ exports[`observability golden: chat turns: Codex stores the golden records 1`] =
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:00:00.000Z",
   "model": "gpt-6.1-sol",
+  "requestedModel": "gpt-6.1-sol",
   "tokens": {
     "input": 2000,
     "output": 400,
@@ -6257,6 +6285,7 @@ exports[`observability golden: chat turns: Codex stores the golden records 1`] =
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:01:00.000Z",
   "model": "gpt-6.1-sol",
+  "requestedModel": "gpt-6.1-sol",
   "tokens": {
     "input": 1000,
     "output": 200,
@@ -6366,6 +6395,7 @@ exports[`observability golden: chat turns: Codex stores the golden records 1`] =
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:01:00.000Z",
   "model": "gpt-6.1-sol",
+  "requestedModel": "gpt-6.1-sol",
   "tokens": {
     "input": 1000,
     "output": 200,
@@ -6480,6 +6510,7 @@ exports[`observability golden: chat turns: Codex stores the golden records 1`] =
       "label": "Code Chat",
       "startedAt": "2026-10-20T09:01:00.000Z",
       "model": "gpt-6.1-sol",
+      "requestedModel": "gpt-6.1-sol",
       "tokens": {
         "input": 1000,
         "output": 200,
@@ -6588,6 +6619,7 @@ exports[`observability golden: chat turns: Codex stores the golden records 1`] =
       "label": "Code Chat",
       "startedAt": "2026-10-20T09:00:00.000Z",
       "model": "gpt-6.1-sol",
+      "requestedModel": "gpt-6.1-sol",
       "tokens": {
         "input": 2000,
         "output": 400,
@@ -7422,6 +7454,7 @@ exports[`observability golden: chat turns: account proxy serves the golden aggre
       "label": "Code Chat",
       "startedAt": "2026-10-20T09:01:00.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "tokens": {
         "input": 0,
         "output": 0,
@@ -7501,6 +7534,7 @@ exports[`observability golden: chat turns: account proxy serves the golden aggre
       "label": "Code Chat",
       "startedAt": "2026-10-20T09:00:00.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "tokens": {
         "input": 600,
         "output": 90,
@@ -7603,6 +7637,7 @@ exports[`observability golden: chat turns: account proxy serves the golden aggre
         "label": "Code Chat",
         "startedAt": "2026-10-20T09:01:00.000Z",
         "model": "claude-sonnet-4-6",
+        "requestedModel": "claude-sonnet-4-6",
         "tokens": {
           "input": 0,
           "output": 0,
@@ -7682,6 +7717,7 @@ exports[`observability golden: chat turns: account proxy serves the golden aggre
         "label": "Code Chat",
         "startedAt": "2026-10-20T09:00:00.000Z",
         "model": "claude-sonnet-4-6",
+        "requestedModel": "claude-sonnet-4-6",
         "tokens": {
           "input": 600,
           "output": 90,
@@ -8783,6 +8819,7 @@ exports[`observability golden: chat turns: account proxy stores the golden recor
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:00:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 600,
     "output": 90,
@@ -8883,6 +8920,7 @@ exports[`observability golden: chat turns: account proxy stores the golden recor
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:00:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 600,
     "output": 90,
@@ -8983,6 +9021,7 @@ exports[`observability golden: chat turns: account proxy stores the golden recor
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:01:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 0,
     "output": 0,
@@ -9063,6 +9102,7 @@ exports[`observability golden: chat turns: account proxy stores the golden recor
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:01:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 0,
     "output": 0,
@@ -9148,6 +9188,7 @@ exports[`observability golden: chat turns: account proxy stores the golden recor
       "label": "Code Chat",
       "startedAt": "2026-10-20T09:01:00.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "tokens": {
         "input": 0,
         "output": 0,
@@ -9227,6 +9268,7 @@ exports[`observability golden: chat turns: account proxy stores the golden recor
       "label": "Code Chat",
       "startedAt": "2026-10-20T09:00:00.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "tokens": {
         "input": 600,
         "output": 90,
@@ -10129,6 +10171,7 @@ exports[`observability golden: duplicate finalization serves the golden aggregat
       "label": "Code Chat",
       "startedAt": "2026-10-20T09:01:02.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "tokens": {
         "input": 0,
         "output": 0,
@@ -10208,6 +10251,7 @@ exports[`observability golden: duplicate finalization serves the golden aggregat
       "label": "Code Chat",
       "startedAt": "2026-10-20T09:01:00.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "tokens": {
         "input": 0,
         "output": 0,
@@ -10281,6 +10325,7 @@ exports[`observability golden: duplicate finalization serves the golden aggregat
       "label": "Code Chat",
       "startedAt": "2026-10-20T09:00:00.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "tokens": {
         "input": 100,
         "output": 20,
@@ -10576,6 +10621,7 @@ exports[`observability golden: duplicate finalization serves the golden aggregat
         "label": "Code Chat",
         "startedAt": "2026-10-20T09:01:02.000Z",
         "model": "claude-sonnet-4-6",
+        "requestedModel": "claude-sonnet-4-6",
         "tokens": {
           "input": 0,
           "output": 0,
@@ -10655,6 +10701,7 @@ exports[`observability golden: duplicate finalization serves the golden aggregat
         "label": "Code Chat",
         "startedAt": "2026-10-20T09:01:00.000Z",
         "model": "claude-sonnet-4-6",
+        "requestedModel": "claude-sonnet-4-6",
         "tokens": {
           "input": 0,
           "output": 0,
@@ -10728,6 +10775,7 @@ exports[`observability golden: duplicate finalization serves the golden aggregat
         "label": "Code Chat",
         "startedAt": "2026-10-20T09:00:00.000Z",
         "model": "claude-sonnet-4-6",
+        "requestedModel": "claude-sonnet-4-6",
         "tokens": {
           "input": 100,
           "output": 20,
@@ -11881,6 +11929,7 @@ exports[`observability golden: duplicate finalization stores the golden records 
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:00:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 100,
     "output": 20,
@@ -11967,6 +12016,7 @@ exports[`observability golden: duplicate finalization stores the golden records 
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:01:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 0,
     "output": 0,
@@ -12041,6 +12091,7 @@ exports[`observability golden: duplicate finalization stores the golden records 
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:01:02.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 0,
     "output": 0,
@@ -12252,6 +12303,7 @@ exports[`observability golden: duplicate finalization stores the golden records 
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:01:02.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 0,
     "output": 0,
@@ -12404,6 +12456,7 @@ exports[`observability golden: duplicate finalization stores the golden records 
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:00:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 100,
     "output": 20,
@@ -12490,6 +12543,7 @@ exports[`observability golden: duplicate finalization stores the golden records 
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:01:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 0,
     "output": 0,
@@ -12564,6 +12618,7 @@ exports[`observability golden: duplicate finalization stores the golden records 
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:01:02.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 0,
     "output": 0,
@@ -12856,6 +12911,7 @@ exports[`observability golden: duplicate finalization stores the golden records 
       "label": "Code Chat",
       "startedAt": "2026-10-20T09:01:02.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "tokens": {
         "input": 0,
         "output": 0,
@@ -12935,6 +12991,7 @@ exports[`observability golden: duplicate finalization stores the golden records 
       "label": "Code Chat",
       "startedAt": "2026-10-20T09:01:00.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "tokens": {
         "input": 0,
         "output": 0,
@@ -13008,6 +13065,7 @@ exports[`observability golden: duplicate finalization stores the golden records 
       "label": "Code Chat",
       "startedAt": "2026-10-20T09:00:00.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "tokens": {
         "input": 100,
         "output": 20,
@@ -14404,6 +14462,7 @@ exports[`observability golden: interrupted-on-shutdown finalization serves the g
       },
       "completedAt": "2026-10-20T09:00:30.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "error": "Application shutdown",
       "projectId": "golden-project",
       "worktreeId": "golden-worktree",
@@ -14475,6 +14534,7 @@ exports[`observability golden: interrupted-on-shutdown finalization serves the g
       },
       "completedAt": "2026-10-20T09:00:30.000Z",
       "model": "gpt-6.1-sol",
+      "requestedModel": "gpt-6.1-sol",
       "error": "Application shutdown",
       "projectId": "golden-project",
       "worktreeId": "golden-worktree",
@@ -14582,6 +14642,7 @@ exports[`observability golden: interrupted-on-shutdown finalization serves the g
       },
       "completedAt": "2026-10-20T09:00:30.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "error": "Application shutdown",
       "projectId": "golden-project",
       "worktreeId": "golden-worktree",
@@ -14796,6 +14857,7 @@ exports[`observability golden: interrupted-on-shutdown finalization serves the g
         },
         "completedAt": "2026-10-20T09:00:30.000Z",
         "model": "claude-sonnet-4-6",
+        "requestedModel": "claude-sonnet-4-6",
         "error": "Application shutdown",
         "projectId": "golden-project",
         "worktreeId": "golden-worktree",
@@ -14867,6 +14929,7 @@ exports[`observability golden: interrupted-on-shutdown finalization serves the g
         },
         "completedAt": "2026-10-20T09:00:30.000Z",
         "model": "gpt-6.1-sol",
+        "requestedModel": "gpt-6.1-sol",
         "error": "Application shutdown",
         "projectId": "golden-project",
         "worktreeId": "golden-worktree",
@@ -14974,6 +15037,7 @@ exports[`observability golden: interrupted-on-shutdown finalization serves the g
         },
         "completedAt": "2026-10-20T09:00:30.000Z",
         "model": "claude-sonnet-4-6",
+        "requestedModel": "claude-sonnet-4-6",
         "error": "Application shutdown",
         "projectId": "golden-project",
         "worktreeId": "golden-worktree",
@@ -16132,6 +16196,7 @@ exports[`observability golden: interrupted-on-shutdown finalization stores the g
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:00:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 0,
     "output": 0,
@@ -16205,6 +16270,7 @@ exports[`observability golden: interrupted-on-shutdown finalization stores the g
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:00:00.000Z",
   "model": "gpt-6.1-sol",
+  "requestedModel": "gpt-6.1-sol",
   "tokens": {
     "input": 1500,
     "output": 100,
@@ -16314,6 +16380,7 @@ exports[`observability golden: interrupted-on-shutdown finalization stores the g
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:00:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 0,
     "output": 0,
@@ -16529,6 +16596,7 @@ exports[`observability golden: interrupted-on-shutdown finalization stores the g
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:00:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 0,
     "output": 0,
@@ -16602,6 +16670,7 @@ exports[`observability golden: interrupted-on-shutdown finalization stores the g
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:00:00.000Z",
   "model": "gpt-6.1-sol",
+  "requestedModel": "gpt-6.1-sol",
   "tokens": {
     "input": 1500,
     "output": 100,
@@ -16711,6 +16780,7 @@ exports[`observability golden: interrupted-on-shutdown finalization stores the g
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:00:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 0,
     "output": 0,
@@ -17045,6 +17115,7 @@ exports[`observability golden: interrupted-on-shutdown finalization stores the g
       },
       "completedAt": "2026-10-20T09:00:30.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "error": "Application shutdown",
       "projectId": "golden-project",
       "worktreeId": "golden-worktree",
@@ -17116,6 +17187,7 @@ exports[`observability golden: interrupted-on-shutdown finalization stores the g
       },
       "completedAt": "2026-10-20T09:00:30.000Z",
       "model": "gpt-6.1-sol",
+      "requestedModel": "gpt-6.1-sol",
       "error": "Application shutdown",
       "projectId": "golden-project",
       "worktreeId": "golden-worktree",
@@ -17223,6 +17295,7 @@ exports[`observability golden: interrupted-on-shutdown finalization stores the g
       },
       "completedAt": "2026-10-20T09:00:30.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "error": "Application shutdown",
       "projectId": "golden-project",
       "worktreeId": "golden-worktree",
@@ -18075,6 +18148,7 @@ exports[`observability golden: managed delegations serves the golden aggregates 
       "label": "Code Chat",
       "startedAt": "2026-10-20T09:00:00.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "tokens": {
         "input": 700,
         "output": 150,
@@ -18265,6 +18339,7 @@ exports[`observability golden: managed delegations serves the golden aggregates 
         "label": "Code Chat",
         "startedAt": "2026-10-20T09:00:00.000Z",
         "model": "claude-sonnet-4-6",
+        "requestedModel": "claude-sonnet-4-6",
         "tokens": {
           "input": 700,
           "output": 150,
@@ -19460,6 +19535,7 @@ exports[`observability golden: managed delegations stores the golden records 1`]
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:00:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 700,
     "output": 150,
@@ -19547,6 +19623,7 @@ exports[`observability golden: managed delegations stores the golden records 1`]
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:00:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 700,
     "output": 150,
@@ -19634,6 +19711,7 @@ exports[`observability golden: managed delegations stores the golden records 1`]
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:00:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 700,
     "output": 150,
@@ -19827,6 +19905,7 @@ exports[`observability golden: managed delegations stores the golden records 1`]
       "label": "Code Chat",
       "startedAt": "2026-10-20T09:00:00.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "tokens": {
         "input": 700,
         "output": 150,
@@ -26473,7 +26552,47 @@ exports[`observability golden: replay after restart builds the golden cost index
         "notPricedCount": 0,
         "hasEstimate": false
       },
-      "chats": [],
+      "chats": [
+        {
+          "chatId": "chat-crashed",
+          "label": "Chat chat-crashed",
+          "state": "open",
+          "totals": {
+            "usd": 0,
+            "bySource": {
+              "chat": 0,
+              "pipeline": 0,
+              "subagents": 0,
+              "delegations": 0,
+              "background": 0
+            },
+            "byBilling": {
+              "subscription": 0,
+              "ai_credits": 0,
+              "account_proxy": 0,
+              "api_key": 0,
+              "org_gateway": 0,
+              "local": 0,
+              "unknown": 0
+            },
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0,
+              "reasoningOutputTokens": 0
+            },
+            "notPricedCount": 0,
+            "hasEstimate": false
+          },
+          "turnCount": 1,
+          "lastActivityAt": "2026-10-20T09:00:40.000Z",
+          "running": false,
+          "models": [
+            "claude-sonnet-4-6"
+          ]
+        }
+      ],
       "pipelineRuns": [
         {
           "executionId": "exec-replay",
@@ -26512,6 +26631,122 @@ exports[`observability golden: replay after restart builds the golden cost index
         }
       ],
       "hasCodexEstimate": false
+    }
+  },
+  "golden-project/golden-worktree/chat/chat-crashed": {
+    "status": "ok",
+    "value": {
+      "kind": "full",
+      "breakdown": {
+        "chat": {
+          "chatId": "chat-crashed",
+          "label": "Chat chat-crashed",
+          "state": "open",
+          "totals": {
+            "usd": 0,
+            "bySource": {
+              "chat": 0,
+              "pipeline": 0,
+              "subagents": 0,
+              "delegations": 0,
+              "background": 0
+            },
+            "byBilling": {
+              "subscription": 0,
+              "ai_credits": 0,
+              "account_proxy": 0,
+              "api_key": 0,
+              "org_gateway": 0,
+              "local": 0,
+              "unknown": 0
+            },
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0,
+              "reasoningOutputTokens": 0
+            },
+            "notPricedCount": 0,
+            "hasEstimate": false
+          },
+          "turnCount": 1,
+          "lastActivityAt": "2026-10-20T09:00:40.000Z",
+          "running": false,
+          "models": [
+            "claude-sonnet-4-6"
+          ]
+        },
+        "updatedAt": "2026-10-20T09:04:00.000Z",
+        "bySource": {
+          "chat": {
+            "usd": 0,
+            "turnCount": 1
+          },
+          "subagents": {
+            "usd": 0,
+            "items": []
+          },
+          "delegations": {
+            "usd": 0,
+            "items": []
+          },
+          "background": {
+            "usd": 0,
+            "rows": []
+          }
+        },
+        "chatTurnsByModel": [
+          {
+            "model": "claude-sonnet-4-6",
+            "turnCount": 1,
+            "usd": 0,
+            "notPricedCount": 0,
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0,
+              "reasoningOutputTokens": 0
+            }
+          }
+        ],
+        "byModel": [
+          {
+            "model": "claude-sonnet-4-6",
+            "turnCount": 1,
+            "usd": 0,
+            "notPricedCount": 0,
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0,
+              "reasoningOutputTokens": 0
+            }
+          }
+        ],
+        "context": {
+          "categories": [],
+          "timeline": []
+        },
+        "compactions": {
+          "total": 0,
+          "auto": 0,
+          "manual": 0
+        },
+        "activity": {
+          "turnCount": 1,
+          "toolCallCount": 0,
+          "subagentCount": 0,
+          "plansCreated": 0,
+          "plansApproved": 0,
+          "topTools": [],
+          "totalDurationMs": 40000,
+          "averageTurnMs": 40000,
+          "p95TurnMs": 40000
+        }
+      }
     }
   },
   "golden-project/golden-worktree/run/exec-replay": {
@@ -26948,7 +27183,7 @@ exports[`observability golden: replay after restart serves the golden aggregates
     {
       "id": "chat:golden-project/golden-worktree/chat-crashed:2026-10-20T09:00:00.000Z",
       "eventType": "worktree_chat",
-      "status": "running",
+      "status": "interrupted",
       "provider": "claude",
       "label": "Code Chat",
       "startedAt": "2026-10-20T09:00:00.000Z",
@@ -26995,12 +27230,16 @@ exports[`observability golden: replay after restart serves the golden aggregates
         "mcp": 0,
         "other": 0
       },
+      "completedAt": "2026-10-20T09:00:40.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
+      "error": "Application stopped before the turn finished",
       "projectId": "golden-project",
       "worktreeId": "golden-worktree",
       "repoId": "golden-repo",
       "repoLabel": "Golden repo",
       "chatId": "chat-crashed",
+      "durationMs": 40000,
       "billingBasis": "subscription",
       "linkTarget": {
         "kind": "worktree-chat",
@@ -27259,7 +27498,7 @@ exports[`observability golden: replay after restart serves the golden aggregates
       {
         "id": "chat:golden-project/golden-worktree/chat-crashed:2026-10-20T09:00:00.000Z",
         "eventType": "worktree_chat",
-        "status": "running",
+        "status": "interrupted",
         "provider": "claude",
         "label": "Code Chat",
         "startedAt": "2026-10-20T09:00:00.000Z",
@@ -27306,12 +27545,16 @@ exports[`observability golden: replay after restart serves the golden aggregates
           "mcp": 0,
           "other": 0
         },
+        "completedAt": "2026-10-20T09:00:40.000Z",
         "model": "claude-sonnet-4-6",
+        "requestedModel": "claude-sonnet-4-6",
+        "error": "Application stopped before the turn finished",
         "projectId": "golden-project",
         "worktreeId": "golden-worktree",
         "repoId": "golden-repo",
         "repoLabel": "Golden repo",
         "chatId": "chat-crashed",
+        "durationMs": 40000,
         "billingBasis": "subscription",
         "linkTarget": {
           "kind": "worktree-chat",
@@ -27970,7 +28213,7 @@ exports[`observability golden: replay after restart serves the golden aggregates
 exports[`observability golden: replay after restart serves the golden differences after a restart 1`] = `[]`;
 
 exports[`observability golden: replay after restart stores the golden records 1`] = `
-"=== agent-observability/audit/2026-10-20.jsonl (3 lines)
+"=== agent-observability/audit/2026-10-20.jsonl (4 lines)
 --- 1
 {
   "id": "pipeline:exec-replay/build/finished-step/0:2026-10-20T09:00:02.000Z",
@@ -28061,6 +28304,76 @@ exports[`observability golden: replay after restart stores the golden records 1`
 }
 --- 2
 {
+  "id": "chat:golden-project/golden-worktree/chat-crashed:2026-10-20T09:00:00.000Z",
+  "eventType": "worktree_chat",
+  "status": "interrupted",
+  "provider": "claude",
+  "label": "Code Chat",
+  "startedAt": "2026-10-20T09:00:00.000Z",
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "cacheReadInputTokens": 0,
+    "cacheCreationInputTokens": 0,
+    "reasoningOutputTokens": 0
+  },
+  "messageCount": 1,
+  "assistantMessageCount": 1,
+  "toolUseCount": 0,
+  "subAgentCount": 0,
+  "hasTranscript": true,
+  "toolCounts": {
+    "thinking": 0,
+    "bash": 0,
+    "read": 0,
+    "readLines": 0,
+    "writeEdit": 0,
+    "plan": 0,
+    "fileEdit": 0,
+    "fileAdd": 0,
+    "fileDelete": 0,
+    "search": 0,
+    "grep": 0,
+    "web": 0,
+    "agent": 0,
+    "workflow": 0,
+    "tasks": 0,
+    "taskStop": 0,
+    "skills": 0,
+    "monitor": 0,
+    "claude": 0,
+    "scheduleWakeup": 0,
+    "askUser": 0,
+    "scriptOutput": 0,
+    "watcher": 0,
+    "canopy": 0,
+    "graph": 0,
+    "appAdvisor": 0,
+    "pipelineEditor": 0,
+    "mcp": 0,
+    "other": 0
+  },
+  "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
+  "projectId": "golden-project",
+  "worktreeId": "golden-worktree",
+  "repoId": "golden-repo",
+  "repoLabel": "Golden repo",
+  "chatId": "chat-crashed",
+  "billingBasis": "subscription",
+  "linkTarget": {
+    "kind": "worktree-chat",
+    "page": "main",
+    "projectId": "golden-project",
+    "worktreeId": "golden-worktree",
+    "chatId": "chat-crashed"
+  },
+  "error": "Application stopped before the turn finished",
+  "completedAt": "2026-10-20T09:00:40.000Z",
+  "durationMs": 40000
+}
+--- 3
+{
   "id": "pipeline:exec-replay/build/resumed-step/0:2026-10-20T09:00:01.000Z",
   "eventType": "pipeline_agent_turn",
   "status": "success",
@@ -28145,7 +28458,7 @@ exports[`observability golden: replay after restart stores the golden records 1`
   "providerAccountEmail": "golden@example.com",
   "providerPlanType": "max"
 }
---- 3
+--- 4
 {
   "id": "pipeline:exec-replay/build/still-running-step/0:2026-10-20T09:00:03.000Z",
   "eventType": "pipeline_agent_turn",
@@ -28492,7 +28805,7 @@ exports[`observability golden: replay after restart stores the golden records 1`
     {
       "id": "chat:golden-project/golden-worktree/chat-crashed:2026-10-20T09:00:00.000Z",
       "eventType": "worktree_chat",
-      "status": "running",
+      "status": "interrupted",
       "provider": "claude",
       "label": "Code Chat",
       "startedAt": "2026-10-20T09:00:00.000Z",
@@ -28539,12 +28852,16 @@ exports[`observability golden: replay after restart stores the golden records 1`
         "mcp": 0,
         "other": 0
       },
+      "completedAt": "2026-10-20T09:00:40.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
+      "error": "Application stopped before the turn finished",
       "projectId": "golden-project",
       "worktreeId": "golden-worktree",
       "repoId": "golden-repo",
       "repoLabel": "Golden repo",
       "chatId": "chat-crashed",
+      "durationMs": 40000,
       "billingBasis": "subscription",
       "linkTarget": {
         "kind": "worktree-chat",
@@ -29354,6 +29671,7 @@ exports[`observability golden: turn duration net of pauses serves the golden agg
       "label": "Code Chat",
       "startedAt": "2026-10-20T09:03:00.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "tokens": {
         "input": 10,
         "output": 1,
@@ -29439,6 +29757,7 @@ exports[`observability golden: turn duration net of pauses serves the golden agg
       "label": "Code Chat",
       "startedAt": "2026-10-20T09:02:00.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "tokens": {
         "input": 50,
         "output": 5,
@@ -29524,6 +29843,7 @@ exports[`observability golden: turn duration net of pauses serves the golden agg
       "label": "Code Chat",
       "startedAt": "2026-10-20T09:01:00.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "tokens": {
         "input": 100,
         "output": 10,
@@ -29609,6 +29929,7 @@ exports[`observability golden: turn duration net of pauses serves the golden agg
       "label": "Code Chat",
       "startedAt": "2026-10-20T09:00:00.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "tokens": {
         "input": 0,
         "output": 0,
@@ -29683,6 +30004,7 @@ exports[`observability golden: turn duration net of pauses serves the golden agg
         "label": "Code Chat",
         "startedAt": "2026-10-20T09:03:00.000Z",
         "model": "claude-sonnet-4-6",
+        "requestedModel": "claude-sonnet-4-6",
         "tokens": {
           "input": 10,
           "output": 1,
@@ -29768,6 +30090,7 @@ exports[`observability golden: turn duration net of pauses serves the golden agg
         "label": "Code Chat",
         "startedAt": "2026-10-20T09:02:00.000Z",
         "model": "claude-sonnet-4-6",
+        "requestedModel": "claude-sonnet-4-6",
         "tokens": {
           "input": 50,
           "output": 5,
@@ -29853,6 +30176,7 @@ exports[`observability golden: turn duration net of pauses serves the golden agg
         "label": "Code Chat",
         "startedAt": "2026-10-20T09:01:00.000Z",
         "model": "claude-sonnet-4-6",
+        "requestedModel": "claude-sonnet-4-6",
         "tokens": {
           "input": 100,
           "output": 10,
@@ -29938,6 +30262,7 @@ exports[`observability golden: turn duration net of pauses serves the golden agg
         "label": "Code Chat",
         "startedAt": "2026-10-20T09:00:00.000Z",
         "model": "claude-sonnet-4-6",
+        "requestedModel": "claude-sonnet-4-6",
         "tokens": {
           "input": 0,
           "output": 0,
@@ -31133,6 +31458,7 @@ exports[`observability golden: turn duration net of pauses stores the golden rec
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:00:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 0,
     "output": 0,
@@ -31205,6 +31531,7 @@ exports[`observability golden: turn duration net of pauses stores the golden rec
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:01:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 100,
     "output": 10,
@@ -31291,6 +31618,7 @@ exports[`observability golden: turn duration net of pauses stores the golden rec
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:02:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 50,
     "output": 5,
@@ -31377,6 +31705,7 @@ exports[`observability golden: turn duration net of pauses stores the golden rec
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:03:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 10,
     "output": 1,
@@ -31463,6 +31792,7 @@ exports[`observability golden: turn duration net of pauses stores the golden rec
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:00:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 0,
     "output": 0,
@@ -31535,6 +31865,7 @@ exports[`observability golden: turn duration net of pauses stores the golden rec
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:01:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 100,
     "output": 10,
@@ -31621,6 +31952,7 @@ exports[`observability golden: turn duration net of pauses stores the golden rec
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:02:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 50,
     "output": 5,
@@ -31707,6 +32039,7 @@ exports[`observability golden: turn duration net of pauses stores the golden rec
   "label": "Code Chat",
   "startedAt": "2026-10-20T09:03:00.000Z",
   "model": "claude-sonnet-4-6",
+  "requestedModel": "claude-sonnet-4-6",
   "tokens": {
     "input": 10,
     "output": 1,
@@ -31816,6 +32149,7 @@ exports[`observability golden: turn duration net of pauses stores the golden rec
       "label": "Code Chat",
       "startedAt": "2026-10-20T09:03:00.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "tokens": {
         "input": 10,
         "output": 1,
@@ -31901,6 +32235,7 @@ exports[`observability golden: turn duration net of pauses stores the golden rec
       "label": "Code Chat",
       "startedAt": "2026-10-20T09:02:00.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "tokens": {
         "input": 50,
         "output": 5,
@@ -31986,6 +32321,7 @@ exports[`observability golden: turn duration net of pauses stores the golden rec
       "label": "Code Chat",
       "startedAt": "2026-10-20T09:01:00.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "tokens": {
         "input": 100,
         "output": 10,
@@ -32071,6 +32407,7 @@ exports[`observability golden: turn duration net of pauses stores the golden rec
       "label": "Code Chat",
       "startedAt": "2026-10-20T09:00:00.000Z",
       "model": "claude-sonnet-4-6",
+      "requestedModel": "claude-sonnet-4-6",
       "tokens": {
         "input": 0,
         "output": 0,

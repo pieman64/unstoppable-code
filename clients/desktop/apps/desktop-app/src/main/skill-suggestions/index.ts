@@ -12,6 +12,13 @@ import { logMainProcessWarn } from '../lib/main-process-logging';
 import { getWorkspacesRootDir } from '../lib/paths';
 import { readPreferencesFile } from '../lib/preferences-store';
 import {
+  hasSuggestionsPreferences,
+  isSuggestionAllowed,
+  isSkillSuggestionsChildPreferenceEnabled,
+  subscribeSuggestionsGate,
+  suggestionsGateRevision,
+} from '../lib/suggestions-gate';
+import {
   defaultBackfillSources,
   listRetainedChatIds,
   runBackfill,
@@ -23,6 +30,7 @@ import {
   isSkillSuggestionsPreferenceEnabled,
   onSkillSuggestionsGateChanged,
   setSkillSuggestionsPreference,
+  setSkillSuggestionsSourceAllowed,
   startSkillSuggestionsGate,
 } from './feature-gate';
 import {
@@ -75,8 +83,15 @@ export const skillSuggestionSurfacing = new SkillSuggestionSurfacingState({
 
 /** Records a completed eligible turn, then checks it against open suggestions. */
 export async function handleRecordedTurn(turn: RecordedTurn): Promise<void> {
+  const revision = suggestionsGateRevision('skill-suggestion');
+  if (!isSkillSuggestionsEnabled()) return;
   const partition = await resolveTurnPartition(turn);
-  if (!partition || !isSkillSuggestionsEnabled()) return;
+  if (
+    !partition ||
+    !isSkillSuggestionsEnabled() ||
+    revision !== suggestionsGateRevision('skill-suggestion')
+  )
+    return;
   const row = buildTurnFingerprint(
     {
       projectId: turn.projectId,
@@ -95,15 +110,29 @@ export async function handleRecordedTurn(turn: RecordedTurn): Promise<void> {
   const previous = await chainCache.get(turn.chatId);
   const chain = extendChatChain(previous, row);
   // The gate is re-checked before anything is written.
-  if (!isSkillSuggestionsEnabled()) return;
+  if (
+    !isSkillSuggestionsEnabled() ||
+    revision !== suggestionsGateRevision('skill-suggestion')
+  )
+    return;
   // A turn recorded before (a retry or resume) never extends its chain again.
   const fresh = (await store.append([row])) > 0;
   // Re-checked synchronously, so a preference-off purge queued meanwhile is
   // never followed by this chain row.
-  if (fresh && chain && isSkillSuggestionsEnabled()) {
+  if (
+    fresh &&
+    chain &&
+    isSkillSuggestionsEnabled() &&
+    revision === suggestionsGateRevision('skill-suggestion')
+  ) {
     await store.append([chain]);
     if (isSkillSuggestionsEnabled()) await chainCache.set(chain);
   }
+  if (
+    !isSkillSuggestionsEnabled() ||
+    revision !== suggestionsGateRevision('skill-suggestion')
+  )
+    return;
   await skillSuggestionSurfacing.matchTurn({
     origin: {
       projectId: turn.projectId,
@@ -409,15 +438,14 @@ export function startSkillSuggestions(): void {
   scheduler.start();
   stopFns.push(() => scheduler.stop());
   installE2eBackfillProbe();
-  void readPreferencesFile()
-    .then((preferences) =>
-      applySkillSuggestionsPreference(
-        preferences.skillSuggestionsEnabled !== false,
-      ),
-    )
-    .catch((error: unknown) =>
-      logMainProcessWarn('[skill-suggestions] preference read failed', error),
-    );
+  const applyGate = (): void => {
+    // Unknown closes eligibility but cannot authorize deleting persisted data.
+    if (!hasSuggestionsPreferences()) return;
+    setSkillSuggestionsSourceAllowed(isSuggestionAllowed('skill-suggestion'));
+    applySkillSuggestionsPreference(isSkillSuggestionsChildPreferenceEnabled());
+  };
+  stopFns.push(subscribeSuggestionsGate(applyGate));
+  applyGate();
 }
 
 export function stopSkillSuggestions(): void {

@@ -1,10 +1,11 @@
 import type { LedgerNavigator } from '@canopy/app-core';
 import type { LedgerFileRef } from '@canopy/protocol/canopy-core';
-import type {
-  LedgerTaskViewScope,
-  LedgerViewOpenResult,
-  LedgerViewScope,
-  LedgerViewSourceTarget,
+import {
+  isLedgerTaskViewScope,
+  type LedgerTaskViewScope,
+  type LedgerViewOpenResult,
+  type LedgerViewScope,
+  type LedgerViewSourceTarget,
 } from '@canopy/protocol/ledger-view';
 import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
 import {
@@ -20,6 +21,7 @@ import {
 } from '@/stores/chatStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { useProjectsStore } from '@/stores/projectsStore';
+import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 
 /*
  * Opens Ledger sources and reference files in the desktop app. Chats and
@@ -33,6 +35,7 @@ import { useProjectsStore } from '@/stores/projectsStore';
 const FILE_UNAVAILABLE = "Couldn't open this file. It may have moved.";
 const FILE_OUTSIDE_PROJECT = "This file isn't in this project.";
 const CHAT_UNAVAILABLE = 'That chat is no longer available.';
+const SCOPE_UNAVAILABLE = 'That project or worktree is no longer available.';
 
 function failed(message: string): LedgerViewOpenResult {
   return { ok: false, message };
@@ -44,6 +47,55 @@ function isCoworkProject(projectId: string): boolean {
     .projects.some(
       (project) => project.id === projectId && project.type === 'cowork',
     );
+}
+
+/** Opens the existing project or work item named by a Feed work path. */
+export async function openLedgerScope(
+  scope: LedgerViewScope,
+): Promise<LedgerViewOpenResult> {
+  // A global (workflow) scope has no project or task to open.
+  if (!isLedgerTaskViewScope(scope)) return failed(SCOPE_UNAVAILABLE);
+  const project = useProjectsStore
+    .getState()
+    .projects.find((candidate) => candidate.id === scope.projectId);
+  if (project === undefined) return failed(SCOPE_UNAVAILABLE);
+
+  if (isCoworkProject(scope.projectId)) {
+    try {
+      const switched = await useStandaloneChatStore
+        .getState()
+        .switchChatProject(scope.projectId);
+      if (!switched) return failed(SCOPE_UNAVAILABLE);
+
+      const standaloneChatStore = useStandaloneChatStore.getState();
+      if (
+        standaloneChatStore.activeChatProjectId !== scope.projectId ||
+        !standaloneChatStore.workEntries.some(
+          (entry) => entry.id === scope.worktreeId,
+        )
+      ) {
+        return failed(SCOPE_UNAVAILABLE);
+      }
+      const selected = await standaloneChatStore.selectWorkEntry(
+        scope.worktreeId,
+      );
+      if (!selected) return failed(SCOPE_UNAVAILABLE);
+    } catch {
+      return failed(SCOPE_UNAVAILABLE);
+    }
+    useNavigationStore.getState().navigate('chat');
+    return { ok: true };
+  }
+
+  if (
+    !('worktrees' in project) ||
+    !project.worktrees.some((worktree) => worktree.id === scope.worktreeId)
+  ) {
+    return failed(SCOPE_UNAVAILABLE);
+  }
+  useNavigationStore.getState().navigate('main');
+  useChatStore.getState().selectWorktree(scope.projectId, scope.worktreeId);
+  return { ok: true };
 }
 
 /**

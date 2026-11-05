@@ -1,3 +1,10 @@
+import {
+  marketplaceShareLink,
+  type SharedLinkKind,
+} from '@canopy/ui-app/sharing';
+import { marketplaceShareLinkPath } from '@canopy/protocol/marketplace';
+import { isUuid } from '@canopy/protocol/uuid';
+import { resolveCloudOrigin } from './cloud-origin';
 /**
  * Renderer helpers for turning a shared resource's server id into a shareable
  * Canopy Cloud URL. The cloud base URL lives main-side (`getCanopyCloudBaseUrl`,
@@ -108,7 +115,11 @@ export async function resolveSharedAutomationUrl(
 
 /** Where a shared resource's link points, before URL resolution. */
 export type ShareLinkSource =
-  | { readonly kind: 'public'; readonly sharePath: string }
+  | {
+      readonly kind: 'public';
+      readonly sharePath: string;
+      readonly id?: string;
+    }
   | { readonly kind: 'scoped'; readonly id: string };
 
 /** The fields of a shared-resource detail that decide its current link. */
@@ -143,12 +154,19 @@ export interface ShareLinkResolver {
 export function createShareLinkResolver(
   scopedSharePath: (id: string) => string,
   resolveUrl: (sharePath: string) => Promise<string | null>,
+  marketplaceKind?: SharedLinkKind,
 ): ShareLinkResolver {
   const resolveLink = async (
     source: ShareLinkSource,
   ): Promise<ShareDialogLink> => {
     const path =
       source.kind === 'public' ? source.sharePath : scopedSharePath(source.id);
+    if (marketplaceKind) {
+      // Snapshot URLs remain valid legacy inputs, but never identify the item.
+      const id = source.id;
+      if (!id || !isUuid(id)) return { url: '', kind: 'item' };
+      return resolveMarketplaceDialogLink(marketplaceKind, id);
+    }
     return { url: (await resolveUrl(path)) ?? path, kind: source.kind };
   };
   const linkFromDetail = async (
@@ -160,6 +178,14 @@ export function createShareLinkResolver(
         ? { kind: 'scoped', id: detail.id }
         : null;
     if (source === null) return null;
+    if (marketplaceKind) {
+      const url = marketplaceShareLink(
+        await resolveCloudOrigin(),
+        marketplaceKind,
+        detail.id,
+      );
+      return url ? { url, kind: 'item' } : null;
+    }
     const path =
       source.kind === 'public' ? source.sharePath : scopedSharePath(source.id);
     // Existing-share controls appear only once an absolute browser URL is
@@ -169,4 +195,27 @@ export function createShareLinkResolver(
     return url ? { url, kind: source.kind } : null;
   };
   return { resolveLink, linkFromDetail };
+}
+
+/** Immediate completion alone preserves the historical missing-origin path exception. */
+export async function resolveMarketplaceDialogLink(
+  kind: SharedLinkKind,
+  itemId: string,
+): Promise<ShareDialogLink> {
+  const origin = await resolveCloudOrigin();
+  const url = marketplaceShareLink(origin, kind, itemId);
+  if (url) return { url, kind: 'item' };
+  let configured: string | null | undefined;
+  try {
+    configured = await window.api?.getCanopyCloudBaseUrl?.();
+  } catch {
+    return { url: '', kind: 'item' };
+  }
+  return {
+    url:
+      !configured && isUuid(itemId)
+        ? marketplaceShareLinkPath(kind, itemId)
+        : '',
+    kind: 'item',
+  };
 }

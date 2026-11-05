@@ -270,34 +270,60 @@ export const WorktreeChatSurface = memo(function WorktreeChatSurface({
     },
   );
 
+  // The composer is memoized, and the surface re-renders on every update of
+  // its chat, so both objects keep their identity while their values hold.
+  const targetProjectId = selectedWorktree?.projectId;
+  const targetWorktreeId = selectedWorktree?.worktreeId;
+  const targetOverride = useMemo(
+    () =>
+      targetProjectId === undefined || targetWorktreeId === undefined
+        ? undefined
+        : {
+            projectId: targetProjectId,
+            worktreeId: targetWorktreeId,
+            chatId: chatTabId,
+          },
+    [targetProjectId, targetWorktreeId, chatTabId],
+  );
+  const canopyNativeBusy = composerTab?.status === 'streaming';
+  // The chat's interface modes: the composer offers them in its + menu, and
+  // the terminal surface floats a toggle to switch back.
+  const interfaceModeControl = useMemo(
+    (): ChatInterfaceModeControl | undefined =>
+      !readOnly &&
+      interfaceContext?.providerIsClaude &&
+      targetProjectId !== undefined &&
+      targetWorktreeId !== undefined
+        ? {
+            mode: interfaceContext.interfaceMode,
+            onChange: (next): void => {
+              void setChatInterfaceMode(interfaceContext.chatId, next, {
+                projectId: targetProjectId,
+                worktreeId: targetWorktreeId,
+              });
+            },
+            providerIsClaude: interfaceContext.providerIsClaude,
+            canopyNativeBusy,
+            claudeTerminalTurnState,
+            claudeTerminalBusy: terminalBusy,
+          }
+        : undefined,
+    [
+      readOnly,
+      interfaceContext,
+      targetProjectId,
+      targetWorktreeId,
+      setChatInterfaceMode,
+      canopyNativeBusy,
+      claudeTerminalTurnState,
+      terminalBusy,
+    ],
+  );
+
   if (!selectedWorktree || !tabExists) {
     return null;
   }
 
-  const targetOverride = {
-    projectId: selectedWorktree.projectId,
-    worktreeId: selectedWorktree.worktreeId,
-    chatId: chatTabId,
-  };
-
-  // The chat's interface modes: the composer offers them in its + menu, and
-  // the terminal surface floats a toggle to switch back.
-  const interfaceModeControl: ChatInterfaceModeControl | undefined =
-    !readOnly && interfaceContext?.providerIsClaude
-      ? {
-          mode: interfaceContext.interfaceMode,
-          onChange: (next): void => {
-            void setChatInterfaceMode(interfaceContext.chatId, next, {
-              projectId: selectedWorktree.projectId,
-              worktreeId: selectedWorktree.worktreeId,
-            });
-          },
-          providerIsClaude: interfaceContext.providerIsClaude,
-          canopyNativeBusy: composerTab?.status === 'streaming',
-          claudeTerminalTurnState,
-          claudeTerminalBusy: terminalBusy,
-        }
-      : undefined;
   return (
     <>
       {isActiveTab && chatActiveTabReport !== null && (

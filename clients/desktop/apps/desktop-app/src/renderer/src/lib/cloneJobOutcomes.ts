@@ -9,11 +9,6 @@ import { useProjectsStore } from '@/stores/projectsStore';
 // of a succeeded job to one attempt.
 const announcedOutcomes = new Set<string>();
 
-/** Test hook: forget announced outcomes between cases. */
-export function resetAnnouncedCloneOutcomesForTests(): void {
-  announcedOutcomes.clear();
-}
-
 /**
  * Ask main to drop a succeeded job once it has been announced. Main stays the
  * single writer: its broadcast removes the job from the sidebar pill and the

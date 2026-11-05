@@ -64,6 +64,7 @@ import {
   isUnavailableModelSelection,
   resolveCodexReasoningRouteFamily,
   resolveGatewayToolSchemaProfile,
+  resolveModelIdForGatewayId,
 } from '@canopy/desktop-shared/lib/gateway-model-availability';
 import { getCodexGatewayProxyService } from './codex-gateway-proxy-service';
 import { ensureGatewayCompatibleCodexCatalog } from '../codex/gateway-model-catalog';
@@ -742,7 +743,7 @@ async function resolveCodexAiCreditsRouting(
       await emit({
         type: 'error',
         error:
-          "This model can't be used with AI Credits and you're not signed in to Codex. Sign in to Codex or pick a model covered by AI Credits.",
+          "This model can't be used with AI Credits and Codex isn't connected. Connect Codex or pick a model covered by AI Credits.",
       });
       // Abort rather than fall through to a native spawn — that would surface a
       // second raw provider auth failure on top of this clear message.
@@ -2134,12 +2135,13 @@ export class CodexProvider implements AgentProvider {
           await import('./delegation/service');
         managedDelegation = await createManagedDelegationSession({
           harness: 'codex',
-          onTranscript: (delegation): void => {
+          onTranscript: (delegation, options): void => {
             void Promise.resolve(
               onEvent({
                 type: 'canopy_delegation',
                 delegation,
                 canopy_turn_user_message_id: delegation.parentTurnId,
+                ...(options?.replay ? { canopy_replay: true } : {}),
               }),
             ).catch((error: unknown) =>
               logMainProcessWarn(
@@ -2827,6 +2829,7 @@ export class CodexProvider implements AgentProvider {
                     : {}),
                 })
               : null;
+          managedDelegation?.setLedgerTools(ledger.tools ?? undefined);
           ledger.decided = true;
           if (isDestroyed()) throw new Error(SESSION_DESTROYED_ERROR_MESSAGE);
         }
@@ -3459,6 +3462,27 @@ export class CodexProvider implements AgentProvider {
               gatewayTurnModels.set(routingModel, resolvedGatewayRoute);
               turnGatewayRoute = resolvedGatewayRoute;
               turnModel = resolvedGatewayRoute.gatewayModel;
+            }
+          }
+          if (aiCreditsRoutingApplied && turnGatewayRoute) {
+            // A native default without native auth is served by its credits
+            // counterpart, which dispatch could not predict. Record the
+            // served model's registry id, not its gateway id: Codex cost is
+            // priced by registry id, and the turn's requested model keeps the
+            // pick (CAN-5233). A pick routed to its own gateway model served
+            // the turn itself; the reverse lookup could name a sibling id.
+            const pickedModel =
+              preparedInvocationState.runtimeModel ?? selectedModel;
+            const servedModel =
+              resolveGatewayModelEntry(pickedModel)?.gatewayId ===
+              turnGatewayRoute.gatewayModel
+                ? undefined
+                : resolveModelIdForGatewayId(turnGatewayRoute.gatewayModel);
+            if (servedModel !== undefined && servedModel !== pickedModel) {
+              getObservabilityService().setChatTurnServedModel(
+                buildSessionKey(opts.projectId, opts.worktreeId, opts.chatId),
+                servedModel,
+              );
             }
           }
           const inventory = await loadCachedInventory().catch(() => null);

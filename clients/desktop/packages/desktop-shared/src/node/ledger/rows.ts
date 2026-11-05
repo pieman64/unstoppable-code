@@ -1,5 +1,10 @@
 import type { SQLOutputValue } from 'node:sqlite';
 
+import {
+  LedgerLeftOpenSchema,
+  type LedgerLeftOpen,
+} from '@canopy/protocol/canopy-core';
+
 import { LedgerStoreError } from './errors';
 
 export type LedgerSqlRow = Record<string, SQLOutputValue>;
@@ -24,6 +29,18 @@ export function rowNullableText(
   if (value === null || value === undefined) return null;
   if (typeof value !== 'string') throw malformedRow();
   return value;
+}
+
+/** Metadata belongs to the mutation of the selected revision, not its entry. */
+export function rowLeftOpen(row: LedgerSqlRow): LedgerLeftOpen | undefined {
+  const reason = rowNullableText(row, 'left_open_reason');
+  if (reason === null) return undefined;
+  const parsed = LedgerLeftOpenSchema.safeParse({
+    reason,
+    at: rowText(row, 'left_open_at'),
+  });
+  if (!parsed.success) throw malformedRow();
+  return parsed.data;
 }
 
 export function rowInteger(row: LedgerSqlRow, column: string): number {

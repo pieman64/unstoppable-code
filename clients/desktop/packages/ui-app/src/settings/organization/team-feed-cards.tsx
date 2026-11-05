@@ -17,7 +17,8 @@ import {
   DelayedLoadingPlaceholder,
   ErrorBanner,
   Markdown,
-  SettingsTableSkeleton,
+  Skeleton,
+  TextLinkButton,
   Tooltip,
   useCopyToClipboard,
 } from '@canopy/ui-shared/components';
@@ -818,14 +819,11 @@ function WorktreeUpdatedCard({
             {renderedBody}
           </div>
           {(overflows || expanded) && (
-            <button
-              type="button"
-              data-settings-control="link"
-              onClick={() => setExpanded((prev) => !prev)}
-              className="mt-1 text-xs fg-accent hover:underline"
-            >
-              {expanded ? 'Show less' : 'Show more'}
-            </button>
+            <div className="mt-1 text-xs">
+              <TextLinkButton onClick={() => setExpanded((prev) => !prev)}>
+                {expanded ? 'Show less' : 'Show more'}
+              </TextLinkButton>
+            </div>
           )}
         </>
       )}
@@ -837,6 +835,55 @@ function WorktreeUpdatedCard({
 }
 
 type SummaryHistoryStatus = 'idle' | 'loading' | 'loaded' | 'error';
+
+/** Plain sample versions the history skeleton measures. */
+const SAMPLE_HISTORY_ENTRIES: readonly WorktreeSummaryHistoryEntry[] = [
+  {
+    id: 'sample-history-1',
+    summary: 'Fixed the checkout test\nWaits for the retry to settle.',
+    generatedAt: '2026-01-01T12:00:00.000Z',
+  },
+  {
+    id: 'sample-history-2',
+    summary: 'Started the checkout fix\nAdded a failing test.',
+    generatedAt: '2026-01-01T12:00:00.000Z',
+  },
+];
+
+/** Earlier summary versions, newest first. */
+function SummaryHistoryEntries({
+  entries,
+}: {
+  entries: readonly WorktreeSummaryHistoryEntry[];
+}): JSX.Element {
+  return (
+    <ol className="flex flex-col gap-3">
+      {entries.map((entry) => {
+        const { title, body } = splitWorktreeSummary(entry.summary);
+        return (
+          <li
+            key={entry.id}
+            data-testid="feed-summary-history-entry"
+            className="flex flex-col gap-0.5"
+          >
+            <time
+              dateTime={entry.generatedAt}
+              className="text-2xs fg-secondary"
+            >
+              {formatRelativeTime(entry.generatedAt)}
+            </time>
+            {title && <p className="text-s font-medium fg-primary">{title}</p>}
+            {body && (
+              <p className="whitespace-pre-line text-xs fg-secondary line-clamp-4">
+                {body}
+              </p>
+            )}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
 
 /**
  * On-demand "History" disclosure under a {@link WorktreeUpdatedCard}. The live
@@ -943,7 +990,13 @@ function WorktreeSummaryHistory({
         >
           {status === 'loading' && (
             <DelayedLoadingPlaceholder>
-              <SettingsTableSkeleton rows={2} />
+              <Skeleton
+                loading
+                label="Loading history"
+                testId="settings-skeleton-table"
+              >
+                <SummaryHistoryEntries entries={SAMPLE_HISTORY_ENTRIES} />
+              </Skeleton>
             </DelayedLoadingPlaceholder>
           )}
           {status === 'error' && (
@@ -953,33 +1006,7 @@ function WorktreeSummaryHistory({
             <p className="text-xs fg-secondary">No earlier versions.</p>
           )}
           {status === 'loaded' && entries.length > 0 && (
-            <ol className="flex flex-col gap-3">
-              {entries.map((entry) => {
-                const { title, body } = splitWorktreeSummary(entry.summary);
-                return (
-                  <li
-                    key={entry.id}
-                    data-testid="feed-summary-history-entry"
-                    className="flex flex-col gap-0.5"
-                  >
-                    <time
-                      dateTime={entry.generatedAt}
-                      className="text-2xs fg-secondary"
-                    >
-                      {formatRelativeTime(entry.generatedAt)}
-                    </time>
-                    {title && (
-                      <p className="text-s font-medium fg-primary">{title}</p>
-                    )}
-                    {body && (
-                      <p className="whitespace-pre-line text-xs fg-secondary line-clamp-4">
-                        {body}
-                      </p>
-                    )}
-                  </li>
-                );
-              })}
-            </ol>
+            <SummaryHistoryEntries entries={entries} />
           )}
           {status === 'loaded' && nextCursor !== null && (
             <Button

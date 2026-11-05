@@ -41,11 +41,140 @@ export interface PostHogInstallLaunch {
 }
 
 /**
+ * The focused chat's committed row count (its transcript descriptor's
+ * `committedMessageCount`), as the lower bound of its bucket: 0, 1,000, 5,000,
+ * 20,000 or 50,000 rows and over.
+ */
+export type RendererChatRowsBucket = 0 | 1_000 | 5_000 | 20_000 | 50_000;
+
+/**
+ * `user-callback` invokers a long frame's script may name. Chromium reports
+ * these fixed callback kinds; any other value is recorded as `null`.
+ */
+export const RENDERER_LONG_FRAME_CALLBACK_INVOKERS = [
+  'TimerHandler:setTimeout',
+  'TimerHandler:setInterval',
+  'FrameRequestCallback',
+  'IdleRequestCallback',
+  'ResizeObserverCallback',
+  'IntersectionObserverCallback',
+  'MutationCallback',
+  'PerformanceObserverCallback',
+] as const;
+
+/**
+ * Standard DOM event handler names an `event-listener` script may name, taken
+ * from the end of Chromium's invoker (`BUTTON#save.onclick` → `onclick`). The
+ * target element, its id, classes and attributes are never kept, and any
+ * other event is recorded as `null`.
+ */
+export const RENDERER_LONG_FRAME_EVENT_INVOKERS = [
+  'onclick',
+  'ondblclick',
+  'oncontextmenu',
+  'onmousedown',
+  'onmouseup',
+  'onmousemove',
+  'onpointerdown',
+  'onpointerup',
+  'onpointermove',
+  'onwheel',
+  'onscroll',
+  'onkeydown',
+  'onkeyup',
+  'onkeypress',
+  'onbeforeinput',
+  'oninput',
+  'onchange',
+  'oncompositionend',
+  'onfocus',
+  'onblur',
+  'onfocusin',
+  'onfocusout',
+  'oncopy',
+  'oncut',
+  'onpaste',
+  'ondragover',
+  'ondrop',
+  'onresize',
+  'onselectionchange',
+  'onvisibilitychange',
+  'onload',
+  'onerror',
+  'onmessage',
+  'ontransitionend',
+  'onanimationend',
+] as const;
+
+export type RendererLongFrameInvoker =
+  | (typeof RENDERER_LONG_FRAME_CALLBACK_INVOKERS)[number]
+  | (typeof RENDERER_LONG_FRAME_EVENT_INVOKERS)[number];
+
+/**
+ * One script Chromium attributed to a long frame. Chromium attributes none
+ * of the app's own scripts (served from `file://` or `app-renderer://`) and
+ * no work entered from a preload IPC listener, so for app code this is
+ * normally empty. What it does attribute has no known provenance, so no
+ * source name, URL or function name is kept.
+ */
+export interface RendererLongFrameScript {
+  /** `invokerType`, grouped as the window's invoker counts are. */
+  invokerType: 'user-callback' | 'event-listener' | 'promise' | 'script';
+  /**
+   * A fixed callback kind for `user-callback`, or a standard event handler
+   * name for `event-listener`; otherwise, and for every other type, `null`.
+   */
+  invoker: RendererLongFrameInvoker | null;
+  /**
+   * The scheme of the script's source URL: `none` when it has none (for
+   * example evaluated code), `other` for any scheme not listed.
+   */
+  sourceKind: 'none' | 'http' | 'blob' | 'data' | 'other';
+  durationMs: number;
+}
+
+/** A long animation frame of at least 1 s, with what can be attributed to it. */
+export interface RendererLongFrame {
+  durationMs: number;
+  blockingMs: number;
+  /**
+   * Frame start to `renderStart` (the whole frame when it had no rendering
+   * update): tasks, their scripts and microtasks.
+   */
+  scriptMs: number;
+  /** `renderStart` to `styleAndLayoutStart`: animation frame callbacks and observers. */
+  renderMs: number;
+  /** `styleAndLayoutStart` to the end of the frame: style, layout and paint. */
+  layoutMs: number;
+  /**
+   * Chat state, chat event and terminal deliveries that started during the
+   * frame. `deliveryMs` is their synchronous apply plus the microtasks queued
+   * during it, such as React's render of an immediate store update; not
+   * microtasks those queue in turn. Streamed content renders on the next
+   * animation frame instead, inside `renderMs`.
+   */
+  deliveries: {
+    chatState: number;
+    chatEvent: number;
+    terminal: number;
+    deliveryMs: number;
+  };
+  /**
+   * Committed row bucket of the window's largest focused chat when the frame
+   * was reported; `null` with no focused chat or no known committed count.
+   */
+  focusedChatRows: RendererChatRowsBucket | null;
+  /** The longest attributed scripts, at most 3, longest first. */
+  scripts: RendererLongFrameScript[];
+}
+
+/**
  * One renderer's frame and chat delivery numbers for one diagnostic window
  * (about 30 s), sent on `observability:record-renderer-summary` and recorded
  * on this device only as the `renderer_frame_summary` app diagnostic. Every
- * field is a count, a duration in milliseconds, or a flag: no chat, path,
- * source or other content.
+ * field is a count, a duration in milliseconds, a flag, a row-count bucket,
+ * or a value from a fixed vocabulary: no chat, path, URL, source or function
+ * name, or other content.
  */
 export interface RendererDiagnosticsSummary {
   /** Length of the window the summary covers. */
@@ -59,13 +188,18 @@ export interface RendererDiagnosticsSummary {
     maxMs: number;
     /** Summed `blockingDuration`. */
     blockingMs: number;
-    /** Script entries by invoker type; promise and script types are combined. */
+    /**
+     * Script entries by invoker type; promise and script types are combined.
+     * Zero for the app's own code, which Chromium does not attribute.
+     */
     invokers: {
       userCallback: number;
       eventListener: number;
       promise: number;
       script: number;
     };
+    /** Frames of at least 1 s, longest first, at most 3. */
+    long: RendererLongFrame[];
   };
   /**
    * `chat:state-changed`: changes attributed by their chat to on screen (the

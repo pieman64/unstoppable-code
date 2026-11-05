@@ -43,11 +43,13 @@ import {
 import {
   LedgerCorrectionBox,
   LedgerOwnerPicker,
+  LedgerActivityLine,
   LedgerStatusControl,
-  CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
   Notice,
   NoticeButton,
+  Skeleton,
+  type LedgerActivityItem,
   type LedgerDensity,
   type LedgerEntrySlots,
   type LedgerOpenEntry,
@@ -60,6 +62,10 @@ import {
   ledgerSourceDescription,
 } from '@canopy/ui-shared/lib';
 import { LedgerComposer } from './LedgerComposer';
+import {
+  LedgerCloseIntentPrompt,
+  type LedgerCloseIntentChoice,
+} from './ledger-close-intent';
 import { problemCopy } from './ledger-problem-copy';
 import {
   ledgerChangeNoticeCopy,
@@ -90,6 +96,8 @@ export interface LedgerScopeRowsState {
   readonly owners: LedgerViewOwnersState;
   /** Corrected entry IDs in correction creation order. */
   readonly correctionIds: readonly string[];
+  /** A close waiting for the person's choice. */
+  readonly closeIntent: LedgerViewState['closeIntent'];
 }
 
 const NO_CORRECTION_IDS: readonly string[] = [];
@@ -126,7 +134,8 @@ function rowsStateOf(
     previous.detail === state.detail &&
     previous.change === state.change &&
     previous.owners === state.owners &&
-    previous.correctionIds === stableCorrectionIds
+    previous.correctionIds === stableCorrectionIds &&
+    previous.closeIntent === state.closeIntent
   ) {
     return previous;
   }
@@ -137,6 +146,7 @@ function rowsStateOf(
     change: state.change,
     owners: state.owners,
     correctionIds: stableCorrectionIds,
+    closeIntent: state.closeIntent,
   };
 }
 
@@ -212,6 +222,7 @@ export function ledgerRestingRowsState(
     change: RESTING_CHANGE,
     owners: RESTING_OWNERS,
     correctionIds: NO_CORRECTION_IDS,
+    closeIntent: null,
   };
 }
 
@@ -569,11 +580,40 @@ export function LedgerEntryReadProblem({
   );
 }
 
-/** The open entry's read while it loads. */
+const SAMPLE_ACTIVITY_NOW = new Date('2026-01-01T12:30:00.000Z');
+
+/** Plain activity lines the read's skeleton measures. */
+const SAMPLE_ACTIVITY: readonly LedgerActivityItem[] = [
+  {
+    key: 'ledger-activity-skeleton-1',
+    text: 'Status changed to In progress',
+    occurredAt: '2026-01-01T12:00:00.000Z',
+  },
+  {
+    key: 'ledger-activity-skeleton-2',
+    text: 'Owner changed to the release agent',
+    occurredAt: '2026-01-01T12:10:00.000Z',
+  },
+];
+
+/**
+ * The open entry's read while it loads: the activity lines it brings, drawn
+ * from plain samples inside the measured `Skeleton`.
+ */
 export function LedgerEntryReadLoading(): JSX.Element {
   return (
     <DelayedLoadingPlaceholder slowNote="Still loading entry…">
-      <CenteredLoadingSpinner className="my-4" />
+      <Skeleton loading label="Loading entry" testId="ledger-entry-loading">
+        <ul className="flex flex-col gap-2.5">
+          {SAMPLE_ACTIVITY.map((item) => (
+            <LedgerActivityLine
+              key={item.key}
+              item={item}
+              now={SAMPLE_ACTIVITY_NOW}
+            />
+          ))}
+        </ul>
+      </Skeleton>
     </DelayedLoadingPlaceholder>
   );
 }
@@ -594,12 +634,17 @@ export function LedgerClosedExplanation({
 /**
  * The scope's open entry: its selected entry with its read, how the read
  * and the last change went, and why a closed entry can't change. Memoize
- * the result on its inputs.
+ * the result on its inputs. With `onChooseClose`, a close waiting on this
+ * entry shows its choice where the change's notice goes; a surface that
+ * shows the choice elsewhere leaves it out.
  */
 export function ledgerScopeOpenEntry(
-  rows: Pick<LedgerScopeRowsState, 'selectedEntryId' | 'detail' | 'change'>,
+  rows: Pick<LedgerScopeRowsState, 'selectedEntryId' | 'detail' | 'change'> & {
+    readonly closeIntent?: LedgerScopeRowsState['closeIntent'];
+  },
   actions: LedgerScopeActions,
   openError: LedgerOpenError | null,
+  onChooseClose?: (choice: LedgerCloseIntentChoice) => Promise<void>,
 ): LedgerOpenEntry | null {
   const { selectedEntryId: entryId, detail, change } = rows;
   if (entryId === null) return null;
@@ -618,8 +663,23 @@ export function ledgerScopeOpenEntry(
   } else if (view === null) {
     readState = <LedgerEntryReadLoading />;
   }
+  const entryType = view?.entry.entry.type;
+  const closeIntent = rows.closeIntent ?? null;
   const notice =
-    change.notice === null ? undefined : (
+    onChooseClose !== undefined &&
+    closeIntent !== null &&
+    closeIntent.entryId === entryId &&
+    (entryType === 'OPERATION' || entryType === 'TASK') ? (
+      <LedgerCloseIntentPrompt
+        openCount={closeIntent.openCount}
+        openCountIsLowerBound={closeIntent.openCountIsLowerBound}
+        kind={entryType}
+        onChoose={async (choice): Promise<{ readonly ok: true }> => {
+          await onChooseClose(choice);
+          return { ok: true };
+        }}
+      />
+    ) : change.notice === null ? undefined : (
       <LedgerChangeNotice
         notice={change.notice}
         onRetry={actions.retryChange}

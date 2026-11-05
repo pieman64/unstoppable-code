@@ -15,11 +15,14 @@ import {
   BusyLabel,
   Button,
   ChoiceField,
+  DelayedLoadingPlaceholder,
   Fact,
   FactList,
   Heading,
+  ListRow,
   Notice,
   SearchField,
+  Skeleton,
 } from '@canopy/ui-shared/components';
 import { formatByteSize, formatDateTime } from '@canopy/ui-shared/lib';
 import { DialogModal } from '../shared';
@@ -59,6 +62,95 @@ async function discardStagedImport(exportId: string): Promise<void> {
   if (!window.api.chat.discardSessionImport) return;
   await window.api.chat.discardSessionImport({ exportId });
 }
+
+interface CloudExportRowProps {
+  exportItem: SessionCloudExportSummary;
+  confirmingDelete: boolean;
+  deleting: boolean;
+  onInspect: () => void;
+  onDelete: () => void;
+}
+
+function CloudExportRow({
+  exportItem,
+  confirmingDelete,
+  deleting,
+  onInspect,
+  onDelete,
+}: CloudExportRowProps): JSX.Element {
+  return (
+    <div
+      data-testid={`import-session-cloud-row-${exportItem.id}`}
+      className="flex items-stretch gap-2 rounded-lg border bg-secondary/10 p-2"
+    >
+      <ListRow
+        onClick={onInspect}
+        className="min-w-0 flex-1"
+        description={[
+          formatDateTime(exportItem.createdAt),
+          formatByteSize(exportItem.sizeBytes),
+          exportItem.workspaceName,
+          `${exportItem.repos.length} ${
+            exportItem.repos.length === 1 ? 'repository' : 'repositories'
+          }`,
+        ].join(' · ')}
+      >
+        {exportItem.title}
+      </ListRow>
+      <Button
+        variant={confirmingDelete ? 'destructive' : 'ghost-destructive'}
+        size="compact"
+        data-testid={`import-session-cloud-delete-${exportItem.id}`}
+        onClick={onDelete}
+        disabled={deleting}
+      >
+        {deleting
+          ? 'Deleting…'
+          : confirmingDelete
+            ? 'Confirm delete'
+            : 'Delete'}
+      </Button>
+    </div>
+  );
+}
+
+const SAMPLE_EXPORT_TIME = '2026-01-01T12:00:00.000Z';
+
+/** Plain exports the loading skeleton lays out as the export list. */
+const SAMPLE_EXPORTS: SessionCloudExportSummary[] = [
+  {
+    id: 'skeleton-export-1',
+    title: 'Fix the flaky checkout test',
+    workspaceName: 'Storefront',
+    workspaceType: 'code',
+    repos: [{ name: 'storefront', branchName: 'main' }],
+    sizeBytes: 482_000,
+    createdAt: SAMPLE_EXPORT_TIME,
+    updatedAt: SAMPLE_EXPORT_TIME,
+  },
+  {
+    id: 'skeleton-export-2',
+    title: 'Draft the release notes',
+    workspaceName: 'Storefront',
+    workspaceType: 'code',
+    repos: [{ name: 'storefront', branchName: 'main' }],
+    sizeBytes: 126_000,
+    createdAt: SAMPLE_EXPORT_TIME,
+    updatedAt: SAMPLE_EXPORT_TIME,
+  },
+  {
+    id: 'skeleton-export-3',
+    title: 'Speed up the image build',
+    workspaceName: 'Platform',
+    workspaceType: 'code',
+    repos: [{ name: 'platform', branchName: 'main' }],
+    sizeBytes: 98_000,
+    createdAt: SAMPLE_EXPORT_TIME,
+    updatedAt: SAMPLE_EXPORT_TIME,
+  },
+];
+
+const noop = (): void => undefined;
 
 function RepoSummaryList({ repos }: RepoSummaryListProps): JSX.Element {
   return (
@@ -339,9 +431,26 @@ export function ImportSessionModal({
             />
 
             {isLoadingList ? (
-              <div className="flex items-center justify-center gap-2 py-10 text-s fg-secondary">
-                <LoadingSpinner tone="accent" /> Loading exports…
-              </div>
+              <DelayedLoadingPlaceholder slowNote="Still loading exports…">
+                <Skeleton
+                  loading
+                  label="Loading exports"
+                  testId="import-session-cloud-loading"
+                >
+                  <div className="flex flex-col gap-2">
+                    {SAMPLE_EXPORTS.map((exportItem) => (
+                      <CloudExportRow
+                        key={exportItem.id}
+                        exportItem={exportItem}
+                        confirmingDelete={false}
+                        deleting={false}
+                        onInspect={noop}
+                        onDelete={noop}
+                      />
+                    ))}
+                  </div>
+                </Skeleton>
+              </DelayedLoadingPlaceholder>
             ) : exports.length === 0 ? (
               <div className="rounded-lg border border-dashed px-4 py-8 text-center text-s fg-secondary">
                 {debouncedSearch
@@ -351,49 +460,14 @@ export function ImportSessionModal({
             ) : (
               <div className="space-y-2">
                 {exports.map((exportItem) => (
-                  <div
+                  <CloudExportRow
                     key={exportItem.id}
-                    data-testid={`import-session-cloud-row-${exportItem.id}`}
-                    className="flex items-stretch gap-2 rounded-lg border bg-secondary/10 p-2"
-                  >
-                    <button
-                      type="button"
-                      onClick={() => void inspectExport(exportItem.id)}
-                      className="focus-ring min-w-0 flex-1 rounded-md px-2 py-1.5 text-left hover:bg-secondary/40"
-                    >
-                      <div className="truncate text-s font-medium fg-primary">
-                        {exportItem.title}
-                      </div>
-                      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs fg-secondary">
-                        <span>{formatDateTime(exportItem.createdAt)}</span>
-                        <span>{formatByteSize(exportItem.sizeBytes)}</span>
-                        <span>{exportItem.workspaceName}</span>
-                        <span>
-                          {exportItem.repos.length}{' '}
-                          {exportItem.repos.length === 1
-                            ? 'repository'
-                            : 'repositories'}
-                        </span>
-                      </div>
-                    </button>
-                    <Button
-                      variant={
-                        confirmingDeleteId === exportItem.id
-                          ? 'destructive'
-                          : 'ghost-destructive'
-                      }
-                      size="compact"
-                      data-testid={`import-session-cloud-delete-${exportItem.id}`}
-                      onClick={() => void handleDeleteExport(exportItem.id)}
-                      disabled={deletingId === exportItem.id}
-                    >
-                      {deletingId === exportItem.id
-                        ? 'Deleting…'
-                        : confirmingDeleteId === exportItem.id
-                          ? 'Confirm delete'
-                          : 'Delete'}
-                    </Button>
-                  </div>
+                    exportItem={exportItem}
+                    confirmingDelete={confirmingDeleteId === exportItem.id}
+                    deleting={deletingId === exportItem.id}
+                    onInspect={() => void inspectExport(exportItem.id)}
+                    onDelete={() => void handleDeleteExport(exportItem.id)}
+                  />
                 ))}
               </div>
             )}

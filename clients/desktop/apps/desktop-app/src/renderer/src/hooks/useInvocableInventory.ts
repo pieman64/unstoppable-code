@@ -401,11 +401,3 @@ export function useInvocableInventory(
 
   return { ...snapshot, refresh, reload };
 }
-
-/** Test-only: drops every provider cache and the module-level event listener. */
-export function resetInvocableInventoryCacheForTests(): void {
-  unsubscribeInventoryChanged?.();
-  unsubscribeInventoryChanged = null;
-  inventoryCaches.clear();
-  activeSubscriberCount = 0;
-}

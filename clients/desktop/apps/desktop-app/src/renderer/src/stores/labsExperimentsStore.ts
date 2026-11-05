@@ -231,20 +231,6 @@ export function useLabsOwnedSidebarKeys(): readonly string[] {
   return useMemo(() => (key ? key.split('|') : []), [key]);
 }
 
-/** Test-only: drop the subscription and return the store to its defaults. */
-export function resetLabsExperimentsStoreForTest(): void {
-  subscriptionGeneration++;
-  unsubscribeSnapshot?.();
-  unsubscribeSnapshot = null;
-  saveTokens.clear();
-  useLabsExperimentsStore.setState({
-    snapshot: null,
-    hydrated: false,
-    pending: {},
-    errors: {},
-  });
-}
-
 /** Current effective state for non-React consumers; main remains the evaluator. */
 export function getLabsFeatureEnabled(id: string): boolean {
   return isLabsExperimentEnabled(

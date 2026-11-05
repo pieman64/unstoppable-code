@@ -1,15 +1,15 @@
 import { readFile, readdir, realpath, stat } from 'node:fs/promises';
-import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import {
-  redactSecrets as redactSharedSecrets,
-  SECRET_ASSIGNMENT_KEYS_SOURCE,
-} from '@canopy/desktop-shared/lib/redaction';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { MemorySource, SearchHit } from '@canopy/desktop-shared/types';
 import {
   clipAtBoundaries,
   LOCAL_MEMORY_MORE_MARKER,
   type BoundaryClip,
-} from './boundary-truncation';
+} from '@canopy/memory-consolidation/boundary-truncation';
+import { fitMemoryIndex } from '@canopy/memory-consolidation/memory-index';
+import { redactMemoryContent } from '@canopy/memory-consolidation/redaction';
+import { normalizeMemoryText as normalizeText } from '@canopy/memory-consolidation/text';
+import { normalizeTopicName } from '@canopy/memory-consolidation/topic-identity';
 import { withMemoryWriteLock } from './edit-coordination';
 import {
   ensureOwnerOnlyMemoryDir,
@@ -25,8 +25,6 @@ import {
 import { LocalMemoryScopeLockLostError } from './scope-lock';
 import { LocalMemoryScopeReadOnlyError } from './scope-manifest';
 
-const MEMORY_INDEX_MAX_LINES = 200;
-const MEMORY_INDEX_MAX_BYTES = 25 * 1024;
 const DEFAULT_RECENT_MAX_NOTES = 5;
 const DEFAULT_RECENT_MAX_CHARS_PER_NOTE = 1_000;
 const MAX_SEARCH_HITS = 50;
@@ -36,10 +34,6 @@ const READ_MEMORY_TRUNCATION_NOTICE =
   '\n\n[Memory content truncated at 24 KiB.]';
 const MAX_SOURCE_FIELD_CHARS = 500;
 const MAX_NOTE_TEXT_CHARS = 2_000;
-
-function normalizeText(text: string): string {
-  return text.replace(/\r\n?/g, '\n').replace(/\0/g, '').trim();
-}
 
 function clipUtf8(text: string, maxBytes: number): string {
   if (maxBytes <= 0) return '';
@@ -58,81 +52,6 @@ function clampInteger(
 ): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
   return Math.min(maximum, Math.max(0, Math.floor(value)));
-}
-
-// Built from the shared redactor's complete assignment-key vocabulary so the
-// two passes can never drift apart again: any key the shared `key: value` /
-// `key=value` rules treat as secret-bearing is also rest-of-line-redacted
-// here, with optional `[a-z0-9]+[_-]` prefixes and the bare `apikey` spelling
-// on top.
-const MEMORY_SECRET_ASSIGNMENT_RULE = new RegExp(
-  `\\b((?:[a-z0-9]+[_-])*(?:${SECRET_ASSIGNMENT_KEYS_SOURCE})|apikey)(["']?[^\\S\\n]*[=:]+[^\\S\\n]*)([^\\n]+)`,
-  'gi',
-);
-
-/**
- * Memory-specific redaction: the shared telemetry scrubber as a base pass
- * plus the store's additional credential patterns (connection strings, token
- * prefixes, high-entropy blobs, assignment rest-of-line). Exported so
- * consolidation output is scrubbed with the SAME rules as note content
- * before it is persisted at rest.
- */
-export function redactMemoryContent(text: string): string {
-  return redactSecrets(text);
-}
-
-function redactSecrets(text: string): string {
-  // Base pass: the shared scrubber (`@canopy/desktop-shared/lib/redaction`)
-  // owns the common secret/PII vocabulary — PEM private-key blocks, JWTs,
-  // GitHub classic and fine-grained tokens, AWS access keys, `sk-` keys,
-  // Authorization/Cookie/API-key headers, Bearer tokens, `key: value` /
-  // `key=value` secret pairs, email addresses, IPv4 addresses, and user
-  // home-directory paths.
-  let result = redactSharedSecrets(text);
-  // Memory-specific additions the shared corpus does not cover follow.
-  // Credential-bearing connection strings: known database/broker schemes, and
-  // any scheme carrying user:password@ credentials.
-  result = result.replace(
-    /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp):\/\/[^\s"']+/gi,
-    '<CONNECTION_STRING>',
-  );
-  result = result.replace(
-    /\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@"']+:[^\s:/@"']+@[^\s"']+/gi,
-    '<CONNECTION_STRING>',
-  );
-  // Token prefixes the shared module lacks, anchored to their real key
-  // shapes (separator or distinctive prefix) so ordinary words that merely
-  // start with `sk`/`pk` can never match.
-  result = result.replace(
-    /\b(?:(?:sk|pk|rk|csk)[-_][A-Za-z0-9_-]{10,}|xox[bapr]-[A-Za-z0-9-]{10,}|AIza[A-Za-z0-9_-]{30,}|ya29\.[A-Za-z0-9_.-]{20,}|AKIA[A-Z0-9]{16}|gh[po]_[A-Za-z0-9]{20,})\b/g,
-    '<API_KEY>',
-  );
-  // High-entropy 40-char base64ish blobs (classic AWS secret-key shape).
-  result = result.replace(
-    /(?<![A-Za-z0-9/+])(?=[A-Za-z0-9/+]*[A-Z])(?=[A-Za-z0-9/+]*[a-z])(?=[A-Za-z0-9/+]*[0-9])[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+])/g,
-    '<SECRET>',
-  );
-  // Prefixed assignment keys (e.g. OPENAI_CUSTOM_TOKEN=...) that the shared
-  // module's word-boundary key list cannot reach. The key vocabulary is the
-  // shared redactor's own SECRET_ASSIGNMENT_KEYS_SOURCE (never a
-  // hand-maintained subset), extended with optional prefixes and the bare
-  // `apikey` spelling. A real assignment separator (= or :) is required so
-  // ordinary prose like "password reminder123" is never rewritten; whitespace
-  // is tolerated on both sides of the separator. Once a secret-key assignment
-  // is present, the REST OF THE LINE is redacted: no value parsing (quotes,
-  // spaces, length) is attempted, so no shape of credential can partially
-  // survive. Deliberately conservative — trailing same-line prose after an
-  // explicit secret assignment is sacrificed rather than risking a leaked
-  // fragment.
-  result = result.replace(
-    MEMORY_SECRET_ASSIGNMENT_RULE,
-    (match, key: string, separator: string, value: string): string => {
-      // Leave values the shared pass already fully replaced untouched.
-      if (/^["']?<[A-Za-z_-]+>["']?$/.test(value.trim())) return match;
-      return `${key}${separator}<TOKEN>`;
-    },
-  );
-  return result;
 }
 
 function normalizeSource(source: MemorySource): MemorySource {
@@ -157,27 +76,6 @@ async function readNormalizedFile(path: string): Promise<string> {
   } catch {
     return '';
   }
-}
-
-/**
- * Normalize a topic name to the stem the store reads and lists. Exported so
- * consolidation output validation can enforce the same round-trip contract:
- * only filenames whose stem satisfies `normalizeTopicName(stem) === stem`
- * are reachable through {@link listTopics} / {@link readTopic}.
- */
-export function normalizeTopicName(topic: string): string | undefined {
-  const normalized = normalizeText(topic);
-  if (normalized.includes('/') || normalized.includes('\\')) return undefined;
-  const name = basename(normalized).replace(/\.md$/i, '');
-  if (
-    !name ||
-    name === '.' ||
-    name === '..' ||
-    !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)
-  ) {
-    return undefined;
-  }
-  return name;
 }
 
 async function listMarkdownFiles(directory: string): Promise<string[]> {
@@ -326,18 +224,6 @@ function searchHitForFile(options: {
   return matchedHeading ? { ...hit, heading: matchedHeading } : hit;
 }
 
-function fitMemoryIndex(content: string): BoundaryClip {
-  return clipAtBoundaries(content, {
-    maxLines: MEMORY_INDEX_MAX_LINES,
-    maxBytes: MEMORY_INDEX_MAX_BYTES,
-  });
-}
-
-/** Fits an index to its line and byte limits, cutting only at boundaries. */
-export function clipMemoryIndex(content: string): string {
-  return fitMemoryIndex(content).text;
-}
-
 /**
  * The scope's index within its line and byte limits, and whether those
  * limits cut it, so recall can say more is saved even when the clipped text
@@ -440,16 +326,16 @@ export async function appendInboxNote(
   // into a well-formed secret assignment afterwards. Both the persisted
   // body and the filename slug derive from this single normalized-then-
   // redacted value.
-  const redactedText = redactSecrets(normalizeText(note.text)).slice(
+  const redactedText = redactMemoryContent(normalizeText(note.text)).slice(
     0,
     MAX_NOTE_TEXT_CHARS,
   );
   if (!redactedText) return '';
   const redactedSource = normalizeSource({
-    provider: redactSecrets(normalizeText(note.source.provider)),
-    chatId: redactSecrets(normalizeText(note.source.chatId)),
+    provider: redactMemoryContent(normalizeText(note.source.provider)),
+    chatId: redactMemoryContent(normalizeText(note.source.chatId)),
     ...(note.source.sessionId !== undefined
-      ? { sessionId: redactSecrets(normalizeText(note.source.sessionId)) }
+      ? { sessionId: redactMemoryContent(normalizeText(note.source.sessionId)) }
       : {}),
   });
   const createdMs = Date.now();
@@ -465,7 +351,7 @@ export async function appendInboxNote(
   ];
   // The ID goes in after redaction, which must never rewrite it.
   const fileContent = withMemoryNoteId(
-    redactSecrets(
+    redactMemoryContent(
       [
         '---',
         ...sourceLines,

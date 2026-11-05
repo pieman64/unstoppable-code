@@ -1,4 +1,4 @@
-import { Button, FloatingMenu } from '@canopy/ui-shared/components';
+import { Button, FloatingMenu, ListRow } from '@canopy/ui-shared/components';
 import {
   useCallback,
   useEffect,
@@ -220,30 +220,29 @@ export function BranchPicker({
         disabled={!branch.isUsedByWorktree && !branch.isCurrent}
         className="w-full"
       >
-        <button
-          type="button"
+        <ListRow
           disabled={isDisabled || isSwitching}
+          selected={branch.isCurrent}
+          aria-current={branch.isCurrent ? 'true' : undefined}
           onClick={() => void handleSwitch(branch)}
-          className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors ${
-            branch.isCurrent
-              ? 'bg-accent-subtle fg-accent'
-              : branch.isUsedByWorktree
-                ? 'cursor-not-allowed opacity-50'
-                : 'fg-primary hover:bg-fg-primary/5'
-          } ${isSwitching ? 'opacity-70' : ''}`}
+          trailing={
+            branch.isCurrent ||
+            branch.isUsedByWorktree ||
+            provenanceBadge ||
+            isSwitching ? (
+              <span className="flex items-center gap-2">
+                {branch.isCurrent && <Badge>current</Badge>}
+                {branch.isUsedByWorktree && !branch.isCurrent && (
+                  <Badge tone="warning">in use</Badge>
+                )}
+                {provenanceBadge && <Badge>{provenanceBadge}</Badge>}
+                {isSwitching && <span>switching…</span>}
+              </span>
+            ) : undefined
+          }
         >
-          <span className="min-w-0 flex-1 truncate font-mono">
-            {branch.name}
-          </span>
-          {branch.isCurrent && <Badge>current</Badge>}
-          {branch.isUsedByWorktree && !branch.isCurrent && (
-            <Badge tone="warning">in use</Badge>
-          )}
-          {provenanceBadge && <Badge>{provenanceBadge}</Badge>}
-          {isSwitching && (
-            <span className="shrink-0 text-3xs fg-secondary">switching…</span>
-          )}
-        </button>
+          <span className="font-mono">{branch.name}</span>
+        </ListRow>
       </Tooltip>
     );
   };
@@ -306,17 +305,15 @@ export function BranchPicker({
 
           {/* New branch option */}
           <div className="border-t p-1">
-            <button
-              type="button"
+            <ListRow
               onClick={() => {
                 setView('create');
                 setCreateError(null);
               }}
-              className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-xs fg-secondary transition-colors hover:bg-fg-primary/5 hover:fg-primary"
+              icon={<AppCatalogPlusIcon width="16" height="16" />}
             >
-              <AppCatalogPlusIcon width="12" height="12" />
               New branch…
-            </button>
+            </ListRow>
           </div>
         </>
       )}
@@ -426,11 +423,11 @@ export function BranchPicker({
                 {baseFilteredBranches.map((b) => {
                   const provenanceBadge = getBranchProvenanceBadge(b);
                   return (
-                    <button
+                    <ListRow
                       key={`base-${b.isRemote ? 'remote' : 'local'}-${b.name}`}
-                      type="button"
                       role="option"
                       aria-selected={b.name === newBaseBranch}
+                      selected={b.name === newBaseBranch}
                       tabIndex={-1}
                       onMouseDown={(e) => {
                         e.preventDefault();
@@ -438,17 +435,10 @@ export function BranchPicker({
                         setNewBaseBranchIsRemote(b.hasRemoteRef);
                         setShowBasePicker(false);
                       }}
-                      className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs fg-primary hover:bg-fg-primary/5"
+                      trailing={provenanceBadge || undefined}
                     >
-                      <span className="min-w-0 flex-1 truncate font-mono">
-                        {b.name}
-                      </span>
-                      {provenanceBadge && (
-                        <span className="shrink-0 text-3xs fg-secondary">
-                          {provenanceBadge}
-                        </span>
-                      )}
-                    </button>
+                      <span className="font-mono">{b.name}</span>
+                    </ListRow>
                   );
                 })}
               </FloatingMenu>

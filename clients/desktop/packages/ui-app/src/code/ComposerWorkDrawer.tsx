@@ -17,6 +17,7 @@ import {
   hasEscapeEnabledOverlay,
   OverlayScrollArea,
   StatusGlyph,
+  SpinnerStyleProvider,
 } from '@canopy/ui-shared/components';
 import {
   ChevronDownIcon,
@@ -47,7 +48,7 @@ export interface ComposerWorkDrawerBackground {
   readonly onExpandedChange?: (expanded: boolean) => void;
 }
 export interface ComposerWorkDrawerProps {
-  /** Initial disclosure state for hosts that open the work list immediately. */
+  /** Explicit initial disclosure state, used by previews. Work never opens it. */
   readonly defaultExpanded?: boolean;
   readonly surface?: 'drawer' | 'section';
   readonly queuedCount: number;
@@ -133,16 +134,8 @@ export function ComposerWorkDrawer({
   queuedPanel,
   background,
 }: ComposerWorkDrawerProps): JSX.Element | null {
-  const [expanded, setExpanded] = useState(defaultExpanded || queuedCount > 0);
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const [animate, setAnimate] = useState(false);
-  const [seenQueued, setSeenQueued] = useState(queuedCount);
-  if (seenQueued !== queuedCount) {
-    setSeenQueued(queuedCount);
-    if (seenQueued === 0 && queuedCount > 0) {
-      setAnimate(false);
-      setExpanded(true);
-    }
-  }
   const onExpandedChange =
     background?.onExpandedChange ?? background?.sections?.onExpandedChange;
   useEffect(() => {
@@ -230,145 +223,137 @@ export function ComposerWorkDrawer({
       </section>
     ) : null;
   const content = (
-    <DrawerRowPresentationContext.Provider value="drawer">
-      <ComposerDrawerSection
-        ref={sectionRef}
-        data-testid={surface === 'section' ? 'composer-work-drawer' : undefined}
-        data-chat-cancel-shortcut-ignore={expanded ? 'true' : undefined}
-        className="flex min-w-0 flex-col"
-      >
-        <DrawerReveal expanded={expanded} animate={animate}>
-          <OverlayScrollArea
-            viewportRef={background?.viewportRef ?? sections?.viewportRef}
-            viewportProps={{
-              id: listId,
-              'data-testid': 'composer-work-drawer-list',
-            }}
-            className="[--background-drawer-list-max:min(16.75rem,35vh)]"
-            viewportClassName="max-h-[var(--background-drawer-list-max)] overflow-x-hidden"
-            edgeFadeSize={6}
-            edgeFadeTopSize={16}
-            edgeFadeBottomInset={2}
-          >
-            <div className="flex flex-col gap-2 pb-1">
-              {section(
-                'Needs you',
-                needsYou,
-                sections?.needsYou,
-                running === 0 ? sections?.controls : undefined,
-                // Keep the controls' owner mounted when running work starts
-                // waiting for approval (or resumes), even across Queued.
-                running === 0 ? 'execution-controls' : 'Needs you',
-              )}
-              {section(
-                'Queued',
-                queuedCount,
-                queuedCount > 0 ? (
-                  <div
-                    ref={queuedPanelRef}
-                    data-testid="composer-work-drawer-queued"
-                  >
-                    {queuedPanel}
-                  </div>
-                ) : null,
-              )}
-              {running === 0 && sections?.completed != null ? (
-                // With no Running label of its own, View completed sits 1px
-                // under the rows above it, as rows do in a list, instead of
-                // a section's 8px away.
-                needsYou > 0 || queuedCount > 0 ? (
-                  <div className="-mt-1.75">{sections.completed}</div>
-                ) : (
-                  sections.completed
-                )
-              ) : (
-                section(
-                  'Running',
-                  running,
-                  sections ? (
-                    running > 0 || sections.completed != null ? (
+    <SpinnerStyleProvider value="comet">
+      <DrawerRowPresentationContext.Provider value="drawer">
+        <ComposerDrawerSection
+          ref={sectionRef}
+          data-testid={
+            surface === 'section' ? 'composer-work-drawer' : undefined
+          }
+          data-chat-cancel-shortcut-ignore={expanded ? 'true' : undefined}
+          className="flex min-w-0 flex-col"
+        >
+          <DrawerReveal expanded={expanded} animate={animate}>
+            <OverlayScrollArea
+              viewportRef={background?.viewportRef ?? sections?.viewportRef}
+              viewportProps={{
+                id: listId,
+                'data-testid': 'composer-work-drawer-list',
+              }}
+              className="[--background-drawer-list-max:min(16.75rem,35vh)]"
+              viewportClassName="max-h-[var(--background-drawer-list-max)] overflow-x-hidden"
+              edgeFadeSize={6}
+              edgeFadeTopSize={16}
+              edgeFadeBottomInset={2}
+            >
+              <div className="flex flex-col gap-2 pb-1">
+                {section(
+                  'Needs you',
+                  needsYou,
+                  sections?.needsYou,
+                  running === 0 ? sections?.controls : undefined,
+                  // Keep the controls' owner mounted when running work starts
+                  // waiting for approval (or resumes), even across Queued.
+                  running === 0 ? 'execution-controls' : 'Needs you',
+                )}
+                {section(
+                  'Queued',
+                  queuedCount,
+                  queuedCount > 0 ? (
+                    <div
+                      ref={queuedPanelRef}
+                      data-testid="composer-work-drawer-queued"
+                    >
+                      {queuedPanel}
+                    </div>
+                  ) : null,
+                )}
+                {running > 0 &&
+                  section(
+                    'Running',
+                    running,
+                    sections ? (
                       <>
                         {sections.running}
                         {sections.completed}
                       </>
-                    ) : null
-                  ) : (
-                    background?.panel
-                  ),
-                  sections?.controls,
-                  'execution-controls',
-                )
-              )}
-              {section('Pull requests', pullRequests, sections?.pullRequests)}
-              {section('Watching', watching, sections?.watching)}
-            </div>
-          </OverlayScrollArea>
-          <div
-            aria-hidden="true"
-            className="-mx-1 mb-1 border-t border-line-tertiary"
-          />
-        </DrawerReveal>
-        <button
-          ref={toggleRef}
-          type="button"
-          aria-expanded={expanded}
-          aria-controls={listId}
-          aria-label={`${expanded ? 'Hide work' : 'Show work'}: ${accessibleSummary}`}
-          data-testid="composer-work-drawer-toggle"
-          className="focus-ring flex min-h-9 min-w-0 items-center gap-2.5 rounded-drawer-row py-1 pl-2.75 pr-1 text-left text-xs fg-secondary hover:bg-subtle"
-          onClick={(event): void => {
-            setAnimate(event.detail > 0);
-            setExpanded((current) => !current);
-          }}
-        >
-          <span className="flex min-w-0 flex-1 items-center gap-2.5">
-            <StatusGlyph
-              tone="state"
-              state={
-                running > 0 ? 'running' : needsYou > 0 ? 'needs-you' : 'queued'
-              }
-              size={14}
-              spinnerSize={10}
-            />
-            <span className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
-              {needsYouLeading && needsYouLabel}
-              {summary.map(({ label, count }, index) => (
-                <span
-                  key={label}
-                  data-testid="composer-work-summary-item"
-                  className="inline-flex items-center gap-2.5 whitespace-nowrap"
-                >
-                  {index > 0 && (
-                    <span
-                      aria-hidden="true"
-                      className="h-3 border-l border-line-primary"
-                      style={{ borderLeftWidth: 1 }}
-                    />
+                    ) : (
+                      background?.panel
+                    ),
+                    sections?.controls,
+                    'execution-controls',
                   )}
-                  <span className="inline-flex items-center gap-1.5">
-                    {label}
-                    <span className="fg-quaternary">{count}</span>
-                  </span>
-                </span>
-              ))}
-            </span>
-          </span>
-          <span
-            data-testid="composer-work-summary-attention"
-            className="flex shrink-0 items-center"
+                {section('Pull requests', pullRequests, sections?.pullRequests)}
+                {section('Watching', watching, sections?.watching)}
+              </div>
+            </OverlayScrollArea>
+            <div
+              aria-hidden="true"
+              className="-mx-1 mb-1 border-t border-line-tertiary"
+            />
+          </DrawerReveal>
+          <button
+            ref={toggleRef}
+            type="button"
+            aria-expanded={expanded}
+            aria-controls={listId}
+            aria-label={`${expanded ? 'Hide work' : 'Show work'}: ${accessibleSummary}`}
+            data-testid="composer-work-drawer-toggle"
+            className="focus-ring flex min-h-9 min-w-0 items-center gap-2.5 rounded-drawer-row py-1 pl-2.75 pr-1 text-left text-xs fg-secondary hover:bg-subtle"
+            onClick={(event): void => {
+              setAnimate(event.detail > 0);
+              setExpanded((current) => !current);
+            }}
           >
-            {needsYou > 0 && !needsYouLeading && needsYouLabel}
-            <span className="flex h-7 w-7 items-center justify-center">
-              {expanded ? (
-                <ChevronDownIcon size={14} />
-              ) : (
-                <ChevronTopMediumIcon size={14} />
+            <span className="flex min-w-0 flex-1 items-center gap-2.5">
+              {(running > 0 || needsYou > 0) && (
+                <StatusGlyph
+                  tone="state"
+                  state={running > 0 ? 'running' : 'needs-you'}
+                  size={14}
+                  spinnerSize={10}
+                />
               )}
+              <span className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
+                {needsYouLeading && needsYouLabel}
+                {summary.map(({ label, count }, index) => (
+                  <span
+                    key={label}
+                    data-testid="composer-work-summary-item"
+                    className="inline-flex items-center gap-2.5 whitespace-nowrap"
+                  >
+                    {index > 0 && (
+                      <span
+                        aria-hidden="true"
+                        className="h-3 border-l border-line-primary"
+                        style={{ borderLeftWidth: 1 }}
+                      />
+                    )}
+                    <span className="inline-flex items-center gap-1.5">
+                      {label}
+                      <span className="fg-quaternary">{count}</span>
+                    </span>
+                  </span>
+                ))}
+              </span>
             </span>
-          </span>
-        </button>
-      </ComposerDrawerSection>
-    </DrawerRowPresentationContext.Provider>
+            <span
+              data-testid="composer-work-summary-attention"
+              className="flex shrink-0 items-center"
+            >
+              {needsYou > 0 && !needsYouLeading && needsYouLabel}
+              <span className="flex h-7 w-7 items-center justify-center">
+                {expanded ? (
+                  <ChevronDownIcon size={14} />
+                ) : (
+                  <ChevronTopMediumIcon size={14} />
+                )}
+              </span>
+            </span>
+          </button>
+        </ComposerDrawerSection>
+      </DrawerRowPresentationContext.Provider>
+    </SpinnerStyleProvider>
   );
   return surface === 'section' ? (
     content

@@ -3,7 +3,11 @@
 import { Fragment, type JSX, type ReactNode } from 'react';
 import { Fact, FactList, Heading } from '@canopy/ui-shared/components';
 import type { PortalMcpServerDetail } from '@canopy/protocol/portal';
-import { Button, StatusLabel } from '@canopy/ui-shared/components';
+import {
+  Button,
+  StatusLabel,
+  ToggleSwitch,
+} from '@canopy/ui-shared/components';
 
 export interface McpServerReadDetailProps {
   statusSection?: ReactNode;
@@ -253,24 +257,19 @@ export function McpServerReadDetail({
                   </div>
                   {statusSection ? null : onToggleConfig ? (
                     <div className="flex shrink-0 flex-col items-end gap-1">
-                      <button
-                        type="button"
-                        role="switch"
-                        aria-checked={config.enabled}
-                        aria-label={`${config.enabled ? 'Disable' : 'Enable'} ${config.name}`}
-                        onClick={() =>
-                          onToggleConfig(config.id, !config.enabled)
-                        }
+                      <ToggleSwitch
+                        checked={config.enabled}
+                        label={`${config.enabled ? 'Disable' : 'Enable'} ${config.name}`}
+                        onChange={(next) => onToggleConfig(config.id, next)}
                         disabled={feedback?.pending === true}
-                        data-testid="mcp-server-read-config-toggle"
-                        className="focus-ring rounded-md border px-2 py-1 text-xs fg-primary disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {feedback?.pending === true
-                          ? 'Saving…'
-                          : config.enabled
-                            ? 'Enabled'
-                            : 'Disabled'}
-                      </button>
+                        busy={feedback?.pending === true}
+                        dataTestId="mcp-server-read-config-toggle"
+                      />
+                      {/* The switch only marks itself busy, so the pending
+                          change is named in text the user can see. */}
+                      {feedback?.pending === true && (
+                        <span className="text-3xs fg-secondary">Saving…</span>
+                      )}
                       {feedback?.message && (
                         <span
                           role="status"

@@ -79,7 +79,7 @@
   border-radius: 8px;
   background: transparent;
   color: var(--fg-secondary);
-  cursor: pointer;
+  cursor: default;
 }
 .workspace-layout-picker .caption {
   color: var(--fg-secondary);

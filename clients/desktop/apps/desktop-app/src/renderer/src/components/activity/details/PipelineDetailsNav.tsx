@@ -13,6 +13,7 @@ import type { PipelineEditDeepLink } from '@/stores/navigationStore';
 import { CostIcon } from '@canopy/ui-shared/components/cost';
 import { capitalizeFirstLetter } from '@canopy/ui-shared/lib';
 import {
+  Button,
   Count,
   FloatingPickerMenu,
   PickerMenuOption,
@@ -238,15 +239,14 @@ export function PipelineDetailsNav({
         ))}
       </div>
 
-      <div className="border-t">
-        <button
-          type="button"
+      <div className="border-t px-3.5 py-2 text-s">
+        <Button
+          variant="link"
           onClick={openDefinition}
-          className="focus-ring focus-ring-inset flex w-full items-center gap-2 px-3.5 py-2 text-left text-s fg-accent transition-colors hover:bg-fg-primary/[0.04] hover:underline"
           data-testid="pipeline-details-open-definition"
         >
           Open current definition ↗
-        </button>
+        </Button>
       </div>
     </nav>
   );
@@ -304,20 +304,21 @@ function PipelineNavJob({
     <div>
       <div
         className={`relative flex w-full items-center transition-colors ${
-          parentActive ? SELECTED_ROW_CLASS : UNSELECTED_ROW_CLASS
-        }`}
+          isMatrix ? 'pl-1.5' : ''
+        } ${parentActive ? SELECTED_ROW_CLASS : UNSELECTED_ROW_CLASS}`}
       >
         {isMatrix && (
-          <button
-            type="button"
+          <Button
+            variant="ghost-quiet"
+            size="sm"
+            iconOnly
             onClick={(): void => setUserExpanded((value) => !value)}
             aria-expanded={expanded}
             aria-label={expanded ? 'Collapse variants' : 'Expand variants'}
             data-testid={`pipeline-details-nav-job-toggle-${jobId}`}
-            className="focus-ring focus-ring-inset shrink-0 rounded p-1 pl-3 fg-secondary transition-colors hover:fg-primary"
           >
             <ChevronIcon open={expanded} />
-          </button>
+          </Button>
         )}
         <button
           type="button"
@@ -457,15 +458,12 @@ function PipelineStatusFilter({
         buttonRef.current?.focus();
       }}
     >
-      <button
+      <Button
         ref={buttonRef}
-        type="button"
+        variant={active ? 'warning' : 'ghost'}
+        size="sm"
+        iconOnly
         onClick={(): void => setOpen((v) => !v)}
-        className={`focus-ring inline-flex items-center justify-center rounded-md border p-1.25 transition-colors ${
-          active
-            ? 'bg-warning-subtle fg-warning'
-            : 'fg-secondary hover:bg-fg-primary/[0.06] hover:fg-primary'
-        }`}
         data-testid="pipeline-details-filter-button"
         data-active={active ? 'true' : 'false'}
         aria-label="Filter by status"
@@ -473,7 +471,7 @@ function PipelineStatusFilter({
         aria-haspopup="true"
       >
         <FilterIcon active={active} />
-      </button>
+      </Button>
       <FloatingPickerMenu
         open={open}
         onOpenChange={setOpen}

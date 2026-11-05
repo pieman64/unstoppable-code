@@ -7,12 +7,14 @@ import {
   PlayCircleIcon,
   SplitPrIcon,
   SummaryIcon,
+  TargetIcon,
   TaskIcon,
   type AppIcon,
 } from '../../icons/AppIcons';
 import { LEDGER_ENTRY_TYPE_LABELS } from '../../lib/ledger-display';
 import { ICON_SIZE_PX } from '../../icons/icon-size';
 import { DISPLAY_AVATAR_GLYPH_SIZE, DisplayAvatar } from '../DisplayAvatar';
+import { RichHoverTooltip } from '../RichHoverTooltip';
 import {
   LEDGER_DISPLAY_AVATAR_SIZE,
   type LedgerActorAvatarSize,
@@ -22,7 +24,8 @@ import {
  * One app glyph per entry type, always shown with the type's name:
  * a checklist for a task, play for an action, a path that forks for a
  * decision (the arrow-split glyph, not the split-project one), an eye for an
- * observation, and the summary glyph for a Summary.
+ * observation, the summary glyph for a Summary, and a target for an
+ * Operation.
  */
 const LEDGER_ENTRY_TYPE_ICONS: Readonly<Record<LedgerEntryType, AppIcon>> = {
   TASK: TaskIcon,
@@ -30,6 +33,7 @@ const LEDGER_ENTRY_TYPE_ICONS: Readonly<Record<LedgerEntryType, AppIcon>> = {
   DECISION: SplitPrIcon,
   OBSERVATION: EyeIcon,
   SUMMARY: SummaryIcon,
+  OPERATION: TargetIcon,
 };
 
 export interface LedgerEntryTypeIconProps {
@@ -87,26 +91,35 @@ export interface LedgerEntryTypeAvatarProps {
 
 /**
  * A main entry's avatar: its type's glyph in the shared avatar shell, so a
- * column of rows reads by what kind of entry each is. Decorative: the row
- * names the type beside it.
+ * column of rows reads by what kind of entry each is. A resting row shows no
+ * type name, so the avatar carries it: as its accessible name and in a hover
+ * card.
  */
 export function LedgerEntryTypeAvatar({
   type,
   size,
 }: LedgerEntryTypeAvatarProps): JSX.Element {
+  const label = LEDGER_ENTRY_TYPE_LABELS[type];
   const avatarSize = LEDGER_DISPLAY_AVATAR_SIZE[size];
   return (
-    <DisplayAvatar
-      name={LEDGER_ENTRY_TYPE_LABELS[type]}
-      size={avatarSize}
-      testId="ledger-entry-type-avatar"
-      data-type={type}
-      glyph={
-        <LedgerEntryTypeIcon
-          type={type}
-          size={ICON_SIZE_PX[DISPLAY_AVATAR_GLYPH_SIZE[avatarSize]]}
-        />
-      }
-    />
+    <RichHoverTooltip
+      content={label}
+      deferUntilInteraction
+      dataTestId="ledger-entry-type-tooltip"
+    >
+      <DisplayAvatar
+        name={label}
+        alt={label}
+        size={avatarSize}
+        testId="ledger-entry-type-avatar"
+        data-type={type}
+        glyph={
+          <LedgerEntryTypeIcon
+            type={type}
+            size={ICON_SIZE_PX[DISPLAY_AVATAR_GLYPH_SIZE[avatarSize]]}
+          />
+        }
+      />
+    </RichHoverTooltip>
   );
 }

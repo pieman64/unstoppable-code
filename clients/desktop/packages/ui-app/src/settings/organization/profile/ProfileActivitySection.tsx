@@ -6,13 +6,13 @@ import {
   DelayedLoadingPlaceholder,
   ErrorBanner,
   LoadingSpinner,
-  SettingsListSkeleton,
 } from '@canopy/ui-shared/components';
 import type { FeedItem } from '@canopy/protocol';
 import type { OrganizationMember } from '@canopy/protocol/settings';
 import { useSettingsClient } from '../../host';
 import { getTeamFeed } from '../team-api';
 import { FeedItemCard } from '../team-feed-cards';
+import { TeamFeedSkeleton } from '../team-feed-skeleton';
 import { useSettingsErrorCopy } from '../../errors';
 import { MEMBER_PROFILE_ERROR_SCOPE } from './use-member-paged-resource';
 import type { SettingsFailure } from '../../errors';
@@ -113,7 +113,7 @@ export function ProfileActivitySection({
   if (!initialLoaded) {
     return (
       <DelayedLoadingPlaceholder>
-        <SettingsListSkeleton />
+        <TeamFeedSkeleton orgId={orgId} label="Loading activity" />
       </DelayedLoadingPlaceholder>
     );
   }

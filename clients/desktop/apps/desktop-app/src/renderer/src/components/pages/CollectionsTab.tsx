@@ -1,3 +1,15 @@
+import { useCloudOrigin } from '@/lib/cloud-origin';
+import {
+  marketplaceShareLink,
+  marketplaceLinkAccess,
+} from '@canopy/ui-app/sharing';
+import {
+  useMarketplaceCopyLinkMenuItem,
+  useResourceContext,
+} from '@canopy/ui-app/capability';
+import { DetailMoreMenu } from '@canopy/ui-shared/components';
+import { copyTextToClipboard } from '@/lib/clipboard';
+import { postShareToast } from '@/lib/share-toast';
 import { Button } from '@canopy/ui-shared/components';
 import {
   type JSX,
@@ -22,11 +34,14 @@ import {
 } from './entityEditModalUtils';
 import { ErrorBanner } from '../shared';
 import {
-  CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
   Disclosure,
   Notice,
 } from '@canopy/ui-shared/components';
+import {
+  CollectionEditorFieldsSkeleton,
+  CollectionReadDetailSkeleton,
+} from './CollectionsTabSkeletons';
 import { UnifiedTable } from '../shared/UnifiedTable';
 import {
   CollectionReadDetail,
@@ -470,7 +485,10 @@ export function CollectionModal({
             <ErrorBanner error={error} />
             {loading ? (
               <DelayedLoadingPlaceholder slowNote="Still loading collection…">
-                <CenteredLoadingSpinner className="my-12" />
+                <CollectionReadDetailSkeleton
+                  label="Loading collection"
+                  testId="collection-detail-loading"
+                />
               </DelayedLoadingPlaceholder>
             ) : readCollection ? (
               <CollectionReadDetail
@@ -647,6 +665,7 @@ export function SharedCollectionDetailModal({
   renderSharedByYou?: (
     detail: SharedCollectionDetail,
     refresh: () => Promise<void>,
+    refreshAfterPublish: () => Promise<void>,
   ) => ReactNode;
 }): JSX.Element {
   const [detail, setDetail] = useState<SharedCollectionDetail | null>(null);
@@ -877,6 +896,28 @@ export function SharedCollectionDetailModal({
     }
   };
 
+  const origin = useCloudOrigin();
+  const { personalOrganizationId } = useResourceContext();
+  const copyAccess = detail
+    ? marketplaceLinkAccess(detail, personalOrganizationId)
+    : null;
+  const copyUrl = detail
+    ? marketplaceShareLink(origin, 'collection', detail.id)
+    : null;
+  const copyItem = useMarketplaceCopyLinkMenuItem(
+    !isEdit && copyUrl && copyAccess
+      ? { link: copyUrl, access: copyAccess }
+      : null,
+    { write: copyTextToClipboard, notify: postShareToast },
+  );
+  const copyMenu = copyItem ? (
+    <DetailMoreMenu
+      name={summary.name}
+      items={[copyItem]}
+      triggerTestId="plugins-entry-detail-more"
+      menuTestId="plugins-entry-detail-menu"
+    />
+  ) : null;
   // The standard action bar: [Unshare] [Edit] [Add].
   const unshareAction = detail ? renderUnshare?.(detail) : null;
   const showEdit = canUpdate && onSwitchToEdit !== undefined;
@@ -884,8 +925,9 @@ export function SharedCollectionDetailModal({
     !isEdit && !loading
       ? {
           secondary:
-            unshareAction || showEdit ? (
+            copyMenu || unshareAction || showEdit ? (
               <>
+                {copyMenu}
                 {unshareAction}
                 {showEdit && (
                   <Button size="compact" onClick={onSwitchToEdit}>
@@ -941,7 +983,17 @@ export function SharedCollectionDetailModal({
             <ErrorBanner error={error} />
             {loading || !editable ? (
               <DelayedLoadingPlaceholder slowNote="Still loading shared collection…">
-                <CenteredLoadingSpinner className="my-12" />
+                {isEdit ? (
+                  <CollectionEditorFieldsSkeleton
+                    label="Loading shared collection"
+                    testId="shared-collection-detail-loading"
+                  />
+                ) : (
+                  <CollectionReadDetailSkeleton
+                    label="Loading shared collection"
+                    testId="shared-collection-detail-loading"
+                  />
+                )}
               </DelayedLoadingPlaceholder>
             ) : (
               <>
@@ -1028,7 +1080,7 @@ export function SharedCollectionDetailModal({
 
                 {!isEdit &&
                   detail &&
-                  renderSharedByYou?.(detail, refreshDetail)}
+                  renderSharedByYou?.(detail, refreshDetail, refreshDetail)}
 
                 {isEdit && editable.items.length > 0 && (
                   <Disclosure

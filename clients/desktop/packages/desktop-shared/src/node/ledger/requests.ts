@@ -3,8 +3,11 @@ import {
   LedgerAddEntryParamsSchema,
   LedgerAttributionSchema,
   LedgerAuthorDetailsSchema,
+  LedgerLeftOpenReasonSchema,
   LedgerOriginSchema,
   LedgerPublishSummaryParamsSchema,
+  LedgerTimestampSchema,
+  LedgerUuidSchema,
   LedgerUpdateEntryParamsSchema,
   countCodePoints,
   ledgerProvisionalTitle,
@@ -14,6 +17,7 @@ import {
   type LedgerAuthorDetails,
   type LedgerEntryType,
   type LedgerFileRef,
+  type LedgerMutation,
   type LedgerOrigin,
   type LedgerOwnerTarget,
   type LedgerStatus,
@@ -30,10 +34,13 @@ import {
 import { parseLedgerInput } from './records';
 import type {
   LedgerAddEntryInput,
+  LedgerHandBackEntryInput,
   LedgerListReceiptKeysInput,
   LedgerPublishSummaryInput,
   LedgerUpdateEntryInput,
+  LedgerWorkSummaryInput,
 } from './types';
+import { toLedgerTimestamp } from './time';
 
 /**
  * Request normalization. Every command is validated with the protocol schemas
@@ -53,11 +60,21 @@ export const LEDGER_COMMAND_OPERATIONS = {
   publishSummary: 'core.ledger.summary.publish',
 } as const;
 
+/** Receipt namespace reserved for the store-internal session handback. */
+const LEDGER_HANDBACK_RECEIPT_OPERATION = 'internal.ledger.entry.handback';
+
 export type LedgerCommandOperation =
   (typeof LEDGER_COMMAND_OPERATIONS)[keyof typeof LEDGER_COMMAND_OPERATIONS];
 
+type LedgerReceiptOperation =
+  | LedgerCommandOperation
+  | typeof LEDGER_HANDBACK_RECEIPT_OPERATION;
+
 /** At most this many keys per receipt-key lookup. */
 export const LEDGER_RECEIPT_KEYS_MAX = 100;
+
+/** Maximum host-resolved actors in one bounded managed-delegation query. */
+export const LEDGER_WORK_SUMMARY_ACTOR_IDS_MAX = 1_024;
 
 /** A validated receipt-key lookup. */
 export interface LedgerReceiptKeysRequest {
@@ -115,7 +132,7 @@ export function normalizeReceiptKeysRequest(
 export interface LedgerReceiptKey {
   readonly ledgerId: string;
   readonly actorId: string;
-  readonly operation: LedgerCommandOperation;
+  readonly operation: LedgerReceiptOperation;
   readonly idempotencyKey: string;
 }
 
@@ -143,6 +160,8 @@ export interface LedgerEntryDraft {
 
 export interface LedgerCreateRequest {
   readonly draft: LedgerEntryDraft;
+  /** The caller's requested parent, retained for the transaction to resolve. */
+  readonly parentEntryId: string | undefined;
   readonly receiptKey: LedgerReceiptKey;
   readonly requestHash: string;
 }
@@ -154,7 +173,26 @@ export interface LedgerUpdateRequest {
   readonly newOwner: LedgerActorRef | null;
   /** Host eligibility verdict for `newOwner`. */
   readonly ownerEligible: boolean;
+  /** Host-resolved owners in the acting chat's managed delegation subtree. */
+  readonly delegateOwnerActorIds: readonly string[] | undefined;
   readonly mayUpdateAnyOpenEntry: boolean;
+  readonly receiptKey: LedgerReceiptKey;
+  readonly requestHash: string;
+}
+
+export interface LedgerWorkSummaryRequest {
+  readonly ledgerId: string;
+  readonly actorIds: readonly string[];
+}
+
+export interface LedgerHandBackRequest {
+  readonly ledgerId: string;
+  readonly entryId: string;
+  readonly expectedRevision: number;
+  readonly endedActorId: string;
+  readonly newOwner: LedgerActorRef;
+  readonly transitionAt: string;
+  readonly reason: NonNullable<LedgerMutation['leftOpen']>;
   readonly receiptKey: LedgerReceiptKey;
   readonly requestHash: string;
 }
@@ -163,6 +201,20 @@ function receiptKey(
   ledgerId: string,
   caller: LedgerActorRef,
   operation: LedgerCommandOperation,
+  idempotencyKey: string,
+): LedgerReceiptKey {
+  return receiptKeyForActorId(
+    ledgerId,
+    caller.actorId,
+    operation,
+    idempotencyKey,
+  );
+}
+
+function receiptKeyForActorId(
+  ledgerId: string,
+  actorId: string,
+  operation: LedgerReceiptOperation,
   idempotencyKey: string,
 ): LedgerReceiptKey {
   if (
@@ -175,7 +227,7 @@ function receiptKey(
       limit: LEDGER_IDEMPOTENCY_KEY_MAX_CODE_POINTS,
     });
   }
-  return { ledgerId, actorId: caller.actorId, operation, idempotencyKey };
+  return { ledgerId, actorId, operation, idempotencyKey };
 }
 
 /** De-duplicates references and drops absent `startLine` members. */
@@ -220,6 +272,7 @@ function initialStatus(
 function hashCreation(
   draft: LedgerEntryDraft,
   extra: { readonly [key: string]: string | boolean | null },
+  parentEntryId: string | undefined,
 ): string {
   return hashLedgerCanonicalValue({
     ...extra,
@@ -231,6 +284,7 @@ function hashCreation(
     status: draft.status,
     ownerActorId: draft.owner.actorId,
     supersedesEntryId: draft.supersedesEntryId ?? null,
+    ...(parentEntryId === undefined ? {} : { parentEntryId }),
   });
 }
 
@@ -268,15 +322,17 @@ export function normalizeAddEntryRequest(
     supersedesEntryId: params.supersedesEntryId,
     publication: null,
   };
+  const parentEntryId = params.parentEntryId;
   return {
     draft,
+    parentEntryId,
     receiptKey: receiptKey(
       input.ledgerId,
       attribution.recordedBy,
       LEDGER_COMMAND_OPERATIONS.addEntry,
       input.idempotencyKey,
     ),
-    requestHash: hashCreation(draft, {}),
+    requestHash: hashCreation(draft, {}, parentEntryId),
   };
 }
 
@@ -336,19 +392,24 @@ export function normalizeSummaryRequest(
   };
   return {
     draft,
+    parentEntryId: undefined,
     receiptKey: receiptKey(
       input.ledgerId,
       helper,
       LEDGER_COMMAND_OPERATIONS.publishSummary,
       input.idempotencyKey,
     ),
-    requestHash: hashCreation(draft, {
-      snapshotId: params.snapshotId,
-      generationId: params.generationId,
-      sourceTruncated: params.sourceTruncated,
-      observedTaskId: params.observedTaskId ?? null,
-      summaryArtifactId: params.summaryArtifactId ?? null,
-    }),
+    requestHash: hashCreation(
+      draft,
+      {
+        snapshotId: params.snapshotId,
+        generationId: params.generationId,
+        sourceTruncated: params.sourceTruncated,
+        observedTaskId: params.observedTaskId ?? null,
+        summaryArtifactId: params.summaryArtifactId ?? null,
+      },
+      undefined,
+    ),
   };
 }
 
@@ -369,6 +430,9 @@ export function normalizeUpdateEntryRequest(
     input.newOwner === null
       ? null
       : parseLedgerInput(LedgerActorRefSchema, input.newOwner, 'newOwner');
+  const delegateOwnerActorIds = normalizeDelegateOwnerActorIds(
+    input.delegateOwnerActorIds,
+  );
   if ((params.owner === undefined) !== (newOwner === null)) {
     throw new LedgerStoreError('INVALID_INPUT', { field: 'owner' });
   }
@@ -385,6 +449,7 @@ export function normalizeUpdateEntryRequest(
     ),
     newOwner,
     ownerEligible: input.ownerEligible !== false,
+    delegateOwnerActorIds,
     mayUpdateAnyOpenEntry: input.mayUpdateAnyOpenEntry === true,
     receiptKey: receiptKey(
       input.ledgerId,
@@ -397,6 +462,130 @@ export function normalizeUpdateEntryRequest(
       expectedRevision: params.expectedRevision,
       status: params.status ?? null,
       ownerActorId: newOwner?.actorId ?? null,
+      ...(params.parentEntryId === undefined
+        ? {}
+        : { parentEntryId: params.parentEntryId }),
+      ...(params.openChildren === undefined
+        ? {}
+        : { openChildren: params.openChildren }),
+    }),
+  };
+}
+
+function normalizeDelegateOwnerActorIds(
+  value: unknown,
+): readonly string[] | undefined {
+  if (value === undefined) return undefined;
+  if (
+    !Array.isArray(value) ||
+    value.length > LEDGER_WORK_SUMMARY_ACTOR_IDS_MAX
+  ) {
+    throw new LedgerStoreError('INVALID_INPUT', {
+      field: 'delegateOwnerActorIds',
+      limit: LEDGER_WORK_SUMMARY_ACTOR_IDS_MAX,
+    });
+  }
+  const actorIds = new Set<string>();
+  for (const rawActorId of value) {
+    const actorId = parseLedgerInput(
+      LedgerUuidSchema,
+      rawActorId,
+      'delegateOwnerActorIds',
+    );
+    actorIds.add(actorId);
+  }
+  return Array.from(actorIds);
+}
+
+export function normalizeLedgerWorkSummaryInput(
+  input: LedgerWorkSummaryInput,
+): LedgerWorkSummaryRequest {
+  const ledgerId = parseLedgerInput(
+    LedgerUuidSchema,
+    input.ledgerId,
+    'ledgerId',
+  );
+  const rawActorIds: unknown = input.actorIds;
+  if (
+    !Array.isArray(rawActorIds) ||
+    rawActorIds.length > LEDGER_WORK_SUMMARY_ACTOR_IDS_MAX
+  ) {
+    throw new LedgerStoreError('INVALID_INPUT', {
+      field: 'actorIds',
+      limit: LEDGER_WORK_SUMMARY_ACTOR_IDS_MAX,
+    });
+  }
+  const actorIds = new Set<string>();
+  for (const rawActorId of rawActorIds) {
+    actorIds.add(parseLedgerInput(LedgerUuidSchema, rawActorId, 'actorIds'));
+  }
+  return { ledgerId, actorIds: Array.from(actorIds) };
+}
+
+/**
+ * Validates and hashes the trusted store-internal handback command. Its
+ * receipt namespace is separate from the public Update command, and the
+ * hash includes every handback fence and attribution-relevant actor.
+ */
+export function normalizeHandBackEntryRequest(
+  input: LedgerHandBackEntryInput,
+): LedgerHandBackRequest {
+  const ledgerId = parseLedgerInput(
+    LedgerUuidSchema,
+    input.ledgerId,
+    'ledgerId',
+  );
+  const entryId = parseLedgerInput(LedgerUuidSchema, input.entryId, 'entryId');
+  if (
+    !Number.isSafeInteger(input.expectedRevision) ||
+    input.expectedRevision < 1
+  ) {
+    throw new LedgerStoreError('INVALID_INPUT', { field: 'expectedRevision' });
+  }
+  const endedActorId = parseLedgerInput(
+    LedgerUuidSchema,
+    input.endedActorId,
+    'endedActorId',
+  );
+  const newOwner = parseLedgerInput(
+    LedgerActorRefSchema,
+    input.newOwner,
+    'newOwner',
+  );
+  const transitionAtValue = parseLedgerInput(
+    LedgerTimestampSchema,
+    input.transitionAt,
+    'transitionAt',
+  );
+  const transitionAt = toLedgerTimestamp(new Date(transitionAtValue));
+  const reason = parseLedgerInput(
+    LedgerLeftOpenReasonSchema,
+    input.reason,
+    'reason',
+  );
+  const receiptKey = receiptKeyForActorId(
+    ledgerId,
+    endedActorId,
+    LEDGER_HANDBACK_RECEIPT_OPERATION,
+    input.idempotencyKey,
+  );
+
+  return {
+    ledgerId,
+    entryId,
+    expectedRevision: input.expectedRevision,
+    endedActorId,
+    newOwner,
+    transitionAt,
+    reason,
+    receiptKey,
+    requestHash: hashLedgerCanonicalValue({
+      entryId,
+      expectedRevision: input.expectedRevision,
+      endedActorId,
+      newOwner,
+      transitionAt,
+      reason,
     }),
   };
 }

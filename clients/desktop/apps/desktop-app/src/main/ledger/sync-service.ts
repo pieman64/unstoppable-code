@@ -8,6 +8,11 @@ import {
   LEDGER_SYNC_GLOBAL_SCHEMA_VERSION,
   LEDGER_SYNC_LIMITS,
   LEDGER_SYNC_SCHEMA_VERSION,
+  LedgerEntryRevisionPayloadV2Schema,
+  isLedgerSyncOperationsVersion,
+  ledgerEntryRevisionNeedsV2,
+  ledgerSyncPushVersion,
+  type LedgerSyncPushVersion,
   type LedgerRequestedAudience,
   type LedgerScopeAudience,
   type LedgerScopeRegisterRequest,
@@ -49,6 +54,9 @@ import {
  * - The mirror refuses it for good (another writer, a gap, an event it will
  *   not take): it is marked for repair and left alone until the next launch,
  *   which tries it once more. Nothing is ever skipped on the mirror's word.
+ * - A mirror that refuses an operations batch (version 3, or 4 for a global
+ *   scope) with `invalid_request` holds only that scope with backoff, so
+ *   other scopes keep syncing until it accepts operations.
  * - The network, the server or the ingest switch: everything waits and is
  *   tried again, with backoff.
  * - The account or its sharing changes during a pass: nothing more is sent
@@ -209,6 +217,8 @@ type ScopeOutcome =
   | { readonly kind: 'done' }
   /** The scope was marked for repair; the pass moves on. */
   | { readonly kind: 'repair' }
+  /** The scope has a timed compatibility hold; the pass moves on. */
+  | { readonly kind: 'held' }
   /** Nothing more can be sent to anyone now. */
   | { readonly kind: 'stop'; readonly failure: LedgerSyncFailure }
   /** The scope's registration changed underneath: take its turn again. */
@@ -221,6 +231,7 @@ type ScopeOutcome =
 
 const DONE: ScopeOutcome = { kind: 'done' };
 const AGAIN: ScopeOutcome = { kind: 'again' };
+const HELD: ScopeOutcome = { kind: 'held' };
 const SUPERSEDED: ScopeOutcome = { kind: 'superseded' };
 
 /** How a pass ended before every scope had its turn. */
@@ -291,6 +302,28 @@ function toWireEvent(event: LedgerOutboxEventRecord): LedgerSyncEvent {
   };
 }
 
+/**
+ * A batch takes an operations version (3, or 4 for a global scope) only when
+ * a safely parsed entry revision in it carries data versions 1 and 2 lack.
+ */
+function pushVersionFor(
+  events: readonly LedgerOutboxEventRecord[],
+  global: boolean,
+): LedgerSyncPushVersion {
+  const carriesOperations = events.some((event): boolean => {
+    if (event.kind !== 'entry_revision') return false;
+    let payload: unknown;
+    try {
+      payload = JSON.parse(event.payloadJson);
+    } catch {
+      return false;
+    }
+    const parsed = LedgerEntryRevisionPayloadV2Schema.safeParse(payload);
+    return parsed.success && ledgerEntryRevisionNeedsV2(parsed.data);
+  });
+  return ledgerSyncPushVersion(global, carriesOperations);
+}
+
 /** The workspace a container's owner is read from. */
 function ownerKey(
   container: Exclude<LedgerContainer, { kind: 'global' }>,
@@ -354,6 +387,11 @@ export class LedgerSyncService {
   private readonly unregistrable = new Set<string>();
   /** Ledgers in repair that had their one fresh try this launch. */
   private readonly repairTried = new Set<string>();
+  /** Scope-local holds for a mirror that has not accepted an operations batch. */
+  private readonly scopeRetryNotBefore = new Map<string, number>();
+  private readonly scopeRetryAttempts = new Map<string, number>();
+  /** When the latest pass started, for retries that came due during it. */
+  private passStartedAt = 0;
   /** The account the mirror reported a prohibition for, and until when. */
   private prohibited: { readonly accountId: string; readonly until: number } = {
     accountId: '',
@@ -503,7 +541,10 @@ export class LedgerSyncService {
       this.options.recordDiagnostic({ code: 'drain_timeout', detail: '1' });
       return outcome;
     }
-    this.forget(ledgerId);
+    this.forget(
+      ledgerId,
+      outcome === 'incomplete' && this.scopeRetryNotBefore.has(ledgerId),
+    );
     if (outcome === 'incomplete') {
       this.options.recordDiagnostic({ code: 'drain_incomplete', detail: '1' });
     }
@@ -585,6 +626,19 @@ export class LedgerSyncService {
     );
   }
 
+  /** The next idle pass also wakes for the earliest due scope-local retry. */
+  private nextPassDelay(): number {
+    const now = this.now();
+    let delayMs = this.timing.periodicCheckMs;
+    for (const retryAt of Array.from(this.scopeRetryNotBefore.values())) {
+      if (retryAt > now) delayMs = Math.min(delayMs, retryAt - now);
+      // Came due during the pass that just ran, after its scope's turn. One
+      // already due when that pass started had its turn, so it cannot spin.
+      else if (retryAt > this.passStartedAt) delayMs = 0;
+    }
+    return delayMs;
+  }
+
   /** Runs `task` after everything already queued: one thing at a time. */
   private enqueue<Result>(task: () => Promise<Result>): Promise<Result> {
     const result = this.running.then(task);
@@ -614,7 +668,7 @@ export class LedgerSyncService {
         if (!this.stopped) {
           const again = this.rerun;
           this.rerun = false;
-          this.schedule(again ? 0 : this.timing.periodicCheckMs);
+          this.schedule(again ? 0 : this.nextPassDelay());
         }
       }
     });
@@ -657,12 +711,18 @@ export class LedgerSyncService {
   }
 
   /** Drops what this launch remembers of a ledger that is gone. */
-  private forget(ledgerId: string): void {
+  private forget(ledgerId: string, preserveScopeRetry = false): void {
     this.epochs.delete(ledgerId);
     this.mirrored.delete(ledgerId);
     this.refusedAudiences.delete(ledgerId);
     this.unregistrable.delete(ledgerId);
     this.repairTried.delete(ledgerId);
+    if (!preserveScopeRetry) this.clearScopeRetry(ledgerId);
+  }
+
+  private clearScopeRetry(ledgerId: string): void {
+    this.scopeRetryNotBefore.delete(ledgerId);
+    this.scopeRetryAttempts.delete(ledgerId);
   }
 
   private async dispositionOf(
@@ -769,8 +829,9 @@ export class LedgerSyncService {
   }
 
   private async pass(): Promise<void> {
-    if (this.stopped || !this.options.isEnabled()) return;
     const startedAt = this.now();
+    this.passStartedAt = startedAt;
+    if (this.stopped || !this.options.isEnabled()) return;
     // The check that follows a backoff or a pause is already scheduled.
     if (startedAt < this.retryNotBefore || startedAt < this.pausedUntil) {
       this.rerun = true;
@@ -786,7 +847,19 @@ export class LedgerSyncService {
     const generation = this.generation;
     const account = await this.readAccount();
     const session = await this.options.readSession();
-    const records = (await this.options.store().listSyncScopes()).filter(
+    const allRecords = await this.options.store().listSyncScopes();
+    const presentLedgerIds = new Set(
+      allRecords.map((record) => record.scope.scope.ledgerId),
+    );
+    for (const ledgerId of Array.from(this.scopeRetryNotBefore.keys())) {
+      if (!presentLedgerIds.has(ledgerId)) this.forget(ledgerId);
+    }
+    for (const record of allRecords) {
+      if (!hasUnsent(record)) {
+        this.clearScopeRetry(record.scope.scope.ledgerId);
+      }
+    }
+    const records = allRecords.filter(
       // A retiring scope is drained by its purge.
       (record) => record.scope.lifecycleState !== 'retirement_pending',
     );
@@ -1008,7 +1081,10 @@ export class LedgerSyncService {
       const fresh = await this.options
         .store()
         .getScopeSync(record.scope.scope.ledgerId);
-      if (fresh === null) return DONE;
+      if (fresh === null) {
+        this.forget(record.scope.scope.ledgerId);
+        return DONE;
+      }
       current = fresh;
     }
     // Still asked to start over: everything waits before it is tried again.
@@ -1024,6 +1100,10 @@ export class LedgerSyncService {
     // A global scope waits, its events held in order, for a mirror that
     // holds global scopes; it is never marked for repair over it.
     if (isGlobalRecord(record) && !turn.globalSupported) return DONE;
+    const retryNotBefore = this.scopeRetryNotBefore.get(ledgerId);
+    if (retryNotBefore !== undefined && this.now() < retryNotBefore) {
+      return HELD;
+    }
     const plan = await this.planFor(record, turn);
     // A scope that waits uploads nothing; `changeAudience` narrows it.
     if (plan.disposition.kind === 'hold') return DONE;
@@ -1170,6 +1250,9 @@ export class LedgerSyncService {
         if (request.narrowing) return DONE;
         this.holdProhibited(request.accountId);
         return stop(failure);
+      case 'local_invalid_request':
+        this.unregistrable.add(ledgerId);
+        return this.needsRepair(record, 'invalid_request');
       case 'not_registered':
         // Another account holds this ledger in the mirror.
         this.unregistrable.add(ledgerId);
@@ -1259,21 +1342,16 @@ export class LedgerSyncService {
       const last = events[events.length - 1];
       if (last === undefined) return DONE;
       if (await this.isSuperseded(turn)) return SUPERSEDED;
-      const result = await this.options.mirror.push(
-        {
-          // One push carries one scope, so never mixes versions.
-          schemaVersion:
-            container.kind === 'global'
-              ? LEDGER_SYNC_GLOBAL_SCHEMA_VERSION
-              : LEDGER_SYNC_SCHEMA_VERSION,
-          ledgerId,
-          accountId: turn.account.id,
-          writerEpoch,
-          acknowledgedSequence: acknowledged,
-          events: events.map(toWireEvent),
-        },
-        this.abort.signal,
-      );
+      const request = {
+        // One push carries one scope, so never mixes versions.
+        schemaVersion: pushVersionFor(events, container.kind === 'global'),
+        ledgerId,
+        accountId: turn.account.id,
+        writerEpoch,
+        acknowledgedSequence: acknowledged,
+        events: events.map(toWireEvent),
+      };
+      const result = await this.options.mirror.push(request, this.abort.signal);
       if (!result.ok) {
         if (
           isGlobalRecord(record) &&
@@ -1282,8 +1360,14 @@ export class LedgerSyncService {
         ) {
           return this.globalRefused(turn, 'push');
         }
-        return this.pushRefused(record, result.failure, turn.account.id);
+        return this.pushRefused(
+          record,
+          result.failure,
+          turn.account.id,
+          request.schemaVersion,
+        );
       }
+      this.clearScopeRetry(ledgerId);
       // Only what this batch carried is acknowledged, and no more than the
       // mirror says it holds: anything further it claims is replayed, and so
       // checked, by the next batch.
@@ -1304,6 +1388,7 @@ export class LedgerSyncService {
     record: LedgerScopeSyncRecord,
     failure: LedgerSyncFailure,
     accountId: string,
+    requestVersion: LedgerSyncPushVersion,
   ): Promise<ScopeOutcome> {
     const { ledgerId } = record.scope.scope;
     switch (failure.kind) {
@@ -1311,7 +1396,15 @@ export class LedgerSyncService {
         // The mirror lost the registration: register again, then push.
         this.epochs.delete(ledgerId);
         return AGAIN;
+      case 'local_invalid_request':
+        return this.needsRepair(record, 'invalid_request');
       case 'repair':
+        if (
+          isLedgerSyncOperationsVersion(requestVersion) &&
+          failure.reason === 'invalid_request'
+        ) {
+          return this.deferOperationsScope(ledgerId);
+        }
         // Another session holds the scope: this one cannot register it either.
         if (failure.reason === 'stale_writer') this.unregistrable.add(ledgerId);
         return this.needsRepair(record, failure.reason);
@@ -1326,6 +1419,24 @@ export class LedgerSyncService {
       case 'paused':
         return stop(failure);
     }
+  }
+
+  /** An operations-only refusal waits without marking this scope for repair. */
+  private deferOperationsScope(ledgerId: string): ScopeOutcome {
+    const attempts = this.scopeRetryAttempts.get(ledgerId) ?? 0;
+    const exponential = Math.min(
+      this.timing.retryMaxMs,
+      this.timing.retryInitialMs * 2 ** attempts,
+    );
+    const jittered =
+      exponential * (0.5 + 0.5 * (this.options.random ?? Math.random)());
+    this.scopeRetryAttempts.set(ledgerId, attempts + 1);
+    this.scopeRetryNotBefore.set(ledgerId, this.now() + jittered);
+    this.options.recordDiagnostic({
+      code: 'paused',
+      detail: 'mirror_requires_sync_v2',
+    });
+    return HELD;
   }
 
   /**
@@ -1346,7 +1457,14 @@ export class LedgerSyncService {
   ): Promise<LedgerDrainOutcome | 'superseded'> {
     if (!this.options.isEnabled()) return 'held';
     const record = await this.options.store().getScopeSync(ledgerId);
-    if (record === null || !hasUnsent(record)) return 'drained';
+    if (record === null) {
+      this.forget(ledgerId);
+      return 'drained';
+    }
+    if (!hasUnsent(record)) {
+      this.clearScopeRetry(ledgerId);
+      return 'drained';
+    }
     const generation = this.generation;
     const account = await this.readAccount();
     const scope: LedgerSyncScope = {
@@ -1358,6 +1476,10 @@ export class LedgerSyncService {
     if (account === null || disposition.kind === 'hold') return 'held';
     const session = await this.options.readSession();
     const now = this.now();
+    const scopeRetryNotBefore = this.scopeRetryNotBefore.get(ledgerId);
+    if (scopeRetryNotBefore !== undefined && now < scopeRetryNotBefore) {
+      return 'incomplete';
+    }
     if (
       session === null ||
       record.repairReason !== null ||
@@ -1378,7 +1500,15 @@ export class LedgerSyncService {
     if (outcome.kind === 'superseded') return 'superseded';
     if (outcome.kind === 'stop') this.drainStopped(outcome.failure, generation);
     const after = await this.options.store().getScopeSync(ledgerId);
-    return after === null || !hasUnsent(after) ? 'drained' : 'incomplete';
+    if (after === null) {
+      this.forget(ledgerId);
+      return 'drained';
+    }
+    if (!hasUnsent(after)) {
+      this.clearScopeRetry(ledgerId);
+      return 'drained';
+    }
+    return 'incomplete';
   }
 
   /** What a failure that ended a drain means for everything else. */

@@ -6,10 +6,12 @@ import {
   writeFileAtomically,
   type AdmittedWriterTarget,
 } from '../lib/atomic-file';
+import { damagedCopyPath, pruneDamagedCopies } from '../lib/damaged-copies';
 import {
   ensurePrivateLockDirectory,
   withOwnerLockFile,
 } from '../lib/owner-lock-file';
+import { normalizePluginSelections } from '../../lib/plugin-selections-normalization';
 import type { ChatTabPluginSelections } from '../../types';
 import type {
   PipelineModelAliasPreference,
@@ -187,10 +189,6 @@ function normalizePluginRefs(
   return result;
 }
 
-function normalizeMcpServerRefs(): ChatTabPluginSelections['mcpServerRefs'] {
-  return [];
-}
-
 function normalizeExtraSelections(value: unknown): ChatTabPluginSelections {
   if (!isRecord(value)) {
     return { ...EMPTY_SELECTIONS };
@@ -207,12 +205,21 @@ function normalizeExtraSelections(value: unknown): ChatTabPluginSelections {
     seen.add(id);
     merged.push(id);
   }
+  // A chat automation's local MCP servers, their sign-in choices and its
+  // not-yet-installed capabilities convert as these preferences (CAN-5479).
+  const { mcpServerRefs, mcpHttpAuthPreferences, unresolvedCapabilities } =
+    normalizePluginSelections({
+      mcpServerRefs: value.mcpServerRefs ?? [],
+      mcpHttpAuthPreferences: value.mcpHttpAuthPreferences ?? [],
+      unresolvedCapabilities: value.unresolvedCapabilities,
+    });
   return {
     collectionIds: merged,
     skillRefs: normalizeSkillRefs(value.skillRefs),
     pluginRefs: normalizePluginRefs(value.pluginRefs),
-    mcpServerRefs: normalizeMcpServerRefs(),
-    mcpHttpAuthPreferences: [],
+    mcpServerRefs: mcpServerRefs ?? [],
+    mcpHttpAuthPreferences: mcpHttpAuthPreferences ?? [],
+    ...(unresolvedCapabilities !== undefined ? { unresolvedCapabilities } : {}),
   };
 }
 
@@ -505,12 +512,13 @@ async function applyMutation(
     try {
       await copyFile(
         filePath,
-        `${filePath}.damaged-${Date.now()}`,
+        damagedCopyPath(filePath),
         fs.constants.COPYFILE_EXCL,
       );
     } catch {
       throw new PipelinePreferencesWriteRefusedError('damaged-copy-failed');
     }
+    await pruneDamagedCopies(filePath);
   }
   await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
   await writeFileAtomically(filePath, serializePreferencesFile(read.file), {
@@ -599,18 +607,94 @@ export function loadPipelinePluginCollectionPreferences(
   );
 }
 
-export function savePipelinePluginCollectionPreferences(
+/** What a whole-field save installed. */
+export interface PipelinePreferenceSaveResult<T> {
+  /** The field as saved. */
+  preferences: Record<string, T>;
+  /**
+   * The stored field had changed since the caller's `base`, so the caller's
+   * changes were merged into it entry by entry.
+   */
+  merged: boolean;
+}
+
+export interface PipelinePreferenceSaveOptions<T> {
+  /**
+   * The stored field the caller's view started from: a compare-and-set base.
+   * When the stored field still matches it, the save replaces the field. When
+   * another writer changed it since, only the entries the caller changed
+   * from `base` are applied; the others keep their stored values. Without a
+   * base the save replaces the field.
+   */
+  base?: Record<string, T>;
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(',')}]`;
+  }
+  if (isRecord(value)) {
+    return `{${Object.keys(value)
+      .filter((key) => value[key] !== undefined)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'undefined';
+}
+
+function sameValue(a: unknown, b: unknown): boolean {
+  return canonicalJson(a) === canonicalJson(b);
+}
+
+/** A three-way merge of one normalized field; see {@link PipelinePreferenceSaveOptions}. */
+function applyFieldSave<T>(
+  stored: Record<string, T>,
+  next: Record<string, T>,
+  base: Record<string, T> | undefined,
+  removed: ReadonlySet<string> = new Set(),
+): PipelinePreferenceSaveResult<T> {
+  if (base === undefined || sameValue(stored, base)) {
+    return { preferences: next, merged: false };
+  }
+  const preferences = { ...stored };
+  const keys = [...Object.keys(base), ...Object.keys(next), ...removed];
+  for (const key of new Set(keys)) {
+    // An explicit removal is a change even where the base had no entry.
+    if (!removed.has(key) && sameValue(next[key], base[key])) continue;
+    if (Object.prototype.hasOwnProperty.call(next, key)) {
+      preferences[key] = next[key];
+    } else {
+      delete preferences[key];
+    }
+  }
+  return { preferences, merged: true };
+}
+
+export async function savePipelinePluginCollectionPreferences(
   locator: PipelinePreferenceLocator,
   preferences: Record<string, PipelinePluginCollectionPreference>,
   writer: PipelinePreferenceWriter,
-): Promise<void> {
+  options: PipelinePreferenceSaveOptions<PipelinePluginCollectionPreference> = {},
+): Promise<PipelinePreferenceSaveResult<PipelinePluginCollectionPreference>> {
   const normalized = normalizePipelinePluginCollectionPreferences(preferences);
-  return mutatePreferencesFile(writer, (file) =>
-    replaceEntryField(file, locator, (entry) => ({
-      ...entry,
-      plugin_collections: normalized,
-    })),
+  const base =
+    options.base === undefined
+      ? undefined
+      : normalizePipelinePluginCollectionPreferences(options.base);
+  let result: PipelinePreferenceSaveResult<PipelinePluginCollectionPreference> =
+    { preferences: normalized, merged: false };
+  await mutatePreferencesFile(writer, (file) =>
+    replaceEntryField(file, locator, (entry) => {
+      result = applyFieldSave(
+        normalizePipelinePluginCollectionPreferences(entry.plugin_collections),
+        normalized,
+        base,
+      );
+      return { ...entry, plugin_collections: result.preferences };
+    }),
   );
+  return result;
 }
 
 /** Saves `preferences` over the stored ones collection by collection. */
@@ -643,18 +727,72 @@ export function loadPipelineModelAliasPreferences(
   return storedEntry(readPreferencesForDisplay(), locator).model_aliases ?? {};
 }
 
-export function savePipelineModelAliasPreferences(
+export interface PipelineModelAliasSaveOptions extends PipelinePreferenceSaveOptions<PipelineModelAliasPreference> {
+  /** When non-empty, only these aliases are kept in the saved field. */
+  aliasIds?: readonly string[];
+}
+
+function keepAliases<T>(
+  preferences: Record<string, T>,
+  aliasIds: ReadonlySet<string>,
+): Record<string, T> {
+  if (aliasIds.size === 0) return preferences;
+  return Object.fromEntries(
+    Object.entries(preferences).filter(([aliasId]) => aliasIds.has(aliasId)),
+  );
+}
+
+/**
+ * Saves the locator's model aliases; a `reset` entry removes its stored
+ * alias. See {@link PipelinePreferenceSaveOptions} for `base`.
+ */
+export async function savePipelineModelAliasPreferences(
   locator: PipelinePreferenceLocator,
   preferences: Record<string, PipelineModelAliasPreference>,
   writer: PipelinePreferenceWriter,
-): Promise<void> {
-  const normalized = normalizePipelineModelAliasPreferences(preferences);
-  return mutatePreferencesFile(writer, (file) =>
-    replaceEntryField(file, locator, (entry) => ({
-      ...entry,
-      model_aliases: normalized,
-    })),
+  options: PipelineModelAliasSaveOptions = {},
+): Promise<PipelinePreferenceSaveResult<PipelineModelAliasPreference>> {
+  const aliasIds = new Set(
+    (options.aliasIds ?? []).map((aliasId) => aliasId.trim()).filter(Boolean),
   );
+  const normalized = keepAliases(
+    normalizePipelineModelAliasPreferences(preferences),
+    aliasIds,
+  );
+  const resets = new Set(
+    Object.entries(preferences)
+      .filter(([, entry]) => isRecord(entry) && entry.mode === 'reset')
+      .map(([aliasId]) => aliasId.trim())
+      .filter(
+        (aliasId) => aliasId && (aliasIds.size === 0 || aliasIds.has(aliasId)),
+      ),
+  );
+  const base =
+    options.base === undefined
+      ? undefined
+      : keepAliases(
+          normalizePipelineModelAliasPreferences(options.base),
+          aliasIds,
+        );
+  let result: PipelinePreferenceSaveResult<PipelineModelAliasPreference> = {
+    preferences: normalized,
+    merged: false,
+  };
+  await mutatePreferencesFile(writer, (file) =>
+    replaceEntryField(file, locator, (entry) => {
+      result = applyFieldSave(
+        keepAliases(
+          normalizePipelineModelAliasPreferences(entry.model_aliases),
+          aliasIds,
+        ),
+        normalized,
+        base,
+        resets,
+      );
+      return { ...entry, model_aliases: result.preferences };
+    }),
+  );
+  return result;
 }
 
 /**

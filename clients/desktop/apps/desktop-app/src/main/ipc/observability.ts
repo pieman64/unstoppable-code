@@ -34,6 +34,7 @@ import {
   type UsageTimeseriesResponse,
 } from '@canopy/desktop-shared/types';
 import { getObservabilityService } from '../observability';
+import { getExecutionObservabilityIngest } from '../observability/ingest';
 import {
   getStableAnonymousKey,
   getStablePostHogAnonymousKey,
@@ -164,7 +165,7 @@ export function registerObservabilityHandlers(
   resolveCaller: DesktopIpcCallerResolver,
 ): void {
   const service = getObservabilityService();
-  registerRendererDiagnosticsHandler(service);
+  registerRendererDiagnosticsHandler(getExecutionObservabilityIngest());
 
   service.subscribe((event) => {
     sendToWindow(getWindow(), IPC_CHANNELS.observabilityEvent, event);

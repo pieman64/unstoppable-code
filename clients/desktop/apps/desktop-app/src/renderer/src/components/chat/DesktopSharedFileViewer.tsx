@@ -1633,7 +1633,8 @@ function DesktopSharedFileViewerImpl({
                       (diffContext.source === 'combined' ? (
                         <span>{availableAnnotations.length} annotations</span>
                       ) : (
-                        <button
+                        <Button
+                          variant="link"
                           onClick={() =>
                             setFileTabViewMode(
                               tabId,
@@ -1645,7 +1646,7 @@ function DesktopSharedFileViewerImpl({
                         >
                           View {availableAnnotations.length} annotations in all
                           changes
-                        </button>
+                        </Button>
                       ))}
                     <div className="ml-auto flex items-center gap-2">
                       {diffContext.startTree && diffContext.endTree && (

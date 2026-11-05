@@ -63,6 +63,7 @@ import { setApprovalOwnerResolver } from './ipc/approvals';
 import { RENDERER_RELAY_GRANTS } from './ipc/canopy-core-relay';
 import {
   addLedgerEntryForE2e,
+  handBackLedgerEntryForE2e,
   pausePipelineAgentForE2e,
   resumePipelineExecutionForE2e,
   updateLedgerEntryForE2e,
@@ -662,11 +663,18 @@ import {
 } from './services/telemetry-sync-service';
 import { handleChatTabsWritten } from './services/worktree-runtime-status-service';
 import {
+  initializeSuggestionsGate,
+  stopSuggestionsGateHydration,
+} from './lib/suggestions-preferences';
+import {
   startSkillSuggestions,
   stopSkillSuggestions,
 } from './skill-suggestions';
 import { registerSkillHandlers } from './skills';
-import { scheduleDeferredStartupBackgroundTasks } from './startup-background-tasks';
+import {
+  scheduleDeferredStartupBackgroundTasks,
+  shutdownDeferredStartupStreamRepair,
+} from './startup-background-tasks';
 import { terminalPersistenceStore } from './terminal/persistence';
 import { workerTerminal } from './terminal/worker-terminal';
 import { startUpdater, stopUpdater } from './updater';
@@ -1025,8 +1033,13 @@ function installE2eChatEventIngestor(): void {
       atMs?: number;
       providerType?: TurnLifecycleProvider;
     }): Promise<void> => {
-      const { getTurnLifecycleProducer } =
-        await import('./agents/provider-turn-lifecycle');
+      const [{ getTurnLifecycleProducer }, { setE2eInjectedTurnLive }] =
+        await Promise.all([
+          import('./agents/provider-turn-lifecycle'),
+          import('./lib/e2e-injected-turns'),
+        ]);
+      // The injected turn stands in for a provider session's live host.
+      setE2eInjectedTurnLive(input, input.phase === 'start');
       const producer = getTurnLifecycleProducer(
         input.providerType ?? 'claude',
         {
@@ -1648,6 +1661,7 @@ function installE2eChatEventIngestor(): void {
     value: {
       addEntry: addLedgerEntryForE2e,
       updateEntry: updateLedgerEntryForE2e,
+      handBackEntry: handBackLedgerEntryForE2e,
       pausePipelineAgent: pausePipelineAgentForE2e,
       resumePipelineExecution: resumePipelineExecutionForE2e,
       storageWorkersStarted: ledgerStorageWorkersStarted,
@@ -2192,6 +2206,7 @@ async function cleanupRuntimeResources(
       ),
     );
     stopLocalMemoryConsolidationScheduler();
+    stopSuggestionsGateHydration();
     stopSkillSuggestions();
     await settleBestEffortCleanup(
       stages.run('local-memory-usage', flushPendingLocalMemoryUsage),
@@ -2246,6 +2261,16 @@ async function cleanupRuntimeResources(
     await deferPreparationFailure(
       stages.run('auto-archive', () => autoArchiveScheduler?.stopScheduling()),
     );
+    // Stream repair owns the same durable ports as live delegation actors.
+    // Disarm the gate and drain its current scope before watcher/chat teardown.
+    cancelStartupBackgroundTasks?.();
+    cancelStartupBackgroundTasks = null;
+    await deferPreparationFailure(
+      stages.run(
+        'delegation-startup-repair',
+        shutdownDeferredStartupStreamRepair,
+      ),
+    );
     // Stop schedulers before closing admission and checkpointing active work.
     stopChatAutomationMigration?.();
     stopChatAutomationMigration = null;
@@ -2255,8 +2280,6 @@ async function cleanupRuntimeResources(
       stages.run('watcher-drain', () => getAppAdvisorWatcherService().drain()),
     );
     holdHooksForShutdown();
-    cancelStartupBackgroundTasks?.();
-    cancelStartupBackgroundTasks = null;
     if (startupRecoveryPromise)
       await deferPreparationFailure(
         stages.run('startup-recovery', () => startupRecoveryPromise),
@@ -4839,6 +4862,29 @@ if (hasSingleInstanceLock) {
       ? process.env.CANOPY_LINUX_PASSWORD_STORE
       : undefined,
   });
+  // E2E test isolation: redirect Electron's `userData` root at the per-run
+  // `CANOPY_DATA_DIR`. `app.getPath('userData')`-based state — notably
+  // `portal-state.json`, which persists the portal `viewMode` — otherwise
+  // lives in the shared `~/Library/Application Support/<name>` directory and
+  // leaks across test runs (a spec that switches to chats mode poisons
+  // `viewMode: 'standalone-chats'` for every later portal spec, hiding the
+  // workspace rail). Gated on the E2E build so production/dev keep the default
+  // OS userData location; the harness always launches with a fresh
+  // `CANOPY_DATA_DIR`, so each test starts from clean state.
+  // It must run before ready: the network service starts with the userData
+  // seen then, and on macOS its sandbox cannot write a root assigned later
+  // (only the system temp directory), so cookies never reached disk.
+  if (__CANOPY_E2E__) {
+    // `CANOPY_E2E_USER_DATA_DIR` is the fallback for specs that must blank
+    // `CANOPY_DATA_DIR` to exercise real brand-candidate data-dir resolution
+    // (CAN-2271): without it those launches would share the default OS
+    // profile directory with concurrently running E2E instances.
+    const e2eUserDataDir =
+      process.env.CANOPY_DATA_DIR || process.env.CANOPY_E2E_USER_DATA_DIR;
+    if (e2eUserDataDir && existsSync(e2eUserDataDir)) {
+      app.setPath('userData', e2eUserDataDir);
+    }
+  }
 }
 
 void app.whenReady().then(async (): Promise<void> => {
@@ -4885,25 +4931,7 @@ void app.whenReady().then(async (): Promise<void> => {
   app.setName(getRuntimeAppName());
   electronApp.setAppUserModelId(getRuntimeAppUserModelId());
   await discardStaleSessionImportArtifacts().catch(() => undefined);
-  // E2E test isolation: redirect Electron's `userData` root at the per-run
-  // `CANOPY_DATA_DIR`. `app.getPath('userData')`-based state — notably
-  // `portal-state.json`, which persists the portal `viewMode` — otherwise
-  // lives in the shared `~/Library/Application Support/<name>` directory and
-  // leaks across test runs (a spec that switches to chats mode poisons
-  // `viewMode: 'standalone-chats'` for every later portal spec, hiding the
-  // workspace rail). Gated on the E2E build so production/dev keep the default
-  // OS userData location; the harness always launches with a fresh
-  // `CANOPY_DATA_DIR`, so each test starts from clean state.
   if (__CANOPY_E2E__) {
-    // `CANOPY_E2E_USER_DATA_DIR` is the fallback for specs that must blank
-    // `CANOPY_DATA_DIR` to exercise real brand-candidate data-dir resolution
-    // (CAN-2271): without it those launches would share the default OS
-    // profile directory with concurrently running E2E instances.
-    const e2eUserDataDir =
-      process.env.CANOPY_DATA_DIR || process.env.CANOPY_E2E_USER_DATA_DIR;
-    if (e2eUserDataDir && existsSync(e2eUserDataDir)) {
-      app.setPath('userData', e2eUserDataDir);
-    }
     installE2eChatEventIngestor();
     // The performance harness reads and resets the work counters here.
     installWorkCountersQuery();
@@ -5026,6 +5054,7 @@ void app.whenReady().then(async (): Promise<void> => {
   startLocalMemoryConsolidationScheduler();
   // Repeat-task skill suggestions (CAN-385): recording taps, idle scans and
   // the live kill switch. Nothing scans at startup.
+  void initializeSuggestionsGate();
   startSkillSuggestions();
   // Warm the AI Credits routing-mode cache so the first session spawn reflects
   // the persisted always-on/on-quota mode without a blocking disk read.
@@ -6622,6 +6651,8 @@ void app.whenReady().then(async (): Promise<void> => {
         saveClaudeMd: saveAppAdvisorClaudeMd,
       },
       chatStatePort: getChatStateService(),
+      installScopePinProvider: (provider): (() => void) =>
+        getChatStateService().setScopePinProvider(provider),
       isMainWindowRendererReady: (): boolean => mainWindowRendererReady,
       // Browser views < main-window overlay layers < floating App Advisor.
       onBrowserViewAttached: (window: BrowserWindow): void => {

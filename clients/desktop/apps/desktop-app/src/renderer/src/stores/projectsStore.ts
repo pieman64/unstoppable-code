@@ -1385,14 +1385,6 @@ function filterVisibleWorkspaceItems(items: SidebarItem[]): SidebarItem[] {
   return items.filter((item) => !isRetiredTemporaryWorkspace(item));
 }
 
-export function __resetProjectsStoreArchiveSuppressionForTests(): void {
-  inFlightArchives.clear();
-  archiveSuppressedWorktreeKeys.clear();
-  archiveSuppressedChatActivityKeys.clear();
-  activeArchiveSuppressedLoadFilters.clear();
-  pendingSplitCompletions.clear();
-}
-
 function reorderVisibleWorktrees(
   worktrees: WorktreeData[],
   activeWorktreeId: string,

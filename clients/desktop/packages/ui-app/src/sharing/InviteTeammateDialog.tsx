@@ -8,7 +8,11 @@ import {
   ErrorBanner,
   Notice,
   NoticeButton,
+  PickerMenuOption,
   PickerMenuOptionCheck,
+  PickerMenuOptionContent,
+  PickerMenuOptionLabel,
+  PickerMenuOptionTrailing,
   SearchField,
   SettingsSelect,
   StatusPill,
@@ -386,30 +390,33 @@ export function InviteTeammateDialog({
               {members.map((member) => {
                 const alreadyShared = invitedUserIds.has(member.userId);
                 return (
-                  <button
+                  <PickerMenuOption
                     key={member.userId}
-                    type="button"
                     role="option"
                     aria-selected={selectedUserId === member.userId}
+                    selected={selectedUserId === member.userId}
                     data-testid={`invite-teammate-member-${member.userId}`}
                     disabled={alreadyShared || submitting}
                     onClick={(): void => setSelectedUserId(member.userId)}
-                    className="outline-none flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-s transition-colors hover:bg-accent-subtle focus-visible:bg-accent-subtle disabled:opacity-50"
                   >
                     <DisplayAvatar
                       name={memberLabel(member)}
                       image={member.image}
                     />
-                    <span className="min-w-0 flex-1 truncate fg-primary">
-                      {memberLabel(member)}
-                    </span>
+                    <PickerMenuOptionContent>
+                      <PickerMenuOptionLabel>
+                        {memberLabel(member)}
+                      </PickerMenuOptionLabel>
+                    </PickerMenuOptionContent>
                     <PickerMenuOptionCheck
                       selected={selectedUserId === member.userId}
                     />
                     {alreadyShared && (
-                      <span className="text-xs fg-secondary">Shared</span>
+                      <PickerMenuOptionTrailing>
+                        Shared
+                      </PickerMenuOptionTrailing>
                     )}
-                  </button>
+                  </PickerMenuOption>
                 );
               })}
             </div>
@@ -471,17 +478,17 @@ export function InviteTeammateDialog({
                   ) : (
                     <StatusPill>Can view and prompt</StatusPill>
                   )}
-                  <button
-                    type="button"
+                  <Button
+                    variant="ghost-destructive"
+                    size="compact"
                     data-testid={`invite-teammate-revoke-${grant.recipient.userId}`}
                     disabled={submitting}
                     onClick={(): void =>
                       void revokeRecipient(grant.recipient.userId)
                     }
-                    className="min-h-11 fg-destructive hover:underline disabled:opacity-50"
                   >
                     Remove
-                  </button>
+                  </Button>
                 </div>
               ))}
           </div>

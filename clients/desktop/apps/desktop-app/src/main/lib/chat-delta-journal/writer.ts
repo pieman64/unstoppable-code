@@ -113,6 +113,7 @@ import {
   writeJsonValuesCooperatively,
 } from '../cooperative-json';
 import type { FileHandle } from 'node:fs/promises';
+import { mapWithConcurrency } from '../concurrency';
 import { fsyncDirectory } from '../fsync-directory';
 import { isPathInside } from '../path-safety';
 import { isErrnoException, isRecord } from '../type-guards';
@@ -254,6 +255,38 @@ export class DeltaJournalCheckpointRequiredError extends Error {
 /** Journal size at which a checkpoint is due (P1 §A size trigger). */
 export const DELTA_JOURNAL_CHECKPOINT_BYTES = 4 * 1024 * 1024;
 const QUARANTINE_TEMPORARY_PREFIX = `.${DELTA_JOURNAL_QUARANTINE_PREFIX}`;
+/** Streams, or stream metadata files, a checkpoint writes at once. */
+const STREAM_METADATA_IO_CONCURRENCY = 16;
+
+type Settled<T> = { ok: true; value: T } | { ok: false };
+
+/**
+ * Bounded concurrent `task` over independent streams or their metadata files, results
+ * in input order. After a failure no further task starts, and every started
+ * one settles before the first failure is rethrown, so no write outlives a
+ * failed checkpoint into its retry.
+ */
+async function eachStreamMetadataFile<T, R>(
+  items: readonly T[],
+  task: (item: T) => Promise<R>,
+): Promise<R[]> {
+  let failure: { error: unknown } | undefined;
+  const settled = await mapWithConcurrency(
+    items,
+    STREAM_METADATA_IO_CONCURRENCY,
+    async (item): Promise<Settled<R>> => {
+      if (failure) return { ok: false };
+      try {
+        return { ok: true, value: await task(item) };
+      } catch (error) {
+        failure ??= { error };
+        return { ok: false };
+      }
+    },
+  );
+  if (failure) throw failure.error;
+  return settled.flatMap((outcome): R[] => (outcome.ok ? [outcome.value] : []));
+}
 
 /**
  * Per scope directory, advanced before this process publishes a version 2
@@ -362,6 +395,13 @@ export interface DeltaJournalCommitInput {
   preparePublish?: () => Promise<void>;
   /** Synchronous authorization check immediately before the record is written. */
   beforePublish?: () => void;
+  /**
+   * Group commit's counterpart of `beforePublish`: a synchronous check as the
+   * prepared record is queued; throwing discards it unqueued. It holds for
+   * the record's place in the journal, because every later checkpoint first
+   * makes the queued records durable.
+   */
+  beforeAdmit?: () => void;
 }
 
 export type DeltaJournalCommitResult =
@@ -454,6 +494,13 @@ export interface ChatDeltaJournalWriterOptions {
     readonly hashBufferBytesPerAllocation: number;
   }) => void;
   maxManifestVersion?: 3 | 4;
+  /**
+   * A format 4 checkpoint restages only the streams, registries and parents
+   * its records change, and publishes the catalog. Readers accept the older
+   * metadata it leaves in place; readers released before that relaxation do
+   * not, so this stays off wherever a promoted scope can reach one.
+   */
+  incrementalStreamMetadata?: boolean;
   /**
    * The log a checkpoint writes the transcripts through. The chat state
    * backend passes the log its read paths use, so their derived caches see
@@ -2493,6 +2540,8 @@ export class ChatDeltaJournalWriter {
     } catch (error) {
       // A stream registered since the last checkpoint has no log yet.
       if (!(isErrnoException(error) && error.code === 'ENOENT')) throw error;
+      if (published && published.committedByteLength > 0)
+        throw new ChatDeltaJournalIntegrityError('Child log truncated');
       exists = false;
     }
     if (exists) {
@@ -3617,6 +3666,7 @@ export class ChatDeltaJournalWriter {
         // are one step. A batch that failed meanwhile poisoned the writer.
         if (this.current() !== state)
           throw new Error('Delta journal state changed during admission');
+        input.beforeAdmit?.();
         let joined = openBatch;
         if (
           joined !== undefined &&
@@ -3893,6 +3943,10 @@ export class ChatDeltaJournalWriter {
     for (const record of records) {
       if (record.toRevision <= appliedThrough) continue;
       const effects = primaryEffects(record);
+      // A child-only record changes no primary transcript: its rows are
+      // applied from every record below, so it neither flushes the open runs
+      // nor needs a progress marker of its own.
+      if (effects.length === 0) continue;
       const coalesced =
         effects.length > 0 &&
         effects.every(
@@ -4028,10 +4082,14 @@ export class ChatDeltaJournalWriter {
           changed.add(key);
         }
       }
-      for (const key of Array.from(changed)) {
+      const overlays = Array.from(changed).flatMap((key) => {
         const overlay = children.get(key);
-        if (!overlay?.hasChanges) continue;
-        await beforeWrite();
+        return overlay?.hasChanges ? [overlay] : [];
+      });
+      if (overlays.length > 0) await beforeWrite();
+      // Each stream's files are its own, so streams overlap their writes and
+      // syncs. Recovery re-applies a stream a crash stops, by committed row id.
+      await eachStreamMetadataFile(overlays, async (overlay) => {
         const store = this.childStore(overlay.target, false, true);
         const streamKey = delegationStreamKey(overlay.target);
         if (overlay.newlyFinalRows.length)
@@ -4049,7 +4107,7 @@ export class ChatDeltaJournalWriter {
             targetRevision,
             this.materializeFieldMode,
           );
-      }
+      });
     }
   }
 
@@ -4061,6 +4119,12 @@ export class ChatDeltaJournalWriter {
     const registrations = new Map<string, TranscriptStreamRegistration[]>();
     const childTimestamps = new Map<string, number>();
     const updates = new Map<string, TranscriptStreamDescriptorUpdate[]>();
+    // Streams whose log, status or settlement these records may change.
+    const changedStreams = new Set<string>();
+    const changedParents = new Set<string>();
+    // Reader-first: released readers before the relaxed closure checks need
+    // every descriptor and registry restamped at each checkpoint.
+    const incremental = this.options.incrementalStreamMetadata === true;
     for (const record of records) {
       for (const effect of primaryEffects(record))
         if (effect.kind === 'delete') removedParents.add(effect.chatId);
@@ -4076,6 +4140,8 @@ export class ChatDeltaJournalWriter {
             effect.kind === 'child-settle'
           ) {
             const key = transcriptTargetKey(effect.target);
+            changedStreams.add(key);
+            changedParents.add(effect.target.chatId);
             for (const row of effect.rows)
               childTimestamps.set(
                 key,
@@ -4087,6 +4153,8 @@ export class ChatDeltaJournalWriter {
           }
         for (const update of record.descriptorUpdates) {
           const key = transcriptTargetKey(update.target);
+          changedStreams.add(key);
+          changedParents.add(update.target.chatId);
           const list = updates.get(key) ?? [];
           list.push(update);
           updates.set(key, list);
@@ -4130,6 +4198,24 @@ export class ChatDeltaJournalWriter {
         );
       return next;
     };
+    // A stream these records leave alone keeps its committed totals, so its
+    // log is not reread. A log whose size moved takes the verifying path;
+    // deep closure checks at capture, copy and recovery still hash it.
+    const unchangedDescriptor = async (
+      entry: TranscriptStreamRegistration,
+      existing: ReturnType<typeof createEmptyStreamDescriptor>,
+      log: string,
+    ): Promise<ReturnType<typeof createEmptyStreamDescriptor>> => {
+      let size: number | undefined;
+      try {
+        size = (await stat(log)).size;
+      } catch (error) {
+        if (!(isErrnoException(error) && error.code === 'ENOENT')) throw error;
+      }
+      return size === existing.committedByteLength
+        ? { ...existing, checkpointRevision: indexes.live.revision }
+        : childDescriptor(entry, existing);
+    };
     const descriptors: { path: string; sha256: string }[] = [];
     const registries: { path: string; sha256: string }[] = [];
     const catalogPath = streamCatalogPath(this.transcriptsRoot);
@@ -4144,11 +4230,26 @@ export class ChatDeltaJournalWriter {
       if (!present.has(parent)) removedParents.add(parent);
     for (const parent of Array.from(removedParents)) delete parents[parent];
     const catalogued = new Set(Object.keys(parents));
+    const plans: Array<{
+      parent: string;
+      registry: string;
+      prior: TranscriptStreamRegistration[];
+      entries: TranscriptStreamRegistration[];
+    }> = [];
     for (const parent of Array.from(
       new Set([...Object.keys(parents), ...Array.from(registrations.keys())]),
     )) {
       const entries = registrations.get(parent) ?? [];
       if (removedParents.has(parent) || !present.has(parent)) continue;
+      // Incrementally, a parent these records leave alone keeps its registry,
+      // its descriptors and its catalog entry from an earlier checkpoint.
+      if (
+        incremental &&
+        entries.length === 0 &&
+        !changedParents.has(parent) &&
+        catalogued.has(parent)
+      )
+        continue;
       const first = entries[0];
       const paths = streamRegistryPaths(
         this.transcriptsRoot,
@@ -4169,35 +4270,60 @@ export class ChatDeltaJournalWriter {
             'Missing known stream registry',
           );
       }
+      plans.push({ parent, registry: paths.registry, prior, entries });
+    }
+    // Every stream to restage in the scope does so in one bounded pool:
+    // incrementally only the changed ones, otherwise every registered one.
+    descriptors.push(
+      ...(await eachStreamMetadataFile(
+        plans.flatMap(({ parent, prior }) =>
+          prior
+            .filter(
+              (entry) =>
+                !incremental ||
+                changedStreams.has(transcriptTargetKey(entry.target)),
+            )
+            .map((entry) => ({ parent, entry })),
+        ),
+        async ({ parent, entry }) => {
+          const entryPaths = streamRegistryPaths(
+            this.transcriptsRoot,
+            parent,
+            entry.streamKey,
+          );
+          const existing = parseStreamDescriptor(
+            await readFile(entryPaths.descriptor),
+          );
+          if (
+            transcriptTargetKey(existing.target) !==
+              transcriptTargetKey(entry.target) ||
+            existing.streamKey !== entry.streamKey
+          )
+            throw new ChatDeltaJournalIntegrityError(
+              'Known descriptor disagrees with registry',
+            );
+          const bytes = Buffer.from(
+            JSON.stringify(
+              changedStreams.has(transcriptTargetKey(entry.target))
+                ? await childDescriptor(entry, existing)
+                : await unchangedDescriptor(entry, existing, entryPaths.log),
+            ),
+          );
+          await stage(entryPaths.descriptor, bytes);
+          return { path: entryPaths.descriptor, sha256: digest(bytes) };
+        },
+      )),
+    );
+    const registryFiles: Array<{
+      parent: string;
+      path: string;
+      bytes: Buffer;
+      entryCount: number;
+    }> = [];
+    for (const { parent, registry, prior, entries } of plans) {
       const identities = new Set(
         prior.map((entry) => transcriptTargetKey(entry.target)),
       );
-      for (const entry of prior) {
-        const entryPaths = streamRegistryPaths(
-          this.transcriptsRoot,
-          parent,
-          entry.streamKey,
-        );
-        const existing = parseStreamDescriptor(
-          await readFile(entryPaths.descriptor),
-        );
-        if (
-          transcriptTargetKey(existing.target) !==
-            transcriptTargetKey(entry.target) ||
-          existing.streamKey !== entry.streamKey
-        )
-          throw new ChatDeltaJournalIntegrityError(
-            'Known descriptor disagrees with registry',
-          );
-        const bytes = Buffer.from(
-          JSON.stringify(await childDescriptor(entry, existing)),
-        );
-        await stage(entryPaths.descriptor, bytes);
-        descriptors.push({
-          path: entryPaths.descriptor,
-          sha256: digest(bytes),
-        });
-      }
       for (const entry of entries) {
         const identity = transcriptTargetKey(entry.target);
         if (identities.has(identity))
@@ -4243,11 +4369,23 @@ export class ChatDeltaJournalWriter {
         });
         prior.push(entry);
       }
-      const bytes = encodeStreamRegistry(parent, indexes.live.revision, prior);
-      await stage(paths.registry, bytes);
-      registries.push({ path: paths.registry, sha256: digest(bytes) });
-      parents[parent] = {
+      // Its registry changes only with a registration.
+      if (incremental && entries.length === 0 && catalogued.has(parent))
+        continue;
+      registryFiles.push({
+        parent,
+        path: registry,
+        bytes: encodeStreamRegistry(parent, indexes.live.revision, prior),
         entryCount: prior.length,
+      });
+    }
+    await eachStreamMetadataFile(registryFiles, ({ path, bytes }) =>
+      stage(path, bytes),
+    );
+    for (const { parent, path, bytes, entryCount } of registryFiles) {
+      registries.push({ path, sha256: digest(bytes) });
+      parents[parent] = {
+        entryCount,
         registrySha256: digest(bytes),
         registryBytes: bytes.length,
       };
@@ -4365,10 +4503,26 @@ export class ChatDeltaJournalWriter {
         identities.set(registryIdentityKey(identity), identity);
       }
     }
-    for (const identity of Array.from(identities.values())) {
-      const highWater = await this.registry.highWater(identity);
-      await this.registry.checkpoint(highWater);
-    }
+    // Each chat's registry is its own files, so chats overlap their appends
+    // and syncs. A chat's identities write their segments together and share
+    // one manifest update, folded in this order.
+    const chats = new Map<string, RegistryIdentity[]>();
+    for (const identity of Array.from(identities.values()))
+      chats.set(identity.chatId, [
+        ...(chats.get(identity.chatId) ?? []),
+        identity,
+      ]);
+    const settled = await Promise.allSettled(
+      Array.from(chats.values(), async (chat) => {
+        const highWaters: DelegationRegistryCheckpoint[] = [];
+        for (const identity of chat)
+          highWaters.push(await this.registry.highWater(identity));
+        await this.registry.checkpointChat(highWaters);
+      }),
+    );
+    // Every chat has stopped writing before a failure poisons the writer.
+    for (const result of settled)
+      if (result.status === 'rejected') throw result.reason;
   }
 
   /** Publish one staged stream metadata file, verifying its digest. */
@@ -4421,12 +4575,11 @@ export class ChatDeltaJournalWriter {
       });
       this.registry.forgetChat(parent);
     }
-    for (const item of [
-      ...metadata.descriptors,
-      ...metadata.registries,
-      ...(metadata.catalog ? [metadata.catalog] : []),
-    ])
-      await this.publishStagedStreamItem(item);
+    const publish = (item: { path: string; sha256: string }): Promise<void> =>
+      this.publishStagedStreamItem(item);
+    await eachStreamMetadataFile(metadata.descriptors, publish);
+    await eachStreamMetadataFile(metadata.registries, publish);
+    if (metadata.catalog) await publish(metadata.catalog);
   }
 
   /** Publish staged indexes, rotate the journal, then clear the marker. */
@@ -4439,9 +4592,10 @@ export class ChatDeltaJournalWriter {
     const publish = (item: { path: string; sha256: string }): Promise<void> =>
       this.publishStagedStreamItem(item);
     if (metadata) {
-      for (const item of metadata.descriptors) await publish(item);
+      // Each phase publishes independent files; phases keep their order.
+      await eachStreamMetadataFile(metadata.descriptors, publish);
       await this.boundary('checkpoint-descriptors-published');
-      for (const item of metadata.registries) await publish(item);
+      await eachStreamMetadataFile(metadata.registries, publish);
       await this.boundary('checkpoint-registries-published');
       if (metadata.catalog) await publish(metadata.catalog);
       await this.boundary('checkpoint-catalog-published');

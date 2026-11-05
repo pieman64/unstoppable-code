@@ -177,21 +177,6 @@ export function installUiZoomMetrics(): void {
   if (!devicePixelRatioWatch) watchDevicePixelRatio();
 }
 
-/** Drops the `devicePixelRatio` watcher and the published metrics. */
-export function resetUiZoomMetricsForTests(): void {
-  if (devicePixelRatioWatch) {
-    devicePixelRatioWatch.mediaQuery.removeEventListener(
-      'change',
-      devicePixelRatioWatch.listener,
-    );
-    devicePixelRatioWatch = undefined;
-  }
-  const html = document.documentElement;
-  html.style.removeProperty(UI_ZOOM_PROPERTY);
-  html.style.removeProperty(BORDER_HAIRLINE_PROPERTY);
-  html.removeAttribute(UI_SCALE_ATTRIBUTE);
-}
-
 /**
  * Records the selected interface scale on `<html>` and refreshes the zoom
  * metrics. The zoom itself follows from persisting the preference: the main

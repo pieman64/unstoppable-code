@@ -181,13 +181,14 @@ export const PrMergeMultiRepoModal = memo(function PrMergeMultiRepoModal({
                       <span className="truncate font-semibold">
                         {repo.repoName}
                       </span>
-                      <button
-                        type="button"
-                        onClick={(): void => handleOpenPr(repo.prUrl)}
-                        className="focus-ring self-start text-xs fg-accent underline-offset-2 hover:underline"
-                      >
-                        #{repo.prNumber}
-                      </button>
+                      <span className="self-start text-xs">
+                        <Button
+                          variant="link"
+                          onClick={(): void => handleOpenPr(repo.prUrl)}
+                        >
+                          #{repo.prNumber}
+                        </Button>
+                      </span>
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
                       {unresolved !== 0 && (

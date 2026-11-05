@@ -5,7 +5,6 @@ import {
   useCallback,
   useContext,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -15,13 +14,13 @@ import {
   type ReactNode,
   type SyntheticEvent,
 } from 'react';
-import { createPortal } from 'react-dom';
 import { isFocusReturnTarget } from '../lib/focusable';
 import {
   copyTextToClipboard,
   DEFAULT_COPIED_DURATION_MS,
 } from './copy-to-clipboard';
-import { DropdownMenuStatusRow, DropdownMenuSurface } from './DropdownMenu';
+import { DropdownMenuStatusRow } from './DropdownMenu';
+import { RichHoverCard } from './RichHoverTooltip';
 import { ErrorBanner } from './StatusBlocks';
 import { selectionTextWithMathSource } from './markdown-math-copy';
 import { TabContextMenu, type TabContextMenuItem } from './TabContextMenu';
@@ -622,9 +621,6 @@ export function ChatMessageContextMenu({
   );
 }
 
-/** Keeps a copy status this far inside the viewport, as the menu does. */
-const STATUS_VIEWPORT_PADDING = 4;
-
 /**
  * How long a `Copied` status waits before filling its live region. Screen
  * readers skip text a live region already holds when it appears, so the
@@ -646,11 +642,6 @@ function ChatMessageCopyStatus({
   onDismiss: () => void;
 }): JSX.Element | null {
   const { ownerDocument, kind } = feedback;
-  const surfaceRef = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState({
-    top: feedback.y,
-    left: feedback.x,
-  });
   const [announced, setAnnounced] = useState(false);
 
   useEffect((): (() => void) => {
@@ -679,54 +670,37 @@ function ChatMessageCopyStatus({
     };
   }, [kind, onDismiss]);
 
-  // Near a viewport edge, pull the status back inside, like the menu.
-  useLayoutEffect((): void => {
-    const surface = surfaceRef.current;
-    const view = ownerDocument.defaultView;
-    if (!surface || !view) return;
-    const rect = surface.getBoundingClientRect();
-    const limit = (start: number, size: number, viewport: number): number =>
-      start + size > viewport - STATUS_VIEWPORT_PADDING
-        ? Math.max(
-            STATUS_VIEWPORT_PADDING,
-            viewport - size - STATUS_VIEWPORT_PADDING,
-          )
-        : start;
-    setPosition({
-      top: limit(feedback.y, rect.height, view.innerHeight),
-      left: limit(feedback.x, rect.width, view.innerWidth),
-    });
-  }, [feedback.x, feedback.y, ownerDocument]);
-
-  const body = ownerDocument.body;
-  if (!body) return null;
-  return createPortal(
-    kind === 'copied' ? (
-      <DropdownMenuSurface
-        ref={surfaceRef}
-        role="presentation"
-        data-testid="chat-message-copied"
-        className="z-dropdown"
-        style={{ position: 'fixed', ...position }}
-      >
-        <DropdownMenuStatusRow role="presentation" aria-hidden="true">
-          Copied
-        </DropdownMenuStatusRow>
-        <span role="status" className="sr-only">
-          {announced ? 'Copied' : ''}
-        </span>
-      </DropdownMenuSurface>
-    ) : (
-      // The failure is the shared error notice, which brings its own tray.
-      <div
-        ref={surfaceRef}
-        data-testid="chat-message-copy-failed"
-        className="z-dropdown"
-        style={{ position: 'fixed', ...position }}
-      >
-        <ErrorBanner className="" error="Couldn't copy to clipboard" />
-      </div>
-    ),
-    body,
+  // Where the menu was, pulled back inside the window near an edge.
+  const point = { x: feedback.x, y: feedback.y };
+  return kind === 'copied' ? (
+    <RichHoverCard
+      anchorPoint={point}
+      ownerDocument={ownerDocument}
+      placement="at-point"
+      dataTestId="chat-message-copied"
+      elevation="menu"
+      surfacePadding="frame"
+      surfaceClassName="w-max"
+    >
+      <DropdownMenuStatusRow role="presentation" aria-hidden="true">
+        Copied
+      </DropdownMenuStatusRow>
+      <span role="status" className="sr-only">
+        {announced ? 'Copied' : ''}
+      </span>
+    </RichHoverCard>
+  ) : (
+    // The failure is the shared error notice, which brings its own tray.
+    <RichHoverCard
+      anchorPoint={point}
+      ownerDocument={ownerDocument}
+      placement="at-point"
+      dataTestId="chat-message-copy-failed"
+      elevation="menu"
+      surfacePadding="flush"
+      surfaceClassName="w-max"
+    >
+      <ErrorBanner className="" error="Couldn't copy to clipboard" />
+    </RichHoverCard>
   );
 }

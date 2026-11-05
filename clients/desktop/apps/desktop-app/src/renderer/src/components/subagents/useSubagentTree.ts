@@ -1,11 +1,25 @@
-import { useCallback, useEffect, useSyncExternalStore } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import { useShallow } from 'zustand/shallow';
 import type { AgentUsage, SubagentTree } from '@canopy/agent-transcript';
 import type { ManagedDelegationTreeEntry } from '@canopy/desktop-shared/types';
 import type { SubagentTreeLoadState } from '@canopy/ui-app/subagents';
 import { getChatTabLabel } from '@/lib/chatTabLabel';
+import { extractIpcErrorMessage } from '@/lib/errors';
 import { useChatStore, type ChatMessage } from '@/stores/chatStore';
 import { hydratedKeys } from '@/stores/chat/hydration';
+import { flushChatInterest } from '@/lib/chat-interest';
+import { catchUpStaleChat } from '@/stores/chat/stale-catch-up';
+import {
+  loadChatTranscriptPage,
+  TRANSCRIPT_PAGE_LOAD_ERROR,
+} from '@/stores/chat/transcript-pages';
 import {
   acquireSubagentTree,
   getSubagentTreeSnapshot,
@@ -26,6 +40,12 @@ export interface SubagentTreeQuery {
 
 export interface UseSubagentTreeOptions {
   readonly enabled: boolean;
+  /**
+   * Reload the root's transcript when it was evicted. Only views that show
+   * the root's tree pass it: the residency sweep keeps their root resident,
+   * so a background consumer reloading would only be evicted again.
+   */
+  readonly reloadEvictedTranscript?: boolean;
 }
 
 interface RootChatProjection {
@@ -33,6 +53,8 @@ interface RootChatProjection {
   readonly agentUsage?: Readonly<Record<string, AgentUsage>>;
   readonly hydrated: boolean;
   readonly rootChatOpen: boolean;
+  readonly needsTranscriptReload: boolean;
+  readonly transcriptStale: boolean;
   readonly title: string;
 }
 
@@ -40,6 +62,8 @@ const EMPTY_PROJECTION: RootChatProjection = {
   messages: null,
   hydrated: false,
   rootChatOpen: false,
+  needsTranscriptReload: false,
+  transcriptStale: false,
   title: '',
 };
 
@@ -52,8 +76,19 @@ export function useSubagentTree(
   options: UseSubagentTreeOptions,
 ): SubagentTreeQuery {
   const enabled = options.enabled && scope !== null && rootChatId !== null;
+  const reloadEvictedTranscript = options.reloadEvictedTranscript === true;
   const projectId = scope?.projectId;
   const worktreeId = scope?.worktreeId;
+  const inFlightTranscriptReloads = useRef(new Set<string>());
+  const reloadKey =
+    projectId !== undefined && worktreeId !== undefined && rootChatId !== null
+      ? `${projectId}/${worktreeId}\u0000${rootChatId}`
+      : null;
+  // A failed reload waits for the view's retry instead of looping.
+  const [failedReload, setFailedReload] = useState<{
+    readonly key: string;
+    readonly error: string;
+  } | null>(null);
 
   const projection = useChatStore(
     useShallow((state): RootChatProjection => {
@@ -73,6 +108,10 @@ export function useSubagentTree(
           : {}),
         hydrated,
         rootChatOpen,
+        // Evicted, or holding only rows that arrived since.
+        needsTranscriptReload:
+          rootChatOpen && tab !== undefined && tab.transcriptLoaded === false,
+        transcriptStale: rootChatOpen && tab?.transcriptStale === true,
         title: rootChatOpen && tab ? getChatTabLabel(tab) : (rootChatId ?? ''),
       };
     }),
@@ -99,9 +138,91 @@ export function useSubagentTree(
   }, [enabled, projectId, rootChatId, scope, worktreeId]);
 
   useEffect(() => {
+    if (
+      !enabled ||
+      !reloadEvictedTranscript ||
+      projectId === undefined ||
+      worktreeId === undefined ||
+      !rootChatId ||
+      reloadKey === null ||
+      !projection.needsTranscriptReload ||
+      failedReload?.key === reloadKey
+    ) {
+      return;
+    }
+    // Only one load per root in flight; a later eviction reloads the next
+    // time the root needs it.
+    const inFlight = inFlightTranscriptReloads.current;
+    if (inFlight.has(reloadKey)) return;
+    inFlight.add(reloadKey);
+    const target = { projectId, worktreeId, chatId: rootChatId };
+    // The newest-page read skips a stale transcript; catch-up installs it.
+    const read = projection.transcriptStale
+      ? catchUpStaleChat(target, flushChatInterest)
+      : loadChatTranscriptPage(target, false);
+    void read
+      .then(
+        (): void => {
+          // A read can settle without installing a page; offer a retry
+          // rather than loading forever.
+          const tab = useChatStore
+            .getState()
+            .worktreeChats[
+              `${projectId}/${worktreeId}`
+            ]?.tabs.find((candidate) => candidate.id === rootChatId);
+          if (tab?.transcriptLoaded === false) {
+            setFailedReload({
+              key: reloadKey,
+              error: TRANSCRIPT_PAGE_LOAD_ERROR,
+            });
+          }
+        },
+        (error: unknown): void => {
+          setFailedReload({
+            key: reloadKey,
+            error: extractIpcErrorMessage(error),
+          });
+        },
+      )
+      .finally(() => inFlight.delete(reloadKey));
+  }, [
+    enabled,
+    failedReload,
+    projectId,
+    projection.needsTranscriptReload,
+    projection.transcriptStale,
+    reloadEvictedTranscript,
+    reloadKey,
+    rootChatId,
+    worktreeId,
+  ]);
+
+  useEffect(() => {
     if (!enabled || !scope || !rootChatId) return;
     updateSubagentTreeRootChat(scope, rootChatId, projection);
   }, [enabled, projectId, projection, rootChatId, scope, worktreeId]);
 
-  return snapshot;
+  // Until an evicted root's rows are back, its tree is incomplete: report it
+  // loading so views keep their focus, or the failure so they can retry.
+  const awaitingReload =
+    enabled && reloadEvictedTranscript && projection.needsTranscriptReload;
+  const reloadError =
+    awaitingReload && failedReload !== null && failedReload.key === reloadKey
+      ? failedReload.error
+      : null;
+  return useMemo((): SubagentTreeQuery => {
+    if (!awaitingReload) return snapshot;
+    return {
+      ...snapshot,
+      settled: false,
+      treeState:
+        reloadError === null
+          ? { status: 'loading' }
+          : {
+              status: 'error',
+              error: reloadError,
+              onRetry: (): void => setFailedReload(null),
+            },
+    };
+  }, [awaitingReload, reloadError, snapshot]);
 }

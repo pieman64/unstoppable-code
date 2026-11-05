@@ -49,8 +49,14 @@ import {
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import profileModule from '../../src/main/agents/delegation/codex-sandbox-profile.ts';
+import { createRequire } from 'node:module';
+
+// Playwright 1.64 compiles this TypeScript as CommonJS once another module
+// requires it; ESM imports of it then see no exports, so require it too.
+const { hostOperatingSystem } = createRequire(import.meta.url)(
+  '@canopy/core-platform/host-platform',
+);
 
 // The tsx loader does not expose this module's named exports to the static ESM
 // linker, so resolve the canonical staged-binary API through a dynamic import,

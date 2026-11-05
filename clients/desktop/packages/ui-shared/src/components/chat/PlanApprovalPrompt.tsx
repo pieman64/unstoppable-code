@@ -1,8 +1,10 @@
 'use client';
 
 import {
+  forwardRef,
   useId,
   useRef,
+  type ButtonHTMLAttributes,
   type JSX,
   type KeyboardEvent,
   type ReactNode,
@@ -41,7 +43,24 @@ export interface PlanApprovalUnsentComments {
 }
 
 const ROW_GLYPH_CLASS = COMPOSER_PROMPT_ROW_GLYPH_CLASS;
-const ROW_CLASS = COMPOSER_PROMPT_ROW_CLASS;
+
+/**
+ * One numbered answer row of a composer prompt: the plan prompt's answers and
+ * the question prompt's options. The caller supplies the circle and label.
+ */
+export const ComposerPromptRowButton = forwardRef<
+  HTMLButtonElement,
+  Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'className' | 'type'>
+>(function ComposerPromptRowButton(props, ref): JSX.Element {
+  return (
+    <button
+      ref={ref}
+      type="button"
+      {...props}
+      className={COMPOSER_PROMPT_ROW_CLASS}
+    />
+  );
+});
 
 /**
  * The unsent comments row's circle: the numbers' circle in the warning ink,
@@ -83,7 +102,8 @@ export const PLAN_APPROVAL_EDITOR_CONTAINER_CLASS =
  *
  * An answer acts as soon as it is clicked. With focus on an answer, 1-9 pick
  * one, the arrow keys move between them, and Escape (anywhere in the prompt)
- * closes it; the plan keeps waiting.
+ * closes it; the plan keeps waiting. A host whose prompt does not close, such
+ * as the Feed's, omits `onClose` and with it the close button.
  *
  * With `unsentComments`, one more answer above the text row offers to send
  * comments the agent has not received. Numbers approve and icons give
@@ -115,8 +135,8 @@ export function PlanApprovalPrompt({
    * the host; absent, the prompt offers no Copy plan.
    */
   readonly planCopy?: PlanCopyState;
-  /** Closes the prompt and keeps the plan waiting. */
-  readonly onClose: () => void;
+  /** Closes the prompt and keeps the plan waiting; absent when it can't close. */
+  readonly onClose?: () => void;
   /** Comments on this plan the agent has not received; absent when none. */
   readonly unsentComments?: PlanApprovalUnsentComments;
   /** The text row. */
@@ -156,7 +176,12 @@ export function PlanApprovalPrompt({
       data-testid={expanded ? 'chat-plan-approval' : undefined}
       className={expanded ? 'flex flex-col gap-1' : undefined}
       onKeyDown={(event): void => {
-        if (!expanded || event.key !== 'Escape' || event.defaultPrevented)
+        if (
+          !expanded ||
+          onClose === undefined ||
+          event.key !== 'Escape' ||
+          event.defaultPrevented
+        )
           return;
         event.preventDefault();
         onClose();
@@ -195,15 +220,17 @@ export function PlanApprovalPrompt({
                 <span>Open</span>
               </ComposerIconButton>
             )}
-            <ComposerIconButton
-              capsule
-              tone="strong"
-              aria-label="Close"
-              onClick={onClose}
-              data-testid="chat-plan-approval-close"
-            >
-              <CloseLargeIcon size={16} />
-            </ComposerIconButton>
+            {onClose && (
+              <ComposerIconButton
+                capsule
+                tone="strong"
+                aria-label="Close"
+                onClick={onClose}
+                data-testid="chat-plan-approval-close"
+              >
+                <CloseLargeIcon size={16} />
+              </ComposerIconButton>
+            )}
           </div>
           <div
             role="group"
@@ -211,37 +238,33 @@ export function PlanApprovalPrompt({
             className={COMPOSER_PROMPT_ROWS_CLASS}
           >
             {options.map((option, index) => (
-              <button
+              <ComposerPromptRowButton
                 key={option.testId}
                 ref={(element): void => {
                   rowRefs.current[index] = element;
                 }}
-                type="button"
                 disabled={option.disabled}
                 data-testid={option.testId}
                 onClick={option.onSelect}
                 onKeyDown={(event): void => handleRowKeyDown(event, index)}
-                className={ROW_CLASS}
               >
                 <span aria-hidden className={ROW_GLYPH_CLASS}>
                   {index + 1}
                 </span>
                 <span className="min-w-0 flex-1 truncate">{option.label}</span>
-              </button>
+              </ComposerPromptRowButton>
             ))}
             {comments && (
-              <button
+              <ComposerPromptRowButton
                 ref={(element): void => {
                   rowRefs.current[options.length] = element;
                 }}
-                type="button"
                 disabled={comments.sending === true}
                 data-testid="chat-plan-send-comments"
                 onClick={comments.onSend}
                 onKeyDown={(event): void =>
                   handleRowKeyDown(event, options.length)
                 }
-                className={ROW_CLASS}
               >
                 <span aria-hidden className={UNSENT_COMMENTS_GLYPH_CLASS}>
                   <MessageIcon size={16} />
@@ -249,7 +272,7 @@ export function PlanApprovalPrompt({
                 <span className="min-w-0 flex-1 truncate">
                   {unsentCommentsLabel(comments)}
                 </span>
-              </button>
+              </ComposerPromptRowButton>
             )}
           </div>
         </>

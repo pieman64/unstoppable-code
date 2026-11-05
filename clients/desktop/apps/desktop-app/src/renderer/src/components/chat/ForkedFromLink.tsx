@@ -5,6 +5,7 @@ import {
   STANDALONE_CHAT_PROJECT_ID,
 } from '@canopy/desktop-shared/types';
 import { ForkContextNotice } from '@canopy/ui-shared';
+import { Button } from '@canopy/ui-shared/components';
 import { getProviderLabel } from '@/lib/providerLabels';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import {
@@ -133,18 +134,18 @@ export const ForkedFromLink = memo(function ForkedFromLink({
 
   return (
     <>
-      <div className="flex items-center gap-3 py-3">
+      <div className="flex items-center gap-3 py-3 text-xs">
         <div className="h-px flex-1 bg-line-base" />
-        <button
-          type="button"
-          onClick={handleClick}
-          className="flex items-center gap-1.5 text-xs font-medium fg-accent transition-colors hover:underline"
-        >
-          <AppCatalogBranchIcon width="14" height="14" aria-hidden="true" />
-          {forkedFrom.continuedFromProvider
-            ? `Continued from ${getProviderLabel(forkedFrom.continuedFromProvider)}, summary only`
-            : 'Forked from conversation'}
-        </button>
+        {/* The glyph sits beside the link so the link's hover underline
+            reaches its text (an inline-flex child would not take it). */}
+        <span className="flex items-center gap-1.5 fg-accent">
+          <AppCatalogBranchIcon aria-hidden="true" />
+          <Button variant="link" onClick={handleClick}>
+            {forkedFrom.continuedFromProvider
+              ? `Continued from ${getProviderLabel(forkedFrom.continuedFromProvider)}, summary only`
+              : 'Forked from conversation'}
+          </Button>
+        </span>
         <div className="h-px flex-1 bg-line-base" />
       </div>
       {forkedFrom.modelContext && (

@@ -411,7 +411,8 @@ export function CoordinatorLabPage(): JSX.Element {
   );
 
   return (
-    <div className="fixed inset-0 bg-base">
+    // The whole window: the lab is its own window's root, not an overlay.
+    <div className="h-screen bg-base">
       <OverlayScrollArea
         className="h-full"
         viewportClassName="overflow-x-hidden"
@@ -567,15 +568,16 @@ export function CoordinatorLabPage(): JSX.Element {
                       ))}
                     {state.log.length > 12 ? (
                       <li>
-                        <button
-                          type="button"
-                          onClick={() => toggle('log-all')}
-                          className="focus-ring rounded-sm text-xs fg-secondary hover:fg-primary"
-                        >
-                          {open['log-all']
-                            ? 'Show fewer'
-                            : `Show all ${state.log.length}`}
-                        </button>
+                        <span className="text-xs">
+                          <Button
+                            variant="link"
+                            onClick={() => toggle('log-all')}
+                          >
+                            {open['log-all']
+                              ? 'Show fewer'
+                              : `Show all ${state.log.length}`}
+                          </Button>
+                        </span>
                       </li>
                     ) : null}
                   </ol>
@@ -652,11 +654,12 @@ export function CoordinatorLabPage(): JSX.Element {
                     button inside it. */}
                 <div className="absolute left-4 top-1/2 z-10 flex -translate-y-1/2">
                   <Tooltip label="Previous" shortcut="←">
-                    <button
-                      type="button"
+                    <Button
+                      variant="secondary"
+                      size="lg"
+                      iconOnly
                       onClick={() => step(-1)}
                       aria-label="Previous"
-                      className="focus-ring flex size-9 items-center justify-center rounded-full bg-base fg-secondary shadow-sm ring-[length:var(--border-hairline)] ring-line-base transition-colors hover:fg-primary"
                     >
                       <ChevronRightIcon
                         width={16}
@@ -664,23 +667,24 @@ export function CoordinatorLabPage(): JSX.Element {
                         aria-hidden={true}
                         className="rotate-180"
                       />
-                    </button>
+                    </Button>
                   </Tooltip>
                 </div>
                 <div className="absolute right-4 top-1/2 z-10 flex -translate-y-1/2">
                   <Tooltip label="Next" shortcut="→">
-                    <button
-                      type="button"
+                    <Button
+                      variant="secondary"
+                      size="lg"
+                      iconOnly
                       onClick={() => step(1)}
                       aria-label="Next"
-                      className="focus-ring flex size-9 items-center justify-center rounded-full bg-base fg-secondary shadow-sm ring-[length:var(--border-hairline)] ring-line-base transition-colors hover:fg-primary"
                     >
                       <ChevronRightIcon
                         width={16}
                         height={16}
                         aria-hidden={true}
                       />
-                    </button>
+                    </Button>
                   </Tooltip>
                 </div>
               </>
@@ -1056,14 +1060,15 @@ function ChatCard({
 
       {hasReview && !reviewOpen ? (
         <div className="pl-7">
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="compact"
             onClick={onToggleReview}
-            className="focus-ring -ml-1 inline-flex items-center gap-1 rounded-md px-1 py-0.5 text-xs fg-secondary transition-colors hover:fg-primary"
+            className="-ml-3"
           >
             <ChevronRightIcon width={14} height={14} aria-hidden={true} />
             {reviewSummary(c, media)}
-          </button>
+          </Button>
         </div>
       ) : null}
 
@@ -1336,13 +1341,11 @@ function ReviewPanel({
               Open lab
             </a>
           ) : null}
-          <button
-            type="button"
-            onClick={onHide}
-            className="focus-ring rounded-sm text-xs fg-secondary hover:fg-primary"
-          >
-            Hide
-          </button>
+          <span className="text-xs">
+            <Button variant="link" onClick={onHide}>
+              Hide
+            </Button>
+          </span>
         </div>
       </div>
 
@@ -1750,27 +1753,35 @@ function PictureViewer({
         )}
         {bases.length > 1 ? (
           <>
-            <button
-              type="button"
-              onClick={() => go(-1)}
-              aria-label="Previous"
-              className="focus-ring absolute left-3 top-1/2 z-10 flex size-8 -translate-y-1/2 items-center justify-center rounded-full bg-base fg-secondary opacity-0 shadow-md ring-[length:var(--border-hairline)] ring-line-base transition-opacity hover:fg-primary focus-visible:opacity-100 group-hover/stage:opacity-100"
-            >
-              <ChevronRightIcon
-                width={14}
-                height={14}
-                aria-hidden={true}
-                className="rotate-180"
-              />
-            </button>
-            <button
-              type="button"
-              onClick={() => go(1)}
-              aria-label="Next"
-              className="focus-ring absolute right-3 top-1/2 z-10 flex size-8 -translate-y-1/2 items-center justify-center rounded-full bg-base fg-secondary opacity-0 shadow-md ring-[length:var(--border-hairline)] ring-line-base transition-opacity hover:fg-primary focus-visible:opacity-100 group-hover/stage:opacity-100"
-            >
-              <ChevronRightIcon width={14} height={14} aria-hidden={true} />
-            </button>
+            {/* The holder places and reveals each arrow on stage hover or
+                keyboard focus; the button keeps its own look. */}
+            <div className="absolute left-3 top-1/2 z-10 flex -translate-y-1/2 opacity-0 transition-opacity focus-within:opacity-100 group-hover/stage:opacity-100">
+              <Button
+                variant="secondary"
+                size="md"
+                iconOnly
+                onClick={() => go(-1)}
+                aria-label="Previous"
+              >
+                <ChevronRightIcon
+                  width={14}
+                  height={14}
+                  aria-hidden={true}
+                  className="rotate-180"
+                />
+              </Button>
+            </div>
+            <div className="absolute right-3 top-1/2 z-10 flex -translate-y-1/2 opacity-0 transition-opacity focus-within:opacity-100 group-hover/stage:opacity-100">
+              <Button
+                variant="secondary"
+                size="md"
+                iconOnly
+                onClick={() => go(1)}
+                aria-label="Next"
+              >
+                <ChevronRightIcon width={14} height={14} aria-hidden={true} />
+              </Button>
+            </div>
           </>
         ) : null}
       </div>
@@ -1818,13 +1829,9 @@ function PictureViewer({
             </span>
           ) : null}
           {rest > 0 && all[0] ? (
-            <button
-              type="button"
-              onClick={() => onShot(all[0])}
-              className="focus-ring rounded-sm fg-secondary hover:fg-primary"
-            >
+            <Button variant="link" onClick={() => onShot(all[0])}>
               +{rest} more
-            </button>
+            </Button>
           ) : null}
         </div>
       </div>

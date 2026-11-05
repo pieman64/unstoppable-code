@@ -1,5 +1,6 @@
 import type { JSX, MouseEvent } from 'react';
 import { InfoIcon } from '../icons/InfoIcon';
+import { Button } from './Button';
 import { Tooltip } from './Tooltip';
 
 export interface SourceInfoButtonProps {
@@ -24,19 +25,24 @@ export function SourceInfoButton({
   dataTestId,
 }: SourceInfoButtonProps): JSX.Element {
   return (
-    <Tooltip label={title}>
-      <button
-        type="button"
-        data-testid={dataTestId}
-        onClick={(event: MouseEvent<HTMLButtonElement>): void => {
-          event.stopPropagation();
-          onClick();
-        }}
-        className="focus-ring shrink-0 rounded p-0.5 fg-secondary opacity-0 transition-opacity hover:fg-primary/80 focus:opacity-100 group-hover:opacity-100 pointer-coarse:opacity-100"
-        aria-label={ariaLabel}
-      >
-        <InfoIcon />
-      </button>
-    </Tooltip>
+    // The wrapper owns the reveal; the 28px button overhangs the row's text
+    // line (`-my-1.5`) rather than growing it.
+    <span className="-my-1.5 inline-flex shrink-0 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 pointer-coarse:opacity-100">
+      <Tooltip label={title}>
+        <Button
+          variant="ghost-quiet"
+          size="sm"
+          iconOnly
+          data-testid={dataTestId}
+          onClick={(event: MouseEvent<HTMLButtonElement>): void => {
+            event.stopPropagation();
+            onClick();
+          }}
+          aria-label={ariaLabel}
+        >
+          <InfoIcon />
+        </Button>
+      </Tooltip>
+    </span>
   );
 }

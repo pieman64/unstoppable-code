@@ -1,7 +1,12 @@
 'use client';
 
 import type { JSX } from 'react';
-import { CheckIcon } from '../icons/AppIcons';
+import {
+  PickerMenuOption,
+  PickerMenuOptionCheck,
+  PickerMenuOptionContent,
+  PickerMenuOptionLabel,
+} from './PickerMenu';
 
 export interface DirectoryPickerOptionRowProps {
   readonly name: string;
@@ -18,21 +23,18 @@ export function DirectoryPickerOptionRow({
   'data-testid': testId,
 }: DirectoryPickerOptionRowProps): JSX.Element {
   return (
-    <button
-      type="button"
+    <PickerMenuOption
       role="option"
       aria-selected={selected}
+      selected={selected}
       data-testid={testId}
       onMouseDown={(event): void => event.preventDefault()}
       onClick={onSelect}
-      className="outline-none flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-s fg-primary/80 transition-colors hover:bg-subtle focus-visible:bg-subtle"
     >
-      <span className="w-4 text-center">
-        {selected ? (
-          <CheckIcon width={12} height={12} aria-hidden="true" />
-        ) : null}
-      </span>
-      <span className="truncate">{name}</span>
-    </button>
+      <PickerMenuOptionCheck selected={selected} reserveSpace />
+      <PickerMenuOptionContent>
+        <PickerMenuOptionLabel tone="quiet">{name}</PickerMenuOptionLabel>
+      </PickerMenuOptionContent>
+    </PickerMenuOption>
   );
 }

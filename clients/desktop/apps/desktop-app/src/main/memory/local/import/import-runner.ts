@@ -2,19 +2,19 @@ import { createHash } from 'node:crypto';
 import { readFile, stat, unlink } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import type { LocalMemoryScopeRequest } from '@canopy/desktop-shared/types';
-import { getUserMemoryDir, getWorkspaceMemoryDir } from '../../../lib/paths';
+import { localMemoryScopeDir } from '../scope-resolver';
 import {
   importEntryFitsBudget,
   logicalMemorySourcePath,
   type MemoryImportSourceTool,
-} from '../input-budget';
+} from '@canopy/memory-consolidation/input-budget';
 import { withMemoryWriteLock } from '../edit-coordination';
 import {
   assertMemoryPathContained,
   assertMemoryScopeLockHeld,
 } from '../memory-files';
 import { memoryNoteIdAt } from '../note-identity';
-import { redactMemoryContent } from '../store';
+import { redactMemoryContent } from '@canopy/memory-consolidation/redaction';
 import { resolveLocalMemoryPolicy } from '../policy';
 import {
   CLAUDE_MEMORY_MAX_FILE_BYTES,
@@ -148,7 +148,10 @@ async function resolveWorkspaceScopeDir(options: {
     worktreeId: options.worktreeId ?? options.workspaceId,
   });
   return policy.kind === 'scoped'
-    ? getWorkspaceMemoryDir(policy.workspaceId)
+    ? localMemoryScopeDir({
+        scope: 'workspace',
+        workspaceId: policy.workspaceId,
+      })
     : null;
 }
 
@@ -165,11 +168,14 @@ async function resolveTargetScopeDir(
     if (policy.privateMemory) {
       return options.userScope === true
         ? null
-        : getWorkspaceMemoryDir(policy.workspaceId);
+        : localMemoryScopeDir({
+            scope: 'workspace',
+            workspaceId: policy.workspaceId,
+          });
     }
   }
   if (scope === 'user') {
-    return getUserMemoryDir();
+    return localMemoryScopeDir({ scope: 'user' });
   }
   return isWorkspaceOptions(options) ? resolveWorkspaceScopeDir(options) : null;
 }

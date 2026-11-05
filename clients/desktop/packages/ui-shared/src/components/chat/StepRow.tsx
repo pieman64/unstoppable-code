@@ -12,7 +12,11 @@ import {
   type ReactNode,
 } from 'react';
 import { ChevronRightIcon } from '../../icons';
-import { StepBadgeLine, useStepBadgeRows } from '../chat-look';
+import {
+  StepBadgeLine,
+  StepTenseProvider,
+  useStepBadgeRows,
+} from '../chat-look';
 import { revealDisclosure } from './reveal-disclosure';
 
 /**
@@ -41,6 +45,8 @@ export interface StepRowProps {
   label: ReactNode;
   /** Extra detail in a lighter ink (a command, a description). */
   detail?: ReactNode;
+  /** Reserve room for status text; free-form previews keep normal truncation. */
+  readonly prioritizeDetail?: boolean;
   /** Shimmer the words while the step is still running. */
   running?: boolean;
   /** Name a failure after the words, for labels that don't say it. */
@@ -92,6 +98,8 @@ export function useShimmerPhase(running: boolean): ShimmerStyle | undefined {
 
 const BADGE_LINE_CLASS =
   'flex min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap';
+const BADGE_STATUS_LINE_CLASS =
+  'grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 overflow-hidden whitespace-nowrap';
 
 /**
  * A badge row's words: each run of plain text in its own span that keeps its
@@ -101,6 +109,17 @@ const BADGE_LINE_CLASS =
  * becomes a line of its own that keeps the same order.
  */
 function truncatingWords(label: ReactNode): ReactNode {
+  // The live group carries its label through this transparent tense wrapper.
+  if (
+    isValidElement<{ children?: ReactNode }>(label) &&
+    label.type === StepTenseProvider
+  ) {
+    return cloneElement(
+      label,
+      undefined,
+      truncatingWords(label.props.children),
+    );
+  }
   if (
     isValidElement<{ children?: ReactNode; className?: string }>(label) &&
     label.type === 'span'
@@ -122,7 +141,10 @@ function truncatingWords(label: ReactNode): ReactNode {
       ? label.props.children
       : label;
   return Children.map(parts, (part) => {
-    if (isValidElement(part) && part.type === Fragment) {
+    if (
+      isValidElement(part) &&
+      (part.type === Fragment || part.type === StepTenseProvider)
+    ) {
       return truncatingWords(part);
     }
     if (typeof part !== 'string' && typeof part !== 'number') return part;
@@ -139,6 +161,7 @@ export const StepRow = forwardRef<HTMLButtonElement, StepRowProps>(
       icon,
       label,
       detail,
+      prioritizeDetail = false,
       running = false,
       failed = false,
       expandable = false,
@@ -160,15 +183,28 @@ export const StepRow = forwardRef<HTMLButtonElement, StepRowProps>(
     // code badges on one line where only a badge's text shrinks.
     const badgeRow = useStepBadgeRows();
     const badges = step && badgeRow;
+    const statusLine = badges && prioritizeDetail && detail != null;
     const words = (
       <span
-        className={`${badges ? BADGE_LINE_CLASS : 'min-w-0 truncate'}${running ? ' canopy-text-shimmer-strong' : ''}`}
+        className={`${
+          badges
+            ? statusLine
+              ? BADGE_STATUS_LINE_CLASS
+              : BADGE_LINE_CLASS
+            : 'min-w-0 truncate'
+        }${running ? ' canopy-text-shimmer-strong' : ''}`}
         ref={motionRef}
         style={shimmerStyle}
         data-step-row-words=""
       >
         {badges ? (
-          <StepBadgeLine>{truncatingWords(label)}</StepBadgeLine>
+          <StepBadgeLine>
+            {statusLine ? (
+              <span className={BADGE_LINE_CLASS}>{truncatingWords(label)}</span>
+            ) : (
+              truncatingWords(label)
+            )}
+          </StepBadgeLine>
         ) : (
           label
         )}

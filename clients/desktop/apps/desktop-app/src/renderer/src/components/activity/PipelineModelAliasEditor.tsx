@@ -31,8 +31,12 @@ import {
   resolveEffectiveAliasPreference,
   validateEffectiveAliasPreference,
 } from '@/lib/pipelineModelAliases';
-import { ChevronIcon } from '@canopy/ui-shared/icons';
-import { Badge, Button, SegmentedControl } from '@canopy/ui-shared/components';
+import {
+  Badge,
+  Button,
+  Disclosure,
+  SegmentedControl,
+} from '@canopy/ui-shared/components';
 
 interface PipelineModelAliasEditorProps {
   alias: PipelineModelAlias;
@@ -178,28 +182,16 @@ export function PipelineModelAliasEditor({
     onChange({ mode: 'reset' });
   }
 
-  const contentId = `pipeline-model-alias-${alias.id}-content`;
-
   return (
-    <div
-      className="rounded-lg border bg-fg-primary/[0.02]"
-      data-testid={`pipeline-model-alias-${alias.id}`}
-    >
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        aria-expanded={expanded}
-        aria-controls={contentId}
-        className="flex w-full items-start gap-2 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-fg-primary/[0.04]"
-      >
-        <span className="mt-0.5 fg-secondary">
-          <ChevronIcon open={expanded} />
-        </span>
-        <span className="min-w-0 flex-1">
+    <Disclosure
+      variant="box"
+      open={expanded}
+      onOpenChange={setExpanded}
+      dataTestId={`pipeline-model-alias-${alias.id}`}
+      label={
+        <span className="flex min-w-0 flex-col">
           <span className="flex items-center gap-2">
-            <span className="truncate text-s font-medium fg-primary">
-              {alias.name || alias.id}
-            </span>
+            <span className="truncate">{alias.name || alias.id}</span>
             {effective.customized && (
               <Badge
                 data-testid={`pipeline-model-alias-${alias.id}-customized`}
@@ -219,157 +211,153 @@ export function PipelineModelAliasEditor({
               </Badge>
             )}
           </span>
-          <span className="mt-0.5 block truncate text-xs fg-secondary">
+          <span className="truncate text-xs font-normal fg-secondary">
             {subtitle}
           </span>
         </span>
-      </button>
+      }
+    >
+      <div className="space-y-3">
+        <SegmentedControl
+          label="Alias mode"
+          shape="capsule"
+          width="content"
+          value={currentMode}
+          disabled={readonly}
+          onChange={selectMode}
+          options={(['inline', 'agent'] as const).map((mode) => ({
+            value: mode,
+            label: mode === 'inline' ? 'Inline model' : 'Agent',
+            dataTestId: `pipeline-model-alias-${alias.id}-mode-${mode}`,
+          }))}
+        />
 
-      {expanded && (
-        <div id={contentId} className="space-y-3 border-t p-3">
-          <SegmentedControl
-            label="Alias mode"
-            shape="capsule"
-            width="content"
-            value={currentMode}
-            disabled={readonly}
-            onChange={selectMode}
-            options={(['inline', 'agent'] as const).map((mode) => ({
-              value: mode,
-              label: mode === 'inline' ? 'Inline model' : 'Agent',
-              dataTestId: `pipeline-model-alias-${alias.id}-mode-${mode}`,
-            }))}
-          />
-
-          {currentMode === 'inline' && (
-            <div className="space-y-3">
-              <DialogFormField
-                label="Base model"
-                error={errorFor('base')}
-                errorId={errorId}
-              >
-                <div className="flex w-full items-center rounded-md border bg-base px-2 py-1.5">
-                  <ModelPicker
-                    currentModel={
-                      effective.preference?.mode === 'inline'
-                        ? effective.preference.base || ''
-                        : ''
-                    }
-                    onModelChange={(model) => updateInline({ base: model })}
-                    allowWorkspaceDefault={false}
-                    hideAgents
-                    disabled={readonly}
-                    placeholderLabel="Choose a model"
-                    triggerTooltip="Model this alias resolves to"
-                  />
-                </div>
-              </DialogFormField>
-              <DialogFormField label="Instructions" htmlFor={instructionsId}>
-                <TextArea
-                  id={instructionsId}
-                  mono
-                  value={
-                    effective.preference?.mode === 'inline'
-                      ? (effective.preference.instructions ?? '')
-                      : ''
-                  }
-                  onChange={(e) =>
-                    updateInline({ instructions: e.target.value })
-                  }
-                  rows={4}
-                  placeholder="Instructions appended when this alias is used…"
-                  disabled={readonly}
-                />
-              </DialogFormField>
-              <DialogFormField
-                label="Plugin collection"
-                description="Enabled in addition to any plugin_collection_id on the step."
-                error={errorFor('plugin')}
-                errorId={errorId}
-              >
-                <SettingsSelect
-                  aria-label="Plugin collection"
-                  aria-invalid={errorFor('plugin') ? true : undefined}
-                  aria-describedby={errorFor('plugin') ? errorId : undefined}
-                  value={
-                    effective.preference?.mode === 'inline'
-                      ? (effective.preference.plugin_collection_id ?? '')
-                      : ''
-                  }
-                  onValueChange={(next) =>
-                    updateInline({ plugin_collection_id: next })
-                  }
-                  options={[
-                    { value: '', label: 'None' },
-                    ...pluginCollections.map((collection) => ({
-                      value: collection.id,
-                      label: `${collection.name || collection.id} (${collection.id})`,
-                    })),
-                  ]}
-                  disabled={readonly}
-                />
-              </DialogFormField>
-            </div>
-          )}
-
-          {currentMode === 'agent' && (
+        {currentMode === 'inline' && (
+          <div className="space-y-3">
             <DialogFormField
-              label="Agent"
-              description="Uses the agent base model, instructions, and plugins at run time."
-              error={errorFor('agent')}
+              label="Base model"
+              error={errorFor('base')}
               errorId={errorId}
             >
-              {agents.length === 0 ? (
-                <p className="text-xs fg-secondary italic">
-                  No local agents available
-                </p>
-              ) : (
-                <SettingsSelect
-                  aria-label="Agent"
-                  aria-invalid={errorFor('agent') ? true : undefined}
-                  aria-describedby={errorFor('agent') ? errorId : undefined}
-                  value={
-                    effective.preference?.mode === 'agent'
-                      ? effective.preference.agent_id
+              <div className="flex w-full items-center rounded-md border bg-base px-2 py-1.5">
+                <ModelPicker
+                  currentModel={
+                    effective.preference?.mode === 'inline'
+                      ? effective.preference.base || ''
                       : ''
                   }
-                  onValueChange={(next) =>
-                    onChange({ mode: 'agent', agent_id: next })
-                  }
-                  options={agents.map((agent) => ({
-                    value: agent.id,
-                    label: `${agent.name} (${agent.id})${
-                      availableAgentIds.has(agent.id) ? '' : ' - unavailable'
-                    }`,
-                  }))}
-                  placeholder="Select an agent"
+                  onModelChange={(model) => updateInline({ base: model })}
+                  allowWorkspaceDefault={false}
+                  hideAgents
                   disabled={readonly}
+                  placeholderLabel="Choose a model"
+                  triggerTooltip="Model this alias resolves to"
                 />
-              )}
+              </div>
             </DialogFormField>
-          )}
-
-          {currentMode === null && (
-            <p className="text-xs fg-secondary">
-              Choose an inline model or an agent for this alias.
-            </p>
-          )}
-
-          {errorField === 'mode' && validationError && (
-            <FieldError id={errorId}>{validationError}</FieldError>
-          )}
-
-          {!readonly && effective.customized && (
-            <Button
-              size="compact"
-              onClick={handleResetOrClear}
-              data-testid={`pipeline-model-alias-${alias.id}-reset`}
+            <DialogFormField label="Instructions" htmlFor={instructionsId}>
+              <TextArea
+                id={instructionsId}
+                mono
+                value={
+                  effective.preference?.mode === 'inline'
+                    ? (effective.preference.instructions ?? '')
+                    : ''
+                }
+                onChange={(e) => updateInline({ instructions: e.target.value })}
+                rows={4}
+                placeholder="Instructions appended when this alias is used…"
+                disabled={readonly}
+              />
+            </DialogFormField>
+            <DialogFormField
+              label="Plugin collection"
+              description="Enabled in addition to any plugin_collection_id on the step."
+              error={errorFor('plugin')}
+              errorId={errorId}
             >
-              {hasDefaults ? 'Reset to defaults' : 'Clear custom value'}
-            </Button>
-          )}
-        </div>
-      )}
-    </div>
+              <SettingsSelect
+                aria-label="Plugin collection"
+                aria-invalid={errorFor('plugin') ? true : undefined}
+                aria-describedby={errorFor('plugin') ? errorId : undefined}
+                value={
+                  effective.preference?.mode === 'inline'
+                    ? (effective.preference.plugin_collection_id ?? '')
+                    : ''
+                }
+                onValueChange={(next) =>
+                  updateInline({ plugin_collection_id: next })
+                }
+                options={[
+                  { value: '', label: 'None' },
+                  ...pluginCollections.map((collection) => ({
+                    value: collection.id,
+                    label: `${collection.name || collection.id} (${collection.id})`,
+                  })),
+                ]}
+                disabled={readonly}
+              />
+            </DialogFormField>
+          </div>
+        )}
+
+        {currentMode === 'agent' && (
+          <DialogFormField
+            label="Agent"
+            description="Uses the agent base model, instructions, and plugins at run time."
+            error={errorFor('agent')}
+            errorId={errorId}
+          >
+            {agents.length === 0 ? (
+              <p className="text-xs fg-secondary italic">
+                No local agents available
+              </p>
+            ) : (
+              <SettingsSelect
+                aria-label="Agent"
+                aria-invalid={errorFor('agent') ? true : undefined}
+                aria-describedby={errorFor('agent') ? errorId : undefined}
+                value={
+                  effective.preference?.mode === 'agent'
+                    ? effective.preference.agent_id
+                    : ''
+                }
+                onValueChange={(next) =>
+                  onChange({ mode: 'agent', agent_id: next })
+                }
+                options={agents.map((agent) => ({
+                  value: agent.id,
+                  label: `${agent.name} (${agent.id})${
+                    availableAgentIds.has(agent.id) ? '' : ' - unavailable'
+                  }`,
+                }))}
+                placeholder="Select an agent"
+                disabled={readonly}
+              />
+            )}
+          </DialogFormField>
+        )}
+
+        {currentMode === null && (
+          <p className="text-xs fg-secondary">
+            Choose an inline model or an agent for this alias.
+          </p>
+        )}
+
+        {errorField === 'mode' && validationError && (
+          <FieldError id={errorId}>{validationError}</FieldError>
+        )}
+
+        {!readonly && effective.customized && (
+          <Button
+            size="compact"
+            onClick={handleResetOrClear}
+            data-testid={`pipeline-model-alias-${alias.id}-reset`}
+          >
+            {hasDefaults ? 'Reset to defaults' : 'Clear custom value'}
+          </Button>
+        )}
+      </div>
+    </Disclosure>
   );
 }

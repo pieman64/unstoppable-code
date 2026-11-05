@@ -1,5 +1,9 @@
 import type { LedgerClient, LedgerFeedClient } from '@canopy/app-core';
 import type { LedgerApi } from '@canopy/desktop-shared/types';
+import type {
+  LedgerFeedWorkPage,
+  LedgerViewResult,
+} from '@canopy/protocol/ledger-view';
 
 /**
  * The desktop Ledger client: the preload's Ledger API, which reads and writes
@@ -21,10 +25,26 @@ export function createIpcLedgerClient(
 
 /** The desktop Feed client: main's Feed service, over the preload API. */
 export function createIpcLedgerFeedClient(
-  api: () => LedgerApi = (): LedgerApi => window.api.ledger,
+  api: () => Pick<
+    LedgerApi,
+    'searchFeed' | 'getFeedEntry' | 'listFeedWork'
+  > = (): LedgerApi => window.api.ledger,
 ): LedgerFeedClient {
   return {
     searchFeed: (request) => api().searchFeed(request),
     getFeedEntry: (request) => api().getFeedEntry(request),
+    listFeedWork: async (
+      request,
+    ): Promise<LedgerViewResult<LedgerFeedWorkPage>> => {
+      try {
+        return await api().listFeedWork(request);
+      } catch {
+        return {
+          status: 'error',
+          reason: 'UNKNOWN',
+          message: 'The Feed work could not be read.',
+        };
+      }
+    },
   };
 }

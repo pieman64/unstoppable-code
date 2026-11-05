@@ -754,6 +754,10 @@ License: MIT
 Version: 3.2.2
 License: MIT
 
+@electron-internal/extract-zip
+Version: 1.0.8
+License: MIT
+
 @electron-toolkit/preload
 Version: 3.0.2
 License: MIT
@@ -1095,7 +1099,7 @@ Version: 2.0.0
 License: MIT
 
 @modelcontextprotocol/sdk
-Version: 1.29.0
+Version: 1.32.2
 License: MIT
 
 @monaco-editor/loader
@@ -1430,10 +1434,6 @@ License: MIT
 Version: 0.0.6
 License: MIT
 
-@types/yauzl
-Version: 2.10.3
-License: MIT
-
 @typescript/typescript6
 Version: 6.0.2
 License: Apache-2.0
@@ -1513,6 +1513,10 @@ License: MIT
 base64-js
 Version: 1.5.1
 License: MIT
+
+bcryptjs
+Version: 3.0.3
+License: BSD-3-Clause
 
 before-after-hook
 Version: 4.0.0
@@ -1923,7 +1927,7 @@ Version: 6.8.3
 License: MIT
 
 electron
-Version: 42.3.0
+Version: 45.2.2
 License: MIT
 
 elkjs
@@ -1936,10 +1940,6 @@ License: MIT
 
 encodeurl
 Version: 2.0.0
-License: MIT
-
-end-of-stream
-Version: 1.4.5
 License: MIT
 
 env-paths
@@ -1999,16 +1999,12 @@ Version: 3.0.7
 License: MIT
 
 express-rate-limit
-Version: 8.4.0
+Version: 8.7.2
 License: MIT
 
 express
 Version: 5.2.1
 License: MIT
-
-extract-zip
-Version: 2.0.1
-License: BSD-2-Clause
 
 fast-content-type-parse
 Version: 3.0.0
@@ -2090,10 +2086,6 @@ get-proto
 Version: 1.0.1
 License: MIT
 
-get-stream
-Version: 5.2.0
-License: MIT
-
 get-tsconfig
 Version: 4.13.6
 License: MIT
@@ -2135,7 +2127,7 @@ Version: 3.3.2
 License: BSD-3-Clause
 
 hono
-Version: 4.12.14
+Version: 4.13.14
 License: MIT
 
 http-errors
@@ -2195,7 +2187,7 @@ Version: 2.0.3
 License: ISC
 
 ip-address
-Version: 10.1.0
+Version: 10.7.5
 License: MIT
 
 ipaddr.js
@@ -2239,7 +2231,7 @@ Version: 1.1.2
 License: MIT
 
 jose
-Version: 6.2.2
+Version: 6.2.3
 License: MIT
 
 js-tokens
@@ -2359,7 +2351,7 @@ Version: 4.5.0
 License: MIT
 
 lodash
-Version: 4.17.23
+Version: 4.18.1
 License: MIT
 
 longest-streak
@@ -2766,16 +2758,12 @@ proxy-addr
 Version: 2.0.7
 License: MIT
 
-pump
-Version: 3.0.3
-License: MIT
-
 qrcode
 Version: 1.5.4
 License: MIT
 
 qs
-Version: 6.15.1
+Version: 6.17.1
 License: BSD-3-Clause
 
 query-selector-shadow-dom
@@ -2959,7 +2947,7 @@ Version: 1.0.2
 License: MIT
 
 side-channel
-Version: 1.1.0
+Version: 1.1.1
 License: MIT
 
 skullet
@@ -3043,7 +3031,7 @@ Version: 6.4.0
 License: MIT
 
 tar
-Version: 7.5.20
+Version: 7.5.22
 License: BlueOak-1.0.0
 
 tiny-invariant
@@ -3111,7 +3099,7 @@ Version: 7.16.0
 License: MIT
 
 undici
-Version: 7.26.0
+Version: 7.30.1
 License: MIT
 
 unist-util-is

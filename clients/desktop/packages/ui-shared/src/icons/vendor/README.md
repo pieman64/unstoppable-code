@@ -75,32 +75,18 @@ license at commit `8a1b2821bb768c484fe8da20c5e1838b6bf551a9` of
 
 ## Octicons
 
-Git and GitHub concepts only (see the iconography rule in
-[icons](../../../../../docs/design/icons.md)). Fetched from
+The GitHub mark only. Git and GitHub concepts (branch, commit, merge, pull
+request states, fork, diff, repository) moved to Lucide on 2026-11-03 so they
+match the rest of the set; merge queue is the Canopy-drawn `IconMergeQueue`
+in `../CanopyGlyphs.tsx`. Fetched from
 `https://cdn.jsdelivr.net/npm/@primer/octicons@19.40.0/build/svg/<name>-24.svg`;
 the npm tarball and its integrity hash are recorded in the manifest's
-`sources`. The existing 24px set and per-entry insets are preserved through
-the Lucide migration. They were chosen for the previous Material catalog's
-24-unit grid and 20-unit live area; they are not Lucide stroke glyphs. Files
-keep their upstream names. At fetch time the generator strips them the same
-way as Simple Icons and LobeHub marks. The retained inset calculation is
-`max(0, 2 - minExtent, maxExtent - 22)` from the drawn path extents, rounded
-to the nearest 0.5. Octicons are © GitHub, Inc., licensed under the MIT License.
+`sources`. At fetch time the generator strips it the same way as Simple Icons
+and LobeHub marks. Octicons are © GitHub, Inc., licensed under the MIT License.
 
-| File                                      | Inset | Exports                                                                                        |
-| ----------------------------------------- | ----- | ---------------------------------------------------------------------------------------------- |
-| `octicons/git-branch-24.svg`              | 0.5   | `BranchIcon`, `GitBranchCompactIcon`, `GitBranch`                                              |
-| `octicons/git-commit-24.svg`              | 0     | `GitCommitIcon`                                                                                |
-| `octicons/git-merge-24.svg`               | 0.5   | `GitMergeIcon`, `GitMerge`, `GitMergeConflictIcon` (merged and conflict differ only by colour) |
-| `octicons/git-merge-queue-24.svg`         | 0.5   | `GitMergeQueueIcon`                                                                            |
-| `octicons/git-pull-request-24.svg`        | 0.5   | `GitPullRequestIcon`, `GitPullRequestNeutralIcon`, `GitPullRequest`                            |
-| `octicons/git-pull-request-closed-24.svg` | 0.5   | `GitPullRequestClosedIcon`, `GitRequestClosedIcon`                                             |
-| `octicons/git-pull-request-draft-24.svg`  | 0.5   | `GitDraftIcon`; mobile `CanopyGlyph.draft`                                                     |
-| `octicons/repo-forked-24.svg`             | 0.5   | `GitForkIcon`                                                                                  |
-| `octicons/repo-24.svg`                    | 2     | `RepoIcon`, `FolderGit2`                                                                       |
-| `octicons/file-diff-24.svg`               | 1     | `ChangesIcon`, `FileDiff`                                                                      |
-| `octicons/diff-modified-24.svg`           | 0     | mobile `CanopyGlyph.differenceModified`                                                        |
-| `octicons/mark-github-24.svg`             | 1.5   | GitHub mark (`GitHubIcon`, `Github`)                                                           |
+| File                          | Inset | Exports                              |
+| ----------------------------- | ----- | ------------------------------------ |
+| `octicons/mark-github-24.svg` | 1.5   | GitHub mark (`GitHubIcon`, `Github`) |
 
 ## Attribution
 

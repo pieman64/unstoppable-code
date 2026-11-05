@@ -6,6 +6,7 @@ import {
   DialogFormField,
   DialogModal,
   LoadingSpinner,
+  SegmentedControl,
   TextArea,
   TextInput,
   Notice,
@@ -157,29 +158,18 @@ export function FeedbackDialog({
           >
             <div className="space-y-1.5">
               <span className={FIELD_LABEL_CLASSNAME}>Type</span>
-              <div
-                className="inline-flex rounded-lg border p-0.5"
-                role="radiogroup"
-                aria-label="Feedback type"
-              >
-                {REPORT_TYPE_OPTIONS.map((option) => (
-                  <button
-                    key={option.value}
-                    type="button"
-                    role="radio"
-                    aria-checked={type === option.value}
-                    onClick={(): void => setType(option.value)}
-                    data-testid={`feedback-modal-type-${option.value}`}
-                    className={`focus-ring rounded-md px-4 py-1.5 text-s font-medium transition-colors ${
-                      type === option.value
-                        ? 'bg-accent fg-emphasis'
-                        : 'fg-secondary hover:fg-primary'
-                    }`}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
+              <SegmentedControl
+                label="Feedback type"
+                shape="capsule"
+                width="content"
+                value={type}
+                options={REPORT_TYPE_OPTIONS.map((option) => ({
+                  value: option.value,
+                  label: option.label,
+                  dataTestId: `feedback-modal-type-${option.value}`,
+                }))}
+                onChange={setType}
+              />
             </div>
 
             <DialogFormField

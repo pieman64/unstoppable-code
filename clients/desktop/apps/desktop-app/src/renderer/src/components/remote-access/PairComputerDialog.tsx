@@ -4,6 +4,7 @@ import { useShallow } from 'zustand/shallow';
 import {
   Button,
   EmptyState,
+  ListRow,
   LoadingSpinner,
   Notice,
   NoticeButton,
@@ -282,23 +283,15 @@ function renderChoose({
           >
             {devices.map((device) => (
               <li key={device.deviceId}>
-                <button
-                  type="button"
+                <ListRow
                   disabled={busy}
                   onClick={() => onPair(device)}
                   data-testid={`remote-access-pair-option-${device.deviceId}`}
-                  className="focus-ring flex w-full min-w-0 items-center gap-3 rounded-md px-2 py-2 text-left text-s fg-primary hover:bg-subtle disabled:cursor-not-allowed disabled:opacity-60"
+                  icon={<MacbookIcon size={16} aria-hidden="true" />}
+                  trailing={platformLabel(device.platform)}
                 >
-                  <MacbookIcon
-                    size={16}
-                    aria-hidden="true"
-                    className="shrink-0 fg-secondary"
-                  />
-                  <span className="min-w-0 flex-1 truncate">{device.name}</span>
-                  <span className="shrink-0 text-xs fg-secondary">
-                    {platformLabel(device.platform)}
-                  </span>
-                </button>
+                  {device.name}
+                </ListRow>
               </li>
             ))}
           </ul>

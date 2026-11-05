@@ -8,3 +8,12 @@ export * from './marketplace-sources-client';
 export * from './marketplace-source-add';
 
 export * from './shared-multi-repo-client';
+
+// Suggestions contracts; the operations are part of QueryMap/CommandMap.
+export type {
+  SuggestionsQueryMap,
+  SuggestionsCommandMap,
+  SuggestionsState,
+  SuggestionsUpdate,
+  SuggestionId,
+} from '@canopy/protocol/suggestions';

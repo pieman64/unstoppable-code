@@ -1,5 +1,8 @@
 import { ChatStorageV2 } from '../../lib/chat-storage-v2';
-import { ChatStateV2Backend } from '../../services/chat-state-v2-backend';
+import {
+  ChatStateV2Backend,
+  type ChatStateV2BackendOptions,
+} from '../../services/chat-state-v2-backend';
 import type { ChatMigrationSource } from '../../lib/chat-storage-v2';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -10,13 +13,14 @@ export async function format4Scope(
   root: string,
   scopeId: string,
   source: () => Promise<ChatMigrationSource>,
+  deltaJournal: NonNullable<ChatStateV2BackendOptions['deltaJournal']> = {},
 ): Promise<{ store: ChatStorageV2; backend: ChatStateV2Backend }> {
   const store = new ChatStorageV2(root, scopeId, undefined, {
     maxManifestVersion: 4,
   });
   await store.migrate(source);
   const backend = new ChatStateV2Backend(store, {
-    deltaJournal: {},
+    deltaJournal,
     enableFormat4: true,
   });
   await backend.promoteToDeltaJournal();

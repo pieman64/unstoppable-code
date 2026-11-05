@@ -1,7 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { reportRendererConsoleError } from '@/lib/renderer-error-logging';
 import { Button } from '@/components/shared/Button';
-import { Heading } from '@canopy/ui-shared/components';
+import { DialogModal } from '@canopy/ui-shared/components';
 
 interface LazyLoadErrorBoundaryProps {
   children: ReactNode;
@@ -10,6 +10,8 @@ interface LazyLoadErrorBoundaryProps {
   onRetry: () => void;
   resetKey: string | number;
 }
+
+function noop(): void {}
 
 interface LazyLoadErrorBoundaryState {
   error: Error | null;
@@ -56,38 +58,38 @@ export class LazyLoadErrorBoundary extends Component<
       return children;
     }
 
+    // A load failure opens without the user asking, so focus lands on the
+    // card rather than on a button the next keypress would press. With no
+    // Close there is no way out but Try again: Escape and the scrim do nothing.
     return (
-      <div className="fixed inset-0 z-modal flex items-center justify-center bg-overlay-scrim p-6">
-        <div
-          className="w-full max-w-md rounded-lg border border-line-destructive/30 bg-card p-5"
-          role="alert"
-        >
-          <div className="space-y-3">
-            <div>
-              <Heading level={2} variant="title">
-                {label} could not be loaded
-              </Heading>
-              <p className="mt-1 text-xs fg-secondary">
-                {error.message || error.name || 'Unknown loading error'}
-              </p>
-            </div>
-            <div className="flex items-center justify-end gap-2">
-              {onClose ? (
-                <Button variant="secondary" size="compact" onClick={onClose}>
-                  Close
-                </Button>
-              ) : null}
-              <Button
-                variant="primary"
-                size="compact"
-                onClick={this.handleRetry}
-              >
-                Try again
+      <DialogModal
+        variant="confirm"
+        title={`${label} could not be loaded`}
+        titleId="lazy-load-error-title"
+        onClose={onClose ?? noop}
+        closeOnBackdrop={false}
+        closeOnEscape={onClose !== undefined}
+        trapFocus
+        initialFocus="dialog"
+        dataTestId="lazy-load-error"
+        ariaDescribedBy="lazy-load-error-message"
+        footer={
+          <>
+            {onClose ? (
+              <Button variant="secondary" size="compact" onClick={onClose}>
+                Close
               </Button>
-            </div>
-          </div>
-        </div>
-      </div>
+            ) : null}
+            <Button variant="primary" size="compact" onClick={this.handleRetry}>
+              Try again
+            </Button>
+          </>
+        }
+      >
+        <p id="lazy-load-error-message" className="text-s fg-secondary">
+          {error.message || error.name || 'Unknown loading error'}
+        </p>
+      </DialogModal>
     );
   }
 }

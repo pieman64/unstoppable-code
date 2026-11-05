@@ -205,8 +205,22 @@ export function useBillingLaneRuntimeSync(
       codexAccountModelIdsFromCatalog(accountCatalog),
     );
 
+    // The Claude probe settled without an answer and nothing confirms a
+    // sign-in, so the resolver may rank confirmed AI Credits ahead of Claude.
+    // Main's `resolveDefaultModelLaneForPreferences` pairs this: its fold of an
+    // Environments credential and a ready account proxy to `true` is the
+    // counterpart of the `claudeProxyReady` and `userSuppliedCredential`
+    // exclusions here.
+    const claudeInconclusive =
+      !claudeProxyReady &&
+      claudeAuth !== null &&
+      claudeAuth.probeFailed === true &&
+      claudeAuth.authenticated !== true &&
+      claudeAuth.userSuppliedCredential !== true;
     const next: BillingLaneAvailability = {
       claudeNativeAuth: claudeProxyReady || nativeAuthTriState(claudeAuth),
+      // Emitted only when true, so an unaffected availability keeps its shape.
+      ...(claudeInconclusive ? { claudeNativeAuthInconclusive: true } : {}),
       codexNativeAuth,
       creditsEligible: creditsTriState(
         credits.eligible,
@@ -221,8 +235,8 @@ export function useBillingLaneRuntimeSync(
     // never rewrites a tab. `syncActiveEmptyTabToDefaults` applies its own
     // pristine guards before touching anything.
     const signature = `${String(next.claudeNativeAuth)}|${String(
-      next.codexNativeAuth,
-    )}|${String(next.creditsEligible)}|${String(
+      claudeInconclusive,
+    )}|${String(next.codexNativeAuth)}|${String(next.creditsEligible)}|${String(
       allowlistOnly,
     )}|${getRendererCodexAccountModelsKey()}`;
     if (lastSignatureRef.current === signature) return;

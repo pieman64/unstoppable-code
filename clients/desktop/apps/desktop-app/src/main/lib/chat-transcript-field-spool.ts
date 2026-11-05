@@ -54,9 +54,72 @@ export class SurrogateTracker {
     }
   }
 
+  /** True once the sequence so far holds an unpaired surrogate. */
+  public get unpairedSeen(): boolean {
+    return this.unpaired;
+  }
+
   /** True when the complete sequence holds an unpaired surrogate. */
   public finish(): boolean {
     return this.unpaired || this.pendingHigh;
+  }
+}
+
+/** Code units encoded per write of a UTF-8 body. */
+const ENCODE_SLICE_CODE_UNITS = 131_072;
+
+/**
+ * Encodes a body to UTF-8 as its chunks arrive, holding back only a high
+ * surrogate that may pair with the next chunk. Valid only while the body
+ * holds no unpaired surrogate (`accept`): such a body is stored as its exact
+ * UTF-16LE code units instead, in a {@link FieldSpool}.
+ */
+export class Utf8FieldEncoder {
+  private readonly tracker = new SurrogateTracker();
+  private readonly buffer = Buffer.allocUnsafe(ENCODE_SLICE_CODE_UNITS * 3);
+  private carry = '';
+
+  /** False once the body, `chunk` included, holds an unpaired surrogate. */
+  public accept(chunk: string): boolean {
+    this.tracker.accept(chunk);
+    return !this.tracker.unpairedSeen;
+  }
+
+  /** The high surrogate held back from the last encoded chunk, if any. */
+  public get held(): string {
+    return this.carry;
+  }
+
+  /** True when the accepted body ends paired, so every code unit is encoded. */
+  public finish(): boolean {
+    return !this.tracker.finish();
+  }
+
+  /**
+   * Pass the UTF-8 bytes of an accepted chunk to `sink` in bounded views of
+   * one buffer, each consumed before the next. A pair is never split.
+   */
+  public async encode(
+    chunk: string,
+    sink: (bytes: Buffer) => Promise<void>,
+  ): Promise<void> {
+    let text = this.carry + chunk;
+    this.carry = '';
+    if (text.length > 0 && isHighSurrogate(text.charCodeAt(text.length - 1))) {
+      this.carry = text.slice(-1);
+      text = text.slice(0, -1);
+    }
+    for (let start = 0; start < text.length; ) {
+      let end = Math.min(text.length, start + ENCODE_SLICE_CODE_UNITS);
+      if (end < text.length && isHighSurrogate(text.charCodeAt(end - 1)))
+        end -= 1;
+      const slice = text.slice(start, end);
+      const written = this.buffer.write(slice, 0, this.buffer.length, 'utf8');
+      if (written !== Buffer.byteLength(slice, 'utf8'))
+        throw new Error('Transcript field exceeded its encoder');
+      await sink(this.buffer.subarray(0, written));
+      start = end;
+    }
   }
 }
 

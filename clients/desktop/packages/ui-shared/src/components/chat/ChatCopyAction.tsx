@@ -2,11 +2,8 @@ import { useCallback, type JSX, type MouseEvent } from 'react';
 import { CheckIcon } from '../../icons/CheckIcon';
 import { CopyIcon } from '../../icons/CopyIcon';
 import { stripOpaqueAgentCitationMarkers } from '../../lib/agent-citations';
-import {
-  CLASSIC_FOOTER_ICON_BUTTON_CLASS,
-  CLEAN_FOOTER_ICON_BUTTON_CLASS,
-  useCleanChatLook,
-} from '../chat-look';
+import { Button } from '../Button';
+import { CLEAN_ICON_BUTTON_VARIANT, useCleanChatLook } from '../chat-look';
 import { CopyStatusRegion, useAnnouncedCopy } from '../copy-feedback';
 import { Tooltip } from '../Tooltip';
 
@@ -58,24 +55,21 @@ function ChatCopyActionControl({
   return (
     <span className="relative inline-flex shrink-0">
       <Tooltip label={name}>
-        <button
-          type="button"
+        <Button
+          variant={CLEAN_ICON_BUTTON_VARIANT}
+          size="sm"
+          iconOnly
           onClick={handleClick}
           aria-label={name}
           data-testid={dataTestId}
           data-copied={copied ? '' : undefined}
-          className={
-            clean
-              ? CLEAN_FOOTER_ICON_BUTTON_CLASS
-              : CLASSIC_FOOTER_ICON_BUTTON_CLASS
-          }
         >
           {copied ? (
             <CheckIcon width={iconSize} height={iconSize} aria-hidden="true" />
           ) : (
             <CopyIcon width={iconSize} height={iconSize} aria-hidden="true" />
           )}
-        </button>
+        </Button>
       </Tooltip>
       <CopyStatusRegion
         announcement={announcement}

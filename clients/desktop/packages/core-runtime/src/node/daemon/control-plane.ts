@@ -1,6 +1,8 @@
 import { Buffer } from 'node:buffer';
 import { Duplex } from 'node:stream';
 import {
+  CANOPY_MAX_MESSAGE_BYTES,
+  CanopyTransportError,
   createCanopyFramedConnection,
   resolveCanopyChannelLimits,
   type CanopyFramedAuthOptions,
@@ -22,6 +24,7 @@ import {
   type CanopyJsonRpcId,
   type CanopyJsonRpcMessage,
   type CanopyJsonRpcRequest,
+  type CanopyStreamCursor,
   type CoreRuntimeInitializeResult,
 } from '@canopy/protocol/canopy-core';
 
@@ -34,6 +37,7 @@ import {
   canopyPermissionDeniedError,
 } from '../../runtime/errors';
 import { hostExecutionOption } from '../../runtime/host-execution';
+import { streamPositionBefore } from '../../runtime/stream-position';
 import type { CanopyDispatcher } from '../../runtime/types';
 import type {
   PlatformByteStream,
@@ -129,7 +133,45 @@ export interface CanopyDaemonControlPlaneOptions {
    * decided call replays on a new lease (DM-5 #4).
    */
   readonly sameKeyFencedOperations?: readonly string[];
+  /**
+   * Fits a query or instruction reply to what this connection's client said
+   * it decodes (`client.capabilities` in `core.runtime.initialize`), so an
+   * additive field reaches only clients that understand it.
+   */
+  readonly fitReply?: CanopyControlReplyFit;
   readonly clock?: CanopyDaemonClock;
+}
+
+/** Per-connection reply fitting; both halves see the client's capabilities. */
+export interface CanopyControlReplyFit {
+  result(
+    method: string,
+    result: unknown,
+    clientCapabilities: ReadonlySet<string>,
+  ): unknown;
+  error(
+    method: string,
+    error: CanopyErrorPayload,
+    clientCapabilities: ReadonlySet<string>,
+  ): CanopyErrorPayload;
+}
+
+/** Applies each fit in turn, so independent additive fields fit together. */
+export function composeCanopyControlReplyFits(
+  ...fits: readonly CanopyControlReplyFit[]
+): CanopyControlReplyFit {
+  return {
+    result: (method, result, capabilities) =>
+      fits.reduce(
+        (fitted, fit) => fit.result(method, fitted, capabilities),
+        result,
+      ),
+    error: (method, error, capabilities) =>
+      fits.reduce(
+        (fitted, fit) => fit.error(method, fitted, capabilities),
+        error,
+      ),
+  };
 }
 
 export interface CanopyDaemonControlPlane {
@@ -152,6 +194,7 @@ type CanopyControlServingOptions = Pick<
   | 'maxActiveRequests'
   | 'leaseBoundOperations'
   | 'sameKeyFencedOperations'
+  | 'fitReply'
   | 'clock'
 >;
 
@@ -224,6 +267,7 @@ export function acceptCanopyFramedConnections(options: {
     try {
       options.onConnection(
         await createCanopyFramedConnection(duplex, {
+          maxMessageBytes: CANOPY_MAX_MESSAGE_BYTES,
           ...options.connection,
           role: 'server',
           auth: options.auth,
@@ -387,6 +431,7 @@ function serveControlConnection(
     );
   /** This connection's negotiated manifest; nothing outside it is served. */
   let advertised: ReadonlySet<string> = new Set();
+  let clientCapabilities: ReadonlySet<string> = new Set();
   let advertisedChannelKinds: ReadonlySet<string> = new Set();
   const identity = (): CanopyControlConnectionIdentity => ({
     connectionId: connection.connectionId,
@@ -397,7 +442,24 @@ function serveControlConnection(
   let active = 0;
   const maxActive = options.maxActiveRequests ?? DEFAULT_MAX_ACTIVE_REQUESTS;
   const send = (message: CanopyJsonRpcMessage): Promise<void> =>
-    connection.send(message).catch(() => undefined);
+    connection.send(message).catch((error: unknown) => {
+      // Refused before a byte was written, such as a result larger than the
+      // client reassembles: the request is still answered.
+      if (
+        connection.signal.aborted ||
+        !(error instanceof CanopyTransportError) ||
+        !('id' in message) ||
+        'error' in message
+      )
+        return;
+      return connection
+        .send({
+          jsonrpc: '2.0',
+          id: message.id,
+          error: encodeCanopyError(error.payload),
+        })
+        .catch(() => undefined);
+    });
   const fail = (id: CanopyJsonRpcId, error: unknown): Promise<void> =>
     send({ jsonrpc: '2.0', id, error: encodeCanopyError(errorPayload(error)) });
   const offEvicted = registrations.onEvicted((event) => {
@@ -479,6 +541,15 @@ function serveControlConnection(
     );
     if (!params.success)
       throw canopyInvalidArgumentError('Invalid core.runtime.initialize.');
+    clientCapabilities = new Set(params.data.client.capabilities);
+    // Additive: a client that reassembles message parts says how large.
+    const { maxMessageBytes } = params.data.client;
+    if (
+      typeof maxMessageBytes === 'number' &&
+      Number.isSafeInteger(maxMessageBytes) &&
+      maxMessageBytes > 0
+    )
+      connection.allowPeerMessageBytes?.(maxMessageBytes);
     // Initialize requires no grant, so the runtime reads run with runtime-read
     // added; advertised availability is still judged on the caller's grants.
     const reader: CanopyCallerDescriptor = {
@@ -540,6 +611,9 @@ function serveControlConnection(
         channels: channelKindsForCaller,
       },
       limits: {
+        ...(connection.maxMessageBytes !== undefined && {
+          maxMessageBytes: connection.maxMessageBytes,
+        }),
         channels: {
           maxChannelsPerLease: channels.maxChannelsPerLease,
           maxChunkBytes: channelLimits.maxChunkBytes,
@@ -615,23 +689,58 @@ function serveControlConnection(
       registration.attach(() => handle.close());
       const { subscriptionId } = handle.openResult;
       await connection.send({ jsonrpc: '2.0', id, result: handle.openResult });
+      let delivered: CanopyStreamCursor | undefined;
       // Pulling applies the dispatcher's bounded buffer as backpressure.
       for await (const frame of handle.frames) {
-        if (frame.kind === 'item')
-          await connection.send({
+        if (frame.kind === 'item') {
+          const refusal = await connection
+            .send({
+              jsonrpc: '2.0',
+              method: `${method}.item`,
+              params: {
+                subscriptionId,
+                cursor: frame.cursor,
+                itemId: `item-${frame.cursor.sequence}`,
+                occurredAt: new Date(
+                  (options.clock ?? CANOPY_SYSTEM_CLOCK).now(),
+                ).toISOString(),
+                item: frame.item,
+              },
+            })
+            .then(
+              () => null,
+              (error: unknown) => {
+                if (
+                  connection.signal.aborted ||
+                  !(error instanceof CanopyTransportError)
+                )
+                  throw error;
+                return error.payload;
+              },
+            );
+          if (refusal === null) {
+            delivered = frame.cursor;
+            continue;
+          }
+          // Refused before a byte was written, such as an item larger than
+          // the client joins: only this stream ends, typed (CAN-5684), at
+          // the position before the refused item so a resume reads it again.
+          handle.close();
+          return await connection.send({
             jsonrpc: '2.0',
-            method: `${method}.item`,
+            method: `${method}.end`,
             params: {
               subscriptionId,
-              cursor: frame.cursor,
-              itemId: `item-${frame.cursor.sequence}`,
-              occurredAt: new Date(
-                (options.clock ?? CANOPY_SYSTEM_CLOCK).now(),
-              ).toISOString(),
-              item: frame.item,
+              cursor: streamPositionBefore(
+                frame.cursor,
+                delivered,
+                handle.openResult.acceptedCursor,
+              ),
+              outcome: 'error',
+              error: refusal,
             },
           });
-        else
+        } else
           await connection.send({
             jsonrpc: '2.0',
             method: `${method}.end`,
@@ -678,12 +787,28 @@ function serveControlConnection(
           ? await options.dispatcher.query(method, params, call)
           : await options.dispatcher.instruction(method, params, call);
       } catch (error) {
-        throw fence?.refusal() ?? error;
+        const refusal = fence?.refusal() ?? error;
+        throw options.fitReply && refusal instanceof CanopyOperationError
+          ? new CanopyOperationError(
+              options.fitReply.error(
+                method,
+                refusal.payload,
+                clientCapabilities,
+              ),
+              refusal.runtimeCause,
+            )
+          : refusal;
       }
       // Checked in the same turn as the send, so no lease change slips between.
       const refused = fence?.refusal();
       if (refused) throw refused;
-      return await send({ jsonrpc: '2.0', id, result });
+      return await send({
+        jsonrpc: '2.0',
+        id,
+        result: options.fitReply
+          ? options.fitReply.result(method, result, clientCapabilities)
+          : result,
+      });
     } finally {
       fence?.dispose();
     }
@@ -918,6 +1043,7 @@ export function serveCanopyControlStream(
   void (async (): Promise<void> => {
     try {
       const connection = await createCanopyFramedConnection(duplex, {
+        maxMessageBytes: CANOPY_MAX_MESSAGE_BYTES,
         ...options.connection,
         role: 'server',
         auth: options.auth,

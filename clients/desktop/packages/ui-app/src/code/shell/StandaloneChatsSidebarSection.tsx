@@ -1278,13 +1278,9 @@ function ChatsSectionWorkEntryRow({
     multiSelect === undefined
       ? undefined
       : multiSelect.menuItemsFor(selectionKey, {
-          toggleSelection: `${rowTestId}-toggle-selection`,
           bulkPin: `${rowTestId}-bulk-pin`,
-          bulkDone: `${rowTestId}-bulk-done`,
-          bulkNotifications: `${rowTestId}-bulk-notifications`,
           bulkArchive: `${rowTestId}-bulk-archive`,
           bulkDelete: `${rowTestId}-bulk-delete`,
-          clearSelection: `${rowTestId}-clear-selection`,
         });
   // A row in a selection of 2 or more shows the selection's menu alone,
   // with the group moves the list built for it.

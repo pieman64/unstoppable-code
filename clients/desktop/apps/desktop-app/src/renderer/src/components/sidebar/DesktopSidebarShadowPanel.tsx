@@ -7,6 +7,7 @@ import {
   type JSX,
 } from 'react';
 import type { CanopyClient, SessionViewModel } from '@canopy/app-core';
+import { Disclosure } from '@canopy/ui-shared/components';
 import { ipcCanopyClient } from '@/client/ipc-canopy-client';
 import {
   WORKTREE_STATUS_META,
@@ -199,17 +200,13 @@ export function DesktopSidebarShadowPanel({
       className="mt-2 border-t border-dashed pt-2"
       data-testid="desktop-sidebar-shadow-panel"
     >
-      <button
-        type="button"
-        className="focus-ring flex w-full items-center justify-between rounded px-2 py-1 text-xs fg-warning hover:bg-subtle"
-        onClick={() => setExpanded((value) => !value)}
-        aria-expanded={expanded}
+      <Disclosure
+        label="Shared sidebar shadow"
+        open={expanded}
+        onOpenChange={setExpanded}
+        dataTestId="desktop-sidebar-shadow-disclosure"
       >
-        Shared sidebar shadow
-        <span aria-hidden="true">{expanded ? '−' : '+'}</span>
-      </button>
-      {expanded && (
-        <div className="mt-1 overflow-hidden rounded border">
+        <div className="overflow-hidden rounded border">
           <Profiler
             id="desktop-sidebar-shadow"
             onRender={commitCounter.increment}
@@ -230,7 +227,7 @@ export function DesktopSidebarShadowPanel({
             refreshCount={refreshCount}
           />
         </div>
-      )}
+      </Disclosure>
     </section>
   );
 }
@@ -260,26 +257,20 @@ function ParityReadout({
       className="border-t bg-subtle p-2 text-2xs"
       data-testid="desktop-sidebar-shadow-parity-readout"
     >
-      <button
-        type="button"
-        className="focus-ring flex w-full justify-between"
-        onClick={onToggle}
-        aria-expanded={expanded}
+      <Disclosure
+        label={`Parity: ${mismatches.length} mismatch(es)`}
+        open={expanded}
+        onOpenChange={onToggle}
+        dataTestId="desktop-sidebar-shadow-parity-disclosure"
       >
-        Parity: {mismatches.length} mismatch(es)
-        <span>{expanded ? '−' : '+'}</span>
-      </button>
-      {expanded && (
-        <>
-          <div>
-            refreshes {refreshCount} · build{' '}
-            {Number(lastBuildDuration.toFixed(2))} ms · commits {commitCount}
-          </div>
-          <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap">
-            {JSON.stringify(mismatches, null, 2)}
-          </pre>
-        </>
-      )}
+        <div>
+          refreshes {refreshCount} · build{' '}
+          {Number(lastBuildDuration.toFixed(2))} ms · commits {commitCount}
+        </div>
+        <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap">
+          {JSON.stringify(mismatches, null, 2)}
+        </pre>
+      </Disclosure>
     </div>
   );
 }

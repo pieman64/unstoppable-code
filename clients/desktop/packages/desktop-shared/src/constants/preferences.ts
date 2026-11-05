@@ -1,5 +1,5 @@
 import { DEFAULT_SIDEBAR_WIDTH_PX } from '@canopy/protocol';
-import type { ChatEnrichmentMode } from '../types';
+import type { ActivationQuietHours, ChatEnrichmentMode } from '../types';
 
 export const DEFAULT_LINEAR_CHAT_ENRICHMENT_MODE: ChatEnrichmentMode =
   'replace';
@@ -47,3 +47,9 @@ export const SIDEBAR_MIN_WIDTH = 220;
 export const SIDEBAR_MAX_WIDTH = 480;
 // Shared with the web rail through the protocol package so the two cannot drift.
 export const DEFAULT_SIDEBAR_WIDTH = DEFAULT_SIDEBAR_WIDTH_PX;
+
+export const DEFAULT_ACTIVATION_QUIET_HOURS: ActivationQuietHours = {
+  enabled: true,
+  startHour: 22,
+  endHour: 8,
+};

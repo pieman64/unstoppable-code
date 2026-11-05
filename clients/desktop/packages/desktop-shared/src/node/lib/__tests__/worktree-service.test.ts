@@ -1,3 +1,5 @@
+import * as cliReads from '../worktree-cli-reads';
+import * as processLocks from '../../w5-host-cohort/process-file-lock';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import type * as FsPromises from 'node:fs/promises';
@@ -13,10 +15,12 @@ import {
   createMultiRepoWorktree,
   createSingleRepoWorktree,
   archiveSingleRepoWorktree,
+  archiveMultiRepoWorktree,
   ensureAgentsMdSymlinkOrCopy,
   listWorktreeCliRepoEntries,
   listWorktreePipelineExecutions,
   rollbackWorkspaceWorktree,
+  rollbackPersistedReservation,
 } from '../worktree-service';
 import { BrowserProfileRepository } from '../../browser-profiles/repository';
 import { resolveBrowserTaskOwner } from '../../browser-profiles/owners';
@@ -134,6 +138,244 @@ describe('desktop-shared node worktree service', () => {
     }
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
+
+  it('does not delete a competing creator checkout when Git refuses the candidate path', async () => {
+    const repoPath = path.join(tempDir, 'repo');
+    initRepo(repoPath);
+    const dataDir = process.env.CANOPY_DATA_DIR ?? '';
+    writeWorkspaceIndex(dataDir, [
+      { id: 'single', name: 'Single', type: 'single-repo' },
+    ]);
+    writeWorkspaceConfig(dataDir, 'single', {
+      type: 'single-repo',
+      repoPath,
+      repos: [],
+    });
+    const winnerPath = path.join(
+      dataDir,
+      'workspaces',
+      'single',
+      'worktrees',
+      'contended',
+    );
+    fs.mkdirSync(winnerPath, { recursive: true });
+    fs.writeFileSync(
+      path.join(winnerPath, 'winner.txt'),
+      'owned by another invocation',
+    );
+    await expect(
+      createSingleRepoWorktree({
+        workspaceId: 'single',
+        branchName: 'contended',
+      }),
+    ).rejects.toThrow();
+    expect(fs.readFileSync(path.join(winnerPath, 'winner.txt'), 'utf8')).toBe(
+      'owned by another invocation',
+    );
+  });
+
+  it('keeps two concurrent CLI creates that read the same original list', async () => {
+    const repoPath = path.join(tempDir, 'repo');
+    initRepo(repoPath);
+    const dataDir = process.env.CANOPY_DATA_DIR ?? '';
+    writeWorkspaceIndex(dataDir, [
+      { id: 'single', name: 'Single', type: 'single-repo' },
+    ]);
+    writeWorkspaceConfig(dataDir, 'single', {
+      type: 'single-repo',
+      repoPath,
+      repos: [],
+    });
+    const actual = cliReads.runGit;
+    let arrived = 0;
+    let release = (): void => undefined;
+    const bothCreated = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    jest.spyOn(cliReads, 'runGit').mockImplementation(async (args, cwd) => {
+      const output = await actual(args, cwd);
+      if (args[0] === 'worktree' && args[1] === 'add') {
+        if (++arrived === 2) release();
+        await bothCreated;
+      }
+      return output;
+    });
+    await Promise.all(
+      ['first', 'second'].map((branchName) =>
+        createSingleRepoWorktree({
+          workspaceId: 'single',
+          branchName,
+          seedPanelLayoutMode: false,
+        }),
+      ),
+    );
+    const result = await cliReads.readWorktrees('single');
+    expect(result.map((row) => row.id).sort()).toEqual(['first', 'second']);
+  });
+
+  it.each(['single', 'multi-source', 'multi-member'] as const)(
+    'reports uncertain effects when the first Git add fails after creating a checkout: %s',
+    async (mode) => {
+      const repoPath = path.join(tempDir, 'repo');
+      initRepo(repoPath);
+      const dataDir = process.env.CANOPY_DATA_DIR ?? '';
+      writeWorkspaceIndex(dataDir, [
+        {
+          id: 'partial',
+          name: 'Partial',
+          type: mode === 'single' ? 'single-repo' : 'multi-repo',
+        },
+      ]);
+      writeWorkspaceConfig(
+        dataDir,
+        'partial',
+        mode === 'single'
+          ? { type: 'single-repo', repoPath, repos: [] }
+          : {
+              type: 'multi-repo',
+              repos:
+                mode === 'multi-member'
+                  ? [{ id: 'repo', name: 'Repo', repoPath }]
+                  : [],
+              ...(mode === 'multi-source' ? { sourceRepoPath: repoPath } : {}),
+            },
+      );
+      const primary = new Error('Git hook failed after checkout creation');
+      const actual = cliReads.runGit;
+      let attemptedPath = '';
+      jest.spyOn(cliReads, 'runGit').mockImplementation(async (args, cwd) => {
+        const output = await actual(args, cwd);
+        if (args[0] === 'worktree' && args[1] === 'add') {
+          attemptedPath = args[4] ?? '';
+          throw primary;
+        }
+        return output;
+      });
+      const create =
+        mode === 'single' ? createSingleRepoWorktree : createMultiRepoWorktree;
+      const error: unknown = await create({
+        workspaceId: 'partial',
+        branchName: 'candidate',
+        seedPanelLayoutMode: false,
+      }).catch((caught: unknown) => caught);
+      const remainingPaths: unknown = expect.arrayContaining([attemptedPath]);
+      expect(error).toMatchObject({
+        name: 'WorktreeCreationConflictError',
+        cause: primary,
+        message: primary.message,
+        remainingPaths,
+      });
+      expect(fs.existsSync(path.join(attemptedPath, 'README.md'))).toBe(true);
+      expect(readWorktrees(dataDir, 'partial')).toEqual({
+        version: 1,
+        worktrees: [],
+      });
+    },
+  );
+
+  it('refuses rollback after another operation replaces the same candidate ID', async () => {
+    const repoPath = path.join(tempDir, 'repo');
+    initRepo(repoPath);
+    const dataDir = process.env.CANOPY_DATA_DIR ?? '';
+    writeWorkspaceIndex(dataDir, [
+      { id: 'single', name: 'Single', type: 'single-repo' },
+    ]);
+    writeWorkspaceConfig(dataDir, 'single', {
+      type: 'single-repo',
+      repoPath,
+      repos: [],
+    });
+    const created = await createSingleRepoWorktree({
+      workspaceId: 'single',
+      branchName: 'candidate',
+      seedPanelLayoutMode: false,
+    });
+    const file = path.join(dataDir, 'workspaces/single/worktrees.json');
+    const winner = {
+      id: created.id,
+      branchName: 'winner',
+      createdAt: 'later',
+      cliCreationToken: 'other-invocation',
+    };
+    fs.writeFileSync(file, JSON.stringify({ version: 1, worktrees: [winner] }));
+    const metadata = path.join(
+      dataDir,
+      'workspaces/single/worktree-data/candidate',
+    );
+    fs.mkdirSync(metadata, { recursive: true });
+    fs.writeFileSync(path.join(metadata, 'winner.txt'), 'keep');
+    await expect(
+      rollbackPersistedReservation('single', created.id, metadata),
+    ).rejects.toMatchObject({ name: 'WorktreeCreationConflictError' });
+    expect(readWorktrees(dataDir, 'single')).toEqual({
+      version: 1,
+      worktrees: [winner],
+    });
+    expect(fs.readFileSync(path.join(metadata, 'winner.txt'), 'utf8')).toBe(
+      'keep',
+    );
+  });
+
+  it.each(['single', 'multi'] as const)(
+    'reports partial archive effects if metadata locking fails after Git removal: %s',
+    async (mode) => {
+      const repoPath = path.join(tempDir, 'repo');
+      initRepo(repoPath);
+      const dataDir = process.env.CANOPY_DATA_DIR ?? '';
+      writeWorkspaceIndex(dataDir, [
+        {
+          id: 'archive',
+          name: 'Archive',
+          type: mode === 'single' ? 'single-repo' : 'multi-repo',
+        },
+      ]);
+      writeWorkspaceConfig(
+        dataDir,
+        'archive',
+        mode === 'single'
+          ? { type: 'single-repo', repoPath, repos: [] }
+          : {
+              type: 'multi-repo',
+              repos: [{ id: 'repo', name: 'Repo', repoPath }],
+            },
+      );
+      const create =
+        mode === 'single' ? createSingleRepoWorktree : createMultiRepoWorktree;
+      await create({
+        workspaceId: 'archive',
+        branchName: 'candidate',
+        seedPanelLayoutMode: false,
+      });
+      const listPath = path.join(dataDir, 'workspaces/archive/worktrees.json');
+      const before = fs.readFileSync(listPath, 'utf8');
+      const primary = new processLocks.W5ProcessFileLockTimeoutError(listPath);
+      jest
+        .spyOn(processLocks, 'worktreeListProcessLock')
+        .mockReturnValue(() => Promise.reject(primary));
+      const gitCalls = jest.spyOn(cliReads, 'runGit');
+      const archive =
+        mode === 'single'
+          ? archiveSingleRepoWorktree
+          : archiveMultiRepoWorktree;
+      await expect(
+        archive({ workspaceId: 'archive', worktreeId: 'candidate' }),
+      ).rejects.toMatchObject({
+        name: 'WorktreeArchiveMetadataError',
+        cause: primary,
+      });
+      expect(
+        fs.existsSync(
+          path.join(dataDir, 'workspaces/archive/worktrees/candidate'),
+        ),
+      ).toBe(false);
+      expect(fs.readFileSync(listPath, 'utf8')).toBe(before);
+      expect(
+        gitCalls.mock.calls.filter(
+          ([args]) => args[0] === 'worktree' && args[1] === 'remove',
+        ),
+      ).toHaveLength(1);
+    },
+  );
 
   it('journals browser retirement after CLI owner removal without an Electron runtime', async () => {
     const repoPath = path.join(tempDir, 'repo');
@@ -1727,99 +1969,114 @@ describe('desktop-shared node worktree service', () => {
     ]);
   });
 
-  // Repo paths do not exist, so `git worktree remove` fails and each removal
-  // falls back to rm: repo-a's rm rejects, repo-b's waits for release.
-  function holdRepoRemovals(): {
-    failure: Error;
-    release: () => void;
-    repoBDone: () => boolean;
-    rm: jest.SpyInstance;
-  } {
+  it('settles every owned rollback removal before returning its primary failure', async () => {
+    const dataDir = process.env.CANOPY_DATA_DIR ?? '';
+    const worktreeDir = path.join(dataDir, 'workspaces/ws/worktrees/wt');
+    fs.mkdirSync(worktreeDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dataDir, 'workspaces/ws/worktrees.json'),
+      JSON.stringify({
+        version: 1,
+        worktrees: [
+          {
+            id: 'wt',
+            branchName: 'wt',
+            createdAt: 'now',
+            cliCreationToken: 'owned',
+          },
+        ],
+      }),
+    );
     const fsPromises =
       jest.requireActual<typeof FsPromises>('node:fs/promises');
     const actualRm = fsPromises.rm;
-    const failure = new Error('repo-a removal failed');
-    let release: () => void = () => {};
-    let repoBDone = false;
-    const rm = jest
-      .spyOn(fsPromises, 'rm')
-      .mockImplementation(async (target, options) => {
-        if (String(target).endsWith(`${path.sep}repo-a`)) throw failure;
-        if (!String(target).endsWith(`${path.sep}repo-b`)) {
-          return actualRm(target, options);
-        }
-        await new Promise<void>((resolve) => {
-          release = resolve;
-        });
-        repoBDone = true;
-      });
-    return {
-      failure,
-      release: () => release(),
-      repoBDone: () => repoBDone,
-      rm,
-    };
-  }
-
-  async function waitForRepoBRemoval(rm: jest.SpyInstance): Promise<void> {
-    while (
-      !rm.mock.calls.some(([target]) => String(target).endsWith('repo-b'))
-    ) {
-      await new Promise<void>((resolve) => setImmediate(resolve));
-    }
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-
-  const missingRepos = ['repo-a', 'repo-b'].map((id) => ({
-    id,
-    name: id,
-    repoPath: path.join(os.tmpdir(), 'canopy-missing-repo', id),
-  }));
-
-  it('rollbackWorkspaceWorktree waits for every repo removal before rejecting', async () => {
-    const held = holdRepoRemovals();
-    const worktreeDir = path.join(tempDir, 'rollback-worktree');
+    const primary = new Error('repo-a cleanup failed');
+    let release = (): void => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered = (): void => undefined;
+    const removing = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let removedB = false;
+    jest.spyOn(fsPromises, 'rm').mockImplementation(async (target, options) => {
+      if (String(target).endsWith(`${path.sep}repo-a`)) throw primary;
+      if (String(target).endsWith(`${path.sep}repo-b`)) {
+        entered();
+        await gate;
+        removedB = true;
+        return;
+      }
+      await actualRm(target, options);
+    });
+    const repos = ['repo-a', 'repo-b'].map((id) => ({
+      id,
+      name: id,
+      repoPath: path.join(tempDir, 'missing', id),
+    }));
     let settled = false;
     const rollback = rollbackWorkspaceWorktree(
       'ws',
       'wt',
       worktreeDir,
-      missingRepos,
+      repos,
+      undefined,
+      undefined,
+      'owned',
     ).finally(() => {
       settled = true;
     });
-    rollback.catch(() => undefined);
-
-    await waitForRepoBRemoval(held.rm);
+    void rollback.catch(() => undefined);
+    await removing;
     expect(settled).toBe(false);
-    expect(held.rm).not.toHaveBeenCalledWith(worktreeDir, expect.anything());
-    held.release();
-    await expect(rollback).rejects.toBe(held.failure);
-    expect(held.repoBDone()).toBe(true);
+    expect(fs.existsSync(worktreeDir)).toBe(true);
+    release();
+    await expect(rollback).rejects.toBe(primary);
+    expect(removedB).toBe(true);
+    expect(fs.existsSync(worktreeDir)).toBe(true);
+    expect(readWorktrees(dataDir, 'ws')).toMatchObject({
+      worktrees: [{ id: 'wt', cliCreationToken: 'owned' }],
+    });
   });
 
-  it('createMultiRepoWorktree finishes every git cleanup before removing the worktree dir', async () => {
+  it('refuses rollback without invocation ownership before deleting files', async () => {
+    const worktreeDir = path.join(tempDir, 'rollback-worktree');
+    fs.mkdirSync(worktreeDir);
+    fs.writeFileSync(path.join(worktreeDir, 'winner.txt'), 'winner');
+    await expect(
+      rollbackWorkspaceWorktree('ws', 'wt', worktreeDir, []),
+    ).rejects.toMatchObject({
+      name: 'WorktreeCreationConflictError',
+      remainingPaths: [worktreeDir],
+    });
+    expect(fs.readFileSync(path.join(worktreeDir, 'winner.txt'), 'utf8')).toBe(
+      'winner',
+    );
+  });
+
+  it('preserves uncertain multi-repo effects and the primary Git error', async () => {
     const dataDir = process.env.CANOPY_DATA_DIR ?? '';
     writeWorkspaceIndex(dataDir, [
       { id: 'ws', name: 'WS', type: 'multi-repo' },
     ]);
     writeWorkspaceConfig(dataDir, 'ws', {
       type: 'multi-repo',
-      repos: missingRepos,
+      repos: [
+        {
+          id: 'missing',
+          name: 'Missing',
+          repoPath: path.join(tempDir, 'missing-repo'),
+        },
+      ],
     });
-    const held = holdRepoRemovals();
     const worktreeDir = path.join(dataDir, 'workspaces/ws/worktrees/feature');
-    const creation = createMultiRepoWorktree({
-      workspaceId: 'ws',
-      branchName: 'feature',
+    await expect(
+      createMultiRepoWorktree({ workspaceId: 'ws', branchName: 'feature' }),
+    ).rejects.toMatchObject({
+      name: 'WorktreeCreationConflictError',
+      remainingPaths: [worktreeDir, path.join(worktreeDir, 'repos/missing')],
     });
-    creation.catch(() => undefined);
-
-    await waitForRepoBRemoval(held.rm);
-    expect(held.rm).not.toHaveBeenCalledWith(worktreeDir, expect.anything());
-    held.release();
-    await expect(creation).rejects.toThrow();
-    expect(held.repoBDone()).toBe(true);
-    expect(held.rm).toHaveBeenCalledWith(worktreeDir, expect.anything());
+    expect(fs.existsSync(worktreeDir)).toBe(true);
   });
 });

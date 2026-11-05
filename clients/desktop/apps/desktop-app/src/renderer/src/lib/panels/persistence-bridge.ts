@@ -88,10 +88,7 @@ import {
 } from './default-layout';
 import { DEFAULT_TERMINAL_GROUP_ID } from './panel-group-ids';
 import { retargetTemplateForWorktree } from './default-layout-template';
-import {
-  prepareBrowserPanelMigration,
-  resetBrowserPanelMigrationForTests,
-} from './browser-panel-migration';
+import { prepareBrowserPanelMigration } from './browser-panel-migration';
 import { panelSurfaceForWorktreeKey } from './panel-surface';
 import {
   hideOptionalMinimalRegions,
@@ -1253,33 +1250,4 @@ export async function resetLayoutToDefault(
   releaseOmittedPipelinePanelUi(worktreeKey);
   scheduleSave(worktreeKey);
   return true;
-}
-
-/** Test-only: clears module state (subscription, hydration, pending saves,
- * teardown flush listeners). */
-export function resetPanelLayoutPersistenceBridgeForTests(): void {
-  pendingSaves.forEach((timer) => {
-    clearTimeout(timer);
-  });
-  pendingSaves.clear();
-  customizedKeys.clear();
-  failedSaves.clear();
-  automaticSaveKeys.clear();
-  layoutDimensions.clear();
-  inFlightSaves.clear();
-  hydratedKeys.clear();
-  ensurePromises.clear();
-  suspendedKeys.clear();
-  if (unsubscribe !== null) {
-    unsubscribe();
-    unsubscribe = null;
-  }
-  previousLayouts = {};
-  resetBrowserPanelMigrationForTests();
-  previousLayoutSizeRevisions = {};
-  if (flushListenersInstalled && typeof window !== 'undefined') {
-    window.removeEventListener('pagehide', handleWindowTeardown);
-    window.removeEventListener('beforeunload', handleWindowTeardown);
-  }
-  flushListenersInstalled = false;
 }

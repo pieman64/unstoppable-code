@@ -90,6 +90,18 @@ export const PortalGitHubPullRequestProgressSchema = z.object({
   number: z.number().int().positive(),
   title: z.string().max(512).optional(),
   url: githubUrl,
+  additions: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(Number.MAX_SAFE_INTEGER)
+    .optional(),
+  deletions: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(Number.MAX_SAFE_INTEGER)
+    .optional(),
   baseRefName: z.string().max(256),
   state: z.enum(['open', 'merged', 'closed']),
   queue: z

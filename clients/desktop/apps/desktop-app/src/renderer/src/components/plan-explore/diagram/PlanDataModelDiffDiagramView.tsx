@@ -30,6 +30,7 @@ import {
   TextArea,
   ThinkingSpinner,
   Heading,
+  PaneSheet,
 } from '@canopy/ui-shared/components';
 import { DiagramCenteredMessage } from './DiagramCenteredMessage';
 import type {
@@ -260,9 +261,10 @@ function SelectedEntityDetail({
   };
 
   return (
-    <div
+    <PaneSheet
+      placement="bottom"
+      aria-label="Entity detail"
       data-testid="data-model-selected-entity-detail"
-      className="absolute bottom-3 left-3 right-3 z-20 max-h-3/5 overflow-auto rounded-lg bg-popover p-3 shadow-lg"
     >
       <div className="mb-1 flex items-start justify-between gap-2">
         <div className="flex min-w-0 items-center gap-1.5">
@@ -430,7 +432,7 @@ function SelectedEntityDetail({
           )}
         </div>
       )}
-    </div>
+    </PaneSheet>
   );
 }
 

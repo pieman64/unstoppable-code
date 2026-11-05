@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { safeReadJson } from '../lib/fs-utils';
 import { getCollectionConfigFilePath } from '../lib/paths';
 import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
@@ -130,6 +131,43 @@ function addMatchSelection(
   });
 }
 
+/** `extras`' own MCP servers and their sign-in choices, for an agent or a chat. */
+function addExtraMcpSelections(
+  selections: ChatTabPluginSelections,
+  extras: ChatTabPluginSelections,
+): void {
+  for (const ref of extras.mcpServerRefs ?? [])
+    addMcpSelection(selections, ref);
+  for (const preference of extras.mcpHttpAuthPreferences ?? []) {
+    const preferences = (selections.mcpHttpAuthPreferences ??= []);
+    if (
+      !preferences.some((entry) =>
+        isDeepStrictEqual(entry.target, preference.target),
+      )
+    )
+      preferences.push(preference);
+  }
+}
+
+/**
+ * The matched defaults and `extras` as a chat takes them: collections stay,
+ * and capabilities not yet installed stay for the chat to offer (CAN-5479).
+ */
+function withChatExtras(
+  selections: ChatTabPluginSelections,
+  extras: ChatTabPluginSelections,
+): ChatTabPluginSelections {
+  for (const collectionId of extras.collectionIds)
+    if (!selections.collectionIds.includes(collectionId))
+      selections.collectionIds.push(collectionId);
+  for (const ref of extras.skillRefs) addSkillSelection(selections, ref);
+  for (const ref of extras.pluginRefs) addPluginSelection(selections, ref);
+  addExtraMcpSelections(selections, extras);
+  return (extras.unresolvedCapabilities?.length ?? 0) > 0
+    ? { ...selections, unresolvedCapabilities: extras.unresolvedCapabilities }
+    : selections;
+}
+
 function mergeExtraSelections(
   selections: ChatTabPluginSelections,
   extras: ChatTabPluginSelections,
@@ -142,6 +180,7 @@ function mergeExtraSelections(
   for (const ref of extras.pluginRefs) {
     addPluginSelection(selections, ref);
   }
+  addExtraMcpSelections(selections, extras);
 
   for (const collectionId of extras.collectionIds) {
     const collectionFile = safeReadJson<CollectionConfigFile>(
@@ -267,6 +306,10 @@ export async function resolvePipelinePluginCollections(
       }
     }
 
+    const chatSelections = withChatExtras(
+      cloneSelections(selections),
+      preference.extraSelections,
+    );
     mergeExtraSelections(
       selections,
       preference.extraSelections,
@@ -286,6 +329,7 @@ export async function resolvePipelinePluginCollections(
 
     snapshots[collection.id] = {
       selections,
+      chatSelections,
       sourceCollectionIds,
       missingOptionalDefaults,
       unresolvedRequiredDefaults,

@@ -181,6 +181,7 @@ export function fieldLoadReplayPlan(capture, profile) {
     byteScale: profile.byteScale,
     cardPolicy: profile.cardPolicy ?? 'legacy',
     streamCount: profile.streamCount,
+    incrementalStreamMetadata: profile.incrementalStreamMetadata === true,
     frameBytes,
     owners,
     pooledOwners: pooled.map((owner) => `${owner.scope}/${String(owner.chat)}`),
@@ -588,7 +589,12 @@ async function runChildDescriptorScenario(
     }),
   );
   const backend = new runtime.ChatStateV2Backend(store, {
-    deltaJournal: { checkpointJournalBytes: threshold },
+    deltaJournal: {
+      checkpointJournalBytes: threshold,
+      ...(plan.incrementalStreamMetadata
+        ? { incrementalStreamMetadata: true }
+        : {}),
+    },
     enableFormat4: true,
   });
   backends.push(backend);
@@ -829,7 +835,10 @@ async function runChildDescriptorScenario(
     journalBytes,
     childRewriteBytes,
     rewriteBoundPassed,
-    ...(streamCount === 500 && !rewriteBoundPassed
+    incrementalStreamMetadata: plan.incrementalStreamMetadata,
+    ...(streamCount === 500 &&
+    !rewriteBoundPassed &&
+    !plan.incrementalStreamMetadata
       ? { deferred: 'incremental-stream-metadata-staging' }
       : {}),
     checkpointCycles: checkpoints,
@@ -1100,6 +1109,7 @@ async function main() {
       'byte-scale': { type: 'string' },
       'card-policy': { type: 'string', default: 'legacy' },
       'stream-count': { type: 'string' },
+      'incremental-stream-metadata': { type: 'boolean', default: false },
       output: { type: 'string' },
     },
   });
@@ -1127,6 +1137,7 @@ async function main() {
     ...(values['stream-count']
       ? { streamCount: Number(values['stream-count']) }
       : {}),
+    incrementalStreamMetadata: values['incremental-stream-metadata'],
   };
   const capturePath = values.capture
     ? path.resolve(values.capture)
@@ -1170,7 +1181,8 @@ async function main() {
     if (
       replay.childStreams &&
       !replay.childStreams.rewriteBoundPassed &&
-      replay.childStreams.streamCount !== 500
+      (replay.childStreams.streamCount !== 500 ||
+        replay.childStreams.incrementalStreamMetadata)
     )
       throw new Error(
         'Child sidecar and metadata rewrite bytes exceeded journal bytes / 8',

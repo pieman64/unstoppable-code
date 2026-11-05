@@ -18,6 +18,7 @@ import {
   type BackgroundTrayCounts,
   type BackgroundTrayRun,
   type BackgroundTrayRunStatus,
+  type BackgroundTrayWatcher,
 } from '@canopy/ui-app';
 import type {
   AppAdvisorWatcherSummary,
@@ -56,7 +57,16 @@ import { extractIpcErrorMessage } from '@/lib/errors';
 import { detectChatStoreSurface } from '@/stores/chat/surface';
 import { backgroundProcessToTask } from '@/lib/background-tasks';
 import { WatcherManagementButton } from '@/components/watchers/WatcherManagementButton';
-import { watchersForPipelineExecution } from '@/components/watchers/watcherFilters';
+import {
+  watchersForPipelineExecution,
+  watchersForSubscriberDestination,
+} from '@/components/watchers/watcherFilters';
+import {
+  triggerTitle,
+  watcherTargetDisplay,
+  watcherOwnerDelegateDisplay,
+  localWatcherProgressLabel,
+} from '@/components/watchers/watcherDisplay';
 import { useBackgroundTaskActions } from '../activity/useBackgroundTaskActions';
 import { reportBackgroundProcessSelection } from '@/lib/current-ui-state/backgroundProcessesUiState';
 import { useSubagentEntryActionsValue } from '@/components/subagents/subagent-entry-actions';
@@ -287,16 +297,63 @@ export function ChatBackgroundTray({
   }, [unloadedKey]);
   // GitHub state comes from the watcher summaries main already broadcasts,
   // as the run card reads it; never a request of its own.
-  const hasRuns = executionIds.length + githubReceipts.length > 0;
-  useEffect(
-    () => (hasRuns ? retainAppAdvisorWatchersBridge() : undefined),
-    [hasRuns],
-  );
+  useEffect(() => retainAppAdvisorWatchersBridge(), []);
   const { watchers, completedWatchers } = useAppAdvisorWatchersStore(
     useShallow((state) => ({
       watchers: state.watchers,
       completedWatchers: state.completedWatchers,
     })),
+  );
+  const chatWatchers = useMemo(
+    (): BackgroundTrayWatcher[] =>
+      watchersForSubscriberDestination(watchers, target).flatMap((watcher) => {
+        if (watcher.status !== 'active' && watcher.status !== 'delivery_failed')
+          return [];
+        const display = watcherTargetDisplay(watcher.target);
+        const progress = localWatcherProgressLabel(watcher);
+        return [
+          {
+            id: watcher.id,
+            name: watcher.label || display.title,
+            watching: display.title,
+            trigger: triggerTitle(watcher.trigger),
+            status: watcher.status,
+            details: [
+              ...(display.subtitle
+                ? [{ label: 'Context', value: display.subtitle }]
+                : []),
+              ...display.details,
+              ...(watcher.ownerDelegate
+                ? [
+                    {
+                      label: 'Delegate',
+                      value: watcherOwnerDelegateDisplay(watcher.ownerDelegate)
+                        .name,
+                    },
+                  ]
+                : []),
+              ...(progress
+                ? [
+                    {
+                      label: 'Progress',
+                      value: progress,
+                    },
+                  ]
+                : []),
+            ],
+            followUpInstruction: watcher.followUpInstruction,
+            deliveryError: watcher.deliveryError,
+          },
+        ];
+      }),
+    [watchers, target],
+  );
+  const deleteWatcher = useCallback(
+    (watcherId: string, notifySubscriber: boolean) =>
+      useAppAdvisorWatchersStore
+        .getState()
+        .deleteWatcher(watcherId, { notifySubscriber }),
+    [],
   );
   const liveGitHubReceipts = useMemo(
     () =>
@@ -573,7 +630,6 @@ export function ChatBackgroundTray({
       return receipt.kind === 'pipeline_run' ? (
         <WatcherManagementButton
           appearance="drawer"
-          actionLabel={run.kind === 'pipeline' ? undefined : 'Manage watching'}
           watchers={matching}
           modalTitle="Pipeline watchers"
           modalEmptyMessage="No active watchers for this pipeline."
@@ -583,7 +639,6 @@ export function ChatBackgroundTray({
       ) : (
         <WatcherManagementButton
           appearance="drawer"
-          actionLabel={run.kind === 'pipeline' ? undefined : 'Manage watching'}
           watchers={matching}
           modalTitle="GitHub workflow watchers"
           modalEmptyMessage="No active watchers for this workflow run."
@@ -629,6 +684,7 @@ export function ChatBackgroundTray({
                     tasks,
                     agents,
                     runs,
+                    watchers: chatWatchers,
                     unlistedDelegations,
                   }),
                   sections,
@@ -645,6 +701,8 @@ export function ChatBackgroundTray({
       agents={agents}
       unlistedDelegations={unlistedDelegations}
       runs={runs}
+      watchers={chatWatchers}
+      onDeleteWatcher={deleteWatcher}
       onOpenAgent={subagentActions?.openSubagentChat}
       onStopAgent={stopAgent}
       onViewTree={subagentActions?.viewTree}

@@ -12,7 +12,7 @@ import {
   DataSharingFeaturePills,
   DelayedLoadingPlaceholder,
   ErrorBanner,
-  SettingsFormSkeleton,
+  Skeleton,
   Tooltip,
   SettingsSelect,
   FormField,
@@ -557,7 +557,7 @@ function EnforcedSettingsCard({
         {enforcing && !coverageResolved ? (
           <div className="mt-4" data-testid="enforced-sync-coverage-pending">
             <DelayedLoadingPlaceholder>
-              <SettingsFormSkeleton />
+              <DataSharingScopesSkeleton orgId={orgId} />
             </DelayedLoadingPlaceholder>
           </div>
         ) : null}
@@ -639,6 +639,49 @@ function EnforcedSettingsCard({
         />
       ) : null}
     </section>
+  );
+}
+
+const noop = (): void => undefined;
+
+/** Sample scopes for the loading state: the first two rows, all covered. */
+const SAMPLE_SCOPES: readonly DataSharingScopeKey[] = ['metadata', 'plans'];
+const SAMPLE_COVERAGE: EnforcementScopeCoverage = {
+  metadata: true,
+  plans: true,
+  summaries: true,
+  transcripts: true,
+};
+
+/**
+ * The scope list while plan coverage loads: the real rows with sample scopes
+ * inside `Skeleton`, so skullet measures them into bars in place.
+ */
+function DataSharingScopesSkeleton({ orgId }: { orgId: string }): JSX.Element {
+  return (
+    <Skeleton
+      loading
+      label="Loading data sharing settings"
+      testId="settings-skeleton-form"
+      className="w-full"
+    >
+      <div className="overflow-hidden rounded-lg border">
+        <ul className="flex flex-col gap-4 p-4">
+          {SAMPLE_SCOPES.map((scope) => (
+            <DataSharingScopeRow
+              key={scope}
+              scope={scope}
+              value
+              coverage={SAMPLE_COVERAGE}
+              busy={false}
+              orgId={orgId}
+              metadataProhibited={false}
+              onChange={noop}
+            />
+          ))}
+        </ul>
+      </div>
+    </Skeleton>
   );
 }
 

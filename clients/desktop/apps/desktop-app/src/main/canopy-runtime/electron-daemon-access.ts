@@ -16,6 +16,8 @@ import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import {
   CORE_WORKSPACE_RECORDS_INSTRUCTION_DEFINITIONS,
   CORE_WORKSPACE_RECORDS_QUERY_DEFINITIONS,
+  WORKER_CODE_GRAPH_GENERATION_REPORT_CAPABILITY,
+  WORKER_CODE_GRAPH_READ_REPORT_CAPABILITY,
 } from '@canopy/protocol/canopy-core';
 import { isW5DaemonFlipCompiled } from '../lib/w5-flip-gate';
 import {
@@ -33,6 +35,7 @@ import {
   type ElectronDaemonClient,
 } from './electron-daemon-host';
 import { getElectronDaemonHealth } from './electron-daemon-health';
+import { getDaemonExecutionStatus } from './daemon-execution-status';
 import type { WorkspaceCommitEventBinding } from './workspace-commit-events';
 
 type ElectronDaemonHost = Awaited<ReturnType<typeof createElectronDaemonHost>>;
@@ -136,8 +139,11 @@ export function getElectronDaemonConnections(): ElectronDaemonConnectionService<
       if (flip) await requireW5Capability(result.value, signal);
       return result.value;
     },
-    onSession: (session, caller) =>
-      observeWorkspaceCommits(session, caller.clientInstanceId),
+    onSession: (session, caller) => {
+      observeWorkspaceCommits(session, caller.clientInstanceId);
+      // The resource monitor follows the daemon's status (CAN-5690).
+      if (!stopped) getDaemonExecutionStatus().observe(session);
+    },
     onReachability: (event) => getElectronDaemonHealth().observe(event),
     // The handoff waits a refused daemon out and settles any attach it
     // refuses; after it, a refusal is a failed start that warns and latches.
@@ -198,6 +204,12 @@ function connectTrusted(
     ...setup,
     clientName: 'desktop',
     clientVersion: app.getVersion(),
+    // Electron main records daemon builds' generation reports (CAN-5627)
+    // and daemon reads' read reports (CAN-5691).
+    clientCapabilities: [
+      WORKER_CODE_GRAPH_GENERATION_REPORT_CAPABILITY,
+      WORKER_CODE_GRAPH_READ_REPORT_CAPABILITY,
+    ],
     definitions: ELECTRON_DAEMON_DEFINITIONS,
   });
 }
@@ -401,5 +413,6 @@ export async function disposeElectronDaemonConnections(): Promise<void> {
   await workspaceCommitEvents
     ?.then((binding) => binding.close())
     .catch(() => undefined);
+  getDaemonExecutionStatus().close();
   await connections?.dispose();
 }

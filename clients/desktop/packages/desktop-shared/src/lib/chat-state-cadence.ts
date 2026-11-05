@@ -1,18 +1,23 @@
 // Which committed chat state changes are streamed content.
 //
 // Streamed content is a message upsert, a non-resetting transcript descriptor
-// update, or a runtime patch that changes nothing but `lastActivityAt`. Every
-// provider commit carries such a runtime patch. Anything else changes a
+// update, a runtime patch that changes nothing but `lastActivityAt`, or a
+// delegation card update at the card revision the consumer already holds for
+// that run. Every provider commit carries such a runtime patch. Within a run
+// the card revision moves whenever the card changes, so a card update at a
+// known revision only advances the run's stream. Anything else changes a
 // chat's lifecycle or structure (status, errors, queues, tabs, questions,
-// archives, removals, replacements, transcript resets).
+// archives, removals, replacements, transcript resets, card transitions).
 //
 // Two consumers share this definition so they agree on it:
 //
 // - main's legacy IPC projection may merge consecutive streamed-content
 //   events of one scope into one `chat:state-changed` message, and sends
-//   every other event on its own;
+//   every other event on its own. It holds no card revisions, so it never
+//   merges a card update;
 // - the renderer may publish streamed content to React on the next animation
-//   frame, and renders everything else at once.
+//   frame, and renders everything else at once. It passes the card revisions
+//   of its stream hints, so a merged event is streamed content there too.
 //
 // Both rules keep lifecycle transitions one event each, so React effects
 // keyed on them still observe every intermediate state.
@@ -63,18 +68,30 @@ function chatRuntimeOnlyActivityChanged(
   return jsonValuesEqual(currentRest, nextRest);
 }
 
+/** The card revision a consumer holds for one delegation run, if it has seen it. */
+export type CardRevisionBefore = (run: {
+  readonly chatId: string;
+  readonly delegationId: string;
+  readonly runGeneration: number;
+}) => number | undefined;
+
 /**
- * True when one change is streamed content. `runtimeBefore` returns the
- * chat's runtime state from before the change's event was applied.
+ * True when one change is streamed content. `runtimeBefore` and
+ * `cardRevisionBefore` return what the consumer held before the change's
+ * event was applied.
  */
 function isStreamedChatStateChange(
   change: ChatStateChange,
   runtimeBefore: (chatId: string) => ChatRuntimeState | undefined,
+  cardRevisionBefore: CardRevisionBefore | undefined,
 ): boolean {
   switch (change.type) {
     case 'delegation.card_state_updated':
-      // Descriptor metadata is not streamed token output.
-      return false;
+      // A run not seen yet, or a new card revision, is a card transition.
+      return (
+        cardRevisionBefore !== undefined &&
+        cardRevisionBefore(change) === change.cardRevision
+      );
     case 'message.upserted':
       return true;
     case 'transcript.updated':
@@ -89,15 +106,19 @@ function isStreamedChatStateChange(
   }
 }
 
-/** True when every change of a committed event is streamed content. */
+/**
+ * True when every change of a committed event is streamed content. Without
+ * `cardRevisionBefore`, every card update is a card transition.
+ */
 export function isStreamedChatStateEvent(
   event: ChatStateChangedEvent,
   runtimeBefore: (chatId: string) => ChatRuntimeState | undefined,
+  cardRevisionBefore?: CardRevisionBefore,
 ): boolean {
   return (
     event.changes.length > 0 &&
     event.changes.every((change) =>
-      isStreamedChatStateChange(change, runtimeBefore),
+      isStreamedChatStateChange(change, runtimeBefore, cardRevisionBefore),
     )
   );
 }

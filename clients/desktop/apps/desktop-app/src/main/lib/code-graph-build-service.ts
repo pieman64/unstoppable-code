@@ -6,42 +6,28 @@ import {
 import { getBundledCodeGraphDir } from '@canopy/desktop-shared/pipelines/config-paths';
 import type { CodeGraphBuildOptions } from '@canopy/desktop-shared/types/code-graph';
 import { WORKSPACE_ROOT_REPO_ID } from '@canopy/desktop-shared/types';
-import {
-  createCodeGraphWorktreeBuildService,
-  type CodeGraphWorktreeBuildFailureCause,
-} from '@canopy/code-graph/host/worktree-build-service';
+import { createCodeGraphWorktreeBuildService } from '@canopy/code-graph/host/worktree-build-service';
+import { createCodeGraphGenerationReporter } from '@canopy/core-runtime/node/code-graph';
 import type { CodeGraphWorkerBuildResponse } from '../code-graph/build-runner';
 import { beginCodeGraphWorkerBuild } from '../code-graph/build-runner';
 import { runCodeGraphWorkerFingerprint } from '../code-graph/fingerprint-runner';
-import {
-  CodeGraphReadFailureError,
-  codeGraphReadFailure,
-} from '../code-graph/read-runner';
 import { copyCompatibleCodeGraphBaseForSeed } from './code-graph-base-store';
 import type { CodeGraphBuildReason } from './code-graph-scheduler';
 import {
   clearCodeGraphWorktreeFingerprintCache,
   readCodeGraphWorktreeCompletion,
 } from './code-graph-worktree-fingerprint';
-import {
-  codeGraphGenerationFailureReason,
-  completeCodeGraphGenerationTelemetry,
-  failCodeGraphGenerationTelemetry,
-  startCodeGraphGenerationTelemetry,
-  type CodeGraphGenerationFailureReason,
-} from './code-graph-telemetry';
+import { startCodeGraphGenerationTelemetry } from './code-graph-telemetry';
+import { recordCodeGraphGenerationReport } from './code-graph-generation-report';
 import {
   CODE_GRAPH_UNAVAILABLE_MESSAGE,
   isCodeGraphAvailableForWorkspace,
 } from './code-graph-availability';
 import {
   clearCodeGraphFirstRequest,
-  codeGraphBuildResultDetail,
   codeGraphFirstRequestedAt,
   noteCodeGraphFirstRequest,
-  recordCodeGraphBuildDiagnostic,
 } from './code-graph-build-diagnostics';
-import type { CodeGraphBuildDiagnosticFailureReason } from '../observability/service';
 import { resolveWorktreeCwd } from './resolve-worktree';
 import { readWorkspaceIndexEntry } from './sidebar-items';
 import { readWorkspaceConfig } from './workspace-persistence';
@@ -70,23 +56,6 @@ function canonicalSourceByRepoId(
     }
   }
   return result;
-}
-
-function failureReasons(cause: CodeGraphWorktreeBuildFailureCause): {
-  generation: CodeGraphGenerationFailureReason;
-  diagnostic: CodeGraphBuildDiagnosticFailureReason;
-} {
-  if (cause.kind !== 'error')
-    return { generation: cause.kind, diagnostic: cause.kind };
-  const { error } = cause;
-  const generation = codeGraphGenerationFailureReason(error);
-  return {
-    generation,
-    diagnostic:
-      error instanceof CodeGraphReadFailureError
-        ? codeGraphReadFailure(error)
-        : generation,
-  };
 }
 
 const service = createCodeGraphWorktreeBuildService({
@@ -135,79 +104,21 @@ const service = createCodeGraphWorktreeBuildService({
     clear: (key) => clearCodeGraphFirstRequest(key),
     at: (key) => codeGraphFirstRequestedAt(key),
   },
+  // The same report the daemon returns with its answer (CAN-5627).
   observe: ({ projectId, worktreeId, trigger }) => {
     const telemetry = startCodeGraphGenerationTelemetry({
       operationSeed: `${projectId}/${worktreeId}`,
       scope: 'worktree',
       trigger,
     });
-    return {
-      setRepositoryCount: (count): void => {
-        telemetry.context.repository_count = count;
-      },
-      succeeded: (input): void => {
-        completeCodeGraphGenerationTelemetry(telemetry, {
-          result: input.response.result,
-          fusionDurationMs: input.response.fusionDurationMs ?? 0,
-          seededRepositoryCount: input.seededRepositoryCount,
-          coldFallbackRepositoryCount: input.coldFallbackRepositoryCount,
-          reusedRepositoryCount: input.reusedRepositoryCount,
-          preparationFailed: input.preparationFailed,
-        });
-        recordCodeGraphBuildDiagnostic({
-          projectId,
-          worktreeId,
-          detail: {
-            scope: 'worktree',
-            trigger,
-            outcome: 'success',
-            ...(input.attemptId === undefined
-              ? {}
-              : { attemptId: input.attemptId }),
-            ...(input.queuePriority === undefined
-              ? {}
-              : { queuePriority: input.queuePriority }),
-            totalMs: input.totalMs,
-            ...codeGraphBuildResultDetail(input.response.result),
-            ...(input.endFingerprintMs === undefined
-              ? {}
-              : { endFingerprintMs: input.endFingerprintMs }),
-            ...(input.fingerprintPersistMs === undefined
-              ? {}
-              : { fingerprintPersistMs: input.fingerprintPersistMs }),
-            fingerprintPersistOutcome: input.fingerprintPersistOutcome,
-          },
-        });
-      },
-      failed: (input): void => {
-        const reasons = failureReasons(input.cause);
-        failCodeGraphGenerationTelemetry(telemetry, {
-          stage: input.stage,
-          reason: reasons.generation,
-        });
-        // Local build diagnostic, alongside the Datadog lifecycle above.
-        const deferred =
-          reasons.diagnostic === 'busy' && input.attemptId === undefined;
-        recordCodeGraphBuildDiagnostic({
-          projectId,
-          worktreeId,
-          detail: {
-            scope: 'worktree',
-            trigger,
-            outcome: deferred ? 'deferred' : 'failure',
-            failureStage: input.stage,
-            failureReason: reasons.diagnostic,
-            ...(input.attemptId === undefined
-              ? {}
-              : { attemptId: input.attemptId }),
-            ...(input.queuePriority === undefined
-              ? {}
-              : { queuePriority: input.queuePriority }),
-            totalMs: input.totalMs,
-          },
-        });
-      },
-    };
+    return createCodeGraphGenerationReporter(trigger, (report) =>
+      recordCodeGraphGenerationReport({
+        projectId,
+        worktreeId,
+        report,
+        telemetry,
+      }),
+    );
   },
 });
 

@@ -17,3 +17,13 @@ export {
   safetyDeniedMessage,
   type SavedRuleDenialScope,
 } from './canopy-core/approval-denial';
+export {
+  APPROVAL_FILE_CHANGE_MAX_CHARS,
+  approvalFileChangeForClaudeTool,
+  type ApprovalFileChange,
+  type ApprovalRequestDetails,
+  type ApprovalRuleTarget,
+  type ApprovalRuleScope,
+  type ApprovalPromptDecision,
+  type ApprovalPromptRequest,
+} from './canopy-core/approval-prompt';

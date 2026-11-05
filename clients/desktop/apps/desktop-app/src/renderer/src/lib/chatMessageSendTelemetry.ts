@@ -106,8 +106,3 @@ export function trackChatComposerSend(input: {
   if (!surface) return;
   trackChatMessageSend({ surface, composerKey: target.chatId, ...send });
 }
-
-/** Test-only: clears per-window state. */
-export function resetChatMessageSendTelemetryForTests(): void {
-  composersWithSuggestedPrompt.clear();
-}

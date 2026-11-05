@@ -19,8 +19,3 @@ export function recallMcpSectionContent(
 ): boolean | undefined {
   return byWorktree.get(worktreeKey) ?? latest;
 }
-
-export function resetMcpSectionContentMemoryForTests(): void {
-  byWorktree.clear();
-  latest = undefined;
-}

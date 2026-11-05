@@ -50,6 +50,7 @@ const SHARE_SCOPES: readonly ShareResourceScope[] = [
 const agentLinks = createShareLinkResolver(
   agentSharePath,
   resolveSharedAgentUrl,
+  'agent',
 );
 
 interface ShareAgentModalProps {
@@ -94,25 +95,35 @@ export function ShareAgentModal({
     [agent.pluginSelections, rows],
   );
 
-  const loadExistingShare = useCallback(async () => {
-    void remoteLoadRevision;
-    setRemoteDetail(null);
-    setRemoteLink(null);
-    if (!agent.remoteId) return { status: 'ready' } as const;
-    try {
-      const detail = await window.agents.getShared(agent.remoteId);
-      setRemoteDetail(detail);
-      setRemoteLink(await agentLinks.linkFromDetail(detail));
-      return { status: 'ready' } as const;
-    } catch (error: unknown) {
-      if (readSharedResourceErrorStatus(error) === 404) {
-        return (await missingRemoteShareCanBeRecreated(agent.remoteAccountId))
-          ? ({ status: 'ready' } as const)
-          : existingShareLoadFailure('agent');
+  const loadExistingShare = useCallback(
+    async (assertCurrent?: () => void) => {
+      void remoteLoadRevision;
+      assertCurrent?.();
+      setRemoteDetail(null);
+      assertCurrent?.();
+      setRemoteLink(null);
+      if (!agent.remoteId) return { status: 'ready' } as const;
+      try {
+        const detail = await window.agents.getShared(agent.remoteId);
+        assertCurrent?.();
+        setRemoteDetail(detail);
+        const refreshedLink = await agentLinks.linkFromDetail(detail);
+
+        assertCurrent?.();
+
+        setRemoteLink(refreshedLink);
+        return { status: 'ready' } as const;
+      } catch (error: unknown) {
+        if (readSharedResourceErrorStatus(error) === 404) {
+          return (await missingRemoteShareCanBeRecreated(agent.remoteAccountId))
+            ? ({ status: 'ready' } as const)
+            : existingShareLoadFailure('agent');
+        }
+        return existingShareLoadFailure('agent');
       }
-      return existingShareLoadFailure('agent');
-    }
-  }, [agent.remoteAccountId, agent.remoteId, remoteLoadRevision]);
+    },
+    [agent.remoteAccountId, agent.remoteId, remoteLoadRevision],
+  );
 
   useEffect(() => {
     const reload = (): void => {
@@ -175,13 +186,16 @@ export function ShareAgentModal({
             };
 
       const revokePublicShare =
-        input.scope !== 'public' && remoteDetail?.publicShare
+        input.scope !== 'public' &&
+        !input.preservePublicLink &&
+        remoteDetail?.publicShare
           ? {
               externalId: remoteDetail.publicShare.externalId,
               updatedAt: remoteDetail.publicShare.updatedAt,
             }
           : undefined;
 
+      input.assertAllowed?.();
       let detail: SharedAgentDetail;
       if (agent.remoteId) {
         try {
@@ -208,6 +222,7 @@ export function ShareAgentModal({
             !(await missingRemoteShareCanBeRecreated(agent.remoteAccountId))
           )
             throw error;
+          input.assertAllowed?.();
           detail = unwrapShareOperationResult(
             await window.agents.createShared({
               agent: document,
@@ -226,6 +241,7 @@ export function ShareAgentModal({
         );
       }
 
+      input.assertAllowed?.();
       let shareUrl: string | undefined;
       let publicLinkFailed = false;
       if (input.scope === 'public') {
@@ -234,9 +250,11 @@ export function ShareAgentModal({
           detail = { ...detail, publicShare };
           const link = await agentLinks.resolveLink({
             kind: 'public',
+            id: detail.id,
             sharePath: publicShare.sharePath,
           });
           shareUrl = link.url;
+          input.assertAllowed?.();
           setRemoteLink(link);
         } catch {
           publicLinkFailed = true;
@@ -251,11 +269,15 @@ export function ShareAgentModal({
             id: detail.id,
           });
           shareUrl = link.url;
+          input.assertAllowed?.();
           setRemoteLink(link);
         }
       }
 
+      input.assertAllowed?.();
+
       pendingShared.current = detail;
+      input.assertAllowed?.();
       setRemoteDetail(detail);
       return {
         ...(shareUrl ? { shareUrl } : {}),
@@ -265,21 +287,28 @@ export function ShareAgentModal({
     [agent, remoteDetail, shareablePlugins.plugins],
   );
 
-  const retryPublicLink =
-    useCallback(async (): Promise<ShareResourceOutcome> => {
+  const retryPublicLink = useCallback(
+    async (assertCurrent?: () => void): Promise<ShareResourceOutcome> => {
+      assertCurrent?.();
       const detail = pendingShared.current;
       if (!detail) return { publicLinkFailed: true };
       const publicShare = await window.agents.publishPublicShare(detail.id);
       const next = { ...detail, publicShare };
+      assertCurrent?.();
       pendingShared.current = next;
+      assertCurrent?.();
       setRemoteDetail(next);
       const link = await agentLinks.resolveLink({
         kind: 'public',
+        id: detail.id,
         sharePath: publicShare.sharePath,
       });
+      assertCurrent?.();
       setRemoteLink(link);
       return { shareUrl: link.url };
-    }, []);
+    },
+    [],
+  );
 
   const handleCompleted = useCallback((): void => {
     if (!pendingShared.current) return;
@@ -306,13 +335,20 @@ export function ShareAgentModal({
     ...(remoteDetail ? { canUpdate: remoteDetail.canUpdate } : {}),
   });
 
-  const revokePublicShare = useCallback(async (): Promise<void> => {
-    if (!remoteDetail?.publicShare) return;
-    await window.agents.revokePublicShare(remoteDetail.id);
-    setRemoteDetail({ ...remoteDetail, publicShare: null });
-    window.dispatchEvent(new Event(AGENT_PUBLIC_SHARE_CHANGED_EVENT));
-    onPublicLinkRemoved?.();
-  }, [onPublicLinkRemoved, remoteDetail]);
+  const revokePublicShare = useCallback(
+    async (assertCurrent?: () => void): Promise<void> => {
+      assertCurrent?.();
+      if (!remoteDetail?.publicShare) return;
+      await window.agents.revokePublicShare(remoteDetail.id);
+      assertCurrent?.();
+      setRemoteDetail({ ...remoteDetail, publicShare: null });
+      assertCurrent?.();
+      window.dispatchEvent(new Event(AGENT_PUBLIC_SHARE_CHANGED_EVENT));
+      assertCurrent?.();
+      onPublicLinkRemoved?.();
+    },
+    [onPublicLinkRemoved, remoteDetail],
+  );
 
   const existingShare = remoteDetail
     ? deriveExistingShare({ ...remoteDetail, link: remoteLink })
@@ -320,6 +356,7 @@ export function ShareAgentModal({
 
   return (
     <DesktopShareResourceDialog
+      marketplace={{ kind: 'agent', resourceKey: agent.id }}
       resourceNoun="agent"
       testIdPrefix="share-agent"
       requiredCapability={AGENTS_CRUD_CAPABILITY}

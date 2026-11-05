@@ -1,5 +1,6 @@
 import type { JSX, ReactNode } from 'react';
 import { COMPACT_ACTIVITY_ITEM_CLASS_NAME } from './activity-item-density';
+import { Button, buttonClassName } from './Button';
 
 /** Hosts resolve identities; the shared row only renders the supplied control. */
 export type McpRowDestination =
@@ -17,18 +18,17 @@ export function McpRowSettings({
   return (
     <div className="mt-1.5 text-2xs">
       {destination.kind === 'button' ? (
-        <button
-          type="button"
-          className="focus-ring rounded fg-accent hover:underline"
+        <Button
+          variant="link"
           onClick={destination.onActivate}
           aria-label={`Open MCP settings for ${name}`}
           data-testid="mcp-servers-card-settings"
         >
           Open MCP settings
-        </button>
+        </Button>
       ) : (
         <a
-          className="focus-ring rounded fg-accent hover:underline"
+          className={buttonClassName({ variant: 'link' })}
           href={destination.href}
           target="_blank"
           rel="noopener"

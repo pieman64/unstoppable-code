@@ -26,10 +26,10 @@ export type SocialProviderId = (typeof SOCIAL_PROVIDER_IDS)[number];
  * Unstoppable Domains OAuth provider id.
  *
  * UD sign-in runs through Better Auth's `genericOAuth` plugin, NOT the built-in
- * `socialProviders` map — so it is intentionally kept OUT of
- * {@link SOCIAL_PROVIDER_IDS} (which drives the social-only client methods
- * `signIn.social` / `linkSocial`). genericOAuth uses `signIn.oauth2` /
- * `oauth2.link` with this `providerId` instead.
+ * `socialProviders` config — so it is intentionally kept OUT of
+ * {@link SOCIAL_PROVIDER_IDS}, the built-in provider list. Since Better Auth
+ * 1.7, genericOAuth providers are reached through the same `signIn.social` /
+ * `linkSocial` client methods, with this id as `provider`.
  */
 export const UD_PROVIDER_ID = 'unstoppable-domains' as const;
 

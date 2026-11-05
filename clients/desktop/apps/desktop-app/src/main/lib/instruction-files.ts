@@ -1,3 +1,4 @@
+import { constants } from 'node:fs';
 import {
   copyFile,
   link,
@@ -8,7 +9,9 @@ import {
   symlink,
 } from 'node:fs/promises';
 import { join } from 'node:path';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import {
+  createRelativeAliasExclusive,
   ensureRelativeAlias,
   ensureRelativeSymlink as ensureRelativeSymlinkWithPort,
   hasExpectedRelativeAlias,
@@ -92,4 +95,23 @@ export function hasExpectedAgentsMdSymlinkOrCopy(
   dir: string,
 ): Promise<boolean> {
   return hasExpectedRelativeSymlinkOrCopy(join(dir, 'AGENTS.md'), 'CLAUDE.md');
+}
+
+/** Additive pairing for user-owned folders; occupied entries always fail. */
+export function createInstructionCounterpartExclusive(
+  dir: string,
+  primary: 'AGENTS.md' | 'CLAUDE.md',
+  platform: NodeJS.Platform = hostOperatingSystem() ?? 'linux',
+): Promise<void> {
+  return createRelativeAliasExclusive(
+    join(dir, primary === 'AGENTS.md' ? 'CLAUDE.md' : 'AGENTS.md'),
+    primary,
+    platform,
+    {
+      symlink: (target, path) => aliasPort.symlink(target, path),
+      hardLink: (source, path) => aliasPort.hardLink(source, path),
+      copyFileExclusive: (source, destination) =>
+        copyFile(source, destination, constants.COPYFILE_EXCL),
+    },
+  );
 }

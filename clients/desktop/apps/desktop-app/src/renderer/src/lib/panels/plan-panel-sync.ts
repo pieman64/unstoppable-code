@@ -183,13 +183,6 @@ export function initPlanPanelSync(): void {
   scheduleSweep();
 }
 
-/** Test-only: runs a pending (scheduled) sweep synchronously. */
-export function flushPlanPanelSyncForTests(): void {
-  if (!pendingSweep) return;
-  pendingSweep = false;
-  runSweep();
-}
-
 /** Test-only: tears down the subscriptions and clears all module state. */
 export function resetPlanPanelSyncForTests(): void {
   for (const unsubscribe of unsubscribers) unsubscribe();

@@ -30,6 +30,8 @@ import type {
   WorktreeSelection,
   SettingsHeldChange,
 } from '@canopy/desktop-shared/types';
+import type { LoadedSubagentSummary } from '@canopy/agent-transcript/lib/subagent-tree/native-inputs';
+import type { WorkflowRunLocation } from '@/components/subagents/workflow-run-launches';
 export type { AppliedOrgMemoryTurn } from '@canopy/desktop-shared/types';
 
 /**
@@ -438,6 +440,12 @@ export interface ChatTab extends Omit<
    * Renderer-only, never persisted; only a successful catch-up read clears it.
    */
   transcriptStale?: true;
+  /** Renderer-only subagent root summary retained after eviction; never persisted. */
+  evictedSubagentRoot?: {
+    native: LoadedSubagentSummary;
+    hasWorkflowLaunches: boolean;
+    workflowLocations: readonly WorkflowRunLocation[];
+  };
   /** Required at runtime; `PersistedChatTab.planMode` is optional. */
   planMode: boolean;
   /** Required at runtime; `PersistedChatTab.thinkingLevel` is optional. */
@@ -627,4 +635,13 @@ export interface WorktreeChatOpenArchiveTranscriptDetail {
 export interface DelegationStreamScopeHints {
   epoch: number;
   runs: Record<string, { streamRevision: number; cardRevision: number }>;
+}
+
+/** One delegation run's key in {@link DelegationStreamScopeHints.runs}. */
+export function delegationStreamRunKey(
+  chatId: string,
+  delegationId: string,
+  runGeneration: number,
+): string {
+  return `${chatId}:${delegationId}:${runGeneration}`;
 }

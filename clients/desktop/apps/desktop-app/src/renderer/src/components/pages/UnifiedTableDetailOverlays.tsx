@@ -9,6 +9,7 @@ import type {
   UnifiedTableDetailView,
 } from './unifiedTableDetailView';
 import { MarkdownFrontmatterContent } from '@canopy/ui-app';
+import { DialogModal } from '@canopy/ui-shared/components';
 import { PluginDetailView } from './PluginDetailView';
 import { McpServerDetailOverlay } from './McpServersTab';
 import { runCancellableModalLoad } from './entityEditModalUtils';
@@ -82,30 +83,29 @@ export function PluginDetailOverlay({
     setDisplayPlugin(plugin);
   }, [plugin]);
 
+  // The detail view draws its own header (title, Back, actions), so the
+  // dialog draws none and is named by that title.
   return (
-    <div
-      className="fixed inset-0 z-modal flex items-center justify-center bg-overlay-scrim p-4"
-      onClick={onBack}
+    <DialogModal
+      header="content"
+      titleId="plugin-detail-title"
+      onClose={onBack}
+      maxWidth="3xl"
+      inset="flush"
+      trapFocus
+      dataTestId="plugin-detail-overlay"
     >
       {/* The shared plugin detail content blocks the README and component
           file text itself. */}
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="plugin-detail-title"
-        className="w-full max-w-3xl max-h-[80vh] flex flex-col rounded-2xl bg-card shadow-xl"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div className="flex-1 overflow-y-auto px-5 py-5">
-          <PluginDetailView
-            plugin={displayPlugin}
-            marketplace={marketplace}
-            onBack={onBack}
-            onPluginUpdated={setDisplayPlugin}
-          />
-        </div>
+      <div className="px-5 py-5">
+        <PluginDetailView
+          plugin={displayPlugin}
+          marketplace={marketplace}
+          onBack={onBack}
+          onPluginUpdated={setDisplayPlugin}
+        />
       </div>
-    </div>
+    </DialogModal>
   );
 }
 

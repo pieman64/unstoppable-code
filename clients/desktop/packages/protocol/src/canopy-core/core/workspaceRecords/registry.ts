@@ -185,6 +185,16 @@ const CaptureResultSchema = z.strictObject({
 });
 
 const RecoveryResultSchema = z.strictObject({
+  /** Oldest successful launch heals; every heal is also logged locally. */
+  abandoned: z
+    .array(
+      z.strictObject({
+        commitId: REVISION,
+        operation: z.string().min(1).max(256),
+      }),
+    )
+    .max(CORE_WORKSPACE_RECORDS_LIMITS.evidenceRows)
+    .optional(),
   applied: z.array(REVISION).max(CORE_WORKSPACE_RECORDS_LIMITS.evidenceRows),
   recoveryRequired: z
     .array(REVISION)

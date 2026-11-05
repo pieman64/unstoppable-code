@@ -1157,13 +1157,13 @@ first-failure
             "jobId": "build",
             "name": "Build",
             "needs": [],
-            "status": "pending",
+            "status": "<started>",
             "steps": [
               {
                 "attempt": 0,
                 "iteration": 1,
                 "name": "greet",
-                "status": "pending",
+                "status": "<started>",
                 "stepId": "greet",
               },
             ],
@@ -1174,26 +1174,25 @@ first-failure
             "needs": [
               "build",
             ],
-            "status": "pending",
+            "status": "<started>",
             "steps": [
               {
                 "attempt": 0,
                 "iteration": 1,
                 "name": "done",
-                "status": "pending",
+                "status": "<started>",
                 "stepId": "done",
               },
             ],
           },
         ],
         "localId": "<uuid>",
-        "outputTail": "",
         "pendingPauses": [],
         "pipelineId": "<pipeline:success>",
         "pipelineName": "Golden run success",
         "runId": "<uuid>",
         "startedAt": "<timestamp>",
-        "status": "pending",
+        "status": "<started>",
         "statusReasons": [],
         "workspaceLocalId": "golden-ws",
         "worktreeLocalId": "golden-wt",
@@ -1362,15 +1361,13 @@ first-failure
             "jobId": "setup",
             "name": "Setup",
             "needs": [],
-            "status": "success",
+            "status": "<started>",
             "steps": [
               {
                 "attempt": 0,
                 "iteration": 1,
                 "name": "ok",
-                "outputTail": "setup
-",
-                "status": "success",
+                "status": "<started>",
                 "stepId": "ok",
               },
             ],
@@ -1381,31 +1378,25 @@ first-failure
             "needs": [
               "setup",
             ],
-            "status": "pending",
+            "status": "<started>",
             "steps": [
               {
                 "attempt": 0,
                 "iteration": 1,
                 "name": "attempt",
-                "outputTail": "first-failure
-",
-                "status": "pending",
+                "status": "<started>",
                 "stepId": "attempt",
               },
             ],
           },
         ],
         "localId": "<run:portal-flaky>",
-        "outputTail": "setup
-
-first-failure
-",
         "pendingPauses": [],
         "pipelineId": "<pipeline:flaky>",
         "pipelineName": "Golden run flaky",
         "runId": "<run:portal-flaky>",
         "startedAt": "<timestamp>",
-        "status": StringMatching /\\^\\(pending\\|running\\)\\$/,
+        "status": "<started>",
         "statusReasons": [],
         "workspaceLocalId": "golden-ws",
         "worktreeLocalId": "golden-wt",

@@ -152,6 +152,60 @@ export interface AgentDelegationSpawnRequest {
   /** Queue until a slot is free, or fail fast with capacity_exceeded. */
   readonly ifBusy?: DelegationIfBusy;
   readonly name?: string;
+  /**
+   * Feed entries (open OPERATION or TASK, at most
+   * AGENT_DELEGATION_TASK_IDS_MAX) the delegate takes over at creation. Only
+   * offered to a caller with the Feed tools.
+   */
+  readonly taskIds?: readonly string[];
+}
+
+/** The most Feed entries one Delegate Task call hands to its delegate. */
+export const AGENT_DELEGATION_TASK_IDS_MAX = 25;
+
+/** Canonical RFC UUID spelling accepted for Feed task IDs. */
+export const AGENT_DELEGATION_TASK_ID_PATTERN =
+  '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$';
+
+/**
+ * What Delegate Task did with `taskIds`, on its result. Bounded: the listed
+ * entries by ID, their open subtasks by count.
+ */
+export interface AgentDelegationFeedAssignment {
+  /** Listed entries now owned by the delegate. */
+  readonly assigned: readonly string[];
+  /** Open subtasks of the listed entries that moved with them. */
+  readonly subtasksAssigned: number;
+  /** Listed entries that changed after validation, and why each was skipped. */
+  readonly skipped: readonly {
+    readonly entryId: string;
+    readonly reason: string;
+  }[];
+  /** Open subtasks that could not move (changed since validation). */
+  readonly subtasksSkipped: number;
+}
+
+/**
+ * A delegation's Feed work, host-built from the Ledger (never from the
+ * child's output): the delegation and its own delegates, including entries the
+ * sweep handed back when they settled. Titles stay out; read entries by ID.
+ */
+export interface AgentDelegationFeedSummary {
+  /** Entries by status; a status with none is left out. */
+  readonly counts: Readonly<Partial<Record<string, number>>>;
+  /** Open entries, most recently updated first, at most 10. */
+  readonly open: readonly {
+    readonly entryId: string;
+    readonly status: string;
+    readonly owner: { readonly kind: string; readonly actorId: string };
+  }[];
+  readonly openTotal: number;
+  /**
+   * When anything is open: a nudge to review those entries and update each
+   * one's status (complete, blocked or failed, or handed on), naming them by
+   * ID and status and the tools that read and change them.
+   */
+  readonly note?: string;
 }
 
 export interface AgentDelegationWaitRequest {
@@ -250,6 +304,8 @@ export interface GetDelegateOutputValue {
   readonly result: DelegateOutput | null;
   readonly currentPhase?: AgentDelegationPhase;
   readonly queue?: AgentDelegationQueueState;
+  /** For a caller with the Feed tools, on a first-page read only. */
+  readonly feed?: AgentDelegationFeedSummary;
 }
 
 export interface PersistedAgentOverlaySummary {
@@ -451,6 +507,10 @@ export interface AgentDelegationWorkspaceObservation {
 }
 
 export interface AgentDelegationSnapshot {
+  /** Inspect Delegate, for a caller with the Feed tools. */
+  readonly feed?: AgentDelegationFeedSummary;
+  /** Delegate Task with `taskIds`: what the delegate took over. */
+  readonly feedAssignment?: AgentDelegationFeedAssignment;
   readonly depth?: number;
   /** Whether this delegate may start its own delegates, and if not, why. */
   readonly nestedDelegation?: DelegationNestingState;
@@ -557,6 +617,12 @@ function isId(value: unknown): value is string {
   );
 }
 
+const taskIdPattern = new RegExp(AGENT_DELEGATION_TASK_ID_PATTERN);
+
+function isTaskId(value: unknown): value is string {
+  return typeof value === 'string' && taskIdPattern.test(value);
+}
+
 function invalidRequest(
   message = 'Invalid delegation request.',
 ): AgentDelegationResult<never> {
@@ -590,6 +656,7 @@ export function parseAgentDelegationSpawnRequest(
     'ifBusy',
     'name',
     'permissions',
+    'taskIds',
   ];
   if (Object.keys(input).some((key) => !fields.includes(key)))
     return invalidRequest();
@@ -657,6 +724,30 @@ export function parseAgentDelegationSpawnRequest(
     !boundedText(input.name, AGENT_DELEGATION_INPUT_LIMITS.nameCharacters)
   )
     return invalidRequest();
+  let parsedTaskIds: string[] | undefined;
+  if (input.taskIds !== undefined) {
+    if (
+      !Array.isArray(input.taskIds) ||
+      input.taskIds.length === 0 ||
+      input.taskIds.length > AGENT_DELEGATION_TASK_IDS_MAX
+    )
+      return invalidRequest(
+        `taskIds must contain between 1 and ${AGENT_DELEGATION_TASK_IDS_MAX} UUIDs.`,
+      );
+    const seenTaskIds = new Set<string>();
+    const taskIds: string[] = [];
+    const entries: unknown[] = input.taskIds;
+    for (const entry of entries) {
+      if (!isTaskId(entry))
+        return invalidRequest('taskIds must contain UUIDs.');
+      const normalized = entry.toLowerCase();
+      if (seenTaskIds.has(normalized))
+        return invalidRequest('taskIds must not contain duplicates.');
+      seenTaskIds.add(normalized);
+      taskIds.push(normalized);
+    }
+    parsedTaskIds = taskIds;
+  }
   let parsedPermissions:
     | NonNullable<AgentDelegationSpawnRequest['permissions']>
     | undefined;
@@ -750,6 +841,7 @@ export function parseAgentDelegationSpawnRequest(
         ? { thinkingLevel: input.thinkingLevel }
         : {}),
       ...(input.name !== undefined ? { name: input.name } : {}),
+      ...(parsedTaskIds !== undefined ? { taskIds: parsedTaskIds } : {}),
     },
   };
 }

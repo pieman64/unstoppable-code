@@ -68,11 +68,14 @@ const HANDLERS: LedgerStorageHandlers = {
   resolvePendingTitle: (repository, input) =>
     repository.resolvePendingTitle(input),
   updateEntry: (repository, input) => repository.updateEntry(input),
+  handBackEntry: (repository, input) => repository.handBackEntry(input),
   publishSummary: (repository, input) => repository.publishSummary(input),
   listReceiptKeys: (repository, input) => repository.listReceiptKeys(input),
   getEntry: (repository, input) => repository.getEntry(input),
   searchEntries: (repository, input) => repository.searchEntries(input),
   listChanges: (repository, input) => repository.listChanges(input),
+  listRollups: (repository, input) => repository.listRollups(input),
+  getWorkSummary: (repository, input) => repository.getWorkSummary(input),
   getStorageCounts: (repository) => repository.getStorageCounts(),
   listScopes: (repository) => repository.listScopes(),
   findContainerScopes: (repository, container) =>

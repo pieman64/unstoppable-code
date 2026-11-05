@@ -7,7 +7,6 @@ import {
   useState,
   type JSX,
 } from 'react';
-import { createPortal } from 'react-dom';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import type {
   PlanComment,
@@ -52,7 +51,12 @@ import {
   PlanReviewThread,
   type PlanReviewAuthor,
 } from '@canopy/ui-shared';
-import { Button, TextArea } from '@canopy/ui-shared/components';
+import {
+  Button,
+  Popover,
+  TextArea,
+  type PopoverAnchorRect,
+} from '@canopy/ui-shared/components';
 
 /**
  * Map a comment to the shared review author shape, from the plan owner's
@@ -76,32 +80,6 @@ function toReviewAuthor(comment: PlanComment): PlanReviewAuthor {
 /** Custom Highlight API registration names (styled in globals.css). */
 const DRAFT_HIGHLIGHT = 'plan-comment-draft';
 const ANCHOR_HIGHLIGHT = 'plan-comment-anchor';
-
-const POPOVER_WIDTH = 272;
-const POPOVER_EST_HEIGHT = 150;
-
-/**
- * Compute a viewport-fixed position for the draft popover from the selection
- * rect, within the window that shows the panel (`view`). The popover is
- * portaled to that window's body so it is never clipped by the plan panel's
- * scroll overflow or covered by the comments tray. Prefers placing it below
- * the selection, flipping above when it would run off the bottom, and clamps
- * to stay on screen.
- */
-function computePopoverPosition(
-  rect: DOMRect,
-  view: { innerWidth: number; innerHeight: number },
-): { top: number; left: number } {
-  const left = Math.min(
-    Math.max(rect.left, 8),
-    view.innerWidth - POPOVER_WIDTH - 8,
-  );
-  let top = rect.bottom + 6;
-  if (top + POPOVER_EST_HEIGHT > view.innerHeight - 8) {
-    top = Math.max(8, rect.top - POPOVER_EST_HEIGHT - 6);
-  }
-  return { top, left };
-}
 
 export interface PlanDocumentPanelProps {
   /** The latest tracked plan; used for raw content and heading resolution. */
@@ -156,10 +134,10 @@ interface PendingSelection {
   /** 1-based canonical line range, when resolvable from source positions. */
   lineStart?: number;
   lineEnd?: number;
-  top: number;
-  left: number;
-  /** Body of the document showing the panel; the popover portals into it. */
-  portalTarget: HTMLElement;
+  /** The selection's box, where the draft popover hangs. */
+  anchorRect: PopoverAnchorRect;
+  /** The document showing the panel; the popover opens in its window. */
+  ownerDocument: Document;
 }
 
 interface SourceLineRange {
@@ -380,18 +358,19 @@ function PlanDocumentPanelImpl({
     draftRangeRef.current = draftRange;
     highlights()?.set(DRAFT_HIGHLIGHT, [draftRange]);
 
-    const { top, left } = computePopoverPosition(
-      range.getBoundingClientRect(),
-      ownerDocument.defaultView ?? window,
-    );
+    const box = range.getBoundingClientRect();
     setPendingSelection({
       rawQuote,
       renderedText,
       lineStart,
       lineEnd,
-      top,
-      left,
-      portalTarget: ownerDocument.body,
+      anchorRect: {
+        left: box.left,
+        top: box.top,
+        width: box.width,
+        height: box.height,
+      },
+      ownerDocument,
     });
     setDraftBody('');
   }, [readOnly, displayContent, lineOffset, highlights]);
@@ -811,32 +790,27 @@ function PlanDocumentPanelImpl({
         </div>
       </div>
 
-      {!readOnly &&
-        pendingSelection &&
-        createPortal(
-          // Portaled out of the panel's block with the selected plan text and
-          // the draft, so it carries its own.
+      {!readOnly && pendingSelection ? (
+        // The shared popover at the selection: focus goes to the comment
+        // field, Escape and an outside press cancel the draft, and presses
+        // inside never reach the panel's selection and click handlers.
+        <Popover
+          open
+          onOpenChange={(next): void => {
+            if (!next) cancelDraft();
+          }}
+          anchorRect={pendingSelection.anchorRect}
+          ownerDocument={pendingSelection.ownerDocument}
+          gap={6}
+          containEvents
+          outsidePressSwallowsClick={false}
+          aria-label="Comment on the plan"
+          data-testid="plan-comment-draft"
+        >
+          {/* Portaled out of the panel's block with the selected plan text
+              and the draft, so it carries its own. */}
           <div
-            className={`${POSTHOG_REPLAY_BLOCK_CLASS} fixed z-dropdown flex flex-col gap-1.5 rounded-md bg-popover p-2 shadow-lg`}
-            style={{
-              top: pendingSelection.top,
-              left: pendingSelection.left,
-              width: POPOVER_WIDTH,
-            }}
-            data-testid="plan-comment-draft"
-            // Keep popover interactions from reaching the panel's selection /
-            // click handlers (which would otherwise dismiss the draft).
-            onMouseDown={(e): void => e.stopPropagation()}
-            onMouseUp={(e): void => e.stopPropagation()}
-            onClick={(e): void => e.stopPropagation()}
-            onKeyDown={(e): void => {
-              if (e.key !== 'Escape') {
-                return;
-              }
-              e.preventDefault();
-              e.stopPropagation();
-              cancelDraft();
-            }}
+            className={`${POSTHOG_REPLAY_BLOCK_CLASS} flex flex-col gap-1.5`}
           >
             <p className="truncate text-2xs italic fg-secondary">
               “{truncateQuote(pendingSelection.renderedText, 60)}”
@@ -874,9 +848,9 @@ function PlanDocumentPanelImpl({
                 Comment
               </Button>
             </div>
-          </div>,
-          pendingSelection.portalTarget,
-        )}
+          </div>
+        </Popover>
+      ) : null}
 
       <CommentsTray
         containerRef={panelRootRef}

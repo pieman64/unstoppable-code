@@ -303,8 +303,3 @@ export function watchAgentVisualFontLoads(
     fonts.removeEventListener('loadingdone', onLoaded);
   };
 }
-
-/** Test-only: forget what was read from a document. */
-export function resetAgentVisualFontsForTests(ownerDocument: Document): void {
-  caches.delete(ownerDocument);
-}

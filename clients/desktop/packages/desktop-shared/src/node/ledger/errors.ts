@@ -28,6 +28,9 @@ const LEDGER_STORE_ERROR_MESSAGES: {
   STORAGE_UNAVAILABLE: 'Feed storage is unavailable.',
   RATE_LIMITED: 'Too many Feed requests.',
   WRITER_UNAVAILABLE: 'Another process holds the Feed database.',
+  PARENT_INVALID: 'The Feed parent is not valid for this item.',
+  PARENT_CLOSED: 'The Feed parent is closed.',
+  OPEN_CHILDREN: 'The Feed item has open children.',
 };
 
 /** Longest `field` accepted by the protocol's `LedgerErrorDetails`. */
@@ -48,6 +51,8 @@ export interface LedgerStoreErrorOptions {
    * never contains text, paths or identifiers.
    */
   readonly diagnosticCode?: string;
+  /** IDs of open children preventing a parent close. */
+  readonly openChildEntryIds?: readonly string[];
 }
 
 /** The single typed error thrown by the local Ledger store. */
@@ -58,6 +63,7 @@ export class LedgerStoreError extends Error {
   readonly limit: number | undefined;
   readonly currentEntry: LedgerEntry | undefined;
   readonly diagnosticCode: string | undefined;
+  readonly openChildEntryIds: readonly string[] | undefined;
 
   constructor(
     reason: LedgerErrorReason,
@@ -74,6 +80,7 @@ export class LedgerStoreError extends Error {
     this.limit = options.limit;
     this.currentEntry = options.currentEntry;
     this.diagnosticCode = options.diagnosticCode;
+    this.openChildEntryIds = options.openChildEntryIds;
   }
 
   /** Bounded details in the protocol's `LedgerErrorDetails` shape. */
@@ -85,6 +92,9 @@ export class LedgerStoreError extends Error {
       ...(this.currentEntry === undefined
         ? {}
         : { currentEntry: this.currentEntry }),
+      ...(this.openChildEntryIds === undefined
+        ? {}
+        : { openChildEntryIds: [...this.openChildEntryIds] }),
     };
   }
 }

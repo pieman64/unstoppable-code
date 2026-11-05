@@ -1,3 +1,4 @@
+import { useSuggestionsClaimApi } from '@canopy/ui-app/suggestions';
 import { isPlanModeReadOnly } from '@canopy/ui-shared/lib/plan-mode-suggestion';
 import {
   usePlanModeSuggestion,
@@ -827,6 +828,7 @@ export function HomeComposerControls({
     !disabled,
   );
   const hint = usePlanModeSuggestion({
+    suggestionsClaimApi: useSuggestionsClaimApi(),
     text,
     draftKey: `home:${workspaceId}:${selectedRepoId}:${draftGeneration}:${hintDraftRevision}`,
     activationKey: effectiveProviderType,

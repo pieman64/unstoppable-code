@@ -85,7 +85,7 @@ import { syncGlobalFocusShortcutFromPreferences } from './global-focus-shortcut'
 import { broadcastPreferencesSynced } from '../lib/preferences-broadcast';
 import { applyUiZoomToAllWindows, uiScaleToZoomFactor } from '../lib/ui-zoom';
 import { setRemoteControlEnabled } from '../lib/remote-control-preference';
-import { applySkillSuggestionsPreference } from '../skill-suggestions';
+import { updateSuggestionsPreferences } from '../lib/suggestions-preferences';
 import {
   getCodeGraphPreferencesSnapshot,
   reconcileCodeGraphAvailability,
@@ -102,7 +102,7 @@ import { isApprovalDefaultSurface } from '@canopy/desktop-shared/types';
 import { recordOnboardingProfileTelemetry } from '../lib/desktop-telemetry';
 import { syncOnboardingProfilePreferences } from '../services/onboarding-profile-sync-service';
 import { enqueueManualLocalMemoryImportBatch } from '../memory/local/import/import-job';
-import { getWorkspaceMemoryDir } from '../lib/paths';
+import { localMemoryScopeDir } from '../memory/local/scope-resolver';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { resolveManagedDelegationMode } from '../agents/delegation/gate';
 import { broadcastModelRegistryUpdated } from '../models/model-registry';
@@ -180,6 +180,8 @@ function preferencesSaveResult(
   const runtime = projectPreferencesForRuntime(normalized);
   return {
     ...runtime,
+    // Old controllers render this switch; disk keeps its downgrade value frozen.
+    repeatTaskAutomationSuggestionsEnabled: runtime.suggestions.enabled,
     managedDelegationMode: resolveManagedDelegationMode(
       runtime.managedDelegationMode,
     ),
@@ -527,6 +529,7 @@ export function registerPreferenceHandlers(): void {
       if (options?.view === 'persisted') return loaded;
       return {
         ...loaded,
+        repeatTaskAutomationSuggestionsEnabled: loaded.suggestions.enabled,
         managedDelegationMode: resolveManagedDelegationMode(
           loaded.managedDelegationMode,
         ),
@@ -569,10 +572,11 @@ export function registerPreferenceHandlers(): void {
         }
         validateId(workspaceId, 'workspaceId');
       }
-      const memoryDir =
+      const memoryDir = localMemoryScopeDir(
         workspaceId === undefined
-          ? join(getResolvedCanopyDataDir().path, 'memory')
-          : getWorkspaceMemoryDir(workspaceId);
+          ? { scope: 'user' }
+          : { scope: 'workspace', workspaceId },
+      );
       await mkdir(memoryDir, { recursive: true });
       const error = await shell.openPath(memoryDir);
       if (error !== '') {
@@ -633,6 +637,16 @@ export function registerPreferenceHandlers(): void {
       // older than main's latest record, so it never overwrites it.
       const rendererPatch = { ...preferences };
       // Main's Copilot connection owns the flag with its account pin (CAN-4880).
+      // Only the dedicated updateSuggestions command changes the master/dismissals.
+      // A generic Settings snapshot may predate a toggle in another window.
+      delete rendererPatch.suggestions;
+      // An older controller sends this exact one-key intent. A multi-field
+      // snapshot may be stale and cannot change the committed master.
+      const legacySuggestionIntent =
+        Object.keys(preferences).length === 1 &&
+        typeof preferences.repeatTaskAutomationSuggestionsEnabled === 'boolean';
+      if (!legacySuggestionIntent)
+        delete rendererPatch.repeatTaskAutomationSuggestionsEnabled;
       delete rendererPatch.copilotEnabled;
       delete rendererPatch.disabledInstalledItems;
       delete rendererPatch.parkedCodexPlugins;
@@ -715,11 +729,6 @@ export function registerPreferenceHandlers(): void {
         applyUiZoomToAllWindows(uiScaleToZoomFactor(normalized.uiScale));
       }
       setRemoteControlEnabled(normalized.remoteControlEnabled === true);
-      // Off deletes request history and open suggestions; resolved ones stay
-      // so dismissed work is never re-proposed. The flag still gates all.
-      applySkillSuggestionsPreference(
-        normalized.skillSuggestionsEnabled !== false,
-      );
       if (
         committedPrevious.copilotEnabled !== normalized.copilotEnabled ||
         JSON.stringify(committedPrevious.copilotAccount) !==
@@ -1024,6 +1033,15 @@ export function registerPreferenceHandlers(): void {
         disabledPipelineIds: normalized.disabledPipelineIds,
       });
       return normalized;
+    },
+  );
+
+  registerIpcHandler(
+    IPC_CHANNELS.preferencesUpdateSuggestions,
+    async (_event, request: unknown) => {
+      const saved = await updateSuggestionsPreferences(request);
+      broadcastCommittedPreferences(saved);
+      return saved.suggestions;
     },
   );
 

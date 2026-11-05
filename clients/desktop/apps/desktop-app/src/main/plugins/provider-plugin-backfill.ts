@@ -11,6 +11,10 @@ import type { IPCResult } from '@canopy/desktop-shared/types/pipeline';
 import type { AgentProviderAuthStatus } from '@canopy/desktop-shared/types';
 import { getBrandEnv } from '@canopy/desktop-shared/brand/env';
 import { writeFileAtomicallySync } from '@canopy/desktop-shared/node/lib/atomic-file';
+import {
+  damagedCopyPath,
+  pruneDamagedCopiesSync,
+} from '@canopy/desktop-shared/node/lib/damaged-copies';
 import { isE2eBuild } from '../lib/e2e-gate';
 import {
   logMainProcessInfo,
@@ -473,7 +477,8 @@ function backfillStateFromProviders(
 
 /**
  * Installs `state` atomically. A damaged file is copied to
- * `<name>.damaged-<ms>` first; a newer or unreadable one is never replaced.
+ * `<name>.damaged-<ms>` first, keeping the newest five copies; a newer or
+ * unreadable one is never replaced.
  */
 export function writeProviderPluginBackfillState(
   state: ProviderPluginBackfillState,
@@ -488,11 +493,13 @@ export function writeProviderPluginBackfillState(
       `Refusing to replace a ${current.status} provider plugin backfill state file.`,
     );
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const aside =
-    current.status === 'damaged' ? `${filePath}.damaged-${Date.now()}` : null;
+  const aside = current.status === 'damaged' ? damagedCopyPath(filePath) : null;
   // Copied, not moved: the damaged file and its valid records stay readable
   // until the rewrite renames over it.
-  if (aside) fs.copyFileSync(filePath, aside);
+  if (aside) {
+    fs.copyFileSync(filePath, aside);
+    pruneDamagedCopiesSync(filePath);
+  }
   writeFileAtomicallySync(filePath, JSON.stringify(state, null, 2), {
     encoding: 'utf8',
     durable: true,

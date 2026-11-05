@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import {
   accountAppearanceSchema,
+  DEFAULT_CHAT_DETAIL,
   type ChatDetail,
 } from '@canopy/protocol/chat-detail';
 import {
@@ -11,7 +12,7 @@ import {
   ChatDetailControl,
   DelayedLoadingPlaceholder,
   ErrorBanner,
-  SettingsFormSkeleton,
+  Skeleton,
 } from '@canopy/ui-shared/components';
 import {
   SETTINGS_CARD_ROW_CLASS,
@@ -27,6 +28,45 @@ function parseChatDetail(value: unknown): ChatDetail {
   const parsed = accountAppearanceSchema.safeParse(value);
   if (!parsed.success) throw new Error('Invalid account appearance response');
   return parsed.data.chatDetail;
+}
+
+const noop = (): void => undefined;
+
+/** The "Chats" card: the chat detail row and its picker. */
+function ChatsCard({
+  value,
+  onChange,
+  error,
+}: {
+  readonly value: ChatDetail;
+  readonly onChange: (chatDetail: ChatDetail) => void;
+  readonly error: SettingsFailure | null;
+}): JSX.Element {
+  return (
+    <SettingsCard title="Chats" testId="account-appearance-chats">
+      <div className="flex flex-col gap-3">
+        {error !== null && (
+          <ErrorBanner
+            className=""
+            error={error?.copy}
+            details={error?.details}
+          />
+        )}
+        <div
+          className={SETTINGS_CARD_ROW_CLASS}
+          data-testid="settings-chat-detail-row"
+        >
+          <div className="min-w-0">
+            <p className="text-s font-medium fg-primary">{CHAT_DETAIL_LABEL}</p>
+            <p className="text-s fg-secondary">
+              {CHAT_DETAIL_COPY[value].description}
+            </p>
+          </div>
+          <ChatDetailControl value={value} onChange={onChange} />
+        </div>
+      </div>
+    </SettingsCard>
+  );
 }
 
 /**
@@ -124,34 +164,20 @@ export function AppearancePage(): JSX.Element {
         />
       ) : shown === null ? (
         <DelayedLoadingPlaceholder>
-          <SettingsFormSkeleton rows={1} />
+          <Skeleton
+            loading
+            label="Loading appearance settings"
+            testId="settings-skeleton-form"
+          >
+            <ChatsCard
+              value={DEFAULT_CHAT_DETAIL}
+              onChange={noop}
+              error={null}
+            />
+          </Skeleton>
         </DelayedLoadingPlaceholder>
       ) : (
-        <SettingsCard title="Chats" testId="account-appearance-chats">
-          <div className="flex flex-col gap-3">
-            {error !== null && (
-              <ErrorBanner
-                className=""
-                error={error?.copy}
-                details={error?.details}
-              />
-            )}
-            <div
-              className={SETTINGS_CARD_ROW_CLASS}
-              data-testid="settings-chat-detail-row"
-            >
-              <div className="min-w-0">
-                <p className="text-s font-medium fg-primary">
-                  {CHAT_DETAIL_LABEL}
-                </p>
-                <p className="text-s fg-secondary">
-                  {CHAT_DETAIL_COPY[shown].description}
-                </p>
-              </div>
-              <ChatDetailControl value={shown} onChange={onChange} />
-            </div>
-          </div>
-        </SettingsCard>
+        <ChatsCard value={shown} onChange={onChange} error={error} />
       )}
     </div>
   );

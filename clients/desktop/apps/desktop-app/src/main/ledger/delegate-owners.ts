@@ -56,3 +56,81 @@ export async function readLedgerContainerLiveDelegates(
     return [];
   }
 }
+
+/** Whose delegates a lineage read asks for: a root chat or a delegation. */
+export type LedgerDelegateLineageOwner =
+  | { readonly kind: 'chat'; readonly chatId: string }
+  | { readonly kind: 'managed_delegation'; readonly delegationId: string };
+
+/**
+ * Lists the durable IDs of every retained delegation under an owner in a
+ * container, at any depth: a chat's whole tree, or a delegation's own
+ * delegates and theirs. Settled and stopped delegations count; their entries
+ * stay theirs until handed back.
+ */
+export type LedgerDelegateLineageSource = (
+  container: LedgerContainer,
+  owner: LedgerDelegateLineageOwner,
+) => Promise<readonly string[]>;
+
+let registeredLineageSource: LedgerDelegateLineageSource | undefined;
+
+/** Registers the delegation host's lineage source; undefined removes it. */
+export function registerLedgerDelegateLineageSource(
+  source: LedgerDelegateLineageSource | undefined,
+): void {
+  registeredLineageSource = source;
+}
+
+/**
+ * The owner's delegations at any depth, or null when no source is registered
+ * or it fails: then a caller may change only its own entries.
+ */
+export async function readLedgerDelegateLineage(
+  container: LedgerContainer,
+  owner: LedgerDelegateLineageOwner,
+): Promise<readonly string[] | null> {
+  const source = registeredLineageSource;
+  if (source === undefined) return null;
+  try {
+    return await source(container, owner);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Lists an owner's own new delegations: durable (admitted, possibly queued or
+ * still preparing) but not yet able to accept a continuation, so the retained
+ * delegate source leaves them out. The Ledger accepts these as owner
+ * candidates only for that owner, so a parent can hand its new delegate its
+ * tasks before the delegate starts, without widening eligibility for anyone
+ * else.
+ */
+export type LedgerNewDelegateSource = (
+  container: LedgerContainer,
+  owner: LedgerDelegateLineageOwner,
+) => Promise<readonly LedgerLiveDelegate[]>;
+
+let registeredNewDelegateSource: LedgerNewDelegateSource | undefined;
+
+/** Registers the delegation host's new-delegate source; undefined removes it. */
+export function registerLedgerNewDelegateSource(
+  source: LedgerNewDelegateSource | undefined,
+): void {
+  registeredNewDelegateSource = source;
+}
+
+/** The owner's new delegations; none when no source or it fails. */
+export async function readLedgerNewDelegates(
+  container: LedgerContainer,
+  owner: LedgerDelegateLineageOwner,
+): Promise<readonly LedgerLiveDelegate[]> {
+  const source = registeredNewDelegateSource;
+  if (source === undefined) return [];
+  try {
+    return await source(container, owner);
+  } catch {
+    return [];
+  }
+}

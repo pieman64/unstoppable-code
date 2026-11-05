@@ -55,8 +55,3 @@ export function closePipelineCompatDetail(): void {
   if (usePipelineCompatDetailStore.getState().request === null) return;
   usePipelineCompatDetailStore.setState({ request: null });
 }
-
-export function resetPipelineCompatDetailStoreForTests(): void {
-  nextNonce = 0;
-  usePipelineCompatDetailStore.setState({ request: null });
-}

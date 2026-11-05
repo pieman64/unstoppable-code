@@ -1,4 +1,4 @@
-import { type JSX, type ReactNode } from 'react';
+import { type HTMLAttributes, type JSX, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useOverlayEscape } from './useOverlayEscape';
 
@@ -105,4 +105,95 @@ export function Sheet({
   return targetDocument?.body
     ? createPortal(overlay, targetDocument.body)
     : overlay;
+}
+
+/**
+ * Where a {@link PaneSheet} docks: `bottom` spans its pane's width 12px in,
+ * capped at three fifths of its height; `top-end` hugs the pane's top end
+ * corner 8px in, as a preview's find bar does; `window-top` is centred 12px
+ * under the window's top edge, as the window-wide find bar is.
+ */
+export type PaneSheetPlacement = 'bottom' | 'top-end' | 'window-top';
+
+const PANE_SHEET_PLACEMENT_CLASS: Record<PaneSheetPlacement, string> = {
+  bottom: 'absolute bottom-3 right-3 z-20 max-h-3/5',
+  'top-end': 'absolute right-2 top-2 z-20 max-w-[calc(100%-1rem)]',
+  'window-top':
+    'electron-no-drag fixed left-1/2 top-3 z-drawer w-max min-w-[min(28rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] -translate-x-1/2',
+};
+
+interface PaneSheetProps extends Omit<
+  HTMLAttributes<HTMLDivElement>,
+  'className' | 'style' | 'role' | 'children'
+> {
+  readonly placement: PaneSheetPlacement;
+  /**
+   * The start edge of a `bottom` sheet: `edge` sits 12px in; `controls`
+   * clears a column of pane controls there (a canvas's zoom buttons).
+   */
+  readonly start?: 'edge' | 'controls';
+  /** `search` is a find bar's 360px; otherwise the sheet sizes to its pane. */
+  readonly width?: 'pane' | 'search';
+  /**
+   * `toolbar` (6px) for a row of toolbar buttons and a field; `controls`
+   * (8px) for a bar of fields; `readout` (12px) for a detail.
+   */
+  readonly padding?: 'toolbar' | 'controls' | 'readout';
+  /** `search` for a find bar; otherwise a labelled complementary region. */
+  readonly role?: 'search' | 'complementary';
+  /**
+   * For `window-top`: the element to portal into (a dialog the bar searches),
+   * defaulting to the document body.
+   */
+  readonly portalContainer?: HTMLElement | null;
+  readonly 'data-testid'?: string;
+  readonly children: ReactNode;
+}
+
+const PANE_SHEET_PADDING_CLASS = {
+  toolbar: 'p-1.5',
+  controls: 'p-2',
+  readout: 'p-3',
+} as const;
+
+/**
+ * A modeless panel docked to one edge of a pane, over the pane's content and
+ * nothing else: a canvas's selected-node detail, a preview's find bar; or,
+ * with `window-top`, to the window's top edge, as the window-wide find bar
+ * is. A pane sheet renders in place inside the nearest positioned ancestor;
+ * a window sheet is fixed and portaled. Either sits on the menu surface
+ * (fill, radius, shadow) and scrolls itself when its content is taller than
+ * its cap. It is not a dialog: it takes no focus and traps none, and the app
+ * keeps working around it. Its content owns closing (a Close button, Escape
+ * in its own field).
+ */
+export function PaneSheet({
+  placement,
+  start = 'edge',
+  width = 'pane',
+  padding = 'readout',
+  role = 'complementary',
+  portalContainer,
+  children,
+  ...rest
+}: PaneSheetProps): JSX.Element {
+  const startClass =
+    placement === 'bottom' ? (start === 'controls' ? 'left-14' : 'left-3') : '';
+  const sheet = (
+    <div
+      {...rest}
+      role={role}
+      className={`flex min-w-0 flex-col overflow-auto rounded-lg bg-quaternary fg-primary shadow-xl ${
+        PANE_SHEET_PLACEMENT_CLASS[placement]
+      } ${startClass} ${width === 'search' ? 'w-90' : ''} ${
+        PANE_SHEET_PADDING_CLASS[padding]
+      }`}
+    >
+      {children}
+    </div>
+  );
+  if (placement !== 'window-top') return sheet;
+  const container =
+    portalContainer ?? (typeof document === 'undefined' ? null : document.body);
+  return container ? createPortal(sheet, container) : sheet;
 }

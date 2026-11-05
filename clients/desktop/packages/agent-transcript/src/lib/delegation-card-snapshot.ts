@@ -54,6 +54,8 @@ export const STREAM_CARD_KEY_CLASSES = {
   approvalPending: 'live-only',
   stopRequested: 'live-only',
   workspaceObservation: 'live-only',
+  feed: 'live-only',
+  feedAssignment: 'live-only',
   streamRevision: 'read-only',
 } as const satisfies Record<
   keyof DelegatedAgentCallBlock,
@@ -87,6 +89,9 @@ export function persistedDelegationSnapshot(
   delete persisted.approvalPending;
   delete persisted.stopRequested;
   delete persisted.workspaceObservation;
+  // Feed reads and hand-off receipts answer the calling agent; never card state.
+  delete persisted.feed;
+  delete persisted.feedAssignment;
   if (persisted.control?.status === 'accepted') delete persisted.control;
   if (!SETTLED_STATUSES.has(snapshot.status)) delete persisted.usage;
   return persisted;

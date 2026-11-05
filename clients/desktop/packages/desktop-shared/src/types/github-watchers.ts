@@ -228,6 +228,9 @@ export interface GitHubPullRequestSnapshot {
   url: string;
   /** Untrusted, bounded PR title for display. */
   title?: string;
+  /** Optional observed line counts; missing means unknown. */
+  additions?: number;
+  deletions?: number;
   baseRefName: string;
   headSha: string;
   mergedAt: string | null;
@@ -257,6 +260,9 @@ export interface GitHubPullRequestWatchProgress {
   url: string;
   /** Untrusted, bounded PR title for display. */
   title?: string;
+  /** Optional observed line counts; missing means unknown. */
+  additions?: number;
+  deletions?: number;
   state: GitHubPullRequestState;
   baseRefName: string;
   /** Merge queue phase and position; `null` when not queued. */

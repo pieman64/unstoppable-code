@@ -67,7 +67,10 @@ import {
   CORE_EVENTS_STREAMS,
 } from './events/registry';
 import { CORE_RUNTIME_QUERIES, CORE_RUNTIME_STREAMS } from './runtime/registry';
-import { CORE_INTEGRATION_QUERIES } from './integration/operations';
+import {
+  CORE_INTEGRATION_INSTRUCTIONS,
+  CORE_INTEGRATION_QUERIES,
+} from './integration/operations';
 import {
   CORE_PULL_REQUEST_INSTRUCTION_DEFINITIONS,
   CORE_PULL_REQUEST_QUERY_DEFINITIONS,
@@ -109,6 +112,7 @@ export const CORE_INSTRUCTION_DEFINITIONS = defineCanopyInstructionRegistry(
     ...PIPELINE_DEFINITION_INSTRUCTION_DEFINITIONS,
     ...OPERATION_INSTRUCTION_DEFINITIONS,
     ...CORE_PULL_REQUEST_INSTRUCTION_DEFINITIONS,
+    ...CORE_INTEGRATION_INSTRUCTIONS,
   },
 );
 export const CORE_STREAM_DEFINITIONS = defineCanopyStreamRegistry('core', {

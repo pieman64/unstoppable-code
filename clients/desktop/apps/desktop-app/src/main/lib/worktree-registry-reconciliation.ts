@@ -5,6 +5,7 @@ import {
   purgeLiveWorktreeObservabilityData,
 } from './worktree-live-cleanup';
 import { cleanupPersistedWorktreeData } from './worktree-data-cleanup';
+import { withLinuxWorktreeWriterTracking } from './worktree-process-cleanup';
 import { notifyDesktopInventoryChanged } from '../services/desktop-inventory-sync-signals';
 import { notifyLedgerContainerRemovedExternally } from '../ledger/lifecycle';
 import { publishWorktreeLifecycleChange } from './worktree-lifecycle-signals';
@@ -93,7 +94,10 @@ export async function reconcileExternalWorktreeSnapshot(
     const key = `${workspaceId}/${worktreeId}`;
     let cleanup = inFlightCleanup.get(key);
     if (!cleanup) {
-      cleanup = cleanupRemovedWorktree(workspaceId, worktreeId).finally(() => {
+      cleanup = withLinuxWorktreeWriterTracking(
+        () => cleanupRemovedWorktree(workspaceId, worktreeId),
+        JSON.stringify([workspaceId, worktreeId]),
+      ).finally(() => {
         inFlightCleanup.delete(key);
       });
       inFlightCleanup.set(key, cleanup);

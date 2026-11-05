@@ -24,6 +24,7 @@ import {
   CanopyTransportError,
   encodeCanopyChannelDataFrame,
   encodeCanopyJsonFrame,
+  encodeCanopyJsonMessage,
   type CanopyDecodedFrame,
 } from './codec';
 import {
@@ -51,6 +52,13 @@ export interface CanopyFramedConnectionOptions {
   readonly role: 'client' | 'server';
   readonly auth: CanopyFramedAuthOptions;
   readonly maxFrameBytes?: number;
+  /**
+   * Largest inbound envelope reassembled from message parts; one frame by
+   * default. Peers learn it out of band, such as `core.runtime.initialize`.
+   */
+  readonly maxMessageBytes?: number;
+  /** The peer's `maxMessageBytes`, when the composition already knows it. */
+  readonly peerMaxMessageBytes?: number;
   /** Inbound envelopes held before the binding stops reading (backpressure). */
   readonly maxBufferedMessages?: number;
   /** Encoded bytes of inbound envelopes held before the binding stops reading. */
@@ -469,6 +477,7 @@ class FramedConnection implements CanopyFramedConnection {
   private authenticated = false;
   private awaitingAuthOutcome = false;
   private repliesAwaitingDrain = 0;
+  private peerMessageBytes: number;
   private closeReason: CanopyErrorPayload = CONNECTION_CLOSED;
   connectionId = '';
   readonly signal = this.controller.signal;
@@ -477,7 +486,9 @@ class FramedConnection implements CanopyFramedConnection {
     private readonly duplex: Duplex,
     private readonly options: CanopyFramedConnectionOptions,
   ) {
+    // Parts are joined only once the peer has authenticated.
     this.decoder = new CanopyFrameDecoder(this.maxFrameBytes);
+    this.peerMessageBytes = options.peerMaxMessageBytes ?? this.maxFrameBytes;
     this.maxBufferedMessages =
       options.maxBufferedMessages ?? DEFAULT_MAX_BUFFERED_MESSAGES;
     duplex.on('data', (chunk: Buffer) => this.onData(chunk));
@@ -491,6 +502,29 @@ class FramedConnection implements CanopyFramedConnection {
 
   get maxFrameBytes(): number {
     return this.options.maxFrameBytes ?? CANOPY_DEFAULT_MAX_FRAME_BYTES;
+  }
+
+  get maxMessageBytes(): number {
+    return Math.max(
+      this.maxFrameBytes,
+      this.options.maxMessageBytes ?? this.maxFrameBytes,
+    );
+  }
+
+  private authenticate(): void {
+    this.authenticated = true;
+    this.decoder.setMaxMessageBytes(this.maxMessageBytes);
+  }
+
+  allowPeerMessageBytes(bytes: number): void {
+    if (!Number.isSafeInteger(bytes) || bytes < 1)
+      throw new CanopyTransportError(
+        transportError(
+          'invalid_argument',
+          'maxMessageBytes must be a positive integer.',
+        ),
+      );
+    this.peerMessageBytes = bytes;
   }
 
   async handshake(): Promise<void> {
@@ -528,7 +562,7 @@ class FramedConnection implements CanopyFramedConnection {
         }
         this.connectionId = randomUUID();
         // The client may send as soon as auth.ok lands.
-        this.authenticated = true;
+        this.authenticate();
         await this.writeBinding({
           type: 'auth.ok',
           connectionId: this.connectionId,
@@ -561,7 +595,7 @@ class FramedConnection implements CanopyFramedConnection {
           );
         this.connectionId = outcome.connectionId;
       }
-      this.authenticated = true;
+      this.authenticate();
     } catch (error) {
       this.fail(payloadOf(error));
       throw new CanopyTransportError(payloadOf(error));
@@ -575,7 +609,13 @@ class FramedConnection implements CanopyFramedConnection {
       throw new CanopyTransportError(
         transportError('invalid_argument', 'Invalid JSON-RPC 2.0 envelope.'),
       );
-    await this.writeFrame(encodeCanopyJsonFrame(message, this.maxFrameBytes));
+    await this.writeFrame(
+      encodeCanopyJsonMessage(
+        message,
+        this.maxFrameBytes,
+        this.peerMessageBytes,
+      ),
+    );
   }
 
   receive(options?: {
@@ -735,7 +775,7 @@ class FramedConnection implements CanopyFramedConnection {
       // Authenticate synchronously: frames sharing this chunk dispatch next.
       this.awaitingAuthOutcome = false;
       this.connectionId = bindingFrame.connectionId;
-      this.authenticated = true;
+      this.authenticate();
       this.handshakeFrames.push(bindingFrame);
     } else if (this.authenticated || bindingFrame.type === 'connection.close')
       this.onBindingFrame(bindingFrame);
@@ -951,6 +991,8 @@ export async function createCanopyFramedConnection(
 ): Promise<CanopyFramedConnection> {
   for (const [name, value] of Object.entries({
     maxFrameBytes: options.maxFrameBytes,
+    maxMessageBytes: options.maxMessageBytes,
+    peerMaxMessageBytes: options.peerMaxMessageBytes,
     maxBufferedMessages: options.maxBufferedMessages,
     maxBufferedBytes: options.maxBufferedBytes,
     handshakeTimeoutMs: options.handshakeTimeoutMs,

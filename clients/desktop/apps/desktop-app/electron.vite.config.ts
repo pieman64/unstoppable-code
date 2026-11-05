@@ -175,6 +175,10 @@ const aliases = {
   '@canopy/protocol': resolve(repoRoot, 'packages/protocol/src'),
   '@canopy/agent-actions': resolve(repoRoot, 'packages/agent-actions/src'),
   '@canopy/mcp-oauth-core': resolve(repoRoot, 'packages/mcp-oauth-core/src'),
+  '@canopy/memory-consolidation': resolve(
+    repoRoot,
+    'packages/memory-consolidation/src',
+  ),
   '@canopy/plugin-interop': resolve(repoRoot, 'packages/plugin-interop/src'),
   '@canopy/pipeline-interop': resolve(
     repoRoot,
@@ -504,10 +508,9 @@ const googleOAuthMainDefines = {
   ),
 };
 
-const ollamaEnabled = readEnvBoolean(
-  'CANOPY_OLLAMA_ENABLED',
-  process.platform === 'darwin' || process.platform === 'win32',
-);
+// Keep the build policy independent of the compiler host. Each bundle checks
+// the platform exposed by the running app, including Linux.
+const ollamaEnabled = readEnvBoolean('CANOPY_OLLAMA_ENABLED', true);
 
 // Build-time gate for UI-automation/E2E-only code paths. Compiled to `false`
 // in every normal/production build so the gated mock/redirect/stabilizer
@@ -1007,6 +1010,7 @@ export default defineConfig(({ mode }) => {
     ...desktopFeatureFlagDefines,
     ...desktopE2eDefines,
     __CANOPY_OLLAMA_ENABLED__: JSON.stringify(ollamaEnabled),
+    __CANOPY_OLLAMA_PLATFORM__: 'process.platform',
     __CANOPY_DESKTOP_SIDEBAR_SHADOW__: JSON.stringify(
       desktopSidebarShadowEnabled,
     ),
@@ -1163,7 +1167,10 @@ export default defineConfig(({ mode }) => {
         }),
       ],
       root: resolve(repoRoot, 'apps/desktop-app/src/renderer'),
-      define: commonDefines,
+      define: {
+        ...commonDefines,
+        __CANOPY_OLLAMA_PLATFORM__: 'window.platform',
+      },
       server: rendererServerOptions,
       // React's development transform injects this entry after the initial
       // static-import crawl. Without an explicit include, a cold dev launch

@@ -422,7 +422,8 @@ export interface AiCreditsBalance {
    * Whether the user opted in to the daily free-credit drip. APPEND-ONLY /
    * optional on the wire: older servers omit it, and `undefined` means
    * "unknown, keep current behavior". Only an explicit `false` hides
-   * free-allowance readouts and offers "Turn on".
+   * free-allowance readouts and offers "Turn on". The server also omits it
+   * when the plan allowance is 0 or unknown (CAN-4762).
    */
   dailyDripEnabled?: boolean;
   /**

@@ -1,4 +1,5 @@
 import { getPlanModeHintStore } from '@/lib/planModeHint';
+import { getGitHubStarPromptStore } from '@/lib/githubStarPrompt';
 import { ComposerTipArbiterProvider, Chip } from '@canopy/ui-shared/components';
 import {
   isPlanModeReadOnly,
@@ -1226,12 +1227,17 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
           })
         )
           void getPlanModeHintStore().getState().markTried();
+        const acceptedTurn =
+          submittedSchedule === null &&
+          (text.trim().length > 0 || attachments.length > 0);
+        // Counts toward the GitHub star prompt, which then shows in the new
+        // chat's composer; a brand without one has no store (CAN-5604).
+        if (acceptedTurn)
+          void getGitHubStarPromptStore()?.getState().noteTurnSent();
         // Report accepted Home turns to the independent contextual tips.
         notifyHomeTaskSent({
           kind: 'chat',
-          acceptedTurn:
-            submittedSchedule === null &&
-            (text.trim().length > 0 || attachments.length > 0),
+          acceptedTurn,
           worktreeChat:
             submittedWorkspace !== undefined &&
             submittedWorkspace.type !== 'cowork',

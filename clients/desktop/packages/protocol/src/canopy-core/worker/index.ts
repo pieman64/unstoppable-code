@@ -1,3 +1,4 @@
+export * from './agent-helpers';
 export * from './code-graph';
 export * from './code-graph-reads';
 export * from './filesystem';

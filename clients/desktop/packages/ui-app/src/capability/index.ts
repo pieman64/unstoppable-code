@@ -58,3 +58,6 @@ export {
 export * from './customizeWorkflowActions';
 export * from './CustomizeWorkflowRowControls';
 export * from './CustomizeSearchRow';
+
+export * from './MarketplaceOwnerRow';
+export * from './marketplaceCopyLinkMenuItem';

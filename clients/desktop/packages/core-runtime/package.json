@@ -24,6 +24,7 @@
     "./node/pipeline": "./src/node/pipeline/index.ts",
     "./node/operations": "./src/node/operations/index.ts",
     "./node/operations/ledger": "./src/node/operations/ledger/index.ts",
+    "./node/agent/helpers": "./src/node/agent/helpers/index.ts",
     "./node/w5/commit-log": "./src/node/w5/commit-log/index.ts",
     "./node/w5/commit-log/data-root": "./src/node/w5/commit-log/data-root.ts",
     "./node/w5/commit-log/eligibility": "./src/node/w5/commit-log/eligibility.ts",

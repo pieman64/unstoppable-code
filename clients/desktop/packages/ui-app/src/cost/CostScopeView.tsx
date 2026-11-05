@@ -36,6 +36,7 @@ import {
   useCostInsightsEnabled,
 } from './CostInsightsGate';
 import { CostViewFrame, costRefreshFailureReason } from './CostViewFrame';
+import { COST_SCOPE_VIEW_SAMPLE } from './cost-view-samples';
 import {
   type CostScopeRowTarget,
   costScopeScaleMax,
@@ -217,6 +218,7 @@ function CostScopeViewContent({
         status={status}
         problem={problem}
         onRetry={() => void load()}
+        loadingSample={COST_SCOPE_VIEW_SAMPLE}
         testId="cost-scope-view"
       >
         {(view) => {

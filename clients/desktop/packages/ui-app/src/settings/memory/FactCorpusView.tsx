@@ -21,7 +21,6 @@ import {
   EmptyState,
   ErrorBanner,
   SegmentedControl,
-  SettingsListSkeleton,
   Sheet,
   buttonClassName,
   SearchField,
@@ -40,6 +39,7 @@ import {
   type LivenessFilter,
 } from './fact-corpus-filters';
 import { FactCard } from './FactCard';
+import { FactCardsSkeleton } from './FactCardsSkeleton';
 import { FactDetailDrawer } from './FactDetailDrawer';
 import { useMemoryErrorCopy } from './memory-error-copy';
 import { RetrievalPreview } from './RetrievalPreview';
@@ -334,7 +334,7 @@ export function FactCorpusView({
   if (emptyLiveCorpus && supersededFound === null) {
     return (
       <DelayedLoadingPlaceholder>
-        <SettingsListSkeleton />
+        <FactCardsSkeleton layout="grid" />
       </DelayedLoadingPlaceholder>
     );
   }
@@ -442,7 +442,7 @@ export function FactCorpusView({
           )}
           {loading && facts.length === 0 ? (
             <DelayedLoadingPlaceholder>
-              <SettingsListSkeleton />
+              <FactCardsSkeleton layout="grid" />
             </DelayedLoadingPlaceholder>
           ) : facts.length === 0 ? (
             <div className="rounded-xl border border-dashed py-16 text-center">

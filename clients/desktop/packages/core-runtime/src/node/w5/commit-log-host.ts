@@ -15,7 +15,12 @@ import type {
   W5ReservationFailureDiagnostics,
   W5Resource,
 } from './commit-log/commit-log';
-import { W5CommitLogError, W5CommitRefusedError } from './commit-log/errors';
+import {
+  W5CommitLogError,
+  W5CommitRefusedError,
+  W5ProcessFileLockTimeoutError,
+  W5FileWriteRefusedError,
+} from './commit-log/errors';
 import type { WorkspaceCreationDiagnostics } from './commit-log/reservation-diagnostics';
 import {
   isW5CaptureRequest,
@@ -60,6 +65,7 @@ export interface W5CommitLogHostOptions {
    * worker makes durable up to it before `ready`. Default: `root` alone.
    */
   dataRoot?: string;
+  healCleanConflictOperations?: readonly string[];
   /**
    * win32: the native addon the host's worker entry loads its handle-confined
    * capture reader from, passed through as worker data. The portable worker
@@ -117,11 +123,17 @@ export class W5CommitLogHostError extends Error {
 /** A failed call: the commit log's own error, or the host's. */
 type W5CommitLogCallError =
   | W5CommitLogError
+  | W5ProcessFileLockTimeoutError
+  | W5FileWriteRefusedError
   | W5CommitRefusedError
   | W5CommitLogHostError;
 
 function toCallError(error: W5CommitLogWorkerError): W5CommitLogCallError {
   switch (error.kind) {
+    case 'fingerprint-conflict':
+      return new W5FileWriteRefusedError(error.path);
+    case 'process-lock-timeout':
+      return new W5ProcessFileLockTimeoutError(error.path);
     case 'log':
       return new W5CommitLogError(error.code, error.message);
     case 'refused':
@@ -272,6 +284,9 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
       dbPath: options.dbPath,
       root: options.root,
       ...dataRootOption(options),
+      ...(options.healCleanConflictOperations !== undefined && {
+        healCleanConflictOperations: options.healCleanConflictOperations,
+      }),
       ...(options.confinementAddon !== undefined && {
         confinementAddon: options.confinementAddon,
       }),

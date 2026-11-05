@@ -475,7 +475,20 @@ export interface AgentAuditEntry {
   startedAt: string;
   completedAt?: string;
   durationMs?: number;
+  /**
+   * The model that served the turn. A routed Claude turn carries the gateway
+   * id its replies report; a credits-routed Codex turn carries the served
+   * model's registry id.
+   */
   model?: string;
+  /**
+   * The selection the turn was started with, which may be an Agent id rather
+   * than a model id. Set once at turn start and never overwritten by provider
+   * output, unlike `model`. Persisted because steering and autonomous wakes
+   * copy metadata from closed entries; an entry written before this field
+   * existed has none.
+   */
+  requestedModel?: string;
   totalCostUsd?: number;
   /**
    * Structured cost breakdown for the turn. Optional and backward-compatible:

@@ -351,8 +351,8 @@ export interface Pipeline {
   jobs: Record<string, Job>;
   /**
    * Optional named collections of portable plugin defaults that steps can
-   * opt into via `with.plugin_collection_id` on `builtin/agent-prompt` or
-   * `builtin/agent-resume`. Only shareable skill and plugin refs are
+   * opt into via `with.plugin_collection_id` on `builtin/agent-prompt`,
+   * `builtin/agent-resume` or `builtin/send-agent-message`. Only shareable skill and plugin refs are
    * permitted here; bundle refs are local-only.
    */
   plugin_collections?: PipelinePluginCollection[];

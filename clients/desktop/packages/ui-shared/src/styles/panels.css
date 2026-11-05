@@ -1708,10 +1708,10 @@
 
 /* Same frame as the shared TitlebarIconButton (28x28, `rounded-md`, subtle
    hover surface) that every other chrome-row icon uses — including the add
-   and overflow controls sitting beside these in the very same bar. These stay
-   plain buttons only because they host arbitrary caller-rendered tab icons
-   rather than TitlebarIconButton's Central glyph prop. */
-.canopy-panel-collapsed-expand,
+   and overflow controls (and the expand toggle) sitting beside these in the
+   very same bar. These stay plain buttons only because they host arbitrary
+   caller-rendered tab icons rather than TitlebarIconButton's Central glyph
+   prop. */
 .canopy-panel-collapsed-tab {
   display: flex;
   align-items: center;
@@ -1730,7 +1730,6 @@
    inset in from its edges, never below the floor. */
 .canopy-panel-collapsed-bar
   :is(
-    .canopy-panel-collapsed-expand,
     .canopy-panel-collapsed-tab,
     .canopy-panel-add-tab,
     .canopy-panel-chrome-button
@@ -1742,7 +1741,6 @@
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .canopy-panel-collapsed-expand,
   .canopy-panel-collapsed-tab {
     transition:
       background-color 0.1s ease-out,
@@ -1750,13 +1748,11 @@
   }
 }
 
-.canopy-panel-collapsed-expand:hover,
 .canopy-panel-collapsed-tab:hover {
   background: var(--bg-subtle);
   color: var(--fg-primary);
 }
 
-.canopy-panel-collapsed-expand:focus-visible,
 .canopy-panel-collapsed-tab:focus-visible {
   outline: 2px solid var(--line-focus);
   outline-offset: -2px;

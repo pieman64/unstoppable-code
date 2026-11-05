@@ -8,7 +8,7 @@ import { useChatStore } from '@/stores/chatStore';
 import {
   useQuestionPrompt,
   type QuestionPromptState,
-} from './useQuestionPrompt';
+} from '@canopy/ui-shared/components/chat/useQuestionPrompt';
 
 /** A waiting request the composer asks: one or more questions. */
 export interface ComposerPendingQuestion {

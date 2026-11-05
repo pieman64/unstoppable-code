@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react';
 import type { MarketplaceSource } from '@canopy/app-core/client';
 import {
   Button,
+  DelayedLoadingPlaceholder,
   EmptyState,
   ErrorBanner,
   ErrorState,
@@ -11,6 +12,7 @@ import {
   MissingPluginsBadge,
   RefreshButton,
   ProviderSupportIcons,
+  Skeleton,
   StatusLabel,
 } from '@canopy/ui-shared/components';
 import { formatRelativeTime } from '@canopy/ui-shared/lib';
@@ -52,6 +54,40 @@ function defaultRemoveConfirmation(
       'The marketplace is removed from your list. Plugins you already installed stay installed.',
   };
 }
+
+function sampleSource(
+  id: string,
+  name: string,
+  description: string,
+): MarketplaceSource {
+  return {
+    id,
+    name,
+    description,
+    kind: 'github',
+    sourceLabel: `acme/${name.toLowerCase().replace(/ /gu, '-')}`,
+    status: { state: 'valid', errors: [] },
+    pluginCount: 4,
+    actions: { update: true, remove: true },
+    plugins: [],
+  };
+}
+
+/** Plain marketplaces the loading skeleton measures. */
+const SAMPLE_SOURCES: readonly MarketplaceSource[] = [
+  sampleSource(
+    'marketplace-skeleton-1',
+    'Team plugins',
+    'Plugins the team shares',
+  ),
+  sampleSource(
+    'marketplace-skeleton-2',
+    'Release tools',
+    'Tools for shipping releases',
+  ),
+];
+
+const noop = (): void => undefined;
 
 /** Marketplaces tab body: source rows with Refresh, Update and Remove. */
 export function MarketplaceSourcesList({
@@ -99,14 +135,25 @@ export function MarketplaceSourcesList({
   let body: ReactNode;
   if (loading) {
     body = (
-      <div
-        className="flex items-center gap-2 py-8 text-s fg-secondary"
-        role="status"
-        data-testid="marketplace-sources-loading"
-      >
-        <LoadingSpinner decorative />
-        Loading marketplaces…
-      </div>
+      <DelayedLoadingPlaceholder slowNote="Still loading marketplaces…">
+        <Skeleton
+          loading
+          label="Loading marketplaces"
+          testId="marketplace-sources-loading"
+        >
+          <ul className="flex flex-col divide-y">
+            {SAMPLE_SOURCES.map((source) => (
+              <MarketplaceSourceRow
+                key={source.id}
+                source={source}
+                state={state}
+                onOpen={noop}
+                onRemove={noop}
+              />
+            ))}
+          </ul>
+        </Skeleton>
+      </DelayedLoadingPlaceholder>
     );
   } else if (sources === null) {
     body = (

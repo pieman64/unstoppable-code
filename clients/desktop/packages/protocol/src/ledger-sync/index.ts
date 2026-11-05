@@ -3,6 +3,7 @@ import { LEDGER_LIMITS } from '../canopy-core/core/ledger/limits';
 import {
   LEDGER_ATTRIBUTION_KINDS,
   LEDGER_ENTRY_TYPES,
+  LEDGER_V1_ENTRY_TYPES,
   LEDGER_STATUSES,
   LedgerActorFilterSchema,
   LedgerActorLabelSchema,
@@ -15,6 +16,10 @@ import {
   LedgerEntryTypeSchema,
   LedgerGlobalOwnerSchema,
   LedgerMutationSchema,
+  LedgerV1EntrySchema,
+  LedgerV1EntrySearchItemSchema,
+  LedgerV1EntryTypeSchema,
+  LedgerV1MutationSchema,
   LedgerOpaqueIdSchema,
   LedgerOrganizationIdSchema,
   LedgerScopeRefSchema,
@@ -43,7 +48,10 @@ import { containsDisallowedControlCharacters } from '../canopy-core/core/ledger/
  *
  * Task scopes sync at schema version 1. Global (workflow) scopes sync at
  * version 2, only to a mirror that advertises `ledger-global-v1`; a request's
- * version must match its scope kind, and one push never mixes versions.
+ * version must match its scope kind, and one push never mixes versions. A
+ * batch that carries anything versions 1 and 2 cannot (an operation, a parent,
+ * a parent change or a `leftOpen` reason) syncs at version 3 for a task scope
+ * and version 4 for a global scope.
  */
 
 export const LEDGER_SYNC_SCHEMA_VERSION = 1;
@@ -65,6 +73,74 @@ export function parseLedgerMirrorReadVersion(
   value: string | null | undefined,
 ): LedgerMirrorReadVersion {
   return value?.trim() === String(LEDGER_MIRROR_GLOBAL_READ_VERSION) ? 2 : 1;
+}
+
+/**
+ * The versions of a push batch that carries anything versions 1 and 2 cannot:
+ * an operation, a parent, a parent change or a `leftOpen` reason, for a task
+ * scope and a global scope. A desktop sends one only for such a batch; a
+ * mirror that predates it refuses the batch, and the desktop holds that scope
+ * until the mirror accepts.
+ */
+export const LEDGER_SYNC_OPERATIONS_SCHEMA_VERSION = 3;
+export const LEDGER_SYNC_GLOBAL_OPERATIONS_SCHEMA_VERSION = 4;
+
+export type LedgerSyncPushVersion =
+  | typeof LEDGER_SYNC_SCHEMA_VERSION
+  | typeof LEDGER_SYNC_GLOBAL_SCHEMA_VERSION
+  | typeof LEDGER_SYNC_OPERATIONS_SCHEMA_VERSION
+  | typeof LEDGER_SYNC_GLOBAL_OPERATIONS_SCHEMA_VERSION;
+
+/** The push version for a scope kind and whether the batch carries operations. */
+export function ledgerSyncPushVersion(
+  global: boolean,
+  operations: boolean,
+): LedgerSyncPushVersion {
+  if (global) {
+    return operations
+      ? LEDGER_SYNC_GLOBAL_OPERATIONS_SCHEMA_VERSION
+      : LEDGER_SYNC_GLOBAL_SCHEMA_VERSION;
+  }
+  return operations
+    ? LEDGER_SYNC_OPERATIONS_SCHEMA_VERSION
+    : LEDGER_SYNC_SCHEMA_VERSION;
+}
+
+/** Whether a push version belongs to a global scope. */
+export function isLedgerSyncGlobalVersion(version: number): boolean {
+  return (
+    version === LEDGER_SYNC_GLOBAL_SCHEMA_VERSION ||
+    version === LEDGER_SYNC_GLOBAL_OPERATIONS_SCHEMA_VERSION
+  );
+}
+
+/** Whether a push version may carry operations, parents and `leftOpen`. */
+export function isLedgerSyncOperationsVersion(version: number): boolean {
+  return (
+    version === LEDGER_SYNC_OPERATIONS_SCHEMA_VERSION ||
+    version === LEDGER_SYNC_GLOBAL_OPERATIONS_SCHEMA_VERSION
+  );
+}
+
+/**
+ * Mirror reads return operations and parents only to a client that asks with
+ * this header. A header rather than a body field, because a mirror that
+ * predates them parses request bodies strictly but ignores unknown headers.
+ */
+export const LEDGER_MIRROR_CAPABILITIES_HEADER = 'X-Canopy-Ledger-Capabilities';
+export const LEDGER_MIRROR_OPERATIONS_CAPABILITY = 'operations';
+
+/** Whether a capabilities header value (comma-separated tokens) asks for operations. */
+export function hasLedgerMirrorOperationsCapability(
+  value: string | null | undefined,
+): boolean {
+  if (value === null || value === undefined) return false;
+  return value
+    .split(',')
+    .some(
+      (token) =>
+        token.trim().toLowerCase() === LEDGER_MIRROR_OPERATIONS_CAPABILITY,
+    );
 }
 
 export const LEDGER_SYNC_LIMITS = {
@@ -354,11 +430,34 @@ export const LedgerActorRegisteredPayloadSchema = z.strictObject({
 });
 
 export const LedgerEntryRevisionPayloadSchema = z.strictObject({
-  entry: LedgerEntrySchema,
-  mutation: LedgerMutationSchema,
+  entry: LedgerV1EntrySchema,
+  mutation: LedgerV1MutationSchema,
   /** Present on a published Summary. */
   publication: z.strictObject({ sourceTruncated: z.boolean() }).optional(),
 });
+
+/** An entry revision in a version 2 batch: it may carry the new fields. */
+export const LedgerEntryRevisionPayloadV2Schema = z.strictObject({
+  entry: LedgerEntrySchema,
+  mutation: LedgerMutationSchema,
+  publication: z.strictObject({ sourceTruncated: z.boolean() }).optional(),
+});
+export type LedgerEntryRevisionPayloadV2 = z.output<
+  typeof LedgerEntryRevisionPayloadV2Schema
+>;
+
+/** Whether a revision carries a field a version 1 batch cannot. */
+export function ledgerEntryRevisionNeedsV2(
+  payload: LedgerEntryRevisionPayloadV2,
+): boolean {
+  const { entry, mutation } = payload;
+  return (
+    entry.type === 'OPERATION' ||
+    entry.parentEntryId !== undefined ||
+    mutation.parent !== undefined ||
+    mutation.leftOpen !== undefined
+  );
+}
 
 /** An archive or a restore, naming where the scope now lives. */
 export const LedgerScopeLifecyclePayloadSchema = z.strictObject({
@@ -386,12 +485,15 @@ export type LedgerSyncEvent = z.output<typeof LedgerSyncEventSchema>;
 
 export const LedgerSyncPushRequestSchema = z.strictObject({
   /**
-   * Version 1 for a task scope, version 2 for a global scope; the mirror
-   * refuses a version that does not match the registered scope's kind.
+   * Version 1 for a task scope, version 2 for a global scope, and 3 or 4 for
+   * a batch of either that carries operations; the mirror refuses a version
+   * that does not match the registered scope's kind.
    */
   schemaVersion: z.union([
     z.literal(LEDGER_SYNC_SCHEMA_VERSION),
     z.literal(LEDGER_SYNC_GLOBAL_SCHEMA_VERSION),
+    z.literal(LEDGER_SYNC_OPERATIONS_SCHEMA_VERSION),
+    z.literal(LEDGER_SYNC_GLOBAL_OPERATIONS_SCHEMA_VERSION),
   ]),
   ledgerId: LedgerUuidSchema,
   accountId: LedgerUuidSchema,
@@ -443,9 +545,9 @@ export const LedgerMirrorSearchRequestSchema = z.strictObject({
   owner: LedgerActorFilterSchema.optional(),
   author: LedgerActorFilterSchema.optional(),
   types: z
-    .array(LedgerEntryTypeSchema)
+    .array(LedgerV1EntryTypeSchema)
     .min(1)
-    .max(LEDGER_ENTRY_TYPES.length)
+    .max(LEDGER_V1_ENTRY_TYPES.length)
     .optional(),
   statuses: z
     .array(LedgerStatusSchema)
@@ -467,6 +569,23 @@ export const LedgerMirrorSearchRequestSchema = z.strictObject({
 });
 export type LedgerMirrorSearchRequest = z.output<
   typeof LedgerMirrorSearchRequestSchema
+>;
+
+/** A search from a client that sent the operations capability. */
+export const LedgerMirrorSearchRequestV2Schema =
+  LedgerMirrorSearchRequestSchema.extend({
+    types: z
+      .array(LedgerEntryTypeSchema)
+      .min(1)
+      .max(LEDGER_ENTRY_TYPES.length)
+      .optional(),
+    /** That entry's direct children; `null` for entries with no parent. */
+    parentEntryId: LedgerUuidSchema.nullable().optional(),
+    /** That top-level entry and everything under it. */
+    rootEntryId: LedgerUuidSchema.optional(),
+  });
+export type LedgerMirrorSearchRequestV2 = z.output<
+  typeof LedgerMirrorSearchRequestV2Schema
 >;
 
 /** Where a mirrored entry was written. */
@@ -498,7 +617,7 @@ const LedgerMirrorGlobalFieldsShape = {
 };
 
 /** A search item from a mirrored scope, with the scope and its source. */
-export const LedgerMirrorEntrySchema = LedgerEntrySearchItemSchema.omit({
+export const LedgerMirrorEntrySchema = LedgerV1EntrySearchItemSchema.omit({
   // A row the mirror returns is mirrored by definition.
   syncState: true,
   // Only the device that owns an entry names what its source opens as.
@@ -511,6 +630,19 @@ export const LedgerMirrorEntrySchema = LedgerEntrySearchItemSchema.omit({
   ...LedgerMirrorGlobalFieldsShape,
 });
 export type LedgerMirrorEntry = z.output<typeof LedgerMirrorEntrySchema>;
+
+/** A search item for a client that sent the operations capability. */
+export const LedgerMirrorEntryV2Schema = LedgerEntrySearchItemSchema.omit({
+  syncState: true,
+  sourceKind: true,
+}).extend({
+  ledgerId: LedgerUuidSchema,
+  scopeKind: LedgerScopeKindSchema,
+  scopeArchived: z.boolean(),
+  source: LedgerMirrorSourceSchema,
+  ...LedgerMirrorGlobalFieldsShape,
+});
+export type LedgerMirrorEntryV2 = z.output<typeof LedgerMirrorEntryV2Schema>;
 
 /** An actor label within one scope; actor IDs are unique per scope. */
 export const LedgerMirrorActorLabelSchema = LedgerActorLabelSchema.extend({
@@ -536,8 +668,18 @@ export type LedgerMirrorSearchResponse = z.output<
   typeof LedgerMirrorSearchResponseSchema
 >;
 
+export const LedgerMirrorSearchResponseV2Schema =
+  LedgerMirrorSearchResponseSchema.extend({
+    entries: z
+      .array(LedgerMirrorEntryV2Schema)
+      .max(LEDGER_LIMITS.searchPageMax),
+  });
+export type LedgerMirrorSearchResponseV2 = z.output<
+  typeof LedgerMirrorSearchResponseV2Schema
+>;
+
 export const LedgerMirrorEntryResponseSchema = z.strictObject({
-  entry: LedgerEntrySchema,
+  entry: LedgerV1EntrySchema,
   ledgerId: LedgerUuidSchema,
   scopeKind: LedgerScopeKindSchema,
   scopeArchived: z.boolean(),
@@ -545,7 +687,9 @@ export const LedgerMirrorEntryResponseSchema = z.strictObject({
   ...LedgerMirrorGlobalFieldsShape,
   sourceAvailability: LedgerSourceAvailabilitySchema,
   history: z.strictObject({
-    mutations: z.array(LedgerMutationSchema).max(LEDGER_LIMITS.historyPageMax),
+    mutations: z
+      .array(LedgerV1MutationSchema)
+      .max(LEDGER_LIMITS.historyPageMax),
     /** The revision to read the next page below; null at the first. */
     nextBeforeRevision: z.int().min(1).nullable(),
   }),
@@ -555,6 +699,20 @@ export const LedgerMirrorEntryResponseSchema = z.strictObject({
 });
 export type LedgerMirrorEntryResponse = z.output<
   typeof LedgerMirrorEntryResponseSchema
+>;
+
+export const LedgerMirrorEntryResponseV2Schema =
+  LedgerMirrorEntryResponseSchema.extend({
+    entry: LedgerEntrySchema,
+    history: z.strictObject({
+      mutations: z
+        .array(LedgerMutationSchema)
+        .max(LEDGER_LIMITS.historyPageMax),
+      nextBeforeRevision: z.int().min(1).nullable(),
+    }),
+  });
+export type LedgerMirrorEntryResponseV2 = z.output<
+  typeof LedgerMirrorEntryResponseV2Schema
 >;
 
 export type LedgerCanonicalValue =

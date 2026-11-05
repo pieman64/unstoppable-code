@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useId, type JSX, type RefObject } from 'react';
-import { createPortal } from 'react-dom';
+import { PaneSheet } from './Sheet';
 import {
   ChangeDiagramIcon,
   ChatIcon,
@@ -222,8 +222,13 @@ export function FindInSurfaceBar({
     modes.length > 1 || modes.some((entry) => scopesFor(entry).length > 1);
   const placeholder = FIND_SURFACE_PLACEHOLDERS[mode];
 
-  const bar = (
-    <div
+  // The shared window sheet: fixed, centred under the window's top edge,
+  // portaled, on the menu surface. It never takes focus from the field.
+  return (
+    <PaneSheet
+      placement="window-top"
+      padding="toolbar"
+      portalContainer={portalContainer}
       role="search"
       aria-label={placeholder}
       data-testid="surface-find-bar"
@@ -238,66 +243,63 @@ export function FindInSurfaceBar({
           onClose();
         }
       }}
-      className="electron-no-drag fixed left-1/2 top-3 z-drawer flex w-max min-w-[min(28rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-col gap-1 rounded-lg bg-quaternary p-1.5 shadow-xl"
     >
-      <div className="flex items-center gap-1">
-        {showModeRow ? (
-          <div className="flex shrink-0 flex-wrap items-center gap-0.5">
-            {modes.map((entry) =>
-              scopesFor(entry).length > 1 ? (
-                scopesFor(entry).map((option, position) => (
-                  <ScopeToggle
-                    key={`${entry}:${option.key}`}
-                    mode={entry}
-                    index={position + 1}
-                    option={option}
-                    active={entry === mode && option.key === activeScopeKey}
-                    onPick={(scopeKey): void => onModeChange(entry, scopeKey)}
-                  />
-                ))
-              ) : (
-                <HeaderActionButton
-                  key={entry}
-                  iconOnly
-                  tone="neutral"
-                  stateStyle="toolbar"
-                  aria-label={MODE_LABELS[entry]}
-                  aria-pressed={entry === mode}
-                  data-testid={`surface-find-mode-${entry}`}
-                  onClick={() => onModeChange(entry)}
-                >
-                  <ModeIcon mode={entry} />
-                </HeaderActionButton>
-              ),
-            )}
-          </div>
+      <div className="flex flex-col gap-1">
+        <div className="flex items-center gap-1">
+          {showModeRow ? (
+            <div className="flex shrink-0 flex-wrap items-center gap-0.5">
+              {modes.map((entry) =>
+                scopesFor(entry).length > 1 ? (
+                  scopesFor(entry).map((option, position) => (
+                    <ScopeToggle
+                      key={`${entry}:${option.key}`}
+                      mode={entry}
+                      index={position + 1}
+                      option={option}
+                      active={entry === mode && option.key === activeScopeKey}
+                      onPick={(scopeKey): void => onModeChange(entry, scopeKey)}
+                    />
+                  ))
+                ) : (
+                  <HeaderActionButton
+                    key={entry}
+                    iconOnly
+                    tone="neutral"
+                    stateStyle="toolbar"
+                    aria-label={MODE_LABELS[entry]}
+                    aria-pressed={entry === mode}
+                    data-testid={`surface-find-mode-${entry}`}
+                    onClick={() => onModeChange(entry)}
+                  >
+                    <ModeIcon mode={entry} />
+                  </HeaderActionButton>
+                ),
+              )}
+            </div>
+          ) : null}
+          <SearchBar
+            className="min-w-56 flex-1"
+            query={query}
+            onQueryChange={onQueryChange}
+            currentIndex={currentIndex}
+            totalCount={totalCount}
+            onNext={onNext}
+            onPrevious={onPrevious}
+            onClose={onClose}
+            inputRef={inputRef}
+            label={placeholder}
+            placeholder={placeholder}
+          />
+        </div>
+        {error ? (
+          <ErrorBanner
+            className="mx-1 mb-1"
+            error={error.message}
+            onRetry={error.onRetry}
+            testId="surface-find-error"
+          />
         ) : null}
-        <SearchBar
-          className="min-w-56 flex-1"
-          query={query}
-          onQueryChange={onQueryChange}
-          currentIndex={currentIndex}
-          totalCount={totalCount}
-          onNext={onNext}
-          onPrevious={onPrevious}
-          onClose={onClose}
-          inputRef={inputRef}
-          label={placeholder}
-          placeholder={placeholder}
-        />
       </div>
-      {error ? (
-        <ErrorBanner
-          className="mx-1 mb-1"
-          error={error.message}
-          onRetry={error.onRetry}
-          testId="surface-find-error"
-        />
-      ) : null}
-    </div>
+    </PaneSheet>
   );
-
-  const container =
-    portalContainer ?? (typeof document === 'undefined' ? null : document.body);
-  return container ? createPortal(bar, container) : bar;
 }

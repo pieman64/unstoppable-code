@@ -62,6 +62,7 @@ const SHARE_SCOPES: readonly ShareResourceScope[] = [
 const skillLinks = createShareLinkResolver(
   skillSharePath,
   resolveSharedSkillUrl,
+  'skill',
 );
 
 interface ShareSkillModalProps {
@@ -113,22 +114,32 @@ export function ShareSkillModal({
   const isCustomSource = skill.sourceId === 'custom:app';
   const skillPath = `${skill.sourceId}/${skill.name}`;
 
-  const loadExistingShare = useCallback(async () => {
-    setRemoteDetail(null);
-    setRemoteLink(null);
-    if (!skill.remote?.remoteId) return { status: 'ready' } as const;
-    try {
-      const detail = await window.skills.getShared(skill.remote.remoteId);
-      setRemoteDetail(detail);
-      setRemoteLink(await skillLinks.linkFromDetail(detail));
-      return { status: 'ready' } as const;
-    } catch (error: unknown) {
-      return readSharedResourceErrorStatus(error) === 404 &&
-        (await missingRemoteShareCanBeRecreated(skill.remote?.accountId))
-        ? ({ status: 'ready' } as const)
-        : existingShareLoadFailure('skill', error);
-    }
-  }, [skill.remote?.accountId, skill.remote?.remoteId]);
+  const loadExistingShare = useCallback(
+    async (assertCurrent?: () => void) => {
+      assertCurrent?.();
+      setRemoteDetail(null);
+      assertCurrent?.();
+      setRemoteLink(null);
+      if (!skill.remote?.remoteId) return { status: 'ready' } as const;
+      try {
+        const detail = await window.skills.getShared(skill.remote.remoteId);
+        assertCurrent?.();
+        setRemoteDetail(detail);
+        const refreshedLink = await skillLinks.linkFromDetail(detail);
+
+        assertCurrent?.();
+
+        setRemoteLink(refreshedLink);
+        return { status: 'ready' } as const;
+      } catch (error: unknown) {
+        return readSharedResourceErrorStatus(error) === 404 &&
+          (await missingRemoteShareCanBeRecreated(skill.remote?.accountId))
+          ? ({ status: 'ready' } as const)
+          : existingShareLoadFailure('skill', error);
+      }
+    },
+    [skill.remote?.accountId, skill.remote?.remoteId],
+  );
 
   const existingShare = useMemo(
     (): ShareResourceExistingShare | undefined =>
@@ -138,12 +149,18 @@ export function ShareSkillModal({
     [remoteDetail, remoteLink],
   );
 
-  const revokePublicLink = useCallback(async (): Promise<void> => {
-    if (!remoteDetail?.publicShare) return;
-    await window.skills.revokePublicShare(remoteDetail.id);
-    setRemoteDetail({ ...remoteDetail, publicShare: null });
-    onPublicLinkRemoved?.();
-  }, [onPublicLinkRemoved, remoteDetail]);
+  const revokePublicLink = useCallback(
+    async (assertCurrent?: () => void): Promise<void> => {
+      assertCurrent?.();
+      if (!remoteDetail?.publicShare) return;
+      await window.skills.revokePublicShare(remoteDetail.id);
+      assertCurrent?.();
+      setRemoteDetail({ ...remoteDetail, publicShare: null });
+      assertCurrent?.();
+      onPublicLinkRemoved?.();
+    },
+    [onPublicLinkRemoved, remoteDetail],
+  );
 
   // What actually travels with this skill: its own folder, anything its
   // instructions invoke, and the MCP/plugin names they reference. The read is
@@ -306,6 +323,7 @@ export function ShareSkillModal({
       }
 
       let publicLinkFailed = false;
+      input.assertAllowed?.();
       let shareUrl: string | undefined;
       if (input.scope === 'public') {
         input.assertAllowed?.();
@@ -317,9 +335,11 @@ export function ShareSkillModal({
           // URL is not configured so the link is still visible and copyable.
           const link = await skillLinks.resolveLink({
             kind: 'public',
+            id: detail.id,
             sharePath: publicShare.sharePath,
           });
           shareUrl = link.url;
+          input.assertAllowed?.();
           setRemoteLink(link);
         } catch {
           publicLinkFailed = true;
@@ -332,11 +352,15 @@ export function ShareSkillModal({
             id: detail.id,
           });
           shareUrl = link.url;
+          input.assertAllowed?.();
           setRemoteLink(link);
         }
       }
 
+      input.assertAllowed?.();
+
       pendingShared.current = { detail };
+      input.assertAllowed?.();
       setRemoteDetail(detail);
       return {
         ...(shareUrl !== undefined ? { shareUrl } : {}),
@@ -346,8 +370,9 @@ export function ShareSkillModal({
     [remoteDetail, skill, skillPath],
   );
 
-  const retryPublicLink =
-    useCallback(async (): Promise<ShareResourceOutcome> => {
+  const retryPublicLink = useCallback(
+    async (assertCurrent?: () => void): Promise<ShareResourceOutcome> => {
+      assertCurrent?.();
       const pending = pendingShared.current;
       if (!pending) return { publicLinkFailed: true };
       const publicShare = await window.skills.publishPublicShare(
@@ -355,13 +380,19 @@ export function ShareSkillModal({
       );
       const link = await skillLinks.resolveLink({
         kind: 'public',
+        id: pending.detail.id,
         sharePath: publicShare.sharePath,
       });
+      assertCurrent?.();
       setRemoteLink(link);
+      assertCurrent?.();
       pending.detail = { ...pending.detail, publicShare };
+      assertCurrent?.();
       setRemoteDetail(pending.detail);
       return { shareUrl: link.url };
-    }, []);
+    },
+    [],
+  );
 
   const handleCompleted = useCallback((): void => {
     const pending = pendingShared.current;
@@ -385,6 +416,7 @@ export function ShareSkillModal({
 
   return (
     <DesktopShareResourceDialog
+      marketplace={{ kind: 'skill', resourceKey: skillPath }}
       resourceNoun="skill"
       testIdPrefix="share-skill"
       requiredCapability={SKILLS_CRUD_CAPABILITY}

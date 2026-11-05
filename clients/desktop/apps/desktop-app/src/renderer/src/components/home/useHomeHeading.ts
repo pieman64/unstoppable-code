@@ -57,14 +57,3 @@ export function useHomeHeading(): string {
 
   return heading;
 }
-
-/**
- * Test-only reset of the module-level held-heading state, so tests can
- * assert fresh-pick behavior without depending on unmount ordering to drop
- * the instance count to zero. Mirrors the `__reset*ForTests` convention used
- * elsewhere in this package (e.g. `stores/slowActionStore.ts`).
- */
-export function __resetHomeHeadingForTests(): void {
-  activeInstanceCount = 0;
-  heldHeading = null;
-}

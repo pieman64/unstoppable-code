@@ -14,7 +14,7 @@ import {
   DelayedLoadingPlaceholder,
   ErrorBanner,
   FormField,
-  SettingsListSkeleton,
+  Skeleton,
   TextInput,
   EmptyStateRow,
   Heading,
@@ -56,6 +56,31 @@ const SOURCE_LABELS: Partial<Record<UserApiKeySource, string>> = {
 };
 
 type PanelStatus = 'loading' | 'ready' | 'error';
+
+const noop = (): void => undefined;
+
+/**
+ * Sample keys for the loading state. They never show: `Skeleton` measures the
+ * real rows rendered with them into bars.
+ */
+const SAMPLE_API_KEYS: readonly UserApiKeyListItem[] = [
+  {
+    id: 'sample-key-1',
+    name: 'Build server',
+    source: 'MANUAL',
+    createdIp: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    lastUsedAt: null,
+  },
+  {
+    id: 'sample-key-2',
+    name: 'Desktop',
+    source: 'OAUTH_DESKTOP',
+    createdIp: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    lastUsedAt: null,
+  },
+];
 
 interface ApiKeysManagerProps {
   brandDisplayName: string;
@@ -344,11 +369,27 @@ export function ApiKeysManager({
       )}
 
       {status === 'loading' && (
-        <div className="py-3">
-          <DelayedLoadingPlaceholder>
-            <SettingsListSkeleton rows={2} />
-          </DelayedLoadingPlaceholder>
-        </div>
+        <DelayedLoadingPlaceholder>
+          <Skeleton
+            loading
+            label="Loading API keys"
+            testId="settings-skeleton-list"
+          >
+            <ul className="flex flex-col border-t">
+              {SAMPLE_API_KEYS.map((key) => (
+                <ApiKeyRow
+                  key={key.id}
+                  apiKey={key}
+                  pendingDelete={false}
+                  deleting={false}
+                  onRequestDelete={noop}
+                  onConfirmDelete={noop}
+                  onCancelDelete={noop}
+                />
+              ))}
+            </ul>
+          </Skeleton>
+        </DelayedLoadingPlaceholder>
       )}
       {status === 'ready' && keys.length === 0 && !creating && (
         <div className={SETTINGS_CARD_ROW_CLASS}>

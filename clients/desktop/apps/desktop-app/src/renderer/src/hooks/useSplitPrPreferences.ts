@@ -64,16 +64,6 @@ subscribePreferencesUpdated((prefs) => {
   });
 });
 
-/** Test-only reset so specs can control the gating preferences directly. */
-export function __resetSplitPrPreferencesForTests(): void {
-  loadStarted = false;
-  useSplitPrPreferencesStore.setState({
-    splitPrEnabled: false,
-    splitPrThresholdLines: Number.MAX_SAFE_INTEGER,
-    hasLoaded: false,
-  });
-}
-
 /**
  * Reactive read of the Split PR gating preferences. Triggers the shared
  * one-time load on first mount; every consumer shares the same snapshot.

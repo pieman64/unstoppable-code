@@ -4,13 +4,15 @@ import {
   useState,
   type ComponentType,
   type JSX,
-  type ReactNode,
 } from 'react';
 import {
+  Chip,
   HeaderActionButton,
   Heading,
   ProgressBar,
   PanelSection,
+  SegmentedControl,
+  type SegmentedControlOption,
 } from '@canopy/ui-shared/components';
 import {
   AttachmentIcon,
@@ -326,33 +328,25 @@ function CardPreview({
   );
 }
 
-function ViewToggle({
-  current,
-  value,
-  onClick,
-  children,
-}: {
-  readonly current: 'machines' | 'catalog' | 'chat';
-  readonly value: 'machines' | 'catalog' | 'chat';
-  readonly onClick: () => void;
-  readonly children: ReactNode;
-}): JSX.Element {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={current === value}
-      data-testid={`activity-gallery-view-${value}`}
-      className={`focus-ring min-h-8 rounded-md px-3 text-xs transition-colors pointer-coarse:min-h-11 ${
-        current === value
-          ? 'bg-accent-subtle fg-accent'
-          : 'fg-secondary hover:bg-secondary hover:fg-primary'
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
+type GalleryView = 'machines' | 'catalog' | 'chat';
+
+const GALLERY_VIEW_OPTIONS: readonly SegmentedControlOption<GalleryView>[] = [
+  {
+    value: 'machines',
+    label: 'State machines',
+    dataTestId: 'activity-gallery-view-machines',
+  },
+  {
+    value: 'chat',
+    label: 'Chat playground',
+    dataTestId: 'activity-gallery-view-chat',
+  },
+  {
+    value: 'catalog',
+    label: 'All states',
+    dataTestId: 'activity-gallery-view-catalog',
+  },
+];
 
 /**
  * Dev/E2E reference for every Activity card and state. It renders the real
@@ -366,7 +360,7 @@ export function ActivityStateGalleryPage(): JSX.Element {
     undefined,
     createInitialActivityGalleryMachine,
   );
-  const [view, setView] = useState<'machines' | 'catalog' | 'chat'>('machines');
+  const [view, setView] = useState<GalleryView>('machines');
 
   return (
     <section
@@ -401,29 +395,13 @@ export function ActivityStateGalleryPage(): JSX.Element {
           </header>
 
           <div className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 rounded-lg bg-base/95 p-2 shadow-sm backdrop-blur">
-            <div className="flex items-center gap-1">
-              <ViewToggle
-                current={view}
-                value="machines"
-                onClick={() => setView('machines')}
-              >
-                State machines
-              </ViewToggle>
-              <ViewToggle
-                current={view}
-                value="chat"
-                onClick={() => setView('chat')}
-              >
-                Chat playground
-              </ViewToggle>
-              <ViewToggle
-                current={view}
-                value="catalog"
-                onClick={() => setView('catalog')}
-              >
-                All states
-              </ViewToggle>
-            </div>
+            <SegmentedControl
+              label="Gallery view"
+              value={view}
+              options={GALLERY_VIEW_OPTIONS}
+              onChange={setView}
+              width="content"
+            />
             <div
               className={view === 'chat' ? 'hidden' : 'flex items-center gap-1'}
             >
@@ -486,9 +464,8 @@ export function ActivityStateGalleryPage(): JSX.Element {
                       aria-label={`${section.title} states`}
                     >
                       {section.states.map((candidate) => (
-                        <button
+                        <Chip
                           key={candidate.id}
-                          type="button"
                           onClick={() =>
                             dispatch({
                               type: 'select',
@@ -496,15 +473,10 @@ export function ActivityStateGalleryPage(): JSX.Element {
                               stateId: candidate.id,
                             })
                           }
-                          aria-pressed={candidate.id === state.id}
-                          className={`focus-ring min-h-7 rounded-md px-2 text-2xs pointer-coarse:min-h-11 ${
-                            candidate.id === state.id
-                              ? 'bg-accent-subtle fg-accent'
-                              : 'fg-secondary hover:bg-secondary hover:fg-primary'
-                          }`}
+                          selected={candidate.id === state.id}
                         >
                           {candidate.label}
-                        </button>
+                        </Chip>
                       ))}
                     </div>
                     <p className="min-h-8 text-2xs leading-relaxed fg-secondary">

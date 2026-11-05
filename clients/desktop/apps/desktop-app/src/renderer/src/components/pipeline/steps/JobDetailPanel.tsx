@@ -4,7 +4,11 @@ import { normalizeNeeds } from '@canopy/desktop-shared/types/pipeline';
 import { isValidPipelineIdentifier } from '../../../lib/pipelineEditor';
 import { parseMaxIterationsInput } from '../../../lib/jobDetailPanel';
 import { MAX_RETRIES_LIMIT } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
-import { ChoiceList, ChoiceListRow } from '@canopy/ui-shared/components';
+import {
+  Button,
+  ChoiceList,
+  ChoiceListRow,
+} from '@canopy/ui-shared/components';
 import { FormField } from '../shared/FormField';
 import { TextField } from '../shared/TextField';
 import { ToggleField } from '../shared/ToggleField';
@@ -17,6 +21,11 @@ interface JobDetailPanelProps {
   allJobIds: string[];
   onChange: (jobId: string, patch: Partial<Job>) => void;
   onRenameJob: (oldId: string, newId: string) => void;
+  /**
+   * Removes the job and the dependencies on it. An unsaved edit like any
+   * other, so Undo brings it back.
+   */
+  onRemove?: (jobId: string) => void;
   onClose: () => void;
   readonly?: boolean;
 }
@@ -33,6 +42,7 @@ export function JobDetailPanel({
   allJobIds,
   onChange,
   onRenameJob,
+  onRemove,
   onClose,
   readonly = false,
 }: JobDetailPanelProps): JSX.Element {
@@ -330,10 +340,20 @@ export function JobDetailPanel({
       </FormField>
 
       {/* Summary */}
-      <div className="pt-2 border-t">
+      <div className="flex items-center justify-between gap-2 border-t pt-2">
         <p className="text-xs fg-secondary">
           {job.steps.length} step{job.steps.length !== 1 ? 's' : ''} in this job
         </p>
+        {onRemove && !readonly ? (
+          <Button
+            variant="ghost-destructive"
+            size="compact"
+            onClick={(): void => onRemove(jobId)}
+            data-testid="pipeline-job-remove"
+          >
+            Remove job
+          </Button>
+        ) : null}
       </div>
     </PipelineDetailPanelShell>
   );

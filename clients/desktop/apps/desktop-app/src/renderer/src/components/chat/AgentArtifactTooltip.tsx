@@ -11,8 +11,10 @@ import type {
 } from '@canopy/protocol/agent-artifacts';
 import {
   capabilityTileModel,
+  capabilityTileStatusText,
   Fact as ListFact,
   FactList,
+  type CapabilityTileModel,
   type CapabilityTileReceipt,
 } from '@canopy/ui-shared/components';
 import {
@@ -95,10 +97,14 @@ interface CapabilityTooltipProps {
     | AutomationRunArtifactReceiptV1
     | AgentDefinitionArtifactReceiptV1
     | CapabilityReferenceArtifactReceiptV1;
+  /** The card's live-resolved model; without it the receipt snapshot. */
+  model?: CapabilityTileModel;
 }
 
 interface AgentArtifactTooltipProps {
   receipt: CapabilityTileReceipt;
+  /** The card's live-resolved model, so the card and its tile agree. */
+  model?: CapabilityTileModel;
 }
 
 function Badge({
@@ -344,8 +350,11 @@ const RUN_TRIGGER_LABELS: Record<
 };
 
 /** Runs, agents and capability references reuse the tile's own wording. */
-function CapabilityTooltip({ receipt }: CapabilityTooltipProps): JSX.Element {
-  const model = capabilityTileModel(receipt);
+function CapabilityTooltip({
+  receipt,
+  model: liveModel,
+}: CapabilityTooltipProps): JSX.Element {
+  const model = liveModel ?? capabilityTileModel(receipt);
   const description =
     receipt.kind === 'automation_run' ? undefined : receipt.description;
   return (
@@ -363,7 +372,9 @@ function CapabilityTooltip({ receipt }: CapabilityTooltipProps): JSX.Element {
       />
       <Badges>
         <Badge>{model.kindLabel}</Badge>
-        {model.state ? <Badge>{model.state.label}</Badge> : null}
+        {model.state ? (
+          <Badge>{capabilityTileStatusText(model.state)}</Badge>
+        ) : null}
         {model.external ? <Badge>External</Badge> : null}
       </Badges>
       <Facts>
@@ -396,6 +407,7 @@ function CapabilityTooltip({ receipt }: CapabilityTooltipProps): JSX.Element {
  */
 export const AgentArtifactTooltip = memo(function AgentArtifactTooltip({
   receipt,
+  model,
 }: AgentArtifactTooltipProps): JSX.Element {
   return (
     <div className="space-y-2 text-xs">
@@ -406,7 +418,7 @@ export const AgentArtifactTooltip = memo(function AgentArtifactTooltip({
       ) : receipt.kind === 'automation' ? (
         <AutomationTooltip receipt={receipt} />
       ) : (
-        <CapabilityTooltip receipt={receipt} />
+        <CapabilityTooltip receipt={receipt} {...(model ? { model } : {})} />
       )}
     </div>
   );

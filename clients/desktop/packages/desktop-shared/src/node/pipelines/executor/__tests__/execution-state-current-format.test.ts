@@ -1,12 +1,6 @@
+import * as fs from 'node:fs';
 import { createHash } from 'node:crypto';
-import {
-  mkdtemp,
-  readFile,
-  readdir,
-  rm,
-  stat,
-  writeFile,
-} from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { normalizePipeline } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
@@ -24,6 +18,10 @@ import type {
   PipelinePauseCheckpoint,
   PipelineStatusReason,
 } from '../types';
+
+function listStateDirectory(dir: string): string[] {
+  return fs.readdirSync(dir).filter((name) => name !== '.locks');
+}
 
 const EXECUTION_ID = 'current-format';
 const STARTED_AT = '2026-01-01T00:00:00.000Z';
@@ -401,7 +399,7 @@ describe('current-format execution state', () => {
         await expect(
           readFile(join(dir, `${EXECUTION_ID}.json`), 'utf8'),
         ).resolves.toBe(before);
-        await expect(readdir(dir)).resolves.toEqual([`${EXECUTION_ID}.json`]);
+        expect(listStateDirectory(dir)).toEqual([`${EXECUTION_ID}.json`]);
       },
     );
   });

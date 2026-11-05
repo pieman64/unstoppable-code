@@ -452,8 +452,9 @@ export const WORKER_TERMINAL_INSTRUCTION_DEFINITIONS =
 
 /**
  * Recreates a terminal that is no longer live on this worker (CAN-5088).
- * Only a local worker serves it, so it stays out of the web core's
- * definitions above.
+ * The daemon serves it whole; the web core serves only its reattach
+ * (CAN-5708), since Core cannot restart a shell under the same id, so it
+ * stays out of the shared definitions above.
  */
 export const WORKER_TERMINAL_SESSION_INSTRUCTION_DEFINITIONS =
   defineCanopyInstructionRegistry('worker', {

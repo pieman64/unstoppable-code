@@ -186,12 +186,6 @@ export function getOrgProjectAddStore(): OrgProjectAddStore | null {
   return advisorStore;
 }
 
-export function setOrgProjectAddStoreForTests(
-  store: OrgProjectAddStore | null,
-): void {
-  advisorStore = store;
-}
-
 export function OrgProjectAddStoreBridge(): null {
   const store = useOrgProjectsStoreApi();
   useEffect((): (() => void) => {

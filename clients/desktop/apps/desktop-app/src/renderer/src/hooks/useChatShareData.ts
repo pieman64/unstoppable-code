@@ -393,21 +393,3 @@ export function useChatMentionIndex(): InvocableMentionIndex | null {
     getMentionIndexSnapshot,
   );
 }
-
-/** Test-only: drops the cache, its subscriptions and every load in flight. */
-export function resetChatShareDataForTests(): void {
-  unsubscribeEvents?.();
-  unsubscribeEvents = null;
-  shareStarted = false;
-  inventoryStarted = false;
-  localLoad = null;
-  inventoryLoad = null;
-  audienceLoad = null;
-  audienceFailed = false;
-  localGeneration += 1;
-  inventoryGeneration += 1;
-  audienceGeneration += 1;
-  inventorySignature = '';
-  state = EMPTY;
-  listeners.clear();
-}

@@ -5,8 +5,7 @@ import type {
   MouseEvent,
   ReactNode,
 } from 'react';
-import { actionChipClassName } from '../lib/row-chips';
-import { buttonClassName } from './Button';
+import { Button, type ButtonVariant } from './Button';
 import { Tooltip } from './Tooltip';
 
 export type ExecutionActionButtonVariant =
@@ -38,16 +37,16 @@ export interface ExecutionActionButtonProps extends Pick<
   ariaLabel: string;
   variant?: ExecutionActionButtonVariant;
   /**
-   * Detail actions retain a 44px touch target on coarse pointers, and a
-   * `default` detail action is the 28px labeled secondary button so it
-   * matches the Share beside it.
+   * Where the action sits: an execution row, or a detail page's header
+   * beside Share. Both draw the same 28px `compact` capsule, whose own hit
+   * area grows to 44px on a coarse pointer.
    */
   placement?: 'row' | 'detail';
   /**
    * Inside a `@container/topbar` narrower than 640px, drop the label and
-   * collapse the `primary` shell to a 28px square so the status region keeps
-   * its room; the icon, accessible name, and tooltip carry the meaning. The
-   * other variants keep their chip geometry.
+   * collapse the `primary` capsule to a 28px circle so the status region
+   * keeps its room; the icon, accessible name, and tooltip carry the
+   * meaning. The other variants keep their label.
    */
   iconOnlyWhenNarrow?: boolean;
   className?: string;
@@ -67,71 +66,38 @@ export interface ExecutionActionButtonProps extends Pick<
 }
 
 /**
- * Geometry is variant-specific rather than shared. `default`, `warning`, and
- * `destructive-chip` are the standardized pipeline-row ACTION CHIP
- * (`h-6 rounded-md px-2.5 text-2xs`) on the house secondary surface
- * (`SECONDARY_SURFACE_CLASS`: quaternary shell, shadow, hairline ring) in its
- * neutral, warning, and destructive inks — the tone never changes the shell;
- * see `actionChipClassName` in `@canopy/ui-shared/lib`. `primary` and
- * `destructive` carry their own desktop-exact treatment: the shared
- * Launch action (`h-7 bg-accent px-2.5`, no border) and the
- * borderless rose Stop caption (`px-2 py-0.5`, no border and no persistent
- * fill, mirroring shared `RunningProcessCard`). `ghost` is the Launch
- * frame (height, corners, padding and type) with no fill, for a quiet
- * top-bar action beside Launch and `Open in`. Each variant is a complete
- * class string so a new variant never inherits the wrong shape.
+ * Each variant is a `Button` variant (docs/design/buttons.md). Labelled
+ * actions are the 28px `compact` capsule; an empty label renders the 28px
+ * `sm` icon-only circle. The chip tones are the ghost variants that resolve
+ * or destroy beside routine actions (`ghost-warning`, `ghost-destructive`);
+ * `text` is the quiet ghost repeated on every row; `destructive` (the Stop
+ * caption) is the destructive ghost too, never a solid fill.
  */
+const BUTTON_VARIANTS: Record<ExecutionActionButtonVariant, ButtonVariant> = {
+  default: 'secondary',
+  primary: 'primary',
+  warning: 'ghost-warning',
+  destructive: 'ghost-destructive',
+  'destructive-chip': 'ghost-destructive',
+  ghost: 'ghost',
+  text: 'ghost-quiet',
+  'ghost-destructive': 'ghost-destructive',
+};
+
 /**
- * The primary shell around its padding slot, so the resting class string keeps
- * its established token order (`h-7 rounded-md bg-accent px-2.5 text-xs …`,
- * which callers' tests pin as a substring) while the narrow-top-bar collapse
- * swaps only the padding.
+ * Narrow, the primary action is the 28px icon-only circle. From 640px of the
+ * top bar the button widens to its label, and this inner span supplies the
+ * labelled capsule's inset, which the icon-only button leaves out.
  */
-const PRIMARY_SHELL_HEAD =
-  'focus-ring inline-flex items-center gap-1.5 whitespace-nowrap transition-colors h-7 rounded-md bg-accent';
-const PRIMARY_SHELL_TAIL =
-  'text-xs font-normal fg-emphasis hover:bg-[color-mix(in_srgb,var(--bg-accent),#000_12%)]';
-const PRIMARY_PADDING_CLASS = 'px-2.5';
-const PRIMARY_COLLAPSE_CLASS =
-  'w-7 px-0 @[640px]/topbar:w-auto @[640px]/topbar:px-2.5';
+const COLLAPSE_CONTENT_CLASS =
+  'inline-flex items-center gap-1.5 @[640px]/topbar:px-3';
 const COLLAPSED_LABEL_CLASS = 'hidden @[640px]/topbar:inline';
 
-function primaryClassName(collapses: boolean): string {
-  return `${PRIMARY_SHELL_HEAD} ${collapses ? PRIMARY_COLLAPSE_CLASS : PRIMARY_PADDING_CLASS} ${PRIMARY_SHELL_TAIL}`;
-}
-
-const VARIANT_CLASSES: Record<ExecutionActionButtonVariant, string> = {
-  default: actionChipClassName('neutral'),
-  warning: actionChipClassName('warning'),
-  'destructive-chip': actionChipClassName('destructive'),
-  primary: primaryClassName(false),
-  ghost:
-    'focus-ring inline-flex items-center gap-1.5 whitespace-nowrap transition-colors h-7 rounded-md px-2.5 text-xs font-normal fg-secondary hover:bg-subtle hover:fg-primary',
-  text: 'focus-ring inline-flex items-center gap-1.5 whitespace-nowrap transition-colors h-7 rounded-md px-2.5 text-xs font-normal fg-tertiary hover:fg-primary',
-  'ghost-destructive':
-    'focus-ring inline-flex items-center gap-1.5 whitespace-nowrap transition-colors h-7 rounded-md px-2.5 text-xs font-normal fg-destructive hover:bg-destructive-subtle',
-  destructive:
-    'focus-ring inline-flex items-center gap-1.5 whitespace-nowrap transition-colors rounded-md px-2 py-0.5 text-2xs font-medium fg-destructive hover:bg-destructive-subtle',
-};
-
 /**
- * On a detail page the action sits in the header beside Share, a capsule
- * `Button`, so it wears the same compact capsule recipe: Try it is the primary
- * Button, every other detail action the secondary one. Buttons are capsules.
- */
-const DETAIL_VARIANT_CLASSES: Partial<
-  Record<ExecutionActionButtonVariant, string>
-> = {
-  primary: buttonClassName({ variant: 'primary', size: 'compact' }),
-  default: buttonClassName({ variant: 'secondary', size: 'compact' }),
-};
-
-/**
- * Small chrome-light button used for run/rerun/retry/stop and similar
- * execution-row actions. Pure display: parent owns the dispatch. The visible
- * geometry comes entirely from {@link VARIANT_CLASSES}; the wrapper adds only
- * centering and the disabled treatment so each variant matches its
- * reference exactly.
+ * Run/rerun/retry/stop and similar execution actions, on `Button` (see
+ * {@link BUTTON_VARIANTS}). Pure display: parent owns the dispatch. The
+ * wrapper adds only the click and keydown containment an execution row
+ * needs, and keeps the action out of the window drag region.
  */
 export function ExecutionActionButton({
   label,
@@ -144,7 +110,6 @@ export function ExecutionActionButton({
   dataState,
   ariaLabel,
   variant = 'default',
-  placement = 'row',
   iconOnlyWhenNarrow = false,
   className = '',
   labelClassName = '',
@@ -153,49 +118,73 @@ export function ExecutionActionButton({
   stopKeyDownPropagation = true,
 }: ExecutionActionButtonProps): JSX.Element {
   const collapses = iconOnlyWhenNarrow && variant === 'primary';
-  const detailClassName =
-    placement === 'detail' ? DETAIL_VARIANT_CLASSES[variant] : undefined;
-  const variantClassName = collapses
-    ? primaryClassName(true)
-    : (detailClassName ?? VARIANT_CLASSES[variant]);
+  const labelNode = label ? (
+    <span
+      data-execution-action-label
+      className={`whitespace-nowrap ${collapses ? COLLAPSED_LABEL_CLASS : labelClassName}${shimmer ? ' canopy-text-shimmer' : ''}`}
+    >
+      {label}
+    </span>
+  ) : null;
+  const shared = {
+    variant: BUTTON_VARIANTS[variant],
+    disabled,
+    'data-testid': dataTestId,
+    'data-state': dataState,
+    'data-execution-action-button': 'true',
+    'aria-describedby': describedBy,
+    'aria-haspopup': hasPopup,
+    onClick: (event: MouseEvent<HTMLButtonElement>): void => {
+      event.stopPropagation();
+      onClick();
+    },
+    onKeyDown: stopKeyDownPropagation
+      ? (event: KeyboardEvent<HTMLButtonElement>): void => {
+          event.stopPropagation();
+        }
+      : undefined,
+  };
   return (
     <Tooltip label={title} disabled={title === undefined}>
-      <button
-        type="button"
-        disabled={disabled}
-        data-testid={dataTestId}
-        data-state={dataState}
-        data-execution-action-button="true"
-        aria-label={ariaLabel}
-        aria-describedby={describedBy}
-        aria-haspopup={hasPopup}
-        onClick={(event: MouseEvent<HTMLButtonElement>): void => {
-          event.stopPropagation();
-          onClick();
-        }}
-        onKeyDown={
-          stopKeyDownPropagation
-            ? (event: KeyboardEvent<HTMLButtonElement>): void => {
-                event.stopPropagation();
-              }
-            : undefined
-        }
-        // Never a window drag handle: the top bar is a drag region and the
-        // class is inert everywhere else, including the web.
-        // A detail action on the Button recipe brings its own disabled look
-        // and coarse-pointer hit area; the row recipes dim and grow here.
-        className={`electron-no-drag justify-center disabled:cursor-not-allowed ${detailClassName === undefined ? `disabled:opacity-50 ${placement === 'detail' ? 'pointer-coarse:min-h-11 pointer-coarse:min-w-11' : ''}` : 'whitespace-nowrap'} ${variantClassName} ${className}`}
-      >
-        {icon}
-        {label ? (
-          <span
-            data-execution-action-label
-            className={`${collapses ? COLLAPSED_LABEL_CLASS : labelClassName}${shimmer ? ' canopy-text-shimmer' : ''}`}
-          >
-            {label}
+      {collapses ? (
+        <Button
+          {...shared}
+          size="compact"
+          iconOnly
+          aria-label={ariaLabel}
+          // Never a window drag handle: the top bar is a drag region and the
+          // class is inert everywhere else, including the web.
+          className={`electron-no-drag pointer-coarse:before:hidden @[640px]/topbar:w-auto ${className}`}
+        >
+          <span className={COLLAPSE_CONTENT_CLASS}>
+            {icon}
+            {labelNode}
           </span>
-        ) : null}
-      </button>
+        </Button>
+      ) : labelNode === null ? (
+        <Button
+          {...shared}
+          size="sm"
+          iconOnly
+          aria-label={ariaLabel}
+          // An icon action sits 8px from its neighbours in a run row, so it
+          // keeps its own 28px target rather than growing over them on a
+          // coarse pointer. Switches to Button's `touchArea` (#7528).
+          className={`electron-no-drag pointer-coarse:before:hidden ${className}`}
+        >
+          {icon}
+        </Button>
+      ) : (
+        <Button
+          {...shared}
+          size="compact"
+          aria-label={ariaLabel}
+          className={`electron-no-drag ${className}`}
+        >
+          {icon}
+          {labelNode}
+        </Button>
+      )}
     </Tooltip>
   );
 }

@@ -3,10 +3,18 @@ import { readCanopyCloudAccountWithStatus } from '../lib/canopy-cloud-account-st
 import { onLedgerEntryChanged, onLedgerSyncChanged } from './change-events';
 import { createLedgerMirrorReader } from './feed-client';
 import {
+  LedgerActorDirectory,
+  readLedgerContainerLiveChats,
+} from './actor-directory';
+import { getLedgerCallerBindingRegistry } from './caller-bindings';
+import { readLedgerContainerLiveDelegates } from './delegate-owners';
+import {
   LedgerFeedService,
   type LedgerFeedAccount,
   type LedgerFeedLocalScope,
 } from './feed-service';
+import { createLedgerFeedWorkContextReader } from './feed-work';
+import { getLedgerPipelineAgentOwners } from './pipeline-agent-owners';
 import { getLedgerStoreClient } from './storage-client';
 import { ledgerDatabaseExists } from './sync-host';
 import { ledgerViewScopeForContainer } from './view-scope';
@@ -43,6 +51,8 @@ async function listLedgerFeedScopes(): Promise<LedgerFeedLocalScope[]> {
       container: record.scope.scope.container,
       containerCreatedAt: record.scope.containerCreatedAt,
       archived: record.scope.lifecycleState === 'archived',
+      lifecycleState:
+        record.scope.lifecycleState === 'archived' ? 'archived' : 'active',
     }));
 }
 
@@ -52,12 +62,20 @@ let unsubscribers: Array<() => void> = [];
 /** The app's Feed service. Creating it reads and sends nothing. */
 export function getLedgerFeedService(): LedgerFeedService {
   if (service !== undefined) return service;
+  const actors = new LedgerActorDirectory({
+    store: getLedgerStoreClient,
+    liveChats: readLedgerContainerLiveChats,
+    liveDelegates: readLedgerContainerLiveDelegates,
+    pipelineAgents: getLedgerPipelineAgentOwners(),
+    callerBindings: getLedgerCallerBindingRegistry(),
+  });
   const created = new LedgerFeedService({
     readAccount: async (): Promise<LedgerFeedAccount> =>
       toLedgerFeedAccount(await readCanopyCloudAccountWithStatus()),
     listScopes: listLedgerFeedScopes,
     viewScope: ledgerViewScopeForContainer,
     mirror: createLedgerMirrorReader(),
+    readWorkContext: createLedgerFeedWorkContextReader(actors),
   });
   unsubscribers = [
     onLedgerEntryChanged((): void => created.invalidate()),

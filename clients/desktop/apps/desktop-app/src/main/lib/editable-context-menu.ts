@@ -198,16 +198,34 @@ export function attachEditableContextMenu(
   const hostWindow =
     'contents' in target ? target.hostWindow : (): BrowserWindow => target;
   if (isE2eBuild()) registerE2eClickListener();
+  // Every context-menu event supersedes a clipboard read still in flight, so
+  // a slow read never opens a menu for an earlier click.
+  let latestRequest = 0;
   contents.on('context-menu', (_event, params): void => {
-    const items = buildEditableContextMenuItems(params, {
-      clipboardHasContent: clipboard.availableFormats().length > 0,
-      platform: process.platform,
+    const request = ++latestRequest;
+    if (!params.isEditable) return;
+    void clipboardHasContent().then((hasContent): void => {
+      if (request !== latestRequest || contents.isDestroyed()) return;
+      const items = buildEditableContextMenuItems(params, {
+        clipboardHasContent: hasContent,
+        platform: process.platform,
+      });
+      if (items === null) return;
+      const window = hostWindow();
+      if (!window) return;
+      presentEditableContextMenu(window, contents, items);
     });
-    if (items === null) return;
-    const window = hostWindow();
-    if (!window) return;
-    presentEditableContextMenu(window, contents, items);
   });
+}
+
+/** An unreadable clipboard leaves Paste to Blink's own `canPaste`. */
+async function clipboardHasContent(): Promise<boolean> {
+  try {
+    const items = await clipboard.read();
+    return items.some((item) => item.types.length > 0);
+  } catch {
+    return true;
+  }
 }
 
 /** {@link attachEditableContextMenu} for a page hosted in a view. */

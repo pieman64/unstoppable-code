@@ -28,6 +28,44 @@ import {
 import type { PipelineRunReceiptHost } from '../agent-activity/pipeline-run-receipt-host';
 import { collectTurnAgentArtifacts } from '../agent-activity/turn-agent-artifacts';
 import { normalizePipelineRunStatus } from '../agent-activity/pipeline-run-receipt';
+import type { BackgroundTrayWatcher } from './background-tray/WatcherRow';
+
+/** Only the receiving chat's visible subscriptions belong in its drawer. */
+export function portalBackgroundTrayWatchers(
+  watchers: readonly PortalWatcherEntity[] | undefined,
+  target: {
+    readonly projectId: string;
+    readonly worktreeId: string;
+    readonly chatId: string;
+  },
+): BackgroundTrayWatcher[] {
+  return (watchers ?? []).flatMap((watcher) => {
+    if (
+      watcher.projectId !== target.projectId ||
+      watcher.worktreeId !== target.worktreeId ||
+      watcher.chatId !== target.chatId ||
+      watcher.status === 'fired'
+    )
+      return [];
+    return [
+      {
+        id: watcher.id,
+        name: watcher.display.title,
+        watching: watcher.display.watching,
+        trigger: watcher.display.subtitle,
+        status: watcher.status,
+        details: [
+          ...watcher.display.details,
+          ...(watcher.display.ownerDelegate
+            ? [{ label: 'Delegate', value: watcher.display.ownerDelegate.name }]
+            : []),
+        ],
+        followUpInstruction: watcher.followUpInstruction,
+        deliveryError: watcher.deliveryError,
+      },
+    ];
+  });
+}
 
 /**
  * Projects a Portal background process (the paired desktop's

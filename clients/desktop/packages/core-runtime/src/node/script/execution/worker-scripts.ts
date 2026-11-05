@@ -12,9 +12,7 @@ import type {
   WorkerScriptExecutionListResult,
 } from '@canopy/protocol/canopy-core';
 
-import { createHash } from 'node:crypto';
-
-import { stableStringify } from '@canopy/protocol/plans';
+import { KeyedOutcomes } from '../../operations/keyed-outcomes';
 
 import { CanopyOperationError } from '../../../runtime/errors';
 import type { CanopyHandlerContext } from '../../../runtime/types';
@@ -121,50 +119,6 @@ function idempotencyKeyReusedError(): CanopyOperationError {
     message: 'This idempotency key was used with other parameters.',
     retry: { kind: 'never' },
   });
-}
-
-/** Keyed outcomes this worker keeps for replay; the oldest are dropped. */
-const MAX_KEYED_OUTCOMES = 512;
-
-/**
- * Keyed replay for this worker's instructions: a repeat with the same caller,
- * key and parameters returns the first outcome, joining it while it runs,
- * instead of running the script again; other parameters are refused. Kept in
- * memory: across a restart the core's dispatch record resolves the outcome.
- */
-class KeyedOutcomes<T> {
-  private readonly outcomes = new Map<
-    string,
-    { fingerprint: string; outcome: Promise<T> }
-  >();
-
-  run(
-    context: CanopyHandlerContext,
-    params: unknown,
-    start: () => Promise<T>,
-  ): Promise<T> {
-    const key = context.metadata.idempotencyKey;
-    if (key === undefined) return start();
-    const id = `${context.caller.principalId}\0${key}`;
-    const fingerprint = createHash('sha256')
-      .update(stableStringify(params) ?? 'null')
-      .digest('hex');
-    const existing = this.outcomes.get(id);
-    if (existing) {
-      if (existing.fingerprint !== fingerprint)
-        return Promise.reject(idempotencyKeyReusedError());
-      return existing.outcome;
-    }
-    const outcome = start();
-    this.outcomes.set(id, { fingerprint, outcome });
-    outcome.catch(() => undefined);
-    while (this.outcomes.size > MAX_KEYED_OUTCOMES) {
-      const oldest = this.outcomes.keys().next().value;
-      if (oldest === undefined) break;
-      this.outcomes.delete(oldest);
-    }
-    return outcome;
-  }
 }
 
 function toExecuteResult(
@@ -602,8 +556,12 @@ export interface WorkerScriptHandlers {
 export function createWorkerScriptHandlers(
   worker: ScriptExecutionWorker,
 ): WorkerScriptHandlers {
-  const executions = new KeyedOutcomes<WorkerScriptExecuteResult>();
-  const cancellations = new KeyedOutcomes<WorkerScriptExecutionCancelResult>();
+  const executions = new KeyedOutcomes<WorkerScriptExecuteResult>({
+    reusedError: idempotencyKeyReusedError,
+  });
+  const cancellations = new KeyedOutcomes<WorkerScriptExecutionCancelResult>({
+    reusedError: idempotencyKeyReusedError,
+  });
   return {
     queries: {
       'worker.script.execution.get': (params) => worker.get(params),

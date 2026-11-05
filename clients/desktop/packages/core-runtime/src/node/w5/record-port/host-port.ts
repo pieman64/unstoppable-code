@@ -1,3 +1,4 @@
+import { W5ProcessFileLockTimeoutError } from '../commit-log/errors';
 import {
   CanopyErrorPayloadSchema,
   CoreWorkspaceRecordsWorktreeIdSchema,
@@ -259,6 +260,7 @@ export function createW5RecordHostPort(
         return new W5CommitRefusedError('unapplied-change', payload.message, {
           path: pathOf(detail(payload, 'target'), firstPath),
           commitId: detail(payload, 'commitId'),
+          operation: detail(payload, 'operation'),
         });
       case 'core.workspaceRecords.recoveryRequired':
         return new W5CommitRefusedError(
@@ -310,6 +312,10 @@ export function createW5RecordHostPort(
         );
       }
       case 'core.workspaceRecords.logUnavailable': {
+        if (detail(payload, 'reason') === 'process-lock-timeout')
+          return new W5ProcessFileLockTimeoutError(
+            pathOf(detail(payload, 'target'), firstPath),
+          );
         const code = detail(payload, 'code');
         return new W5CommitLogError(
           isLogCode(code) ? code : 'STORAGE_UNAVAILABLE',
@@ -477,6 +483,7 @@ export function createW5RecordHostPort(
       // their own read; the store's launch warnings and identity reads use them.
       const live = await reservations();
       return {
+        ...(report.abandoned?.length ? { abandoned: report.abandoned } : {}),
         applied: report.applied,
         recoveryRequired: report.recoveryRequired,
         recoveryRequiredDetails: report.recoveryRequiredDetails,

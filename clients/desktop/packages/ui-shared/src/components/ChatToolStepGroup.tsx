@@ -140,6 +140,7 @@ export const ChatToolStepGroup = memo(function ChatToolStepGroup({
       >
         <div className={`flex min-w-0 max-w-full${inset ? ' px-3' : ''}`}>
           <StepRow
+            prioritizeDetail
             step={live !== undefined}
             icon={live === undefined ? icon : live.icon}
             label={

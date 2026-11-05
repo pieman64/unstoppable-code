@@ -33,7 +33,7 @@ export function registerCanopyCoreRelayHandlers(
   dispatcher: DesktopCanopyDispatcher,
   resolveSurface: (event: RendererRelayEvent) => RendererRelaySurfaceResolution,
 ): () => void {
-  // Interim connection-scoped declarations; lane C supplies durable ownership at CAN-3729.
+  // Interim connection-scoped declarations; durable ownership waits for a relay daemon binding (W3 exit, CAN-3166).
   const registrations = new Map<string, RelayCapabilities>();
   const relay = createRendererRelay({
     bindingProvider: createInterimInMemoryBindingProvider(dispatcher, {

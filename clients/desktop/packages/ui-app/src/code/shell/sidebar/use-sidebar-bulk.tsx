@@ -21,7 +21,6 @@ import {
   bulkStateActions,
   deriveSelectionMenuItems,
   rowNeedsStateAction,
-  selectionToggleMenuItem,
   type SidebarBatchActionAvailability,
   type SidebarBulkRowState,
   type SidebarBulkStateAction,
@@ -876,11 +875,8 @@ export function useSidebarBulk(input: {
         if (menu.bulk !== undefined) {
           return {
             items: deriveSelectionMenuItems({
-              count: menu.bulk.count,
               availability: menu.bulk.availability,
-              unitLabel: menu.bulk.unitLabel,
               onBulkRemoval: menu.bulk.onBulkRemoval,
-              onClearSelection: menu.bulk.onClear,
               stateActions: menu.bulk.stateActions,
               onStateAction: menu.bulk.onStateAction,
               testIds,
@@ -889,14 +885,7 @@ export function useSidebarBulk(input: {
           };
         }
         return {
-          items: [
-            selectionToggleMenuItem({
-              multiSelected: menu.multiSelected,
-              onToggle: menu.toggle,
-              testId: testIds?.toggleSelection,
-              separatorBefore: true,
-            }),
-          ],
+          items: [],
           replacesMenu: false,
         };
       },

@@ -63,7 +63,7 @@ import {
 /**
  * Every recovery action is a house `Button`: `secondary` for the alternative
  * and global choices (No, resume at reset; Always) and `primary` for the
- * single recommended action per state (Just this chat, Get AI Credits, Use AI
+ * single recommended action per state (Just this chat, Buy AI Credits, Use AI
  * Credits), so no state ever shows two equally weighted solid actions. The
  * offer leads with the per-chat action and never makes the global opt-in the
  * accent (CAN-5159). The credits-arrival notice has no accent action when the
@@ -137,7 +137,7 @@ interface AiCreditsUsageLimitBannerProps {
    * Sends the interrupted turn again once the user chooses AI Credits from
    * this banner (CAN-4756). Runs after the routing action in the same click,
    * and after Always only once its preference save succeeds. Credits arriving
-   * from Get AI Credits only route and never call it.
+   * from Buy AI Credits only route and never call it.
    */
   onContinueAfterUsingCredits?: () => void;
   /**
@@ -656,7 +656,7 @@ export function AiCreditsUsageLimitBanner({
       {showOffer
         ? `. ${question}`
         : showPricing
-          ? ', or get AI Credits to keep going now.'
+          ? ', or buy AI Credits to keep going now.'
           : '.'}
     </span>
   ) : asksToUseCredits ? (
@@ -666,7 +666,7 @@ export function AiCreditsUsageLimitBanner({
       question
     )
   ) : showPricing ? (
-    `Get AI Credits to keep going now, or wait for your quota to reset${
+    `Buy AI Credits to keep going now, or wait for your quota to reset${
       resetsLabel ? ` around ${resetsLabel}` : ''
     }.`
   ) : showContactAdmin ? (

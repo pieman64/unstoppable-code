@@ -37,6 +37,13 @@ export interface BillingLaneAvailability {
   claudeNativeAuth: boolean | undefined;
   codexNativeAuth: boolean | undefined;
   creditsEligible: boolean | undefined;
+  /**
+   * The Claude probe settled without an answer and this process has no
+   * confirmed sign-in. Only meaningful while `claudeNativeAuth` is
+   * `undefined`; it never makes Claude count as unavailable. See
+   * {@link resolveDefaultModelLane}.
+   */
+  claudeNativeAuthInconclusive?: boolean;
 }
 
 /**
@@ -483,6 +490,41 @@ export function resolveDefaultModelLane(input: {
         ...(preferredLane === 'ollama' ? [] : [preferredLane]),
         ...baseOrder.filter((lane) => lane !== preferredLane),
       ];
+  const isConfirmed = (lane: BillingLane): boolean =>
+    laneAvailability(
+      lane,
+      input.availability,
+      input.ollamaPinned,
+      input.orgGateway,
+    ) === true;
+  // The index just past the last confirmed-available lane in `order`.
+  const afterLastConfirmed = (): number => {
+    let insertAt = 0;
+    order.forEach((lane, index) => {
+      if (isConfirmed(lane)) insertAt = index + 1;
+    });
+    return insertAt;
+  };
+  // A Claude check that settled without an answer (the `claude auth status`
+  // probe timing out, common on Windows) leaves Claude unknown forever. Never
+  // let that unknown lane outrank confirmed AI Credits unless this scope's
+  // last resolved lane (else the most recent one) is Claude; a later confirmed
+  // sign-in wins again
+  // because confirmed lanes keep their rank. Only Claude moves: an unknown
+  // Codex lane still resolves provisionally ahead of credits, because Codex's
+  // probe failure also marks a stable custom provider answer.
+  if (
+    input.availability.claudeNativeAuth === undefined &&
+    input.availability.claudeNativeAuthInconclusive === true &&
+    input.lastResolvedLane !== 'claude-native' &&
+    isConfirmed('ai-credits')
+  ) {
+    const claudeIndex = order.indexOf('claude-native');
+    if (claudeIndex !== -1) {
+      order.splice(claudeIndex, 1);
+      order.splice(afterLastConfirmed(), 0, 'claude-native');
+    }
+  }
   if (
     input.lastResolvedLane &&
     laneAvailability(
@@ -510,20 +552,7 @@ export function resolveDefaultModelLane(input: {
     // credits: undefined}` and a Claude-preferred user, the first unconfirmed
     // index is 0 (Claude is `false`), which would splice credits ahead of the
     // CONFIRMED Codex lane and bill credits against a working subscription.
-    let insertAt = 0;
-    order.forEach((lane, index) => {
-      if (
-        laneAvailability(
-          lane,
-          input.availability,
-          input.ollamaPinned,
-          input.orgGateway,
-        ) === true
-      ) {
-        insertAt = index + 1;
-      }
-    });
-    order.splice(insertAt, 0, input.lastResolvedLane);
+    order.splice(afterLastConfirmed(), 0, input.lastResolvedLane);
   }
 
   let preferredHadNoDispatchableModel = false;

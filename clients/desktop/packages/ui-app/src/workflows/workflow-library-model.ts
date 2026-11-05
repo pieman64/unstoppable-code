@@ -109,7 +109,7 @@ export const WORKFLOW_LIBRARY_ACTION_LABELS: Readonly<
   'view-runs': 'View runs',
   duplicate: 'Duplicate',
   share: 'Share…',
-  'copy-link': 'Copy share link',
+  'copy-link': 'Copy link',
   delete: 'Delete',
 };
 

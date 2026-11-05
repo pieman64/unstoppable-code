@@ -18,6 +18,7 @@ export * from './Badge';
 export * from './FactList';
 export * from './StatusPill';
 export * from './StatusLabel';
+export * from './ReadyStatusLine';
 export * from './CopyDetailsButton';
 export * from './AutoRoutedModelPill';
 export * from './CapabilityPill';
@@ -64,6 +65,7 @@ export * from './Progress';
 export * from './UsageIndicator';
 export * from './PageHeader';
 export * from './Heading';
+export * from './InstructionsEditor';
 export * from './Disclosure';
 export * from './ProviderUsageAccountRow';
 export * from './ProviderAccountUsage';
@@ -113,11 +115,7 @@ export * from './ProjectChoiceCard';
 export * from './OverlayScrollArea';
 export * from './DropdownMenu';
 export * from './SidebarAiCreditsMenuItem';
-export {
-  FREE_AI_CREDITS_LABEL,
-  aiCreditsLabel,
-  isFreeOnlyAiCredits,
-} from './aiCreditsLabel';
+export { isFreeOnlyAiCredits } from './aiCreditsLabel';
 export * from './ExternalTextLink';
 export * from './PluginHarnessConnections';
 export * from './PluginAccountConnection';
@@ -211,6 +209,7 @@ export * from './PlanSourceMark';
 export * from './PlanProvenance';
 export * from './HighlightedSegments';
 export * from './Markdown';
+export { MarkdownCodeBlock } from './MarkdownCodeBlock';
 export * from './SkillFilePreview';
 export * from './SkillFileExplorer';
 // CAN-1939 — shared mobile-app promotion. The base64 badge artwork lives in
@@ -234,6 +233,7 @@ export * from './DiffStates';
 export * from './RepositoryCloneError';
 export * from './NoticeList';
 export * from './NotificationDetailsDialog';
+export * from './SuggestionCard';
 export * from './NotificationOfferNotice';
 export * from './AutomationOfferNotice';
 export * from './AutomationPipelineTargetFields';
@@ -268,7 +268,6 @@ export * from './WorkEntryRow';
 export * from './AgentStateGlyph';
 export * from './WakeTurnBoundary';
 export * from './WakeParkedNotice';
-export * from './ToolApprovalNotice';
 export * from './SidebarMoreRow';
 export * from './SidebarRowAge';
 export * from './CometSpinner';
@@ -290,8 +289,6 @@ export * from './ModelUnlockConfirmedNotice';
 export * from './aiCreditsArrival';
 export * from './AiCreditsArrivedNotice';
 export * from './ModelUnlockPendingNotice';
-export * from './dailyFreeCredits';
-export * from './DailyFreeCreditsOffer';
 export * from './creditsRecoveryCopy';
 export * from './CreditsRecoveryNotice';
 export * from './guestModelGate';
@@ -323,6 +320,9 @@ export * from './ChatMessageContextMenu';
 // Portal Plugins section groundwork — pure plugin-surface parts extracted from
 // the desktop plugins/skills/MCP views (see
 // docs/planning/2026-08-27-portal-plugins-section/design.md).
+export * from './ProgressDots';
+export * from './StatusCounts';
+export * from './WorkPath';
 export * from './BackDetailOverlayShell';
 export * from './ComponentSection';
 export * from './ClickableName';
@@ -471,3 +471,4 @@ export * from './StartChatSummary';
 
 export * from './DrawerWatcherControl';
 export * from './DrawerInspectorAction';
+export * from './ReferenceHoverCard';

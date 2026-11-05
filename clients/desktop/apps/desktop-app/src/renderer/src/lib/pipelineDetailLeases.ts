@@ -208,9 +208,3 @@ export function isPipelineExecutionRetainedByInterest(
     leasesByExecution.has(executionId) || summaryInterestCounts.has(executionId)
   );
 }
-
-export function resetPipelineDetailLeasesForTests(): void {
-  leasesByExecution.clear();
-  leasesByOwner.clear();
-  summaryInterestCounts.clear();
-}

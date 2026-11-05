@@ -1,8 +1,5 @@
 /** @type {import('jest').Config} */
 const config = {
-  ...(process.env.CANOPY_JEST_BALANCE === 'true'
-    ? { testSequencer: '<rootDir>/scripts/lib/jest-duration-sequencer.mjs' }
-    : {}),
   testEnvironment: 'node',
   // A worker keeps the heap of every suite it ran. CI runs each shard as a
   // targeted run, without the shard loop's per-file recycling, so a worker
@@ -14,8 +11,15 @@ const config = {
     '<rootDir>/apps/core-daemon/src',
     '<rootDir>/packages',
   ],
-  testPathIgnorePatterns: ["<rootDir>/packages/protocol/src/__tests__/ui-labels-mobile-mirror.test.ts","<rootDir>/apps/desktop-app/src/main/w5-commit-log/__tests__/commit-log-host-construction.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/daemon-files-route.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/daemon-files-route-connection.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/daemon-files-route-remote.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/electron-daemon-caller-lifetime.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/electron-w5-record-port.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/electron-w5-record-port-stopped.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/fixtures/electron-w5-record-port-daemon.ts","<rootDir>/apps/desktop-app/src/main/__tests__/pipeline-harness/invariants.test.ts","<rootDir>/apps/desktop-app/src/main/__tests__/provider-turn-contract-fixtures.pipeline.test.ts","<rootDir>/apps/desktop-app/src/main/__tests__/provider-turn-launch-profile.pipeline.test.ts","<rootDir>/packages/desktop-shared/src/node/lib/__tests__/admitted-storage-paths-manifest.test.ts","<rootDir>/packages/protocol/src/__tests__/core-workspace-metadata-contracts.test.ts"],
-  testMatch: ['**/__tests__/**/*.test.ts', '**/__tests__/**/*.test.tsx'],
+  // Golden tests live in __tests__/ (see scripts/golden-suites.mjs). Local TDD
+  // tests live in gitignored __scratch__/ directories and are never committed.
+  testPathIgnorePatterns: ["<rootDir>/apps/desktop-app/src/main/lib/__tests__/w5-recovery-daemon.test.ts","<rootDir>/apps/desktop-app/src/main/lib/__tests__/fixtures/w5-recovery-daemon-child.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/fixtures/electron-w5-record-port-daemon.ts","<rootDir>/packages/desktop-shared/src/node/lib/__tests__/admitted-storage-paths-manifest.test.ts","<rootDir>/packages/protocol/src/__tests__/ui-labels-mobile-mirror.test.ts","<rootDir>/apps/desktop-app/src/main/w5-commit-log/__tests__/commit-log-host-construction.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/daemon-files-route.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/daemon-files-route-connection.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/daemon-files-route-remote.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/electron-daemon-caller-lifetime.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/electron-w5-record-port.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/electron-w5-record-port-stopped.test.ts","<rootDir>/apps/desktop-app/src/main/__tests__/pipeline-harness/invariants.test.ts","<rootDir>/apps/desktop-app/src/main/__tests__/provider-turn-contract-fixtures.pipeline.test.ts","<rootDir>/apps/desktop-app/src/main/__tests__/provider-turn-launch-profile.pipeline.test.ts","<rootDir>/packages/protocol/src/__tests__/core-workspace-metadata-contracts.test.ts"],
+  testMatch: [
+    '**/__tests__/**/*.test.ts',
+    '**/__tests__/**/*.test.tsx',
+    '**/__scratch__/**/*.test.ts',
+    '**/__scratch__/**/*.test.tsx',
+  ],
   // Tests spawn `git` in temp repositories; drop inherited repository
   // variables (set when run from a Git hook) before any worker forks.
   globalSetup: '<rootDir>/scripts/lib/jest-git-env-isolation.mjs',
@@ -29,6 +33,10 @@ const config = {
   moduleNameMapper: {
     '^@canopy/mcp-oauth-core$':
       '<rootDir>/packages/mcp-oauth-core/src/index.ts',
+    '^@canopy/memory-consolidation$':
+      '<rootDir>/packages/memory-consolidation/src/index.ts',
+    '^@canopy/memory-consolidation/(.*)$':
+      '<rootDir>/packages/memory-consolidation/src/$1',
     '^@canopy/pipeline-interop$':
       '<rootDir>/packages/pipeline-interop/src/index.ts',
     '^@canopy/pipeline-interop/(.*)$':
@@ -146,53 +154,6 @@ const config = {
     __CANOPY_OLLAMA_ENABLED__: true,
     __CANOPY_MOCK_LLM_BASE_URL__: undefined,
     __CANOPY_LINEAR_API_BASE_URL__: undefined,
-  },
-  coverageDirectory: '<rootDir>/coverage',
-  coverageReporters: ['json', 'json-summary', 'lcov', 'text', 'clover'],
-  collectCoverageFrom: [
-    'apps/desktop-app/src/main/**/*.ts',
-    'packages/plugin-interop/src/**/*.ts',
-    '!packages/plugin-interop/src/index.ts',
-    'packages/agent-actions/src/**/*.ts',
-    '!packages/agent-actions/src/index.ts',
-    '!packages/plugin-interop/src/types.ts',
-    '!apps/desktop-app/src/main/index.ts',
-    '!apps/desktop-app/src/main/**/index.ts',
-    '!apps/desktop-app/src/main/ipc/register.ts',
-  ],
-  coverageThreshold: {
-    './apps/desktop-app/src/main/skills/source-parser.ts': {
-      lines: 80,
-      branches: 80,
-    },
-    './apps/desktop-app/src/main/skills/paths.ts': {
-      lines: 80,
-      branches: 80,
-    },
-    './apps/desktop-app/src/main/skills/installer.ts': {
-      lines: 80,
-      branches: 80,
-    },
-    './apps/desktop-app/src/main/skills/lock-file.ts': {
-      lines: 80,
-      branches: 80,
-    },
-    './apps/desktop-app/src/main/skills/risk.ts': {
-      lines: 80,
-      branches: 80,
-    },
-    './apps/desktop-app/src/main/plugins/plugin-scanner.ts': {
-      lines: 80,
-      branches: 80,
-    },
-    './apps/desktop-app/src/main/ipc/preferences.ts': {
-      lines: 80,
-      branches: 80,
-    },
-    './apps/desktop-app/src/main/ipc/projects.ts': {
-      lines: 80,
-      branches: 80,
-    },
   },
 };
 

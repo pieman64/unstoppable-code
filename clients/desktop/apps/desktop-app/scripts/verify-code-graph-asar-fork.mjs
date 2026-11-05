@@ -47,8 +47,7 @@
  * requires already-emitted worker bundles and a downloaded Electron binary, so
  * it cannot join the cheap resolution-only lint lane. The automated guard on
  * the same invariant is `pnpm run check:electron-boundary` (build-free, runs on
- * every PR via `lint.yml`), backed by `pnpm run test:dev-scripts` for the
- * entry-list/alias parity in `scripts/lib/utility-worker-entries.test.mjs`.
+ * every PR via `lint.yml`).
  * Run this one by hand after `pnpm run build` when touching worker packaging.
  *
  * Usage: pnpm run verify:code-graph:asar-fork

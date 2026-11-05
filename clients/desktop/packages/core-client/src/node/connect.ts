@@ -1,6 +1,9 @@
 import { once } from 'node:events';
 import { createConnection } from 'node:net';
-import { createCanopyFramedConnection } from '@canopy/core-transport';
+import {
+  CANOPY_MAX_MESSAGE_BYTES,
+  createCanopyFramedConnection,
+} from '@canopy/core-transport';
 import type { CanopyFramedConnection } from '@canopy/core-transport/types';
 import type {
   CanopyInstructionDefinitionMap,
@@ -75,6 +78,7 @@ async function openFramed(
       role: 'client',
       auth: endpoint.auth,
       maxFrameBytes: endpoint.maxFrameBytes,
+      maxMessageBytes: CANOPY_MAX_MESSAGE_BYTES,
       handshakeTimeoutMs: handshakeTimeoutMs(scope),
     });
     return await scope.guard(authenticating, (connection) =>

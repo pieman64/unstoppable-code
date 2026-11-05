@@ -344,6 +344,10 @@ A stream sink's `emitAt(cursor, item)` preserves canonical source cursors. The
 first cursor establishes the stream's source epoch; later cursors must retain
 that epoch and increase their sequence. Cursors are copied and validated;
 mixing `emit` allocation with `emitAt` ends the stream with a handler error.
+`endAt(cursor, outcome)` ends at the source's cursor under the same rules,
+except that it may repeat the last sequence; a stream with no items adopts
+it. The worker binding client ends each bridged stream there, so a resume
+from a worker stream that ended before its first item reaches the worker.
 
 ## Runtime composition
 

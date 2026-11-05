@@ -17,7 +17,11 @@ import {
   type ReactElement,
   type ReactNode,
 } from 'react';
-import { useCanopyClient, useChatStore } from '@canopy/app-state';
+import {
+  useCanopyClient,
+  useChatStore,
+  useRetainChatThread,
+} from '@canopy/app-state';
 import { portalChatMessageAttachmentsFromRefs } from '@canopy/protocol/portal';
 import type {
   PortalChatCloudAttachmentRef,
@@ -337,6 +341,7 @@ export function ChatPanel({
   onLoadOlder,
   findScope,
 }: ChatPanelProps): JSX.Element {
+  useRetainChatThread(chatId);
   const composerContainer = useRef<HTMLDivElement>(null);
   const panelRoot = useRef<HTMLDivElement>(null);
   const find = useChatTranscriptFind({

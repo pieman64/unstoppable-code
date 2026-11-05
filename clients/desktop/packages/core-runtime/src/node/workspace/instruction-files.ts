@@ -375,6 +375,49 @@ export async function ensureRelativeAlias(
   }
 }
 
+/** An exclusive copy failed after it may have created or written its destination. */
+export class InstructionCounterpartCopyError extends Error {
+  readonly copyError: unknown;
+
+  constructor(cause: unknown) {
+    super('The instruction counterpart could not be fully copied.');
+    this.name = 'InstructionCounterpartCopyError';
+    this.copyError = cause;
+  }
+}
+
+/** Add a counterpart without ever removing or replacing an occupied entry. */
+export async function createRelativeAliasExclusive(
+  linkPath: string,
+  targetPath: string,
+  platform: NodeJS.Platform,
+  files: Pick<InstructionAliasPort, 'symlink' | 'hardLink'> &
+    Pick<InstructionFileWritePort, 'copyFileExclusive'>,
+): Promise<void> {
+  if (platform !== 'win32') {
+    await files.symlink(targetPath, linkPath);
+    return;
+  }
+  const source = resolve(dirname(linkPath), targetPath);
+  try {
+    await files.hardLink(source, linkPath);
+  } catch (error) {
+    // Unsupported links and cross-volume links can be represented by a copy.
+    // Permission, I/O and occupied-destination errors must remain failures.
+    const code = instructionFileErrorCode(error);
+    if (!['EXDEV', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS'].includes(code ?? ''))
+      throw error;
+    try {
+      await files.copyFileExclusive(source, linkPath);
+    } catch (copyError) {
+      // EEXIST guarantees the exclusive copy left the occupied entry alone.
+      // Other failures may occur after creation; never remove it to roll back.
+      if (instructionFileErrorCode(copyError) === 'EEXIST') throw copyError;
+      throw new InstructionCounterpartCopyError(copyError);
+    }
+  }
+}
+
 /** A matching link, or a regular copy with the target's exact content. */
 export async function hasExpectedRelativeAlias(
   linkPath: string,

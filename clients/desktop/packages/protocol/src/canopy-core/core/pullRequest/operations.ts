@@ -146,6 +146,24 @@ export type CorePullRequestUpdateParams = z.output<
   typeof CorePullRequestUpdateParamsSchema
 >;
 
+export const CORE_PULL_REQUEST_MERGE_STRATEGIES = [
+  'merge',
+  'squash',
+  'rebase',
+] as const;
+
+export const CorePullRequestMergeParamsSchema = z.strictObject({
+  pullRequestId: OpaqueIdSchema,
+  /** The projection's `revision` the caller read; any other refuses the merge. */
+  expectedRevision: z.number().int().min(0),
+  expectedHeadSha: GitObjectIdSchema,
+  strategy: z.enum(CORE_PULL_REQUEST_MERGE_STRATEGIES),
+});
+
+export type CorePullRequestMergeParams = z.output<
+  typeof CorePullRequestMergeParamsSchema
+>;
+
 const CORE_PULL_REQUEST_READ_CODES = [
   'core.pullRequest.invalidId',
   'core.pullRequest.integrationUnavailable',
@@ -181,6 +199,17 @@ export const CORE_PULL_REQUEST_UPDATE_ERROR_CODES = [
   'core.pullRequest.update.draftUnsupported',
   'core.pullRequest.update.revisionConflict',
   'core.pullRequest.update.baseRejected',
+  'core.pullRequest.projectionUnavailable',
+  'core.pullRequest.idempotencyKeyReused',
+] as const;
+
+export const CORE_PULL_REQUEST_MERGE_ERROR_CODES = [
+  ...CORE_PULL_REQUEST_READ_CODES,
+  'core.pullRequest.notFound',
+  'core.pullRequest.merge.headMismatch',
+  'core.pullRequest.merge.revisionConflict',
+  'core.pullRequest.merge.notMergeable',
+  'core.pullRequest.merge.mergeQueueRequired',
   'core.pullRequest.projectionUnavailable',
   'core.pullRequest.idempotencyKeyReused',
 ] as const;
@@ -236,6 +265,25 @@ export const CORE_PULL_REQUEST_INSTRUCTION_DEFINITIONS =
       params: CorePullRequestUpdateParamsSchema,
       result: CorePullRequestSchema,
       error: keyedOperationErrorSchema(CORE_PULL_REQUEST_UPDATE_ERROR_CODES),
+      idempotency: 'keyed',
+      requiredGrants: ['core.pullRequest.write'],
+    }),
+  });
+
+/**
+ * Pull request merge, served by the web core only (CAN-5714), so kept out of
+ * the composed registries, whose hosts would need a handler.
+ */
+export const CORE_PULL_REQUEST_MERGE_INSTRUCTION_DEFINITIONS =
+  defineCanopyInstructionRegistry('core', {
+    'core.pullRequest.merge': defineCanopyInstruction({
+      plane: 'core',
+      domain: 'pullRequest',
+      version: 1,
+      placement: 'core-only',
+      params: CorePullRequestMergeParamsSchema,
+      result: CorePullRequestSchema,
+      error: keyedOperationErrorSchema(CORE_PULL_REQUEST_MERGE_ERROR_CODES),
       idempotency: 'keyed',
       requiredGrants: ['core.pullRequest.write'],
     }),

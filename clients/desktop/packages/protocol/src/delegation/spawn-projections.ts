@@ -1,5 +1,7 @@
 import { THINKING_LEVELS } from '../thinking';
 import {
+  AGENT_DELEGATION_TASK_ID_PATTERN,
+  AGENT_DELEGATION_TASK_IDS_MAX,
   AGENT_DELEGATION_INPUT_LIMITS,
   parseAgentDelegationSpawnRequest,
   type AgentDelegationResult,
@@ -65,6 +67,19 @@ const grantProperties = {
     enum: ['shared_worktree', 'worktree'],
     default: 'shared_worktree',
   },
+} as const;
+
+const taskIdsProperty = {
+  type: 'array',
+  minItems: 1,
+  maxItems: AGENT_DELEGATION_TASK_IDS_MAX,
+  uniqueItems: true,
+  items: {
+    type: 'string',
+    pattern: AGENT_DELEGATION_TASK_ID_PATTERN,
+  },
+  description:
+    'Open Feed task UUIDs this delegate should take over when it is admitted.',
 } as const;
 
 // Names and registration belong to each host's injected brand namespace.
@@ -135,6 +150,28 @@ export const CODEX_DELEGATION_SPAWN_SCHEMA = {
   },
 } as const;
 
+/** Feed-aware variants are selected only for a parent with Feed tools. */
+export const CLAUDE_DELEGATION_SPAWN_FEED_SCHEMA = {
+  ...CLAUDE_DELEGATION_SPAWN_SCHEMA,
+  properties: {
+    ...CLAUDE_DELEGATION_SPAWN_SCHEMA.properties,
+    taskIds: taskIdsProperty,
+  },
+} as const;
+
+export const CODEX_DELEGATION_SPAWN_FEED_SCHEMA = {
+  ...CODEX_DELEGATION_SPAWN_SCHEMA,
+  properties: {
+    ...CODEX_DELEGATION_SPAWN_SCHEMA.properties,
+    task_ids: taskIdsProperty,
+  },
+} as const;
+
+export interface DelegationSpawnProjectionOptions {
+  /** Whether this parent has the Feed tools and may hand off Feed task IDs. */
+  readonly includeFeed?: boolean;
+}
+
 function hasOnlyFields(
   input: unknown,
   fields: readonly string[],
@@ -160,6 +197,7 @@ function invalidProjection(): AgentDelegationResult<never> {
 
 export function parseClaudeDelegationSpawn(
   input: unknown,
+  options: DelegationSpawnProjectionOptions = {},
 ): AgentDelegationResult<AgentDelegationSpawnRequest> {
   if (
     !hasOnlyFields(input, [
@@ -177,6 +215,7 @@ export function parseClaudeDelegationSpawn(
       'capabilities',
       'allow_capability_discovery',
       'if_busy',
+      ...(options.includeFeed ? ['taskIds'] : []),
     ])
   )
     return invalidProjection();
@@ -200,6 +239,9 @@ export function parseClaudeDelegationSpawn(
       ? { allowCapabilityDiscovery: input.allow_capability_discovery }
       : {}),
     ...(input.if_busy !== undefined ? { ifBusy: input.if_busy } : {}),
+    ...(options.includeFeed && input.taskIds !== undefined
+      ? { taskIds: input.taskIds }
+      : {}),
     ...(input.fast_mode !== undefined ? { fastMode: input.fast_mode } : {}),
     permissions: input.permissions,
     isolation: input.isolation,
@@ -216,6 +258,7 @@ export function parseClaudeDelegationSpawn(
 
 export function parseCodexDelegationSpawn(
   input: unknown,
+  options: DelegationSpawnProjectionOptions = {},
 ): AgentDelegationResult<AgentDelegationSpawnRequest> {
   if (
     !hasOnlyFields(input, [
@@ -233,6 +276,7 @@ export function parseCodexDelegationSpawn(
       'capabilities',
       'allow_capability_discovery',
       'if_busy',
+      ...(options.includeFeed ? ['task_ids'] : []),
     ])
   )
     return invalidProjection();
@@ -261,6 +305,9 @@ export function parseCodexDelegationSpawn(
       ? { allowCapabilityDiscovery: input.allow_capability_discovery }
       : {}),
     ...(input.if_busy !== undefined ? { ifBusy: input.if_busy } : {}),
+    ...(options.includeFeed && input.task_ids !== undefined
+      ? { taskIds: input.task_ids }
+      : {}),
     ...(input.fast_mode !== undefined ? { fastMode: input.fast_mode } : {}),
     permissions: input.permissions,
     isolation: input.isolation,

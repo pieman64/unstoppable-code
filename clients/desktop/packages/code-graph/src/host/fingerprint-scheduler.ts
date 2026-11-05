@@ -56,7 +56,10 @@ export interface CodeGraphFingerprintScheduler {
     repositories: readonly CodeGraphRepositoryInput[],
     options?: CodeGraphFingerprintOptions,
   ): Promise<CodeGraphFingerprintWorkerResponse>;
-  /** Cancels the key's fingerprint and resolves once its host has exited. */
+  /**
+   * Cancels the key's fingerprint, stops any host of the key that answered
+   * but has not exited yet, and resolves once each of them has exited.
+   */
   cancel(key: string): Promise<void>;
   /** Cancels every fingerprint, refuses new ones and waits for every host to exit. */
   shutdown(): Promise<void>;
@@ -104,7 +107,8 @@ export function createCodeGraphFingerprintScheduler(
   const records = new Map<string, FingerprintRecord>();
   const queue: FingerprintRecord[] = [];
   const active = new Set<FingerprintRecord>();
-  const liveChildren = new Set<CodeGraphBuildHostProcess>();
+  /** Every launched host until its exit, with the key it fingerprinted. */
+  const liveChildren = new Map<CodeGraphBuildHostProcess, string>();
   const pendingExitWaits = new Map<string, Promise<void>>();
   let shuttingDown = false;
 
@@ -166,7 +170,7 @@ export function createCodeGraphFingerprintScheduler(
       return;
     }
     record.child = child;
-    liveChildren.add(child);
+    liveChildren.set(child, record.key);
     // Hashing dirty files and running Git is disk-heavy. The pid only exists
     // once the host emits `spawn`.
     child.once('spawn', () => {
@@ -347,13 +351,23 @@ export function createCodeGraphFingerprintScheduler(
           ),
         );
       }
+      // A host answers before it exits, so one may still be exiting.
+      for (const [child, childKey] of liveChildren) {
+        if (childKey !== key || child === record?.child) continue;
+        void registerExitWait(key, child);
+        try {
+          child.kill();
+        } catch {
+          // The worker may already have exited.
+        }
+      }
       await (pendingExitWaits.get(key) ?? Promise.resolve());
     },
 
     async shutdown() {
       shuttingDown = true;
       const pending = Array.from(records.values());
-      const children = Array.from(liveChildren);
+      const children = Array.from(liveChildren.keys());
       const childExitWaits = children.map(waitForChildExit);
       for (const record of pending) {
         rejectRecord(

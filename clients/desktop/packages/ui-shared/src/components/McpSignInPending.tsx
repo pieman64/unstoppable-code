@@ -89,7 +89,7 @@ export function McpSignInPendingActions({
 }: McpSignInPendingActionsProps): JSX.Element {
   if (variant === 'compact')
     return (
-      <span className="flex items-center gap-0.5">
+      <span className="flex items-center gap-0.5 pointer-coarse:gap-2">
         <a
           className={`${MCP_ROW_ACTION_CLASS_NAME} ${SECONDARY_SURFACE_CLASS} fg-primary`}
           href={authorizationUrl}
@@ -106,9 +106,10 @@ export function McpSignInPendingActions({
         </a>
         {onCancel !== undefined && (
           <Tooltip label={MCP_SIGN_IN_CANCEL_LABEL}>
-            <button
-              type="button"
-              className="focus-ring inline-flex h-5 w-5 items-center justify-center rounded-md fg-secondary transition-colors hover:bg-secondary hover:fg-primary"
+            <Button
+              variant="ghost-quiet"
+              size="sm"
+              iconOnly
               aria-label={
                 serviceName
                   ? `Cancel ${serviceName} sign-in`
@@ -118,7 +119,7 @@ export function McpSignInPendingActions({
               data-testid={`${dataTestId}-cancel`}
             >
               <CloseIcon size={12} aria-hidden="true" />
-            </button>
+            </Button>
           </Tooltip>
         )}
       </span>

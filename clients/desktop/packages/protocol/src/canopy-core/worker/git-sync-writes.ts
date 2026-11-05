@@ -6,8 +6,13 @@ import {
 } from '../definitions';
 import {
   CanopyErrorPayloadSchema,
+  CanopyKeyedRetryDirectiveSchema,
   CanopyRetryDirectiveSchema,
 } from '../errors';
+import {
+  OperationKindSchema,
+  OperationStatusSchema,
+} from '../core/operation/schemas';
 import { WORKER_GIT_GRANTS } from './git';
 import {
   WorkerGitCheckoutScopeSchema,
@@ -133,6 +138,109 @@ export const WORKER_GIT_SYNC_WRITE_INSTRUCTION_DEFINITIONS =
       result: WorkerGitPullResultSchema,
       error: WorkerGitPullErrorSchema,
       idempotency: 'none',
+      requiredGrants: [WORKER_GIT_GRANTS.write],
+    }),
+  });
+
+export const WORKER_GIT_COMMIT_ERROR_CODES = [
+  'worker.git.commit.invalidScope',
+  'worker.git.commit.scopeUnsupported',
+  'worker.git.commit.callerRefused',
+  'worker.git.commit.headChanged',
+  'worker.git.commit.nothingToCommit',
+] as const;
+
+export type WorkerGitCommitErrorCode =
+  (typeof WORKER_GIT_COMMIT_ERROR_CODES)[number];
+
+export const WorkerGitCommitParamsSchema = z.strictObject({
+  scope: WorkerGitCheckoutScopeSchema,
+  message: z.string().min(1).max(100_000),
+  /** The paths to commit; absent commits what is staged. */
+  paths: z.array(z.string()).optional(),
+  /** The commit `HEAD` must be at right before the commit. */
+  expectedHeadSha: z.string(),
+  amend: z.boolean().optional(),
+  sign: z.boolean().optional(),
+});
+
+export type WorkerGitCommitParams = z.output<
+  typeof WorkerGitCommitParamsSchema
+>;
+
+/** The operation a keyed commit or push started; `core.operation.get` follows it. */
+export const WorkerGitOperationHandleSchema = z.strictObject({
+  operationId: z.string().min(1).max(512),
+  kind: OperationKindSchema,
+  status: OperationStatusSchema,
+});
+
+export type WorkerGitOperationHandle = z.output<
+  typeof WorkerGitOperationHandleSchema
+>;
+
+export const WorkerGitCommitErrorSchema = CanopyErrorPayloadSchema.extend({
+  code: z.enum(WORKER_GIT_COMMIT_ERROR_CODES).optional(),
+  retry: CanopyKeyedRetryDirectiveSchema,
+});
+
+export const WORKER_GIT_PUSH_ERROR_CODES = [
+  'worker.git.push.invalidScope',
+  'worker.git.push.scopeUnsupported',
+  'worker.git.push.callerRefused',
+  'worker.git.push.headChanged',
+  'worker.git.push.remoteChanged',
+  'worker.git.push.rejected',
+] as const;
+
+export type WorkerGitPushErrorCode =
+  (typeof WORKER_GIT_PUSH_ERROR_CODES)[number];
+
+export const WorkerGitPushParamsSchema = z.strictObject({
+  scope: WorkerGitCheckoutScopeSchema,
+  remote: z.string(),
+  branch: z.string(),
+  /** The commit the local branch must be at right before the push. */
+  expectedLocalHeadSha: z.string(),
+  /** The commit the remote branch must be at; null when it must not exist. */
+  expectedRemoteHeadSha: z.string().nullable(),
+  setUpstream: z.boolean().optional(),
+});
+
+export type WorkerGitPushParams = z.output<typeof WorkerGitPushParamsSchema>;
+
+export const WorkerGitPushErrorSchema = CanopyErrorPayloadSchema.extend({
+  code: z.enum(WORKER_GIT_PUSH_ERROR_CODES).optional(),
+  retry: CanopyKeyedRetryDirectiveSchema,
+});
+
+/**
+ * Committing and pushing one checkout, keyed. Served by the web core only
+ * (CAN-5714), so kept out of the composed registries, whose hosts would need
+ * a handler.
+ */
+export const WORKER_GIT_COMMIT_PUSH_INSTRUCTION_DEFINITIONS =
+  defineCanopyInstructionRegistry('worker', {
+    'worker.git.commit': defineCanopyInstruction({
+      plane: 'worker',
+      domain: 'git',
+      version: 1,
+      placement: 'target-selectable',
+      params: WorkerGitCommitParamsSchema,
+      result: WorkerGitOperationHandleSchema,
+      error: WorkerGitCommitErrorSchema,
+      idempotency: 'keyed',
+      requiredGrants: [WORKER_GIT_GRANTS.write],
+    }),
+    'worker.git.push': defineCanopyInstruction({
+      plane: 'worker',
+      domain: 'git',
+      version: 1,
+      placement: 'target-selectable',
+      params: WorkerGitPushParamsSchema,
+      result: WorkerGitOperationHandleSchema,
+      error: WorkerGitPushErrorSchema,
+      idempotency: 'keyed',
       requiredGrants: [WORKER_GIT_GRANTS.write],
     }),
   });

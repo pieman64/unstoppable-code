@@ -109,6 +109,12 @@ interface ProviderAuthPanelProps {
    * it. Defaults to `error`.
    */
   unauthenticatedTone?: ProviderAuthUnauthenticatedTone;
+  /**
+   * Replaces "Not connected" on a signed-out neutral row with what connecting
+   * gets the user. Claude and Codex `row` layout only; GitHub and the `panel`
+   * layout ignore it.
+   */
+  signedOutDescription?: string;
 }
 
 export function ProviderAuthPanel({
@@ -117,6 +123,7 @@ export function ProviderAuthPanel({
   compact = false,
   layout = 'panel',
   unauthenticatedTone = 'error',
+  signedOutDescription,
 }: ProviderAuthPanelProps): JSX.Element {
   if (provider === 'github') {
     return (
@@ -135,6 +142,7 @@ export function ProviderAuthPanel({
         compact={compact}
         layout={layout}
         unauthenticatedTone={unauthenticatedTone}
+        signedOutDescription={signedOutDescription}
       />
     );
   }
@@ -145,6 +153,7 @@ export function ProviderAuthPanel({
       compact={compact}
       layout={layout}
       unauthenticatedTone={unauthenticatedTone}
+      signedOutDescription={signedOutDescription}
     />
   );
 }
@@ -199,6 +208,7 @@ interface TerminalProviderAuthPanelProps {
   compact?: boolean;
   layout: ProviderAuthPanelLayout;
   unauthenticatedTone: ProviderAuthUnauthenticatedTone;
+  signedOutDescription?: string;
 }
 
 function providerDisplayName(provider: AuthTerminalProvider): string {
@@ -211,6 +221,7 @@ function TerminalProviderAuthPanel({
   compact = false,
   layout,
   unauthenticatedTone,
+  signedOutDescription,
 }: TerminalProviderAuthPanelProps): JSX.Element {
   const [claudeRefreshKey, setClaudeRefreshKey] = useState(0);
   const [codexRefreshKey, setCodexRefreshKey] = useState(0);
@@ -279,12 +290,10 @@ function TerminalProviderAuthPanel({
   ) : null;
 
   if (layout === 'row') {
+    const neutralTone = unauthenticatedTone === 'neutral';
     // Only a signed-out row changes tone; a signed-in row whose check failed
     // still reads as signed in.
-    const neutral =
-      unauthenticatedTone === 'neutral' &&
-      status !== null &&
-      !status.authenticated;
+    const neutral = neutralTone && status !== null && !status.authenticated;
     const rowStatusDot = status ? (
       <StatusDot
         ok={status.authenticated}
@@ -314,11 +323,16 @@ function TerminalProviderAuthPanel({
       );
     } else if (neutral) {
       // Main reports a plain sign-out with a generic "is not authenticated"
-      // error, so only a failed check shows the provider's own message.
+      // error, so only a failed check shows the provider's own message. A
+      // failed check never shows the description: it is not evidence that
+      // the user has no subscription.
+      const probeFailed = status.probeFailed === true;
       statusLine = (
         <span className="fg-secondary">
-          {(status.probeFailed === true && status.error) ||
-            PROVIDER_CONNECTION_STATE_LABELS['not-connected']}
+          {probeFailed
+            ? status.error || PROVIDER_CONNECTION_STATE_LABELS['not-connected']
+            : (signedOutDescription ??
+              PROVIDER_CONNECTION_STATE_LABELS['not-connected'])}
         </span>
       );
     } else {
@@ -340,7 +354,9 @@ function TerminalProviderAuthPanel({
             data-testid={`auth-panel-${provider}-connect`}
             size="compact"
           >
-            {neutral ? 'Connect' : loginLabel}
+            {/* A neutral row says Connect while the read runs too, like the
+                account row beside it. */}
+            {neutralTone && !status?.authenticated ? 'Connect' : loginLabel}
           </Button>
         }
       >

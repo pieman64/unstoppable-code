@@ -85,6 +85,7 @@ export function createGitTabFailedLoadPreferences(): PreferencesData {
     approvalDefaults: createDefaultApprovalDefaults(),
     globalApprovalRules: [],
     approvalsUpgradeNoticeDismissed: false,
+    suggestions: { enabled: true, dismissed: {} },
     onboardingTipsDismissed: {},
     summaryModel: defaultSummaryModel(),
     summaryThinkingLevel: 'off',

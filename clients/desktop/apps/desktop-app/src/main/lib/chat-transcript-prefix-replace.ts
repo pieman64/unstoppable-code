@@ -530,7 +530,7 @@ export async function replaceSharedPrefix(
   const record = options.record;
   const externalize = options.externalize;
   let next = pending;
-  async function* suffix(): AsyncGenerator<PersistedChatMessage> {
+  async function* suffix(): AsyncGenerator<string> {
     while (next) {
       const { stored, json } = next;
       if (!isPersistedChatMessage(stored) || ids.has(stored.id))
@@ -550,7 +550,7 @@ export async function replaceSharedPrefix(
       if (recorded) await recorded;
       offset = end;
       suffixRows += 1;
-      yield stored;
+      yield json;
       const following = await incoming.next();
       if (following.done) next = undefined;
       else {
@@ -587,6 +587,7 @@ export async function replaceSharedPrefix(
         suffix(),
         {
           pretty: false,
+          serializedValues: true,
           separator: '\n',
           trailingSeparator: true,
           append: true,

@@ -13,12 +13,10 @@ import {
   BillingHistoryTable as SharedBillingHistoryTable,
   Button,
   CreditLedgerTable as SharedCreditLedgerTable,
-  DelayedLoadingPlaceholder,
   EmptyState,
   ErrorBanner,
   Fact,
   FactList,
-  SettingsTableSkeleton,
   Heading,
 } from '@canopy/ui-shared/components';
 import {
@@ -49,7 +47,10 @@ import {
   SETTINGS_CARD_GROUP_CLASS,
   SettingsCard,
 } from '@canopy/ui-shared/components/settings/SettingsCard';
-import { BillingCardBodySkeleton } from './billing-card-body-skeleton';
+import {
+  BillingCardBodySkeleton,
+  BillingTransactionsSkeleton,
+} from './billing-card-body-skeleton';
 import { CreditsUsedThisPeriod } from './credits-used-this-period';
 import { InvoicesSection, INVOICES_PAGE_LIMIT } from './invoices-section';
 import { TrialBadge } from './trial-badge';
@@ -377,7 +378,7 @@ function PlanCard({
                 Subscription plan
               </Heading>
               {loading ? (
-                <BillingCardBodySkeleton className="mt-3" />
+                <BillingCardBodySkeleton body="plan" />
               ) : (
                 <p className="mt-1 text-s fg-secondary">
                   No plan details available.
@@ -921,9 +922,7 @@ function BillingHistoryCard({
         />
 
         {loading && !showTransactions ? (
-          <DelayedLoadingPlaceholder>
-            <SettingsTableSkeleton />
-          </DelayedLoadingPlaceholder>
+          <BillingTransactionsSkeleton />
         ) : showTransactions ? (
           <div data-testid="team-billing-transactions">
             <p className="text-s font-medium fg-primary">Transactions</p>
@@ -969,8 +968,7 @@ const FREE_ACCESS_POOL_SUBTITLE =
  * the credit ledger, and (for OWNER) a manual "Buy credits" button. Both OWNER
  * and ADMIN see the shared {@link AutoTopUpControls}: OWNER can manage it, ADMIN
  * sees it read-only (`canManage=false` → disabled toggle, no "Adjust limit", no
- * top-up). MEMBER never reaches this tab. Drip UI is gated on the plan/env drip
- * cap (org pools never drip, but the gate is applied uniformly).
+ * top-up). MEMBER never reaches this tab.
  */
 function AiCreditPoolCard({
   orgId,
@@ -1102,7 +1100,7 @@ function AiCreditPoolCard({
         {topUpDialog}
 
         {loading ? (
-          <BillingCardBodySkeleton />
+          <BillingCardBodySkeleton body="credits" />
         ) : summary === null ? (
           <p className="text-s fg-secondary">No AI credit details available.</p>
         ) : neverFunded ? (

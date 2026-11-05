@@ -1,7 +1,7 @@
 /**
- * This renderer's chat interest: the chats it shows (focused) and showed
- * recently (warm), declared to main on `chat:set-interest`. Main records it
- * per window; nothing filters on it yet.
+ * This renderer's chat interest: the chats it shows (focused), showed
+ * recently (warm), expanded delegate runs, and observability entries declared
+ * to main on `chat:set-interest`.
  *
  * Started once per renderer ({@link useChatInterestDeclaration} in `App.tsx`
  * and `AppAdvisorWindowApp.tsx`). Targeted store subscriptions mark the
@@ -22,6 +22,7 @@ import { useNavigationStore } from '@/stores/navigationStore';
 import { usePanelLayoutStore } from '@/stores/panelLayoutStore';
 import { usePanelWindowsStore } from '@/stores/panelWindowsStore';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
+import { useObservabilityStore } from '@/stores/observabilityStore';
 import {
   PIPELINE_ASSISTANT_UI_STATE_KEY,
   PIPELINE_EDITOR_SCOPE_KEY,
@@ -30,6 +31,8 @@ import {
   type ChatInterestSurface,
 } from './focused-chats';
 import { setChatInterestRedeclareHandler } from './redeclare';
+import { observabilityEntriesInterestRegistry } from './observability-interest';
+import { expandedRunRegistry } from './run-interest';
 import {
   createChatInterestTracker,
   type ChatInterest,
@@ -39,11 +42,17 @@ import {
 
 export {
   MAX_FOCUSED_CHATS,
+  MAX_FOCUSED_RUNS,
   MAX_WARM_CHATS,
   WARM_CHAT_LIMIT,
   type ChatInterest,
   type ChatInterestListener,
 } from './tracker';
+export { registerExpandedRun, useExpandedRunInterest } from './run-interest';
+export {
+  observabilityEntriesInterestRegistry,
+  useObservabilityEntriesInterest,
+} from './observability-interest';
 export type { ChatInterestSurface } from './focused-chats';
 export { requestChatInterestRedeclare } from './redeclare';
 
@@ -52,6 +61,11 @@ export { requestChatInterestRedeclare } from './redeclare';
  * instead, so a change made while hidden still reaches main.
  */
 const HIDDEN_WINDOW_FRAME_FALLBACK_MS = 100;
+
+let observabilityEntriesSupported = true;
+let observabilityInterestGeneration = 0;
+let observabilityCatchUpGeneration = 0;
+let observabilityCatchUpTask: Promise<void> | null = null;
 
 let running: {
   readonly surface: ChatInterestSurface;
@@ -78,12 +92,90 @@ function scheduleFrame(callback: () => void): () => void {
   };
 }
 
+function withoutObservabilityEntries(
+  declaration: ChatInterestDeclaration,
+): ChatInterestDeclaration {
+  const legacy = { ...declaration };
+  delete legacy.observabilityEntries;
+  return legacy;
+}
+
 async function sendChatInterest(
   declaration: ChatInterestDeclaration,
 ): Promise<void> {
   // Older preloads have no `setInterest`; such a window never declares.
-  if (typeof window.api?.chat?.setInterest !== 'function') return;
-  await window.api.chat.setInterest(declaration);
+  const chatApi = window.api?.chat;
+  if (typeof chatApi?.setInterest !== 'function') return;
+  if (!observabilityEntriesSupported) {
+    await chatApi.setInterest(withoutObservabilityEntries(declaration));
+    return;
+  }
+  try {
+    await chatApi.setInterest(declaration);
+  } catch (error) {
+    if (declaration.observabilityEntries === undefined) throw error;
+    // An older host's exact-key check rejects the field: keep chat interest.
+    await chatApi.setInterest(withoutObservabilityEntries(declaration));
+    observabilityEntriesSupported = false;
+  }
+}
+
+function requestObservabilitySnapshotCatchUp(): void {
+  observabilityInterestGeneration += 1;
+  if (!observabilityEntriesInterestRegistry.active()) return;
+  if (observabilityCatchUpTask !== null) return;
+
+  const catchUp = async (): Promise<void> => {
+    while (observabilityEntriesInterestRegistry.active()) {
+      const generation = observabilityInterestGeneration;
+      try {
+        await flushChatInterest();
+      } catch {
+        if (
+          observabilityEntriesInterestRegistry.active() &&
+          generation !== observabilityInterestGeneration
+        ) {
+          continue;
+        }
+        observabilityCatchUpGeneration = generation;
+        return;
+      }
+
+      if (!observabilityEntriesInterestRegistry.active()) return;
+      if (generation !== observabilityInterestGeneration) continue;
+
+      try {
+        const snapshot = await window.api.observability.loadSnapshot();
+        if (
+          observabilityEntriesInterestRegistry.active() &&
+          generation === observabilityInterestGeneration
+        ) {
+          useObservabilityStore.getState().applySnapshot(snapshot);
+          observabilityCatchUpGeneration = generation;
+          return;
+        }
+      } catch {
+        if (
+          !observabilityEntriesInterestRegistry.active() ||
+          generation === observabilityInterestGeneration
+        ) {
+          observabilityCatchUpGeneration = generation;
+          return;
+        }
+      }
+    }
+  };
+
+  const task = catchUp();
+  observabilityCatchUpTask = task.finally(() => {
+    observabilityCatchUpTask = null;
+    if (
+      observabilityEntriesInterestRegistry.active() &&
+      observabilityInterestGeneration !== observabilityCatchUpGeneration
+    ) {
+      requestObservabilitySnapshotCatchUp();
+    }
+  });
 }
 
 function logSendFailure(error: unknown): void {
@@ -182,6 +274,9 @@ export function startChatInterestTracking(
   }
   const tracker = createChatInterestTracker({
     readFocused: () => computeFocusedChats(readChatInterestSources(surface)),
+    readExpandedRuns: () => expandedRunRegistry.list(),
+    readObservabilityEntries: () =>
+      observabilityEntriesInterestRegistry.active(),
     send: sendChatInterest,
     scheduleFrame,
     onSendFailed: logSendFailure,
@@ -189,10 +284,26 @@ export function startChatInterestTracking(
   const unsubscribeTracker = tracker.subscribe((interest) => {
     listeners.forEach((listener) => listener(interest));
   });
+  const unsubscribeExpandedRuns = expandedRunRegistry.subscribe(
+    tracker.invalidate,
+  );
+  const unsubscribeObservabilityEntries =
+    observabilityEntriesInterestRegistry.subscribe((active) => {
+      tracker.invalidate();
+      if (active) {
+        requestObservabilitySnapshotCatchUp();
+        return;
+      }
+      observabilityInterestGeneration += 1;
+      observabilityCatchUpGeneration = observabilityInterestGeneration;
+      useObservabilityStore.getState().clearEntryCaches();
+    });
   const unsubscribeSources = subscribeSources(surface, tracker.invalidate);
   const removeRedeclare = setChatInterestRedeclareHandler(tracker.redeclare);
   const dispose = (): void => {
     unsubscribeSources();
+    unsubscribeExpandedRuns();
+    unsubscribeObservabilityEntries();
     removeRedeclare();
     unsubscribeTracker();
     tracker.dispose();
@@ -201,6 +312,9 @@ export function startChatInterestTracking(
   running = { surface, tracker, dispose };
   // Declare on page load, even before any source changes.
   tracker.invalidate();
+  if (observabilityEntriesInterestRegistry.active()) {
+    requestObservabilitySnapshotCatchUp();
+  }
   return dispose;
 }
 

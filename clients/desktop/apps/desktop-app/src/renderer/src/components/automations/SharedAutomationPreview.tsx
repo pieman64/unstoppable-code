@@ -221,6 +221,8 @@ export function SharedAutomationPreview({
           the fetched detail, so this costs no extra request. */}
       <AutomationPublicShareRow
         remoteId={detail.id}
+        facts={detail}
+        name={detail.automation.name}
         initialShare={detail.publicShare ?? null}
         // The author can manage it, and so can an organization admin who
         // may delete a departed creator's share, as in the share dialog.

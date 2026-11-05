@@ -74,7 +74,7 @@ export const REMOTE_EVENTS = {
  * Version 1 is every release before this check. After a bump, run
  * `pnpm run remote-control:contract:write`; see docs/remote-control-protocol.md.
  */
-export const REMOTE_PROTOCOL_VERSION = 14;
+export const REMOTE_PROTOCOL_VERSION = 15;
 
 /** What a computer runs, as the other computer of a session sees it. */
 export const RemoteVersionSchema = z.object({

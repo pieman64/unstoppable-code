@@ -23,6 +23,7 @@ import { PipelineListView } from '../pipeline/PipelineListView';
 import { useClearWorkflowsKeyboardTarget } from '../workflows/workflowsTabContext';
 import { pipelineAssistantHasConversation } from '../pipeline/pipelineAssistantConversation';
 import { PipelineChatPanel } from '../pipeline/PipelineChatPanel';
+import type { PipelineAssistantContext } from '../pipeline/pipelineAssistantSuggestions';
 import { useCurrentUiStateReporter } from '../../hooks/useCurrentUiStateReporter';
 import { useChatStore } from '../../stores/chatStore';
 import {
@@ -42,10 +43,16 @@ import {
 } from '../../stores/pipelineEditorBridgeStore';
 import {
   PIPELINE_ASSISTANT_OPEN_EVENT,
+  consumePipelineAssistantNewChatRequest,
   consumePipelineAssistantOpenRequest,
+  requestPipelineAssistantNewChat,
 } from '@/lib/pipelineAssistantEvents';
 import { startPipelineInterviewChat } from '@/lib/pipelineInterview';
+import { WorkflowEditToolbar } from '@canopy/ui-app/workflows';
 import { Button, Tooltip } from '@canopy/ui-shared';
+import { useWorkflowEditView } from './useWorkflowEditView';
+import { workflowEditBackLabel } from '@/lib/workflows/edit-back';
+import { WORKFLOW_ITEM_LABEL } from '@canopy/ui-shared/lib/workflow-labels';
 import { ResizeRailIndicator } from '@canopy/ui-shared/components';
 import { SharePipelineModal } from '../pipeline/SharePipelineModal';
 import { useShareAccess } from '../../hooks/useShareAccess';
@@ -110,6 +117,87 @@ async function leaveWorkflowEditForList(): Promise<boolean> {
 const MIN_PANEL_PERCENT = 20;
 const MAX_PANEL_PERCENT = 65;
 const DEFAULT_PANEL_PERCENT = 30;
+/**
+ * Opens a new pipeline draft with a new assistant chat for it (CAN-4319).
+ * A person who keeps the open item keeps its chat too.
+ */
+async function openNewPipelineDraft(): Promise<void> {
+  // Asked first, so the edit view's assistant opens on it.
+  requestPipelineAssistantNewChat();
+  const opened = await openGuardedWorkflowEdit({
+    kind: 'pipeline',
+    pipelineId: null,
+  });
+  if (opened === null) consumePipelineAssistantNewChatRequest();
+}
+
+/** What the edit shell reports about the open pipeline. */
+export interface WorkflowEditDetails {
+  readonly title: string;
+  readonly readOnly: boolean;
+  /** For the assistant's empty chat; absent for a new workflow. */
+  readonly assistant?: PipelineAssistantContext;
+}
+
+/**
+ * The edit view bar's first crumb: where its way back goes. The Library is
+ * a tab of the Workflows page, which the crumb names.
+ */
+function workflowEditCrumbLabel(target: WorkflowEditTarget): string {
+  const label = workflowEditBackLabel(target);
+  return label === 'Library' ? 'Workflows' : label;
+}
+
+interface PipelineAssistantDrawerProps {
+  /**
+   * `start` leads an open pipeline's edit view (CAN-4319), as its own card;
+   * `end` sits beside the Workflows list.
+   */
+  readonly placement: 'start' | 'end';
+  /** A new workflow: its empty chat offers starters. */
+  readonly creating: boolean;
+  /** The open saved workflow, for what its empty chat offers. */
+  readonly assistantContext: PipelineAssistantContext | undefined;
+  readonly widthPercent: number;
+  /** Hides the list's drawer; the edit view's assistant always shows. */
+  readonly onCollapse?: () => void;
+}
+
+/** The Pipeline Assistant beside the list or leading an edit view. */
+function PipelineAssistantDrawer({
+  placement,
+  creating,
+  assistantContext,
+  widthPercent,
+  onCollapse,
+}: PipelineAssistantDrawerProps): JSX.Element {
+  const inEditView = placement === 'start';
+  return (
+    <div
+      // The edit view keeps its chat at every width: it is where a workflow
+      // is described and changed. The list's drawer folds away below `lg`.
+      className={
+        inEditView ? 'min-h-0 shrink-0' : 'hidden min-h-0 shrink-0 lg:block'
+      }
+      style={{ width: `${widthPercent}%` }}
+      data-testid="pipeline-chat-drawer"
+      data-placement={placement}
+      {...(inEditView ? { 'data-workflow-edit-card': '' } : {})}
+    >
+      {/* This full-height assistant has no terminal strip below its
+          composer. Keep its controls above the shell's bottom status chip
+          even while the chip appears or disappears during a turn. */}
+      <div className="flex h-full min-h-0 flex-col pb-12">
+        <PipelineChatPanel
+          {...(onCollapse ? { onCollapse } : {})}
+          placement={placement}
+          creating={creating}
+          {...(assistantContext ? { assistantContext } : {})}
+        />
+      </div>
+    </div>
+  );
+}
 
 function clampPanelPercent(percent: number): number {
   return Math.min(MAX_PANEL_PERCENT, Math.max(MIN_PANEL_PERCENT, percent));
@@ -157,7 +245,10 @@ export interface PipelinesPageListApi {
   readonly loadMoreSharedList: () => Promise<void>;
   readonly disabledPipelineIds: ReadonlySet<string>;
   readonly setPipelineEnabled: (id: string, enabled: boolean) => Promise<void>;
-  /** Opens the manual pipeline builder. */
+  /**
+   * Opens a new pipeline (CAN-4319): the assistant chat beside the editor,
+   * on a new chat, with no choice to make first.
+   */
   readonly createNew: () => void;
   /** Starts the AI pipeline interview in a new chat. */
   readonly startInterview: () => void;
@@ -171,8 +262,22 @@ export interface PipelinesPageListApi {
   readonly shareError: string | null;
   /** The Pipeline Assistant toggle, when its drawer is closed. */
   readonly headerAction: ReactNode;
-  /** The Pipeline Assistant drawer, for the edit shell's Assistant action. */
-  readonly assistant: { readonly open: boolean; readonly toggle: () => void };
+  /** The Pipeline Assistant drawer beside the list. */
+  readonly assistant: {
+    readonly open: boolean;
+    readonly toggle: () => void;
+  };
+  /**
+   * The open pipeline as the edit shell has loaded it, or `null` to clear
+   * it: its name for the page's bar, so a rename shows there before it is
+   * saved, and what its assistant's empty chat offers.
+   */
+  readonly reportEdit: (details: WorkflowEditDetails | null) => void;
+  /**
+   * Where the edit shell renders its actions: the edit view's bar (CAN-4319).
+   * `null` until the bar mounts.
+   */
+  readonly editActionsTarget: HTMLElement | null;
   /** Project of the selected worktree, for project pipelines. */
   readonly projectId: string | undefined;
   /** The selected worktree's checkout, for project pipelines. */
@@ -251,10 +356,28 @@ export function PipelinesPage({
   useEffect(() => {
     latestWidthRef.current = chatPanelWidthPercent;
   }, [chatPanelWidthPercent]);
-  useCurrentUiStateReporter('pipelines.chatPanel', {
-    visible: chatPanelVisible,
-    widthPercent: Math.round(chatPanelWidthPercent),
-  });
+  const {
+    pipelines,
+    loading,
+    error,
+    refresh,
+    deletePipeline,
+    duplicatePipeline,
+    disabledPipelineIds,
+    setPipelineEnabled,
+    refreshSharedList,
+    loadMoreShared,
+    deleteSharedPipeline,
+    setSharedFilters,
+    shared,
+  } = usePipelineList(cwd, projectContext?.worktree);
+
+  const [editDetails, reportEdit] = useState<WorkflowEditDetails | null>(null);
+  // Where the edit shell puts its actions, in the edit view's bar.
+  const [editActionsTarget, setEditActionsTarget] =
+    useState<HTMLDivElement | null>(null);
+  const editView = useWorkflowEditView(pipelineEditorOpen);
+  const editViewOpen = editView.open;
   // CAN-3487: the main "New pipeline" action starts an AI interview in
   // a new Cowork chat. The flag stops a double click from opening two chats.
   const [interviewPending, setInterviewPending] = useState(false);
@@ -335,7 +458,13 @@ export function PipelinesPage({
     if (!container) return;
     const bounds = container.getBoundingClientRect();
     if (bounds.width <= 0) return;
-    // The drawer is on the right edge, so its width is right-edge − pointer.
+    // The edit view's chat is on the left edge, so its width is
+    // pointer − left edge; the drawer is on the right, right edge − pointer.
+    if (editView.openRef.current) {
+      const percent = ((clientX - bounds.left) / bounds.width) * 100;
+      editView.setChatPercent(clampPanelPercent(percent));
+      return;
+    }
     const percent = ((bounds.right - clientX) / bounds.width) * 100;
     setChatPanelWidthPercent(clampPanelPercent(percent));
   }, []);
@@ -357,6 +486,8 @@ export function PipelinesPage({
     };
     const handleMouseUp = (): void => {
       setIsResizing(false);
+      // The edit view's split is not the drawer's saved width.
+      if (editView.openRef.current) return;
       void window.api
         .savePreferences({
           pipelineChatPanelWidthPercent: latestWidthRef.current,
@@ -419,22 +550,6 @@ export function PipelinesPage({
       cancelled = true;
     };
   }, [selectedWorktree]);
-
-  const {
-    pipelines,
-    loading,
-    error,
-    refresh,
-    deletePipeline,
-    duplicatePipeline,
-    disabledPipelineIds,
-    setPipelineEnabled,
-    refreshSharedList,
-    loadMoreShared,
-    deleteSharedPipeline,
-    setSharedFilters,
-    shared,
-  } = usePipelineList(cwd, projectContext?.worktree);
 
   // ---------------------------------------------------------------------------
   // Row-level Share. The page owns the modal (mirroring `AutomationsPage`); a
@@ -639,9 +754,18 @@ export function PipelinesPage({
     </span>
   );
 
+  // An open pipeline always shows its assistant; the list shows the drawer
+  // when it is chosen.
   const assistantVisible =
-    chatPanelVisible && (assistantEnabled || pipelineEditorOpen);
+    editViewOpen || (chatPanelVisible && assistantEnabled);
   const headerAction = assistantVisible ? undefined : chatToggle;
+  // What is on screen, not the drawer's saved choice: an edit view shows its
+  // chat whatever that choice is, and focused-chat interest reads this to
+  // keep the visible assistant streaming.
+  useCurrentUiStateReporter('pipelines.chatPanel', {
+    visible: assistantVisible,
+    widthPercent: Math.round(chatPanelWidthPercent),
+  });
   // Throws when nothing was deleted, so the caller's dialog stays open.
   const handleRowDelete = async (pipeline: PipelineInfo): Promise<void> => {
     const deleted =
@@ -679,8 +803,14 @@ export function PipelinesPage({
       ...(shown?.returnTo !== undefined ? { returnTo: shown.returnTo } : {}),
     });
   };
-  const createNew = (): void =>
-    useNavigationStore.getState().openPipelineEdit({ pipelineId: null });
+  const createNew = (): void => {
+    void openNewPipelineDraft();
+  };
+  // The bar's first crumb goes where the editor's Back would, asking first
+  // about unsaved work.
+  const leaveEditView = (): void => {
+    useNavigationStore.getState().closeWorkflowEdit();
+  };
 
   const mainContent = renderList ? (
     renderList({
@@ -707,7 +837,12 @@ export function PipelinesPage({
       sharePendingId,
       shareError,
       headerAction,
-      assistant: { open: assistantVisible, toggle: handleToggleChatPanel },
+      assistant: {
+        open: assistantVisible,
+        toggle: handleToggleChatPanel,
+      },
+      reportEdit,
+      editActionsTarget,
       projectId: projectContext?.worktree.projectId,
       projectContext,
       projectContextPending,
@@ -754,14 +889,95 @@ export function PipelinesPage({
     />
   );
 
+  const drawerWidthPercent = editViewOpen
+    ? editView.chatPercent
+    : chatPanelWidthPercent;
+  const drawer = assistantVisible ? (
+    <PipelineAssistantDrawer
+      placement={editViewOpen ? 'start' : 'end'}
+      creating={
+        workflowEdit?.kind === 'pipeline' && workflowEdit.pipelineId === null
+      }
+      assistantContext={editViewOpen ? editDetails?.assistant : undefined}
+      widthPercent={drawerWidthPercent}
+      {...(editViewOpen ? {} : { onCollapse: handleToggleChatPanel })}
+    />
+  ) : null;
+  const resizeRail = !assistantVisible ? null : editViewOpen ? (
+    // The gap between the edit view's cards resizes them the way a
+    // worktree's panel gaps do: the same sash, whose handle shows on hover.
+    <div
+      className={`canopy-sash vertical -translate-x-1/2 [--canopy-sash-size:8px] ${isResizing ? 'active' : ''}`}
+      style={{
+        left: `calc(${drawerWidthPercent}% + var(--inset-card-gap, 0px) / 2)`,
+      }}
+      onMouseDown={handleResizeMouseDown}
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize workflow assistant"
+      aria-valuemin={MIN_PANEL_PERCENT}
+      aria-valuemax={MAX_PANEL_PERCENT}
+      aria-valuenow={Math.round(drawerWidthPercent)}
+    />
+  ) : (
+    <div
+      className="group absolute inset-y-0 z-30 hidden w-2 translate-x-1/2 cursor-col-resize items-stretch justify-center lg:flex"
+      style={{ right: `${drawerWidthPercent}%` }}
+      onMouseDown={handleResizeMouseDown}
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize workflow assistant"
+      aria-valuemin={MIN_PANEL_PERCENT}
+      aria-valuemax={MAX_PANEL_PERCENT}
+      aria-valuenow={Math.round(drawerWidthPercent)}
+    >
+      <ResizeRailIndicator active={isResizing} />
+    </div>
+  );
+  const main = (
+    <div
+      className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+      data-testid="pipelines-main"
+      {...(editViewOpen ? { 'data-workflow-edit-card': '' } : {})}
+    >
+      {mainContent}
+    </div>
+  );
+
   return (
     <div
-      ref={containerRef}
-      className="relative flex h-full min-h-0"
+      className="relative flex h-full min-h-0 flex-col"
       data-testid="page-pipelines-root"
     >
-      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        {mainContent}
+      {/* An open pipeline is laid out like a worktree page (CAN-4319): its
+          bar sits in the window's top bar row with where the person is, the
+          way back and the workflow's actions, and the assistant and the
+          editor below it are two cards. */}
+      {editViewOpen && workflowEdit !== undefined ? (
+        <WorkflowEditToolbar
+          backLabel={workflowEditCrumbLabel(workflowEdit)}
+          onLeave={leaveEditView}
+          actionsRef={setEditActionsTarget}
+          {...(editDetails !== null
+            ? { title: editDetails.title, privateTitle: true }
+            : {
+                title:
+                  workflowEdit.kind === 'pipeline' &&
+                  workflowEdit.pipelineId === null
+                    ? 'New workflow'
+                    : WORKFLOW_ITEM_LABEL,
+              })}
+        />
+      ) : null}
+      <div
+        ref={containerRef}
+        className="relative flex min-h-0 flex-1"
+        {...(editViewOpen ? { 'data-testid': 'workflow-edit-cards' } : {})}
+      >
+        {editViewOpen ? drawer : null}
+        {main}
+        {resizeRail}
+        {editViewOpen ? null : drawer}
       </div>
 
       {shareGateModal}
@@ -787,37 +1003,6 @@ export function PipelinesPage({
           }}
           onPublicLinkRemoved={() => void refreshSharedList()}
         />
-      )}
-
-      {assistantVisible && (
-        <div
-          className="group absolute inset-y-0 z-30 hidden w-2 translate-x-1/2 cursor-col-resize items-stretch justify-center lg:flex"
-          style={{ right: `${chatPanelWidthPercent}%` }}
-          onMouseDown={handleResizeMouseDown}
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize workflow assistant"
-          aria-valuemin={MIN_PANEL_PERCENT}
-          aria-valuemax={MAX_PANEL_PERCENT}
-          aria-valuenow={Math.round(chatPanelWidthPercent)}
-        >
-          <ResizeRailIndicator active={isResizing} />
-        </div>
-      )}
-
-      {assistantVisible && (
-        <div
-          className="hidden min-h-0 shrink-0 lg:block"
-          style={{ width: `${chatPanelWidthPercent}%` }}
-          data-testid="pipeline-chat-drawer"
-        >
-          {/* This full-height assistant has no terminal strip below its
-              composer. Keep its controls above the shell's bottom status chip
-              even while the chip appears or disappears during a turn. */}
-          <div className="flex h-full min-h-0 flex-col pb-12">
-            <PipelineChatPanel onCollapse={handleToggleChatPanel} />
-          </div>
-        </div>
       )}
     </div>
   );

@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { isMemoryUlid } from '@canopy/protocol/memory-sync';
 import { isRecord } from '../../../lib/type-guards';
 import { writeMemoryFileAtomically } from '../memory-files';
-import type { MemoryImportSourceTool } from '../input-budget';
+import type { MemoryImportSourceTool } from '@canopy/memory-consolidation/input-budget';
 
 const IMPORT_STATE_FILENAME = 'import-state.json';
 const IMPORT_STATE_VERSION = 1;

@@ -5,6 +5,7 @@ import type {
 } from '@canopy/protocol/canopy-core';
 import { ledgerActorName } from '../../lib/ledger-display';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
+import type { WorkPathPart } from '../WorkPath';
 
 /*
  * Where an entry row came from, for a list that spans scopes, devices and
@@ -25,6 +26,7 @@ export type LedgerEntryRowAttribution =
 /** Where a row was recorded, for a list that spans scopes. */
 export interface LedgerEntryRowDetails {
   readonly context?: string;
+  readonly workPath?: readonly WorkPathPart[];
   readonly attribution?: LedgerEntryRowAttribution;
 }
 

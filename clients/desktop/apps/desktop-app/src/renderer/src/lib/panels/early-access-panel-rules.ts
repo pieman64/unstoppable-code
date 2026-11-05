@@ -50,11 +50,3 @@ export function ensureEarlyAccessPanelRulesSync(): void {
     }
   });
 }
-
-/** Test-only: stop following early access and lift the rules. */
-export function resetEarlyAccessPanelRulesSyncForTest(): void {
-  unsubscribe?.();
-  unsubscribe = null;
-  setPanelLayoutChatGroup(null);
-  setPanelLayoutExcludedKinds([]);
-}

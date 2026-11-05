@@ -25,6 +25,7 @@ import {
   type MergeQueueLabel,
   type MergeQueueStep,
 } from '../lib/merge-queue-display';
+import { Button } from './Button';
 import { FloatingMenu } from './FloatingMenu';
 import { RunSpinner } from './RunSpinner';
 
@@ -482,14 +483,15 @@ function QueueList({
         </>
       )}
       {hidden > 0 && (
-        <button
-          type="button"
-          onClick={() => setExpanded(true)}
-          data-testid="merge-queue-popover-show-more"
-          className="focus-ring w-full rounded-md px-2 py-1.5 text-left text-2xs fg-secondary transition-colors hover:bg-subtle hover:fg-primary"
-        >
-          Show {hidden} more
-        </button>
+        <div className="px-2 py-1.5 text-2xs">
+          <Button
+            variant="link"
+            onClick={() => setExpanded(true)}
+            data-testid="merge-queue-popover-show-more"
+          >
+            Show {hidden} more
+          </Button>
+        </div>
       )}
       {(expanded || !collapsible || hidden === 0) && unloaded > 0 && (
         <div className="px-2 py-1.5 text-2xs fg-tertiary">

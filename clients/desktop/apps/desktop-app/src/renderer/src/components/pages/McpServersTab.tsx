@@ -83,7 +83,10 @@ import { DialogModal } from '../shared/DialogModal';
 import { McpBrowseDialog } from '../mcp/McpBrowseDialog';
 import { ErrorBanner, EmptyState } from '../shared/StatusBlocks';
 import {
-  CenteredLoadingSpinner,
+  McpAccountBindingSkeleton,
+  McpServersTableSkeleton,
+} from './McpServersTabSkeletons';
+import {
   DataTableBody,
   DataTableCell,
   DataTableFrame,
@@ -2495,7 +2498,7 @@ export function McpServerDialog({
                 <div className="text-sm" data-testid="mcp-account-binding">
                   {accountConnectionsLoading ? (
                     <DelayedLoadingPlaceholder slowNote="Still loading account connections…">
-                      <CenteredLoadingSpinner className="my-12" />
+                      <McpAccountBindingSkeleton />
                     </DelayedLoadingPlaceholder>
                   ) : accountConnectionsError ? (
                     <ErrorBanner error={accountConnectionsError} />
@@ -3954,7 +3957,7 @@ export function McpServersTab({
       {/* Loading */}
       {loading && servers.length === 0 && (
         <DelayedLoadingPlaceholder slowNote="Still loading MCP servers…">
-          <CenteredLoadingSpinner className="my-16" />
+          <McpServersTableSkeleton />
         </DelayedLoadingPlaceholder>
       )}
 

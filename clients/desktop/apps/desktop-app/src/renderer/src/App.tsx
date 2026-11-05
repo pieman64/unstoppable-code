@@ -90,8 +90,9 @@ import { PublicShareDispatchHost } from './components/share/PublicShareDispatchH
 import { ShareInstallModalHost } from './components/share/ShareInstallModal';
 import { CloudConnectGate } from './components/shared/CloudConnectGate';
 import { GuestUpgradeNudge } from './components/shared/GuestUpgradeNudge';
-import { OsNotificationOfferBanner } from './components/shared/OsNotificationOfferBanner';
-import { RepeatTaskAutomationOfferBanner } from './components/shared/RepeatTaskAutomationOfferBanner';
+import { SuggestionCorner } from '@canopy/ui-app/suggestions';
+import { OsNotificationOfferProducer } from './components/suggestions/OsNotificationOfferProducer';
+import { RepeatTaskOfferProducer } from './components/suggestions/RepeatTaskOfferProducer';
 import { RunCommentsModalHost } from './components/shared/RunCommentsModal';
 import { ShareSessionStatusModal } from './components/shared/ShareSessionStatusModal';
 import {
@@ -2355,8 +2356,9 @@ function App(): JSX.Element {
             bottom placements they sit nearest the screen edge as the
             transient layer; the container is `flex-col` for all four corners,
             so under the top placements they sit below the banner instead.
-            The one-time notification offer and the repeated-task
-            automation offer can sit beside either.
+            The one suggestion corner (CAN-4343) shows at most one
+            event-driven offer at a time: the notification offer, the
+            repeated-task automation offer, or the skill-share nudge.
 
             The withheld-file count used to render here too. It only ever had a
             value while a share was mounted — the same moments the recipient
@@ -2376,8 +2378,9 @@ function App(): JSX.Element {
           {/* Persistent until the background service is reached again. */}
           <BackgroundServiceUnavailableNotice />
           <GuestUpgradeNudge />
-          <OsNotificationOfferBanner />
-          <RepeatTaskAutomationOfferBanner />
+          <OsNotificationOfferProducer />
+          <RepeatTaskOfferProducer />
+          <SuggestionCorner />
           <Suspense fallback={null}>
             <MobileAppCtaBanner />
           </Suspense>

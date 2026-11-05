@@ -6,7 +6,7 @@ import {
   assertMemoryScopeLockHeld,
   writeMemoryFileAtomically,
 } from '../memory-files';
-import { redactMemoryContent } from '../store';
+import { redactMemoryContent } from '@canopy/memory-consolidation/redaction';
 
 function slug(value: string, maximum: number): string {
   const normalized = value

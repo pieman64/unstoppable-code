@@ -2,11 +2,13 @@
 // frame instead of immediately (see `frame-batched-store-view.ts`).
 //
 // Only streamed content qualifies: message upserts, non-resetting transcript
-// descriptor updates, and runtime patches that change nothing but
-// `lastActivityAt`. Everything that changes a chat's lifecycle or structure
-// (status, errors, queues, tabs, questions, archives, removals, replacements,
-// transcript resets) renders immediately, as before, so React effects keyed
-// on those transitions still observe every intermediate state.
+// descriptor updates, runtime patches that change nothing but
+// `lastActivityAt`, and delegation card updates that only advance a run's
+// stream (the card revision is the one the stream hints hold). Everything that
+// changes a chat's lifecycle or structure (status, errors, queues, tabs,
+// questions, archives, removals, replacements, transcript resets, card
+// transitions) renders immediately, as before, so React effects keyed on
+// those transitions still observe every intermediate state.
 
 import type {
   ChatRuntimeState,
@@ -17,6 +19,11 @@ import type {
   FrameBatchedStoreView,
   FrameScheduler,
 } from './frame-batched-store-view';
+import { chatScopeKey } from './revisioned-sync';
+import {
+  delegationStreamRunKey,
+  type DelegationStreamScopeHints,
+} from './types';
 
 /**
  * True when every change of a committed event is streamed content. Evaluate
@@ -28,8 +35,19 @@ import type {
 export function isStreamedContentEvent(
   event: ChatStateChangedEvent,
   runtimeByChatId: Readonly<Record<string, ChatRuntimeState>>,
+  delegationStreamHints: Readonly<Record<string, DelegationStreamScopeHints>>,
 ): boolean {
-  return isStreamedChatStateEvent(event, (chatId) => runtimeByChatId[chatId]);
+  const runs =
+    delegationStreamHints[chatScopeKey(event.projectId, event.worktreeId)]
+      ?.runs;
+  return isStreamedChatStateEvent(
+    event,
+    (chatId) => runtimeByChatId[chatId],
+    (run) =>
+      runs?.[
+        delegationStreamRunKey(run.chatId, run.delegationId, run.runGeneration)
+      ]?.cardRevision,
+  );
 }
 
 /**
@@ -41,11 +59,18 @@ export function applyChatStateChangedForRender<S>(
   options: {
     apply: (event: ChatStateChangedEvent) => void;
     runtimeByChatId: Readonly<Record<string, ChatRuntimeState>>;
+    delegationStreamHints: Readonly<Record<string, DelegationStreamScopeHints>>;
     view: FrameBatchedStoreView<S>;
     scheduler: FrameScheduler;
   },
 ): void {
-  if (isStreamedContentEvent(event, options.runtimeByChatId)) {
+  if (
+    isStreamedContentEvent(
+      event,
+      options.runtimeByChatId,
+      options.delegationStreamHints,
+    )
+  ) {
     options.view.deferNotifications(options.scheduler, () =>
       options.apply(event),
     );

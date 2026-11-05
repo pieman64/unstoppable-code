@@ -87,11 +87,16 @@ export interface CancelActionButtonProps {
  * descendants inside a `<button>` are invalid markup, and the click would
  * bubble into the action anyway. So it is a sibling, absolutely positioned
  * over the leading icon slot, satisfying two constraints at once: centred on
- * the spinner it replaces (midpoint 16px from the pill's left edge — 10px
- * padding + half the 12px slot) AND inset an equal 2px from the pill's top,
- * bottom and left. A square can't do both (2px insets centre a 24px box at
- * 14px), so the button is 28×24: `left-[2px]` + half of 28 lands on 16.
- * The group wrapper supplies the positioning context.
+ * the spinner it replaces (midpoint 18px from the pill's left edge — the
+ * `compact` capsule's 12px padding + half the 12px slot) AND inset an equal
+ * 2px from the pill's top, bottom and left. A circle can't do both (2px
+ * insets centre a 24px circle at 14px), so the button is a 32×24 capsule:
+ * `left-0.5` + half of 32 lands on 18. The group wrapper supplies the
+ * positioning context.
+ *
+ * It stays a native `<button>` rather than `Button`: it is 24px tall inside
+ * the 28px pill, below the smallest `Button` size, and its `merged` tone has
+ * no `Button` variant.
  *
  * The action button underneath stays a cancel target too, so clicking the
  * label does the same thing. Being a sibling (not a child) means a click on
@@ -110,7 +115,7 @@ export function CancelActionButton({
     // the ✕ landed outside the action button entirely), and putting
     // `absolute`/`hidden` on the wrapper would collide with the `relative` and
     // `inline-flex` it already carries.
-    // `top-[2px]`, not `top-1/2 -translate-y-1/2`: the pill is a known 28px
+    // `top-0.5`, not `top-1/2 -translate-y-1/2`: the pill is a known 28px
     // and this a known 24px, so a fixed inset is exact, while the centring
     // translate landed on a subpixel (measured 1.8 top / 2.3 bottom).
     <span className="absolute left-0.5 top-0.5 hidden group-hover/gitaction:block">
@@ -126,10 +131,10 @@ export function CancelActionButton({
           // DIRECTLY, then gets its own background + darker glyph on top.
           //
           // The radius is the nested-corner rule, not a free choice: the pill
-          // is `rounded-md` (8px) and this sits 2px inside it top and bottom
-          // (24px tall in a 28px pill), so `--radius-md` − 2px keeps the two
-          // arcs concentric. A flat `rounded` (4px) read as a separate chip.
-          className={`electron-no-drag focus-ring flex h-6 w-7 items-center justify-center rounded-[calc(var(--radius-md)-2px)] transition-colors ${TONE_CLASS_NAMES[tone]}`}
+          // is a 28px capsule and this sits 2px inside it top, bottom and
+          // left, so a 24px capsule's end arc (radius 12) shares the centre
+          // of the pill's end cap (radius 14) and the two stay concentric.
+          className={`electron-no-drag focus-ring flex h-6 w-8 items-center justify-center rounded-full transition-colors ${TONE_CLASS_NAMES[tone]}`}
         >
           <CloseMediumIcon />
         </button>

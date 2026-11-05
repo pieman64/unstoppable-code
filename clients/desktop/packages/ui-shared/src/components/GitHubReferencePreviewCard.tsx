@@ -6,11 +6,16 @@ import type {
 } from '@canopy/protocol/reference-previews';
 import { formatRelativeTime } from '../lib/format-relative-time';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
-import { PersonIcon } from '../icons/AppIcons';
-import { DISPLAY_AVATAR_GLYPH_SIZE, DisplayAvatar } from './DisplayAvatar';
+import { CircleCheckIcon, RecordIcon } from '../icons/AppIcons';
+import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
 import { GroupedDiffStats } from './GroupedDiffStats';
 import { CometSpinner } from './CometSpinner';
-import { useSkeletonBone } from './SkeletonBlock';
+import { Skeleton } from './Skeleton';
+import {
+  ReferenceHoverCard,
+  ReferenceHoverCardFact,
+  type ReferenceHoverCardIcon,
+} from './ReferenceHoverCard';
 import {
   PR_STATUS_LINES,
   prStatusLineKind,
@@ -78,64 +83,35 @@ function pullStatus(preview: GitHubItemPreview): WorktreeRowPrStatus {
   };
 }
 
-/** Line icons draw a 1.5px line at their 14px size. */
-const CARD_ICON_STROKE_PX = 1.5;
-
-/** Colored glyph and label, no badge: `Merge conflicts`, `Merged`, `Draft`. */
-function StatusLabel({ preview }: { preview: GitHubItemPreview }): JSX.Element {
+/** The glyph, ink and label an item's status row leads with. */
+export function gitHubItemStatus(preview: GitHubItemPreview): {
+  kind: string;
+  label: string;
+  Icon: ReferenceHoverCardIcon | null;
+  ink: string;
+} {
   if (preview.itemType === 'issue') {
-    // No issue glyph in the icon set: the state reads as text alone.
-    return (
-      <span
-        className="min-w-0 truncate fg-secondary"
-        data-testid="github-reference-preview-status"
-      >
-        {ITEM_STATE_COPY[preview.state]}
-      </span>
-    );
+    return preview.state === 'open'
+      ? {
+          kind: 'open',
+          label: 'Open',
+          Icon: RecordIcon,
+          ink: OPERATIONAL_STATUS_COLORS.success.foreground,
+        }
+      : {
+          kind: 'closed',
+          label: 'Closed',
+          Icon: CircleCheckIcon,
+          ink: OPERATIONAL_STATUS_COLORS.merged.foreground,
+        };
   }
   const kind = prStatusLineKind(pullStatus(preview));
-  const { label, Icon, ink } = PR_STATUS_LINES[kind];
-  return (
-    // Shrinks last-but-one: the repository gives way first, then the label
-    // cuts off with "…", so the number and age always stay in the card.
-    <span
-      className={`inline-flex min-w-0 items-center gap-1 ${ink}`}
-      data-testid="github-reference-preview-status"
-      data-status={kind}
-    >
-      {Icon ? (
-        <Icon
-          size={14}
-          drawnStrokeWidth={CARD_ICON_STROKE_PX}
-          className="shrink-0"
-        />
-      ) : (
-        <span className="inline-flex size-3.5 shrink-0 items-center justify-center">
-          <CometSpinner sizePx={12} />
-        </span>
-      )}
-      <span className="truncate">{label}</span>
-    </span>
-  );
+  return { kind, ...PR_STATUS_LINES[kind] };
 }
 
-/** A quiet count on the card's footer, such as `42 files`. */
-function FactChip({
-  children,
-  testId,
-}: {
-  children: ReactNode;
-  testId: string;
-}): JSX.Element {
-  return (
-    <span
-      className="inline-flex h-5 shrink-0 items-center rounded-full bg-muted px-2 fg-secondary"
-      data-testid={testId}
-    >
-      {children}
-    </span>
-  );
+/** The running-checks spinner in the glyph's place. */
+function ChecksRunningGlyph(): JSX.Element {
+  return <CometSpinner sizePx={12} />;
 }
 
 function StatusLayoutItemCard({
@@ -150,104 +126,77 @@ function StatusLayoutItemCard({
 }): JSX.Element {
   const pull = preview.itemType === 'pull' ? preview.pull : undefined;
   const hasChanges = pull !== undefined && pull.additions + pull.deletions > 0;
+  const status = gitHubItemStatus(preview);
+  const facts: ReactNode[] = [];
+  if (pull && hasChanges) {
+    facts.push(
+      <ReferenceHoverCardFact key="diff" testId="github-reference-preview-diff">
+        <GroupedDiffStats
+          insertions={pull.additions}
+          deletions={pull.deletions}
+          numerals="proportional"
+        />
+      </ReferenceHoverCardFact>,
+    );
+  }
+  if (pull) {
+    facts.push(
+      <ReferenceHoverCardFact
+        key="files"
+        testId="github-reference-preview-files"
+      >
+        {pull.changedFiles === 1
+          ? '1 file'
+          : `${FILE_COUNT_FORMAT.format(pull.changedFiles)} files`}
+      </ReferenceHoverCardFact>,
+    );
+  }
   return (
-    // The surface pads 12px by 8px. The extra inset here sets 14px of
-    // drawn ink on every side: the 16px status row's glyph ink sits 2px
-    // inside it, the chips' fill sits on the box edge.
-    <div
-      className="flex min-w-0 flex-col gap-2 px-0.5 pt-1 pb-1.5 text-xs"
-      data-testid="github-reference-preview-card"
-      data-layout="status"
-    >
-      <div className="flex h-4 min-w-0 items-center gap-1.5 fg-tertiary">
-        <StatusLabel preview={preview} />
+    <ReferenceHoverCard
+      testId="github-reference-preview-card"
+      layout="status"
+      icon={status.Icon ?? ChecksRunningGlyph}
+      ink={status.ink}
+      lead={
         <span
-          className={`${REPLAY_BLOCK_CLASS} min-w-0 flex-1 truncate`}
-          data-testid="github-reference-preview-repository"
+          data-testid="github-reference-preview-status"
+          data-status={status.kind}
         >
-          {preview.repository}
+          {status.label}
         </span>
-        <span className="shrink-0">#{preview.number}</span>
-        <span className="shrink-0" data-testid="github-reference-preview-age">
+      }
+      context={[`#${preview.number}`]}
+      trailing={
+        <span data-testid="github-reference-preview-age">
           {formatRelativeTime(preview.updatedAt)}
         </span>
-      </div>
-      <p
-        className={`${REPLAY_BLOCK_CLASS} line-clamp-2 break-words fg-primary`}
-      >
-        {preview.title}
-      </p>
-      {/* A cached card that couldn't refresh says so on its own line, so the
-          header keeps the status whole. */}
-      {stale && (
-        <span
-          className="-mt-1 text-2xs fg-tertiary"
-          data-testid="github-reference-preview-checked"
-        >
-          Checked {formatRelativeTime(checkedAt)}
-        </span>
-      )}
-      {(preview.author || pull) && (
-        // The chips' 20px sets the row; without them, a 16px row keeps the
-        // avatar's ink on the same 14px bottom inset.
-        <div
-          className={`flex min-w-0 items-center gap-2 ${pull ? 'h-5' : 'h-4'}`}
-        >
-          {preview.author && (
-            <span className="flex min-w-0 flex-1 items-center gap-1 fg-secondary">
-              <DisplayAvatar
-                name={preview.author}
-                image={preview.authorAvatarUrl}
-                size="xs"
-                glyph={
-                  <PersonIcon
-                    size={DISPLAY_AVATAR_GLYPH_SIZE.xs}
-                    drawnStrokeWidth={CARD_ICON_STROKE_PX}
-                  />
-                }
-              />
-              <span className={`${REPLAY_BLOCK_CLASS} truncate`}>
-                {preview.author}
-              </span>
-            </span>
-          )}
-          {pull && (
-            <span className="ml-auto flex shrink-0 items-center gap-2">
-              {hasChanges && (
-                <FactChip testId="github-reference-preview-diff">
-                  <GroupedDiffStats
-                    insertions={pull.additions}
-                    deletions={pull.deletions}
-                    numerals="proportional"
-                  />
-                </FactChip>
-              )}
-              <FactChip testId="github-reference-preview-files">
-                {pull.changedFiles === 1
-                  ? '1 file'
-                  : `${FILE_COUNT_FORMAT.format(pull.changedFiles)} files`}
-              </FactChip>
-            </span>
-          )}
-        </div>
-      )}
-    </div>
+      }
+      title={preview.title}
+      note={
+        // A cached card that couldn't refresh says so on its own line, so
+        // the header keeps the status whole.
+        stale ? (
+          <span
+            className="-mt-1 text-2xs fg-tertiary"
+            data-testid="github-reference-preview-checked"
+          >
+            Checked {formatRelativeTime(checkedAt)}
+          </span>
+        ) : undefined
+      }
+      person={preview.author ?? undefined}
+      personImage={preview.authorAvatarUrl}
+      facts={facts}
+    />
   );
 }
 
 const FILE_COUNT_FORMAT = new Intl.NumberFormat('en-US');
 
-/** One shaded block of the loading card; the classes give its size and shape. */
-function Bone({ className }: { className: string }): JSX.Element {
-  const bone = useSkeletonBone<HTMLSpanElement>();
-  return <span {...bone} className={`block ${className}`} />;
-}
-
 /**
- * The status card while its item loads: the same box, insets and rows as
- * {@link StatusLayoutItemCard} with a pull request's facts, shaded where the
- * text will go, so the card keeps its size when the data arrives. The number
- * is already known and stays in its place.
+ * The status card while its item loads: the real card with a pull request's
+ * sample data, which skullet measures into a skeleton, so the card keeps its
+ * size when the data arrives.
  */
 function StatusLayoutItemSkeleton({
   itemNumber,
@@ -255,47 +204,46 @@ function StatusLayoutItemSkeleton({
   itemNumber: number;
 }): JSX.Element {
   return (
-    <div
-      role="status"
-      className="flex min-w-0 flex-col gap-2 px-0.5 pt-1 pb-1.5 text-xs"
-      data-testid="github-reference-preview-skeleton"
-      data-layout="status"
+    <Skeleton
+      loading
+      label="Loading preview"
+      testId="github-reference-preview-skeleton"
     >
-      <span className="sr-only">Loading preview</span>
-      <div className="flex h-4 min-w-0 items-center gap-1.5 fg-tertiary">
-        <span className="flex shrink-0 items-center gap-1">
-          <Bone className="size-3.5 rounded-full" />
-          <Bone className="h-2.5 w-14 rounded-sm" />
-        </span>
-        <span className="flex min-w-0 flex-1">
-          <Bone className="h-2.5 w-10 rounded-sm" />
-        </span>
-        <span className="shrink-0" aria-hidden="true">
-          #{itemNumber}
-        </span>
-        <Bone className="h-2.5 w-6 shrink-0 rounded-sm" />
-      </div>
-      {/* Two title lines, each one line of text tall. */}
-      <div className="flex flex-col">
-        <span className="flex h-lh items-center">
-          <Bone className="h-3 w-full rounded-sm" />
-        </span>
-        <span className="flex h-lh items-center">
-          <Bone className="h-3 w-3/5 rounded-sm" />
-        </span>
-      </div>
-      <div className="flex h-5 min-w-0 items-center gap-2">
-        <span className="flex min-w-0 flex-1 items-center gap-1">
-          <Bone className="size-4 shrink-0 rounded-full" />
-          <Bone className="h-2.5 w-16 rounded-sm" />
-        </span>
-        <span className="ml-auto flex shrink-0 items-center gap-2">
-          <Bone className="h-5 w-20 rounded-full" />
-          <Bone className="h-5 w-12 rounded-full" />
-        </span>
-      </div>
-    </div>
+      <StatusLayoutItemCard
+        preview={sampleItem(itemNumber)}
+        stale={false}
+        checkedAt={0}
+      />
+    </Skeleton>
   );
+}
+
+/** A pull request of typical length, for the loading card's shape. */
+function sampleItem(itemNumber: number): GitHubItemPreview {
+  return {
+    kind: 'item',
+    owner: 'owner',
+    repository: 'repository',
+    number: itemNumber,
+    itemType: 'pull',
+    title: 'Keep the card the same size while its preview loads from GitHub',
+    url: 'https://github.com/owner/repository',
+    description: null,
+    state: 'open',
+    draft: false,
+    author: 'author-name',
+    authorAvatarUrl: null,
+    updatedAt: new Date(0).toISOString(),
+    pull: {
+      additions: 142,
+      deletions: 18,
+      changedFiles: 6,
+      mergeable: 'mergeable',
+      checks: 'none',
+      reviewDecision: null,
+      inMergeQueue: false,
+    },
+  };
 }
 
 /** Informational hover card for one GitHub repository, issue, or pull request reference. */

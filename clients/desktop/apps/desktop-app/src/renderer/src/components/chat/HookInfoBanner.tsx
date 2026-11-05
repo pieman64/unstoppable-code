@@ -8,6 +8,7 @@ import { isActivitySectionAllowedForAccess } from '@/lib/shared-containers/panel
 import { useWorkspaceAccess } from '@/lib/workspace-access';
 import { ChatMarkdownFileTargetContext } from './chat-markdown-file-target';
 import { InfoIcon as AppCatalogInfoIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { Button } from '@canopy/ui-shared/components';
 
 const HOOKS_SECTION = {
   id: 'hooks',
@@ -65,14 +66,13 @@ export const HookInfoBanner = memo(function HookInfoBanner({
       <span>
         Chat initiated by{' '}
         {openHooks !== null ? (
-          <button
-            type="button"
+          <Button
+            variant="link"
             data-testid="chat-hook-info-open-hooks"
-            className="focus-ring cursor-pointer font-semibold fg-accent underline decoration-accent/40 underline-offset-2 hover:decoration-accent"
             onClick={openHooks}
           >
             {hookName}
-          </button>
+          </Button>
         ) : (
           <strong>{hookName}</strong>
         )}{' '}

@@ -5,13 +5,12 @@ import {
 } from '@canopy/desktop-shared/lib/canopy-injected-tools';
 import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk';
 import * as nodePath from 'node:path';
-import { APPROVAL_FILE_CHANGE_MAX_CHARS } from '@canopy/desktop-shared/types';
+import { approvalFileChangeForClaudeTool } from '@canopy/protocol/approvals';
 import type {
   ApprovalCheck,
   ApprovalMode,
   ApprovalRequestDetails,
   ApprovalRuleTarget,
-  ApprovalFileChange,
 } from '@canopy/desktop-shared/types';
 import { suggestedCommandPattern } from '@canopy/desktop-shared/lib/approval-engine';
 
@@ -172,56 +171,6 @@ export function approvalFileDisplayPath(
   return relative;
 }
 
-function boundedFileChangeText(text: string): string {
-  if (text.length <= APPROVAL_FILE_CHANGE_MAX_CHARS) return text;
-  let end = APPROVAL_FILE_CHANGE_MAX_CHARS;
-  const before = text.charCodeAt(end - 1);
-  const after = text.charCodeAt(end);
-  if (
-    before >= 0xd800 &&
-    before <= 0xdbff &&
-    after >= 0xdc00 &&
-    after <= 0xdfff
-  )
-    end -= 1;
-  return text.slice(0, end);
-}
-
-function fileChangeForTool(
-  toolName: string,
-  input: Record<string, unknown>,
-): ApprovalFileChange | undefined {
-  if (
-    toolName === 'Edit' &&
-    typeof input.old_string === 'string' &&
-    typeof input.new_string === 'string'
-  ) {
-    const oldText = boundedFileChangeText(input.old_string);
-    const newText = boundedFileChangeText(input.new_string);
-    return {
-      kind: 'edit',
-      oldText,
-      newText,
-      ...(typeof input.replace_all === 'boolean'
-        ? { replaceAll: input.replace_all }
-        : {}),
-      ...(oldText.length < input.old_string.length ||
-      newText.length < input.new_string.length
-        ? { truncated: true }
-        : {}),
-    };
-  }
-  if (toolName === 'Write' && typeof input.content === 'string') {
-    const content = boundedFileChangeText(input.content);
-    return {
-      kind: 'write',
-      content,
-      ...(content.length < input.content.length ? { truncated: true } : {}),
-    };
-  }
-  return undefined;
-}
-
 function checkForFileWrite(
   toolName: string,
   path: unknown,
@@ -232,7 +181,7 @@ function checkForFileWrite(
     return toolFallback(toolName);
   }
   const displayPath = approvalFileDisplayPath(path, cwd);
-  const change = fileChangeForTool(toolName, input);
+  const change = approvalFileChangeForClaudeTool(toolName, input);
   return {
     check: { kind: 'file-write', path },
     details: {

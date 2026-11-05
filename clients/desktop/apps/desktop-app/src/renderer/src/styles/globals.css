@@ -23,9 +23,9 @@
 }
 
 /* At high UI scale the first-run column can be narrower than an action's
- * label. Let those labels wrap and grow their buttons; choice controls
- * (such as the credits switch) keep their own geometry. */
-.first-run-import-page button:not([role]) {
+ * label. Let those labels wrap and grow their buttons; choice controls and
+ * inline text links (a provider row's signup link) keep their own geometry. */
+.first-run-import-page button:not([role]):not([data-settings-control='link']) {
   max-width: 100%;
   height: auto;
   min-height: 1.75rem;
@@ -726,6 +726,35 @@ body[data-app-advisor-floating] {
   margin-top: 46px;
 }
 
+/* An open workflow (CAN-4319) is laid out like a worktree page: its bar sits
+ * on the window in the top bar row, and the assistant and the editor below it
+ * are two cards, one gap apart, so the assistant reads as its own panel. The
+ * page's card gives way while the bar shows. */
+[data-window-layout='inset']
+  main[data-main-frame='card']:has(
+    [data-testid='workflow-edit-toolbar']:not([data-main-page-hidden] *)
+  ) {
+  --bg-base: transparent;
+  margin: 0;
+  border-radius: 0;
+  background-color: transparent;
+  box-shadow: none;
+}
+
+[data-window-layout='inset'] [data-testid='workflow-edit-cards'] {
+  gap: var(--inset-card-gap);
+  margin: 0 var(--inset-card-gap) var(--inset-card-gap)
+    var(--inset-card-edge-room);
+}
+
+[data-window-layout='inset'] [data-workflow-edit-card] {
+  --bg-base: var(--bg-primary);
+  overflow: hidden;
+  border-radius: var(--inset-card-radius);
+  background-color: var(--bg-primary);
+  box-shadow: var(--inset-card-shadow);
+}
+
 /* Hovering or dragging a sidebar's resize handle draws a line on the edge
  * beside the sidebar. It does not follow the pointer: it runs the whole edge,
  * solid through its middle 70% and fading out over the last 15% at each end.
@@ -922,20 +951,6 @@ html[data-platform='darwin'] .app-sidebar-material .bg-sidebar:not(.sticky) {
 
 .canopy-hide-scrollbar::-webkit-scrollbar {
   display: none;
-}
-
-.browser-bar-pick-button {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  gap: 0.25rem;
-  border-radius: 0.25rem;
-  padding: 0.25rem 0.5rem;
-  font-size: 11px;
-  font-weight: var(--font-weight-medium);
-  transition-property:
-    color, background-color, border-color, text-decoration-color, fill, stroke;
-  transition-duration: 150ms;
 }
 
 @container browser-bar (max-width: 520px) {
@@ -1174,7 +1189,7 @@ tr:has(td[data-review-selected]) td:first-child {
 
 .canopy-monaco-file-editor .canopy-file-annotation-glyph,
 .canopy-monaco-file-editor .canopy-file-comment-glyph {
-  cursor: pointer;
+  cursor: default;
 }
 
 .canopy-monaco-file-editor .canopy-file-annotation-glyph::before,

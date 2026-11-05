@@ -9,6 +9,7 @@
     "packages/plugin-interop",
     "packages/agent-actions",
     "packages/agent-transcript",
+    "packages/memory-consolidation",
     "packages/core-runtime",
     "packages/core-platform",
     "packages/core-transport",
@@ -30,23 +31,9 @@
   ],
   "distribution": false,
   "excludedTestScopes": [
-    "three private installer configuration tests",
-    "six Linux identity comparisons against private installer configuration",
-    "hosted Portal header assertions and omitted daemon/VM consumer audit rows",
-    "hosted web org-project source audit rows and registration handler test",
-    "hosted web font checks and thinking vocabulary source audit root",
-    "hosted web settings capsule source audit rows",
-    "hosted Portal pinned-script header assertions",
-    "mobile label-mirror suite",
-    "four daemon host filesystem integrations requiring apps/core-daemon",
-    "W5 writer construction audit requiring the daemon host source",
-    "daemon workspace record-port lease integration requiring apps/core-daemon",
-    "daemon workspace record-port stopped-daemon integration requiring apps/core-daemon",
-    "three turn-state harness suites requiring recorder fixtures and planning docs",
-    "admitted storage path census cross-check requiring planning docs",
-    "private repository review-track fixture integration test",
-    "desktop CLI journal, memory, and Ollama source audit rows",
-    "hosted web settings capsule audit rows",
-    "APT publisher configuration comparison requiring private release scripts"
+    "W5 recovery golden and crash child requiring apps/core-daemon",
+    "omitted daemon/VM peer-identity consumer audit rows",
+    "daemon workspace record-port fixture requiring apps/core-daemon",
+    "admitted storage path census cross-check requiring planning docs"
   ]
 }

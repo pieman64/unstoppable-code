@@ -151,6 +151,7 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     preferencesAcknowledgeLoadError: 'tunnel',
     preferencesSave: 'tunnel',
     preferencesSetPipelineDisabled: 'tunnel',
+    preferencesUpdateSuggestions: 'tunnel',
     preferencesUpdateOnboardingTips: 'tunnel',
     preferencesSetApprovalDefault: 'tunnel',
     // creates B install data dir and adoption marker; install-level
@@ -605,6 +606,7 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     ledgerEntriesChanged: 'tunnel',
     ledgerFeedSearch: 'tunnel',
     ledgerFeedGetEntry: 'tunnel',
+    ledgerFeedWork: 'tunnel',
     workEntriesList: 'tunnel',
     workEntriesCreate: 'tunnel',
     workEntriesUpdate: 'tunnel',
@@ -615,6 +617,9 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     settingsProviderCarryover: 'tunnel',
     settingsCodexAuthStatus: 'tunnel',
     settingsGitHubCliStatus: 'tunnel',
+    // the star is a personal action of the person at the keyboard: it runs
+    // with the controlling computer's gh account, never the controlled one's
+    settingsStarSourceRepository: 'local',
     settingsGitHubPermissions: 'tunnel',
     // returns raw secret/API key to caller
     settingsLoadGitHubPat: 'blocked',

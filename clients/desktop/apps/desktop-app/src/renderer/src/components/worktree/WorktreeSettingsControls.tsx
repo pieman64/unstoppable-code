@@ -338,13 +338,14 @@ export function SourceWorktreePicker({
         surfacePadding="card"
         surfaceClassName="w-72"
       >
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="compact"
+          iconOnly
           aria-label="Project configuration help"
-          className="fg-secondary"
         >
           <AppCatalogQuestionMarkIcon width="14" height="14" />
-        </button>
+        </Button>
       </RichHoverTooltip>
     </div>
   );

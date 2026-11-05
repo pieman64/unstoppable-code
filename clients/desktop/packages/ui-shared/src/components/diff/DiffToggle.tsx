@@ -1,11 +1,16 @@
 import type { JSX } from 'react';
+import { SegmentedControl } from '../SegmentedControl';
 
-/** Shared pill geometry for independent diff comparison and layout choices. */
+/**
+ * The shared segmented picker for independent diff comparison and layout
+ * choices: a group of pressed segments sized to their labels.
+ */
 export interface DiffToggleProps<Value extends string> {
   value: Value;
   onChange: (next: Value) => void;
   options: ReadonlyArray<{ value: Value; label: string }>;
-  className?: string;
+  /** Accessible name for the group. */
+  label: string;
   dataTestId?: string;
 }
 
@@ -13,33 +18,21 @@ export function DiffToggle<Value extends string>({
   value,
   onChange,
   options,
-  className,
+  label,
   dataTestId,
 }: DiffToggleProps<Value>): JSX.Element {
   return (
-    <div
-      className={
-        className ??
-        'flex overflow-hidden rounded-md ring-[length:var(--border-hairline)] ring-line-base'
-      }
-      data-testid={dataTestId}
-    >
-      {options.map((option, index) => (
-        <button
-          key={option.value}
-          type="button"
-          data-testid={dataTestId ? `${dataTestId}-${option.value}` : undefined}
-          aria-pressed={value === option.value}
-          onClick={(): void => onChange(option.value)}
-          className={`whitespace-nowrap px-2.5 py-1 text-2xs transition-colors ${
-            value === option.value
-              ? 'bg-accent-subtle fg-accent'
-              : 'fg-secondary hover:fg-primary'
-          } ${index > 0 ? 'border-l' : ''}`}
-        >
-          {option.label}
-        </button>
-      ))}
-    </div>
+    <SegmentedControl
+      value={value}
+      onChange={onChange}
+      label={label}
+      width="content"
+      dataTestId={dataTestId}
+      options={options.map((option) => ({
+        value: option.value,
+        label: option.label,
+        ...(dataTestId ? { dataTestId: `${dataTestId}-${option.value}` } : {}),
+      }))}
+    />
   );
 }

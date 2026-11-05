@@ -489,6 +489,7 @@ const results = memoized(() => {
     completedAt: z.string().optional(),
     durationMs: optionalCount,
     model: z.string().optional(),
+    requestedModel: z.string().optional(),
     totalCostUsd: optionalCount,
     observedCost: ObservedCostSchema.optional(),
     modelRouting: ModelRoutingAttributionSchema.optional(),

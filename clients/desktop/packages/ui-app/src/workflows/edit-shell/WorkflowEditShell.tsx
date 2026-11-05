@@ -8,6 +8,7 @@ import {
   type JSX,
   type ReactNode,
 } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Button,
   ConfirmDialog,
@@ -84,6 +85,13 @@ export interface WorkflowEditShellProps {
   /** Where Back goes, e.g. `Library`. */
   readonly backLabel: string;
   readonly onBack: () => void;
+  /**
+   * The page shows its own bar above the shell (a pipeline's edit view,
+   * CAN-4319). Its breadcrumb is the way back and names a new item, and the
+   * shell's actions render into `actionsTarget` in it, so the header leaves
+   * out Back, the actions and the `New` state.
+   */
+  readonly pageBar?: { readonly actionsTarget: HTMLElement | null };
   readonly plan: WorkflowEditPlan;
   readonly section: WorkflowEditSection;
   readonly onSectionChange: (section: WorkflowEditSection) => void;
@@ -245,6 +253,7 @@ export function WorkflowEditShell({
   description,
   backLabel,
   onBack,
+  pageBar,
   plan,
   section,
   onSectionChange,
@@ -458,7 +467,18 @@ export function WorkflowEditShell({
   const off =
     plan.actions.toggle.visible && onToggleEnabled !== undefined && !enabled;
 
-  const saveStateLabel = WORKFLOW_EDIT_SAVE_STATE_LABELS[plan.saveState];
+  const saveStateLabel =
+    pageBar && plan.saveState === 'new'
+      ? null
+      : WORKFLOW_EDIT_SAVE_STATE_LABELS[plan.saveState];
+  const actionBar = (
+    <DetailActionBar
+      dataTestId="workflow-edit-actions"
+      secondary={secondary}
+      share={share ?? undefined}
+      primary={primary ?? undefined}
+    />
+  );
 
   return (
     <section
@@ -476,7 +496,15 @@ export function WorkflowEditShell({
     >
       <PageHeader
         className="shrink-0"
-        back={{ label: backLabel, onClick: onBack, testId: testId('back') }}
+        {...(pageBar
+          ? {}
+          : {
+              back: {
+                label: backLabel,
+                onClick: onBack,
+                testId: testId('back'),
+              },
+            })}
         title={nameEditor ?? <span className={REPLAY_MASK_CLASS}>{name}</span>}
         titleTestId={testId('name')}
         headingRef={headingRef}
@@ -498,14 +526,7 @@ export function WorkflowEditShell({
             </>
           ) : undefined
         }
-        actions={
-          <DetailActionBar
-            dataTestId="workflow-edit-actions"
-            secondary={secondary}
-            share={share ?? undefined}
-            primary={primary ?? undefined}
-          />
-        }
+        {...(pageBar ? {} : { actions: actionBar })}
         tabs={
           <TabBar
             items={WORKFLOW_EDIT_SECTIONS.map((id) => ({
@@ -550,6 +571,9 @@ export function WorkflowEditShell({
           ),
         )}
       </div>
+      {pageBar?.actionsTarget
+        ? createPortal(actionBar, pageBar.actionsTarget)
+        : null}
       {confirmingDelete ? (
         <ConfirmDialog
           title={

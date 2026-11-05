@@ -226,6 +226,68 @@ export type WorkerCodeGraphStatusGetResult = z.output<
   typeof WorkerCodeGraphStatusGetResultSchema
 >;
 
+/**
+ * The `core.runtime.initialize` client capability that asks for read
+ * reports. A client that does not announce it gets read results and refusals
+ * without them, as before CAN-5691.
+ */
+export const WORKER_CODE_GRAPH_READ_REPORT_CAPABILITY =
+  'worker.codeGraph.readReport';
+
+/** Every kind a read host read is counted under, query kinds included. */
+export const WORKER_CODE_GRAPH_READ_KINDS = [
+  ...WORKER_CODE_GRAPH_QUERY_KINDS,
+  'base-validation',
+  'snapshot-export',
+  'snapshot-import',
+] as const;
+
+/** A read the read host could not answer, as its telemetry names it. */
+export const WORKER_CODE_GRAPH_READ_FAILURES = [
+  'queue-timeout',
+  'execution-timeout',
+  'busy',
+  'worker-exit',
+  'canceled',
+  'invalid-response',
+  'database-error',
+] as const;
+
+const milliseconds = z.number().min(0).max(86_400_000);
+
+/**
+ * One read-host read, as the worker measured it (CAN-5691): what its query
+ * telemetry and local read diagnostic record. The requesting interface
+ * records it with its own consent and bundled telemetry configuration, so
+ * each read is recorded once, by the client that asked for it. It names no
+ * path, query or worker message.
+ */
+export const WorkerCodeGraphReportedReadSchema = z.strictObject({
+  kind: z.enum(WORKER_CODE_GRAPH_READ_KINDS),
+  outcome: z.enum(['success', 'error', 'timeout', 'canceled']),
+  queueDurationMs: milliseconds,
+  executionDurationMs: milliseconds,
+  readFailure: z.enum(WORKER_CODE_GRAPH_READ_FAILURES).optional(),
+});
+
+export type WorkerCodeGraphReportedRead = z.output<
+  typeof WorkerCodeGraphReportedReadSchema
+>;
+
+/** Every read-host read one request ran, in the order they settled. */
+export const WorkerCodeGraphReadReportSchema = z.strictObject({
+  reads: z.array(WorkerCodeGraphReportedReadSchema).max(64),
+});
+
+export type WorkerCodeGraphReadReport = z.output<
+  typeof WorkerCodeGraphReadReportSchema
+>;
+
+/** A read refusal's details: how its reads went, for a reporting client. */
+export const WorkerCodeGraphReadFailureDetailsSchema = z.strictObject({
+  read: WorkerCodeGraphReadReportSchema,
+});
+
 export const WorkerCodeGraphQueryResultSchema = z.strictObject({
   /**
    * Whether the worktree's graph database, or any compatible published
@@ -248,6 +310,11 @@ export const WorkerCodeGraphQueryResultSchema = z.strictObject({
     ]),
     value: WorkerCodeGraphJsonValueSchema,
   }),
+  /**
+   * The reads this answer took, for a client that announced
+   * {@link WORKER_CODE_GRAPH_READ_REPORT_CAPABILITY}.
+   */
+  read: WorkerCodeGraphReadReportSchema.optional(),
 });
 
 export type WorkerCodeGraphQueryResult = z.output<

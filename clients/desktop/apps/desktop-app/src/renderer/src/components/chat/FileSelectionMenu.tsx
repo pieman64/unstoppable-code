@@ -14,6 +14,7 @@ import {
   MessageIcon,
 } from '@canopy/ui-shared/icons';
 import { Tooltip } from '@canopy/ui-shared';
+import { Button } from '@canopy/ui-shared/components';
 
 interface FileSelectionMenuProps {
   anchorRect: DOMRect;
@@ -106,13 +107,14 @@ export function FileSelectionMenu({
       role="menu"
       aria-label="Selected file text actions"
       data-testid="file-selection-menu"
-      className="fixed z-dropdown flex overflow-hidden whitespace-nowrap rounded-md bg-card/95 text-2xs font-medium fg-primary shadow-md backdrop-blur"
+      className="fixed z-dropdown flex whitespace-nowrap rounded-full bg-card/95 shadow-md backdrop-blur"
       style={{ top, left }}
       onMouseDown={(event): void => event.stopPropagation()}
     >
       <Tooltip label="Send the selected file text to the chat composer">
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="compact"
           role="menuitem"
           data-testid="file-selection-send-to-chat"
           onMouseDown={preserveSelection}
@@ -121,15 +123,15 @@ export function FileSelectionMenu({
             event.stopPropagation();
             onSendToChat();
           }}
-          className="flex items-center gap-1.5 px-2 py-1 transition-colors hover:bg-accent-subtle hover:fg-accent"
         >
-          <ChatIcon className="h-3 w-3" />
+          <ChatIcon aria-hidden="true" />
           <span>Send to chat</span>
-        </button>
+        </Button>
       </Tooltip>
       <Tooltip label={copied ? 'Copied' : 'Copy the selected file text'}>
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="compact"
           role="menuitem"
           data-testid="file-selection-copy"
           onMouseDown={preserveSelection}
@@ -146,20 +148,20 @@ export function FileSelectionMenu({
               }, COPIED_DURATION_MS);
             })();
           }}
-          className="flex items-center gap-1.5 border-l px-2 py-1 transition-colors hover:bg-accent-subtle hover:fg-accent"
           aria-label={copied ? 'Copied' : 'Copy the selected file text'}
         >
           {copied ? (
-            <CheckIcon className="h-3 w-3" />
+            <CheckIcon aria-hidden="true" />
           ) : (
-            <CopyIcon className="h-3 w-3" />
+            <CopyIcon aria-hidden="true" />
           )}
           <span>{copied ? 'Copied' : 'Copy'}</span>
-        </button>
+        </Button>
       </Tooltip>
       <Tooltip label="Comment on the selected file text">
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="compact"
           role="menuitem"
           data-testid="file-selection-comment"
           onMouseDown={preserveSelection}
@@ -168,11 +170,10 @@ export function FileSelectionMenu({
             event.stopPropagation();
             onComment();
           }}
-          className="flex items-center gap-1.5 border-l px-2 py-1 transition-colors hover:bg-accent-subtle hover:fg-accent"
         >
-          <MessageIcon className="h-3 w-3" />
+          <MessageIcon aria-hidden="true" />
           <span>Comment</span>
-        </button>
+        </Button>
       </Tooltip>
     </div>,
     document.body,

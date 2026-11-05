@@ -13,11 +13,14 @@ import { McpServerIcon } from '../icons/McpServerIcon';
 import { PipelineIcon } from '../icons/PipelineIcon';
 import { PluginsIcon } from '../icons/PluginsIcon';
 import { SkillIcon } from '../icons/SkillIcon';
-import type { TooltipTriggerProps } from './RichHoverTooltip';
-import type {
-  CapabilityTileIconKind,
-  CapabilityTileModel,
-  CapabilityTileTone,
+import { RichHoverTooltip, type TooltipTriggerProps } from './RichHoverTooltip';
+import { StatusGlyph } from './StatusGlyph';
+import {
+  capabilityTileStatusText,
+  type CapabilityTileIconKind,
+  type CapabilityTileModel,
+  type CapabilityTileState,
+  type CapabilityTileTone,
 } from './capability-tile-model';
 
 /**
@@ -52,6 +55,12 @@ export interface CapabilityTileProps {
    * inside the anchor or button.
    */
   accessory?: ReactNode;
+  /**
+   * Names a status glyph in its own hover tooltip. A host whose
+   * `wrapTrigger` card already shows the status turns it off, so one hover
+   * opens one surface; the glyph keeps its accessible name either way.
+   */
+  statusTooltip?: boolean;
 }
 
 const ICONS: Record<
@@ -116,7 +125,7 @@ function accessibleName(
     model.name,
     model.kindLabel,
     model.operationLabel,
-    model.state?.label,
+    model.state ? capabilityTileStatusText(model.state) : undefined,
     model.external ? 'External' : undefined,
     model.removedNote,
     hint,
@@ -125,12 +134,60 @@ function accessibleName(
     .join(', ');
 }
 
+/**
+ * A run or waiting state as its status glyph, named by the full status
+ * ("Failed · 4 s"). The tile itself stays the only tab stop: keyboard users
+ * hear the status in the tile's name, and pointer users hover the glyph.
+ */
+function TileStateGlyph({
+  state,
+  glyph,
+  tooltip,
+}: {
+  state: CapabilityTileState;
+  glyph: NonNullable<CapabilityTileState['glyph']>;
+  tooltip: boolean;
+}): JSX.Element {
+  const statusText = capabilityTileStatusText(state);
+  // A native span is the trigger, so the tooltip's description lands on the
+  // element that carries the status name.
+  const trigger = (
+    <span
+      className="inline-flex"
+      role="img"
+      aria-label={statusText}
+      data-testid="capability-tile-state"
+    >
+      <StatusGlyph state={glyph} size={14} />
+    </span>
+  );
+  // The wrapper keeps the 8px gap outside the glyph box and centres the
+  // glyph on the name's first line.
+  return (
+    <span className="ml-auto flex h-5 shrink-0 items-center self-start pl-2">
+      {tooltip ? (
+        <RichHoverTooltip
+          surfaceClassName="w-max"
+          surfacePadding="relaxed"
+          content={<div className="text-xs fg-primary">{statusText}</div>}
+        >
+          {trigger}
+        </RichHoverTooltip>
+      ) : (
+        trigger
+      )}
+    </span>
+  );
+}
+
 function TileBody({
   model,
   padForAccessory,
+  statusTooltip,
 }: {
   model: CapabilityTileModel;
   padForAccessory: boolean;
+  statusTooltip: boolean;
 }): JSX.Element {
   const Icon = ICONS[model.iconKind];
   // Under the name, one line says what the item is and where it comes from;
@@ -173,7 +230,13 @@ function TileBody({
                 <ArrowUpRightIcon width={14} height={14} />
               </span>
             ) : null}
-            {model.state ? (
+            {model.state?.glyph ? (
+              <TileStateGlyph
+                state={model.state}
+                glyph={model.state.glyph}
+                tooltip={statusTooltip}
+              />
+            ) : model.state ? (
               <span
                 className={`ml-auto shrink-0 pl-2 text-xs ${TONE_INK[model.state.tone]}`}
                 data-testid="capability-tile-state"
@@ -224,6 +287,7 @@ export const CapabilityTile = memo(function CapabilityTile({
   testId,
   wrapTrigger,
   accessory,
+  statusTooltip = true,
 }: CapabilityTileProps): JSX.Element {
   const action: CapabilityTileAction = model.removed
     ? { kind: 'none' }
@@ -231,7 +295,13 @@ export const CapabilityTile = memo(function CapabilityTile({
   const hint = action.kind === 'none' ? action.hint : undefined;
   const label = accessibleName(model, hint);
   const padForAccessory = Boolean(accessory);
-  const body = <TileBody model={model} padForAccessory={padForAccessory} />;
+  const body = (
+    <TileBody
+      model={model}
+      padForAccessory={padForAccessory}
+      statusTooltip={statusTooltip}
+    />
+  );
   let trigger: ReactElement<TooltipTriggerProps>;
   if (action.kind === 'link') {
     const { href, onNavigate } = action;

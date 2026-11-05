@@ -494,10 +494,20 @@ export class CanopyAppDriver {
   }
 
   /**
-   * Picks an entry of the New workflow menu: `schedule` (the automation
-   * form), `describe` (the pipeline interview) or `build` (a blank pipeline).
+   * Starts a new workflow: `build` (a pipeline, in the creation view) or
+   * `schedule` (the automation form). Runs and Library open the creation
+   * view directly (CAN-4319); an automation starts from Schedule, whose New
+   * workflow menu offers it, so a `schedule` start from elsewhere moves there.
    */
   async startNewWorkflow(kind) {
+    const direct = this.window.getByTestId('workflows-new-create');
+    if (kind === 'build' && (await direct.count()) > 0) {
+      await direct.first().click();
+      return;
+    }
+    if ((await this.window.getByTestId('workflows-new').count()) === 0) {
+      await this.openWorkflowsTab('workflows-schedule');
+    }
     await this.window.getByTestId('workflows-new').first().click();
     await this.window.getByTestId(`workflows-new-${kind}`).click();
   }
@@ -1301,8 +1311,12 @@ export async function waitForStableBoundingBox(
  * their older test ids for Back and Save, so the helpers below match either.
  */
 
-const WORKFLOW_EDIT_BACK_SELECTOR =
-  '[data-testid="workflow-edit-back"], [data-testid="pipeline-editor-back"]';
+// A pipeline (CAN-4319) leaves through the first crumb of the page's bar.
+const WORKFLOW_EDIT_BACK_SELECTOR = [
+  '[data-testid="workflow-edit-back"]',
+  '[data-testid="pipeline-editor-back"]',
+  '[data-testid="workflow-edit-toolbar-back"]',
+].join(', ');
 const WORKFLOW_EDIT_SAVE_SELECTOR = [
   '[data-testid="automations-form-submit"]',
   '[data-testid="pipeline-save"]',

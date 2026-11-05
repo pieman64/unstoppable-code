@@ -11,6 +11,7 @@ import type { ActivePanel, MainView } from '../../hooks/usePipelineEditor';
 import { Tooltip } from '@canopy/ui-shared';
 import {
   Button,
+  IconToggleButton,
   SegmentedControl,
   type SegmentedControlOption,
 } from '@canopy/ui-shared/components';
@@ -125,17 +126,14 @@ export function PipelineSettingsToggle({
   onToggle,
 }: PipelineSettingsToggleProps): JSX.Element {
   return (
-    <button
+    <IconToggleButton
+      pressed={open}
+      label="Workflow settings"
+      tooltip="Workflow settings"
+      icon={<AppCatalogSettingsIcon width="16" height="16" />}
       onClick={onToggle}
-      data-testid="pipeline-editor-settings-toggle"
-      className={`p-1.5 rounded-md transition-colors ${
-        open
-          ? 'bg-accent-subtle fg-accent'
-          : 'fg-secondary hover:fg-primary hover:bg-secondary'
-      }`}
-    >
-      <AppCatalogSettingsIcon width="16" height="16" />
-    </button>
+      testId="pipeline-editor-settings-toggle"
+    />
   );
 }
 
@@ -202,7 +200,7 @@ export function PipelineToolbar({
   onAddJob,
   readonly = false,
   readDetail = false,
-  readDetailView = 'details',
+  readDetailView = 'flowchart',
   onReadDetailViewChange,
   onShare,
   headerAction,

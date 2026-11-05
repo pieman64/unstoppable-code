@@ -38,6 +38,7 @@ import {
   useCostInsightsEnabled,
 } from './CostInsightsGate';
 import { CostViewFrame, costRefreshFailureReason } from './CostViewFrame';
+import { PIPELINE_RUN_COST_VIEW_SAMPLE } from './cost-view-samples';
 import { usePipelineRunCostStore } from './use-cost-view-store';
 import { AttributedCostRow } from './session-breakdown/AttributedCostRow';
 
@@ -540,6 +541,7 @@ function PipelineRunCostWithStore({
       status={state.status}
       problem={state.problem}
       onRetry={retry}
+      loadingSample={PIPELINE_RUN_COST_VIEW_SAMPLE}
       testId="pipeline-run-cost-view"
     >
       {(view) => (

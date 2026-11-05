@@ -1960,19 +1960,6 @@ function cacheAndReturn(
   return response;
 }
 
-/**
- * Clear the dispatcher's idempotency cache. Used by tests; not part of the
- * production surface.
- */
-export function __resetAppActionDispatcherForTests(): void {
-  responseCache.clear();
-  orgProjectSetupOutcomeWaitMs = ORG_PROJECT_SETUP_OUTCOME_WAIT_MS;
-}
-
-export function __isValidAppAdvisorActionForTests(action: unknown): boolean {
-  return validateAppAdvisorAction(action).ok;
-}
-
 type ActionValidationResult =
   | { ok: true; action: AppAdvisorAction }
   | { ok: false; message: string };
@@ -11627,11 +11614,7 @@ async function orgProjectSetupOutcomeReply(
  * under way, within the action's overall deadline.
  */
 const ORG_PROJECT_SETUP_OUTCOME_WAIT_MS = 8_000;
-let orgProjectSetupOutcomeWaitMs = ORG_PROJECT_SETUP_OUTCOME_WAIT_MS;
-
-export function __setOrgProjectSetupOutcomeWaitForTests(ms: number): void {
-  orgProjectSetupOutcomeWaitMs = ms;
-}
+const orgProjectSetupOutcomeWaitMs = ORG_PROJECT_SETUP_OUTCOME_WAIT_MS;
 
 /**
  * The catalog's Add for App Advisor (CAN-3592): the sidebar lists only
@@ -18539,7 +18522,7 @@ async function routeAction(
             prompts: prompts.length,
             attachments: attachments.length,
           },
-          ...(claudeMd !== undefined ? { claudeMd } : {}),
+          ...(claudeMd !== undefined ? { claudeMd: claudeMd.content } : {}),
         },
       };
     }
@@ -18586,10 +18569,20 @@ async function routeAction(
       };
       await useStandaloneChatStore.getState().updateChatProject(updateRequest);
       if (action.claudeMd !== undefined) {
-        await window.api.chatProject.saveClaudeMd({
+        const loaded = await window.api.chatProject.loadClaudeMd({
+          projectId: action.projectId,
+        });
+        const saved = await window.api.chatProject.saveClaudeMd({
           projectId: action.projectId,
           content: action.claudeMd,
+          revision: loaded.revision,
         });
+        if (saved.status !== 'saved') {
+          return {
+            ok: false,
+            error: { code: 'execution_failed', message: saved.message },
+          };
+        }
       }
       await useStandaloneChatStore.getState().loadChatProjects();
       const updated =

@@ -33,6 +33,7 @@ import {
 import {
   delegationChildRows,
   DelegationChildRowNotice,
+  type DelegationChildRowDisplay,
   type DelegationChildRowEntry,
 } from './delegation-child-rows';
 import {
@@ -56,9 +57,12 @@ export interface DelegationChildPagesProps {
   readonly delegationId: string;
   readonly runGeneration: number;
   readonly hint?: { readonly epoch: number; readonly streamRevision?: number };
+  /** The card's result, which the rows do not repeat. */
+  readonly finalText?: string;
   /** Return one keyed element per entry, in order (including empty rows). */
   readonly renderRows?: (
     entries: readonly DelegationChildRowEntry[],
+    display?: DelegationChildRowDisplay,
   ) => ReactNode;
 }
 
@@ -161,6 +165,7 @@ function ChildWindow({
   delegationId,
   runGeneration,
   hint,
+  finalText,
   renderRows,
   renderBlock,
   v2Available,
@@ -572,7 +577,9 @@ function ChildWindow({
       logicalAvailable,
     ],
   );
-  const rendered = Children.toArray(renderRows(entries));
+  const rendered = Children.toArray(
+    renderRows(entries, finalText !== undefined ? { finalText } : {}),
+  );
   return (
     <div
       ref={container}

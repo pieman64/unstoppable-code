@@ -56,6 +56,8 @@ const WATCHED_PULL_REQUEST_QUERY = `
         closedAt
         url
         title
+        additions
+        deletions
         baseRefName
         headRefOid
         mergeCommit { oid }
@@ -383,6 +385,16 @@ export function normalizeGitHubPullRequestRead(
     state,
     url,
     ...(title ? { title } : {}),
+    ...(typeof pullRequest.additions === 'number' &&
+    Number.isSafeInteger(pullRequest.additions) &&
+    pullRequest.additions >= 0
+      ? { additions: pullRequest.additions }
+      : {}),
+    ...(typeof pullRequest.deletions === 'number' &&
+    Number.isSafeInteger(pullRequest.deletions) &&
+    pullRequest.deletions >= 0
+      ? { deletions: pullRequest.deletions }
+      : {}),
     baseRefName,
     headSha,
     mergedAt: state === 'merged' ? mergedAt : null,

@@ -6,6 +6,7 @@ import {
   DropdownMenuItem,
   DropdownMenuItemIcon,
   FloatingMenu,
+  ListRow,
   type DotTone,
 } from '@canopy/ui-shared/components';
 import {
@@ -262,9 +263,8 @@ export function SidebarMachinePicker({
   return (
     <div className="relative w-full min-w-0">
       <div ref={rowRef} className="flex w-full items-center gap-0">
-        <button
+        <ListRow
           ref={triggerRef}
-          type="button"
           onClick={() => setOpen((value) => !value)}
           data-testid="sidebar-machine-picker"
           data-machine-mode="remote"
@@ -272,29 +272,26 @@ export function SidebarMachinePicker({
           aria-haspopup="menu"
           aria-controls={open ? menuId : undefined}
           aria-label={triggerLabel}
-          className="focus-ring flex h-8 w-full min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap rounded-row px-2 text-left text-s font-normal fg-primary hover:bg-subtle pointer-coarse:min-h-11"
+          className="min-w-0"
+          icon={<MacbookIcon size={16} aria-hidden="true" />}
+          trailing={
+            <span className="flex items-center gap-2">
+              {currentDot ? (
+                <StatusDot
+                  tone={currentDot}
+                  testId="sidebar-machine-picker-status"
+                />
+              ) : null}
+              <ChevronDownMediumIcon
+                size={16}
+                aria-hidden="true"
+                className="shrink-0 fg-secondary"
+              />
+            </span>
+          }
         >
-          <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center fg-secondary">
-            <MacbookIcon size={16} aria-hidden="true" />
-          </span>
-          <span
-            className="min-w-0 flex-1 truncate leading-snug"
-            title={currentLabel}
-          >
-            {currentLabel}
-          </span>
-          {currentDot ? (
-            <StatusDot
-              tone={currentDot}
-              testId="sidebar-machine-picker-status"
-            />
-          ) : null}
-          <ChevronDownMediumIcon
-            size={16}
-            aria-hidden="true"
-            className="shrink-0 fg-secondary"
-          />
-        </button>
+          <span title={currentLabel}>{currentLabel}</span>
+        </ListRow>
       </div>
       <FloatingMenu
         id={menuId}

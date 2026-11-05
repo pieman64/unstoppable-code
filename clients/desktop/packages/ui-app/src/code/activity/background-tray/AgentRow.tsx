@@ -15,6 +15,8 @@ import {
   DELEGATED_AGENT_STOP_ACCESSIBLE_LABEL,
   DELEGATED_AGENT_STOP_WITH_DESCENDANTS_LABEL,
   SubagentStatusGlyph,
+  Button,
+  Tooltip,
   TaskStopButton,
   getToolDisplayInfo,
   subagentStatusLabel,
@@ -22,18 +24,13 @@ import {
   type SubagentStatus,
 } from '@canopy/ui-shared/components';
 import { formatElapsed } from '@canopy/ui-shared/lib';
-import { AgentIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { AgentIcon, StopFilledIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import type { BackgroundTaskHostActions } from '../background-tasks-section';
 import { backgroundTaskStopAccessibleLabel } from '../BackgroundProcessesSectionBody';
 import { TaskStopAction } from '../TaskStopAction';
 import { CappedRegion } from './drawer-layout';
-import {
-  DrawerRow,
-  InspectorOpenAction,
-  InspectorSection,
-  InspectorSubtitle,
-} from './DrawerRow';
+import { DrawerRow, InspectorOpenAction, InspectorSection } from './DrawerRow';
 import { DrawerRowPresentationContext } from './drawer-presentation';
 
 /** Which provider runs a background subagent. */
@@ -127,16 +124,16 @@ function AgentInspector({
   return (
     <>
       {redesigned ? (
-        <InspectorSubtitle>
-          <p className={`${REPLAY_BLOCK_CLASS} truncate`}>
-            {activity ?? subagentStatusLabel(agent.status)}
+        steps.length === 0 &&
+        agent.prompt &&
+        agent.prompt !== agent.activity &&
+        agent.prompt !== agent.title ? (
+          <p
+            className={`${REPLAY_BLOCK_CLASS} whitespace-pre-wrap break-words text-xs fg-secondary`}
+          >
+            {agent.prompt}
           </p>
-          {steps.length === 0 && agent.prompt && (
-            <p className={`${REPLAY_BLOCK_CLASS} line-clamp-3 fg-tertiary`}>
-              {agent.prompt}
-            </p>
-          )}
-        </InspectorSubtitle>
+        ) : null
       ) : (
         <div className="flex min-w-0 items-center gap-2">
           <SubagentStatusGlyph status={agent.status} />
@@ -255,6 +252,10 @@ export function AgentRow({
 }: AgentRowProps): JSX.Element {
   const presentation = useContext(DrawerRowPresentationContext);
   const activity = agentActivity(agent);
+  const redesigned = presentation !== 'legacy';
+  const active = ['queued', 'starting', 'running', 'approval', 'idle'].includes(
+    agent.status,
+  );
   const taskStopTarget =
     task !== undefined && task.canStop
       ? (taskActions?.stopTarget?.(task) ?? null)
@@ -275,6 +276,27 @@ export function AgentRow({
       />
     ) : agent.canStop && onStop ? (
       <DelegateStop agent={agent} onStop={onStop} />
+    ) : redesigned && active ? (
+      <Tooltip
+        label={
+          agent.kind === 'codex'
+            ? 'This native Codex agent cannot be stopped independently.'
+            : 'Stop is not available for this agent in this view.'
+        }
+      >
+        <span className="inline-flex">
+          <Button
+            variant="ghost-overlay"
+            size="compact"
+            iconOnly
+            disabled
+            aria-label="Stop agent"
+            data-testid="background-tray-agent-stop"
+          >
+            <StopFilledIcon size="sm" />
+          </Button>
+        </span>
+      </Tooltip>
     ) : undefined;
   return (
     <DrawerRow
@@ -297,12 +319,23 @@ export function AgentRow({
           <span className={REPLAY_BLOCK_CLASS}>{activity}</span>
         )
       }
+      status={
+        redesigned
+          ? agent.status === 'approval'
+            ? subagentStatusLabel(agent.status)
+            : agent.startedAt !== null
+              ? formatElapsed(now - agent.startedAt)
+              : undefined
+          : undefined
+      }
       trailing={
-        agent.status === 'approval'
-          ? subagentStatusLabel(agent.status)
-          : agent.startedAt !== null
-            ? formatElapsed(now - agent.startedAt)
-            : undefined
+        !redesigned
+          ? agent.status === 'approval'
+            ? subagentStatusLabel(agent.status)
+            : agent.startedAt !== null
+              ? formatElapsed(now - agent.startedAt)
+              : undefined
+          : undefined
       }
       attention={agent.status === 'approval'}
       action={action}
@@ -311,27 +344,31 @@ export function AgentRow({
           ? { label: 'Open chat', onClick: (): void => onOpen(target) }
           : undefined
       }
-      inspector={{
-        open,
-        onToggle,
-        footer:
-          presentation === 'legacy' ? undefined : (
-            <p className="min-w-0 flex-1">
-              The result will be sent to this chat when it finishes.
-            </p>
-          ),
-        render: (): JSX.Element => (
-          <>
-            <AgentInspector agent={agent} />
-            {presentation === 'legacy' && onOpen && target !== null && (
-              <InspectorOpenAction
-                label="Open chat"
-                onClick={(): void => onOpen(target)}
-              />
-            )}
-          </>
-        ),
-      }}
+      inspector={
+        !redesigned ||
+        agent.steps.length > 0 ||
+        Boolean(
+          agent.prompt &&
+          agent.prompt !== agent.activity &&
+          agent.prompt !== agent.title,
+        )
+          ? {
+              open,
+              onToggle,
+              render: (): JSX.Element => (
+                <>
+                  <AgentInspector agent={agent} />
+                  {presentation === 'legacy' && onOpen && target !== null && (
+                    <InspectorOpenAction
+                      label="Open chat"
+                      onClick={(): void => onOpen(target)}
+                    />
+                  )}
+                </>
+              ),
+            }
+          : undefined
+      }
       listRef={listRef}
       topInset={topInset}
     />

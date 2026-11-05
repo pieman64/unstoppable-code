@@ -1,5 +1,6 @@
 import { Fragment, type JSX } from 'react';
 import type { UnifiedEntryAlternative } from '@canopy/ui-shared';
+import { Button } from '@canopy/ui-shared/components';
 
 interface PluginAlternativesProps {
   alternatives?: readonly UnifiedEntryAlternative[];
@@ -25,15 +26,14 @@ export function PluginAlternatives({
       {alternatives.map((alternative, index) => (
         <Fragment key={alternative.entryId}>
           {index > 0 && ', '}
-          <button
-            type="button"
+          <Button
+            variant="link"
             data-testid={`${testIdPrefix}-${alternative.entryId}`}
             disabled={onOpenEntryId === undefined}
             onClick={() => onOpenEntryId?.(alternative.entryId)}
-            className="focus-ring rounded fg-accent enabled:hover:underline disabled:cursor-default"
           >
             {alternative.label}
-          </button>
+          </Button>
         </Fragment>
       ))}
     </p>

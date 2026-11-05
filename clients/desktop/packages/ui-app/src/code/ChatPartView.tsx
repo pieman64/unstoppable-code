@@ -33,7 +33,6 @@ import {
   CodexAccountModelNotice,
   TRANSCRIPT_MARKDOWN_OPTIONS,
   AgentBlockCard,
-  DelegatedAgentCard,
   AutoRoutedModelPill,
   AnsweredQuestionsBlock,
   AskUserQuestionCard,
@@ -75,10 +74,7 @@ import { stripOpaqueAgentCitationMarkers } from '@canopy/ui-shared/lib';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { DotIcon, WrenchIcon } from '@canopy/ui-shared/icons';
 import { ChatAssetImage } from './ChatMessageAttachments';
-import {
-  DelegationChildPages,
-  isStreamBackedDelegation,
-} from './DelegationChildPages';
+import { ManagedDelegationCard } from './ManagedDelegationCard';
 import { useSubagentChatActions } from './subagents/SubagentChatActionsContext';
 import {
   DeferredToolOutput,
@@ -657,34 +653,24 @@ function ManagedAgentPart({
   }, [delegation.delegationId, delegation.description, onOpenSubagentChat]);
 
   return (
-    <DelegatedAgentCard
-      snapshot={delegation}
-      parentHarnessId={delegation.parentHarnessId}
-      description={delegation.description}
-      prompt={delegation.prompt}
-      executionMode={delegation.executionMode}
+    <ManagedDelegationCard
+      delegation={delegation}
+      runGeneration={delegation.runGeneration ?? 1}
       waitingOnParent={waitingDelegations.has(delegation.delegationId)}
       {...(onOpenSubagentChat ? { onOpenChat } : {})}
+      source={transcriptHost?.source}
+      renderRows={transcriptHost?.renderRows}
+      hint={
+        transcriptHost
+          ? {
+              epoch: transcriptHost.epoch,
+              streamRevision: delegation.streamRevision,
+            }
+          : undefined
+      }
     >
-      {isStreamBackedDelegation(delegation.transcriptStore) ? (
-        <DelegationChildPages
-          source={transcriptHost?.source}
-          renderRows={transcriptHost?.renderRows}
-          hint={
-            transcriptHost
-              ? {
-                  epoch: transcriptHost.epoch,
-                  streamRevision: delegation.streamRevision,
-                }
-              : undefined
-          }
-          delegationId={delegation.delegationId}
-          runGeneration={delegation.runGeneration ?? 1}
-        />
-      ) : (
-        children
-      )}
-    </DelegatedAgentCard>
+      {children}
+    </ManagedDelegationCard>
   );
 }
 

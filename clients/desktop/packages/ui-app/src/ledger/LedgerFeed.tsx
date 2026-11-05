@@ -43,10 +43,12 @@ import {
   EmptyState,
   DelayedLoadingPlaceholder,
   ErrorState,
+  Heading,
   LedgerThreadList,
   LedgerThreadListSkeleton,
   Notice,
   NoticeButton,
+  ToggleSwitch,
   isLedgerFeedFiltered,
   useRetry,
   type LedgerEntryRowAttribution,
@@ -61,6 +63,10 @@ import {
   FeedControls,
   LEDGER_FEED_ALL_AUDIENCES,
 } from './ledger-feed-rows';
+import {
+  ledgerScopeWorkPath,
+  type LedgerScopeNamesFor,
+} from './ledger-work-path';
 import {
   createLedgerScopeActions,
   LedgerEntryReadLoading,
@@ -168,7 +174,24 @@ export interface LedgerFeedProps {
   readonly onSignIn?: () => void;
   /** The person's name, for the composer and correction avatars. */
   readonly personName?: string;
+  /** This device's names for a scope, used for Activity work paths. */
+  readonly scopeNames?: LedgerScopeNamesFor;
+  /** Opens a scope named by an Activity work path. */
+  readonly onOpenScope?: (scope: LedgerViewScope) => void;
+  /** An ancestor's scroller; when supplied, this Feed adds no scroll pane. */
+  readonly scrollElement?: () => HTMLElement | null;
+  /** Adds the page's Activity heading and audience controls. */
+  readonly heading?: boolean;
+  /** Registers an opener for this device's entries in a known scope. */
+  readonly registerLocalEntryOpener?: (
+    opener: LedgerFeedLocalEntryOpener | null,
+  ) => void;
 }
+
+export type LedgerFeedLocalEntryOpener = (
+  scope: LedgerViewScope,
+  entryId: string,
+) => void;
 
 function attributionOf(
   origin: LedgerFeedOrigin,
@@ -271,6 +294,11 @@ export function LedgerFeed({
   visible,
   onSignIn,
   personName = DEFAULT_PERSON_NAME,
+  scopeNames,
+  onOpenScope,
+  scrollElement,
+  heading = false,
+  registerLocalEntryOpener,
 }: LedgerFeedProps): JSX.Element {
   const client = local?.client;
   const navigator = local?.navigator;
@@ -281,6 +309,10 @@ export function LedgerFeed({
   const addableScopes = local?.addableScopes;
   const {
     audience,
+    showTeammates,
+    onlyThisDevice,
+    live,
+    activityShownCount,
     list,
     actors,
     newActivity,
@@ -291,6 +323,10 @@ export function LedgerFeed({
   } = store(
     useShallow((state) => ({
       audience: state.audience,
+      showTeammates: state.showTeammates,
+      onlyThisDevice: state.onlyThisDevice,
+      live: state.live,
+      activityShownCount: state.activityShownCount,
       list: state.list,
       actors: state.actors,
       newActivity: state.newActivity,
@@ -329,6 +365,11 @@ export function LedgerFeed({
     undefined,
   );
   const listScrollRef = useRef<HTMLDivElement>(null);
+  const getListScrollElement = useCallback(
+    (): HTMLElement | null =>
+      scrollElement === undefined ? listScrollRef.current : scrollElement(),
+    [scrollElement],
+  );
   const now = useLedgerNow();
 
   // Every page entry reads past the host's cache and shows the newest page.
@@ -405,11 +446,19 @@ export function LedgerFeed({
     [],
   );
 
+  useEffect(
+    () => (): void => {
+      void store.getState().setLiveHeld(false);
+    },
+    [store],
+  );
+
   // Restores the list's scroll position from before the page unmounted.
   useLayoutEffect(() => {
+    if (scrollElement !== undefined) return;
     const element = listScrollRef.current;
     if (element !== null) element.scrollTop = store.getState().scrollTop;
-  }, [store]);
+  }, [scrollElement, store]);
 
   // A new first page (a search, filter or audience) starts at the top: the
   // store resets the list's place, and the list follows. A look for newer
@@ -418,10 +467,10 @@ export function LedgerFeed({
     () =>
       store.subscribe((state, previous) => {
         if (state.scrollTop !== 0 || previous.scrollTop === 0) return;
-        const element = listScrollRef.current;
+        const element = getListScrollElement();
         if (element !== null) element.scrollTop = 0;
       }),
-    [store],
+    [getListScrollElement, store],
   );
 
   const onSearchChange = useCallback(
@@ -452,6 +501,22 @@ export function LedgerFeed({
     [cancelSearchTimer, store],
   );
 
+  const onOnlyThisDeviceChange = useCallback(
+    (on: boolean): void => {
+      cancelSearchTimer();
+      void store.getState().setOnlyThisDevice(on);
+    },
+    [cancelSearchTimer, store],
+  );
+
+  const onShowTeammatesChange = useCallback(
+    (on: boolean): void => {
+      cancelSearchTimer();
+      void store.getState().setShowTeammates(on);
+    },
+    [cancelSearchTimer, store],
+  );
+
   const onFiltersChange = useCallback(
     (next: LedgerFeedFilters): void => {
       cancelSearchTimer();
@@ -471,6 +536,10 @@ export function LedgerFeed({
   }, [store]);
 
   const rows = list.rows;
+  const activityRows = useMemo(
+    () => rows.slice(0, activityShownCount),
+    [activityShownCount, rows],
+  );
   const rowsById = useMemo(
     () => new Map(rows.map((row) => [row.entry.entryId, row])),
     [rows],
@@ -632,6 +701,19 @@ export function LedgerFeed({
     },
     [actionsByScope, client, navigator, scopeStore, store],
   );
+  const openLocalEntry = useCallback(
+    (scope: LedgerViewScope, entryId: string): void => {
+      setOpenError(null);
+      store.getState().focusScope(scope);
+      actionsForScope(scope)?.open(entryId);
+    },
+    [actionsForScope, store],
+  );
+  useEffect(() => {
+    if (registerLocalEntryOpener === undefined) return;
+    registerLocalEntryOpener(openLocalEntry);
+    return (): void => registerLocalEntryOpener(null);
+  }, [openLocalEntry, registerLocalEntryOpener]);
 
   const rowDetails = useCallback(
     (entry: LedgerEntrySearchItem): LedgerEntryRowDetails => {
@@ -649,8 +731,19 @@ export function LedgerFeed({
         return attribution === null ? {} : { attribution };
       }
       if (row.origin.kind === 'this_device') {
+        const scope = row.origin.scope;
+        // A workflow scope has no project › task path; it keeps its owner.
+        if (scopeNames !== undefined && isLedgerTaskViewScope(scope)) {
+          return {
+            workPath: ledgerScopeWorkPath(scope, scopeNames(scope) ?? null, {
+              fallback:
+                describeScope(scope) ?? SCOPE_KIND_LABELS[row.scopeKind],
+              ...(onOpenScope === undefined ? {} : { onOpenScope }),
+            }),
+          };
+        }
         return {
-          context: localRowContext(row, row.origin.scope, describeScope),
+          context: localRowContext(row, scope, describeScope),
         };
       }
       const attribution = attributionOf(row.origin);
@@ -660,7 +753,14 @@ export function LedgerFeed({
         ...(attribution === null ? {} : { attribution }),
       };
     },
-    [rowsById, describeScope, remoteDetail.entryId, remoteDetail.origin],
+    [
+      rowsById,
+      describeScope,
+      onOpenScope,
+      remoteDetail.entryId,
+      remoteDetail.origin,
+      scopeNames,
+    ],
   );
 
   const slotsCache = useLedgerSlotsCache();
@@ -745,6 +845,7 @@ export function LedgerFeed({
   const selectedScopeEntryId = selectedScopeRows?.selectedEntryId ?? null;
   const selectedScopeDetail = selectedScopeRows?.detail ?? null;
   const selectedScopeChange = selectedScopeRows?.change ?? null;
+  const selectedScopeCloseIntent = selectedScopeRows?.closeIntent ?? null;
   const remoteView =
     selectedEntryId !== null &&
     remoteDetail.status === 'ready' &&
@@ -773,9 +874,14 @@ export function LedgerFeed({
           selectedEntryId: selectedScopeEntryId,
           detail: selectedScopeDetail,
           change: selectedScopeChange,
+          closeIntent: selectedScopeCloseIntent,
         },
         selectedScopeActions,
         openError,
+        scopeStore === undefined
+          ? undefined
+          : (choice): Promise<void> =>
+              scopeStore(selectedScope).getState().resolveCloseIntent(choice),
       );
     }
     if (selectedEntryId === null) return null;
@@ -819,15 +925,17 @@ export function LedgerFeed({
     selectedScope,
     selectedScopeActions,
     selectedScopeChange,
+    selectedScopeCloseIntent,
     selectedScopeDetail,
     selectedScopeEntryId,
+    scopeStore,
   ]);
   const rowsWithOpenRead = useMemo(() => {
     const openRead = openEntry?.view?.entry.entry;
-    if (selectedScope === null || openRead === undefined) return rows;
+    if (selectedScope === null || openRead === undefined) return activityRows;
 
     let changed = false;
-    const updatedRows = rows.map((row) => {
+    const updatedRows = activityRows.map((row) => {
       if (
         row.origin.kind !== 'this_device' ||
         ledgerScopeKey(row.origin.scope) !== ledgerScopeKey(selectedScope) ||
@@ -848,8 +956,8 @@ export function LedgerFeed({
         },
       };
     });
-    return changed ? updatedRows : rows;
-  }, [openEntry?.view, rows, selectedScope]);
+    return changed ? updatedRows : activityRows;
+  }, [activityRows, openEntry?.view, selectedScope]);
   const entries = useMemo(
     () => rowsWithOpenRead.map((row) => row.entry),
     [rowsWithOpenRead],
@@ -932,11 +1040,13 @@ export function LedgerFeed({
   const composer = useMemo(
     (): ReactNode => (
       <>
-        {scopeStore !== undefined &&
+        {client !== undefined &&
+          scopeStore !== undefined &&
           scopeHasDraft !== undefined &&
           addableScopes !== undefined && (
             <FeedComposerRow
               store={store}
+              client={client}
               scopeStore={scopeStore}
               scopeHasDraft={scopeHasDraft}
               addableScopes={addableScopes}
@@ -952,6 +1062,7 @@ export function LedgerFeed({
     ),
     [
       addableScopes,
+      client,
       correctionFallback,
       files,
       pendingOpen,
@@ -1046,17 +1157,14 @@ export function LedgerFeed({
     [actionsForScope, rowsById, store],
   );
   const onLoadMore = useCallback((): void => {
-    void store.getState().loadMore();
+    void store.getState().showMoreEntries();
   }, [store]);
-  const scrollElement = useCallback(
-    (): HTMLElement | null => listScrollRef.current,
-    [],
-  );
+  const activityHasMore = activityRows.length < rows.length || list.hasMore;
   const showNewActivity = useCallback((): void => {
     void store.getState().showNewActivity();
-    const element = listScrollRef.current;
+    const element = getListScrollElement();
     if (element !== null) element.scrollTop = 0;
-  }, [store]);
+  }, [getListScrollElement, store]);
 
   let listBody: ReactNode;
   if (shownProblem !== null) {
@@ -1093,7 +1201,7 @@ export function LedgerFeed({
   } else if (
     placed.entries.length === 0 &&
     pinnedEntry === null &&
-    !list.hasMore
+    !activityHasMore
   ) {
     listBody = (
       <>
@@ -1141,22 +1249,72 @@ export function LedgerFeed({
         corrections={corrections}
         pinnedEntry={pinnedEntry}
         composer={composer}
-        hasMore={list.hasMore}
+        hasMore={activityHasMore}
         loadingMore={list.loadingMore}
         loadMoreError={
           list.loadMoreProblem === null ? null : "Couldn't load more entries."
         }
         onLoadMore={onLoadMore}
-        scrollElement={scrollElement}
+        {...(heading ? { loadMoreTestId: 'feed-show-more-entries' } : {})}
+        scrollElement={getListScrollElement}
       />
     );
   }
 
-  return (
+  const listContent = (
+    <div
+      className="flex w-full flex-col pb-8 pt-2"
+      onPointerEnter={() => {
+        void store.getState().setLiveHeld(true);
+      }}
+      onPointerLeave={() => {
+        void store.getState().setLiveHeld(false);
+      }}
+    >
+      {newActivity && (
+        <div className="sticky top-0 z-10 flex justify-center bg-base pb-2">
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            data-testid="ledger-feed-new-activity"
+            onClick={showNewActivity}
+          >
+            Show new activity
+          </Button>
+        </div>
+      )}
+      {listBody}
+    </div>
+  );
+  // The list's column. With an ancestor's scroller it only holds the list,
+  // which scrolls with the page; otherwise it is the list's own scroller.
+  const listPane =
+    scrollElement === undefined ? (
+      <div
+        ref={listScrollRef}
+        data-testid="ledger-feed-list-pane"
+        onScroll={(event) =>
+          store.getState().setScrollTop(event.currentTarget.scrollTop)
+        }
+        className="min-h-0 min-w-0 flex-1 overflow-y-auto"
+      >
+        {listContent}
+      </div>
+    ) : (
+      <div data-testid="ledger-feed-list-pane" className="min-w-0">
+        {listContent}
+      </div>
+    );
+  const feed = (
     <div
       data-testid="ledger-feed"
       data-audience={audience}
-      className="flex min-h-0 min-w-0 flex-1 flex-col"
+      className={
+        scrollElement === undefined
+          ? 'flex min-h-0 min-w-0 flex-1 flex-col'
+          : 'flex min-w-0 flex-col'
+      }
     >
       <FeedControls
         store={store}
@@ -1164,37 +1322,56 @@ export function LedgerFeed({
         onAudienceChange={onAudienceChange}
         onSearchChange={onSearchChange}
         onFiltersChange={onFiltersChange}
+        heading={heading}
+        onOnlyThisDeviceChange={onOnlyThisDeviceChange}
       />
       <FeedNotice
         notice={list.notice}
         onRetry={onNoticeRetry}
         onSignIn={onSignIn}
       />
-      <div
-        ref={listScrollRef}
-        data-testid="ledger-feed-list-pane"
-        onScroll={(event) =>
-          store.getState().setScrollTop(event.currentTarget.scrollTop)
-        }
-        className="min-h-0 min-w-0 flex-1 overflow-y-auto pt-2"
-      >
-        <div className="mx-auto flex w-full max-w-3xl flex-col pb-8">
-          {newActivity && (
-            <div className="sticky top-0 z-10 flex justify-center bg-base pb-2">
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                data-testid="ledger-feed-new-activity"
-                onClick={showNewActivity}
-              >
-                Show new activity
-              </Button>
-            </div>
-          )}
-          {listBody}
+      {listPane}
+    </div>
+  );
+  if (!heading) return feed;
+
+  return (
+    <section
+      data-testid="feed-activity"
+      className={
+        scrollElement === undefined
+          ? 'flex min-h-0 min-w-0 flex-1 flex-col'
+          : 'flex min-w-0 flex-col'
+      }
+    >
+      <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 pb-3">
+        <Heading level={2} variant="title">
+          Activity
+        </Heading>
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="flex items-center gap-2 text-xs fg-secondary">
+            <span>Show teammates</span>
+            <ToggleSwitch
+              label="Show teammates"
+              checked={showTeammates && !onlyThisDevice}
+              dataTestId="feed-show-teammates"
+              onChange={onShowTeammatesChange}
+            />
+          </div>
+          <div className="flex items-center gap-2 text-xs fg-secondary">
+            <span>Live</span>
+            <ToggleSwitch
+              label="Live"
+              checked={live}
+              dataTestId="feed-live"
+              onChange={(on) => {
+                void store.getState().setLive(on);
+              }}
+            />
+          </div>
         </div>
       </div>
-    </div>
+      {feed}
+    </section>
   );
 }

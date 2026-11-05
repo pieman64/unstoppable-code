@@ -47,6 +47,7 @@ import {
 import {
   isProviderNativelyAuthenticatedForRouting,
   peekFreshProviderNativeAuthAvailability,
+  peekClaudeAuthInconclusiveWithoutSignIn,
   peekProviderNativeAuthAvailability,
 } from '../auth/provider-auth-state';
 import {
@@ -724,9 +725,18 @@ export async function resolveDefaultModelLaneForPreferences(
     void readCodexSpeedCatalog();
   }
 
+  // An Environments credential or ready account proxy already folds Claude to
+  // `true` above, so the inconclusive flag never applies to them. The
+  // renderer's `useBillingLaneRuntimeSync` pairs this with its
+  // `claudeProxyReady` and `userSuppliedCredential` exclusions.
+  const claudeNativeAuthInconclusive =
+    claudeNativeAuth === undefined && peekClaudeAuthInconclusiveWithoutSignIn();
   const resolution = resolveDefaultModelLane({
     availability: {
       claudeNativeAuth,
+      ...(claudeNativeAuthInconclusive
+        ? { claudeNativeAuthInconclusive: true }
+        : {}),
       codexNativeAuth,
       creditsEligible:
         creditsContext === null

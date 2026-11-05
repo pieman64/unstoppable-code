@@ -122,6 +122,19 @@ export interface CanopyStreamSink<Item> {
     outcome: 'completed' | 'cancelled' | 'error',
     error?: CanopyErrorPayload,
   ): void;
+  /**
+   * Ends at a cursor from the stream's source, such as the end a worker sent
+   * for a stream bridged through the core, so a resume from the end reaches
+   * that source. The rules of `emitAt` apply, except that the sequence may
+   * equal the last one; a stream with no items and no resume cursor adopts
+   * it. An invalid cursor ends as an invalid handler result at the last
+   * cursor.
+   */
+  endAt(
+    cursor: CanopyStreamCursor,
+    outcome: 'completed' | 'cancelled' | 'error',
+    error?: CanopyErrorPayload,
+  ): void;
 }
 export type CanopyDispatcherStreamHandlerMap<
   D extends CanopyStreamDefinitionMap,

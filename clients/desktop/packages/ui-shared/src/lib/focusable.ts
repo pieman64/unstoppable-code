@@ -16,6 +16,8 @@
  *
  * Deliberately narrower than a full focusability check: this answers "what are
  * the Tab stops inside this surface", not "what could receive focus at all".
+ * A stop hidden inside the surface (a kept-mounted page under `hidden`, an
+ * `invisible` wrapper) is not one.
  */
 const FOCUSABLE_SELECTOR = [
   'a[href]',
@@ -55,5 +57,23 @@ export function focusableWithin(root: HTMLElement): HTMLElement[] {
       (item) =>
         !item.hasAttribute('disabled') &&
         item.getAttribute('aria-disabled') !== 'true',
-    );
+    )
+    .filter((item) => !isHiddenWithin(item, root));
+}
+
+/**
+ * The item cannot take focus because something inside `root` hides it: a
+ * `hidden` or `inert` ancestor (a kept-mounted page that is not showing),
+ * `display: none`, or `visibility: hidden` (an `invisible` wrapper). Only
+ * ancestors inside `root` count, so a surface that is itself inside an inert
+ * region keeps its own stops. `checkVisibility` answers for layout where the
+ * browser has it; jsdom does not, so the attribute check carries the tests.
+ */
+function isHiddenWithin(item: HTMLElement, root: HTMLElement): boolean {
+  const hiding = item.closest('[hidden],[inert]');
+  if (hiding !== null && hiding !== root && root.contains(hiding)) return true;
+  if (typeof item.checkVisibility === 'function') {
+    return !item.checkVisibility({ visibilityProperty: true });
+  }
+  return false;
 }

@@ -1,4 +1,5 @@
 import type { AgentRunRequest } from '@canopy/desktop-shared/node/delegation';
+import { AGENT_DELEGATION_TASK_IDS_MAX } from '@canopy/protocol/delegation';
 import type {
   DelegationContinuationCandidate,
   DelegationLineage,
@@ -10,6 +11,11 @@ import type {
   LedgerToolsHost,
   LedgerToolsRuntime,
 } from '../../canopy-tools/ledger-tools-runtime';
+import {
+  buildAssignedLedgerEntriesPrompt,
+  type AssignedLedgerEntry,
+} from '../../canopy-tools/prompting';
+import { logMainProcessWarn } from '../../lib/main-process-logging';
 import type { LedgerLiveDelegate } from '../../ledger/delegate-owners';
 
 /*
@@ -75,7 +81,7 @@ export async function openChildLedgerTools(
   // resolves from the module cache.
   const { openLedgerDelegateTools } =
     await import('../../canopy-tools/ledger-tools-runtime');
-  return openLedgerDelegateTools({
+  const ledger = await openLedgerDelegateTools({
     target: {
       projectId: parent.projectId,
       worktreeId: parent.worktreeId,
@@ -106,6 +112,50 @@ export async function openChildLedgerTools(
     },
     ...(context.host === undefined ? {} : { host: context.host }),
   });
+  if (ledger === null) return null;
+
+  const taskIds = (request.task.taskIds ?? []).slice(
+    0,
+    AGENT_DELEGATION_TASK_IDS_MAX,
+  );
+  const feedRuntime = ledger.delegationFeed;
+  if (taskIds.length === 0 || feedRuntime === undefined) return ledger;
+
+  // Read only IDs from the trusted spawn request, through the runtime bound
+  // to this delegate's Feed ownership. The request's IDs alone never enter
+  // the prompt; the child sees only IDs confirmed by its Feed runtime.
+  const requestedIds = new Set(taskIds);
+  const titlesById = new Map<string, string>();
+  try {
+    for (const entry of await feedRuntime.readAssignedEntries(taskIds)) {
+      if (requestedIds.has(entry.entryId) && !titlesById.has(entry.entryId))
+        titlesById.set(entry.entryId, entry.title);
+    }
+  } catch {
+    logMainProcessWarn(
+      '[delegation] Unable to read assigned Feed entries for delegate prompt',
+    );
+    return ledger;
+  }
+  const assignedEntries: AssignedLedgerEntry[] = taskIds.flatMap((entryId) => {
+    const title = titlesById.get(entryId);
+    return title === undefined ? [] : [{ entryId, title }];
+  });
+  const assignmentPrompt = buildAssignedLedgerEntriesPrompt(
+    harness,
+    assignedEntries,
+  );
+  if (assignmentPrompt.length === 0) return ledger;
+
+  return {
+    execute: (key, rawArgs, invocation) =>
+      ledger.execute(key, rawArgs, invocation),
+    systemPrompt: () => `${ledger.systemPrompt()}\n${assignmentPrompt}`,
+    dispose: () => ledger.dispose(),
+    ...(ledger.delegationFeed === undefined
+      ? {}
+      : { delegationFeed: ledger.delegationFeed }),
+  };
 }
 
 /**
@@ -124,14 +174,19 @@ export async function retainChildLedgerTools(
 ): Promise<ChildLedgerTools | undefined> {
   if (delegation === undefined || open === undefined) return undefined;
   const ledger = await open(context);
-  if (ledger !== undefined)
+  if (ledger !== undefined) {
+    const { configureDelegationFeed } = await import('./service');
     context.retain(
       () => {
+        // The hand-off registration ends with the run, before its runtime.
+        configureDelegationFeed(delegation, undefined);
         ledger.dispose();
         return Promise.resolve();
       },
       { label: 'ledger-tools', phase: 'parent' },
     );
+    configureDelegationFeed(delegation, ledger);
+  }
   return ledger;
 }
 

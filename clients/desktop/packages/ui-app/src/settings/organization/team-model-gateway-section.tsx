@@ -12,7 +12,7 @@ import {
   DelayedLoadingPlaceholder,
   ErrorBanner,
   Notice,
-  SettingsFormSkeleton,
+  Skeleton,
   Tooltip,
   SettingsSelect,
   ChoiceList,
@@ -352,7 +352,7 @@ function ModelGatewayCard({
         {!entitlementResolved || gateway === null ? (
           <div className="mt-4" data-testid="model-gateway-pending">
             <DelayedLoadingPlaceholder>
-              <SettingsFormSkeleton />
+              <ModelGatewaySkeleton />
             </DelayedLoadingPlaceholder>
           </div>
         ) : editable || relaxOnly ? (
@@ -672,6 +672,56 @@ interface GatewayModelListProps {
   busy: boolean;
   canRemove: boolean;
   onRemove: (id: string) => void;
+}
+
+const noop = (): void => undefined;
+
+/** The route switches, as the loaded card's first panel shows them. */
+const SAMPLE_GATEWAY_ROWS: readonly { label: string; description: string }[] = [
+  {
+    label: 'Route member traffic through your gateway',
+    description: 'Members add their own gateway key.',
+  },
+  {
+    label: 'Make this the only route',
+    description: 'Members use only this gateway.',
+  },
+];
+
+/**
+ * The card body while the gateway loads: its first panel with sample rows
+ * inside `Skeleton`, so skullet measures them into bars in place.
+ */
+function ModelGatewaySkeleton(): JSX.Element {
+  return (
+    <Skeleton
+      loading
+      label="Loading model gateway"
+      testId="settings-skeleton-form"
+      className="w-full"
+    >
+      <div className="flex flex-col gap-3 rounded-lg border bg-subtle/45 p-4">
+        {SAMPLE_GATEWAY_ROWS.map((row, index) => (
+          <div
+            key={row.label}
+            className={index > 0 ? 'border-t pt-3' : undefined}
+          >
+            <SettingsRowsRow
+              label={row.label}
+              description={row.description}
+              control={
+                <ToggleSwitch
+                  label={row.label}
+                  checked={false}
+                  onChange={noop}
+                />
+              }
+            />
+          </div>
+        ))}
+      </div>
+    </Skeleton>
+  );
 }
 
 function GatewayModelList({

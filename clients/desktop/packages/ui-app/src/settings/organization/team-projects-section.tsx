@@ -25,7 +25,7 @@ import {
   PageSearchField,
   PageSearchRow,
   SegmentedControl,
-  SettingsListSkeleton,
+  Skeleton,
   StatusPill,
   FormField,
   TextArea,
@@ -1131,7 +1131,7 @@ function ProjectList({
       )}
       {loading && (
         <DelayedLoadingPlaceholder>
-          <SettingsListSkeleton avatarShape="square" />
+          <ProjectListSkeleton />
         </DelayedLoadingPlaceholder>
       )}
       {showChecklist && (
@@ -1889,5 +1889,73 @@ function ProjectEditor({
         />
       )}
     </>
+  );
+}
+
+/** One sample project for the loading state: plain, of the loaded shape. */
+function sampleProject(id: string, name: string): OrgProjectSummary {
+  return {
+    id,
+    organizationId: null,
+    name,
+    description: null,
+    kind: 'CODE',
+    purpose: 'project',
+    visibility: 'organization',
+    memberOwned: false,
+    location: 'LOCAL',
+    repository: {
+      provider: 'github',
+      host: 'github.com',
+      owner: 'sample',
+      name,
+      providerRepoId: null,
+      defaultBranch: 'main',
+      verification: 'VERIFIED',
+    },
+    state: 'ACTIVE',
+    revision: 1,
+    authorizationVersion: 1,
+    defaultListed: true,
+    preference: 'FOLLOW_DEFAULTS',
+    listed: true,
+    capabilities: { administer: false, manageCloud: false, use: true },
+    instance: null,
+  };
+}
+
+const SAMPLE_PROJECTS: readonly OrgProjectSummary[] = [
+  sampleProject('sample-project-1', 'project'),
+  sampleProject('sample-project-2', 'another'),
+];
+
+/**
+ * The project list while it loads: the real rows with sample projects inside
+ * `Skeleton`, so skullet measures them into bars in place.
+ */
+function ProjectListSkeleton(): JSX.Element {
+  return (
+    <Skeleton
+      loading
+      label="Loading projects"
+      testId="settings-skeleton-list"
+      className="w-full"
+    >
+      <div
+        className={`${ORG_PROJECT_ROW_COLUMNS_CLASS} divide-y ${SETTINGS_GROUP_SURFACE_CLASS}`}
+      >
+        {SAMPLE_PROJECTS.map(
+          (project): JSX.Element => (
+            <OrgProjectRow
+              key={project.id}
+              project={project}
+              testIdPrefix="team-projects"
+              columns
+              description={`sample/${project.name}`}
+            />
+          ),
+        )}
+      </div>
+    </Skeleton>
   );
 }

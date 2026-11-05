@@ -1,5 +1,5 @@
 import { memo, useMemo, useState, type JSX } from 'react';
-import { Button, Notice } from '@canopy/ui-shared/components';
+import { Button, Chip, Disclosure, Notice } from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { FormField } from '@/components/pipeline/shared/FormField';
 import { SelectField } from '@/components/pipeline/shared/SelectField';
@@ -357,64 +357,54 @@ const SplitPlanChangesEditor = memo(function SplitPlanChangesEditor({
         const wholeFileOwner = ownership.get(`${file.path}#-1`) ?? -1;
 
         return (
-          <div
+          <Disclosure
             key={file.path}
-            className="rounded-md border"
-            data-testid={`split-plan-changes-file-${child.index}-${file.path}`}
+            variant="box"
+            open={isExpanded}
+            onOpenChange={() => toggleExpanded(file.path)}
+            dataTestId={`split-plan-changes-file-${child.index}-${file.path}`}
+            label={<span className="font-mono">{file.path}</span>}
+            meta={
+              isWholeFile ? 'whole file' : `${change?.hunks.length} hunk(s)`
+            }
           >
-            <button
-              type="button"
-              onClick={() => toggleExpanded(file.path)}
-              className="flex w-full items-center justify-between gap-2 px-2 py-1 text-left text-xs hover:bg-fg-primary/[0.04]"
-            >
-              <span className="min-w-0 flex-1 truncate font-mono">
-                {file.path}
-              </span>
-              <span className="shrink-0 text-3xs fg-secondary">
-                {isWholeFile ? 'whole file' : `${change?.hunks.length} hunk(s)`}
-                {' · '}
-                {isExpanded ? 'collapse' : 'expand'}
-              </span>
-            </button>
-            {isExpanded && (
-              <div className="space-y-1 border-t p-1.5">
-                {file.hunks.length === 0 ? (
-                  <HunkRow
-                    file={file}
-                    hunk={null}
-                    ownerChildIndex={wholeFileOwner}
-                    childOptions={childOptions}
-                    onReassign={(target) => onReassign(file, 'all', target)}
-                  />
-                ) : isWholeFile ? (
-                  <HunkRow
-                    file={file}
-                    hunk={null}
-                    ownerChildIndex={child.index}
-                    childOptions={childOptions}
-                    onReassign={(target) => onReassign(file, 'all', target)}
-                  />
-                ) : (
-                  file.hunks.map((hunk) => {
-                    const owner =
-                      ownership.get(`${file.path}#${hunk.hunkIndex}`) ?? -1;
-                    return (
-                      <HunkRow
-                        key={hunk.hunkIndex}
-                        file={file}
-                        hunk={hunk}
-                        ownerChildIndex={owner}
-                        childOptions={childOptions}
-                        onReassign={(target) =>
-                          onReassign(file, hunk.hunkIndex, target)
-                        }
-                      />
-                    );
-                  })
-                )}
-              </div>
-            )}
-          </div>
+            <div className="space-y-1">
+              {file.hunks.length === 0 ? (
+                <HunkRow
+                  file={file}
+                  hunk={null}
+                  ownerChildIndex={wholeFileOwner}
+                  childOptions={childOptions}
+                  onReassign={(target) => onReassign(file, 'all', target)}
+                />
+              ) : isWholeFile ? (
+                <HunkRow
+                  file={file}
+                  hunk={null}
+                  ownerChildIndex={child.index}
+                  childOptions={childOptions}
+                  onReassign={(target) => onReassign(file, 'all', target)}
+                />
+              ) : (
+                file.hunks.map((hunk) => {
+                  const owner =
+                    ownership.get(`${file.path}#${hunk.hunkIndex}`) ?? -1;
+                  return (
+                    <HunkRow
+                      key={hunk.hunkIndex}
+                      file={file}
+                      hunk={hunk}
+                      ownerChildIndex={owner}
+                      childOptions={childOptions}
+                      onReassign={(target) =>
+                        onReassign(file, hunk.hunkIndex, target)
+                      }
+                    />
+                  );
+                })
+              )}
+            </div>
+          </Disclosure>
         );
       })}
     </div>
@@ -576,20 +566,14 @@ const SplitPlanChildRow = memo(function SplitPlanChildRow({
             {dependsOnOptions.map((depIndex) => {
               const selected = child.dependsOn.includes(depIndex);
               return (
-                <button
+                <Chip
                   key={depIndex}
-                  type="button"
                   onClick={() => toggleDependsOn(depIndex)}
-                  aria-pressed={selected}
-                  data-testid={`split-plan-dependson-${child.index}-${depIndex}`}
-                  className={`rounded-md px-2 py-0.5 text-xs transition-colors ${
-                    selected
-                      ? 'bg-accent-subtle fg-accent ring-1 ring-line-accent/40'
-                      : 'bg-fg-primary/[0.06] fg-secondary hover:bg-fg-primary/[0.1]'
-                  }`}
+                  selected={selected}
+                  actionTestId={`split-plan-dependson-${child.index}-${depIndex}`}
                 >
                   Child {depIndex}
-                </button>
+                </Chip>
               );
             })}
           </div>

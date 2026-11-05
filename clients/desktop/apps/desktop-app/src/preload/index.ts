@@ -1636,7 +1636,7 @@ try {
 // `window.ollamaModelEntries` and the shared `initOllamaModels` catalog below —
 // stay empty. Renderer surfaces that guard on `OLLAMA_MODELS.length > 0` then
 // drop Ollama automatically.
-if (__CANOPY_OLLAMA_ENABLED__) {
+if (isOllamaSupportedOnPlatform()) {
   try {
     const snapshot: unknown = ipcRenderer.sendSync(
       IPC_CHANNELS.modelRegistryGet,
@@ -2019,6 +2019,7 @@ const platformOllamaApi: OllamaApiSurface = isOllamaSupportedOnPlatform()
 function createE2eOllamaApi(api: OllamaApiSurface): OllamaApiSurface {
   if (
     !__CANOPY_E2E__ ||
+    !isOllamaSupportedOnPlatform() ||
     process.env.CANOPY_E2E_OLLAMA_SETUP !== 'managed-install'
   ) {
     return api;
@@ -2031,13 +2032,13 @@ function createE2eOllamaApi(api: OllamaApiSurface): OllamaApiSurface {
     models: [],
     mode: 'managed',
     installation: {
-      platform: hostPlatform,
+      platform: localPlatform,
       ready: false,
       path: null,
       version: null,
       source: 'not-found',
       checkedAt: '2026-07-16T00:00:00.000Z',
-      automaticInstallSupported: true,
+      automaticInstallSupported: localPlatform !== 'linux',
     },
   };
 
@@ -2045,7 +2046,44 @@ function createE2eOllamaApi(api: OllamaApiSurface): OllamaApiSurface {
     ...api,
     getOllamaState: () => Promise.resolve(state),
     refreshOllamaModels: () => Promise.resolve(state),
+    redetectOllamaInstallation: () => {
+      if (localPlatform === 'linux') {
+        state = {
+          ...state,
+          status: 'running-managed',
+          installation: {
+            ...state.installation,
+            ready: true,
+            path: '/usr/local/bin/ollama',
+            version: '0.14.1',
+            source: 'auto-detected',
+          },
+        };
+      }
+      return Promise.resolve(state);
+    },
+    browseOllamaInstallation: () => {
+      if (localPlatform === 'linux') {
+        state = {
+          ...state,
+          status: 'running-managed',
+          installation: {
+            ...state.installation,
+            ready: true,
+            path: '/opt/ollama/bin/ollama',
+            version: '0.14.1',
+            source: 'browse',
+          },
+        };
+      }
+      return Promise.resolve(state);
+    },
     installOllama: async (): Promise<OllamaState> => {
+      if (localPlatform === 'linux') {
+        throw new Error(
+          'Automatic Ollama installation is not available on Linux.',
+        );
+      }
       const progress: OllamaInstallProgress = {
         phase: 'downloading',
         message: 'Downloading Ollama...',
@@ -2060,7 +2098,10 @@ function createE2eOllamaApi(api: OllamaApiSurface): OllamaApiSurface {
         installation: {
           ...state.installation,
           ready: true,
-          path: '/Applications/Ollama.app/Contents/Resources/ollama',
+          path:
+            localPlatform === 'win32'
+              ? 'C:\\Program Files\\Ollama\\ollama.exe'
+              : '/Applications/Ollama.app/Contents/Resources/ollama',
           version: '0.14.1',
           source: 'installed',
         },
@@ -2274,6 +2315,8 @@ const canopyApi: CanopyApi = {
     ipcRenderer.invoke(IPC_CHANNELS.preferencesSave, preferences, options),
   setPipelineDisabledPreference: (request) =>
     ipcRenderer.invoke(IPC_CHANNELS.preferencesSetPipelineDisabled, request),
+  updateSuggestions: (update) =>
+    ipcRenderer.invoke(IPC_CHANNELS.preferencesUpdateSuggestions, update),
   updateOnboardingTips: (update) =>
     ipcRenderer.invoke(IPC_CHANNELS.preferencesUpdateOnboardingTips, update),
   setApprovalDefaultPreference: (request) =>
@@ -3064,6 +3107,8 @@ const canopyApi: CanopyApi = {
   },
   getGitHubCliStatus: () =>
     ipcRenderer.invoke(IPC_CHANNELS.settingsGitHubCliStatus),
+  starSourceRepository: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.settingsStarSourceRepository),
   getClaudeAuthStatus: (options) =>
     ipcRenderer.invoke(IPC_CHANNELS.settingsClaudeAuthStatus, options),
   getCodexAuthStatus: (options) =>
@@ -5741,6 +5786,8 @@ const canopyApi: CanopyApi = {
       ipcRenderer.invoke(IPC_CHANNELS.ledgerFeedSearch, request),
     getFeedEntry: (request) =>
       ipcRenderer.invoke(IPC_CHANNELS.ledgerFeedGetEntry, request),
+    listFeedWork: (request) =>
+      ipcRenderer.invoke(IPC_CHANNELS.ledgerFeedWork, request),
     onEntriesChanged: (callback) => {
       const handler = (
         _event: Electron.IpcRendererEvent,

@@ -552,6 +552,33 @@ async function waitForFile(filePath) {
  * harness to create `release-<index>`). After a chunk's notifications are
  * written, `emitted-<index>` tells the harness; `done` follows the last one.
  */
+function requestPerfScriptTool(threadId, turnId, toolCall, suffix) {
+  return new Promise((resolve) => {
+    const callId = `perf-${suffix}-${turnId}`;
+    const requestId = `request-${callId}`;
+    pendingToolCalls.set(requestId, {
+      threadId,
+      turnId,
+      tool: toolCall.tool,
+      callId,
+      phase: 'perf-script',
+      resolve,
+    });
+    send({
+      id: requestId,
+      method: 'item/tool/call',
+      params: {
+        threadId,
+        turnId,
+        callId,
+        namespace: null,
+        tool: toolCall.tool,
+        arguments: toolCall.arguments ?? {},
+      },
+    });
+  });
+}
+
 async function emitPerfScriptTurn(threadId, turnId, script) {
   const gateDir = script.gateDir;
   const mode = readFileSync(path.join(gateDir, 'mode'), 'utf8').trim();
@@ -569,7 +596,15 @@ async function emitPerfScriptTurn(threadId, turnId, script) {
     } else {
       await sleep(chunk.delayMs ?? 0);
     }
-    for (const notification of chunk.notifications) {
+    // A tool call is a request: wait for the client's answer, in order.
+    for (const [call, toolCall] of (chunk.toolCalls ?? []).entries())
+      await requestPerfScriptTool(
+        threadId,
+        turnId,
+        toolCall,
+        `${index}-${call}`,
+      );
+    for (const notification of chunk.notifications ?? []) {
       const params = { threadId, ...notification.params };
       if (notification.method === 'turn/completed') {
         params.turn = { ...params.turn, id: turnId };
@@ -1019,6 +1054,10 @@ function handleToolResponse(message) {
   pendingToolCalls.delete(String(message.id));
   log({ direction: 'client-tool-result', message });
   emitDynamicToolCompleted(pending, message.result);
+  if (pending.resolve) {
+    pending.resolve(message.result);
+    return true;
+  }
 
   if (pending.phase === 'auto-archive-held') {
     const releasePath = process.env.CANOPY_E2E_CODEX_RELEASE_PATH;
@@ -2552,6 +2591,16 @@ function handleRequest(message) {
           })),
           nextCursor: null,
         },
+      });
+      return;
+    }
+    case 'model/list': {
+      // Production builds read the account's models from the app-server;
+      // a release-like spec that routes delegates supplies them here.
+      const listed = process.env.CANOPY_E2E_CODEX_MODEL_LIST;
+      send({
+        id: message.id,
+        result: listed ? { data: JSON.parse(listed), nextCursor: null } : {},
       });
       return;
     }

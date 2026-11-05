@@ -235,6 +235,7 @@ export interface ShareAudienceSelectorProps {
   value: ShareAudience | null;
   onChange: (next: ShareAudience) => void;
   legend: string;
+  labelForAudience?: (audience: SelectableShareAudience) => string;
   /** Helper sentence under the selector for the selected audience. */
   descriptions?: Partial<Record<ShareAudience, string>>;
   /** Shown under the selector when an offered audience needs an upgrade. */
@@ -277,6 +278,7 @@ export function ShareAudienceSelector({
   value,
   onChange,
   legend,
+  labelForAudience = shareAudienceLabel,
   descriptions,
   upgradeHint,
   hint,
@@ -313,7 +315,7 @@ export function ShareAudienceSelector({
       disabled={disabled}
       options={options.map((audience) => ({
         value: audience,
-        label: shareAudienceLabel(audience),
+        label: labelForAudience(audience),
         disabled: availability[audience] === false,
         ...(optionDescribedBy?.[audience] !== undefined
           ? { describedBy: optionDescribedBy[audience] }

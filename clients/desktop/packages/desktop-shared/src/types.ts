@@ -74,6 +74,10 @@ import type {
 import type { ReleaseNotesEntry } from '@canopy/protocol/release-notes';
 import type { FileIndexingPreferences } from '@canopy/protocol/file-indexing';
 import type {
+  SuggestionsState,
+  SuggestionsUpdate,
+} from '@canopy/protocol/suggestions';
+import type {
   OnboardingTipDismissals,
   OnboardingTipsState,
   OnboardingTipsUpdate,
@@ -106,7 +110,11 @@ import type {
 import type { McpActivationRecord } from '@canopy/protocol/mcp-servers';
 import type { AppAdvisorCodeGraphAction } from './types/app-advisor-code-graph';
 import type { DataSharingOptInFeature } from '@canopy/protocol/canopy-server';
-import type { PlanModeHintRecord } from '@canopy/protocol/onboarding';
+import type {
+  GitHubStarPromptRecord,
+  PlanModeHintRecord,
+  StarSourceRepositoryResult,
+} from '@canopy/protocol/onboarding';
 import type {
   AgentActionError,
   AgentActionErrorCode,
@@ -253,6 +261,8 @@ import type {
   LedgerFeedEntryRequest,
   LedgerFeedPage,
   LedgerFeedRequest,
+  LedgerFeedWorkPage,
+  LedgerFeedWorkRequest,
   LedgerViewAddRequest,
   LedgerViewChangedEvent,
   LedgerViewEntry,
@@ -563,9 +573,12 @@ import type {
   ApprovalDefaults,
   ApprovalMode,
   ApprovalRule,
-  ApprovalRuleScope,
   ApprovalRuleTarget,
 } from './types/approvals';
+import type {
+  ApprovalPromptDecision,
+  ApprovalRequestDetails,
+} from '@canopy/protocol/approvals';
 import type { ActivationCampaignNavigateEvent } from './types/activation-journey';
 import type {
   AutomationsPanelVariant,
@@ -1141,6 +1154,10 @@ export interface LedgerApi {
   getFeedEntry(
     request: LedgerFeedEntryRequest,
   ): Promise<LedgerViewResult<LedgerViewEntry>>;
+  /** This device's operations and top-level tasks, with their rollups. */
+  listFeedWork(
+    request: LedgerFeedWorkRequest,
+  ): Promise<LedgerViewResult<LedgerFeedWorkPage>>;
 }
 
 /**
@@ -1850,6 +1867,8 @@ export const PIPELINE_EDITOR_WORKTREE_ID = 'pipeline-editor';
 // ---------------------------------------------------------------------------
 // Settings types
 // ---------------------------------------------------------------------------
+
+export type { StarSourceRepositoryResult };
 
 export interface GitHubCliStatus {
   authenticated: boolean;
@@ -5194,10 +5213,35 @@ export interface ChatProjectClaudeMdRequest {
   projectId: string;
 }
 
+export type ChatProjectInstructionFileName = 'AGENTS.md' | 'CLAUDE.md';
+
+export interface ChatProjectClaudeMdResponse {
+  content: string;
+  fileName: ChatProjectInstructionFileName;
+  layout: 'create-counterpart' | 'alias' | 'mirrors' | 'divergent';
+  /** Opaque observation of both entries, contents and application save epoch. */
+  revision: string;
+}
+
 export interface SaveChatProjectClaudeMdRequest {
   projectId: string;
   content: string;
+  revision: string;
 }
+
+export type SaveChatProjectClaudeMdResult =
+  | { status: 'saved' }
+  | { status: 'conflict'; reloadRequired: true; message: string }
+  | {
+      status: 'partial-save';
+      reloadRequired: true;
+      savedFiles: ChatProjectInstructionFileName[];
+      failedFile: ChatProjectInstructionFileName;
+      stage: 'primary' | 'mirror' | 'counterpart';
+      /** A failed write may have changed some bytes of failedFile. */
+      failedFileMayHaveChanged: boolean;
+      message: string;
+    };
 
 export interface WorkspaceClaudeMdRequest {
   workspaceId: string;
@@ -6763,6 +6807,7 @@ export interface PreferencesData extends TerminalDrawerPreferences {
    * The web Portal reads and writes it through the paired desktop.
    */
   onboardingTipsDismissed: OnboardingTipDismissals;
+  suggestions: SuggestionsState;
   /**
    * Most recent fully-resolved lane across BOTH default scopes, retained while
    * auth, policy, or catalog facts reload.
@@ -7224,18 +7269,16 @@ export interface PreferencesData extends TerminalDrawerPreferences {
    */
   ledgerAgentRecordingEnabled?: boolean;
   /**
-   * Settings → General → "Suggest automations for repeated tasks" (CAN-4009).
-   * On by default. Off stops comparing New task prompts at all: nothing is
-   * recorded and the renderer clears its repeated-task history. While a
-   * preferences read is degraded the renderer treats it as off. Optional for
-   * compatibility with earlier preferences; normalization always supplies a
-   * boolean.
+   * Legacy repeated-task switch (CAN-4009), retained only when a boolean was
+   * already stored. CAN-4343 migrates its opt-out to suggestions.enabled.
+   * Legacy-only saves change the master, but keep this value unchanged for
+   * downgrades; fresh profiles omit it. New callers use updateSuggestions.
    */
   repeatTaskAutomationSuggestionsEnabled?: boolean;
   /**
    * Settings → Plugins → "Suggest skills for repeated requests" (CAN-385).
-   * On by default, and only effective while
-   * `canopy-desktop-skill-suggestions` is on. Off deletes the local request
+   * On by default, and only effective while the suggestions master and
+   * `canopy-desktop-skill-suggestions` are on and the category is not dismissed. Off deletes the local request
    * fingerprints, clears pending suggestions and resets the 30-day backfill;
    * resolved suggestions stay resolved. Independent of `localMemoryEnabled`,
    * which only picks the model a scan uses. Optional for compatibility with
@@ -7539,6 +7582,12 @@ export interface PreferencesData extends TerminalDrawerPreferences {
    * checklist progress cannot retire the lesson again.
    */
   planModeHint?: PlanModeHintRecord;
+  /**
+   * Local GitHub star nudge state: accepted chat sends and its one-time
+   * retirement. Save a patch through the authoritative preference writer,
+   * which merges it so the count never drops and retirement is permanent.
+   */
+  githubStarPrompt?: GitHubStarPromptRecord;
   /**
    * ISO-8601 timestamp of when the user accepted the first-run legal consent
    * (Terms of Service / Privacy Policy). Unlike guest consent, this blocking
@@ -13842,8 +13891,17 @@ export interface ChatInterestDeclaration {
   focused: ChatInterestChatRef[];
   /** Recently focused chats, most recent first, excluding focused. At most 16. */
   warm: ChatInterestChatRef[];
-  /** Delegate runs whose cards are mounted. At most 64. Recorded only. */
+  /**
+   * Delegate runs whose cards are expanded in a focused chat. At most 64.
+   * Main sends live delegate detail frames only to windows that list the run.
+   */
   focusedRuns?: ChatInterestRunRef[];
+  /**
+   * Whether the window shows audit entries or usage details. Main skips
+   * `observability:event` entry updates for a window that sets it to false;
+   * builds from before the field leave it out and receive every update.
+   */
+  observabilityEntries?: boolean;
   /**
    * The window handles `messages.omitted` and catches up stale chats. Main
    * omits message bodies only for windows that set it: builds from before the
@@ -14859,64 +14917,12 @@ export type ChatSendMessageDisposition = 'dispatched' | 'already_accepted';
 // Tool-approval prompt types
 // ---------------------------------------------------------------------------
 
-/** Maximum UTF-16 string units per supplied file-change text field. */
-export const APPROVAL_FILE_CHANGE_MAX_CHARS = 20_000;
-
-/** Display-only request text, bounded before delivery and persistence. */
-export type ApprovalFileChange =
-  | {
-      kind: 'edit';
-      oldText: string;
-      newText: string;
-      replaceAll?: boolean;
-      truncated?: boolean;
-    }
-  | {
-      kind: 'write';
-      content: string;
-      truncated?: boolean;
-    };
-
-export type ApprovalRequestDetails =
-  | { kind: 'command'; command: string; cwd?: string; reason?: string }
-  | {
-      kind: 'file-write';
-      path?: string;
-      /** Host-projected relative path; never an approval rule target. */
-      displayPath?: string;
-      change?: ApprovalFileChange;
-      reason?: string;
-      itemId?: string;
-    }
-  | {
-      kind: 'mcp';
-      server: string;
-      tool: string;
-      paramsDisplay?: string;
-      reason?: string;
-    }
-  | { kind: 'network'; host: string; reason?: string }
-  | { kind: 'tool'; toolName: string; inputSummary?: string; reason?: string }
-  | {
-      kind: 'browser-upload';
-      /** Origin of the frame that receives the files. */
-      origin: string;
-      /** Origin of the page, shown when it differs from `origin`. */
-      topOrigin?: string;
-      files: Array<{ displayPath: string; sizeBytes: number }>;
-      reason?: string;
-    }
-  | {
-      /** `browser.request_files`: the user chooses files or declines. */
-      kind: 'browser-file-request';
-      /** Origin of the frame that receives the files. */
-      origin: string;
-      /** Origin of the page, shown when it differs from `origin`. */
-      topOrigin?: string;
-      /** Why the agent asks, in its own words. */
-      purpose?: string;
-      multiple: boolean;
-    };
+export {
+  APPROVAL_FILE_CHANGE_MAX_CHARS,
+  type ApprovalFileChange,
+  type ApprovalPromptDecision,
+  type ApprovalRequestDetails,
+} from '@canopy/protocol/approvals';
 
 export interface ApprovalRequestEvent {
   /** Omitted by older chat hosts. Non-chat requests have their own UI owner. */
@@ -14945,17 +14951,6 @@ export interface ApprovalRequestEvent {
   subagentId?: string;
   /** Internal identity for the durable turn-timer pause held by this prompt. */
   timerPauseOwnerId?: string;
-}
-
-export interface ApprovalPromptDecision {
-  behavior: 'allow' | 'deny';
-  scope: ApprovalRuleScope | 'once';
-  /** Required when scope !== 'once'; the rule to persist. */
-  target?: ApprovalRuleTarget;
-  /** Deny-only free-text fed back to the agent. */
-  message?: string;
-  /** Deny-only: also interrupt the turn. */
-  stopTurn?: boolean;
 }
 
 export interface ApprovalRespondRequest {
@@ -18686,8 +18681,8 @@ export const NO_BILLING_SOURCE_ERROR_CODE = 'no_billing_source' as const;
  * `resolveAiCreditsCoverage` / `openBillingPage` were extracted.
  *
  * `NoBillingSourceBanner` states the same thing but cannot share this string: it
- * renders the "Get AI Credits" remedy as an interactive element rather than
- * prose. `no-billing-source-copy.test.ts` asserts the two stay in step.
+ * renders the "Connect {provider}" and "Buy AI Credits" remedies as interactive
+ * elements rather than prose. `no-billing-source-copy.test.ts` asserts the two stay in step.
  *
  * @param providerLabel User-facing provider name, e.g. `'Claude'` / `'Codex'`.
  * @param brandName Injected brand display name; never hard-code a product name.
@@ -18696,7 +18691,7 @@ export function buildNoBillingSourceError(
   providerLabel: string,
   brandName: string,
 ): string {
-  return `You're not signed in to ${providerLabel} and have no ${brandName} AI Credits available. Get AI Credits or sign in to ${providerLabel} to start chatting.`;
+  return `You're not connected to ${providerLabel} and have no ${brandName} AI Credits. Connect ${providerLabel} or buy AI Credits to start chatting.`;
 }
 
 /**
@@ -20861,6 +20856,8 @@ export interface CanopyApi {
   setPipelineDisabledPreference: (
     request: SetPipelineDisabledPreferenceRequest,
   ) => Promise<PreferencesData>;
+  /** Updates the master switch, category dismissals or corner display record (CAN-4343). */
+  updateSuggestions: (update: SuggestionsUpdate) => Promise<SuggestionsState>;
   /**
    * Dismisses one onboarding tip or brings every tip back (CAN-4904), merged
    * inside the preferences write queue so a dismissal saved meanwhile from a
@@ -21489,6 +21486,8 @@ export interface CanopyApi {
     callback: (event: GitExecutableInstallProgress) => void,
   ) => () => void;
   getGitHubCliStatus: () => Promise<GitHubCliStatus>;
+  /** Stars the product's source repository with the GitHub CLI's account. */
+  starSourceRepository: () => Promise<StarSourceRepositoryResult>;
   getClaudeAuthStatus: (options?: {
     forceRefresh?: boolean;
   }) => Promise<AgentProviderAuthStatus>;
@@ -22372,8 +22371,12 @@ export interface ChatProjectApi {
   ): Promise<void>;
   update(req: UpdateChatProjectRequest): Promise<void>;
   delete(req: DeleteChatProjectRequest): Promise<void>;
-  loadClaudeMd(req: ChatProjectClaudeMdRequest): Promise<string>;
-  saveClaudeMd(req: SaveChatProjectClaudeMdRequest): Promise<void>;
+  loadClaudeMd(
+    req: ChatProjectClaudeMdRequest,
+  ): Promise<ChatProjectClaudeMdResponse>;
+  saveClaudeMd(
+    req: SaveChatProjectClaudeMdRequest,
+  ): Promise<SaveChatProjectClaudeMdResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -22838,18 +22841,6 @@ export interface AppAdvisorUiStateSnapshot {
     localMemory?: {
       loaded: boolean;
       enabled: boolean;
-    };
-    /**
-     * Daily free AI Credits opt-in reported while the Settings section that
-     * hosts the toggle is mounted. `available` is false without a connected
-     * cloud account or when the server does not offer the preference;
-     * `decided` is true once the user has answered either way.
-     */
-    dailyCreditDrip?: {
-      loaded: boolean;
-      available: boolean;
-      enabled: boolean;
-      decided: boolean;
     };
     /**
      * Managed delegation policy reported while the Labs settings tab is
@@ -28413,6 +28404,7 @@ export const IPC_CHANNELS = {
   preferencesAcknowledgeLoadError: 'preferences:acknowledge-load-error',
   preferencesSave: 'preferences:save',
   preferencesSetPipelineDisabled: 'preferences:set-pipeline-disabled',
+  preferencesUpdateSuggestions: 'preferences:update-suggestions',
   preferencesUpdateOnboardingTips: 'preferences:update-onboarding-tips',
   preferencesSetApprovalDefault: 'preferences:set-approval-default',
   preferencesCreatePrimaryDataDir: 'preferences:create-primary-data-dir',
@@ -28938,6 +28930,7 @@ export const IPC_CHANNELS = {
   settingsCodexAuthStatus: 'settings:codex-auth-status',
   settingsProviderCarryover: 'settings:provider-carryover',
   settingsGitHubCliStatus: 'settings:github-cli-status',
+  settingsStarSourceRepository: 'settings:star-source-repository',
   settingsGitHubPermissions: 'settings:github-permissions',
   settingsLoadGitHubPat: 'settings:load-github-pat',
   settingsSaveGitHubPat: 'settings:save-github-pat',
@@ -29393,6 +29386,7 @@ export const IPC_CHANNELS = {
   // with the account's other devices and teammates read from the mirror.
   ledgerFeedSearch: 'ledger:feed-search',
   ledgerFeedGetEntry: 'ledger:feed-get-entry',
+  ledgerFeedWork: 'ledger:feed-work',
   // Observed cost of a work scope. Handlers route through the desktop
   // dispatcher to `core.cost.*`; `costUpdated` carries scope refs and a
   // revision only. The watch channels are one-way sends from a window.

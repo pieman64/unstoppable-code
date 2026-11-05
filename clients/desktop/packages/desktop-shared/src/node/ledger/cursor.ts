@@ -3,6 +3,9 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import {
   LEDGER_LIMITS,
   LEDGER_SEARCH_SORTS,
+  LedgerSequenceSchema,
+  LedgerTimestampSchema,
+  LedgerUuidSchema,
   type LedgerSearchSort,
 } from '@canopy/protocol/canopy-core';
 
@@ -43,9 +46,24 @@ export interface LedgerHistoryCursorState extends LedgerCursorBase {
   readonly afterRevision: number;
 }
 
+/** Position in a cross-scope rollup page, pinned to each scope's snapshot. */
+export interface LedgerRollupsCursorState extends LedgerCursorBase {
+  readonly kind: 'rollups';
+  /** SHA-256 of the ordered scope IDs and host-resolved caller actor IDs. */
+  readonly filterHash: string;
+  /** Scope sequence captured for each requested ledger, in request order. */
+  readonly watermarks: readonly string[];
+  /** Keyset ordering position: open first, then newest activity. */
+  readonly lastOpenRank: number;
+  readonly lastActivityAt: string;
+  readonly lastScopeOrder: number;
+  readonly lastEntryId: string;
+}
+
 export type LedgerCursorState =
   | LedgerSearchCursorState
-  | LedgerHistoryCursorState;
+  | LedgerHistoryCursorState
+  | LedgerRollupsCursorState;
 
 function sign(payload: string, secret: Buffer): string {
   return createHmac('sha256', secret).update(payload).digest('base64url');
@@ -123,6 +141,56 @@ function parseHistoryCursor(
   return { kind: 'history', ...base, entryId, afterRevision };
 }
 
+function parseRollupsCursor(
+  record: Record<string, unknown>,
+  base: LedgerCursorBase,
+): LedgerRollupsCursorState | null {
+  const filterHash = text(record, 'filterHash');
+  const lastOpenRank = integer(record, 'lastOpenRank');
+  const lastActivityAt = text(record, 'lastActivityAt');
+  const lastScopeOrder = integer(record, 'lastScopeOrder');
+  const lastEntryId = text(record, 'lastEntryId');
+  const watermarks = record.watermarks;
+  if (
+    filterHash === null ||
+    !/^[0-9a-f]{64}$/.test(filterHash) ||
+    (lastOpenRank !== 0 && lastOpenRank !== 1) ||
+    lastActivityAt === null ||
+    !LedgerTimestampSchema.safeParse(lastActivityAt).success ||
+    lastScopeOrder === null ||
+    lastScopeOrder < 0 ||
+    lastScopeOrder >= LEDGER_LIMITS.rollupsLedgerIdsMax ||
+    lastEntryId === null ||
+    !LedgerUuidSchema.safeParse(lastEntryId).success ||
+    !Array.isArray(watermarks) ||
+    watermarks.length < 1 ||
+    watermarks.length > LEDGER_LIMITS.rollupsLedgerIdsMax
+  ) {
+    return null;
+  }
+
+  const parsedWatermarks: string[] = [];
+  for (const value of watermarks) {
+    if (
+      typeof value !== 'string' ||
+      !LedgerSequenceSchema.safeParse(value).success
+    )
+      return null;
+    parsedWatermarks.push(value);
+  }
+
+  return {
+    kind: 'rollups',
+    ...base,
+    filterHash,
+    watermarks: parsedWatermarks,
+    lastOpenRank,
+    lastActivityAt,
+    lastScopeOrder,
+    lastEntryId,
+  };
+}
+
 function parseCursorState(value: unknown): LedgerCursorState | null {
   if (!isRecord(value) || value.v !== CURSOR_FORMAT_VERSION) return null;
   const ledgerId = text(value, 'ledgerId');
@@ -134,6 +202,7 @@ function parseCursorState(value: unknown): LedgerCursorState | null {
   const base: LedgerCursorBase = { ledgerId, schemaVersion, issuedAtMs };
   if (value.kind === 'search') return parseSearchCursor(value, base);
   if (value.kind === 'history') return parseHistoryCursor(value, base);
+  if (value.kind === 'rollups') return parseRollupsCursor(value, base);
   return null;
 }
 

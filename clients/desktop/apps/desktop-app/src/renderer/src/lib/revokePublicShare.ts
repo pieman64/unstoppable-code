@@ -1,7 +1,7 @@
+import type { SharedLinkKind } from '@canopy/ui-app/sharing';
 import {
   MarketplaceUnshareError,
   marketplaceUnshareReasonForStatus,
-  type MarketplaceUnshareKind,
 } from '@canopy/ui-shared/lib/marketplace-unshare';
 import { readSharedResourceErrorStatus } from './sharedResourceErrors';
 
@@ -16,11 +16,24 @@ import { readSharedResourceErrorStatus } from './sharedResourceErrors';
  * resolved failure is turned into a rejection here and never reads as success.
  */
 export async function revokeMarketplacePublicShare(
-  kind: MarketplaceUnshareKind,
+  kind: SharedLinkKind,
   shareId: string,
 ): Promise<void> {
   try {
     switch (kind) {
+      case 'pipeline': {
+        const result = await window.pipelines.revokePublicShare(shareId);
+        if (!result.success)
+          throw new Error(result.error ?? 'Remove public link failed');
+        window.dispatchEvent(new Event('canopy:pipeline-public-share-changed'));
+        return;
+      }
+      case 'automation':
+        await window.api.automations.revokePublicShare(shareId);
+        window.dispatchEvent(
+          new Event('canopy:automation-public-share-changed'),
+        );
+        return;
       case 'skill':
         await window.skills.revokePublicShare(shareId);
         return;

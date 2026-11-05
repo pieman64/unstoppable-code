@@ -19,7 +19,7 @@
 //   opencode → OpenCodeLogo
 import React, { type JSX } from 'react';
 import { AppIconBase, type AppIconBaseProps } from './AppIconBase';
-import { IconShimmer } from './CanopyGlyphs';
+import { IconMergeQueue, IconShimmer } from './CanopyGlyphs';
 
 /** Every generated glyph accepts the shared base props. */
 export type AppGlyph = React.ComponentType<AppIconBaseProps>;
@@ -1450,6 +1450,29 @@ const LucideEyeOff = /* @__PURE__ */ React.memo(function LucideEyeOff(
   );
 });
 
+const LucideFileDiff = /* @__PURE__ */ React.memo(function LucideFileDiff(
+  props: AppIconBaseProps,
+): JSX.Element {
+  return (
+    <AppIconBase
+      {...props}
+      viewBox="0 0 24 24"
+      artworkFamily="lucide"
+      fill={props.fill ?? 'none'}
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      data-glyph="file-diff"
+    >
+      <path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z" />
+      <path d="M9 10h6" />
+      <path d="M12 13V7" />
+      <path d="M9 17h6" />
+    </AppIconBase>
+  );
+});
+
 const LucideFileDown = /* @__PURE__ */ React.memo(function LucideFileDown(
   props: AppIconBaseProps,
 ): JSX.Element {
@@ -1648,6 +1671,29 @@ const LucideFolderFill1 = /* @__PURE__ */ React.memo(function LucideFolderFill1(
   );
 });
 
+const LucideFolderGit2 = /* @__PURE__ */ React.memo(function LucideFolderGit2(
+  props: AppIconBaseProps,
+): JSX.Element {
+  return (
+    <AppIconBase
+      {...props}
+      viewBox="0 0 24 24"
+      artworkFamily="lucide"
+      fill={props.fill ?? 'none'}
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      data-glyph="folder-git-2"
+    >
+      <path d="M18 19a5 5 0 0 1-5-5v8" />
+      <path d="M9 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v5" />
+      <circle cx="13" cy="12" r="2" />
+      <circle cx="20" cy="19" r="2" />
+    </AppIconBase>
+  );
+});
+
 const LucideFolderOpen = /* @__PURE__ */ React.memo(function LucideFolderOpen(
   props: AppIconBaseProps,
 ): JSX.Element {
@@ -1733,6 +1779,28 @@ const LucideGitBranch = /* @__PURE__ */ React.memo(function LucideGitBranch(
   );
 });
 
+const LucideGitCommitHorizontal = /* @__PURE__ */ React.memo(
+  function LucideGitCommitHorizontal(props: AppIconBaseProps): JSX.Element {
+    return (
+      <AppIconBase
+        {...props}
+        viewBox="0 0 24 24"
+        artworkFamily="lucide"
+        fill={props.fill ?? 'none'}
+        stroke="currentColor"
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        data-glyph="git-commit-horizontal"
+      >
+        <circle cx="12" cy="12" r="3" />
+        <line x1="3" x2="9" y1="12" y2="12" />
+        <line x1="15" x2="21" y1="12" y2="12" />
+      </AppIconBase>
+    );
+  },
+);
+
 const LucideGitFork = /* @__PURE__ */ React.memo(function LucideGitFork(
   props: AppIconBaseProps,
 ): JSX.Element {
@@ -1756,6 +1824,100 @@ const LucideGitFork = /* @__PURE__ */ React.memo(function LucideGitFork(
     </AppIconBase>
   );
 });
+
+const LucideGitMerge = /* @__PURE__ */ React.memo(function LucideGitMerge(
+  props: AppIconBaseProps,
+): JSX.Element {
+  return (
+    <AppIconBase
+      {...props}
+      viewBox="0 0 24 24"
+      artworkFamily="lucide"
+      fill={props.fill ?? 'none'}
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      data-glyph="git-merge"
+    >
+      <circle cx="18" cy="18" r="3" />
+      <circle cx="6" cy="6" r="3" />
+      <path d="M6 21V9a9 9 0 0 0 9 9" />
+    </AppIconBase>
+  );
+});
+
+const LucideGitPullRequest = /* @__PURE__ */ React.memo(
+  function LucideGitPullRequest(props: AppIconBaseProps): JSX.Element {
+    return (
+      <AppIconBase
+        {...props}
+        viewBox="0 0 24 24"
+        artworkFamily="lucide"
+        fill={props.fill ?? 'none'}
+        stroke="currentColor"
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        data-glyph="git-pull-request"
+      >
+        <circle cx="18" cy="18" r="3" />
+        <circle cx="6" cy="6" r="3" />
+        <path d="M13 6h3a2 2 0 0 1 2 2v7" />
+        <line x1="6" x2="6" y1="9" y2="21" />
+      </AppIconBase>
+    );
+  },
+);
+
+const LucideGitPullRequestClosed = /* @__PURE__ */ React.memo(
+  function LucideGitPullRequestClosed(props: AppIconBaseProps): JSX.Element {
+    return (
+      <AppIconBase
+        {...props}
+        viewBox="0 0 24 24"
+        artworkFamily="lucide"
+        fill={props.fill ?? 'none'}
+        stroke="currentColor"
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        data-glyph="git-pull-request-closed"
+      >
+        <path d="m15.5 3.5 5 5" />
+        <path d="m15.5 8.5 5-5" />
+        <path d="M18 11.62V15" />
+        <path d="M6 9v12" />
+        <circle cx="18" cy="18" r="3" />
+        <circle cx="6" cy="6" r="3" />
+      </AppIconBase>
+    );
+  },
+);
+
+const LucideGitPullRequestDraft = /* @__PURE__ */ React.memo(
+  function LucideGitPullRequestDraft(props: AppIconBaseProps): JSX.Element {
+    return (
+      <AppIconBase
+        {...props}
+        viewBox="0 0 24 24"
+        artworkFamily="lucide"
+        fill={props.fill ?? 'none'}
+        stroke="currentColor"
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        data-glyph="git-pull-request-draft"
+      >
+        <circle cx="18" cy="18" r="3" />
+        <circle cx="6" cy="6" r="3" />
+        <path d="M18 6V5" />
+        <path d="M18 11v-1" />
+        <line x1="6" x2="6" y1="9" y2="21" />
+      </AppIconBase>
+    );
+  },
+);
 
 const LucideGlobe = /* @__PURE__ */ React.memo(function LucideGlobe(
   props: AppIconBaseProps,
@@ -3136,6 +3298,30 @@ const LucidePuzzle = /* @__PURE__ */ React.memo(function LucidePuzzle(
   );
 });
 
+const LucideRadio = /* @__PURE__ */ React.memo(function LucideRadio(
+  props: AppIconBaseProps,
+): JSX.Element {
+  return (
+    <AppIconBase
+      {...props}
+      viewBox="0 0 24 24"
+      artworkFamily="lucide"
+      fill={props.fill ?? 'none'}
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      data-glyph="radio"
+    >
+      <path d="M16.247 7.761a6 6 0 0 1 0 8.478" />
+      <path d="M19.075 4.933a10 10 0 0 1 0 14.134" />
+      <path d="M4.925 19.067a10 10 0 0 1 0-14.134" />
+      <path d="M7.753 16.239a6 6 0 0 1 0-8.478" />
+      <circle cx="12" cy="12" r="2" />
+    </AppIconBase>
+  );
+});
+
 const LucideRectangleEllipsis = /* @__PURE__ */ React.memo(
   function LucideRectangleEllipsis(props: AppIconBaseProps): JSX.Element {
     return (
@@ -3560,6 +3746,27 @@ const LucideSquare = /* @__PURE__ */ React.memo(function LucideSquare(
   );
 });
 
+const LucideSquareDot = /* @__PURE__ */ React.memo(function LucideSquareDot(
+  props: AppIconBaseProps,
+): JSX.Element {
+  return (
+    <AppIconBase
+      {...props}
+      viewBox="0 0 24 24"
+      artworkFamily="lucide"
+      fill={props.fill ?? 'none'}
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      data-glyph="square-dot"
+    >
+      <rect width="18" height="18" x="3" y="3" rx="2" />
+      <circle cx="12" cy="12" r="1" />
+    </AppIconBase>
+  );
+});
+
 const LucideSquareFill1 = /* @__PURE__ */ React.memo(function LucideSquareFill1(
   props: AppIconBaseProps,
 ): JSX.Element {
@@ -3751,6 +3958,28 @@ const LucideTag = /* @__PURE__ */ React.memo(function LucideTag(
     >
       <path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z" />
       <circle cx="7.5" cy="7.5" r=".5" fill="currentColor" />
+    </AppIconBase>
+  );
+});
+
+const LucideTarget = /* @__PURE__ */ React.memo(function LucideTarget(
+  props: AppIconBaseProps,
+): JSX.Element {
+  return (
+    <AppIconBase
+      {...props}
+      viewBox="0 0 24 24"
+      artworkFamily="lucide"
+      fill={props.fill ?? 'none'}
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      data-glyph="target"
+    >
+      <circle cx="12" cy="12" r="10" />
+      <circle cx="12" cy="12" r="6" />
+      <circle cx="12" cy="12" r="2" />
     </AppIconBase>
   );
 });
@@ -4172,136 +4401,6 @@ const LucideZapFill1 = /* @__PURE__ */ React.memo(function LucideZapFill1(
   );
 });
 
-const OcticonsAlertInset0p5 = /* @__PURE__ */ React.memo(
-  function OcticonsAlertInset0p5(props: AppIconBaseProps): JSX.Element {
-    return (
-      <AppIconBase {...props} viewBox="-0.5 -0.5 25 25" data-glyph="alert">
-        <path d="M13 17.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0zm-.25-8.25a.75.75 0 0 0-1.5 0v4.5a.75.75 0 0 0 1.5 0v-4.5z" />
-        <path d="M9.84 3.24c.96-1.66 3.36-1.66 4.32 0l8.97 15.51c.96 1.67-.24 3.75-2.16 3.75H3.03c-1.92 0-3.12-2.08-2.16-3.75zm3.03.76a1 1 0 0 0-1.74 0L2.17 19.5a1 1 0 0 0 .86 1.5h17.94a1 1 0 0 0 .86-1.5L12.87 3.99z" />
-      </AppIconBase>
-    );
-  },
-);
-
-const OcticonsDiffModified = /* @__PURE__ */ React.memo(
-  function OcticonsDiffModified(props: AppIconBaseProps): JSX.Element {
-    return (
-      <AppIconBase {...props} viewBox="0 0 24 24" data-glyph="diff-modified">
-        <path d="M2 3.75C2 2.78 2.78 2 3.75 2h16.5c.97 0 1.75.78 1.75 1.75v16.5A1.75 1.75 0 0 1 20.25 22H3.75A1.75 1.75 0 0 1 2 20.25V3.75zm1.75-.25a.25.25 0 0 0-.25.25v16.5c0 .14.11.25.25.25h16.5a.25.25 0 0 0 .25-.25V3.75a.25.25 0 0 0-.25-.25H3.75z" />
-        <path d="M14.5 12a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0z" />
-      </AppIconBase>
-    );
-  },
-);
-
-const OcticonsFileDiffInset1 = /* @__PURE__ */ React.memo(
-  function OcticonsFileDiffInset1(props: AppIconBaseProps): JSX.Element {
-    return (
-      <AppIconBase {...props} viewBox="-1 -1 26 26" data-glyph="file-diff">
-        <path d="M12.5 6.75a.75.75 0 0 0-1.5 0V9H8.75a.75.75 0 0 0 0 1.5H11v2.25a.75.75 0 0 0 1.5 0V10.5h2.25a.75.75 0 0 0 0-1.5H12.5V6.75zM8.75 16a.75.75 0 0 0 0 1.5h6a.75.75 0 0 0 0-1.5h-6z" />
-        <path d="M5 1h9.98a2 2 0 0 1 1.42.59l4.01 4.01A2 2 0 0 1 21 7.02V21a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2zm-.5 2v18a.5.5 0 0 0 .5.5h14a.5.5 0 0 0 .5-.5V7.02a.5.5 0 0 0-.15-.36l-4.01-4.01a.5.5 0 0 0-.36-.15H5a.5.5 0 0 0-.5.5z" />
-      </AppIconBase>
-    );
-  },
-);
-
-const OcticonsGitBranchInset0p5 = /* @__PURE__ */ React.memo(
-  function OcticonsGitBranchInset0p5(props: AppIconBaseProps): JSX.Element {
-    return (
-      <AppIconBase {...props} viewBox="-0.5 -0.5 25 25" data-glyph="git-branch">
-        <path d="M15 4.75a3.25 3.25 0 1 1 6.5 0 3.25 3.25 0 0 1-6.5 0zM2.5 19.25a3.25 3.25 0 1 1 6.5 0 3.25 3.25 0 0 1-6.5 0zm0-14.5a3.25 3.25 0 1 1 6.5 0 3.25 3.25 0 0 1-6.5 0zM5.75 6.5a1.75 1.75 0 1 0 0-3.5 1.75 1.75 0 0 0 0 3.5zm0 14.5a1.75 1.75 0 1 0 0-3.5 1.75 1.75 0 0 0 0 3.5zm12.5-14.5a1.75 1.75 0 1 0 0-3.5 1.75 1.75 0 0 0 0 3.5z" />
-        <path d="M5.75 16.75A.75.75 0 0 1 5 16V8a.75.75 0 0 1 1.5 0v8a.75.75 0 0 1-.75.75z" />
-        <path d="M17.5 8.75v-1H19v1a3.75 3.75 0 0 1-3.75 3.75h-7a1.75 1.75 0 0 0-1.75 1.75H5A3.25 3.25 0 0 1 8.25 11h7a2.25 2.25 0 0 0 2.25-2.25z" />
-      </AppIconBase>
-    );
-  },
-);
-
-const OcticonsGitCommit = /* @__PURE__ */ React.memo(function OcticonsGitCommit(
-  props: AppIconBaseProps,
-): JSX.Element {
-  return (
-    <AppIconBase {...props} viewBox="0 0 24 24" data-glyph="git-commit">
-      <path d="M16.94 11h4.31a.75.75 0 0 1 0 1.5h-4.31a5 5 0 0 1-9.88 0H2.75a.75.75 0 0 1 0-1.5h4.31a5 5 0 0 1 9.88 0zm-1.44.75a3.5 3.5 0 1 0-7 0 3.5 3.5 0 0 0 7 0z" />
-    </AppIconBase>
-  );
-});
-
-const OcticonsGitMergeInset0p5 = /* @__PURE__ */ React.memo(
-  function OcticonsGitMergeInset0p5(props: AppIconBaseProps): JSX.Element {
-    return (
-      <AppIconBase {...props} viewBox="-0.5 -0.5 25 25" data-glyph="git-merge">
-        <path d="M15 13.25a3.25 3.25 0 1 1 6.5 0 3.25 3.25 0 0 1-6.5 0zm-12.5 6a3.25 3.25 0 1 1 6.5 0 3.25 3.25 0 0 1-6.5 0zm0-14.5a3.25 3.25 0 1 1 6.5 0 3.25 3.25 0 0 1-6.5 0zM5.75 6.5a1.75 1.75 0 1 0 0-3.5 1.75 1.75 0 0 0 0 3.5zm0 14.5a1.75 1.75 0 1 0 0-3.5 1.75 1.75 0 0 0 0 3.5zm12.5-6a1.75 1.75 0 1 0 0-3.5 1.75 1.75 0 0 0 0 3.5z" />
-        <path d="M6.5 7.25c0 2.9 2.35 5.25 5.25 5.25h4.5V14h-4.5A6.75 6.75 0 0 1 5 7.25z" />
-        <path d="M5.75 16.75A.75.75 0 0 1 5 16V8a.75.75 0 0 1 1.5 0v8a.75.75 0 0 1-.75.75z" />
-      </AppIconBase>
-    );
-  },
-);
-
-const OcticonsGitMergeQueueInset0p5 = /* @__PURE__ */ React.memo(
-  function OcticonsGitMergeQueueInset0p5(props: AppIconBaseProps): JSX.Element {
-    return (
-      <AppIconBase
-        {...props}
-        viewBox="-0.5 -0.5 25 25"
-        data-glyph="git-merge-queue"
-      >
-        <path d="M5.75 6.5a1.75 1.75 0 1 1 0-3.5 1.75 1.75 0 0 1 0 3.5zM9.5 8.75a1.75 1.75 0 1 1 3.5 0 1.75 1.75 0 0 1-3.5 0zM5.75 22.5a3.25 3.25 0 0 1-.74-6.41A.81.81 0 0 1 5 16v-5a.75.75 0 0 1 1.5 0v5a.81.81 0 0 1 0 .09 3.25 3.25 0 0 1-.75 6.41zM4 19.25a1.75 1.75 0 1 0 3.5 0 1.75 1.75 0 0 0-3.5 0zm11-6.5a3.25 3.25 0 1 1 6.5 0 3.25 3.25 0 0 1-6.5 0zm3.25 1.75a1.75 1.75 0 1 0 0-3.5 1.75 1.75 0 0 0 0 3.5z" />
-      </AppIconBase>
-    );
-  },
-);
-
-const OcticonsGitPullRequestClosedInset0p5 = /* @__PURE__ */ React.memo(
-  function OcticonsGitPullRequestClosedInset0p5(
-    props: AppIconBaseProps,
-  ): JSX.Element {
-    return (
-      <AppIconBase
-        {...props}
-        viewBox="-0.5 -0.5 25 25"
-        data-glyph="git-pull-request-closed"
-      >
-        <path d="M22.27 2.71a.75.75 0 1 0-1.06-1.06l-1.99 1.98-1.98-1.98a.75.75 0 1 0-1.06 1.06l1.98 1.98-1.98 1.99a.75.75 0 0 0 1.06 1.06l1.98-1.99 1.99 1.99a.75.75 0 0 0 1.06-1.06l-1.99-1.99 1.99-1.98zM4.75 1.5a3.25 3.25 0 0 1 .75 6.41.83.83 0 0 1 0 .09v8a.83.83 0 0 1 0 .09 3.25 3.25 0 0 1-.75 6.41 3.25 3.25 0 0 1-.74-6.41A.83.83 0 0 1 4 16V8c0-.03 0-.06.01-.09a3.25 3.25 0 0 1 .74-6.41zM16 19.25a3.25 3.25 0 0 1 2.5-3.16V9.63a.75.75 0 0 1 1.5 0v6.46a3.25 3.25 0 0 1-.75 6.41A3.25 3.25 0 0 1 16 19.25zM3 4.75a1.75 1.75 0 1 0 3.5 0 1.75 1.75 0 0 0-3.5 0zm0 14.5a1.75 1.75 0 1 0 3.5 0 1.75 1.75 0 0 0-3.5 0zm16.25-1.75a1.75 1.75 0 1 0 0 3.5 1.75 1.75 0 0 0 0-3.5z" />
-      </AppIconBase>
-    );
-  },
-);
-
-const OcticonsGitPullRequestDraftInset0p5 = /* @__PURE__ */ React.memo(
-  function OcticonsGitPullRequestDraftInset0p5(
-    props: AppIconBaseProps,
-  ): JSX.Element {
-    return (
-      <AppIconBase
-        {...props}
-        viewBox="-0.5 -0.5 25 25"
-        data-glyph="git-pull-request-draft"
-      >
-        <path d="M4.75 1.5a3.25 3.25 0 0 1 .75 6.41.83.83 0 0 1 0 .09v8a.83.83 0 0 1 0 .09 3.25 3.25 0 0 1-.75 6.41 3.25 3.25 0 0 1-.74-6.41A.83.83 0 0 1 4 16V8c0-.03 0-.06.01-.09a3.25 3.25 0 0 1 .74-6.41zM16 19.25a3.25 3.25 0 1 1 6.5 0 3.25 3.25 0 0 1-6.5 0zM3 4.75a1.75 1.75 0 1 0 3.5 0 1.75 1.75 0 0 0-3.5 0zm0 14.5a1.75 1.75 0 1 0 3.5 0 1.75 1.75 0 0 0-3.5 0zm16.25-1.75a1.75 1.75 0 1 0 0 3.5 1.75 1.75 0 0 0 0-3.5zm0-11.5a1.75 1.75 0 1 0 0-3.5 1.75 1.75 0 0 0 0 3.5zM21 11.25a1.75 1.75 0 1 1-3.5 0 1.75 1.75 0 0 1 3.5 0z" />
-      </AppIconBase>
-    );
-  },
-);
-
-const OcticonsGitPullRequestInset0p5 = /* @__PURE__ */ React.memo(
-  function OcticonsGitPullRequestInset0p5(
-    props: AppIconBaseProps,
-  ): JSX.Element {
-    return (
-      <AppIconBase
-        {...props}
-        viewBox="-0.5 -0.5 25 25"
-        data-glyph="git-pull-request"
-      >
-        <path d="M16 19.25a3.25 3.25 0 1 1 6.5 0 3.25 3.25 0 0 1-6.5 0zm-14.5 0a3.25 3.25 0 1 1 6.5 0 3.25 3.25 0 0 1-6.5 0zm0-14.5a3.25 3.25 0 1 1 6.5 0 3.25 3.25 0 0 1-6.5 0zM4.75 3a1.75 1.75 0 1 0 0 3.5 1.75 1.75 0 0 0 0-3.5zm0 14.5a1.75 1.75 0 1 0 0 3.5 1.75 1.75 0 0 0 0-3.5zm14.5 0a1.75 1.75 0 1 0 0 3.5 1.75 1.75 0 0 0 0-3.5z" />
-        <path d="M13.41 1.72a.75.75 0 0 1 0 1.06L12.19 4h4.06A3.75 3.75 0 0 1 20 7.75v8.75a.75.75 0 0 1-1.5 0V7.75a2.25 2.25 0 0 0-2.25-2.25h-4.06l1.22 1.22a.75.75 0 0 1-1.06 1.06l-2.5-2.5a.75.75 0 0 1 0-1.06l2.5-2.5a.75.75 0 0 1 1.06 0zM4.75 7.25A.75.75 0 0 1 5.5 8v8A.75.75 0 0 1 4 16V8a.75.75 0 0 1 .75-.75z" />
-      </AppIconBase>
-    );
-  },
-);
-
 const OcticonsMarkGithubInset1p5 = /* @__PURE__ */ React.memo(
   function OcticonsMarkGithubInset1p5(props: AppIconBaseProps): JSX.Element {
     return (
@@ -4311,33 +4410,6 @@ const OcticonsMarkGithubInset1p5 = /* @__PURE__ */ React.memo(
         data-glyph="mark-github"
       >
         <path d="M10.23 17.28c-2.97-.36-5.06-2.49-5.06-5.25 0-1.12.41-2.34 1.08-3.15-.29-.74-.25-2.31.09-2.96.9-.11 2.11.36 2.83 1.01.85-.27 1.75-.41 2.85-.41 1.1 0 2 .14 2.81.39.7-.63 1.93-1.1 2.83-.99.32.6.36 2.18.07 2.94.72.85 1.1 2 1.1 3.17 0 2.76-2.09 4.85-5.1 5.23.76.5 1.28 1.57 1.28 2.81v2.33c0 .68.56 1.06 1.24.79 4.06-1.55 7.25-5.61 7.25-10.65C23.5 6.19 18.33 1 11.98 1 5.62 1 .5 6.19.5 12.55c0 4.98 3.17 9.12 7.44 10.66.6.23 1.19-.18 1.19-.78v-1.8a2.9 2.9 0 0 1-1.08.22c-1.49 0-2.36-.8-2.99-2.31-.25-.61-.52-.96-1.03-1.03-.27-.02-.36-.14-.36-.27 0-.27.45-.47.9-.47.65 0 1.21.4 1.79 1.23.45.65.92.95 1.49.95.56 0 .92-.21 1.43-.72.38-.38.68-.72.95-.95" />
-      </AppIconBase>
-    );
-  },
-);
-
-const OcticonsRepoForkedInset0p5 = /* @__PURE__ */ React.memo(
-  function OcticonsRepoForkedInset0p5(props: AppIconBaseProps): JSX.Element {
-    return (
-      <AppIconBase
-        {...props}
-        viewBox="-0.5 -0.5 25 25"
-        data-glyph="repo-forked"
-      >
-        <path d="M8.75 19.25a3.25 3.25 0 1 1 6.5 0 3.25 3.25 0 0 1-6.5 0zM15 4.75a3.25 3.25 0 1 1 6.5 0 3.25 3.25 0 0 1-6.5 0zm-12.5 0a3.25 3.25 0 1 1 6.5 0 3.25 3.25 0 0 1-6.5 0zM5.75 6.5a1.75 1.75 0 1 0 0-3.5 1.75 1.75 0 0 0 0 3.5zM12 21a1.75 1.75 0 1 0 0-3.5 1.75 1.75 0 0 0 0 3.5zm6.25-14.5a1.75 1.75 0 1 0 0-3.5 1.75 1.75 0 0 0 0 3.5z" />
-        <path d="M6.5 7.75v1A2.25 2.25 0 0 0 8.75 11h6.5a2.25 2.25 0 0 0 2.25-2.25v-1H19v1a3.75 3.75 0 0 1-3.75 3.75h-6.5A3.75 3.75 0 0 1 5 8.75v-1z" />
-        <path d="M11.25 16.25v-5h1.5v5h-1.5z" />
-      </AppIconBase>
-    );
-  },
-);
-
-const OcticonsRepoInset2 = /* @__PURE__ */ React.memo(
-  function OcticonsRepoInset2(props: AppIconBaseProps): JSX.Element {
-    return (
-      <AppIconBase {...props} viewBox="-2 -2 28 28" data-glyph="repo">
-        <path d="M3 2.75A2.75 2.75 0 0 1 5.75 0h14.5a.75.75 0 0 1 .75.75v20.5a.75.75 0 0 1-.75.75h-6a.75.75 0 0 1 0-1.5h5.25v-4H6A1.5 1.5 0 0 0 4.5 18v.75c0 .72.43 1.33 1.05 1.61a.75.75 0 0 1-.6 1.37A3.25 3.25 0 0 1 3 18.75zM19.5 1.5H5.75c-.69 0-1.25.56-1.25 1.25V15.4A2.99 2.99 0 0 1 6 15h13.5z" />
-        <path d="M7 18.25a.25.25 0 0 1 .25-.25h5a.25.25 0 0 1 .25.25v5.01a.25.25 0 0 1-.4.2l-2.2-1.6a.25.25 0 0 0-.3 0l-2.2 1.6a.25.25 0 0 1-.4-.2v-5.01z" />
       </AppIconBase>
     );
   },
@@ -4458,10 +4530,11 @@ export const IconBoard: AppGlyph = LucideLayoutDashboard;
 export const IconBottombarHiddenBottomWide: AppGlyph = LucidePanelBottom;
 export const IconBrain1: AppGlyph = LucideBrain;
 export const IconBrain2: AppGlyph = LucideBrainCircuit;
-export const IconBranch: AppGlyph = OcticonsGitBranchInset0p5;
-export const IconBranchSimple: AppGlyph = OcticonsGitBranchInset0p5;
+export const IconBranch: AppGlyph = LucideGitBranch;
+export const IconBranchSimple: AppGlyph = LucideGitBranch;
 export const IconBriefcase: AppGlyph = LucideBriefcase;
 export const IconBrightness: AppGlyph = LucideSun;
+export const IconBroadcast: AppGlyph = LucideRadio;
 export const IconBubble2: AppGlyph = LucideMessageCircle;
 export const IconBubblePlus: AppGlyph = LucideMessageSquarePlus;
 export const IconBubbles: AppGlyph = LucideMessagesSquare;
@@ -4474,7 +4547,7 @@ export const IconBulletList: AppGlyph = LucideList;
 export const IconCalendarClock: AppGlyph = LucideCalendarClock;
 export const IconCamera1: AppGlyph = LucideCamera;
 export const IconCanvasGrid: AppGlyph = LucideGrid2x2;
-export const IconChanges: AppGlyph = OcticonsFileDiffInset1;
+export const IconChanges: AppGlyph = LucideFileDiff;
 export const IconChart4: AppGlyph = LucideChartNoAxesColumn;
 export const IconCheckmark1: AppGlyph = LucideCheck;
 export const IconChevronDownMedium: AppGlyph = LucideChevronDown;
@@ -4502,7 +4575,7 @@ export const IconCloud: AppGlyph = LucideCloud;
 export const IconCodeBrackets: AppGlyph = LucideCode;
 export const IconCodeMedium: AppGlyph = LucideCode;
 export const IconCoins: AppGlyph = LucideCoins;
-export const IconCommits: AppGlyph = OcticonsGitCommit;
+export const IconCommits: AppGlyph = LucideGitCommitHorizontal;
 export const IconConnectors2: AppGlyph = LucideNetwork;
 export const IconConsole: AppGlyph = LucideTerminal;
 export const IconConsoleSimple: AppGlyph = LucideTerminal;
@@ -4513,16 +4586,16 @@ export const IconCrossSmall: AppGlyph = LucideX;
 export const IconCursorClick: AppGlyph = LucideMousePointerClick;
 export const IconDeepseek: AppGlyph = SimpleIconsDeepseekInset2;
 export const IconDevices: AppGlyph = LucideMonitorSmartphone;
-export const IconDifference: AppGlyph = OcticonsFileDiffInset1;
-export const IconDifferenceModified: AppGlyph = OcticonsDiffModified;
+export const IconDifference: AppGlyph = LucideFileDiff;
+export const IconDifferenceModified: AppGlyph = LucideSquareDot;
 export const IconDiscord: AppGlyph = SimpleIconsDiscordInset2;
 export const IconDollar: AppGlyph = LucideCircleDollarSign;
 export const IconDotGrid1x3Horizontal: AppGlyph = LucideEllipsis;
 export const IconDotGrid1x3Vertical: AppGlyph = LucideEllipsisVertical;
 export const IconDotGrid2x3: AppGlyph = LucideGripVertical;
 export const IconDotGrid3x3: AppGlyph = LucideGripFill1;
-export const IconDraft: AppGlyph = OcticonsGitPullRequestDraftInset0p5;
-export const IconDraftSimple: AppGlyph = OcticonsGitPullRequestDraftInset0p5;
+export const IconDraft: AppGlyph = LucideGitPullRequestDraft;
+export const IconDraftSimple: AppGlyph = LucideGitPullRequestDraft;
 export const IconEditBig: AppGlyph = LucideSquarePen;
 export const IconElectrocardiogram: AppGlyph = LucideActivity;
 export const IconEmail1: AppGlyph = LucideMail;
@@ -4540,7 +4613,7 @@ export const IconFilter1: AppGlyph = LucideFilter;
 export const IconFocusSquare: AppGlyph = LucideFocus;
 export const IconFolder1: AppGlyph = LucideFolder;
 export const IconFolderAddRight: AppGlyph = LucideFolderPlus;
-export const IconFolderData: AppGlyph = OcticonsRepoInset2;
+export const IconFolderData: AppGlyph = LucideFolderGit2;
 export const IconFolderFilled: AppGlyph = LucideFolderFill1;
 export const IconFolders: AppGlyph = LucideFolders;
 export const IconFoldersDashed: AppGlyph = LucideFolderOpen;
@@ -4548,7 +4621,7 @@ export const IconForkSplit: AppGlyph = LucideSplit;
 export const IconFrontHand: AppGlyph = LucideHand;
 export const IconGit: AppGlyph = SimpleIconsGitInset2;
 export const IconGitBranchLine: AppGlyph = LucideGitBranch;
-export const IconGitFork: AppGlyph = OcticonsRepoForkedInset0p5;
+export const IconGitFork: AppGlyph = LucideGitFork;
 export const IconGithub: AppGlyph = OcticonsMarkGithubInset1p5;
 export const IconGlobe: AppGlyph = LucideGlobe;
 export const IconGlobe2: AppGlyph = LucideGlobe;
@@ -4578,11 +4651,10 @@ export const IconMacbook: AppGlyph = LucideLaptop;
 export const IconMagnifyingGlass: AppGlyph = LucideSearch;
 export const IconMap: AppGlyph = LucideMap;
 export const IconMention: AppGlyph = LucideAtSign;
-export const IconMergeConflict: AppGlyph = OcticonsAlertInset0p5;
-export const IconMergeConflictSimple: AppGlyph = OcticonsAlertInset0p5;
-export const IconMerged: AppGlyph = OcticonsGitMergeInset0p5;
-export const IconMergedSimple: AppGlyph = OcticonsGitMergeInset0p5;
-export const IconMergeQueue: AppGlyph = OcticonsGitMergeQueueInset0p5;
+export const IconMergeConflict: AppGlyph = LucideTriangleAlert;
+export const IconMergeConflictSimple: AppGlyph = LucideTriangleAlert;
+export const IconMerged: AppGlyph = LucideGitMerge;
+export const IconMergedSimple: AppGlyph = LucideGitMerge;
 export const IconMessageCircleDashed: AppGlyph = LucideMessageCircleDashed;
 export const IconMicrophone: AppGlyph = LucideMic;
 export const IconMinimax: AppGlyph = SimpleIconsMinimaxInset2;
@@ -4611,17 +4683,16 @@ export const IconPlayCircle: AppGlyph = LucideCirclePlay;
 export const IconPlusLarge: AppGlyph = LucidePlus;
 export const IconPlusMedium: AppGlyph = LucidePlus;
 export const IconPlusSmall: AppGlyph = LucidePlus;
-export const IconPullRequest: AppGlyph = OcticonsGitPullRequestInset0p5;
-export const IconPullRequestClosedSimple: AppGlyph =
-  OcticonsGitPullRequestClosedInset0p5;
-export const IconPullRequestSimple: AppGlyph = OcticonsGitPullRequestInset0p5;
+export const IconPullRequest: AppGlyph = LucideGitPullRequest;
+export const IconPullRequestClosedSimple: AppGlyph = LucideGitPullRequestClosed;
+export const IconPullRequestSimple: AppGlyph = LucideGitPullRequest;
 export const IconPuzzle: AppGlyph = LucidePuzzle;
 export const IconRaisedHand: AppGlyph = LucideHand;
 export const IconRecord: AppGlyph = LucideCircleDot;
 export const IconReddit: AppGlyph = SimpleIconsRedditInset2;
 export const IconRedo: AppGlyph = LucideRedo2;
 export const IconReplay: AppGlyph = LucideRotateCcw;
-export const IconRequestClosed: AppGlyph = OcticonsGitPullRequestClosedInset0p5;
+export const IconRequestClosed: AppGlyph = LucideGitPullRequestClosed;
 export const IconReviewFilled: AppGlyph = LucideStarFill1;
 export const IconRobot: AppGlyph = LucideBot;
 export const IconRobot2: AppGlyph = LucideBot;
@@ -4659,6 +4730,7 @@ export const IconStore1: AppGlyph = LucideStore;
 export const IconSummary: AppGlyph = LucideFileText;
 export const IconSun: AppGlyph = LucideSun;
 export const IconTag: AppGlyph = LucideTag;
+export const IconTarget: AppGlyph = LucideTarget;
 export const IconTextIndentLeft: AppGlyph = LucideIndentIncrease;
 export const IconTextIndentRight: AppGlyph = LucideIndentDecrease;
 export const IconThumbsDown: AppGlyph = LucideThumbsDown;
@@ -4673,6 +4745,7 @@ export const IconUserAdd: AppGlyph = LucideUserRoundPlus;
 export const IconUserGroup: AppGlyph = LucideUsers;
 export const IconVibeCoding: AppGlyph = LucideWandSparkles;
 export const IconWarningSign: AppGlyph = LucideTriangleAlert;
+export const IconWatching: AppGlyph = LucideRadio;
 export const IconWebhooks: AppGlyph = LucideWebhook;
 export const IconWorkflows: AppGlyph = LucideWorkflow;
 export const IconXSocial: AppGlyph = SimpleIconsXInset2;
@@ -4680,4 +4753,4 @@ export const IconZai: AppGlyph = LobehubZaiInset2;
 export const IconZap: AppGlyph = LucideZap;
 export const IconZapFilled: AppGlyph = LucideZapFill1;
 
-export { IconShimmer };
+export { IconMergeQueue, IconShimmer };

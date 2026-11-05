@@ -8,6 +8,7 @@ import {
   loadChatTranscriptPage,
   TRANSCRIPT_PAGE_LOAD_ERROR,
 } from '@/stores/chat/transcript-pages';
+import { useChatTranscriptResidency } from '@/stores/chat/transcript-residency-host';
 import {
   lazy,
   Suspense,
@@ -152,6 +153,12 @@ interface ChatContentProps {
   /** Centered content replacing the default empty-chat hint. */
   emptyStateCenter?: ReactNode;
   /**
+   * Where `emptyStateCenter` sits in the empty transcript: `bottom` (the
+   * default) rests it on the composer; `center` centers it vertically, for
+   * a shared `EmptyState`. Both scroll from the top when the pane is short.
+   */
+  emptyStateCenterPlacement?: 'bottom' | 'center';
+  /**
    * Whether this surface is the focused one for Cmd/Ctrl+F (CAN-3048):
    * worktree panels pass the hosting panel's `isActive` bit. Defaults to
    * `true` for single-instance contexts (standalone chat, pipeline drawer)
@@ -202,6 +209,7 @@ export function ChatContent({
   hideComposer: hideComposerProp = false,
   emptyStateSuggestions,
   emptyStateCenter,
+  emptyStateCenterPlacement = 'bottom',
   searchShortcutActive = true,
   findSurfaceVisible = searchShortcutActive,
 }: ChatContentProps): JSX.Element {
@@ -302,6 +310,7 @@ export function ChatContent({
         : undefined,
     [pageChatId, pageProjectId, pageWorktreeId],
   );
+  useChatTranscriptResidency(pageScrollTarget ?? null);
   const loadPage = useCallback(
     async (older = false, turnId?: string): Promise<void> => {
       if (!pageProjectId || !pageWorktreeId || !pageChatId) return;
@@ -512,7 +521,11 @@ export function ChatContent({
             className={`flex min-h-0 flex-1 ${emptyStateCenter ? 'overflow-y-auto' : 'items-center justify-center'}`}
           >
             {emptyStateCenter ? (
-              <div className="mt-auto w-full py-4">{emptyStateCenter}</div>
+              <div
+                className={`${emptyStateCenterPlacement === 'center' ? 'my-auto' : 'mt-auto'} w-full py-4`}
+              >
+                {emptyStateCenter}
+              </div>
             ) : (
               <div className="text-center text-s fg-secondary">
                 Send a message to start working

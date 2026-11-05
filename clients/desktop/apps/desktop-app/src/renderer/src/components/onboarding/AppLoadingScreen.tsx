@@ -15,8 +15,9 @@ import { BrandLogo } from '@/components/BrandLogo';
  */
 export function AppLoadingScreen(): JSX.Element {
   return (
+    // The window's whole content in place of the shell, not a layer over it.
     <div
-      className="fixed inset-0 z-modal flex items-center justify-center bg-base"
+      className="flex h-screen w-full items-center justify-center bg-base"
       data-testid="app-loading-screen"
     >
       <BrandLogo

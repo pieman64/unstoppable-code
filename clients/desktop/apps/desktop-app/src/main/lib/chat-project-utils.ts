@@ -152,6 +152,7 @@ export async function ensureChatProjectDir(
   await syncChatProjectAgentsMd(projectId);
 }
 
+/** Managed-home scaffolding, template seeding and legacy forks only. Interactive saves use the non-destructive layout-aware service. */
 export async function syncChatProjectAgentsMd(
   projectId: string,
 ): Promise<void> {

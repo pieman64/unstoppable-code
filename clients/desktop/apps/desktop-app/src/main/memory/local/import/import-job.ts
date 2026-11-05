@@ -10,14 +10,11 @@ import {
   BACKGROUND_HELPER_PRIORITIES,
   enqueueBackgroundHelperTask,
 } from '../../../lib/background-helper-queue';
-import {
-  coworkWorkspaceRootDirFor,
-  getUserMemoryDir,
-  getWorkspaceMemoryDir,
-} from '../../../lib/paths';
+import { coworkWorkspaceRootDirFor } from '../../../lib/paths';
 import { readLocalMemoryEnabledPreference } from '../../../lib/preferences-store';
 import { readAllSidebarItems } from '../../../lib/sidebar-items';
 import { readWorkspaceConfig } from '../../../lib/workspace-persistence';
+import { localMemoryScopeDir } from '../scope-resolver';
 import { broadcastLocalMemoryChanged } from '../change-events';
 import { requestLocalMemoryConsolidation } from '../consolidation-scheduler';
 import { isMemoryMarkdownFileName } from '../memory-files';
@@ -89,9 +86,11 @@ function emptyJobResult(
 }
 
 function targetScopeDir(target: LocalMemoryImportTarget): string {
-  return target.scope === 'user'
-    ? getUserMemoryDir()
-    : getWorkspaceMemoryDir(target.workspaceId);
+  return localMemoryScopeDir(
+    target.scope === 'user'
+      ? { scope: 'user' }
+      : { scope: 'workspace', workspaceId: target.workspaceId },
+  );
 }
 
 async function scopeHasPendingStagedImports(
@@ -404,7 +403,9 @@ async function enqueueLocalMemoryImportBatch(
     const pendingUserScope =
       involvedUserScope &&
       (stagedUserScope ||
-        (await scopeHasPendingStagedImports(getUserMemoryDir())));
+        (await scopeHasPendingStagedImports(
+          localMemoryScopeDir({ scope: 'user' }),
+        )));
     const pendingWorkspaceIds = (
       await Promise.all(
         Array.from(involvedWorkspaceIds, async (workspaceId) => ({
@@ -412,7 +413,7 @@ async function enqueueLocalMemoryImportBatch(
           pending:
             stagedWorkspaceIds.has(workspaceId) ||
             (await scopeHasPendingStagedImports(
-              getWorkspaceMemoryDir(workspaceId),
+              localMemoryScopeDir({ scope: 'workspace', workspaceId }),
             )),
         })),
       )

@@ -4,6 +4,10 @@ import { dirname } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { writeFileAtomicallySync } from '@canopy/desktop-shared/node/lib/atomic-file';
 import {
+  damagedCopyPath,
+  pruneDamagedCopiesSync,
+} from '@canopy/desktop-shared/node/lib/damaged-copies';
+import {
   DEFAULT_TERMINAL_DRAWER_COLLAPSED,
   TERMINAL_CUSTOM_NAME_MAX_LENGTH,
   TERMINAL_PERSISTED_SCROLLBACK_MAX_LINES,
@@ -89,9 +93,12 @@ function hasVersion1Shape(value: Record<string, unknown>): boolean {
   );
 }
 
-/** Keeps a damaged file's bytes beside it; false when it could not be moved. */
+/**
+ * Keeps a damaged file's bytes beside it, with at most the newest five such
+ * copies; false when it could not be moved.
+ */
 function setAsideDamagedStateFile(filePath: string): boolean {
-  const asidePath = `${filePath}.damaged-${Date.now()}`;
+  const asidePath = damagedCopyPath(filePath);
   try {
     renameSync(filePath, asidePath);
   } catch (error) {
@@ -100,6 +107,7 @@ function setAsideDamagedStateFile(filePath: string): boolean {
     });
     return false;
   }
+  pruneDamagedCopiesSync(filePath);
   logMainProcessWarn('Set aside damaged terminal state', { asidePath });
   return true;
 }

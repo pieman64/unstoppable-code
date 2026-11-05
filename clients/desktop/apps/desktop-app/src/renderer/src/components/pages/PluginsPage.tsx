@@ -48,7 +48,6 @@ import {
 } from 'react';
 import { PageTitlebar } from '../shared/PageTitlebar';
 import { PageContent } from '../shared/PageContent';
-import { TITLEBAR_BUTTON_CLASSNAME } from '../sidebar/sidebar-styles';
 import { useMarketplaceList } from '../../hooks/useMarketplaceList';
 import { useCuratedMcpServers } from '../../hooks/useCuratedMcpServers';
 import { useMcpServerList } from '../../hooks/useMcpServerList';
@@ -122,7 +121,6 @@ import type {
   McpServerStatusEntry,
   McpServerIndexEntry,
 } from '@canopy/desktop-shared/types/mcp-servers';
-import { ChevronRightMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
   CUSTOMIZE_SECTION_SUBTITLE,
   EmptyState,
@@ -3275,99 +3273,58 @@ export function PluginsPage({
             className="flex h-full items-start pl-2.25 pt-2.25"
             data-testid="marketplace-source-titlebar"
           >
-            <nav
-              aria-label="Breadcrumb"
-              className="electron-no-drag flex h-7 min-w-0 items-center text-s font-normal"
-              data-testid="marketplace-source-breadcrumbs"
-            >
-              <ol className="flex h-full min-w-0 items-center gap-1">
-                <li className="flex h-full shrink-0 items-center">
-                  <button
-                    type="button"
-                    data-testid="marketplace-source-breadcrumb-root"
-                    onClick={() => {
+            <div className="electron-no-drag min-w-0">
+              <CustomizeBreadcrumbs
+                testId="marketplace-source-breadcrumbs"
+                items={[
+                  {
+                    key: 'root',
+                    label: CUSTOMIZE_LABEL,
+                    testId: 'marketplace-source-breadcrumb-root',
+                    onSelect: (): void => {
                       setSelectedSourceId(null);
                       setKindFilter(null);
-                    }}
-                    className={`${TITLEBAR_BUTTON_CLASSNAME} whitespace-nowrap text-s font-normal`}
-                  >
-                    {CUSTOMIZE_LABEL}
-                  </button>
-                </li>
-                <li
-                  aria-hidden="true"
-                  className="flex h-full shrink-0 items-center fg-tertiary"
-                >
-                  <ChevronRightMediumIcon size={16} />
-                </li>
-                <li className="flex h-full shrink-0 items-center">
-                  <button
-                    type="button"
-                    data-testid="marketplace-source-breadcrumb-sources"
-                    onClick={closeMarketplaceSource}
-                    className={`${TITLEBAR_BUTTON_CLASSNAME} whitespace-nowrap text-s font-normal`}
-                  >
-                    Marketplaces
-                  </button>
-                </li>
-                <li
-                  aria-hidden="true"
-                  className="flex h-full shrink-0 items-center fg-tertiary"
-                >
-                  <ChevronRightMediumIcon size={16} />
-                </li>
-                <li className="flex h-full min-w-0 items-center">
-                  <span
-                    aria-current="page"
-                    className="flex h-7 min-w-0 items-center truncate px-1.5 fg-primary"
-                    data-testid="marketplace-source-breadcrumb-current"
-                  >
-                    <span className="ph-mask truncate">
-                      {selectedSource?.name ?? 'Marketplace'}
-                    </span>
-                  </span>
-                </li>
-              </ol>
-            </nav>
+                    },
+                  },
+                  {
+                    key: 'sources',
+                    label: 'Marketplaces',
+                    testId: 'marketplace-source-breadcrumb-sources',
+                    onSelect: closeMarketplaceSource,
+                  },
+                  {
+                    key: 'current',
+                    label: selectedSource?.name ?? 'Marketplace',
+                    testId: 'marketplace-source-breadcrumb-current',
+                    privateLabel: true,
+                  },
+                ]}
+              />
+            </div>
           </div>
         ) : activeBrowseGroup ? (
           <div
             className="flex h-full items-start pl-2.25 pt-2.25"
             data-testid="plugins-category-titlebar"
           >
-            <nav
-              aria-label="Breadcrumb"
-              className="electron-no-drag flex h-7 min-w-0 items-center text-s font-normal"
-              data-testid="plugins-category-breadcrumbs"
-            >
-              <ol className="flex h-full min-w-0 items-center gap-1">
-                <li className="flex h-full shrink-0 items-center">
-                  <button
-                    type="button"
-                    data-testid="plugins-category-breadcrumb-root"
-                    onClick={closeBrowseGroup}
-                    className={`${TITLEBAR_BUTTON_CLASSNAME} whitespace-nowrap text-s font-normal`}
-                  >
-                    {CUSTOMIZE_LABEL}
-                  </button>
-                </li>
-                <li
-                  aria-hidden="true"
-                  className="flex h-full shrink-0 items-center fg-tertiary"
-                >
-                  <ChevronRightMediumIcon size={16} />
-                </li>
-                <li className="flex h-full min-w-0 items-center">
-                  <span
-                    aria-current="page"
-                    className="flex h-7 min-w-0 items-center truncate px-1.5 fg-primary"
-                    data-testid="plugins-category-breadcrumb-current"
-                  >
-                    {activeBrowseGroup.title}
-                  </span>
-                </li>
-              </ol>
-            </nav>
+            <div className="electron-no-drag min-w-0">
+              <CustomizeBreadcrumbs
+                testId="plugins-category-breadcrumbs"
+                items={[
+                  {
+                    key: 'root',
+                    label: CUSTOMIZE_LABEL,
+                    testId: 'plugins-category-breadcrumb-root',
+                    onSelect: closeBrowseGroup,
+                  },
+                  {
+                    key: 'current',
+                    label: activeBrowseGroup.title,
+                    testId: 'plugins-category-breadcrumb-current',
+                  },
+                ]}
+              />
+            </div>
           </div>
         ) : null}
       </PageTitlebar>
@@ -3804,55 +3761,30 @@ export function PluginsPage({
         <CuratedPipelinePreview
           breadcrumbs={
             curatedPipelineBreadcrumbTitle ? (
-              <nav
-                aria-label="Breadcrumb"
-                className="mb-4 flex h-7 min-w-0 items-center text-s font-normal"
-                data-testid="plugins-curated-pipeline-breadcrumbs"
-              >
-                <ol className="flex h-full min-w-0 items-center gap-1">
-                  <li className="flex h-full shrink-0 items-center">
-                    <button
-                      type="button"
-                      data-testid="plugins-curated-pipeline-breadcrumb-root"
-                      onClick={capabilityInventory.curated.onBack}
-                      className={`${TITLEBAR_BUTTON_CLASSNAME} whitespace-nowrap text-s font-normal`}
-                    >
-                      {CUSTOMIZE_LABEL}
-                    </button>
-                  </li>
-                  <li
-                    aria-hidden="true"
-                    className="flex h-full shrink-0 items-center fg-tertiary"
-                  >
-                    <ChevronRightMediumIcon size={16} />
-                  </li>
-                  <li className="flex h-full shrink-0 items-center">
-                    <button
-                      type="button"
-                      data-testid="plugins-curated-pipeline-breadcrumb-type"
-                      onClick={openCuratedPipelineType}
-                      className={`${TITLEBAR_BUTTON_CLASSNAME} whitespace-nowrap text-s font-normal`}
-                    >
-                      Workflows
-                    </button>
-                  </li>
-                  <li
-                    aria-hidden="true"
-                    className="flex h-full shrink-0 items-center fg-tertiary"
-                  >
-                    <ChevronRightMediumIcon size={16} />
-                  </li>
-                  <li className="flex h-full min-w-0 items-center">
-                    <span
-                      aria-current="page"
-                      className="flex h-7 min-w-0 items-center truncate px-1.5 fg-primary"
-                      data-testid="plugins-curated-pipeline-breadcrumb-current"
-                    >
-                      {curatedPipelineBreadcrumbTitle}
-                    </span>
-                  </li>
-                </ol>
-              </nav>
+              <div className="mb-4 min-w-0">
+                <CustomizeBreadcrumbs
+                  testId="plugins-curated-pipeline-breadcrumbs"
+                  items={[
+                    {
+                      key: 'root',
+                      label: CUSTOMIZE_LABEL,
+                      testId: 'plugins-curated-pipeline-breadcrumb-root',
+                      onSelect: capabilityInventory.curated.onBack,
+                    },
+                    {
+                      key: 'type',
+                      label: 'Workflows',
+                      testId: 'plugins-curated-pipeline-breadcrumb-type',
+                      onSelect: openCuratedPipelineType,
+                    },
+                    {
+                      key: 'current',
+                      label: curatedPipelineBreadcrumbTitle,
+                      testId: 'plugins-curated-pipeline-breadcrumb-current',
+                    },
+                  ]}
+                />
+              </div>
             ) : undefined
           }
           catalog={{

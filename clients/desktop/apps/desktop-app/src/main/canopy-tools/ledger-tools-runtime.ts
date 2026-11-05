@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   LEDGER_GRANTS,
+  LEDGER_LIMITS,
   LedgerAddEntryToolInputSchema,
   LedgerErrorDetailsSchema,
   LedgerSearchEntriesToolInputSchema,
@@ -15,15 +16,18 @@ import {
   type LedgerContainer,
   type LedgerEntriesSearchResult,
   type LedgerEntry,
+  type LedgerEntryUpdateResult,
   type LedgerEntrySearchItem,
   type LedgerEntryType,
   type LedgerErrorDetails,
   type LedgerFileRef,
   type LedgerGlobalOwner,
   type LedgerOwnerCandidatePage,
+  type LedgerOwnerTarget,
   type LedgerSearchEntriesToolInput,
   type LedgerSourceAvailability,
   type LedgerStatus,
+  type LedgerWorkSummaryGetResult,
 } from '@canopy/protocol/canopy-core';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { CanopyOperationError } from '@canopy/core-runtime';
@@ -196,6 +200,73 @@ export interface LedgerToolsRuntime {
     rawArgs: unknown,
     invocation?: LedgerToolInvocation,
   ): Promise<CanopyInjectedToolTextResult>;
+  /** Host-owned dispatcher operations for delegation Feed hand-off. */
+  readonly delegationFeed?: LedgerDelegationFeedRuntime;
+}
+
+/** A content-free revision snapshot retained from spawn preflight. */
+export interface LedgerDelegationFeedEntrySnapshot {
+  readonly entryId: string;
+  readonly revision: number;
+  readonly type: LedgerEntryType;
+  readonly status: LedgerStatus;
+  readonly ownerActorId: string;
+  readonly parentEntryId?: string;
+}
+
+export interface LedgerDelegationFeedValidation {
+  /** Invalid listed IDs are all reported, so the caller can repair one call. */
+  readonly invalid: readonly {
+    readonly entryId: string;
+    readonly reason: string;
+  }[];
+  /** Snapshots include the listed roots and permitted open descendants. */
+  readonly listed: readonly LedgerDelegationFeedEntrySnapshot[];
+  readonly subtasks: readonly LedgerDelegationFeedEntrySnapshot[];
+}
+
+export interface LedgerDelegationFeedUpdate {
+  readonly entryId: string;
+  readonly expectedRevision: number;
+  readonly owner: LedgerOwnerTarget;
+  readonly idempotencyKey: string;
+}
+
+/** Dispatcher-only authorization filters; never part of injected tool input. */
+export type LedgerDelegationFeedSearch = LedgerSearchEntriesToolInput & {
+  readonly updatableByCaller?: true;
+  readonly ownerDelegationId?: string;
+};
+
+/**
+ * The only Feed surface delegation host code may use. Each member resolves
+ * this session's trusted caller and dispatches core.ledger.*; it never exposes
+ * the dispatcher, store, or actor binding to delegation code.
+ */
+export interface LedgerDelegationFeedRuntime {
+  validateTaskIds(
+    entryIds: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<LedgerDelegationFeedValidation>;
+  searchEntries(
+    params: LedgerDelegationFeedSearch,
+    signal?: AbortSignal,
+  ): Promise<LedgerEntriesSearchResult>;
+  owners(
+    delegationId: string,
+    signal?: AbortSignal,
+  ): Promise<LedgerOwnerCandidatePage>;
+  updateEntry(
+    update: LedgerDelegationFeedUpdate,
+    signal?: AbortSignal,
+  ): Promise<LedgerEntryUpdateResult>;
+  workSummary(
+    delegationId: string,
+    signal?: AbortSignal,
+  ): Promise<LedgerWorkSummaryGetResult>;
+  readAssignedEntries(
+    entryIds: readonly string[],
+  ): Promise<readonly { readonly entryId: string; readonly title: string }[]>;
 }
 
 export type LedgerToolsDispatcher = Pick<
@@ -269,6 +340,8 @@ const OPEN_LEDGER_STATUSES: readonly LedgerStatus[] = [
   'BLOCKED',
   'NEEDS_REVIEW',
 ];
+const DELEGATION_FEED_SUBTASK_LIMIT = 200;
+const DELEGATION_FEED_AUTHORIZATION_BATCH_SIZE = 25;
 
 /**
  * App-managed chats without a Ledger scope in v1 (LD07). App Advisor chats
@@ -288,6 +361,9 @@ const MAX_RESULT_CHARACTERS = 40_000;
 /** Open entries the turn-start assignment hint reads. */
 const ASSIGNMENT_HINT_PAGE_SIZE = 25;
 const ASSIGNMENT_HINT_TIMEOUT_MS = 1_000;
+const ASSIGNMENT_OPERATION_LIMIT = 3;
+const ASSIGNMENT_HISTORY_READ_LIMIT = 3;
+const OPEN_OPERATION_HINT_LIMIT = 3;
 const SETTING_VALUE_MAX_CODE_POINTS = 256;
 const DEFAULT_CHAT_DISPLAY_NAME = 'Chat';
 const DEFAULT_DELEGATE_DISPLAY_NAME = 'Delegate';
@@ -651,12 +727,42 @@ export class LedgerChatToolsSession implements LedgerToolsRuntime {
   /** Open entries owned by this chat, by ID, at the revision it last saw. */
   private knownAssignments = new Map<string, number>();
   private assignmentBaseline = false;
+  private readyOperations = new Map<string, boolean>();
+  private operationHintOffset = 0;
+  private seenHandbacks = new Map<string, number>();
+  /** Changed entries whose handback history a capped or failed turn did not read. */
+  private pendingHandbackChecks = new Set<string>();
+  private readonly delegationFeedPort: LedgerDelegationFeedRuntime | undefined;
 
   constructor(options: LedgerChatToolsSessionOptions) {
     this.options = options;
     this.host = options.host ?? DESKTOP_LEDGER_TOOLS_HOST;
+    this.delegationFeedPort =
+      options.pipelineAgent === undefined
+        ? this.createDelegationFeedPort()
+        : undefined;
     lastRuntimeGeneration += 1;
     this.runtimeGeneration = lastRuntimeGeneration;
+  }
+
+  private createDelegationFeedPort(): LedgerDelegationFeedRuntime {
+    return {
+      validateTaskIds: (entryIds, signal) =>
+        this.validateDelegationTaskIds(entryIds, signal),
+      searchEntries: (params, signal) =>
+        this.dispatchFeedSearch(params, signal),
+      owners: (delegationId, signal) =>
+        this.dispatchDelegationOwnerQuery(delegationId, signal),
+      updateEntry: (update, signal) => this.dispatchFeedUpdate(update, signal),
+      workSummary: (delegationId, signal) =>
+        this.dispatchFeedWorkSummary(delegationId, signal),
+      readAssignedEntries: (entryIds) =>
+        this.readCurrentAssignedEntries(entryIds),
+    };
+  }
+
+  get delegationFeed(): LedgerDelegationFeedRuntime | undefined {
+    return this.delegationFeedPort;
   }
 
   get scope(): LedgerChatScope {
@@ -698,10 +804,267 @@ export class LedgerChatToolsSession implements LedgerToolsRuntime {
     }
   }
 
+  private async validateDelegationTaskIds(
+    entryIds: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<LedgerDelegationFeedValidation> {
+    if (entryIds.length === 0) {
+      return { invalid: [], listed: [], subtasks: [] };
+    }
+
+    const requestedIds = Array.from(new Set(entryIds));
+    const listedResult = await this.dispatchFeedSearch(
+      { entryIds: requestedIds, limit: requestedIds.length },
+      signal,
+    );
+    const listedById = new Map(
+      listedResult.entries.map((entry) => [entry.entryId, entry]),
+    );
+    const invalid: { entryId: string; reason: string }[] = [];
+    const listedCandidates: LedgerEntrySearchItem[] = [];
+    for (const entryId of requestedIds) {
+      const entry = listedById.get(entryId);
+      if (entry === undefined) {
+        invalid.push({
+          entryId,
+          reason: 'this entry is not available in the caller’s Feed',
+        });
+      } else if (entry.type !== 'OPERATION' && entry.type !== 'TASK') {
+        invalid.push({
+          entryId,
+          reason: 'only OPERATION or TASK entries can be handed off',
+        });
+      } else if (!OPEN_LEDGER_STATUSES.includes(entry.status)) {
+        invalid.push({ entryId, reason: 'this entry is not open' });
+      } else {
+        listedCandidates.push(entry);
+      }
+    }
+
+    const listedIds = listedCandidates.map((entry) => entry.entryId);
+    const authorizedListedEntries =
+      listedIds.length === 0
+        ? []
+        : await this.dispatchFeedSearch(
+            {
+              entryIds: listedIds,
+              updatableByCaller: true,
+              limit: listedIds.length,
+            },
+            signal,
+          ).then((result) => result.entries);
+    const authorizedListedIds = new Set(
+      authorizedListedEntries.map((entry) => entry.entryId),
+    );
+
+    const listed: LedgerDelegationFeedEntrySnapshot[] = [];
+    const validRoots: LedgerEntrySearchItem[] = [];
+    for (const entry of listedCandidates) {
+      if (!authorizedListedIds.has(entry.entryId)) {
+        invalid.push({
+          entryId: entry.entryId,
+          reason: 'the caller cannot update this entry',
+        });
+        continue;
+      }
+      validRoots.push(entry);
+    }
+
+    const subtaskRows: LedgerEntrySearchItem[] = [];
+    for (const entry of validRoots) {
+      if (signal?.aborted) throw new Error('Feed validation was cancelled');
+      const subtree = await this.readOpenSubtasks(entry.entryId, signal);
+      if (subtree.overflow) {
+        invalid.push({
+          entryId: entry.entryId,
+          reason: `its subtask tree has more than ${DELEGATION_FEED_SUBTASK_LIMIT} entries, the hand-off limit; split the work before delegating`,
+        });
+        continue;
+      }
+      listed.push(toDelegationFeedEntrySnapshot(entry));
+      subtaskRows.push(...subtree.entries);
+    }
+
+    const uniqueSubtasks = Array.from(
+      new Map(subtaskRows.map((entry) => [entry.entryId, entry])).values(),
+    );
+    const subtasks = uniqueSubtasks.map(toDelegationFeedEntrySnapshot);
+    return { invalid, listed, subtasks };
+  }
+
+  private async readOpenSubtasks(
+    rootEntryId: string,
+    signal?: AbortSignal,
+  ): Promise<{ entries: LedgerEntrySearchItem[]; overflow: boolean }> {
+    const entries: LedgerEntrySearchItem[] = [];
+    const visited = new Set<string>([rootEntryId]);
+    const parents = [rootEntryId];
+    let queueOffset = 0;
+
+    while (queueOffset < parents.length) {
+      if (signal?.aborted) throw new Error('Feed validation was cancelled');
+      const parentEntryId = parents[queueOffset];
+      queueOffset += 1;
+      let cursor: string | undefined;
+      const seenCursors = new Set<string>();
+      for (;;) {
+        const result = await this.dispatchFeedSearch(
+          {
+            parentEntryId,
+            limit: LEDGER_LIMITS.searchPageMax,
+            ...(cursor === undefined ? {} : { cursor }),
+          },
+          signal,
+        );
+        for (const entry of result.entries) {
+          if (visited.has(entry.entryId)) continue;
+          visited.add(entry.entryId);
+          // Walk closed tasks too: an open subtask may sit under one.
+          parents.push(entry.entryId);
+          if (OPEN_LEDGER_STATUSES.includes(entry.status)) entries.push(entry);
+          if (parents.length - 1 > DELEGATION_FEED_SUBTASK_LIMIT) {
+            return { entries: [], overflow: true };
+          }
+        }
+        if (!result.hasMore) break;
+        if (result.nextCursor === null || seenCursors.has(result.nextCursor))
+          return { entries: [], overflow: true };
+        seenCursors.add(result.nextCursor);
+        cursor = result.nextCursor;
+      }
+    }
+
+    // Traverse every branch before applying authority. Filtering during
+    // the walk would hide an authorized grandchild below an entry the caller
+    // cannot itself update.
+    const authorized = new Map<string, LedgerEntrySearchItem>();
+    for (
+      let offset = 0;
+      offset < entries.length;
+      offset += DELEGATION_FEED_AUTHORIZATION_BATCH_SIZE
+    ) {
+      if (signal?.aborted) throw new Error('Feed validation was cancelled');
+      const batch = entries.slice(
+        offset,
+        offset + DELEGATION_FEED_AUTHORIZATION_BATCH_SIZE,
+      );
+      const result = await this.dispatchFeedSearch(
+        {
+          entryIds: batch.map((entry) => entry.entryId),
+          updatableByCaller: true,
+          limit: batch.length,
+        },
+        signal,
+      );
+      for (const entry of result.entries) authorized.set(entry.entryId, entry);
+    }
+    return {
+      entries: entries.flatMap((entry) => {
+        const permitted = authorized.get(entry.entryId);
+        return permitted === undefined ? [] : [permitted];
+      }),
+      overflow: false,
+    };
+  }
+
+  private async dispatchFeedSearch(
+    params: LedgerDelegationFeedSearch,
+    signal?: AbortSignal,
+  ): Promise<LedgerEntriesSearchResult> {
+    return this.withDelegationFeedCaller((dispatcher, caller) =>
+      dispatcher.query('core.ledger.entries.search', params, {
+        caller,
+        ...(signal ? { signal } : {}),
+      }),
+    );
+  }
+
+  private async dispatchFeedWorkSummary(
+    delegationId: string,
+    signal?: AbortSignal,
+  ): Promise<LedgerWorkSummaryGetResult> {
+    return this.withDelegationFeedCaller((dispatcher, caller) =>
+      dispatcher.query(
+        'core.ledger.workSummary.get',
+        { delegationId },
+        { caller, ...(signal ? { signal } : {}) },
+      ),
+    );
+  }
+
+  private async dispatchDelegationOwnerQuery(
+    delegationId: string,
+    signal?: AbortSignal,
+  ): Promise<LedgerOwnerCandidatePage> {
+    // The dispatcher narrows the owner lookup to this exact durable delegate.
+    const params = { delegationId };
+    return this.withDelegationFeedCaller((dispatcher, caller) =>
+      dispatcher.query('core.ledger.owners.list', params, {
+        caller,
+        ...(signal ? { signal } : {}),
+      }),
+    );
+  }
+
+  private async dispatchFeedUpdate(
+    update: LedgerDelegationFeedUpdate,
+    signal?: AbortSignal,
+  ): Promise<LedgerEntryUpdateResult> {
+    return this.withDelegationFeedCaller((dispatcher, caller) =>
+      dispatcher.instruction(
+        'core.ledger.entry.update',
+        {
+          entryId: update.entryId,
+          expectedRevision: update.expectedRevision,
+          owner: update.owner,
+          _meta: { idempotencyKey: update.idempotencyKey },
+        },
+        {
+          caller,
+          metadata: { idempotencyKey: update.idempotencyKey },
+          ...(signal ? { signal } : {}),
+        },
+      ),
+    );
+  }
+
+  private async readCurrentAssignedEntries(
+    entryIds: readonly string[],
+  ): Promise<readonly { readonly entryId: string; readonly title: string }[]> {
+    if (entryIds.length === 0) return [];
+    if (entryIds.length > LEDGER_LIMITS.searchEntryIdsMax) return [];
+    const result = await this.dispatchFeedSearch({
+      entryIds: [...entryIds],
+      owner: 'self',
+      statuses: [...OPEN_LEDGER_STATUSES],
+      limit: entryIds.length,
+    });
+    return result.entries.map(({ entryId, title }) => ({ entryId, title }));
+  }
+
+  private async withDelegationFeedCaller<Result>(
+    run: (
+      dispatcher: LedgerToolsDispatcher,
+      caller: CanopyCallerDescriptor,
+    ) => Promise<Result>,
+  ): Promise<Result> {
+    const unavailable = await this.executionGate();
+    if (unavailable !== null)
+      throw new Error(UNAVAILABLE_MESSAGES[unavailable]);
+    const dispatcher = this.host.dispatcher();
+    if (dispatcher === null)
+      throw new Error(UNAVAILABLE_MESSAGES.ledger_runtime_unavailable);
+    const resolution = await this.resolveCaller();
+    if (resolution.kind !== 'caller')
+      throw new Error(UNAVAILABLE_MESSAGES[resolution.reason]);
+    if (this.hasEnded()) throw new Error(UNAVAILABLE_MESSAGES.session_ended);
+    return run(dispatcher, resolution.caller);
+  }
+
   /**
    * A short note at the start of a normal turn when entries assigned to this
    * chat changed since it last saw them, so the agent refreshes owner=self.
-   * One bounded query; never opens storage when the database does not exist
+   * Bounded queries; never opens storage when the database does not exist
    * and never delays a turn beyond its timeout. Undefined when there is
    * nothing to say.
    */
@@ -752,11 +1115,170 @@ export class LedgerChatToolsSession implements LedgerToolsRuntime {
     // A result that arrives after the timeout was never shown, so it must
     // not become the baseline the next turn compares against.
     if (signal.aborted) return undefined;
-    return this.noteAssignmentSnapshot(result);
+    const seenHandbacks = new Map(this.seenHandbacks);
+    const readyOperations = new Map(this.readyOperations);
+    const checkedAssignments = new Set<string>();
+    const handbacks = await this.handbackHints(
+      dispatcher,
+      resolution.caller,
+      result,
+      signal,
+      seenHandbacks,
+      checkedAssignments,
+    );
+    if (signal.aborted) return undefined;
+    const readiness = await this.operationReadinessHints(
+      dispatcher,
+      resolution.caller,
+      result,
+      signal,
+      readyOperations,
+    );
+    if (signal.aborted) return undefined;
+    this.seenHandbacks = seenHandbacks;
+    this.readyOperations = readyOperations;
+    const operationCount = result.entries.filter(
+      (entry) => entry.type === 'OPERATION',
+    ).length;
+    this.operationHintOffset =
+      operationCount === 0
+        ? 0
+        : (this.operationHintOffset + ASSIGNMENT_OPERATION_LIMIT) %
+          operationCount;
+    return this.noteAssignmentSnapshot(result, checkedAssignments, [
+      ...handbacks,
+      ...readiness,
+    ]);
+  }
+
+  private async handbackHints(
+    dispatcher: LedgerToolsDispatcher,
+    caller: CanopyCallerDescriptor,
+    result: LedgerEntriesSearchResult,
+    signal: AbortSignal,
+    seen: Map<string, number>,
+    checked: Set<string>,
+  ): Promise<string[]> {
+    const changed = result.entries
+      .filter((entry) => {
+        // shortcut: entry.get only exposes ascending history pages. Skip entries
+        // beyond historyPageMax; newest-first or afterRevision reads would lift this limit.
+        if (
+          (this.knownAssignments.get(entry.entryId) === entry.revision &&
+            !this.pendingHandbackChecks.has(entry.entryId)) ||
+          entry.revision > LEDGER_LIMITS.historyPageMax
+        ) {
+          checked.add(entry.entryId);
+          return false;
+        }
+        return true;
+      })
+      .slice(0, ASSIGNMENT_HISTORY_READ_LIMIT);
+    const lines: string[] = [];
+    for (const entry of changed) {
+      if (signal.aborted) return [];
+      try {
+        const detail = await dispatcher.query(
+          'core.ledger.entry.get',
+          {
+            entryId: entry.entryId,
+            includeHistory: true,
+            historyLimit: LEDGER_LIMITS.historyPageMax,
+          },
+          { caller, signal },
+        );
+        if (signal.aborted) return [];
+        let handbackRevision = seen.get(entry.entryId) ?? 0;
+        for (const mutation of detail.history?.mutations ?? []) {
+          if (
+            mutation.leftOpen !== undefined &&
+            mutation.owner?.to.actorId === entry.owner.actorId &&
+            mutation.revision > handbackRevision
+          ) {
+            handbackRevision = mutation.revision;
+          }
+        }
+        if (handbackRevision > (seen.get(entry.entryId) ?? 0)) {
+          lines.push(
+            `Handed back to you: ${JSON.stringify(entry.title)} (${entry.entryId}); review and close or hand off the unfinished work.`,
+          );
+          seen.set(entry.entryId, handbackRevision);
+        }
+        checked.add(entry.entryId);
+      } catch {
+        // History is best effort, not a reason to delay or refuse the turn.
+      }
+    }
+    return lines;
+  }
+
+  private async operationReadinessHints(
+    dispatcher: LedgerToolsDispatcher,
+    caller: CanopyCallerDescriptor,
+    result: LedgerEntriesSearchResult,
+    signal: AbortSignal,
+    next: Map<string, boolean>,
+  ): Promise<string[]> {
+    const operations = result.entries.filter(
+      (entry) => entry.type === 'OPERATION',
+    );
+    if (!result.hasMore) {
+      for (const entryId of Array.from(next.keys())) {
+        if (!operations.some((entry) => entry.entryId === entryId))
+          next.delete(entryId);
+      }
+    }
+    const lines: string[] = [];
+    const count = Math.min(operations.length, ASSIGNMENT_OPERATION_LIMIT);
+    for (let index = 0; index < count; index += 1) {
+      if (signal.aborted) return [];
+      const operation =
+        operations[(this.operationHintOffset + index) % operations.length];
+      if (operation === undefined) continue;
+      try {
+        const children = await dispatcher.query(
+          'core.ledger.entries.search',
+          { parentEntryId: operation.entryId, limit: 1 },
+          { caller, signal },
+        );
+        if (signal.aborted) return [];
+        let ready = false;
+        // An empty operation may still be being laid out, not ready to close.
+        if (children.entries.length > 0) {
+          // Operations are always roots, so this sees open entries at every
+          // depth, as the close check does. The open operation is one of them.
+          const open = await dispatcher.query(
+            'core.ledger.entries.search',
+            {
+              rootEntryId: operation.entryId,
+              statuses: [...OPEN_LEDGER_STATUSES],
+              limit: 2,
+            },
+            { caller, signal },
+          );
+          if (signal.aborted) return [];
+          ready = open.entries.every(
+            (entry) => entry.entryId === operation.entryId,
+          );
+        }
+        if (ready && next.get(operation.entryId) !== true) {
+          lines.push(
+            `Ready to close: ${JSON.stringify(operation.title)} (${operation.entryId}); all its children are closed.`,
+          );
+        }
+        next.set(operation.entryId, ready);
+      } catch {
+        // Keep the previous transition state when a best-effort read fails.
+      }
+    }
+    if (signal.aborted) return [];
+    return lines;
   }
 
   private noteAssignmentSnapshot(
     result: LedgerEntriesSearchResult,
+    checkedAssignments: ReadonlySet<string>,
+    lines: readonly string[] = [],
   ): string | undefined {
     const current = new Map<string, number>();
     for (const entry of result.entries) {
@@ -780,6 +1302,13 @@ export class LedgerChatToolsSession implements LedgerToolsRuntime {
     }
     const firstLook = !this.assignmentBaseline;
     this.assignmentBaseline = true;
+    // Deferred or failed history checks are retried on a later turn without
+    // announcing the entry as changed again.
+    this.pendingHandbackChecks = new Set(
+      result.entries
+        .map((entry) => entry.entryId)
+        .filter((entryId) => !checkedAssignments.has(entryId)),
+    );
     this.knownAssignments = current;
     const open = `${result.entries.length}${result.hasMore ? '+' : ''}`;
     const searchName = (
@@ -789,10 +1318,14 @@ export class LedgerChatToolsSession implements LedgerToolsRuntime {
     if (firstLook) {
       return result.entries.length === 0
         ? undefined
-        : `<feed_assignments revision="${revision}" open="${open}">You have ${open} open Feed entries assigned to you. Use ${searchName} with owner "self" to review them before continuing.</feed_assignments>`;
+        : `<feed_assignments revision="${revision}" open="${open}">You have ${open} open Feed entries assigned to you. Use ${searchName} with owner "self" to review them before continuing.${lines.length === 0 ? '' : `\n${lines.join('\n')}`}</feed_assignments>`;
     }
-    if (changed === 0 && removed === 0) return undefined;
-    return `<feed_assignments revision="${revision}" open="${open}">Feed entries assigned to you changed since your last turn (${changed} new or updated, ${removed} no longer open for you). Use ${searchName} with owner "self" to refresh them before continuing.</feed_assignments>`;
+    if (changed === 0 && removed === 0 && lines.length === 0) return undefined;
+    const changeNote =
+      changed === 0 && removed === 0
+        ? ''
+        : `Feed entries assigned to you changed since your last turn (${changed} new or updated, ${removed} no longer open for you). `;
+    return `<feed_assignments revision="${revision}" open="${open}">${changeNote}Use ${searchName} with owner "self" to refresh them before continuing.${lines.length === 0 ? '' : `\n${lines.join('\n')}`}</feed_assignments>`;
   }
 
   private async executionGate(): Promise<LedgerToolsUnavailableReason | null> {
@@ -837,6 +1370,10 @@ export class LedgerChatToolsSession implements LedgerToolsRuntime {
         this.selfActorId ??= receipt.entry.author.actorId;
         return receipt;
       },
+      params.type === 'TASK' && params.parentEntryId === undefined
+        ? (dispatcher, caller): Promise<string | undefined> =>
+            this.openOperationsHint(dispatcher, caller, invocation.signal)
+        : undefined,
     );
   }
 
@@ -875,6 +1412,10 @@ export class LedgerChatToolsSession implements LedgerToolsRuntime {
       caller: CanopyCallerDescriptor,
       idempotencyKey: string,
     ) => Promise<LedgerCommandReceipt>,
+    afterSuccess?: (
+      dispatcher: LedgerToolsDispatcher,
+      caller: CanopyCallerDescriptor,
+    ) => Promise<string | undefined>,
   ): Promise<CanopyInjectedToolTextResult> {
     const dispatcher = this.host.dispatcher();
     if (dispatcher === null) {
@@ -890,18 +1431,60 @@ export class LedgerChatToolsSession implements LedgerToolsRuntime {
     try {
       const receipt = await run(dispatcher, resolution.caller, idempotencyKey);
       this.noteOwnEntry(receipt.entry);
+      let additionalLine: string | undefined;
+      if (afterSuccess !== undefined) {
+        try {
+          additionalLine = await afterSuccess(dispatcher, resolution.caller);
+        } catch {
+          // A follow-up hint must never turn a committed write into a failure.
+          additionalLine = undefined;
+        }
+      }
       return {
-        text: JSON.stringify({
+        text: `${JSON.stringify({
           ok: true,
           changed: receipt.changed,
           entry: projectEntry(receipt.entry, this.selfActorId),
-        }),
+        })}${additionalLine === undefined ? '' : `\n${additionalLine}`}`,
       };
     } catch (error) {
       return this.errorResult(error, {
         mode: 'command',
         explicitKey: requestKey !== undefined,
       });
+    }
+  }
+
+  /** Suggests open operation parents for a newly added top-level task. */
+  private async openOperationsHint(
+    dispatcher: LedgerToolsDispatcher,
+    caller: CanopyCallerDescriptor,
+    signal: AbortSignal | undefined,
+  ): Promise<string | undefined> {
+    if (signal?.aborted) return undefined;
+    try {
+      const result = await dispatcher.query(
+        'core.ledger.entries.search',
+        {
+          types: ['OPERATION'],
+          statuses: [...OPEN_LEDGER_STATUSES],
+          sort: 'updated_desc',
+          limit: OPEN_OPERATION_HINT_LIMIT,
+        },
+        { caller, ...(signal ? { signal } : {}) },
+      );
+      if (signal?.aborted || result.entries.length === 0) return undefined;
+      const namedOperations = result.entries
+        .map((entry) => `${JSON.stringify(entry.title)} (${entry.entryId})`)
+        .join('; ');
+      const more = result.hasMore ? '; and more' : '';
+      const searchName = (
+        this.options.toolNames ?? ledgerToolNames(this.options.harness)
+      ).search;
+      return `Open operations in this Feed: ${namedOperations}${more}. Set parentEntryId to one of these IDs if this task belongs under an operation, or use ${searchName} to choose.`;
+    } catch {
+      // The write already committed; a failed or cancelled hint is best effort.
+      return undefined;
     }
   }
 
@@ -1344,6 +1927,7 @@ interface LedgerEntryView {
   readonly createdAt?: string;
   readonly updatedAt: string;
   readonly supersedesEntryId?: string;
+  readonly parentEntryId?: string;
   readonly source?: LedgerSourceAvailability;
 }
 
@@ -1354,6 +1938,21 @@ function projectActor(
   return actor.actorId === selfActorId
     ? { actorId: actor.actorId, kind: actor.kind, isSelf: true }
     : { actorId: actor.actorId, kind: actor.kind };
+}
+
+function toDelegationFeedEntrySnapshot(
+  entry: LedgerEntrySearchItem,
+): LedgerDelegationFeedEntrySnapshot {
+  return {
+    entryId: entry.entryId,
+    revision: entry.revision,
+    type: entry.type,
+    status: entry.status,
+    ownerActorId: entry.owner.actorId,
+    ...(entry.parentEntryId === undefined
+      ? {}
+      : { parentEntryId: entry.parentEntryId }),
+  };
 }
 
 /** A receipt's entry, without the content its author just wrote. */
@@ -1372,6 +1971,9 @@ function projectEntry(
     ...(entry.supersedesEntryId === undefined
       ? {}
       : { supersedesEntryId: entry.supersedesEntryId }),
+    ...(entry.parentEntryId === undefined
+      ? {}
+      : { parentEntryId: entry.parentEntryId }),
   };
 }
 
@@ -1398,6 +2000,9 @@ function projectSearchItem(
     ...(item.supersedesEntryId === undefined
       ? {}
       : { supersedesEntryId: item.supersedesEntryId }),
+    ...(item.parentEntryId === undefined
+      ? {}
+      : { parentEntryId: item.parentEntryId }),
     ...(item.sourceAvailability === 'available'
       ? {}
       : { source: item.sourceAvailability }),
@@ -1477,7 +2082,10 @@ function readLedgerErrorDetails(
 function errorResult(
   code: string,
   message: string,
-  extra: { readonly currentEntry?: LedgerEntryView } = {},
+  extra: {
+    readonly currentEntry?: LedgerEntryView;
+    readonly openChildEntryIds?: readonly string[];
+  } = {},
 ): CanopyInjectedToolTextResult {
   return {
     text: JSON.stringify({
@@ -1486,6 +2094,9 @@ function errorResult(
       ...(extra.currentEntry === undefined
         ? {}
         : { currentEntry: extra.currentEntry }),
+      ...(extra.openChildEntryIds === undefined
+        ? {}
+        : { openChildEntryIds: extra.openChildEntryIds }),
     }),
     isError: true,
   };
@@ -1557,6 +2168,24 @@ function ledgerErrorResult(
       return errorResult(
         details.reason,
         'That owner can no longer be assigned. Search with includeAssignableOwners set to true for current owners and eligibility tokens.',
+      );
+    case 'PARENT_INVALID':
+      return errorResult(
+        details.reason,
+        'That parent cannot contain this entry. Search the Feed and choose a valid open Operation or Task, or set parentEntryId to null when updating to leave the entry at top level (omit parentEntryId when adding).',
+      );
+    case 'PARENT_CLOSED':
+      return errorResult(
+        details.reason,
+        'That parent is closed. Search the Feed and choose an open parent, or set parentEntryId to null when updating to detach the entry (omit parentEntryId when adding).',
+      );
+    case 'OPEN_CHILDREN':
+      return errorResult(
+        details.reason,
+        'This entry has open children. Review openChildEntryIds and retry with openChildren set to "complete", "fail" or "detach".',
+        details.openChildEntryIds === undefined
+          ? {}
+          : { openChildEntryIds: details.openChildEntryIds },
       );
     case 'SCOPE_RETIRED':
       return errorResult(

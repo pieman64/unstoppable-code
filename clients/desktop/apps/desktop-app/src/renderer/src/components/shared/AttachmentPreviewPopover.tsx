@@ -1,79 +1,16 @@
+import { memo, useCallback, useEffect, useState, type JSX } from 'react';
 import {
-  memo,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type JSX,
-} from 'react';
-import { createPortal } from 'react-dom';
-import {
+  Button,
   Markdown,
+  RichHoverCard,
   SkeletonBlock,
   useSkeletonBone,
 } from '@canopy/ui-shared/components';
-import { getDocument, getWindow } from '@canopy/ui-shared/panels';
 import type { FilePreviewResponse } from '@canopy/desktop-shared/types';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { FileIcon } from '@canopy/ui-shared/icons';
 import { getFilenameFromPath } from '@/lib/file-type';
 import { useGitHubStore } from '@/stores/githubStore';
-
-// ---------------------------------------------------------------------------
-// Position calculation
-// ---------------------------------------------------------------------------
-
-interface PopoverPosition {
-  /** Set when the popover hangs below the anchor (grows downward). */
-  top?: number;
-  /**
-   * Set when the popover sits above the anchor (grows upward). Anchoring the
-   * BOTTOM edge is load-bearing: preview content (notably images) loads
-   * asynchronously after the popover mounts, and a top-anchored popover
-   * grows downward over the pill it is anchored to.
-   */
-  bottom?: number;
-  left: number;
-  maxHeight: number;
-}
-
-const POPOVER_WIDTH = 280;
-const POPOVER_GAP = 8;
-const VIEWPORT_PADDING = 8;
-const MIN_USEFUL_HEIGHT = 48;
-
-function computePopoverPosition(
-  anchorEl: HTMLElement,
-  placement: 'auto' | 'above',
-): PopoverPosition {
-  const rect = anchorEl.getBoundingClientRect();
-  const view = getWindow(anchorEl);
-  const left = Math.min(
-    Math.max(VIEWPORT_PADDING, rect.left + rect.width / 2 - POPOVER_WIDTH / 2),
-    view.innerWidth - POPOVER_WIDTH - VIEWPORT_PADDING,
-  );
-  const availableAbove = rect.top - POPOVER_GAP - VIEWPORT_PADDING;
-  const availableBelow =
-    view.innerHeight - rect.bottom - POPOVER_GAP - VIEWPORT_PADDING;
-
-  const preferAbove =
-    placement === 'above'
-      ? availableAbove > MIN_USEFUL_HEIGHT
-      : availableAbove >= availableBelow;
-
-  if (preferAbove) {
-    return {
-      bottom: view.innerHeight - rect.top + POPOVER_GAP,
-      left,
-      maxHeight: Math.max(MIN_USEFUL_HEIGHT, availableAbove),
-    };
-  }
-  return {
-    top: rect.bottom + POPOVER_GAP,
-    left,
-    maxHeight: Math.max(MIN_USEFUL_HEIGHT, availableBelow),
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Sub-components
@@ -188,11 +125,9 @@ export const AttachmentPreviewPopover = memo(function AttachmentPreviewPopover({
   onMouseEnter,
   onMouseLeave,
 }: AttachmentPreviewPopoverProps): JSX.Element | null {
-  const popoverRef = useRef<HTMLDivElement>(null);
   const [preview, setPreview] = useState<FilePreviewResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [position, setPosition] = useState<PopoverPosition | null>(null);
   const addToast = useGitHubStore((state) => state.addToast);
 
   const displayName = filename ?? getFilenameFromPath(absolutePath);
@@ -225,52 +160,6 @@ export const AttachmentPreviewPopover = memo(function AttachmentPreviewPopover({
     };
   }, [absolutePath]);
 
-  // Position calculation. Edge-anchored (top XOR bottom), so async preview
-  // growth extends away from the anchor and never needs re-measuring.
-  const updatePosition = useCallback((): void => {
-    const anchorEl = anchorRef.current;
-    if (!anchorEl) return;
-    const next = computePopoverPosition(anchorEl, placement);
-    setPosition((prev) => {
-      if (
-        prev &&
-        prev.top === next.top &&
-        prev.bottom === next.bottom &&
-        prev.left === next.left &&
-        prev.maxHeight === next.maxHeight
-      ) {
-        return prev;
-      }
-      return next;
-    });
-  }, [anchorRef, placement]);
-
-  useEffect(() => {
-    updatePosition();
-  }, [updatePosition, preview, loading, error]);
-
-  useEffect(() => {
-    const view = getWindow(anchorRef.current);
-    const onScroll = (): void => updatePosition();
-    const onResize = (): void => updatePosition();
-    view.addEventListener('scroll', onScroll, true);
-    view.addEventListener('resize', onResize);
-    return (): void => {
-      view.removeEventListener('scroll', onScroll, true);
-      view.removeEventListener('resize', onResize);
-    };
-  }, [updatePosition, anchorRef]);
-
-  // CAN-2707: `Open` used to route through `chatStore.openFileTab`, which
-  // no-ops whenever there is no selected worktree — the New Task screen's
-  // normal state — leaving a clickable, inert control. Handing the path to the
-  // system default application works from every surface the popover renders
-  // on, and a rejected open surfaces instead of disappearing.
-  //
-  // `shell.openExternal` on a `file://`
-  // URL can resolve even when nothing opens, so the error path is best-effort
-  // rather than deterministic. Both desktop window roots mount the shared
-  // toast surface, so failures remain visible in the App Advisor popout too.
   const handleOpen = useCallback((): void => {
     if (onOpen) {
       onOpen();
@@ -283,22 +172,16 @@ export const AttachmentPreviewPopover = memo(function AttachmentPreviewPopover({
     });
   }, [absolutePath, addToast, displayName, onOpen]);
 
-  if (!position) return null;
-
-  return createPortal(
-    <div
-      ref={popoverRef}
+  return (
+    <RichHoverCard
+      anchorRef={anchorRef}
+      placement={placement}
+      interactive
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
-      data-canopy-browser-native-overlay="true"
-      className="z-dropdown flex w-70 flex-col overflow-hidden rounded-lg bg-popover shadow-lg"
-      style={{
-        position: 'fixed',
-        top: position.top,
-        bottom: position.bottom,
-        left: position.left,
-        maxHeight: position.maxHeight,
-      }}
+      elevation="menu"
+      surfacePadding="flush"
+      surfaceClassName="w-70"
     >
       {/* Header */}
       <div className="shrink-0 border-b px-3 py-2">
@@ -352,16 +235,13 @@ export const AttachmentPreviewPopover = memo(function AttachmentPreviewPopover({
       </div>
 
       {/* Footer */}
-      <button
-        type="button"
-        onClick={handleOpen}
-        className="flex w-full shrink-0 items-center gap-1.5 border-t px-3 py-2 text-xs fg-secondary transition-colors hover:bg-fg-primary/[0.04] hover:fg-primary"
-      >
-        <FileIcon width={12} height={12} />
-        Open
-      </button>
-    </div>,
-    getDocument(anchorRef.current).body,
+      <div className="flex shrink-0 border-t px-2 py-1.5">
+        <Button variant="ghost" size="compact" onClick={handleOpen}>
+          <FileIcon width={12} height={12} />
+          Open
+        </Button>
+      </div>
+    </RichHoverCard>
   );
 });
 

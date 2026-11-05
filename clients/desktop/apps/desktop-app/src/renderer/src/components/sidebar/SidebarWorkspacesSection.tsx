@@ -45,7 +45,6 @@ import {
   DropdownMenuItem,
   DropdownMenuItemIcon,
   FloatingMenu,
-  LoadingSpinner,
   ProjectListPagination,
   RailIconButton,
   SidebarFadePresence,
@@ -74,6 +73,7 @@ import { ProjectSection } from '../worktree/ProjectSection';
 import { canDragSidebarRow } from '@/lib/sidebar-ordering';
 import { SidebarSortMenuItems } from './SidebarSortMenuItems';
 import { ProjectIcon } from '../shared/ProjectIcon';
+import { SidebarProjectsSkeleton } from './SidebarProjectsSkeleton';
 import { SidebarProjectVisibilityMenuItems } from './SidebarProjectVisibilityMenuItems';
 import { useSidebarWorkspaces } from './useSidebarWorkspaces';
 import { hasMultipleWorkspaces } from '@/lib/workspaceChoice';
@@ -628,17 +628,9 @@ export function SidebarWorkspacesSection({
       >
         <MoreStickyLead key="more" lead={stickyHeaderLead} />
         <StickyWorkspaceControls />
-        {/* While workspaces load, the header is hidden and a centered
-        "Loading projects" label with our spinner takes its place. */}
-        <div
-          className="flex flex-col items-center gap-2 px-1 pt-2"
-          data-testid="sidebar-section-code-loading"
-        >
-          <span className="text-s font-normal fg-secondary">
-            Loading projects
-          </span>
-          <LoadingSpinner tone="secondary" />
-        </div>
+        {/* While workspaces load, the header is hidden and the measured
+        skeleton of the project rows takes its place. */}
+        <SidebarProjectsSkeleton />
       </div>
     );
   }

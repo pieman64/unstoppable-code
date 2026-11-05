@@ -16,17 +16,14 @@ import {
 } from 'react';
 import type { ModelLibraryAccess } from '@canopy/protocol/models';
 import { getDocument } from '../panels/window-registry';
-import { aiCreditsLabel } from './aiCreditsLabel';
+import { AI_CREDITS_LABEL } from './aiCreditsLabel';
 import { formatCost, formatUsageResetWhen } from '../lib/format-usage';
 import { ProgressRing, type ProgressTone } from './Progress';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import { InlineTextSkeleton } from './InlineTextSkeleton';
+import { Button } from './Button';
 
-import {
-  UsageMeter,
-  formatUsagePercent,
-  USAGE_TOUCH_FLOOR_CLASS,
-} from './usage-indicator-meter';
+import { UsageMeter, formatUsagePercent } from './usage-indicator-meter';
 export { USAGE_TOUCH_FLOOR_CLASS } from './usage-indicator-meter';
 import {
   UsageDisclosureChevron,
@@ -106,15 +103,11 @@ export function formatCreditsLeft(credits: number): string {
 
 /**
  * A whole AI Credits wallet balance as the composer shows it, as a plain
- * fact: `12.5 AI Credits`, `0 AI Credits`, or `3.2 Free AI Credits` while
- * the paying wallet has not made its first purchase. The product term stays
+ * fact: `12.5 AI Credits` or `0 AI Credits`. The product term stays
  * plural like every other AI Credits label.
  */
-export function formatAiCreditsCount(
-  credits: number,
-  access?: ModelLibraryAccess,
-): string {
-  return `${formatCreditCount(credits)} ${aiCreditsLabel(access)}`;
+export function formatAiCreditsCount(credits: number): string {
+  return `${formatCreditCount(credits)} ${AI_CREDITS_LABEL}`;
 }
 
 /**
@@ -126,7 +119,7 @@ function CreditBalanceRow({
 }: {
   balance: UsageIndicatorCreditBalance;
 }): JSX.Element {
-  const label = aiCreditsLabel(balance.libraryAccess);
+  const label = AI_CREDITS_LABEL;
   const pending = balance.credits === null;
   return (
     <section
@@ -174,9 +167,8 @@ export interface UsageIndicatorCreditBalance {
   /** Opens the host's AI Credits management view. */
   readonly onManage?: () => void;
   /**
-   * The paying wallet's model-library access, when the host knows it for
-   * this chat's owner. Before the first purchase the balance reads
-   * `Free AI Credits`; omitted or unknown access keeps the plain label.
+   * The paying wallet's model-library access. Ignored: the balance always
+   * reads `AI Credits` (CAN-4769). Kept until hosts stop passing it.
    */
   readonly libraryAccess?: ModelLibraryAccess;
 }
@@ -504,14 +496,13 @@ export function UsageIndicatorAccountSummary({
     <p role="status" className="text-xs fg-secondary">
       {status}{' '}
       {onRetry && (
-        <button
-          type="button"
+        <Button
+          variant="link"
           onClick={onRetry}
           data-testid="usage-indicator-retry"
-          className={`focus-ring rounded-sm fg-primary transition-colors hover:fg-secondary ${USAGE_TOUCH_FLOOR_CLASS}`}
         >
           Try again
-        </button>
+        </Button>
       )}
     </p>
   );
@@ -742,12 +733,81 @@ export interface UsageIndicatorProps {
   alignRef?: RefObject<HTMLElement | null>;
   /**
    * The AI Credits balance paying for this chat. The trigger shows it as
-   * `{N} AI Credits` (or `{N} Free AI Credits`) beside the context ring, and the popover's account
+   * `{N} AI Credits` beside the context ring, and the popover's account
    * section shows the same figure, in place of `accountUsage`: a credit-routed chat is not billed to
    * a subscription. `credits: null` shows a pending skeleton in both places;
    * an invalid figure is ignored.
    */
   creditBalance?: UsageIndicatorCreditBalance;
+  /**
+   * The 7-day plan limit binding this chat's model, account and harness.
+   * With it the ring shows that limit, and hover shows its % beside the
+   * ring; the context fill stays in the popover. Omit it for a chat with no
+   * 7-day limit, or while its share is not known: the ring then shows the
+   * context fill.
+   */
+  weeklyLimit?: UsageIndicatorWeeklyLimit;
+}
+
+export interface UsageIndicatorWeeklyLimit {
+  /** Share of the 7-day limit used, 0–100; clamped. */
+  readonly usedPercent: number;
+}
+
+// Hover, keyboard focus or an open popover shows the weekly % beside the
+// ring. Nothing resizes: the trigger keeps its 32px box, the hover fill is
+// drawn at its open width and revealed with clip-path, and the % fades and
+// slides in, so the row never relayouts. `ComposerAccessUsage` slides the
+// access control before the meter aside by the same 37px, on the same curve.
+// Tailwind needs each class written out, so the open states are spelled per
+// element; `data-open` holds a still frame open for captures and tests.
+//
+// Motion (Emil Kowalski's rules): one soft ease-out, `ease-drawer`,
+// on every part; 300 ms in and a slightly quicker 240 ms out; CSS
+// transitions, so a pointer that leaves mid-way reverses from where it is.
+// Hover counts only for a fine pointer, so a tap cannot leave it open.
+// Reduced motion keeps the fades and drops the movement.
+
+/** Leaving: 240 ms. */
+const WEEKLY_EXIT = 'duration-240 ease-drawer motion-reduce:transition-none';
+
+/** Arriving: 300 ms, the duration taken from the open state. */
+const WEEKLY_ENTER =
+  'pointer-fine:group-hover/weekly:duration-300 group-focus-visible/weekly:duration-300 group-aria-expanded/weekly:duration-300 group-data-[open=true]/weekly:duration-300';
+
+/**
+ * The hover fill: the composer controls' 32px round hover, grown leftward
+ * into a pill around the %. Right to left it holds its usual 8px edge, the
+ * ring, a 6px gap, a two-digit box (25px) and a 14px edge, so it and the row
+ * grow by 37px; "100%" reaches about 4px into the left edge.
+ */
+const WEEKLY_HOVER_FILL = `pointer-events-none absolute -right-2 -top-2 h-8 w-17.25 bg-subtle opacity-0 usage-weekly-fill-closed transition-[clip-path,opacity] ${WEEKLY_EXIT} ${WEEKLY_ENTER} pointer-fine:group-hover/weekly:opacity-100 group-focus-visible/weekly:opacity-100 group-aria-expanded/weekly:opacity-100 group-data-[open=true]/weekly:opacity-100 pointer-fine:group-hover/weekly:usage-weekly-fill-open group-focus-visible/weekly:usage-weekly-fill-open group-aria-expanded/weekly:usage-weekly-fill-open group-data-[open=true]/weekly:usage-weekly-fill-open`;
+
+/**
+ * The %, one step below the row's labels, 6px left of the ring. It fades in
+ * a beat after the fill starts to grow, with a short slide.
+ */
+const WEEKLY_PERCENT = `pointer-events-none absolute right-5.5 top-0 flex h-4 items-center whitespace-nowrap text-2xs fg-primary opacity-0 translate-x-1 motion-reduce:translate-x-0 transition-[opacity,translate] motion-reduce:transition-opacity duration-150 ease-drawer pointer-fine:group-hover/weekly:duration-240 group-focus-visible/weekly:duration-240 group-aria-expanded/weekly:duration-240 group-data-[open=true]/weekly:duration-240 pointer-fine:group-hover/weekly:opacity-100 group-focus-visible/weekly:opacity-100 group-aria-expanded/weekly:opacity-100 group-data-[open=true]/weekly:opacity-100 pointer-fine:group-hover/weekly:translate-x-0 group-focus-visible/weekly:translate-x-0 group-aria-expanded/weekly:translate-x-0 group-data-[open=true]/weekly:translate-x-0 pointer-fine:group-hover/weekly:delay-40 group-focus-visible/weekly:delay-40 group-aria-expanded/weekly:delay-40 group-data-[open=true]/weekly:delay-40`;
+
+/** The ring with the weekly % that appears beside it. */
+function WeeklyRing({
+  value,
+  tone,
+  text,
+}: {
+  value: number;
+  tone: ProgressTone;
+  text: string;
+}): JSX.Element {
+  return (
+    <span className="relative block h-4 w-4" aria-hidden>
+      <span className={WEEKLY_HOVER_FILL} data-part="weekly-fill" />
+      <span className={WEEKLY_PERCENT} data-part="weekly-percent">
+        {text}
+      </span>
+      <ProgressRing value={value} tone={tone} className="relative" />
+    </span>
+  );
 }
 
 export function UsageIndicator({
@@ -765,6 +825,7 @@ export function UsageIndicator({
   capsule = false,
   alignRef,
   creditBalance,
+  weeklyLimit,
 }: UsageIndicatorProps): JSX.Element {
   // A tab with no usage yet still gets a usable meter: the host's seed when
   // one is known, otherwise an all-zero placeholder so the popover can at
@@ -837,7 +898,13 @@ export function UsageIndicator({
     ? Math.min((usage.contextTokens / usage.contextWindow) * 100, 100)
     : 0;
 
-  const ringTone = getUsageRingTone(percentage);
+  // An invalid share is ignored, like an invalid credit balance.
+  const weeklyPercent =
+    weeklyLimit !== undefined && Number.isFinite(weeklyLimit.usedPercent)
+      ? Math.min(Math.max(weeklyLimit.usedPercent, 0), 100)
+      : undefined;
+  const ringPercent = weeklyPercent ?? percentage;
+  const ringTone = getUsageRingTone(ringPercent);
 
   // One figure for the trigger and the popover, so they never disagree.
   const balance = isShowableCreditBalance(creditBalance)
@@ -846,7 +913,7 @@ export function UsageIndicator({
   const balancePending = balance?.credits === null;
   const balanceText =
     balance && balance.credits !== null
-      ? formatAiCreditsCount(balance.credits, balance.libraryAccess)
+      ? formatAiCreditsCount(balance.credits)
       : null;
   const accountSection = balance ? (
     <CreditBalanceRow balance={balance} />
@@ -854,6 +921,8 @@ export function UsageIndicator({
     accountUsage
   );
   const wideTrigger = responseUsage !== undefined || balance !== undefined;
+  // The % shows beside the ring only where the ring stands alone.
+  const weeklyRing = capsule && !wideTrigger && weeklyPercent !== undefined;
 
   return (
     <div ref={containerRef} className="relative">
@@ -861,17 +930,28 @@ export function UsageIndicator({
         type="button"
         ref={triggerRef}
         onClick={handleClick}
-        className={`focus-ring flex items-center text-2xs fg-secondary transition-colors hover:bg-subtle hover:fg-primary ${
-          capsule
-            ? wideTrigger
-              ? 'h-8 min-w-8 max-w-full justify-center gap-1 rounded-full px-2.5 pointer-coarse:min-h-11 pointer-coarse:min-w-11'
-              : 'h-8 w-8 justify-center rounded-full pointer-coarse:min-h-11 pointer-coarse:min-w-11'
-            : 'gap-1 rounded-md px-1.5 py-0.5'
-        }`}
+        className={`focus-ring flex items-center text-2xs fg-secondary transition-colors hover:fg-primary ${
+          // The weekly fill is the hover state; the round hover fill would
+          // sit under it.
+          weeklyRing
+            ? 'group/weekly h-8 w-8 justify-center rounded-full pointer-coarse:min-h-11 pointer-coarse:min-w-11'
+            : capsule
+              ? wideTrigger
+                ? 'h-8 min-w-8 max-w-full justify-center gap-1 rounded-full px-2.5 pointer-coarse:min-h-11 pointer-coarse:min-w-11'
+                : 'h-8 w-8 justify-center rounded-full pointer-coarse:min-h-11 pointer-coarse:min-w-11'
+              : 'gap-1 rounded-md px-1.5 py-0.5'
+        }${weeklyRing ? '' : ' hover:bg-subtle'}`}
+        data-weekly-trigger={weeklyRing ? true : undefined}
         // The name carries the visible balance, so voice control can say it.
-        aria-label={
-          balanceText ? `Usage indicator, ${balanceText}` : 'Usage indicator'
-        }
+        aria-label={[
+          'Usage indicator',
+          weeklyPercent !== undefined
+            ? `${formatUsagePercent(weeklyPercent)} of weekly limit used`
+            : null,
+          balanceText,
+        ]
+          .filter((part) => part !== null)
+          .join(', ')}
         aria-busy={balancePending ? true : undefined}
         aria-haspopup="dialog"
         aria-expanded={open}
@@ -881,8 +961,14 @@ export function UsageIndicator({
           balance ? null : (
             'Usage'
           )
+        ) : weeklyRing ? (
+          <WeeklyRing
+            value={ringPercent}
+            tone={ringTone}
+            text={formatUsagePercent(weeklyPercent ?? 0)}
+          />
         ) : (
-          <ProgressRing value={percentage} tone={ringTone} />
+          <ProgressRing value={ringPercent} tone={ringTone} />
         )}
         {balance && (
           <CreditBalanceFigure

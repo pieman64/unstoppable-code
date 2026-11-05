@@ -66,6 +66,9 @@
       "path": "./packages/mcp-oauth-core"
     },
     {
+      "path": "./packages/memory-consolidation"
+    },
+    {
       "path": "./packages/ui-app/test/tsconfig.json"
     },
     {

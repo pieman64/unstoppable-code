@@ -25,3 +25,6 @@ export * from './RemovePublicLinkConfirmDialog';
 export * from './LinkSharingConfirmDialog';
 export * from './defaultOrganizationForContext';
 export { OrganizationInviteButton } from './OrganizationInviteButton';
+
+export * from './marketplaceShareLink';
+export * from './sharedByYouRow';

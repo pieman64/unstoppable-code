@@ -1,5 +1,6 @@
 import type { JSX, ReactNode } from 'react';
 import { MoreHorizontalIcon } from '../../icons/AppIcons';
+import { ListRow } from '../ListRow';
 import { LoadingSpinner } from '../LoadingSpinner';
 import { Heading } from '../Heading';
 
@@ -28,9 +29,6 @@ export interface PanelEmptyGroupCatalogProps {
   readonly testId?: string;
 }
 
-const ROW_CLASS_NAME =
-  'focus-ring flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-s fg-primary hover:bg-subtle disabled:opacity-50 disabled:hover:bg-transparent';
-
 /**
  * An empty panel group's starting point: what can be opened there, one row
  * per surface, so the group explains itself instead of showing a blank area.
@@ -57,46 +55,34 @@ export function PanelEmptyGroupCatalog({
         <ul className="flex flex-col">
           {entries.map((entry) => (
             <li key={entry.key}>
-              <button
-                type="button"
-                className={ROW_CLASS_NAME}
+              <ListRow
                 data-testid={entry.testId}
                 disabled={entry.disabled}
                 aria-busy={entry.busy || undefined}
                 onClick={entry.onActivate}
+                icon={
+                  <span aria-hidden="true" className="inline-flex">
+                    {entry.busy ? <LoadingSpinner /> : entry.icon}
+                  </span>
+                }
               >
-                <span
-                  aria-hidden="true"
-                  className="inline-flex h-4 w-4 shrink-0 items-center justify-center fg-tertiary"
-                >
-                  {entry.busy ? <LoadingSpinner /> : entry.icon}
-                </span>
-                <span className="min-w-0 truncate">{entry.label}</span>
-              </button>
+                {entry.label}
+              </ListRow>
             </li>
           ))}
           {onMore !== undefined && (
             <li className="relative">
-              <button
-                type="button"
-                className={ROW_CLASS_NAME}
+              <ListRow
                 data-testid={
                   testId !== undefined ? `${testId}-more` : undefined
                 }
                 aria-haspopup="menu"
                 aria-expanded={moreMenu !== undefined}
                 onClick={onMore}
+                icon={<MoreHorizontalIcon aria-hidden="true" />}
               >
-                <span
-                  aria-hidden="true"
-                  className="inline-flex h-4 w-4 shrink-0 items-center justify-center fg-tertiary"
-                >
-                  <MoreHorizontalIcon />
-                </span>
-                <span className="min-w-0 truncate fg-secondary">
-                  {moreLabel}
-                </span>
-              </button>
+                <span className="fg-secondary">{moreLabel}</span>
+              </ListRow>
               {moreMenu}
             </li>
           )}

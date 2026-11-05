@@ -39,6 +39,35 @@ function collectCases(
   return cases;
 }
 
+it('registers the cases a message binding without a server close cannot run as todo', () => {
+  const run: string[] = [];
+  const todo: string[] = [];
+  runCanopyTransportConformance({
+    name: 'collected',
+    createPair: createInMemoryFramedPair,
+    describe: (_name, body) => body(),
+    it: (name) => void run.push(name),
+    todo: (name) => void todo.push(name),
+    byteWire: false,
+    serverClose: false,
+  });
+  expect(todo).toEqual(
+    expect.arrayContaining([
+      'reassembles a request written one byte at a time (no byte wire on this binding)',
+      'carries payloads up to the frame cap and fails closed beyond it (no byte wire on this binding)',
+      'applies backpressure to an unread stream and resumes in order (no byte wire on this binding)',
+      'answers malformed envelopes and closes on malformed frames (no byte wire on this binding)',
+      'negotiates bulk channels within their caps (no byte wire on this binding)',
+      'bulk channel credit flow control (no byte wire on this binding)',
+      'fails authentication closed (no byte wire on this binding)',
+      'fails closed with an actionable error on a protocol-major mismatch (no server close reaches the client on this binding)',
+    ]),
+  );
+  expect(todo).toHaveLength(8 + CANOPY_TRANSPORT_CONFORMANCE_PENDING.length);
+  expect(run).toContain('surfaces a disconnect mid-stream to both ends');
+  expect(run).toContain('resumes a subscription after the acknowledged cursor');
+});
+
 it('keeps each case isolated when a runner schedules cases concurrently', async () => {
   const results = await Promise.allSettled(
     Array.from(collectCases(createInMemoryFramedPair).values(), (body) =>

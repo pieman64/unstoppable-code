@@ -112,6 +112,7 @@ export interface DesktopIncarnation {
 }
 
 export interface DesktopHost extends GoldenObservabilityHost {
+  /** Emptied by {@link disposeAll}. */
   readonly incarnations: DesktopIncarnation[];
 }
 
@@ -192,8 +193,13 @@ export function finalAuditEntries(
     .filter((entry) => entry !== null);
 }
 
+/**
+ * Disposes every incarnation and drops the host's references to them. Each
+ * boot holds its own isolated module graph, so a suite that keeps disposed
+ * hosts alive until the file ends holds every graph it ever loaded.
+ */
 export async function disposeAll(host: DesktopHost): Promise<void> {
-  for (const { service } of host.incarnations) {
+  for (const { service } of host.incarnations.splice(0)) {
     await service.dispose().catch(() => undefined);
   }
 }

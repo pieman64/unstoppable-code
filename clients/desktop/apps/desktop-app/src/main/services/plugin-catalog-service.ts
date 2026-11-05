@@ -1,3 +1,4 @@
+import { getShareablePluginRefKey } from '@canopy/protocol/plugins';
 import { listAdvertisedProviderConnectors } from '../mcp/provider-connectors';
 import {
   McpConfigNotFoundError,
@@ -91,7 +92,10 @@ import type {
 } from '@canopy/desktop-shared/types';
 import type { IPCResult } from '@canopy/desktop-shared/types/pipeline';
 import { skillSharePath } from '@canopy/protocol/skills';
-import { MCP_SHARE_BLOCKED_MESSAGE } from '@canopy/protocol/collections';
+import {
+  collectionSharePath,
+  MCP_SHARE_BLOCKED_MESSAGE,
+} from '@canopy/protocol/collections';
 import { pluginDisplayName } from '@canopy/ui-shared/lib';
 import { parseGitHubRepo } from '@canopy/desktop-shared/lib/github-repo';
 import { computePluginShareableRef } from '@canopy/desktop-shared/plugin-refs';
@@ -614,7 +618,11 @@ export async function sharePortalPlugin(input: {
   let shared = await createSharedPlugin(request);
   // Revoke before changing a scoped owner so a failed revoke cannot leave
   // the old public link live alongside the newly selected audience.
-  if (input.scope !== 'public' && shared.publicShare) {
+  if (
+    input.scope !== 'public' &&
+    shared.publicShare &&
+    !(await preserveOrganizationPublicLink(shared.owner))
+  ) {
     await revokePluginPublicShare(shared.externalId);
   }
   const ownerChanged =
@@ -2686,11 +2694,60 @@ export async function getPortalExistingSkillShare(input: {
   await requirePortalShareAccountId(skill.remote);
   const { getSharedSkill } = await import('../skills/canopy-server-client');
   try {
-    return toPortalExistingShare(await getSharedSkill(skill.remote.remoteId));
+    return toPortalExistingShare(await getSharedSkill(skill.remote.remoteId), {
+      kind: 'skill',
+      itemId: skill.remote.remoteId,
+    });
   } catch (error) {
     if (isCloudNotFound(error)) return null;
     throw error;
   }
+}
+
+/** Read-only hosted lookup by the same account and portable ref used by plugin creation. */
+export async function getPortalExistingPluginShare(input: {
+  marketplaceId: string;
+  pluginName: string;
+}): Promise<PortalSharingExistingShare | null> {
+  const accountId = await requirePortalShareAccountId();
+  const { marketplace, plugin, shareResolver } = await findCachedPlugin(
+    input.marketplaceId,
+    input.pluginName,
+  );
+  const sharing = shareResolver.plugin(input.marketplaceId, input.pluginName);
+  if (sharing.status === 'blocked')
+    throw codedError('execution_failed', sharing.reason);
+  const ref = computePluginShareableRef(plugin, marketplace);
+  if (!ref)
+    throw codedError(
+      'execution_failed',
+      MARKETPLACE_SHARE_BLOCKED_REASONS.noPublicSource,
+    );
+  const { assertSharedPluginsSupported, listSharedPlugins, getSharedPlugin } =
+    await import('../plugins/canopy-server-client');
+  await assertSharedPluginsSupported();
+  const refKey = getShareablePluginRefKey(ref);
+  const matches = (await listSharedPlugins({ createdBy: 'me' })).filter(
+    (row) => row.refKey === refKey,
+  );
+  if (matches.length > 1)
+    throw codedError(
+      'execution_failed',
+      'The current plugin share could not be identified.',
+    );
+  const match = matches[0];
+  const detail = match ? await getSharedPlugin(match.externalId) : null;
+  if ((await requirePortalShareAccountId()) !== accountId)
+    throw codedError(
+      'execution_failed',
+      'The desktop Cloud account changed. Try again.',
+    );
+  return detail
+    ? toPortalExistingShare(detail, {
+        kind: 'plugin',
+        itemId: detail.externalId,
+      })
+    : null;
 }
 
 /** Load a local Collection's current Cloud audience for Portal preselection. */
@@ -2710,7 +2767,10 @@ export async function getPortalExistingCollectionShare(
   const { getSharedCollection } =
     await import('../collections/canopy-server-client');
   try {
-    return toPortalExistingShare(await getSharedCollection(remote.remoteId));
+    return toPortalExistingShare(await getSharedCollection(remote.remoteId), {
+      kind: 'collection',
+      itemId: remote.remoteId,
+    });
   } catch (error) {
     if (isCloudNotFound(error)) return null;
     throw error;
@@ -2908,7 +2968,7 @@ export async function sharePortalCollection(input: {
     const publicShare = await publishCollectionPublicShare(detail.id);
     return { sharePath: publicShare.sharePath };
   }
-  return {};
+  return { sharePath: collectionSharePath(detail.id) };
 }
 
 /** Canonical device-file resolution; labels and a missing account scope confer no authority. */

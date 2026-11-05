@@ -27,7 +27,7 @@ import {
   POSTHOG_REPLAY_BLOCK_CLASS,
   POSTHOG_REPLAY_MASK_CLASS,
 } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
-import { BrandLogo } from '@/components/BrandLogo';
+import { FirstRunAccountRowHost } from '@/components/onboarding/FirstRunAccountRowHost';
 import { ProviderAuthPanel } from '@/components/auth/ProviderAuthPanel';
 import {
   bulkSelection,
@@ -54,11 +54,10 @@ import {
 } from '@/components/settings/SettingsLayout';
 import { useClaudeAuthStatus } from '@/hooks/useClaudeAuthStatus';
 import { useCodexAuthStatus } from '@/hooks/useCodexAuthStatus';
-import { useDailyCreditDripOptIn } from '@/hooks/useDailyCreditDripOptIn';
 import { offerCursorRulesReview } from '@/lib/cursorRulesOffer';
 import {
   agentConnectionsIntro,
-  FirstRunAiCreditsRow,
+  PROVIDER_ROW_DESCRIPTIONS,
 } from '@canopy/ui-app/onboarding';
 import { brandText } from '@/lib/brand';
 import {
@@ -585,7 +584,6 @@ export function FirstRunImportPage({
 }): JSX.Element {
   const claude = useClaudeAuthStatus();
   const codex = useCodexAuthStatus();
-  const drip = useDailyCreditDripOptIn();
   const [scan, setScan] = useState<ExternalProjectDiscoverResponse | null>(
     null,
   );
@@ -796,28 +794,11 @@ export function FirstRunImportPage({
       });
   };
 
-  // Offered only once both checks have finished and neither provider is
-  // connected; a failed check counts as not connected.
-  const noSubscription =
-    claude !== null &&
-    claude.authenticated !== true &&
-    codex !== null &&
-    codex.authenticated !== true;
-  const creditsOfferable =
-    noSubscription &&
-    (drip.live.state === 'undecided' || drip.live.state === 'decided');
-  // Once shown, the row stays, so connecting a provider or a re-read does
-  // not pull it out from under the user. Losing the cloud account hides it,
-  // since the choice can no longer be saved.
-  const [creditsShown, setCreditsShown] = useState(false);
+  // CAN-4765: the account row always shows, so `credits_offered` is always
+  // true. The field stays for schema continuity.
   useEffect(() => {
-    if (creditsOfferable) setCreditsShown(true);
-  }, [creditsOfferable]);
-  const showCredits =
-    drip.live.state !== 'unavailable' && (creditsShown || creditsOfferable);
-  useEffect(() => {
-    if (showCredits) visit.markCreditsOffered();
-  }, [showCredits, visit]);
+    visit.markCreditsOffered();
+  }, [visit]);
 
   const foundAny = importable.length > 0;
   const nothingToImport = scan !== null && !foundAny;
@@ -841,28 +822,22 @@ export function FirstRunImportPage({
         description={pageDescription(scan, foundAny)}
       >
         <SettingsSection
-          description={agentConnectionsIntro({
-            offersCredits: showCredits,
-            appName: brandText.appName,
-          })}
+          description={agentConnectionsIntro({ appName: brandText.appName })}
         >
           <SettingsGroup>
-            {showCredits && (
-              <FirstRunAiCreditsRow
-                drip={drip}
-                logo={<BrandLogo size={16} aria-hidden />}
-              />
-            )}
             <ProviderAuthPanel
               provider="claude"
               layout="row"
               unauthenticatedTone="neutral"
+              signedOutDescription={PROVIDER_ROW_DESCRIPTIONS.claude}
             />
             <ProviderAuthPanel
               provider="codex"
               layout="row"
               unauthenticatedTone="neutral"
+              signedOutDescription={PROVIDER_ROW_DESCRIPTIONS.codex}
             />
+            <FirstRunAccountRowHost />
           </SettingsGroup>
         </SettingsSection>
 

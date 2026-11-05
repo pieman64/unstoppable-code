@@ -6,6 +6,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { brandText } from '@/lib/brand';
 import { useObservabilityStore } from '@/stores/observabilityStore';
+import { useObservabilityEntriesInterest } from '@/lib/chat-interest';
 import {
   CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
@@ -177,6 +178,7 @@ function ActivityBar({
 }
 
 export function TodayStatisticsPanel(): JSX.Element {
+  useObservabilityEntriesInterest();
   const loadUsageMetricsView = useObservabilityStore(
     (s) => s.loadUsageMetricsView,
   );

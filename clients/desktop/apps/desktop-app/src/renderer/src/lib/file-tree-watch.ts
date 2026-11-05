@@ -65,8 +65,3 @@ export function releaseFileTreeWatch(
     .stopFileTreeWatch({ projectId, worktreeId })
     .catch(() => undefined);
 }
-
-/** Test-only: clears all refcounts without issuing IPC stops. */
-export function resetFileTreeWatchRefcountForTests(): void {
-  watches.clear();
-}

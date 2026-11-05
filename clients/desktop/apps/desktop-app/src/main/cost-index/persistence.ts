@@ -8,6 +8,10 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import path from 'node:path';
+import {
+  damagedCopiesOf,
+  pruneDamagedCopies,
+} from '@canopy/desktop-shared/node/lib/damaged-copies';
 import { writeFileAtomically } from '../lib/atomic-file';
 import {
   COST_BILLING_BASES,
@@ -844,7 +848,8 @@ const preservationsInFlight = new Map<string, Promise<void>>();
 /**
  * Keep `contents` beside `filePath` as `<name><marker><suffix>`, unless a copy
  * with the same marker and bytes is already there. A file read again and
- * again (a retained summary is never rebuilt) is kept once.
+ * again (a retained summary is never rebuilt) is kept once, and only the
+ * newest five copies per marker are kept.
  */
 async function preserveFileOnce(
   filePath: string,
@@ -859,11 +864,14 @@ async function preserveFileOnce(
   }
   const task = (async (): Promise<void> => {
     if (await hasPreservedCopy(filePath, marker, contents)) return;
-    const suffix =
-      marker === '.corrupt-'
-        ? `${Date.now()}-${++corruptFileSequence}`
-        : `${Date.now()}`;
+    const corrupt = marker === '.corrupt-';
+    const suffix = corrupt
+      ? `${Date.now()}-${++corruptFileSequence}`
+      : `${Date.now()}`;
     await writeFile(`${filePath}${marker}${suffix}`, contents, { flag: 'wx' });
+    await pruneDamagedCopies(
+      damagedCopiesOf(filePath, marker, { uniqueTail: corrupt }),
+    );
   })();
   preservationsInFlight.set(key, task);
   try {

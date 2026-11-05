@@ -1,6 +1,29 @@
 import { createHash } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+/**
+ * The longest Unix socket path the core daemon can bind (macOS's limit;
+ * Linux allows 107). See `address` in `@canopy/core-platform/endpoints`.
+ */
+const SOCKET_PATH_LIMIT_BYTES = 103;
+
+/** Whether the daemon socket of `<root>/data` fits, with its bind sibling. */
+function socketFits(root: string): boolean {
+  return (
+    Buffer.byteLength(join(root, 'data', 'runtime', '.000000000000')) <=
+    SOCKET_PATH_LIMIT_BYTES
+  );
+}
+
+function canonical(directory: string): string {
+  try {
+    return realpathSync.native(directory);
+  } catch {
+    return directory;
+  }
+}
 
 /**
  * Keep unit tests out of the developer's real data directory.
@@ -12,21 +35,27 @@ import { join } from 'node:path';
  * `workspace-1/worktree-1` appeared in real session diagnostics). Every Jest
  * worker now defaults to a private temporary root; a test that sets or deletes
  * these variables itself still controls resolution.
+ *
+ * The root is one short hashed name, because the core daemon's socket lives
+ * in the data root (CAN-5685). Under a temporary directory too long for that
+ * socket, as agents' scratch directories can be, it goes under `/tmp`.
  */
 export function configureJestDataDirIsolation(
   env: NodeJS.ProcessEnv = process.env,
   cwd: string = process.cwd(),
   workerId: string = env.JEST_WORKER_ID ?? String(process.pid),
+  temporaryDirectory: string = tmpdir(),
+  platform: NodeJS.Platform = process.platform,
 ): string {
-  const worktreeKey = createHash('sha256')
-    .update(cwd)
+  const name = `canopy-jest-${createHash('sha256')
+    .update(`${cwd}\0${process.pid}\0${workerId}`)
     .digest('hex')
-    .slice(0, 12);
-  const root = join(
-    tmpdir(),
-    'canopy-jest-data',
-    `${worktreeKey}-${process.pid}-${workerId}`,
-  );
+    .slice(0, 16)}`;
+  const preferred = join(canonical(temporaryDirectory), name);
+  const root =
+    platform === 'win32' || socketFits(preferred)
+      ? preferred
+      : join(canonical('/tmp'), name);
   if (!env.CANOPY_DATA_DIR?.trim()) {
     env.CANOPY_DATA_DIR = join(root, 'data');
   }

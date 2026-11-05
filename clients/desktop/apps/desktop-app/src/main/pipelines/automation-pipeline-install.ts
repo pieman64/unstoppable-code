@@ -1,6 +1,10 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { readFile } from 'node:fs/promises';
 import * as path from 'node:path';
-import { hashPipelinePackageYaml } from '@canopy/desktop-shared/node';
+import {
+  hashPipelinePackageYaml,
+  leasePipelinePackage,
+} from '@canopy/desktop-shared/node';
 import { AUTOMATION_PIPELINE_LOCAL_CHANGES_MESSAGE } from '@canopy/desktop-shared/lib/automation-install';
 import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
 import type {
@@ -14,16 +18,29 @@ import type {
 } from '@canopy/desktop-shared/types';
 import type {
   Pipeline,
-  PipelineSaveInput,
+  PipelineInfo,
 } from '@canopy/desktop-shared/types/pipeline';
+import { CanopyOperationError } from '@canopy/core-runtime';
+import type { PipelineDefinitionInstall } from '@canopy/core-runtime/node/pipeline';
 import {
   AUTOMATION_PIPELINE_TREE_ENTRY_PATH,
+  buildPackagedPipelineId,
+  parsePackagedPipelineId,
   type PipelinePackageManifestV1,
   type PipelinePackageResource,
 } from '@canopy/protocol/pipelines';
-import { getPipelinePackageInstallStorePath } from '../lib/paths';
+import {
+  getPipelinePackageInstallStorePath,
+  getPipelinePackagesDir,
+} from '../lib/paths';
+import { logMainProcessWarn } from '../lib/main-process-logging';
 import { validateId } from '../lib/validation';
 import { assertStoredPipelineContext } from './pipeline-install-context';
+import {
+  beginPipelineInstallIntent,
+  isPipelineDefinitionClaimed,
+  type PipelineInstallIntent,
+} from './pipeline-install-intents';
 import {
   installPipelineAssets,
   previewPipelineAssetChanges,
@@ -42,8 +59,12 @@ import * as localPipelineService from './pipeline-service';
  * Stage A of an automation install: materialize the package's
  * `automation_pipeline` resources as local user pipelines before the
  * automation exists, link each to the package with a pipeline-owner install
- * record, and install the files each declares. Electron-main compatibility
- * path for `core.initiatedWork`; no daemon route serves packages yet.
+ * record, and install the files each declares. Each pipeline installs
+ * through `core.pipeline.definition.import` of its `package-pipeline:`
+ * remote, which reads it from the verified package
+ * ({@link readPackagedPipelineRemote}); Stage A decides where each one goes
+ * and names the local pipeline it updates. Electron-main compatibility path
+ * for `core.initiatedWork`; no daemon route serves packages yet.
  *
  * Outcomes, per packaged pipeline key:
  * - `kept`: the recorded local pipeline (`existingPipelines`) already has
@@ -58,9 +79,12 @@ import * as localPipelineService from './pipeline-service';
  *
  * Every recorded pipeline and every blob is checked before anything is
  * written, so a refusal (a locally edited pipeline, a blob that doesn't
- * match its hash) leaves no pipeline, record or file behind. A failure after
- * that is not rolled back (v1); a retry is idempotent and reuses what an
- * earlier attempt saved.
+ * match its hash) leaves no pipeline, record or file behind. Each pipeline's
+ * files are installed before its install record, and every write is noted in
+ * the install's intent record first (CAN-5633): a failure, or an exit that
+ * startup recovery finds, removes the pipelines it created and restores the
+ * ones it rewrote or linked, with their records and the supporting files it
+ * overwrote or added (CAN-5677). A retry is idempotent.
  *
  * {@link previewAutomationPipelines} runs the same checks and decisions for
  * the update review and writes nothing but the package cache.
@@ -312,43 +336,182 @@ export async function installAutomationPipelines(
   request: InstallAutomationPipelinesRequest,
   options: AutomationPipelineInstallOptions = {},
 ): Promise<InstallAutomationPipelinesResponse> {
-  const { packageDigest, packagePath, documents, plans } =
-    await planAutomationPipelines(request, options);
-
-  const storePath = getPipelinePackageInstallStorePath();
-  const pipelines: InstallAutomationPipelinesResponse['pipelines'] = [];
-  for (let index = 0; index < documents.length; index += 1) {
-    const document = documents[index];
-    const plan = plans[index];
-    if (!document || !plan) continue;
-    const localPipelineId = await materializePipeline(document, plan);
-    if (currentPipelineHash(localPipelineId) !== document.pipelineContentHash) {
-      throw new Error(
-        `"${document.displayName}" could not be saved exactly as shared. Try installing again.`,
+  const intent = await beginPipelineInstallIntent('automation');
+  // Held until every install record names the package, so another install's
+  // rollback cannot remove it in between.
+  const lease = leasePipelinePackage(
+    getPipelinePackagesDir(),
+    request.packageRef.digest,
+  );
+  try {
+    const response = await installPlannedAutomationPipelines(
+      intent,
+      await planAutomationPipelines(request, options),
+    );
+    await intent.finish();
+    return response;
+  } catch (error) {
+    await intent.rollBack().catch((rollbackError: unknown) => {
+      logMainProcessWarn(
+        '[automation-install] Could not roll back an automation install',
+        rollbackError,
       );
-    }
-    await upsertPipelinePackageInstall(storePath, {
-      localPipelineId,
-      pipelineContentHash: document.pipelineContentHash,
-      distributionMode: 'package',
-      packageDigest,
-      installedAt: new Date().toISOString(),
     });
-    if (document.assets.length > 0) {
-      await installPipelineAssets({
-        localPipelineId,
-        packagePath,
-        resources: document.assets,
+    throw error;
+  } finally {
+    lease.release();
+  }
+}
+
+/** The Stage A install a packaged pipeline's remote installs into. */
+interface AutomationPipelineInstallSession {
+  readonly intent: PipelineInstallIntent;
+  readonly packageDigest: string;
+  readonly packagePath: string;
+  readonly resources: ReadonlyMap<string, PackagedPipelineResource>;
+  /** The keys Stage A planned to rewrite in place; others are only linked. */
+  readonly rewrites: ReadonlySet<string>;
+}
+
+const automationPipelineInstalls =
+  new AsyncLocalStorage<AutomationPipelineInstallSession>();
+
+async function installPlannedAutomationPipelines(
+  intent: PipelineInstallIntent,
+  { packageDigest, packagePath, documents, plans }: PlannedAutomationPipelines,
+): Promise<InstallAutomationPipelinesResponse> {
+  const { importRemotePipeline } =
+    await import('../canopy-runtime/pipeline-definition-dispatch');
+  const session: AutomationPipelineInstallSession = {
+    intent,
+    packageDigest,
+    packagePath,
+    resources: new Map(documents.map((document) => [document.key, document])),
+    rewrites: new Set(
+      documents
+        .filter((_document, index) => {
+          const plan = plans[index];
+          return plan?.outcome === 'reused' && plan.rewrite;
+        })
+        .map((document) => document.key),
+    ),
+  };
+  return automationPipelineInstalls.run(session, async () => {
+    const pipelines: InstallAutomationPipelinesResponse['pipelines'] = [];
+    for (let index = 0; index < documents.length; index += 1) {
+      const document = documents[index];
+      const plan = plans[index];
+      if (!document || !plan) continue;
+      let installed: PipelineInfo;
+      try {
+        installed = await importRemotePipeline({
+          remoteDefinitionId: buildPackagedPipelineId({
+            packageDigest,
+            pipelineKey: document.key,
+          }),
+          expectedRemoteVersion: document.pipelineContentHash,
+          // Prompts name a project pipeline by the name the author saw.
+          nameOverride: document.displayName || document.pipeline.name,
+          ...(plan.outcome === 'created'
+            ? {}
+            : { definitionId: plan.localPipelineId }),
+        });
+      } catch (error) {
+        throw error instanceof CanopyOperationError
+          ? new Error(error.payload.message)
+          : error;
+      }
+      pipelines.push({
+        key: document.key,
+        localPipelineId: installed.id,
+        pipelineContentHash: document.pipelineContentHash,
+        outcome: plan.outcome,
       });
     }
-    pipelines.push({
-      key: document.key,
-      localPipelineId,
-      pipelineContentHash: document.pipelineContentHash,
-      outcome: plan.outcome,
-    });
-  }
-  return { pipelines };
+    return { pipelines };
+  });
+}
+
+/** A packaged pipeline as the desktop's remote reader hands it to core. */
+export interface PackagedPipelineRemote {
+  readonly name: string;
+  readonly description: string;
+  readonly icon: string;
+  readonly rawPipeline: string;
+  readonly remoteVersion: string;
+  install(write: PipelineDefinitionInstall): Promise<PipelineInfo>;
+}
+
+/**
+ * A pipeline the capability package of a running Stage A install carries,
+ * read from the verified package cache, as a remote core installs from.
+ * Its version is the pipeline's content hash. The install creates the
+ * local pipeline under the id core chose, or updates the one Stage A named
+ * (keeping the recipient's name, description and icon, or only linking it
+ * when it already has this YAML), then installs its files and its install
+ * record, noting each write in the install's intent record first.
+ */
+export async function readPackagedPipelineRemote(
+  remoteDefinitionId: string,
+): Promise<PackagedPipelineRemote | null> {
+  const ref = parsePackagedPipelineId(remoteDefinitionId);
+  if (!ref) return null;
+  const session = automationPipelineInstalls.getStore();
+  if (!session || session.packageDigest !== ref.packageDigest)
+    throw new Error('A packaged workflow installs with its automation.');
+  const resource = session.resources.get(ref.pipelineKey);
+  if (!resource) return null;
+  const document = await readPackagedPipeline(session.packagePath, resource);
+  const { intent } = session;
+  return {
+    name: document.displayName || document.pipeline.name,
+    description: document.pipeline.description ?? '',
+    icon: document.pipeline.icon ?? '',
+    rawPipeline: document.rawPipeline,
+    remoteVersion: document.pipelineContentHash,
+    install: async (write) => {
+      const localPipelineId = await materializePipeline(
+        document,
+        write,
+        session.rewrites.has(document.key),
+        intent,
+      );
+      if (
+        currentPipelineHash(localPipelineId) !== document.pipelineContentHash
+      ) {
+        throw new Error(
+          `"${document.displayName}" could not be saved exactly as shared. Try installing again.`,
+        );
+      }
+      // Files first: a recorded pipeline always has every file it declares.
+      if (document.assets.length > 0) {
+        await installPipelineAssets({
+          localPipelineId,
+          packagePath: session.packagePath,
+          resources: document.assets,
+          beforeWrite: (plan) => intent.noteAssetFiles(localPipelineId, plan),
+        });
+      }
+      const record = {
+        localPipelineId,
+        pipelineContentHash: document.pipelineContentHash,
+        distributionMode: 'package' as const,
+        packageDigest: session.packageDigest,
+        installedAt: new Date().toISOString(),
+      };
+      await intent.noteInstallRecord(localPipelineId, record);
+      await upsertPipelinePackageInstall(
+        getPipelinePackageInstallStorePath(),
+        record,
+      );
+      const stored = localPipelineService.getPipeline(localPipelineId);
+      if (!stored.success || !stored.data)
+        throw new Error(
+          stored.error ?? `"${document.displayName}" could not be read`,
+        );
+      return stored.data.info;
+    },
+  };
 }
 
 async function canUsePipeline(localPipelineId: string): Promise<boolean> {
@@ -389,13 +552,15 @@ async function planPipelineInstall(
   recordedByAutomations.forEach((localPipelineId) => {
     taken.add(localPipelineId);
   });
-  // A pipeline an earlier attempt linked to this package and hash.
+  // A pipeline an earlier attempt linked to this package and hash; never
+  // one an install still running created, which its rollback would remove.
   for (const install of installs) {
     if (
       install.distributionMode === 'definition_only' ||
       install.packageDigest !== packageDigest ||
       install.pipelineContentHash !== document.pipelineContentHash ||
       taken.has(install.localPipelineId) ||
+      isPipelineDefinitionClaimed(install.localPipelineId) ||
       currentPipelineHash(install.localPipelineId) !==
         document.pipelineContentHash ||
       !(await canUsePipeline(install.localPipelineId))
@@ -419,43 +584,66 @@ async function planPipelineInstall(
 
 async function materializePipeline(
   document: PackagedPipelineDocument,
-  plan: PipelineInstallPlan,
+  write: PipelineDefinitionInstall,
+  rewrite: boolean,
+  intent: PipelineInstallIntent,
 ): Promise<string> {
-  if (plan.outcome === 'kept') return plan.localPipelineId;
-  if (plan.outcome === 'reused' && !plan.rewrite) return plan.localPipelineId;
-  if (plan.outcome === 'reused') {
+  const localPipelineId = write.definitionId;
+  if (write.replaces) {
+    // Kept, or reused as it is: only linked, so an edit made since Stage A
+    // planned fails the exact-bytes check instead of being overwritten.
+    if (!rewrite) {
+      await intent.noteDefinition({
+        definitionId: localPipelineId,
+        change: 'linked',
+        contentHash: document.pipelineContentHash,
+      });
+      return localPipelineId;
+    }
     // Rewrite in place, keeping the recipient's name, description and icon.
-    const existing = localPipelineService.getPipeline(plan.localPipelineId);
+    const existing = localPipelineService.getPipeline(localPipelineId);
     if (!existing.success || !existing.data) {
       throw new Error(
         existing.error ?? `"${document.displayName}" could not be read`,
       );
     }
+    await intent.noteDefinition({
+      definitionId: localPipelineId,
+      change: 'replaced',
+      contentHash: document.pipelineContentHash,
+    });
     const saved = localPipelineService.savePipeline({
-      id: plan.localPipelineId,
+      id: localPipelineId,
       name: existing.data.info.name,
       description: existing.data.info.description,
       icon: existing.data.info.icon,
-      content: document.pipeline,
-      rawContent: document.rawPipeline,
+      content: write.pipeline,
+      rawContent: write.text,
     });
     if (!saved.success) {
       throw new Error(
         saved.error ?? `"${document.displayName}" could not be updated`,
       );
     }
-    await recordInstalledPipelineMetadata(plan.localPipelineId, false, true);
-    return plan.localPipelineId;
+    await recordInstalledPipelineMetadata(localPipelineId, false, true);
+    return localPipelineId;
   }
-  const input: PipelineSaveInput = {
-    // Prompts name a project pipeline by the name the author saw.
-    name: document.displayName || document.pipeline.name,
-    description: document.pipeline.description ?? '',
-    icon: document.pipeline.icon ?? '',
-    content: document.pipeline,
-    rawContent: document.rawPipeline,
-  };
-  const saved = localPipelineService.savePipeline(input);
+  await intent.noteDefinition({
+    definitionId: localPipelineId,
+    change: 'created',
+    contentHash: document.pipelineContentHash,
+    assets: true,
+  });
+  const saved = localPipelineService.savePipeline(
+    {
+      name: write.name,
+      description: write.description,
+      icon: write.icon,
+      content: write.pipeline,
+      rawContent: write.text,
+    },
+    { id: localPipelineId },
+  );
   if (!saved.success || !saved.data) {
     throw new Error(
       saved.error ?? `"${document.displayName}" could not be saved`,

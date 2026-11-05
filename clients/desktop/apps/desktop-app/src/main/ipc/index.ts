@@ -163,6 +163,7 @@ import {
   setBrowserService,
 } from '../browser/browser-service';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
+import type { ChatScopeKey } from '../services/chat-state-contracts';
 
 export interface WindowAccessors {
   getMainWindow: () => BrowserWindow | null;
@@ -192,6 +193,10 @@ export interface WindowAccessors {
   appAdvisorWorkspaceOperations?: AppAdvisorWorkspaceOperations;
   /** Main-owned revisioned chat service, injected by the backend slice. */
   chatStatePort?: ChatStateCommandPort;
+  /** Installs main-window interest as an in-memory chat scope pin. */
+  installScopePinProvider?: (
+    provider: (scope: ChatScopeKey) => boolean,
+  ) => () => void;
   /** True only after the current main-window renderer has unlocked startup. */
   isMainWindowRendererReady?: () => boolean;
   notifyStartupUnlocked: () => void;
@@ -336,6 +341,7 @@ export function registerAllIpcHandlers(
       {
         dispatcher: canopyRuntime.dispatcher,
         resolveCaller: canopyRuntime.resolveCaller,
+        installScopePinProvider: accessors.installScopePinProvider,
       },
     );
   }

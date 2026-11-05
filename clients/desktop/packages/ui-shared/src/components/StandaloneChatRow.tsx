@@ -1,6 +1,7 @@
 import type { JSX, KeyboardEvent } from 'react';
 import type { ModelCatalogProvider } from '@canopy/protocol/models';
 import { ArchiveIcon } from '../icons/AppIcons';
+import { Button } from './Button';
 import { ModelProviderIcon } from './ModelProviderIcon';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 
@@ -108,18 +109,23 @@ export function StandaloneChatRow({
         )}
       </div>
       {onArchive && !archived && (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onArchive();
-          }}
-          className="shrink-0 rounded-md p-0.5 fg-secondary opacity-0 transition-[color,opacity] hover:fg-warning group-hover:opacity-100 pointer-coarse:opacity-100"
-          aria-label="Archive chat"
-          data-testid="standalone-chat-row-archive"
-        >
-          <ArchiveIcon size={14} aria-hidden="true" />
-        </button>
+        // The wrapper owns the reveal; the 28px quiet icon button overhangs
+        // the row's 6px end inset (`-mx-1`), so the title keeps its width.
+        <span className="-mx-1 inline-flex shrink-0 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 pointer-coarse:opacity-100">
+          <Button
+            variant="ghost-quiet"
+            size="sm"
+            iconOnly
+            onClick={(e) => {
+              e.stopPropagation();
+              onArchive();
+            }}
+            aria-label="Archive chat"
+            data-testid="standalone-chat-row-archive"
+          >
+            <ArchiveIcon size={14} aria-hidden="true" />
+          </Button>
+        </span>
       )}
     </div>
   );

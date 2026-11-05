@@ -18,3 +18,8 @@ export function chatStoreApi(): ChatStoreApi {
   }
   return api;
 }
+
+/** The registered store, or `undefined` before `chatStore.ts` registers it. */
+export function tryChatStoreApi(): ChatStoreApi | undefined {
+  return api;
+}

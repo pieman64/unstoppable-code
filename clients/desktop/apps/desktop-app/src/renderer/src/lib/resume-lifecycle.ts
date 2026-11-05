@@ -49,9 +49,3 @@ export function trackResume(work: () => void | Promise<unknown>): void {
     end();
   }
 }
-
-/** Test-only reset of the pending count and listeners. */
-export function resetResumeLifecycleForTests(): void {
-  pending = 0;
-  listeners.clear();
-}

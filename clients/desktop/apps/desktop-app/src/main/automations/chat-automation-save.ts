@@ -258,6 +258,7 @@ function ownedPipelineMatchesChat(
       action.inputs ?? {},
       isCoworkWorkspace,
       action.modelAliasPreferences,
+      action.pluginCollectionPreferences,
     ) !== null
   );
 }
@@ -400,6 +401,7 @@ export async function updateAutomationForAgent(
           stored.action.inputs ?? {},
           isCoworkWorkspace,
           stored.action.modelAliasPreferences,
+          stored.action.pluginCollectionPreferences,
         )
       : null;
   // CAN-5479: the authority the automation has, which an agent's write

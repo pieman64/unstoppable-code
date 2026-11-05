@@ -13,13 +13,11 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type ButtonHTMLAttributes,
   type JSX,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
   type RefObject,
 } from 'react';
-import { createPortal } from 'react-dom';
 import type {
   ModelCatalog,
   ModelCatalogOption,
@@ -32,7 +30,7 @@ import {
   getModelCatalogProviderLabel,
   getModelVendorLabel,
 } from '@canopy/protocol/models';
-import { getDocument, getWindow } from '../panels';
+import { getWindow } from '../panels';
 import { measureTextWidth } from '../lib/measure-text-width';
 import {
   AllModelsIcon,
@@ -58,7 +56,6 @@ import {
   FloatingMenu,
 } from './FloatingMenu';
 import { ModelGroupHeader } from './ModelGroupHeader';
-import { MODEL_PICKER_ROW_CUE_COPY } from './modelPickerRowCue';
 import { NestedMenuFlyout } from './NestedMenuFlyout';
 import { OverlayScrollArea } from './OverlayScrollArea';
 import {
@@ -75,13 +72,10 @@ import {
   type PickerMenuSkeletonLabelWidth,
 } from './PickerMenu';
 import { Button } from './Button';
-import { RichHoverTooltip } from './RichHoverTooltip';
+import { RichHoverCard, RichHoverTooltip } from './RichHoverTooltip';
 import { SearchField } from './SearchField';
-import {
-  AI_CREDITS_LABEL,
-  FREE_AI_CREDITS_LABEL,
-  isFreeOnlyAiCredits,
-} from './aiCreditsLabel';
+import { Skeleton } from './Skeleton';
+import { AI_CREDITS_LABEL } from './aiCreditsLabel';
 import { EmptyState } from './StatusBlocks';
 import { IconToggleButton } from './IconToggleButton';
 import { Tooltip } from './Tooltip';
@@ -106,6 +100,11 @@ const MODEL_ROW_CONTROL_RADIUS_CLASS = 'rounded-[calc(var(--radius-md)-2px)]';
  */
 const PICKER_RAIL_GLYPH_SIZE = 18;
 const PICKER_ROW_GLYPH_SIZE = 14;
+/**
+ * The longest row recovery label the default picker width fits, as the
+ * former 15-character credits tag did (`Sign in and buy` still fits).
+ */
+const DEFAULT_WIDTH_ROW_LABEL_MAX_LENGTH = 15;
 
 /** `py-1` on the harness rail — picker chrome zeroes the menu surface pad-y. */
 const PICKER_CHROME_NAV_PAD_PX = 8;
@@ -167,8 +166,8 @@ export interface ModelPickerOptionState {
   };
   /**
    * CAN-5213 — settled evidence says this row runs a new turn now, so a
-   * library-locked viewer sees a check and `Available` in place of the
-   * credits tag. Selection is unchanged. Ignored when `disabled` or `locked`.
+   * library-locked viewer sees no credits tag; a usable row needs no label.
+   * Selection is unchanged. Ignored when `disabled` or `locked`.
    */
   readonly available?: boolean;
 }
@@ -293,10 +292,9 @@ export interface ModelPickerMenuProps {
     selection?: ModelPickerSelectionContext,
   ) => ModelPickerOptionState;
   /**
-   * The work owner's model-library access. Before the first purchase, a
-   * credit-billed row without an active library lock tags itself
-   * `Free AI Credits`; locked rows and unknown access keep `AI Credits`.
-   * Hosts omit it for organization-owned work.
+   * The work owner's model-library access. Ignored: credit-billed rows
+   * always tag themselves `AI Credits` (CAN-4769). Kept until hosts stop
+   * passing it.
    */
   readonly libraryAccess?: ModelLibraryAccess;
   /** Route-specific billing and details; the menu retains the row's identity. */
@@ -713,10 +711,6 @@ interface CatalogSection {
   readonly sortOrder: number;
 }
 
-const EXTRA_CHARGE_TOOLTIP_GAP = 8;
-const EXTRA_CHARGE_TOOLTIP_VIEWPORT_PADDING = 8;
-const FLOATING_MENU_SURFACE_SELECTOR = '.canopy-floating-menu';
-
 /** A harness that runs models and has its own icon, if `value` names one. */
 function harnessIconId(value: string | undefined): string | undefined {
   return value === 'claude' ||
@@ -734,42 +728,6 @@ function sharedSectionHarness(section: CatalogSection): string | undefined {
     section.options.map((option) => option.source ?? option.provider),
   );
   return harnesses.size === 1 ? Array.from(harnesses)[0] : undefined;
-}
-
-interface Box {
-  readonly left: number;
-  readonly top: number;
-  readonly right: number;
-  readonly bottom: number;
-}
-
-function boxesIntersect(first: Box, second: Box): boolean {
-  return (
-    first.left < second.right &&
-    first.right > second.left &&
-    first.top < second.bottom &&
-    first.bottom > second.top
-  );
-}
-
-/**
- * Rects of every other open floating-menu surface the detail popup must stay
- * clear of — for a "More" flyout row that is the parent dropdown, which sits on
- * the lower dropdown layer and would otherwise be covered by the z-tooltip
- * popup. Surfaces still awaiting their first position sit hidden at 0,0 and
- * are skipped.
- */
-function otherMenuSurfaceBoxes(surface: Element | null, row: Element): Box[] {
-  return Array.from(
-    getDocument(row).querySelectorAll(FLOATING_MENU_SURFACE_SELECTOR),
-  )
-    .filter(
-      (element) =>
-        element !== surface &&
-        element.getAttribute('data-positioned') !== 'false',
-    )
-    .map((element) => element.getBoundingClientRect())
-    .filter((rect) => rect.width > 0 && rect.height > 0);
 }
 
 /**
@@ -920,7 +878,6 @@ export function ModelPickerMenu({
   onSelect,
   getOptionState,
   getOptionPresentation,
-  libraryAccess,
   vendorLabels,
   cursorExperimental = true,
   triggerTooltip = 'Model for this chat',
@@ -959,7 +916,6 @@ export function ModelPickerMenu({
 }: ModelPickerMenuProps): JSX.Element {
   const generatedMenuId = useId();
   const resolvedMenuId = menuId ?? generatedMenuId;
-  const freeCreditsAccess = isFreeOnlyAiCredits(libraryAccess);
   const [open, setOpen] = useState(false);
   useEffect(() => {
     onOpenChange?.(open);
@@ -2172,14 +2128,11 @@ export function ModelPickerMenu({
     >
       <ModelGroupHeader label="More models" variant="picker" />
       {catalogStatus.status === 'loading' ? (
-        <>
-          <span role="status" className="sr-only">
-            Loading more models
-          </span>
+        <Skeleton loading label="Loading more models">
           {GATEWAY_PLACEHOLDER_WIDTHS.map((width) => (
             <PickerMenuSkeletonRow key={width} labelWidth={width} />
           ))}
-        </>
+        </Skeleton>
       ) : (
         <div className="flex h-8 items-center justify-between gap-2 pl-2">
           <span className="min-w-0 truncate text-s fg-tertiary">
@@ -2538,11 +2491,6 @@ export function ModelPickerMenu({
             presentation.source === 'ai-gateway' ||
             harnessTabs?.creditsRoutedModelIds?.has(option.id) === true)
         }
-        creditsTagLabel={
-          freeCreditsAccess && !activeLock(state)
-            ? FREE_AI_CREDITS_LABEL
-            : AI_CREDITS_LABEL
-        }
         settingsHarnesses={
           // Harness tabs and search groups already fix where the model runs.
           // All switches a hosted model for the pick; Favorites moves the
@@ -2833,8 +2781,8 @@ export function ModelPickerMenu({
       : 'model-browser'
     : 'menu';
   // Recovery text shares a row with the model's identity. The compact shell
-  // predates these labels and leaves Haiku almost entirely ellipsized beside
-  // Needs free daily credits. Use the same roomier shell on every host; the
+  // predates these labels and leaves a model name almost entirely ellipsized
+  // beside a lock label. Use the same roomier shell on every host; the
   // existing picker surface still caps it to the available viewport.
   const hasRowCueLabel = useMemo(
     () =>
@@ -2843,7 +2791,10 @@ export function ModelPickerMenu({
         return (
           state !== undefined &&
           !state.disabled &&
-          (state.available === true || activeLock(state)?.label !== undefined)
+          // A short label fits the default width; only longer recovery
+          // text widens it.
+          (activeLock(state)?.label?.trim().length ?? 0) >
+            DEFAULT_WIDTH_ROW_LABEL_MAX_LENGTH
         );
       }),
     [catalog, getOptionState],
@@ -3107,7 +3058,10 @@ export function ModelPickerMenu({
                       data-testid={`${testIdPrefix}-search`}
                     />
                     {modelSearch ? (
-                      <ModelPickerIconButton
+                      <Button
+                        variant="ghost-quiet"
+                        size="sm"
+                        iconOnly
                         aria-label="Clear search"
                         data-testid={`${testIdPrefix}-clear-search`}
                         onMouseDown={(event): void => event.preventDefault()}
@@ -3117,12 +3071,12 @@ export function ModelPickerMenu({
                         }}
                         className={
                           autoToggle
-                            ? 'fg-tertiary'
-                            : 'absolute right-1.5 top-1/2 -translate-y-1/2 fg-tertiary'
+                            ? undefined
+                            : 'absolute right-1.5 top-1/2 -translate-y-1/2'
                         }
                       >
                         <CloseMediumIcon width={16} height={16} />
-                      </ModelPickerIconButton>
+                      </Button>
                     ) : null}
                     {autoToggle}
                   </div>
@@ -3740,7 +3694,6 @@ function ModelPickerOption({
   highlightSelection = false,
   leadingFavorite = false,
   usesAiCredits = option.source === 'ai-gateway',
-  creditsTagLabel = AI_CREDITS_LABEL,
   extraChargeMarker = false,
   billingPreference,
   billingFallback = true,
@@ -3771,8 +3724,6 @@ function ModelPickerOption({
   readonly onBillingOpenChange?: (open: boolean) => void;
   readonly billingMenuActive?: boolean;
   readonly usesAiCredits?: boolean;
-  /** Text of the credits tag; `Free AI Credits` before the first purchase. */
-  readonly creditsTagLabel?: string;
   /** Single-list rows mark AI Credits-only models with `$`, not a label. */
   readonly extraChargeMarker?: boolean;
   readonly option: ModelCatalogOption;
@@ -3821,7 +3772,6 @@ function ModelPickerOption({
   const tooltipId = useId();
   const reasonId = `${tooltipId}-reason`;
   const rowRef = useRef<HTMLButtonElement | null>(null);
-  const tooltipRef = useRef<HTMLDivElement | null>(null);
   const [reasonRevealed, setReasonRevealed] = useState(false);
   const lock = activeLock(state);
   const lockLabel = lock?.label?.trim() || undefined;
@@ -3838,7 +3788,7 @@ function ModelPickerOption({
     [visibleDetail, inFlyout, onDetailChange, option.id],
   );
   // A sign-in label replaces the credits tag: the row cannot run on credits
-  // until the user signs in. So does `Available`; the detail names billing.
+  // until the user signs in. An available row drops it too; the detail names billing.
   const showsCreditsTag =
     usesAiCredits &&
     !isAutoMode &&
@@ -3849,14 +3799,9 @@ function ModelPickerOption({
   const [creditsFocused, setCreditsFocused] = useState(false);
   const creditsTooltipActive =
     showsCreditsTag && (creditsHovered || creditsFocused);
-  const [tooltipPosition, setTooltipPosition] = useState<{
-    readonly top: number;
-    readonly left: number;
-  } | null>(null);
   const hasExtraCharge = option.extraChargeOnly === true;
   const hasDescription = Boolean(option.description);
   const lockHintId = `${tooltipId}-unlock`;
-  const availableId = `${tooltipId}-available`;
   const showReasonInTooltip =
     state.unavailableReason !== undefined && !reasonRevealed;
   /*
@@ -3881,93 +3826,6 @@ function ModelPickerOption({
     setReasonRevealed(false);
   }, [state.disabled, state.unavailableReason]);
 
-  const updateTooltipPosition = useCallback((): void => {
-    const row = rowRef.current;
-    const tooltip = tooltipRef.current;
-    if (!row || !tooltip) return;
-    const rowRect = row.getBoundingClientRect();
-    const view = getWindow(row);
-    const width = tooltip.offsetWidth;
-    const height = tooltip.offsetHeight;
-    const padding = EXTRA_CHARGE_TOOLTIP_VIEWPORT_PADDING;
-    const maxLeft = Math.max(padding, view.innerWidth - width - padding);
-    const maxTop = Math.max(padding, view.innerHeight - height - padding);
-    const centeredTop = rowRect.top + rowRect.height / 2 - height / 2;
-    const top = Math.min(Math.max(padding, centeredTop), maxTop);
-    /*
-     * Horizontal candidates come from the row's owning menu surface, not the
-     * row: beside a "More" flyout, "left of the row" is exactly where the
-     * parent dropdown sits. Prefer right of the surface, then left, taking the
-     * first that fits the viewport without covering another open menu; failing
-     * that, the first viewport-clamped side that covers no other menu.
-     */
-    const surface = row.closest(FLOATING_MENU_SURFACE_SELECTOR);
-    const surfaceRect = surface?.getBoundingClientRect() ?? rowRect;
-    const otherMenus = otherMenuSurfaceBoxes(surface, row);
-    const coversOtherMenu = (left: number): boolean =>
-      otherMenus.some((menu) =>
-        boxesIntersect(
-          { left, top, right: left + width, bottom: top + height },
-          menu,
-        ),
-      );
-    const fitsViewport = (left: number): boolean =>
-      left >= padding && left <= maxLeft;
-    const clamp = (left: number): number =>
-      Math.min(Math.max(padding, left), maxLeft);
-    const rightOfSurface = surfaceRect.right + EXTRA_CHARGE_TOOLTIP_GAP;
-    const leftOfSurface = surfaceRect.left - EXTRA_CHARGE_TOOLTIP_GAP - width;
-    const left =
-      [rightOfSurface, leftOfSurface].find(
-        (candidate) => fitsViewport(candidate) && !coversOtherMenu(candidate),
-      ) ??
-      [clamp(leftOfSurface), clamp(rightOfSurface)].find(
-        (candidate) => !coversOtherMenu(candidate),
-      ) ??
-      clamp(leftOfSurface);
-    setTooltipPosition((previous) =>
-      previous?.top === top && previous.left === left
-        ? previous
-        : { top, left },
-    );
-  }, []);
-
-  useLayoutEffect((): (() => void) | void => {
-    if (!tooltipVisible) {
-      setTooltipPosition(null);
-      return;
-    }
-    updateTooltipPosition();
-    const view = getWindow(rowRef.current);
-    const frame = view.requestAnimationFrame(updateTooltipPosition);
-    return (): void => view.cancelAnimationFrame(frame);
-  }, [tooltipVisible, updateTooltipPosition]);
-
-  useEffect((): (() => void) | void => {
-    if (!tooltipVisible) return;
-    const view = getWindow(rowRef.current);
-    let frame: number | null = null;
-    const schedulePositionUpdate = (): void => {
-      if (frame !== null) return;
-      frame = view.requestAnimationFrame((): void => {
-        frame = null;
-        updateTooltipPosition();
-      });
-    };
-    view.addEventListener('resize', schedulePositionUpdate);
-    view.addEventListener('scroll', schedulePositionUpdate, {
-      capture: true,
-      passive: true,
-    });
-    return (): void => {
-      view.removeEventListener('resize', schedulePositionUpdate);
-      view.removeEventListener('scroll', schedulePositionUpdate, {
-        capture: true,
-      });
-      if (frame !== null) view.cancelAnimationFrame(frame);
-    };
-  }, [tooltipVisible, updateTooltipPosition]);
-
   const trailingSlots: PickerMenuOptionTrailingSlots = leadingFavorite
     ? trailingHarnessSlot
       ? 'one'
@@ -3989,11 +3847,7 @@ function ModelPickerOption({
     ? tooltipVisible
       ? `${reasonId} ${tooltipId}`
       : reasonId
-    : [
-        lock ? lockHintId : undefined,
-        available ? availableId : undefined,
-        tooltipVisible ? tooltipId : undefined,
-      ]
+    : [lock ? lockHintId : undefined, tooltipVisible ? tooltipId : undefined]
         .filter(Boolean)
         .join(' ') || undefined;
   const lockGlyph = (
@@ -4211,19 +4065,28 @@ function ModelPickerOption({
                   className="shrink-0 text-2xs fg-secondary"
                   data-testid={`${testIdPrefix}-row-credits-${option.id}`}
                 >
-                  {creditsTagLabel}
+                  {AI_CREDITS_LABEL}
                 </span>
-                {/* CAN-5213: the free tag means the row runs now, so it
-                    takes the same trailing check as `Available`. */}
-                {creditsTagLabel === FREE_AI_CREDITS_LABEL ? (
-                  <AppCatalogCheckIcon
-                    width={PICKER_ROW_GLYPH_SIZE}
-                    height={PICKER_ROW_GLYPH_SIZE}
-                    aria-hidden="true"
-                    className="ml-1 shrink-0 fg-secondary"
-                    data-testid={`${testIdPrefix}-row-credits-check-${option.id}`}
-                  />
-                ) : null}
+              </span>
+            ) : null}
+            {lock && lockLabel ? (
+              // Same slot, type and padding as the credits tag it replaces.
+              // The lock's hint already names the remedy for assistive
+              // technology, so the visible label is not read twice.
+              <span
+                aria-hidden="true"
+                className="-mx-2 -my-2 inline-flex shrink-0 items-center self-stretch px-2 py-2"
+              >
+                <span
+                  className="shrink-0 text-2xs fg-secondary"
+                  data-testid={
+                    uniformTestIds
+                      ? `${testIdPrefix}-option-lock-label`
+                      : `${testIdPrefix}-option-lock-label-${option.id}`
+                  }
+                >
+                  {lockLabel}
+                </span>
               </span>
             ) : null}
             {extraChargeMarker && hasExtraCharge ? (
@@ -4247,55 +4110,10 @@ function ModelPickerOption({
                 <span id={lockHintId} className="sr-only">
                   {lock.hint}
                 </span>
-                {lockLabel ? (
-                  // The hint above already names the remedy for assistive
-                  // technology, so the visible label is not read twice.
-                  <span
-                    aria-hidden="true"
-                    className="inline-flex shrink-0 items-center gap-1"
-                  >
-                    <span
-                      className="text-2xs fg-secondary"
-                      data-testid={
-                        uniformTestIds
-                          ? `${testIdPrefix}-option-lock-label`
-                          : `${testIdPrefix}-option-lock-label-${option.id}`
-                      }
-                    >
-                      {lockLabel}
-                    </span>
-                    {lockGlyph}
-                  </span>
-                ) : (
-                  lockGlyph
-                )}
+                {/* A labelled lock shows only its label, in the credits tag's
+                    slot above; a bare lock keeps the glyph. */}
+                {lockLabel ? null : lockGlyph}
               </>
-            ) : null}
-            {available ? (
-              // Read through `aria-describedby`, so the row's accessible name
-              // stays the model's name.
-              <span
-                aria-hidden="true"
-                className="inline-flex shrink-0 items-center gap-1"
-              >
-                <span
-                  id={availableId}
-                  className="text-2xs fg-secondary"
-                  data-testid={
-                    uniformTestIds
-                      ? `${testIdPrefix}-option-available`
-                      : `${testIdPrefix}-option-available-${option.id}`
-                  }
-                >
-                  {MODEL_PICKER_ROW_CUE_COPY.available}
-                </span>
-                <AppCatalogCheckIcon
-                  width={PICKER_ROW_GLYPH_SIZE}
-                  height={PICKER_ROW_GLYPH_SIZE}
-                  aria-hidden="true"
-                  className="shrink-0 fg-secondary"
-                />
-              </span>
             ) : null}
           </PickerMenuOption>
           {state.disabled ? (
@@ -4343,7 +4161,7 @@ function ModelPickerOption({
                 setFocusBillingOnOpen(event.detail === 0);
                 onBillingOpenChange?.(!billingOpen);
               }}
-              className={`focus-ring absolute ${leadingFavorite ? 'right-0.5' : 'right-7.5'} top-1/2 flex size-7 -translate-y-1/2 items-center justify-center ${MODEL_ROW_CONTROL_RADIUS_CLASS} fg-tertiary hover:bg-subtle hover:fg-primary`}
+              className={`focus-ring absolute z-1 ${leadingFavorite ? 'right-0.5' : 'right-7.5'} top-1/2 flex size-7 -translate-y-1/2 items-center justify-center ${MODEL_ROW_CONTROL_RADIUS_CLASS} fg-tertiary hover:bg-subtle hover:fg-primary`}
             >
               <span
                 className={
@@ -4393,7 +4211,7 @@ function ModelPickerOption({
                 setFocusBillingOnOpen(event.detail === 0);
                 onBillingOpenChange?.(!billingOpen);
               }}
-              className={`focus-ring absolute ${leadingFavorite && !harnessTrigger ? 'right-0.5' : 'right-7.5'} top-1/2 flex size-7 -translate-y-1/2 items-center justify-center ${MODEL_ROW_CONTROL_RADIUS_CLASS} fg-tertiary hover:bg-subtle hover:fg-primary group-hover/model-row:opacity-100 group-focus-within/model-row:opacity-100 [@media(hover:none)]:opacity-100 ${billingOpen || selected ? 'opacity-100' : 'opacity-0'}`}
+              className={`focus-ring absolute z-1 ${leadingFavorite && !harnessTrigger ? 'right-0.5' : 'right-7.5'} top-1/2 flex size-7 -translate-y-1/2 items-center justify-center ${MODEL_ROW_CONTROL_RADIUS_CLASS} fg-tertiary hover:bg-subtle hover:fg-primary group-hover/model-row:opacity-100 group-focus-within/model-row:opacity-100 [@media(hover:none)]:opacity-100 ${billingOpen || selected ? 'opacity-100' : 'opacity-0'}`}
             >
               <MoreHorizontalIcon
                 width={PICKER_ROW_GLYPH_SIZE}
@@ -4402,9 +4220,14 @@ function ModelPickerOption({
               />
             </button>
           ) : null}
+          {/* The star sits against the row's triggers, its label and the rows
+              above and below, so its touch hit area stays its own box. */}
           {onToggleFavorite ? (
-            <ModelPickerIconButton
-              type="button"
+            <Button
+              variant="ghost-quiet"
+              size="sm"
+              iconOnly
+              touchArea="contained"
               aria-label={`${favorite ? 'Remove' : 'Add'} ${option.label} ${favorite ? 'from' : 'to'} favorites`}
               hidden={hidden}
               role="menuitemcheckbox"
@@ -4416,11 +4239,10 @@ function ModelPickerOption({
                 event.stopPropagation();
                 onToggleFavorite();
               }}
-              radiusClassName={MODEL_ROW_CONTROL_RADIUS_CLASS}
-              className={`absolute ${leadingFavorite ? 'left-0.5' : 'right-0.5'} top-1/2 -translate-y-1/2 fg-tertiary`}
+              className={`absolute ${leadingFavorite ? 'left-0.5' : 'right-0.5'} top-1/2 -translate-y-1/2`}
             >
               <FavoriteStar filled={favorite === true} />
-            </ModelPickerIconButton>
+            </Button>
           ) : null}
         </div>
       </RichHoverTooltip>
@@ -4545,85 +4367,69 @@ function ModelPickerOption({
           ) : null}
         </FloatingMenu>
       ) : null}
-      {tooltipVisible && !pickerChrome && rowRef.current
-        ? createPortal(
+      {tooltipVisible && !pickerChrome && rowRef.current ? (
+        <RichHoverCard
+          anchorRef={rowRef}
+          placement="beside-menu"
+          id={tooltipId}
+          role="tooltip"
+          dataTestId={`${testIdPrefix}-option-detail`}
+          tone="inverse"
+          surfacePadding="relaxed"
+          surfaceClassName="w-64 whitespace-normal"
+        >
+          {/* Quieter lines dim the inverse ink, as ModelRowDetail does:
+              fg-secondary is too faint on the inverse surface. */}
+          {/* The row already describes itself with this hint. */}
+          {lock ? (
+            <div aria-hidden="true" className="text-xs leading-snug">
+              {lock.hint}
+            </div>
+          ) : null}
+          {hasExtraCharge ? (
+            <div className={`text-xs leading-snug${lock ? ' mt-1' : ''}`}>
+              <div>Extra charge only</div>
+              {option.extraChargeMessage ? (
+                <div className="mt-0.5 opacity-70">
+                  {option.extraChargeMessage}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          {hasDescription ? (
             <div
-              ref={tooltipRef}
-              id={tooltipId}
-              role="tooltip"
-              data-testid={`${testIdPrefix}-option-detail`}
-              className="pointer-events-none fixed z-tooltip w-64 whitespace-normal rounded bg-card px-2.5 py-2 text-xs font-normal leading-snug fg-primary shadow-lg"
-              style={
-                tooltipPosition
-                  ? { top: tooltipPosition.top, left: tooltipPosition.left }
-                  : { visibility: 'hidden', top: 0, left: 0 }
+              data-testid={
+                uniformTestIds
+                  ? `${testIdPrefix}-option-tooltip-description`
+                  : `${testIdPrefix}-option-tooltip-description-${option.id}`
+              }
+              className={`text-xs leading-snug${hasExtraCharge || lock ? ' mt-1 opacity-70' : ''}`}
+            >
+              {option.description}
+            </div>
+          ) : null}
+          {contextWindowLabel ? (
+            <div
+              className="text-xs leading-snug mt-1 opacity-70"
+              data-testid={`${testIdPrefix}-option-context-window`}
+            >
+              {contextWindowLabel} context
+            </div>
+          ) : null}
+          {showReasonInTooltip ? (
+            <div
+              className="text-xs leading-snug mt-1 opacity-70"
+              data-testid={
+                uniformTestIds
+                  ? undefined
+                  : `${testIdPrefix}-unavailable-tooltip`
               }
             >
-              {/* The row already describes itself with this hint. */}
-              {lock ? <div aria-hidden="true">{lock.hint}</div> : null}
-              {hasExtraCharge ? (
-                <div className={lock ? 'mt-1' : ''}>
-                  <div>Extra charge only</div>
-                  {option.extraChargeMessage ? (
-                    <div className="mt-0.5 fg-secondary">
-                      {option.extraChargeMessage}
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-              {hasDescription ? (
-                <div
-                  data-testid={
-                    uniformTestIds
-                      ? `${testIdPrefix}-option-tooltip-description`
-                      : `${testIdPrefix}-option-tooltip-description-${option.id}`
-                  }
-                  className={hasExtraCharge || lock ? 'mt-1 fg-secondary' : ''}
-                >
-                  {option.description}
-                </div>
-              ) : null}
-              {contextWindowLabel ? (
-                <div
-                  className="mt-1 fg-secondary"
-                  data-testid={`${testIdPrefix}-option-context-window`}
-                >
-                  {contextWindowLabel} context
-                </div>
-              ) : null}
-              {showReasonInTooltip ? (
-                <div
-                  className="mt-1 fg-secondary"
-                  data-testid={
-                    uniformTestIds
-                      ? undefined
-                      : `${testIdPrefix}-unavailable-tooltip`
-                  }
-                >
-                  {state.unavailableReason}
-                </div>
-              ) : null}
-            </div>,
-            getDocument(rowRef.current).body,
-          )
-        : null}
+              {state.unavailableReason}
+            </div>
+          ) : null}
+        </RichHoverCard>
+      ) : null}
     </>
-  );
-}
-
-function ModelPickerIconButton({
-  className = '',
-  radiusClassName = 'rounded-md',
-  ...props
-}: ButtonHTMLAttributes<HTMLButtonElement> & {
-  /** Nested hosts pass their concentric radius. */
-  readonly radiusClassName?: string;
-}): JSX.Element {
-  return (
-    <button
-      type="button"
-      {...props}
-      className={`focus-ring flex size-7 shrink-0 items-center justify-center ${radiusClassName} transition-colors hover:bg-subtle hover:fg-primary ${className}`}
-    />
   );
 }

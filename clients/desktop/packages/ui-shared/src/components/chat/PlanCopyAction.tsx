@@ -11,13 +11,8 @@ import {
 import { CheckIcon } from '../../icons/CheckIcon';
 import { CopyIcon } from '../../icons/CopyIcon';
 import { Button } from '../Button';
-import {
-  CLASSIC_FOOTER_ICON_BUTTON_CLASS,
-  CLEAN_FOOTER_ICON_BUTTON_CLASS,
-  useCleanChatLook,
-} from '../chat-look';
+import { CLEAN_ICON_BUTTON_VARIANT, useCleanChatLook } from '../chat-look';
 import { CopyStatusRegion, useAnnouncedCopy } from '../copy-feedback';
-import { PLAN_ACTION_BUTTON_CLASS } from '../PlanActionButtonRow';
 import { Tooltip } from '../Tooltip';
 import { ComposerIconButton } from './ComposerIconButton';
 import type { PlanTurnResolution } from './exit-plan-mode-plan';
@@ -75,7 +70,8 @@ export function planCopyStateFromMarkdown(
 /**
  * Where the action sits: `footer` is a turn's quiet icon beside its stamp,
  * `composer` the labeled capsule beside Open plan, `control` the 28px
- * secondary button beside Share, and `card` the plan card's tinted action.
+ * secondary button beside Share, and `card` the plan card's `compact`
+ * secondary capsule beside its other actions.
  */
 export type PlanCopyAppearance = 'footer' | 'composer' | 'control' | 'card';
 
@@ -158,7 +154,6 @@ function PlanCopyActionControl({
     compact,
     clean,
     copied,
-    unavailable,
     buttonProps,
   });
 
@@ -208,35 +203,29 @@ function renderPlanCopyControl({
   compact,
   clean,
   copied,
-  unavailable,
   buttonProps,
 }: {
   readonly appearance: PlanCopyAppearance;
   readonly compact: boolean;
   readonly clean: boolean;
   readonly copied: boolean;
-  readonly unavailable: boolean;
   readonly buttonProps: PlanCopyButtonProps;
 }): JSX.Element {
   const visibleLabel = copied ? 'Copied' : COPY_PLAN_VISIBLE_LABEL;
   // An inert action keeps its geometry and stays reachable; it only reads
   // as unavailable. `Button` and `ComposerIconButton` style `aria-disabled`
-  // themselves; the plain footer and card buttons take this.
-  const inertClass = unavailable ? ' cursor-not-allowed opacity-50' : '';
+  // themselves.
   switch (appearance) {
     case 'footer':
       return (
-        <button
-          type="button"
+        <Button
+          variant={CLEAN_ICON_BUTTON_VARIANT}
+          size="sm"
+          iconOnly
           {...buttonProps}
-          className={`${
-            clean
-              ? CLEAN_FOOTER_ICON_BUTTON_CLASS
-              : CLASSIC_FOOTER_ICON_BUTTON_CLASS
-          }${inertClass}`}
         >
           {planCopyGlyph(copied, clean ? 14 : 13)}
-        </button>
+        </Button>
       );
     case 'composer':
       return (
@@ -247,14 +236,10 @@ function renderPlanCopyControl({
       );
     case 'card':
       return (
-        <button
-          type="button"
-          {...buttonProps}
-          className={`${PLAN_ACTION_BUTTON_CLASS}${inertClass}`}
-        >
+        <Button size="compact" variant="secondary" {...buttonProps}>
           {planCopyGlyph(copied, 13)}
           {visibleLabel}
-        </button>
+        </Button>
       );
     case 'control':
       return compact ? (

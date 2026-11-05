@@ -214,6 +214,18 @@ export interface FloatingMenuPoint {
   readonly y: number;
 }
 
+const SURFACE_ANCHORS = new WeakMap<Element, Element>();
+
+/**
+ * The element an open floating surface (menu, listbox, popover) is anchored
+ * to, so a modal surface can tell a menu opened from one of its own controls
+ * from one opened elsewhere, whether or not the trigger names the menu with
+ * `aria-controls`.
+ */
+export function floatingSurfaceAnchor(surface: Element): Element | null {
+  return SURFACE_ANCHORS.get(surface) ?? null;
+}
+
 export const FLOATING_MENU_GAP = 4;
 export const FLOATING_PICKER_GAP = 8;
 /**
@@ -596,6 +608,9 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
     useLayoutEffect((): void => {
       const menu = menuRef.current;
       if (!open || !menu) return;
+      const anchor = anchorRef.current;
+      if (anchor) SURFACE_ANCHORS.set(menu, anchor);
+      else SURFACE_ANCHORS.delete(menu);
       const owner = anchorRef.current?.closest('.canopy-floating-menu');
       if (owner && owner !== menu && owner.id) {
         menu.dataset.floatingMenuOwner = owner.id;
@@ -896,10 +911,15 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
       event: ReactKeyboardEvent<HTMLDivElement>,
     ): void => {
       onKeyDown?.(event);
-      // Tab always leaves a listbox. A focus trap that already placed focus
-      // (it prevented the Tab at its boundary) keeps that focus; otherwise
-      // focus goes back to the trigger so the browser's Tab moves on from it.
-      if (interaction === 'listbox' && event.key === 'Tab') {
+      // Tab always leaves a menu or listbox. A focus trap that already placed
+      // focus (it prevented the Tab at its boundary) keeps that focus, and
+      // the surface still closes rather than staying open behind it;
+      // otherwise focus goes back to the trigger so the browser's Tab moves
+      // on from it.
+      if (
+        (interaction === 'listbox' || interaction === 'menu') &&
+        event.key === 'Tab'
+      ) {
         if (!event.defaultPrevented) {
           (returnFocusRef?.current ?? anchorRef.current)?.focus({
             preventScroll: true,
@@ -1059,6 +1079,13 @@ export interface FloatingMenuPointAnchorProps {
   /** Pointer position in the owner window's viewport, from the event. */
   readonly x: number;
   readonly y: number;
+  /**
+   * A box rather than a point (a text selection, a diff line): the anchor
+   * spans `width` by `height` from `x`, `y`, so a surface that flips to the
+   * other side clears the box instead of covering it.
+   */
+  readonly width?: number;
+  readonly height?: number;
   /** The document of the window the menu opens in. */
   readonly ownerDocument: Document;
   readonly 'data-testid'?: string;
@@ -1075,7 +1102,7 @@ export const FloatingMenuPointAnchor = forwardRef<
   HTMLSpanElement,
   FloatingMenuPointAnchorProps
 >(function FloatingMenuPointAnchor(
-  { x, y, ownerDocument, 'data-testid': dataTestId },
+  { x, y, width = 0, height = 0, ownerDocument, 'data-testid': dataTestId },
   ref,
 ): JSX.Element {
   return createPortal(
@@ -1083,8 +1110,8 @@ export const FloatingMenuPointAnchor = forwardRef<
       ref={ref}
       aria-hidden="true"
       data-testid={dataTestId}
-      className="pointer-events-none fixed h-0 w-0"
-      style={{ left: x, top: y }}
+      className="pointer-events-none fixed"
+      style={{ left: x, top: y, width, height }}
     />,
     ownerDocument.body,
   );

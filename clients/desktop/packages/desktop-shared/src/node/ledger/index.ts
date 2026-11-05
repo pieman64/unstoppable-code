@@ -7,6 +7,7 @@
  * literal search, signed cursors and the typed store error.
  */
 export { LedgerRepository } from './repository';
+export type { LedgerRollupsInput, LedgerRollupsScopeRequest } from './rollups';
 export {
   LEDGER_ACTOR_ORIGIN_KEY_MAX_CODE_POINTS,
   ledgerGlobalAccountKey,
@@ -59,6 +60,7 @@ export {
   LEDGER_COMMAND_OPERATIONS,
   LEDGER_IDEMPOTENCY_KEY_MAX_CODE_POINTS,
   LEDGER_RECEIPT_KEYS_MAX,
+  LEDGER_WORK_SUMMARY_ACTOR_IDS_MAX,
   type LedgerCommandOperation,
 } from './requests';
 export {
@@ -74,6 +76,7 @@ export {
   type LedgerFindGlobalScopeInput,
   type LedgerFindScopeInput,
   type LedgerGetEntryInput,
+  type LedgerHandBackEntryInput,
   type LedgerListChangesInput,
   type LedgerListReceiptKeysInput,
   type LedgerOutboxEventRecord,
@@ -88,6 +91,7 @@ export {
   type LedgerRecordMirrorAudienceInput,
   type LedgerRegisterActorInput,
   type LedgerRegisterActorResult,
+  type LedgerRelatedEntryChange,
   type LedgerResolvePendingTitleInput,
   type LedgerResolvePendingTitleResult,
   type LedgerRepositoryOptions,
@@ -101,7 +105,9 @@ export {
   type LedgerSetScopeRepairInput,
   type LedgerSourceAvailabilityResolver,
   type LedgerStorageCounts,
+  type LedgerStoreCommandReceipt,
   type LedgerStoreOperation,
   type LedgerSyncRepairReason,
   type LedgerUpdateEntryInput,
+  type LedgerWorkSummaryInput,
 } from './types';

@@ -55,6 +55,8 @@ const PUSH_MAX_RETRY_MS = 8_000;
 
 /** Resolves after `ms`, or as soon as `signal` aborts. */
 function pause(ms: number, signal: AbortSignal): Promise<void> {
+  // An aborted signal never fires again, so its timer would outlive the connection.
+  if (signal.aborted) return Promise.resolve();
   return new Promise((resolve) => {
     const timer = setTimeout(done, ms);
     signal.addEventListener('abort', done, { once: true });

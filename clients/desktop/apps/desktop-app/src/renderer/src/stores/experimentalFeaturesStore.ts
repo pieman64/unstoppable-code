@@ -7,7 +7,6 @@ import { EARLY_ACCESS_EXPERIMENT_ID } from '@canopy/protocol/experiments';
 import {
   ensureLabsExperimentsSubscription,
   isLabsExperimentEnabled,
-  resetLabsExperimentsStoreForTest,
   useLabsExperimentsStore,
 } from './labsExperimentsStore';
 
@@ -76,15 +75,4 @@ export function useExperimentalFeaturesEnabled(): boolean {
     ensureExperimentalFeaturesSubscription();
   }, []);
   return enabled;
-}
-
-/** Test-only: drop the subscription and return the store to its defaults. */
-export function resetExperimentalFeaturesStoreForTest(): void {
-  unsubscribeLabs?.();
-  unsubscribeLabs = null;
-  resetLabsExperimentsStoreForTest();
-  useExperimentalFeaturesStore.setState({
-    enabled: false,
-    hydrated: false,
-  });
 }

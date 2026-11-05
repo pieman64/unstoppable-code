@@ -14,6 +14,7 @@ import { Fact, FactList } from './FactList';
 import { Button } from './Button';
 import { DialogModal } from './DialogModal';
 import { DialogFormField } from './DialogFormField';
+import { ListRow } from './ListRow';
 import { TextInput } from './Field';
 
 function stopPropagation(event: SyntheticEvent): void {
@@ -210,9 +211,8 @@ export function PipelinePickerDialog({
       >
         <div className="mt-3 space-y-1">
           {entries.map((entry) => (
-            <button
+            <ListRow
               key={entry.id}
-              type="button"
               disabled={entry.disabled === true || running}
               onClick={() => {
                 const result = onRun(entry.id);
@@ -224,13 +224,10 @@ export function PipelinePickerDialog({
                 }
               }}
               data-testid={testIds?.entry?.(entry.id)}
-              className="focus-ring flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-s fg-primary hover:bg-fg-primary/[0.06] disabled:cursor-not-allowed disabled:fg-secondary/50"
+              trailing={entry.statusLabel || undefined}
             >
-              <span>{entry.name}</span>
-              {entry.statusLabel && (
-                <span className="text-xs">{entry.statusLabel}</span>
-              )}
-            </button>
+              {entry.name}
+            </ListRow>
           ))}
         </div>
         <div className="mt-4 flex justify-end">

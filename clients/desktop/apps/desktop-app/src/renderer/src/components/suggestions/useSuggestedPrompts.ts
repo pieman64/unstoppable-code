@@ -67,13 +67,6 @@ const heldInstanceCounts = new Map<string, number>();
  */
 const lastImpressions = new Map<string, string>();
 
-/** Test-only reset of module-level hold/impression state. */
-export function __resetSuggestedPromptsForTests(): void {
-  heldPicks.clear();
-  heldInstanceCounts.clear();
-  lastImpressions.clear();
-}
-
 /**
  * Resolves the MCP-aware suggested prompts for one empty-state surface
  * (CAN-1809): detects the MCPs enabled for `selections`, filters to eligible

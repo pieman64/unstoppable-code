@@ -164,12 +164,13 @@ export class AuthTerminalManager {
       TERM: 'xterm-256color',
       COLORTERM: 'truecolor',
       LANG: enhancedEnv.LANG ?? DEFAULT_LANG,
-      // Claude and Codex both honor BROWSER and still print their complete
-      // authorization URL when the launcher exits successfully. Keep that
-      // URL inside the auth terminal so the renderer can route it into the
-      // worktree's Browser panel instead of stealing focus with a system
-      // browser. GitHub's interactive device flow should retain its defaults.
-      ...(provider === 'github' ? {} : { BROWSER: 'echo' }),
+      // Claude Code opens the system browser with its localhost callback URL,
+      // so sign-in finishes without pasting a code; overriding BROWSER would
+      // discard that URL. E2E builds must never open an OS browser. GitHub's
+      // device flow also keeps its defaults.
+      ...((provider === 'claude' && !__CANOPY_E2E__) || provider === 'github'
+        ? {}
+        : { BROWSER: 'echo' }),
     };
 
     const pty = this.ptySpawn(executable, args, {

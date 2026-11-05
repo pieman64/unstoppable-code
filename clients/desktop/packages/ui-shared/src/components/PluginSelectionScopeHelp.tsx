@@ -1,5 +1,6 @@
 import type { JSX } from 'react';
 import { InfoIcon } from '../icons/InfoIcon';
+import { Button } from './Button';
 import { RichHoverTooltip } from './RichHoverTooltip';
 
 const SCOPE_GUIDANCE = [
@@ -40,13 +41,15 @@ export function PluginSelectionScopeHelp(): JSX.Element {
           </div>
         }
       >
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="sm"
+          iconOnly
           aria-label="How project defaults work"
-          className="focus-ring shrink-0 rounded p-0.5 fg-secondary transition-colors hover:fg-primary"
+          className="-my-1.5"
         >
           <InfoIcon aria-hidden="true" />
-        </button>
+        </Button>
       </RichHoverTooltip>
     </div>
   );

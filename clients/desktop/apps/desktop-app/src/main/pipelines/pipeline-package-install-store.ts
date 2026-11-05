@@ -1,6 +1,10 @@
 import { copyFile, mkdir, readFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import {
+  damagedCopiesOf,
+  pruneDamagedCopies,
+} from '@canopy/desktop-shared/node/lib/damaged-copies';
+import {
   isPipelineContentHash,
   isPipelinePackageDigest,
 } from '@canopy/protocol/pipelines';
@@ -242,9 +246,11 @@ async function writeStore(
     // recoverable file (truncated or hand-edited) into permanent loss of every
     // install it recorded. If the copy itself fails (EACCES, disk full) this
     // throws and the write does not happen: blocking one install is preferable
-    // to overwriting the only copy of the user's ledger. The side copy is not
-    // pruned; it happens once, since the write leaves a readable v1 ledger.
+    // to overwriting the only copy of the user's ledger. Only the newest five
+    // side copies are kept, so a ledger damaged again and again, or a rewrite
+    // that keeps failing, cannot fill the data directory.
     await copyFile(storePath, `${storePath}.unreadable-${Date.now()}`);
+    await pruneDamagedCopies(damagedCopiesOf(storePath, '.unreadable-'));
   }
   // Rows this build could not parse are written back alongside the ones it
   // could, so a downgrade does not quietly delete a newer build's installs.

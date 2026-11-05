@@ -289,11 +289,3 @@ export function initializeDelegationActivityStore(): () => void {
   disposeInitialization = dispose;
   return dispose;
 }
-
-/** Test-only: drop the subscription, listeners and every entry. */
-export function resetDelegationActivityStoreForTests(): void {
-  disposeInitialization?.();
-  disposeInitialization = null;
-  settledListeners.clear();
-  useDelegationActivityStore.setState({ byChat: {}, hydrated: false });
-}

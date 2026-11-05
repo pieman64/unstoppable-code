@@ -36,8 +36,10 @@ import {
   type SubagentNativeInterruptResult,
 } from '@canopy/ui-app/subagents';
 import {
+  ErrorState,
   SUBAGENT_CHAT_LOADING_LABEL,
   SUBAGENT_CHAT_NOT_FOUND_LABEL,
+  SUBAGENTS_LOAD_FAILED_LABEL,
 } from '@canopy/ui-shared/components';
 import type { SubagentViewerCapabilities } from '@canopy/ui-app/subagents';
 import { SubagentCostSection } from '@canopy/ui-app/cost';
@@ -140,6 +142,34 @@ function UnavailableSubagentChat(): JSX.Element {
     </div>
   );
 }
+
+/** A tree that failed to load, such as an evicted root whose reload failed. */
+function SubagentChatLoadError({
+  error,
+  onRetry,
+  retrying = false,
+}: {
+  readonly error: string;
+  readonly onRetry: (() => void) | undefined;
+  readonly retrying?: boolean;
+}): JSX.Element {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col items-center justify-center">
+      <ErrorState
+        space="panel"
+        testId="subagent-chat-load-error"
+        retryTestId="subagent-chat-load-retry"
+        message={SUBAGENTS_LOAD_FAILED_LABEL}
+        details={error}
+        onRetry={onRetry}
+        retrying={retrying}
+      />
+    </div>
+  );
+}
+
+// A busy Try again swallows clicks; it only needs a handler to stay mounted.
+const RETRY_IN_PROGRESS = (): void => undefined;
 
 function LoadingSubagentChat(): JSX.Element {
   return (
@@ -529,7 +559,17 @@ export function DesktopSubagentChatPanelHost({
   isVisible,
   isActive,
 }: DesktopSubagentChatPanelHostProps): JSX.Element {
-  const treeQuery = useSubagentTree(scope, rootChatId, { enabled: isVisible });
+  const treeQuery = useSubagentTree(scope, rootChatId, {
+    enabled: isVisible,
+    reloadEvictedTranscript: true,
+  });
+  const { treeState } = treeQuery;
+  // Try again keeps the failure on screen, busy, until the reload settles, so
+  // the panel never blanks between tries and the button keeps focus.
+  const [retriedError, setRetriedError] = useState<string | null>(null);
+  if (retriedError !== null && treeState.status !== 'loading') {
+    setRetriedError(null);
+  }
   const baseCapabilities = useSubagentViewerCapabilities();
   const rootChat = useRootChatProjection(scope, rootChatId);
   const node = treeQuery.tree?.nodes.get(subagentId);
@@ -568,7 +608,30 @@ export function DesktopSubagentChatPanelHost({
     !node ||
     node.kind !== subagentKind
   ) {
-    return <LoadingSubagentChat />;
+    if (treeState.status === 'error') {
+      const { error, onRetry } = treeState;
+      return (
+        <SubagentChatLoadError
+          error={error}
+          onRetry={
+            onRetry &&
+            ((): void => {
+              setRetriedError(error);
+              onRetry();
+            })
+          }
+        />
+      );
+    }
+    return retriedError === null ? (
+      <LoadingSubagentChat />
+    ) : (
+      <SubagentChatLoadError
+        error={retriedError}
+        onRetry={RETRY_IN_PROGRESS}
+        retrying
+      />
+    );
   }
 
   return (

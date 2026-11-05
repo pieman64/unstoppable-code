@@ -1,8 +1,8 @@
 import { memo, useId, type JSX } from 'react';
 import { FileIcon } from '../../icons';
-import { ArrowUpRightIcon, FolderIcon } from '../../icons/AppIcons';
+import { FolderIcon } from '../../icons/AppIcons';
+import { TitlebarIconButton } from '../TitlebarIconButton';
 import { REPLAY_MASK_CLASS } from '../../lib/replay-privacy';
-import { Tooltip } from '../Tooltip';
 import { useCleanChatLook } from '../chat-look';
 import { TOOL_APPROVAL_WAITING_LABEL } from './tool-approval-wait';
 import { TURN_FILE_ROW_CLASS_NAME } from './turn-file-styles';
@@ -43,46 +43,21 @@ function FileReveal({
   reveal: TurnFileChipReveal;
   describedBy: string;
 }): JSX.Element {
-  const clean = useCleanChatLook();
-  const button = (
-    <button
-      type="button"
+  return (
+    <TitlebarIconButton
+      icon={FolderIcon}
+      foreground="top-bar"
+      coarsePointerTarget
       data-testid="turn-file-chip-reveal"
       onClick={reveal.onReveal}
       aria-label={reveal.label}
-      {...(describedBy ? { 'aria-describedby': describedBy } : {})}
-      className={
-        clean
-          ? 'focus-ring flex size-8 shrink-0 items-center justify-center rounded-sm pointer-coarse:size-11'
-          : 'focus-ring m-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md fg-secondary transition-colors hover:bg-fg-primary/[0.06] hover:fg-primary'
-      }
-    >
-      {clean ? (
-        <>
-          <ArrowUpRightIcon
-            width={14}
-            height={14}
-            aria-hidden="true"
-            className="fg-quaternary"
-          />
-        </>
-      ) : (
-        <FolderIcon width={14} height={14} aria-hidden="true" />
-      )}
-    </button>
+      aria-describedby={describedBy || undefined}
+      tooltipLabel={reveal.tooltip}
+    />
   );
-  return <Tooltip label={reveal.tooltip}>{button}</Tooltip>;
 }
 
-function FileLabel({
-  filename,
-  location,
-  locationId,
-}: {
-  filename: string;
-  location?: string;
-  locationId: string;
-}): JSX.Element {
+function FileLabel({ filename }: { filename: string }): JSX.Element {
   const clean = useCleanChatLook();
   const characters = Array.from(
     filenameSegments.segment(filename),
@@ -120,15 +95,6 @@ function FileLabel({
           <span className="min-w-0 truncate fg-primary">{filename}</span>
         )}
       </span>
-      {location && (
-        <span
-          id={locationId}
-          data-testid="turn-file-chip-location"
-          className={`${REPLAY_MASK_CLASS} ${clean ? 'hidden min-w-0 max-w-2/5 shrink-0 truncate text-xs fg-secondary @min-[28rem]/turn-file:block' : 'mt-1 block truncate text-3xs fg-secondary'}`}
-        >
-          {location}
-        </span>
-      )}
     </span>
   );
 }
@@ -159,7 +125,7 @@ export const TurnFileChipView = memo(function TurnFileChipView({
   const id = useId();
   const locationId = `${id}-location`;
   const statusId = `${id}-status`;
-  const shownLocation = pending ? undefined : location;
+  const shownLocation = pending || hostStatus ? undefined : location;
   const isWaiting = pending && waiting;
   const status = isWaiting
     ? TOOL_APPROVAL_WAITING_LABEL
@@ -181,61 +147,62 @@ export const TurnFileChipView = memo(function TurnFileChipView({
       className={
         clean
           ? presentation === 'summary'
-            ? '@container/turn-file group/turn-file flex min-w-0 flex-1 items-center gap-3 text-s'
-            : `@container/turn-file group/turn-file ${TURN_FILE_ROW_CLASS_NAME}`
-          : 'flex min-w-0 max-w-full items-start rounded-md border bg-fg-primary/[0.02] text-xs transition-colors hover:bg-fg-primary/[0.04]'
+            ? '@container/turn-file group/turn-file flex min-w-0 flex-1 cursor-default select-none items-center gap-3 text-s'
+            : `@container/turn-file group/turn-file relative cursor-default select-none ${TURN_FILE_ROW_CLASS_NAME}`
+          : 'relative flex min-w-0 max-w-full cursor-default select-none items-start rounded-md border bg-fg-primary/[0.02] text-xs transition-colors hover:bg-fg-primary/[0.04]'
       }
     >
-      <Tooltip
-        label={<span className={REPLAY_MASK_CLASS}>{filename}</span>}
-        allowShrink
-        className="flex-1 self-stretch"
-        contentClassName="max-w-80 whitespace-normal wrap-anywhere"
-        delay="long"
+      <button
+        type="button"
+        data-testid="turn-file-chip-open"
+        onClick={disabled ? undefined : onOpen}
+        aria-label={
+          isWaiting
+            ? `${filename}, ${TOOL_APPROVAL_WAITING_LABEL.toLowerCase()}`
+            : pending
+              ? `${change === 'updated' ? 'Updating' : 'Creating'} ${filename}`
+              : `Open ${filename}`
+        }
+        aria-busy={busy}
+        aria-disabled={disabled}
+        {...(describedBy ? { 'aria-describedby': describedBy } : {})}
+        className={
+          clean
+            ? `focus-ring focus-ring-stretched inline-flex min-h-8 min-w-0 max-w-3/5 shrink items-center rounded-sm text-left before:absolute ${presentation === 'summary' ? 'before:inset-1 before:rounded-lg' : 'focus-ring-inset before:inset-0 before:rounded-[calc(var(--radius-xl)-5px)]'} aria-disabled:cursor-default pointer-coarse:min-h-11`
+            : 'focus-ring focus-ring-stretched min-w-0 max-w-3/5 cursor-default rounded-md px-2 py-1.5 text-left before:absolute before:inset-0 before:rounded-[calc(var(--radius-xl)-5px)] aria-disabled:cursor-default'
+        }
       >
-        <button
-          type="button"
-          data-testid="turn-file-chip-open"
-          onClick={disabled ? undefined : onOpen}
-          aria-label={
-            isWaiting
-              ? `${filename}, ${TOOL_APPROVAL_WAITING_LABEL.toLowerCase()}`
-              : pending
-                ? `${change === 'updated' ? 'Updating' : 'Creating'} ${filename}`
-                : `Open ${filename}`
-          }
-          aria-busy={busy}
-          aria-disabled={disabled}
-          {...(describedBy ? { 'aria-describedby': describedBy } : {})}
+        <FileLabel filename={filename} />
+      </button>
+      {status && (
+        <span
+          id={statusId}
+          role="status"
+          data-testid="turn-file-chip-status"
           className={
             clean
-              ? 'focus-ring flex min-h-8 min-w-0 flex-1 flex-col items-start justify-center rounded-sm text-left aria-disabled:cursor-default pointer-coarse:min-h-11'
-              : 'focus-ring min-w-0 flex-1 cursor-pointer rounded-md px-2 py-1.5 text-left aria-disabled:cursor-default'
+              ? 'relative z-10 block min-w-0 max-w-2/5 shrink-0 truncate whitespace-nowrap text-xs fg-tertiary'
+              : 'relative z-10 block min-w-0 max-w-2/5 shrink-0 truncate whitespace-nowrap text-xs fg-secondary'
           }
         >
-          <FileLabel
-            filename={filename}
-            location={shownLocation}
-            locationId={locationId}
-          />
-          {status && (
-            <span
-              id={statusId}
-              role="status"
-              data-testid="turn-file-chip-status"
-              className={
-                clean
-                  ? 'block w-full whitespace-normal wrap-anywhere text-xs fg-tertiary'
-                  : 'mt-1 block whitespace-normal wrap-anywhere text-3xs fg-secondary'
-              }
-            >
-              {status}
-            </span>
-          )}
-        </button>
-      </Tooltip>
+          {status}
+        </span>
+      )}
+      {shownLocation && (
+        <span
+          id={locationId}
+          data-testid="turn-file-chip-location"
+          className={`${REPLAY_MASK_CLASS} ${clean ? 'relative z-10 block min-w-0 max-w-2/5 shrink-0 truncate text-xs fg-secondary' : 'relative z-10 block min-w-0 max-w-2/5 truncate text-3xs fg-secondary'}`}
+        >
+          {shownLocation}
+        </span>
+      )}
       {reveal && !pending && (
-        <FileReveal reveal={reveal} describedBy={describedBy} />
+        <span
+          className={`relative z-10 ml-auto inline-flex shrink-0 p-1 ${clean && presentation === 'summary' ? '' : '-mr-2'}`}
+        >
+          <FileReveal reveal={reveal} describedBy={describedBy} />
+        </span>
       )}
     </div>
   );

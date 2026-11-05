@@ -1,5 +1,7 @@
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { execFile } from 'node:child_process';
-import { realpath } from 'node:fs/promises';
+import { readFile, readdir, readlink, realpath } from 'node:fs/promises';
 import { basename, dirname, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
@@ -7,6 +9,384 @@ const execFileAsync = promisify(execFile);
 const TERMINATION_GRACE_MS = 750;
 const PROCESS_LIST_TIMEOUT_MS = 5_000;
 const POSIX_COMMAND_READ_CONCURRENCY = 16;
+const EXIT_CHECK_COUNT = 20;
+const EXIT_CHECK_DELAY_MS = 25;
+
+export class WorktreeProcessCleanupError extends Error {
+  readonly code = 'WORKTREE_WRITERS_ACTIVE';
+}
+
+interface LinuxWriterVerificationOps {
+  findWriters(paths: readonly string[]): Promise<number[]>;
+  delay(ms: number): Promise<void>;
+  procFs: LinuxProcFs;
+  additionalPaths: readonly string[];
+}
+
+interface LinuxProcFs {
+  readFile(path: string): Promise<string>;
+  readlink(path: string): Promise<string>;
+  readdir(path: string): Promise<string[]>;
+}
+
+const linuxProcFs: LinuxProcFs = {
+  readFile: (path) => readFile(path, 'utf8'),
+  readlink,
+  readdir,
+};
+
+function pathReferencesWorktree(
+  path: string,
+  worktreePaths: readonly string[],
+): boolean {
+  const entry = path.replace(/ \(deleted\)$/, '');
+  return worktreePaths.some(
+    (candidate) => entry === candidate || entry.startsWith(`${candidate}/`),
+  );
+}
+
+async function readProc<T>(read: () => Promise<T>): Promise<T | undefined> {
+  try {
+    return await read();
+  } catch (error) {
+    if (
+      isErrnoException(error) &&
+      ['ENOENT', 'ESRCH'].includes(error.code ?? '')
+    )
+      return undefined;
+    throw error;
+  }
+}
+
+interface CapturedLinuxOwner {
+  identity: string;
+  worktreeRelated: boolean;
+}
+
+interface LinuxWriterTracking {
+  owners: Map<number, CapturedLinuxOwner>;
+  paths: Set<string>;
+  unresolved: boolean;
+  activeAttempts: number;
+}
+
+const linuxWriterTracking = new AsyncLocalStorage<LinuxWriterTracking>();
+const unresolvedLinuxWorktrees = new Map<string, LinuxWriterTracking>();
+
+function createLinuxWriterTracking(): LinuxWriterTracking {
+  return {
+    owners: new Map(),
+    paths: new Set(),
+    unresolved: false,
+    activeAttempts: 0,
+  };
+}
+
+/** Keep birth identities through removal and across retries of a failed worktree. */
+export async function withLinuxWorktreeWriterTracking<T>(
+  run: () => Promise<T>,
+  worktreeKey?: string,
+): Promise<T> {
+  if (hostOperatingSystem() !== 'linux') return run();
+  const retained =
+    worktreeKey === undefined
+      ? undefined
+      : unresolvedLinuxWorktrees.get(worktreeKey);
+  // A live-state drain can be nested in this worktree's archive lifecycle.
+  if (retained !== undefined && linuxWriterTracking.getStore() === retained)
+    return run();
+  const tracking = retained ?? createLinuxWriterTracking();
+  if (worktreeKey !== undefined)
+    unresolvedLinuxWorktrees.set(worktreeKey, tracking);
+  // A rejected lifecycle keeps its snapshot, even when cancellation failed before
+  // verification. No expiry can prove that an orphan has closed its handles.
+  tracking.activeAttempts += 1;
+  try {
+    const result = await linuxWriterTracking.run(tracking, run);
+    if (
+      worktreeKey !== undefined &&
+      tracking.activeAttempts === 1 &&
+      !tracking.unresolved &&
+      unresolvedLinuxWorktrees.get(worktreeKey) === tracking
+    )
+      unresolvedLinuxWorktrees.delete(worktreeKey);
+    return result;
+  } finally {
+    tracking.activeAttempts -= 1;
+  }
+}
+
+async function inspectLinuxWriters(
+  paths: readonly string[],
+  tracking: LinuxWriterTracking,
+  procFs: LinuxProcFs,
+): Promise<number[]> {
+  for (const path of paths) tracking.paths.add(path);
+  tracking.unresolved = true;
+  const writers = await findLinuxOwnedWriters(
+    [...tracking.paths],
+    tracking.owners,
+    procFs,
+  );
+  tracking.unresolved = writers.length > 0;
+  return writers;
+}
+
+/** Inspect only this app's process tree; unreadable unrelated terminals are not owners. */
+async function findLinuxOwnedWriters(
+  worktreePaths: readonly string[],
+  owners: Map<number, CapturedLinuxOwner>,
+  procFs: LinuxProcFs,
+): Promise<number[]> {
+  const pending: Array<{
+    pid: number;
+    worktreeRelated: boolean;
+    identity?: string;
+  }> = [{ pid: process.pid, worktreeRelated: false }];
+  const deadline = Date.now() + 2_000;
+  // Retain birth identities across reparenting without adopting reused PIDs.
+  for (const [pid, owner] of owners) {
+    if (Date.now() >= deadline)
+      throw new WorktreeProcessCleanupError(
+        'App-owned writer inspection exceeded its deadline; cleanup is incomplete.',
+      );
+    try {
+      if ((await readLinuxProcessIdentity(pid, procFs)) === owner.identity)
+        pending.push({
+          pid,
+          worktreeRelated: owner.worktreeRelated,
+          identity: owner.identity,
+        });
+      else owners.delete(pid);
+    } catch (error) {
+      if (owner.worktreeRelated || !isProcPermissionError(error)) throw error;
+    }
+  }
+  const seen = new Map<number, boolean>();
+  const writers = new Set<number>();
+  while (pending.length > 0) {
+    const candidate = pending.pop();
+    if (candidate === undefined) continue;
+    const previous = seen.get(candidate.pid);
+    if (previous === true || (previous === false && !candidate.worktreeRelated))
+      continue;
+    const { pid } = candidate;
+    if (Date.now() >= deadline)
+      throw new WorktreeProcessCleanupError(
+        'App-owned writer inspection exceeded its deadline; cleanup is incomplete.',
+      );
+    const root = `/proc/${pid}`;
+    let inspectionFailure: Error | undefined;
+    // A denied cwd must not hide readable argv, handles, or terminal ancestry.
+    const readEvidence = async <T>(
+      read: () => Promise<T>,
+    ): Promise<T | undefined> => {
+      try {
+        return await readProc(read);
+      } catch (error) {
+        if (!isProcPermissionError(error)) throw error;
+        inspectionFailure ??= error;
+        return undefined;
+      }
+    };
+    const identity = await readEvidence(() =>
+      readLinuxProcessIdentity(pid, procFs),
+    );
+    if (identity === undefined && inspectionFailure === undefined) continue;
+    // A captured PID may be reused between the seed read and this inspection.
+    if (candidate.identity !== undefined && identity !== candidate.identity) {
+      if (
+        inspectionFailure &&
+        (candidate.worktreeRelated || pid === process.pid)
+      )
+        throw inspectionFailure;
+      continue;
+    }
+    const cwd = await readEvidence(() => procFs.readlink(`${root}/cwd`));
+    const command = await readEvidence(() =>
+      procFs.readFile(`${root}/cmdline`),
+    );
+    const commandReferencesWorktree =
+      command
+        ?.split('\0')
+        .some((arg) =>
+          pathReferencesWorktree(
+            arg.slice(arg.indexOf('=') + 1),
+            worktreePaths,
+          ),
+        ) ?? false;
+    let worktreeRelated =
+      candidate.worktreeRelated || commandReferencesWorktree;
+    let writing =
+      cwd !== undefined && pathReferencesWorktree(cwd, worktreePaths);
+    worktreeRelated ||= writing;
+    const handles = await readEvidence(() => procFs.readdir(`${root}/fd`));
+    for (const handle of handles ?? []) {
+      if (Date.now() >= deadline)
+        throw new WorktreeProcessCleanupError(
+          'App-owned writer inspection exceeded its deadline; cleanup is incomplete.',
+        );
+      const target = await readEvidence(() =>
+        procFs.readlink(`${root}/fd/${handle}`),
+      );
+      if (
+        target === undefined ||
+        !pathReferencesWorktree(target, worktreePaths)
+      )
+        continue;
+      worktreeRelated = true;
+      const info = await readEvidence(() =>
+        procFs.readFile(`${root}/fdinfo/${handle}`),
+      );
+      const flags =
+        info === undefined ? undefined : /^flags:\s+([0-7]+)/m.exec(info);
+      if (flags && (Number.parseInt(flags[1], 8) & 3) !== 0) writing = true;
+    }
+    const childrenToInspect: number[] = [];
+    const tasks = await readEvidence(() => procFs.readdir(`${root}/task`));
+    for (const task of tasks ?? []) {
+      const children = await readEvidence(() =>
+        procFs.readFile(`${root}/task/${task}/children`),
+      );
+      if (
+        children === undefined &&
+        !inspectionFailure &&
+        (await readEvidence(() =>
+          procFs.readFile(`${root}/task/${task}/stat`),
+        )) !== undefined
+      ) {
+        throw new WorktreeProcessCleanupError(
+          'Linux process-child inspection is unavailable; cleanup is incomplete.',
+        );
+      }
+      for (const child of children?.trim().split(/\s+/) ?? []) {
+        if (/^\d+$/.test(child)) childrenToInspect.push(Number(child));
+      }
+    }
+    let finalIdentity: string | undefined;
+    try {
+      finalIdentity = await readLinuxProcessIdentity(pid, procFs);
+    } catch (error) {
+      if (
+        !isProcPermissionError(error) ||
+        worktreeRelated ||
+        pid === process.pid
+      )
+        throw error;
+      continue;
+    }
+    // Do not retain descriptors or child PIDs read from a recycled process.
+    if (
+      finalIdentity === undefined ||
+      (identity !== undefined && finalIdentity !== identity)
+    )
+      continue;
+    seen.set(pid, worktreeRelated);
+    if (identity !== undefined) owners.set(pid, { identity, worktreeRelated });
+    for (const child of childrenToInspect)
+      pending.push({
+        pid: child,
+        // Main owns many worktrees. Its open files never implicate every PTY.
+        worktreeRelated: pid !== process.pid && worktreeRelated,
+      });
+    if (writing) {
+      writers.add(pid);
+    } else if (inspectionFailure && (worktreeRelated || pid === process.pid)) {
+      throw inspectionFailure;
+    }
+  }
+  return [...writers];
+}
+
+function isProcPermissionError(error: unknown): error is NodeJS.ErrnoException {
+  return (
+    isErrnoException(error) && ['EACCES', 'EPERM'].includes(error.code ?? '')
+  );
+}
+
+async function readLinuxProcessIdentity(
+  pid: number,
+  procFs: LinuxProcFs = linuxProcFs,
+): Promise<string | undefined> {
+  const stat = await readProc(() => procFs.readFile(`/proc/${pid}/stat`));
+  if (stat === undefined) return undefined;
+  const fields = stat
+    .slice(stat.lastIndexOf(')') + 2)
+    .trim()
+    .split(/\s+/);
+  // A process can become a zombie between reading stat and opening fd. Linux
+  // may deny fd inspection then, but an exited process has no writable handles.
+  if (fields[0] === 'Z' || fields[0] === 'X') return undefined;
+  return fields[19];
+}
+
+/** Capture live owners before cancellation, including writers later reparented. */
+export async function captureLinuxWorktreeWriterVerification(
+  worktreePath: string,
+  procFs: LinuxProcFs = linuxProcFs,
+): Promise<() => Promise<void>> {
+  if (hostOperatingSystem() !== 'linux') return async (): Promise<void> => {};
+  const paths = await resolveCleanupWorktreePaths(worktreePath);
+  const tracking =
+    linuxWriterTracking.getStore() ?? createLinuxWriterTracking();
+  await inspectLinuxWriters(paths, tracking, procFs);
+  return async (): Promise<void> => {
+    await withLinuxWorktreeRemovalVerification(worktreePath, async () => {}, {
+      findWriters: () => inspectLinuxWriters(paths, tracking, procFs),
+    });
+  };
+}
+
+/** A successful unlink on Linux says nothing about an old writable descriptor. */
+export async function withLinuxWorktreeRemovalVerification<T>(
+  worktreePath: string,
+  remove: () => Promise<T>,
+  overrides: Partial<LinuxWriterVerificationOps> = {},
+): Promise<T> {
+  if (hostOperatingSystem() !== 'linux') return remove();
+  const paths = (
+    await Promise.all(
+      [worktreePath, ...(overrides.additionalPaths ?? [])].map((path) =>
+        resolveCleanupWorktreePaths(path),
+      ),
+    )
+  )
+    .flat()
+    .map((path) => resolve(path));
+  const tracking =
+    linuxWriterTracking.getStore() ?? createLinuxWriterTracking();
+  const findWriters =
+    overrides.findWriters ??
+    ((candidates: readonly string[]): Promise<number[]> =>
+      inspectLinuxWriters(
+        candidates,
+        tracking,
+        overrides.procFs ?? linuxProcFs,
+      ));
+  const delay =
+    overrides.delay ??
+    ((ms: number): Promise<void> =>
+      new Promise((resolve) => setTimeout(resolve, ms)));
+  const verify = async (removed: boolean): Promise<void> => {
+    const deadline = Date.now() + 2_000;
+    for (let check = 0; ; check += 1) {
+      const writers = await findWriters(paths);
+      if (writers.length === 0) return;
+      if (check >= EXIT_CHECK_COUNT || Date.now() >= deadline) {
+        throw new WorktreeProcessCleanupError(
+          removed
+            ? `The directory was removed at ${worktreePath}, but app-owned writers are still active (${writers.join(', ')}); cleanup is incomplete.`
+            : `The directory was retained at ${worktreePath} because app-owned writers are still active (${writers.join(', ')}).`,
+        );
+      }
+      await delay(EXIT_CHECK_DELAY_MS);
+    }
+  };
+  await verify(false);
+  const result = await remove();
+  await verify(true);
+  return result;
+}
 
 export interface ProcessRow {
   pid: number;
@@ -15,10 +395,12 @@ export interface ProcessRow {
 }
 
 interface WorktreeProcessCleanupOps {
+  currentPid: number;
   listProcesses(): Promise<ProcessRow[]>;
   protectedPids(rows: readonly ProcessRow[]): Set<number>;
   kill(pid: number, signal: NodeJS.Signals): void;
-  isAlive(pid: number): boolean;
+  isAlive(pid: number): boolean | Promise<boolean>;
+  processIdentity(pid: number): Promise<string | undefined>;
   delay(ms: number): Promise<void>;
   resolveRealPath(path: string): Promise<string>;
 }
@@ -121,20 +503,13 @@ export function protectedPidsForCurrentProcess(
   rows: readonly ProcessRow[],
   currentPid = process.pid,
 ): Set<number> {
-  const protectedPids = new Set<number>([currentPid]);
+  // Linux removal targets app-owned descendants; only our own process and
+  // ancestors must be protected there. Other platforms retain their policy.
+  const protectedPids =
+    hostOperatingSystem() === 'linux'
+      ? new Set([currentPid])
+      : descendantPids(rows, currentPid);
   const byPid = new Map(rows.map((row) => [row.pid, row]));
-  const descendants = new Set<number>([currentPid]);
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const row of rows) {
-      if (descendants.has(row.parentPid) && !descendants.has(row.pid)) {
-        descendants.add(row.pid);
-        protectedPids.add(row.pid);
-        changed = true;
-      }
-    }
-  }
 
   let cursor = byPid.get(currentPid);
   while (
@@ -148,6 +523,25 @@ export function protectedPidsForCurrentProcess(
   return protectedPids;
 }
 
+function descendantPids(
+  rows: readonly ProcessRow[],
+  currentPid: number,
+): Set<number> {
+  const descendants = new Set<number>([currentPid]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const row of rows) {
+      if (descendants.has(row.parentPid) && !descendants.has(row.pid)) {
+        descendants.add(row.pid);
+        changed = true;
+      }
+    }
+  }
+
+  return descendants;
+}
+
 function defaultKill(pid: number, signal: NodeJS.Signals): void {
   try {
     process.kill(pid, signal);
@@ -156,7 +550,16 @@ function defaultKill(pid: number, signal: NodeJS.Signals): void {
   }
 }
 
-function defaultIsAlive(pid: number): boolean {
+async function defaultIsAlive(pid: number): Promise<boolean> {
+  if (hostOperatingSystem() === 'linux') {
+    const stat = await readProc(() =>
+      linuxProcFs.readFile(`/proc/${pid}/stat`),
+    );
+    if (stat === undefined) return false;
+    const state = stat.slice(stat.lastIndexOf(')') + 2).split(/\s+/)[0];
+    // A zombie holds no writable descriptors and cannot write again.
+    if (state === 'Z' || state === 'X') return false;
+  }
   try {
     process.kill(pid, 0);
     return true;
@@ -167,15 +570,23 @@ function defaultIsAlive(pid: number): boolean {
 
 function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
   return (
-    error instanceof Error && 'code' in error && typeof error.code === 'string'
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    typeof error.code === 'string'
   );
 }
 
 const defaultOps: WorktreeProcessCleanupOps = {
+  currentPid: process.pid,
   listProcesses,
   protectedPids: protectedPidsForCurrentProcess,
   kill: defaultKill,
   isAlive: defaultIsAlive,
+  processIdentity: (pid) =>
+    hostOperatingSystem() === 'linux'
+      ? readLinuxProcessIdentity(pid)
+      : Promise.resolve(undefined),
   delay: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   resolveRealPath: realpath,
 };
@@ -260,12 +671,23 @@ export async function terminateProcessesReferencingPath(
     worktreePath,
     ops.resolveRealPath,
   );
+  const owned = descendantPids(rows, ops.currentPid);
   const pids = selectProcessesReferencingPath(
     rows,
     worktreePaths,
     ops.protectedPids(rows),
-  );
+  ).filter((pid) => hostOperatingSystem() !== 'linux' || owned.has(pid));
   const initialRows = new Map(rows.map((row) => [row.pid, row]));
+  const initialIdentities = new Map(
+    await Promise.all(
+      pids.map(
+        async (pid): Promise<[number, string | undefined]> => [
+          pid,
+          await ops.processIdentity(pid),
+        ],
+      ),
+    ),
+  );
   for (const pid of pids) ops.kill(pid, 'SIGTERM');
   if (pids.length === 0) return 0;
   await ops.delay(TERMINATION_GRACE_MS);
@@ -279,9 +701,37 @@ export async function terminateProcessesReferencingPath(
       initial &&
       remaining &&
       initial.command === remaining.command &&
-      ops.isAlive(pid)
+      (await ops.isAlive(pid)) &&
+      (initialIdentities.get(pid) === undefined ||
+        initialIdentities.get(pid) === (await ops.processIdentity(pid)))
     ) {
       ops.kill(pid, 'SIGKILL');
+    }
+  }
+  if (hostOperatingSystem() === 'linux') {
+    const deadline = Date.now() + 2_000;
+    for (let check = 0; ; check += 1) {
+      const alive: number[] = [];
+      for (const pid of pids) {
+        const initial = initialRows.get(pid);
+        const remaining = remainingRows.get(pid);
+        if (
+          initial &&
+          remaining &&
+          initial.command === remaining.command &&
+          (await ops.isAlive(pid)) &&
+          (initialIdentities.get(pid) === undefined ||
+            initialIdentities.get(pid) === (await ops.processIdentity(pid)))
+        )
+          alive.push(pid);
+      }
+      if (alive.length === 0) break;
+      if (check >= EXIT_CHECK_COUNT || Date.now() >= deadline) {
+        throw new WorktreeProcessCleanupError(
+          `Worktree processes are still alive after termination (${alive.join(', ')}).`,
+        );
+      }
+      await ops.delay(EXIT_CHECK_DELAY_MS);
     }
   }
   return pids.length;

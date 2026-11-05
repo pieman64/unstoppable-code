@@ -1,5 +1,9 @@
 import { copyFile, mkdir, readFile } from 'node:fs/promises';
 import * as path from 'node:path';
+import {
+  damagedCopyPath,
+  pruneDamagedCopies,
+} from '@canopy/desktop-shared/node/lib/damaged-copies';
 import { writeStoreFileDurably } from '../lib/durable-store-write';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 
@@ -112,8 +116,10 @@ async function writeStore(
 ): Promise<void> {
   await mkdir(path.dirname(storePath), { recursive: true });
   // Copied, not moved: if the replacement fails, the damaged file stays put.
-  if (current.status === 'damaged')
-    await copyFile(storePath, `${storePath}.damaged-${Date.now()}`);
+  if (current.status === 'damaged') {
+    await copyFile(storePath, damagedCopyPath(storePath));
+    await pruneDamagedCopies(storePath);
+  }
   await writeStoreFileDurably(
     storePath,
     `${JSON.stringify({ version: 1, records: [...records, ...current.unknown] }, null, 2)}\n`,

@@ -43,7 +43,11 @@ import {
   emptyWaitForAgentReplyOutputs,
   parseWaitForAgentReplyInputs,
 } from '@canopy/desktop-shared/pipelines/host-wait-for-agent-reply';
-import type { UsageInitiationSource } from '@canopy/desktop-shared/types';
+import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import type {
+  ChatTabPluginSelections,
+  UsageInitiationSource,
+} from '@canopy/desktop-shared/types';
 import type {
   PipelineAgentChatAddress,
   PipelineChatSendRecord,
@@ -89,6 +93,10 @@ export interface HostActionStepOptions {
   cwd?: string;
   /** Resolves a step's `model` input (pipeline, `$` and global aliases); throws to refuse. */
   resolveModel?: (value: string) => Promise<string>;
+  /** A plugin collection the run resolved, as a chat takes it; `undefined` when it didn't. */
+  pluginCollectionSelections?: (
+    id: string,
+  ) => ChatTabPluginSelections | undefined;
   /** `rawInputValues` from `runStepBody` (already resolved against the manifest defaults). */
   inputValues: Record<string, string>;
   logFile: string;
@@ -116,6 +124,21 @@ type HostRequestBuild =
 interface HostRequestOptions {
   cwd?: string;
   resolveModel?: (value: string) => Promise<string>;
+  pluginCollectionSelections?: (
+    id: string,
+  ) => ChatTabPluginSelections | undefined;
+}
+
+/** Selections that set anything; a collection that sets nothing sends none. */
+function choosesAny(selections: ChatTabPluginSelections): boolean {
+  return (
+    selections.collectionIds.length > 0 ||
+    selections.skillRefs.length > 0 ||
+    selections.pluginRefs.length > 0 ||
+    (selections.mcpServerRefs?.length ?? 0) > 0 ||
+    (selections.mcpHttpAuthPreferences?.length ?? 0) > 0 ||
+    (selections.unresolvedCapabilities?.length ?? 0) > 0
+  );
 }
 
 type ContainedPath =
@@ -298,7 +321,12 @@ async function buildSendAgentMessageRequest(
   });
   const parsed = parseSendAgentMessageInputs(inputValues);
   if (!parsed.ok) return refuse(parsed.message);
-  const { text: source, attachments, ...rest } = parsed.value;
+  const {
+    text: source,
+    attachments,
+    pluginCollectionId,
+    ...rest
+  } = parsed.value;
 
   let text: string;
   if (source.kind === 'inline') {
@@ -322,6 +350,16 @@ async function buildSendAgentMessageRequest(
   }
 
   let settings = rest.settings;
+  if (pluginCollectionId !== undefined) {
+    const collection = options.pluginCollectionSelections?.(pluginCollectionId);
+    if (collection === undefined)
+      return refuse(
+        'send-agent-message "plugin_collection_id" names a plugin collection this run didn\'t resolve',
+      );
+    const pluginSelections = normalizePluginSelections(collection);
+    if (choosesAny(pluginSelections))
+      settings = { ...settings, pluginSelections };
+  }
   if (settings.model !== undefined && options.resolveModel) {
     try {
       settings = {
@@ -633,6 +671,9 @@ export async function runHostAction(
     ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
     ...(options.resolveModel !== undefined
       ? { resolveModel: options.resolveModel }
+      : {}),
+    ...(options.pluginCollectionSelections !== undefined
+      ? { pluginCollectionSelections: options.pluginCollectionSelections }
       : {}),
   });
   if (!build.ok) {

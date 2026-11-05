@@ -44,7 +44,10 @@ import {
   type ActivityPanelHostActions,
   type ActivityPanelSectionOverride,
 } from '@canopy/ui-app';
-import { RefreshButton } from '@canopy/ui-shared/components';
+import {
+  HeaderActionButton,
+  RefreshButton,
+} from '@canopy/ui-shared/components';
 import { RefreshSpinnerIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { formatRelativeTime } from '@canopy/ui-shared/lib';
 import {
@@ -811,13 +814,13 @@ function SharedActivityPanelAdapterContents({
                   actionOnlyCard
                   actionOnlyLabel="Add MCP server"
                   headerAction={
-                    <button
+                    <HeaderActionButton
                       data-testid="activity-mcp-add"
                       disabled={!mcpAddEnabled}
                       onClick={openMcpAdd}
                     >
                       Add MCP server
-                    </button>
+                    </HeaderActionButton>
                   }
                 />
               }
@@ -843,14 +846,14 @@ function SharedActivityPanelAdapterContents({
                       : 'Generate summary'
                   }
                   headerAction={
-                    <button
+                    <HeaderActionButton
                       data-testid="activity-summary-generate"
                       disabled={summaryGenerating || !worktreeSummaryEnabled}
                       aria-busy={summaryGenerating}
                       onClick={hostActions.onRefreshSummary}
                     >
                       Generate summary
-                    </button>
+                    </HeaderActionButton>
                   }
                 />
               }
@@ -867,12 +870,12 @@ function SharedActivityPanelAdapterContents({
                   actionOnlyCard
                   actionOnlyLabel="Add hook"
                   headerAction={
-                    <button
+                    <HeaderActionButton
                       data-testid="activity-hooks-add"
                       onClick={(): void => onOpenSettingsTab('hooks')}
                     >
                       Add hook
-                    </button>
+                    </HeaderActionButton>
                   }
                 />
               }

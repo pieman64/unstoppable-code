@@ -20,7 +20,8 @@ import {
  * Kept out of the composed CORE_INSTRUCTION_DEFINITIONS, as the web-only and
  * qualification-only sets are, because the daemon dispatcher requires a
  * handler for every definition it is given and none is registered yet
- * (W7a-2, W7a-3). The web core never serves them: W5 files are host-local.
+ * (W7a-2, W7a-3). The web core serves only #4 reorder, over the cloud project
+ * order (CAN-5710, 2026-11-04); the others edit host-local W5 files.
  *
  * Params never carry `source`, `scope` or a host path: the caller's source and
  * receipt scope are derived from the trusted caller, a repository is named by

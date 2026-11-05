@@ -516,6 +516,13 @@ export class ChatTurnOwnershipAggregate implements ChatTurnOwnershipSource {
     return snapshotOf(entry, this.serviceEpoch);
   }
 
+  /** The scopes this process tracks turn state for that hold `chatId`. */
+  public scopesForChat(chatId: string): ChatTurnStateScope[] {
+    return Array.from(this.scopes.values(), (entry) => entry.scope)
+      .filter((scope) => scope.chatId === chatId)
+      .map(cloneScope);
+  }
+
   public subscribe(
     listener: (snapshot: ChatTurnOwnershipSnapshot) => void,
   ): () => void {

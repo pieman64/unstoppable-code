@@ -1298,6 +1298,8 @@ const PanelUsageContent = memo(function PanelUsageContent(
   props: PanelContentProps,
 ): JSX.Element {
   const selectedWorktree = useSelectedWorktree();
+  const hostVisible = usePanelHostState().visible !== false;
+  const documentVisible = useDocumentVisible(usePanelOwnerDocument());
   const variant = isUsagePanelVariant(props.instance?.variant)
     ? props.instance.variant
     : 'all';
@@ -1308,6 +1310,7 @@ const PanelUsageContent = memo(function PanelUsageContent(
           variant={variant}
           projectId={selectedWorktree.projectId}
           worktreeId={selectedWorktree.worktreeId}
+          visible={props.isVisible && hostVisible && documentVisible}
         />
       ) : (
         <PanelEmptyState />

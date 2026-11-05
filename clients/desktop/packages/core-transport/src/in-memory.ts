@@ -15,6 +15,8 @@ export interface CanopyInMemoryFramedPairOptions {
   /** Overrides the client's expected data root, e.g. to exercise a foreign daemon. */
   readonly clientDataRootHash?: string;
   readonly maxFrameBytes?: number;
+  /** Both ends reassemble message parts up to this size and send them. */
+  readonly maxMessageBytes?: number;
   readonly maxBufferedMessages?: number;
   readonly maxBufferedBytes?: number;
 }
@@ -40,6 +42,8 @@ export async function createInMemoryFramedPair(
   const dataRootHash = options.dataRootHash ?? DEFAULT_DATA_ROOT_HASH;
   const shared: Omit<CanopyFramedConnectionOptions, 'role' | 'auth'> = {
     maxFrameBytes: options.maxFrameBytes,
+    maxMessageBytes: options.maxMessageBytes,
+    peerMaxMessageBytes: options.maxMessageBytes,
     maxBufferedMessages: options.maxBufferedMessages,
     maxBufferedBytes: options.maxBufferedBytes,
   };

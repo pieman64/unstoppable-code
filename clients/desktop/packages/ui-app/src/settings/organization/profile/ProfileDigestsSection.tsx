@@ -5,8 +5,8 @@ import { SettingsLink, useSettingsClient } from '../../host';
 import {
   DelayedLoadingPlaceholder,
   ErrorBanner,
-  SettingsListSkeleton,
   Heading,
+  Skeleton,
 } from '@canopy/ui-shared/components';
 import type { DigestArchiveItem } from '@canopy/protocol/settings';
 import { DigestList } from '../../digests/digest-list';
@@ -25,6 +25,80 @@ interface ProfileDigestsSectionProps {
    * archive, everyone else to the member-scoped protected route.
    */
   isOwnProfile: boolean;
+}
+
+/** Plain sample rows the loading skeleton measures. */
+const SAMPLE_DIGESTS: readonly DigestArchiveItem[] = [
+  {
+    externalId: 'sample-digest-1',
+    cadence: 'WEEKLY',
+    periodStart: '2026-01-01T00:00:00.000Z',
+    periodEnd: '2026-01-08T00:00:00.000Z',
+    headline: 'Shipped the checkout fix',
+    variant: 'FULL',
+    status: 'READY',
+    billedCredits: null,
+    createdAt: '2026-01-08T00:00:00.000Z',
+  },
+  {
+    externalId: 'sample-digest-2',
+    cadence: 'WEEKLY',
+    periodStart: '2026-01-08T00:00:00.000Z',
+    periodEnd: '2026-01-15T00:00:00.000Z',
+    headline: 'Cleaned up billing',
+    variant: 'FULL',
+    status: 'READY',
+    billedCredits: null,
+    createdAt: '2026-01-15T00:00:00.000Z',
+  },
+];
+
+/** The loaded tab: the heading, the archive link, and the digest rows. */
+function ProfileDigestsView({
+  digests,
+  orgId,
+  userId,
+  memberName,
+  isOwnProfile,
+}: ProfileDigestsSectionProps & {
+  digests: readonly DigestArchiveItem[];
+}): JSX.Element {
+  return (
+    <div className="flex flex-col gap-3" data-testid="profile-digests-tab">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <Heading level={2} variant="title">
+          {isOwnProfile ? 'Your work digests' : 'Shared digests'}
+        </Heading>
+        {isOwnProfile && (
+          <SettingsLink
+            href="/account/digests"
+            className="text-s font-medium fg-accent hover:underline"
+            data-testid="profile-digests-archive-link"
+          >
+            Open digest archive
+          </SettingsLink>
+        )}
+      </div>
+      <DigestList
+        digests={digests}
+        // The owner's rows go to the canonical personal permalink; another
+        // member's go to the member-scoped route, which is the only one that
+        // applies the share-safe projection.
+        basePath={
+          isOwnProfile
+            ? '/account/digests'
+            : `/organization/${orgId}/members/${userId}/digests`
+        }
+        emptyMessage={
+          isOwnProfile
+            ? 'No work digests yet. Generated and requested digests will appear here.'
+            : // Reachable as a race: the tab was rendered because a feature
+              // existed, and it was removed before this fetch resolved.
+              `${memberName} hasn't shared any work digests with this organization.`
+        }
+      />
+    </div>
+  );
 }
 
 /**
@@ -104,46 +178,31 @@ export function ProfileDigestsSection({
     return (
       <div data-testid="profile-digests-loading">
         <DelayedLoadingPlaceholder>
-          <SettingsListSkeleton />
+          <Skeleton
+            loading
+            label="Loading digests"
+            testId="settings-skeleton-list"
+          >
+            <ProfileDigestsView
+              digests={SAMPLE_DIGESTS}
+              orgId={orgId}
+              userId={userId}
+              memberName={memberName}
+              isOwnProfile={isOwnProfile}
+            />
+          </Skeleton>
         </DelayedLoadingPlaceholder>
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col gap-3" data-testid="profile-digests-tab">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <Heading level={2} variant="title">
-          {isOwnProfile ? 'Your work digests' : 'Shared digests'}
-        </Heading>
-        {isOwnProfile && (
-          <SettingsLink
-            href="/account/digests"
-            className="text-s font-medium fg-accent hover:underline"
-            data-testid="profile-digests-archive-link"
-          >
-            Open digest archive
-          </SettingsLink>
-        )}
-      </div>
-      <DigestList
-        digests={digests}
-        // The owner's rows go to the canonical personal permalink; another
-        // member's go to the member-scoped route, which is the only one that
-        // applies the share-safe projection.
-        basePath={
-          isOwnProfile
-            ? '/account/digests'
-            : `/organization/${orgId}/members/${userId}/digests`
-        }
-        emptyMessage={
-          isOwnProfile
-            ? 'No work digests yet. Generated and requested digests will appear here.'
-            : // Reachable as a race: the tab was rendered because a feature
-              // existed, and it was removed before this fetch resolved.
-              `${memberName} hasn't shared any work digests with this organization.`
-        }
-      />
-    </div>
+    <ProfileDigestsView
+      digests={digests}
+      orgId={orgId}
+      userId={userId}
+      memberName={memberName}
+      isOwnProfile={isOwnProfile}
+    />
   );
 }

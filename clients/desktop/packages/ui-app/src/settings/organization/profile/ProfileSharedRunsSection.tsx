@@ -9,12 +9,88 @@ import {
   DelayedLoadingPlaceholder,
   ErrorBanner,
   LoadingSpinner,
-  SettingsListSkeleton,
+  Skeleton,
 } from '@canopy/ui-shared/components';
+import type { SharedRunSummary } from '@canopy/protocol/runs';
 import { formatPlanDate } from '@canopy/protocol/settings/plan-display';
 import { formatCostUsd } from '../feed-format';
 import { fetchMemberSharedRuns } from './profile-api';
 import { useMemberPagedResource } from './use-member-paged-resource';
+
+/** Plain sample rows the loading skeleton measures. */
+const SAMPLE_RUNS: readonly SharedRunSummary[] = [
+  {
+    id: 'sample-run-1',
+    title: 'Fix the checkout test',
+    shareScope: 'organization',
+    status: 'completed',
+    provider: 'claude',
+    model: null,
+    turnCount: 3,
+    toolUseCount: 0,
+    totalCostUsd: null,
+    durationMs: null,
+    createdAt: '2026-01-01T12:00:00.000Z',
+    updatedAt: '2026-01-01T12:00:00.000Z',
+  },
+  {
+    id: 'sample-run-2',
+    title: 'Clean up billing',
+    shareScope: 'organization',
+    status: 'completed',
+    provider: 'claude',
+    model: null,
+    turnCount: 2,
+    toolUseCount: 0,
+    totalCostUsd: null,
+    durationMs: null,
+    createdAt: '2026-01-01T12:00:00.000Z',
+    updatedAt: '2026-01-01T12:00:00.000Z',
+  },
+];
+
+/** The shared sessions, each linking to the run viewer. */
+function SharedRunList({
+  runs,
+}: {
+  runs: readonly SharedRunSummary[];
+}): JSX.Element {
+  return (
+    <ul className="flex flex-col gap-2" data-testid="profile-sessions-list">
+      {runs.map((run) => {
+        const updated = formatPlanDate(run.updatedAt);
+        const cost = formatCostUsd(run.totalCostUsd);
+        const meta = [
+          run.status,
+          `${run.turnCount} turn${run.turnCount === 1 ? '' : 's'}`,
+          ...(cost ? [cost] : []),
+          ...(updated ? [`Updated ${updated}`] : []),
+        ].join(' · ');
+        return (
+          <li key={run.id}>
+            <SettingsLink
+              href={`/runs/${encodeURIComponent(run.id)}`}
+              data-testid="profile-session-row"
+              className="flex items-start gap-3 rounded-xl bg-card p-4 shadow-sm transition-colors hover:bg-secondary/40"
+            >
+              <span className="mt-0.5 shrink-0 fg-accent">
+                <Bot size={18} aria-hidden="true" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-s font-medium fg-primary">
+                  {run.title}
+                </span>
+                <span className="mt-0.5 block truncate text-xs fg-secondary">
+                  {meta}
+                </span>
+              </span>
+            </SettingsLink>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
 
 interface ProfileSharedRunsSectionProps {
   orgId: string;
@@ -50,7 +126,13 @@ export function ProfileSharedRunsSection({
     return (
       <div data-testid="profile-sessions-loading">
         <DelayedLoadingPlaceholder>
-          <SettingsListSkeleton />
+          <Skeleton
+            loading
+            label="Loading sessions"
+            testId="settings-skeleton-list"
+          >
+            <SharedRunList runs={SAMPLE_RUNS} />
+          </Skeleton>
         </DelayedLoadingPlaceholder>
       </div>
     );
@@ -82,39 +164,7 @@ export function ProfileSharedRunsSection({
 
   return (
     <div className="flex flex-col gap-3">
-      <ul className="flex flex-col gap-2" data-testid="profile-sessions-list">
-        {runs.map((run) => {
-          const updated = formatPlanDate(run.updatedAt);
-          const cost = formatCostUsd(run.totalCostUsd);
-          const meta = [
-            run.status,
-            `${run.turnCount} turn${run.turnCount === 1 ? '' : 's'}`,
-            ...(cost ? [cost] : []),
-            ...(updated ? [`Updated ${updated}`] : []),
-          ].join(' · ');
-          return (
-            <li key={run.id}>
-              <SettingsLink
-                href={`/runs/${encodeURIComponent(run.id)}`}
-                data-testid="profile-session-row"
-                className="flex items-start gap-3 rounded-xl bg-card p-4 shadow-sm transition-colors hover:bg-secondary/40"
-              >
-                <span className="mt-0.5 shrink-0 fg-accent">
-                  <Bot size={18} aria-hidden="true" />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-s font-medium fg-primary">
-                    {run.title}
-                  </span>
-                  <span className="mt-0.5 block truncate text-xs fg-secondary">
-                    {meta}
-                  </span>
-                </span>
-              </SettingsLink>
-            </li>
-          );
-        })}
-      </ul>
+      <SharedRunList runs={runs} />
 
       {error && (
         <ErrorBanner

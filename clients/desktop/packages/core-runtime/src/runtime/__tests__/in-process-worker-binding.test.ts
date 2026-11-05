@@ -121,22 +121,51 @@ it('copies validated requests, metadata and results and fixes the worker caller'
   expect(result).toEqual(roots);
   expect(result).not.toBe(roots);
 });
-it('fails pending calls with the worker half typed transport failure', async () => {
+it('answers a reply its connection refuses to send and keeps serving', async () => {
   const binding = build();
-  // The pair closes both ends at once, so a close before the typed stop
-  // would fail the call as a bare disconnect.
-  pairs[pairs.length - 1].server.send.mockRejectedValueOnce(
+  const { server } = pairs[pairs.length - 1];
+  // Refused before a byte was written, as a reply larger than the peer
+  // reassembles is: only that call fails (CAN-5630).
+  server.send.mockRejectedValueOnce(
     new CanopyOperationError({
       kind: 'resource_exhausted',
-      message: 'Frame too large.',
+      message: 'Message too large.',
       retry: { kind: 'never' },
     }),
   );
   await expect(
     binding.query('worker.filesystem.roots.list', params),
   ).rejects.toMatchObject({
-    payload: { kind: 'resource_exhausted', retry: { kind: 'never' } },
+    payload: {
+      kind: 'resource_exhausted',
+      message: 'Message too large.',
+      retry: { kind: 'never' },
+    },
   });
+  server.send.mockRejectedValueOnce(new Error('Not JSON-safe.'));
+  await expect(
+    binding.query('worker.filesystem.roots.list', params),
+  ).rejects.toMatchObject({ payload: { kind: 'internal' } });
+  await expect(
+    binding.query('worker.filesystem.roots.list', params),
+  ).resolves.toEqual(roots);
+});
+it('fails only a request its connection refuses to send', async () => {
+  const binding = build();
+  const { client } = pairs[pairs.length - 1];
+  client.send.mockRejectedValueOnce(
+    new CanopyOperationError({
+      kind: 'resource_exhausted',
+      message: 'Message too large.',
+      retry: { kind: 'never' },
+    }),
+  );
+  await expect(
+    binding.query('worker.filesystem.roots.list', params),
+  ).rejects.toMatchObject({ payload: { kind: 'resource_exhausted' } });
+  await expect(
+    binding.query('worker.filesystem.roots.list', params),
+  ).resolves.toEqual(roots);
 });
 
 it.each([

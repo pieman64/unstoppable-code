@@ -116,12 +116,12 @@ export function OrgProjectPlaceholderRow({
               : ''}
           </span>
           {!running && actionable && (
-            <button
-              type="button"
+            <Button
+              variant="link"
               disabled={!available}
               aria-label={`${failed ? 'Try again for' : 'Set up'} ${project.name}`}
               data-testid={`sidebar-org-project-${failed ? 'retry' : 'setup'}-${project.id}`}
-              className="focus-ring shrink-0 rounded text-xs fg-accent underline-offset-2 hover:underline disabled:cursor-default disabled:no-underline disabled:fg-quaternary"
+              className="shrink-0"
               onClick={(): void =>
                 actOnSetup(
                   (projectId): Promise<void> =>
@@ -130,7 +130,7 @@ export function OrgProjectPlaceholderRow({
               }
             >
               {failed ? 'Try again' : 'Set up'}
-            </button>
+            </Button>
           )}
         </div>
       </div>

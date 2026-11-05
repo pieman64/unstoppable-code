@@ -84,7 +84,7 @@ interface AiCreditsRoutingStatusBannerProps {
   accountChangedAt?: number;
   /**
    * Offers "Continue" while the chat still has an unanswered usage-limit
-   * interruption (CAN-4756): after credits arrive from Get AI Credits, which
+   * interruption (CAN-4756): after credits arrive from Buy AI Credits, which
    * only route, or after an automatic resend failed. While it shows, the card
    * hides "Switch to subscription" so it keeps a single accent action.
    */

@@ -22,6 +22,7 @@ import {
   DialogModal,
   ErrorBanner,
   MODEL_LIBRARY_UNLOCK_COPY,
+  SegmentedControl,
   TextInput,
   ValueRow,
   ValueRows,
@@ -95,6 +96,18 @@ export interface TopUpSheetProps {
 }
 
 const AMOUNT_CHIPS_USD: readonly number[] = [5, 20, 50, 100];
+const CUSTOM_AMOUNT = 'custom';
+
+/**
+ * The amount segment that reads as chosen: a preset when the field holds a
+ * valid preset, Custom when it holds anything else, and none for a preset
+ * outside the allowed range.
+ */
+function amountChoice(parsed: number, valid: boolean): string | null {
+  if (!AMOUNT_CHIPS_USD.some((amount) => amount === parsed))
+    return CUSTOM_AMOUNT;
+  return valid ? String(parsed) : null;
+}
 
 const AUTHENTICATION_ERROR =
   'Your bank did not confirm the payment. Check its status before trying again.';
@@ -420,48 +433,33 @@ export function TopUpSheet({
         </div>
       ) : (
         <div className="flex flex-col gap-4 p-6">
-          <div
-            className="flex flex-wrap gap-2"
-            role="group"
-            aria-label="Amount"
-          >
-            {AMOUNT_CHIPS_USD.map((amount) => (
-              <button
-                key={amount}
-                type="button"
-                disabled={working}
-                aria-pressed={valid && parsed === amount}
-                onClick={() => setValue(String(amount))}
-                data-testid={tid(`credits-top-up-amount-${amount}`)}
-                className={`rounded-md border px-3 py-1.5 text-s font-medium transition-colors disabled:opacity-50 ${
-                  valid && parsed === amount
-                    ? 'bg-secondary fg-primary'
-                    : 'fg-secondary hover:bg-secondary'
-                }`}
-              >
-                {`$${amount}`}
-              </button>
-            ))}
-            <button
-              type="button"
-              disabled={working}
-              aria-pressed={
-                !AMOUNT_CHIPS_USD.some((amount) => amount === parsed)
-              }
-              onClick={() => {
+          <SegmentedControl
+            label="Amount"
+            shape="capsule"
+            width="content"
+            disabled={working}
+            value={amountChoice(parsed, valid)}
+            options={[
+              ...AMOUNT_CHIPS_USD.map((amount) => ({
+                value: String(amount),
+                label: `$${amount}`,
+                dataTestId: tid(`credits-top-up-amount-${amount}`),
+              })),
+              {
+                value: CUSTOM_AMOUNT,
+                label: 'Custom',
+                dataTestId: tid('credits-top-up-amount-custom'),
+              },
+            ]}
+            onChange={(next) => {
+              if (next === CUSTOM_AMOUNT) {
                 customRef.current?.focus();
                 customRef.current?.select();
-              }}
-              data-testid={tid('credits-top-up-amount-custom')}
-              className={`rounded-md border px-3 py-1.5 text-s font-medium transition-colors disabled:opacity-50 ${
-                AMOUNT_CHIPS_USD.some((amount) => amount === parsed)
-                  ? 'fg-secondary hover:bg-secondary'
-                  : 'bg-secondary fg-primary'
-              }`}
-            >
-              Custom
-            </button>
-          </div>
+                return;
+              }
+              setValue(next);
+            }}
+          />
           <DialogFormField label="Amount (USD)" htmlFor={amountId}>
             <TextInput
               ref={customRef}

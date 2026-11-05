@@ -372,9 +372,3 @@ export function shareRepairBinding(
     open: (launch) => openShareRepairChat(chat, launch),
   };
 }
-
-/** Test seam: forget launches between cases. */
-export function resetShareRepairChatsForTests(): void {
-  inFlight.clear();
-  recoverable.clear();
-}

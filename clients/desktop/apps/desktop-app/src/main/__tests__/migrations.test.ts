@@ -253,6 +253,26 @@ describe('damaged ledger', () => {
     ['an unknown non-numeric version', '{"version": "2", "kept": true}'],
   ];
 
+  it('keeps only the newest damaged copies, removing the oldest first', async () => {
+    const copyName = (day: number): string =>
+      `migrations.damaged-2026-01-0${day}T00-00-00-000Z-0a1b2c3d.json`;
+    for (const day of [1, 2, 3, 4, 5, 6])
+      await writeFile(join(dataDir, copyName(day)), `old ${day}`);
+    await writeFile(lastGood(), ledgerText({ version: 1, kept: true }));
+    await writeFile(primary(), '{"version": 1, "kept": tr');
+
+    await expect(hasMigrationRun('kept')).resolves.toBe(true);
+
+    const kept = (await readdir(dataDir))
+      .filter((name) => /^migrations\.damaged-.+\.json$/.test(name))
+      .sort();
+    expect(kept.slice(0, 4)).toEqual([3, 4, 5, 6].map(copyName));
+    expect(kept).toHaveLength(5);
+    await expect(read(join(dataDir, kept[4] ?? ''))).resolves.toBe(
+      '{"version": 1, "kept": tr',
+    );
+  });
+
   it.each(damaged)(
     'keeps a %s primary and restores last-good',
     async (_name, bytes) => {

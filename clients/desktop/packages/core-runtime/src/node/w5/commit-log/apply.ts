@@ -1,3 +1,7 @@
+import { W5FileWriteRefusedError } from './errors';
+import { isCleanConflictEvidence } from './apply-evidence';
+import { CORE_WORKSPACE_RECORDS_LIMITS } from '@canopy/protocol/canopy-core';
+
 import { mkdir, open, readFile, realpath, rm } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 
@@ -31,6 +35,28 @@ export interface W5ApplyOptions {
   root: string;
   durability: W5DurabilityPort;
   onStep?: (step: W5ApplyStep) => void;
+  /** Explicit historical operation policy; cold maintenance hosts omit it. */
+  healCleanConflictOperations?: ReadonlySet<string>;
+  onAbandoned?: (entry: { commitId: number; operation: string }) => void;
+  /** Host-bound exclusion at the execution owner, including replay. */
+  processLock?: W5ProcessFileLock;
+}
+
+export type W5ProcessFileLock = <T>(
+  paths: readonly string[],
+  work: () => Promise<T>,
+) => Promise<T>;
+
+/** A typed live apply result proves this attempt wrote nothing. */
+export function isCleanApplyConflict(
+  result: W5ApplyResult,
+): result is Extract<W5ApplyResult, { status: 'recovery-required' }> {
+  return (
+    result.status === 'recovery-required' &&
+    result.conflicts.length > 0 &&
+    result.written.length === 0 &&
+    result.error === undefined
+  );
 }
 
 export type W5ApplyResult =
@@ -65,6 +91,18 @@ async function readFingerprint(path: string): Promise<string | null> {
   } catch (error) {
     if (isMissingPathError(error)) return null;
     throw error;
+  }
+}
+
+/** Execution-owner preflight, while holding process exclusion and before decision. */
+export async function preflightW5CommitFiles(
+  files: readonly W5FileChange[],
+  root: string,
+): Promise<void> {
+  for (const file of files) {
+    await assertInsideRoot(file.path, root);
+    if ((await readFingerprint(file.path)) !== file.previousFingerprint)
+      throw new W5FileWriteRefusedError(file.path);
   }
 }
 
@@ -186,15 +224,22 @@ async function writeChange(
  * before it is written, and any unexpected failure also leaves the commit
  * waiting for recovery rather than failing the caller.
  *
- * The desktop CLI still writes these files outside the log until CAN-3802,
- * so the check right before a write narrows, but cannot close, the window in
- * which it could change a file.
+ * Participating CLI list mutations and host workers share execution-owner
+ * process exclusion. Retained raw workspace/folder writers are inventoried
+ * compatibility debt, so the fingerprint check remains necessary.
  */
 export async function applyW5Commit(
   log: W5CommitLog,
   commit: W5PendingCommit,
   options: W5ApplyOptions,
 ): Promise<W5ApplyResult> {
+  if (options.processLock) {
+    const { processLock, ...unlocked } = options;
+    return processLock(
+      commit.files.map((file) => file.path),
+      () => applyW5Commit(log, commit, unlocked),
+    );
+  }
   const written: string[] = [];
   const stop = (conflicts: W5FileConflict[], error?: string): W5ApplyResult => {
     log.markCommitRecoveryRequired(commit.commitId, {
@@ -269,6 +314,9 @@ async function checkFile(file: W5FileChange): Promise<W5FileConflict | null> {
 }
 
 export interface W5RecoveryReport {
+  /** Oldest successful heals, bounded to the wire evidence-row limit. */
+  abandoned?: Array<{ commitId: number; operation: string }>;
+
   applied: number[];
   recoveryRequired: number[];
   interruptedReservations: number;
@@ -299,6 +347,21 @@ export async function recoverW5CommitLog(
     const result = await applyW5Commit(log, commit, options);
     if (result.status === 'applied') applied.push(commit.commitId);
   }
+  const abandoned: NonNullable<W5RecoveryReport['abandoned']> = [];
+  for (const row of log.listRecoveryRequiredCommits()) {
+    if (
+      !options.healCleanConflictOperations?.has(row.operation) ||
+      row.hasReceipt ||
+      row.fileCount !== 1 ||
+      !isCleanConflictEvidence(row.diagnostics)
+    )
+      continue;
+    log.abandonRecoveryRequiredCommit(row.commitId);
+    const entry = { commitId: row.commitId, operation: row.operation };
+    options.onAbandoned?.(entry);
+    if (abandoned.length < CORE_WORKSPACE_RECORDS_LIMITS.evidenceRows)
+      abandoned.push(entry);
+  }
   log.compact();
   const recoveryRequiredReservations = log
     .listReservations()
@@ -306,6 +369,7 @@ export async function recoverW5CommitLog(
     .map((reservation) => reservation.reservationId);
   return {
     applied,
+    ...(abandoned.length ? { abandoned } : {}),
     // Every commit still waiting, including those an earlier launch found.
     recoveryRequired: log.listRecoveryRequiredCommitIds(),
     interruptedReservations,

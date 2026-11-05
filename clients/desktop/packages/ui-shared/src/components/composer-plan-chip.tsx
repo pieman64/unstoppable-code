@@ -1,5 +1,9 @@
 import type { ChatComposerToolbarChipConfig } from './ChatComposerToolbar';
-import { CloseMediumIcon, PlanModeIcon } from '../icons/AppIcons';
+import {
+  CloseMediumIcon,
+  PlanModeIcon,
+  QuestionMarkIcon,
+} from '../icons/AppIcons';
 
 /** The Plan chip's label while it is on; Cursor and Copilot call it read only. */
 export function planModeChipLabel(readOnly: boolean): string {
@@ -106,5 +110,30 @@ function buildToggleChip({
     icon: <PlanModeIcon width={16} height={16} active={active} />,
     label: active ? planModeChipLabel(false) : undefined,
     ...(dataTestId === undefined ? {} : { dataTestId }),
+  };
+}
+
+/**
+ * The chip beside + while a question waits with its prompt closed: it reads
+ * "Question" and reopens the prompt, as "Plan ready" does for a plan.
+ */
+export function buildQuestionReadyChip({
+  onOpen,
+  compact = false,
+}: {
+  onOpen: () => void;
+  compact?: boolean;
+}): ChatComposerToolbarChipConfig {
+  return {
+    onClick: onOpen,
+    active: true,
+    activeTone: 'warning',
+    ariaLabel: 'Question waiting, answer it',
+    title: 'Answer the question',
+    // `sm`: the 14px the desktop chip's old 16px box drew (Lucide snapping).
+    icon: <QuestionMarkIcon size="sm" />,
+    ...(compact ? {} : { label: 'Question' }),
+    variant: 'capsule',
+    dataTestId: 'chat-input-question-ready-chip',
   };
 }

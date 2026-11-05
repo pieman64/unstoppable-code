@@ -38,7 +38,6 @@ import {
 } from '@canopy/ui-shared/components/settings/SettingsCard';
 import { BillingCardBodySkeleton } from './billing-card-body-skeleton';
 import { CreditsUsedThisPeriod } from './credits-used-this-period';
-import { DailyFreeCreditsControls } from './daily-free-credits-controls';
 import { InvoicesSection, INVOICES_PAGE_LIMIT } from './invoices-section';
 import { TrialBadge } from './trial-badge';
 import { PlanPill } from './plan-pill';
@@ -69,11 +68,7 @@ import {
 } from '../host';
 import { withPrivacyClass } from '../account/privacy-class';
 import { SETTINGS_LOAD_ERROR_COPY, useSettingsErrorCopy } from '../errors';
-import {
-  getCreditsBalance,
-  getCreditsLedger,
-  updateDailyDrip,
-} from '../organization/team-api';
+import { getCreditsBalance, getCreditsLedger } from '../organization/team-api';
 import {
   isCancellationLapsed,
   type AccountBillingOrg,
@@ -734,7 +729,7 @@ function PlanCard({
               {/* The failure MESSAGE is the stack's `ErrorBanner` above, so this
                 branch stays a neutral placeholder rather than repeating it. */}
               {loading ? (
-                <BillingCardBodySkeleton className="mt-3" />
+                <BillingCardBodySkeleton body="plan" />
               ) : (
                 <p className="mt-1 text-s fg-secondary">
                   No plan details available.
@@ -955,22 +950,18 @@ function BillingTransactions({
 /* -------------------------------------------------------------------------- */
 
 /**
- * The wallet's subtitle with free access on: free credits arrive daily (the
- * opt-in sits in this card), never as a monthly plan allotment.
+ * The wallet's subtitle with free access on: there is no monthly plan
+ * allotment to draw down first, so it names only the credits themselves.
  */
-const FREE_ACCESS_CREDITS_SUBTITLE =
-  'Credits for AI models: daily free credits plus any you buy.';
+const FREE_ACCESS_CREDITS_SUBTITLE = 'Credits for AI models. Buy more anytime.';
 
 /**
  * The account "AI credits wallet" card. Self-loads the personal
  * {@link CreditsSummary} plus the first ledger page, then renders the balance
  * (in credits — the ledger's own unit, not a USD figure that would read as a
- * refundable cash balance), the plain-text month-to-date consumption line, an
- * optional daily-drip line (only when the plan/env configures a drip cap), the
- * shared "Buy credits" button with the no-saved-card fallback, the
- * {@link DailyFreeCreditsControls} opt-in (only when the server reports a
- * positive daily cap), the shared {@link AutoTopUpControls}, and the credit
- * ledger. Personal credits are
+ * refundable cash balance), the plain-text month-to-date consumption line, the
+ * shared "Buy credits" button with the no-saved-card fallback, the shared
+ * {@link AutoTopUpControls}, and the credit ledger. Personal credits are
  * usage-based, so this renders even for org-covered users.
  *
  * The saved card that funds these top-ups no longer lives here — it moved to the
@@ -983,7 +974,7 @@ function AiCreditsCard({
   intentTarget,
   reloadSignal,
 }: {
-  /** Free access has no plan quota, so the subtitle names daily credits. */
+  /** Free access has no plan quota, so the subtitle names none. */
   freeAccess?: boolean;
   /** The page's top-up or automatic top-up intent, once read. */
   intentTarget: BillingSettingsIntentTarget | null;
@@ -1072,17 +1063,6 @@ function AiCreditsCard({
 
   const reloadAfterAutoTopUp = useCallback((): Promise<void> => load(), [load]);
 
-  // Rejects only when the preference PUT fails (the control rolls back then).
-  // The reload is silent: a 2xx is a saved choice even if the refetch that
-  // brings in the new balance and ledger row does not land.
-  const saveDailyDrip = useCallback(
-    async (input: Parameters<typeof updateDailyDrip>[1]): Promise<void> => {
-      await updateDailyDrip(client, input);
-      await load({ silent: true });
-    },
-    [client, load],
-  );
-
   // The old `<h3>AI credits</h3>` disappears into the card title — it was only
   // a subheading because the card used to be nested inside the Billing wrapper.
   const shell = (children: JSX.Element): JSX.Element => (
@@ -1103,7 +1083,7 @@ function AiCreditsCard({
   );
 
   if (status === 'loading') {
-    return shell(<BillingCardBodySkeleton />);
+    return shell(<BillingCardBodySkeleton body="credits" />);
   }
 
   if (status === 'error' || summary === null) {
@@ -1170,14 +1150,6 @@ function AiCreditsCard({
         summary={summary}
         testId="billing-ai-credits-used"
       />
-
-      {summary.dailyDrip && summary.dailyDrip.capCredits > 0 ? (
-        <DailyFreeCreditsControls
-          enabled={summary.dailyDrip.enabled}
-          capCredits={summary.dailyDrip.capCredits}
-          save={saveDailyDrip}
-        />
-      ) : null}
 
       {slots !== null ? (
         <slots.AutoTopUpControls

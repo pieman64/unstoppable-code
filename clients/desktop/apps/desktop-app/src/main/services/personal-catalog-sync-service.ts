@@ -1,6 +1,10 @@
 import { mkdir, readFile, rename, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { z } from 'zod';
+import {
+  damagedCopiesOf,
+  pruneDamagedCopies,
+} from '@canopy/desktop-shared/node/lib/damaged-copies';
 import type { PersonalCatalogRegistration } from '@canopy/protocol/org-projects';
 import { writeFileAtomically } from '../lib/atomic-file';
 import { logMainProcessError } from '../lib/main-process-logging';
@@ -200,6 +204,7 @@ export class PersonalCatalogSyncService {
     } catch {
       // The fresh save below replaces whatever could not be moved aside.
     }
+    await pruneDamagedCopies(damagedCopiesOf(this.deps.file, '.corrupt-'));
   }
   /** Drop entries past the seven-day bound and remember them so an unchanged payload is not renewed. */
   private pruneExpired(now: number): void {

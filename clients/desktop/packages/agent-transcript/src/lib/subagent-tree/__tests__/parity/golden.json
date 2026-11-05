@@ -181,7 +181,7 @@
         },
         {
           "kind": "tool",
-          "label": "Run the date test",
+          "label": "Run the date test npm test -- test/date.test.ts",
           "family": "bash",
           "result": {
             "output": "FAIL test/date.test.ts\n  expected 2026-10-16, received 2026-10-15",
@@ -201,7 +201,7 @@
         },
         {
           "kind": "tool",
-          "label": "Read the dev log",
+          "label": "Read the dev log tail -n 20 logs/dev.log",
           "family": "bash",
           "result": {
             "output": "GET /health 200 3ms",

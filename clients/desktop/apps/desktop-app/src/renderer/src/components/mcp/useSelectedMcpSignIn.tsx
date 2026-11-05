@@ -742,13 +742,9 @@ export function useSelectedMcpSignIn({
             ? MCP_SIGN_IN_WAITING_LABEL
             : 'Opening sign-in…'}
         </span>
-        <button
-          type="button"
-          className="focus-ring fg-accent"
-          onClick={(): void => signIn.cancel(accountKey)}
-        >
+        <Button variant="link" onClick={(): void => signIn.cancel(accountKey)}>
           Cancel
-        </button>
+        </Button>
       </span>
     );
   };

@@ -5,7 +5,7 @@ import {
   NOTICE_GALLERY_SECTIONS,
   type NoticeGalleryEntry,
 } from './noticeStateGalleryData';
-import { Heading } from '@canopy/ui-shared/components';
+import { Chip, Heading } from '@canopy/ui-shared/components';
 
 /**
  * The composer preview at the top of the Notice States gallery: the real
@@ -65,15 +65,6 @@ const COMPOSER_ENTRIES: readonly NoticeGalleryEntry[] =
   NOTICE_GALLERY_SECTIONS.find((section) => section.id === 'composer')
     ?.entries ?? [];
 
-/** Matches the picker chips on the sibling Activity States gallery. */
-function chipClass(selected: boolean): string {
-  return `focus-ring min-h-7 rounded-md px-2 text-2xs pointer-coarse:min-h-11 ${
-    selected
-      ? 'bg-accent-subtle fg-accent'
-      : 'fg-secondary hover:bg-secondary hover:fg-primary'
-  }`;
-}
-
 export function NoticeComposerPreview({
   renderNotice,
 }: {
@@ -130,26 +121,22 @@ export function NoticeComposerPreview({
         aria-label="Composer notices"
         data-testid="notice-preview-picker"
       >
-        <button
-          type="button"
+        <Chip
           onClick={(): void => setSelectedId(null)}
-          className={chipClass(selectedId === null)}
-          data-testid="notice-preview-pick-none"
-          aria-pressed={selectedId === null}
+          selected={selectedId === null}
+          actionTestId="notice-preview-pick-none"
         >
           No notice
-        </button>
+        </Chip>
         {COMPOSER_ENTRIES.map((entry) => (
-          <button
+          <Chip
             key={entry.id}
-            type="button"
             onClick={(): void => setSelectedId(entry.id)}
-            className={chipClass(entry.id === selectedId)}
-            data-testid={`notice-preview-pick-${entry.id}`}
-            aria-pressed={entry.id === selectedId}
+            selected={entry.id === selectedId}
+            actionTestId={`notice-preview-pick-${entry.id}`}
           >
             {entry.title}
-          </button>
+          </Chip>
         ))}
       </div>
 

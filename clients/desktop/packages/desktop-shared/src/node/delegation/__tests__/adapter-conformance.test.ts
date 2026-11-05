@@ -247,6 +247,7 @@ it('routes both third-harness modes through the durable broker and replays third
       }),
   };
   const broker = new AgentDelegationBroker(options);
+  let brokerClosed = false;
   const ids: string[] = [];
   try {
     await broker.initialize();
@@ -311,6 +312,7 @@ it('routes both third-harness modes through the durable broker and replays third
       );
     }
     await broker.close();
+    brokerClosed = true;
     expect(parent.notifications.size).toBe(0);
     const recovered = new AgentDelegationBroker(options);
     await recovered.initialize();
@@ -343,7 +345,7 @@ it('routes both third-harness modes through the durable broker and replays third
       await recovered.close();
     }
   } finally {
-    await broker.close();
+    if (!brokerClosed) await broker.close();
     await fs.rm(directory, { recursive: true, force: true });
   }
 });

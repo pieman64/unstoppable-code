@@ -1,5 +1,4 @@
-import { useLayoutEffect, useRef, useState, type JSX } from 'react';
-import { createPortal } from 'react-dom';
+import type { JSX } from 'react';
 import {
   ClaudeLogo,
   CodexLogo,
@@ -9,6 +8,7 @@ import {
 } from '../icons';
 import { GitHubIcon } from '../icons/AppIcons';
 import { REPLAY_BLOCK_CLASS, REPLAY_MASK_CLASS } from '../lib/replay-privacy';
+import { RichHoverCard } from './RichHoverTooltip';
 
 export type ChatPreviewProviderType =
   | 'claude'
@@ -51,37 +51,15 @@ export interface ChatPreviewPopoverProps {
   heading: string;
 }
 
-export function getInitialBadgePopoverPosition(anchorRect: DOMRect): {
-  top: number;
-  left: number;
-} {
-  return {
-    top: anchorRect.bottom + 4,
-    left: anchorRect.left,
-  };
-}
-
-export function getMeasuredBadgePopoverPosition(
-  anchorRect: DOMRect,
-  popoverHeight: number,
-  popoverWidth: number,
-): { top: number; left: number } {
-  const padding = 8;
-
-  let top = anchorRect.bottom + 4;
-  if (top + popoverHeight > window.innerHeight - padding) {
-    top = anchorRect.top - popoverHeight - 4;
-  }
-  top = Math.max(padding, top);
-
-  let left = anchorRect.left;
-  left = Math.max(
-    padding,
-    Math.min(left, window.innerWidth - popoverWidth - padding),
-  );
-
-  return { top, left };
-}
+/**
+ * The sidebar badge cards (chats, scripts, hooks, terminals, workflows): the
+ * menu's corners, shadow and fill with card inset, like the worktree preview
+ * card beside them.
+ */
+export const BADGE_HOVER_CARD_SURFACE = {
+  elevation: 'menu',
+  surfacePadding: 'card',
+} as const;
 
 interface ChatPreviewProviderIconProps {
   providerType: ChatPreviewProviderType | undefined;
@@ -113,32 +91,15 @@ export function ChatPreviewPopover({
   anchorRect,
   rows,
   heading,
-}: ChatPreviewPopoverProps): JSX.Element {
-  const popoverRef = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState<{ top: number; left: number }>(
-    getInitialBadgePopoverPosition(anchorRect),
-  );
-
-  useLayoutEffect((): void => {
-    const el = popoverRef.current;
-    if (!el) return;
-    setPosition(
-      getMeasuredBadgePopoverPosition(
-        anchorRect,
-        el.offsetHeight,
-        el.offsetWidth,
-      ),
-    );
-  }, [anchorRect]);
-
+}: ChatPreviewPopoverProps): JSX.Element | null {
   // Portaled to the body, out of any parent's replay block. Chat titles are
   // recorded; each message preview is conversation content and carries its
   // own block.
-  return createPortal(
-    <div
-      ref={popoverRef}
-      className="pointer-events-none fixed z-tooltip min-w-50 max-w-75 rounded-lg bg-popover px-3 py-2 shadow-lg"
-      style={{ top: position.top, left: position.left }}
+  return (
+    <RichHoverCard
+      anchorRect={anchorRect}
+      {...BADGE_HOVER_CARD_SURFACE}
+      surfaceClassName="min-w-50 max-w-75"
     >
       <div className="mb-1 text-3xs font-semibold fg-secondary">{heading}</div>
       {rows.length === 0 ? (
@@ -187,7 +148,6 @@ export function ChatPreviewPopover({
           ))}
         </div>
       )}
-    </div>,
-    document.body,
+    </RichHoverCard>
   );
 }

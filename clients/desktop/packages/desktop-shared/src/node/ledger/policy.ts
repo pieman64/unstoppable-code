@@ -15,14 +15,19 @@ import {
  * rules inside its transaction; UI and adapters can reuse them for early
  * feedback, but the repository check is the one that counts.
  *
- * Immutability is structural: an update can change only `status` and `owner`.
+ * Immutability is structural: an update can change only `status`, `owner` and
+ * the entry's parent.
  * Title, content, type, highlights, references, author, author details,
  * origin, attribution and `createdAt` are never rewritten, so a correction is
  * a new entry with `supersedesEntryId`.
  */
 
 /** The only entry fields an Update may change; every other field is frozen. */
-export const LEDGER_MUTABLE_ENTRY_FIELDS = ['status', 'owner'] as const;
+export const LEDGER_MUTABLE_ENTRY_FIELDS = [
+  'status',
+  'owner',
+  'parentEntryId',
+] as const;
 
 // Creation statuses live with the contract, so interfaces show the default
 // the repository applies.
@@ -186,6 +191,10 @@ export type LedgerUpdateDecision =
       readonly kind: 'change';
       readonly status: LedgerStatusChange | null;
       readonly owner: LedgerOwnerChange | null;
+      readonly parent: {
+        readonly from: string | null;
+        readonly to: string | null;
+      } | null;
     };
 
 export interface LedgerUpdatePolicyInput {
@@ -193,17 +202,43 @@ export interface LedgerUpdatePolicyInput {
     readonly revision: number;
     readonly status: LedgerStatus;
     readonly owner: LedgerActorRef;
+    readonly parentEntryId?: string;
   };
   readonly expectedRevision: number;
   readonly requestedStatus?: LedgerStatus;
   readonly requestedOwner?: LedgerActorRef;
+  /** `null` detaches; `undefined` leaves the parent unchanged. */
+  readonly requestedParentEntryId?: string | null;
   /** The caller's attribution; its effective actor is the acting identity. */
   readonly attribution: LedgerAttribution;
+  /** Host-resolved owners in this chat's managed delegation subtree. */
+  readonly delegateOwnerActorIds?: readonly string[];
   /**
    * Set only for the user UI, which may update any open entry in a scope it can
-   * write. Agents may update only entries they currently own.
+   * write. Agents may update their own entries and host-resolved delegated owners.
    */
   readonly mayUpdateAnyOpenEntry: boolean;
+}
+
+/**
+ * True when this actor may update an entry with the current owner. Delegated
+ * owners are an explicit host grant for chat and managed-delegation actors;
+ * sidecar attribution continues to act only for its primary actor.
+ */
+export function canLedgerActorUpdateOwnedEntry(
+  attribution: LedgerAttribution,
+  ownerActorId: string,
+  delegateOwnerActorIds?: readonly string[],
+): boolean {
+  if (attribution.effectiveActor.actorId === ownerActorId) return true;
+  if (
+    attribution.kind === 'sidecar' ||
+    (attribution.effectiveActor.kind !== 'chat' &&
+      attribution.effectiveActor.kind !== 'managed_delegation')
+  ) {
+    return false;
+  }
+  return delegateOwnerActorIds?.includes(ownerActorId) === true;
 }
 
 function checkUpdatePermission(
@@ -215,15 +250,26 @@ function checkUpdatePermission(
       ? null
       : { kind: 'reject', reason: 'FORBIDDEN', field: 'mayUpdateAnyOpenEntry' };
   }
-  if (input.current.owner.actorId !== actor.actorId) {
+  if (
+    !canLedgerActorUpdateOwnedEntry(
+      input.attribution,
+      input.current.owner.actorId,
+      input.delegateOwnerActorIds,
+    )
+  ) {
     return { kind: 'reject', reason: 'FORBIDDEN', field: 'owner' };
   }
   // Sidecars (deferred) may change status only, on behalf of their primary.
   if (
     input.attribution.kind === 'sidecar' &&
-    input.requestedOwner !== undefined
+    (input.requestedOwner !== undefined ||
+      input.requestedParentEntryId !== undefined)
   ) {
-    return { kind: 'reject', reason: 'FORBIDDEN', field: 'owner' };
+    return {
+      kind: 'reject',
+      reason: 'FORBIDDEN',
+      field: input.requestedOwner !== undefined ? 'owner' : 'parentEntryId',
+    };
   }
   return null;
 }
@@ -261,6 +307,20 @@ export function evaluateLedgerUpdate(
     input.requestedOwner.actorId !== input.current.owner.actorId
       ? { from: input.current.owner, to: input.requestedOwner }
       : null;
-  if (status === null && owner === null) return { kind: 'noop' };
-  return { kind: 'change', status, owner };
+  const currentParentEntryId = input.current.parentEntryId ?? null;
+  const parent: {
+    readonly from: string | null;
+    readonly to: string | null;
+  } | null =
+    input.requestedParentEntryId !== undefined &&
+    input.requestedParentEntryId !== currentParentEntryId
+      ? {
+          from: currentParentEntryId,
+          to: input.requestedParentEntryId,
+        }
+      : null;
+  if (status === null && owner === null && parent === null) {
+    return { kind: 'noop' };
+  }
+  return { kind: 'change', status, owner, parent };
 }

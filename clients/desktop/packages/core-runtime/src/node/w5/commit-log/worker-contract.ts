@@ -12,7 +12,8 @@ export {
   type W5ConfinedFileReaderSource,
   type W5FileImage,
 } from './capture-contract';
-import type { W5ApplyResult, W5RecoveryReport } from './apply';
+import { isW5FileConflict } from './apply-evidence';
+import type { W5FileConflict, W5ApplyResult, W5RecoveryReport } from './apply';
 import type {
   W5BackupPosition,
   W5ReceiptLookup,
@@ -46,6 +47,7 @@ export interface W5CommitLogWorkerData {
    * re-anchors it. Windows capture confines reads to it and refuses without it.
    */
   captureRoot?: string;
+  healCleanConflictOperations?: readonly string[];
 }
 
 /**
@@ -91,6 +93,13 @@ export type W5CommitOutcome =
   | { status: 'replay-expired'; commitId: number }
   /** Committed and written to its files. */
   | { status: 'applied'; commitId: number; revisions: Record<string, number> }
+  /** Recorded and abandoned without writing files; revision advances stay. */
+  | {
+      status: 'conflict';
+      commitId: number;
+      revisions: Record<string, number>;
+      conflicts: W5FileConflict[];
+    }
   /**
    * Committed, but its files could not be brought up to date; the commit
    * waits for manual recovery and blocks later changes to those files.
@@ -125,6 +134,8 @@ export type W5RecoveryRetryOutcome =
  */
 export type W5CommitLogWorkerError =
   | { kind: 'log'; code: W5CommitLogErrorCode; message: string }
+  | { kind: 'process-lock-timeout'; path: string; message: string }
+  | { kind: 'fingerprint-conflict'; path: string; message: string }
   | {
       kind: 'refused';
       reason: W5CommitRefusal;
@@ -187,6 +198,9 @@ function isWorkerError(value: unknown): value is W5CommitLogWorkerError {
   switch (value.kind) {
     case 'log':
       return typeof value.code === 'string';
+    case 'process-lock-timeout':
+    case 'fingerprint-conflict':
+      return typeof value.path === 'string' && value.path.length > 0;
     case 'refused':
       return typeof value.reason === 'string' && isRecord(value.details);
     case 'malformed':
@@ -207,7 +221,15 @@ export function isW5CommitLogWorkerData(
     typeof value.root === 'string' &&
     value.root.length > 0 &&
     isOptionalPath(value.dataRoot) &&
-    isOptionalPath(value.captureRoot)
+    isOptionalPath(value.captureRoot) &&
+    (value.healCleanConflictOperations === undefined ||
+      (Array.isArray(value.healCleanConflictOperations) &&
+        value.healCleanConflictOperations.every(
+          (operation: unknown) =>
+            typeof operation === 'string' &&
+            operation.length > 0 &&
+            operation.length <= 256,
+        )))
   );
 }
 
@@ -271,6 +293,16 @@ export function isW5RecoveryReport(
 ): value is W5HostRecoveryReport {
   return (
     isRecord(value) &&
+    (value.abandoned === undefined ||
+      (Array.isArray(value.abandoned) &&
+        value.abandoned.every(
+          (entry: unknown) =>
+            isRecord(entry) &&
+            isRequestId(entry.commitId) &&
+            typeof entry.operation === 'string' &&
+            entry.operation.length > 0 &&
+            entry.operation.length <= 256,
+        ))) &&
     isCommitIdList(value.applied) &&
     isCommitIdList(value.recoveryRequired) &&
     (value.recoveryRequiredDetails === undefined ||
@@ -316,6 +348,14 @@ export function isW5CommitOutcome(value: unknown): value is W5CommitOutcome {
       return Number.isSafeInteger(value.commitId) && value.commitId > 0;
     case 'applied':
       return isRevisionMap(value.revisions);
+    case 'conflict':
+      return (
+        isRequestId(value.commitId) &&
+        isRevisionMap(value.revisions) &&
+        Array.isArray(value.conflicts) &&
+        value.conflicts.length > 0 &&
+        value.conflicts.every(isW5FileConflict)
+      );
     case 'recovery-required':
       return (
         isRevisionMap(value.revisions) && isRecoveryRequiredApply(value.apply)

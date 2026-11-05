@@ -1,3 +1,4 @@
+import type { MarketplaceShareLinkKind } from '@canopy/protocol/marketplace';
 /**
  * Copy and failure classification for Unsharing an account share from its
  * Marketplace detail (CAN-4263). Both hosts render the same confirmation, so
@@ -40,9 +41,8 @@ export const MARKETPLACE_UNSHARE_ALL_LABEL = 'Unshare all';
  * all" when the Shared by you section lists two audience rows.
  */
 export function marketplaceUnshareMenuLabel(audienceCount: number): string {
-  return audienceCount >= 2
-    ? MARKETPLACE_UNSHARE_ALL_LABEL
-    : MARKETPLACE_UNSHARE_LABEL;
+  void audienceCount;
+  return MARKETPLACE_UNSHARE_LABEL;
 }
 
 /**
@@ -82,10 +82,15 @@ export function marketplaceUnshareReasonForStatus(
  * promised about copies already installed.
  */
 export function marketplaceUnshareMessage(
-  kind: MarketplaceUnshareKind,
+  kind: MarketplaceShareLinkKind,
   ownerName?: string | null,
 ): string {
-  const label = MARKETPLACE_UNSHARE_KIND_LABELS[kind];
+  const label =
+    kind === 'pipeline'
+      ? 'workflow'
+      : kind === 'automation'
+        ? 'automation'
+        : MARKETPLACE_UNSHARE_KIND_LABELS[kind];
   const audience = ownerName?.trim()
     ? `People in ${ownerName.trim()}`
     : 'People it was shared with';
@@ -101,10 +106,15 @@ export function marketplaceUnshareMessage(
 
 /** Inline error for a refused Unshare; the dialog stays open to retry. */
 export function marketplaceUnshareErrorMessage(
-  kind: MarketplaceUnshareKind,
+  kind: MarketplaceShareLinkKind,
   reason: MarketplaceUnshareFailureReason,
 ): string {
-  const label = MARKETPLACE_UNSHARE_KIND_LABELS[kind];
+  const label =
+    kind === 'pipeline'
+      ? 'workflow'
+      : kind === 'automation'
+        ? 'automation'
+        : MARKETPLACE_UNSHARE_KIND_LABELS[kind];
   switch (reason) {
     case 'forbidden':
       return `You no longer have permission to unshare this ${label}. Refresh the page to see its current status.`;

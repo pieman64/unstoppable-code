@@ -13,6 +13,7 @@ import {
   DelayedLoadingPlaceholder,
   ErrorBanner,
   SettingsSelect,
+  Skeleton,
   EmptyStateRow,
   ValueRow,
   ValueRows,
@@ -92,6 +93,23 @@ const JOB_COLUMNS: ReadonlyArray<DataTableColumn<ExplorerIngestJob>> = [
     render: (job) => job.lastError ?? '—',
   },
 ];
+
+/** Plain jobs the loading skeleton measures. */
+const SAMPLE_JOBS: readonly ExplorerIngestJob[] = [1, 2, 3].map(
+  (index): ExplorerIngestJob => ({
+    id: `memory-job-skeleton-${String(index)}`,
+    status: 'DONE',
+    attempts: 1,
+    notBefore: '2026-01-01T12:00:00.000Z',
+    lockedBy: null,
+    lockedAt: null,
+    lastHeartbeatAt: '2026-01-01T12:00:00.000Z',
+    heartbeatStale: false,
+    lastError: null,
+    createdAt: '2026-01-01T12:00:00.000Z',
+    updatedAt: '2026-01-01T12:00:00.000Z',
+  }),
+);
 
 function isJobStatus(value: string): value is ExplorerIngestJobStatus {
   return STATUSES.some((status) => status === value);
@@ -184,16 +202,21 @@ export function OpsView({
               onRetry={() => selectStatus(status)}
             />
           ) : jobsLoading && visibleJobs.length === 0 ? (
-            <DelayedLoadingPlaceholder>
-              <DataTable
-                columns={JOB_COLUMNS}
-                rows={[]}
-                rowKey={(job) => job.id}
-                caption="Ingest jobs"
-                testId="memory-jobs-table"
+            <DelayedLoadingPlaceholder slowNote="Still loading ingest jobs…">
+              <Skeleton
                 loading
-                minWidth="47.5rem"
-              />
+                label="Loading ingest jobs"
+                testId="memory-jobs-table-loading"
+              >
+                <DataTable
+                  columns={JOB_COLUMNS}
+                  rows={SAMPLE_JOBS}
+                  rowKey={(job) => job.id}
+                  caption="Ingest jobs"
+                  testId="memory-jobs-table"
+                  minWidth="47.5rem"
+                />
+              </Skeleton>
             </DelayedLoadingPlaceholder>
           ) : (
             <DataTable

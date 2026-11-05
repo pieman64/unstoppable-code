@@ -75,6 +75,7 @@ import {
   parseStreamCatalog,
   parseStreamDescriptor,
   parseStreamRegistry,
+  publishedAtOrBefore,
   streamCatalogPath,
   streamRegistryPaths,
   validateStreamClosure,
@@ -214,7 +215,7 @@ async function publishingStreamRegistrations(
     const registry = parseStreamRegistry(registryBytes, parent);
     if (
       registry.entries.length !== reference.entryCount ||
-      registry.header.checkpointRevision !== revision
+      !publishedAtOrBefore(registry.header.checkpointRevision, revision)
     )
       throw new ChatDeltaJournalIntegrityError(
         'Publishing registry revision/count mismatch',
@@ -232,7 +233,11 @@ async function publishingStreamRegistrations(
       const body = await readFile(item.log);
       if (
         descriptor.streamKey !== entry.streamKey ||
-        descriptor.checkpointRevision !== revision ||
+        !publishedAtOrBefore(
+          descriptor.checkpointRevision,
+          revision,
+          entry.registeredAtRevision,
+        ) ||
         transcriptTargetKey(descriptor.target) !==
           transcriptTargetKey(entry.target) ||
         descriptor.committedByteLength !== body.length ||

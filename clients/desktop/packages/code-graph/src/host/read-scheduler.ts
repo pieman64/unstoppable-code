@@ -66,6 +66,7 @@ interface ReadRecord {
   key: string;
   diagnosticOwner?: { projectId: string; worktreeId: string };
   kind: CodeGraphQueryKind;
+  observe?: (observation: CodeGraphReadObservation) => void;
   request: CodeGraphWorkerReadRequest;
   admissionClass: ReadAdmissionClass;
   queuedAt: number;
@@ -540,6 +541,11 @@ export interface CodeGraphReadTelemetry {
   executionDurationMs: number;
 }
 
+/** One settled read's telemetry, with its failure when it failed. */
+export type CodeGraphReadObservation = CodeGraphReadTelemetry & {
+  readFailure?: CodeGraphReadFailure;
+};
+
 export interface CodeGraphReadSchedulerHost {
   /** Launches one read host with its entry and memory budget; throws when it can't. */
   launchReadHost(): CodeGraphReadHostProcess;
@@ -564,6 +570,11 @@ export interface CodeGraphWorkerReadInput {
    * one retires its host, as a key cancel does.
    */
   signal?: AbortSignal;
+  /**
+   * Receives this read's telemetry too, once it settles, so a worker can
+   * report it to the requester that records it (CAN-5691).
+   */
+  observe?: (observation: CodeGraphReadObservation) => void;
 }
 
 /** One scheduler per host process; see the module comment. */
@@ -656,6 +667,16 @@ export function createCodeGraphReadScheduler(
       });
     } catch {
       // Local diagnostic storage must not prevent settlement or queue cleanup.
+    }
+    try {
+      record.observe?.({
+        kind: record.kind,
+        outcome,
+        ...timings,
+        ...(readFailure === undefined ? {} : { readFailure }),
+      });
+    } catch {
+      // Neither may a caller's observer.
     }
   }
 
@@ -1156,6 +1177,7 @@ export function createCodeGraphReadScheduler(
           ? {}
           : { diagnosticOwner: input.diagnosticOwner }),
         kind: input.kind,
+        ...(input.observe === undefined ? {} : { observe: input.observe }),
         request: input.request,
         admissionClass: admissionClassFor(input.request.task, input.kind),
         queuedAt: Date.now(),

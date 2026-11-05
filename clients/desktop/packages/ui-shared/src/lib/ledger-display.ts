@@ -26,6 +26,7 @@ export const LEDGER_ENTRY_TYPE_LABELS: Readonly<
   DECISION: 'Decision',
   OBSERVATION: 'Observation',
   SUMMARY: 'Summary',
+  OPERATION: 'Operation',
 };
 
 export const LEDGER_STATUS_LABELS: Readonly<Record<LedgerStatus, string>> = {
@@ -447,6 +448,7 @@ export const LEDGER_FORM_TYPE_OPTIONS: readonly LedgerPublicEntryType[] = [
   'ACTION',
   'DECISION',
   'OBSERVATION',
+  'OPERATION',
 ];
 
 /** Statuses that keep an entry open to further changes. */

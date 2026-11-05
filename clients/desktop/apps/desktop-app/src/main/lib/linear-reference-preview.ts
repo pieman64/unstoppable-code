@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import {
   LINEAR_ISSUE_TITLE_MAX_CODE_POINTS,
   LINEAR_TEAM_KEY_PATTERN,
+  isLinearAvatarUrl,
+  isLinearStatusType,
   type LinearIssuePreview,
   type LinearIssuePreviewRequest,
   type LinearIssuePreviewResult,
@@ -110,7 +112,11 @@ function toPreview(
     url,
     description: descriptionExcerpt(node.description),
     status: nestedName(node.state),
+    statusType: isLinearStatusType(node.state?.type) ? node.state.type : null,
     assignee: nestedName(node.assignee),
+    assigneeAvatarUrl: isLinearAvatarUrl(node.assignee?.avatarUrl)
+      ? node.assignee.avatarUrl
+      : null,
     project: nestedName(node.project),
     updatedAt: typeof node.updatedAt === 'string' ? node.updatedAt : '',
   };

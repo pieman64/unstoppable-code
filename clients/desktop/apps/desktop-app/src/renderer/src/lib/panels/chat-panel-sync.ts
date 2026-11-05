@@ -2088,15 +2088,6 @@ export function forgetChatPanelSyncWorktree(worktreeKey: string): void {
   lastPanelActiveTabId.delete(worktreeKey);
 }
 
-/** Test-only: runs a pending (scheduled) sweep synchronously. */
-export function flushChatPanelSyncForTests(): void {
-  if (!pendingSweep) {
-    return;
-  }
-  pendingSweep = false;
-  runSweep();
-}
-
 /** Test-only: tears down subscriptions and clears all module state. */
 export function resetChatPanelSyncForTests(): void {
   unsubscribeChat?.();

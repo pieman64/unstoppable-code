@@ -38,14 +38,62 @@ export function beginChatAutoRouting(request: ChatCancelRequest): {
   };
 }
 
-/** The shared ordinary Stop sequence, committed before any caller broadcasts. */
-export async function stopChatTurn(request: ChatCancelRequest): Promise<{
+/**
+ * Capture a Stop with the user message id of the turn it would end, in one
+ * synchronous step: the Claude fence's turn, else the chat's live turn.
+ */
+export function captureChatTurnStopWithTurn(request: ChatCancelRequest): {
+  readonly context: ChatTurnStopContext;
+  readonly userMessageId: string | undefined;
+} {
+  const context = captureChatTurnStop(request);
+  const { fence } = context;
+  const ownership = getChatTurnOwnership();
+  const snapshot = ownership.isBound()
+    ? ownership.getSnapshot({
+        projectId: request.projectId,
+        worktreeId: request.worktreeId,
+        chatId: request.chatId,
+      })
+    : undefined;
+  if (fence?.userMessageId === undefined) {
+    const live =
+      snapshot?.receipt?.state.current ?? snapshot?.committed?.state.current;
+    return { context, userMessageId: live?.userMessageId };
+  }
+  const bound = boundUserMessageId(request, fence);
+  if (bound !== undefined || fence.turnId !== fence.userMessageId)
+    return { context, userMessageId: bound ?? fence.userMessageId };
+  // Claude started this turn before its prompt bound: it runs the message
+  // its dispatch owner was taken for, which Stop settles too.
+  const owners = (snapshot?.dispatchOwners ?? []).filter(
+    (owner) => owner.userMessageId !== undefined,
+  );
+  const dispatched =
+    owners.find((owner) => owner.turnId === fence.turnId) ??
+    (owners.length === 1 && owners[0]?.turnId === undefined
+      ? owners[0]
+      : undefined);
+  return {
+    context,
+    userMessageId: dispatched?.userMessageId ?? fence.userMessageId,
+  };
+}
+
+/**
+ * The shared ordinary Stop sequence, committed before any caller broadcasts.
+ * `captured` is a context the caller took without awaiting since.
+ */
+export async function stopChatTurn(
+  request: ChatCancelRequest,
+  captured?: ChatTurnStopContext,
+): Promise<{
   type: 'result';
   is_error: false;
   result: 'Cancelled';
   canopy_turn_user_message_id?: string;
 }> {
-  const stopContext = captureChatTurnStop(request);
+  const stopContext = captured ?? captureChatTurnStop(request);
   // S blocks admission and holds wake from capture until this Stop's release
   // and settle are durable, so no newer dispatch can start mid-Stop.
   const scope = {

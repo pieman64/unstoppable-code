@@ -1,5 +1,11 @@
 # Local-memory real-model benchmark
 
+> **No runner.** The golden-only test cut ([golden tests](../../../../docs/golden-tests.md))
+> deleted `local-memory-bench.spec.ts`, its Playwright config and the
+> `bench:local-memory*` scripts. The harness, evaluator and packs below stay
+> (the packs are fixtures for the public-export golden); restoring the
+> benchmark means restoring its spec outside the committed tree.
+
 CAN-2720 is a manually run benchmark for the desktop app's local-memory path.
 It drives the real chat UI and bundled provider binary against live models; it
 does not use the E2E mock LLM, an LLM judge, or visual timing assertions.

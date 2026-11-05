@@ -1,6 +1,7 @@
 /**
  * Subprocess entry for `readChatStorage.mjs`: prints the committed state of
- * one delta-journal (format 3) chat scope as JSON.
+ * one format 3 or format 4 chat scope as JSON, with any requested format 4
+ * delegation streams' rows.
  *
  * A format 3 scope keeps new commits in `delta-journal.log`; its index and
  * transcript files only change at a checkpoint. This runs the app's own
@@ -25,7 +26,22 @@ async function readMessages(view, chatId) {
   return messages;
 }
 
-async function readScope({ directory, scopeId, chats }) {
+/** Every committed row of one delegation stream, oldest first. */
+async function readStream(view, target) {
+  const rows = [];
+  let before;
+  for (;;) {
+    const page = await view.stream(
+      { kind: 'delegation', ...target },
+      before === undefined ? {} : { before },
+    );
+    rows.unshift(...page.rows);
+    if (page.nextBefore === undefined) return rows;
+    before = page.nextBefore;
+  }
+}
+
+async function readScope({ directory, scopeId, chats, streams = [] }) {
   const view = await openReplayedChatScope(
     { directory, scopeId },
     assertChatStorageIndexes,
@@ -40,7 +56,10 @@ async function readScope({ directory, scopeId, chats }) {
     const messages = {};
     for (const chatId of chatIds)
       messages[chatId] = await readMessages(view, chatId);
-    return { indexes: view.indexes, messages };
+    const streamRows = [];
+    for (const target of streams)
+      streamRows.push(await readStream(view, target));
+    return { indexes: view.indexes, messages, streams: streamRows };
   } finally {
     await view.dispose();
   }

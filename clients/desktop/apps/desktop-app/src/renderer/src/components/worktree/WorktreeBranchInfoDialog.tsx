@@ -51,10 +51,11 @@ import {
   TextInput,
 } from '@canopy/ui-shared/components';
 import {
+  DelayedLoadingPlaceholder,
   EmptyState,
   Fact,
   FactList,
-  InlineTextSkeleton,
+  Skeleton,
 } from '@canopy/ui-shared/components';
 import { RichHoverTooltip } from '@/components/shared/RichHoverTooltip';
 
@@ -190,36 +191,50 @@ function formatHealthRetryError(
   return issueMessage;
 }
 
-function ProjectPipelineList({
+const SAMPLE_PIPELINE_TIME = '2026-01-01T12:00:00.000Z';
+
+function samplePipeline(
+  id: string,
+  name: string,
+  description: string,
+): PipelineInfo {
+  return {
+    id,
+    name,
+    filename: `${id}.yaml`,
+    description,
+    icon: '',
+    createdAt: SAMPLE_PIPELINE_TIME,
+    updatedAt: SAMPLE_PIPELINE_TIME,
+    source: 'project',
+    readonly: true,
+  };
+}
+
+/** Plain workflows the loading skeleton lays out as the workflow rows. */
+const SAMPLE_PIPELINES: PipelineInfo[] = [
+  samplePipeline('skeleton-review', 'Code review', 'Reviews the open changes'),
+  samplePipeline(
+    'skeleton-release',
+    'Release notes',
+    'Drafts notes from commits',
+  ),
+  samplePipeline(
+    'skeleton-tests',
+    'Run the tests',
+    'Runs the suite and reports',
+  ),
+];
+
+const noop = (): void => undefined;
+
+function ProjectPipelineRows({
   pipelines,
-  loading,
   onView,
 }: {
   pipelines: PipelineInfo[];
-  loading: boolean;
   onView: (pipeline: PipelineInfo) => void;
 }): JSX.Element {
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center py-8 text-s fg-secondary">
-        <LoadingSpinner />
-        <span className="ml-2">Loading workflows…</span>
-      </div>
-    );
-  }
-
-  if (pipelines.length === 0) {
-    return (
-      <p className="py-6 text-center text-xs fg-secondary">
-        No project workflows found.
-        <br />
-        <span className="mt-1 inline-block text-3xs">
-          Add YAML files to <code>.canopy/pipelines/</code> in your repo.
-        </span>
-      </p>
-    );
-  }
-
   return (
     <div className="space-y-1.5">
       {pipelines.map((p) => (
@@ -245,6 +260,44 @@ function ProjectPipelineList({
       ))}
     </div>
   );
+}
+
+function ProjectPipelineList({
+  pipelines,
+  loading,
+  onView,
+}: {
+  pipelines: PipelineInfo[];
+  loading: boolean;
+  onView: (pipeline: PipelineInfo) => void;
+}): JSX.Element {
+  if (loading) {
+    return (
+      <DelayedLoadingPlaceholder slowNote="Still loading workflows…">
+        <Skeleton
+          loading
+          label="Loading workflows"
+          testId="worktree-branch-info-workflows-loading"
+        >
+          <ProjectPipelineRows pipelines={SAMPLE_PIPELINES} onView={noop} />
+        </Skeleton>
+      </DelayedLoadingPlaceholder>
+    );
+  }
+
+  if (pipelines.length === 0) {
+    return (
+      <p className="py-6 text-center text-xs fg-secondary">
+        No project workflows found.
+        <br />
+        <span className="mt-1 inline-block text-3xs">
+          Add YAML files to <code>.canopy/pipelines/</code> in your repo.
+        </span>
+      </p>
+    );
+  }
+
+  return <ProjectPipelineRows pipelines={pipelines} onView={onView} />;
 }
 
 const BRANCH_INFO_TAB_LABELS: Readonly<Record<BranchInfoTab, string>> = {
@@ -284,6 +337,28 @@ function BranchInfoTabs({
   );
 }
 
+/** The path a loading directory is measured from: a typical worktree. */
+const SAMPLE_WORKTREE_DIRECTORY = '~/.canopy/worktrees/canopy/feature-branch';
+
+/**
+ * The directory path, truncated from the start so its end stays visible;
+ * no path reads "Unavailable".
+ */
+function DirectoryPath({ path }: { path: string | null }): JSX.Element {
+  return (
+    <span
+      className="min-w-0 truncate font-mono"
+      style={{
+        direction: 'rtl',
+        textAlign: 'left',
+      }}
+      title={path ?? undefined}
+    >
+      {path ? `\u200e${path}` : 'Unavailable'}
+    </span>
+  );
+}
+
 interface DirectoryFactProps {
   worktreeDirectory: string | null;
   worktreeDirectoryStatus: WorktreeDirectoryStatus;
@@ -304,22 +379,17 @@ function DirectoryFact({
     <div className={placement}>
       <FactList columnGap="3" labelTone="secondary">
         <Fact label="Directory" fit="row" dataTestId="worktree-directory-fact">
-          <span
-            className="min-w-0 truncate font-mono"
-            style={{
-              direction: 'rtl',
-              textAlign: 'left',
-            }}
-            title={worktreeDirectory ?? undefined}
-          >
-            {worktreeDirectory ? (
-              `\u200e${worktreeDirectory}`
-            ) : worktreeDirectoryStatus === 'error' ? (
-              'Unavailable'
-            ) : (
-              <InlineTextSkeleton className="w-48" />
-            )}
-          </span>
+          {worktreeDirectory || worktreeDirectoryStatus === 'error' ? (
+            <DirectoryPath path={worktreeDirectory} />
+          ) : (
+            <Skeleton
+              loading
+              label="Loading worktree directory"
+              className="min-w-0"
+            >
+              <DirectoryPath path={SAMPLE_WORKTREE_DIRECTORY} />
+            </Skeleton>
+          )}
           {worktreeDirectory && (
             <CopyButton
               value={worktreeDirectory}
@@ -495,18 +565,18 @@ function BranchActionButtons({
         surfacePadding="compact"
         content={<span className="text-xs fg-primary">Switch branch</span>}
       >
-        <button
-          type="button"
+        <Button
+          size="compact"
           disabled={disabled}
           onClick={onSwitchBranchClick}
-          className="flex min-w-0 items-center gap-1 rounded bg-fg-primary/5 px-2 py-0.5 font-mono text-xs fg-secondary transition-colors hover:bg-fg-primary/10 hover:fg-primary disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-fg-primary/5 disabled:hover:fg-secondary"
+          className="min-w-0 max-w-full"
           aria-label={
             copyKey === 'single' ? 'Switch branch' : `Switch branch ${branch}`
           }
         >
-          <span className="truncate">{branch}</span>
+          <span className="truncate font-mono">{branch}</span>
           <AppCatalogChevronDownMediumIcon size={14} className="shrink-0" />
-        </button>
+        </Button>
       </RichHoverTooltip>
       <Tooltip label="Rename branch">
         <Button

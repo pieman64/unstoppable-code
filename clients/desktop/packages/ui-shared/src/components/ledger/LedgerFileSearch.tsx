@@ -2,6 +2,7 @@
 
 import type { JSX } from 'react';
 import type { LedgerViewFileCandidate } from '@canopy/protocol/ledger-view';
+import { ListRow } from '../ListRow';
 import { SearchField } from '../SearchField';
 
 export interface LedgerFileSearchProps {
@@ -48,22 +49,17 @@ export function LedgerFileSearch({
         >
           {results.map((file) => (
             <li key={`${file.rootId}:${file.path}`}>
-              <button
-                type="button"
+              <ListRow
                 data-testid="ledger-file-search-result"
                 onClick={() => onPick(file)}
-                className="focus-ring flex w-full min-w-0 items-baseline gap-2 rounded px-2 py-1 text-left text-xs hover:bg-subtle"
+                trailing={file.rootName}
               >
                 {/* The root shows beside it; the cut-off path keeps its full
                     value as a native title. */}
-                <span
-                  className="truncate font-mono fg-primary"
-                  title={file.path}
-                >
+                <span className="font-mono" title={file.path}>
                   {file.path}
                 </span>
-                <span className="shrink-0 fg-tertiary">{file.rootName}</span>
-              </button>
+              </ListRow>
             </li>
           ))}
           {!searching && results.length === 0 && (

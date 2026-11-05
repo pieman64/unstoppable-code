@@ -10,9 +10,8 @@ import type {
   StepResult,
 } from '@canopy/desktop-shared/types/pipeline';
 import { PipelineTimer } from '../PipelineTimer';
-import { ChevronIcon } from '@canopy/ui-shared/icons';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
-import { SegmentedControl } from '@canopy/ui-shared/components';
+import { Disclosure, SegmentedControl } from '@canopy/ui-shared/components';
 
 /**
  * Shared step-detail building blocks for the pipeline execution details modal.
@@ -114,24 +113,17 @@ export function DetailSection({
   }
 
   return (
-    <div className="space-y-2">
-      <div className="flex w-full items-center gap-2">
-        <button
-          type="button"
-          aria-expanded={open}
-          onClick={(): void => setOpen((prev) => !prev)}
-          className="focus-ring flex min-w-0 flex-1 items-center gap-1.5 text-xs font-medium fg-secondary transition-colors hover:fg-secondary"
-        >
-          <ChevronIcon open={open} />
-          {title}
-        </button>
-        {headerAction ? (
-          <span className="ml-auto flex shrink-0 items-center text-xs font-medium fg-secondary">
-            {headerAction}
-          </span>
-        ) : null}
-      </div>
-      {open && content}
+    // The header action sits at the end of the toggle's row; the body opens
+    // full width under both.
+    <div className="relative">
+      <Disclosure open={open} onOpenChange={setOpen} label={title}>
+        {content}
+      </Disclosure>
+      {headerAction ? (
+        <span className="absolute right-0 top-0 flex items-center text-xs font-medium fg-secondary">
+          {headerAction}
+        </span>
+      ) : null}
     </div>
   );
 }

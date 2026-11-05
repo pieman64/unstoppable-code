@@ -25,9 +25,12 @@ import {
   ARCHIVED_LIST_CONTAINER_CLASS_NAME,
   ArchivedOverviewRow as SharedArchivedOverviewRow,
   ArchivedStateIcon,
+  DelayedLoadingPlaceholder,
   EmptyTrashDialog as SharedEmptyTrashDialog,
   HeaderActionButton,
+  ListRow,
   SearchField,
+  Skeleton,
 } from '@canopy/ui-shared/components';
 import { formatCostAmount } from '@canopy/ui-shared/components/cost';
 import { formatByteSize, matchesArchivedQuery } from '@canopy/ui-shared/lib';
@@ -494,12 +497,9 @@ export function ArchivedContainersOverviewPage({
         className={`${ARCHIVED_LIST_CONTAINER_CLASS_NAME} min-h-0 flex-1 overflow-y-auto px-3 py-2`}
       >
         {!loaded ? (
-          <div className="flex items-center gap-2 px-2 py-4">
-            <LoadingSpinner tone="secondary" />
-            <span className="text-xs fg-secondary">
-              Loading archived and deleted items
-            </span>
-          </div>
+          <DelayedLoadingPlaceholder slowNote="Still loading archived and deleted items…">
+            <ArchivedOverviewListSkeleton />
+          </DelayedLoadingPlaceholder>
         ) : totalCount === 0 ? (
           <div
             className="px-2 py-6 text-center text-xs fg-secondary"
@@ -548,30 +548,21 @@ export function ArchivedContainersOverviewPage({
                 </div>
                 <div className="space-y-0.5">
                   {visibleLegacyChats.map((chat) => (
-                    <button
+                    <ListRow
                       key={chat.id}
-                      type="button"
                       data-testid={`archived-overview-legacy-row-${chat.id}`}
                       data-standalone-chat-id={chat.id}
                       data-archived="true"
                       onClick={() => openLegacyChat(chat.id)}
-                      className="focus-ring flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-fg-primary/[0.04]"
+                      icon={<ArchivedStateIcon state="archived" />}
+                      trailing={formatDateOrEmpty(
+                        chat.archivedAt ?? chat.lastMessageAt ?? chat.createdAt,
+                      )}
                     >
-                      <ArchivedStateIcon state="archived" />
-                      <span
-                        className="min-w-0 flex-1 truncate text-xs leading-snug fg-primary/75"
-                        title={getStandaloneRowLabel(chat)}
-                      >
+                      <span title={getStandaloneRowLabel(chat)}>
                         {getStandaloneRowLabel(chat)}
                       </span>
-                      <span className="shrink-0 text-2xs fg-secondary">
-                        {formatDateOrEmpty(
-                          chat.archivedAt ??
-                            chat.lastMessageAt ??
-                            chat.createdAt,
-                        )}
-                      </span>
-                    </button>
+                    </ListRow>
                   ))}
                 </div>
               </div>
@@ -644,6 +635,73 @@ function ArchivedOverviewHeaderShell({
     >
       {children}
     </PageTitlebar>
+  );
+}
+
+/** Plain rows of the real shape: a name, a size, and a date each. */
+const SAMPLE_OVERVIEW_ROWS: ReadonlyArray<{
+  readonly id: string;
+  readonly state: ArchivedContainerState;
+  readonly title: string;
+  readonly size: string;
+  readonly date: string;
+}> = [
+  {
+    id: 'sample-1',
+    state: 'archived',
+    title: 'Fix the checkout retry',
+    size: '12 MB',
+    date: 'Jan 4',
+  },
+  {
+    id: 'sample-2',
+    state: 'deleted',
+    title: 'Update the docs sidebar',
+    size: '3 MB',
+    date: 'Jan 2',
+  },
+  {
+    id: 'sample-3',
+    state: 'archived',
+    title: 'Add release notes',
+    size: '8 MB',
+    date: 'Dec 30',
+  },
+];
+
+const noop = (): void => undefined;
+
+/**
+ * The retained items that have not arrived: the shared overview row itself,
+ * rendered from plain samples inside the measured `Skeleton`, so the bars sit
+ * where the rows will.
+ */
+function ArchivedOverviewListSkeleton(): JSX.Element {
+  return (
+    <Skeleton
+      loading
+      label="Loading archived and deleted items"
+      testId="archived-overview-loading"
+    >
+      <div className="flex flex-col gap-0.5">
+        {SAMPLE_OVERVIEW_ROWS.map((row) => (
+          <SharedArchivedOverviewRow
+            key={row.id}
+            state={row.state}
+            title={row.title}
+            stateTooltip={null}
+            trailing={
+              <span className="shrink-0 text-2xs tabular-nums fg-secondary">
+                {row.size}
+              </span>
+            }
+            date={row.date}
+            onOpen={noop}
+            actions={null}
+          />
+        ))}
+      </div>
+    </Skeleton>
   );
 }
 

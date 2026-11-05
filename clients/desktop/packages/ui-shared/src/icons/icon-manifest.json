@@ -301,20 +301,18 @@
       "note": "Lucide brain-circuit, 2px stroke. Replaces neurology; regular 20px, compact 14px."
     },
     "branch": {
-      "source": "octicons",
+      "source": "lucide",
       "name": "git-branch",
       "fill": 0,
-      "class": "identity",
-      "inset": 0.5,
-      "note": "Official GitHub Octicon (git-branch-24), inset 0.5. Replaces the CAN-4423 gap decision fork_right."
+      "class": "direct",
+      "note": "Lucide git-branch, 2px stroke; regular 20px, compact 14px. Replaces the Octicon git-branch so Git states match the rest of the Lucide set (2026-11-03)."
     },
     "branchSimple": {
-      "source": "octicons",
+      "source": "lucide",
       "name": "git-branch",
       "fill": 0,
-      "class": "identity",
-      "inset": 0.5,
-      "note": "Official GitHub Octicon (git-branch-24), inset 0.5. Replaces the CAN-4423 gap decision fork_right."
+      "class": "direct",
+      "note": "Lucide git-branch, 2px stroke; regular 20px, compact 14px. Replaces the Octicon git-branch so Git states match the rest of the Lucide set (2026-11-03)."
     },
     "briefcase": {
       "source": "lucide",
@@ -415,12 +413,11 @@
       "note": "Lucide grid-2x2, 2px stroke. Replaces grid_view; regular 20px, compact 14px."
     },
     "changes": {
-      "source": "octicons",
+      "source": "lucide",
       "name": "file-diff",
       "fill": 0,
-      "class": "identity",
-      "inset": 1,
-      "note": "Official GitHub Octicon (file-diff-24), inset 1. Replaces Material difference."
+      "class": "direct",
+      "note": "Lucide file-diff, 2px stroke; regular 20px, compact 14px. Replaces the Octicon file-diff so Git states match the rest of the Lucide set (2026-11-03)."
     },
     "chart4": {
       "source": "lucide",
@@ -619,12 +616,11 @@
       "note": "Shared Lucide replacement for the legacy coins icon; 2px stroke, regular 20px / compact 14px."
     },
     "commits": {
-      "source": "octicons",
-      "name": "git-commit",
+      "source": "lucide",
+      "name": "git-commit-horizontal",
       "fill": 0,
-      "class": "identity",
-      "inset": 0,
-      "note": "Official GitHub Octicon (git-commit-24), inset 0. Replaces Material commit."
+      "class": "direct",
+      "note": "Lucide git-commit-horizontal, 2px stroke; regular 20px, compact 14px. Replaces the Octicon git-commit so Git states match the rest of the Lucide set (2026-11-03)."
     },
     "connectors2": {
       "source": "lucide",
@@ -705,20 +701,18 @@
       "note": "Lucide monitor-smartphone, 2px stroke. Replaces devices; regular 20px, compact 14px."
     },
     "difference": {
-      "source": "octicons",
+      "source": "lucide",
       "name": "file-diff",
       "fill": 0,
-      "class": "identity",
-      "inset": 1,
-      "note": "Official GitHub Octicon (file-diff-24), inset 1. Replaces Material difference. API override. FileDiff: the Changes tab of a shared run, a generic file diff."
+      "class": "direct",
+      "note": "Lucide file-diff, 2px stroke; regular 20px, compact 14px. Replaces the Octicon file-diff so Git states match the rest of the Lucide set (2026-11-03)."
     },
     "differenceModified": {
-      "source": "octicons",
-      "name": "diff-modified",
+      "source": "lucide",
+      "name": "square-dot",
       "fill": 0,
-      "class": "identity",
-      "inset": 0,
-      "note": "Official GitHub Octicon (diff-modified-24), inset 0. Replaces the CAN-4423 gap decision square_dot. Modified-file status."
+      "class": "direct",
+      "note": "Lucide square-dot, 2px stroke; regular 20px, compact 14px. Replaces the Octicon diff-modified so Git states match the rest of the Lucide set (2026-11-03)."
     },
     "discord": {
       "source": "simple-icons",
@@ -764,20 +758,18 @@
       "note": "Lucide grip, 2px stroke. Replaces apps; regular 20px, compact 14px. Nine filled dots in a 3x3 grid."
     },
     "draft": {
-      "source": "octicons",
+      "source": "lucide",
       "name": "git-pull-request-draft",
       "fill": 0,
-      "class": "identity",
-      "inset": 0.5,
-      "note": "Official GitHub Octicon (git-pull-request-draft-24), inset 0.5. Replaces the CAN-4423 gap decision alt_route."
+      "class": "direct",
+      "note": "Lucide git-pull-request-draft, 2px stroke; regular 20px, compact 14px. Replaces the Octicon git-pull-request-draft so Git states match the rest of the Lucide set (2026-11-03)."
     },
     "draftSimple": {
-      "source": "octicons",
+      "source": "lucide",
       "name": "git-pull-request-draft",
       "fill": 0,
-      "class": "identity",
-      "inset": 0.5,
-      "note": "Official GitHub Octicon (git-pull-request-draft-24), inset 0.5. Replaces the CAN-4423 gap decision alt_route."
+      "class": "direct",
+      "note": "Lucide git-pull-request-draft, 2px stroke; regular 20px, compact 14px. Replaces the Octicon git-pull-request-draft so Git states match the rest of the Lucide set (2026-11-03)."
     },
     "editBig": {
       "source": "lucide",
@@ -820,6 +812,13 @@
       "fill": 0,
       "class": "direct",
       "note": "Lucide maximize-2, 2px stroke. Replaces open_in_full; regular 20px, compact 14px."
+    },
+    "broadcast": {
+      "source": "lucide",
+      "name": "radio",
+      "fill": 0,
+      "class": "gap",
+      "note": "Lucide radio, 2px stroke. Replaces bigtop_updates for the watcher (CAN-4652); regular 20px, compact 14px."
     },
     "eyeOpen": {
       "source": "lucide",
@@ -899,12 +898,11 @@
       "note": "Lucide folder-plus, 2px stroke. Replaces create_new_folder; regular 20px, compact 14px."
     },
     "folderData": {
-      "source": "octicons",
-      "name": "repo",
+      "source": "lucide",
+      "name": "folder-git-2",
       "fill": 0,
-      "class": "identity",
-      "inset": 2,
-      "note": "Official GitHub Octicon (repo-24), inset 2. Replaces Material folder_data. API override. FolderGit2: a Git-backed folder (GitIcon keeps the Git logo); RepoIcon binds it too."
+      "class": "direct",
+      "note": "Lucide folder-git-2, 2px stroke; regular 20px, compact 14px. Replaces the Octicon repo so Git states match the rest of the Lucide set (2026-11-03)."
     },
     "folderFilled": {
       "source": "lucide",
@@ -947,22 +945,21 @@
       "name": "split",
       "fill": 0,
       "class": "direct",
-      "note": "Lucide split, 2px stroke. The clean chat look's Fork action, turned a quarter right; regular 20px, compact 14px. Lucide by the designer's explicit choice (2026-10-21), matching the other Lucide icons in the reply row and menu. Intentional deviation from DESIGN.md's rule that Git and GitHub concepts use Primer Octicons, limited to the Clean chat reply row and its \"•••\" menu; elsewhere fork and branch keep their Octicons."
+      "note": "Lucide split, 2px stroke. The clean chat look's Fork action, turned a quarter right; regular 20px, compact 14px. Lucide by the designer's explicit choice (2026-10-21), matching the other Lucide icons in the reply row and menu. Intentional deviation from DESIGN.md's rule that Git and GitHub concepts use Primer Octicons, limited to the Clean chat reply row and its \"\u2022\u2022\u2022\" menu; elsewhere fork and branch keep their Octicons."
     },
     "gitBranchLine": {
       "source": "lucide",
       "name": "git-branch",
       "fill": 0,
       "class": "direct",
-      "note": "Lucide git-branch, 2px stroke. The clean chat look's Branch action, beside Lucide icons; regular 20px, compact 14px. Lucide by the designer's explicit choice (2026-10-21), matching the other Lucide icons in the reply row and menu. Intentional deviation from DESIGN.md's rule that Git and GitHub concepts use Primer Octicons, limited to the Clean chat reply row and its \"•••\" menu; elsewhere fork and branch keep their Octicons."
+      "note": "Lucide git-branch, 2px stroke. The clean chat look's Branch action, beside Lucide icons; regular 20px, compact 14px. Lucide by the designer's explicit choice (2026-10-21), matching the other Lucide icons in the reply row and menu. Intentional deviation from DESIGN.md's rule that Git and GitHub concepts use Primer Octicons, limited to the Clean chat reply row and its \"\u2022\u2022\u2022\" menu; elsewhere fork and branch keep their Octicons."
     },
     "gitFork": {
-      "source": "octicons",
-      "name": "repo-forked",
+      "source": "lucide",
+      "name": "git-fork",
       "fill": 0,
-      "class": "identity",
-      "inset": 0.5,
-      "note": "Official GitHub Octicon (repo-forked-24), inset 0.5. Replaces the Canopy-drawn IconGitFork."
+      "class": "direct",
+      "note": "Lucide git-fork, 2px stroke; regular 20px, compact 14px. Replaces the Octicon repo-forked so Git states match the rest of the Lucide set (2026-11-03)."
     },
     "github": {
       "source": "octicons",
@@ -1191,44 +1188,39 @@
       "note": "Shared Lucide replacement for the legacy mention icon; 2px stroke, regular 20px / compact 14px."
     },
     "mergeConflict": {
-      "source": "octicons",
-      "name": "alert",
+      "source": "lucide",
+      "name": "triangle-alert",
       "fill": 0,
-      "class": "identity",
-      "inset": 0.5,
-      "note": "Official GitHub Octicon (alert-24), inset 0.5. Merge conflicts, the glyph GitHub's merge box shows for a conflicting branch; previously shared git-merge artwork with merged, which read as merged."
+      "class": "direct",
+      "note": "Lucide triangle-alert, 2px stroke; regular 20px, compact 14px. Replaces the Octicon alert so Git states match the rest of the Lucide set (2026-11-03)."
     },
     "mergeConflictSimple": {
-      "source": "octicons",
-      "name": "alert",
+      "source": "lucide",
+      "name": "triangle-alert",
       "fill": 0,
-      "class": "identity",
-      "inset": 0.5,
-      "note": "Official GitHub Octicon (alert-24), inset 0.5. Merge conflicts, the glyph GitHub's merge box shows for a conflicting branch; previously shared git-merge artwork with mergedSimple, which read as merged."
+      "class": "direct",
+      "note": "Lucide triangle-alert, 2px stroke; regular 20px, compact 14px. Replaces the Octicon alert so Git states match the rest of the Lucide set (2026-11-03)."
     },
     "mergeQueue": {
-      "source": "octicons",
-      "name": "git-merge-queue",
+      "source": "canopy",
+      "name": "IconMergeQueue",
       "fill": 0,
       "class": "identity",
-      "inset": 0.5,
-      "note": "Official GitHub Octicon (git-merge-queue-24), inset 0.5. Merge-queue state, which previously rendered mergedSimple."
+      "note": "Canopy-authored on the Lucide grid (2px round stroke): queued dots above a target ring plus a waiting branch ring. Lucide has no merge-queue glyph; replaces the Octicon git-merge-queue (2026-11-03)."
     },
     "merged": {
-      "source": "octicons",
+      "source": "lucide",
       "name": "git-merge",
       "fill": 0,
-      "class": "identity",
-      "inset": 0.5,
-      "note": "Official GitHub Octicon (git-merge-24), inset 0.5. Replaces the CAN-4423 gap decision merge."
+      "class": "direct",
+      "note": "Lucide git-merge, 2px stroke; regular 20px, compact 14px. Replaces the Octicon git-merge so Git states match the rest of the Lucide set (2026-11-03)."
     },
     "mergedSimple": {
-      "source": "octicons",
+      "source": "lucide",
       "name": "git-merge",
       "fill": 0,
-      "class": "identity",
-      "inset": 0.5,
-      "note": "Official GitHub Octicon (git-merge-24), inset 0.5. Replaces the CAN-4423 gap decision merge."
+      "class": "direct",
+      "note": "Lucide git-merge, 2px stroke; regular 20px, compact 14px. Replaces the Octicon git-merge so Git states match the rest of the Lucide set (2026-11-03)."
     },
     "messageCircleDashed": {
       "source": "lucide",
@@ -1442,28 +1434,25 @@
       "note": "Lucide plus, 2px stroke. Replaces add; regular 20px, compact 14px."
     },
     "pullRequest": {
-      "source": "octicons",
+      "source": "lucide",
       "name": "git-pull-request",
       "fill": 0,
-      "class": "identity",
-      "inset": 0.5,
-      "note": "Official GitHub Octicon (git-pull-request-24), inset 0.5. Replaces the CAN-4423 gap decision conversion_path."
+      "class": "direct",
+      "note": "Lucide git-pull-request, 2px stroke; regular 20px, compact 14px. Replaces the Octicon git-pull-request so Git states match the rest of the Lucide set (2026-11-03)."
     },
     "pullRequestClosedSimple": {
-      "source": "octicons",
+      "source": "lucide",
       "name": "git-pull-request-closed",
       "fill": 0,
-      "class": "identity",
-      "inset": 0.5,
-      "note": "Official GitHub Octicon (git-pull-request-closed-24), inset 0.5. Replaces the CAN-4423 gap decision conversion_path_off."
+      "class": "direct",
+      "note": "Lucide git-pull-request-closed, 2px stroke; regular 20px, compact 14px. Replaces the Octicon git-pull-request-closed so Git states match the rest of the Lucide set (2026-11-03)."
     },
     "pullRequestSimple": {
-      "source": "octicons",
+      "source": "lucide",
       "name": "git-pull-request",
       "fill": 0,
-      "class": "identity",
-      "inset": 0.5,
-      "note": "Official GitHub Octicon (git-pull-request-24), inset 0.5. Replaces the CAN-4423 gap decision conversion_path."
+      "class": "direct",
+      "note": "Lucide git-pull-request, 2px stroke; regular 20px, compact 14px. Replaces the Octicon git-pull-request so Git states match the rest of the Lucide set (2026-11-03)."
     },
     "puzzle": {
       "source": "lucide",
@@ -1509,12 +1498,11 @@
       "note": "Lucide rotate-ccw, 2px stroke. Replaces replay; regular 20px, compact 14px."
     },
     "requestClosed": {
-      "source": "octicons",
+      "source": "lucide",
       "name": "git-pull-request-closed",
       "fill": 0,
-      "class": "identity",
-      "inset": 0.5,
-      "note": "Official GitHub Octicon (git-pull-request-closed-24), inset 0.5. Replaces the CAN-4423 gap decision conversion_path_off."
+      "class": "direct",
+      "note": "Lucide git-pull-request-closed, 2px stroke; regular 20px, compact 14px. Replaces the Octicon git-pull-request-closed so Git states match the rest of the Lucide set (2026-11-03)."
     },
     "reviewFilled": {
       "source": "lucide",
@@ -1775,6 +1763,13 @@
       "class": "direct",
       "note": "Lucide tag, 2px stroke. Replaces sell; regular 20px, compact 14px."
     },
+    "target": {
+      "source": "lucide",
+      "name": "target",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide target, 2px stroke. Operation entries name the intended outcome; regular 20px, compact 14px."
+    },
     "textIndentLeft": {
       "source": "lucide",
       "name": "indent-increase",
@@ -1944,6 +1939,13 @@
       "fill": 0,
       "class": "identity",
       "note": "Repository logo; OpenCode app icon from https://opencode.ai/favicon.svg."
+    },
+    "watching": {
+      "source": "lucide",
+      "name": "radio",
+      "fill": 0,
+      "class": "direct",
+      "note": "Approved Watching glyph: radio broadcast; paired with scan-eye for Being watched."
     }
   }
 }

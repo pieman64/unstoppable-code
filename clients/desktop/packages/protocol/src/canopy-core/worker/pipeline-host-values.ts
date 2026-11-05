@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { CODEX_SPEEDS } from '../../automations';
 import { THINKING_LEVELS } from '../../thinking';
 
 /*
@@ -81,14 +82,55 @@ export const WorkerPipelinePromptReferenceSchema = z.discriminatedUnion(
   ],
 );
 
+const refs = <Shape extends z.ZodRawShape>(
+  shape: Shape,
+): z.ZodArray<z.ZodObject<Shape, z.core.$strict>> =>
+  z.array(z.strictObject(shape)).max(1024);
+
+/**
+ * Local plugin selections (`ChatTabPluginSelections`) as the step parser
+ * normalizes them: legacy `bundleIds` already merged into `collectionIds`.
+ */
+export const WorkerPipelinePluginSelectionsSchema = z.strictObject({
+  collectionIds: z.array(name).max(1024),
+  skillRefs: refs({ sourceId: name, skillName: name }),
+  pluginRefs: refs({ marketplaceId: name, pluginName: name }),
+  mcpServerRefs: refs({ serverId: name, configId: name }).optional(),
+  mcpHttpAuthPreferences: refs({
+    target: z.discriminatedUnion('kind', [
+      z.strictObject({
+        kind: z.literal('standalone'),
+        serverId: name,
+        configId: name,
+      }),
+      z.strictObject({
+        kind: z.literal('plugin'),
+        marketplaceId: name,
+        pluginName: name,
+        serverName: name,
+      }),
+    ]),
+    handler: z.enum(['canopy', 'provider', 'account']),
+  }).optional(),
+  unresolvedCapabilities: refs({
+    kind: z.enum(['plugin', 'mcp', 'skill']),
+    sourceId: name,
+    catalogId: name,
+    name,
+  }).optional(),
+});
+
 /** A send's per-turn settings; `model` is already resolved from its alias. */
 export const WorkerPipelineSendSettingsSchema = z.strictObject({
   model: name.optional(),
   thinkingEffort: z.enum(THINKING_LEVELS).optional(),
   fastMode: z.boolean().optional(),
+  /** The Codex speed, Ultra fast included; never with `fastMode`. */
+  speed: z.enum(CODEX_SPEEDS).optional(),
   planMode: z.boolean().optional(),
   approvalMode: z.enum(['ask', 'auto', 'full-access']).optional(),
   plugins: z.array(WorkerPipelinePluginRefSchema).max(256).optional(),
+  pluginSelections: WorkerPipelinePluginSelectionsSchema.optional(),
   interfaceMode: z.enum(['canopy', 'claude-code', 'auto']).optional(),
 });
 

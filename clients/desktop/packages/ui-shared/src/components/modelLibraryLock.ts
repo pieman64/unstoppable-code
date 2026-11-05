@@ -50,7 +50,7 @@ export function modelLibraryUnlockLabel(
   }
 }
 
-const PURCHASE_SCOPE_BODY = `Free daily credits don't unlock advanced models. Purchase some AI Credits (minimum $${BILLING_TOP_UP_MIN_USD}) to unlock Sonnet, Opus, Fable and more.`;
+const PURCHASE_SCOPE_BODY = `Purchase some AI Credits (minimum $${BILLING_TOP_UP_MIN_USD}) to unlock Sonnet, Opus, Fable and more.`;
 
 /**
  * Recovery copy. "Advanced models", never "every model": provider, policy, and

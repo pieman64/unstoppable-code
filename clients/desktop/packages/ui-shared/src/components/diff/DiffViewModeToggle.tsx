@@ -12,8 +12,6 @@ export interface DiffViewModeToggleProps {
   value: DiffViewMode;
   /** Callback fired when the user picks a different mode. */
   onChange: (next: DiffViewMode) => void;
-  /** Optional override for the wrapper class. */
-  className?: string;
   /** Test ID hook for automation. */
   dataTestId?: string;
 }
@@ -24,13 +22,12 @@ const MODES: { value: DiffViewMode; label: string }[] = [
 ];
 
 /**
- * Pill-shaped two-button toggle for switching between unified and split diff
- * view modes. Pure display: parent owns the dispatch.
+ * Segmented toggle for switching between unified and split diff view modes.
+ * Pure display: parent owns the dispatch.
  */
 export function DiffViewModeToggle({
   value,
   onChange,
-  className,
   dataTestId,
 }: DiffViewModeToggleProps): JSX.Element {
   return (
@@ -38,7 +35,7 @@ export function DiffViewModeToggle({
       value={value}
       onChange={onChange}
       options={MODES}
-      className={className}
+      label="Diff layout"
       dataTestId={dataTestId}
     />
   );

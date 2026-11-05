@@ -1,9 +1,6 @@
-import { useLayoutEffect, useRef, useState, type JSX } from 'react';
-import { createPortal } from 'react-dom';
-import {
-  getInitialBadgePopoverPosition,
-  getMeasuredBadgePopoverPosition,
-} from './ChatPreviewPopover';
+import type { JSX } from 'react';
+import { BADGE_HOVER_CARD_SURFACE } from './ChatPreviewPopover';
+import { RichHoverCard } from './RichHoverTooltip';
 import type { WorktreeTerminalStatus } from './WorktreeRow';
 
 function terminalStatusDisplayLabel(status: WorktreeTerminalStatus): string {
@@ -38,33 +35,15 @@ export function TerminalStatusPopover({
   anchorRect,
   rows,
   status,
-}: TerminalStatusPopoverProps): JSX.Element {
-  const popoverRef = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState<{ top: number; left: number }>(
-    getInitialBadgePopoverPosition(anchorRect),
-  );
-
-  useLayoutEffect((): void => {
-    const el = popoverRef.current;
-    if (!el) return;
-
-    setPosition(
-      getMeasuredBadgePopoverPosition(
-        anchorRect,
-        el.offsetHeight,
-        el.offsetWidth,
-      ),
-    );
-  }, [anchorRect]);
-
+}: TerminalStatusPopoverProps): JSX.Element | null {
   const statusLabel = terminalStatusDisplayLabel(status);
 
-  return createPortal(
-    <div
-      ref={popoverRef}
-      className="pointer-events-none fixed z-tooltip min-w-40 max-w-65 rounded-lg bg-popover px-3 py-2 shadow-lg"
-      style={{ top: position.top, left: position.left }}
-      data-testid="terminal-status-popover"
+  return (
+    <RichHoverCard
+      anchorRect={anchorRect}
+      dataTestId="terminal-status-popover"
+      {...BADGE_HOVER_CARD_SURFACE}
+      surfaceClassName="min-w-40 max-w-65"
     >
       <div className="mb-1 text-3xs font-semibold fg-secondary">
         Terminals {statusLabel}
@@ -92,7 +71,6 @@ export function TerminalStatusPopover({
           ))}
         </div>
       )}
-    </div>,
-    document.body,
+    </RichHoverCard>
   );
 }

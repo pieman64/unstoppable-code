@@ -24,6 +24,7 @@ import {
   rangesToIndices,
   splitMatchSegments,
 } from '@canopy/ui-shared';
+import { ListRow } from '@canopy/ui-shared/components';
 import { WORKTREE_STATUS_META } from '@/lib/worktree-status';
 import { AgentProviderIcon } from '@/lib/providerUi';
 import type { UiAgentProvider } from '@/lib/providerLabels';
@@ -94,33 +95,82 @@ function PaletteResultRowInner({
       : null
     : null;
 
+  const subtitleClassName =
+    item.subtitleMatchRanges || item.subtitleReplayBlocked
+      ? POSTHOG_REPLAY_BLOCK_CLASS
+      : item.subtitleReplayMasked
+        ? POSTHOG_REPLAY_MASK_CLASS
+        : undefined;
+  const hasTrailing =
+    Boolean(item.statusBadge) ||
+    Boolean(item.shortcut) ||
+    item.timestamp !== undefined;
+
   return (
     <li
       ref={(node): void => registerRef(index, node)}
       data-palette-kind={item.kind}
     >
-      <button
-        type="button"
+      <ListRow
         role="option"
         aria-selected={isSelected}
+        selected={isSelected}
         data-testid={commandTestId}
         onMouseEnter={(): void => onHover(index)}
         onClick={(): void => onActivate(item)}
-        className={`flex w-full items-center gap-3 px-4 py-2 text-left transition-colors ${
-          isSelected
-            ? 'bg-accent-subtle fg-accent'
-            : 'fg-primary hover:bg-secondary'
-        }`}
-      >
-        <span className="flex shrink-0 items-center gap-1.5 fg-secondary">
+        icon={
           <Icon
             className="h-4 w-4"
             data-testid={`command-palette-kind-${item.kind}`}
             aria-hidden
           />
+        }
+        description={
+          item.subtitle ? (
+            // A tier-2 content snippet (`subtitleMatchRanges`) quotes chat
+            // transcript or plan text, and a flagged subtitle quotes a
+            // prompt: both are blocked in session replay.
+            <span className={subtitleClassName}>
+              {subtitleSegments ? (
+                <HighlightedSegments segments={subtitleSegments} />
+              ) : (
+                item.subtitle
+              )}
+            </span>
+          ) : undefined
+        }
+        trailing={
+          hasTrailing ? (
+            <span className="flex shrink-0 items-center gap-2">
+              {item.statusBadge && (
+                <span
+                  data-testid="command-palette-status-badge"
+                  className="rounded-full bg-secondary px-2 py-0.5 text-3xs fg-secondary"
+                >
+                  {item.statusBadge}
+                </span>
+              )}
+              {item.shortcut && (
+                <span
+                  data-testid="command-palette-shortcut"
+                  className="whitespace-nowrap tabular-nums fg-quaternary"
+                >
+                  {item.shortcut}
+                </span>
+              )}
+              {item.timestamp !== undefined && (
+                <span className="text-2xs fg-secondary">
+                  {formatRelativeTime(item.timestamp)}
+                </span>
+              )}
+            </span>
+          ) : undefined
+        }
+      >
+        <span className="flex min-w-0 items-center gap-2">
           {dotClass && (
             <span
-              className={`h-2.5 w-2.5 rounded-full border ${dotClass}`}
+              className={`h-2.5 w-2.5 shrink-0 rounded-full border ${dotClass}`}
               data-testid="command-palette-worktree-status"
               aria-hidden
             />
@@ -128,78 +178,31 @@ function PaletteResultRowInner({
           {provider && (
             <AgentProviderIcon
               provider={provider}
-              className="h-4 w-4"
+              className="h-4 w-4 shrink-0 fg-secondary"
               data-testid={`command-palette-provider-${provider}`}
               aria-hidden
             />
           )}
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="flex items-center gap-2">
-            <span
-              className={
-                item.titleReplayMasked
-                  ? `${POSTHOG_REPLAY_MASK_CLASS} truncate text-s font-medium`
-                  : 'truncate text-s font-medium'
-              }
-            >
-              <HighlightedSegments segments={titleSegments} />
-            </span>
-            {item.archived && (
-              <span
-                data-testid="command-palette-archive-badge"
-                data-archive-state={item.archiveState ?? 'archived'}
-                className="shrink-0 rounded-full bg-secondary px-1.5 py-0.5 text-3xs fg-secondary"
-              >
-                {item.archiveState === 'deleted' ? 'Deleted' : 'Archived'}
-              </span>
-            )}
+          <span
+            className={
+              item.titleReplayMasked
+                ? `${POSTHOG_REPLAY_MASK_CLASS} min-w-0 truncate`
+                : 'min-w-0 truncate'
+            }
+          >
+            <HighlightedSegments segments={titleSegments} />
           </span>
-          {item.subtitle && (
+          {item.archived && (
             <span
-              // A tier-2 content snippet (`subtitleMatchRanges`) quotes chat
-              // transcript or plan text, and a flagged subtitle quotes a
-              // prompt: both are blocked in session replay.
-              className={
-                item.subtitleMatchRanges || item.subtitleReplayBlocked
-                  ? `${POSTHOG_REPLAY_BLOCK_CLASS} mt-0.5 block truncate text-xs fg-secondary`
-                  : item.subtitleReplayMasked
-                    ? `${POSTHOG_REPLAY_MASK_CLASS} mt-0.5 block truncate text-xs fg-secondary`
-                    : 'mt-0.5 block truncate text-xs fg-secondary'
-              }
+              data-testid="command-palette-archive-badge"
+              data-archive-state={item.archiveState ?? 'archived'}
+              className="shrink-0 rounded-full bg-secondary px-1.5 py-0.5 text-3xs fg-secondary"
             >
-              {subtitleSegments ? (
-                <HighlightedSegments segments={subtitleSegments} />
-              ) : (
-                item.subtitle
-              )}
+              {item.archiveState === 'deleted' ? 'Deleted' : 'Archived'}
             </span>
           )}
         </span>
-        <span className="flex shrink-0 items-center gap-2">
-          {item.statusBadge && (
-            <span
-              data-testid="command-palette-status-badge"
-              className="rounded-full bg-secondary px-2 py-0.5 text-3xs fg-secondary"
-            >
-              {item.statusBadge}
-            </span>
-          )}
-          {item.shortcut && (
-            <span
-              data-testid="command-palette-shortcut"
-              className="text-xs whitespace-nowrap tabular-nums fg-quaternary"
-            >
-              {item.shortcut}
-            </span>
-          )}
-          {item.timestamp !== undefined && (
-            <span className="text-2xs fg-secondary">
-              {formatRelativeTime(item.timestamp)}
-            </span>
-          )}
-        </span>
-      </button>
+      </ListRow>
     </li>
   );
 }

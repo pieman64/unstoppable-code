@@ -1,7 +1,4 @@
-import {
-  dailyFreeCreditsName,
-  dailyFreeCreditsTitle,
-} from './dailyFreeCredits';
+import { AI_CREDITS_GUEST_PURCHASE_LABEL } from './aiCreditsPurchaseCopy';
 import { MODEL_LIBRARY_UNLOCK_COPY } from './modelLibraryLock';
 
 /**
@@ -14,31 +11,6 @@ export const GUEST_WORK_PRESERVED_COPY =
 
 /** The guest model gate's dismiss label: a declined offer, not a cancel. */
 export const GUEST_MODEL_GATE_DISMISS_COPY = 'Not now';
-
-/**
- * How the guest reaches the gate's fallback model.
- *
- * `now` — the model is usable as things stand.
- * `daily-credits` — the guest declined free daily AI Credits, and the fallback
- * action turns them on before selecting the model.
- */
-export type GuestModelFallbackAccess = 'now' | 'daily-credits';
-
-/**
- * CAN-5211 — the guest gate's status lines for the `daily-credits` fallback.
- * The saved-state lines are shown only once the preference save succeeded,
- * and none of them promises when credits arrive.
- */
-const GRANT_NAME = dailyFreeCreditsName('AI Credits');
-const GRANT_TITLE = dailyFreeCreditsTitle('AI Credits');
-
-export const GUEST_MODEL_GATE_DAILY_CREDITS_COPY = {
-  saveFailed: `Couldn't turn on ${GRANT_NAME}. Try again.`,
-  saveUncertain: `Couldn't confirm whether ${GRANT_NAME} are on. Check again.`,
-  savedRefreshFailed: `${GRANT_TITLE} are on, but we couldn't check your balance. Try again.`,
-  savedNoCoverage: `${GRANT_TITLE} are on, but no credits are available right now.`,
-  recheckAction: 'Check again',
-} as const;
 
 export interface GuestModelGateCopyInput {
   /** Display label of the gated model the guest picked. */
@@ -55,9 +27,16 @@ export interface GuestModelGateCopyInput {
    * one value so neither can appear without the other.
    */
   readonly fallbackLabel?: string;
-  /** How the fallback is reached. Defaults to `now`; ignored without a label. */
-  readonly fallbackAccess?: GuestModelFallbackAccess;
+  /**
+   * CAN-4769 — web chat is paid-only, so the web gate also names the desktop
+   * app with the visitor's own subscription. Desktop omits it.
+   */
+  readonly subscriptionAlternative?: boolean;
 }
+
+/** The sentence `subscriptionAlternative` appends to the gate body. */
+export const GUEST_MODEL_GATE_SUBSCRIPTION_ALTERNATIVE_COPY =
+  'Or use the desktop app with your Claude or ChatGPT subscription.';
 
 export interface GuestModelGateCopy {
   readonly title: string;
@@ -74,34 +53,33 @@ export interface GuestModelGateCopy {
  * The plain gate says the account is free and, when the host can select one,
  * names the guest model available right now. The purchase variant names both
  * requirements up front, because signing in alone does not unlock that model,
- * and its action leads with the purchase: hosts route it through sign-in
- * straight to checkout. It may still offer the free alternative.
+ * and its action says the guest signs in to buy: hosts route it through
+ * sign-in straight to checkout. It may still offer a guest model that is
+ * usable right now.
  *
  * "Free" describes the account and the guest-allowed model. It never claims
- * the gated model is free to run. A `daily-credits` fallback says the guest
- * model runs on free daily AI Credits instead of claiming it works right now.
+ * the gated model is free to run.
  */
 export function guestModelGateCopy({
   modelLabel,
   appName,
   access = 'needs_sign_in',
   fallbackLabel,
-  fallbackAccess = 'now',
+  subscriptionAlternative = false,
 }: GuestModelGateCopyInput): GuestModelGateCopy {
+  const withAlternative = (body: string): string =>
+    subscriptionAlternative
+      ? `${body} ${GUEST_MODEL_GATE_SUBSCRIPTION_ALTERNATIVE_COPY}`
+      : body;
   // The sentence and the action come from one value, so neither can appear
   // without the other.
   const fallback =
     fallbackLabel === undefined
       ? undefined
-      : fallbackAccess === 'daily-credits'
-        ? {
-            sentence: `As a guest you can use ${fallbackLabel} with ${GRANT_NAME}.`,
-            action: `Use ${fallbackLabel} with ${GRANT_NAME}`,
-          }
-        : {
-            sentence: `As a guest you can use ${fallbackLabel} right now.`,
-            action: `Use ${fallbackLabel} (free)`,
-          };
+      : {
+          sentence: `As a guest you can use ${fallbackLabel} right now.`,
+          action: `Use ${fallbackLabel} (free)`,
+        };
   const withFallback =
     fallback === undefined ? {} : { fallbackAction: fallback.action };
   const fallbackSentence = fallback?.sentence;
@@ -110,11 +88,12 @@ export function guestModelGateCopy({
     const requirement = `Using ${modelLabel} requires a free ${appName} account and a purchase of AI Credits.`;
     return {
       title: MODEL_LIBRARY_UNLOCK_COPY.title,
-      body:
+      body: withAlternative(
         fallbackSentence === undefined
           ? requirement
           : `${requirement} ${fallbackSentence}`,
-      signInAction: MODEL_LIBRARY_UNLOCK_COPY.purchaseAction,
+      ),
+      signInAction: AI_CREDITS_GUEST_PURCHASE_LABEL,
       ...withFallback,
       dismissAction: MODEL_LIBRARY_UNLOCK_COPY.dismissAction,
     };
@@ -123,10 +102,11 @@ export function guestModelGateCopy({
   const accountSentence = `${modelLabel} needs a free ${appName} account.`;
   return {
     title: `Sign in free to use ${modelLabel}`,
-    body:
+    body: withAlternative(
       fallbackSentence === undefined
         ? `${accountSentence} ${GUEST_WORK_PRESERVED_COPY}`
         : `${accountSentence} ${fallbackSentence}`,
+    ),
     signInAction: `Sign in to use ${modelLabel}`,
     ...withFallback,
     dismissAction: GUEST_MODEL_GATE_DISMISS_COPY,

@@ -6,6 +6,7 @@ import {
   type JSX,
   type ReactNode,
 } from 'react';
+import { Button, type ButtonVariant } from './Button';
 import { Tooltip } from './Tooltip';
 
 export type HeaderActionButtonTone =
@@ -25,16 +26,15 @@ interface HeaderActionButtonBaseProps extends ButtonHTMLAttributes<HTMLButtonEle
    */
   groupHover?: boolean;
   /**
-   * Fade to 80% while disabled instead of only dropping pointer interaction,
-   * for a control that stays in place while its action runs (Refresh).
+   * Disabled, keep the tone's ink at 80% instead of the disabled ink, for a
+   * control that stays in place while its action runs (Refresh).
    */
   quietWhenDisabled?: boolean;
   /**
    * How pressed and disabled states read. `default` keeps the established
    * look. `toolbar` (the early-access browser address bar) gives a pressed
-   * neutral toggle the hover surface and primary ink, dims a disabled
-   * control to the disabled ink, and drops a disabled icon control's name
-   * tooltip; an explicit `tooltipLabel` or `title` still shows.
+   * toggle its hover look and drops a disabled icon control's name tooltip;
+   * an explicit `tooltipLabel` or `title` still shows.
    */
   stateStyle?: HeaderActionButtonStateStyle;
   /**
@@ -47,7 +47,7 @@ interface HeaderActionButtonBaseProps extends ButtonHTMLAttributes<HTMLButtonEle
 export type HeaderActionButtonProps = HeaderActionButtonBaseProps &
   (
     | {
-        /** Render a square icon-only action. */
+        /** Render a circular icon-only action. */
         iconOnly: true;
         /** Accessible name required for icon-only controls. */
         'aria-label': string;
@@ -68,41 +68,20 @@ export type HeaderActionButtonStateStyle = 'default' | 'toolbar';
 export const HeaderActionDefaultToneContext =
   createContext<HeaderActionButtonTone>('accent');
 
-const BASE_CLASS_NAME =
-  "electron-no-drag focus-ring relative inline-flex h-7 shrink-0 select-none items-center justify-center gap-1.5 whitespace-nowrap rounded-md text-xs font-normal transition-[opacity,transform,scale] duration-150 before:absolute before:inset-x-0 before:content-[''] active:scale-97 disabled:pointer-events-none";
-
-const TONE_CLASS_NAMES: Record<HeaderActionButtonTone, string> = {
-  accent: 'bg-transparent fg-accent enabled:hover:bg-accent-subtle',
-  neutral:
-    'bg-transparent fg-secondary enabled:hover:bg-subtle enabled:hover:fg-primary',
-  warning: 'bg-transparent fg-warning enabled:hover:bg-warning-subtle',
+/** Each tone is a quiet `Button` variant: ink at rest, a tinted hover. */
+const TONE_VARIANTS: Record<HeaderActionButtonTone, ButtonVariant> = {
+  accent: 'ghost-accent',
+  neutral: 'ghost-overlay',
+  warning: 'ghost-warning',
   /** Irreversible or trash-bound actions (Delete permanently, Empty trash). */
-  destructive:
-    'bg-transparent fg-destructive enabled:hover:bg-destructive-subtle',
+  destructive: 'ghost-destructive',
 };
-
-const GROUP_HOVER_CLASS_NAMES: Record<HeaderActionButtonTone, string> = {
-  accent: 'enabled:group-hover/gitaction:bg-accent-subtle',
-  neutral: 'enabled:group-hover/gitaction:bg-subtle',
-  warning: 'enabled:group-hover/gitaction:bg-warning-subtle',
-  destructive: 'enabled:group-hover/gitaction:bg-destructive-subtle',
-};
-
-/** `toolbar` state classes; a pressed toggle keeps its hover look. */
-const TOOLBAR_PRESSED_CLASS_NAMES: Record<HeaderActionButtonTone, string> = {
-  accent: '',
-  neutral: 'aria-pressed:bg-subtle aria-pressed:fg-primary',
-  warning: '',
-  destructive: '',
-};
-
-const LABEL_CLASS_NAME = 'px-2.5 pointer-coarse:before:-inset-y-2';
-const ICON_ONLY_CLASS_NAME =
-  'w-7 px-0 pointer-coarse:before:-inset-x-2 pointer-coarse:before:-inset-y-2';
 
 /**
- * Compact action primitive shared by worktree headers and activity-card
- * controls. Its geometry is the established Create PR button shell.
+ * Compact action shared by worktree headers and activity-card controls: the
+ * `compact` `Button` (28px capsule, 13px label) in the tone's quiet variant,
+ * with a shared tooltip. Under the desktop window's drag region, so it is
+ * `electron-no-drag`.
  */
 export const HeaderActionButton = forwardRef<
   HTMLButtonElement,
@@ -113,49 +92,68 @@ export const HeaderActionButton = forwardRef<
     groupHover = false,
     quietWhenDisabled = false,
     stateStyle = 'default',
-    iconOnly = false,
-    type = 'button',
+    iconOnly,
     className = '',
     tooltipLabel,
     title,
     'aria-label': ariaLabel,
-    ...props
+    children,
+    ...buttonProps
   },
   ref,
 ): JSX.Element {
   const defaultTone = useContext(HeaderActionDefaultToneContext);
   const tone = toneProp ?? defaultTone;
   const toolbarStates = stateStyle === 'toolbar';
-  const pressedClassName = toolbarStates
-    ? TOOLBAR_PRESSED_CLASS_NAMES[tone]
-    : '';
-  const disabledClassName = quietWhenDisabled
-    ? ' disabled:opacity-80'
-    : toolbarStates
-      ? ' disabled:fg-disabled'
-      : '';
+  const states = {
+    ...buttonProps,
+    ref,
+    variant: TONE_VARIANTS[tone],
+    groupHover,
+    // A pressed toolbar toggle keeps its hover look; a disabled control
+    // already takes the disabled ink unless it is quiet.
+    pressedHover: toolbarStates,
+    quietWhenDisabled,
+  };
+  // A header action never wraps its label when the row squeezes it (a
+  // wrapped "Create PR" squashed its icon). `contents` keeps the icon and
+  // the label as the button's own flex items, so its gap still applies.
+  const label = <span className="contents whitespace-nowrap">{children}</span>;
   // `title` feeds the shared rich tooltip only — never the DOM: a native
   // title lags on macOS and would stack a second tooltip on the same control.
-  const control = (
-    <button
-      ref={ref}
-      type={type}
-      data-header-action-button="true"
-      aria-label={ariaLabel}
-      className={`${BASE_CLASS_NAME} ${TONE_CLASS_NAMES[tone]}${pressedClassName ? ` ${pressedClassName}` : ''}${groupHover ? ` ${GROUP_HOVER_CLASS_NAMES[tone]}` : ''}${disabledClassName} ${iconOnly ? ICON_ONLY_CLASS_NAME : LABEL_CLASS_NAME} ${className}`}
-      {...props}
-    />
-  );
+  const control =
+    iconOnly === true ? (
+      <Button
+        {...states}
+        size="compact"
+        iconOnly
+        aria-label={ariaLabel}
+        data-header-action-button="true"
+        className={`electron-no-drag ${className}`}
+      >
+        {label}
+      </Button>
+    ) : (
+      <Button
+        {...states}
+        size="compact"
+        aria-label={ariaLabel}
+        data-header-action-button="true"
+        className={`electron-no-drag ${className}`}
+      >
+        {label}
+      </Button>
+    );
 
   // In the toolbar style a disabled icon control has nothing to explain by
   // name, so it shows no name tooltip.
   const showsNameTooltip =
-    iconOnly && !(toolbarStates && props.disabled === true);
-  const label =
+    iconOnly === true && !(toolbarStates && buttonProps.disabled === true);
+  const tooltip =
     tooltipLabel ?? title ?? (showsNameTooltip ? ariaLabel : undefined);
-  if (label === undefined) return control;
+  if (tooltip === undefined) return control;
 
-  return <Tooltip label={label}>{control}</Tooltip>;
+  return <Tooltip label={tooltip}>{control}</Tooltip>;
 });
 
 HeaderActionButton.displayName = 'HeaderActionButton';

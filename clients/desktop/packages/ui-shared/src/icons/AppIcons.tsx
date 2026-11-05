@@ -118,6 +118,7 @@ import {
   IconEmail2Check,
   IconExclamationTriangle,
   IconExpand45,
+  IconBroadcast,
   IconEyeOpen,
   IconEyeSlash,
   IconEyeSparkle,
@@ -232,6 +233,7 @@ import {
   IconSummary,
   IconSun,
   IconTag,
+  IconTarget,
   IconTextIndentLeft,
   IconTextIndentRight,
   IconTrashCan,
@@ -243,6 +245,7 @@ import {
   IconUserGroup,
   IconVibeCoding,
   IconWarningSign,
+  IconWatching,
   IconWebhooks,
   IconWorkflows,
   IconDiscord,
@@ -417,8 +420,9 @@ export const AgentIcon = /* @__PURE__ */ createAppIcon(IconRobot);
 // as Pipeline Advisor and the Ledger sidecar keep the bot.
 export const AppAdvisorIcon = /* @__PURE__ */ createAppIcon(IconOrbit);
 export const AgentAssistantIcon = /* @__PURE__ */ createAppIcon(IconRobot2);
+/** The watcher: a chat that waits on something and acts when it changes. */
 export const AppAdvisorWatcherIcon =
-  /* @__PURE__ */ createAppIcon(IconEyeSparkle);
+  /* @__PURE__ */ createAppIcon(IconBroadcast);
 export const ApplePlatformIcon = /* @__PURE__ */ createAppIcon(IconApple);
 export const ArchiveIcon = /* @__PURE__ */ createAppIcon(IconArchive);
 export const ArchiveBoxIcon = /* @__PURE__ */ createAppIcon(IconArchive1);
@@ -666,7 +670,7 @@ export const SnoozeIcon = /* @__PURE__ */ createAppIcon(IconClockSnooze);
 export const TimeslotIcon = /* @__PURE__ */ createAppIcon(IconClockTimeslot);
 export const SplitPrIcon = /* @__PURE__ */ createAppIcon(IconArrowSplitUp);
 export const SplitIcon = /* @__PURE__ */ createAppIcon(IconSplit);
-/** Cross-repo / fork PR badge — official Octicon `repo-forked`. */
+/** Cross-repo / fork PR badge — Lucide `git-fork`. */
 export const GitForkIcon = /* @__PURE__ */ createAppIcon(IconGitFork);
 /** Lucide split and git-branch, for rows of Lucide icons (the clean chat look's reply actions). */
 export const ForkSplitIcon = /* @__PURE__ */ createAppIcon(IconForkSplit);
@@ -685,6 +689,7 @@ export const AttachmentIcon = /* @__PURE__ */ createAppIcon(IconPageAttachment);
 export const SummaryIcon = /* @__PURE__ */ createAppIcon(IconSummary);
 export const SyncIcon = /* @__PURE__ */ createAppIcon(IconArrowRotateLeftRight);
 export const TaskIcon = /* @__PURE__ */ createAppIcon(IconSquareChecklist);
+export const TargetIcon = /* @__PURE__ */ createAppIcon(IconTarget);
 export const TasksIcon = /* @__PURE__ */ createAppIcon(IconPlanning);
 export const TemporaryMultiRepoIcon =
   /* @__PURE__ */ createAppIcon(IconFoldersDashed);
@@ -711,7 +716,10 @@ export const UnarchiveIcon = /* @__PURE__ */ createAppIcon(IconUnarchive);
 export const WarningIcon = /* @__PURE__ */ createAppIcon(
   IconExclamationTriangle,
 );
-export const WatcherEyeIcon = /* @__PURE__ */ createAppIcon(IconEyeOpen);
+export const WatchingIcon = /* @__PURE__ */ createAppIcon(IconWatching);
+export const BeingWatchedIcon = /* @__PURE__ */ createAppIcon(IconEyeSparkle);
+/** What a watcher follows. The plain eye is reserved for show/hide. */
+export const WatcherEyeIcon = /* @__PURE__ */ createAppIcon(IconEyeSparkle);
 export const WrenchIcon = /* @__PURE__ */ createAppIcon(IconBuild);
 
 export const CameraIcon = /* @__PURE__ */ createAppIcon(IconCamera1);

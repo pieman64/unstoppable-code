@@ -256,7 +256,12 @@ import { resetChatToPoint } from '../lib/chat-reset-to-point';
 import { assertWritableScope } from '../lib/read-only-scope';
 import { assertChatScopeAcceptsTurns } from '../lib/retired-chat-scope-guard';
 import { buildSubmittedMessageText } from '../lib/chat-submitted-message';
-import { beginChatAutoRouting, stopChatTurn } from '../lib/chat-turn-stop';
+import {
+  beginChatAutoRouting,
+  captureChatTurnStopWithTurn,
+  stopChatTurn,
+} from '../lib/chat-turn-stop';
+import type { ChatTurnStopContext } from '../lib/chat-turn-cancel';
 import {
   cancelTransientRetryForChat,
   getTransientRetryStateSnapshot,
@@ -1437,6 +1442,80 @@ async function rememberApprovalDefaultForSurface(
   } finally {
     endPendingWrite();
   }
+}
+
+/** Runtime statuses whose active turn Stop can end. */
+const ACTIVE_TURN_STATUSES: ReadonlySet<string> = new Set([
+  'starting',
+  'streaming',
+  'awaiting_input',
+  'completing',
+]);
+
+/**
+ * The user's Stop: settles the chat's turn and broadcasts the cancellation.
+ * With `expectedUserMessageId`, stops only while that is the active turn and
+ * answers null otherwise (`core.chat.turn.cancel`, CAN-5485).
+ */
+export async function stopChatForUser(
+  req: ChatCancelRequest,
+  getWindow: () => BrowserWindow | null,
+  expectedUserMessageId?: string,
+): Promise<ChatCancelResult | null> {
+  assertWritableScope(req.projectId);
+  const stateBeforeCancel = await getChatStateService()
+    .getState({ projectId: req.projectId, worktreeId: req.worktreeId })
+    .catch(() => null);
+  const runtimeBeforeCancel = stateBeforeCancel?.runtimeByChatId[req.chatId];
+  // The snapshot above is already stale: check the turn the Stop captures
+  // now, and stop with that capture, so a newer turn is never stopped.
+  let captured: ChatTurnStopContext | undefined;
+  if (expectedUserMessageId !== undefined) {
+    const stop = captureChatTurnStopWithTurn(req);
+    if (stop.userMessageId !== expectedUserMessageId) return null;
+    captured = stop.context;
+  }
+  const tabBeforeCancel = stateBeforeCancel?.tabsFile.tabs.find(
+    (tab) => tab.id === req.chatId,
+  );
+  // Cowork and managed Claude terminal turns have separate event-routing
+  // lifecycles and cannot use the native worktree resume coordinator.
+  const resumableUserMessageId =
+    runtimeBeforeCancel?.activeTurn?.userMessageId &&
+    (expectedUserMessageId === undefined ||
+      runtimeBeforeCancel.activeTurn.userMessageId === expectedUserMessageId) &&
+    ACTIVE_TURN_STATUSES.has(runtimeBeforeCancel.status) &&
+    runtimeBeforeCancel.queuedMessageIds.length === 0 &&
+    Boolean(tabBeforeCancel?.sdkSessionId) &&
+    !isCoworkWorkspace(req.projectId) &&
+    !isTerminalBackedInterfaceMode(tabBeforeCancel?.interfaceMode) &&
+    req.projectId !== APP_ADVISOR_PROJECT_ID &&
+    req.projectId !== PIPELINE_EDITOR_PROJECT_ID
+      ? runtimeBeforeCancel.activeTurn.userMessageId
+      : undefined;
+  const resumeService = getStoppedTurnResumeService();
+  const pendingResumeOffer = resumableUserMessageId
+    ? resumeService.beginOffer(req, resumableUserMessageId)
+    : undefined;
+  if (!pendingResumeOffer) resumeService.invalidate(req);
+  const cancelledData = await stopChatTurn(req, captured);
+  sendChatEvent(
+    getWindow(),
+    req.projectId,
+    req.worktreeId,
+    req.chatId,
+    cancelledData,
+  );
+  if (
+    resumableUserMessageId &&
+    pendingResumeOffer &&
+    resumeService.completeOffer(req, pendingResumeOffer)
+  ) {
+    return {
+      resumableTurn: { userMessageId: resumableUserMessageId },
+    };
+  }
+  return {};
 }
 
 export function registerChatHandlers(
@@ -3143,53 +3222,8 @@ export function registerChatHandlers(
   registerIpcHandler<[ChatCancelRequest], ChatCancelResult>(
     IPC_CHANNELS.chatCancel,
     async (_event, req) => {
-      assertWritableScope(req.projectId);
-      const stateBeforeCancel = await getChatStateService()
-        .getState({ projectId: req.projectId, worktreeId: req.worktreeId })
-        .catch(() => null);
-      const runtimeBeforeCancel =
-        stateBeforeCancel?.runtimeByChatId[req.chatId];
-      const tabBeforeCancel = stateBeforeCancel?.tabsFile.tabs.find(
-        (tab) => tab.id === req.chatId,
-      );
-      // Cowork and managed Claude terminal turns have separate event-routing
-      // lifecycles and cannot use the native worktree resume coordinator.
-      const resumableUserMessageId =
-        runtimeBeforeCancel?.activeTurn?.userMessageId &&
-        ['starting', 'streaming', 'awaiting_input', 'completing'].includes(
-          runtimeBeforeCancel.status,
-        ) &&
-        runtimeBeforeCancel.queuedMessageIds.length === 0 &&
-        Boolean(tabBeforeCancel?.sdkSessionId) &&
-        !isCoworkWorkspace(req.projectId) &&
-        !isTerminalBackedInterfaceMode(tabBeforeCancel?.interfaceMode) &&
-        req.projectId !== APP_ADVISOR_PROJECT_ID &&
-        req.projectId !== PIPELINE_EDITOR_PROJECT_ID
-          ? runtimeBeforeCancel.activeTurn.userMessageId
-          : undefined;
-      const resumeService = getStoppedTurnResumeService();
-      const pendingResumeOffer = resumableUserMessageId
-        ? resumeService.beginOffer(req, resumableUserMessageId)
-        : undefined;
-      if (!pendingResumeOffer) resumeService.invalidate(req);
-      const cancelledData = await stopChatTurn(req);
-      sendChatEvent(
-        getWindow(),
-        req.projectId,
-        req.worktreeId,
-        req.chatId,
-        cancelledData,
-      );
-      if (
-        resumableUserMessageId &&
-        pendingResumeOffer &&
-        resumeService.completeOffer(req, pendingResumeOffer)
-      ) {
-        return {
-          resumableTurn: { userMessageId: resumableUserMessageId },
-        };
-      }
-      return {};
+      const result = await stopChatForUser(req, getWindow);
+      return result ?? {};
     },
   );
 

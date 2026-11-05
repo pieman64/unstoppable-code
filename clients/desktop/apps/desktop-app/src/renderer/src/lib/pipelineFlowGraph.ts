@@ -62,6 +62,16 @@ export interface PipelineJobNodeData extends Record<string, unknown> {
   selected?: boolean;
   /** Set by the diagram when one of this job's steps is the active selection. */
   selectedStepIndex?: number;
+  /**
+   * The editable flow offers `Add step` under this job's steps (CAN-4319),
+   * and its height already holds that row.
+   */
+  canAddStep?: boolean;
+}
+
+export interface DefinitionFlowOptions {
+  /** The job whose block offers `Add step`: the selected one, when editable. */
+  readonly addStepJobId?: string;
 }
 
 export type PipelineJobNode = Node<PipelineJobNodeData, 'pipelineJob'>;
@@ -86,6 +96,8 @@ export const STEP_LIST_PADDING_BOTTOM = 8;
 const EMPTY_BODY_PADDING = 6;
 const RANK_SEP = 70;
 const NODE_SEP = 40;
+/** The editable flow's `Add step` row: a compact `Button`. */
+export const ADD_STEP_ROW_HEIGHT = 28;
 /** Height of one summary line inside a logical matrix node's body. */
 export const MATRIX_SUMMARY_ROW_HEIGHT = 15;
 
@@ -101,6 +113,16 @@ export function jobNodeHeight(stepCount: number): number {
     (stepCount - 1) * STEP_ROW_GAP +
     STEP_LIST_PADDING_BOTTOM
   );
+}
+
+/** A job block's height with the `Add step` row under its steps. */
+export function jobNodeHeightWithAddStep(stepCount: number): number {
+  return stepCount === 0
+    ? JOB_HEADER_HEIGHT +
+        STEP_LIST_PADDING_TOP +
+        ADD_STEP_ROW_HEIGHT +
+        STEP_LIST_PADDING_BOTTOM
+    : jobNodeHeight(stepCount) + STEP_ROW_GAP + ADD_STEP_ROW_HEIGHT;
 }
 
 /** Number of summary lines a matrix node body will render. */
@@ -303,6 +325,7 @@ export function buildDefinitionFlow(
   pipeline: Pipeline,
   jobOrder: string[],
   direction: PipelineFlowDirection = 'TB',
+  options: DefinitionFlowOptions = {},
 ): PipelineFlowResult {
   const presentJobs = jobOrder.filter((id) => pipeline.jobs[id] !== undefined);
   const nodes: RawNodeEntry[] = presentJobs.map((jobId) => {
@@ -314,15 +337,19 @@ export function buildDefinitionFlow(
       status: 'none',
     }));
     const isMatrixJob = job.strategy !== undefined;
+    const canAddStep = options.addStepJobId === jobId;
     return {
       id: jobId,
-      height: jobNodeHeight(steps.length),
+      height: canAddStep
+        ? jobNodeHeightWithAddStep(steps.length)
+        : jobNodeHeight(steps.length),
       data: {
         jobId,
         label: job.name ?? jobId,
         status: 'none',
         steps,
         ...(isMatrixJob ? { matrix: {} } : {}),
+        ...(canAddStep ? { canAddStep } : {}),
       },
     };
   });

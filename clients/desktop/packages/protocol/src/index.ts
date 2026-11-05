@@ -52,3 +52,5 @@ export * from './chat-title';
 export * from './experiments';
 
 export * from './try-it';
+
+export * from './suggestions';

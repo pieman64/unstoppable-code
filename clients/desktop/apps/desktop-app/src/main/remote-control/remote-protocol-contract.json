@@ -1,5 +1,5 @@
 {
-  "protocolVersion": 14,
+  "protocolVersion": 15,
   "tunneledChannels": [
     "account-proxy:changed",
     "account-proxy:connect",
@@ -425,6 +425,7 @@
     "ledger:entries-changed",
     "ledger:feed-get-entry",
     "ledger:feed-search",
+    "ledger:feed-work",
     "ledger:get-entry",
     "ledger:list-owners",
     "ledger:search-entries",
@@ -657,6 +658,7 @@
     "preferences:set-pipeline-disabled",
     "preferences:synced",
     "preferences:update-onboarding-tips",
+    "preferences:update-suggestions",
     "project:apply-source-changes",
     "project:delete",
     "project:save-default-plugins",

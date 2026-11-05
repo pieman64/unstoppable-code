@@ -8,10 +8,10 @@ import {
 } from '@canopy/desktop-shared/pipelines/config-paths';
 import { spawnSync } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
+import { redactMemoryContent } from '@canopy/memory-consolidation/redaction';
 import {
   readMemoryIndex,
   readRecentInboxNotes,
-  redactMemoryContent,
 } from '../../src/main/memory/local/store';
 import { renderLocalMemoryBlock } from '../../src/main/memory/local/render';
 

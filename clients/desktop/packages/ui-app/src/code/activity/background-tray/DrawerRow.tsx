@@ -16,6 +16,7 @@ import {
   DrawerInspectorAction,
   Tooltip,
   useShimmerPhase,
+  SpinnerStyleProvider,
 } from '@canopy/ui-shared/components';
 import {
   ArrowUpRightIcon,
@@ -33,8 +34,10 @@ const DETAIL_FADE_MASK =
  * instead of cutting a glyph in half. */
 function RowDetail({
   children,
+  compact = false,
 }: {
   readonly children: ReactNode;
+  readonly compact?: boolean;
 }): JSX.Element {
   const ref = useRef<HTMLSpanElement>(null);
   const [overflowing, setOverflowing] = useState(false);
@@ -55,7 +58,7 @@ function RowDetail({
   return (
     <span
       ref={ref}
-      className="min-w-0 flex-1 truncate text-xs fg-tertiary"
+      className={`min-w-0 truncate text-xs fg-tertiary ${compact ? '' : 'flex-1'}`}
       data-overflowing={overflowing ? 'true' : undefined}
       style={
         overflowing
@@ -118,7 +121,9 @@ export interface DrawerRowProps {
   readonly name: ReactNode;
   /** What the item is doing now; hidden while its inspector is open. */
   readonly detail?: ReactNode;
-  /** Elapsed time or state. */
+  /** State follows the subtitle and precedes watcher indicators. */
+  readonly status?: ReactNode;
+  /** Diff statistics or legacy elapsed time. */
   readonly trailing?: ReactNode;
   /** The row's one action, outside its toggle. */
   readonly action?: ReactNode;
@@ -157,6 +162,7 @@ export function DrawerRow({
   glyph,
   name,
   detail,
+  status,
   trailing,
   action,
   openAction,
@@ -169,6 +175,8 @@ export function DrawerRow({
 }: DrawerRowProps): JSX.Element {
   const presentation = useContext(DrawerRowPresentationContext);
   const modal = presentation === 'modal';
+  const redesigned = presentation !== 'legacy';
+  const nameId = useId();
   const navigation = presentation === 'legacy' ? undefined : openAction;
   const navigationInHeader = navigation !== undefined && (modal || !action);
   const linkRow = navigation !== undefined && !inspector && !action && !modal;
@@ -189,11 +197,27 @@ export function DrawerRow({
     action
   );
   const [animateDetails, setAnimateDetails] = useState(false);
+  const actionGroup =
+    redesigned && navigation && action ? (
+      <span className="flex items-center gap-1">
+        <Button
+          variant="ghost-overlay"
+          size="compact"
+          data-testid="background-tray-row-open"
+          onClick={navigation.onClick}
+        >
+          {navigation.label}
+        </Button>
+        {action}
+      </span>
+    ) : (
+      headerAction
+    );
   const inspectorId = useId();
   const ref = useRef<HTMLLIElement>(null);
   const open = inspector?.open === true;
   const hasFooter = Boolean(
-    inspector?.footer || (navigation && !navigationInHeader),
+    inspector?.footer || (navigation && !navigationInHeader && !redesigned),
   );
   // The clean chat look's live-step shimmer, in step with every other row.
   const shimmering = running && !open;
@@ -214,24 +238,20 @@ export function DrawerRow({
   const leading = open ? (
     // Open, the row already has the fill, so hovering the header (it closes
     // the row) lifts its ink instead.
-    <ChevronDownIcon
-      size={14}
-      aria-hidden="true"
-      className="fg-tertiary group-hover/header:fg-primary"
-    />
+    <ChevronDownIcon size={14} aria-hidden="true" className="fg-tertiary" />
   ) : inspector ? (
     <>
-      <span className="flex group-hover/header:hidden group-focus-visible/header:hidden">
+      <span className="flex group-hover/row:hidden group-focus-within/row:hidden">
         {glyph}
       </span>
-      <span className="hidden fg-primary group-hover/header:flex group-focus-visible/header:flex">
+      <span className="hidden fg-tertiary group-hover/row:flex group-focus-within/row:flex">
         <ChevronRightIcon size={14} aria-hidden="true" />
       </span>
     </>
   ) : (
     glyph
   );
-  const content = (
+  const legacyContent = (
     <>
       <span
         aria-hidden="true"
@@ -270,6 +290,49 @@ export function DrawerRow({
       )}
     </>
   );
+  const content = redesigned ? (
+    <>
+      <span
+        aria-hidden="true"
+        className="flex w-3.5 shrink-0 justify-center fg-tertiary"
+      >
+        {leading}
+      </span>
+      <span className="flex min-w-0 flex-1 items-center gap-2.5">
+        <span
+          id={nameId}
+          className={`min-w-0 truncate ${open ? 'fg-secondary' : shimmering ? 'canopy-text-shimmer-strong' : 'fg-primary'}`}
+          style={shimmerStyle}
+        >
+          {name}
+        </span>
+        {detail !== undefined && <RowDetail compact>{detail}</RowDetail>}
+        {status !== undefined && (
+          <span
+            className="inline-flex min-w-0 shrink-0 items-center gap-2.5 text-xs fg-tertiary"
+            style={{ WebkitTextFillColor: 'currentColor' }}
+            data-testid="background-tray-inline-status"
+          >
+            <span aria-hidden="true">·</span>
+            <span className="truncate">{status}</span>
+          </span>
+        )}
+        {headerAccessory && (
+          <span className="pointer-events-auto relative z-10 inline-flex shrink-0 items-center gap-2.5 text-xs fg-tertiary">
+            <span aria-hidden="true">·</span>
+            {headerAccessory}
+          </span>
+        )}
+      </span>
+      {trailing !== undefined && (
+        <span className="shrink-0 text-xs tabular-nums fg-tertiary">
+          {trailing}
+        </span>
+      )}
+    </>
+  ) : (
+    legacyContent
+  );
   // Waiting on the user, the row rests on the fill (hover steps up to
   // muted); the glyph carries the attention ink, so the fill stays neutral.
   const fill = open
@@ -278,121 +341,126 @@ export function DrawerRow({
       ? ''
       : attention
         ? 'bg-subtle hover:bg-muted'
-        : 'hover:bg-subtle';
+        : inspector || navigation || action
+          ? 'hover:bg-subtle'
+          : '';
   return (
-    <li
-      ref={ref}
-      className={`group/row flex flex-col ${modal ? 'rounded-lg' : 'rounded-drawer-row'} ${fill}`}
-      data-tray-row={rowKey}
-      data-testid={testId}
-    >
-      {/* The action ends 4px from the row's end, as from its top and bottom. */}
-      <div
-        className={`relative flex h-9 min-w-0 items-center text-s ${modal && !open ? 'rounded-lg hover:bg-subtle' : ''} ${modal && !navigationInHeader ? 'pr-3' : presentation === 'legacy' ? 'gap-3 pr-1' : 'gap-2.5 pr-1'}`}
+    <SpinnerStyleProvider value="comet">
+      <li
+        ref={ref}
+        className={`group/row flex flex-col ${modal ? 'rounded-lg' : 'rounded-drawer-row'} ${fill}`}
+        data-tray-row={rowKey}
+        data-testid={testId}
       >
-        {inspector || linkRow ? (
-          <>
-            {/* With nothing to unfold, the whole row is its way out (a pull
+        {/* The action ends 4px from the row's end, as from its top and bottom. */}
+        <div
+          className={`relative flex h-9 min-w-0 items-center text-s ${modal && !open ? 'rounded-lg hover:bg-subtle' : ''} ${modal && !navigationInHeader ? 'pr-3' : presentation === 'legacy' ? 'gap-3 pr-1' : 'gap-2.5 pr-1'}`}
+        >
+          {inspector || linkRow ? (
+            <>
+              {/* With nothing to unfold, the whole row is its way out (a pull
                 request opens on GitHub): the button lies under the row's
                 content, and controls in the row sit above it. */}
-            <button
-              type="button"
-              className={`focus-visible:outline focus-visible:outline-1 focus-visible:outline-fg-quaternary focus-visible:-outline-offset-1 outline-none ${
-                inspector
-                  ? `group/header flex h-9 min-w-0 flex-1 items-center gap-2.5 text-left ${modal ? 'rounded-lg pl-3' : 'rounded-drawer-row pl-2.75'}`
-                  : 'absolute inset-0 rounded-drawer-row'
-              }`}
-              aria-expanded={inspector ? open : undefined}
-              aria-controls={inspector && open ? inspectorId : undefined}
-              onClick={(event): void => {
-                if (!inspector) {
-                  navigation?.onClick();
-                  return;
+              <button
+                type="button"
+                className={`focus-visible:outline focus-visible:outline-1 focus-visible:outline-fg-quaternary focus-visible:-outline-offset-1 outline-none ${
+                  inspector && !redesigned
+                    ? `group/header flex h-9 min-w-0 flex-1 items-center gap-2.5 text-left ${modal ? 'rounded-lg pl-3' : 'rounded-drawer-row pl-2.75'}`
+                    : 'absolute inset-0 rounded-drawer-row'
+                }`}
+                aria-labelledby={redesigned ? nameId : undefined}
+                aria-expanded={inspector ? open : undefined}
+                aria-controls={inspector && open ? inspectorId : undefined}
+                onClick={(event): void => {
+                  if (!inspector) {
+                    navigation?.onClick();
+                    return;
+                  }
+                  setAnimateDetails(modal && event.detail > 0);
+                  inspector.onToggle();
+                }}
+                data-testid={
+                  inspector
+                    ? 'background-tray-row-toggle'
+                    : 'background-tray-row-open'
                 }
-                setAnimateDetails(modal && event.detail > 0);
-                inspector.onToggle();
-              }}
-              data-testid={
-                inspector
-                  ? 'background-tray-row-toggle'
-                  : 'background-tray-row-open'
-              }
-            >
-              {inspector ? (
-                content
-              ) : (
-                <span className="sr-only">
-                  {name}, {navigation?.label}
+              >
+                {inspector && !redesigned ? (
+                  content
+                ) : !redesigned ? (
+                  <span className="sr-only">
+                    {name}, {navigation?.label}
+                  </span>
+                ) : null}
+              </button>
+              {(!inspector || redesigned) && (
+                <div className="pointer-events-none flex h-9 min-w-0 flex-1 items-center gap-2.5 pl-2.75">
+                  {content}
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="flex h-9 min-w-0 flex-1 items-center gap-2.5 pl-2.75">
+              {content}
+            </div>
+          )}
+          {!redesigned && headerAccessory && (
+            <>
+              <span className="relative shrink-0">{headerAccessory}</span>
+              {trailing !== undefined && (
+                <span className="shrink-0 text-xs tabular-nums fg-tertiary">
+                  {trailing}
                 </span>
               )}
-            </button>
-            {!inspector && (
-              <div className="pointer-events-none flex h-9 min-w-0 flex-1 items-center gap-2.5 pl-2.75">
-                {content}
-              </div>
+            </>
+          )}
+          {/* One action column, so the times line up whichever icon action a
+            row has, or none; a labeled action (Resume) widens its own row. */}
+          {linkRow ? (
+            <span
+              aria-hidden="true"
+              className="pointer-events-none flex w-7 shrink-0 justify-center fg-tertiary"
+            >
+              {/* The whole row is the link, as View completed's is. */}
+              <ChevronRightIcon size={14} />
+            </span>
+          ) : (
+            (!modal || navigationInHeader) && (
+              <span
+                className={`relative z-10 flex shrink-0 items-center justify-end ${presentation === 'legacy' ? 'w-14' : 'min-w-7'}`}
+              >
+                {actionGroup}
+              </span>
+            )
+          )}
+        </div>
+        {open && inspector && (
+          <div
+            id={inspectorId}
+            // Indented to the name: 11px inset, 14px glyph, 10px gap.
+            className={`flex flex-col gap-2 text-s fg-tertiary ${modal ? 'px-3 pb-2' : `pl-8.75 pr-1 ${presentation === 'legacy' ? 'pb-1' : 'pb-2'}`}`}
+            data-testid="background-tray-inspector"
+          >
+            {presentation === 'legacy' && (
+              <div
+                aria-hidden="true"
+                className="mb-1 mr-9.5 border-t border-fg-quaternary"
+              />
             )}
-          </>
-        ) : (
-          <div className="flex h-9 min-w-0 flex-1 items-center gap-2.5 pl-2.75">
-            {content}
+            <InspectorReveal animate={animateDetails}>
+              {inspector.render()}
+              {hasFooter && (
+                <InspectorFooter
+                  action={navigationInHeader ? undefined : navigation}
+                >
+                  {inspector.footer}
+                </InspectorFooter>
+              )}
+            </InspectorReveal>
           </div>
         )}
-        {headerAccessory && (
-          <>
-            <span className="relative shrink-0">{headerAccessory}</span>
-            {trailing !== undefined && (
-              <span className="shrink-0 text-xs tabular-nums fg-tertiary">
-                {trailing}
-              </span>
-            )}
-          </>
-        )}
-        {/* One action column, so the times line up whichever icon action a
-            row has, or none; a labeled action (Resume) widens its own row. */}
-        {linkRow ? (
-          <span
-            aria-hidden="true"
-            className="pointer-events-none flex w-7 shrink-0 justify-center fg-tertiary group-hover/row:fg-primary"
-          >
-            {/* The whole row is the link, as View completed's is. */}
-            <ChevronRightIcon size={14} />
-          </span>
-        ) : (
-          (!modal || navigationInHeader) && (
-            <span
-              className={`flex shrink-0 items-center justify-end ${presentation === 'legacy' ? 'w-14' : 'min-w-7'}`}
-            >
-              {headerAction}
-            </span>
-          )
-        )}
-      </div>
-      {open && inspector && (
-        <div
-          id={inspectorId}
-          // Indented to the name: 11px inset, 14px glyph, 10px gap.
-          className={`flex flex-col gap-2 text-s fg-tertiary ${modal ? 'px-3 pb-2' : `pl-8.75 pr-1 ${presentation === 'legacy' ? 'pb-1' : 'pb-2'}`}`}
-          data-testid="background-tray-inspector"
-        >
-          {presentation === 'legacy' && (
-            <div
-              aria-hidden="true"
-              className="mb-1 mr-9.5 border-t border-fg-quaternary"
-            />
-          )}
-          <InspectorReveal animate={animateDetails}>
-            {inspector.render()}
-            {hasFooter && (
-              <InspectorFooter
-                action={navigationInHeader ? undefined : navigation}
-              >
-                {inspector.footer}
-              </InspectorFooter>
-            )}
-          </InspectorReveal>
-        </div>
-      )}
-    </li>
+      </li>
+    </SpinnerStyleProvider>
   );
 }
 
@@ -426,10 +494,6 @@ export function InspectorSection({
       className="flex flex-col gap-2"
       data-testid="background-tray-inspector-section"
     >
-      <div
-        aria-hidden="true"
-        className={`mb-1 border-t border-fg-quaternary ${presentation === 'modal' ? 'ml-6' : 'mr-9.5'}`}
-      />
       {children}
     </div>
   );

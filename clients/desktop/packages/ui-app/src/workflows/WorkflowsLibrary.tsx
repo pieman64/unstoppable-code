@@ -13,8 +13,8 @@ import {
   PageSearchControls,
   PageSearchFilters,
   PageSearchRow,
-  SkeletonBlock,
   SearchEmptyState,
+  Skeleton,
   SortDropdown,
   TableActionButton,
   TableActionsCell,
@@ -22,7 +22,6 @@ import {
   Tooltip,
   WorkflowLastRunText,
   pageFilter,
-  type SkeletonBarWidth,
 } from '@canopy/ui-shared/components';
 import {
   AppAdvisorIcon,
@@ -266,10 +265,7 @@ export function WorkflowsLibraryTable({
   );
 }
 
-/**
- * The Library table's column heads, shared by the table and its loading
- * skeleton so the two always line up.
- */
+/** The Library table's column heads. */
 function WorkflowsLibraryTableHead({
   compact,
 }: {
@@ -299,83 +295,129 @@ export interface WorkflowsLibraryTableSkeletonProps {
   readonly compact?: boolean;
 }
 
-/** Each row's bars, varied so the column reads as distinct workflows. */
-const SKELETON_ROWS = [
-  { key: 'first', name: '1/2', summary: '1/4', trigger: '3/5', run: '2/3' },
-  { key: 'second', name: '2/5', summary: '1/5', trigger: '1/2', run: '3/5' },
-  { key: 'third', name: '1/2', summary: '1/3', trigger: '2/3', run: '2/3' },
-  { key: 'fourth', name: '1/3', summary: '1/4', trigger: '1/2', run: '3/4' },
-  { key: 'fifth', name: '2/5', summary: '1/5', trigger: '3/5', run: '1/2' },
-] as const satisfies ReadonlyArray<{
+/** A fixed clock, so the samples' Next run never depends on the real one. */
+const SAMPLE_NOW = Date.UTC(2026, 0, 1, 12);
+const SAMPLE_HOUR_MS = 3_600_000;
+
+interface SampleWorkflow {
   readonly key: string;
-  readonly name: SkeletonBarWidth;
-  readonly summary: SkeletonBarWidth;
-  readonly trigger: SkeletonBarWidth;
-  readonly run: SkeletonBarWidth;
-}>;
+  readonly name: string;
+  readonly summary: string;
+  readonly trigger: WorkflowTriggerKind;
+  readonly triggerText: string;
+  readonly lastRunHoursAgo: number;
+  /** Absent for a workflow with no next run (a pipeline). */
+  readonly nextRunInHours?: number;
+}
+
+function sampleWorkflowRow(sample: SampleWorkflow): WorkflowLibraryRow {
+  return {
+    key: sample.key,
+    kind: sample.trigger === 'schedule' ? 'automation' : 'pipeline',
+    name: sample.name,
+    triggers: [sample.trigger],
+    triggerText: sample.triggerText,
+    steps: ['agent'],
+    summary: sample.summary,
+    source: 'built-in',
+    sourceLabel: 'Built-in',
+    lastRun: {
+      state: 'success',
+      at: SAMPLE_NOW - sample.lastRunHoursAgo * SAMPLE_HOUR_MS,
+    },
+    nextRunAt:
+      sample.nextRunInHours === undefined
+        ? undefined
+        : SAMPLE_NOW + sample.nextRunInHours * SAMPLE_HOUR_MS,
+    enabled: true,
+    actions: ['toggle', 'run', 'edit'],
+  };
+}
 
 /**
- * The Library while its rows load: the real table and column heads, with
- * rows of the same height in which only the values pulse. The rows replace
- * it in place. Wrap it in `DelayedLoadingPlaceholder` so a fast load never
- * flashes it.
+ * Plain sample workflows: a name, one summary line with its source, a
+ * trigger, a last run and a switch, so each row stands at a loaded row's
+ * height.
+ */
+const SAMPLE_WORKFLOW_VALUES: readonly SampleWorkflow[] = [
+  {
+    key: 'sample-review',
+    name: 'Review pull requests',
+    summary: '3 steps',
+    trigger: 'plan-approved',
+    triggerText: 'When a plan is approved',
+    lastRunHoursAgo: 2,
+  },
+  {
+    key: 'sample-digest',
+    name: 'Morning digest',
+    summary: 'Start chat',
+    trigger: 'schedule',
+    triggerText: 'Weekdays at 9:00 AM',
+    lastRunHoursAgo: 20,
+    nextRunInHours: 21,
+  },
+  {
+    key: 'sample-release',
+    name: 'Release notes',
+    summary: '4 steps',
+    trigger: 'manual',
+    triggerText: 'Manual',
+    lastRunHoursAgo: 48,
+  },
+  {
+    key: 'sample-triage',
+    name: 'Triage new issues',
+    summary: 'Start chat',
+    trigger: 'schedule',
+    triggerText: 'Every hour',
+    lastRunHoursAgo: 1,
+    nextRunInHours: 1,
+  },
+  {
+    key: 'sample-tests',
+    name: 'Fix failing tests',
+    summary: '2 steps',
+    trigger: 'task-ready',
+    triggerText: 'When a task is ready',
+    lastRunHoursAgo: 6,
+  },
+];
+
+const SAMPLE_WORKFLOWS: readonly WorkflowLibraryRow[] =
+  SAMPLE_WORKFLOW_VALUES.map(sampleWorkflowRow);
+
+const noop = (): void => undefined;
+
+/**
+ * The Library while its rows load: `WorkflowsLibraryTable` itself, rendered
+ * from sample workflows inside the measured `Skeleton`, so the column heads
+ * stay and the bars sit where the values will. The rows replace it in place.
+ * Wrap it in `DelayedLoadingPlaceholder` so a fast load never flashes it.
  */
 export function WorkflowsLibraryTableSkeleton({
-  rows = SKELETON_ROWS.length,
+  rows = SAMPLE_WORKFLOWS.length,
   compact = false,
 }: WorkflowsLibraryTableSkeletonProps): JSX.Element {
-  const shown = SKELETON_ROWS.slice(
+  const shown = SAMPLE_WORKFLOWS.slice(
     0,
-    Math.max(1, Math.min(SKELETON_ROWS.length, Math.floor(rows))),
+    Math.max(1, Math.min(SAMPLE_WORKFLOWS.length, Math.floor(rows))),
   );
   return (
-    <div role="status" data-testid="workflows-library-skeleton">
-      <span className="sr-only">Loading workflows</span>
-      <DataTableFrame layout="fixed" busy>
-        <WorkflowsLibraryTableHead compact={compact} />
-        <DataTableBody>
-          {shown.map((row) => (
-            <DataTableRow key={row.key}>
-              <DataTableCell>
-                {/* The name and summary lines' own heights, so the row is
-                    as tall as a loaded one. */}
-                <div className="flex min-w-0 flex-col gap-1">
-                  <span className="flex h-5 items-center">
-                    <SkeletonBlock height="text" width={row.name} />
-                  </span>
-                  <span className="flex h-4.5 items-center">
-                    <SkeletonBlock height="meta" width={row.summary} />
-                  </span>
-                </div>
-              </DataTableCell>
-              <DataTableCell>
-                <span className="flex h-5 items-center">
-                  <SkeletonBlock height="text" width={row.trigger} />
-                </span>
-              </DataTableCell>
-              <DataTableCell>
-                <span className="flex h-5 items-center">
-                  <SkeletonBlock height="text" width={row.run} />
-                </span>
-              </DataTableCell>
-              {compact ? null : (
-                <DataTableCell>
-                  <span className="flex h-5 items-center">
-                    <SkeletonBlock height="text" width="1/4" />
-                  </span>
-                </DataTableCell>
-              )}
-              <DataTableCell>
-                {/* Where the switch sits; Run and More stay blank. */}
-                <span className="flex h-7 items-center justify-end pr-18">
-                  <SkeletonBlock shape="toggle" />
-                </span>
-              </DataTableCell>
-            </DataTableRow>
-          ))}
-        </DataTableBody>
-      </DataTableFrame>
-    </div>
+    <Skeleton
+      loading
+      label="Loading workflows"
+      testId="workflows-library-skeleton"
+    >
+      <WorkflowsLibraryTable
+        rows={shown}
+        now={SAMPLE_NOW}
+        locale="en-US"
+        onOpen={noop}
+        onAction={noop}
+        compact={compact}
+      />
+    </Skeleton>
   );
 }
 
@@ -750,42 +792,40 @@ export function WorkflowsLibraryPagination({
       </span>
       {page.pageCount > 1 ? (
         <nav aria-label="Pages" className="flex items-center gap-0.5">
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="compact"
+            iconOnly
             aria-label="Previous page"
             disabled={page.page === 1}
             data-testid="workflows-library-page-previous"
             onClick={(): void => onPageChange(page.page - 1)}
-            className="focus-ring flex h-7 w-7 items-center justify-center rounded-md fg-secondary hover:bg-subtle disabled:opacity-40 disabled:hover:bg-transparent"
           >
             <ChevronLeftMediumIcon width={16} height={16} aria-hidden="true" />
-          </button>
+          </Button>
           {numbers.map((number) => (
-            <button
+            <Button
               key={number}
-              type="button"
+              variant={number === page.page ? 'secondary' : 'ghost'}
+              size="compact"
               aria-current={number === page.page ? 'page' : undefined}
               data-testid={`workflows-library-page-${String(number)}`}
               onClick={(): void => onPageChange(number)}
-              className={`focus-ring flex h-7 min-w-7 items-center justify-center rounded-md px-1.5 tabular-nums ${
-                number === page.page
-                  ? 'bg-secondary fg-primary'
-                  : 'fg-secondary hover:bg-subtle'
-              }`}
             >
-              {number}
-            </button>
+              <span className="tabular-nums">{number}</span>
+            </Button>
           ))}
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="compact"
+            iconOnly
             aria-label="Next page"
             disabled={page.page === page.pageCount}
             data-testid="workflows-library-page-next"
             onClick={(): void => onPageChange(page.page + 1)}
-            className="focus-ring flex h-7 w-7 items-center justify-center rounded-md fg-secondary hover:bg-subtle disabled:opacity-40 disabled:hover:bg-transparent"
           >
             <ChevronRightMediumIcon width={16} height={16} aria-hidden="true" />
-          </button>
+          </Button>
         </nav>
       ) : null}
     </div>

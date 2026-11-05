@@ -82,6 +82,11 @@ import {
 } from '@/stores/chatStore';
 import { useChatSidebarStore } from '@/stores/chatSidebarStore';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
+import {
+  endChatIntent,
+  noteChatIntent,
+  type ChatPrefetchTarget,
+} from '@/stores/chat/chat-prefetch';
 import { useSelectedCoworkEntryId } from './useSelectedCoworkEntryId';
 import {
   EMPTY_ARCHIVED_CONTAINERS,
@@ -685,6 +690,19 @@ function SidebarWorkEntryRowContent({
   const handleOpen = useCallback((): void => {
     onSelect(entry.id);
   }, [onSelect, entry.id]);
+  const handleIntent = useCallback(
+    (phase: 'start' | 'end', source: 'pointer' | 'focus'): void => {
+      const target: ChatPrefetchTarget = {
+        kind: 'worktree',
+        projectId: workspaceId,
+        worktreeId: entry.id,
+        attentionLanding: true,
+      };
+      if (phase === 'start') noteChatIntent(target, source);
+      else endChatIntent(target);
+    },
+    [workspaceId, entry.id],
+  );
   const beginRemovalConfirmation = useCallback(
     (mode: WorkEntryRemovalMode): void => {
       removalAttemptRef.current += 1;
@@ -755,13 +773,9 @@ function SidebarWorkEntryRowContent({
       const selectionMenu =
         menu.open && selectionBinding !== undefined
           ? selectionBinding.menuItemsFor(selectionKey, {
-              toggleSelection: `${rowTestId}-toggle-selection`,
               bulkPin: `${rowTestId}-bulk-pin`,
-              bulkDone: `${rowTestId}-bulk-done`,
-              bulkNotifications: `${rowTestId}-bulk-notifications`,
               bulkArchive: `${rowTestId}-bulk-archive`,
               bulkDelete: `${rowTestId}-bulk-delete`,
-              clearSelection: `${rowTestId}-clear-selection`,
             })
           : undefined;
       const selectionItems = selectionMenu?.items ?? [];
@@ -915,6 +929,7 @@ function SidebarWorkEntryRowContent({
         multiSelect={multiSelect}
         drag={drag}
         onOpen={handleOpen}
+        onIntent={deleting ? undefined : handleIntent}
         onDelete={handleDeleteButton}
         deleteDisabledReason={removalDisabledReason}
         // Early access: hover offers Pin and Archive (as focused worktree

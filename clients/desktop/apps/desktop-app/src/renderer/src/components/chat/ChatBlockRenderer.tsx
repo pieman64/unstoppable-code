@@ -25,7 +25,6 @@ import {
   type ReactNode,
 } from 'react';
 import {
-  DelegatedAgentCard,
   AccountProxySwitchLine,
   AnsweredQuestionsBlock,
   ApprovalSafetyDeniedNotice,
@@ -40,6 +39,7 @@ import {
   Markdown,
   extractExitPlanModePlan,
   markdownOptions,
+  MarkdownCodeBlock,
   markdownTableCellProps,
   Notice,
   ChatAppNote,
@@ -57,11 +57,18 @@ import { AgentBlock } from './AgentBlock';
 import { WorkflowBlock } from './WorkflowBlock';
 import { CollapsibleBlock } from './CollapsibleBlock';
 import { ToolCallBlock } from './ToolCallBlock';
-import { ChatVisualBlock, type ChatVisualOwner } from '@canopy/ui-app';
+import {
+  ChatVisualBlock,
+  GitHubReferencePreview,
+  LinearReferencePreview,
+  ManagedDelegationCard,
+  type ChatVisualOwner,
+} from '@canopy/ui-app';
 import type { ToolResult } from './types';
 import { TurnTimer } from './TurnTimer';
 import type { DisplayBlock } from './types';
 import { HookInfoBanner } from './HookInfoBanner';
+import { useExpandedRunInterest } from '@/lib/chat-interest';
 import { isAskUserQuestionToolName } from '@/lib/canopy-tool-aliases';
 import { findAskUserQuestionRecordState } from './ask-user-pending-match';
 import { SkillIcon } from '@canopy/ui-shared/icons';
@@ -94,12 +101,6 @@ import {
 import { PluginMention } from './PluginMention';
 import { ChatMarkdownFileTargetContext } from './chat-markdown-file-target';
 import { ChatMarkdownLink } from './ChatMarkdownLink';
-import {
-  DelegationChildPages,
-  GitHubReferencePreview,
-  isStreamBackedDelegation,
-  LinearReferencePreview,
-} from '@canopy/ui-app';
 import {
   gitHubReferenceFromHref,
   gitHubReferenceLabel,
@@ -364,6 +365,38 @@ function decorateFilePathText(
   });
 }
 
+/**
+ * The file chip for inline code whose whole text is one file path, labelled
+ * with the file name and line only (reference chips name the ID, the tooltip
+ * keeps the full path), or null for any other code.
+ */
+function wholeFilePathMention(
+  decorators: MentionDecorators,
+  children: ReactNode,
+): JSX.Element | null {
+  if (typeof children !== 'string' || !decorators.filePathIndex) return null;
+  const text = children.trim();
+  const pieces = splitTextByFilePathMentions(text, decorators.filePathIndex);
+  const piece = pieces.length === 1 ? pieces[0] : undefined;
+  if (piece?.type !== 'file' || piece.text !== text) return null;
+  // Keep the line suffix as written (`:12`, `#L12-L20`): what follows the
+  // file name the scanner matched, which may itself contain `:12`.
+  const { filename } = piece.target;
+  const suffix = piece.location
+    ? text.slice(text.lastIndexOf(filename) + filename.length)
+    : '';
+  return (
+    <FilePathMention
+      target={piece.target}
+      location={piece.location}
+      displayText={piece.text}
+      originChatTabId={decorators.originChatTabId}
+    >
+      {`${filename}${suffix}`}
+    </FilePathMention>
+  );
+}
+
 function decoratePluginAndFilePathText(
   text: string,
   filePathIndex: FilePathMentionIndex | null | undefined,
@@ -520,6 +553,13 @@ const MentionDecoratorsContext = createContext<MentionDecorators>(
   NO_MENTION_DECORATORS,
 );
 
+/**
+ * True inside a fenced or indented block. A block's `code` has no language
+ * class when the fence names none, so the class alone can't tell it apart
+ * from inline code.
+ */
+const InCodeBlockContext = createContext(false);
+
 function decorateWithMentions(
   decorators: MentionDecorators,
   children: ReactNode,
@@ -551,6 +591,15 @@ function useDecoratedChildren(
 
 const MENTION_MARKDOWN_COMPONENTS: MarkdownOverrides = {
   ...MARKDOWN_COMPONENTS,
+  pre: function MentionPre(
+    props: ComponentPropsWithoutRef<'pre'>,
+  ): JSX.Element {
+    return (
+      <InCodeBlockContext.Provider value={true}>
+        <MarkdownCodeBlock {...props} />
+      </InCodeBlockContext.Provider>
+    );
+  },
   a: function MentionMarkdownLink(
     props: ComponentPropsWithoutRef<'a'>,
   ): JSX.Element {
@@ -641,17 +690,31 @@ const MENTION_MARKDOWN_COMPONENTS: MarkdownOverrides = {
     ...props
   }: ComponentPropsWithoutRef<'code'>): JSX.Element {
     const decorators = useContext(MentionDecoratorsContext);
+    const inBlock = useContext(InCodeBlockContext);
     const isCodeBlock =
-      typeof className === 'string' &&
-      (className.includes('lang-') || className.includes('language-'));
+      inBlock ||
+      (typeof className === 'string' &&
+        (className.includes('lang-') || className.includes('language-')));
     // Fenced code stays literal, so it is never scanned for mentions: a large
     // generated block would otherwise pay for a decoration it then drops.
-    // Inline code keeps mentions but never becomes a reference link.
+    // Inline code that is only a file path is the file chip alone, never a
+    // chip boxed inside a code pill.
+    const file = isCodeBlock
+      ? null
+      : wholeFilePathMention(decorators, children);
+    if (file) return file;
+    // Other inline code keeps skill and plugin mentions, but never a file
+    // chip or a reference link inside its box.
     return (
       <code className={className} {...props}>
         {isCodeBlock
           ? children
-          : decorateWithMentions(decorators, children, 'code', false)}
+          : decorateWithMentions(
+              { ...decorators, filePathIndex: null },
+              children,
+              'code',
+              false,
+            )}
       </code>
     );
   },
@@ -789,6 +852,19 @@ const DelegatedAgentCallCard = memo(function DelegatedAgentCallCard({
   const block = useDelegatedAgentTranscript(committed);
   const hint = useDelegationStreamHint(block);
   const source = useContext(DelegationTranscriptSourceContext);
+  const [expanded, setExpanded] = useState(false);
+  useExpandedRunInterest(
+    source
+      ? {
+          projectId: source.projectId,
+          worktreeId: source.worktreeId,
+          chatId: source.chatId,
+          delegationId: block.delegationId,
+          runGeneration: block.runGeneration,
+        }
+      : null,
+    expanded,
+  );
   const stopControls = useContext(ManagedDelegationStopContext);
   const waitingDelegations = useContext(WaitingDelegationsContext);
   const target = stopControls?.target;
@@ -819,47 +895,38 @@ const DelegatedAgentCallCard = memo(function DelegatedAgentCallCard({
     [delegationId, revision, target],
   );
   return (
-    <DelegatedAgentCard
-      snapshot={block}
-      parentHarnessId={block.parentHarnessId}
-      description={block.description}
-      prompt={block.prompt}
-      executionMode={block.executionMode}
+    <ManagedDelegationCard
+      delegation={block}
+      runGeneration={block.runGeneration}
       onCopyNativeSessionId={copyNativeSessionId}
       onOpenChat={onOpenChat}
+      onExpandedChange={setExpanded}
       onStop={onStop}
       onLoadChanges={onLoadChanges}
       hasLiveDescendants={
         stopControls?.withLiveDescendants.has(delegationId) ?? false
       }
       waitingOnParent={waitingDelegations.has(delegationId)}
+      {...(source ? { source: transcriptReadSource(source) } : {})}
+      hint={hint}
+      renderRows={(entries, shown) =>
+        renderDelegationChildRows(entries, block, renderSubBlock, shown)
+      }
+      v2Available={true}
+      renderBlock={(entry, row) =>
+        renderDelegationChildBlock(entry, row, renderSubBlock)
+      }
     >
-      {isStreamBackedDelegation(block.transcriptStore) ? (
-        <DelegationChildPages
-          {...(source ? { source: transcriptReadSource(source) } : {})}
-          delegationId={block.delegationId}
-          runGeneration={block.runGeneration}
-          hint={hint}
-          renderRows={(entries) =>
-            renderDelegationChildRows(entries, block, renderSubBlock)
-          }
-          v2Available={true}
-          renderBlock={(entry, row) =>
-            renderDelegationChildBlock(entry, row, renderSubBlock)
-          }
-        />
-      ) : (
-        block.subBlocks
-          .filter(
-            (child) =>
-              !(
-                child.type === 'text' &&
-                child.text.trim() === block.finalText?.trim()
-              ),
-          )
-          .map((child, i) => renderSubBlock(child, i))
-      )}
-    </DelegatedAgentCard>
+      {block.subBlocks
+        .filter(
+          (child) =>
+            !(
+              child.type === 'text' &&
+              child.text.trim() === block.finalText?.trim()
+            ),
+        )
+        .map((child, i) => renderSubBlock(child, i))}
+    </ManagedDelegationCard>
   );
 });
 const LARGE_TRANSCRIPT_MARKDOWN_PROGRESSIVE_OPTIONS = Object.freeze({

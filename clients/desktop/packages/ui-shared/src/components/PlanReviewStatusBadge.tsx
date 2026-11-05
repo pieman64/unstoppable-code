@@ -5,6 +5,7 @@ import type {
   PlanDisplayStatusKind,
 } from '../lib/planDisplayStatus';
 import { Badge } from './Badge';
+import { Button } from './Button';
 import { LoadingSpinner } from './LoadingSpinner';
 
 const STATUS_TONES: Record<PlanDisplayStatusKind, BadgeTone> = {
@@ -88,8 +89,8 @@ export function PlanStatusNote({
       {text ? <span className="truncate">{text}</span> : null}
       {text && link ? <span aria-hidden="true">·</span> : null}
       {link ? (
-        <button
-          type="button"
+        <Button
+          variant="link"
           data-testid={link['data-testid']}
           onClick={(event): void => {
             event.stopPropagation();
@@ -100,10 +101,10 @@ export function PlanStatusNote({
               event.stopPropagation();
             }
           }}
-          className="focus-ring shrink-0 rounded-sm fg-info hover:underline"
+          className="shrink-0"
         >
           {link.label}
-        </button>
+        </Button>
       ) : null}
     </span>
   );

@@ -174,7 +174,9 @@ export function codeGraphBuildRefusalOf(
   return {
     code: refusal,
     message,
-    ...(refusal === 'worker.codeGraph.buildFailed' && parsed.success
+    ...(refusal === 'worker.codeGraph.buildFailed' &&
+    parsed.success &&
+    parsed.data.failure !== undefined
       ? { failure: parsed.data.failure }
       : {}),
   };

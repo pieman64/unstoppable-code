@@ -59,10 +59,11 @@ import {
   isOrgModelPolicyActiveForStoredAccount,
 } from '../../lib/model-policy-state';
 import { readPreferencesFile } from '../../lib/preferences-store';
+import { resolveLaneAwareDefaultSelection } from '../../lib/default-model-lane-resolver';
 import {
-  resolveConcreteModelDispatchability,
-  resolveLaneAwareDefaultSelection,
-} from '../../lib/default-model-lane-resolver';
+  noDispatchableModelSendMessage,
+  resolveSendBillingRefusal,
+} from '../../lib/send-billing-refusal';
 import {
   resolveAiCreditsScopeOwner,
   type WorkOwnerSession,
@@ -943,9 +944,9 @@ async function executePortalChatSend(
       context.fail(
         command,
         'invalid_payload',
-        storedDefault.noDispatchableModel.missing === 'policy-allowance'
-          ? 'Your organization policy allows no model that can run this message.'
-          : 'No model is available to send this message. Add a billing source, then try again.',
+        noDispatchableModelSendMessage(
+          storedDefault.noDispatchableModel.missing,
+        ),
       );
       await removeMaterializedPortalChatAttachments(
         materializedAttachmentPaths,
@@ -984,27 +985,27 @@ async function executePortalChatSend(
     // `resolveConcreteModelDispatchability`): only a provable dead end refuses,
     // because refusing a model the user explicitly picked is unrecoverable
     // while letting it through just yields dispatch's own specific error.
-    if (
+    const concreteBillingRefusal =
       effectiveModel &&
-      (requestedModel !== undefined || tabOptions.model !== undefined) &&
-      (await resolveConcreteModelDispatchability(effectiveModel, {
-        workspaceId: command.payload.projectId,
-        ...(command.payload.chatId
-          ? {
-              workOwnerSession: {
-                projectId: command.payload.projectId,
-                worktreeId: command.payload.worktreeId,
-                chatId: command.payload.chatId,
-              },
-            }
-          : {}),
-      })) === 'no-billing-lane'
-    ) {
-      context.fail(
-        command,
-        'invalid_payload',
-        'No model is available to send this message. Add a billing source, then try again.',
-      );
+      (requestedModel !== undefined || tabOptions.model !== undefined)
+        ? await resolveSendBillingRefusal({
+            concreteModel: effectiveModel,
+            credentialScope: {
+              workspaceId: command.payload.projectId,
+              ...(command.payload.chatId
+                ? {
+                    workOwnerSession: {
+                      projectId: command.payload.projectId,
+                      worktreeId: command.payload.worktreeId,
+                      chatId: command.payload.chatId,
+                    },
+                  }
+                : {}),
+            },
+          })
+        : null;
+    if (concreteBillingRefusal !== null) {
+      context.fail(command, 'invalid_payload', concreteBillingRefusal);
       await removeMaterializedPortalChatAttachments(
         materializedAttachmentPaths,
       );

@@ -60,6 +60,13 @@ export interface CanopyLeaseConformanceInstance {
 
 export interface CanopyLeaseConformanceTarget {
   readonly name: string;
+  /** The `interfaceKind` its leases are acquired with; `test` unless the binding admits only its own. */
+  readonly interfaceKind?: string;
+  /**
+   * False when leases never outlive their connection, as over HTTP (ADR 13a):
+   * the reconnect-grace case is then registered through `todo`.
+   */
+  readonly reconnectGrace?: boolean;
   start(): Promise<CanopyLeaseConformanceInstance>;
 }
 
@@ -68,12 +75,16 @@ export interface CanopyLeaseConformanceOptions {
   readonly target: CanopyLeaseConformanceTarget;
   readonly describe: CanopyTransportConformanceOptions['describe'];
   readonly it: CanopyTransportConformanceOptions['it'];
+  /** Required when a case does not apply to the target. */
+  readonly todo?: CanopyTransportConformanceOptions['todo'];
 }
 
 export interface CanopyConformancePairOptions {
   readonly clientSecret?: string;
   readonly clientDataRootHash?: string;
   readonly maxFrameBytes?: number;
+  /** Largest message either end splits into parts; one frame unless raised. */
+  readonly maxMessageBytes?: number;
   readonly maxBufferedMessages?: number;
 }
 
@@ -87,6 +98,19 @@ export interface CanopyTransportConformanceOptions {
   readonly it: (name: string, body: () => Promise<void>) => void;
   /** Registers a case the binding cannot run yet (jest: `it.todo`). */
   readonly todo: (name: string) => void;
+  /**
+   * False for a message binding with no byte wire (HTTP POST plus SSE): its
+   * partial-frame, frame-cap, malformed-frame, handshake-auth, byte-channel
+   * and wire-backpressure cases are registered through `todo`. Its streams
+   * are flow-controlled by acknowledgement instead.
+   */
+  readonly byteWire?: boolean;
+  /**
+   * False when the client cannot observe the server ending its connection
+   * until its next request (HTTP POST plus SSE, ADR 13a): cases that need
+   * that close are registered through `todo`.
+   */
+  readonly serverClose?: boolean;
 }
 
 export interface CanopyJournalConformanceOptions {
@@ -497,7 +521,7 @@ export function runCanopyLeaseConformance(
   ): Promise<z.output<typeof LeaseSchema>> => {
     const { result, error } = await call(client, 'core.client.lease.acquire', {
       clientInstanceId: 'conformance-client',
-      interfaceKind: 'test',
+      interfaceKind: target.interfaceKind ?? 'test',
       label: 'Conformance',
       interactive: true,
       foreground: true,
@@ -554,9 +578,13 @@ export function runCanopyLeaseConformance(
         assert.notEqual(reacquired.leaseId, lease.leaseId);
       });
 
-      leaseCase(
-        'reconnect grace keeps lease registrations',
-        async (instance) => {
+      const graceCase = 'reconnect grace keeps lease registrations';
+      if (target.reconnectGrace === false) {
+        if (!options.todo)
+          throw new Error(`${target.name} skips "${graceCase}" without todo`);
+        options.todo(`${graceCase} (no reconnect grace on this binding)`);
+      } else
+        leaseCase(graceCase, async (instance) => {
           const first = await initialized(instance);
           const lease = await acquire(first);
           first.close();
@@ -575,8 +603,7 @@ export function runCanopyLeaseConformance(
           const third = await initialized(instance);
           const replaced = await acquire(third, lease.leaseId);
           assert.notEqual(replaced.leaseId, lease.leaseId);
-        },
-      );
+        });
     },
   );
 }
@@ -591,16 +618,28 @@ export function runCanopyTransportConformance(
 ): void {
   const { describe, todo } = options;
   const test = trackedCases(options.it, options.createPair);
+  const wireCase: RegisterCase =
+    options.byteWire === false
+      ? (name) => todo(`${name} (no byte wire on this binding)`)
+      : test;
+  const closeCase: RegisterCase =
+    options.serverClose === false
+      ? (name) =>
+          todo(`${name} (no server close reaches the client on this binding)`)
+      : test;
 
   describe(`Canopy transport conformance: ${options.name}`, () => {
-    test('reassembles a request written one byte at a time', async (pair) => {
-      const { server, clientWire } = await pair();
-      for (const byte of Array.from(encodeCanopyJsonFrame(request(1)))) {
-        clientWire.write(Uint8Array.of(byte));
-        await tick();
-      }
-      assert.deepEqual(await server.receive(), request(1));
-    });
+    wireCase(
+      'reassembles a request written one byte at a time',
+      async (pair) => {
+        const { server, clientWire } = await pair();
+        for (const byte of Array.from(encodeCanopyJsonFrame(request(1)))) {
+          clientWire.write(Uint8Array.of(byte));
+          await tick();
+        }
+        assert.deepEqual(await server.receive(), request(1));
+      },
+    );
 
     test('correlates concurrent requests answered out of order', async (pair) => {
       const { client, server } = await pair();
@@ -626,65 +665,82 @@ export function runCanopyTransportConformance(
         assert.deepEqual(result, { echo: id });
     });
 
-    test('carries payloads up to the frame cap and fails closed beyond it', async (pair) => {
-      const maxFrameBytes = 64 * 1024;
-      const { client, server, clientWire } = await pair({ maxFrameBytes });
-      const envelopeBytes =
-        encodeCanopyJsonFrame({ jsonrpc: '2.0', id: 1, result: '' }).length - 4;
-      const atCap = 'x'.repeat(maxFrameBytes - envelopeBytes);
-      await client.send({ jsonrpc: '2.0', id: 1, result: atCap });
-      assert.deepEqual(await server.receive(), {
-        jsonrpc: '2.0',
-        id: 1,
-        result: atCap,
-      });
-      assert.equal(
-        await rejectionKind(
-          client.send({ jsonrpc: '2.0', id: 2, result: `${atCap}x` }),
-        ),
-        'resource_exhausted',
-      );
-      assert.equal(client.signal.aborted, false);
-      const header = Buffer.alloc(4);
-      header.writeUInt32BE(maxFrameBytes + 1, 0);
-      clientWire.write(header);
-      assert.equal(await rejectionKind(server.receive()), 'resource_exhausted');
-      assert.equal(await rejectionKind(client.receive()), 'resource_exhausted');
-    });
-
-    test('applies backpressure to an unread stream and resumes in order', async (pair) => {
-      const { client, server } = await pair({ maxBufferedMessages: 4 });
-      // 64 MiB ceiling: past any OS socket buffer, so only backpressure stops it.
-      const ceiling = 1024;
-      const item = 'z'.repeat(64 * 1024);
-      let sent = 0;
-      let stop = false;
-      const sending = (async (): Promise<void> => {
-        while (!stop && sent < ceiling) {
-          await server.send({
-            jsonrpc: '2.0',
-            method: `${SUBSCRIBE}.item`,
-            params: { sequence: sent + 1, item },
-          });
-          sent += 1;
-        }
-      })();
-      // Paused means a send stays pending across event-loop turns, not a time window.
-      for (let idleTurns = 0, last = -1; idleTurns < 20; last = sent) {
-        await tick();
-        assert.ok(sent < ceiling, `sender was not paused (sent ${sent})`);
-        idleTurns = sent === last ? idleTurns + 1 : 0;
-      }
-      stop = true;
-      const pendingSequence = sent + 1;
-      for (let sequence = 1; sequence <= pendingSequence; sequence += 1)
+    wireCase(
+      'carries payloads up to the frame cap and fails closed beyond it',
+      async (pair) => {
+        const maxFrameBytes = 64 * 1024;
+        // Pinned: a binding that splits messages refuses at its message cap.
+        const { client, server, clientWire } = await pair({
+          maxFrameBytes,
+          maxMessageBytes: maxFrameBytes,
+        });
+        const envelopeBytes =
+          encodeCanopyJsonFrame({ jsonrpc: '2.0', id: 1, result: '' }).length -
+          4;
+        const atCap = 'x'.repeat(maxFrameBytes - envelopeBytes);
+        await client.send({ jsonrpc: '2.0', id: 1, result: atCap });
+        assert.deepEqual(await server.receive(), {
+          jsonrpc: '2.0',
+          id: 1,
+          result: atCap,
+        });
         assert.equal(
-          notification(await client.receive()).params.sequence,
-          sequence,
+          await rejectionKind(
+            client.send({ jsonrpc: '2.0', id: 2, result: `${atCap}x` }),
+          ),
+          'resource_exhausted',
         );
-      await sending;
-      assert.equal(sent, pendingSequence);
-    });
+        assert.equal(client.signal.aborted, false);
+        const header = Buffer.alloc(4);
+        header.writeUInt32BE(maxFrameBytes + 1, 0);
+        clientWire.write(header);
+        assert.equal(
+          await rejectionKind(server.receive()),
+          'resource_exhausted',
+        );
+        assert.equal(
+          await rejectionKind(client.receive()),
+          'resource_exhausted',
+        );
+      },
+    );
+
+    wireCase(
+      'applies backpressure to an unread stream and resumes in order',
+      async (pair) => {
+        const { client, server } = await pair({ maxBufferedMessages: 4 });
+        // 64 MiB ceiling: past any OS socket buffer, so only backpressure stops it.
+        const ceiling = 1024;
+        const item = 'z'.repeat(64 * 1024);
+        let sent = 0;
+        let stop = false;
+        const sending = (async (): Promise<void> => {
+          while (!stop && sent < ceiling) {
+            await server.send({
+              jsonrpc: '2.0',
+              method: `${SUBSCRIBE}.item`,
+              params: { sequence: sent + 1, item },
+            });
+            sent += 1;
+          }
+        })();
+        // Paused means a send stays pending across event-loop turns, not a time window.
+        for (let idleTurns = 0, last = -1; idleTurns < 20; last = sent) {
+          await tick();
+          assert.ok(sent < ceiling, `sender was not paused (sent ${sent})`);
+          idleTurns = sent === last ? idleTurns + 1 : 0;
+        }
+        stop = true;
+        const pendingSequence = sent + 1;
+        for (let sequence = 1; sequence <= pendingSequence; sequence += 1)
+          assert.equal(
+            notification(await client.receive()).params.sequence,
+            sequence,
+          );
+        await sending;
+        assert.equal(sent, pendingSequence);
+      },
+    );
 
     test('cancels a pending receive without closing the connection', async (pair) => {
       const { client, server } = await pair();
@@ -717,29 +773,32 @@ export function runCanopyTransportConformance(
 
     registerJournalCases(test, REFERENCE_JOURNAL_TARGET);
 
-    test('answers malformed envelopes and closes on malformed frames', async (pair) => {
-      const { client, server, clientWire } = await pair();
-      clientWire.write(
-        encodeCanopyJsonFrame({ jsonrpc: '2.0', id: 5, method: 'nope' }),
-      );
-      const invalid = await receiveResponse(client);
-      assert.equal(invalid.id, 5);
-      assert.equal(decodeCanopyError(invalid.error).kind, 'invalid_argument');
-      clientWire.write(
-        Buffer.concat([Buffer.from([0, 0, 0, 2]), Buffer.from('[]')]),
-      );
-      assert.equal(
-        decodeCanopyError((await receiveResponse(client)).error).kind,
-        'invalid_argument',
-      );
-      await client.send(request(6));
-      assert.deepEqual(await server.receive(), request(6));
-      clientWire.write(Buffer.from([0, 0, 0, 2, 0x7b, 0x7b]));
-      assert.equal(await rejectionKind(server.receive()), 'invalid_argument');
-      assert.equal(await rejectionKind(client.receive()), 'invalid_argument');
-    });
+    wireCase(
+      'answers malformed envelopes and closes on malformed frames',
+      async (pair) => {
+        const { client, server, clientWire } = await pair();
+        clientWire.write(
+          encodeCanopyJsonFrame({ jsonrpc: '2.0', id: 5, method: 'nope' }),
+        );
+        const invalid = await receiveResponse(client);
+        assert.equal(invalid.id, 5);
+        assert.equal(decodeCanopyError(invalid.error).kind, 'invalid_argument');
+        clientWire.write(
+          Buffer.concat([Buffer.from([0, 0, 0, 2]), Buffer.from('[]')]),
+        );
+        assert.equal(
+          decodeCanopyError((await receiveResponse(client)).error).kind,
+          'invalid_argument',
+        );
+        await client.send(request(6));
+        assert.deepEqual(await server.receive(), request(6));
+        clientWire.write(Buffer.from([0, 0, 0, 2, 0x7b, 0x7b]));
+        assert.equal(await rejectionKind(server.receive()), 'invalid_argument');
+        assert.equal(await rejectionKind(client.receive()), 'invalid_argument');
+      },
+    );
 
-    test('negotiates bulk channels within their caps', async (pair) => {
+    wireCase('negotiates bulk channels within their caps', async (pair) => {
       const { client, server } = await pair();
       const caps = { maxChunkBytes: 1_024, maxBufferedChunks: 8 };
       assert.equal(
@@ -771,7 +830,7 @@ export function runCanopyTransportConformance(
       );
     });
 
-    test('bulk channel credit flow control', async (pair) => {
+    wireCase('bulk channel credit flow control', async (pair) => {
       const { client, server } = await pair();
       const acceptedChannels: CanopyByteChannel[] = [];
       const channelWaiters: ((channel: CanopyByteChannel) => void)[] = [];
@@ -851,7 +910,7 @@ export function runCanopyTransportConformance(
       assert.equal(echoServer.signal.aborted, false);
     });
 
-    test('fails authentication closed', async (pair) => {
+    wireCase('fails authentication closed', async (pair) => {
       assert.equal(
         await rejectionKind(pair({ clientSecret: 'wrong' })),
         'unauthenticated',
@@ -862,27 +921,33 @@ export function runCanopyTransportConformance(
       );
     });
 
-    test('fails closed with an actionable error on a protocol-major mismatch', async (pair) => {
-      const { client, server } = await pair();
-      void serveReferenceCore(server, { daemonEpoch: 'epoch-1', journal: [] });
-      await client.send(
-        request(1, 'core.runtime.initialize', {
-          client: {
-            name: 'test',
-            version: '0',
-            protocolVersions: [99],
-            capabilities: [],
-          },
-        }),
-      );
-      const error = decodeCanopyError((await receiveResponse(client)).error);
-      assert.equal(error.kind, 'failed_precondition');
-      assert.deepEqual(error.details, {
-        supportedProtocolVersions: [1],
-        action: 'restart_or_update',
-      });
-      assert.equal(await rejectionKind(client.receive()), 'unavailable');
-    });
+    closeCase(
+      'fails closed with an actionable error on a protocol-major mismatch',
+      async (pair) => {
+        const { client, server } = await pair();
+        void serveReferenceCore(server, {
+          daemonEpoch: 'epoch-1',
+          journal: [],
+        });
+        await client.send(
+          request(1, 'core.runtime.initialize', {
+            client: {
+              name: 'test',
+              version: '0',
+              protocolVersions: [99],
+              capabilities: [],
+            },
+          }),
+        );
+        const error = decodeCanopyError((await receiveResponse(client)).error);
+        assert.equal(error.kind, 'failed_precondition');
+        assert.deepEqual(error.details, {
+          supportedProtocolVersions: [1],
+          action: 'restart_or_update',
+        });
+        assert.equal(await rejectionKind(client.receive()), 'unavailable');
+      },
+    );
 
     for (const { name, owner } of CANOPY_TRANSPORT_CONFORMANCE_PENDING)
       todo(`${name} (pending ${owner})`);

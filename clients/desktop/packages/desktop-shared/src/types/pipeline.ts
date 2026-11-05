@@ -649,6 +649,12 @@ export interface PipelinePluginDefaultPreviewItem {
  */
 export interface ResolvedPipelinePluginCollectionSnapshot {
   selections: ChatTabPluginSelections;
+  /**
+   * What a `send-agent-message` step sends (CAN-5479): the matched defaults
+   * and the preference's own selections as stored, collections unexpanded,
+   * since the chat resolves them itself. Absent in a run resolved before it.
+   */
+  chatSelections?: ChatTabPluginSelections;
   /** Collection identities expanded into selections, retained for replay authorization. */
   sourceCollectionIds?: string[];
   mcpServers?: Record<string, unknown>;
@@ -706,6 +712,14 @@ export interface ResolvePluginCollectionsResponse {
 export interface SavePluginCollectionPreferencesRequest {
   pipelinePreferenceLocator?: PipelinePreferenceLocator;
   preferences: Record<string, PipelinePluginCollectionPreference>;
+  /**
+   * The stored preferences the caller's view was seeded from, as a
+   * compare-and-set base. When another writer (such as the CLI) changed them
+   * since, only the collections the caller changed from this base are saved
+   * and the rest keep their stored values. Omitted, the save replaces the
+   * stored preferences.
+   */
+  basePreferences?: Record<string, PipelinePluginCollectionPreference>;
 }
 
 /**
@@ -714,9 +728,17 @@ export interface SavePluginCollectionPreferencesRequest {
  * `reason: 'missing-locator'` is returned when the locator is omitted, which
  * happens for inline pipelines. Callers can use this to disable their Save
  * button rather than silently failing.
+ *
+ * On success, `preferences` holds the stored preferences as saved, and
+ * `merged` is true when they had changed since `basePreferences`, so the
+ * caller's view should show `preferences`.
  */
 export type SavePluginCollectionPreferencesResponse =
-  | { ok: true }
+  | {
+      ok: true;
+      preferences?: Record<string, PipelinePluginCollectionPreference>;
+      merged?: boolean;
+    }
   | { ok: false; reason: 'missing-locator' };
 
 // ---------------------------------------------------------------------------
@@ -754,6 +776,13 @@ export interface SaveModelAliasPreferencesRequest {
   pipelinePreferenceLocator?: PipelinePreferenceLocator;
   preferences: Record<string, PipelineModelAliasPreference>;
   aliasIds?: string[];
+  /**
+   * The stored preferences the caller's view was seeded from, as a
+   * compare-and-set base. When another writer changed them since, only the
+   * aliases the caller changed from this base are saved; see
+   * {@link SavePluginCollectionPreferencesRequest.basePreferences}.
+   */
+  basePreferences?: Record<string, PipelineModelAliasPreference>;
 }
 
 /**
@@ -761,9 +790,17 @@ export interface SaveModelAliasPreferencesRequest {
  *
  * `reason: 'missing-locator'` is returned when the locator is omitted (inline
  * pipelines). The frontend uses this to disable "save as defaults".
+ *
+ * On success, `preferences` and `merged` are as for
+ * {@link SavePluginCollectionPreferencesResponse}; `preferences` never
+ * contains `reset` markers.
  */
 export type SaveModelAliasPreferencesResponse =
-  | { ok: true }
+  | {
+      ok: true;
+      preferences?: Record<string, PipelineModelAliasPreference>;
+      merged?: boolean;
+    }
   | { ok: false; reason: 'missing-locator' };
 
 export interface PauseInputField {

@@ -16,7 +16,7 @@ import {
 } from '../lib/installed-item-status';
 import { MoreHorizontalIcon, TrashIcon } from '../icons/AppIcons';
 import { Button } from './Button';
-import { SkeletonBlock } from './SkeletonBlock';
+import { Skeleton } from './Skeleton';
 import { DetailPageActions } from './DetailActionBar';
 import { DetailMoreMenuRows, useDetailMoreItems } from './DetailMoreMenu';
 import { DropdownMenuItem } from './DropdownMenu';
@@ -68,6 +68,9 @@ export interface InstalledItemStatusControlProps {
 const QUIET_STATUS_CLASS =
   'inline-flex h-7 shrink-0 items-center rounded-lg px-2 text-xs whitespace-nowrap fg-tertiary';
 
+/** The status the loading picker is measured from: a typical one. */
+const SAMPLE_LOADING_STATUS: InstalledItemStatus = 'active';
+
 /** The card-level picker. Renders nothing for rows without an installed status. */
 export function InstalledItemStatusControl({
   itemName,
@@ -80,14 +83,17 @@ export function InstalledItemStatusControl({
   if (!state) return null;
   if (state.kind === 'loading')
     return (
-      <span
-        role="status"
-        data-testid={testId ? `${testId}-loading` : undefined}
+      <Skeleton
+        loading
+        label="Loading status"
+        testId={testId ? `${testId}-loading` : undefined}
         className="inline-flex shrink-0"
       >
-        <span className="sr-only">Loading status</span>
-        <SkeletonBlock shape="control" />
-      </span>
+        <InstalledItemStatusPicker
+          itemName={itemName}
+          status={SAMPLE_LOADING_STATUS}
+        />
+      </Skeleton>
     );
   if (state.kind === 'read-only')
     return (

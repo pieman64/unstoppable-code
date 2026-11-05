@@ -13,7 +13,7 @@ import {
   DelayedLoadingPlaceholder,
   ErrorBanner,
   Notice,
-  SettingsFormSkeleton,
+  Skeleton,
   SettingsRowsRow,
   ToggleSwitch,
   Tooltip,
@@ -457,7 +457,7 @@ function ModelPolicyCard({
         {!entitlementResolved || enforcing === null || !catalogReady ? (
           <div className="mt-4" data-testid="model-policy-pending">
             <DelayedLoadingPlaceholder>
-              <SettingsFormSkeleton rows={2} />
+              <ModelPolicySkeleton />
             </DelayedLoadingPlaceholder>
           </div>
         ) : entitled === true || relaxOnly ? (
@@ -676,6 +676,57 @@ function ModelPolicyCard({
         ) : null}
       </div>
     </section>
+  );
+}
+
+const noop = (): void => undefined;
+
+/** Sample models for the loading state: plain, of the loaded shape. */
+const SAMPLE_POLICY_MODELS: readonly OrgModelCatalogEntry[] = [
+  { id: 'sample-model-1', label: 'Sample model' },
+  { id: 'sample-model-2', label: 'Another model' },
+];
+
+/**
+ * The card body while the policy loads: its enforcement switch and model rows
+ * with sample models inside `Skeleton`, so skullet measures them into bars in
+ * place.
+ */
+function ModelPolicySkeleton(): JSX.Element {
+  return (
+    <Skeleton
+      loading
+      label="Loading model policy"
+      testId="settings-skeleton-form"
+      className="w-full"
+    >
+      <SettingsRowsRow
+        label="Enforce member model access policy"
+        description="Members can only use the models you choose."
+        control={
+          <ToggleSwitch
+            label="Enforce member model access policy"
+            checked={false}
+            onChange={noop}
+          />
+        }
+      />
+      <ul className="flex flex-col">
+        {SAMPLE_POLICY_MODELS.map((model) => (
+          <ModelPolicyRow
+            key={model.id}
+            model={model}
+            allowed
+            pendingReview={false}
+            busy={false}
+            locked={false}
+            upgradeHref=""
+            upgradeText=""
+            onChange={noop}
+          />
+        ))}
+      </ul>
+    </Skeleton>
   );
 }
 

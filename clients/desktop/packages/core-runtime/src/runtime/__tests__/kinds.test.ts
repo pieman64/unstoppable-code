@@ -72,6 +72,10 @@ interface TestSink {
     item: { daemonEpoch: string },
   ): CanopyStreamCursor | null;
   end(outcome: 'completed' | 'cancelled' | 'error'): void;
+  endAt(
+    cursor: CanopyStreamCursor,
+    outcome: 'completed' | 'cancelled' | 'error',
+  ): void;
 }
 
 function runtime(
@@ -1093,3 +1097,156 @@ it.each(Object.entries(invalidEmits))(
     if (frames.length > 1) expect(frames[1].cursor).toEqual(frames[0].cursor);
   },
 );
+
+type EndScenario = {
+  resume: CanopyStreamCursor | null;
+  run: (sink: TestSink) => void;
+  end: CanopyStreamCursor;
+};
+// A bridge ends where its source ended, such as a worker stream that ends
+// before its first item (CAN-5696), so a resume from that end reaches the source.
+it.each<[string, EndScenario]>([
+  [
+    'adopts the cursor of a stream with no items',
+    {
+      resume: null,
+      run: (sink): void => sink.endAt(at(6), 'completed'),
+      end: at(6),
+    },
+  ],
+  [
+    'keeps the last supplied cursor',
+    {
+      resume: null,
+      run: (sink): void => {
+        sink.emitAt(at(5), item);
+        sink.endAt(at(5), 'completed');
+      },
+      end: at(5),
+    },
+  ],
+  [
+    'moves past the last supplied cursor',
+    {
+      resume: null,
+      run: (sink): void => {
+        sink.emitAt(at(5), item);
+        sink.endAt(at(7), 'completed');
+      },
+      end: at(7),
+    },
+  ],
+  [
+    'keeps the resume cursor of an idle resumed stream',
+    {
+      resume: at(4),
+      run: (sink): void => sink.endAt(at(4), 'completed'),
+      end: at(4),
+    },
+  ],
+])('endAt %s', async (_label, { resume, run, end }) => {
+  const dispatcher = runtime((_cursor, sink) => {
+    run(sink);
+    return Promise.resolve();
+  });
+  const handle = await dispatcher.openStream(
+    'core.example.events',
+    { ...params, cursor: resume },
+    { caller },
+  );
+  const frames: CanopyStreamFrame<unknown, unknown>[] = [];
+  for await (const frame of handle.frames) frames.push(frame);
+  expect(frames.at(-1)).toEqual(
+    expect.objectContaining({ kind: 'end', cursor: end, outcome: 'completed' }),
+  );
+});
+
+it.each<[string, EndScenario]>([
+  [
+    'an invalid cursor',
+    {
+      resume: null,
+      run: (sink): void => {
+        sink.emitAt(at(5), item);
+        sink.endAt(at(6, ''), 'completed');
+      },
+      end: at(5),
+    },
+  ],
+  [
+    'a lower sequence',
+    {
+      resume: null,
+      run: (sink): void => {
+        sink.emitAt(at(5), item);
+        sink.endAt(at(4), 'completed');
+      },
+      end: at(5),
+    },
+  ],
+  [
+    'an epoch switch',
+    {
+      resume: null,
+      run: (sink): void => {
+        sink.emitAt(at(5), item);
+        sink.endAt(at(6, 'other'), 'completed');
+      },
+      end: at(5),
+    },
+  ],
+  [
+    'a foreign epoch after resume',
+    {
+      resume: at(4),
+      run: (sink): void => sink.endAt(at(5, 'other'), 'completed'),
+      end: at(4),
+    },
+  ],
+  [
+    'a sequence below the resume cursor',
+    {
+      resume: at(4),
+      run: (sink): void => sink.endAt(at(3), 'completed'),
+      end: at(4),
+    },
+  ],
+])('endAt ends as an invalid result on %s', async (_label, scenario) => {
+  const dispatcher = runtime((_cursor, sink) => {
+    scenario.run(sink);
+    return Promise.resolve();
+  });
+  const handle = await dispatcher.openStream(
+    'core.example.events',
+    { ...params, cursor: scenario.resume },
+    { caller },
+  );
+  const frames: CanopyStreamFrame<unknown, unknown>[] = [];
+  for await (const frame of handle.frames) frames.push(frame);
+  expect(frames.at(-1)).toMatchObject({
+    kind: 'end',
+    cursor: scenario.end,
+    outcome: 'error',
+    error: { message: 'The operation returned an invalid result.' },
+  });
+});
+
+it('endAt after an allocated cursor ends as an invalid result', async () => {
+  let allocated: CanopyStreamCursor | null = null;
+  const dispatcher = runtime((_cursor, sink) => {
+    allocated = sink.emit(item);
+    sink.endAt(at(50), 'completed');
+    return Promise.resolve();
+  });
+  const handle = await dispatcher.openStream('core.example.events', params, {
+    caller,
+  });
+  const frames: CanopyStreamFrame<unknown, unknown>[] = [];
+  for await (const frame of handle.frames) frames.push(frame);
+  expect(allocated).not.toBeNull();
+  expect(frames.at(-1)).toMatchObject({
+    kind: 'end',
+    cursor: allocated,
+    outcome: 'error',
+  });
+});

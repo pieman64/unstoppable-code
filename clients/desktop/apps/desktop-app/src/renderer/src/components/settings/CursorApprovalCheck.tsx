@@ -19,7 +19,7 @@ import {
   type CursorApprovalCheckResult,
 } from '@canopy/desktop-shared/types';
 import { Button, Notice } from '@canopy/ui-shared/components';
-import { ToolApprovalCard } from '../chat/ToolApprovalCard';
+import { ToolApprovalCard } from '@canopy/ui-shared/components';
 import {
   SettingsGroup,
   SettingsRow,

@@ -6,6 +6,12 @@ export {
 } from './execution-pause-clock';
 export {
   clearExecutionCancellation,
+  deleteExecutionState,
+  ExecutionStateWriteRefusedError,
+  isExecutionStateWriteRefusal,
+  EXECUTION_STATE_LOCK_TIMEOUT_MESSAGE,
+  type ExecutionStateWriteRefusal,
+  type SaveExecutionStateOptions,
   executionHasBlockers,
   executionHasNonTerminalWork,
   findResumePoint,

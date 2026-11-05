@@ -1,3 +1,4 @@
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { WorktreeArchiveRefusedError } from './worktree-archive-refusal';
 import {
   withDestructiveLifecycle,
@@ -41,7 +42,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { captureDesktopInstrumentationError } from '@canopy/desktop-instrumentation/electron/main';
 import { listUnmanagedWorktreeRepositories } from './unmanaged-worktree-repository';
 import { lstat, mkdir, readdir, rm } from 'node:fs/promises';
-import { basename, dirname, isAbsolute } from 'node:path';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import type { BrowserWindow } from 'electron';
 import {
@@ -270,6 +271,11 @@ import { getResolvedGitExecutableForSpawn } from './git-executable';
 import { deferCodeGraphRefreshUntilPostCreateSetup } from './code-graph-scheduler';
 import { isErrnoException } from './type-guards';
 import { removeTreeWithoutAsar } from './remove-tree-without-asar';
+import {
+  withLinuxWorktreeRemovalVerification,
+  withLinuxWorktreeWriterTracking,
+  WorktreeProcessCleanupError,
+} from './worktree-process-cleanup';
 import { BrowserProfileError } from '@canopy/desktop-shared/browser-profile-error';
 import {
   captureArchivedContainerGitState,
@@ -1322,6 +1328,13 @@ async function safeRemoveWorktreeLocked(
     });
   }
 
+  // Git may already have removed and unregistered the checkout before the
+  // post-removal writer check fails. Preserve that result instead of running
+  // a new pre-removal check which would falsely describe the path as retained.
+  if (gitRemovalError instanceof WorktreeProcessCleanupError) {
+    return [formatUnregisteredWorktreeWarning(worktreePath, gitRemovalError)];
+  }
+
   try {
     let physicalRemovalError = await tolerateRemovalWork(
       'checkout-directory-removal',
@@ -1380,7 +1393,7 @@ async function safeRemoveWorktreeLocked(
       );
     }
 
-    if (process.platform !== 'win32' && process.platform !== 'darwin') {
+    if (!tolerantResidueWarningPlatform()) {
       throw normalizeError(physicalRemovalError);
     }
 
@@ -1527,10 +1540,47 @@ async function recoverTimedOutMacosWorktreeRemoval(options: {
   }
 }
 
+/** Platforms that report leftover files as a warning once Git has let go. */
+function tolerantResidueWarningPlatform(): boolean {
+  const operatingSystem = hostOperatingSystem();
+  return (
+    operatingSystem === 'win32' ||
+    operatingSystem === 'darwin' ||
+    operatingSystem === 'linux'
+  );
+}
+
+/**
+ * Linux residue wording. A writer-verification failure already says whether
+ * the directory was retained (checked before removal) or removed (checked
+ * after), so its message is reported as is and never rewritten to claim the
+ * opposite.
+ */
+function formatLinuxResidueWarning(
+  worktreePath: string,
+  error: unknown,
+  gitUnregistered: boolean,
+): string {
+  if (error instanceof WorktreeProcessCleanupError) {
+    return gitUnregistered
+      ? `Git unregistered this worktree. ${error.message}`
+      : error.message;
+  }
+  const residue = `Linux left files behind at ${worktreePath}: ${getErrorMessage(
+    error,
+  )}`;
+  return gitUnregistered
+    ? `Git unregistered this worktree, but ${residue}`
+    : residue;
+}
+
 function formatUnregisteredWorktreeWarning(
   worktreePath: string,
   error: unknown,
 ): string {
+  if (hostOperatingSystem() === 'linux') {
+    return formatLinuxResidueWarning(worktreePath, error, true);
+  }
   const residueDescription =
     process.platform === 'darwin'
       ? 'macOS left files behind'
@@ -1552,16 +1602,25 @@ function formatWindowsLockedFilesWarning(
 async function removePhysicalWorktreeDirectory(
   worktreePath: string,
 ): Promise<void> {
-  await removeWindowsWorktreeReparsePoints(worktreePath);
-  await removeTreeWithoutAsar(worktreePath, {
-    recursive: true,
-    force: true,
-    maxRetries:
-      process.platform === 'win32'
-        ? WINDOWS_WORKTREE_DIRECTORY_REMOVE_MAX_RETRIES
-        : DEFAULT_WORKTREE_DIRECTORY_REMOVE_MAX_RETRIES,
-    retryDelay: WORKTREE_DIRECTORY_REMOVE_RETRY_DELAY_MS,
-  });
+  const removeDirectory = async (): Promise<void> => {
+    await removeWindowsWorktreeReparsePoints(worktreePath);
+    await removeTreeWithoutAsar(worktreePath, {
+      recursive: true,
+      force: true,
+      maxRetries:
+        hostOperatingSystem() === 'win32'
+          ? WINDOWS_WORKTREE_DIRECTORY_REMOVE_MAX_RETRIES
+          : DEFAULT_WORKTREE_DIRECTORY_REMOVE_MAX_RETRIES,
+      retryDelay: WORKTREE_DIRECTORY_REMOVE_RETRY_DELAY_MS,
+    });
+  };
+  if (hostOperatingSystem() !== 'linux') {
+    await removeDirectory();
+    return;
+  }
+  // An unlink on Linux succeeds while an old writable descriptor survives, so
+  // check Canopy-owned writers before removal and again after it.
+  await withLinuxWorktreeRemovalVerification(worktreePath, removeDirectory);
 }
 
 async function removeTopLevelWorktreeDirectory(
@@ -1641,6 +1700,9 @@ async function removeTopLevelWorktreeDirectoryWithWarning(
   } catch (error) {
     if (process.platform === 'win32') {
       return [formatWindowsLockedFilesWarning(worktreePath, error)];
+    }
+    if (hostOperatingSystem() === 'linux') {
+      return [formatLinuxResidueWarning(worktreePath, error, false)];
     }
     if (process.platform !== 'darwin') {
       throw normalizeError(error);
@@ -4376,6 +4438,31 @@ async function createAdmittedMultiRepoWorktree(
   };
 }
 
+/**
+ * Archive retention removes the checkout in a utility worker whose process
+ * tree excludes main's providers, so main verifies its own writers around
+ * that teardown: after live cleanup drained them, before and after removal.
+ * Without a retained container the in-process removal verifies on its own.
+ */
+function retainedArchiveWriterVerification(
+  worktreePath: string,
+  archiveContainer: PreparedWorktreeArchiveContainer | undefined,
+): <T>(run: () => Promise<T>) => Promise<T> {
+  return (run) =>
+    archiveContainer
+      ? withLinuxWorktreeRemovalVerification(worktreePath, run, {
+          // Include the sibling before teardown starts: an interrupted archive
+          // may already have moved the checkout there before this retry.
+          additionalPaths: [
+            join(
+              dirname(worktreePath),
+              `.${basename(worktreePath)}.archive-quarantine`,
+            ),
+          ],
+        })
+      : run();
+}
+
 async function cleanupLiveStateIfNeeded(
   projectId: string,
   worktreeId: string,
@@ -5340,8 +5427,12 @@ async function archiveSingleRepoWorktreeWithoutOperationLock(options: {
     return null;
   });
 
+  const verifyWriters = retainedArchiveWriterVerification(
+    worktreePath,
+    archiveContainer,
+  );
   const [teardownResult] = await settleEach([
-    (async (): Promise<string[]> => {
+    verifyWriters(async (): Promise<string[]> => {
       setArchivePhase('teardown');
       if (archiveContainer?.teardownCompleted) return [];
       if (archiveContainer?.manifest.version === 3) {
@@ -5650,7 +5741,7 @@ async function archiveSingleRepoWorktreeWithoutOperationLock(options: {
         }
       }
       return warnings;
-    })(),
+    }),
   ]);
 
   if (teardownResult.status === 'rejected') {
@@ -5948,7 +6039,10 @@ export async function runWorktreeDiscardTail(options: {
       worktreeId,
     );
     setArchivePhase('teardown');
-    warnings = await options.removeTargets();
+    warnings = await withLinuxWorktreeRemovalVerification(
+      getWorktreeDir(workspaceId, worktreeId),
+      options.removeTargets,
+    );
   } catch (error) {
     await getAppAdvisorWatcherService().releaseLocalScopeFence(
       workspaceId,
@@ -6152,10 +6246,14 @@ async function runAdmittedArchiveDeletionLifecycle<T>(
   );
   try {
     schedulePortalStructuralSync();
-    return await runMarkedWorktreeArchiveDeletionLifecycle(
-      workspaceId,
-      worktreeId,
-      archiveOperation,
+    return await withLinuxWorktreeWriterTracking(
+      () =>
+        runMarkedWorktreeArchiveDeletionLifecycle(
+          workspaceId,
+          worktreeId,
+          archiveOperation,
+        ),
+      JSON.stringify([workspaceId, worktreeId]),
     );
   } finally {
     // Release before the sync: a failed or rejected archive shows the row
@@ -6487,8 +6585,12 @@ async function archiveMultiRepoWorktreeWithoutOperationLock(options: {
         return null;
       });
 
+      const verifyWriters = retainedArchiveWriterVerification(
+        worktreePath,
+        archiveContainer,
+      );
       const [teardownResult] = await settleEach([
-        (async (): Promise<string[]> => {
+        verifyWriters(async (): Promise<string[]> => {
           setArchivePhase('teardown');
           const warnings: string[] = branchPreservationWarning
             ? [branchPreservationWarning]
@@ -6996,7 +7098,7 @@ async function archiveMultiRepoWorktreeWithoutOperationLock(options: {
             );
           }
           return warnings;
-        })(),
+        }),
       ]);
 
       return {

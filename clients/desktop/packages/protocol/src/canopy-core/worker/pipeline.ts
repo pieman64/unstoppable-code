@@ -526,6 +526,20 @@ export const WorkerPipelineHostActionRequestSchema = z.discriminatedUnion(
        * on its host.
        */
       attachmentCount: z.number().int().min(1).max(1024).optional(),
+      /**
+       * A converted chat automation's composer payload (CAN-5479): absolute
+       * attachment paths, their prompt contexts and legacy file references.
+       * Each holds host paths, so only its count crosses.
+       */
+      attachmentPathCount: z.number().int().min(1).max(1024).optional(),
+      attachmentPromptContextCount: z
+        .number()
+        .int()
+        .min(1)
+        .max(1024)
+        .optional(),
+      fileReferenceCount: z.number().int().min(1).max(1024).optional(),
+      inputMode: z.enum(['typed', 'voice']).optional(),
       literalText: z.literal(true).optional(),
       replaceEmptyChat: z.literal(true).optional(),
       newChat: z.literal(true).optional(),

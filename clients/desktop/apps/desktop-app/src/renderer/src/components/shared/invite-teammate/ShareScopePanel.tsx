@@ -17,7 +17,7 @@ import type { UseSharePreviewResult } from './useSharePreview';
 import { useCanopyDesktopStartPageEnabled } from '@/hooks/useCanopyDesktopStartPageEnabled';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { openStartPageSettings } from '@/lib/start-page/save-start-page';
-import { ErrorBanner } from '@canopy/ui-shared/components';
+import { Button, ErrorBanner } from '@canopy/ui-shared/components';
 
 export interface ShareScopePanelProps {
   containerType: SharedContainerType;
@@ -132,9 +132,8 @@ export function ShareScopePanel({
         >
           <span>{`Opens to: ${share.preview.startPage.label}`}</span>
           <span aria-hidden="true"> · </span>
-          <button
-            type="button"
-            className="fg-accent hover:underline"
+          <Button
+            variant="link"
             onClick={() => {
               const project = useProjectsStore
                 .getState()
@@ -159,7 +158,7 @@ export function ShareScopePanel({
             }}
           >
             Change
-          </button>
+          </Button>
           {/* The layout wins over the start page while it is on, so the
               withheld note only decides anything once it is off. */}
           {!share.preferredLayoutEnabled &&

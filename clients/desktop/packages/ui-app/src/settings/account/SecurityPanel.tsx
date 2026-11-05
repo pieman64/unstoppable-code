@@ -19,7 +19,7 @@ import {
   TextInput,
   DelayedLoadingPlaceholder,
   ErrorBanner,
-  SettingsFormSkeleton,
+  Skeleton,
   StatusLabel,
 } from '@canopy/ui-shared/components';
 import {
@@ -61,6 +61,29 @@ const REMOVE_AUTH_SOURCE_KNOWN_ERRORS: readonly KnownSettingsError[] = [
 ];
 
 type Status = 'loading' | 'ready' | 'error';
+
+const noop = (): void => undefined;
+
+/**
+ * Sample sign-in methods for the loading state. They never show: `Skeleton`
+ * measures the real rows rendered with them into bars.
+ */
+const SAMPLE_AUTH_SOURCES: readonly AuthSource[] = [
+  {
+    providerId: 'google',
+    accountId: 'sample-google',
+    label: 'Google',
+    linkedAt: '2026-01-01T00:00:00.000Z',
+    canUnlink: true,
+  },
+  {
+    providerId: CREDENTIAL_PROVIDER_ID,
+    accountId: 'sample-credential',
+    label: 'Email and password',
+    linkedAt: '2026-01-01T00:00:00.000Z',
+    canUnlink: true,
+  },
+];
 
 export interface SecurityPanelProps {
   brandDisplayName: string;
@@ -146,7 +169,23 @@ export function SecurityPanel({
     <section className="flex flex-col gap-6">
       {status === 'loading' && (
         <DelayedLoadingPlaceholder>
-          <SettingsFormSkeleton rows={3} />
+          <Skeleton
+            loading
+            label="Loading sign-in methods"
+            testId="settings-skeleton-form"
+          >
+            <SettingsCard title="Sign-in methods">
+              <ul className="flex flex-col">
+                {SAMPLE_AUTH_SOURCES.map((source) => (
+                  <AuthSourceRow
+                    key={source.accountId}
+                    source={source}
+                    onRemoved={noop}
+                  />
+                ))}
+              </ul>
+            </SettingsCard>
+          </Skeleton>
         </DelayedLoadingPlaceholder>
       )}
 

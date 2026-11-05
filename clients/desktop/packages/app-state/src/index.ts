@@ -183,6 +183,7 @@ export {
 } from './ledger/create-ledger-view-store';
 export {
   DEFAULT_LEDGER_FEED_FILTERS,
+  LEDGER_FEED_PAGE_ENTRIES,
   createLedgerFeedStore,
   ledgerFeedDraft,
   type LedgerFeedComposerState,
@@ -256,6 +257,17 @@ export {
   type PlanModeHintStore,
 } from './onboarding/plan-mode-hint-store';
 export {
+  createGitHubStarPromptStore,
+  isGitHubStarPromptAvailable,
+  isGitHubStarPromptRetired,
+  type GitHubStarPromptLoadResult,
+  type GitHubStarPromptOperation,
+  type GitHubStarPromptPersistence,
+  type GitHubStarPromptState,
+  type GitHubStarPromptStatus,
+  type GitHubStarPromptStore,
+} from './onboarding/github-star-prompt-store';
+export {
   buildSidebarActivitySnapshot,
   compareSidebarActivityEntries,
   sidebarActivityStandaloneChatKey,
@@ -284,6 +296,7 @@ export {
 export * from './marketplace-sources/useMarketplaceSourceAdd';
 export * from './script-actions';
 export * from './onboarding-tips';
+export * from './suggestions';
 export * from './org-projects/create-shared-multi-repo-store';
 
 export * from './sidebar-placement/sidebar-placement-model';

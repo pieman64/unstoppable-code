@@ -427,8 +427,8 @@ export function HooksSectionBody({
         key={key}
         className={
           compact
-            ? `group flex ${COMPACT_ACTIVITY_ITEM_CLASS_NAME}`
-            : 'group flex w-full items-center gap-2 rounded-lg border bg-fg-primary/[0.03] px-2.5 py-2 text-left text-xs'
+            ? `group flex ${COMPACT_ACTIVITY_ITEM_CLASS_NAME} pointer-coarse:gap-4`
+            : 'group flex w-full items-center gap-2 rounded-lg border bg-fg-primary/[0.03] px-2.5 py-2 text-left text-xs pointer-coarse:gap-4'
         }
         data-testid="activity-hooks-entry"
       >
@@ -520,8 +520,8 @@ export function HooksSectionBody({
             key={`unconfigured-watch-${watcher.key}`}
             className={
               compact
-                ? `group flex ${COMPACT_ACTIVITY_ITEM_CLASS_NAME}`
-                : 'group flex w-full items-center gap-2 rounded-lg border bg-fg-primary/[0.03] px-2.5 py-2 text-left text-xs'
+                ? `group flex ${COMPACT_ACTIVITY_ITEM_CLASS_NAME} pointer-coarse:gap-4`
+                : 'group flex w-full items-center gap-2 rounded-lg border bg-fg-primary/[0.03] px-2.5 py-2 text-left text-xs pointer-coarse:gap-4'
             }
           >
             <span className="flex-1 font-medium fg-secondary">

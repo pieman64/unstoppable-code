@@ -483,7 +483,9 @@ export function HarnessesTab(): JSX.Element {
               ) : null}
             </DragOverlay>
             {keyboardActiveId && (
+              // Decorative: the live region below announces the move.
               <div
+                aria-hidden="true"
                 data-testid="harness-drag-overlay"
                 className="pointer-events-none fixed left-1/2 top-6 z-toast flex h-8 -translate-x-1/2 items-center rounded-md bg-card px-2 text-s fg-primary shadow-lg"
               >

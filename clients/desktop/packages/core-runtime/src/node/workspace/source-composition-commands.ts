@@ -129,7 +129,15 @@ function unredeemable(
   );
 }
 
-/** The eight handlers over `host`; register them only where `host` runs. */
+/**
+ * The combine's worktree form and its retry are the cloud's Add repository
+ * (CAN-5710); no desktop host runs that combine.
+ */
+function cloudOnly(message: string): CoreLifecycleRefusedError {
+  return new CoreLifecycleRefusedError('feature-unavailable', message);
+}
+
+/** The nine handlers over `host`; register them only where `host` runs. */
 export function createCoreSourceCompositionHandlers(
   host: CoreSourceCompositionHost,
 ): CoreSourceCompositionHandlers {
@@ -162,9 +170,21 @@ export function createCoreSourceCompositionHandlers(
       run('core.workspace.sourceChanges.apply', context, (wire) =>
         host.applySourceChanges(params, wire),
       ),
-    'core.workspace.composition.combine': (_params, context) =>
+    'core.workspace.composition.combine': (params, context) =>
       run('core.workspace.composition.combine', context, () =>
-        Promise.reject(unredeemable('option-unavailable')),
+        Promise.reject(
+          'optionId' in params
+            ? unredeemable('option-unavailable')
+            : cloudOnly(
+                'Adding projects to a worktree is unavailable on this host.',
+              ),
+        ),
+      ),
+    'core.workspace.composition.retry': (_params, context) =>
+      run('core.workspace.composition.retry', context, () =>
+        Promise.reject(
+          cloudOnly('Retrying a combine is unavailable on this host.'),
+        ),
       ),
     'core.workspace.composition.split': (_params, context) =>
       run('core.workspace.composition.split', context, () =>

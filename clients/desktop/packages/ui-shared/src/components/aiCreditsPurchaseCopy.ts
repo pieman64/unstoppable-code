@@ -9,7 +9,14 @@
  */
 
 /** The purchase action on every surface. */
-export const AI_CREDITS_PURCHASE_LABEL = 'Get AI Credits';
+export const AI_CREDITS_PURCHASE_LABEL = 'Buy AI Credits';
+
+/**
+ * CAN-4766 — the purchase action a guest sees. A guest can't buy before
+ * signing in, so no guest action carries the bare purchase label: the guest
+ * recovery dialog and the guest model gate both say this instead.
+ */
+export const AI_CREDITS_GUEST_PURCHASE_LABEL = 'Sign in to buy AI Credits';
 
 /** The re-read after checkout, on every surface. */
 export const AI_CREDITS_CHECK_AGAIN_LABEL = 'Check again';

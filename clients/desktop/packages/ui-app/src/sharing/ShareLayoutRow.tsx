@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { ToggleSwitch } from '@canopy/ui-shared/components';
+import { Button, ToggleSwitch } from '@canopy/ui-shared/components';
 
 export interface ShareLayoutRowProps {
   /** Whether receivers open to the publisher's layout. */
@@ -45,15 +45,14 @@ export function ShareLayoutRow({
       <span className="fg-primary">{label}</span>
       <div className="flex items-center gap-3">
         {enabled && updateLabel !== undefined && (
-          <button
-            type="button"
-            className="fg-accent hover:underline disabled:pointer-events-none disabled:opacity-60"
+          <Button
+            variant="link"
             disabled={saving}
             onClick={onUpdate}
             data-testid={childTestId('update')}
           >
             {updateLabel}
-          </button>
+          </Button>
         )}
         <ToggleSwitch
           checked={enabled}

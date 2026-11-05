@@ -179,26 +179,30 @@ export function PlanReviewCommentActions({
   return (
     <>
       <Tooltip label="Edit unsubmitted comment">
-        <button
-          type="button"
+        <Button
+          variant="ghost-quiet"
+          size="sm"
+          iconOnly
           onClick={onEdit}
           aria-label="Edit comment"
           data-testid={editTestId}
-          className="focus-ring rounded-md p-0.5 fg-secondary hover:bg-secondary hover:fg-primary"
+          className="-my-1.5"
         >
           <PencilIcon width={13} height={13} />
-        </button>
+        </Button>
       </Tooltip>
       <Tooltip label="Delete unsubmitted comment">
-        <button
-          type="button"
+        <Button
+          variant="ghost-quiet"
+          size="sm"
+          iconOnly
           onClick={onDelete}
           aria-label="Delete comment"
           data-testid={deleteTestId}
-          className="focus-ring rounded-md p-0.5 fg-secondary hover:bg-secondary hover:fg-destructive"
+          className="-my-1.5"
         >
           <TrashIcon width={13} height={13} />
-        </button>
+        </Button>
       </Tooltip>
     </>
   );
@@ -278,19 +282,22 @@ export function PlanReviewThread({
         }`}
       >
         {onToggleCollapsed && (
-          <button
-            type="button"
+          <Button
+            variant="ghost-quiet"
+            size="sm"
+            iconOnly
             onClick={onToggleCollapsed}
             aria-expanded={!collapsed}
+            aria-label="Comments"
             data-testid={dataTestId ? `${dataTestId}-toggle` : undefined}
-            className="focus-ring -ml-1 shrink-0 rounded p-0.5 fg-secondary hover:fg-primary"
+            className="-my-1.5 -ml-2"
           >
             {collapsed ? (
               <ChevronRightIcon width={14} height={14} />
             ) : (
               <ChevronDownIcon width={14} height={14} />
             )}
-          </button>
+          </Button>
         )}
         <span
           className={`flex shrink-0 items-center gap-1 text-2xs font-semibold ${
@@ -326,14 +333,16 @@ export function PlanReviewThread({
               surfaceClassName="w-max max-w-96"
               surfacePadding="compact"
             >
-              <button
-                type="button"
+              <Button
+                variant="link"
                 onClick={reference.onActivate}
                 aria-label={reference.activateLabel ?? reference.text}
-                className="focus-ring w-full min-w-0 truncate text-left text-2xs italic fg-secondary/90 transition-colors hover:fg-primary hover:underline"
+                className="w-full min-w-0"
               >
-                {reference.text}
-              </button>
+                <span className="block truncate text-left text-2xs italic">
+                  {reference.text}
+                </span>
+              </Button>
             </RichHoverTooltip>
           ) : (
             <span className="min-w-0 flex-1 truncate text-2xs italic fg-secondary/90">

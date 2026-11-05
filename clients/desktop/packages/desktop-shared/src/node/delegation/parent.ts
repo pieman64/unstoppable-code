@@ -19,6 +19,7 @@ import { DelegationCallBindings } from './call-bindings';
 import {
   createDelegationProjection,
   type DelegationCapabilityDiscovery,
+  type DelegationFeedHooks,
   type DelegationProjectionBroker,
   type DelegationProjectionNames,
 } from './projections';
@@ -117,7 +118,8 @@ export class DelegationParent {
   private readonly controller = new AbortController();
   private binding?: { turnId: string; calls: DelegationCallBindings };
   private readonly hostMessages: DelegationHostMessages;
-  readonly projection: ReturnType<typeof createDelegationProjection>;
+  private feedHooks?: DelegationFeedHooks;
+  private currentProjection: ReturnType<typeof createDelegationProjection>;
 
   constructor(
     readonly options: {
@@ -163,18 +165,24 @@ export class DelegationParent {
     },
   ) {
     this.hostMessages = options.hostMessages ?? new DelegationHostMessages();
-    this.projection = createDelegationProjection(
-      options.harness,
-      options.namespace,
-      options.broker,
-      {
-        names: options.names,
-        discoverModels: options.discoverModels,
-        discoverCapabilities: options.discoverCapabilities,
-        enableDelegationTools: options.enableDelegationTools,
-        requestSteering: options.requestSteering,
-      },
-    );
+    this.currentProjection = this.createProjection();
+  }
+
+  get projection(): ReturnType<typeof createDelegationProjection> {
+    return this.currentProjection;
+  }
+
+  /** Configure this parent's host-built Feed readers and rebuild the tool gate. */
+  configureFeed(hooks: DelegationFeedHooks | undefined): void {
+    if (
+      this.feedHooks?.readFeedSummary === hooks?.readFeedSummary &&
+      this.feedHooks?.readFeedAssignment === hooks?.readFeedAssignment
+    )
+      return;
+    this.feedHooks = hooks;
+    // In-flight native Claude calls still resolve their turn-bound arguments;
+    // invocation reparses them against the new Feed gate before broker access.
+    this.currentProjection = this.createProjection();
   }
 
   get active(): boolean {
@@ -436,6 +444,57 @@ export class DelegationParent {
     });
   }
 
+  private createProjection(): ReturnType<typeof createDelegationProjection> {
+    const hooks = this.feedHooks;
+    return createDelegationProjection(
+      this.options.harness,
+      this.options.namespace,
+      this.options.broker,
+      {
+        names: this.options.names,
+        discoverModels: this.options.discoverModels,
+        discoverCapabilities: this.options.discoverCapabilities,
+        enableDelegationTools: this.options.enableDelegationTools,
+        requestSteering: this.options.requestSteering,
+        ...(hooks
+          ? {
+              includeFeed: true,
+              readFeedSummary: hooks.readFeedSummary,
+              readFeedAssignment: hooks.readFeedAssignment,
+            }
+          : {}),
+        onError: this.options.reportError,
+      },
+    );
+  }
+
+  private async enrichFeedAssignment(
+    parent: DelegationParentContext,
+    task: AgentDelegationSpawnRequest,
+    result: AgentDelegationResult<AgentDelegationSnapshot>,
+  ): Promise<AgentDelegationResult<AgentDelegationSnapshot>> {
+    if (!result.ok || !task.taskIds?.length || !this.feedHooks) return result;
+    try {
+      const feedAssignment = await this.feedHooks.readFeedAssignment(
+        parent,
+        task,
+        result.value.delegationId,
+      );
+      return feedAssignment === undefined
+        ? result
+        : { ok: true, value: { ...result.value, feedAssignment } };
+    } catch {
+      try {
+        this.options.reportError(
+          new Error('Delegation Feed assignment unavailable'),
+        );
+      } catch {
+        // The host diagnostic must not turn a Feed read failure into spawn failure.
+      }
+      return result;
+    }
+  }
+
   private async invokeOwned(
     parent: DelegationParentCallContext,
     name: string,
@@ -465,8 +524,12 @@ export class DelegationParent {
       );
     const parsed =
       this.options.harness !== 'codex'
-        ? parseClaudeDelegationSpawn(input)
-        : parseCodexDelegationSpawn(input);
+        ? parseClaudeDelegationSpawn(input, {
+            includeFeed: this.feedHooks !== undefined,
+          })
+        : parseCodexDelegationSpawn(input, {
+            includeFeed: this.feedHooks !== undefined,
+          });
     if (!parsed.ok) return parsed;
     if (this.options.authorizeSpawn?.() === false) {
       const blocked: AgentDelegationResult<AgentDelegationSnapshot> = {
@@ -485,8 +548,13 @@ export class DelegationParent {
       ...parsed.value,
       executionMode: 'background',
     });
-    this.options.onInvocation?.(parent, parsed.value, result);
-    return result;
+    const enriched = await this.enrichFeedAssignment(
+      parent,
+      parsed.value,
+      result,
+    );
+    this.options.onInvocation?.(parent, parsed.value, enriched);
+    return enriched;
   }
 
   private bindingRequest(
@@ -494,7 +562,13 @@ export class DelegationParent {
     input: unknown,
   ): AgentDelegationResult<AgentDelegationSpawnRequest> {
     if (name === this.options.names.spawn)
-      return parseClaudeDelegationSpawn(input);
+      return this.options.harness !== 'codex'
+        ? parseClaudeDelegationSpawn(input, {
+            includeFeed: this.feedHooks !== undefined,
+          })
+        : parseCodexDelegationSpawn(input, {
+            includeFeed: this.feedHooks !== undefined,
+          });
     if (
       !isWatchDelegatesCompatibilityName(name, this.options.harness) &&
       !this.ownsTool(name)

@@ -1915,7 +1915,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       type: 'settings.set_skill_suggestions_enabled',
       category: 'settings',
       summary:
-        'Turn "Suggest skills for repeated requests" on or off: whether the app offers to turn a request the user keeps making into a skill.',
+        'Turn "Suggest skills for repeated requests" on or off: whether the app offers to turn a request the user keeps making into a skill. Suggestions also need Settings → General → "Show suggestions", the master switch for in-app suggestions, which the user changes in Settings.',
       fields: [
         field(
           'enabled',

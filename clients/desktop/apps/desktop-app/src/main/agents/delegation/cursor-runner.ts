@@ -38,6 +38,7 @@ import {
   DELEGATION_STREAM_PREVIEW_LIMITS,
   DelegationTranscriptRecorder,
 } from './transcript-recorder';
+import { ChildAppendQueue } from './child-append-queue';
 import { DelegationChildNormalizer } from './child-row-normalizers';
 import { delegationBlockId } from '@canopy/agent-transcript';
 import { childDelegationGuidance } from './child-tools';
@@ -188,13 +189,19 @@ export function createCursorDelegationRunner(options: {
       const transcript = new DelegationTranscriptRecorder(
         childNormalizer ? DELEGATION_STREAM_PREVIEW_LIMITS : undefined,
       );
+      const childAppends = appendChildChanges
+        ? new ChildAppendQueue(appendChildChanges, (changes) =>
+            childNormalizer?.acknowledge(changes),
+          )
+        : undefined;
+      // Provider events queue their rows and continue; finishing waits until
+      // every queued row is durable.
+      const queueNormalizedChanges = async (
+        changes: readonly DelegationTranscriptChange[],
+      ): Promise<void> => childAppends?.enqueue(changes);
       const appendNormalizedChanges = async (
         changes: readonly DelegationTranscriptChange[],
-      ): Promise<void> => {
-        if (!changes.length || !appendChildChanges) return;
-        await appendChildChanges(changes);
-        childNormalizer?.acknowledge(changes);
-      };
+      ): Promise<void> => childAppends?.flush(changes);
       let usage: AgentDelegationUsage | undefined;
       let lastTranscript = 0;
       const flush = async (): Promise<void> => {
@@ -423,7 +430,7 @@ export function createCursorDelegationRunner(options: {
             },
             emit: async (event) => {
               transcript.cursor(event);
-              await appendNormalizedChanges(
+              await queueNormalizedChanges(
                 childNormalizer ? await childNormalizer.patch(event) : [],
               );
               if (transcript.limitExceeded && !childNormalizer)

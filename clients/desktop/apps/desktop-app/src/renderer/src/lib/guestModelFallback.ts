@@ -4,7 +4,6 @@ import {
   resolveModelIdForGatewayId,
 } from '@canopy/desktop-shared/lib/gateway-model-availability';
 import { resolveGuestAllowedModelForGatewayId } from '@canopy/protocol/models';
-import type { GuestModelFallbackAccess } from '@canopy/ui-shared';
 import type { ModelRecovery, VisibleModelRowGate } from './modelPickerRowGate';
 
 /**
@@ -21,13 +20,6 @@ export interface GuestModelFallback {
   readonly gatewayId: string;
   /** Allowlist label, shown in the gate copy. */
   readonly label: string;
-  /**
-   * `now` — the row was available at the click. `daily-credits` (CAN-5211) —
-   * the row was recoverable by credits alone: a candidate only, since credits
-   * could fund it but nothing here proves the guest can turn them on. The
-   * recovery modal decides that from its own account read.
-   */
-  readonly access: GuestModelFallbackAccess;
 }
 
 /** The parts of a picker row the fallback reads. */
@@ -65,18 +57,13 @@ function findCandidateRow(
   return matches.length === 1 ? matches[0] : undefined;
 }
 
-/** How a candidate row can be reached, or `undefined` when it cannot. */
-function fallbackAccessOf(
-  gate: VisibleModelRowGate,
-): GuestModelFallbackAccess | undefined {
-  if (gate.kind === 'available') return 'now';
-  if (
-    gate.kind === 'recoverable' &&
-    (gate.recovery.kind === 'needs-credits' ||
-      gate.recovery.kind === 'needs-billing-source')
-  )
-    return 'daily-credits';
-  return undefined;
+/**
+ * Whether a candidate row is usable right now. CAN-4766: a row that needs
+ * credits or a provider is never offered, since the gate no longer turns on
+ * free daily credits to reach it.
+ */
+function isUsableNow(gate: VisibleModelRowGate): boolean {
+  return gate.kind === 'available';
 }
 
 /**
@@ -86,9 +73,8 @@ function fallbackAccessOf(
  * Same vendor, first allowlist entry (see
  * `resolveGuestAllowedModelForGatewayId`). Offered only when that entry maps
  * to exactly one listed row that is not what the chat already uses, and that
- * row is `available` right now or recoverable by credits alone (CAN-5211).
- * Any other recovery, or a blocked preferred entry, offers nothing: later
- * allowlist entries are never searched.
+ * row is `available` right now. Any recovery, or a blocked preferred entry,
+ * offers nothing: later allowlist entries are never searched.
  */
 export function resolveGuestModelFallback({
   gatedModel,
@@ -107,8 +93,7 @@ export function resolveGuestModelFallback({
 
   const row = findCandidateRow(candidate.gatewayId, rows);
   if (row === undefined) return undefined;
-  const access = fallbackAccessOf(row.gate);
-  if (access === undefined) return undefined;
+  if (!isUsableNow(row.gate)) return undefined;
 
   const model = rowSelection(row);
   if (
@@ -124,7 +109,6 @@ export function resolveGuestModelFallback({
     model,
     gatewayId: candidate.gatewayId,
     label: candidate.label,
-    access,
   };
 }
 

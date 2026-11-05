@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import {
   Button,
+  ListRow,
   LoadingSpinner,
   Notice,
   TextInput,
@@ -161,10 +162,10 @@ export function RemotePathPicker({
               entry.kind === 'file' && selectedFile === entry.path;
             return (
               <li key={entry.path}>
-                <button
-                  type="button"
+                <ListRow
                   disabled={loading}
                   aria-pressed={entry.kind === 'file' ? selected : undefined}
+                  selected={selected}
                   onClick={() => {
                     if (entry.kind === 'directory') {
                       load(entry.path);
@@ -177,30 +178,25 @@ export function RemotePathPicker({
                   }}
                   data-testid={`remote-path-picker-entry-${entry.name}`}
                   data-entry-kind={entry.kind}
-                  className="focus-ring flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-2 text-left text-s fg-primary hover:bg-subtle disabled:cursor-wait"
+                  icon={
+                    entry.kind === 'directory' ? (
+                      <FolderIcon size={16} aria-hidden="true" />
+                    ) : (
+                      <FileIcon size={16} aria-hidden="true" />
+                    )
+                  }
+                  trailing={
+                    selected ? (
+                      <CheckIcon
+                        size={16}
+                        aria-hidden="true"
+                        className="fg-primary"
+                      />
+                    ) : undefined
+                  }
                 >
-                  {entry.kind === 'directory' ? (
-                    <FolderIcon
-                      size={16}
-                      aria-hidden="true"
-                      className="shrink-0 fg-secondary"
-                    />
-                  ) : (
-                    <FileIcon
-                      size={16}
-                      aria-hidden="true"
-                      className="shrink-0 fg-secondary"
-                    />
-                  )}
-                  <span className="min-w-0 flex-1 truncate">{entry.name}</span>
-                  {selected ? (
-                    <CheckIcon
-                      size={16}
-                      aria-hidden="true"
-                      className="shrink-0"
-                    />
-                  ) : null}
-                </button>
+                  {entry.name}
+                </ListRow>
               </li>
             );
           })}

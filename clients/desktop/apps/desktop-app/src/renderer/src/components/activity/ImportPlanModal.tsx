@@ -7,7 +7,6 @@ import {
   useState,
   type JSX,
 } from 'react';
-import { createPortal } from 'react-dom';
 import { useShallow } from 'zustand/shallow';
 import type {
   DetectedPlanEntry,
@@ -22,7 +21,11 @@ import {
   type ImportPlanPickerItem,
   type ImportPlanSuggestion,
 } from '@canopy/ui-app/plans';
-import { getWorktreeCacheKey, useFileListStore } from '@/stores/fileListStore';
+import {
+  getWorktreeCacheKey,
+  useFileListStore,
+  useRetainFileIndex,
+} from '@/stores/fileListStore';
 import { useActivityStore } from '@/stores/activityStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useGitHubStore } from '@/stores/githubStore';
@@ -96,6 +99,7 @@ export function ImportPlanModal({
   const chatTabs = useChatStore((state) => state.worktreeChats[worktreeKey]);
 
   const cacheKey = getWorktreeCacheKey(projectId, worktreeId);
+  useRetainFileIndex(cacheKey);
   const { entry, error, isLoading, fetchFileIndex } = useFileListStore(
     useShallow((state) => ({
       entry: state.indexCache[cacheKey],
@@ -475,7 +479,8 @@ export function ImportPlanModalHost(): JSX.Element {
     closeImportModal();
   };
 
-  return createPortal(
+  // The picker is a DialogModal, which portals itself.
+  return (
     <ImportPlanModal
       projectId={projectId}
       worktreeId={worktreeId}
@@ -483,7 +488,6 @@ export function ImportPlanModalHost(): JSX.Element {
       onClose={closeImportModal}
       onImported={(plan): void => openPlan(plan.id)}
       onOpenTracked={openPlan}
-    />,
-    document.body,
+    />
   );
 }

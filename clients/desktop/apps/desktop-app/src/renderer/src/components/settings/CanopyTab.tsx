@@ -27,9 +27,10 @@ import {
   ToggleSwitch,
   BusyLabel,
   DialogModal,
-  LoadingIndicator,
   ErrorBanner,
+  Skeleton,
   StatusLabel,
+  WindowPage,
 } from '@canopy/ui-shared/components';
 import {
   Badge,
@@ -51,7 +52,7 @@ import { ProfileRoleSection } from '@/components/settings/ProfileRoleSection';
 import { NavigationModeSection } from '@/components/settings/NavigationModeSection';
 import { LaunchAtLoginSection } from '@/components/settings/LaunchAtLoginSection';
 import { LedgerAgentRecordingSection } from '@/components/settings/LedgerAgentRecordingSection';
-import { RepeatTaskSuggestionsSection } from '@/components/settings/RepeatTaskSuggestionsSection';
+import { SuggestionsSection } from '@/components/settings/SuggestionsSection';
 import {
   SettingsGroup,
   SettingsPage,
@@ -159,6 +160,9 @@ interface DependencyRowProps {
   version: string | undefined;
 }
 
+/** A sample version the loading skeleton measures in a version's place. */
+const SAMPLE_VERSION = '1.2.30';
+
 function DependencyRow({
   icon,
   label,
@@ -174,7 +178,17 @@ function DependencyRow({
       }
       control={
         <span className="font-mono text-xs tabular-nums fg-secondary">
-          {version ?? <LoadingIndicator />}
+          {version ?? (
+            // The version is the value still on its way: a sample of its
+            // real text, measured.
+            <Skeleton
+              loading
+              label={`Loading ${label} version`}
+              className="inline-block"
+            >
+              {SAMPLE_VERSION}
+            </Skeleton>
+          )}
         </span>
       }
     />
@@ -225,6 +239,8 @@ function DependenciesSection({
     </SettingsSection>
   );
 }
+
+function noop(): void {}
 
 export function CanopyTab(): JSX.Element {
   const linuxCopy = linuxUpdateCopy(brand, __CANOPY_RELEASE_FLAVOR__);
@@ -620,7 +636,7 @@ export function CanopyTab(): JSX.Element {
         </SettingsGroup>
       </SettingsSection>
 
-      <RepeatTaskSuggestionsSection />
+      <SuggestionsSection />
 
       {dataDirPromptOpen && dataDirStatus?.source === 'fallback' && (
         <ConfirmDialog
@@ -893,7 +909,14 @@ export function CanopyTab(): JSX.Element {
                   {appVersion ? (
                     formatVersionLabel(appVersion)
                   ) : (
-                    <LoadingIndicator />
+                    <Skeleton
+                      loading
+                      label="Loading version"
+                      className="inline-block"
+                      testId="settings-app-version-loading"
+                    >
+                      {SAMPLE_VERSION}
+                    </Skeleton>
                   )}
                 </span>
               </span>
@@ -1135,7 +1158,18 @@ export function CanopyTab(): JSX.Element {
       </SettingsSection>
 
       <DependenciesSection dependencyVersions={dependencyVersions} />
-      {dataDirSplashVisible && <AppLoadingScreen />}
+      {/* While the data folder is created and the app restarts, the loading
+          screen covers the whole window on the shared window page: nothing
+          behind it takes a press or focus, and Escape cannot close Settings
+          underneath it. */}
+      <WindowPage
+        open={dataDirSplashVisible}
+        onClose={noop}
+        aria-label={`Restarting ${brandText.appName}`}
+        dataTestId="data-dir-restart-screen"
+      >
+        <AppLoadingScreen />
+      </WindowPage>
     </SettingsPage>
   );
 }

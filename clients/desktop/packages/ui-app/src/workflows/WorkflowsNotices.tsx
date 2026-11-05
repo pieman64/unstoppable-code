@@ -110,7 +110,9 @@ export function NewWorkflowMenu({
                     : 'When you start it'}
                 </span>
                 <span className="text-xs fg-tertiary">
-                  Build the workflow in the editor
+                  {onDescribePipeline
+                    ? 'Build the workflow in the editor'
+                    : 'Describe it to the assistant, or build it yourself'}
                 </span>
               </span>
             </DropdownMenuItem>

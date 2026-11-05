@@ -85,6 +85,10 @@ import {
   handlePortalAppAdvisorSetModel,
 } from './adapters/app-advisor-adapter';
 import {
+  handlePortalSuggestionsGet,
+  handlePortalSuggestionsUpdate,
+} from './adapters/suggestions-adapter';
+import {
   handlePortalOnboardingTipsGet,
   handlePortalOnboardingTipsUpdate,
 } from './adapters/onboarding-tips-adapter';
@@ -570,6 +574,8 @@ const FEATURE_ADAPTERS: Partial<
     handlePortalAppAdvisorSettingsGet as PortalCommandAdapter<unknown>,
   'portal.app_advisor.settings.save':
     handlePortalAppAdvisorSettingsSave as PortalCommandAdapter<unknown>,
+  'portal.suggestions.get': handlePortalSuggestionsGet,
+  'portal.suggestions.update': handlePortalSuggestionsUpdate,
   'portal.onboarding_tips.get': handlePortalOnboardingTipsGet,
   'portal.onboarding_tips.update': handlePortalOnboardingTipsUpdate,
   // The census handler span below stays as on develop until the Portal

@@ -3,9 +3,9 @@
 import { useEffect, useState, type JSX } from 'react';
 import type { ExplorerSourceTranscript } from '@canopy/protocol/settings/organization-memory';
 import {
-  CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
   ErrorBanner,
+  Skeleton,
 } from '@canopy/ui-shared/components';
 import { useSettingsClient, useSettingsSearchParams } from '../host';
 import type { SettingsPageProps } from '../pages/page-props';
@@ -19,6 +19,38 @@ import {
   OrganizationMemoryLayout,
 } from './OrganizationMemoryLayout';
 import { SourceTranscriptView } from './SourceTranscriptView';
+
+/** A plain transcript the loading skeleton measures: two short messages. */
+const SAMPLE_TRANSCRIPT: ExplorerSourceTranscript = {
+  restricted: false,
+  evidenceQuote: null,
+  source: {
+    id: 'memory-source-skeleton',
+    transcriptTurnId: null,
+    referenceTime: '2026-01-01T12:00:00.000Z',
+    actor: { id: 'memory-source-skeleton', name: 'Sam Lee', email: '' },
+  },
+  messages: [
+    {
+      scope: 'worktree',
+      localChatId: 'memory-source-skeleton',
+      localMessageId: 'memory-source-skeleton-1',
+      role: 'user',
+      status: 'complete',
+      content: 'Which database do the integration tests use?',
+      occurredAt: '2026-01-01T12:00:00.000Z',
+    },
+    {
+      scope: 'worktree',
+      localChatId: 'memory-source-skeleton',
+      localMessageId: 'memory-source-skeleton-2',
+      role: 'assistant',
+      status: 'complete',
+      content: 'They run against the staging database on port 5433.',
+      occurredAt: '2026-01-01T12:01:00.000Z',
+    },
+  ],
+};
 
 type SelectedTranscript =
   | { status: 'ready'; transcript: ExplorerSourceTranscript | null }
@@ -139,8 +171,14 @@ function FactSourceTranscript({
   if (selected.status === 'loading') {
     return (
       <div className="flex min-h-40">
-        <DelayedLoadingPlaceholder>
-          <CenteredLoadingSpinner />
+        <DelayedLoadingPlaceholder slowNote="Still loading the transcript…">
+          <Skeleton
+            loading
+            label="Loading transcript"
+            testId="memory-fact-transcript-loading"
+          >
+            <SourceTranscriptView transcript={SAMPLE_TRANSCRIPT} />
+          </Skeleton>
         </DelayedLoadingPlaceholder>
       </div>
     );

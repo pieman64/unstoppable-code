@@ -66,8 +66,8 @@ export interface DelegationLiveFramesOptions {
  * items that are new or changed since the previous frame, so a live card
  * receives each item about once instead of the whole transcript ten times a
  * second. A run's first frame, a frame after {@link DELEGATION_LIVE_KEYFRAME_MS},
- * and its settled frame carry the whole transcript, so a renderer that
- * reloaded or forgot the run catches up without asking.
+ * a forced keyframe, and its settled frame carry the whole transcript, so a
+ * renderer that reloaded or forgot the run catches up without asking.
  */
 export class DelegationLiveFrames {
   private readonly runs = new Map<string, LiveRun>();
@@ -79,6 +79,16 @@ export class DelegationLiveFrames {
     this.keyframeMs = options.keyframeMs ?? DELEGATION_LIVE_KEYFRAME_MS;
   }
 
+  /** Sends the whole transcript and resets the live patch baseline. */
+  keyframe(transcript: AgentDelegationTranscript): AgentDelegationTranscript {
+    const key = delegationRunKey(transcript);
+    if (DELEGATION_SETTLED_STATUSES.has(transcript.snapshot.status)) {
+      this.runs.delete(key);
+      return transcript;
+    }
+    return this.rememberKeyframe(key, transcript, this.now());
+  }
+
   frame(transcript: AgentDelegationTranscript): AgentDelegationTranscript {
     const key = delegationRunKey(transcript);
     const at = this.now();
@@ -87,19 +97,26 @@ export class DelegationLiveFrames {
       return transcript;
     }
     const run = this.runs.get(key);
-    if (!run || at - run.keyframeAt >= this.keyframeMs) {
-      this.runs.set(key, {
-        sent: new Map(transcript.transcript.map((item) => [item.id, item])),
-        keyframeAt: at,
-      });
-      return transcript;
-    }
+    if (!run || at - run.keyframeAt >= this.keyframeMs)
+      return this.rememberKeyframe(key, transcript, at);
     const changed = transcript.transcript.filter((item) => {
       if (sameDelegationItem(run.sent.get(item.id), item)) return false;
       run.sent.set(item.id, item);
       return true;
     });
     return { ...transcript, transcriptMode: 'patch', transcript: changed };
+  }
+
+  private rememberKeyframe(
+    key: string,
+    transcript: AgentDelegationTranscript,
+    at: number,
+  ): AgentDelegationTranscript {
+    this.runs.set(key, {
+      sent: new Map(transcript.transcript.map((item) => [item.id, item])),
+      keyframeAt: at,
+    });
+    return transcript;
   }
 
   /** Forgets every run, for example when the chat's root closes. */

@@ -13,7 +13,11 @@ export interface ForkChatButtonProps extends Pick<
 > {
   readonly ariaLabel: string;
   readonly className?: string;
-  /** Grow to the 44px touch floor on a coarse pointer (the web chat header). */
+  /**
+   * The web chat header's request for the 44px touch floor on a coarse
+   * pointer. Both looks render the shared `Button`, whose coarse-pointer hit
+   * area already reaches it, so nothing more is drawn.
+   */
   readonly coarsePointerTarget?: boolean;
   readonly dataTestId?: string;
   readonly disabled?: boolean;
@@ -24,13 +28,19 @@ export interface ForkChatButtonProps extends Pick<
 export function ForkChatButton({
   ariaLabel,
   className,
-  coarsePointerTarget = false,
   dataTestId,
   disabled = false,
   onClick,
   title,
-  ...ariaAttributes
+  'aria-controls': ariaControls,
+  'aria-describedby': ariaDescribedBy,
+  'aria-expanded': ariaExpanded,
 }: ForkChatButtonProps): JSX.Element {
+  const ariaAttributes = {
+    'aria-controls': ariaControls,
+    'aria-describedby': ariaDescribedBy,
+    'aria-expanded': ariaExpanded,
+  };
   const clean = useCleanChatLook();
   if (clean) {
     // Clean chat look: the reply row's one tooltip style, a single line in
@@ -57,23 +67,24 @@ export function ForkChatButton({
       </Tooltip>
     );
   }
-  // A host that wraps the button in its own tooltip (desktop's
+  // The retired classic look (no host chooses it any more): the plain ghost
+  // icon action. A host that wraps the button in its own tooltip (desktop's
   // ActionTooltip) passes no title, so this one stays out of its way.
   return (
     <Tooltip label={title} disabled={title === undefined}>
-      <button
-        type="button"
+      <Button
+        variant="ghost"
+        size="sm"
+        iconOnly
         aria-label={ariaLabel}
-        className={`${'focus-ring flex h-6 w-6 items-center justify-center rounded-md bg-fg-primary/[0.04] fg-primary/80 ring-1 ring-line-base transition-colors hover:bg-fg-primary/[0.08] hover:fg-primary disabled:cursor-not-allowed disabled:opacity-50'}${
-          coarsePointerTarget ? ' pointer-coarse:h-11 pointer-coarse:w-11' : ''
-        }${className ? ` ${className}` : ''}`}
+        className={className}
         data-testid={dataTestId}
         disabled={disabled}
         onClick={onClick}
         {...ariaAttributes}
       >
         <AppCatalogGitForkIcon width="14" height="14" aria-hidden="true" />
-      </button>
+      </Button>
     </Tooltip>
   );
 }

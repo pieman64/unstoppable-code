@@ -64,6 +64,7 @@ import {
 import { useNavigationStore } from '@/stores/navigationStore';
 import { openPipelineExecutionFromUi } from '@/lib/panels/open-pipeline-execution';
 import { useObservabilityStore } from '@/stores/observabilityStore';
+import { useObservabilityEntriesInterest } from '@/lib/chat-interest';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 import { brandText } from '@/lib/brand';
 import { requestPipelineAssistantOpen } from '@/lib/pipelineAssistantEvents';
@@ -73,6 +74,7 @@ import { switchContextForWorkspace } from '@/lib/contextScope';
 import { useWorkspaceContextReset } from '@/hooks/useWorkspaceContextReset';
 import {
   Button,
+  DelayedLoadingPlaceholder,
   LoadingIndicator,
   PageHeader,
   PageSearchControls,
@@ -82,7 +84,9 @@ import {
   pageFilter,
   Badge,
   SegmentedControl,
+  Skeleton,
 } from '@canopy/ui-shared/components';
+import { SAMPLE_AUDIT_ENTRIES } from './auditTrailSamples';
 import {
   Download as AppCatalogDownload,
   ExternalIcon as AppCatalogExternalIcon,
@@ -367,6 +371,141 @@ function AuditDuration({ entry, className }: AuditDurationProps): JSX.Element {
   );
 }
 
+interface AuditEntryCardProps {
+  entry: AgentAuditEntry;
+  onOpenTranscript: () => void;
+  onInspect: () => void;
+}
+
+/** One audit entry: its run, status, timing, counts, and actions. */
+function AuditEntryCard({
+  entry,
+  onOpenTranscript,
+  onInspect,
+}: AuditEntryCardProps): JSX.Element {
+  const costLabel = formatAuditCostLabel(entry);
+  return (
+    <div
+      data-testid={`audit-entry-${entry.id}`}
+      className="rounded-xl border bg-card/60 px-4 py-4"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="space-y-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <AgentProviderIcon
+              provider={entry.provider}
+              width={14}
+              height={14}
+            />
+            <span className="text-s font-semibold fg-primary">
+              {displayLabelForEntry(entry)}
+            </span>
+            <span className="rounded-full bg-secondary px-2 py-0.5 text-2xs fg-secondary">
+              {entry.provider}
+            </span>
+            {entry.chatMode === 'terminal' && (
+              <span
+                className="rounded-full bg-secondary px-2 py-0.5 text-2xs fg-secondary"
+                data-testid={`audit-chat-mode-badge-${entry.id}`}
+              >
+                Terminal
+              </span>
+            )}
+            <span
+              className={`rounded-full px-2 py-0.5 text-2xs ${statusBadgeClass(entry.status)}`}
+            >
+              {formatStatus(entry.status)}
+            </span>
+            {entry.aiCreditsRouted && !entry.modelGatewayRouted && (
+              <Badge
+                data-testid={`audit-ai-credits-badge-${entry.id}`}
+                title="This run's LLM traffic was routed through your AI Credits."
+              >
+                AI Credits
+              </Badge>
+            )}
+          </div>
+          <p className="text-xs fg-secondary">
+            {new Date(entry.startedAt).toLocaleString()}
+            {entry.model ? ` · ${entry.model}` : ''}
+            {entry.repoLabel ? ` · ${entry.repoLabel}` : ''}
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          {entry.hasTranscript && (
+            <Button
+              size="compact"
+              onClick={onOpenTranscript}
+              data-testid={`audit-transcript-button-${entry.id}`}
+            >
+              Transcript
+            </Button>
+          )}
+          {entry.linkTarget && (
+            <Button
+              size="compact"
+              onClick={onInspect}
+              data-testid={`audit-inspect-button-${entry.id}`}
+            >
+              <AppCatalogExternalIcon width="14" height="14" />
+              Inspect
+            </Button>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-4 text-xs fg-secondary">
+        <div className="flex flex-wrap gap-4">
+          <AuditDuration entry={entry} />
+          <span>{entry.messageCount} messages</span>
+          <span>{entry.toolUseCount} tool uses</span>
+          <span>{entry.subAgentCount} sub-agents</span>
+          {costLabel !== null ? (
+            <span data-testid={`audit-cost-${entry.id}`}>{costLabel}</span>
+          ) : null}
+        </div>
+        <span data-testid={`audit-tokens-${entry.id}`}>
+          {formatMetric(entry)}
+        </span>
+      </div>
+
+      {entry.error && (
+        <p className="mt-3">
+          <StatusLabel size="s">{entry.error}</StatusLabel>
+        </p>
+      )}
+    </div>
+  );
+}
+
+const noop = (): void => undefined;
+
+/**
+ * Entries that have not arrived: `AuditEntryCard` itself, rendered from
+ * plain samples inside the measured `Skeleton`, so the bars sit where the
+ * entries will.
+ */
+function AuditEntryListSkeleton(): JSX.Element {
+  return (
+    <Skeleton
+      loading
+      label="Loading audit entries"
+      testId="audit-trail-loading"
+    >
+      <div className="flex flex-col gap-3">
+        {SAMPLE_AUDIT_ENTRIES.map((entry) => (
+          <AuditEntryCard
+            key={entry.id}
+            entry={entry}
+            onOpenTranscript={noop}
+            onInspect={noop}
+          />
+        ))}
+      </div>
+    </Skeleton>
+  );
+}
+
 interface DurationRowProps {
   label: string;
   entry: AgentAuditEntry;
@@ -382,6 +521,7 @@ function DurationRow({ label, entry }: DurationRowProps): JSX.Element {
 }
 
 export function AuditTrailPage(): JSX.Element {
+  useObservabilityEntriesInterest();
   const initialize = useObservabilityStore((s) => s.initialize);
   const refreshHistory = useObservabilityStore((s) => s.refreshHistory);
   const loadMoreHistory = useObservabilityStore((s) => s.loadMoreHistory);
@@ -825,114 +965,31 @@ export function AuditTrailPage(): JSX.Element {
       <div className="min-h-0 flex-1 overflow-auto">
         <PageContent>
           <div className="space-y-3" data-testid="audit-entry-list">
-            {visibleHistoryEntries.map((entry) => {
-              const costLabel = formatAuditCostLabel(entry);
-              return (
-                <div
-                  key={entry.id}
-                  data-testid={`audit-entry-${entry.id}`}
-                  className="rounded-xl border bg-card/60 px-4 py-4"
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div className="space-y-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <AgentProviderIcon
-                          provider={entry.provider}
-                          width={14}
-                          height={14}
-                        />
-                        <span className="text-s font-semibold fg-primary">
-                          {displayLabelForEntry(entry)}
-                        </span>
-                        <span className="rounded-full bg-secondary px-2 py-0.5 text-2xs fg-secondary">
-                          {entry.provider}
-                        </span>
-                        {entry.chatMode === 'terminal' && (
-                          <span
-                            className="rounded-full bg-secondary px-2 py-0.5 text-2xs fg-secondary"
-                            data-testid={`audit-chat-mode-badge-${entry.id}`}
-                          >
-                            Terminal
-                          </span>
-                        )}
-                        <span
-                          className={`rounded-full px-2 py-0.5 text-2xs ${statusBadgeClass(entry.status)}`}
-                        >
-                          {formatStatus(entry.status)}
-                        </span>
-                        {entry.aiCreditsRouted && !entry.modelGatewayRouted && (
-                          <Badge
-                            data-testid={`audit-ai-credits-badge-${entry.id}`}
-                            title="This run's LLM traffic was routed through your AI Credits."
-                          >
-                            AI Credits
-                          </Badge>
-                        )}
-                      </div>
-                      <p className="text-xs fg-secondary">
-                        {new Date(entry.startedAt).toLocaleString()}
-                        {entry.model ? ` · ${entry.model}` : ''}
-                        {entry.repoLabel ? ` · ${entry.repoLabel}` : ''}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      {entry.hasTranscript && (
-                        <Button
-                          size="compact"
-                          onClick={() => {
-                            void handleOpenTranscript(entry);
-                          }}
-                          data-testid={`audit-transcript-button-${entry.id}`}
-                        >
-                          Transcript
-                        </Button>
-                      )}
-                      {entry.linkTarget && (
-                        <Button
-                          size="compact"
-                          onClick={() => {
-                            void openEntry(entry);
-                          }}
-                          data-testid={`audit-inspect-button-${entry.id}`}
-                        >
-                          <AppCatalogExternalIcon width="14" height="14" />
-                          Inspect
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="mt-3 flex flex-wrap items-center justify-between gap-4 text-xs fg-secondary">
-                    <div className="flex flex-wrap gap-4">
-                      <AuditDuration entry={entry} />
-                      <span>{entry.messageCount} messages</span>
-                      <span>{entry.toolUseCount} tool uses</span>
-                      <span>{entry.subAgentCount} sub-agents</span>
-                      {costLabel !== null ? (
-                        <span data-testid={`audit-cost-${entry.id}`}>
-                          {costLabel}
-                        </span>
-                      ) : null}
-                    </div>
-                    <span data-testid={`audit-tokens-${entry.id}`}>
-                      {formatMetric(entry)}
-                    </span>
-                  </div>
-
-                  {entry.error && (
-                    <p className="mt-3">
-                      <StatusLabel size="s">{entry.error}</StatusLabel>
-                    </p>
-                  )}
-                </div>
-              );
-            })}
+            {visibleHistoryEntries.length === 0 && loadingHistory ? (
+              <DelayedLoadingPlaceholder slowNote="Still loading audit entries…">
+                <AuditEntryListSkeleton />
+              </DelayedLoadingPlaceholder>
+            ) : null}
+            {visibleHistoryEntries.map((entry) => (
+              <AuditEntryCard
+                key={entry.id}
+                entry={entry}
+                onOpenTranscript={() => {
+                  void handleOpenTranscript(entry);
+                }}
+                onInspect={() => {
+                  void openEntry(entry);
+                }}
+              />
+            ))}
 
             {visibleHistoryEntries.length === 0 && !loadingHistory && (
               <EmptyState title="No audit entries yet." />
             )}
 
-            {loadingHistory && (
+            {/* More entries on their way below the loaded ones, as the
+                list scrolls: a busy load-more keeps its verb. */}
+            {loadingHistory && visibleHistoryEntries.length > 0 && (
               <div className="flex justify-center py-4 text-s fg-secondary">
                 <LoadingIndicator text="Loading…" />
               </div>

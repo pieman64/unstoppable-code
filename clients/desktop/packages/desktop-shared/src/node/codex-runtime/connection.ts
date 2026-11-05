@@ -892,18 +892,6 @@ function poolResourceLabel(poolKey: string): string {
   return 'Codex app-server (dedicated)';
 }
 
-export interface CodexAppServerConnectionTestSeam {
-  registerOwner(owner: CodexAppServerConnectionOwner): void;
-  trackPendingServerRequestHandler(
-    owner: CodexAppServerConnectionOwner,
-    handler: Promise<void>,
-  ): Promise<void>;
-  waitForPendingServerRequestHandlers(): { settlement: Promise<void> };
-  pendingServerRequestHandlerCount(
-    owner: CodexAppServerConnectionOwner,
-  ): number;
-}
-
 function sharedRestartTrigger(
   ownerError: Error,
 ): CodexRuntimeSharedRestartDiagnostic['restartTrigger'] {
@@ -1187,28 +1175,6 @@ export class CodexAppServerConnection {
 
   isInitialized(): boolean {
     return this.initialized;
-  }
-
-  createTestSeam(): CodexAppServerConnectionTestSeam {
-    return {
-      registerOwner: (owner: CodexAppServerConnectionOwner): void => {
-        this.clients.add(owner);
-      },
-      trackPendingServerRequestHandler: (
-        owner: CodexAppServerConnectionOwner,
-        handler: Promise<void>,
-      ): Promise<void> => this.trackPendingServerRequestHandler(owner, handler),
-      waitForPendingServerRequestHandlers: (): {
-        settlement: Promise<void>;
-      } => {
-        const { settlement } = this.waitForPendingServerRequestHandlers();
-        return { settlement };
-      },
-      pendingServerRequestHandlerCount: (
-        owner: CodexAppServerConnectionOwner,
-      ): number =>
-        this.pendingServerRequestHandlersByOwner.get(owner)?.size ?? 0,
-    };
   }
 
   recordLoadedThreadProviderRoute(threadId: string, identity: string): void {

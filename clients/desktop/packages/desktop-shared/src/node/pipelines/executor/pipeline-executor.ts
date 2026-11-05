@@ -34,6 +34,7 @@ import {
   clearPhysicalJobBlockers,
   CURRENT_EXECUTION_STATE_VERSION,
   clearExecutionCancellation,
+  isExecutionStateWriteRefusal,
   findResumePoint,
   isExecutionCancellationRequested,
   loadExecutionState,
@@ -2769,11 +2770,9 @@ export async function executePipeline(
     );
   }
   state.plan_hash_before = await hashPlanFile(state);
-  await clearExecutionCancellation(
-    executionId,
-    executionOptions.runtime.executionsDir,
-  );
-  await saveExecutionState(state, executionOptions.runtime.executionsDir);
+  await saveExecutionState(state, executionOptions.runtime.executionsDir, {
+    cancellation: 'clear_before',
+  });
   await executionOptions.beforeStart?.(cloneState(state));
   return executeState(state, executionOptions);
 }
@@ -2993,8 +2992,9 @@ export async function resumePipeline(
       options.childPipelineAuthorizations;
   }
   recordPortalCommandReceipt(recoveredState, options.portalCommandId);
-  await clearExecutionCancellation(executionId, options.runtime.executionsDir);
-  await saveExecutionState(recoveredState, options.runtime.executionsDir);
+  await saveExecutionState(recoveredState, options.runtime.executionsDir, {
+    cancellation: 'clear_before',
+  });
   // The resume is saved: agents paused on the checkpoints it consumed run
   // again, so the host stops offering them as Ledger owners. A nested
   // pipeline's checkpoints are consumed when its own resume runs.
@@ -3098,7 +3098,6 @@ export async function retryPipelineExecution(
     retryState.pipeline_package_snapshot,
   );
   recordPortalCommandReceipt(retryState, options.portalCommandId);
-  await clearExecutionCancellation(executionId, options.runtime.executionsDir);
   if (options.executionContext !== undefined)
     retryState.execution_context = options.executionContext;
   if (options.initiator !== undefined) retryState.initiator = options.initiator;
@@ -3107,7 +3106,9 @@ export async function retryPipelineExecution(
   if (options.childPipelineAuthorizations !== undefined)
     retryState.child_pipeline_authorizations =
       options.childPipelineAuthorizations;
-  await saveExecutionState(retryState, options.runtime.executionsDir);
+  await saveExecutionState(retryState, options.runtime.executionsDir, {
+    cancellation: 'clear_before',
+  });
   return executeState(retryState, {
     ...options,
     executionId,
@@ -3167,10 +3168,6 @@ export async function retryMatrixJobExecution(
     loadedState.repo_path,
   );
   retryState.plan_hash_before = await hashPlanFile(retryState);
-  await clearExecutionCancellation(
-    request.executionId,
-    options.runtime.executionsDir,
-  );
   if (options.executionContext !== undefined)
     retryState.execution_context = options.executionContext;
   if (options.initiator !== undefined) retryState.initiator = options.initiator;
@@ -3179,7 +3176,9 @@ export async function retryMatrixJobExecution(
   if (options.childPipelineAuthorizations !== undefined)
     retryState.child_pipeline_authorizations =
       options.childPipelineAuthorizations;
-  await saveExecutionState(retryState, options.runtime.executionsDir);
+  await saveExecutionState(retryState, options.runtime.executionsDir, {
+    cancellation: 'clear_before',
+  });
   const pipelinePackageOverlay = await loadPipelinePackageExecutionOverlay(
     retryState.pipeline_package_snapshot,
   );
@@ -3477,8 +3476,9 @@ export async function rerunPipelineExecution(
     );
     throw error;
   }
-  await clearExecutionCancellation(executionId, options.runtime.executionsDir);
-  await saveExecutionState(state, options.runtime.executionsDir);
+  await saveExecutionState(state, options.runtime.executionsDir, {
+    cancellation: 'clear_before',
+  });
   return executeState(state, {
     ...options,
     executionId,
@@ -3529,12 +3529,17 @@ export async function cancelPipelineExecution(
     endExecutionPause(cancelledState, cancelledState.completed_at);
     cancelledState.pending_input = undefined;
     cancelledState.status_reasons = [];
-    await clearExecutionCancellation(executionId, runtime.executionsDir);
-    await saveExecutionState(cancelledState, runtime.executionsDir);
-    runtime.lifecycle?.onExecutionStart?.(loadedState);
-    runtime.lifecycle?.onExecutionSettled?.(cancelledState);
-    await cleanupExecutionTempDir(cancelledState, runtime);
-    return cancelledState;
+    try {
+      await saveExecutionState(cancelledState, runtime.executionsDir);
+      await clearExecutionCancellation(executionId, runtime.executionsDir);
+      runtime.lifecycle?.onExecutionStart?.(loadedState);
+      runtime.lifecycle?.onExecutionSettled?.(cancelledState);
+      await cleanupExecutionTempDir(cancelledState, runtime);
+      return cancelledState;
+    } catch (error) {
+      if (!isExecutionStateWriteRefusal(error, 'owned_by_other_process'))
+        throw error;
+    }
   }
 
   await requestExecutionCancellation(executionId, runtime.executionsDir);
@@ -3566,7 +3571,7 @@ export async function cancelPipelineExecution(
     throw new Error(`Execution "${executionId}" not found`);
   }
 
-  if (latestState.status === 'running') {
+  if (latestState.status === 'running' || latestState.status === 'pending') {
     if (options?.allowRecoveredFallback === false) {
       // Archive teardown requires proof that the owning executor settled. Keep
       // both its running state and durable cancellation marker intact so the
@@ -3575,16 +3580,19 @@ export async function cancelPipelineExecution(
         `Execution "${executionId}" did not settle after cancellation`,
       );
     }
-    // This is a deliberately bounded last-write-wins fallback. The owning
-    // executor has already received both the in-process cancel request and the
-    // durable cancellation marker, then had the full cooperative polling
-    // window to settle. A still-live but unresponsive executor could later
-    // overwrite this terminal snapshot; avoiding that rare race would require
-    // cross-process execution ownership fencing rather than extending the
-    // renderer's Cancel action indefinitely.
+    // A running owner in another live process keeps authority over its state.
+    // Its durable cancellation request stays in place; once that process exits,
+    // orphan recovery or a later cancel settles the run. An owner in this process
+    // may still be force-finalized after the cooperative window.
     const cancelledState = cancelRecoveredExecutionState(latestState);
+    try {
+      await saveExecutionState(cancelledState, runtime.executionsDir);
+    } catch (error) {
+      if (isExecutionStateWriteRefusal(error, 'owned_by_other_process'))
+        return latestState;
+      throw error;
+    }
     await clearExecutionCancellation(executionId, runtime.executionsDir);
-    await saveExecutionState(cancelledState, runtime.executionsDir);
     runtime.lifecycle?.onExecutionStart?.(latestState);
     runtime.lifecycle?.onExecutionSettled?.(cancelledState);
     await cleanupExecutionTempDir(cancelledState, runtime);

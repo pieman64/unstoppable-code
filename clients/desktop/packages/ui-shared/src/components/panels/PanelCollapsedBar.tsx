@@ -5,6 +5,7 @@ import type {
   PanelIntentCallbacks,
   PanelTabModel,
 } from '../../panels/registry-types';
+import { TitlebarIconButton } from '../TitlebarIconButton';
 import { Tooltip } from '../Tooltip';
 import {
   ChevronDownMediumIcon,
@@ -71,11 +72,6 @@ const EXPAND_GLYPHS: Record<PanelCollapseEdge, AppIcon> = {
   bottom: ChevronTopMediumIcon,
 };
 
-function ExpandGlyph({ edge }: { edge: PanelCollapseEdge }): JSX.Element {
-  const Glyph = EXPAND_GLYPHS[edge];
-  return <Glyph size={16} aria-hidden="true" />;
-}
-
 function FallbackTabGlyph(): JSX.Element {
   return (
     <svg
@@ -134,18 +130,19 @@ export function PanelCollapsedBar({
   // pixel-for-pixel with the expanded title bar. Vertical strip: a standalone
   // toggle closes the control stack, just above the tab icons.
   const expandToggle = isVertical ? (
+    // The strip's own tooltip, so a right-edge strip can place it to the
+    // left; the button's built-in one is off.
     <Tooltip label={expandLabel} placement={tooltipPlacement}>
-      <button
-        type="button"
-        className="canopy-panel-collapsed-expand"
+      <TitlebarIconButton
+        surface="panelChrome"
+        icon={EXPAND_GLYPHS[edge]}
+        tooltipLabel=""
         data-testid={`panel-group-expand-${group.groupId}`}
         aria-label={expandLabel}
         onClick={(): void => {
           callbacks.onCollapseGroup?.(group.groupId, false);
         }}
-      >
-        <ExpandGlyph edge={edge} />
-      </button>
+      />
     </Tooltip>
   ) : null;
 

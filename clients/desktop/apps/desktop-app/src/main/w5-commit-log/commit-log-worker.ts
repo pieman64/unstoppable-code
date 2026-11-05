@@ -1,3 +1,4 @@
+import { dirname } from 'node:path';
 import { parentPort, workerData } from 'node:worker_threads';
 import { runW5CommitLogWorker } from '@canopy/core-runtime/node/w5/commit-log/worker';
 import { isDesktopW5CommitLogWorkerData } from './commit-log-worker-contract';
@@ -21,5 +22,8 @@ const valid = isDesktopW5CommitLogWorkerData(data);
 void runW5CommitLogWorker(
   port,
   valid ? data : undefined,
-  desktopW5CommitLogWorkerHost(valid ? data.confinementAddon : undefined),
+  desktopW5CommitLogWorkerHost(
+    valid ? data.confinementAddon : undefined,
+    valid ? (data.dataRoot ?? dirname(data.root)) : undefined,
+  ),
 );

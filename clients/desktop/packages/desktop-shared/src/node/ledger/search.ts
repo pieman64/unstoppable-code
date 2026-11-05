@@ -2,17 +2,22 @@ import type { SQLInputValue } from 'node:sqlite';
 
 import {
   LEDGER_LIMITS,
+  LEDGER_STATUSES,
   LedgerSearchEntriesParamsSchema,
+  LedgerUuidSchema,
   type LedgerActorFilter,
   type LedgerAttributionKind,
   type LedgerEntryType,
+  type LedgerRootChatFilter,
   type LedgerSearchEntriesParams,
   type LedgerSearchSort,
+  type LedgerSourceKind,
   type LedgerStatus,
 } from '@canopy/protocol/canopy-core';
 
 import { LedgerStoreError } from './errors';
 import { hashLedgerCanonicalValue } from './hashing';
+import { isLedgerEntryOpen } from './policy';
 import { normalizeLedgerTimeBound } from './time';
 import type { LedgerSearchEntriesInput } from './types';
 
@@ -59,9 +64,23 @@ export interface LedgerNormalizedSearch {
   readonly limit: number;
   /** Null without a query; empty when the query cannot match anything. */
   readonly words: readonly string[] | null;
+  /** Internal store filter: null is unrestricted and [] intentionally matches nothing. */
+  readonly ownerIn: readonly string[] | null;
+  readonly openOnly: boolean;
   readonly entryIds: readonly string[] | null;
   readonly ownerActorId: string | null;
   readonly authorActorId: string | null;
+  /** Undefined means unrestricted; null means a top-level entry. */
+  readonly parentEntryId: string | null | undefined;
+  readonly rootEntryId: string | null;
+  readonly authorIn: readonly string[] | null;
+  readonly sourceKinds: readonly LedgerSourceKind[] | null;
+  readonly rootChat: {
+    readonly rootOnly: boolean;
+    readonly chatId: string | null;
+  } | null;
+  /** Owners under `rootChat.chatId`; derived, so left out of the filter hash. */
+  readonly rootChatOwnerIn: readonly string[];
   readonly types: readonly LedgerEntryType[] | null;
   readonly statuses: readonly LedgerStatus[] | null;
   readonly attribution: readonly LedgerAttributionKind[] | null;
@@ -79,6 +98,9 @@ const INPUT_FIELD_BY_PARAM: { readonly [param: string]: string } = {
   author: 'authorActorId',
 };
 
+const LEDGER_SEARCH_OWNER_IDS_MAX = 1_024;
+const LEDGER_OPEN_STATUSES = LEDGER_STATUSES.filter(isLedgerEntryOpen);
+
 function invalidSearchField(path: readonly PropertyKey[]): LedgerStoreError {
   const segments = path.map((segment: PropertyKey): string => String(segment));
   const head = segments[0];
@@ -95,6 +117,26 @@ function uniqueSorted<Value extends string>(
   values: readonly Value[] | undefined,
 ): readonly Value[] | null {
   return values === undefined ? null : Array.from(new Set(values)).sort();
+}
+
+function ownerFilter(value: unknown): readonly string[] | null {
+  if (value === undefined) return null;
+  if (!Array.isArray(value) || value.length > LEDGER_SEARCH_OWNER_IDS_MAX) {
+    throw invalidSearchField(['ownerIn']);
+  }
+  const actorIds = new Set<string>();
+  for (const actorId of value) {
+    const parsed = LedgerUuidSchema.safeParse(actorId);
+    if (!parsed.success) throw invalidSearchField(['ownerIn']);
+    actorIds.add(parsed.data);
+  }
+  return Array.from(actorIds).sort();
+}
+
+function openOnlyFilter(value: unknown): boolean {
+  if (value === undefined) return false;
+  if (value !== true) throw invalidSearchField(['openOnly']);
+  return true;
 }
 
 function timeBound(value: string | undefined, field: string): string | null {
@@ -118,12 +160,27 @@ function assertCompatibleRange(
 
 type LedgerSearchFilters = Omit<LedgerNormalizedSearch, 'filterHash'>;
 
+function rootChatFilter(
+  filter: LedgerRootChatFilter | undefined,
+): LedgerNormalizedSearch['rootChat'] {
+  return filter === undefined
+    ? null
+    : { rootOnly: filter.rootOnly, chatId: filter.chatId ?? null };
+}
+
 function hashSearchFilters(filters: LedgerSearchFilters): string {
   return hashLedgerCanonicalValue({
     words: filters.words,
+    ...(filters.ownerIn === null ? {} : { ownerIn: filters.ownerIn }),
+    ...(filters.openOnly ? { openOnly: filters.openOnly } : {}),
     entryIds: filters.entryIds,
     ownerActorId: filters.ownerActorId,
     authorActorId: filters.authorActorId,
+    parentEntryId: filters.parentEntryId,
+    rootEntryId: filters.rootEntryId,
+    authorIn: filters.authorIn,
+    sourceKinds: filters.sourceKinds,
+    ...(filters.rootChat === null ? {} : { rootChat: filters.rootChat }),
     types: filters.types,
     statuses: filters.statuses,
     attribution: filters.attribution,
@@ -153,6 +210,11 @@ function parseSearchParams(
     entryIds: input.entryIds,
     owner: actorFilter(input.ownerActorId),
     author: actorFilter(input.authorActorId),
+    parentEntryId: input.parentEntryId,
+    rootEntryId: input.rootEntryId,
+    authorIn: input.authorIn,
+    sourceKinds: input.sourceKinds,
+    rootChat: input.rootChat,
     types: input.types,
     statuses: input.statuses,
     attribution: input.attribution,
@@ -184,9 +246,17 @@ export function normalizeLedgerSearch(
     limit: params.limit ?? LEDGER_LIMITS.searchPageDefault,
     words:
       params.query === undefined ? null : splitLedgerSearchWords(params.query),
+    ownerIn: ownerFilter(input.ownerIn),
+    openOnly: openOnlyFilter(input.openOnly),
     entryIds: uniqueSorted(params.entryIds),
     ownerActorId: filterActorId(params.owner),
     authorActorId: filterActorId(params.author),
+    parentEntryId: params.parentEntryId,
+    rootEntryId: params.rootEntryId ?? null,
+    authorIn: uniqueSorted(params.authorIn),
+    sourceKinds: uniqueSorted(params.sourceKinds),
+    rootChat: rootChatFilter(params.rootChat),
+    rootChatOwnerIn: ownerFilter(input.rootChatOwnerIn) ?? [],
     types: uniqueSorted(params.types),
     statuses: uniqueSorted(params.statuses),
     attribution: uniqueSorted(params.attribution),
@@ -282,11 +352,81 @@ export function buildLedgerSearchPageStatement(
     search.sort === 'updated_desc' ? `${row}.updated_at` : `${row}.created_at`;
   const where = new ClauseBuilder();
   where.equals('e.ledger_id', ledgerId);
+  if (search.ownerIn !== null) {
+    if (search.ownerIn.length === 0) {
+      where.raw('0');
+    } else {
+      where.raw(
+        `${row}.owner_actor_id IN (SELECT value FROM json_each(?))`,
+        JSON.stringify(search.ownerIn),
+      );
+    }
+  }
   where.oneOf(`${row}.entry_id`, search.entryIds);
   where.equals(`${row}.owner_actor_id`, search.ownerActorId);
   where.equals(`${row}.author_actor_id`, search.authorActorId);
+  if (search.parentEntryId === null) {
+    where.raw(`${row}.parent_entry_id IS NULL`);
+  } else {
+    where.equals(`${row}.parent_entry_id`, search.parentEntryId ?? null);
+  }
+  if (search.rootEntryId !== null) {
+    const membershipSequenceFilter = unchanged
+      ? 'AND membership.to_sequence IS NULL'
+      : `AND membership.from_sequence <= ?
+          AND (membership.to_sequence IS NULL OR membership.to_sequence > ?)`;
+    where.raw(
+      `EXISTS (
+        SELECT 1 FROM ledger_entry_roots AS membership
+        WHERE membership.entry_rowid = e.entry_rowid
+          AND membership.ledger_id = e.ledger_id
+          AND membership.root_entry_id = ?
+          ${membershipSequenceFilter}
+      )`,
+      search.rootEntryId,
+      ...(unchanged ? [] : [position.watermark, position.watermark]),
+    );
+  }
+  where.oneOf(`${row}.author_actor_id`, search.authorIn);
+  if (search.sourceKinds !== null) {
+    const sourceKindExpression = `CASE json_extract(${row}.projection_json, '$.origin.kind')
+      WHEN 'chat' THEN 'chat'
+      WHEN 'pipeline_agent' THEN 'pipeline'
+      WHEN 'summary' THEN 'summary'
+      WHEN 'managed_delegation' THEN CASE json_extract(${row}.projection_json, '$.origin.root.kind')
+        WHEN 'chat' THEN 'chat'
+        WHEN 'pipeline_agent' THEN 'pipeline'
+        ELSE NULL
+      END
+      ELSE NULL
+    END`;
+    where.oneOf(sourceKindExpression, search.sourceKinds);
+  }
+  if (search.rootChat !== null) {
+    // The origin is the creator's: an update keeps the entry's origin.
+    const origin = (path: string): string =>
+      `json_extract(${row}.projection_json, '$.origin${path}')`;
+    const { rootOnly, chatId } = search.rootChat;
+    if (rootOnly) {
+      where.raw(`${origin('.kind')} = 'chat'`);
+      if (chatId !== null) where.raw(`${origin('.chatId')} = ?`, chatId);
+    } else {
+      // The chat itself, a delegate under it, or anyone it or they own for.
+      where.raw(
+        `((${origin('.kind')} = 'chat' AND ${origin('.chatId')} = ?)
+          OR (${origin('.kind')} = 'managed_delegation'
+            AND ${origin('.root.kind')} = 'chat'
+            AND ${origin('.root.chatId')} = ?)
+          OR ${row}.owner_actor_id IN (SELECT value FROM json_each(?)))`,
+        chatId,
+        chatId,
+        JSON.stringify(search.rootChatOwnerIn),
+      );
+    }
+  }
   where.oneOf(`${row}.type`, search.types);
   where.oneOf(`${row}.status`, search.statuses);
+  if (search.openOnly) where.oneOf(`${row}.status`, LEDGER_OPEN_STATUSES);
   where.oneOf(`${row}.attribution_kind`, search.attribution);
   where.compare(`${row}.created_at`, '>=', search.createdAfter);
   where.compare(`${row}.created_at`, '<', search.createdBefore);
@@ -307,14 +447,19 @@ export function buildLedgerSearchPageStatement(
     );
   }
   const select = `SELECT ${row}.projection_json AS projection_json,
-      ${row}.scope_sequence AS scope_sequence
+      ${row}.scope_sequence AS scope_sequence,
+      json_extract(mutation.mutation_json, '$.leftOpen') AS left_open_reason,
+      mutation.occurred_at AS left_open_at
     FROM ledger_entries AS e`;
+  const mutationJoin = `LEFT JOIN ledger_mutations AS mutation
+      ON mutation.entry_rowid = e.entry_rowid AND mutation.revision = ${row}.revision`;
   const page = `WHERE ${where.clauses.join(' AND ')}
     ORDER BY ${sortColumn} DESC, ${row}.entry_id DESC
     LIMIT ?`;
   if (unchanged) {
     return {
       sql: `${select}
+    ${mutationJoin}
     ${page}`,
       params: [...where.params, fetchLimit],
     };
@@ -328,6 +473,7 @@ export function buildLedgerSearchPageStatement(
       ORDER BY snapshot.scope_sequence DESC
       LIMIT 1
     )
+    ${mutationJoin}
     ${page}`;
   return {
     sql,

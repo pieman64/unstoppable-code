@@ -11,7 +11,6 @@ import { CursorApprovalCheck } from './CursorApprovalCheck';
 import { type JSX, type ReactNode, useMemo } from 'react';
 import { ProviderAuthPanel } from '@/components/auth/ProviderAuthPanel';
 import { CanopyCloudAccountSection } from './CanopyCloudAccountSection';
-import { CloudDailyCreditDripSettings } from './CloudDailyCreditDripSettings';
 import { ModelGatewayCredentialSection } from './ModelGatewayCredentialSection';
 import {
   orderGatewaysForContext,
@@ -20,7 +19,6 @@ import {
 import { useSidebarScopingContext } from '@/components/sidebar/useSidebarScopingContext';
 import { LinearKeyRow } from './LinearKeyRow';
 import { useHostedSettingsAvailable } from './hosted/hosted-settings-availability';
-import { useGuestCredentialState } from '@/hooks/useIsGuestCredential';
 import { SettingsGroup, SettingsPage, SettingsSection } from './SettingsLayout';
 
 interface AccountSectionProps {
@@ -102,19 +100,17 @@ function LlmProviderSection({
 
 /**
  * The Accounts tab. With hosted account settings available it is "Providers":
- * the LLM providers, plus a guest's daily credits control. Signed-in accounts
- * use the hosted Account, Billing and Integrations pages.
+ * the LLM providers only. Signed-in accounts use the hosted Account, Billing
+ * and Integrations pages.
  */
 export function AccountTab(): JSX.Element {
   const cursorReleased = useFeatureFlagsStore(isCursorHarnessReleased);
   const hostedSettingsAvailable = useHostedSettingsAvailable();
-  const isGuest = useGuestCredentialState() === true;
 
   if (hostedSettingsAvailable) {
     return (
       <SettingsPage title="Providers" dataTestId="settings-tab-account">
         <LlmProviderSection cursorReleased={cursorReleased} />
-        {isGuest && <CloudDailyCreditDripSettings />}
         {cursorReleased && <CursorApprovalCheck collapsible />}
       </SettingsPage>
     );
@@ -129,11 +125,6 @@ export function AccountTab(): JSX.Element {
       </SettingsSection>
 
       <LlmProviderSection cursorReleased={cursorReleased} />
-
-      {/* Renders only once the server confirms the opt-in exists for the
-            connected credential, guests included, so it is not gated on the
-            teams flag like the account card above. */}
-      <CloudDailyCreditDripSettings />
 
       {/* Its own page section (and nothing while unavailable), right after
           the providers. */}

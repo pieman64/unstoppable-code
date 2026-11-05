@@ -1,5 +1,6 @@
 import type { JSX } from 'react';
 import type { ProviderCarryoverProvider } from '@canopy/desktop-shared/types';
+import { ReadyStatusLine } from '@canopy/ui-shared/components/ReadyStatusLine';
 import { useProviderCarryover } from '@/hooks/useProviderCarryover';
 import {
   providerCarryoverAttention,
@@ -16,7 +17,8 @@ interface ProviderCarryoverNoteProps {
 
 /**
  * Under a connected provider: what the user's own setup carries over into
- * its chats, and what could not be loaded (CAN-3701). Nothing renders until
+ * its chats, behind the ready check, and what could not be loaded, which
+ * takes no check (CAN-3701, CAN-4765). Nothing renders until
  * the read answers, so a connected row never flashes an empty claim.
  */
 export function ProviderCarryoverNote({
@@ -32,7 +34,7 @@ export function ProviderCarryoverNote({
       data-testid={`provider-carryover-${provider}`}
       className="block text-xs fg-secondary"
     >
-      <span className="block">{providerCarryoverLine(summary)}</span>
+      <ReadyStatusLine>{providerCarryoverLine(summary)}</ReadyStatusLine>
       {attention && (
         <span
           data-testid={`provider-carryover-${provider}-attention`}

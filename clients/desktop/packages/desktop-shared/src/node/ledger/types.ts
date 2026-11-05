@@ -5,18 +5,22 @@ import type {
   LedgerAttribution,
   LedgerAttributionKind,
   LedgerAuthorDetails,
+  LedgerCommandReceipt,
   LedgerContainer,
   LedgerEntriesSearchResult,
   LedgerEntry,
   LedgerEntryType,
+  LedgerMutation,
   LedgerGlobalOwner,
   LedgerOrigin,
   LedgerPublishSummaryParams,
   LedgerScopeRef,
+  LedgerSourceKind,
   LedgerSearchSort,
   LedgerSourceAvailability,
   LedgerStatus,
   LedgerUpdateEntryParams,
+  LedgerRootChatFilter,
 } from '@canopy/protocol/canopy-core';
 import type {
   LedgerScopeAudience,
@@ -30,9 +34,9 @@ export const LEDGER_SCOPE_LIFECYCLE_STATES = [
 ] as const;
 
 /**
- * `active` scopes accept writes. `archived` scopes are read-only and
- * `retirement_pending` scopes await purge; writes to either fail
- * `SCOPE_RETIRED`. `lifecycle.ts` holds the allowed transitions.
+ * `active` scopes accept ordinary writes. `archived` scopes are read-only to
+ * ordinary commands but accept session-end handbacks; `retirement_pending`
+ * scopes await purge and reject writes. `lifecycle.ts` holds the transitions.
  */
 export type LedgerScopeLifecycleState =
   (typeof LEDGER_SCOPE_LIFECYCLE_STATES)[number];
@@ -44,6 +48,7 @@ export type LedgerStoreOperation =
   | 'registerActor'
   | 'addEntry'
   | 'updateEntry'
+  | 'handBackEntry'
   | 'publishSummary'
   | 'recordPendingTitleAttempt'
   | 'resolvePendingTitle'
@@ -219,11 +224,53 @@ export interface LedgerUpdateEntryInput {
    * and only when the owner actually changes.
    */
   readonly ownerEligible?: boolean;
+  /** Host-resolved owner actors for this chat's managed delegation subtree. */
+  readonly delegateOwnerActorIds?: readonly string[];
   /** User UI only: may update any open entry, not just its own. */
   readonly mayUpdateAnyOpenEntry: boolean;
   /** Scoped by ledger, `attribution.recordedBy` and operation. */
   readonly idempotencyKey: string;
 }
+
+/** Bounded actor set used to read one managed delegation's work summary. */
+export interface LedgerWorkSummaryInput {
+  readonly ledgerId: string;
+  readonly actorIds: readonly string[];
+}
+
+/**
+ * Store-internal ownership handback after an actor session ends. The store
+ * derives the system attribution from registered actors and records the
+ * reason on the resulting mutation.
+ */
+export interface LedgerHandBackEntryInput {
+  readonly ledgerId: string;
+  readonly entryId: string;
+  readonly expectedRevision: number;
+  readonly endedActorId: string;
+  readonly newOwner: LedgerActorRef;
+  /** The actor transition's time fence; later entry revisions are not handed back. */
+  readonly transitionAt: string;
+  readonly reason: NonNullable<LedgerMutation['leftOpen']>;
+  readonly idempotencyKey: string;
+}
+
+/** Another entry revised in the same transaction as a command's entry. */
+export interface LedgerRelatedEntryChange {
+  readonly entryId: string;
+  readonly revision: number;
+}
+
+/**
+ * A command's receipt as the store returns it. `relatedChanges` lists, in
+ * commit order, the other entries the command revised (close cascades and
+ * operation auto-start); it is absent when there are none and on replays.
+ * It is store-internal: the host announces those changes and strips the
+ * field, so callers only ever see the protocol `LedgerCommandReceipt`.
+ */
+export type LedgerStoreCommandReceipt = LedgerCommandReceipt & {
+  readonly relatedChanges?: readonly LedgerRelatedEntryChange[];
+};
 
 export interface LedgerPublishSummaryInput {
   readonly ledgerId: string;
@@ -293,11 +340,30 @@ export interface LedgerResolvePendingTitleResult {
  */
 export interface LedgerSearchEntriesInput {
   readonly ledgerId: string;
+  /** Internal store-only owner set; omitted means unrestricted, empty means no matches. */
+  readonly ownerIn?: readonly string[];
+  /** Internal store-only filter for every non-terminal status. */
+  readonly openOnly?: true;
   /** Literal, case-insensitive words, each matching the start of a word; all must match. */
   readonly query?: string;
   readonly entryIds?: readonly string[];
   readonly ownerActorId?: string;
   readonly authorActorId?: string;
+  /** Parent id; `null` selects top-level entries. */
+  readonly parentEntryId?: string | null;
+  /** Top-level root whose membership contains the entry at the snapshot. */
+  readonly rootEntryId?: string;
+  /** Match any of these authors, resolved to actor IDs by the caller. */
+  readonly authorIn?: readonly string[];
+  /** Match entries whose source resolves to one of these kinds. */
+  readonly sourceKinds?: readonly LedgerSourceKind[];
+  /** Work from one line of agents (the Feed panel's root chat filter). */
+  readonly rootChat?: LedgerRootChatFilter;
+  /**
+   * Internal store-only owners under `rootChat.chatId`, resolved by the
+   * caller: without `rootOnly`, an entry any of them owns matches too.
+   */
+  readonly rootChatOwnerIn?: readonly string[];
   readonly types?: readonly LedgerEntryType[];
   readonly statuses?: readonly LedgerStatus[];
   /** Creation attribution kinds. */

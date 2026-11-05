@@ -62,16 +62,6 @@ import { getSidebarScopingContext } from '@/components/sidebar/useSidebarScoping
 import { markStartPageSuppressed } from '@/lib/panels/start-page-suppression';
 import type { WorkspaceTemplateShareSummary } from '@canopy/protocol';
 
-let failNextWorkEntryFlushForE2e = false;
-
-declare global {
-  interface Window {
-    __canopyStandaloneChatTestApi?: {
-      failNextWorkEntryFlush: () => void;
-    };
-  }
-}
-
 /** Sentinel value indicating summary is still being generated. */
 export const SUMMARY_LOADING = '__loading__';
 
@@ -1887,10 +1877,6 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
       let persistenceSuppressed = false;
       try {
         await awaitPendingRemovalHoldForE2e();
-        if (__CANOPY_E2E__ && failNextWorkEntryFlushForE2e) {
-          failNextWorkEntryFlushForE2e = false;
-          throw new Error('E2E-forced work-entry flush failure');
-        }
         await chatStore.flushWorktreeTabs(resolvedProjectId, entryId);
         chatStore.suppressWorktreePersistence(resolvedProjectId, entryId);
         persistenceSuppressed = true;
@@ -2786,11 +2772,3 @@ useStandaloneChatStore.subscribe((state, previousState) => {
     setStandaloneChatArchiveOverlayOpen(state.archiveOverlayChatId !== null);
   }
 });
-
-if (__CANOPY_E2E__) {
-  window.__canopyStandaloneChatTestApi = {
-    failNextWorkEntryFlush: (): void => {
-      failNextWorkEntryFlushForE2e = true;
-    },
-  };
-}

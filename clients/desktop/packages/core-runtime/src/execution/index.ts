@@ -8,6 +8,7 @@ export {
   createCoreExecutionHandlers,
   type CoreExecutionHandlerOptions,
   type CoreExecutionHandlers,
+  type ExecutionStatusView,
 } from './handlers';
-export { PROCESS_TABLE_UNAVAILABLE } from './process-tree';
+export { computePressure, PROCESS_TABLE_UNAVAILABLE } from './process-tree';
 export * from './types';

@@ -1,6 +1,22 @@
 import type { JSX } from 'react';
-import type { LinearIssuePreview } from '@canopy/protocol/reference-previews';
+import type {
+  LinearIssuePreview,
+  LinearStatusType,
+} from '@canopy/protocol/reference-previews';
 import { formatRelativeTime } from '../lib/format-relative-time';
+import {
+  LinearBacklogIcon,
+  LinearCanceledIcon,
+  LinearDoneIcon,
+  LinearInProgressIcon,
+  LinearInReviewIcon,
+  LinearTodoIcon,
+} from '../icons/LinearStatusIcons';
+import { Skeleton } from './Skeleton';
+import {
+  ReferenceHoverCard,
+  type ReferenceHoverCardIcon,
+} from './ReferenceHoverCard';
 
 export type LinearIssuePreviewCardView =
   | { readonly status: 'loading' }
@@ -22,6 +38,103 @@ const UNAVAILABLE_COPY = {
   failed: 'Couldn’t reach Linear',
 } as const;
 
+export interface LinearStatusGlyph {
+  readonly Icon: ReferenceHoverCardIcon;
+  /** Ink for the glyph. */
+  readonly ink: string;
+  /** Ink for the status name, when it differs from the glyph's. */
+  readonly labelInk?: string;
+}
+
+/**
+ * The glyph for a Linear status, drawn the way Linear draws its kind; a
+ * started status named for review is the three-quarter pie. Null without a
+ * kind, so callers keep the Linear mark.
+ */
+export function linearStatusGlyph(
+  type: LinearStatusType | null | undefined,
+  name: string | null,
+): LinearStatusGlyph | null {
+  switch (type) {
+    case 'backlog':
+      return {
+        Icon: LinearBacklogIcon,
+        ink: 'fg-quaternary',
+        labelInk: 'fg-primary',
+      };
+    case 'triage':
+    case 'unstarted':
+      return {
+        Icon: LinearTodoIcon,
+        ink: 'fg-secondary',
+        labelInk: 'fg-primary',
+      };
+    case 'started':
+      return name !== null && /review/i.test(name)
+        ? { Icon: LinearInReviewIcon, ink: 'fg-success' }
+        : { Icon: LinearInProgressIcon, ink: 'fg-warning' };
+    case 'completed':
+      return { Icon: LinearDoneIcon, ink: 'fg-purple' };
+    case 'canceled':
+      return { Icon: LinearCanceledIcon, ink: 'fg-quaternary' };
+    default:
+      return null;
+  }
+}
+
+function ReadyCard({
+  preview,
+  stale,
+  checkedAt,
+}: {
+  preview: LinearIssuePreview;
+  stale: boolean;
+  checkedAt: number;
+}): JSX.Element {
+  const glyph = linearStatusGlyph(preview.statusType, preview.status);
+  return (
+    <ReferenceHoverCard
+      testId="linear-issue-preview-card"
+      icon={glyph?.Icon ?? LinearTodoIcon}
+      ink={glyph?.ink ?? 'fg-secondary'}
+      leadInk={glyph ? glyph.labelInk : 'fg-primary'}
+      lead={preview.status ?? 'No status'}
+      context={[preview.identifier]}
+      trailing={
+        <span className="tabular-nums">
+          {formatRelativeTime(preview.updatedAt)}
+        </span>
+      }
+      title={preview.title}
+      note={
+        stale ? (
+          <span className="-mt-1 text-2xs fg-tertiary">
+            Checked {formatRelativeTime(checkedAt)}
+          </span>
+        ) : undefined
+      }
+      person={preview.assignee ?? 'Unassigned'}
+      personImage={preview.assigneeAvatarUrl}
+    />
+  );
+}
+
+/** An issue of typical length, for the loading card's shape. */
+function sampleIssue(identifier: string): LinearIssuePreview {
+  return {
+    identifier,
+    title: 'Keep the card the same size while its preview loads from Linear',
+    url: 'https://linear.app/',
+    description: null,
+    status: 'In progress',
+    statusType: 'started',
+    assignee: 'Assignee name',
+    assigneeAvatarUrl: null,
+    project: null,
+    updatedAt: new Date(0).toISOString(),
+  };
+}
+
 /** Informational hover card for one Linear issue reference. */
 export function LinearIssuePreviewCard({
   identifier,
@@ -30,46 +143,34 @@ export function LinearIssuePreviewCard({
   identifier: string;
   view: LinearIssuePreviewCardView;
 }): JSX.Element {
+  if (view.status === 'loading') {
+    return (
+      <Skeleton
+        loading
+        label="Loading preview"
+        testId="linear-issue-preview-skeleton"
+      >
+        <ReadyCard
+          preview={sampleIssue(identifier)}
+          stale={false}
+          checkedAt={0}
+        />
+      </Skeleton>
+    );
+  }
   if (view.status !== 'ready') {
     return (
       <div className="flex min-w-0 flex-col gap-0.5 text-xs" aria-live="polite">
         <span className="font-mono text-2xs fg-secondary">{identifier}</span>
-        <span className="fg-secondary">
-          {view.status === 'loading'
-            ? 'Loading preview…'
-            : UNAVAILABLE_COPY[view.reason]}
-        </span>
+        <span className="fg-secondary">{UNAVAILABLE_COPY[view.reason]}</span>
       </div>
     );
   }
-  const { preview } = view;
-  const facts = [
-    preview.status,
-    preview.assignee ?? 'Unassigned',
-    preview.project,
-  ].filter((fact): fact is string => Boolean(fact));
   return (
-    <div
-      className="flex min-w-0 flex-col gap-1 text-xs"
-      data-testid="linear-issue-preview-card"
-    >
-      <div className="flex min-w-0 items-baseline gap-1.5">
-        <span className="shrink-0 font-mono text-2xs fg-secondary">
-          {preview.identifier}
-        </span>
-        <span className="min-w-0 break-words font-medium fg-primary">
-          {preview.title}
-        </span>
-      </div>
-      {preview.description && (
-        <p className="line-clamp-3 fg-secondary">{preview.description}</p>
-      )}
-      <div className="truncate fg-secondary">{facts.join(' · ')}</div>
-      <div className="truncate text-2xs tabular-nums fg-tertiary">
-        {view.stale
-          ? `Checked ${formatRelativeTime(view.checkedAt)}`
-          : `Updated ${formatRelativeTime(preview.updatedAt)}`}
-      </div>
-    </div>
+    <ReadyCard
+      preview={view.preview}
+      stale={view.stale}
+      checkedAt={view.checkedAt}
+    />
   );
 }

@@ -7,6 +7,7 @@ import {
   type AgentDelegationErrorCode,
   type AgentDelegationSnapshot,
   type AgentDelegationStatus,
+  type AgentDelegationWorkspaceObservation,
 } from '@canopy/protocol/delegation';
 import {
   cutJsonPreview,
@@ -80,6 +81,8 @@ export interface DelegationReceiptSnapshot {
   readonly requestedModelId?: string;
   readonly partialText?: string;
   readonly finalText?: string;
+  /** The launch-time workspace observation, a small fixed shape. */
+  readonly workspaceObservation?: AgentDelegationWorkspaceObservation;
   readonly outputTruncated: boolean;
 }
 
@@ -147,6 +150,16 @@ const receiptError = z.strictObject({
   apply: z.strictObject({ issueCount }).optional(),
 });
 
+const workspaceObservation = z.strictObject({
+  consistency: z.literal('live_shared_worktree'),
+  headRevision: z
+    .string()
+    .regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/)
+    .nullable(),
+  dirty: z.boolean().nullable(),
+  observedAt: nonNegativeTime,
+});
+
 const receiptSnapshot = z.strictObject({
   delegationId: registryId,
   runGeneration: positiveGeneration.optional(),
@@ -189,6 +202,7 @@ const receiptSnapshot = z.strictObject({
     .optional(),
   partialText: z.string().optional(),
   finalText: z.string().optional(),
+  workspaceObservation: workspaceObservation.optional(),
   outputTruncated: z.boolean(),
 });
 
@@ -430,6 +444,20 @@ function boundSnapshot(
   if (previewBudget === 0)
     cut ||=
       snapshot.partialText !== undefined || snapshot.finalText !== undefined;
+  // Copied field by field, so the receipt holds only the bounded shape.
+  const parsedObservation = workspaceObservation.safeParse(
+    snapshot.workspaceObservation === undefined
+      ? undefined
+      : {
+          consistency: snapshot.workspaceObservation.consistency,
+          headRevision: snapshot.workspaceObservation.headRevision,
+          dirty: snapshot.workspaceObservation.dirty,
+          observedAt: snapshot.workspaceObservation.observedAt,
+        },
+  );
+  const observation = parsedObservation.success
+    ? parsedObservation.data
+    : undefined;
   const usageEntries = snapshot.usage
     ? MANAGED_MESSAGE_USAGE_KEYS.flatMap((key) => {
         const amount = snapshot.usage?.[key];
@@ -473,6 +501,9 @@ function boundSnapshot(
         : { requestedModelId: requestedModelId.text }),
       ...(partialText === undefined ? {} : { partialText }),
       ...(finalText === undefined ? {} : { finalText }),
+      ...(observation === undefined
+        ? {}
+        : { workspaceObservation: observation }),
       outputTruncated: snapshot.outputTruncated === true || cut,
     },
     cut,

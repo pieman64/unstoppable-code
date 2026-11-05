@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type JSX } from 'react';
 import { SkillSuggestionBanner } from '@canopy/ui-app';
+import { useSuggestionClaim } from '@canopy/ui-app/suggestions';
 import type {
   PendingSkillSuggestion,
   SkillSuggestionResolution,
@@ -29,6 +30,12 @@ interface SkillSuggestionBannerHostProps {
  * this host reads it for the chat and reports `shown` only once the banner is
  * really on screen, so a streaming or background composer never spends one
  * of the suggestion's shows.
+ *
+ * It also takes part in one-at-a-time suggestions (CAN-4343): it claims the
+ * shared slot only while visible in an on-screen composer and renders only
+ * while the claim is active. It stays in the composer, an explicit temporary
+ * deviation from the corner placement for event-driven offers; see
+ * `docs/in-app-suggestions.md`.
  */
 export function SkillSuggestionBannerHost({
   projectId,
@@ -121,15 +128,28 @@ export function SkillSuggestionBannerHost({
   const pendingState = pending?.state ?? null;
 
   // A composer mounted behind another page becomes visible without any of
-  // this host's inputs changing, so the check runs after every render while
-  // the entry is unreported; `report` sends each resolution once.
+  // this host's inputs changing, so the check runs after every render.
+  const [composerShown, setComposerShown] = useState(false);
   useEffect(() => {
-    if (!pending || !visible || pendingState !== 'pending') return;
-    if (!isComposerVisible()) return;
-    report(pending, 'shown');
+    const shown = visible && isComposerVisible();
+    if (shown !== composerShown) setComposerShown(shown);
   });
+  const claim = useSuggestionClaim(
+    'skill-suggestion',
+    visible && composerShown,
+    pending?.id,
+  );
+  const onScreen = visible && composerShown && claim.allowed;
+  const confirmShown = claim.confirmShown;
 
-  if (!pending || !visible) return null;
+  // `report` sends each resolution once.
+  useEffect(() => {
+    if (!pending || !onScreen) return;
+    confirmShown();
+    if (pendingState === 'pending') report(pending, 'shown');
+  }, [pending, onScreen, pendingState, report, confirmShown]);
+
+  if (!pending || !onScreen) return null;
 
   const { suggestion } = pending;
   return (
@@ -142,6 +162,14 @@ export function SkillSuggestionBannerHost({
         create.start(suggestion, () => report(pending, 'accepted'));
       }}
       onDismiss={() => report(pending, 'dismissed')}
+      {...(claim.gated
+        ? {
+            onDismissForever: () => {
+              claim.dismiss();
+              report(pending, 'dismissed');
+            },
+          }
+        : {})}
     />
   );
 }

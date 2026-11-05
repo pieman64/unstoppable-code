@@ -229,21 +229,3 @@ export function useOpenSkillSuggestions(
   }, [active]);
   return useSkillSuggestionStore((state) => state.suggestions);
 }
-
-/** Test-only: forget module-level subscriptions between cases. */
-export function resetSkillSuggestionStoreForTests(): void {
-  for (const intent of Object.values(
-    useSkillSuggestionStore.getState().resolutions,
-  )) {
-    if (intent.timer !== undefined) window.clearTimeout(intent.timer);
-  }
-  unsubscribeChanged?.();
-  unsubscribeChanged = null;
-  listSubscribers = 0;
-  listSequence = 0;
-  useSkillSuggestionStore.setState({
-    suggestions: null,
-    resolutions: {},
-    modalOpen: false,
-  });
-}

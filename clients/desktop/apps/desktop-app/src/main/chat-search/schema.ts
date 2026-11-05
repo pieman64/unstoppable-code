@@ -17,9 +17,11 @@ import { isSqliteRow } from './sqlite-rows';
  * `addMissingColumns` adds them in place, because a rebuild re-reads every
  * transcript in the background after an upgrade. Version 9 adds explicit
  * child-document ownership so parent deletion and retained-set reconciliation
- * do not rely on doc-id prefixes.
+ * do not rely on doc-id prefixes. Version 10 records each body row's FTS rowid
+ * (`body_fts_rowid`), because FTS5 cannot index `doc_id` and every doc-id
+ * filter scanned the whole index; existing body rows have no recorded rowid.
  */
-export const CHAT_SEARCH_SCHEMA_VERSION = 9;
+export const CHAT_SEARCH_SCHEMA_VERSION = 10;
 
 const REQUIRED_TABLES = [
   'search_meta',
@@ -50,6 +52,7 @@ const CREATE_SCHEMA_STATEMENTS: readonly string[] = [
     review_status TEXT,
     transcript_fingerprint TEXT,
     committed_fingerprint TEXT,
+    body_fts_rowid INTEGER,
     active_fts_rowid INTEGER,
     parent_doc_id TEXT,
     delegation_id TEXT,

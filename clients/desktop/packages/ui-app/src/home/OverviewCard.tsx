@@ -2,7 +2,8 @@
 
 import { memo, type JSX, type MouseEvent, type ReactNode } from 'react';
 import type { WorktreeLabel } from '@canopy/app-state';
-import { Tooltip } from '@canopy/ui-shared/components';
+import { Button, Tooltip } from '@canopy/ui-shared/components';
+import { CloseIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 
 /**
@@ -94,15 +95,19 @@ function OverviewCardImpl({
           {badge}
           {onDismiss && (
             <Tooltip label={dismissLabel} className="pointer-events-auto">
-              <button
-                type="button"
+              <Button
+                variant="ghost-overlay"
+                size="sm"
+                iconOnly
                 onClick={handleDismiss}
                 aria-label={dismissLabel}
-                className="pointer-events-auto inline-flex h-5 w-5 shrink-0 items-center justify-center rounded fg-secondary transition-colors hover:bg-secondary hover:fg-primary"
+                // The 28px circle overhangs the 20px title line rather than
+                // growing it.
+                className="-my-1"
                 data-testid={`${dataTestId}-dismiss`}
               >
-                <span aria-hidden="true">×</span>
-              </button>
+                <CloseIcon size="md" aria-hidden="true" />
+              </Button>
             </Tooltip>
           )}
         </span>

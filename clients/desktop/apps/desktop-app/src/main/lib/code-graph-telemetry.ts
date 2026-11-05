@@ -20,9 +20,10 @@ import {
 } from '@canopy/desktop-instrumentation/electron/main';
 import type { CodeGraphBuildResult } from '@canopy/desktop-shared/types/code-graph';
 import {
-  CodeGraphWorkerBuildError,
-  type CodeGraphWorkerBuildErrorReason,
-} from '../code-graph/build-runner';
+  codeGraphGenerationFailureReason as sharedCodeGraphGenerationFailureReason,
+  codeGraphGenerationResultContext,
+} from '@canopy/core-runtime/node/code-graph';
+import type { CodeGraphWorkerBuildErrorReason } from '../code-graph/build-runner';
 
 const CODE_GRAPH_GENERATION_OPERATION = 'canopy.code_graph_generation';
 const CODE_GRAPH_REFRESH_METRICS_OPERATION =
@@ -344,58 +345,10 @@ function safelyEmit(callback: () => void): void {
   }
 }
 
-function buildResultContext(
-  input: CompleteCodeGraphGenerationTelemetryInput,
-): DesktopInstrumentationContext {
-  const derivedComputedCount = input.result.derived.filter(
-    (entry) => entry.computed,
-  ).length;
-  // A build that published before its derived analysis has no derived
-  // counts yet: report them as unknown rather than zero.
-  const derivedKnown = input.result.derivedDeferred !== true;
-  return {
-    files_scanned: input.result.filesScanned,
-    files_parsed: input.result.filesParsed,
-    files_unchanged: input.result.filesUnchanged,
-    files_skipped: input.result.filesSkipped,
-    files_removed: input.result.filesRemoved,
-    parse_failure_count: input.result.parseFailures,
-    symbol_count: input.result.symbolCount,
-    edge_count: input.result.edgeCount,
-    reconciliation_duration_ms: input.result.durationMs,
-    fusion_duration_ms: input.fusionDurationMs,
-    facts_changed: input.result.factsChanged,
-    zero_mutation: input.result.factsChanged === false,
-    derived_repository_count: derivedKnown
-      ? input.result.derived.length
-      : undefined,
-    derived_computed_repository_count: derivedKnown
-      ? derivedComputedCount
-      : undefined,
-    community_count: derivedKnown
-      ? input.result.derived.reduce(
-          (total, entry) => total + entry.communityCount,
-          0,
-        )
-      : undefined,
-    flow_count: derivedKnown
-      ? input.result.derived.reduce(
-          (total, entry) => total + entry.flowCount,
-          0,
-        )
-      : undefined,
-    seeded_repository_count: input.seededRepositoryCount,
-    cold_fallback_repository_count: input.coldFallbackRepositoryCount,
-    reused_repository_count: input.reusedRepositoryCount,
-    preparation_failed: input.preparationFailed,
-    generation_published: input.generationPublished,
-  };
-}
-
 export function codeGraphGenerationFailureReason(
   error: unknown,
 ): CodeGraphGenerationFailureReason {
-  return error instanceof CodeGraphWorkerBuildError ? error.reason : 'unknown';
+  return sharedCodeGraphGenerationFailureReason(error);
 }
 
 export function startCodeGraphGenerationTelemetry(
@@ -432,14 +385,29 @@ export function completeCodeGraphGenerationTelemetry(
   handle: CodeGraphGenerationTelemetryHandle,
   input: CompleteCodeGraphGenerationTelemetryInput,
 ): void {
+  succeedCodeGraphGenerationTelemetry(
+    handle,
+    codeGraphGenerationResultContext(input),
+  );
+}
+
+/**
+ * A successful generation with its result values. `durationMs` replaces the
+ * handle's own clock for a generation another host measured (CAN-5627).
+ */
+export function succeedCodeGraphGenerationTelemetry(
+  handle: CodeGraphGenerationTelemetryHandle,
+  resultContext: DesktopInstrumentationContext,
+  durationMs?: number,
+): void {
   safelyEmit(() => {
     succeedDesktopOperation(CODE_GRAPH_GENERATION_OPERATION, {
       operationKey: handle.operationKey,
       context: {
         ...handle.context,
-        ...buildResultContext(input),
+        ...resultContext,
         status: 'success',
-        duration_ms: Math.max(0, Date.now() - handle.startedAtMs),
+        duration_ms: durationMs ?? Math.max(0, Date.now() - handle.startedAtMs),
       },
     });
   });
@@ -451,6 +419,7 @@ export function failCodeGraphGenerationTelemetry(
     stage: CodeGraphGenerationFailureStage;
     reason: CodeGraphGenerationFailureReason;
   },
+  durationMs?: number,
 ): void {
   const failureReason: DesktopInstrumentationFailureReason =
     input.reason === 'canceled' ? 'abandoned' : 'error';
@@ -462,7 +431,7 @@ export function failCodeGraphGenerationTelemetry(
         status: 'failure',
         failure_stage: input.stage,
         failure_reason: input.reason,
-        duration_ms: Math.max(0, Date.now() - handle.startedAtMs),
+        duration_ms: durationMs ?? Math.max(0, Date.now() - handle.startedAtMs),
       },
     });
   });

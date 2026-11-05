@@ -112,7 +112,7 @@ function projectSnapshot(
   };
 }
 
-function listState(
+export function listState(
   status: ChatRuntimeStatus | undefined,
 ): CoreChatListResult['items'][number]['state'] {
   switch (status) {

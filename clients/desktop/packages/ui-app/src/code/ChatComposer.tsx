@@ -1,5 +1,7 @@
 'use client';
 
+import { useSuggestionsClaimApi } from '../suggestions/SuggestionsProvider';
+
 import {
   Button,
   ComposerTipArbiterProvider,
@@ -274,6 +276,7 @@ function ChatComposerContent({
     !disabled && onSend !== undefined,
   );
   const hint = usePlanModeSuggestion({
+    suggestionsClaimApi: useSuggestionsClaimApi(),
     text: draftText,
     draftKey: `${draftKey}:${editorKey}`,
     activationKey: providerType,

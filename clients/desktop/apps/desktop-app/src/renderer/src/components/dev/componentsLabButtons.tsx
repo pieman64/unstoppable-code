@@ -7,8 +7,10 @@ import {
 } from '@canopy/ui-shared/components';
 import {
   ChevronRightIcon,
+  CloseIcon,
   FolderIcon,
   PlusIcon,
+  RefreshIcon,
   SettingsIcon,
   TrashIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
@@ -27,6 +29,7 @@ const VARIANTS: readonly ButtonVariant[] = [
   'ghost-quiet',
   'ghost-accent',
   'ghost-destructive',
+  'ghost-warning',
   'ghost-overlay',
   'warning',
   'destructive',
@@ -116,6 +119,85 @@ export function ButtonsSpecimen(): JSX.Element {
             <Button size="compact" variant="primary">
               Archive
             </Button>
+          </SpecimenCell>
+          <SpecimenCell label="groupHover: held while the ✕ is hovered" wide>
+            <span className="group/gitaction relative inline-flex items-center gap-1">
+              <Button size="compact" variant="ghost-accent" groupHover>
+                Creating PR…
+              </Button>
+              <Button
+                size="compact"
+                variant="ghost-quiet"
+                iconOnly
+                aria-label="Cancel"
+              >
+                <CloseIcon />
+              </Button>
+            </span>
+          </SpecimenCell>
+          <SpecimenCell label="pressedHover: toolbar toggle, on and off">
+            <Button
+              size="sm"
+              variant="ghost-overlay"
+              iconOnly
+              aria-label="Bookmark on"
+              aria-pressed
+              pressedHover
+            >
+              <FolderIcon />
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost-overlay"
+              iconOnly
+              aria-label="Bookmark off"
+              aria-pressed={false}
+              pressedHover
+            >
+              <FolderIcon />
+            </Button>
+          </SpecimenCell>
+          <SpecimenCell label="quietWhenDisabled: running Refresh">
+            <Button
+              size="compact"
+              variant="ghost-overlay"
+              iconOnly
+              aria-label="Refresh"
+              disabled
+              quietWhenDisabled
+            >
+              <RefreshIcon />
+            </Button>
+            <Button
+              size="compact"
+              variant="ghost-overlay"
+              iconOnly
+              aria-label="Refresh"
+              disabled
+            >
+              <RefreshIcon />
+            </Button>
+          </SpecimenCell>
+          <SpecimenCell label='touchArea="contained": touch hit area = own box (outlined)'>
+            <span className="inline-flex gap-1 [&_button]:before:outline [&_button]:before:outline-1 [&_button]:before:outline-dashed">
+              <Button
+                size="sm"
+                variant="ghost-quiet"
+                iconOnly
+                aria-label="Expanded"
+              >
+                <FolderIcon />
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost-quiet"
+                iconOnly
+                aria-label="Contained"
+                touchArea="contained"
+              >
+                <FolderIcon />
+              </Button>
+            </span>
           </SpecimenCell>
           <SpecimenCell label='variant="link", inside a sentence' wide>
             <p className="text-s fg-secondary">

@@ -177,12 +177,3 @@ export function captureActivePlanContext(
     ? { planId }
     : { planId, viewedRevisionNumber };
 }
-
-/** Clear every entry. Tests only. */
-export function resetActivePlanStoreForTests(): void {
-  useActivePlanStore.setState({
-    activeByWorktree: {},
-    viewCounts: {},
-    viewedRevisions: {},
-  });
-}

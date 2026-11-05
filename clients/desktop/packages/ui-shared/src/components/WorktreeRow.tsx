@@ -19,7 +19,11 @@ import {
 } from 'react';
 import { LoadingSpinner } from './LoadingSpinner';
 import { GroupedDiffStats } from './GroupedDiffStats';
-import { PREVIEW_CARD_SURFACE, RichHoverTooltip } from './RichHoverTooltip';
+import {
+  ITEM_PREVIEW_OPEN_DELAY_MS,
+  PREVIEW_CARD_SURFACE,
+  RichHoverTooltip,
+} from './RichHoverTooltip';
 import {
   isPrStatusInMergeQueue,
   PR_STATUS_ICONS,
@@ -191,15 +195,14 @@ export interface WorktreeRowMultiSelect {
 }
 
 /**
- * The row surface: a multi-selected row takes the accent tint so it reads
- * apart from the open row's neutral highlight; null keeps the resting look.
+ * The row surface: a multi-selected row takes the open row's fill, as a
+ * Finder list draws every selected row alike; null keeps the resting look.
  */
 function rowHighlightClassName(
   selected: boolean,
   multiSelected: boolean,
 ): string | null {
-  if (multiSelected) return 'bg-accent-subtle fg-primary';
-  if (selected) return 'bg-muted fg-primary';
+  if (multiSelected || selected) return 'bg-muted fg-primary';
   return null;
 }
 
@@ -1005,7 +1008,7 @@ function ClassicApprovedReviewIcon({
       aria-label={label}
       data-testid={withTestIdSuffix('worktree-row-pr-approved', testIdSuffix)}
     >
-      <AppCatalogCheckIcon width="10" height="10" aria-hidden="true" />
+      <AppCatalogCheckIcon size="xs" aria-hidden="true" />
     </span>
   );
 }
@@ -1805,20 +1808,20 @@ function WorktreeRowImpl(
     (hasMismatch || healthIssue?.status === 'broken');
   const actionChipRestingPadding =
     actionChipButtonCount <= 1
-      ? 'pr-7'
+      ? 'pr-8'
       : actionChipButtonCount === 2
-        ? 'pr-13.5'
+        ? 'pr-15.5'
         : actionChipButtonCount === 3
-          ? 'pr-20'
-          : 'pr-26.5';
+          ? 'pr-23'
+          : 'pr-30.5';
   const actionChipHoverPadding =
     actionChipButtonCount <= 1
-      ? 'pointer-fine:group-hover:pr-7 pointer-fine:group-focus-within:pr-7'
+      ? 'pointer-fine:group-hover:pr-8 pointer-fine:group-focus-within:pr-8'
       : actionChipButtonCount === 2
-        ? 'pointer-fine:group-hover:pr-13.5 pointer-fine:group-focus-within:pr-13.5'
+        ? 'pointer-fine:group-hover:pr-15.5 pointer-fine:group-focus-within:pr-15.5'
         : actionChipButtonCount === 3
-          ? 'pointer-fine:group-hover:pr-20 pointer-fine:group-focus-within:pr-20'
-          : 'pointer-fine:group-hover:pr-26.5 pointer-fine:group-focus-within:pr-26.5';
+          ? 'pointer-fine:group-hover:pr-23 pointer-fine:group-focus-within:pr-23'
+          : 'pointer-fine:group-hover:pr-30.5 pointer-fine:group-focus-within:pr-30.5';
   const showPrBadge = lastKnownPrStatus !== undefined && !isDone;
   const prColorClass = lastKnownPrStatus
     ? prStatusColorClass(lastKnownPrStatus)
@@ -1855,7 +1858,7 @@ function WorktreeRowImpl(
         className="focus-ring inline-flex h-4 w-4 shrink-0 items-center justify-center rounded fg-warning"
         aria-label="Worktree issue - click for details"
       >
-        <WarningIcon size={16} />
+        <WarningIcon size="xs" />
       </button>,
     )
   ) : showPrBadge ? (
@@ -2675,7 +2678,7 @@ function WorktreeRowImpl(
     // at the end of the label line (inside the hover-padding reserve, so
     // they shift left with the title when the action chips appear and their
     // hover popovers stay reachable). Every slot shares the action-button
-    // footprint (24px wide, gap-0.5), so the cluster lines up with the
+    // 24px slot (gap-0.5) and the row reserves 28px per hover action button, so the cluster lines up with the
     // hover action column; the dot keeps the anchor (right-most) slot.
     const classicSystemStatus =
       focusedStatus ? null : classicSetupStatusTitle ? (
@@ -3646,7 +3649,7 @@ function WorktreeRowImpl(
                       testIdSuffix,
                     )}
                   >
-                    <GitMergeConflictIcon size={BRANCH_GLYPH_SIZE_PX} />
+                    <GitMergeConflictIcon size="xs" />
                   </span>
                 )}
                 {focusedMergeQueue && lastKnownPrStatus !== undefined && (
@@ -3786,7 +3789,7 @@ function WorktreeRowImpl(
                     className="focus-ring -m-0.5 p-0.5 shrink-0 rounded transition-colors fg-warning hover:bg-subtle hover:fg-primary"
                     aria-label="Worktree issue - click for details"
                   >
-                    <WarningIcon size={12} />
+                    <WarningIcon size="xs" />
                   </button>,
                 )}
 
@@ -4368,8 +4371,6 @@ const WorktreeRowBase = forwardRef<HTMLDivElement, WorktreeRowProps>(
   WorktreeRowImpl,
 );
 
-const PREVIEW_OPEN_DELAY_MS = 500;
-
 function WorktreeRowPreviewLine({
   icon,
   label,
@@ -4789,7 +4790,7 @@ function WorktreeRowWithPreview(
         />
       }
       dataTestId="worktree-row-preview"
-      openDelay={PREVIEW_OPEN_DELAY_MS}
+      openDelay={ITEM_PREVIEW_OPEN_DELAY_MS}
       suppressed={pressed || menuActive}
       preferRightPlacement
       rightPlacementAlign="start"

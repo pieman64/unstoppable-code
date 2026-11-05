@@ -486,6 +486,7 @@ interface ActiveSidecar {
     stagedId: string;
     byteOffset: number;
     messageIds: string[];
+    explicitRevision?: unknown;
     child?: true;
     stagedByteLength?: number;
     stagedSha256?: string;
@@ -533,11 +534,31 @@ interface ActiveSidecarHeaderV2 {
   finalizing?: {
     stagedId: string;
     byteOffset: number;
+    explicitRevision?: unknown;
     child?: true;
     messageIds?: string[];
     stagedByteLength?: number;
     stagedSha256?: string;
   };
+}
+
+function hasExactAppendRevisionMarker(
+  marker: unknown,
+  finalizing: NonNullable<ActiveSidecar['finalizing']>,
+  transcriptRevision: number,
+): boolean {
+  return (
+    isRecord(marker) &&
+    typeof marker.stagedId === 'string' &&
+    marker.stagedId === finalizing.stagedId &&
+    typeof marker.byteOffset === 'number' &&
+    Number.isSafeInteger(marker.byteOffset) &&
+    marker.byteOffset === finalizing.byteOffset &&
+    typeof marker.transcriptRevision === 'number' &&
+    Number.isSafeInteger(marker.transcriptRevision) &&
+    marker.transcriptRevision >= 0 &&
+    marker.transcriptRevision === transcriptRevision
+  );
 }
 
 interface ActiveSidecarMessageV2 {
@@ -624,6 +645,11 @@ interface CommittedRecentPage {
   latestHumanMessage?: PersistedChatMessage;
 }
 
+interface InFlightRecentCommittedPage {
+  identity: string;
+  promise: Promise<CommittedRecentPage | undefined>;
+}
+
 export interface ArtifactReferenceSlice {
   identity: string;
   nextOffset: number;
@@ -678,12 +704,17 @@ async function rememberWrittenActiveAnchors(
   }
 }
 
+// Large recent pages are parsed once per transcript identity, not once per turn boundary.
 const recentCommittedPages =
   new BoundedTranscriptSnapshotCache<CommittedRecentPage>(
-    8,
-    4 * 1024 * 1024,
-    2 * 1024 * 1024,
+    4,
+    64 * 1024 * 1024,
+    64 * 1024 * 1024,
   );
+const inFlightRecentCommittedPages = new Map<
+  string,
+  InFlightRecentCommittedPage
+>();
 const MAX_MAINTENANCE_INDEX_BYTES = 1024 * 1024;
 interface MaintenanceCommittedIndex extends Pick<
   TranscriptDescriptor,
@@ -1600,6 +1631,9 @@ async function writeActiveSidecar(
           finalizing: {
             stagedId: sidecar.finalizing.stagedId,
             byteOffset: sidecar.finalizing.byteOffset,
+            ...(sidecar.finalizing.explicitRevision !== undefined
+              ? { explicitRevision: sidecar.finalizing.explicitRevision }
+              : {}),
             ...(sidecar.finalizing.child
               ? {
                   child: sidecar.finalizing.child,
@@ -1894,6 +1928,7 @@ async function* lines(
   message: PersistedChatMessage;
   offset: number;
   end: number;
+  bytes: Buffer;
 }> {
   yield* linesFromChunks(createReadStream(path, { start }), start);
 }
@@ -1905,6 +1940,7 @@ async function* linesFromChunks(
   message: PersistedChatMessage;
   offset: number;
   end: number;
+  bytes: Buffer;
 }> {
   let offset = start;
   let pending: Buffer[] = [];
@@ -1932,7 +1968,7 @@ async function* linesFromChunks(
       if (!isPersistedChatMessage(parsed))
         throw new Error('Invalid complete transcript message');
       const end = offset + bytes.length + 1;
-      yield { message: parsed, offset, end };
+      yield { message: parsed, offset, end, bytes };
       offset = end;
       begin = i + 1;
       pending = [];
@@ -2258,6 +2294,14 @@ export async function* readCompleteTranscriptMessages(
   path: string,
 ): AsyncGenerator<PersistedChatMessage> {
   for await (const row of lines(path)) yield row.message;
+}
+
+/** Complete rows with the exact bytes read for each, for integrity hashing. */
+export async function* readCompleteTranscriptRows(
+  path: string,
+): AsyncGenerator<{ message: PersistedChatMessage; bytes: Buffer }> {
+  for await (const row of lines(path))
+    yield { message: row.message, bytes: row.bytes };
 }
 
 export interface ChatTranscriptReplaceMeasurement {
@@ -4219,62 +4263,94 @@ export class TranscriptStreamStore {
       const identity = `${index.committedDigest}:${index.committedMessageCount}:${index.committedByteLength}:${index.latestHuman?.ordinal ?? -1}:${index.latestHuman?.offset ?? -1}:${before.stamp}`;
       const cached = recentCommittedPages.get(path, identity);
       if (cached) return cached;
+      const pending = inFlightRecentCommittedPages.get(path);
+      const read =
+        pending?.identity === identity
+          ? pending
+          : {
+              identity,
+              promise: this.readCommittedRecentPageAttempt(
+                path,
+                index,
+                identity,
+                before,
+              ),
+            };
+      if (read !== pending) inFlightRecentCommittedPages.set(path, read);
       let page: CommittedRecentPage | undefined;
-      let pageBytes = 256;
-      let readError: unknown;
       try {
-        const end = index.committedMessageCount;
-        const start = Math.max(0, end - TRANSCRIPT_PAGE_SIZE);
-        const checkpoint = [...index.offsets]
-          .reverse()
-          .find((entry) => entry.ordinal <= start);
-        const messages: PersistedChatMessage[] = [];
-        if (checkpoint && start < end) {
-          let ordinal = checkpoint.ordinal;
-          for await (const row of lines(path, checkpoint.offset)) {
-            if (ordinal >= start && ordinal < end) {
-              messages.push(row.message);
-              pageBytes += row.end - row.offset;
-            }
-            ordinal += 1;
-            if (ordinal >= end) break;
-          }
-        }
-        if (messages.length !== end - start)
-          throw new Error('Committed transcript page is incomplete');
-        let latestHumanMessage: PersistedChatMessage | undefined;
-        if (index.latestHuman) {
-          if (
-            index.latestHuman.ordinal >= start &&
-            index.latestHuman.ordinal < end
-          )
-            latestHumanMessage = messages[index.latestHuman.ordinal - start];
-          else
-            for await (const row of lines(path, index.latestHuman.offset)) {
-              latestHumanMessage = row.message;
-              pageBytes += row.end - row.offset;
-              break;
-            }
-        }
-        page = {
-          messages,
-          ...(latestHumanMessage ? { latestHumanMessage } : {}),
-        };
-      } catch (error) {
-        readError = error;
+        page = await read.promise;
+      } finally {
+        if (inFlightRecentCommittedPages.get(path)?.promise === read.promise)
+          inFlightRecentCommittedPages.delete(path);
       }
-      const after = await fileIdentity(path);
-      if (before.stamp !== after.stamp) {
-        recentCommittedPages.delete(path);
-        if (attempt < 2) continue;
-        throw new Error('Committed transcript changed during page read');
-      }
-      if (readError) throw errorFromUnknown(readError);
-      if (!page) throw new Error('Committed transcript page is unavailable');
-      recentCommittedPages.set(path, identity, pageBytes, page);
-      return page;
+      if (page !== undefined) return structuredClone(page);
+      recentCommittedPages.delete(path);
+      if (attempt < 2) continue;
+      throw new Error('Committed transcript changed during page read');
     }
     throw new Error('Committed transcript changed during page read');
+  }
+
+  private async readCommittedRecentPageAttempt(
+    path: string,
+    index: SparseIndex,
+    identity: string,
+    before: { stamp: string; bytes: number },
+  ): Promise<CommittedRecentPage | undefined> {
+    let page: CommittedRecentPage | undefined;
+    let pageBytes = 256;
+    let readError: unknown;
+    try {
+      const end = index.committedMessageCount;
+      const start = Math.max(0, end - TRANSCRIPT_PAGE_SIZE);
+      const checkpoint = [...index.offsets]
+        .reverse()
+        .find((entry) => entry.ordinal <= start);
+      const messages: PersistedChatMessage[] = [];
+      if (checkpoint && start < end) {
+        let ordinal = checkpoint.ordinal;
+        for await (const row of lines(path, checkpoint.offset)) {
+          if (ordinal >= start && ordinal < end) {
+            messages.push(row.message);
+            pageBytes += row.end - row.offset;
+          }
+          ordinal += 1;
+          if (ordinal >= end) break;
+        }
+      }
+      if (messages.length !== end - start)
+        throw new Error('Committed transcript page is incomplete');
+      let latestHumanMessage: PersistedChatMessage | undefined;
+      if (index.latestHuman) {
+        if (
+          index.latestHuman.ordinal >= start &&
+          index.latestHuman.ordinal < end
+        )
+          latestHumanMessage = messages[index.latestHuman.ordinal - start];
+        else
+          for await (const row of lines(path, index.latestHuman.offset)) {
+            latestHumanMessage = row.message;
+            pageBytes += row.end - row.offset;
+            break;
+          }
+      }
+      page = {
+        messages,
+        ...(latestHumanMessage ? { latestHumanMessage } : {}),
+      };
+    } catch (error) {
+      readError = error;
+    }
+    const after = await fileIdentity(path);
+    if (before.stamp !== after.stamp) {
+      recentCommittedPages.delete(path);
+      return undefined;
+    }
+    if (readError) throw errorFromUnknown(readError);
+    if (!page) throw new Error('Committed transcript page is unavailable');
+    recentCommittedPages.set(path, identity, pageBytes, page);
+    return page;
   }
 
   private remember(chatId: string, value: LoadedLog): void {
@@ -4334,12 +4410,23 @@ export class TranscriptStreamStore {
           throw new ChatTranscriptIntegrityError(
             `Transcript ${chatId} is shorter than its committed index: ${size} of ${candidate.committedByteLength} bytes`,
           );
+        const indexedByteLength = candidate.committedByteLength;
         if (
           trusted &&
           Number.isSafeInteger(candidate.committedMessageCount) &&
           candidate.committedMessageCount >= 0 &&
-          (candidate.committedMessageCount === 0 ? size === 0 : size > 0) &&
-          candidate.committedByteLength === size &&
+          (candidate.committedMessageCount === 0
+            ? indexedByteLength === 0
+            : indexedByteLength > 0) &&
+          (indexedByteLength === size ||
+            (active?.finalizing !== undefined &&
+              hasExactAppendRevisionMarker(
+                active.finalizing.explicitRevision,
+                active.finalizing,
+                active.transcriptRevision,
+              ) &&
+              !this.options.childMode &&
+              indexedByteLength === active.finalizing.byteOffset)) &&
           Number.isSafeInteger(candidate.transcriptRevision) &&
           Array.isArray(candidate.offsets) &&
           candidate.offsets.length ===
@@ -4349,14 +4436,14 @@ export class TranscriptStreamStore {
               entry.ordinal === i * SPARSE_STRIDE &&
               Number.isSafeInteger(entry.offset) &&
               entry.offset >= 0 &&
-              entry.offset < size &&
+              entry.offset < indexedByteLength &&
               (i === 0
                 ? entry.offset === 0
                 : entry.offset > candidate.offsets[i - 1].offset),
           ) &&
           (candidate.latestHuman === undefined ||
             (candidate.latestHuman.offset >= 0 &&
-              candidate.latestHuman.offset < size &&
+              candidate.latestHuman.offset < indexedByteLength &&
               candidate.latestHuman.ordinal >= 0 &&
               candidate.latestHuman.ordinal < candidate.committedMessageCount))
         ) {
@@ -4393,6 +4480,31 @@ export class TranscriptStreamStore {
               : undefined,
             ...metadata,
           };
+          if (
+            indexedByteLength !== size &&
+            active?.finalizing !== undefined &&
+            hasExactAppendRevisionMarker(
+              active.finalizing.explicitRevision,
+              active.finalizing,
+              active.transcriptRevision,
+            ) &&
+            !this.options.childMode
+          ) {
+            if (
+              isSparseReducerFrame(
+                persisted.reducerFrame,
+                persisted.committedMessageCount,
+                persisted.committedByteLength,
+              )
+            )
+              persisted = await this.extendRecoveredAppendIndex(
+                chatId,
+                persisted,
+                active,
+                size,
+              );
+            else persisted = undefined;
+          }
         }
       } catch (error) {
         if (
@@ -4538,6 +4650,122 @@ export class TranscriptStreamStore {
     if (active?.finalizing) await this.clearFinalized(chatId, active);
     this.remember(chatId, result);
     return result;
+  }
+
+  /**
+   * Extend a verified old index from the exact staged append after log append
+   * but before index publication. This avoids rebuilding derived state from
+   * the committed prefix during the ordinary append-recovery window.
+   */
+  private async extendRecoveredAppendIndex(
+    chatId: string,
+    index: SparseIndex,
+    pending: ActiveSidecar,
+    logSize: number,
+  ): Promise<SparseIndex> {
+    const intent = pending.finalizing;
+    if (
+      !intent ||
+      !hasExactAppendRevisionMarker(
+        intent.explicitRevision,
+        intent,
+        pending.transcriptRevision,
+      ) ||
+      intent.child ||
+      !Number.isSafeInteger(intent.byteOffset) ||
+      index.committedByteLength !== intent.byteOffset
+    )
+      throw new Error('Invalid transcript append recovery base');
+
+    const stagedPath = this.paths.stagedAppendFile(chatId, intent.stagedId);
+    const stagedSize = (await stat(stagedPath)).size;
+    if (logSize !== intent.byteOffset + stagedSize)
+      throw new Error('Recovered transcript append extent differs from intent');
+
+    const stagedMessages: PersistedChatMessage[] = [];
+    for await (const row of lines(stagedPath)) stagedMessages.push(row.message);
+    if (
+      stagedMessages.length === 0 ||
+      stagedMessages.length !== intent.messageIds.length ||
+      !stagedMessages.every(
+        (message, position) =>
+          message.id === intent.messageIds[position] &&
+          pending.messages.some(
+            (candidate) =>
+              candidate.id === message.id &&
+              digest(candidate) === digest(message),
+          ),
+      )
+    )
+      throw new Error(
+        'Recovered staged append differs from its durable intent',
+      );
+
+    const locatorRows: Array<{
+      message: PersistedChatMessage;
+      offset: number;
+      end: number;
+    }> = [];
+    // Replacement drops active-only metadata before recording final rows, as
+    // `replace` does when it starts a fresh index.
+    delete index.hasOrdinaryActiveRows;
+    let offset = intent.byteOffset;
+    for (const message of stagedMessages) {
+      const end =
+        offset + Buffer.byteLength(JSON.stringify(message), 'utf8') + 1;
+      locatorRows.push({ message, offset, end });
+      const logical = message.blocksRef
+        ? await this.expandBlocks(chatId, message)
+        : message;
+      this.record(index, message, offset, end, undefined, logical);
+      offset = end;
+    }
+    if (offset !== logSize)
+      throw new Error('Recovered staged append byte length differs from log');
+
+    const newLocatorRows: typeof locatorRows = [];
+    for (const row of locatorRows) {
+      try {
+        const parsed: unknown = JSON.parse(
+          await readFile(this.locatorPath(chatId, row.message.id), 'utf8'),
+        );
+        if (
+          !isMessageLocator(parsed) ||
+          parsed.messageId !== row.message.id ||
+          parsed.offset !== row.offset ||
+          parsed.end !== row.end ||
+          parsed.digest !== digest(row.message)
+        )
+          throw new Error('Recovered append locator conflicts with staged row');
+      } catch (error) {
+        if (isErrnoException(error) && error.code === 'ENOENT') {
+          newLocatorRows.push(row);
+          continue;
+        }
+        throw error;
+      }
+    }
+    await this.writeLocators(chatId, newLocatorRows);
+
+    const finalizingIds = new Set(intent.messageIds);
+    const activeRows = pending.messages.filter(
+      (message) => !finalizingIds.has(message.id),
+    );
+    const activeAnchors = survivingActiveRowAnchors(
+      activeRows,
+      pending.activeRowAnchors,
+    );
+    index.transcriptRevision = pending.transcriptRevision;
+    index.hasActiveSidecar = activeRows.length > 0;
+    if (activeAnchors.size > 0)
+      index.hasOrdinaryActiveRows = await this.hasOrdinaryActiveRows(
+        chatId,
+        activeRows,
+        activeAnchors,
+      );
+    else delete index.hasOrdinaryActiveRows;
+    await this.writeIndex(chatId, index);
+    return index;
   }
 
   private async foldReducerFrameFromLog(
@@ -5240,19 +5468,18 @@ export class TranscriptStreamStore {
       try {
         bytesWritten = await writeJsonValuesCooperatively(
           temporary,
-          (async function* (): AsyncGenerator<PersistedChatMessage> {
+          (async function* (): AsyncGenerator<string> {
             for await (const message of iterateAsync(replacement)) {
               const stored = await prepareRow(chatId, message, true, fields);
               if (!isPersistedChatMessage(stored))
                 throw new Error('Invalid or duplicate replacement message');
+              const json = JSON.stringify(stored);
               const offset = index.committedByteLength;
-              const rowBytes = Buffer.byteLength(
-                JSON.stringify(stored),
-                'utf8',
-              );
+              const rowBytes = Buffer.byteLength(json, 'utf8');
               if (rowBytes > MAX_TRANSCRIPT_ROW_BYTES)
                 throw new Error('Transcript row exceeds maximum size');
               const end = offset + rowBytes + 1;
+              const rowDigest = createHash('sha256').update(json).digest('hex');
               const locatorPath = join(
                 locatorTemporary,
                 `${createHash('sha256').update(stored.id).digest('hex')}.json`,
@@ -5264,7 +5491,7 @@ export class TranscriptStreamStore {
                   messageId: stored.id,
                   offset,
                   end,
-                  digest: digest(stored),
+                  digest: rowDigest,
                 },
               });
               if (locatorBatch.length === 64)
@@ -5272,11 +5499,16 @@ export class TranscriptStreamStore {
               const logical = stored.blocksRef
                 ? await expandBlocks(chatId, stored)
                 : stored;
-              record(index, stored, offset, end, undefined, logical);
-              yield stored;
+              record(index, stored, offset, end, rowDigest, logical);
+              yield json;
             }
           })(),
-          { pretty: false, separator: '\n', trailingSeparator: true },
+          {
+            pretty: false,
+            serializedValues: true,
+            separator: '\n',
+            trailingSeparator: true,
+          },
         );
         await flushLocatorBatch(locatorBatch);
         // A crash must not leave an old but byte-length-compatible sparse index
@@ -5367,6 +5599,168 @@ export class TranscriptStreamStore {
         activeTailCount,
       ),
     );
+  }
+
+  /**
+   * Append a format-4 replacement tail and publish its active suffix in one
+   * transaction. Returns false without staging or publishing when the rows do
+   * not form an appendable tail; callers can then use the general replacement
+   * path. Already-committed final rows are accepted only as an identical,
+   * contiguous suffix at the end of the committed log.
+   */
+  public async tryAppendPatch(
+    chatId: string,
+    tail: readonly PersistedChatMessage[],
+    activeTailCount: number,
+    replacementRevision: number,
+    fields: TranscriptFieldMode,
+    capturedAnchors?: ReadonlyMap<string, ActiveRowAnchor>,
+  ): Promise<boolean> {
+    if (
+      (fields !== 'format4' && fields !== 'format4-committed') ||
+      this.options.childMode
+    )
+      return false;
+    if (
+      !Number.isSafeInteger(activeTailCount) ||
+      activeTailCount < 0 ||
+      activeTailCount > tail.length ||
+      !Number.isSafeInteger(replacementRevision) ||
+      replacementRevision < 0 ||
+      replacementRevision >= Number.MAX_SAFE_INTEGER
+    )
+      throw new Error('Invalid mixed transcript patch');
+
+    this.assertWritable();
+    const explicitAnchors = copyActiveRowAnchors(capturedAnchors);
+    const finalCount = tail.length - activeTailCount;
+    const targetRevision = replacementRevision + (activeTailCount > 0 ? 1 : 0);
+    return this.serial(chatId, async () => {
+      const loaded = await this.load(chatId);
+      if (!loaded.locatorsComplete) return false;
+
+      const ids = new Set<string>();
+      const committedFinalRows: Array<{
+        locator: MessageLocator;
+        message: PersistedChatMessage;
+      }> = [];
+      let missingFinalRow = false;
+      for (let position = 0; position < tail.length; position += 1) {
+        const message = tail[position];
+        if (!message || ids.has(message.id)) return false;
+        ids.add(message.id);
+        const isFinal = position < finalCount;
+        if (!isFinal) {
+          if (await this.hasLocatorFile(chatId, message.id)) return false;
+          continue;
+        }
+
+        const located = await this.readCommittedMessageAtLocator(
+          chatId,
+          message.id,
+        );
+        if (!located.valid) {
+          if (await this.hasLocatorFile(chatId, message.id)) return false;
+          missingFinalRow = true;
+          continue;
+        }
+        if (missingFinalRow) return false;
+        if (
+          digest(located.message) !== digest(message) &&
+          !(await this.artifacts.isFinalFormOf(
+            this.paths.owner(chatId),
+            message,
+            located.message,
+          ))
+        )
+          return false;
+        const locatorValue: unknown = JSON.parse(
+          await readFile(this.locatorPath(chatId, message.id), 'utf8'),
+        );
+        if (
+          !isMessageLocator(locatorValue) ||
+          locatorValue.messageId !== message.id
+        )
+          return false;
+        committedFinalRows.push({
+          locator: locatorValue,
+          message: located.message,
+        });
+      }
+
+      if (committedFinalRows.length > 0) {
+        const last = committedFinalRows[committedFinalRows.length - 1];
+        if (
+          !last ||
+          last.message.id !== loaded.index.lastMessageId ||
+          last.locator.end !== loaded.index.committedByteLength
+        )
+          return false;
+        for (let index = 1; index < committedFinalRows.length; index += 1) {
+          const previous = committedFinalRows[index - 1];
+          const current = committedFinalRows[index];
+          if (
+            !previous ||
+            !current ||
+            previous.locator.end !== current.locator.offset
+          )
+            return false;
+        }
+      }
+
+      const openRows = tail.slice(finalCount);
+      const currentActive = await this.active(chatId);
+      const expectedAnchors = survivingActiveRowAnchors(
+        openRows,
+        explicitAnchors ?? currentActive?.activeRowAnchors,
+      );
+      // The prefix will be committed before the retained suffix is visible.
+      // Include it in the bounded validation view, as appendLocked does.
+      await this.validateActiveAnchorSet(chatId, tail, expectedAnchors);
+      assertActiveSidecarRecordBudgets(
+        openRows,
+        expectedAnchors,
+        new Set<string>(),
+      );
+
+      const activeAlreadyPublished =
+        sameActiveMessages(currentActive?.messages ?? [], openRows) &&
+        sameActiveAnchors(currentActive?.activeRowAnchors, expectedAnchors);
+      if (
+        committedFinalRows.length === finalCount &&
+        loaded.index.transcriptRevision === targetRevision &&
+        activeAlreadyPublished
+      )
+        return true;
+
+      await this.appendLocked(
+        chatId,
+        tail,
+        fields,
+        undefined,
+        expectedAnchors,
+        activeTailCount,
+        {
+          replaceActive: true,
+          transcriptRevision: targetRevision,
+          exactRevision: true,
+        },
+      );
+      return true;
+    });
+  }
+
+  private async hasLocatorFile(
+    chatId: string,
+    messageId: string,
+  ): Promise<boolean> {
+    try {
+      await stat(this.locatorPath(chatId, messageId));
+      return true;
+    } catch (error) {
+      if (isErrnoException(error) && error.code === 'ENOENT') return false;
+      throw error;
+    }
   }
 
   /**
@@ -5641,6 +6035,11 @@ export class TranscriptStreamStore {
     },
     explicitAnchors?: ReadonlyMap<string, ActiveRowAnchor>,
     activeTailCount?: number,
+    options?: {
+      replaceActive?: boolean;
+      transcriptRevision?: number;
+      exactRevision?: boolean;
+    },
   ): Promise<void> {
     const loaded = await this.load(chatId);
     const suffixCount = activeTailCount ?? 0;
@@ -5658,8 +6057,15 @@ export class TranscriptStreamStore {
       if (!message) throw new Error('Invalid append payload');
       if (this.options.childMode && !isDelegationChildRow(message))
         throw new Error('Invalid child transcript row');
-      // Appended rows are committed, hence final.
-      const stored = await this.prepareRow(chatId, message, true, fields);
+      // Rows in the active suffix use the open-row policy; the preceding
+      // payload is committed and uses the final-row policy.
+      const isActiveSuffix = suffixMode && position >= committedPayloadCount;
+      const stored = await this.prepareRow(
+        chatId,
+        message,
+        !isActiveSuffix,
+        fields,
+      );
       assertTranscriptRowWithinLimit(stored);
       const hash = digest(stored);
       const existing = await this.readCommittedMessage(chatId, stored.id);
@@ -5679,11 +6085,17 @@ export class TranscriptStreamStore {
       else prepared.push(stored);
     }
     if (prepared.length === 0 && !suffixMode) {
-      const sidecar = before ? undefined : await this.active(chatId);
+      const sidecar =
+        before || options?.replaceActive
+          ? undefined
+          : await this.active(chatId);
       const active = before ?? sidecar;
       const existingAnchors = before
         ? await this.activeRowAnchorsForWrite(chatId)
-        : sidecar?.activeRowAnchors;
+        : options?.replaceActive
+          ? undefined
+          : sidecar?.activeRowAnchors;
+      if (options?.replaceActive) delete loaded.index.hasOrdinaryActiveRows;
       const effectiveAnchors = survivingActiveRowAnchors(
         active?.messages ?? [],
         existingAnchors,
@@ -5696,7 +6108,8 @@ export class TranscriptStreamStore {
       );
       if (before) {
         // Nothing to finalize: the run alone, as writeActiveAtRevision.
-        loaded.index.transcriptRevision = before.transcriptRevision;
+        loaded.index.transcriptRevision =
+          options?.transcriptRevision ?? before.transcriptRevision;
         await this.persistActive(
           chatId,
           loaded,
@@ -5715,11 +6128,16 @@ export class TranscriptStreamStore {
       return;
     }
     if (prepared.length === 0 && suffixMode) {
-      const sidecar = before ? undefined : await this.active(chatId);
+      const sidecar =
+        before || options?.replaceActive
+          ? undefined
+          : await this.active(chatId);
       const active = before ?? sidecar;
       const existingAnchors = before
         ? await this.activeRowAnchorsForWrite(chatId)
-        : sidecar?.activeRowAnchors;
+        : options?.replaceActive
+          ? undefined
+          : sidecar?.activeRowAnchors;
       const effectiveAnchors = survivingActiveRowAnchors(
         activeSuffix,
         existingAnchors,
@@ -5732,20 +6150,28 @@ export class TranscriptStreamStore {
       );
       if (
         sameActiveMessages(active?.messages ?? [], activeSuffix) &&
-        sameActiveAnchors(existingAnchors, effectiveAnchors)
+        sameActiveAnchors(existingAnchors, effectiveAnchors) &&
+        options?.replaceActive !== true &&
+        (options?.transcriptRevision === undefined ||
+          loaded.index.transcriptRevision === options.transcriptRevision)
       )
         return;
+      if (options?.replaceActive) delete loaded.index.hasOrdinaryActiveRows;
       loaded.index.transcriptRevision =
+        options?.transcriptRevision ??
         (before?.transcriptRevision ?? loaded.index.transcriptRevision) + 1;
       await this.persistActive(chatId, loaded, activeSuffix, effectiveAnchors);
       await this.writeIndex(chatId, loaded.index);
       return;
     }
-    const sidecar = before ? undefined : await this.active(chatId);
+    const sidecar =
+      before || options?.replaceActive ? undefined : await this.active(chatId);
     const active = before ?? sidecar;
     const existingAnchors = before
       ? await this.activeRowAnchorsForWrite(chatId)
-      : sidecar?.activeRowAnchors;
+      : options?.replaceActive
+        ? undefined
+        : sidecar?.activeRowAnchors;
     const orderingAnchors = survivingActiveRowAnchors(
       [...(active?.messages ?? []), ...prepared, ...activeSuffix],
       existingAnchors,
@@ -5813,6 +6239,7 @@ export class TranscriptStreamStore {
       effectiveAnchors,
       new Set(prepared.map((message) => message.id)),
     );
+    if (options?.replaceActive) delete loaded.index.hasOrdinaryActiveRows;
     const stagedId = randomUUID();
     await writeJsonValuesCooperatively(
       this.paths.stagedAppendFile(chatId, stagedId),
@@ -5837,10 +6264,12 @@ export class TranscriptStreamStore {
         }
       : undefined;
     if (this.options.childMode) await this.options.onChildStaged?.();
+    const pendingTranscriptRevision =
+      options?.transcriptRevision ??
+      (before?.transcriptRevision ?? loaded.index.transcriptRevision) + 1;
     const pending: ActiveSidecar = {
       version: 1,
-      transcriptRevision:
-        (before?.transcriptRevision ?? loaded.index.transcriptRevision) + 1,
+      transcriptRevision: pendingTranscriptRevision,
       updatedAt: new Date().toISOString(),
       // Child rows stay in the digest-pinned staged file, not the sidecar.
       messages: this.options.childMode
@@ -5852,6 +6281,15 @@ export class TranscriptStreamStore {
       finalizing: {
         stagedId,
         byteOffset: loaded.index.committedByteLength,
+        ...(options?.exactRevision
+          ? {
+              explicitRevision: {
+                stagedId,
+                byteOffset: loaded.index.committedByteLength,
+                transcriptRevision: pendingTranscriptRevision,
+              },
+            }
+          : {}),
         // Child rows stay in the digest-pinned staged file, not the sidecar.
         messageIds: this.options.childMode
           ? []

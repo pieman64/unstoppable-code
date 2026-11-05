@@ -16,8 +16,15 @@ import {
   useState,
   useSyncExternalStore,
 } from 'react';
+import type { SuggestionsClaimApi } from '../../suggestions/SuggestionsProvider';
+import {
+  useSuggestionClaim,
+  useSuggestionEligible,
+} from '../../suggestions/useSuggestionClaim';
 
 export interface UsePlanModeSuggestionOptions {
+  /** Null for an unsupported target, even within a supporting session. */
+  suggestionsClaimApi?: SuggestionsClaimApi | null;
   /** The composer's current draft text. Attachments do not contribute. */
   text: string;
   /**
@@ -80,6 +87,7 @@ const NO_STORE_SUBSCRIPTION = (): (() => void) => () => undefined;
  * everywhere.
  */
 export function usePlanModeSuggestion({
+  suggestionsClaimApi,
   text,
   draftKey,
   activationKey,
@@ -130,14 +138,39 @@ export function usePlanModeSuggestion({
   // it; every other capability/visibility gate still hides it immediately.
   const awaitingActivation = pending && available && activationAllowed;
   const presentationGate = gate || awaitingActivation;
-  const { visible: tipAllowed, isVisible: isTipAllowed } = useComposerTipClaim(
-    'plan-mode',
+  const wantsTip =
     presentationGate &&
-      (session.current.key !== draftKey ||
-        session.current.scope !== store ||
-        !session.current.done) &&
-      isLongMultiStepPrompt(text),
+    (session.current.key !== draftKey ||
+      session.current.scope !== store ||
+      !session.current.done) &&
+    isLongMultiStepPrompt(text);
+  // The shared suggestions slot (CAN-4343) is asked for only once this
+  // composer's own arbiter granted the tip, and the local slot only while the
+  // category is eligible, so neither gate waits on the other or reserves a
+  // slot for a hint that cannot show. Losing the shared slot pauses the hint
+  // without retiring the draft session. Without a claim API (cloud, older
+  // Portal) the hint behaves as before.
+  const sharedEligible = useSuggestionEligible(
+    'plan-mode-hint',
+    suggestionsClaimApi,
   );
+  const { visible: localTipAllowed, isVisible: isLocalTipAllowed } =
+    useComposerTipClaim('plan-mode', wantsTip && sharedEligible);
+  const sharedClaim = useSuggestionClaim(
+    'plan-mode-hint',
+    wantsTip && sharedEligible && localTipAllowed,
+    draftKey,
+    undefined,
+    suggestionsClaimApi,
+  );
+  const tipAllowed = localTipAllowed && sharedClaim.allowed;
+  const isSharedTipAllowed = sharedClaim.isAllowed;
+  const isTipAllowed = useCallback(
+    (): boolean => isLocalTipAllowed() && isSharedTipAllowed(),
+    [isLocalTipAllowed, isSharedTipAllowed],
+  );
+  const confirmSharedShown = sharedClaim.confirmShown;
+  const dismissShared = sharedClaim.dismiss;
   const latest = useRef({
     draftKey,
     activationKey,
@@ -251,9 +284,10 @@ export function usePlanModeSuggestion({
     if (!actuallyVisible || !isTipAllowed() || session.current.presented)
       return;
     session.current.presented = true;
+    confirmSharedShown();
     callbacks.current.onShown?.();
     void store?.getState().markShown();
-  }, [actuallyVisible, isTipAllowed, store]);
+  }, [actuallyVisible, isTipAllowed, store, confirmSharedShown]);
 
   const accept = useCallback(async () => {
     const {
@@ -290,6 +324,7 @@ export function usePlanModeSuggestion({
     // A failed enable keeps the suggestion; a stale target never retires it.
     if (
       !enabled ||
+      !isTipAllowed() ||
       session.current !== acceptedSession ||
       latest.current.draftKey !== key ||
       latest.current.activationKey !== enableKey ||
@@ -312,9 +347,12 @@ export function usePlanModeSuggestion({
     session.current.done = true;
     setVisible(false);
     void store?.getState().markDismissed();
+    // Dismissing the lesson also retires the category through the shared
+    // suggestions path, so every surface reading it agrees.
+    dismissShared();
     callbacks.current.onDismissed?.();
     callbacks.current.focusComposer?.();
-  }, [store, isTipAllowed]);
+  }, [store, isTipAllowed, dismissShared]);
 
   return { visible: actuallyVisible, pending, accept, dismiss };
 }

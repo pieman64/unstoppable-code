@@ -16,7 +16,7 @@ import {
   PickerMenuSectionLabel,
   PrivateMemoryAdvancedOption,
   RailIconButton,
-  SettingsListSkeleton,
+  Skeleton,
   StatusPill,
   buttonClassName,
   ChoiceList,
@@ -516,6 +516,104 @@ function RepositoryFilterMenu({
   );
 }
 
+interface RepositoryChoiceProps {
+  repository: Repository;
+  /** The host's session-replay block token; '' when the host has none. */
+  blockClassName: string;
+  selected: boolean;
+  disabled: boolean;
+  onClick: () => void;
+}
+
+/** One repository in the picker: its name, default branch, and pills. */
+function RepositoryChoice({
+  repository,
+  blockClassName,
+  selected,
+  disabled,
+  onClick,
+}: RepositoryChoiceProps): JSX.Element {
+  return (
+    <ChoiceListRow
+      data-testid={`team-projects-repo-${repository.id}`}
+      selected={selected}
+      disabled={disabled}
+      onClick={onClick}
+      trailing={
+        repository.private || repository.archived ? (
+          <span className="flex items-center gap-2">
+            {repository.private && <StatusPill>Private</StatusPill>}
+            {repository.archived && <StatusPill>Archived</StatusPill>}
+          </span>
+        ) : undefined
+      }
+    >
+      <span
+        className={joinClasses('min-w-0 flex-1 break-words', blockClassName)}
+      >
+        {repository.fullName}
+        <span className="block fg-secondary">
+          Default branch: {repository.defaultBranch ?? 'Not set'}
+        </span>
+      </span>
+    </ChoiceListRow>
+  );
+}
+
+const noop = (): void => undefined;
+
+/** Sample repositories for the loading state: plain, of the loaded shape. */
+const SAMPLE_REPOSITORIES: readonly Repository[] = [
+  {
+    id: 1,
+    fullName: 'sample/repository',
+    owner: 'sample',
+    name: 'repository',
+    defaultBranch: 'main',
+    private: false,
+    archived: false,
+    htmlUrl: '',
+  },
+  {
+    id: 2,
+    fullName: 'sample/another',
+    owner: 'sample',
+    name: 'another',
+    defaultBranch: 'main',
+    private: false,
+    archived: false,
+    htmlUrl: '',
+  },
+];
+
+/**
+ * The repository picker while it loads: the real choices with sample
+ * repositories inside `Skeleton`, so skullet measures them into bars in place.
+ */
+function RepositoryChoicesSkeleton(): JSX.Element {
+  return (
+    <Skeleton
+      loading
+      label="Loading repositories"
+      testId="settings-skeleton-list"
+      className="w-full"
+    >
+      <ChoiceList aria-label="Repositories">
+        {SAMPLE_REPOSITORIES.map((repository) => (
+          <RepositoryChoice
+            key={repository.id}
+            repository={repository}
+            blockClassName=""
+            selected={false}
+            disabled={false}
+            onClick={noop}
+          />
+        ))}
+      </ChoiceList>
+    </Skeleton>
+  );
+}
+
 interface RepositoryPickerProps {
   orgId: string;
   selected: Repository[];
@@ -692,7 +790,7 @@ function RepositoryPicker({
       )}
       {loading && page.repositories.length === 0 && (
         <DelayedLoadingPlaceholder>
-          <SettingsListSkeleton avatarShape="square" />
+          <RepositoryChoicesSkeleton />
         </DelayedLoadingPlaceholder>
       )}
       {!loading && !error && page.repositories.length === 0 && (
@@ -712,9 +810,10 @@ function RepositoryPicker({
               (entry) => entry.id === repository.id,
             );
             return (
-              <ChoiceListRow
+              <RepositoryChoice
                 key={repository.id}
-                data-testid={`team-projects-repo-${repository.id}`}
+                repository={repository}
+                blockClassName={blockClassName}
                 selected={checked}
                 disabled={disabled || (!checked && capped)}
                 onClick={(): void => {
@@ -725,27 +824,7 @@ function RepositoryPicker({
                   else if (!capped)
                     onSelectionChange([...selected, repository]);
                 }}
-                trailing={
-                  repository.private || repository.archived ? (
-                    <span className="flex items-center gap-2">
-                      {repository.private && <StatusPill>Private</StatusPill>}
-                      {repository.archived && <StatusPill>Archived</StatusPill>}
-                    </span>
-                  ) : undefined
-                }
-              >
-                <span
-                  className={joinClasses(
-                    'min-w-0 flex-1 break-words',
-                    blockClassName,
-                  )}
-                >
-                  {repository.fullName}
-                  <span className="block fg-secondary">
-                    Default branch: {repository.defaultBranch ?? 'Not set'}
-                  </span>
-                </span>
-              </ChoiceListRow>
+              />
             );
           })}
         </ChoiceList>

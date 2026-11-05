@@ -30,10 +30,11 @@ import {
   staleCopiesOf,
 } from '@/lib/automationShareRelationship';
 import { resolveSharedResourceErrorMessage } from '@/lib/sharedResourceErrors';
+import { DelayedLoadingPlaceholder } from '@canopy/ui-shared/components';
 import {
-  CenteredLoadingSpinner,
-  DelayedLoadingPlaceholder,
-} from '@canopy/ui-shared/components';
+  CuratedAutomationDetailSkeleton,
+  SharedAutomationDetailSkeleton,
+} from './AutomationCatalogDetailSkeletons';
 import { McpServerLogo } from '../shared/McpServerLogo';
 import { AutomationUpdateModal } from './AutomationUpdateModal';
 import { InstallSharedAutomationModal } from './InstallSharedAutomationModal';
@@ -435,7 +436,7 @@ export function SharedAutomationMarketplaceDetail({
   if (!detail) {
     return (
       <DelayedLoadingPlaceholder slowNote="Still loading automation…">
-        <CenteredLoadingSpinner className="my-8" />
+        <SharedAutomationDetailSkeleton />
       </DelayedLoadingPlaceholder>
     );
   }
@@ -536,7 +537,7 @@ export function CuratedAutomationMarketplaceDetail({
   if (!detail || loading) {
     return (
       <DelayedLoadingPlaceholder slowNote="Still loading automation…">
-        <CenteredLoadingSpinner className="my-8" />
+        <CuratedAutomationDetailSkeleton name={name} />
       </DelayedLoadingPlaceholder>
     );
   }

@@ -4,6 +4,8 @@ import type { PublicShareVersion, ShareRemoteMetadata } from '../sharing';
 export * from './dependencies';
 export * from './package';
 export * from './shared-pipeline-id';
+export * from './public-pipeline-share-id';
+export * from './packaged-pipeline-id';
 import type {
   PipelineDistributionMode,
   PipelinePackageSummary,

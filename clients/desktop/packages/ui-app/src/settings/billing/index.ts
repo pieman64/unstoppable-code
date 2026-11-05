@@ -70,7 +70,6 @@ export {
 } from './org-plan-ladder';
 export { BillingTogglePanel } from './billing-toggle-panel';
 export { CreditsUsedThisPeriod } from './credits-used-this-period';
-export { DailyFreeCreditsControls } from './daily-free-credits-controls';
 export { PlanPill } from './plan-pill';
 export { SubscriptionPlanPill } from './subscription-plan-pill';
 export { TrialBadge } from './trial-badge';

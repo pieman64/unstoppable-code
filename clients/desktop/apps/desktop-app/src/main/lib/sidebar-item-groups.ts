@@ -2,6 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { readFile, rename, mkdir, writeFile, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import {
+  damagedCopiesOf,
+  pruneDamagedCopies,
+} from '@canopy/desktop-shared/node/lib/damaged-copies';
+import {
   normalizeSidebarItemGroups,
   parseSidebarItemGroupsFile,
   type SidebarItemGroup,
@@ -106,6 +110,9 @@ export async function readSidebarItemGroupsEnvelope(
   if (parsed.status === 'malformed' || parsed.status === 'missing') {
     if (options?.readOnly) return undefined;
     await rename(path, `${path}.corrupt-${Date.now()}-${randomUUID()}`);
+    await pruneDamagedCopies(
+      damagedCopiesOf(path, '.corrupt-', { uniqueTail: true }),
+    );
     envelopes.delete(path);
     logMainProcessWarn('sidebar_item_groups_unreadable');
     return undefined;

@@ -48,10 +48,13 @@ export function noticeButtonClassName(
   className = '',
   size: NoticeButtonSize = 'sm',
 ): string {
+  // The same placement `NoticeButton` gives its `Button`: never wider than
+  // its row, the label on one line (a narrow notice moves its buttons under
+  // the copy instead). The capsule's own height and inset apply unchanged.
   return buttonClassName({
     variant,
     size,
-    className: `h-auto! max-h-none! max-w-full shrink-0 whitespace-nowrap py-1 ${size === 'md' ? 'min-h-8' : 'min-h-7'} ${className}`,
+    className: `max-w-full whitespace-nowrap ${className}`,
   });
 }
 
@@ -98,60 +101,35 @@ export const NoticeButton = forwardRef<HTMLButtonElement, NoticeButtonProps>(
   ): JSX.Element {
     const size = useContext(NoticeButtonSizeContext);
     const hasIcon = icon !== undefined && icon !== null;
-    if (busy !== undefined) {
-      // The resting and busy labels share one cell (`BusyLayers`, as in
-      // `LoadingButton`), so turning busy never widens the capsule.
-      return (
-        <button
-          ref={ref}
-          type={type}
-          className={noticeButtonClassName(variant, className, size)}
-          {...props}
-          disabled={busy || disabled}
-          aria-busy={busy || undefined}
-        >
-          <BusyLayers
-            busy={busy}
-            busyLabel={busyLabel}
-            leading={
-              hasIcon ? (
-                <span aria-hidden="true" className="inline-flex shrink-0">
-                  {icon}
-                </span>
-              ) : undefined
-            }
-          >
-            {children}
-          </BusyLayers>
-        </button>
-      );
-    }
-    if (!hasIcon) {
-      return (
-        <button
-          ref={ref}
-          type={type}
-          className={noticeButtonClassName(variant, className, size)}
-          disabled={disabled}
-          {...props}
-        >
-          {children}
-        </button>
-      );
-    }
+    const glyph = hasIcon ? (
+      <span aria-hidden="true" className="inline-flex shrink-0">
+        {icon}
+      </span>
+    ) : undefined;
     return (
-      <button
+      <Button
         ref={ref}
         type={type}
-        className={noticeButtonClassName(variant, `gap-1.5 ${className}`, size)}
-        disabled={disabled}
+        variant={variant}
+        size={size}
+        className={`max-w-full whitespace-nowrap ${className}`}
         {...props}
+        disabled={busy === true || disabled}
+        aria-busy={busy === true ? true : props['aria-busy']}
       >
-        <span aria-hidden="true" className="inline-flex shrink-0">
-          {icon}
-        </span>
-        {children}
-      </button>
+        {busy === undefined ? (
+          <>
+            {glyph}
+            {children}
+          </>
+        ) : (
+          // The resting and busy labels share one cell (`BusyLayers`, as in
+          // `LoadingButton`), so turning busy never widens the capsule.
+          <BusyLayers busy={busy} busyLabel={busyLabel} leading={glyph}>
+            {children}
+          </BusyLayers>
+        )}
+      </Button>
     );
   },
 );
@@ -373,7 +351,9 @@ export function NoticeShapeProvider({
  * The banners above a composer: one stack owns their spacing (DESIGN.md: one
  * spacing owner per group), every notice takes the composer's corners, and
  * it collapses entirely (`empty:hidden`) when none render, so nothing reserves
- * space above the box. Hosts place it inside their composer gutter.
+ * space above the box. Hosts place it inside their composer gutter; the
+ * stack owns the same 16px side inset as ComposerDrawer. Both use the host's
+ * composer shell gutter; never add a banner-only horizontal inset.
  */
 export function ComposerNoticeStack({
   children,
@@ -386,7 +366,7 @@ export function ComposerNoticeStack({
     <NoticeShapeProvider shape="composer">
       <div
         data-testid={testId}
-        className="mb-2 flex flex-col gap-2 empty:hidden"
+        className="mb-2 flex flex-col gap-2 px-4 empty:hidden"
       >
         {children}
       </div>

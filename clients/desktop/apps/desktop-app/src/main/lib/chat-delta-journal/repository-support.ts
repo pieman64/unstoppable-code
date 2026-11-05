@@ -14,6 +14,7 @@ import type { DeltaJournalDiagnostic } from './writer';
 /** The repository options that tune a scope's delta journal. */
 export interface DeltaJournalRepositorySettings {
   deltaJournalCheckpointBytes?: number;
+  deltaJournalIncrementalStreamMetadata?: boolean;
   deltaJournalLargeRecordBytes?: number;
   deltaJournalPromotionRetryMs?: number;
   deltaJournalPromotionRetryLimit?: number;
@@ -30,6 +31,9 @@ export function deltaJournalBackendOptions(
       : {}),
     ...(settings.deltaJournalLargeRecordBytes !== undefined
       ? { largeRecordBytes: settings.deltaJournalLargeRecordBytes }
+      : {}),
+    ...(settings.deltaJournalIncrementalStreamMetadata
+      ? { incrementalStreamMetadata: true }
       : {}),
     promotionRetry: {
       delayMs: settings.deltaJournalPromotionRetryMs,

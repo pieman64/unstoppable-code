@@ -6,7 +6,7 @@ import {
   type JSX,
   type ReactNode,
 } from 'react';
-import { CHAT_COMPOSER_SHELL_CLASS } from '@canopy/ui-shared';
+import { Button, CHAT_COMPOSER_SHELL_CLASS } from '@canopy/ui-shared';
 import {
   ArrowUp,
   CheckIcon,
@@ -202,21 +202,16 @@ function RoundButton({
   disabled?: boolean;
   children: ReactNode;
 }): JSX.Element {
-  const toneClass = {
-    primary:
-      'bg-accent fg-emphasis enabled:hover:bg-accent/90 disabled:bg-muted disabled:fg-tertiary',
-    secondary: 'bg-subtle fg-primary enabled:hover:bg-muted',
-    ghost: 'fg-secondary enabled:hover:bg-subtle enabled:hover:fg-primary',
-  }[tone];
   return (
-    <button
-      type="button"
+    <Button
+      variant={tone}
+      size="md"
+      iconOnly
       aria-label={label}
       disabled={disabled}
-      className={`focus-ring inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-transform enabled:active:scale-97 disabled:cursor-not-allowed ${toneClass}`}
     >
       {children}
-    </button>
+    </Button>
   );
 }
 

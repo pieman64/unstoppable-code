@@ -59,6 +59,7 @@ import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/genera
 import type { UserInput } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/UserInput';
 import { getCodexRuntimeService } from '../../codex/runtime-service';
 import { CodexDelegationProgress } from './codex-progress';
+import { ChildAppendQueue } from './child-append-queue';
 import { DelegationChildNormalizer } from './child-row-normalizers';
 import {
   createDefaultCommandOutputSpools,
@@ -753,13 +754,19 @@ export function createCodexDelegationRunner(options: {
             },
           )
         : undefined;
+      const childAppends = appendChildChanges
+        ? new ChildAppendQueue(appendChildChanges, (changes) =>
+            childNormalizer?.acknowledge(changes),
+          )
+        : undefined;
+      // Provider events queue their rows and continue; settling waits until
+      // every queued row is durable.
+      const queueNormalizedChanges = async (
+        changes: readonly DelegationTranscriptChange[],
+      ): Promise<void> => childAppends?.enqueue(changes);
       const appendNormalizedChanges = async (
         changes: readonly DelegationTranscriptChange[],
-      ): Promise<void> => {
-        if (!changes.length || !appendChildChanges) return;
-        await appendChildChanges(changes);
-        childNormalizer?.acknowledge(changes);
-      };
+      ): Promise<void> => childAppends?.flush(changes);
       let events: Promise<void> = Promise.resolve();
       const settleChildTurn = async (
         threadId: string,
@@ -1002,7 +1009,7 @@ export function createCodexDelegationRunner(options: {
               transcript.codex(event);
               if (childNormalizer) {
                 events = events.then(async () =>
-                  appendNormalizedChanges(await childNormalizer.codex(event)),
+                  queueNormalizedChanges(await childNormalizer.codex(event)),
                 );
                 void events.catch(options.reportError);
               }

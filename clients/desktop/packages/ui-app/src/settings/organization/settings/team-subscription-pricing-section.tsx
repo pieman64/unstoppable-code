@@ -11,7 +11,7 @@ import {
   DelayedLoadingPlaceholder,
   EmptyState,
   ErrorBanner,
-  SettingsFormSkeleton,
+  Skeleton,
   TextInput,
   Heading,
 } from '@canopy/ui-shared/components';
@@ -122,7 +122,26 @@ export function TeamSubscriptionPricingSection({
         {loading ? (
           <div className="mt-4">
             <DelayedLoadingPlaceholder>
-              <SettingsFormSkeleton rows={2} />
+              <Skeleton
+                loading
+                label="Loading plan pricing"
+                testId="settings-skeleton-form"
+                className="w-full"
+              >
+                <ul className="flex flex-col">
+                  {SAMPLE_PLANS.map((plan) => (
+                    <PlanRow
+                      key={plan.planKey}
+                      client={client}
+                      orgId={orgId}
+                      plan={plan}
+                      canEdit={false}
+                      onSaved={noop}
+                      onError={noop}
+                    />
+                  ))}
+                </ul>
+              </Skeleton>
             </DelayedLoadingPlaceholder>
           </div>
         ) : loadError ? null : plans.length === 0 ? (
@@ -150,6 +169,32 @@ export function TeamSubscriptionPricingSection({
     </section>
   );
 }
+
+const noop = (): void => undefined;
+
+/** Sample plans for the loading state: plain, of the loaded shape. */
+const SAMPLE_PLANS: readonly SubscriptionPlanPricingRow[] = [
+  {
+    planKey: 'sample-plan-1',
+    provider: 'claude',
+    label: 'Sample plan',
+    rawPlanTypes: [],
+    accountCount: 2,
+    defaultMonthlyUsd: 100,
+    overrideMonthlyUsd: null,
+    effectiveMonthlyUsd: 100,
+  },
+  {
+    planKey: 'sample-plan-2',
+    provider: 'codex',
+    label: 'Another plan',
+    rawPlanTypes: [],
+    accountCount: 1,
+    defaultMonthlyUsd: 20,
+    overrideMonthlyUsd: null,
+    effectiveMonthlyUsd: 20,
+  },
+];
 
 interface PlanRowProps {
   client: AccountOrganizationSettingsClient;

@@ -2,6 +2,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { BRAND } from '@canopy/brand/current';
 import { writeFileAtomicallySync } from '@canopy/desktop-shared/node/lib/atomic-file';
+import {
+  damagedCopyPath,
+  pruneDamagedCopiesSync,
+} from '@canopy/desktop-shared/node/lib/damaged-copies';
 import type { PluginProvider } from '@canopy/desktop-shared/types/plugins';
 import { getBuiltInPluginMarketplacesFilePath } from '../lib/paths';
 import { logMainProcessWarn } from '../lib/main-process-logging';
@@ -14,7 +18,8 @@ import { logMainProcessWarn } from '../lib/main-process-logging';
  * repair it instead of reporting a foreign marketplace (CAN-4482).
  *
  * Reads have no side effects. Only the writers (`record`, `reconcile`) copy a
- * damaged file aside, and they never write over a newer or unreadable one.
+ * damaged file aside, keeping the newest `DAMAGED_COPY_LIMIT` copies, and
+ * they never write over a newer or unreadable one.
  * Each write is a synchronous read-modify-write that only adds receipts, so
  * writers in this process never interleave; the single-instance lock keeps
  * other app processes out.
@@ -223,10 +228,13 @@ function addReceipts(
     ];
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     const aside =
-      current.status === 'damaged' ? `${filePath}.damaged-${Date.now()}` : null;
+      current.status === 'damaged' ? damagedCopyPath(filePath) : null;
     // Copied, not moved: the damaged file and its valid receipts stay readable
     // until the rewrite renames over it.
-    if (aside) fs.copyFileSync(filePath, aside);
+    if (aside) {
+      fs.copyFileSync(filePath, aside);
+      pruneDamagedCopiesSync(filePath);
+    }
     writeFileAtomicallySync(
       filePath,
       JSON.stringify({ version: LEDGER_VERSION, entries }, null, 2),

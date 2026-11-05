@@ -28,6 +28,7 @@ import {
   type SegmentedControlOption,
   Heading,
   DataTable,
+  Popover,
   type DataTableColumn,
   type DataTableColumnGroup,
 } from '@canopy/ui-shared/components';
@@ -1576,11 +1577,11 @@ interface FilterPopoverProps {
 
 /**
  * Collapses the Scope / Granularity / Person filters behind a single icon
- * trigger so the tab-bar row stays a clean single line. Mirrors the
- * codebase's established custom popover pattern (see `SidebarAccountMenu`):
- * `useState` + `useRef` + a click-outside / Escape `useEffect`. A small dot on
- * the trigger signals when one of these collapsed filters is non-default;
- * range lives outside the popover and is excluded.
+ * trigger so the tab-bar row stays a clean single line. The shared `Popover`
+ * owns focus, Escape, outside presses (its selects' menus count as inside)
+ * and focus return. A small dot on the trigger signals when one of these
+ * collapsed filters is non-default; range lives outside the popover and is
+ * excluded.
  */
 function FilterPopover({
   scope,
@@ -1598,49 +1599,10 @@ function FilterPopover({
   blockClassName,
 }: FilterPopoverProps): JSX.Element {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-    // A dropdown in the panel draws its menu outside it (portaled to the
-    // page body); a press or Escape there belongs to that menu, not the panel.
-    function inPanelMenu(target: EventTarget | null): boolean {
-      return (
-        target instanceof Element &&
-        target.closest('.canopy-floating-menu') !== null
-      );
-    }
-    function handleClickOutside(event: MouseEvent): void {
-      if (
-        ref.current &&
-        event.target instanceof Node &&
-        !ref.current.contains(event.target) &&
-        !inPanelMenu(event.target)
-      ) {
-        setOpen(false);
-      }
-    }
-    function handleKeyDown(event: KeyboardEvent): void {
-      if (event.key === 'Escape' && !inPanelMenu(event.target)) {
-        setOpen(false);
-        // Return focus to the trigger so keyboard users keep their place
-        // (dialog focus management for the Escape close path).
-        triggerRef.current?.focus();
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside);
-    document.addEventListener('keydown', handleKeyDown);
-    return (): void => {
-      document.removeEventListener('mousedown', handleClickOutside);
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [open]);
-
   return (
-    <div ref={ref} className="relative">
+    <div className="relative">
       <Button
         ref={triggerRef}
         size="compact"
@@ -1663,14 +1625,17 @@ function FilterPopover({
         )}
       </Button>
 
-      {open && (
-        <div
-          id="usage-filters-panel"
-          role="dialog"
-          aria-label="Filters"
-          className="absolute right-0 top-full z-50 mt-2 flex w-64 flex-col gap-3 rounded-lg bg-card p-3 shadow-lg"
-          data-testid="usage-controls"
-        >
+      <Popover
+        open={open}
+        onOpenChange={setOpen}
+        anchorRef={triggerRef}
+        placement="bottom-right"
+        gap={8}
+        id="usage-filters-panel"
+        aria-label="Filters"
+        data-testid="usage-controls"
+      >
+        <div className="flex flex-col gap-3">
           {!personal && (
             <SelectControl
               stacked
@@ -1738,7 +1703,7 @@ function FilterPopover({
             />
           )}
         </div>
-      )}
+      </Popover>
     </div>
   );
 }

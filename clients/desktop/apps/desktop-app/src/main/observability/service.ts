@@ -337,6 +337,9 @@ const FLUSH_BYTE_TRIGGER = 256 * 1024;
 const APPEND_BATCH_MAX_BYTES = 256 * 1024;
 const TRANSCRIPT_MAX_BYTES = 8 * 1024 * 1024;
 const TRANSCRIPT_MARKER_RESERVATION_BYTES = 512;
+// Delegation records may use this much of a turn's file; root records keep the rest.
+const TRANSCRIPT_DELEGATION_MAX_BYTES = 4 * 1024 * 1024;
+const TRANSCRIPT_DELEGATION_STATUS_RESERVATION_BYTES = 256 * 1024;
 const CHAT_TURN_OPERATION_NAME = 'canopy.chat_turn';
 const AGENT_TASK_OPERATION_NAME = 'canopy.agent_task';
 const APP_DIAGNOSTIC_OPERATION_NAME = 'canopy.app_diagnostic';
@@ -713,12 +716,16 @@ interface TranscriptSidecarState {
   closed: boolean;
   injectedPrompts: AgentTranscriptInjectedPrompt[];
   finalizedEntry?: AgentAuditEntry;
+  delegationRunGeneration?: number;
   delegationItems?: AgentDelegationTranscript['transcript'];
+  delegationContentSuppressed?: boolean;
+  delegationStatus?: AgentDelegationTranscript['snapshot']['status'];
 }
 
 interface TranscriptSidecarBudget {
   persistedBytes: number;
   queuedBytes: number;
+  delegationBytes: number;
   truncated: boolean;
   projectId?: string;
   worktreeId?: string;
@@ -867,6 +874,8 @@ export interface AppDiagnosticRecord {
      * paths, or workspace, worktree or chat ids.
      */
     | 'chat_transcript_full_rewrite'
+    /** Device-local, content-free rewrite rate alert: an opaque chat key and counts. */
+    | 'chat_transcript_rewrite_rate_exceeded'
     /**
      * The Codex marketplace staging janitor reclaimed leaked
      * `marketplace-{add,upgrade,backup}-*` checkouts. Counts only, never
@@ -1201,8 +1210,18 @@ export interface AppDiagnosticRecord {
   writerHandoffOutcome?: 'released' | 'holder-busy' | 'no-local-holder';
   /** `codex_app_server_writer_handoff` only. */
   writerHandoffDurationMs?: number;
-  /** `chat_transcript_full_rewrite` only: opaque digest correlating one chat. */
+  /** Rewrite diagnostics only: opaque digest correlating one chat. */
   chatTranscriptRewriteChatKey?: string;
+  /** `chat_transcript_rewrite_rate_exceeded` only: its rolling window in milliseconds. */
+  chatTranscriptRewriteRateWindowMs?: number;
+  /** `chat_transcript_rewrite_rate_exceeded` only: bytes needed to trigger it. */
+  chatTranscriptRewriteRateThresholdBytes?: number;
+  /** `chat_transcript_rewrite_rate_exceeded` only: committed bytes in the window. */
+  chatTranscriptRewriteRateCommittedBytes?: number;
+  /** `chat_transcript_rewrite_rate_exceeded` only: rewrite count in the window. */
+  chatTranscriptRewriteRateRewrites?: number;
+  /** `chat_transcript_rewrite_rate_exceeded` only: sorted distinct reasons. */
+  chatTranscriptRewriteRateReasons?: string[];
   /** `chat_transcript_full_rewrite` only: committed rows before the rewrite. */
   chatTranscriptRewriteCommittedRows?: number;
   /** `chat_transcript_full_rewrite` only: committed JSONL bytes before it. */
@@ -2161,7 +2180,11 @@ function buildAuditOperationContext(
     event_type: entry.eventType,
     provider: entry.provider,
     status,
+    // `model` is the model that served the turn; `requested_model` is the
+    // selection the turn started with. The allowlist keeps the latter on
+    // chat turns only.
     model: entry.model,
+    requested_model: entry.requestedModel,
     has_transcript: entry.hasTranscript,
     // Always present so PostHog can split credits turns from own-account
     // turns; organization gateway turns are routed through AI credits too.
@@ -2365,6 +2388,7 @@ function chatEntryMetadata(
       ? { executionHarness: entry.executionHarness }
       : {}),
     ...(entry.model ? { model: entry.model } : {}),
+    ...(entry.requestedModel ? { requestedModel: entry.requestedModel } : {}),
     ...(entry.modelRouting ? { modelRouting: entry.modelRouting } : {}),
     ...(entry.serviceTier ? { serviceTier: entry.serviceTier } : {}),
     ...(entry.aiCreditsRouted ? { aiCreditsRouted: true } : {}),
@@ -2866,6 +2890,9 @@ function claudeCredentialFailureMessage(
 ): string {
   switch (reason) {
     case 'credential_not_found':
+      if (source === 'credentials_file') {
+        return 'Claude credentials were not found in the Claude Code config directory. Sign in to Claude Code, then refresh.';
+      }
       return process.platform === 'win32'
         ? 'Claude credentials were not found in the Windows Claude config or legacy Credential Manager. Sign in to Claude Code from Windows (a WSL-only login is stored separately), then refresh.'
         : 'Claude credentials were not found in the system credential store. Sign in to Claude Code, then refresh.';
@@ -2881,6 +2908,8 @@ function claudeCredentialFailureMessage(
         return 'The Claude Code credentials file is invalid or unreadable. Sign in to Claude Code again, then refresh.';
       }
       return 'The stored Claude credential is invalid or unreadable. Sign in to Claude Code again, then refresh.';
+    case 'credential_expired':
+      return 'The stored Claude credential has expired. Run Claude Code to renew it, then refresh.';
     case 'username_unavailable':
       return 'Could not determine the operating-system account used to store Claude credentials.';
     case 'unsupported_platform':
@@ -2902,6 +2931,7 @@ function claudeCredentialFailureKind(
     case 'credential_not_found':
     case 'credential_read_failed':
     case 'credential_parse_failed':
+    case 'credential_expired':
       return 'auth';
     case 'username_unavailable':
       return 'unknown';
@@ -3256,6 +3286,8 @@ export class ObservabilityService {
   >();
   private pendingAppDiagnostics: AppDiagnosticRecord[] = [];
   private pendingSessionDiagnostics: SessionDiagnosticRecord[] = [];
+  // Earlier-process entries have no transcript state; reopening one corrupts it.
+  private readonly finalizedChatEntryIdsInProcess = new Set<string>();
   private usageProviders = {
     claude: createEmptyProviderUsage('claude'),
     codex: createEmptyProviderUsage('codex'),
@@ -3278,6 +3310,7 @@ export class ObservabilityService {
     number
   >();
   private claudeUsageEventOrder = 0;
+  private claudeUsageAuthDisagreement = false;
   private claudeUsageRefreshDebounce: {
     trailing: ReturnType<typeof setTimeout> | null;
     maxWait: ReturnType<typeof setTimeout> | null;
@@ -3487,7 +3520,11 @@ export class ObservabilityService {
     try {
       await this.startHostServices();
       await this.loadRetentionDaysFromPreferences();
-      await this.loadSnapshotFromDisk();
+      const hydration = await this.loadSnapshotFromDisk();
+      await this.recoverInterruptedEntries(
+        hydration.recoveryCandidates,
+        hydration.snapshotMtimeMs,
+      );
       for (const entry of this.recentEntries) {
         this.rememberCountedPlanUsageEventIds(entry);
       }
@@ -4715,6 +4752,13 @@ export class ObservabilityService {
   startChatTurn(
     options: ChatTranscriptStartOptions & {
       model?: string;
+      /**
+       * The selection the turn started with; pass it when it differs from
+       * `model` (an Agent id, for example). Defaults to `model`, so every
+       * chat entry with a model records it. Set once here; the served-model
+       * overwrites of `model` never touch it.
+       */
+      requestedModel?: string;
       modelSource?: AgentAuditEntry['modelSource'];
       executionHarness?: AgentAuditEntry['executionHarness'];
       serviceTier?: string;
@@ -4767,6 +4811,7 @@ export class ObservabilityService {
         ? this.getOrCreateCodexSubagentChatTracker(key)
         : undefined;
     codexSubagentUsageTracker?.beginEntry();
+    const requestedModel = options.requestedModel ?? options.model;
     const entry: AgentAuditEntry = {
       id: auditId,
       eventType,
@@ -4792,6 +4837,7 @@ export class ObservabilityService {
       label: labelForEventType(eventType),
       startedAt,
       model: options.model,
+      ...(requestedModel !== undefined ? { requestedModel } : {}),
       serviceTier: options.serviceTier,
       ...(options.aiCreditsRouted ? { aiCreditsRouted: true } : {}),
       ...(options.modelRouting ? { modelRouting: options.modelRouting } : {}),
@@ -5025,6 +5071,9 @@ export class ObservabilityService {
     this.startChatTurn({
       ...options,
       model: previous?.model,
+      // An entry written before `requestedModel` existed has none, so its
+      // steer inherits the served model as the requested one.
+      requestedModel: previous?.requestedModel ?? previous?.model,
       modelSource: previous?.modelSource,
       executionHarness: previous?.executionHarness,
       serviceTier: previous?.serviceTier,
@@ -5197,8 +5246,16 @@ export class ObservabilityService {
       const child = data.delegation;
       const ownedKey = `${key}:delegation:${child.delegationId}`;
       let owned = this.transcriptStates.get(ownedKey);
-      const parentEntry =
-        this.openEntries.get(key)?.entry ??
+      const openParent = this.openEntries.get(key)?.entry;
+      // An autonomous wake reports the previous prompt's message id as the
+      // parent, so a run created after the open turn started belongs to it.
+      const launchedInOpenTurn =
+        openParent !== undefined &&
+        child.createdAt >= Date.parse(openParent.startedAt);
+      const matchedParentEntry =
+        (openParent?.userMessageId === child.parentTurnId || launchedInOpenTurn
+          ? openParent
+          : undefined) ??
         this.recentEntries.find(
           (candidate) =>
             candidate.projectId === projectId &&
@@ -5206,7 +5263,17 @@ export class ObservabilityService {
             candidate.chatId === chatId &&
             candidate.userMessageId === child.parentTurnId,
         );
-      const lineageEntry = owned?.finalizedEntry ?? parentEntry;
+      // A parent id no entry records (Claude's turn id before any prompt was
+      // dispatched) keeps the open-turn compatibility path.
+      const parentEntry = matchedParentEntry ?? openParent;
+      const ownedEntry =
+        owned?.delegationRunGeneration === child.runGeneration
+          ? owned.finalizedEntry
+          : undefined;
+      const replay = data.canopy_replay === true;
+      const lineageEntry = replay
+        ? (matchedParentEntry ?? owned?.finalizedEntry)
+        : (ownedEntry ?? parentEntry);
       this.managedDelegationCapture.observe(
         {
           projectId,
@@ -5222,34 +5289,94 @@ export class ObservabilityService {
         },
         child,
       );
-      const entry = owned?.finalizedEntry ?? parentEntry;
+      // Retained snapshots can settle managed audit entries after a restart,
+      // but are not live output belonging in any parent transcript.
+      if (replay) return;
+      const entry = ownedEntry ?? parentEntry;
       if (!entry) return;
-      if (!owned) {
+      if (!owned || owned.delegationRunGeneration !== child.runGeneration) {
+        // A retained delegation can launch another generation from a new
+        // parent turn. Keep any queued old writes on their original sidecar.
         this.initializeTranscriptState(ownedKey, entry);
         owned = this.transcriptStates.get(ownedKey);
         if (!owned) return;
         owned.firstAppendSucceeded = entry.hasTranscript;
+        owned.delegationRunGeneration = child.runGeneration;
       }
       owned.finalizedEntry = { ...entry };
       owned.closed = !['pending', 'running'].includes(child.snapshot.status);
       const priorItems = owned.delegationItems;
-      owned.delegationItems = child.transcript;
+      if (owned.closed) delete owned.delegationItems;
+
+      // Once content no longer fits the delegation share, record status only.
+      const statusOnlyRecord = {
+        ...data,
+        delegation: { ...child, transcriptMode: 'patch', transcript: [] },
+      };
+      if (owned.delegationContentSuppressed) {
+        if (owned.delegationStatus !== child.snapshot.status) {
+          if (
+            this.enqueueTranscriptRecord(
+              owned,
+              statusOnlyRecord,
+              'delegation-status',
+            )
+          ) {
+            owned.delegationStatus = child.snapshot.status;
+          }
+        }
+        this.releaseClosedTranscriptState(owned);
+        return;
+      }
+
       const priorById = new Map(priorItems?.map((item) => [item.id, item]));
-      const persisted =
+      const changedItems =
         priorItems && child.snapshot.status === 'running'
-          ? {
+          ? child.transcript.filter(
+              (item) =>
+                !sameDelegationTranscriptItem(priorById.get(item.id), item),
+            )
+          : undefined;
+      const persisted =
+        changedItems === undefined
+          ? data
+          : {
               ...data,
               delegation: {
                 ...child,
                 transcriptMode: 'patch',
-                transcript: child.transcript.filter(
-                  (item) =>
-                    !sameDelegationTranscriptItem(priorById.get(item.id), item),
-                ),
+                transcript: changedItems,
               },
-            }
-          : data;
-      this.enqueueTranscriptRecord(owned, persisted);
+            };
+      const statusOnly =
+        changedItems === undefined
+          ? child.transcriptMode === 'patch' && child.transcript.length === 0
+          : changedItems.length === 0;
+      const admitted = this.enqueueTranscriptRecord(
+        owned,
+        persisted,
+        statusOnly ? 'delegation-status' : 'delegation-content',
+      );
+      if (admitted) {
+        owned.delegationStatus = child.snapshot.status;
+        if (!owned.closed && !statusOnly) {
+          owned.delegationItems = child.transcript;
+        }
+      } else if (!owned.budget.truncated && !statusOnly) {
+        owned.delegationContentSuppressed = true;
+        if (owned.delegationStatus !== child.snapshot.status) {
+          if (
+            this.enqueueTranscriptRecord(
+              owned,
+              statusOnlyRecord,
+              'delegation-status',
+            )
+          ) {
+            owned.delegationStatus = child.snapshot.status;
+          }
+        }
+      }
+      this.releaseClosedTranscriptState(owned);
       return;
     }
 
@@ -6518,17 +6645,6 @@ export class ObservabilityService {
     );
   }
 
-  getInjectedPromptsForTests(
-    projectId: string,
-    worktreeId: string,
-    chatId: string,
-  ): readonly AgentTranscriptInjectedPrompt[] {
-    return (
-      this.transcriptStates.get(`chat:${projectId}/${worktreeId}/${chatId}`)
-        ?.injectedPrompts ?? []
-    );
-  }
-
   appendTranscriptRecord(key: string, payload: unknown): void {
     const transcriptState = this.transcriptStates.get(key);
     if (transcriptState) {
@@ -6591,6 +6707,7 @@ export class ObservabilityService {
         const budget = this.transcriptBudgets.get(path) ?? {
           persistedBytes,
           queuedBytes: 0,
+          delegationBytes: 0,
           truncated: false,
           projectId,
           worktreeId,
@@ -6687,7 +6804,10 @@ export class ObservabilityService {
     const existingEntry = this.recentEntries.find(
       (entry) => entry.id.startsWith(`${key}:`) && entry.status !== 'running',
     );
-    if (!existingEntry) {
+    if (
+      !existingEntry ||
+      !this.finalizedChatEntryIdsInProcess.has(existingEntry.id)
+    ) {
       return;
     }
 
@@ -6753,6 +6873,7 @@ export class ObservabilityService {
       // Keep the closed sidecar reachable until its queued/in-flight append
       // finishes, even if a new root starts before the scheduled flush.
       previous.closed = true;
+      delete previous.delegationItems;
       this.retiringTranscriptStates.add(previous);
     }
     const request = buildTranscriptRequest(entry);
@@ -6760,6 +6881,7 @@ export class ObservabilityService {
     const budget = this.transcriptBudgets.get(transcriptPath) ?? {
       persistedBytes: 0,
       queuedBytes: 0,
+      delegationBytes: 0,
       truncated: false,
       projectId: entry.projectId,
       worktreeId: entry.worktreeId,
@@ -6784,9 +6906,11 @@ export class ObservabilityService {
   private enqueueTranscriptRecord(
     transcriptState: TranscriptSidecarState,
     payload: unknown,
-  ): void {
+    delegationRecord?: 'delegation-content' | 'delegation-status',
+  ): boolean {
     if (transcriptState.budget.truncated) {
-      return;
+      this.releaseClosedTranscriptState(transcriptState);
+      return false;
     }
 
     const line = JSON.stringify(payload);
@@ -6799,15 +6923,46 @@ export class ObservabilityService {
       totalBytes >
       TRANSCRIPT_MAX_BYTES - TRANSCRIPT_MARKER_RESERVATION_BYTES
     ) {
-      this.enqueueTranscriptTruncationMarker(transcriptState);
-      this.scheduleFlush();
-      return;
+      if (!delegationRecord) {
+        this.enqueueTranscriptTruncationMarker(transcriptState);
+        this.scheduleFlush();
+      }
+      return false;
+    }
+    if (delegationRecord) {
+      const delegationLimit =
+        delegationRecord === 'delegation-status'
+          ? TRANSCRIPT_DELEGATION_MAX_BYTES
+          : TRANSCRIPT_DELEGATION_MAX_BYTES -
+            TRANSCRIPT_DELEGATION_STATUS_RESERVATION_BYTES;
+      if (
+        transcriptState.budget.delegationBytes + lineBytes >
+        delegationLimit
+      ) {
+        return false;
+      }
     }
 
     transcriptState.queuedLines.push(line);
     transcriptState.queuedBytes += lineBytes;
     transcriptState.budget.queuedBytes += lineBytes;
+    if (delegationRecord) {
+      transcriptState.budget.delegationBytes += lineBytes;
+    }
     this.scheduleFlush(lineBytes);
+    return true;
+  }
+
+  private releaseClosedTranscriptState(
+    transcriptState: TranscriptSidecarState,
+  ): void {
+    if (!transcriptState.closed) return;
+    delete transcriptState.delegationItems;
+    if (transcriptState.queuedLines.length > 0) return;
+    this.retiringTranscriptStates.delete(transcriptState);
+    if (this.transcriptStates.get(transcriptState.key) === transcriptState) {
+      this.transcriptStates.delete(transcriptState.key);
+    }
   }
 
   private enqueueTranscriptTruncationMarker(
@@ -6986,6 +7141,30 @@ export class ObservabilityService {
     this.initializeTranscriptState(key, observedEntry);
     startAuditOperation(this.host, key, observedEntry);
     this.upsertRecentEntry(observedEntry);
+  }
+
+  /**
+   * Records the model that actually served a chat turn when the session
+   * swapped it after dispatch (a credits-routed Codex turn whose picked native
+   * model becomes the credits gateway model). `requestedModel` keeps the
+   * selection the turn started with. Like `updateObservedTask`, only
+   * `modelGatewayRouted` is recomputed: the swap never runs on an
+   * organization gateway route, so `billingBasis` cannot change here.
+   */
+  setChatTurnServedModel(sessionKey: string, model: string): void {
+    const openEntry = this.openEntries.get(`chat:${sessionKey}`);
+    if (!openEntry || openEntry.entry.model === model) {
+      return;
+    }
+    const nextEntry: AgentAuditEntry = { ...openEntry.entry, model };
+    if (usedOrganizationGateway(nextEntry)) {
+      nextEntry.modelGatewayRouted = true;
+    } else {
+      delete nextEntry.modelGatewayRouted;
+    }
+    openEntry.entry = nextEntry;
+    this.upsertRecentEntry(openEntry.entry);
+    this.enqueueAuditEntry(openEntry.entry);
   }
 
   /**
@@ -8144,6 +8323,7 @@ export class ObservabilityService {
     openEntry.codexSubagentUsageTracker?.endEntry();
     this.openEntries.delete(key);
     if (key.startsWith('chat:')) {
+      this.finalizedChatEntryIdsInProcess.add(openEntry.entry.id);
       skillSuggestionTurnRecorder.complete(key, openEntry.entry.id, status);
     }
     if (!key.startsWith('chat:') && openEntry.entry.provider === 'claude') {
@@ -8748,13 +8928,17 @@ export class ObservabilityService {
     this.flushTimer = timer;
   }
 
-  private async loadSnapshotFromDisk(): Promise<void> {
+  private async loadSnapshotFromDisk(): Promise<{
+    recoveryCandidates: AgentAuditEntry[];
+    snapshotMtimeMs: number;
+  }> {
     const snapshotPath = getAgentObservabilitySnapshotPath();
+    const entriesBeforeRead = [...this.recentEntries];
     try {
       const raw = await readFile(snapshotPath, 'utf8');
       const parsed: unknown = JSON.parse(raw);
       if (!isRecord(parsed)) {
-        return;
+        return { recoveryCandidates: [], snapshotMtimeMs: 0 };
       }
 
       const recentEntries = Array.isArray(parsed.recentEntries)
@@ -8763,9 +8947,31 @@ export class ObservabilityService {
             .filter((value): value is AgentAuditEntry => value !== null)
         : [];
       recentEntries.sort(compareEntries);
-      this.recentEntries = recentEntries
+      const retainedRestoredEntries = recentEntries
         .filter((entry) => this.isEntryWithinRetention(entry))
         .slice(0, RECENT_ENTRY_LIMIT);
+      const entriesAtHydration = [...this.recentEntries];
+      const memoryIds = new Set(
+        [...entriesBeforeRead, ...entriesAtHydration].map((entry) => entry.id),
+      );
+      const mergedEntriesById = new Map(
+        retainedRestoredEntries.map((entry) => [entry.id, entry]),
+      );
+      for (const entry of entriesAtHydration) {
+        mergedEntriesById.set(entry.id, entry);
+      }
+      this.recentEntries = Array.from(mergedEntriesById.values())
+        .filter((entry) => this.isEntryWithinRetention(entry))
+        .sort(compareEntries)
+        .slice(0, RECENT_ENTRY_LIMIT);
+      const recoveryCandidates = retainedRestoredEntries.filter(
+        (entry) =>
+          entry.status === 'running' &&
+          entry.eventType !== 'pipeline_agent_turn' &&
+          entry.eventType !== 'managed_delegation' &&
+          !memoryIds.has(entry.id) &&
+          !this.isOpenEntryId(entry.id),
+      );
 
       const usage = isRecord(parsed.usage) ? parsed.usage : null;
       const rawSnapshots =
@@ -8784,8 +8990,117 @@ export class ObservabilityService {
       this.retainedAccountSnapshots = new Map(
         prunedHydrated.map((snapshot) => [snapshot.accountKey, snapshot]),
       );
+      if (recoveryCandidates.length === 0) {
+        return { recoveryCandidates, snapshotMtimeMs: 0 };
+      }
+
+      const snapshotStats = await stat(snapshotPath).catch(() => undefined);
+      const stillRecoverable = recoveryCandidates.filter((entry) =>
+        this.getRecoverableRunningEntry(entry.id),
+      );
+      return {
+        recoveryCandidates: stillRecoverable,
+        snapshotMtimeMs: snapshotStats?.mtimeMs ?? Date.now(),
+      };
     } catch {
-      this.recentEntries = [];
+      return { recoveryCandidates: [], snapshotMtimeMs: 0 };
+    }
+  }
+
+  private isOpenEntryId(id: string): boolean {
+    return Array.from(this.openEntries.values()).some(
+      (openEntry) => openEntry.entry.id === id,
+    );
+  }
+
+  private getRecoverableRunningEntry(id: string): AgentAuditEntry | undefined {
+    if (this.isOpenEntryId(id)) return undefined;
+    return this.recentEntries.find(
+      (entry) => entry.id === id && entry.status === 'running',
+    );
+  }
+
+  private async recoverInterruptedEntries(
+    candidates: readonly AgentAuditEntry[],
+    snapshotMtimeMs: number,
+  ): Promise<void> {
+    if (candidates.length === 0) return;
+
+    const candidateIdsByDay = new Map<string, Set<string>>();
+    for (const candidate of candidates) {
+      const day = toIsoDay(candidate.startedAt);
+      const ids = candidateIdsByDay.get(day) ?? new Set<string>();
+      ids.add(candidate.id);
+      candidateIdsByDay.set(day, ids);
+    }
+
+    const lastJournalRows = new Map<string, AgentAuditEntry>();
+    for (const [day, candidateIds] of Array.from(candidateIdsByDay.entries())) {
+      let contents = '';
+      try {
+        contents = await readFile(
+          getAgentObservabilityAuditDayFilePath(day),
+          'utf8',
+        );
+      } catch {
+        // A missing or unreadable day file means there is no journal row to adopt.
+      }
+      const stillRecoverableIds = new Set<string>();
+      candidateIds.forEach((id) => {
+        if (this.getRecoverableRunningEntry(id)) {
+          stillRecoverableIds.add(id);
+        }
+      });
+      for (const line of contents.split('\n')) {
+        const trimmed = line.trim();
+        if (trimmed.length === 0) continue;
+        const parsed = safeJsonParse(trimmed);
+        const entry = parsed ? normalizeAuditEntry(parsed) : null;
+        if (entry && stillRecoverableIds.has(entry.id)) {
+          lastJournalRows.set(entry.id, entry);
+        }
+      }
+    }
+
+    const toSettle: AgentAuditEntry[] = [];
+    for (const candidate of candidates) {
+      if (!this.getRecoverableRunningEntry(candidate.id)) continue;
+      const journalEntry = lastJournalRows.get(candidate.id);
+      if (journalEntry && journalEntry.status !== 'running') {
+        this.upsertRecentEntry(journalEntry);
+        continue;
+      }
+      toSettle.push(candidate);
+    }
+
+    for (const candidate of toSettle) {
+      let transcriptMtimeMs: number | undefined;
+      const liveEntry = this.getRecoverableRunningEntry(candidate.id);
+      if (!liveEntry) continue;
+      if (liveEntry.hasTranscript) {
+        const transcriptPath = getAgentObservabilityTranscriptFilePath(
+          buildTranscriptRequest(liveEntry),
+        );
+        transcriptMtimeMs = await stat(transcriptPath)
+          .then((stats) => stats.mtimeMs)
+          .catch(() => undefined);
+      }
+      const currentEntry = this.getRecoverableRunningEntry(candidate.id);
+      if (!currentEntry) continue;
+      const startedAtMs = Date.parse(currentEntry.startedAt);
+      const completedAtMs = Math.max(
+        startedAtMs,
+        transcriptMtimeMs ?? snapshotMtimeMs,
+      );
+      const settled: AgentAuditEntry = {
+        ...currentEntry,
+        status: 'interrupted',
+        error: 'Application stopped before the turn finished',
+        completedAt: new Date(completedAtMs).toISOString(),
+        durationMs: completedAtMs - startedAtMs,
+      };
+      this.enqueueAuditEntry(settled);
+      this.upsertRecentEntry(settled);
     }
   }
 
@@ -9063,6 +9378,26 @@ export class ObservabilityService {
     }
 
     if (authStatus?.loggedIn !== true) {
+      // Match passive auth transitions: one disagreeing probe must not erase
+      // signed-in usage while a usable provider credential is still present.
+      const previousSummary = this.usageProviders.claude;
+      if (
+        previousSummary.authState === 'authenticated' &&
+        !this.claudeUsageAuthDisagreement
+      ) {
+        const credentialResult = await this.host.claude.readOauthCredentials();
+        if (
+          this.disposing ||
+          !this.isCurrentProviderUsageRefresh('claude', refreshVersion)
+        ) {
+          return;
+        }
+        if (credentialResult.status === 'success') {
+          this.claudeUsageAuthDisagreement = true;
+          return;
+        }
+      }
+      this.claudeUsageAuthDisagreement = false;
       this.publishClaudeUsageSummary({
         provider: 'claude',
         authState: authStatus === null ? 'unknown' : 'unauthenticated',
@@ -9075,6 +9410,7 @@ export class ObservabilityService {
       return;
     }
 
+    this.claudeUsageAuthDisagreement = false;
     const accountKey = normalizeClaudeAccountKey(authStatus.email);
     const currentSummary = this.usageProviders.claude;
     const currentSummaryMatchesAccount =
@@ -9771,7 +10107,10 @@ export class ObservabilityService {
         ...Array.from(this.retiringTranscriptStates),
         ...Array.from(this.transcriptStates.values()),
       ]),
-    ).filter((state) => state.queuedLines.length > 0);
+    ).filter((state) => {
+      this.releaseClosedTranscriptState(state);
+      return state.queuedLines.length > 0;
+    });
     if (pendingTranscriptStates.length === 0) {
       return false;
     }
@@ -9828,17 +10167,7 @@ export class ObservabilityService {
               transcriptState.queuedBytes - committedBytes,
             );
           }
-          if (
-            transcriptState.closed &&
-            transcriptState.queuedLines.length === 0
-          ) {
-            this.retiringTranscriptStates.delete(transcriptState);
-            if (
-              this.transcriptStates.get(transcriptState.key) === transcriptState
-            ) {
-              this.transcriptStates.delete(transcriptState.key);
-            }
-          }
+          this.releaseClosedTranscriptState(transcriptState);
         }
       }
       return false;

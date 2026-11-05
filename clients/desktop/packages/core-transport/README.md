@@ -6,6 +6,10 @@ channels), the `CanopyFramedConnection` contract with a `node:stream` `Duplex`
 implementation, and `createInMemoryFramedPair()`. JSON-RPC envelopes and
 operation schemas live in `@canopy/protocol/canopy-core`; binding frames live
 here because they are not catalog operations. `./types` is browser-safe.
+A message larger than one frame crosses as consecutive message parts (tag
+`0x01`) once the peer has said how large a message it joins
+(`maxMessageBytes`, `allowPeerMessageBytes`); a send over that cap is refused
+as `resource_exhausted` and the connection stays open.
 Accepting listeners may admit each channel open before notification, and the
 granted caps respect a per-channel bytes-in-flight budget; readers return credit as chunks are consumed so writers wait at the negotiated window.
 

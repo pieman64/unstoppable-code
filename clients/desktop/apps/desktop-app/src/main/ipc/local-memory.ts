@@ -9,28 +9,13 @@ import {
   type LocalMemorySnapshotSummary,
 } from '@canopy/desktop-shared/types';
 import { LOCAL_MEMORY_CHAT_SCOPE_SENTINELS } from '@canopy/desktop-shared/lib/local-memory-scope';
-import { getUserMemoryDir, getWorkspaceMemoryDir } from '../lib/paths';
 import { validateId } from '../lib/validation';
 import {
   broadcastLocalMemoryChanged,
   unwatchLocalMemoryScope,
   watchLocalMemoryScope,
 } from '../memory/local/change-events';
-import { readLocalMemoryConsolidationStatus } from '../memory/local/consolidation-status';
-import {
-  deleteLocalMemoryFile,
-  listLocalMemoryFiles,
-  mutateLocalMemoryItem,
-  readLocalMemoryDocument,
-  updateLocalMemoryFile,
-} from '../memory/local/explorer';
-import {
-  restoreManualLocalMemorySnapshot,
-  runManualLocalMemoryConsolidation,
-  runManualLocalMemoryRebuild,
-} from '../memory/local/manual-consolidation-trigger';
-import { listLocalMemorySnapshots } from '../memory/local/snapshots';
-import { readUsage, usageEntryFor } from '../memory/local/usage';
+import { localMemoryStore } from '../memory/local/memory-store';
 import { registerIpcHandler } from './register';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -55,46 +40,23 @@ function scopeRequest(value: unknown): LocalMemoryScopeRequest {
   return { scope: 'workspace', workspaceId: request.workspaceId };
 }
 
-function directory(scope: LocalMemoryScopeRequest): string {
-  return scope.scope === 'user'
-    ? getUserMemoryDir()
-    : getWorkspaceMemoryDir(scope.workspaceId);
-}
-
 function field(request: Record<string, unknown>, key: string): string {
   if (typeof request[key] !== 'string')
     throw new Error('Invalid memory request.');
   return request[key];
 }
 
-/**
- * The scope's files with each one's usage count. Usage is advisory: while
- * tracking is unknown for the scope, or reading it fails, files carry none.
- */
-async function listWithUsage(
-  scopeDir: string,
-): Promise<LocalMemoryFileSummary[]> {
-  const [files, usage] = await Promise.all([
-    listLocalMemoryFiles(scopeDir),
-    readUsage(scopeDir).catch(() => null),
-  ]);
-  if (!usage || usage.trackingSince === null) return files;
-  return files.map((file) => {
-    const entry = usageEntryFor(usage.entries, file.fileKey);
-    return { ...file, usageCount: entry?.usageCount ?? 0 };
-  });
-}
-
 export function registerLocalMemoryHandlers(): void {
   registerIpcHandler<[unknown], LocalMemoryFileSummary[]>(
     IPC_CHANNELS.localMemoryList,
-    async (_event, value) => listWithUsage(directory(scopeRequest(value))),
+    async (_event, value) =>
+      localMemoryStore.listDocuments(scopeRequest(value)),
   );
   registerIpcHandler<[unknown], LocalMemoryDocument>(
     IPC_CHANNELS.localMemoryRead,
     async (_event, value) =>
-      readLocalMemoryDocument(
-        directory(scopeRequest(value)),
+      localMemoryStore.readDocument(
+        scopeRequest(value),
         field(record(value), 'fileKey'),
       ),
   );
@@ -107,7 +69,7 @@ export function registerLocalMemoryHandlers(): void {
       async (_event, value) => {
         const scope = scopeRequest(value);
         const request = record(value);
-        const result = await mutateLocalMemoryItem(directory(scope), {
+        const result = await localMemoryStore.mutateItem(scope, {
           fileKey: field(request, 'fileKey'),
           itemId: field(request, 'itemId'),
           revision: field(request, 'revision'),
@@ -123,7 +85,7 @@ export function registerLocalMemoryHandlers(): void {
     async (_event, value) => {
       const scope = scopeRequest(value);
       const request = record(value);
-      const result = await updateLocalMemoryFile(directory(scope), {
+      const result = await localMemoryStore.writeDocument(scope, {
         fileKey: field(request, 'fileKey'),
         revision: field(request, 'revision'),
         body: field(request, 'body'),
@@ -140,7 +102,7 @@ export function registerLocalMemoryHandlers(): void {
     async (_event, value) => {
       const scope = scopeRequest(value);
       const request = record(value);
-      await deleteLocalMemoryFile(directory(scope), {
+      await localMemoryStore.deleteDocument(scope, {
         fileKey: field(request, 'fileKey'),
         revision: field(request, 'revision'),
       });
@@ -150,7 +112,7 @@ export function registerLocalMemoryHandlers(): void {
   registerIpcHandler<[unknown], LocalMemoryConsolidationStatus>(
     IPC_CHANNELS.localMemoryConsolidationStatus,
     async (_event, value) =>
-      readLocalMemoryConsolidationStatus(directory(scopeRequest(value))),
+      localMemoryStore.consolidationStatus(scopeRequest(value)),
   );
   registerIpcHandler<[unknown], LocalMemoryConsolidationStatus>(
     IPC_CHANNELS.localMemoryConsolidate,
@@ -160,8 +122,8 @@ export function registerLocalMemoryHandlers(): void {
       // The response is the fresh status with the run that just finished
       // layered on top, so a failed state write can never answer with the
       // pre-run outcome.
-      const run = await runManualLocalMemoryConsolidation(scope);
-      const status = await readLocalMemoryConsolidationStatus(directory(scope));
+      const run = await localMemoryStore.consolidateNow(scope);
+      const status = await localMemoryStore.consolidationStatus(scope);
       if (!run.recorded) return status;
       const succeeded = run.outcome.result === 'success';
       return {
@@ -177,20 +139,20 @@ export function registerLocalMemoryHandlers(): void {
     IPC_CHANNELS.localMemoryRebuild,
     async (_event, value) => {
       const scope = scopeRequest(value);
-      const rebuild = await runManualLocalMemoryRebuild(scope);
-      const status = await readLocalMemoryConsolidationStatus(directory(scope));
+      const rebuild = await localMemoryStore.rebuild(scope);
+      const status = await localMemoryStore.consolidationStatus(scope);
       return { rebuild, status };
     },
   );
   registerIpcHandler<[unknown], LocalMemorySnapshotSummary[]>(
     IPC_CHANNELS.localMemoryListSnapshots,
     async (_event, value) =>
-      listLocalMemorySnapshots(directory(scopeRequest(value))),
+      localMemoryStore.listSnapshots(scopeRequest(value)),
   );
   registerIpcHandler<[unknown], LocalMemorySnapshotRestoreResponse>(
     IPC_CHANNELS.localMemoryRestoreSnapshot,
     async (_event, value) =>
-      restoreManualLocalMemorySnapshot(
+      localMemoryStore.restoreSnapshot(
         scopeRequest(value),
         field(record(value), 'snapshotId'),
       ),
@@ -199,7 +161,11 @@ export function registerLocalMemoryHandlers(): void {
     IPC_CHANNELS.localMemoryWatch,
     (event, value): void => {
       const scope = scopeRequest(value);
-      watchLocalMemoryScope(scope, directory(scope), event.sender);
+      watchLocalMemoryScope(
+        scope,
+        localMemoryStore.resolve(scope).dir,
+        event.sender,
+      );
     },
   );
   registerIpcHandler<[unknown], void>(

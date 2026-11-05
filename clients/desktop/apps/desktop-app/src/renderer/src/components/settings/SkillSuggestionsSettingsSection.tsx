@@ -21,7 +21,7 @@ import {
 const SECTION_TITLE = 'Skill suggestions';
 const LABEL = 'Suggest skills for repeated requests';
 const HELPER =
-  'Get an offer to turn tasks you repeat into a skill. Your request history stays on this computer and is only used to spot patterns, which may use AI Credits.';
+  'Get an offer to turn tasks you repeat into a skill. Works only while Settings → General → Show suggestions is on. Your request history stays on this computer and is only used to spot patterns, which may use AI Credits.';
 const VIEW_LABEL = 'Open suggestions';
 const VIEW_HELPER = 'See every open suggestion and create or dismiss it.';
 const SAVE_ERROR_MESSAGE = "Couldn't save this setting. Try again.";

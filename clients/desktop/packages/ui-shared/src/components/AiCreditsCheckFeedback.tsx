@@ -1,4 +1,5 @@
 import type { JSX } from 'react';
+import { Button } from './Button';
 import { LoadingSpinner } from './LoadingSpinner';
 import {
   AI_CREDITS_HANDOFF_COPY,
@@ -65,8 +66,8 @@ export function AiCreditsCheckFeedback({
       {showReopen ? (
         <>
           {' '}
-          <button
-            type="button"
+          <Button
+            variant="link"
             data-testid={`${dataTestId}-reopen-billing`}
             disabled={reopenPending || reopenDisabled}
             aria-busy={reopenPending}
@@ -74,16 +75,17 @@ export function AiCreditsCheckFeedback({
             // credits controls.
             onMouseDown={(e): void => e.preventDefault()}
             onClick={onReopenBilling}
-            className="focus-ring inline-flex items-center gap-1 rounded font-medium fg-accent hover:underline disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:no-underline"
           >
-            {reopenPending && (
-              <LoadingSpinner
-                dataTestId={`${dataTestId}-reopen-billing-spinner`}
-                decorative
-              />
-            )}
-            {AI_CREDITS_REOPEN_BILLING_LABEL}
-          </button>
+            <span className="inline-flex items-center gap-1">
+              {reopenPending && (
+                <LoadingSpinner
+                  dataTestId={`${dataTestId}-reopen-billing-spinner`}
+                  decorative
+                />
+              )}
+              {AI_CREDITS_REOPEN_BILLING_LABEL}
+            </span>
+          </Button>
         </>
       ) : null}
     </span>

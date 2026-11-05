@@ -54,6 +54,7 @@ import { getBundledClaudeBinaryPath } from '../../pipelines/config-paths';
 import { spawnClaudeCodeProcessOffMain } from '../claude-process-host-runner';
 import { recordHostedClaudeProcessDiagnostic } from '../claude-process-diagnostics';
 import { ClaudeDelegationUsage } from './claude-usage';
+import { ChildAppendQueue } from './child-append-queue';
 import { DelegationChildNormalizer } from './child-row-normalizers';
 import type { DelegationTranscriptChange } from '@canopy/desktop-shared/node/delegation/transcript-port';
 import { delegationBlockId } from '@canopy/agent-transcript';
@@ -351,13 +352,19 @@ export function createClaudeDelegationRunner(options: {
       const transcript = new DelegationTranscriptRecorder(
         childNormalizer ? DELEGATION_STREAM_PREVIEW_LIMITS : undefined,
       );
+      const childAppends = appendChildChanges
+        ? new ChildAppendQueue(appendChildChanges, (changes) =>
+            childNormalizer?.acknowledge(changes),
+          )
+        : undefined;
+      // Provider events queue their rows and continue; finishing waits until
+      // every queued row is durable.
+      const queueNormalizedChanges = async (
+        changes: readonly DelegationTranscriptChange[],
+      ): Promise<void> => childAppends?.enqueue(changes);
       const appendNormalizedChanges = async (
         changes: readonly DelegationTranscriptChange[],
-      ): Promise<void> => {
-        if (!changes.length || !appendChildChanges) return;
-        await appendChildChanges(changes);
-        childNormalizer?.acknowledge(changes);
-      };
+      ): Promise<void> => childAppends?.flush(changes);
       let costUsd = 0;
       let hasRecordedCost = false;
       let segmentIndex = 0;
@@ -815,7 +822,7 @@ export function createClaudeDelegationRunner(options: {
             inputDelivery.observe(event);
             if (context.signal.aborted) break;
             transcript.claude(event);
-            await appendNormalizedChanges(
+            await queueNormalizedChanges(
               childNormalizer ? await childNormalizer.claude(event) : [],
             );
             if (transcript.limitExceeded && !childNormalizer) {

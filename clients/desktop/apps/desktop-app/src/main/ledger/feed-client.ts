@@ -1,13 +1,15 @@
 import { LedgerUuidSchema } from '@canopy/protocol/canopy-core';
 import {
+  LEDGER_MIRROR_CAPABILITIES_HEADER,
+  LEDGER_MIRROR_OPERATIONS_CAPABILITY,
+  LedgerMirrorEntryResponseV2Schema,
   LEDGER_MIRROR_GLOBAL_READ_VERSION,
   LEDGER_MIRROR_VERSION_HEADER,
-  LedgerMirrorEntryResponseSchema,
-  LedgerMirrorSearchRequestSchema,
-  LedgerMirrorSearchResponseSchema,
-  type LedgerMirrorEntryResponse,
-  type LedgerMirrorSearchRequest,
-  type LedgerMirrorSearchResponse,
+  LedgerMirrorSearchRequestV2Schema,
+  LedgerMirrorSearchResponseV2Schema,
+  type LedgerMirrorEntryResponseV2,
+  type LedgerMirrorSearchRequestV2,
+  type LedgerMirrorSearchResponseV2,
 } from '@canopy/protocol/ledger-sync';
 import {
   CanopyCloudClientError,
@@ -35,6 +37,9 @@ import {
  */
 const MIRROR_READ_HEADERS: Readonly<Record<string, string>> = {
   [LEDGER_MIRROR_VERSION_HEADER]: String(LEDGER_MIRROR_GLOBAL_READ_VERSION),
+  // Operations and parents, from a mirror that has them; one that predates
+  // them ignores the header.
+  [LEDGER_MIRROR_CAPABILITIES_HEADER]: LEDGER_MIRROR_OPERATIONS_CAPABILITY,
 };
 
 /** Why a read did not succeed, as what the Feed does about it. */
@@ -55,16 +60,16 @@ export type LedgerMirrorReadResult<Value> =
 /** Each call reads as `accountId`, and can be cancelled with `signal`. */
 export interface LedgerMirrorReader {
   search(
-    request: LedgerMirrorSearchRequest,
+    request: LedgerMirrorSearchRequestV2,
     accountId: string,
     signal?: AbortSignal,
-  ): Promise<LedgerMirrorReadResult<LedgerMirrorSearchResponse>>;
+  ): Promise<LedgerMirrorReadResult<LedgerMirrorSearchResponseV2>>;
   getEntry(
     entryId: string,
     options: { readonly beforeRevision?: number },
     accountId: string,
     signal?: AbortSignal,
-  ): Promise<LedgerMirrorReadResult<LedgerMirrorEntryResponse>>;
+  ): Promise<LedgerMirrorReadResult<LedgerMirrorEntryResponseV2>>;
 }
 
 /** A search is a page the person waits for. */
@@ -136,9 +141,10 @@ export function createLedgerMirrorReader(
       body,
       accountId,
       signal,
-    ): Promise<LedgerMirrorReadResult<LedgerMirrorSearchResponse>> => {
-      // A search the contract would refuse is never sent.
-      const outgoing = LedgerMirrorSearchRequestSchema.safeParse(body);
+    ): Promise<LedgerMirrorReadResult<LedgerMirrorSearchResponseV2>> => {
+      // A search the contract would refuse is never sent. The reader sends the
+      // operations capability, so the mirror reads the V2 request.
+      const outgoing = LedgerMirrorSearchRequestV2Schema.safeParse(body);
       if (!outgoing.success) return { ok: false, failure: 'unavailable' };
       const credentialContext = await credentialsOf(credentials, accountId);
       if (credentialContext === null) {
@@ -156,7 +162,7 @@ export function createLedgerMirrorReader(
           ...(signal === undefined ? {} : { signal }),
         },
         (answer) => {
-          const parsed = LedgerMirrorSearchResponseSchema.safeParse(answer);
+          const parsed = LedgerMirrorSearchResponseV2Schema.safeParse(answer);
           return parsed.success ? parsed.data : null;
         },
       );
@@ -166,7 +172,7 @@ export function createLedgerMirrorReader(
       options,
       accountId,
       signal,
-    ): Promise<LedgerMirrorReadResult<LedgerMirrorEntryResponse>> => {
+    ): Promise<LedgerMirrorReadResult<LedgerMirrorEntryResponseV2>> => {
       if (!LedgerUuidSchema.safeParse(entryId).success) {
         return { ok: false, failure: 'not_found' };
       }
@@ -189,7 +195,7 @@ export function createLedgerMirrorReader(
           ...(signal === undefined ? {} : { signal }),
         },
         (answer) => {
-          const parsed = LedgerMirrorEntryResponseSchema.safeParse(answer);
+          const parsed = LedgerMirrorEntryResponseV2Schema.safeParse(answer);
           // An answer about another entry says nothing about this one.
           return parsed.success && parsed.data.entry.entryId === entryId
             ? parsed.data

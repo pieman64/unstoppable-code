@@ -30,6 +30,7 @@ import {
 import {
   hashPipelinePackageYaml,
   installPipelinePackageAtomically,
+  leasePipelinePackage,
   verifyCachedPipelinePackage,
 } from '@canopy/desktop-shared/node';
 import type {
@@ -65,6 +66,7 @@ import { logMainProcessWarn } from '../lib/main-process-logging';
 import { recordUserPipelineOwner } from './pipeline-local-metadata-store';
 import { selectedOwnerContext } from './pipeline-owner-policy';
 import { upsertPipelinePackageInstall } from './pipeline-package-install-store';
+import { beginPipelineInstallIntent } from './pipeline-install-intents';
 import {
   withPackageVersionNegotiation,
   type PipelinePackageDownload,
@@ -413,41 +415,74 @@ export async function readCuratedPipelineRemote(
     },
     install: async (write) => {
       await assertCurrentCredentials(context);
-      const result = savePipeline(
-        {
-          name: write.name,
-          description: write.description,
-          icon: write.icon,
-          content: write.pipeline,
-          rawContent: write.text,
-          curatedOrigin: {
-            key: detail.key,
-            contentHash: detail.contentHash,
-            revision: detail.revision,
-            importedAt: new Date().toISOString(),
-          },
-        },
-        { id: write.definitionId },
-      );
-      if (!result.success || !result.data)
-        throw new Error(result.error ?? 'Failed to add curated workflow.');
-      const saved = result.data;
-      if (pipelinePackage) {
-        try {
-          await upsertPipelinePackageInstall(
-            getPipelinePackageInstallStorePath(),
-            {
-              localPipelineId: saved.id,
-              originExternalId: `curated:${detail.key}`,
-              pipelineContentHash: pipelinePackage.manifest.pipelineContentHash,
-              packageDigest: pipelinePackage.digest,
-              installedAt: new Date().toISOString(),
-            },
+      const intent = await beginPipelineInstallIntent('curated');
+      // Held until the install record names the package, so another
+      // install's rollback cannot remove it in between.
+      const lease = packageRef
+        ? leasePipelinePackage(getPipelinePackagesDir(), packageRef.digest)
+        : undefined;
+      let saved: PipelineInfo;
+      try {
+        if (pipelinePackage)
+          pipelinePackage = await installCuratedPipelinePackage(
+            detail.key,
+            detail.rawPipeline,
+            packageRef,
           );
-        } catch (error) {
-          deletePipeline(saved.id);
-          throw error;
+        await intent.noteDefinition({
+          definitionId: write.definitionId,
+          change: 'created',
+          contentHash: hashPipelinePackageYaml(write.text),
+        });
+        const result = savePipeline(
+          {
+            name: write.name,
+            description: write.description,
+            icon: write.icon,
+            content: write.pipeline,
+            rawContent: write.text,
+            curatedOrigin: {
+              key: detail.key,
+              contentHash: detail.contentHash,
+              revision: detail.revision,
+              importedAt: new Date().toISOString(),
+            },
+          },
+          { id: write.definitionId },
+        );
+        if (!result.success || !result.data)
+          throw new Error(result.error ?? 'Failed to add curated workflow.');
+        saved = result.data;
+        if (pipelinePackage) {
+          const record = {
+            localPipelineId: saved.id,
+            originExternalId: `curated:${detail.key}`,
+            pipelineContentHash: pipelinePackage.manifest.pipelineContentHash,
+            packageDigest: pipelinePackage.digest,
+            installedAt: new Date().toISOString(),
+          };
+          await intent.noteInstallRecord(saved.id, record);
+          try {
+            await upsertPipelinePackageInstall(
+              getPipelinePackageInstallStorePath(),
+              record,
+            );
+          } catch (error) {
+            deletePipeline(saved.id);
+            throw error;
+          }
         }
+        await intent.finish();
+      } catch (error) {
+        await intent.rollBack().catch((rollbackError: unknown) => {
+          logMainProcessWarn(
+            '[curated-pipelines] Could not roll back a curated install',
+            rollbackError,
+          );
+        });
+        throw error;
+      } finally {
+        lease?.release();
       }
       return {
         source: 'user',

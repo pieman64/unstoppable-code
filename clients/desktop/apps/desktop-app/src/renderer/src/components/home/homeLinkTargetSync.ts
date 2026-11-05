@@ -314,14 +314,6 @@ export function gateHomeLinkSend():
   return evaluateHomeLinkSend(selection);
 }
 
-/** Test seam: drop module scheduling state between cases. */
-export function resetHomeLinkTargetSyncForTests(): void {
-  if (pendingTimer !== null) clearTimeout(pendingTimer);
-  pendingTimer = null;
-  connectionGeneration = 0;
-  requestGeneration += 1;
-}
-
 /** Mount once per Home surface; any number of mounts share one scheduler. */
 export function useHomeLinkTargetSync(): void {
   const {

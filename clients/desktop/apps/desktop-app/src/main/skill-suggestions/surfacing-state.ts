@@ -181,6 +181,7 @@ export function expireStaleSuggestions(
 }
 
 export class SkillSuggestionSurfacingState {
+  private generation = 0;
   private readonly pending = new Map<string, PendingEntry>();
   private readonly listeners = new Set<
     (event: SkillSuggestionChangedEvent) => void
@@ -214,8 +215,9 @@ export class SkillSuggestionSurfacingState {
 
   /** Counts a completed turn toward a matching suggestion and may surface it. */
   matchTurn(turn: SurfacingTurn): Promise<void> {
+    const generation = this.generation;
     return this.enqueue(async () => {
-      if (!this.deps.isEnabled()) return;
+      if (!this.deps.isEnabled() || generation !== this.generation) return;
       const now = this.deps.now();
       const organizations = this.deps.memberOrganizations();
       const key = originKey(turn.origin);
@@ -225,6 +227,8 @@ export class SkillSuggestionSurfacingState {
         ):
           | { surfaced: StoredSkillSuggestion | null; expired: boolean }
           | false => {
+          if (!this.deps.isEnabled() || generation !== this.generation)
+            return false;
           const expired = expireStaleSuggestions(draft, now).length > 0;
           const match = findMatchingSuggestion(turn, draft.suggestions);
           if (!match) return expired ? { surfaced: null, expired } : false;
@@ -252,7 +256,13 @@ export class SkillSuggestionSurfacingState {
       // Open lists (the modal and the Settings badge) drop expired rows.
       if (result !== false && result.expired) this.notifyChanged();
       const stored = result === false ? null : result.surfaced;
-      if (!stored || !this.deps.isEnabled() || this.pending.has(key)) return;
+      if (
+        !stored ||
+        !this.deps.isEnabled() ||
+        generation !== this.generation ||
+        this.pending.has(key)
+      )
+        return;
       const snapshot = toSkillSuggestionDto(stored, organizations);
       if (!snapshot) return;
       this.pending.set(key, {
@@ -449,6 +459,7 @@ export class SkillSuggestionSurfacingState {
 
   /** The gate closed: every pending banner disappears. */
   clearAll(): void {
+    this.generation += 1;
     const origins = Array.from(this.pending.values()).map(
       (entry) => entry.origin,
     );

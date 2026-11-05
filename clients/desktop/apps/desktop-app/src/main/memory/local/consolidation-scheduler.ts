@@ -13,8 +13,9 @@ import {
   enqueueBackgroundHelperTask,
 } from '../../lib/background-helper-queue';
 import { readPreferencesFile } from '../../lib/preferences-store';
-import { getUserMemoryDir, getWorkspaceMemoryDir } from '../../lib/paths';
+import { isConsolidationInputClean } from '@canopy/memory-consolidation/input';
 import { broadcastLocalMemoryChanged } from './change-events';
+import { localMemoryScopeDir } from './scope-resolver';
 import {
   beginLocalMemoryConsolidationRun,
   endLocalMemoryConsolidationRun,
@@ -63,7 +64,7 @@ function currentRelevantSessions(): ChatActiveSessionInfo[] {
 }
 
 function userScope(): ConsolidationScope {
-  return { scopeDir: getUserMemoryDir() };
+  return { scopeDir: localMemoryScopeDir({ scope: 'user' }) };
 }
 
 function scopeRequest(scope: ConsolidationScope): LocalMemoryScopeRequest {
@@ -74,7 +75,7 @@ function scopeRequest(scope: ConsolidationScope): LocalMemoryScopeRequest {
 
 function workspaceScope(workspaceId: string): ConsolidationScope {
   return {
-    scopeDir: getWorkspaceMemoryDir(workspaceId),
+    scopeDir: localMemoryScopeDir({ scope: 'workspace', workspaceId }),
     workspaceId,
   };
 }
@@ -274,12 +275,7 @@ async function attemptScopeConsolidation(
     const { collectConsolidationInput, runLocalMemoryConsolidation } =
       await import('./consolidation-task');
     const preflight = await collectConsolidationInput(scope.scopeDir);
-    if (
-      preflight.inboxFiles.length === 0 &&
-      preflight.importFiles.length === 0 &&
-      (preflight.omittedImportFiles?.fileCount ?? 0) === 0 &&
-      preflight.indexWithinLimits
-    ) {
+    if (isConsolidationInputClean(preflight)) {
       return;
     }
     if (state?.lastInputHash === preflight.inputHash) {
@@ -303,12 +299,7 @@ async function attemptScopeConsolidation(
         }
         const latestState = await readConsolidationState(scope.scopeDir);
         const queuedInput = await collectConsolidationInput(scope.scopeDir);
-        if (
-          queuedInput.inboxFiles.length === 0 &&
-          queuedInput.importFiles.length === 0 &&
-          (queuedInput.omittedImportFiles?.fileCount ?? 0) === 0 &&
-          queuedInput.indexWithinLimits
-        ) {
+        if (isConsolidationInputClean(queuedInput)) {
           return;
         }
         if (latestState && isWithinHourlyCap(latestState.lastConsolidatedAt)) {

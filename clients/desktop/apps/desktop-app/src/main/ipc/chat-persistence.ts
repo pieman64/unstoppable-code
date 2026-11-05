@@ -34,7 +34,10 @@ import {
   type TurnBlock,
   type TurnMessage,
 } from '@canopy/desktop-shared/lib/turn-utils';
-import { toArchivedChatSummary } from '../lib/chat-archives';
+import {
+  readChatArchivesFile,
+  toArchivedChatSummary,
+} from '../lib/chat-archives';
 import { type ChatTabsWriteDelta } from '../lib/chat-tabs';
 import { adhocMigrateWorktreeTabs } from '../lib/adhoc-migrate-tabs';
 import {
@@ -85,6 +88,10 @@ import { isCoworkWorkspace } from '../lib/workspace-registry';
 import { deferredToolsReloadCoordinator } from '../deferred-tools/reload-coordinator';
 import { getChatSearchService } from '../chat-search/service';
 import { getChatStateService } from '../services/chat-state-service';
+import {
+  notifyLedgerSessionEnded,
+  registerLedgerChatArchivedSource,
+} from '../ledger/session-end-sweep-ports';
 import {
   ACCOUNT_MCP_REF_LOADER_WAIT,
   normalizeAccountMcpSelections,
@@ -378,6 +385,16 @@ export function registerChatPersistenceHandlers(
   getWindow: () => BrowserWindow | null = () => null,
   runtime?: DesktopCanopyRuntimeAccessors,
 ): void {
+  // The Feed's session-end sweep re-checks a chat recipient before each
+  // hand-back, so work never lands on a chat archived while it ran.
+  registerLedgerChatArchivedSource(async (target, chatId) => {
+    const archives = await readChatArchivesFile(
+      target.projectId,
+      target.worktreeId,
+      { chatIds: [chatId], pageOnly: true },
+    );
+    return archives.archived.some((entry) => entry.tab.id === chatId);
+  });
   // A defaults change normalizes inside its commit scope and its manifest
   // admission; the chat writes precede that decision and are not part of it
   // (CAN-4409), so their observers' writes admit at their own sinks
@@ -571,6 +588,21 @@ export function registerChatPersistenceHandlers(
           ...(req.unread ? { unread: true } : {}),
         },
       );
+      // The archive is committed first. A quit before the intent write lands
+      // can lose this handback; startup completes every intent recorded after
+      // that accepted commit-to-intent window. Never await the sweep itself.
+      try {
+        await notifyLedgerSessionEnded({
+          target: { projectId: req.projectId, worktreeId: req.worktreeId },
+          actor: { kind: 'chat', originKey: req.tabId },
+          recipient: { kind: 'user' },
+          reason: 'chat_archived',
+          transitionKey: `chat-archive:${req.projectId}:${req.worktreeId}:${req.tabId}:${archivedAt}`,
+          transitionAt: archivedAt,
+        });
+      } catch {
+        // Ledger bookkeeping must never fail a committed archive.
+      }
       getChatSearchService().worktreeChatArchived(
         req.projectId,
         req.worktreeId,

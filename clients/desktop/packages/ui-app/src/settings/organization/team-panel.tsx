@@ -9,7 +9,7 @@ import {
   EmptyState,
   ErrorBanner,
   OrgEnforcedConsentList,
-  SettingsListSkeleton,
+  Skeleton,
   StatusBadge,
   Heading,
 } from '@canopy/ui-shared/components';
@@ -302,7 +302,7 @@ export function TeamPanel({
 
       {status === 'loading' && (
         <DelayedLoadingPlaceholder>
-          <SettingsListSkeleton avatarShape="square" />
+          <OrganizationListSkeleton />
         </DelayedLoadingPlaceholder>
       )}
 
@@ -330,39 +330,13 @@ export function TeamPanel({
         <ul className="flex flex-col gap-3">
           {organizations.map((org) => (
             <li key={org.id}>
-              <button
-                type="button"
-                data-settings-control="row"
-                onClick={() => {
+              <OrganizationRow
+                org={org}
+                onOpen={() => {
                   selectOrganization(org.id);
                   router.push(`/organization/${org.id}`);
                 }}
-                data-testid="team-panel-org"
-                className="flex w-full cursor-pointer flex-wrap items-center justify-between gap-3 rounded-md border px-4 py-3 text-left transition-colors hover:bg-secondary"
-              >
-                <div className="flex min-w-0 items-center gap-3">
-                  <OrganizationLogo
-                    name={org.name}
-                    logoUrl={org.logoUrl}
-                    size="xl"
-                  />
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="truncate text-s font-medium fg-primary">
-                        {org.name}
-                      </span>
-                      <TeamRoleBadge role={org.role} />
-                    </div>
-                    <p className="mt-1 text-xs fg-secondary">
-                      {org.memberCount}{' '}
-                      {org.memberCount === 1 ? 'member' : 'members'} ·{' '}
-                      {org.subTeamCount}{' '}
-                      {org.subTeamCount === 1 ? 'team' : 'teams'}
-                    </p>
-                  </div>
-                </div>
-                <span className="text-s font-medium fg-accent">Open</span>
-              </button>
+              />
             </li>
           ))}
         </ul>
@@ -390,5 +364,86 @@ export function TeamPanel({
         />
       )}
     </section>
+  );
+}
+
+/** One organization the viewer belongs to, opening its settings. */
+function OrganizationRow({
+  org,
+  onOpen,
+}: {
+  org: OrganizationSummary;
+  onOpen: () => void;
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      data-settings-control="row"
+      onClick={onOpen}
+      data-testid="team-panel-org"
+      className="flex w-full cursor-pointer flex-wrap items-center justify-between gap-3 rounded-md border px-4 py-3 text-left transition-colors hover:bg-secondary"
+    >
+      <div className="flex min-w-0 items-center gap-3">
+        <OrganizationLogo name={org.name} logoUrl={org.logoUrl} size="xl" />
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="truncate text-s font-medium fg-primary">
+              {org.name}
+            </span>
+            <TeamRoleBadge role={org.role} />
+          </div>
+          <p className="mt-1 text-xs fg-secondary">
+            {org.memberCount} {org.memberCount === 1 ? 'member' : 'members'} ·{' '}
+            {org.subTeamCount} {org.subTeamCount === 1 ? 'team' : 'teams'}
+          </p>
+        </div>
+      </div>
+      <span className="text-s font-medium fg-accent">Open</span>
+    </button>
+  );
+}
+
+const noop = (): void => undefined;
+
+/** Sample organizations for the loading state: plain, of the loaded shape. */
+const SAMPLE_ORGANIZATIONS: readonly OrganizationSummary[] = [
+  {
+    id: 'sample-org-1',
+    name: 'Sample organization',
+    role: 'OWNER',
+    memberCount: 4,
+    subTeamCount: 2,
+    logoUrl: null,
+  },
+  {
+    id: 'sample-org-2',
+    name: 'Another organization',
+    role: 'MEMBER',
+    memberCount: 3,
+    subTeamCount: 1,
+    logoUrl: null,
+  },
+];
+
+/**
+ * The organization list while it loads: the real rows with sample
+ * organizations inside `Skeleton`, so skullet measures them into bars in place.
+ */
+function OrganizationListSkeleton(): JSX.Element {
+  return (
+    <Skeleton
+      loading
+      label="Loading organizations"
+      testId="settings-skeleton-list"
+      className="w-full"
+    >
+      <ul className="flex flex-col gap-3">
+        {SAMPLE_ORGANIZATIONS.map((org) => (
+          <li key={org.id}>
+            <OrganizationRow org={org} onOpen={noop} />
+          </li>
+        ))}
+      </ul>
+    </Skeleton>
   );
 }

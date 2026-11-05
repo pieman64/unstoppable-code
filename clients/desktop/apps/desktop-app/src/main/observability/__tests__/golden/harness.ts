@@ -3,7 +3,7 @@
 // under its data root, so a portable ingest (CAN-4136) can bind its own host
 // to the same scenarios and goldens. Nothing here imports Electron main code.
 import type { Dirent } from 'node:fs';
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile, readdir, utimes } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
 import type {
   AgentAuditEntry,
@@ -264,6 +264,13 @@ export async function runGoldenScenario(
   host.setClock(GOLDEN_START_TIME);
   const incarnations: GoldenObservabilityIngest[] = [];
   const boot = async (): Promise<GoldenObservabilityIngest> => {
+    // Restart recovery reads file mtimes, which the host's fake clock cannot set.
+    const now = new Date();
+    for (const file of await listFiles(
+      join(host.dataRoot, OBSERVABILITY_DIR),
+    )) {
+      await utimes(file, now, now);
+    }
     const ingest = await host.boot();
     incarnations.push(ingest);
     await ingest.start();

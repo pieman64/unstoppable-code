@@ -113,17 +113,3 @@ export const useResourceMonitorStore = create<ResourceMonitorState>(
     },
   }),
 );
-
-/**
- * Test-only helper. Resets the module-scoped initialization guard and
- * unsubscribes any active listener so each test starts fresh.
- */
-export function __resetResourceMonitorStoreForTests(): void {
-  disposeResourceMonitorSubscription();
-  useResourceMonitorStore.setState({
-    initialized: false,
-    loading: true,
-    snapshot: null,
-    error: null,
-  });
-}

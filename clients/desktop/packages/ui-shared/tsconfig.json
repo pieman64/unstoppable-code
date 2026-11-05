@@ -32,5 +32,6 @@
     {
       "path": "../agent-transcript"
     }
-  ]
+  ],
+  "exclude": ["node_modules", "**/__scratch__/**"]
 }

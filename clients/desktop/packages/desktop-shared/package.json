@@ -12,7 +12,7 @@
     "@canopy/plugin-interop": "workspace:*",
     "@canopy/protocol": "workspace:*",
     "@github/copilot-sdk": "1.0.15",
-    "@modelcontextprotocol/sdk": "1.29.0",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "jsonc-parser": "3.3.1",

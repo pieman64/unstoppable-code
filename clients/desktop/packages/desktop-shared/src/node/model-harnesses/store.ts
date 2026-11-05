@@ -11,6 +11,7 @@ import {
 } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { getModelHarnessOverridesFilePath } from '../../canopy-paths';
+import { damagedCopiesOf, pruneDamagedCopies } from '../lib/damaged-copies';
 import {
   MODEL_HARNESS_OVERRIDES_VERSION,
   ModelHarnessPolicyError,
@@ -221,6 +222,9 @@ export class ModelHarnessOverrideStore {
     const stamp = this.now().toISOString().replace(/[:.]/g, '-');
     const backupPath = `${this.filePath}.corrupt-${stamp}.bak`;
     await rename(this.filePath, backupPath);
+    await pruneDamagedCopies(
+      damagedCopiesOf(this.filePath, '.corrupt-', { suffix: '.bak' }),
+    );
     await this.atomicWrite({});
     this.overrides = {};
     this.needsCleanup = false;

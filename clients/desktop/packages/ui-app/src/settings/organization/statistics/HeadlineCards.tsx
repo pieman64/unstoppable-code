@@ -3,6 +3,7 @@
 import type { JSX, ReactNode } from 'react';
 import { Info } from '@canopy/ui-shared/icons/AppIcons';
 import { Tooltip } from '@canopy/ui-shared';
+import { Button } from '@canopy/ui-shared/components';
 import type { TelemetryHeadlineCard } from '@canopy/protocol/telemetry';
 import { formatCardValue } from './format';
 import { TrendChip, type TrendColorScheme } from './TrendChip';
@@ -95,15 +96,18 @@ export function HeadlineCards({
                     </span>
                   }
                 >
-                  <button
-                    type="button"
-                    data-settings-control="disclosure"
+                  <Button
+                    variant="ghost"
+                    size="compact"
+                    iconOnly
                     aria-label={`What does ${card.label} mean?`}
-                    className="shrink-0 fg-secondary/60 transition-colors hover:fg-primary"
+                    // The 28px circle overhangs the 16px label line rather
+                    // than growing the card's header.
+                    className="-m-1.5"
                     data-testid={`usage-card-${card.key}-info`}
                   >
                     <Info size={13} aria-hidden="true" />
-                  </button>
+                  </Button>
                 </Tooltip>
               )}
             </div>

@@ -133,10 +133,7 @@ export interface WorktreeBulkRowMenu {
   >;
   readonly callbacks: Pick<
     WorktreeMenuCallbacks,
-    | 'onToggleSelectionRequested'
-    | 'onBulkRemovalRequested'
-    | 'onBulkStateActionRequested'
-    | 'onClearSelectionRequested'
+    'onBulkRemovalRequested' | 'onBulkStateActionRequested'
   >;
 }
 
@@ -480,12 +477,10 @@ export function worktreeBulkRowMenu(
         : {}),
     },
     callbacks: {
-      onToggleSelectionRequested: menu.toggle,
       ...(menu.bulk !== undefined
         ? {
             onBulkRemovalRequested: menu.bulk.onBulkRemoval,
             onBulkStateActionRequested: menu.bulk.onStateAction,
-            onClearSelectionRequested: menu.bulk.onClear,
           }
         : {}),
     },
@@ -497,10 +492,12 @@ export function worktreeSelectionRowsFor(
   workspace: WorktreeSelectableWorkspace,
   worktrees: readonly SnapshotWorktree[],
   isSelectable: WorktreeMultiSelectBinding['isSelectable'],
+  openWorktreeLocalId?: string,
 ): SidebarSelectionRow[] {
   return worktrees.map((worktree) => ({
     key: worktreeRowKey(workspace.localId, worktree.localId),
     kind: workspace.type === 'cowork' ? 'session' : 'worktree',
     selectable: isSelectable(workspace, worktree),
+    open: worktree.localId === openWorktreeLocalId,
   }));
 }

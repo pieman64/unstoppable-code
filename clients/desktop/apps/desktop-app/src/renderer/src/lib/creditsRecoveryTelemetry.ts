@@ -46,11 +46,6 @@ const MAX_TRACKED_VIEWS = 200;
 
 const lastViewAt = new Map<string, number>();
 
-/** Test seam: forget recorded views. */
-export function resetCreditsRecoveryTelemetryForTests(): void {
-  lastViewAt.clear();
-}
-
 function emit(
   name: typeof VIEW_OPERATION | typeof CLICK_OPERATION,
   context: Record<string, string>,

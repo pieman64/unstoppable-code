@@ -117,6 +117,7 @@ import type {
 import type { ChatStorageV2 } from '../lib/chat-storage-v2';
 import { createHash, randomUUID } from 'node:crypto';
 import { isE2eBuild } from '../lib/e2e-gate';
+import { installChatScopeResidencyE2eHook } from './chat-scope-residency-e2e';
 import { BACKGROUND_WORK_CHAT_REFUSAL } from '../agents/delegation/activity';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { isDeepStrictEqual } from 'node:util';
@@ -328,7 +329,10 @@ import {
 import { isUserTurnBoundary } from '@canopy/agent-transcript/lib/turn-boundary';
 import { preserveSettledTurnTimers } from '../lib/settled-turn-timer-guard';
 import { recordInterruptedChats } from '../lib/usage-limited-chats-registry';
-import { installChatTranscriptRewriteDiagnosticSink } from './chat-transcript-rewrite-diagnostics';
+import {
+  installChatTranscriptRewriteDiagnosticSink,
+  installChatTranscriptRewriteRateDiagnosticSink,
+} from './chat-transcript-rewrite-diagnostics';
 import { chatEventDroppedDiagnostic } from '../lib/chat-event-drop-diagnostics';
 import { isRealWorkspaceTarget } from '../lib/chat-targets';
 import { logMainProcessWarn } from '../lib/main-process-logging';
@@ -371,6 +375,8 @@ import {
   type ChatStateCommit,
   type ChatStateStorageDiagnostic,
   type ChatStateTransactionContext,
+  type ChildStreamWritePreparation,
+  type PreparedChildStreamCommit,
 } from './chat-state-contracts';
 import type { ChatQueuePersistenceMutation } from './chat-queue-service';
 import {
@@ -3169,9 +3175,27 @@ interface PendingChatTabsProjection {
   changedTabs: Map<string, PersistedChatTab>;
 }
 
+/**
+ * The idle unload interval for a repository the service builds itself. Read
+ * only then, so a caller that supplies its own repository outside a Vite
+ * build (where the E2E constant is undefined) never evaluates the gate.
+ */
+function defaultIdleScopeUnloadOption(): { idleScopeUnloadMs?: number } {
+  const e2eMs = isE2eBuild()
+    ? Number(process.env.CANOPY_E2E_SCOPE_IDLE_UNLOAD_MS)
+    : undefined;
+  if (e2eMs !== undefined && Number.isSafeInteger(e2eMs) && e2eMs > 0)
+    return { idleScopeUnloadMs: e2eMs };
+  // Never arm idle unload under Jest: a suite that builds the service without
+  // draining it would run the unload's live check after the environment is
+  // torn down. Repository tests set the option.
+  return process.env.NODE_ENV === 'test' ? { idleScopeUnloadMs: 0 } : {};
+}
+
 export class ChatStateService implements ChatStateCommandPort {
   public readonly inputDelivery: ChatInputDeliveryCoordinator;
   private readonly repository: ChatStateRepositoryPort;
+  private readonly uninstallScopeResidencyHook: () => void;
   private readonly getChatCloseBlockReasonChecker: () => Promise<ChatCloseBlockReasonChecker>;
   private defaultChatCloseBlockReasonChecker:
     | Promise<ChatCloseBlockReasonChecker>
@@ -3349,6 +3373,8 @@ export class ChatStateService implements ChatStateCommandPort {
   private readonly deletingScopeIds = new Map<string, number>();
   /** Admitted sends that deletion must include in its session cleanup sweep. */
   private readonly activeScopeOperations = new Map<string, number>();
+  /** Host-owned window interests that keep a scope's in-memory state live. */
+  private scopePinProvider: ((scope: ChatScopeKey) => boolean) | undefined;
   /** Deletion waiters released when the last admitted send leaves a scope. */
   private readonly scopeOperationDrainWaiters = new Map<
     string,
@@ -3418,6 +3444,11 @@ export class ChatStateService implements ChatStateCommandPort {
         // Test-only opt-in for retained stream fixtures; normal builds never write format 4.
         enableFormat4:
           isE2eBuild() && process.env.CANOPY_E2E_CHAT_FORMAT4 === '1',
+        // Reader-first: production may write incremental stream metadata
+        // only once a stable release carries the relaxed readers, so this
+        // follows E2E format 4 only, not the production promotion switch.
+        deltaJournalIncrementalStreamMetadata:
+          isE2eBuild() && process.env.CANOPY_E2E_CHAT_FORMAT4 === '1',
         delegationReadMetadata: readMetadataOfRecord,
         hasLiveDependency: async (scope): Promise<boolean> => {
           // Lazy by design: these local services import the chat-state singleton,
@@ -3435,11 +3466,29 @@ export class ChatStateService implements ChatStateCommandPort {
             ).length > 0
           );
         },
+        ...defaultIdleScopeUnloadOption(),
+        // Separate from hasLiveDependency, which also guards v1 migration:
+        // an operation's own admission must not block its first load.
+        hasAdmittedOperation: (scope): boolean =>
+          this.activeScopeOperations.has(chatScopeLifecycleKey(scope)),
+        isScopePinned: (scope): boolean => {
+          try {
+            return this.scopePinProvider?.(scope) ?? false;
+          } catch {
+            return true;
+          }
+        },
       });
     this.unsubscribeStorageDiagnostics =
       this.repository.subscribeStorageDiagnostics((diagnostic) => {
         this.recordDiagnostic(storageSessionDiagnostic(diagnostic));
       });
+    // Only for the repository built here, as for the idle unload option.
+    this.uninstallScopeResidencyHook =
+      options.repository === undefined &&
+      this.repository instanceof ChatStateV2Repository
+        ? installChatScopeResidencyE2eHook(this.repository)
+        : (): void => undefined;
     this.reconcileHostRuntime = options.repository === undefined;
     this.now = options.now ?? Date.now;
     this.createId = options.createId ?? randomUUID;
@@ -3791,6 +3840,15 @@ export class ChatStateService implements ChatStateCommandPort {
       (commit, wait): Promise<void> => this.publishCommit(commit, wait),
       (commit): ChatWaitOperation => this.startCommitWait(commit),
     );
+  }
+
+  public setScopePinProvider(
+    provider: (scope: ChatScopeKey) => boolean,
+  ): () => void {
+    this.scopePinProvider = provider;
+    return (): void => {
+      if (this.scopePinProvider === provider) this.scopePinProvider = undefined;
+    };
   }
 
   /** Whether canonical turn state already ended this turn id, receipt first. */
@@ -5094,6 +5152,21 @@ export class ChatStateService implements ChatStateCommandPort {
     );
   }
 
+  /** Read, choose and commit a child write in one turn of the scope lease. */
+  public commitPreparedChildStream(
+    scope: ChatScopeKey,
+    target: TranscriptTarget,
+    mutationKey: string,
+    prepare: ChildStreamWritePreparation,
+  ): Promise<PreparedChildStreamCommit> {
+    return this.childStreamRepository().commitPreparedChildStream(
+      scope,
+      target,
+      mutationKey,
+      prepare,
+    );
+  }
+
   /** Read one logical row only at the stream revision the caller observed. */
   public getChildStreamMessage(
     scope: ChatScopeKey,
@@ -5447,10 +5520,12 @@ export class ChatStateService implements ChatStateCommandPort {
       { getActiveChatIds },
       { getChatQueueService },
       { getClaudeTerminalSessionService },
+      { getE2eInjectedLiveTurnChatIds },
     ] = await Promise.all([
       import('../agents/session-manager'),
       import('./chat-queue-service'),
       import('../integration/claude-terminal-session-service'),
+      import('../lib/e2e-injected-turns'),
     ]);
     const queueService = getChatQueueService();
     const memoryQueueIds = new Map(
@@ -5699,9 +5774,10 @@ export class ChatStateService implements ChatStateCommandPort {
           // a stale pre-transaction snapshot cannot interrupt a newly accepted
           // turn. Queue turnActive covers the period after dispatch returns;
           // dispatchesInFlight covers durable acceptance through host exposure.
-          const activeChatIds = new Set(
-            getActiveChatIds(scope.projectId, scope.worktreeId),
-          );
+          const activeChatIds = new Set([
+            ...getActiveChatIds(scope.projectId, scope.worktreeId),
+            ...getE2eInjectedLiveTurnChatIds(scope.projectId, scope.worktreeId),
+          ]);
           const hostQueueIds = new Map(
             queueService
               .getWorktreeSnapshots(scope.projectId, scope.worktreeId)
@@ -10390,6 +10466,7 @@ export class ChatStateService implements ChatStateCommandPort {
         setTurnLifecycleEndedLookup(null);
       }
       this.unsubscribeStorageDiagnostics();
+      this.uninstallScopeResidencyHook();
     }
   }
 
@@ -15130,6 +15207,19 @@ export class ChatStateService implements ChatStateCommandPort {
         ),
       ],
     };
+    // An advance that changed nothing a window shows still carries a change:
+    // its chat's unchanged transcript descriptor. Applying it is a no-op, and
+    // the event keeps subscribers' revision chain whole, so they do not
+    // resync (`ChatStateCommit.advancedChatIds`).
+    if (event.changes.length === 0)
+      for (const tab of commit.state.tabsFile.tabs)
+        if (tab.transcript && commit.advancedChatIds?.includes(tab.id))
+          event.changes.push({
+            type: 'transcript.updated',
+            chatId: tab.id,
+            transcript: tab.transcript,
+            reset: false,
+          });
     wait.phase('subscriber_publication');
     for (const listener of Array.from(this.listeners)) {
       try {
@@ -15359,6 +15449,15 @@ export function getChatStateService(): ChatStateService {
     replaceChatStateService(service);
     // Lazy for the same initialization cycle as `recordDiagnostic` above.
     installChatTranscriptRewriteDiagnosticSink((record): void => {
+      void import('../observability')
+        .then(({ getObservabilityService }) => {
+          getObservabilityService().recordAppDiagnostic(record);
+        })
+        .catch(() => {
+          // A rewrite diagnostic never changes a committed transaction.
+        });
+    });
+    installChatTranscriptRewriteRateDiagnosticSink((record): void => {
       void import('../observability')
         .then(({ getObservabilityService }) => {
           getObservabilityService().recordAppDiagnostic(record);

@@ -194,9 +194,11 @@ export function useChatEventSubscriptions(): void {
     const unsubscribe = window.api.chat.onStateChanged(
       (event: ChatStateChangedEvent): void => {
         const startedAt = performance.now();
+        const state = useChatStore.getState();
         applyChatStateChangedForRender(event, {
           apply: handleChatStateChanged,
-          runtimeByChatId: useChatStore.getState().runtimeByChatId,
+          runtimeByChatId: state.runtimeByChatId,
+          delegationStreamHints: state.delegationStreamHints,
           view: chatStoreRenderView,
           scheduler,
         });

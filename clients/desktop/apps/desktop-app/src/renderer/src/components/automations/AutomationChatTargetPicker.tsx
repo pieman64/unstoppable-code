@@ -26,7 +26,12 @@ import { useProjectsStore } from '@/stores/projectsStore';
 import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
 import { getWorktreeBranchDisplayName } from '@/lib/worktreeDisplayName';
 import { getChatTabLabel } from '@/lib/chatTabLabel';
-import { FormField } from '@canopy/ui-shared/components';
+import {
+  Button,
+  DelayedLoadingPlaceholder,
+  FormField,
+  Skeleton,
+} from '@canopy/ui-shared/components';
 import { SearchableSelect } from '../shared/SearchableSelect';
 import {
   openAutomationRunDestination,
@@ -290,37 +295,52 @@ export function AutomationChatTargetPicker({
       data-testid="automations-form-chat-target"
     >
       <FormField label={containerLabel}>
-        {(control) => (
-          <SearchableSelect
-            id={control.id}
-            value={selectedContainerId}
-            ownerDocument={ownerDocument}
-            options={(containers ?? []).map((option) => ({
-              id: option.id,
-              label: option.label,
-            }))}
-            selectedFallback={
-              selectedContainerId
-                ? {
-                    id: selectedContainerId,
-                    label: value?.worktreeName || selectedContainerId,
-                  }
-                : undefined
-            }
-            onChange={handleContainerChange}
-            placeholder={
-              containers === null
-                ? 'Loading…'
-                : containers.length === 0
+        {(control) => {
+          const select = (
+            <SearchableSelect
+              id={control.id}
+              value={selectedContainerId}
+              ownerDocument={ownerDocument}
+              options={(containers ?? []).map((option) => ({
+                id: option.id,
+                label: option.label,
+              }))}
+              selectedFallback={
+                selectedContainerId
+                  ? {
+                      id: selectedContainerId,
+                      label: value?.worktreeName || selectedContainerId,
+                    }
+                  : undefined
+              }
+              onChange={handleContainerChange}
+              placeholder={
+                containers?.length === 0
                   ? `No ${containerLabel.toLowerCase()}s available`
                   : `Select a ${containerLabel.toLowerCase()}`
-            }
-            searchPlaceholder={`Search ${containerLabel.toLowerCase()}s`}
-            emptyListMessage="No matches"
-            disabled={!project && !isAppAdvisor}
-            testId="automations-form-chat-target-worktree"
-          />
-        )}
+              }
+              searchPlaceholder={`Search ${containerLabel.toLowerCase()}s`}
+              emptyListMessage="No matches"
+              disabled={!project && !isAppAdvisor}
+              testId="automations-form-chat-target-worktree"
+            />
+          );
+          // The choices are on their way and nothing is chosen yet: the
+          // field itself is measured in place until they arrive.
+          return containers === null && !selectedContainerId ? (
+            <DelayedLoadingPlaceholder>
+              <Skeleton
+                loading
+                label={`Loading ${containerLabel.toLowerCase()}s`}
+                testId="automations-form-chat-target-worktree-loading"
+              >
+                {select}
+              </Skeleton>
+            </DelayedLoadingPlaceholder>
+          ) : (
+            select
+          );
+        }}
       </FormField>
       <FormField label={CHAT_UNIT_LABEL}>
         {(control) => (
@@ -363,9 +383,9 @@ export function AutomationChatTargetPicker({
         )}
       </FormField>
       {complete && !isNewChat && !unavailable ? (
-        <div>
-          <button
-            type="button"
+        <div className="text-xs">
+          <Button
+            variant="link"
             onClick={(): void => {
               setOpenChatError(null);
               // Cowork and App Advisor destinations live on their own surfaces,
@@ -391,10 +411,9 @@ export function AutomationChatTargetPicker({
               });
             }}
             data-testid="automations-form-open-chat"
-            className="focus-ring text-xs font-medium fg-accent transition-colors hover:fg-primary"
           >
             Open {CHAT_UNIT_LABEL.toLowerCase()}
-          </button>
+          </Button>
           <ErrorBanner error={openChatError} className="mt-1" />
         </div>
       ) : null}

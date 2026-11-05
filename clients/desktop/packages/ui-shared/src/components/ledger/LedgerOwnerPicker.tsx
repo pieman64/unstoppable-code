@@ -10,6 +10,10 @@ import {
   ledgerOwnerCandidateDescription,
   ledgerOwnerCandidateTitle,
 } from '../../lib/ledger-display';
+import {
+  REPLAY_BLOCK_CLASS,
+  REPLAY_MASK_CLASS,
+} from '../../lib/replay-privacy';
 import { Button } from '../Button';
 import {
   FloatingPickerMenu,
@@ -53,6 +57,10 @@ export interface LedgerOwnerPickerProps {
   'aria-label'?: string;
   /** The visible label that names the trigger, inside a form. */
   'aria-labelledby'?: string;
+  /** Replaces the current owner's name on the trigger. */
+  triggerLabel?: string;
+  /** The trigger's test id; defaults to `ledger-owner-picker`. */
+  triggerTestId?: string;
   id?: string;
 }
 
@@ -75,6 +83,8 @@ export function LedgerOwnerPicker({
   variant = 'capsule',
   'aria-label': ariaLabel,
   'aria-labelledby': ariaLabelledBy,
+  triggerLabel,
+  triggerTestId = 'ledger-owner-picker',
   id,
 }: LedgerOwnerPickerProps): JSX.Element {
   const [open, setOpen] = useState(false);
@@ -91,6 +101,13 @@ export function LedgerOwnerPicker({
   const youSelected =
     ownerActorId === null ||
     (self !== undefined && self.actor.actorId === ownerActorId);
+  const currentOwner = candidates.find(
+    (candidate) => candidate.actor.actorId === ownerActorId,
+  );
+  const ownerNamePrivacyClass =
+    ownerActorId === null || currentOwner?.actor.kind === 'user'
+      ? REPLAY_BLOCK_CLASS
+      : REPLAY_MASK_CLASS;
   return (
     <div
       className={
@@ -107,7 +124,7 @@ export function LedgerOwnerPicker({
           aria-haspopup="menu"
           aria-expanded={open}
           aria-label={inlineAriaLabel}
-          data-testid="ledger-owner-picker"
+          data-testid={triggerTestId}
           // The trigger's -mx-1 makes its wrapper 0.5rem narrower than it;
           // `max-w-full` alone would cut a short name such as You.
           className="min-w-0 max-w-[calc(100%+0.5rem)]"
@@ -115,7 +132,17 @@ export function LedgerOwnerPicker({
         >
           <span className="flex min-w-0 items-center gap-1 text-2xs">
             <span className="shrink-0 fg-tertiary">Owner:</span>
-            <span className="min-w-0 truncate fg-secondary">{ownerName}</span>
+            {triggerLabel === undefined ? (
+              <span
+                className={`min-w-0 truncate fg-secondary ${ownerNamePrivacyClass}`}
+              >
+                {ownerName}
+              </span>
+            ) : (
+              <span className="min-w-0 truncate fg-secondary">
+                {triggerLabel}
+              </span>
+            )}
           </span>
         </LedgerInPlaceTrigger>
       ) : (
@@ -129,13 +156,21 @@ export function LedgerOwnerPicker({
           aria-expanded={open}
           aria-label={ariaLabel}
           aria-labelledby={ariaLabelledBy}
-          data-testid="ledger-owner-picker"
+          data-testid={triggerTestId}
           className={
             variant === 'capsule' ? '-mx-2.5' : 'w-full justify-between'
           }
           onClick={onTriggerClick}
         >
-          <span className="truncate">{ownerName}</span>
+          <span
+            className={
+              triggerLabel === undefined
+                ? `truncate ${ownerNamePrivacyClass}`
+                : 'truncate'
+            }
+          >
+            {triggerLabel ?? ownerName}
+          </span>
           <PickerTriggerChevron open={open} variant={variant} />
         </PickerTrigger>
       )}
@@ -161,7 +196,9 @@ export function LedgerOwnerPicker({
           }}
         >
           <PickerMenuOptionContent>
-            <PickerMenuOptionLabel>You</PickerMenuOptionLabel>
+            <PickerMenuOptionLabel>
+              <span className={REPLAY_BLOCK_CLASS}>You</span>
+            </PickerMenuOptionLabel>
           </PickerMenuOptionContent>
           <PickerMenuOptionCheck selected={youSelected} />
         </PickerMenuOption>
@@ -206,7 +243,15 @@ export function LedgerOwnerPicker({
             >
               <PickerMenuOptionContent>
                 <PickerMenuOptionLabel>
-                  {candidate.displayName}
+                  <span
+                    className={
+                      candidate.actor.kind === 'user'
+                        ? REPLAY_BLOCK_CLASS
+                        : REPLAY_MASK_CLASS
+                    }
+                  >
+                    {candidate.displayName}
+                  </span>
                 </PickerMenuOptionLabel>
                 {description.length > 0 && (
                   <PickerMenuOptionDescription>

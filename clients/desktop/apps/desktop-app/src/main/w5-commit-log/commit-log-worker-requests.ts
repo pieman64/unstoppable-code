@@ -1,3 +1,5 @@
+import { dirname } from 'node:path';
+import { worktreeListProcessLock } from '@canopy/desktop-shared/node/w5-host-cohort/process-file-lock';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { windowsW5ConfinedFileReader } from '@canopy/core-platform/w5-confined-read';
 import {
@@ -23,10 +25,14 @@ export {
  */
 export function desktopW5CommitLogWorkerHost(
   confinementAddon: string | undefined,
+  dataRoot?: string,
 ): W5CommitLogWorkerHost {
   const os = hostOperatingSystem();
   return {
     durability: desktopW5Durability,
+    ...(dataRoot === undefined
+      ? {}
+      : { processLock: worktreeListProcessLock(dataRoot) }),
     os,
     confinedReader: windowsW5ConfinedFileReader(os, confinementAddon),
   };
@@ -41,7 +47,10 @@ export class W5CommitLogRequestHandler {
     data: DesktopW5CommitLogWorkerData,
     recovery: W5RecoveryReport,
   ) {
-    const host = desktopW5CommitLogWorkerHost(data.confinementAddon);
+    const host = desktopW5CommitLogWorkerHost(
+      data.confinementAddon,
+      data.dataRoot ?? dirname(data.root),
+    );
     this.handler = new W5PortableRequestHandler(
       log,
       data,
@@ -49,6 +58,7 @@ export class W5CommitLogRequestHandler {
       host.durability,
       host.os,
       host.confinedReader,
+      host.processLock,
     );
   }
 

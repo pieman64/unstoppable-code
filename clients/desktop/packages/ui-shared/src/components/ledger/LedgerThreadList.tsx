@@ -79,6 +79,7 @@ export interface LedgerThreadListProps {
   readonly loadingMore: boolean;
   readonly loadMoreError: string | null;
   readonly onLoadMore: () => void;
+  readonly loadMoreTestId?: string;
   /** Given one, a long list renders only the threads near the view. */
   readonly scrollElement?: () => HTMLElement | null;
 }
@@ -144,10 +145,12 @@ function VirtualizedThreads({
   threads,
   scrollElement,
   renderThread,
+  openEntry,
 }: {
   readonly threads: readonly LedgerThread<LedgerEntrySearchItem>[];
   readonly scrollElement: () => HTMLElement | null;
   readonly renderThread: ThreadRenderer;
+  readonly openEntry: LedgerOpenEntry | null;
 }): JSX.Element {
   const windowRef = useRef<HTMLDivElement>(null);
   const getItemKey = useCallback(
@@ -169,6 +172,26 @@ function VirtualizedThreads({
     },
     [virtualizer],
   );
+  // An entry opened from elsewhere (Open entry) may sit outside the window,
+  // where no row renders: scroll to it once, so its row exists to show. An
+  // entry opened on screen keeps the list where it is.
+  const revealedEntryId = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    const entryId = openEntry?.entryId ?? null;
+    if (entryId === revealedEntryId.current) return;
+    const index = threads.findIndex((thread) =>
+      threadOwnsEntry(thread, openEntry),
+    );
+    if (entryId !== null && index < 0) return;
+    revealedEntryId.current = entryId;
+    if (
+      index < 0 ||
+      virtualizer.getVirtualItems().some((item) => item.index === index)
+    ) {
+      return;
+    }
+    virtualizer.scrollToIndex(index, { align: 'start' });
+  }, [openEntry, threads, virtualizer]);
   // Item positions include the scroll margin; the total size does not.
   const virtualItems = virtualizer.getVirtualItems();
   const first = virtualItems[0];
@@ -250,10 +273,12 @@ function LoadMoreFooter({
   loadingMore,
   loadMoreError,
   onLoadMore,
+  loadMoreTestId,
 }: {
   readonly loadingMore: boolean;
   readonly loadMoreError: string | null;
   readonly onLoadMore: () => void;
+  readonly loadMoreTestId: string;
 }): JSX.Element {
   return (
     <div className="flex flex-col items-start gap-1 px-2 pb-2">
@@ -268,7 +293,7 @@ function LoadMoreFooter({
           type="button"
           variant="ghost"
           size="sm"
-          data-testid="ledger-load-more"
+          data-testid={loadMoreTestId}
           onClick={onLoadMore}
         >
           {loadMoreError === null ? 'Show more entries' : 'Try again'}
@@ -299,6 +324,7 @@ export const LedgerThreadList = memo(function LedgerThreadList({
   loadingMore,
   loadMoreError,
   onLoadMore,
+  loadMoreTestId = 'ledger-load-more',
   scrollElement,
 }: LedgerThreadListProps): JSX.Element {
   const context = useMemo<LedgerEntryPostContext>(
@@ -385,6 +411,7 @@ export const LedgerThreadList = memo(function LedgerThreadList({
           threads={threads}
           scrollElement={windowedIn}
           renderThread={makeThread}
+          openEntry={openEntry}
         />
       )}
       {(hasMore || loadMoreError !== null) && (
@@ -392,6 +419,7 @@ export const LedgerThreadList = memo(function LedgerThreadList({
           loadingMore={loadingMore}
           loadMoreError={loadMoreError}
           onLoadMore={onLoadMore}
+          loadMoreTestId={loadMoreTestId}
         />
       )}
     </div>

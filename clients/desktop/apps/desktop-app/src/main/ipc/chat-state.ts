@@ -13,6 +13,7 @@ import type { BrowserWindow } from 'electron';
 import { CanopyOperationError } from '@canopy/core-runtime';
 import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import type { DesktopIpcCallerResolver } from './file-tree';
+import type { ChatScopeKey } from '../services/chat-state-contracts';
 import { isDeepStrictEqual } from 'node:util';
 import {
   IPC_CHANNELS,
@@ -69,7 +70,11 @@ import {
   sendToWebContents,
   setRendererDeliveryFilter,
 } from '../lib/web-contents-send';
-import { ChatEventInterestFilter } from './chat-event-interest';
+import {
+  ChatEventInterestFilter,
+  runsEnteringInterest,
+} from './chat-event-interest';
+import { shouldDropObservabilityEvent } from './observability-event-interest';
 import { filterChatStateBodies } from './chat-state-body-filter';
 import { MAX_DECLARED_CHAT_STATE_SCOPES } from '@canopy/desktop-shared/lib/chat-state-cadence';
 import {
@@ -77,7 +82,10 @@ import {
   ChatStateSubscriptions,
 } from './chat-state-delivery';
 import { installChatInterestE2eHook } from './chat-interest-e2e';
-import { installChatInterestLookup } from './chat-interest-registry';
+import {
+  installChatInterestLookup,
+  notifyRunsEnteringInterest,
+} from './chat-interest-registry';
 
 const MAX_ID_LENGTH = 256;
 const MAX_OPAQUE_INSTRUCTION_ID_LENGTH = 4_096;
@@ -2450,7 +2458,13 @@ export function validateChatInterestDeclaration(
     failInvalidRequest('Chat interest declaration must be an object.');
   assertExactKeys(
     value,
-    new Set(['focused', 'warm', 'focusedRuns', 'acceptsMessagesOmitted']),
+    new Set([
+      'focused',
+      'warm',
+      'focusedRuns',
+      'acceptsMessagesOmitted',
+      'observabilityEntries',
+    ]),
     'declaration',
   );
   if (
@@ -2458,6 +2472,11 @@ export function validateChatInterestDeclaration(
     value.acceptsMessagesOmitted !== true
   )
     failInvalidRequest('acceptsMessagesOmitted must be true when present.');
+  if (
+    value.observabilityEntries !== undefined &&
+    typeof value.observabilityEntries !== 'boolean'
+  )
+    failInvalidRequest('observabilityEntries must be a boolean when present.');
   if (!Array.isArray(value.focused) || value.focused.length > 32)
     failInvalidRequest('focused must be an array of at most 32 chats.');
   if (!Array.isArray(value.warm) || value.warm.length > 16)
@@ -2483,6 +2502,9 @@ export function validateChatInterestDeclaration(
     ...(value.acceptsMessagesOmitted === true
       ? { acceptsMessagesOmitted: true }
       : {}),
+    ...(value.observabilityEntries === undefined
+      ? {}
+      : { observabilityEntries: value.observabilityEntries }),
     ...(focusedRuns === undefined
       ? {}
       : {
@@ -2897,6 +2919,9 @@ export function registerChatStateHandlers(
   runtime: {
     dispatcher: DesktopCanopyDispatcher;
     resolveCaller: DesktopIpcCallerResolver;
+    installScopePinProvider?: (
+      provider: (scope: ChatScopeKey) => boolean,
+    ) => () => void;
   },
 ): () => void {
   const rethrowLegacyError = (error: unknown): never => {
@@ -3110,6 +3135,21 @@ export function registerChatStateHandlers(
   const subscriptions = new ChatStateSubscriptions<
     Pick<BrowserWindow['webContents'], 'id' | 'isDestroyed'>
   >();
+  const uninstallScopePinProvider =
+    runtime.installScopePinProvider?.((scope): boolean =>
+      getWindows().some((window): boolean => {
+        if (!window || !canSend(window)) return false;
+        const renderer = rendererContentsOf(window.webContents);
+        const interest = subscriptions.interestOf(renderer);
+        const matchesScope = (chat: ChatInterestChatRef): boolean =>
+          chat.projectId === scope.projectId &&
+          chat.worktreeId === scope.worktreeId;
+        return (
+          interest?.focused.some(matchesScope) === true ||
+          interest?.warm.some(matchesScope) === true
+        );
+      }),
+    ) ?? ((): void => undefined);
   const removeInterestE2eHook = installChatInterestE2eHook(subscriptions);
   const removeInterestLookup = installChatInterestLookup((contents) =>
     subscriptions.interestOf(contents),
@@ -3124,6 +3164,12 @@ export function registerChatStateHandlers(
         subscriptions.interestOf(target),
         args[0],
       ),
+  );
+  const removeObservabilityEventFilter = setRendererDeliveryFilter(
+    IPC_CHANNELS.observabilityEvent,
+    (target, args) =>
+      isInterestSubscriber(target) &&
+      shouldDropObservabilityEvent(subscriptions.interestOf(target), args[0]),
   );
   const delivery = new ChatStateDelivery<ChatStatePushTarget>({
     transform: (target, event): ChatStateChangedEvent =>
@@ -3262,14 +3308,18 @@ export function registerChatStateHandlers(
         failInvalidRequest('Only a window can declare its chat interest.');
       }
       watchSubscriber(subscriber);
+      const previous = subscriptions.interestOf(subscriber);
+      let declaration: ChatInterestDeclaration;
       try {
-        subscriptions.declareInterest(
-          subscriber,
-          validateChatInterestDeclaration(value),
-        );
+        declaration = validateChatInterestDeclaration(value);
       } catch (error) {
         subscriptions.resetInterest(subscriber);
         throw error;
+      }
+      subscriptions.declareInterest(subscriber, declaration);
+      const enteringRuns = runsEnteringInterest(previous, declaration);
+      if (enteringRuns.length > 0) {
+        notifyRunsEnteringInterest(enteringRuns);
       }
     },
   );
@@ -3368,9 +3418,11 @@ export function registerChatStateHandlers(
     runtime.dispatcher.closeChatEventsForLegacyIpc();
     // Teardown delivers what is held back; later events go out at once.
     delivery.dispose();
+    uninstallScopePinProvider();
     removeInterestE2eHook();
     removeInterestLookup();
     removeEventFilter();
+    removeObservabilityEventFilter();
     removeDeliveryBarrier();
     if (installedChatStatePort === port) setChatStateCommandPort(null);
   };

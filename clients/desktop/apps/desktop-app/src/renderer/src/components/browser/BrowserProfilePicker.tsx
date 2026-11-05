@@ -225,19 +225,16 @@ export function BrowserProfilePicker({
           trigger after the click, so the tooltip would otherwise paint on top
           of the menu it just opened. */}
           <Tooltip label={`Browser profile: ${currentName}`} suppressed={open}>
-            <button
+            <Button
               ref={button}
-              type="button"
+              variant="ghost"
+              size="sm"
               aria-label={`Browser profile: ${currentName}`}
               aria-expanded={open}
               aria-haspopup="dialog"
               data-testid="browser-profile-picker"
               onClick={show}
-              className={`browser-bar-pick-button min-w-0 ${
-                open
-                  ? 'bg-muted/60 fg-primary'
-                  : 'fg-secondary hover:bg-muted/40 hover:fg-primary'
-              }`}
+              className="min-w-0"
             >
               <BrowserProfileBadge
                 name={currentName}
@@ -246,7 +243,7 @@ export function BrowserProfilePicker({
                 titleSuppressed
               />
               <ChevronDownIcon aria-hidden="true" className="shrink-0" />
-            </button>
+            </Button>
           </Tooltip>
         </>
       )}

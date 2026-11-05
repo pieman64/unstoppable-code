@@ -23,6 +23,8 @@ import {
   type AgentDelegationTranscript,
   type AgentDelegationTranscriptItem,
 } from '@canopy/protocol/delegation';
+// Type only: the chat store must not load the shared UI package at runtime.
+import type { ManagedDelegationProgress } from '@canopy/ui-app';
 
 export const DELEGATION_TRANSCRIPT_RUN_LIMIT = 48;
 
@@ -38,6 +40,16 @@ export interface DelegationTranscriptSource {
 export interface DelegationRunEntry {
   /** The newest live snapshot this session (card fields and items). */
   readonly live?: AgentDelegationTranscript;
+  /** Newest stream-backed card progress, never child transcript items. */
+  readonly streamProgress?: ManagedDelegationProgress & {
+    readonly sequence: number;
+    readonly arrivalStamp: number;
+  };
+  /** Snapshot endpoint progress, ordered against live frame arrival. */
+  readonly streamHydrated?: {
+    readonly progress: ManagedDelegationProgress;
+    readonly requestArrivalStamp: number;
+  };
   /** Current card fields read once after reconnect, never child-log items. */
   readonly hydrated?: {
     readonly snapshot: AgentDelegationSnapshot;
@@ -71,7 +83,11 @@ interface DelegationTranscriptState {
   /** Bootstraps current card progress without touching archived/history copies. */
   hydrateCurrent: (
     source: DelegationTranscriptSource,
-    run: { delegationId: string; runGeneration: number },
+    run: {
+      delegationId: string;
+      runGeneration: number;
+      transcriptStore?: string;
+    },
   ) => void;
   reset: () => void;
 }
@@ -116,6 +132,42 @@ function mergeItems(
 /** Mounted cards per run key: a held run is never evicted. */
 const heldRuns = new Map<string, number>();
 
+/**
+ * Same rule as `isStreamBackedDelegation` in `@canopy/ui-app`: an unknown
+ * store marker is not a delegate log, so it never reads one.
+ */
+function isStreamBackedDelegation(
+  transcriptStore: string | undefined,
+): boolean {
+  return (
+    transcriptStore !== undefined &&
+    transcriptStore !== DELEGATION_TRANSCRIPT_CHAT_LOG
+  );
+}
+
+/** Shared arrival order for stream frames and snapshot requests. */
+let arrivalCounter = 0;
+
+function nextArrivalStamp(): number {
+  arrivalCounter += 1;
+  return arrivalCounter;
+}
+
+function progressFromSnapshot(
+  snapshot: AgentDelegationSnapshot,
+  runGeneration: number,
+): ManagedDelegationProgress {
+  return {
+    runGeneration,
+    status: snapshot.status,
+    ...(snapshot.phase === undefined ? {} : { phase: snapshot.phase }),
+    ...(snapshot.queue === undefined ? {} : { queue: snapshot.queue }),
+    ...(snapshot.approvalPending === undefined
+      ? {}
+      : { approvalPending: snapshot.approvalPending }),
+  };
+}
+
 /** Holds a run's entry while a card shows it; returns the release. */
 export function holdDelegationRun(key: string): () => void {
   heldRuns.set(key, (heldRuns.get(key) ?? 0) + 1);
@@ -158,13 +210,49 @@ export const useDelegationTranscriptStore = create<DelegationTranscriptState>(
     runs: {},
     order: [],
     applyLive: (target, transcript): void => {
+      if (isStreamBackedDelegation(transcript.transcriptStore)) {
+        if (
+          transcript.snapshot.delegationId !== transcript.delegationId ||
+          (transcript.snapshot.runGeneration !== undefined &&
+            transcript.snapshot.runGeneration !== transcript.runGeneration)
+        )
+          return;
+        const key = delegationRunKey(target, transcript);
+        const arrivalStamp = nextArrivalStamp();
+        set((state) => {
+          const entry = state.runs[key];
+          const previous = entry?.streamProgress;
+          if (previous && previous.sequence >= transcript.sequence)
+            return state;
+          return touch(state, key, {
+            ...entry,
+            streamProgress: {
+              ...progressFromSnapshot(
+                transcript.snapshot,
+                transcript.runGeneration,
+              ),
+              sequence: transcript.sequence,
+              arrivalStamp,
+            },
+          });
+        });
+        return;
+      }
       if (transcript.transcriptStore !== DELEGATION_TRANSCRIPT_CHAT_LOG) return;
       const key = delegationRunKey(target, transcript);
       let readLog = false;
       set((state) => {
         const entry = state.runs[key];
         const previous = entry?.live;
-        if (previous && previous.sequence >= transcript.sequence) return state;
+        // An equal-sequence whole frame is main's catch-up keyframe for a
+        // window that missed patches and merged later ones over stale items.
+        if (
+          previous &&
+          (previous.sequence > transcript.sequence ||
+            (previous.sequence === transcript.sequence &&
+              transcript.transcriptMode === 'patch'))
+        )
+          return state;
         if (transcript.transcriptMode !== 'patch')
           return touch(state, key, {
             ...entry,
@@ -188,23 +276,27 @@ export const useDelegationTranscriptStore = create<DelegationTranscriptState>(
     hydrateCurrent: (source, run): void => {
       if (source.archivedContainerId || source.standaloneHistory) return;
       const key = delegationRunKey(source, run);
+      const streamBacked = isStreamBackedDelegation(run.transcriptStore);
       const entry = get().runs[key];
-      if (entry?.snapshotRequested || entry?.live) return;
+      if (entry?.snapshotRequested || (!streamBacked && entry?.live)) return;
       set((state) =>
         touch(state, key, { ...state.runs[key], snapshotRequested: true }),
       );
       void Promise.resolve()
-        .then(() =>
-          window.api.managedDelegation.transcriptPage({
-            projectId: source.projectId,
-            worktreeId: source.worktreeId,
-            chatId: source.chatId,
-            delegationId: run.delegationId,
-            runGeneration: run.runGeneration,
-          }),
-        )
+        .then(() => {
+          const requestArrivalStamp = nextArrivalStamp();
+          return window.api.managedDelegation
+            .transcriptPage({
+              projectId: source.projectId,
+              worktreeId: source.worktreeId,
+              chatId: source.chatId,
+              delegationId: run.delegationId,
+              runGeneration: run.runGeneration,
+            })
+            .then((result) => ({ result, requestArrivalStamp }));
+        })
         .then(
-          (result) => {
+          ({ result, requestArrivalStamp }) => {
             if (
               !result.ok ||
               result.runGeneration !== run.runGeneration ||
@@ -215,15 +307,32 @@ export const useDelegationTranscriptStore = create<DelegationTranscriptState>(
               return;
             set((state) => {
               const current = state.runs[key];
+              if (
+                streamBacked &&
+                current?.streamProgress &&
+                current.streamProgress.arrivalStamp > requestArrivalStamp
+              )
+                return state;
               // Live delivery wins over a read started before it, including
               // equal revisions whose queue details may have changed.
               if (
                 !current ||
-                current.live ||
+                (!streamBacked && current.live) ||
                 (current.hydrated &&
                   current.hydrated.revision >= result.revision)
               )
                 return state;
+              if (streamBacked)
+                return touch(state, key, {
+                  ...current,
+                  streamHydrated: {
+                    progress: progressFromSnapshot(
+                      result.snapshot,
+                      run.runGeneration,
+                    ),
+                    requestArrivalStamp,
+                  },
+                });
               return touch(state, key, {
                 ...current,
                 hydrated: {

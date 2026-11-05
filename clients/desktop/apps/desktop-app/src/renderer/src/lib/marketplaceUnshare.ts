@@ -1,9 +1,9 @@
+import type { SharedLinkKind } from '@canopy/ui-app/sharing';
 import { CANOPY_CLOUD_SERVER_ID } from '@canopy/desktop-shared/constants/canopy-cloud';
 import {
   MarketplaceUnshareError,
   marketplaceUnsharedNotice,
   marketplaceUnshareReasonForStatus,
-  type MarketplaceUnshareKind,
 } from '@canopy/ui-shared/lib/marketplace-unshare';
 import { readSharedResourceErrorStatus } from './sharedResourceErrors';
 import { postShareToast } from './share-toast';
@@ -23,11 +23,25 @@ import {
  * into a rejection here and never reads as success.
  */
 export async function unshareMarketplaceResource(
-  kind: MarketplaceUnshareKind,
+  kind: SharedLinkKind,
   shareId: string,
 ): Promise<void> {
   try {
     switch (kind) {
+      case 'pipeline': {
+        const result = await window.pipelines.deleteShared({
+          remoteId: shareId,
+        });
+        if (!result.success) throw new Error(result.error ?? 'Unshare failed');
+        window.dispatchEvent(new Event('canopy:pipeline-public-share-changed'));
+        return;
+      }
+      case 'automation':
+        await window.api.automations.deleteShared({ automationId: shareId });
+        window.dispatchEvent(
+          new Event('canopy:automation-public-share-changed'),
+        );
+        return;
       case 'skill':
         await window.skills.deleteShared({ skillId: shareId });
         return;
@@ -68,7 +82,7 @@ export function unshareOwnerName(owner: {
  * (CAN-4840): the kind's shared list re-reads and a toast confirms it.
  */
 export function followMarketplaceUnshare(
-  kind: MarketplaceUnshareKind,
+  kind: SharedLinkKind,
   name: string,
   refresh: {
     readonly sharedSkills: () => Promise<void>;

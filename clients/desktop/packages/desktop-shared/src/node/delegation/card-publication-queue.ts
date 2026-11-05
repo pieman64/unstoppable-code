@@ -11,9 +11,29 @@ import type {
   DelegationTranscriptTarget,
 } from './transcript-port';
 
+/** The card publisher's body-free view; broker state is reloaded before writes. */
+type PublicationRecord = Pick<
+  StoredDelegationV3,
+  | 'version'
+  | 'parent'
+  | 'task'
+  | 'callKey'
+  | 'requestHash'
+  | 'createdAt'
+  | 'state'
+  | 'launch'
+  | 'delivery'
+  | 'readMetadata'
+  | 'registration'
+  | 'receipts'
+  | 'control'
+  | 'latestResult'
+  | 'cardPublication'
+>;
+
 interface Publication {
   attempted?: boolean;
-  readonly record: StoredDelegationV3;
+  readonly record: PublicationRecord;
   readonly request: DelegationTranscriptCardStateRequest | undefined;
 }
 interface Barrier {
@@ -24,7 +44,7 @@ interface Barrier {
 interface Entry {
   readonly target: DelegationTranscriptTarget;
   pending?: Publication;
-  latest?: StoredDelegationV3;
+  latest?: PublicationRecord;
   running: boolean;
   watermark: number;
   failure?: Error;
@@ -32,6 +52,39 @@ interface Entry {
   wake?: () => void;
   readonly barriers: Set<Barrier>;
 }
+
+/** Select only card and identity metadata; never copy tagged summary bodies. */
+function publicationRecord(record: StoredDelegationV3): PublicationRecord {
+  return {
+    version: 3,
+    parent: record.parent,
+    task: record.task,
+    callKey: record.callKey,
+    requestHash: record.requestHash,
+    createdAt: record.createdAt,
+    state: {
+      delegationId: record.state.delegationId,
+      runGeneration: record.state.runGeneration,
+      sequence: record.state.sequence,
+      status: record.state.status,
+      outputTruncated: record.state.outputTruncated,
+    },
+    launch: record.launch,
+    delivery: record.delivery,
+    readMetadata: record.readMetadata,
+    registration: record.registration,
+    // The queue never uses receipt history; avoid retaining unrelated replay data.
+    receipts: { commandReceipts: [], stopReceipts: [] },
+    ...(record.control === undefined ? {} : { control: record.control }),
+    ...(record.latestResult === undefined
+      ? {}
+      : { latestResult: record.latestResult }),
+    ...(record.cardPublication === undefined
+      ? {}
+      : { cardPublication: record.cardPublication }),
+  };
+}
+
 export interface CardPublicationQueueDependencies {
   readonly port: () => DelegationTranscriptPort;
   readonly rebase: (
@@ -63,6 +116,69 @@ export class CardPublicationQueue {
     private readonly dependencies: CardPublicationQueueDependencies,
   ) {}
 
+  /** One bounded, registration-free attempt used by broker-only startup repair. */
+  repairOnce(
+    record: StoredDelegationV3,
+    descriptor: DelegationTranscriptGeneration,
+    beforeMutation: () => Promise<void>,
+  ): Promise<boolean> {
+    return this.repairSnapshot(
+      publicationRecord(record),
+      descriptor,
+      beforeMutation,
+    );
+  }
+
+  private async repairSnapshot(
+    record: PublicationRecord,
+    descriptor: DelegationTranscriptGeneration,
+    beforeMutation: () => Promise<void>,
+  ): Promise<boolean> {
+    const target = record.readMetadata.current.target;
+    const classification = classifyCardDescriptor(
+      record,
+      descriptor.stream?.cardState,
+    );
+    if (classification.kind === 'covered') return false;
+    if (classification.kind === 'conflict')
+      throw new PublicationFailure({
+        code: 'conflict',
+        retryable: false,
+        message: 'Descriptor card identity or frozen fields conflict',
+      });
+    if (classification.kind === 'rebase') {
+      await beforeMutation();
+      const rebased = await this.dependencies.rebase(
+        record,
+        classification.cardPublication,
+      );
+      // The rebased pair may carry a newer revision that only this call publishes.
+      await this.repairSnapshot(
+        publicationRecord(rebased),
+        descriptor,
+        beforeMutation,
+      );
+      return true;
+    }
+    const cardDraft = materializeCardDraft(record);
+    const cardRevision = record.cardPublication?.cardRevision;
+    if (cardDraft === undefined || cardRevision === undefined)
+      throw new Error('Card publication is missing its durable pair');
+    await beforeMutation();
+    const updated = await this.dependencies.port().updateCardState({
+      target,
+      cardRevision,
+      cardDraft,
+    });
+    if (!updated.ok) throw new PublicationFailure(updated.error);
+    const found = await this.dependencies.port().generation(target);
+    if (!found.ok) throw new PublicationFailure(found.error);
+    const after = classifyCardDescriptor(record, found.value.stream?.cardState);
+    if (after.kind !== 'covered')
+      throw new Error('Card publication was not visible in the descriptor');
+    return true;
+  }
+
   private entry(target: DelegationTranscriptTarget): Entry {
     const existing = this.entries.get(key(target));
     if (existing) return existing;
@@ -78,15 +194,16 @@ export class CardPublicationQueue {
 
   enqueue(record: StoredDelegationV3, reconcile = false): void {
     if (this.closed) return;
-    const target = record.readMetadata.current.target;
+    const current = publicationRecord(record);
+    const target = current.readMetadata.current.target;
     const entry = this.entry(target);
     if (entry.failure) return;
-    entry.latest = record;
-    const cardDraft = materializeCardDraft(record);
-    const revision = record.cardPublication?.cardRevision ?? 0;
+    entry.latest = current;
+    const cardDraft = materializeCardDraft(current);
+    const revision = current.cardPublication?.cardRevision ?? 0;
     if (!reconcile && revision <= entry.watermark) return;
     entry.pending = {
-      record,
+      record: current,
       request:
         cardDraft === undefined
           ? undefined
@@ -120,15 +237,17 @@ export class CardPublicationQueue {
 
   close(): void {
     this.closed = true;
-    for (const entry of Array.from(this.entries.values())) {
-      if (entry.timer !== undefined) clearTimeout(entry.timer);
-      entry.wake?.();
+    for (const entry of Array.from(this.entries.values()))
       this.fail(entry, new Error('Card publication queue closed'));
-    }
   }
 
   private fail(entry: Entry, error: Error): void {
     entry.failure ??= error;
+    if (entry.timer !== undefined) clearTimeout(entry.timer);
+    entry.timer = undefined;
+    entry.wake?.();
+    entry.wake = undefined;
+    entry.latest = undefined;
     entry.pending = undefined;
     for (const barrier of Array.from(entry.barriers))
       barrier.reject(entry.failure);

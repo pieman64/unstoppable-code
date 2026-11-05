@@ -9,7 +9,7 @@ import type { CanopyClient, CanopyRuntimeIdentity } from './types';
 
 /** The client surface the registry reads; any typed `CanopyClient` fits. */
 export interface CanopyAuthorityConnection {
-  // CAN-4163 part two restores the full identity (runtimeId, hostId, daemonEpoch) for cursor domains once the CAN-4155 web-core handshake supplies it.
+  // CAN-4095 (Phase 6) restores the full identity (runtimeId, hostId, daemonEpoch) for cursor domains once the browser's CAN-4155 web-core handshake supplies it.
   readonly identity: Pick<CanopyRuntimeIdentity, 'authorityId' | 'profile'>;
   readonly signal: CanopyClient['signal'];
 }

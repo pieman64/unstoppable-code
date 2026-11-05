@@ -6,6 +6,7 @@ import {
   AGENT_ACTIVITY_STOP_ALL_CONFIRM_LABEL,
   DELEGATED_AGENT_STOPPING_LABEL,
   ExecutionActionButton,
+  Button,
   ConfirmDialog,
 } from '@canopy/ui-shared/components';
 
@@ -135,20 +136,31 @@ export function StopAllConfirmControl({
             onClick={cancel}
           />
         </div>
+      ) : appearance === 'section' ? (
+        <Button
+          variant="ghost-overlay"
+          size="compact"
+          aria-label={
+            stoppingOnly ? DELEGATED_AGENT_STOPPING_LABEL : accessibleLabel
+          }
+          disabled={stoppingOnly || sending}
+          data-testid={testId}
+          onClick={() => setConfirming(true)}
+        >
+          {stoppingOnly ? DELEGATED_AGENT_STOPPING_LABEL : label}
+        </Button>
       ) : (
         <ExecutionActionButton
           label={stoppingOnly ? DELEGATED_AGENT_STOPPING_LABEL : label}
           ariaLabel={
             stoppingOnly ? DELEGATED_AGENT_STOPPING_LABEL : accessibleLabel
           }
-          variant={appearance === 'section' ? 'text' : 'destructive'}
+          variant="destructive"
           disabled={stoppingOnly || sending}
           dataTestId={testId}
-          stopKeyDownPropagation={appearance !== 'section'}
+          stopKeyDownPropagation
           onClick={(): void => {
-            if (appearance !== 'section') {
-              focusTargetRef.current = `${testId}-cancel`;
-            }
+            focusTargetRef.current = `${testId}-cancel`;
             setConfirming(true);
           }}
         />

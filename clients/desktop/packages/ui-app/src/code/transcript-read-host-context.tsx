@@ -2,13 +2,17 @@
 import { createContext, type ReactNode } from 'react';
 import type { TranscriptReadSource } from '@canopy/app-core';
 import type { DelegationBlockRenderer } from './DelegationRowBlocks';
-import type { DelegationChildRowEntry } from './delegation-child-rows';
+import type {
+  DelegationChildRowDisplay,
+  DelegationChildRowEntry,
+} from './delegation-child-rows';
 
 export interface TranscriptReadHost {
   readonly source: TranscriptReadSource;
   /** Return one keyed element for each entry, including notices/empty rows. */
   readonly renderRows: (
     entries: readonly DelegationChildRowEntry[],
+    display?: DelegationChildRowDisplay,
   ) => ReactNode;
   readonly epoch: number;
   readonly v2Available?: boolean;

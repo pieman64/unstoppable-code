@@ -121,6 +121,8 @@ type _QueryNamesAreExact = Expect<
     | 'core.ledger.entry.get'
     | 'core.ledger.owners.list'
     | 'core.ledger.changes.list'
+    | 'core.ledger.rollups.list'
+    | 'core.ledger.workSummary.get'
     | 'core.cost.scope.get'
     | 'core.cost.chat.get'
     | 'core.cost.pipelineRun.get'
@@ -192,6 +194,8 @@ type _CoreNamesAreExact = Expect<
     | 'core.ledger.entry.get'
     | 'core.ledger.owners.list'
     | 'core.ledger.changes.list'
+    | 'core.ledger.rollups.list'
+    | 'core.ledger.workSummary.get'
     | 'core.cost.scope.get'
     | 'core.cost.chat.get'
     | 'core.cost.pipelineRun.get'
@@ -1361,6 +1365,8 @@ describe('universal Canopy query registry', () => {
       'core.ledger.entry.get',
       'core.ledger.owners.list',
       'core.ledger.changes.list',
+      'core.ledger.rollups.list',
+      'core.ledger.workSummary.get',
       'core.cost.scope.get',
       'core.cost.chat.get',
       'core.cost.pipelineRun.get',
@@ -2120,6 +2126,8 @@ describe('common request and error contracts', () => {
       'core.ledger.entries.search',
       'core.ledger.entry.get',
       'core.ledger.owners.list',
+      'core.ledger.rollups.list',
+      'core.ledger.workSummary.get',
       'core.observability.audit.list',
       'core.observability.audit.transcript.get',
       'core.observability.summary.get',
@@ -2163,6 +2171,7 @@ describe('common request and error contracts', () => {
       'core.chat.turn.cancel',
       'core.chat.update',
       'core.cost.index.refresh',
+      'core.integration.sourceRepository.star',
       'core.ledger.entry.add',
       'core.ledger.entry.update',
       'core.ledger.summary.publish',
@@ -2447,5 +2456,29 @@ describe('pipeline owner reads', () => {
       ...Object.values(CANOPY_STREAM_DEFINITIONS),
     ].flatMap((definition) => definition.requiredGrants);
     expect(required).not.toContain(PIPELINE_GRANTS.ownerRead);
+  });
+});
+
+describe('core.integration.sourceRepository.star', () => {
+  const definition =
+    CANOPY_INSTRUCTION_DEFINITIONS['core.integration.sourceRepository.star'];
+
+  it('requires only the star grant and is inherently idempotent', () => {
+    expect(definition).toMatchObject({
+      kind: 'instruction',
+      plane: 'core',
+      domain: 'integration',
+      placement: 'core-only',
+      idempotency: 'inherent',
+      requiredGrants: ['core.integration.star'],
+    });
+  });
+
+  it('accepts no params, so a caller cannot name a repository', () => {
+    expect(definition.params.safeParse({}).success).toBe(true);
+    expect(
+      definition.params.safeParse({ owner: 'someone', repo: 'elsewhere' })
+        .success,
+    ).toBe(false);
   });
 });

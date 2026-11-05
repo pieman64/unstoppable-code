@@ -33,8 +33,7 @@ export interface MemoryFilters {
 /**
  * An opaque id for a memory row in tests. File names can hold the memory's
  * own words, and session replay records attributes as written, so rows carry
- * this 32-bit FNV-1a hash of the file key instead of the key itself. Electron
- * specs compute the same value (tests/electron/memoryRows.mjs).
+ * this 32-bit FNV-1a hash of the file key instead of the key itself.
  */
 export function memoryRowId(fileKey: string): string {
   let hash = 0x811c9dc5;

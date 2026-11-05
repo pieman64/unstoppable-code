@@ -6,12 +6,22 @@ import {
   recordSharedPipelineInstall,
 } from './pipeline-install-context';
 import {
+  beginPipelineInstallIntent,
+  isPipelineDefinitionClaimed,
+  type PipelineInstallIntent,
+} from './pipeline-install-intents';
+import {
   assertPipelineContext,
   assertPipelineContextSnapshot,
   pipelineContextSnapshot,
   pipelineResourceContextEnabled,
 } from './resource-lanes';
 import type { BrowserWindow } from 'electron';
+import { CanopyOperationError } from '@canopy/core-runtime';
+import {
+  PipelineDefinitionSourceError,
+  type PipelineDefinitionInstall,
+} from '@canopy/core-runtime/node/pipeline';
 import {
   recordSharedItemInstall,
   type SharedItemInstallRecord,
@@ -48,7 +58,10 @@ import {
   filterPackageOverlayForBindingKey,
   hashPipelinePackageYaml,
   installPipelinePackageAtomically,
+  leasePipelinePackage,
+  type PipelinePackageLease,
   pipelinePackageCarriesPipeline,
+  removePipelinePackageUnlessRetained,
   verifyCachedPipelinePackage,
 } from '@canopy/desktop-shared/node';
 import type {
@@ -60,7 +73,6 @@ import type {
   PipelinePackageCapabilityOverlay,
   PipelinePackageAnalyzeRequest,
   PipelineShareSource,
-  PipelineSaveInput,
   PipelinePackageCreateSharedRequest,
   PipelinePackageInstallRecordV1,
   PipelinePackageInstallRequest,
@@ -71,6 +83,7 @@ import type {
   PipelinePackageReadiness,
   PipelinePackageReferenceDismissal,
   PipelinePackageReadinessRequest,
+  PipelineInfo,
   SharedPipelineDetail,
 } from '@canopy/desktop-shared/types/pipeline';
 import type {
@@ -88,6 +101,10 @@ import type {
   PipelineShareInstallPin,
 } from '@canopy/protocol/pipelines';
 import {
+  buildPublicPipelineShareId,
+  parsePublicPipelineShareId,
+  parsePublicPipelineShareVersion,
+  publicPipelineShareVersion,
   CAPABILITY_PACKAGE_SUBJECT_BINDING_KEY,
   capabilityPackageBindingFromKey,
   capabilityPackageBindingKey,
@@ -2814,22 +2831,27 @@ export async function installAutomationCapabilityPackage(
   },
 ): Promise<void> {
   const download = await downloadAutomationCapabilityPackage(input);
-  await cacheAutomationCapabilityPackage(download);
   const storePath = getPipelinePackageInstallStorePath();
   const previous = await findCapabilityPackageInstallByOwner(storePath, {
     kind: 'automation',
     localAutomationId: input.localAutomationId,
   });
-  await upsertCapabilityPackageInstall(storePath, {
-    owner: { kind: 'automation', localAutomationId: input.localAutomationId },
-    originExternalId: input.remoteId,
-    ...(input.localContentHash !== undefined
-      ? { localContentHash: input.localContentHash }
-      : {}),
-    pipelineContentHash: download.manifest.pipelineContentHash,
-    packageDigest: download.digest,
-    installedAt: new Date().toISOString(),
-  });
+  const lease = leasePipelinePackage(getPipelinePackagesDir(), download.digest);
+  try {
+    await cacheAutomationCapabilityPackage(download);
+    await upsertCapabilityPackageInstall(storePath, {
+      owner: { kind: 'automation', localAutomationId: input.localAutomationId },
+      originExternalId: input.remoteId,
+      ...(input.localContentHash !== undefined
+        ? { localContentHash: input.localContentHash }
+        : {}),
+      pipelineContentHash: download.manifest.pipelineContentHash,
+      packageDigest: download.digest,
+      installedAt: new Date().toISOString(),
+    });
+  } finally {
+    lease.release();
+  }
   if (
     previous &&
     previous.distributionMode !== 'definition_only' &&
@@ -3158,7 +3180,8 @@ export async function copyPackageInstall(
 
 /**
  * A writable local pipeline with exactly this YAML and no package link, so an
- * install can adopt it instead of saving a duplicate.
+ * install can adopt it instead of saving a duplicate. A copy another install
+ * is still creating is not adopted: its rollback would remove it.
  */
 export async function findReusableUnlinkedPipeline(
   pipelineContentHash: string,
@@ -3173,7 +3196,8 @@ export async function findReusableUnlinkedPipeline(
     if (
       pipeline.readonly ||
       linkedPipelineIds.has(pipeline.id) ||
-      excludedPipelineIds.has(pipeline.id)
+      excludedPipelineIds.has(pipeline.id) ||
+      isPipelineDefinitionClaimed(pipeline.id)
     )
       continue;
     const raw = localPipelineService.getPipelineText(pipeline.id);
@@ -3197,7 +3221,11 @@ async function findPackageUpdateTarget(originExternalId: string): Promise<
   | undefined
 > {
   for (const record of await listPackageInstalls()) {
-    if (record.originExternalId !== originExternalId) continue;
+    if (
+      record.originExternalId !== originExternalId ||
+      isPipelineDefinitionClaimed(record.localPipelineId)
+    )
+      continue;
     const pipeline = localPipelineService.getPipeline(record.localPipelineId);
     const rawPipeline = localPipelineService.getPipelineText(
       record.localPipelineId,
@@ -3296,17 +3324,76 @@ type PublicPackageShareSubscription = Pick<
   'remoteId' | 'sourceKind' | 'contentHash'
 >;
 
-async function performPublicPackageShareInstall(
-  request: PipelinePackageInstallRequest,
-  getWindow?: () => BrowserWindow | null,
-  transaction?: PipelineInstallTransaction,
-  onSubscription?: (subscription: PublicPackageShareSubscription) => void,
-): Promise<PipelinePackageInstallResult> {
-  const snapshot = await getPublicPipelineShareSnapshot(request.externalId, {
-    expectedPipelineContentHash: request.expectedPipelineContentHash,
-    expectedDistributionMode: request.expectedDistributionMode,
-    expectedPackageDigest: request.expectedPackageDigest,
-  });
+/** A public share install the queue is running, which its remote serves. */
+interface PublicShareInstallSession {
+  readonly remoteDefinitionId: string;
+  /** The install's intent record (CAN-5633), finished or rolled back by the queue. */
+  readonly intent: PipelineInstallIntent;
+  /** Package leases held until the install record names the package. */
+  readonly leases: PipelinePackageLease[];
+  readonly transaction?: PipelineInstallTransaction;
+  readonly getWindow?: () => BrowserWindow | null;
+  subscription?: PublicPackageShareSubscription;
+  outcome?: PipelinePackageInstallResult;
+}
+
+/** Installs are queued one at a time, so at most one session is running. */
+let activePublicShareInstall: PublicShareInstallSession | undefined;
+
+const PUBLIC_SHARE_CHANGED_MESSAGE =
+  'This shared workflow changed. Return to the share page to review the updated dependencies.';
+
+/** Where a public share install lands, chosen once its pin has passed. */
+type PublicShareInstallPlan =
+  | {
+      kind: 'existing';
+      localPipelineId: string;
+      manifest?: PipelinePackageManifestV1;
+    }
+  | {
+      kind: 'update';
+      localPipelineId: string;
+      previous: { pipeline: PipelineData; rawPipeline: string };
+    }
+  | { kind: 'reuse'; localPipelineId: string }
+  | { kind: 'create' };
+
+/**
+ * A public share, addressed by its external id, as a remote core installs
+ * from (`public-share:<externalId>`). Its version holds the document, the
+ * distribution mode and the package the share page reviewed, which the
+ * public resolve itself also refuses to serve once changed. The install
+ * lands in the copy an earlier install of the share left unchanged, in that
+ * copy's update, in an identical unlinked copy, or in a new one; it installs
+ * the share's package (its skills, plugins and MCP servers) before the
+ * definition, and records the package install, receipt and subscription
+ * with it, rolling back with the running install's transaction.
+ */
+export async function readPublicPipelineShareRemote(
+  remoteDefinitionId: string,
+  expectedRemoteVersion: string | null,
+): Promise<PublicPipelineShareRemote | null> {
+  const externalId = parsePublicPipelineShareId(remoteDefinitionId);
+  if (externalId === null) return null;
+  const session =
+    activePublicShareInstall?.remoteDefinitionId === remoteDefinitionId
+      ? activePublicShareInstall
+      : undefined;
+  const transaction = session?.transaction;
+  const pin =
+    expectedRemoteVersion === null
+      ? null
+      : parsePublicPipelineShareVersion(expectedRemoteVersion);
+  const snapshot = await getPublicPipelineShareSnapshot(
+    externalId,
+    pin === null
+      ? undefined
+      : {
+          expectedPipelineContentHash: pin.pipelineContentHash,
+          expectedDistributionMode: pin.distributionMode,
+          expectedPackageDigest: pin.packageDigest,
+        },
+  );
   await transaction?.check();
   const scopedDetail =
     pipelineResourceContextEnabled() && snapshot.sourceRemoteId
@@ -3314,151 +3401,372 @@ async function performPublicPackageShareInstall(
       : undefined;
   // A share link can resolve to a team or organization pipeline rather than
   // a Public share; that install follows the pipeline itself.
-  onSubscription?.(
-    scopedDetail
-      ? {
-          remoteId: scopedDetail.id,
-          sourceKind: 'shared',
-          contentHash: scopedDetail.contentHash,
-        }
-      : {
-          remoteId: request.externalId,
-          sourceKind: 'public',
-          contentHash: request.expectedPipelineContentHash,
-        },
-  );
-  if (
-    snapshot.distributionMode !== request.expectedDistributionMode ||
-    snapshot.contentHash !== request.expectedPipelineContentHash ||
-    (request.expectedDistributionMode === 'package' &&
-      snapshot.package?.digest !== request.expectedPackageDigest)
-  ) {
-    throw new Error(
-      'This shared workflow changed. Return to the share page to review the updated dependencies.',
+  const subscription: PublicPackageShareSubscription = scopedDetail
+    ? {
+        remoteId: scopedDetail.id,
+        sourceKind: 'shared',
+        contentHash: scopedDetail.contentHash,
+      }
+    : {
+        remoteId: externalId,
+        sourceKind: 'public',
+        contentHash: snapshot.contentHash,
+      };
+  // A resolve that names no distribution mode matches no reviewed pin.
+  if (snapshot.distributionMode === undefined)
+    throw new PipelineDefinitionSourceError(
+      'core.pipeline.remoteVersionConflict',
+      PUBLIC_SHARE_CHANGED_MESSAGE,
     );
-  }
+  const distributionMode = snapshot.distributionMode;
+  const sharePackage = snapshot.package;
+  const packageDigest =
+    distributionMode === 'package' ? sharePackage?.digest : undefined;
+  const pipeline = parsePipelineText(snapshot.rawPipeline);
+  let plan: PublicShareInstallPlan = { kind: 'create' };
 
-  if (request.expectedDistributionMode === 'definition_only') {
-    const existing = (await listPackageInstalls()).find(
-      (record) =>
-        record.distributionMode === 'definition_only' &&
-        record.originExternalId === request.externalId &&
-        record.pipelineContentHash === request.expectedPipelineContentHash,
+  // An unchanged earlier install, checked before the package downloads so
+  // its verified cache is reused.
+  const findExistingInstall = async (): Promise<
+    PublicShareInstallPlan | undefined
+  > => {
+    if (distributionMode === 'definition_only') {
+      const existing = (await listPackageInstalls()).find(
+        (record) =>
+          record.distributionMode === 'definition_only' &&
+          record.originExternalId === externalId &&
+          record.pipelineContentHash === snapshot.contentHash &&
+          !isPipelineDefinitionClaimed(record.localPipelineId),
+      );
+      if (existing) {
+        await assertStoredPipelineContext(existing.localPipelineId);
+        const current = localPipelineService.getPipelineText(
+          existing.localPipelineId,
+        );
+        if (
+          current.success &&
+          current.data &&
+          hashPipelinePackageYaml(current.data) === existing.pipelineContentHash
+        )
+          return {
+            kind: 'existing',
+            localPipelineId: existing.localPipelineId,
+          };
+        await removePackageInstall(existing.localPipelineId);
+      }
+    } else {
+      if (!sharePackage || packageDigest === undefined)
+        throw new PipelineDefinitionSourceError(
+          'core.pipeline.remoteVersionConflict',
+          PUBLIC_SHARE_CHANGED_MESSAGE,
+        );
+      const recorded = await findPipelinePackageInstall(
+        getPipelinePackageInstallStorePath(),
+        {
+          originExternalId: externalId,
+          pipelineContentHash: snapshot.contentHash,
+          packageDigest,
+        },
+      );
+      // A copy an unfinished install created is that install's to roll back.
+      const existing =
+        recorded && !isPipelineDefinitionClaimed(recorded.localPipelineId)
+          ? recorded
+          : null;
+      if (existing) {
+        await assertStoredPipelineContext(existing.localPipelineId);
+        const stored = localPipelineService.getPipeline(
+          existing.localPipelineId,
+        );
+        const rawPipeline = localPipelineService.getPipelineText(
+          existing.localPipelineId,
+        );
+        if (
+          !stored.success ||
+          !rawPipeline.success ||
+          !rawPipeline.data ||
+          hashPipelinePackageYaml(rawPipeline.data) !==
+            existing.pipelineContentHash
+        ) {
+          await removePackageInstall(existing.localPipelineId);
+        } else {
+          const cachedManifest = await verifyCachedPipelinePackage(
+            packagePathForDigest(packageDigest),
+            packageDigest,
+          );
+          if (
+            cachedManifest?.pipelineContentHash === existing.pipelineContentHash
+          )
+            return {
+              kind: 'existing',
+              localPipelineId: existing.localPipelineId,
+              manifest: cachedManifest,
+            };
+        }
+      }
+    }
+    return undefined;
+  };
+
+  // Where a new revision lands, read after the package downloads so the
+  // copy it updates is the current one.
+  const planInstallTarget = async (): Promise<PublicShareInstallPlan> => {
+    const updateTarget = await findPackageUpdateTarget(externalId);
+    if (updateTarget)
+      return {
+        kind: 'update',
+        localPipelineId: updateTarget.record.localPipelineId,
+        previous: {
+          pipeline: updateTarget.pipeline,
+          rawPipeline: updateTarget.rawPipeline,
+        },
+      };
+    const reusable = scopedDetail
+      ? undefined
+      : await findReusableUnlinkedPipeline(snapshot.contentHash);
+    return reusable === undefined
+      ? { kind: 'create' }
+      : { kind: 'reuse', localPipelineId: reusable };
+  };
+
+  let packageManifest: PipelinePackageManifestV1 | undefined;
+  const ownLeases: PipelinePackageLease[] = [];
+  const preparePackage = async (): Promise<
+    PipelinePackageManifestV1 | undefined
+  > => {
+    const existing = await findExistingInstall();
+    if (existing?.kind === 'existing') {
+      plan = existing;
+      return existing.manifest;
+    }
+    if (distributionMode !== 'package' || packageDigest === undefined)
+      return undefined;
+    const download = await (
+      scopedDetail ? getPipelinePackage : getPublicPipelinePackage
+    )(externalId, packageDigest);
+    if (download.manifest.pipelineContentHash !== snapshot.contentHash) {
+      throw new Error(
+        'Workflow package content hash does not match the reviewed YAML',
+      );
+    }
+    let transferred = 0;
+    emitProgress(session?.getWindow, {
+      stage: 'Uploading dependencies…',
+      completed: 0,
+      total: download.manifest.totalFiles,
+    });
+    // Held until the install record names the package, so a concurrent
+    // install's rollback cannot remove the directory under this one.
+    const lease = leasePipelinePackage(
+      getPipelinePackagesDir(),
+      download.digest,
     );
-    if (existing) {
-      await assertStoredPipelineContext(existing.localPipelineId);
+    (session?.leases ?? ownLeases).push(lease);
+    await installPipelinePackageAtomically({
+      ...(transaction
+        ? {
+            beforeCommit: transaction.check,
+            onCreated: (destination: string): void =>
+              transaction.onRollback(async () => {
+                await removePipelinePackageUnlessRetained({
+                  destination,
+                  lease,
+                  isRecorded: async () =>
+                    (await listPackageInstalls()).some(
+                      (record) => record.packageDigest === download.digest,
+                    ),
+                });
+              }),
+          }
+        : {}),
+      packagesRoot: getPipelinePackagesDir(),
+      digest: download.digest,
+      manifest: download.manifest,
+      fetchBlob: async (sha256) => {
+        const bytes = await (
+          scopedDetail ? getPipelinePackageBlob : getPublicPipelinePackageBlob
+        )(externalId, packageDigest, sha256);
+        transferred += 1;
+        emitProgress(session?.getWindow, {
+          stage: 'Uploading dependencies…',
+          completed: transferred,
+          total: download.manifest.totalFiles,
+        });
+        return bytes;
+      },
+    });
+    packageManifest = download.manifest;
+    return download.manifest;
+  };
+
+  const namedReplacement = async (
+    localPipelineId: string,
+  ): Promise<PublicShareInstallPlan> => {
+    await assertStoredPipelineContext(localPipelineId);
+    const stored = localPipelineService.getPipeline(localPipelineId);
+    const rawPipeline = localPipelineService.getPipelineText(localPipelineId);
+    if (
+      !stored.success ||
+      !stored.data ||
+      !rawPipeline.success ||
+      !rawPipeline.data
+    )
+      throw new Error('Workflow unavailable (unknown-provenance)');
+    return {
+      kind: 'update',
+      localPipelineId,
+      previous: { pipeline: stored.data, rawPipeline: rawPipeline.data },
+    };
+  };
+
+  const installWith = async (
+    intent: PipelineInstallIntent,
+    write: PipelineDefinitionInstall,
+  ): Promise<PipelineInfo> => {
+    if (session) session.subscription = subscription;
+    const localPipelineId = write.definitionId;
+    const outcome = (): PipelinePackageInstallResult =>
+      packageDigest === undefined
+        ? {
+            localPipelineId,
+            distributionMode: 'definition_only',
+            resourceCount: 0,
+          }
+        : {
+            localPipelineId,
+            distributionMode: 'package',
+            packageDigest,
+            resourceCount:
+              packageManifest?.resources.length ??
+              sharePackage?.resources.length ??
+              0,
+          };
+    // A definition the caller named replaces whatever copy this remote chose.
+    const target =
+      write.replaces &&
+      (plan.kind === 'create' || plan.localPipelineId !== localPipelineId)
+        ? await namedReplacement(localPipelineId)
+        : plan;
+    if (target.kind === 'existing') {
       if (scopedDetail)
         await recordSharedPipelineInstall(
           scopedDetail,
-          existing.localPipelineId,
+          localPipelineId,
           transaction?.onReceiptRollback,
         );
-      const current = localPipelineService.getPipelineText(
-        existing.localPipelineId,
-      );
-      if (
-        current.success &&
-        current.data &&
-        hashPipelinePackageYaml(current.data) === existing.pipelineContentHash
-      ) {
-        return {
-          localPipelineId: existing.localPipelineId,
-          distributionMode: 'definition_only',
-          resourceCount: 0,
-        };
-      }
-      await removePackageInstall(existing.localPipelineId);
+      if (session) session.outcome = outcome();
+      return storedPipelineInfo(localPipelineId);
     }
-
-    const updateTarget = await findPackageUpdateTarget(request.externalId);
-    const reusedPipelineId =
-      updateTarget?.record.localPipelineId ??
-      (scopedDetail
-        ? undefined
-        : await findReusableUnlinkedPipeline(snapshot.contentHash));
-    let localPipelineId = reusedPipelineId;
-    const scopedLocalId = scopedDetail
-      ? (reusedPipelineId ?? randomUUID())
-      : undefined;
+    // Core holds the definition's lock from here; an edit saved since the
+    // copy was chosen is kept rather than overwritten.
+    if (
+      target.kind === 'update' &&
+      localPipelineService.getPipelineText(localPipelineId).data !==
+        target.previous.rawPipeline
+    )
+      throw new Error(
+        'This workflow changed while the shared workflow was installing. Try again.',
+      );
+    const created = target.kind === 'create';
+    const updated = target.kind === 'update' ? target.previous : undefined;
     await transaction?.check();
-    let createdPipeline = false;
-    if (!localPipelineId) {
-      const pipeline = parsePipelineText(snapshot.rawPipeline);
-      const input: PipelineSaveInput = {
-        name: pipeline.name,
-        description: pipeline.description ?? snapshot.description,
-        icon: pipeline.icon ?? '',
-        content: pipeline,
-      };
-      const saved = scopedLocalId
-        ? localPipelineService.savePipeline(input, { id: scopedLocalId })
-        : localPipelineService.savePipeline(input);
+    // Each write is noted first, so an exit partway is rolled back at the
+    // next start instead of leaving a copy a reinstall would duplicate.
+    await intent.noteDefinition({
+      definitionId: localPipelineId,
+      change: created ? 'created' : updated ? 'replaced' : 'linked',
+      contentHash: hashPipelinePackageYaml(write.text),
+    });
+    let savedInfo: PipelineInfo | undefined;
+    if (created) {
+      const saved = localPipelineService.savePipeline(
+        {
+          name: write.name,
+          description: write.description,
+          icon: write.icon,
+          content: write.pipeline,
+          rawContent: write.text,
+        },
+        { id: localPipelineId },
+      );
       if (!saved.success || !saved.data) {
         throw new Error(saved.error ?? 'Failed to save the workflow');
       }
-      localPipelineId = saved.data.id;
-      createdPipeline = true;
+      if (saved.data.id !== localPipelineId)
+        throw new Error('Pipeline create identity mismatch');
+      savedInfo = saved.data;
     }
-    await trackPipelineInstallRollback(
-      transaction,
-      localPipelineId,
-      createdPipeline,
-    );
-    if (scopedLocalId && localPipelineId !== scopedLocalId)
-      throw new Error('Pipeline create identity mismatch');
+    await trackPipelineInstallRollback(transaction, localPipelineId, created);
     if (scopedDetail)
       await recordSharedPipelineInstall(
         scopedDetail,
         localPipelineId,
         transaction?.onReceiptRollback,
+        (effect) => intent.noteReceipt(localPipelineId, effect),
       );
     await transaction?.check();
     try {
-      if (updateTarget) {
-        const pipeline = parsePipelineText(snapshot.rawPipeline);
+      if (updated) {
         const saved = localPipelineService.savePipeline({
           id: localPipelineId,
-          name: pipeline.name,
-          description: pipeline.description ?? snapshot.description,
-          icon: pipeline.icon ?? '',
-          content: pipeline,
+          name: write.name,
+          description: write.description,
+          icon: write.icon,
+          content: write.pipeline,
+          rawContent: write.text,
         });
         if (!saved.success) {
           throw new Error(saved.error ?? 'Failed to update the workflow');
         }
       }
-      if (createdPipeline || updateTarget) {
-        await replaceStoredPipelineYaml(localPipelineId, snapshot.rawPipeline);
+      // The pin holds the exact shared YAML bytes. The local store serializes
+      // parsed content, so replace that serialization atomically with the
+      // reviewed snapshot before recording the package link.
+      if (created || updated) {
+        await replaceStoredPipelineYaml(localPipelineId, write.text);
       }
-      await upsertPipelinePackageInstall(getPipelinePackageInstallStorePath(), {
-        localPipelineId,
-        originExternalId: request.externalId,
-        pipelineContentHash: snapshot.contentHash,
-        distributionMode: 'definition_only',
-        installedAt: new Date().toISOString(),
-      });
+      const installedAt = new Date().toISOString();
+      const record: PipelinePackageInstallRecordV1 =
+        packageDigest === undefined
+          ? {
+              localPipelineId,
+              originExternalId: externalId,
+              pipelineContentHash: snapshot.contentHash,
+              distributionMode: 'definition_only',
+              installedAt,
+            }
+          : {
+              localPipelineId,
+              originExternalId: externalId,
+              pipelineContentHash: snapshot.contentHash,
+              distributionMode: 'package',
+              packageDigest,
+              installedAt,
+            };
+      await intent.noteInstallRecord(localPipelineId, record);
+      await upsertPipelinePackageInstall(
+        getPipelinePackageInstallStorePath(),
+        record,
+      );
     } catch (error) {
       if (transaction) throw error;
-      if (createdPipeline) {
+      if (created) {
         localPipelineService.deletePipeline(localPipelineId);
-      } else if (updateTarget) {
+      } else if (updated) {
         try {
           const restored = localPipelineService.savePipeline({
             id: localPipelineId,
-            name: updateTarget.pipeline.info.name,
-            description: updateTarget.pipeline.info.description,
-            icon: updateTarget.pipeline.info.icon,
-            content: updateTarget.pipeline.content,
+            name: updated.pipeline.info.name,
+            description: updated.pipeline.info.description,
+            icon: updated.pipeline.info.icon,
+            content: updated.pipeline.content,
           });
           if (!restored.success) {
             throw new Error(
               restored.error ?? 'Failed to restore the previous workflow',
             );
           }
-          await replaceStoredPipelineYaml(
-            localPipelineId,
-            updateTarget.rawPipeline,
-          );
+          await replaceStoredPipelineYaml(localPipelineId, updated.rawPipeline);
         } catch (rollbackError) {
           const installMessage =
             error instanceof Error ? error.message : String(error);
@@ -3467,7 +3775,9 @@ async function performPublicPackageShareInstall(
               ? rollbackError.message
               : String(rollbackError);
           throw new Error(
-            `Definition-only workflow update failed (${installMessage}) and the previous workflow could not be restored (${rollbackMessage})`,
+            distributionMode === 'package'
+              ? `Workflow package update failed (${installMessage}) and the previous workflow could not be restored (${rollbackMessage})`
+              : `Definition-only workflow update failed (${installMessage}) and the previous workflow could not be restored (${rollbackMessage})`,
           );
         }
       }
@@ -3475,229 +3785,81 @@ async function performPublicPackageShareInstall(
     }
     await recordInstalledPipelineMetadata(
       localPipelineId,
-      createdPipeline,
-      createdPipeline || Boolean(updateTarget),
+      created,
+      created || Boolean(updated),
       transaction,
     );
-    return {
-      localPipelineId,
-      distributionMode: 'definition_only',
-      resourceCount: 0,
-    };
-  }
-
-  if (snapshot.distributionMode !== 'package' || !snapshot.package) {
-    throw new Error(
-      'This shared workflow changed. Return to the share page to review the updated dependencies.',
-    );
-  }
-  const existing = await findPipelinePackageInstall(
-    getPipelinePackageInstallStorePath(),
-    {
-      originExternalId: request.externalId,
-      pipelineContentHash: request.expectedPipelineContentHash,
-      packageDigest: request.expectedPackageDigest,
-    },
-  );
-  if (existing) {
-    await assertStoredPipelineContext(existing.localPipelineId);
-    if (scopedDetail)
-      await recordSharedPipelineInstall(
-        scopedDetail,
-        existing.localPipelineId,
-        transaction?.onReceiptRollback,
-      );
-    const pipeline = localPipelineService.getPipeline(existing.localPipelineId);
-    const rawPipeline = localPipelineService.getPipelineText(
-      existing.localPipelineId,
-    );
-    if (
-      !pipeline.success ||
-      !rawPipeline.success ||
-      !rawPipeline.data ||
-      hashPipelinePackageYaml(rawPipeline.data) !== existing.pipelineContentHash
-    ) {
-      await removePackageInstall(existing.localPipelineId);
-    } else {
-      const cachedManifest = await verifyCachedPipelinePackage(
-        packagePathForDigest(request.expectedPackageDigest),
-        request.expectedPackageDigest,
-      );
-      if (
-        cachedManifest?.pipelineContentHash === existing.pipelineContentHash
-      ) {
-        return {
-          localPipelineId: existing.localPipelineId,
-          distributionMode: 'package',
-          packageDigest: request.expectedPackageDigest,
-          resourceCount: snapshot.package.resources.length,
-        };
-      }
-    }
-  }
-  const download = await (
-    scopedDetail ? getPipelinePackage : getPublicPipelinePackage
-  )(request.externalId, request.expectedPackageDigest);
-  if (download.manifest.pipelineContentHash !== snapshot.contentHash) {
-    throw new Error(
-      'Workflow package content hash does not match the reviewed YAML',
-    );
-  }
-  let transferred = 0;
-  emitProgress(getWindow, {
-    stage: 'Uploading dependencies…',
-    completed: 0,
-    total: download.manifest.totalFiles,
-  });
-  await installPipelinePackageAtomically({
-    ...(transaction
-      ? {
-          beforeCommit: transaction.check,
-          onCreated: (destination: string): void =>
-            transaction.onRollback(async () => {
-              const retained = (await listPackageInstalls()).some(
-                (record) => record.packageDigest === download.digest,
-              );
-              if (!retained)
-                await rm(destination, { recursive: true, force: true });
-            }),
-        }
-      : {}),
-    packagesRoot: getPipelinePackagesDir(),
-    digest: download.digest,
-    manifest: download.manifest,
-    fetchBlob: async (sha256) => {
-      const bytes = await (
-        scopedDetail ? getPipelinePackageBlob : getPublicPipelinePackageBlob
-      )(request.externalId, request.expectedPackageDigest, sha256);
-      transferred += 1;
-      emitProgress(getWindow, {
-        stage: 'Uploading dependencies…',
-        completed: transferred,
-        total: download.manifest.totalFiles,
-      });
-      return bytes;
-    },
-  });
-  const updateTarget = await findPackageUpdateTarget(request.externalId);
-  const reusedPipelineId =
-    updateTarget?.record.localPipelineId ??
-    (scopedDetail
-      ? undefined
-      : await findReusableUnlinkedPipeline(snapshot.contentHash));
-  let localPipelineId = reusedPipelineId;
-  const scopedPackageLocalId = scopedDetail
-    ? (reusedPipelineId ?? randomUUID())
-    : undefined;
-  await transaction?.check();
-  let createdPipeline = false;
-  if (!localPipelineId) {
-    const pipeline = parsePipelineText(snapshot.rawPipeline);
-    const input: PipelineSaveInput = {
-      name: pipeline.name,
-      description: pipeline.description ?? snapshot.description,
-      icon: pipeline.icon ?? '',
-      content: pipeline,
-    };
-    const saved = scopedPackageLocalId
-      ? localPipelineService.savePipeline(input, { id: scopedPackageLocalId })
-      : localPipelineService.savePipeline(input);
-    if (!saved.success || !saved.data) {
-      throw new Error(saved.error ?? 'Failed to save the workflow');
-    }
-    localPipelineId = saved.data.id;
-    createdPipeline = true;
-  }
-  await trackPipelineInstallRollback(
-    transaction,
-    localPipelineId,
-    createdPipeline,
-  );
-  if (scopedPackageLocalId && localPipelineId !== scopedPackageLocalId)
-    throw new Error('Pipeline create identity mismatch');
-  if (scopedDetail)
-    await recordSharedPipelineInstall(
-      scopedDetail,
-      localPipelineId,
-      transaction?.onReceiptRollback,
-    );
-  await transaction?.check();
-  try {
-    if (updateTarget) {
-      const pipeline = parsePipelineText(snapshot.rawPipeline);
-      const saved = localPipelineService.savePipeline({
-        id: localPipelineId,
-        name: pipeline.name,
-        description: pipeline.description ?? snapshot.description,
-        icon: pipeline.icon ?? '',
-        content: pipeline,
-      });
-      if (!saved.success) {
-        throw new Error(saved.error ?? 'Failed to update the workflow');
-      }
-    }
-    // The package hash pins the exact shared YAML bytes. The normal local
-    // store serializes parsed content, so replace that serialization
-    // atomically with the reviewed snapshot before recording the package link.
-    if (createdPipeline || updateTarget) {
-      await replaceStoredPipelineYaml(localPipelineId, snapshot.rawPipeline);
-    }
-    await upsertPipelinePackageInstall(getPipelinePackageInstallStorePath(), {
-      localPipelineId,
-      originExternalId: request.externalId,
-      pipelineContentHash: snapshot.contentHash,
-      distributionMode: 'package',
-      packageDigest: download.digest,
-      installedAt: new Date().toISOString(),
-    });
-  } catch (error) {
-    if (transaction) throw error;
-    if (createdPipeline) {
-      localPipelineService.deletePipeline(localPipelineId);
-    } else if (updateTarget) {
-      try {
-        const restored = localPipelineService.savePipeline({
-          id: localPipelineId,
-          name: updateTarget.pipeline.info.name,
-          description: updateTarget.pipeline.info.description,
-          icon: updateTarget.pipeline.info.icon,
-          content: updateTarget.pipeline.content,
-        });
-        if (!restored.success) {
-          throw new Error(
-            restored.error ?? 'Failed to restore the previous workflow',
-          );
-        }
-        await replaceStoredPipelineYaml(
-          localPipelineId,
-          updateTarget.rawPipeline,
-        );
-      } catch (rollbackError) {
-        const installMessage =
-          error instanceof Error ? error.message : String(error);
-        const rollbackMessage =
-          rollbackError instanceof Error
-            ? rollbackError.message
-            : String(rollbackError);
-        throw new Error(
-          `Workflow package update failed (${installMessage}) and the previous workflow could not be restored (${rollbackMessage})`,
-        );
-      }
-    }
-    throw error;
-  }
-  await recordInstalledPipelineMetadata(
-    localPipelineId,
-    createdPipeline,
-    createdPipeline || Boolean(updateTarget),
-    transaction,
-  );
-  return {
-    localPipelineId,
-    distributionMode: 'package',
-    packageDigest: download.digest,
-    resourceCount: download.manifest.resources.length,
+    if (session) session.outcome = outcome();
+    return savedInfo ?? storedPipelineInfo(localPipelineId);
   };
+
+  // Without a queued session (whose queue settles its intent and leases),
+  // the install keeps its own.
+  const install = async (
+    write: PipelineDefinitionInstall,
+  ): Promise<PipelineInfo> => {
+    if (session) {
+      // Committed before core records the import's replay receipt, so a
+      // record never outlives an install core reported done.
+      const installed = await installWith(session.intent, write);
+      await session.transaction?.check();
+      await session.intent.finish();
+      return installed;
+    }
+    const intent = await beginPipelineInstallIntent('package_share');
+    try {
+      const installed = await installWith(intent, write);
+      await intent.finish();
+      return installed;
+    } catch (error) {
+      await intent.rollBack().catch((rollbackError: unknown) => {
+        logMainProcessWarn(
+          '[pipeline-packages] Install intent rollback failed',
+          rollbackError,
+        );
+      });
+      throw error;
+    } finally {
+      for (const lease of ownLeases.splice(0)) lease.release();
+    }
+  };
+
+  return {
+    name: pipeline.name,
+    description: pipeline.description ?? snapshot.description,
+    icon: pipeline.icon ?? '',
+    rawPipeline: snapshot.rawPipeline,
+    remoteVersion: publicPipelineShareVersion({
+      pipelineContentHash: snapshot.contentHash,
+      distributionMode,
+      ...(packageDigest === undefined ? {} : { packageDigest }),
+    }),
+    installTarget: async (): Promise<string | null> => {
+      if (plan.kind !== 'existing') plan = await planInstallTarget();
+      return plan.kind === 'create' ? null : plan.localPipelineId;
+    },
+    packageManifest: preparePackage,
+    install,
+  };
+}
+
+/** A public share as the desktop's remote reader hands it to core. */
+export interface PublicPipelineShareRemote {
+  readonly name: string;
+  readonly description: string;
+  readonly icon: string;
+  readonly rawPipeline: string;
+  readonly remoteVersion: string;
+  installTarget(): Promise<string | null>;
+  packageManifest(): Promise<PipelinePackageManifestV1 | undefined>;
+  install(write: PipelineDefinitionInstall): Promise<PipelineInfo>;
+}
+
+function storedPipelineInfo(localPipelineId: string): PipelineInfo {
+  const stored = localPipelineService.getPipeline(localPipelineId);
+  if (!stored.success || !stored.data)
+    throw new Error(stored.error ?? 'Failed to read the installed workflow');
+  return stored.data.info;
 }
 
 /**
@@ -3788,22 +3950,33 @@ export async function createContainerInstalledPipeline(input: {
         );
       }
       const sourcePath = packagePathForDigest(overlay.sourcePackageDigest);
-      await installPipelinePackageAtomically({
-        packagesRoot: getPipelinePackagesDir(),
-        digest: overlay.digest,
-        manifest: overlay.manifest,
-        fetchBlob: (sha256) =>
-          readFile(path.join(sourcePath, 'blobs', sha256)).then(
-            (bytes) => new Uint8Array(bytes),
-          ),
-      });
-      await upsertPipelinePackageInstall(getPipelinePackageInstallStorePath(), {
-        localPipelineId: input.localPipelineId,
-        pipelineContentHash: contentHash,
-        distributionMode: 'package',
-        packageDigest: overlay.digest,
-        installedAt: new Date().toISOString(),
-      });
+      const lease = leasePipelinePackage(
+        getPipelinePackagesDir(),
+        overlay.digest,
+      );
+      try {
+        await installPipelinePackageAtomically({
+          packagesRoot: getPipelinePackagesDir(),
+          digest: overlay.digest,
+          manifest: overlay.manifest,
+          fetchBlob: (sha256) =>
+            readFile(path.join(sourcePath, 'blobs', sha256)).then(
+              (bytes) => new Uint8Array(bytes),
+            ),
+        });
+        await upsertPipelinePackageInstall(
+          getPipelinePackageInstallStorePath(),
+          {
+            localPipelineId: input.localPipelineId,
+            pipelineContentHash: contentHash,
+            distributionMode: 'package',
+            packageDigest: overlay.digest,
+            installedAt: new Date().toISOString(),
+          },
+        );
+      } finally {
+        lease.release();
+      }
     }
   } catch (error) {
     await removeContainerInstalledPipeline(
@@ -3860,6 +4033,7 @@ export async function installPublicPackageShare(
     .catch(() => undefined)
     .then(async () => {
       if (snapshot !== undefined) await assertPipelineContextSnapshot(snapshot);
+      const intent = await beginPipelineInstallIntent('package_share');
       const undos: Array<() => Promise<void>> = [];
       const receiptUndos: Array<() => Promise<void>> = [];
       const transaction: PipelineInstallTransaction | undefined =
@@ -3874,24 +4048,48 @@ export async function installPublicPackageShare(
                 undos.push(undo);
               },
             };
+      const session: PublicShareInstallSession = {
+        remoteDefinitionId: buildPublicPipelineShareId(request.externalId),
+        intent,
+        leases: [],
+        ...(transaction ? { transaction } : {}),
+        ...(getWindow ? { getWindow } : {}),
+      };
       try {
-        let subscription: PublicPackageShareSubscription | undefined;
-        const result = await performPublicPackageShareInstall(
-          request,
-          getWindow,
-          transaction,
-          (value) => {
-            subscription = value;
-          },
-        );
+        const { importRemotePipeline } =
+          await import('../canopy-runtime/pipeline-definition-dispatch');
+        activePublicShareInstall = session;
+        let installed: PipelineInfo;
+        try {
+          installed = await importRemotePipeline({
+            remoteDefinitionId: session.remoteDefinitionId,
+            expectedRemoteVersion: publicPipelineShareVersion({
+              pipelineContentHash: request.expectedPipelineContentHash,
+              distributionMode: request.expectedDistributionMode,
+              ...(request.expectedPackageDigest === undefined
+                ? {}
+                : { packageDigest: request.expectedPackageDigest }),
+            }),
+            nameOverride: null,
+          });
+        } catch (error) {
+          throw publicShareInstallError(error);
+        } finally {
+          activePublicShareInstall = undefined;
+        }
+        const { outcome, subscription } = session;
+        if (outcome?.localPipelineId !== installed.id)
+          throw new Error('Workflow install failed');
         await transaction?.check();
+        // Already finished by the remote's install; a no-op then.
+        await intent.finish();
         if (subscription !== undefined)
           recordSharedItemInstall({
             kind: 'pipeline',
             ...subscription,
-            localId: result.localPipelineId,
+            localId: installed.id,
           });
-        return result;
+        return outcome;
       } catch (error) {
         const failures: unknown[] = [];
         for (const undo of undos.reverse()) {
@@ -3911,6 +4109,20 @@ export async function installPublicPackageShare(
             }
           }
         }
+        // Whatever the steps above left, or a failure without a transaction
+        // never tracked, is undone from the intent record; on failure it
+        // stays for startup recovery, and is news only when the steps above
+        // reported none.
+        try {
+          await intent.rollBack();
+        } catch (rollbackError) {
+          if (failures.length)
+            logMainProcessWarn(
+              '[pipeline-packages] Install intent rollback failed',
+              rollbackError,
+            );
+          else failures.push(rollbackError);
+        }
         if (failures.length)
           throw Object.assign(
             new Error(
@@ -3921,6 +4133,8 @@ export async function installPublicPackageShare(
             { cause: error, rollbackErrors: failures },
           );
         throw error;
+      } finally {
+        for (const lease of session.leases.splice(0)) lease.release();
       }
     });
   publicPackageInstallQueue = operation.then(
@@ -3935,6 +4149,15 @@ export async function installPublicPackageShare(
   };
   void operation.then(clearInFlight, clearInFlight);
   return operation;
+}
+
+/** Core's refusal worded as the share page has always shown it. */
+function publicShareInstallError(error: unknown): Error {
+  if (!(error instanceof CanopyOperationError))
+    return error instanceof Error ? error : new Error(String(error));
+  if (error.payload.code === 'core.pipeline.remoteVersionConflict')
+    return new Error(PUBLIC_SHARE_CHANGED_MESSAGE);
+  return new Error(error.payload.message);
 }
 
 /**

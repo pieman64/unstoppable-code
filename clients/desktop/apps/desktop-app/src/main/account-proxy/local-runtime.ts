@@ -5,17 +5,18 @@
 // docs/planning/2026-10-14-account-proxy-local/README.md.
 
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import {
   mkdir,
   readFile,
   readdir,
   readlink,
+  rename,
   rm,
   writeFile,
 } from 'node:fs/promises';
 import { connect, type Socket } from 'node:net';
 import { join } from 'node:path';
+import { hash as bcryptHash } from 'bcryptjs';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import type {
   AccountProxyLocalPhase,
@@ -28,6 +29,12 @@ import {
 } from '../lib/paths';
 import { ManagedRuntimeInstaller } from '../lib/managed-runtime-installer';
 import { listeningInodes, netstatShowsListener } from './listener-owner';
+import {
+  closeLocalAccountProxyLaunchKeys,
+  mintLocalAccountProxyLaunchKeys,
+  type LocalAccountProxyLaunchKeys,
+  type MintedLocalAccountProxyKeys,
+} from './local-launch-keys';
 import { registerLocalAccountProxyShutdown } from './local-shutdown';
 import {
   accountProxyExecutableName,
@@ -41,10 +48,11 @@ const HEALTH_POLL_MS = 250;
 const SHUTDOWN_TIMEOUT_MS = 5_000;
 const OUTPUT_TAIL_CHARS = 4_000;
 
-/** What the proxy needs to start: its keys and the port it last used. */
+/**
+ * What the proxy needs to start: the port it last used and its routing. Each
+ * launch makes its own keys (CAN-4406).
+ */
 export interface LocalAccountProxyLaunch {
-  readonly managementKey: string;
-  readonly clientKey: string;
   /** Tried first, so a restart keeps the address sessions already know. */
   readonly preferredPort: number | null;
   /** `routing.strategy`; null leaves the proxy's default, round robin. */
@@ -65,6 +73,8 @@ export class LocalAccountProxyError extends Error {
 interface ProcessRecord {
   readonly pid: number;
   readonly port: number;
+  /** The launch's config; records from earlier versions used config.yaml. */
+  readonly config?: string;
 }
 
 interface RuntimeDeps {
@@ -250,10 +260,12 @@ let installProgress: AccountProxyLocalRuntime['install'] = null;
 let runningPort: number | null = null;
 let failureMessage: string | null = null;
 let child: ChildProcess | null = null;
+/** The config the child was started with, removed once it has exited. */
+let childConfig: string | null = null;
 let outputTail = '';
 let installed: boolean | null = null;
-/** Which keys the running proxy was started with. */
-let runningLaunch: string | null = null;
+/** The running proxy's keys, open while it serves its port. */
+let launchKeys: LocalAccountProxyLaunchKeys | null = null;
 /** Cancels the start in progress: Stop, quit, and turning the feature off. */
 let startAbort: AbortController | null = null;
 /** Set at quit; nothing starts after it. */
@@ -282,20 +294,21 @@ export function onLocalAccountProxyChanged(listener: () => void): () => void {
 
 function paths(): {
   root: string;
-  config: string;
+  /** Every launch's config path starts with this, as earlier ones did. */
+  configPrefix: string;
   auths: string;
   record: string;
-  key: string;
+  legacyKey: string;
 } {
   const root = getAccountProxyLocalDir();
   return {
     root,
-    config: join(root, 'config.yaml'),
+    configPrefix: join(root, 'config'),
     auths: join(root, 'auths'),
     record: join(root, 'process.json'),
-    // Outlives the process, unlike the record: which management key the
-    // config's hashed secret belongs to.
-    key: join(root, 'key.json'),
+    // Written by earlier versions, which reused one stored key across
+    // launches; removed on the next start.
+    legacyKey: join(root, 'key.json'),
   };
 }
 
@@ -353,20 +366,35 @@ export function getLocalAccountProxyPort(): number | null {
   return phase === 'running' ? runningPort : null;
 }
 
+/**
+ * The running proxy's keys and port, while it serves that port. The handles
+ * reveal nothing once the process exits or is stopped.
+ */
+export function getLocalAccountProxyLaunch(): {
+  readonly port: number;
+  readonly keys: LocalAccountProxyLaunchKeys;
+} | null {
+  if (phase !== 'running' || runningPort === null || !launchKeys) return null;
+  return { port: runningPort, keys: launchKeys };
+}
+
+/**
+ * App start: stop a proxy an earlier run of the app left behind and remove
+ * its config. Its keys died with that run, so nothing can use it. A proxy
+ * that may still be running keeps its record and config, so a later start
+ * can still find and stop it.
+ */
+export function clearLocalAccountProxyLeftovers(): Promise<void> {
+  return serialize(async () => {
+    if (child) return;
+    await removeLeftoverConfigs(await stopOrphans());
+  });
+}
+
 function serialize<T>(task: () => Promise<T>): Promise<T> {
   const next = queue.then(task, task);
   queue = next.catch(() => undefined);
   return next;
-}
-
-function fingerprint(managementKey: string): string {
-  return createHash('sha256').update(managementKey).digest('hex');
-}
-
-function launchFingerprint(launch: LocalAccountProxyLaunch): string {
-  return createHash('sha256')
-    .update(`${launch.managementKey}\0${launch.clientKey}`)
-    .digest('hex');
 }
 
 /** Whether a start in progress was cancelled, or the app is quitting. */
@@ -380,28 +408,14 @@ class LocalAccountProxyCancelled extends LocalAccountProxyError {
   }
 }
 
-async function readKeyFingerprint(): Promise<string | null> {
-  try {
-    const value: unknown = JSON.parse(await readFile(paths().key, 'utf8'));
-    return typeof value === 'object' &&
-      value !== null &&
-      'managementKeyFingerprint' in value &&
-      typeof value.managementKeyFingerprint === 'string'
-      ? value.managementKeyFingerprint
-      : null;
-  } catch {
-    return null;
-  }
-}
-
 /** A JSON string is a valid YAML double-quoted scalar. */
 function yamlString(value: string): string {
   return JSON.stringify(value);
 }
 
-async function readRecord(): Promise<ProcessRecord | null> {
+async function readRecord(file: string): Promise<ProcessRecord | null> {
   try {
-    const value: unknown = JSON.parse(await readFile(paths().record, 'utf8'));
+    const value: unknown = JSON.parse(await readFile(file, 'utf8'));
     if (
       typeof value === 'object' &&
       value !== null &&
@@ -412,7 +426,13 @@ async function readRecord(): Promise<ProcessRecord | null> {
       'port' in value &&
       typeof value.port === 'number'
     ) {
-      return { pid: value.pid, port: value.port };
+      const config =
+        'config' in value &&
+        typeof value.config === 'string' &&
+        value.config.startsWith(paths().configPrefix)
+          ? value.config
+          : `${paths().configPrefix}.yaml`;
+      return { pid: value.pid, port: value.port, config };
     }
   } catch {
     // No record, or one this version cannot read: nothing to stop.
@@ -420,41 +440,33 @@ async function readRecord(): Promise<ProcessRecord | null> {
   return null;
 }
 
-/** The bcrypt hash the proxy wrote over the plaintext key, if present. */
-async function existingSecretHash(): Promise<string | null> {
-  try {
-    const config = await readFile(paths().config, 'utf8');
-    const match =
-      /^\s*secret-key:\s*"(\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53})"\s*$/m.exec(
-        config,
-      );
-    return match?.[1] ?? null;
-  } catch {
-    return null;
-  }
-}
+/** CLIProxyAPI's default bcrypt cost for its management secret. */
+const MANAGEMENT_HASH_ROUNDS = 10;
 
 /**
  * The config the proxy runs with. Loopback only, never advertised on the
  * network, no web panel download, usage statistics off (the broker attributes
  * requests), and session affinity on. The client key list is never empty: the
  * proxy treats an empty list as no auth.
+ *
+ * The management secret is a bcrypt hash made here, which the proxy accepts
+ * as is, so the management key never reaches disk. The proxy reads client
+ * keys only from this file, so the launch's client key is in it until the
+ * process exits and the file is removed.
  */
 async function writeConfig(
   launch: LocalAccountProxyLaunch,
   port: number,
+  minted: MintedLocalAccountProxyKeys,
+  config: string,
 ): Promise<void> {
-  const { config, auths, root, key } = paths();
-  const keyFingerprint = fingerprint(launch.managementKey);
-  // The proxy replaces a plaintext secret with a bcrypt hash when it starts.
-  // Reuse that hash while the key is the same, so the plaintext reaches disk
-  // once, in a directory only this user can read.
-  const hash =
-    (await readKeyFingerprint()) === keyFingerprint
-      ? await existingSecretHash()
-      : null;
+  const { auths, root } = paths();
+  const secretHash = await bcryptHash(
+    minted.managementKey,
+    MANAGEMENT_HASH_ROUNDS,
+  );
   const body = [
-    '# Written by the app on every start. Edits here are replaced.',
+    '# Written by the app on every start and removed when the proxy stops.',
     'config-version: 8',
     'server:',
     `  host: ${yamlString('127.0.0.1')}`,
@@ -463,11 +475,11 @@ async function writeConfig(
     '    enabled: false',
     'management:',
     '  allow-remote: false',
-    `  secret-key: ${yamlString(hash ?? launch.managementKey)}`,
+    `  secret-key: ${yamlString(secretHash)}`,
     '  disable-control-panel: true',
     'access:',
     '  api-keys:',
-    `    - ${yamlString(launch.clientKey)}`,
+    `    - ${yamlString(minted.clientKey)}`,
     'routing:',
     ...(launch.routingStrategy
       ? [`  strategy: ${yamlString(launch.routingStrategy)}`]
@@ -485,14 +497,58 @@ async function writeConfig(
   ].join('\n');
   await mkdir(root, { recursive: true, mode: 0o700 });
   await mkdir(auths, { recursive: true, mode: 0o700 });
-  await writeFile(config, body, { mode: 0o600 });
-  if (!hash) {
-    await writeFile(
-      key,
-      JSON.stringify({ managementKeyFingerprint: keyFingerprint }),
-      { mode: 0o600 },
-    );
-  }
+  // A new file, so always created with 0600.
+  await writeFile(config, body, { mode: 0o600, flag: 'wx' });
+}
+
+/**
+ * Each launch has its own config file. The proxy reloads its config when it
+ * changes, so a proxy an earlier launch left running, which cannot always be
+ * identified, never reads a later launch's keys.
+ */
+function launchConfigPath(minted: MintedLocalAccountProxyKeys): string {
+  return `${paths().configPrefix}-${minted.keys.epoch}.yaml`;
+}
+
+/**
+ * Removes a launch's config. Only once that proxy has exited: a config
+ * without its client key would open it to every local program.
+ */
+async function removeLaunchConfig(config: string | null): Promise<void> {
+  if (config) await rm(config, { force: true });
+}
+
+/**
+ * Removes the launch configs and the key file earlier versions kept, except
+ * the configs of proxies that may still be running. Only when this app runs
+ * no proxy itself.
+ */
+async function removeLeftoverConfigs(keep: ReadonlySet<string>): Promise<void> {
+  const { root, legacyKey } = paths();
+  const names = await readdir(root).catch((): string[] => []);
+  await Promise.all(
+    names
+      .filter((name) => /^config(-[0-9a-f-]+)?\.yaml$/.test(name))
+      .map((name) => join(root, name))
+      .filter((config) => !keep.has(config))
+      .map((config) => rm(config, { force: true })),
+  );
+  await rm(legacyKey, { force: true });
+}
+
+/** Ends the running launch: its keys reveal nothing from now on. */
+function closeLaunchKeys(): void {
+  if (launchKeys) closeLocalAccountProxyLaunchKeys(launchKeys);
+  launchKeys = null;
+}
+
+/** The proxy's output, with the launch's keys taken out. */
+function redactKeys(text: string, minted: MintedLocalAccountProxyKeys): string {
+  return text
+    .split(minted.clientKey)
+    .join('[redacted]')
+    .split(minted.managementKey)
+    .join('[redacted]');
 }
 
 /** Ports the proxy picks from when the last one is taken. */
@@ -581,24 +637,64 @@ async function waitForExit(pid: number, timeoutMs: number): Promise<boolean> {
  * command line names this device's config file, so a process that reused
  * the id is never signalled and nothing is sent to whatever holds the port.
  */
-async function stopOrphan(): Promise<void> {
-  if (child) return;
-  const record = await readRecord();
-  if (!record || !deps.isProcessAlive(record.pid)) return;
+async function stopOrphan(
+  record: ProcessRecord,
+): Promise<'gone' | 'unconfirmed'> {
+  if (!deps.isProcessAlive(record.pid)) return 'gone';
   const commandLine = await deps.commandLine(record.pid);
-  if (!commandLine?.includes(paths().config)) return;
+  // Where the command line cannot be read, the process may still be the proxy.
+  if (commandLine === null) return 'unconfirmed';
+  // The id now belongs to another program, so the proxy itself has exited.
+  if (!commandLine.includes(paths().configPrefix)) return 'gone';
   try {
     deps.kill(record.pid, 'SIGTERM');
   } catch {
-    return;
+    return deps.isProcessAlive(record.pid) ? 'unconfirmed' : 'gone';
   }
-  if (!(await waitForExit(record.pid, SHUTDOWN_TIMEOUT_MS))) {
-    try {
-      deps.kill(record.pid, 'SIGKILL');
-    } catch {
-      // Already gone.
+  if (await waitForExit(record.pid, SHUTDOWN_TIMEOUT_MS)) return 'gone';
+  try {
+    deps.kill(record.pid, 'SIGKILL');
+  } catch {
+    // Already gone, or not ours to signal; checked below.
+  }
+  return (await waitForExit(record.pid, SHUTDOWN_TIMEOUT_MS))
+    ? 'gone'
+    : 'unconfirmed';
+}
+
+/**
+ * Stops the proxies earlier runs left behind. A stopped one's record goes;
+ * one that may still be running keeps a record of its own, out of the way of
+ * the next launch's, and the config it reads. Resolves with those configs.
+ */
+async function stopOrphans(): Promise<ReadonlySet<string>> {
+  const { root, record } = paths();
+  const names = await readdir(root).catch((): string[] => []);
+  const files = [
+    record,
+    ...names
+      .filter((name) => /^orphan-\d+\.json$/.test(name))
+      .map((name) => join(root, name)),
+  ];
+  const keep = new Set<string>();
+  for (const file of files) {
+    const found = await readRecord(file);
+    if (!found) {
+      await rm(file, { force: true }).catch(() => undefined);
+      continue;
+    }
+    if ((await stopOrphan(found)) === 'gone') {
+      await rm(file, { force: true }).catch(() => undefined);
+      continue;
+    }
+    if (found.config) keep.add(found.config);
+    if (file === record) {
+      await rename(file, join(root, `orphan-${String(found.pid)}.json`)).catch(
+        () => undefined,
+      );
     }
   }
+  return keep;
 }
 
 /**
@@ -667,16 +763,8 @@ async function startNow(
       'The account proxy is not available for this device.',
     );
   }
-  if (child && phase === 'running' && runningPort !== null) {
-    if (runningLaunch === launchFingerprint(launch)) return runningPort;
-    // New keys: the running proxy only takes the old ones. Listeners cancel
-    // what is still on its way to its port before it is released.
-    const previous = child;
-    child = null;
-    runningPort = null;
-    changed();
-    await terminate(previous);
-  }
+  // A running proxy keeps its keys; only a stop or restart replaces them.
+  if (child && phase === 'running' && runningPort !== null) return runningPort;
   const abort = new AbortController();
   startAbort = abort;
   // A stop requested while the previous proxy was terminated.
@@ -713,15 +801,14 @@ async function startNow(
   phase = 'starting';
   installProgress = null;
   changed();
-  await stopOrphan();
+  // A proxy that may still be running keeps its files; its config is not
+  // the one this launch writes.
+  await removeLeftoverConfigs(await stopOrphans()).catch(() => undefined);
   let port = await choosePort(launch.preferredPort);
   for (let attempt = 1; ; attempt++) {
     if (cancelled(abort.signal)) throw new LocalAccountProxyCancelled();
     const outcome = await launchOnce(executable, launch, port, abort.signal);
-    if (outcome.ok) {
-      runningLaunch = launchFingerprint(launch);
-      return port;
-    }
+    if (outcome.ok) return port;
     if (cancelled(abort.signal)) throw new LocalAccountProxyCancelled();
     // Another program took the port between the check and the bind.
     if (!outcome.portTaken || attempt >= BIND_ATTEMPTS) {
@@ -753,19 +840,24 @@ async function launchOnce(
   port: number,
   signal: AbortSignal,
 ): Promise<LaunchOutcome> {
-  await writeConfig(launch, port);
+  const minted = mintLocalAccountProxyLaunchKeys();
+  const config = launchConfigPath(minted);
+  try {
+    await writeConfig(launch, port, minted, config);
+  } catch (error) {
+    closeLocalAccountProxyLaunchKeys(minted.keys);
+    await removeLaunchConfig(config).catch(() => undefined);
+    throw error;
+  }
   outputTail = '';
-  const started = spawn(
-    executable,
-    ['--config', paths().config, '--local-model'],
-    {
-      cwd: paths().root,
-      env: proxyEnvironment(),
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-    },
-  );
+  const started = spawn(executable, ['--config', config, '--local-model'], {
+    cwd: paths().root,
+    env: proxyEnvironment(),
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
   child = started;
+  childConfig = config;
   // Set from the process callbacks, which the loop below reads.
   const exit: { reason: string | null } = { reason: null };
   // Both streams are read, so the proxy's logging never fills a pipe.
@@ -779,13 +871,18 @@ async function launchOnce(
   });
   started.once('exit', (code, signal) => {
     exit.reason = signal ? `signal ${signal}` : `code ${String(code)}`;
+    // Whatever stopped it, its keys open nothing any more.
+    closeLocalAccountProxyLaunchKeys(minted.keys);
+    if (launchKeys === minted.keys) launchKeys = null;
     if (child !== started) return;
     child = null;
+    childConfig = null;
     runningPort = null;
     if (phase === 'running') {
       phase = 'error';
       failureMessage = `The account proxy stopped (${exit.reason}).`;
       changed();
+      void serialize(() => removeLaunchConfig(config)).catch(() => undefined);
     }
     void rm(paths().record, { force: true }).catch(() => undefined);
   });
@@ -793,13 +890,20 @@ async function launchOnce(
     try {
       await writeFile(
         paths().record,
-        JSON.stringify({ pid: started.pid, port } satisfies ProcessRecord),
+        JSON.stringify({
+          pid: started.pid,
+          port,
+          config,
+        } satisfies ProcessRecord),
         { mode: 0o600 },
       );
     } catch (error) {
       // Unrecorded, a crash would leave it for no later launch to find.
       if (child === started) child = null;
+      if (childConfig === config) childConfig = null;
       await terminate(started);
+      closeLocalAccountProxyLaunchKeys(minted.keys);
+      await removeLaunchConfig(config).catch(() => undefined);
       throw error;
     }
   }
@@ -827,6 +931,7 @@ async function launchOnce(
       }
       phase = 'running';
       runningPort = port;
+      launchKeys = minted.keys;
       changed();
       return { ok: true };
     }
@@ -836,7 +941,15 @@ async function launchOnce(
     child = null;
     await terminate(started);
   }
-  const output = outputTail.trim().split('\n').slice(-1)[0] ?? '';
+  // The process is gone, so its config can go.
+  if (childConfig === config) childConfig = null;
+  closeLocalAccountProxyLaunchKeys(minted.keys);
+  await removeLaunchConfig(config).catch(() => undefined);
+  // The last line is shown in the status; no key of this launch goes with it.
+  const output = redactKeys(
+    outputTail.trim().split('\n').slice(-1)[0] ?? '',
+    minted,
+  );
   return {
     ok: false,
     reason: foreignListener
@@ -898,11 +1011,14 @@ export function stopLocalAccountProxy(): Promise<void> {
   startAbort?.abort();
   return serialize(async () => {
     const target = child;
+    const config = childConfig;
     child = null;
+    childConfig = null;
     runningPort = null;
-    runningLaunch = null;
+    closeLaunchKeys();
     if (target) await terminate(target);
     await rm(paths().record, { force: true }).catch(() => undefined);
+    await removeLaunchConfig(config).catch(() => undefined);
     phase = 'stopped';
     failureMessage = null;
     installProgress = null;
@@ -929,15 +1045,18 @@ export async function shutdownLocalAccountProxy(): Promise<void> {
     ]);
   }
   const target = child;
+  const config = childConfig;
   child = null;
+  childConfig = null;
   runningPort = null;
-  runningLaunch = null;
+  closeLaunchKeys();
   phase = 'stopped';
   // Listeners cancel what is still on its way to the port before it is
   // released, as they do on Stop.
   changed();
   if (target) await terminate(target);
   await rm(paths().record, { force: true }).catch(() => undefined);
+  await removeLaunchConfig(config).catch(() => undefined);
 }
 
 registerLocalAccountProxyShutdown(shutdownLocalAccountProxy);
@@ -955,9 +1074,10 @@ export function resetLocalAccountProxyForTests(): void {
   runningPort = null;
   failureMessage = null;
   child = null;
+  childConfig = null;
   outputTail = '';
   installed = null;
-  runningLaunch = null;
+  closeLaunchKeys();
   startAbort = null;
   shuttingDown = false;
   stopRequests = 0;

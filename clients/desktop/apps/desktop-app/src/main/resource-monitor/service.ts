@@ -5,6 +5,7 @@ import {
   type ExecutionAccountingSnapshot,
   type ExecutionRegistrationHandle,
 } from '@canopy/core-runtime';
+import type { CoreExecutionStatus } from '@canopy/protocol/canopy-core';
 import {
   IPC_CHANNELS,
   type ResourceGroupId,
@@ -24,6 +25,8 @@ import {
   succeedDesktopOperation,
 } from '@canopy/desktop-instrumentation/electron/main';
 import { getObservabilityService } from '../observability';
+import { getDaemonExecutionStatus } from '../canopy-runtime/daemon-execution-status';
+import { mergeDaemonExecutionStatus } from './daemon-status';
 import {
   getExecutionAccounting,
   resetExecutionAccountingSamples,
@@ -42,7 +45,9 @@ import { sendToWebContents } from '../lib/web-contents-send';
  * window focus, and the renderer broadcast. Every client reads the same
  * accounting through `core.execution.*` (CAN-5080): this projection follows
  * core's sample events, whoever sampled, and `resource-monitor:get-snapshot`
- * reads through the dispatcher.
+ * reads through the dispatcher. While Electron main holds a daemon session,
+ * the daemon's own status is folded in (CAN-5690), so pressure includes
+ * the terminal and graph hosts the daemon runs.
  */
 
 const DEFAULT_SAMPLE_INTERVAL_MS = 2_000;
@@ -298,6 +303,9 @@ export class ResourceMonitorService {
     Promise<ResourceMonitorSnapshot>
   >();
   private unsubscribeAccounting: (() => void) | null = null;
+  private unsubscribeDaemon: (() => void) | null = null;
+  /** The daemon's last status, or null when no daemon reports one. */
+  private daemonStatus: CoreExecutionStatus | null = null;
 
   constructor() {
     this.lastAccounted = this.accounting.getSnapshot();
@@ -310,6 +318,14 @@ export class ResourceMonitorService {
     this.unsubscribeAccounting ??= this.accounting.subscribe((accounted) => {
       void this.applyCoreSample(accounted).catch(() => {});
     });
+    if (!this.unsubscribeDaemon) {
+      const daemon = getDaemonExecutionStatus();
+      this.daemonStatus = daemon.current();
+      this.unsubscribeDaemon = daemon.subscribe((status) => {
+        this.daemonStatus = status;
+        void this.reproject().catch(() => {});
+      });
+    }
     if (process.env.NODE_ENV === 'test') {
       return;
     }
@@ -367,6 +383,9 @@ export class ResourceMonitorService {
     this.monitoringActive = false;
     this.unsubscribeAccounting?.();
     this.unsubscribeAccounting = null;
+    this.unsubscribeDaemon?.();
+    this.unsubscribeDaemon = null;
+    this.daemonStatus = null;
     if (this.timer !== null) {
       clearTimeout(this.timer);
       this.timer = null;
@@ -490,6 +509,8 @@ export class ResourceMonitorService {
       return this.snapshot;
     }
     this.sampling = true;
+    // A daemon session whose lease reconnected is followed again (CAN-5690).
+    if (this.unsubscribeDaemon) getDaemonExecutionStatus().reattach();
     try {
       return await this.applyCoreSample(await this.accounting.sample());
     } finally {
@@ -523,7 +544,35 @@ export class ResourceMonitorService {
     return projected;
   }
 
+  /** Projects the last core sample again, after a daemon status changed. */
+  private reproject(): Promise<ResourceMonitorSnapshot> {
+    const projected = this.projectionChain
+      .catch(() => {})
+      .then(async (): Promise<ResourceMonitorSnapshot> => {
+        const snapshot = this.project(this.lastAccounted, this.lastOverlay);
+        this.snapshot = snapshot;
+        this.broadcast(snapshot);
+        await this.handlePressureTransition(snapshot);
+        return snapshot;
+      });
+    this.projectionChain = projected;
+    return projected;
+  }
+
   private project(
+    accounted: ExecutionAccountingSnapshot<ResourceMetadata>,
+    desktop: DesktopOverlay,
+  ): ResourceMonitorSnapshot {
+    const local = this.projectLocal(accounted, desktop);
+    return this.daemonStatus
+      ? mergeDaemonExecutionStatus(local, this.daemonStatus, {
+          productName: BRAND.displayName,
+          now: Date.now(),
+        })
+      : local;
+  }
+
+  private projectLocal(
     accounted: ExecutionAccountingSnapshot<ResourceMetadata>,
     desktop: DesktopOverlay,
   ): ResourceMonitorSnapshot {

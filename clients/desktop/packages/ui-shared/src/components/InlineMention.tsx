@@ -6,8 +6,15 @@ import type {
   ReactNode,
 } from 'react';
 
-/** A Central-catalog icon, or any glyph that takes a `className`. */
-export type InlineMentionIcon = ComponentType<{ className?: string }>;
+/**
+ * A catalog icon, or any glyph that takes a `className`. Catalog icons take
+ * `exactSize` so a Lucide glyph follows the chip's 1em box instead of the
+ * app's 14px icon tier.
+ */
+export type InlineMentionIcon = ComponentType<{
+  className?: string;
+  exactSize?: boolean;
+}>;
 
 export interface InlineMentionProps extends Omit<
   HTMLAttributes<HTMLElement>,
@@ -61,6 +68,13 @@ export const INLINE_CHIP_ICON_CLASS =
   'mr-[0.333em] inline-block h-[1em] w-[1em] shrink-0 align-[-0.133em]';
 
 /**
+ * The chip glyph for the GitHub mark, whose catalog artwork is inset 1.5 of
+ * 27 units: scaling by 27/24 makes its ink fill the 1em box, the same as the
+ * Linear and Slack marks.
+ */
+export const INLINE_CHIP_GITHUB_ICON_CLASS = `${INLINE_CHIP_ICON_CLASS} scale-[1.125]`;
+
+/**
  * The inline chip for an `@` mention inside a message: a file path, a plugin,
  * or any other target with an icon and a label. The desktop's
  * `FilePathMention` and `PluginMention` render through it, and reference
@@ -74,7 +88,7 @@ export function InlineMention({
 }: InlineMentionProps): JSX.Element {
   const content = (
     <>
-      <Icon className={INLINE_CHIP_ICON_CLASS} />
+      <Icon className={INLINE_CHIP_ICON_CLASS} exactSize />
       {children}
     </>
   );

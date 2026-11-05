@@ -4,7 +4,6 @@ import { useCallback, useMemo, type JSX, type RefObject } from 'react';
 import {
   getModelCatalogProviderLabel,
   MODEL_PICKER_AUTO_REASONS,
-  MODEL_PICKER_ROW_CUE_COPY,
   ModelPickerMenu,
   modelLibraryUnlockHint,
   modelLibraryUnlockLabel,
@@ -66,9 +65,9 @@ export interface PortalModelPickerProps {
     ) => void;
   };
   /**
-   * The work owner's access for the rows' credits tag (`Free AI Credits`
-   * before the first purchase). Hosts pass it only for Personal work, so an
-   * organization's chat never shows the viewer's own purchase state.
+   * The work owner's model-library access, forwarded to the shared menu.
+   * It no longer changes the credits tag, which always reads `AI Credits`
+   * (CAN-4769). Hosts pass it only for Personal work.
    */
   readonly libraryAccess?: ModelLibraryAccess;
   /**
@@ -82,13 +81,6 @@ export interface PortalModelPickerProps {
     readonly usableNow: (modelId: string) => ModelPickerRowFact;
     /** Spendable AI Credits cover a credits-route row. */
     readonly creditsSufficient: ModelPickerRowFact;
-    /** The viewer's free daily credits preference. */
-    readonly dailyCreditsOn: ModelPickerRowFact;
-    /** The host's recovery that turns daily credits on; absent offers none. */
-    readonly onTurnOnDailyCredits?: (
-      modelId: string,
-      harness?: AgentExecutionHarness,
-    ) => void;
   };
   readonly onSelect: (modelId: string, harness?: AgentExecutionHarness) => void;
 }
@@ -432,7 +424,6 @@ export function PortalModelPicker({
           },
         };
       }
-      const onTurnOnDailyCredits = rowReadiness?.onTurnOnDailyCredits;
       const cue = rowReadiness
         ? resolveModelPickerRowCue({
             rowKind: option.kind === 'agent' ? 'agent' : 'model',
@@ -447,29 +438,10 @@ export function PortalModelPicker({
                   ? 'yes'
                   : 'unknown',
             creditsSufficient: rowReadiness.creditsSufficient,
-            dailyCreditsOn: rowReadiness.dailyCreditsOn,
-            dailyCreditsRecoverySupported: onTurnOnDailyCredits !== undefined,
           })
         : undefined;
       if (cue?.kind === 'available')
         return { disabled: false, available: true };
-      if (cue?.kind === 'needs-daily-credits' && onTurnOnDailyCredits)
-        return {
-          disabled: false,
-          locked: {
-            hint: MODEL_PICKER_ROW_CUE_COPY.needsDailyCreditsHint,
-            label: MODEL_PICKER_ROW_CUE_COPY.needsDailyCredits,
-            keepsOrder: true,
-            onUnlock: (): void => {
-              const harness =
-                selection?.harness === undefined
-                  ? capturedHarness
-                  : optionHarness(option);
-              if (harness === undefined) onTurnOnDailyCredits(option.id);
-              else onTurnOnDailyCredits(option.id, harness);
-            },
-          },
-        };
       return { disabled: false };
     },
     [

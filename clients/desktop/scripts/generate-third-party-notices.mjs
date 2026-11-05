@@ -25,6 +25,7 @@ const PACKAGE_ROOTS = [
   'apps/desktop-cli',
   'packages/protocol',
   'packages/plugin-interop',
+  'packages/memory-consolidation',
   'packages/desktop-shared',
   'packages/ui-shared',
   'packages/ui-rich',

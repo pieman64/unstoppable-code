@@ -171,10 +171,11 @@ const PIPELINE_PUBLIC_SHARE = {
 };
 
 const PLUGIN_PUBLIC_SHARE = {
-  externalId: 'public-plugin-e2e',
+  externalId: 'fd98d65c-4897-4ce7-bd65-f2875b533210',
   pinnedRefKey: 'codex_plugin:demo/market:gamma-tool',
   upToDate: true,
-  sharePath: '/portal/plugins/plugins/shared/public-plugin-e2e',
+  sharePath:
+    '/portal/plugins/plugins/shared/fd98d65c-4897-4ce7-bd65-f2875b533210',
   createdAt: NOW,
   updatedAt: NOW,
 };
@@ -194,7 +195,7 @@ const AGENT_PUBLIC_SHARE = {
   externalId: AGENT_PUBLIC_SHARE_ID,
   pinnedContentHash: 'agent-public-e2e-hash',
   upToDate: true,
-  sharePath: `/portal/plugins/agents/${AGENT_PUBLIC_SHARE_ID}`,
+  sharePath: `/portal/plugins/agents/${AGENT_SHARE_ID}`,
   createdAt: NOW,
   updatedAt: NOW,
 };
@@ -210,7 +211,7 @@ const AUTOMATION_PUBLIC_SHARE = {
   externalId: AUTOMATION_PUBLIC_SHARE_ID,
   pinnedContentHash: AUTOMATION_PUBLIC_CONTENT_HASH,
   upToDate: true,
-  sharePath: `/portal/plugins/automations/${AUTOMATION_PUBLIC_SHARE_ID}`,
+  sharePath: `/portal/plugins/automations/${AUTOMATION_SHARE_ID}`,
   createdAt: NOW,
   updatedAt: NOW,
 };
@@ -964,6 +965,79 @@ function matchesLedgerSearch(row, body) {
   return true;
 }
 
+const LEDGER_MIRROR_CAPABILITIES_HEADER = 'x-canopy-ledger-capabilities';
+
+/** Whether this mirror read requested the version 2 operations fields. */
+function hasLedgerOperationsCapability(request) {
+  const header = Object.entries(request.headers ?? {}).find(
+    ([name]) => name.toLowerCase() === LEDGER_MIRROR_CAPABILITIES_HEADER,
+  )?.[1];
+  const value = Array.isArray(header) ? header.join(',') : header;
+  return (
+    typeof value === 'string' &&
+    value
+      .split(',')
+      .some((token) => token.trim().toLowerCase() === 'operations')
+  );
+}
+
+function hasOwn(object, key) {
+  if (object === null || typeof object !== 'object') return false;
+  return Object.prototype.hasOwnProperty.call(object ?? {}, key);
+}
+
+/** Whether a push carries a field only an operations version (3 or 4) can. */
+function ledgerPushNeedsOperationsVersion(events) {
+  return (Array.isArray(events) ? events : []).some((event) => {
+    const payload = event?.payload;
+    const entry = payload?.entry;
+    const mutation = payload?.mutation;
+    return (
+      entry?.type === 'OPERATION' ||
+      hasOwn(entry, 'parentEntryId') ||
+      hasOwn(mutation, 'parent') ||
+      hasOwn(mutation, 'leftOpen')
+    );
+  });
+}
+
+/** Copy an entry response into the strict version 1 shape. */
+function withoutLedgerOperationsFields(entryResponse) {
+  const entry = entryResponse?.entry;
+  const { parentEntryId: _parentEntryId, ...v1Entry } = entry ?? {};
+  const history = entryResponse?.history;
+  const mutations = (history?.mutations ?? []).flatMap((mutation) => {
+    const { parent: _parent, leftOpen: _leftOpen, ...v1Mutation } = mutation;
+    if (
+      v1Mutation.kind !== 'create' &&
+      v1Mutation.status === undefined &&
+      v1Mutation.owner === undefined
+    ) {
+      return [];
+    }
+    return [v1Mutation];
+  });
+  return {
+    ...entryResponse,
+    ...(entryResponse?.entry === undefined ? {} : { entry: v1Entry }),
+    ...(history === undefined ? {} : { history: { ...history, mutations } }),
+  };
+}
+
+/** Whether a row's parent chain reaches a requested root. */
+function isLedgerDescendantOf(row, rootEntryId, rowsById) {
+  let current = row;
+  const visited = new Set();
+  while (current && !visited.has(current.entryId)) {
+    if (current.entryId === rootEntryId) return true;
+    visited.add(current.entryId);
+    current = current.parentEntryId
+      ? rowsById.get(current.parentEntryId)
+      : undefined;
+  }
+  return false;
+}
+
 /** The mirror's search and entry reads; true when the request was one. */
 async function handleLedgerReadRequest(request, response, pathname) {
   const isSearch =
@@ -986,9 +1060,39 @@ async function handleLedgerReadRequest(request, response, pathname) {
   if (isSearch) {
     const body = await readJsonBody(request);
     recordScenarioActivity(key, 'ledgerSearch');
+    const hasOperations = hasLedgerOperationsCapability(request);
+    if (
+      !hasOperations &&
+      (hasOwn(body, 'parentEntryId') ||
+        hasOwn(body, 'rootEntryId') ||
+        (Array.isArray(body?.types) && body.types.includes('OPERATION')))
+    ) {
+      ledgerError(response, 400, 'ledger_invalid_request', 'never');
+      return true;
+    }
     const audience = body?.audience === 'teammates' ? 'teammates' : 'mine';
-    const rows = [...(feed?.[audience] ?? [])]
+    const sourceRows = [...(feed?.[audience] ?? [])];
+    const rowsById = new Map(sourceRows.map((row) => [row.entryId, row]));
+    const rows = sourceRows
+      .filter((row) => hasOperations || row.type !== 'OPERATION')
+      .filter((row) =>
+        hasOperations && hasOwn(body, 'parentEntryId')
+          ? body.parentEntryId === null
+            ? row.parentEntryId === undefined || row.parentEntryId === null
+            : row.parentEntryId === body.parentEntryId
+          : true,
+      )
+      .filter((row) =>
+        hasOperations && typeof body?.rootEntryId === 'string'
+          ? isLedgerDescendantOf(row, body.rootEntryId, rowsById)
+          : true,
+      )
       .filter((row) => matchesLedgerSearch(row, body))
+      .map((row) => {
+        if (hasOperations || !hasOwn(row, 'parentEntryId')) return row;
+        const { parentEntryId: _parentEntryId, ...v1Row } = row;
+        return v1Row;
+      })
       .sort(byNewestChange);
     jsonResponse(response, 200, {
       entries: rows,
@@ -999,11 +1103,16 @@ async function handleLedgerReadRequest(request, response, pathname) {
     return true;
   }
   const entry = feed?.entries?.[decodeURIComponent(entryMatch[1])];
-  if (!entry) {
+  const hasOperations = hasLedgerOperationsCapability(request);
+  if (!entry || (!hasOperations && entry.entry?.type === 'OPERATION')) {
     ledgerError(response, 404, 'ledger_entry_not_found', 'never');
     return true;
   }
-  jsonResponse(response, 200, entry);
+  jsonResponse(
+    response,
+    200,
+    hasOperations ? entry : withoutLedgerOperationsFields(entry),
+  );
   return true;
 }
 
@@ -1041,6 +1150,15 @@ async function handleLedgerRequest(request, response, pathname) {
     });
     return true;
   }
+  // Versions 1 and 2 are plain task and global batches; 3 and 4 carry
+  // operation fields.
+  if (
+    ![1, 2, 3, 4].includes(body?.schemaVersion) ||
+    (body.schemaVersion <= 2 && ledgerPushNeedsOperationsVersion(body.events))
+  ) {
+    ledgerError(response, 400, 'ledger_invalid_request', 'never');
+    return true;
+  }
   const scope = scopes.get(body?.ledgerId);
   if (!scope) {
     ledgerError(response, 404, 'ledger_scope_not_registered', 'after_register');
@@ -1069,6 +1187,7 @@ async function handleLedgerRequest(request, response, pathname) {
       return true;
     }
   }
+  recordScenarioActivity(key, `ledgerPushVersion${body.schemaVersion}`);
   jsonResponse(response, 200, {
     ledgerId: body.ledgerId,
     acknowledgedSequence: String(scope.acknowledged),

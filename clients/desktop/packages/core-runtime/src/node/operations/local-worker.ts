@@ -6,6 +6,7 @@ import {
   DelegationSecretFingerprintSchema,
   IN_PROCESS_LEASE_TERMS,
   IN_PROCESS_WORKER_TARGET,
+  WorkerAgentHelperRunResultSchema,
   safeParseCanopySchema,
   type CanopyErrorKind,
   type CanopyErrorPayload,
@@ -436,6 +437,14 @@ export class LocalWorkerExecution {
     settlement: Settlement,
     value?: unknown,
   ): Promise<LocalWorkerDispatchResult> {
+    if (
+      delegation.operation.name === 'worker.agent.helper.run' &&
+      settlement.status === 'completed'
+    ) {
+      const result = WorkerAgentHelperRunResultSchema.safeParse(value);
+      if (result.success && result.data.status === 'cancelled')
+        settlement = { ...settlement, status: 'cancelled' };
+    }
     const settled = await this.settle(
       delegation.delegationId,
       settlement,
@@ -463,7 +472,12 @@ export class LocalWorkerExecution {
     return {
       operation,
       delegation,
-      result: operation.status === 'completed' ? value : undefined,
+      result:
+        operation.status === 'completed' ||
+        (operation.kind === 'worker.agent.helper.run' &&
+          operation.status === 'cancelled')
+          ? value
+          : undefined,
       replayed: false,
     };
   }
@@ -484,7 +498,12 @@ export class LocalWorkerExecution {
     return {
       operation,
       delegation,
-      result: operation.status === 'completed' ? operation.outcome : undefined,
+      result:
+        operation.status === 'completed' ||
+        (operation.kind === 'worker.agent.helper.run' &&
+          operation.status === 'cancelled')
+          ? operation.outcome
+          : undefined,
       replayed: true,
     };
   }

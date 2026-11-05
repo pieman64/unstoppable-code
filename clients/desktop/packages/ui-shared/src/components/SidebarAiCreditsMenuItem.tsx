@@ -1,7 +1,7 @@
 import { type JSX } from 'react';
 import type { ModelLibraryAccess } from '@canopy/protocol/models';
 import { CreditCard } from '../icons/AppIcons';
-import { aiCreditsLabel } from './aiCreditsLabel';
+import { AI_CREDITS_LABEL } from './aiCreditsLabel';
 import { DropdownMenuItem, DropdownMenuItemIcon } from './DropdownMenu';
 
 export { AI_CREDITS_LABEL } from './aiCreditsLabel';
@@ -100,9 +100,8 @@ export interface SidebarAiCreditsMenuItemProps {
   /** Balance in credits, or null while it is unknown (loading or failed). */
   balanceCredits: number | null;
   /**
-   * The signed-in person's own model-library access. Before the first
-   * purchase the row reads `Free AI Credits`; unknown access keeps the plain
-   * label.
+   * The signed-in person's own model-library access. Ignored: the row
+   * always reads `AI Credits` (CAN-4769). Kept until hosts stop passing it.
    */
   libraryAccess?: ModelLibraryAccess;
   onSelect: () => void;
@@ -118,13 +117,12 @@ export interface SidebarAiCreditsMenuItemProps {
  */
 export function SidebarAiCreditsMenuItem({
   balanceCredits,
-  libraryAccess,
   onSelect,
   selected = false,
   'data-testid': dataTestId = 'sidebar-account-menu-item-ai-credits',
 }: SidebarAiCreditsMenuItemProps): JSX.Element {
   const balance = normalizeBalance(balanceCredits);
-  const label = aiCreditsLabel(libraryAccess);
+  const label = AI_CREDITS_LABEL;
   return (
     <DropdownMenuItem
       onClick={onSelect}

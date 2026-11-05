@@ -7,13 +7,65 @@ import {
   DelayedLoadingPlaceholder,
   ErrorBanner,
   LoadingSpinner,
-  SettingsListSkeleton,
+  Skeleton,
 } from '@canopy/ui-shared/components';
+import type { PipelineApiItem } from '@canopy/protocol/pipelines';
 import { markdownDescriptionToPlainText } from '@canopy/ui-shared/lib/markdown-plain-text';
 import { fetchMemberSharedPipelines } from './profile-api';
 import { useMemberPagedResource } from './use-member-paged-resource';
 import { useSettingsPrivacy } from '../../host';
 import { joinClassNames } from '../join-class-names';
+
+/** The fields a pipeline row shows. */
+type PipelineRowItem = Pick<PipelineApiItem, 'id' | 'name' | 'description'>;
+
+/** Plain sample rows the loading skeleton measures. */
+const SAMPLE_PIPELINES: readonly PipelineRowItem[] = [
+  {
+    id: 'sample-pipeline-1',
+    name: 'Release notes',
+    description: 'Drafts notes',
+  },
+  { id: 'sample-pipeline-2', name: 'Triage', description: 'Labels new issues' },
+];
+
+/** The shared pipelines as read-only info cards. */
+function PipelineList({
+  pipelines,
+}: {
+  pipelines: readonly PipelineRowItem[];
+}): JSX.Element {
+  return (
+    <ul className="flex flex-col gap-2" data-testid="profile-pipelines-list">
+      {pipelines.map((pipeline) => {
+        const description = markdownDescriptionToPlainText(
+          pipeline.description,
+        );
+        return (
+          <li
+            key={pipeline.id}
+            data-testid="profile-pipeline-row"
+            className="flex items-start gap-3 rounded-xl bg-card p-4 shadow-sm"
+          >
+            <span className="mt-0.5 shrink-0 fg-accent">
+              <Workflow size={18} aria-hidden="true" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-s font-medium fg-primary">
+                {pipeline.name}
+              </span>
+              {description && (
+                <span className="mt-0.5 block truncate text-xs fg-secondary">
+                  {description}
+                </span>
+              )}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
 
 interface ProfilePipelinesSectionProps {
   orgId: string;
@@ -48,7 +100,13 @@ export function ProfilePipelinesSection({
     return (
       <div data-testid="profile-pipelines-loading">
         <DelayedLoadingPlaceholder>
-          <SettingsListSkeleton />
+          <Skeleton
+            loading
+            label="Loading workflows"
+            testId="settings-skeleton-list"
+          >
+            <PipelineList pipelines={SAMPLE_PIPELINES} />
+          </Skeleton>
         </DelayedLoadingPlaceholder>
       </div>
     );
@@ -80,34 +138,7 @@ export function ProfilePipelinesSection({
 
   return (
     <div className="flex flex-col gap-3">
-      <ul className="flex flex-col gap-2" data-testid="profile-pipelines-list">
-        {pipelines.map((pipeline) => {
-          const description = markdownDescriptionToPlainText(
-            pipeline.description,
-          );
-          return (
-            <li
-              key={pipeline.id}
-              data-testid="profile-pipeline-row"
-              className="flex items-start gap-3 rounded-xl bg-card p-4 shadow-sm"
-            >
-              <span className="mt-0.5 shrink-0 fg-accent">
-                <Workflow size={18} aria-hidden="true" />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-s font-medium fg-primary">
-                  {pipeline.name}
-                </span>
-                {description && (
-                  <span className="mt-0.5 block truncate text-xs fg-secondary">
-                    {description}
-                  </span>
-                )}
-              </span>
-            </li>
-          );
-        })}
-      </ul>
+      <PipelineList pipelines={pipelines} />
 
       {error && (
         <ErrorBanner

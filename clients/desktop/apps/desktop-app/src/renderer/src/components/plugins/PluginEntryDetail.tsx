@@ -1,3 +1,12 @@
+import { copyTextToClipboard } from '@/lib/clipboard';
+import { useCloudOrigin } from '@/lib/cloud-origin';
+import {
+  marketplaceShareLink,
+  marketplaceLinkAccess,
+  type SharedByYouFacts,
+  type SharedLinkKind,
+} from '@canopy/ui-app/sharing';
+import { useMarketplaceCopyLinkMenuItem } from '@canopy/ui-app/capability';
 import type { PluginMcpNavigationTarget } from '@canopy/ui-shared/components';
 import { type JSX, useEffect, useMemo, useRef, useState } from 'react';
 import { CuratedMcpConnectionDetail } from './CuratedMcpConnectionDetail';
@@ -440,18 +449,38 @@ function DetailShell({
 function SharedDetailShell({
   unshare,
   audienceCount = 0,
+  copyTarget,
   ...shell
 }: Parameters<typeof DetailShell>[0] & {
   unshare: UseMarketplaceUnshareOptions | null;
   /** Rows in the Shared by you section; two read the item "Unshare all". */
   audienceCount?: number;
+  copyTarget?: {
+    kind: SharedLinkKind;
+    itemId: string;
+    facts: SharedByYouFacts;
+  };
 }): JSX.Element {
-  if (unshare === null) return <DetailShell {...shell} moreItems={[]} />;
+  const origin = useCloudOrigin();
+  const { personalOrganizationId } = useResourceContext();
+  const link = copyTarget
+    ? marketplaceShareLink(origin, copyTarget.kind, copyTarget.itemId)
+    : null;
+  const access = copyTarget
+    ? marketplaceLinkAccess(copyTarget.facts, personalOrganizationId)
+    : null;
+  const copy = useMarketplaceCopyLinkMenuItem(
+    link && access ? { link, access } : null,
+    { write: copyTextToClipboard, notify: postShareToast },
+  );
+  const moreItems = copy ? [copy] : [];
+  if (unshare === null) return <DetailShell {...shell} moreItems={moreItems} />;
   return (
     <SharedDetailShellWithUnshare
       unshare={unshare}
       audienceCount={audienceCount}
       {...shell}
+      moreItems={moreItems}
     />
   );
 }
@@ -470,6 +499,7 @@ function SharedDetailShellWithUnshare({
       <DetailShell
         {...shell}
         moreItems={[
+          ...(shell.moreItems ?? []),
           {
             ...unshare.item,
             label: marketplaceUnshareMenuLabel(audienceCount),
@@ -976,6 +1006,7 @@ export function PluginEntryDetail({
           canDelete: agent.canDelete,
         })}
         audienceCount={agentAudienceCount}
+        copyTarget={{ kind: 'agent', itemId: agent.id, facts: agent }}
       >
         <div className="space-y-6">
           <SharedAgentMarketplaceDetail agent={agent} />
@@ -1027,6 +1058,11 @@ export function PluginEntryDetail({
           canDelete: plugin.canDelete,
         })}
         audienceCount={pluginAudienceCount}
+        copyTarget={{
+          kind: 'plugin',
+          itemId: plugin.externalId,
+          facts: plugin,
+        }}
       >
         <div className="space-y-6">
           <SharedPluginMarketplaceDetail plugin={plugin} />
@@ -1425,12 +1461,13 @@ export function PluginEntryDetail({
               canDelete: detail.canDelete,
             })
           }
-          renderSharedByYou={(detail, refresh) => (
+          renderSharedByYou={(detail, refresh, refreshAfterPublish) => (
             <SharedByYou
               kind="skill"
               shareId={detail.id}
               name={detail.name}
               facts={detail}
+              onRefresh={refreshAfterPublish}
               onUnshared={(audience): void => {
                 if (audience.id === 'public') void refresh();
                 sharedByYouUnshared('skill', detail.id, detail.name)(audience);
@@ -1554,12 +1591,13 @@ export function PluginEntryDetail({
               canDelete: detail.canDelete,
             })
           }
-          renderSharedByYou={(detail, refresh) => (
+          renderSharedByYou={(detail, refresh, refreshAfterPublish) => (
             <SharedByYou
               kind="collection"
               shareId={detail.id}
               name={detail.name}
               facts={detail}
+              onRefresh={refreshAfterPublish}
               onUnshared={(audience): void => {
                 if (audience.id === 'public') void refresh();
                 sharedByYouUnshared(

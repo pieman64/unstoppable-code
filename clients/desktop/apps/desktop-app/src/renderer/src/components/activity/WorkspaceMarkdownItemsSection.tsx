@@ -18,6 +18,7 @@ import {
   Button,
   DialogFormField,
   HeaderActionButton,
+  ListRow,
   Markdown,
   markdownOptions,
   EmptyStateRow,
@@ -270,24 +271,7 @@ function ItemRow({
       className="group relative rounded border bg-fg-primary/[0.02] transition-colors hover:border-fg-primary/10"
       data-testid={`${testIdPrefix}-item`}
     >
-      <div className="flex items-center gap-2 px-2 py-1.5">
-        <div
-          className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5"
-          role="button"
-          tabIndex={0}
-          onClick={(): void => onView(item)}
-          onKeyDown={(e): void => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              onView(item);
-            }
-          }}
-        >
-          <span className="truncate text-xs font-medium fg-primary">
-            {item.title}
-          </span>
-        </div>
-      </div>
+      <ListRow onClick={(): void => onView(item)}>{item.title}</ListRow>
       {!readOnly && (
         <RowActionTray>
           {del.confirming ? (

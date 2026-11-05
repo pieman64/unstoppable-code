@@ -7,6 +7,7 @@ import {
   type CanopyCallerDescriptor,
   type WorkerCodeGraphBuildParams,
   type WorkerCodeGraphBuildResult,
+  type WorkerCodeGraphGenerationReport,
   type WorkerCodeGraphQueryParams,
   type WorkerCodeGraphQueryResult,
 } from '@canopy/protocol/canopy-core';
@@ -22,6 +23,14 @@ import type { ElectronDaemonClient } from '../canopy-runtime/electron-daemon-hos
 import { getElectronDaemonHealth } from '../canopy-runtime/electron-daemon-health';
 import { getLabsExperimentsService } from '../services/labs-experiments-runtime';
 import { logMainProcessWarn } from '../lib/main-process-logging';
+import { recordCodeGraphGenerationReport } from '../lib/code-graph-generation-report';
+import { codeGraphReadRecorders } from './read-recorders';
+import {
+  codeGraphGenerationReportOf,
+  codeGraphReadReportOf,
+  recordCodeGraphReadReport,
+} from '@canopy/core-runtime/node/code-graph';
+import { CanopyClientError } from '@canopy/core-client';
 
 /**
  * Routing of renderer code-graph builds and reads to the daemon's graph
@@ -148,7 +157,11 @@ function worktreeKey(workspaceId: string, worktreeId: string): string {
   return `${workspaceId}/${worktreeId}`;
 }
 
-/** A worktree build in the daemon, keyed so a resent request joins it. */
+/**
+ * A worktree build in the daemon, keyed so a resent request joins it. Its
+ * generation report, on the answer or the refusal, is recorded here as
+ * Electron main records its own generations (CAN-5627).
+ */
 export async function buildCodeGraphInDaemon(
   graphScope: Extract<
     WorkerCodeGraphBuildParams['graphScope'],
@@ -156,11 +169,33 @@ export async function buildCodeGraphInDaemon(
   >,
 ): Promise<WorkerCodeGraphBuildResult> {
   built.add(worktreeKey(graphScope.workspaceId, graphScope.worktreeId));
-  return (await client()).instruction(
-    'worker.codeGraph.build',
-    { graphScope },
-    { metadata: { idempotencyKey: randomUUID() } },
-  );
+  const record = (report: WorkerCodeGraphGenerationReport | null): void => {
+    if (report)
+      recordCodeGraphGenerationReport({
+        projectId: graphScope.workspaceId,
+        worktreeId: graphScope.worktreeId,
+        report,
+      });
+  };
+  let result: WorkerCodeGraphBuildResult;
+  try {
+    result = await (
+      await client()
+    ).instruction(
+      'worker.codeGraph.build',
+      { graphScope },
+      { metadata: { idempotencyKey: randomUUID() } },
+    );
+  } catch (error) {
+    record(
+      error instanceof CanopyClientError
+        ? codeGraphGenerationReportOf(error.payload.details)
+        : null,
+    );
+    throw error;
+  }
+  if (result.kind === 'worktree') record(result.generation ?? null);
+  return result;
 }
 
 /**
@@ -196,18 +231,34 @@ export async function drainDaemonCodeGraphWorktree(
 /**
  * One worktree read in the daemon. A session that closed under the read
  * reads as an unreachable daemon, so the summary comes from the local graph.
+ * The reads it took, on the answer or the refusal, are recorded here as
+ * Electron main records its own reads (CAN-5691); callers get the answer
+ * an in-process read gives.
  */
 export async function queryCodeGraphInDaemon(
   params: WorkerCodeGraphQueryParams,
 ): Promise<WorkerCodeGraphQueryResult> {
+  const key =
+    'kind' in params.scope
+      ? `${params.scope.workspaceId}/`
+      : worktreeKey(params.scope.workspaceId, params.scope.worktreeId);
   const session = await client();
+  let result: WorkerCodeGraphQueryResult;
   try {
-    return await session.query('worker.codeGraph.query', params);
+    result = await session.query('worker.codeGraph.query', params);
   } catch (error) {
+    const report =
+      error instanceof CanopyClientError
+        ? codeGraphReadReportOf(error.payload.details)
+        : null;
+    if (report) recordCodeGraphReadReport(report, key, codeGraphReadRecorders);
     throw session.signal.aborted && !owner.signal.aborted
       ? markUnreachable(error, 'connection_lost')
       : error;
   }
+  const { read, ...answer } = result;
+  if (read) recordCodeGraphReadReport(read, key, codeGraphReadRecorders);
+  return answer;
 }
 
 const BUILD_STATE_RANK: Readonly<Record<CodeGraphBuildState, number>> = {

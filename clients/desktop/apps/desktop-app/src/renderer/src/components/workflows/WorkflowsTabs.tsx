@@ -263,35 +263,33 @@ export function WorkflowsTabs({
     ]).then(() => setRefreshing(false));
   }, [pipelines, refreshSharedAutomations]);
 
-  // The pipeline editor belongs to the Library page id, which its assistant
-  // shortcuts key on, so a draft started elsewhere opens there.
-  const buildPipeline =
-    tab === 'workflows-library'
-      ? pipelines.createNew
-      : (): void =>
-          useNavigationStore.getState().openPipelineEdit({ pipelineId: null });
-  const newWorkflow = (
+  // New workflow opens the creation view (CAN-4319): the assistant chat
+  // beside the editor, with no choice to make first. The pipeline editor
+  // belongs to the Library page id, so a draft started on Runs opens there.
+  const newWorkflowButton = (
+    <Button
+      variant="primary"
+      size="compact"
+      data-testid="workflows-new-create"
+      onClick={pipelines.createNew}
+    >
+      New workflow
+    </Button>
+  );
+  // Schedule still offers what a schedule needs first: an automation, or a
+  // pipeline that an automation can run.
+  const newScheduledWorkflow = (
     <NewWorkflowMenu
       onSchedule={automations.beginCreate}
-      onDescribePipeline={
-        pipelines.interviewPending ? undefined : pipelines.startInterview
-      }
-      onBuildPipeline={buildPipeline}
+      onBuildPipeline={pipelines.createNew}
     />
   );
   const hasWorkflows = library.rows.length > 0;
   const actions =
     tab === 'workflows' ? (
       // Starting a workflow does not depend on having one to run, so Runs
-      // opens the pipeline editor directly in every state.
-      <Button
-        variant="primary"
-        size="compact"
-        data-testid="workflows-new-manual"
-        onClick={buildPipeline}
-      >
-        New workflow
-      </Button>
+      // offers it in every state.
+      newWorkflowButton
     ) : tab === 'workflows-library' ? (
       <>
         {pipelines.headerAction}
@@ -307,10 +305,10 @@ export function WorkflowsTabs({
             <RefreshSpinner spinning={refreshing || pipelines.loading} />
           </Button>
         </Tooltip>
-        {newWorkflow}
+        {newWorkflowButton}
       </>
     ) : (
-      newWorkflow
+      newScheduledWorkflow
     );
 
   return (
@@ -365,7 +363,7 @@ export function WorkflowsTabs({
               automations={automations}
               now={now}
               onRunPipeline={runPipeline}
-              newWorkflow={newWorkflow}
+              newWorkflow={newWorkflowButton}
             />
           )}
         </WorkflowsTabPanel>

@@ -27,6 +27,7 @@ import {
 } from './ledger/lifecycle';
 import { reconcileSummaryPublications } from './ledger/summary-reconciliation';
 import { WORKSPACE_TEMPLATE_SHARE_LABEL } from '@canopy/protocol';
+import type * as StartupStreamRepairModule from './agents/delegation/startup-stream-repair';
 
 const STARTUP_BACKGROUND_TASK_DELAY_MS = 5000;
 const STARTUP_BACKGROUND_INTERACTION_IDLE_MS = 5000;
@@ -34,6 +35,44 @@ const STARTUP_BACKGROUND_MAX_DELAY_MS = 60_000;
 const CODEX_STAGING_SWEEP_INTERVAL_MS = 12 * 60 * 60 * 1000;
 const LIVE_E2E_STARTUP_BACKGROUND_ENV =
   'CANOPY_PERFORMANCE_LIVE_STARTUP_BACKGROUND';
+const E2E_STARTUP_STREAM_REPAIR_ENV = 'CANOPY_E2E_STARTUP_STREAM_REPAIR';
+
+// Keep the broker/service graph out of the startup critical path. Retaining the
+// import promise also fences shutdown against an import that has not resolved.
+let streamRepairModule: Promise<typeof StartupStreamRepairModule> | undefined;
+let streamRepairTask: Promise<void> | undefined;
+
+function runStartupStreamRepair(): void {
+  streamRepairModule ??= import('./agents/delegation/startup-stream-repair');
+  streamRepairTask = streamRepairModule
+    .then(async ({ startStartupStreamRepair }): Promise<void> => {
+      const result = await startStartupStreamRepair();
+      if (result.failed > 0) {
+        recordStartupBackgroundTaskFailure(
+          'delegation_stream_repair',
+          `discovered=${result.discovered} repaired=${result.repaired} skipped=${result.skipped} failed=${result.failed} durationMs=${result.durationMs}`,
+        );
+      }
+    })
+    .catch((): void => {
+      // Scope errors can contain paths or chat text. Diagnostics carry only
+      // fixed codes/counts; the job isolates individual scopes internally.
+      recordStartupBackgroundTaskFailure(
+        'delegation_stream_repair',
+        'incomplete',
+      );
+    });
+}
+
+/** Drop pending scopes and drain the admitted scope while chat ports are live. */
+export async function shutdownDeferredStartupStreamRepair(): Promise<void> {
+  if (!streamRepairModule) return;
+  const repair = await streamRepairModule;
+  await repair.shutdownStartupStreamRepair();
+  await streamRepairTask;
+  streamRepairTask = undefined;
+  streamRepairModule = undefined;
+}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -46,7 +85,8 @@ function recordStartupBackgroundTaskFailure(
     | 'plugin_marketplace_receipts'
     | 'blueprint_catalog_refresh'
     | 'ledger_scope_reconciliation'
-    | 'ledger_summary_reconciliation',
+    | 'ledger_summary_reconciliation'
+    | 'delegation_stream_repair',
   reason: string,
 ): void {
   getObservabilityService().recordAppDiagnostic({
@@ -216,13 +256,18 @@ export function scheduleDeferredStartupBackgroundTasks(
   // for tests. The desktop performance runner has one explicit opt-in for
   // diagnosing this real post-shell pressure; production builds never consult
   // that E2E-only switch.
-  if (
-    isE2eBuild() &&
-    process.env[LIVE_E2E_STARTUP_BACKGROUND_ENV] !== '1' &&
-    !isRealisticStartupPerformanceEnabled()
-  ) {
-    return () => {};
-  }
+  const e2e = isE2eBuild();
+  const runOrdinaryTasks =
+    !e2e ||
+    process.env[LIVE_E2E_STARTUP_BACKGROUND_ENV] === '1' ||
+    isRealisticStartupPerformanceEnabled();
+  // This switch is consulted only in the compile-time E2E build. It enables
+  // local stream repair, never marketplace/provider work or other startup jobs.
+  const runStreamRepair =
+    !e2e ||
+    runOrdinaryTasks ||
+    process.env[E2E_STARTUP_STREAM_REPAIR_ENV] === '1';
+  if (!runOrdinaryTasks && !runStreamRepair) return () => {};
 
   const scheduledAt = Date.now();
   recordRealisticStartupPerformanceEvent(
@@ -271,6 +316,8 @@ export function scheduleDeferredStartupBackgroundTasks(
         'startup:skill-plugin-refresh:gate-fired',
         { elapsedMs: elapsed, idleForMs: idleFor },
       );
+      if (runStreamRepair) runStartupStreamRepair();
+      if (!runOrdinaryTasks) return;
       void enqueueStartupLocalMemoryImportBatch().catch(() => undefined);
       void sweepCodexMarketplaceStaging();
       codexStagingSweepInterval = setInterval(() => {

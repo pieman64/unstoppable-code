@@ -8,7 +8,7 @@ import {
   useSyncExternalStore,
   type JSX,
 } from 'react';
-import type { LedgerFilePicker } from '@canopy/app-core';
+import type { LedgerClient, LedgerFilePicker } from '@canopy/app-core';
 import {
   ledgerDraftMovable,
   ledgerFeedDraft,
@@ -32,6 +32,7 @@ import {
 } from '@canopy/ui-shared/components';
 import {
   LedgerDraftFileSearch,
+  LedgerDraftOperationPicker,
   LedgerDraftOwnerPicker,
 } from './LedgerDraftFields';
 import { ledgerSaveProblemText } from './ledger-write-copy';
@@ -119,6 +120,7 @@ export function useLedgerFeedDraft(
 
 export interface LedgerFeedComposerProps {
   readonly store: LedgerFeedStore;
+  readonly client: LedgerClient;
   readonly scopeStore: LedgerViewStoreFor;
   /** Whether a scope's own view holds a draft, read without creating it. */
   readonly scopeHasDraft: (scope: LedgerViewScope) => boolean;
@@ -128,6 +130,7 @@ export interface LedgerFeedComposerProps {
 
 interface FeedTargetFieldsProps {
   readonly store: LedgerFeedStore;
+  readonly client: LedgerClient;
   readonly scopeStore: LedgerViewStoreFor;
   readonly scopeHasDraft: (scope: LedgerViewScope) => boolean;
   readonly addableScopes: readonly LedgerFeedScopeOption[];
@@ -145,6 +148,7 @@ interface FeedTargetFieldsProps {
 /** Where the Feed's new entry goes: its project, task and owner, in order. */
 function FeedTargetFields({
   store,
+  client,
   scopeStore,
   scopeHasDraft,
   addableScopes,
@@ -212,6 +216,15 @@ function FeedTargetFields({
           data-testid="ledger-feed-target-project"
         />
       </div>
+      {draft.type === 'TASK' && scope !== null && (
+        <LedgerDraftOperationPicker
+          client={client}
+          scope={scope}
+          draft={draft}
+          saving={saving}
+          onChange={onChange}
+        />
+      )}
       <div className="flex min-w-0 flex-col gap-1">
         <span id={`${id}-task-label`} className="text-xs fg-secondary">
           Task
@@ -265,6 +278,7 @@ function FeedTargetFields({
  */
 export function LedgerFeedComposer({
   store,
+  client,
   scopeStore,
   scopeHasDraft,
   addableScopes,
@@ -282,8 +296,12 @@ export function LedgerFeedComposer({
   const saving = viewComposer?.saving ?? false;
   const problem = viewComposer?.problem ?? null;
   const onChange = (patch: Partial<LedgerViewDraft>): void => {
-    if (view === null) store.getState().updateDraft(patch);
-    else view.getState().updateDraft(patch);
+    const nextPatch =
+      patch.type !== undefined && patch.type !== 'TASK'
+        ? { ...patch, parent: null }
+        : patch;
+    if (view === null) store.getState().updateDraft(nextPatch);
+    else view.getState().updateDraft(nextPatch);
   };
 
   return (
@@ -296,6 +314,7 @@ export function LedgerFeedComposer({
         targetControl={
           <FeedTargetFields
             store={store}
+            client={client}
             scopeStore={scopeStore}
             scopeHasDraft={scopeHasDraft}
             addableScopes={addableScopes}

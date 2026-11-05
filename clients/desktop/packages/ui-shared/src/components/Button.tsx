@@ -21,6 +21,7 @@ export type ButtonVariant =
   | 'ghost-quiet'
   | 'ghost-accent'
   | 'ghost-destructive'
+  | 'ghost-warning'
   | 'warning'
   | 'destructive';
 
@@ -55,7 +56,33 @@ interface CapsuleButtonBaseProps extends ButtonHTMLAttributes<HTMLButtonElement>
    * stretched primary CTA.
    */
   fillRow?: boolean;
+  /**
+   * Keep the hover look while the enclosing `group/gitaction` is hovered. A
+   * running action's cancel ✕ sits inside that group but outside the
+   * button, so without this the button would drop its hover the moment the
+   * pointer reaches the ✕.
+   */
+  groupHover?: boolean;
+  /**
+   * A toggle (`aria-pressed`) shows its hover look while pressed, so the
+   * on state reads at rest: the browser address bar's toolbar toggles.
+   */
+  pressedHover?: boolean;
+  /**
+   * Disabled, keep the variant's ink at 80% instead of the disabled ink, for
+   * a control that stays in place while its own action runs (Refresh).
+   */
+  quietWhenDisabled?: boolean;
+  /**
+   * How far the hit area reaches on a touch screen. `expanded` (the default)
+   * grows it to 44px around the button. `contained` keeps it to the button's
+   * own box, for a button packed against other controls or stacked rows
+   * (a model row's favorite star), where the grown area would take their taps.
+   */
+  touchArea?: ButtonTouchArea;
 }
+
+export type ButtonTouchArea = 'expanded' | 'contained';
 
 type CapsuleButtonProps = CapsuleButtonBaseProps &
   (
@@ -90,6 +117,10 @@ interface LinkButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   iconOnly?: false;
   shortcut?: undefined;
   fillRow?: undefined;
+  groupHover?: undefined;
+  pressedHover?: undefined;
+  quietWhenDisabled?: undefined;
+  touchArea?: undefined;
 }
 
 export type ButtonProps = CapsuleButtonProps | LinkButtonProps;
@@ -130,7 +161,13 @@ export const DROPDOWN_INVALID_CLASS =
 // Its look ignores hover and press instead: Tailwind sorts `disabled:` after
 // `hover:` and `active:`, so each disabled class below outranks the hover or
 // press class for the same property.
-const BASE_CLASS_NAME = `focus-ring inline-flex max-h-9 shrink-0 select-none items-center justify-center gap-1.5 font-medium transition-[opacity,transform,scale] ${BUTTON_PRESS_CLASS} before:absolute before:inset-x-0 before:content-[''] disabled:scale-100 disabled:cursor-not-allowed disabled:text-[var(--fg-disabled)] disabled:opacity-100 disabled:shadow-none aria-disabled:scale-100 aria-disabled:cursor-not-allowed aria-disabled:opacity-60`;
+const BASE_CLASS_NAME = `focus-ring inline-flex max-h-9 shrink-0 select-none items-center justify-center gap-1.5 font-medium transition-[opacity,transform,scale] ${BUTTON_PRESS_CLASS} before:absolute before:inset-x-0 before:content-[''] disabled:scale-100 disabled:cursor-not-allowed disabled:shadow-none aria-disabled:scale-100 aria-disabled:cursor-not-allowed aria-disabled:opacity-60`;
+
+// Disabled, the label takes the disabled ink; `quietWhenDisabled` keeps the
+// variant's ink at 80% instead.
+const DISABLED_INK_CLASS_NAME =
+  'disabled:text-[var(--fg-disabled)] disabled:opacity-100';
+const QUIET_DISABLED_INK_CLASS_NAME = 'disabled:opacity-80';
 
 // Disabled, a filled variant swaps its fill for the disabled fill. The ghost
 // variants (transparent at rest) keep no fill: a disabled ghost reads as a
@@ -160,6 +197,10 @@ const VARIANT_CLASS_NAMES: Record<ButtonVariant, string> = {
   // A quiet destructive action beside other actions (Delete next to Edit),
   // where the filled `destructive` would outweigh the primary choice.
   'ghost-destructive': `bg-transparent fg-destructive hover:bg-destructive-subtle hover:fg-destructive ${DISABLED_NO_FILL_CLASS_NAME}`,
+  // A quiet action that resolves a warning beside other actions (Resolve
+  // conflicts in a header, Install on a plugin row), where the filled
+  // `warning` would outweigh its neighbours.
+  'ghost-warning': `bg-transparent fg-warning hover:bg-warning-subtle hover:fg-warning ${DISABLED_NO_FILL_CLASS_NAME}`,
   warning: `bg-warning-subtle fg-warning hover:bg-warning-subtle/80 active:bg-warning-subtle ${DISABLED_FILL_CLASS_NAME}`,
   destructive: `bg-destructive fg-emphasis hover:bg-destructive-hover ${DISABLED_FILL_CLASS_NAME}`,
 };
@@ -174,12 +215,33 @@ const LINK_CLASS_NAME =
 // Shape and label size belong to the size, so the pill and the control
 // rectangle never carry each other's radius or type.
 const SIZE_CLASS_NAMES: Record<ButtonSize, string> = {
-  sm: 'h-7 rounded-full text-s pointer-coarse:before:-inset-y-2',
-  md: 'h-8 rounded-full text-s pointer-coarse:before:-inset-y-1.5',
-  lg: 'h-9 rounded-full text-s pointer-coarse:before:-inset-y-1',
-  control: 'h-7 rounded-md text-xs pointer-coarse:before:-inset-y-2',
-  compact: 'h-7 rounded-full text-xs pointer-coarse:before:-inset-y-2',
-  field: `h-7 rounded-row text-xs pointer-coarse:before:-inset-y-2 ${DROPDOWN_INVALID_CLASS}`,
+  sm: 'h-7 rounded-full text-s',
+  md: 'h-8 rounded-full text-s',
+  lg: 'h-9 rounded-full text-s',
+  control: 'h-7 rounded-md text-xs',
+  compact: 'h-7 rounded-full text-xs',
+  field: `h-7 rounded-row text-xs ${DROPDOWN_INVALID_CLASS}`,
+};
+
+// On a coarse pointer the `before:` hit area grows to 44px: up and down for
+// every button, and sideways too for an icon-only one. `touchArea="contained"`
+// leaves both out.
+const COARSE_HIT_Y_CLASS_NAMES: Record<ButtonSize, string> = {
+  sm: 'pointer-coarse:before:-inset-y-2',
+  md: 'pointer-coarse:before:-inset-y-1.5',
+  lg: 'pointer-coarse:before:-inset-y-1',
+  control: 'pointer-coarse:before:-inset-y-2',
+  compact: 'pointer-coarse:before:-inset-y-2',
+  field: 'pointer-coarse:before:-inset-y-2',
+};
+
+const COARSE_HIT_X_CLASS_NAMES: Record<ButtonSize, string> = {
+  sm: 'pointer-coarse:before:-inset-x-2',
+  md: 'pointer-coarse:before:-inset-x-1.5',
+  lg: 'pointer-coarse:before:-inset-x-1',
+  control: 'pointer-coarse:before:-inset-x-2',
+  compact: 'pointer-coarse:before:-inset-x-2',
+  field: 'pointer-coarse:before:-inset-x-2',
 };
 
 const LABEL_SIZE_CLASS_NAMES: Record<ButtonSize, string> = {
@@ -204,12 +266,12 @@ const SHORTCUT_END_PADDING_CLASS_NAMES: Record<ButtonSize, string> = {
 };
 
 const ICON_ONLY_SIZE_CLASS_NAMES: Record<ButtonSize, string> = {
-  sm: 'w-7 px-0 pointer-coarse:before:-inset-x-2',
-  md: 'w-8 px-0 pointer-coarse:before:-inset-x-1.5',
-  lg: 'w-9 px-0 pointer-coarse:before:-inset-x-1',
-  control: 'w-7 px-0 pointer-coarse:before:-inset-x-2',
-  compact: 'w-7 px-0 pointer-coarse:before:-inset-x-2',
-  field: 'w-7 px-0 pointer-coarse:before:-inset-x-2',
+  sm: 'w-7 px-0',
+  md: 'w-8 px-0',
+  lg: 'w-9 px-0',
+  control: 'w-7 px-0',
+  compact: 'w-7 px-0',
+  field: 'w-7 px-0',
 };
 
 // The overlay replaces the coarse-pointer `before:` hit area; `static` and the
@@ -240,8 +302,52 @@ const FILL_ROW_HOVER_CLASS_NAMES: Record<ButtonVariant, string> = {
     'group-hover/checklist:bg-accent-subtle group-hover/checklist:fg-accent',
   'ghost-destructive':
     'group-hover/checklist:bg-destructive-subtle group-hover/checklist:fg-destructive',
+  'ghost-warning':
+    'group-hover/checklist:bg-warning-subtle group-hover/checklist:fg-warning',
   warning: 'group-hover/checklist:bg-warning-subtle/80',
   destructive: 'group-hover/checklist:bg-destructive-hover',
+};
+
+/**
+ * Each variant's hover look, painted by the enclosing `group/gitaction`'s
+ * hover (`groupHover`). `enabled:` keeps a disabled button out of it.
+ */
+const GROUP_HOVER_CLASS_NAMES: Record<ButtonVariant, string> = {
+  primary:
+    'enabled:group-hover/gitaction:bg-[color-mix(in_srgb,var(--bg-accent),#000_12%)]',
+  secondary:
+    'enabled:group-hover/gitaction:[background-image:linear-gradient(var(--bg-subtle),var(--bg-subtle))]',
+  outline: 'enabled:group-hover/gitaction:bg-secondary',
+  ghost:
+    'enabled:group-hover/gitaction:bg-secondary enabled:group-hover/gitaction:fg-primary',
+  'ghost-overlay':
+    'enabled:group-hover/gitaction:bg-subtle enabled:group-hover/gitaction:fg-primary',
+  'ghost-quiet':
+    'enabled:group-hover/gitaction:bg-subtle enabled:group-hover/gitaction:fg-primary',
+  'ghost-accent': 'enabled:group-hover/gitaction:bg-accent-subtle',
+  'ghost-destructive': 'enabled:group-hover/gitaction:bg-destructive-subtle',
+  'ghost-warning': 'enabled:group-hover/gitaction:bg-warning-subtle',
+  warning: 'enabled:group-hover/gitaction:bg-warning-subtle/80',
+  destructive: 'enabled:group-hover/gitaction:bg-destructive-hover',
+};
+
+/** Each variant's hover look, held while the toggle is pressed (`pressedHover`). */
+const PRESSED_HOVER_CLASS_NAMES: Record<ButtonVariant, string> = {
+  primary:
+    'enabled:aria-pressed:bg-[color-mix(in_srgb,var(--bg-accent),#000_12%)]',
+  secondary:
+    'enabled:aria-pressed:[background-image:linear-gradient(var(--bg-subtle),var(--bg-subtle))]',
+  outline: 'enabled:aria-pressed:bg-secondary',
+  ghost: 'enabled:aria-pressed:bg-secondary enabled:aria-pressed:fg-primary',
+  'ghost-overlay':
+    'enabled:aria-pressed:bg-subtle enabled:aria-pressed:fg-primary',
+  'ghost-quiet':
+    'enabled:aria-pressed:bg-subtle enabled:aria-pressed:fg-primary',
+  'ghost-accent': 'enabled:aria-pressed:bg-accent-subtle',
+  'ghost-destructive': 'enabled:aria-pressed:bg-destructive-subtle',
+  'ghost-warning': 'enabled:aria-pressed:bg-warning-subtle',
+  warning: 'enabled:aria-pressed:bg-warning-subtle/80',
+  destructive: 'enabled:aria-pressed:bg-destructive-hover',
 };
 
 // The button is the containing block for its `before:` hit area, so it is
@@ -277,16 +383,33 @@ export function buttonClassName({
   variant = 'secondary',
   size = 'md',
   iconOnly = false,
+  groupHover = false,
+  pressedHover = false,
+  quietWhenDisabled = false,
+  touchArea = 'expanded',
   className = '',
 }: {
   variant?: ButtonVariant | ButtonLinkVariant;
   size?: ButtonSize;
   iconOnly?: boolean;
+  groupHover?: boolean;
+  pressedHover?: boolean;
+  quietWhenDisabled?: boolean;
+  touchArea?: ButtonTouchArea;
   className?: string;
 } = {}): string {
   if (variant === 'link') return `${LINK_CLASS_NAME} ${className}`;
   const position = positionsItself(className) ? '' : 'relative ';
-  return `${position}${BASE_CLASS_NAME} ${VARIANT_CLASS_NAMES[variant]} ${SIZE_CLASS_NAMES[size]} ${iconOnly ? ICON_ONLY_SIZE_CLASS_NAMES[size] : LABEL_SIZE_CLASS_NAMES[size]} ${className}`;
+  const states = [
+    quietWhenDisabled ? QUIET_DISABLED_INK_CLASS_NAME : DISABLED_INK_CLASS_NAME,
+    groupHover ? GROUP_HOVER_CLASS_NAMES[variant] : '',
+    pressedHover ? PRESSED_HOVER_CLASS_NAMES[variant] : '',
+    touchArea === 'expanded' ? COARSE_HIT_Y_CLASS_NAMES[size] : '',
+    touchArea === 'expanded' && iconOnly ? COARSE_HIT_X_CLASS_NAMES[size] : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+  return `${position}${BASE_CLASS_NAME} ${states} ${VARIANT_CLASS_NAMES[variant]} ${SIZE_CLASS_NAMES[size]} ${iconOnly ? ICON_ONLY_SIZE_CLASS_NAMES[size] : LABEL_SIZE_CLASS_NAMES[size]} ${className}`;
 }
 
 /**
@@ -302,6 +425,10 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
       size = 'md',
       iconOnly = false,
       fillRow = false,
+      groupHover = false,
+      pressedHover = false,
+      quietWhenDisabled = false,
+      touchArea = 'expanded',
       type = 'button',
       className = '',
       style,
@@ -323,6 +450,10 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
           variant,
           size,
           iconOnly,
+          groupHover,
+          pressedHover,
+          quietWhenDisabled,
+          touchArea,
           className: fillRow
             ? `${FILL_ROW_CLASS_NAME} ${variant === 'link' ? '' : FILL_ROW_HOVER_CLASS_NAMES[variant]} ${placementClassName}`
             : placementClassName,

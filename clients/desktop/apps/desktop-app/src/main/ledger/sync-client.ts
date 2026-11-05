@@ -36,6 +36,8 @@ export type LedgerSyncFailure =
   | { readonly kind: 'stale_binding' }
   /** The mirror does not hold the scope for this account: register first. */
   | { readonly kind: 'not_registered' }
+  /** A request rejected by local contract validation was never sent. */
+  | { readonly kind: 'local_invalid_request' }
   /** The scope cannot sync until it is repaired. */
   | { readonly kind: 'repair'; readonly reason: LedgerSyncRepairReason };
 
@@ -150,7 +152,7 @@ async function post<
   // A request the contract would refuse is never sent, and never retried.
   const outgoing = requestSchema.safeParse(body);
   if (!outgoing.success) {
-    return { ok: false, failure: repair('invalid_request') };
+    return { ok: false, failure: { kind: 'local_invalid_request' } };
   }
   let answer: unknown;
   try {

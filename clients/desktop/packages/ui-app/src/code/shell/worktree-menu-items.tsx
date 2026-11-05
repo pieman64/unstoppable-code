@@ -18,7 +18,6 @@ import {
 import type { AppIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
   deriveSelectionMenuItems,
-  selectionToggleMenuItem,
   type SidebarBatchActionAvailability,
   type SidebarBatchActionState,
   type SidebarBatchAvailabilityRow,
@@ -76,6 +75,8 @@ export interface WorktreeMenuContext {
       | 'group-with-base';
   };
   readonly addRepositoryAvailable: boolean;
+  /** A saved attempt to resume or cancel keeps the item enabled. */
+  readonly addRepositoryResumable?: boolean;
   readonly hasActiveSession: boolean;
   readonly setupPhase?: 'git-pending' | 'running-setup';
   readonly removalLockedBySplitPr: boolean;
@@ -182,15 +183,12 @@ export interface WorktreeMenuCallbacks {
   /** Pin or unpin the row at the top of its section; desktop only. */
   readonly onTogglePinnedRequested?: () => void;
   readonly onRemovalRequested?: (mode?: 'archive' | 'delete') => void;
-  /** Adds the row to the bulk selection or takes it out (touch entry point). */
-  readonly onToggleSelectionRequested?: () => void;
   /** Opens the batch confirm for the whole selection. */
   readonly onBulkRemovalRequested?: (mode: 'archive' | 'delete') => void;
   /** Runs one state action on every selected row that needs it. */
   readonly onBulkStateActionRequested?: (
     action: SidebarBulkStateAction,
   ) => void;
-  readonly onClearSelectionRequested?: () => void;
   /** Saves this space's notification choice; `null` clears the override. */
   readonly onNotificationChoiceRequested?: (
     choice: SpaceNotificationMenuChoice,
@@ -224,14 +222,9 @@ export type WorktreeMenuTestIdKey =
    * `removal` id serves otherwise, so the portal's contract is unchanged.
    */
   | 'removalDelete'
-  | 'toggleSelection'
   | 'bulkPin'
-  | 'bulkDone'
-  | 'bulkNotifications'
-  | 'bulkHide'
   | 'bulkArchive'
-  | 'bulkDelete'
-  | 'clearSelection';
+  | 'bulkDelete';
 
 export interface DerivedWorktreeMenu {
   readonly items: readonly WorktreeMenuItem[];
@@ -386,11 +379,8 @@ export function deriveWorktreeMenuItems(
   ) {
     return {
       items: deriveSelectionMenuItems({
-        count: context.bulkSelection.count,
         availability: context.bulkSelection.availability,
-        unitLabel: context.bulkSelection.unitLabel,
         onBulkRemoval: callbacks.onBulkRemovalRequested,
-        onClearSelection: callbacks.onClearSelectionRequested,
         stateActions: context.bulkSelection.stateActions,
         onStateAction: callbacks.onBulkStateActionRequested,
         testIds: callbacks.testIds,
@@ -518,9 +508,10 @@ export function deriveWorktreeMenuItems(
     callbacks.onAddRepositoryRequested
   ) {
     const disabled =
-      context.hasActiveSession ||
-      context.done ||
-      context.setupPhase !== undefined;
+      context.addRepositoryResumable !== true &&
+      (context.hasActiveSession ||
+        context.done ||
+        context.setupPhase !== undefined);
     items.push({
       key: 'add-repository',
       label: 'Add repository',
@@ -528,13 +519,15 @@ export function deriveWorktreeMenuItems(
       onSelect: callbacks.onAddRepositoryRequested,
       testId: callbacks.testIds?.addRepository,
       disabled,
-      tooltip: context.hasActiveSession
-        ? 'Stop active sessions before adding a repo'
-        : context.done
-          ? 'Done worktrees cannot add repos'
-          : context.setupPhase !== undefined
-            ? 'Wait for setup to finish before adding a repo'
-            : undefined,
+      tooltip: !disabled
+        ? undefined
+        : context.hasActiveSession
+          ? 'Stop active sessions before adding a repo'
+          : context.done
+            ? 'Done worktrees cannot add repos'
+            : context.setupPhase !== undefined
+              ? 'Wait for setup to finish before adding a repo'
+              : undefined,
     });
   }
   if (callbacks.onMoveToOrganizationRequested) {
@@ -548,23 +541,13 @@ export function deriveWorktreeMenuItems(
     });
   }
   items.push(...deriveNotificationItems(context, callbacks, items.length > 0));
-  if (callbacks.onToggleSelectionRequested) {
-    items.push(
-      selectionToggleMenuItem({
-        multiSelected: context.multiSelected === true,
-        onToggle: callbacks.onToggleSelectionRequested,
-        testId: callbacks.testIds?.toggleSelection,
-        separatorBefore: true,
-      }),
-    );
-  }
   if (callbacks.onToggleHiddenRequested) {
     items.push({
       key: 'toggle-hidden',
       label: context.hidden ? 'Show' : 'Hide',
       icon: context.hidden ? <EyeIcon /> : <EyeOffIcon />,
       onSelect: callbacks.onToggleHiddenRequested,
-      separatorBefore: !callbacks.onToggleSelectionRequested,
+      separatorBefore: true,
       testId: callbacks.testIds?.toggleHidden,
     });
   }
@@ -587,9 +570,7 @@ export function deriveWorktreeMenuItems(
         onSelect: () => callbacks.onRemovalRequested?.('archive'),
         disabled,
         tone: 'default',
-        separatorBefore:
-          !callbacks.onToggleHiddenRequested &&
-          !callbacks.onToggleSelectionRequested,
+        separatorBefore: !callbacks.onToggleHiddenRequested,
         testId: callbacks.testIds?.removal,
       });
       items.push({
@@ -620,9 +601,7 @@ export function deriveWorktreeMenuItems(
             ? 'Stop the active session before removing this worktree.'
             : undefined,
         tone: destructive ? 'destructive' : 'default',
-        separatorBefore:
-          !callbacks.onToggleHiddenRequested &&
-          !callbacks.onToggleSelectionRequested,
+        separatorBefore: !callbacks.onToggleHiddenRequested,
         testId: destructive
           ? (callbacks.testIds?.removalDelete ?? callbacks.testIds?.removal)
           : callbacks.testIds?.removal,

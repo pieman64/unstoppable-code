@@ -301,7 +301,3 @@ export function selectPipelinePanelTitle(
   }
   return undefined;
 }
-
-export function resetPipelinePanelUiStoreForTests(): void {
-  usePipelinePanelUiStore.setState({ entries: {}, sessions: {} });
-}

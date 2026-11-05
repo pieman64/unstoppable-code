@@ -96,6 +96,15 @@ export interface AgentArmedChatWatcher {
 }
 
 export interface AgentChatWatcherPort<H> {
+  /**
+   * Where a target's chat is now, before any scope check. A host whose chats
+   * can move to another project (a cloud combine) maps a target naming the
+   * project the chat left to its current one; other hosts omit it.
+   */
+  resolveTarget?(
+    target: AgentChatWatcherTarget,
+    call: AgentActionCall<H>,
+  ): Promise<AgentChatWatcherTarget>;
   armChatCompletion(
     input: AgentArmChatWatcherInput,
     call: AgentActionCall<H>,
@@ -187,11 +196,11 @@ export function createChatWatcherTools<H>(options: {
         `Watcher trigger ${trigger} is not available here.`,
       );
     }
-    const target = entry.target;
+    const requested = entry.target;
     if (
-      !('projectId' in target) ||
-      target.worktreeId === undefined ||
-      target.chatId === undefined
+      !('projectId' in requested) ||
+      requested.worktreeId === undefined ||
+      requested.chatId === undefined
     ) {
       return agentActionError(
         call,
@@ -199,6 +208,23 @@ export function createChatWatcherTools<H>(options: {
         'worktree_chat_completion watchers need target.projectId, target.worktreeId, and target.chatId.',
       );
     }
+    const projectId = watchers.resolveTarget
+      ? (
+          await watchers.resolveTarget(
+            {
+              workspaceId: requested.projectId,
+              worktreeId: requested.worktreeId,
+              chatId: requested.chatId,
+            },
+            call,
+          )
+        ).workspaceId
+      : requested.projectId;
+    const target = {
+      projectId,
+      worktreeId: requested.worktreeId,
+      chatId: requested.chatId,
+    };
     if (
       capabilities.watcherTargetScope === 'current_workspace' &&
       target.projectId !== scope.workspaceId

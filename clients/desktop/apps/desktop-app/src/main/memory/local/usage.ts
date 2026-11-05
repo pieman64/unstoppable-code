@@ -27,7 +27,7 @@ import { randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { isRecord } from '../../lib/type-guards';
 import { ensureOwnerOnlyDir } from './memory-files';
-import { memoryFileIdentity } from './topic-identity';
+import { memoryFileIdentity } from '@canopy/memory-consolidation/topic-identity';
 
 export interface MemoryUsageEntry {
   usageCount: number;

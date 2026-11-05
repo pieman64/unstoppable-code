@@ -61,7 +61,9 @@ export function countingW5HostPort(
     async commit(request) {
       recordW5Work(`host.commit.${request.operation}`);
       try {
-        return await timed('host.commit', () => host.commit(request));
+        const outcome = await timed('host.commit', () => host.commit(request));
+        recordW5Work(`host.commit.${outcome.status}`);
+        return outcome;
       } catch (error) {
         recordW5Work('host.commit.failed');
         throw error;

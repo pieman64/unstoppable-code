@@ -34,6 +34,8 @@ export const LEDGER_SQL = {
   selectActorIdentity:
     'SELECT kind, authority_id FROM ledger_actors WHERE ledger_id = ? AND actor_id = ?',
   listActors: `SELECT ${LEDGER_ACTOR_COLUMNS} FROM ledger_actors WHERE ledger_id = ? ORDER BY rowid`,
+  selectActorById: `SELECT ${LEDGER_ACTOR_COLUMNS} FROM ledger_actors
+    WHERE ledger_id = ? AND actor_id = ?`,
   insertActor: `INSERT INTO ledger_actors (actor_id, ledger_id, kind, authority_id,
       origin_key, display_name, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -71,6 +73,37 @@ export const LEDGER_SQL = {
     WHERE version.ledger_id = ?`,
   selectEntry:
     'SELECT entry_rowid, scope_sequence, projection_json FROM ledger_entries WHERE ledger_id = ? AND entry_id = ?',
+  selectChildren: `SELECT entry_rowid, scope_sequence, projection_json
+    FROM ledger_entries WHERE ledger_id = ? AND parent_entry_id = ?
+    ORDER BY entry_id`,
+  selectSubtreeRowIds: `WITH RECURSIVE subtree(entry_rowid, entry_id, depth) AS (
+      SELECT entry_rowid, entry_id, 0 FROM ledger_entries
+      WHERE ledger_id = ? AND entry_id = ?
+      UNION ALL
+      SELECT child.entry_rowid, child.entry_id, parent.depth + 1
+      FROM ledger_entries AS child
+      JOIN subtree AS parent ON child.parent_entry_id = parent.entry_id
+      WHERE child.ledger_id = ?
+    )
+    SELECT entry_rowid, entry_id, depth FROM subtree ORDER BY depth DESC, entry_id`,
+  selectTaskSubtreeDepth: `WITH RECURSIVE task_subtree(entry_id, depth) AS (
+      SELECT entry_id, 0 FROM ledger_entries
+      WHERE ledger_id = ? AND entry_id = ? AND type = 'TASK'
+      UNION ALL
+      SELECT child.entry_id, parent.depth + 1
+      FROM ledger_entries AS child
+      JOIN task_subtree AS parent ON child.parent_entry_id = parent.entry_id
+      WHERE child.ledger_id = ? AND child.type = 'TASK'
+    )
+    SELECT MAX(depth) AS depth FROM task_subtree`,
+  selectCurrentRoot: `SELECT root_entry_id FROM ledger_entry_roots
+    WHERE entry_rowid = ? AND to_sequence IS NULL
+    ORDER BY from_sequence DESC LIMIT 1`,
+  closeCurrentRoot: `UPDATE ledger_entry_roots SET to_sequence = ?
+    WHERE entry_rowid = ? AND to_sequence IS NULL`,
+  insertRoot: `INSERT INTO ledger_entry_roots
+      (entry_rowid, ledger_id, root_entry_id, from_sequence, to_sequence)
+    VALUES (?, ?, ?, ?, NULL)`,
   selectEntryFirstSequence: `SELECT MIN(scope_sequence) AS scope_sequence
     FROM ledger_entry_versions WHERE ledger_id = ? AND entry_id = ?`,
   updateEntryProjection:
@@ -89,16 +122,17 @@ export const LEDGER_SQL = {
     'SELECT scope_sequence FROM ledger_entry_versions WHERE ledger_id = ? AND entry_id = ? AND revision = ?',
   insertEntry: `INSERT INTO ledger_entries (entry_id, ledger_id, revision, scope_sequence,
       type, status, author_actor_id, owner_actor_id, attribution_kind, created_at,
-      updated_at, supersedes_entry_id, projection_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      updated_at, supersedes_entry_id, parent_entry_id, projection_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     RETURNING entry_rowid`,
   updateEntry: `UPDATE ledger_entries SET revision = ?, scope_sequence = ?, status = ?,
-      owner_actor_id = ?, updated_at = ?, projection_json = ?
+      owner_actor_id = ?, updated_at = ?, parent_entry_id = ?, projection_json = ?
     WHERE entry_rowid = ? AND revision = ?`,
   insertVersion: `INSERT INTO ledger_entry_versions (entry_rowid, entry_id, ledger_id,
       revision, scope_sequence, mutation_id, type, status, author_actor_id,
-      owner_actor_id, attribution_kind, created_at, updated_at, projection_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      owner_actor_id, attribution_kind, created_at, updated_at, parent_entry_id,
+      projection_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   insertMutation: `INSERT INTO ledger_mutations (mutation_id, entry_rowid, ledger_id, kind,
       revision, previous_revision, scope_sequence, effective_actor_id,
       recorded_by_actor_id, occurred_at, mutation_json)
@@ -112,6 +146,64 @@ export const LEDGER_SQL = {
     WHERE entry_rowid = ? AND revision > ? ORDER BY revision ASC LIMIT ?`,
   selectChanges: `SELECT scope_sequence, entry_id, revision FROM ledger_entry_versions
     WHERE ledger_id = ? AND scope_sequence > ? ORDER BY scope_sequence ASC LIMIT ?`,
+  /**
+   * The actor set is one bounded JSON relation. Each candidate branch uses an
+   * existing (ledger, actor) index; UNION deduplicates entries that match more
+   * than one relation, including an ended owner recorded on a leftOpen
+   * hand-back mutation. Aggregates and the ten-row page stay in SQLite.
+   */
+  getWorkSummary: `WITH actor_ids(actor_id) AS MATERIALIZED (
+      SELECT value FROM json_each(?) WHERE type = 'text'
+    ), candidate_entries(entry_rowid) AS (
+      SELECT authored.entry_rowid FROM ledger_entries AS authored
+        INDEXED BY ledger_entries_by_author
+      WHERE authored.ledger_id = ?
+        AND authored.author_actor_id IN (SELECT actor_id FROM actor_ids)
+      UNION
+      SELECT owned.entry_rowid FROM ledger_entries AS owned
+        INDEXED BY ledger_entries_by_owner_status
+      WHERE owned.ledger_id = ?
+        AND owned.owner_actor_id IN (SELECT actor_id FROM actor_ids)
+      UNION
+      SELECT mutation.entry_rowid FROM ledger_mutations AS mutation
+        INDEXED BY ledger_mutations_by_effective_actor
+      WHERE mutation.ledger_id = ?
+        AND mutation.effective_actor_id IN (SELECT actor_id FROM actor_ids)
+        AND json_extract(mutation.mutation_json, '$.leftOpen') IS NOT NULL
+    ), matching_entries AS MATERIALIZED (
+      SELECT entry.entry_id, entry.status, entry.updated_at,
+        entry.owner_actor_id, owner.kind AS owner_kind,
+        owner.authority_id AS owner_authority_id
+      FROM candidate_entries AS candidate
+      JOIN ledger_entries AS entry ON entry.entry_rowid = candidate.entry_rowid
+      JOIN ledger_actors AS owner ON owner.ledger_id = entry.ledger_id
+        AND owner.actor_id = entry.owner_actor_id
+      WHERE entry.ledger_id = ?
+    ), status_counts AS (
+      SELECT status, COUNT(*) AS entry_count
+      FROM matching_entries GROUP BY status
+    ), counts_summary AS (
+      SELECT COALESCE(json_group_object(status, entry_count), '{}') AS counts_json
+      FROM status_counts
+    ), open_total AS (
+      SELECT COUNT(*) AS open_total FROM matching_entries
+      WHERE status IN ('TODO', 'IN_PROGRESS', 'BLOCKED', 'NEEDS_REVIEW')
+    ), open_entries AS (
+      SELECT entry_id, status, updated_at, owner_actor_id,
+        owner_kind, owner_authority_id
+      FROM matching_entries
+      WHERE status IN ('TODO', 'IN_PROGRESS', 'BLOCKED', 'NEEDS_REVIEW')
+      ORDER BY updated_at DESC, entry_id DESC LIMIT 10
+    )
+    SELECT counts_summary.counts_json, open_total.open_total,
+      open_entries.entry_id AS open_entry_id,
+      open_entries.status AS open_status,
+      open_entries.owner_actor_id AS open_owner_actor_id,
+      open_entries.owner_kind AS open_owner_kind,
+      open_entries.owner_authority_id AS open_owner_authority_id
+    FROM counts_summary CROSS JOIN open_total
+    LEFT JOIN open_entries ON true
+    ORDER BY open_entries.updated_at DESC, open_entries.entry_id DESC`,
   selectScopeSync: `SELECT ${LEDGER_SCOPE_SYNC_COLUMNS} FROM ledger_scope_sync
     WHERE ledger_id = ?`,
   listScopeSync: `SELECT ledger_id, ${LEDGER_SCOPE_SYNC_COLUMNS} FROM ledger_scope_sync`,

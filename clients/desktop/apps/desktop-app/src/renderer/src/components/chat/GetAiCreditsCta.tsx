@@ -62,7 +62,7 @@ import {
 } from '@/stores/aiCreditsHandoffStore';
 
 /**
- * CAN-2349 §3 — the one "Get AI Credits" affordance.
+ * CAN-2349 §3 — the one "Buy AI Credits" affordance.
  *
  * Cases A, B and C, plus the two existing banners, all end in the same place:
  * `requestConnect` → `openBillingPage` → either Billing opens inside Settings
@@ -211,7 +211,7 @@ export interface GetAiCreditsHandoffState {
 }
 
 export interface GetAiCreditsCtaProps {
-  /** e.g. "Get AI Credits" / "Add credits to use Claude Opus 4.5". */
+  /** e.g. "Buy AI Credits" / "Add credits to use Claude Opus 4.5". */
   readonly label: string;
   /** Case-specific line rendered above the button. */
   readonly description?: string;

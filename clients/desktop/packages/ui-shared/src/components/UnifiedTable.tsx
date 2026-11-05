@@ -25,8 +25,8 @@ import {
   type UnifiedProviderSupport,
 } from './ProviderSupportIcons';
 import { getUnifiedTableItemKey } from './unified-table-virtualization';
-import { CenteredLoadingSpinner } from './CenteredLoadingSpinner';
 import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
+import { Skeleton } from './Skeleton';
 import { SegmentedControl } from './SegmentedControl';
 import { Badge } from './Badge';
 import {
@@ -39,10 +39,10 @@ import {
 } from './DataTable';
 import { Button } from './Button';
 import { Checkbox, ChoiceField } from './Choice';
+import { Disclosure } from './Disclosure';
 import { SettingsSelect, type SettingsSelectOption } from './SettingsSelect';
 import { SearchField } from './SearchField';
 import { FloatingMenu } from './FloatingMenu';
-import { useLoadingIndicatorStyle } from './LoadingIndicatorStyle';
 
 /**
  * Row kinds. MCP servers are one kind however the host built the row: the
@@ -478,40 +478,36 @@ const UnifiedTableRowView = memo(function UnifiedTableRowView({
           </span>
         </button>
         {row.members && row.members.length > 0 && (
-          <div className="mt-2">
-            <button
-              type="button"
-              aria-expanded={expanded}
-              onClick={() => onExpand(row.key)}
-              className="focus-ring rounded px-1 py-1 text-xs fg-accent"
-              data-testid="plugin-members-toggle"
-            >
-              {expanded
+          <Disclosure
+            className="mt-2"
+            label={
+              expanded
                 ? 'Hide capabilities'
-                : `${row.members.length} capabilities`}
-            </button>
-            {expanded && (
-              <ul
-                className="mt-1 space-y-2 border-l pl-3"
-                aria-label={`${row.name} capabilities`}
-              >
-                {row.members.map((member, index) => (
-                  <li
-                    key={`${member.kind}:${member.name}:${index}`}
-                    className="text-xs"
-                  >
-                    <span className="font-medium fg-primary">
-                      {member.name}
-                    </span>
-                    <span className="ml-2 fg-secondary">{member.kind}</span>
-                    <p className="whitespace-normal break-words fg-secondary">
-                      {member.description}
-                    </p>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+                : `${row.members.length} capabilities`
+            }
+            open={expanded}
+            onOpenChange={() => onExpand(row.key)}
+            dataTestId="plugin-members"
+            toggleTestId="plugin-members-toggle"
+          >
+            <ul
+              className="space-y-2 border-l pl-3"
+              aria-label={`${row.name} capabilities`}
+            >
+              {row.members.map((member, index) => (
+                <li
+                  key={`${member.kind}:${member.name}:${index}`}
+                  className="text-xs"
+                >
+                  <span className="font-medium fg-primary">{member.name}</span>
+                  <span className="ml-2 fg-secondary">{member.kind}</span>
+                  <p className="whitespace-normal break-words fg-secondary">
+                    {member.description}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </Disclosure>
         )}
         {row.members && (
           <p className="mt-1 text-xs fg-secondary">
@@ -597,6 +593,99 @@ function kindFilterOptionsFor(
   }
   if (showMcpKind) options.push({ value: 'mcp', label: 'MCP server' });
   return options;
+}
+
+function UnifiedTableHead(): JSX.Element {
+  return (
+    <DataTableHead sticky>
+      <DataTableHeaderCell width="2.5rem" labelHidden>
+        Selected
+      </DataTableHeaderCell>
+      <DataTableHeaderCell width="40%">Name</DataTableHeaderCell>
+      <DataTableHeaderCell width="30%">Source</DataTableHeaderCell>
+      <DataTableHeaderCell width="7rem">Last updated</DataTableHeaderCell>
+      <DataTableHeaderCell width="3.5rem" labelHidden>
+        Actions
+      </DataTableHeaderCell>
+    </DataTableHead>
+  );
+}
+
+/** Plain rows the loading skeleton measures: a name, a line, a source. */
+const SAMPLE_ROWS: readonly UnifiedTableRow[] = [
+  {
+    kind: 'plugin',
+    key: 'unified-table-sample-1',
+    name: 'Release notes',
+    description: 'Drafts release notes from merged pull requests',
+    source: 'Marketplace',
+    sourceSubtitle: '',
+    sourceIcon: 'none',
+    lastUpdated: '2026-01-01T00:00:00.000Z',
+  },
+  {
+    kind: 'skill',
+    key: 'unified-table-sample-2',
+    name: 'Code review',
+    description: 'Reviews a change for bugs before it merges',
+    source: 'Repository',
+    sourceSubtitle: '',
+    sourceIcon: 'none',
+    lastUpdated: '2026-01-01T00:00:00.000Z',
+  },
+  {
+    kind: 'mcp',
+    key: 'unified-table-sample-3',
+    name: 'Issue tracker',
+    description: 'Reads and updates issues in your tracker',
+    source: 'Account',
+    sourceSubtitle: '',
+    sourceIcon: 'none',
+    lastUpdated: '2026-01-01T00:00:00.000Z',
+  },
+];
+
+const noop = (): void => undefined;
+
+/**
+ * Rows that have not arrived: the table itself, with its real header and
+ * rows, rendered from plain samples inside the measured `Skeleton`.
+ */
+function UnifiedTableSkeleton({
+  providerIconScope,
+}: {
+  providerIconScope: ProviderSupportScope;
+}): JSX.Element {
+  return (
+    <DelayedLoadingPlaceholder slowNote="Still loading plugins, skills and MCP servers…">
+      <Skeleton
+        loading
+        label="Loading plugins, skills and MCP servers"
+        testId="unified-table-loading"
+      >
+        <DataTableFrame
+          layout="fixed"
+          caption="Plugins, skills and MCP servers"
+        >
+          <UnifiedTableHead />
+          <DataTableBody>
+            {SAMPLE_ROWS.map((row) => (
+              <UnifiedTableRowView
+                key={row.key}
+                row={row}
+                checked={false}
+                expanded={false}
+                onExpand={noop}
+                providerIconScope={providerIconScope}
+                onToggle={noop}
+                onView={noop}
+              />
+            ))}
+          </DataTableBody>
+        </DataTableFrame>
+      </Skeleton>
+    </DelayedLoadingPlaceholder>
+  );
 }
 
 export function UnifiedTable({
@@ -808,7 +897,6 @@ export function UnifiedTable({
     ? rowVirtualizer.getTotalSize() - lastVirtualItem.end
     : 0;
   const showLoading = loading && rows.length === 0;
-  const loadingIndicatorStyle = useLoadingIndicatorStyle();
 
   return (
     <div
@@ -851,14 +939,9 @@ export function UnifiedTable({
         {toolbarTrailing}
       </div>
       <div className="flex min-h-0 flex-1 flex-col">
-        {showLoading &&
-          (loadingIndicatorStyle === 'spinner' ? (
-            <DelayedLoadingPlaceholder>
-              <CenteredLoadingSpinner className="my-12" />
-            </DelayedLoadingPlaceholder>
-          ) : (
-            <p className="py-12 text-center text-s fg-secondary">Loading…</p>
-          ))}
+        {showLoading && (
+          <UnifiedTableSkeleton providerIconScope={providerIconScope} />
+        )}
         {!showLoading && filteredRows.length === 0 && (
           <p className="py-8 text-center text-s fg-secondary">
             {deferredNameSearch ||
@@ -876,19 +959,7 @@ export function UnifiedTable({
             layout="fixed"
             caption="Plugins, skills and MCP servers"
           >
-            <DataTableHead sticky>
-              <DataTableHeaderCell width="2.5rem" labelHidden>
-                Selected
-              </DataTableHeaderCell>
-              <DataTableHeaderCell width="40%">Name</DataTableHeaderCell>
-              <DataTableHeaderCell width="30%">Source</DataTableHeaderCell>
-              <DataTableHeaderCell width="7rem">
-                Last updated
-              </DataTableHeaderCell>
-              <DataTableHeaderCell width="3.5rem" labelHidden>
-                Actions
-              </DataTableHeaderCell>
-            </DataTableHead>
+            <UnifiedTableHead />
             <DataTableBody replay={blockRowsFromReplay ? 'block' : undefined}>
               {paddingTop > 0 && (
                 <tr aria-hidden style={{ height: paddingTop }}>

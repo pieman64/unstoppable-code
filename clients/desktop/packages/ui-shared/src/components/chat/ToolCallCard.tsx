@@ -375,6 +375,7 @@ export function ToolCallCard({
           value={isWaiting ? 'waiting' : STATUS_TENSE[resolvedStatus]}
         >
           <StepRow
+            prioritizeDetail
             icon={statusIcon}
             step
             label={label ?? toolName}

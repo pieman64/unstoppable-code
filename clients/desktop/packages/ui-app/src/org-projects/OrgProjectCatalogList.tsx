@@ -20,7 +20,6 @@
 import { useState, type JSX, type ReactNode } from 'react';
 import { Button, EmptyState, Notice } from '@canopy/ui-shared';
 import {
-  CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
   SearchField,
 } from '@canopy/ui-shared/components';
@@ -32,6 +31,10 @@ import {
   type OrgProjectSummary,
 } from '@canopy/protocol/org-projects';
 import { OrgProjectRow } from './OrgProjectRow';
+import {
+  OrgProjectCatalogRowsSkeleton,
+  OrgProjectCatalogSetupSkeleton,
+} from './org-project-catalog-skeletons';
 
 /** GitHub's last update as a sortable time; unknown sorts last. */
 function updatedTime(project: OrgProjectSummary): number {
@@ -287,7 +290,7 @@ export function OrgProjectCatalogList({
           )}
           {catalog === undefined && stale === false ? (
             <DelayedLoadingPlaceholder slowNote="Still loading projects…">
-              <CenteredLoadingSpinner className="my-12" />
+              <OrgProjectCatalogRowsSkeleton addLabel={addLabel} />
             </DelayedLoadingPlaceholder>
           ) : projects.length === 0 && stale === false ? (
             management === undefined || error !== '' ? (
@@ -421,7 +424,9 @@ function OrgProjectCatalogSetup({
     return (
       <div data-testid="add-workspace-org-catalog-setup-checking">
         <DelayedLoadingPlaceholder slowNote="Still checking GitHub connection…">
-          <CenteredLoadingSpinner className="my-12" />
+          <OrgProjectCatalogSetupSkeleton
+            organizationLabel={organizationLabel}
+          />
         </DelayedLoadingPlaceholder>
       </div>
     );

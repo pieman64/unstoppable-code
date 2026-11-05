@@ -22,7 +22,7 @@ import {
   type FloatingMenuProps,
 } from './FloatingMenu';
 import { OverlayScrollArea } from './OverlayScrollArea';
-import { useSkeletonBone } from './SkeletonBlock';
+import { SKELETON_KEEP, Skeleton } from './Skeleton';
 
 type PickerMenuStyle = CSSProperties & {
   '--canopy-picker-minimum-width'?: string;
@@ -59,6 +59,7 @@ export const FloatingPickerMenu = forwardRef<
 >(function FloatingPickerMenu(
   {
     anchorRef,
+    open,
     className = '',
     interaction = 'manual',
     maximumWidth,
@@ -72,8 +73,10 @@ export const FloatingPickerMenu = forwardRef<
   const pickerStyle: PickerMenuStyle = {
     ...(minimumWidth ? { '--canopy-picker-minimum-width': minimumWidth } : {}),
     ...(maximumWidth ? { '--canopy-picker-maximum-width': maximumWidth } : {}),
+    // A closed menu renders nothing; measuring then would force a layout on
+    // every render of every closed picker in a list.
     '--canopy-picker-trigger-width': `${
-      anchorRef.current?.getBoundingClientRect().width ?? 0
+      open ? (anchorRef.current?.getBoundingClientRect().width ?? 0) : 0
     }px`,
     ...style,
   };
@@ -82,6 +85,7 @@ export const FloatingPickerMenu = forwardRef<
     <FloatingMenu
       {...props}
       ref={ref}
+      open={open}
       anchorRef={anchorRef}
       gap={gap}
       interaction={interaction}
@@ -766,17 +770,20 @@ export type PickerMenuSkeletonLabelWidth =
   | 36
   | 40;
 
-const SKELETON_LABEL_WIDTH_CLASS: Record<PickerMenuSkeletonLabelWidth, string> =
-  {
-    20: 'w-20',
-    22: 'w-22',
-    24: 'w-24',
-    28: 'w-28',
-    32: 'w-32',
-    34: 'w-34',
-    36: 'w-36',
-    40: 'w-40',
-  };
+/**
+ * Sample labels about as wide as each step (80px to 160px in the row's
+ * text), so the measured bars keep the varied widths of a real list.
+ */
+const SAMPLE_LABELS: Record<PickerMenuSkeletonLabelWidth, string> = {
+  20: 'Release notes',
+  22: 'Sample option',
+  24: 'Another option',
+  28: 'Fix the login form',
+  32: 'Update the setup guide',
+  34: 'Refresh the sidebar list',
+  36: 'Stabilize the checkout test',
+  40: 'Move billing to the new page',
+};
 
 /** Varied label widths so placeholder rows read as a list, not a block. */
 const SKELETON_LABEL_WIDTHS = [
@@ -784,56 +791,70 @@ const SKELETON_LABEL_WIDTHS = [
 ] as const satisfies readonly PickerMenuSkeletonLabelWidth[];
 
 /**
- * One placeholder option: a leading icon and a label bar on an option's
- * 32px row, both shared skeleton blocks.
+ * One sample option for a measured `Skeleton`: the real `PickerMenuOption`
+ * with its leading rail and a plain label of about the given width. It is
+ * sample content, so render it only inside a `Skeleton`, which draws it as
+ * bars and keeps it inert.
  */
 export function PickerMenuSkeletonRow({
   labelWidth,
+  leading = true,
 }: {
   readonly labelWidth: PickerMenuSkeletonLabelWidth;
+  /** Keep the 16px leading rail, for a list whose rows lead with an icon. */
+  readonly leading?: boolean;
 }): JSX.Element {
-  const icon = useSkeletonBone<HTMLSpanElement>();
-  const label = useSkeletonBone<HTMLSpanElement>();
   return (
-    <div aria-hidden="true" className="flex h-8 items-center gap-2 px-2">
-      <span {...icon} className="block size-4 shrink-0 rounded-full" />
-      <span
-        {...label}
-        className={`block h-2.5 rounded-full ${SKELETON_LABEL_WIDTH_CLASS[labelWidth]}`}
-      />
-    </div>
+    <PickerMenuOption tabIndex={-1}>
+      {leading ? <PickerMenuOptionLeading {...SKELETON_KEEP} /> : null}
+      <PickerMenuOptionContent>
+        <PickerMenuOptionLabel>
+          {SAMPLE_LABELS[labelWidth]}
+        </PickerMenuOptionLabel>
+      </PickerMenuOptionContent>
+    </PickerMenuOption>
   );
 }
 
-export interface PickerMenuSkeletonProps extends HTMLAttributes<HTMLDivElement> {
+export interface PickerMenuSkeletonProps {
   /** Placeholder rows to draw. */
-  rows?: number;
+  readonly rows?: number;
   /** Announced to assistive tech while the real rows load. */
-  label?: string;
+  readonly label?: string;
+  /** Placement only: margin, width, and flex participation. */
+  readonly className?: string;
+  /** Marks the status region. */
+  readonly 'data-testid'?: string;
+  /** Whether the list's rows lead with an icon (branches, models). */
+  readonly leading?: boolean;
 }
 
 /**
  * Placeholder rows shown while a picker's options load or render, so the
- * picker can open at once. Each row matches an option's 32px height, leading
- * icon, and label.
+ * picker can open at once: real option rows with sample labels, measured
+ * into bars by the shared `Skeleton`, so each bar sits where an option's
+ * label will.
  */
 export function PickerMenuSkeleton({
   rows = 6,
   label = 'Loading',
   className = '',
-  ...props
+  'data-testid': testId,
+  leading = true,
 }: PickerMenuSkeletonProps): JSX.Element {
   return (
-    <div {...props} role="status" className={`flex flex-col ${className}`}>
-      <span className="sr-only">{label}</span>
-      {Array.from({ length: rows }, (_, index) => (
-        <PickerMenuSkeletonRow
-          key={index}
-          labelWidth={
-            SKELETON_LABEL_WIDTHS[index % SKELETON_LABEL_WIDTHS.length] ?? 32
-          }
-        />
-      ))}
-    </div>
+    <Skeleton loading label={label} testId={testId} className={className}>
+      <div className="flex flex-col">
+        {Array.from({ length: rows }, (_, index) => (
+          <PickerMenuSkeletonRow
+            key={index}
+            leading={leading}
+            labelWidth={
+              SKELETON_LABEL_WIDTHS[index % SKELETON_LABEL_WIDTHS.length] ?? 32
+            }
+          />
+        ))}
+      </div>
+    </Skeleton>
   );
 }

@@ -1308,8 +1308,8 @@ function ToolVerb({
 }
 
 /**
- * Shell calls prefer the provider description in clean rows. Without one,
- * show Run and the command; the raw command remains in expanded details.
+ * Shell calls show the provider description followed by the same command
+ * badge as undescribed calls. Expanded details retain the full command.
  * Classic rows retain their description and short command snippet.
  */
 function ShellLabel({
@@ -1326,7 +1326,26 @@ function ShellLabel({
   const clean = useCleanChatLook();
   const badges = useStepBadges();
   if (clean) {
-    if (description) return <>{description}</>;
+    if (description)
+      return (
+        <>
+          {badges ? (
+            <span className="max-w-full shrink-0 truncate">{description}</span>
+          ) : (
+            description
+          )}
+          {command && (
+            <>
+              {' '}
+              {badges ? (
+                <StepBadge>{command}</StepBadge>
+              ) : (
+                <MonoSnippet>{command}</MonoSnippet>
+              )}
+            </>
+          )}
+        </>
+      );
     return (
       <>
         <ToolVerb classic={heading} clean="Run" />{' '}
