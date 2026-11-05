@@ -1,3 +1,4 @@
+import 'package:mobile/data/repositories/pipeline_content_paging.dart';
 import 'dart:async';
 
 import 'package:mobile/data/models/remote_pipeline_content.dart';
@@ -47,27 +48,7 @@ final class PipelineContentReader {
           offset: offset,
           revision: revision,
         );
-    for (var attempt = 0; ; attempt++) {
-      final first = await page(0, null);
-      final text = StringBuffer(first.content);
-      var next = first;
-      try {
-        while (next.nextOffset < next.length) {
-          next = await page(next.nextOffset, first.revision);
-          if (next.revision != first.revision) {
-            throw const RemoteControlException(_unanswered);
-          }
-          text.write(next.content);
-        }
-      } on RemoteControlException {
-        if (attempt == 0) continue;
-        rethrow;
-      }
-      return RemotePipelineContentDocument(
-        format: first.format,
-        text: text.toString(),
-      );
-    }
+    return readPipelineContentPages(page);
   }
 
   Future<RemotePipelineContentPage> _page({

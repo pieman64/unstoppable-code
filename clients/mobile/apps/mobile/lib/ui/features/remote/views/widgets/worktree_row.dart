@@ -8,7 +8,7 @@ import 'package:mobile/ui/core/status_colors.dart';
 import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
 import 'package:mobile/core/design-system/icon/canopy_icon.dart';
 import 'package:mobile/core/design-system/spinner/dot_spinner.dart';
-import 'package:mobile/ui/core/dimens.dart';
+import 'package:mobile/ui/core/workspaces/workspace_navigation_row.dart';
 
 /// Desktop's two-line workspace row: title and progress above activity
 /// metadata, the worktree identifier, PR state, and plain diff counters.
@@ -47,189 +47,100 @@ class WorktreeRow extends StatelessWidget {
     final hasDiff =
         (worktree.insertions ?? 0) > 0 || (worktree.deletions ?? 0) > 0;
 
-    return MergeSemantics(
-      child: Semantics(
-        button: onTap != null,
-        child: InkWell(
-          onTap: onTap,
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(minHeight: 56),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(
-                AppDimens.navRowLeadingInset,
-                8,
-                4,
-                8,
-              ),
-              child: Row(
-                crossAxisAlignment: needsAnswer
-                    ? CrossAxisAlignment.center
-                    : CrossAxisAlignment.start,
-                children: [
-                  SizedBox(
-                    key: const ValueKey('worktree-leading'),
-                    width: AppDimens.navRowLeadingSize,
-                    height:
-                        MediaQuery.textScalerOf(
-                          context,
-                        ).scale(theme.textTheme.bodyLarge?.fontSize ?? 16) *
-                        (theme.textTheme.bodyLarge?.height ?? 1.5),
-                    child: Center(
-                      child: needsAnswer
-                          ? const PendingQuestionIndicator()
-                          : leading?.widget(size: 18),
-                    ),
-                  ),
-                  const SizedBox(width: AppDimens.navRowLeadingGap),
-                  Expanded(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                title,
-                                key: const ValueKey('worktree-title'),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: theme.textTheme.bodyLarge,
-                              ),
-                            ),
-                            _TitleSignals(
-                              worktree: worktree,
-                              needsAnswer: needsAnswer,
-                            ),
-                          ],
+    return WorkspaceNavigationRow(
+      onTap: onTap,
+      title: title,
+      centerLeading: needsAnswer,
+      leading: needsAnswer
+          ? const PendingQuestionIndicator()
+          : leading?.widget(size: 18),
+      titleSignals: _TitleSignals(worktree: worktree, needsAnswer: needsAnswer),
+      metadata: DefaultTextStyle(
+        style: metadataStyle ?? const TextStyle(),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        child: LayoutBuilder(
+          builder: (context, constraints) => Row(
+            children: [
+              Expanded(
+                child: Row(
+                  children: [
+                    if (signals.length > leadingSignals) ...[
+                      ConstrainedBox(
+                        constraints: BoxConstraints(
+                          maxWidth: constraints.maxWidth * 0.3,
                         ),
-                        const SizedBox(height: 2),
-                        DefaultTextStyle(
-                          style: metadataStyle ?? const TextStyle(),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          child: LayoutBuilder(
-                            builder: (context, constraints) => Row(
-                              children: [
-                                Expanded(
-                                  child: Row(
-                                    children: [
-                                      if (signals.length > leadingSignals) ...[
-                                        ConstrainedBox(
-                                          constraints: BoxConstraints(
-                                            maxWidth:
-                                                constraints.maxWidth * 0.3,
-                                          ),
-                                          child: FittedBox(
-                                            fit: BoxFit.scaleDown,
-                                            alignment: Alignment.centerLeft,
-                                            child: Row(
-                                              mainAxisSize: MainAxisSize.min,
-                                              children: [
-                                                for (final signal
-                                                    in signals.skip(
-                                                      leadingSignals,
-                                                    ))
-                                                  Padding(
-                                                    padding:
-                                                        const EdgeInsets.only(
-                                                          right: 4,
-                                                        ),
-                                                    child: signal.widget(
-                                                      size: 12,
-                                                    ),
-                                                  ),
-                                              ],
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                      Expanded(
-                                        child: Text.rich(
-                                          TextSpan(
-                                            children: [
-                                              TextSpan(
-                                                text:
-                                                    contextLabel ??
-                                                    worktree.localId,
-                                              ),
-                                              if (worktree.mergeProgressLabel !=
-                                                      null ||
-                                                  pr != null) ...[
-                                                const TextSpan(text: ' · '),
-                                                TextSpan(
-                                                  text:
-                                                      worktree
-                                                          .mergeProgressLabel ??
-                                                      pr!.label,
-                                                  style: metadataStyle?.copyWith(
-                                                    color: worktree.mergingPr
-                                                        ? colors.active
-                                                        : pr!.color(colors),
-                                                    fontWeight: AppTypography
-                                                        .emphasisWeight,
-                                                    fontVariations:
-                                                        AppTypography
-                                                            .emphasisVariations,
-                                                  ),
-                                                ),
-                                                if (!worktree.mergingPr)
-                                                  if (pr?.checkStatus
-                                                      case final check?)
-                                                    WidgetSpan(
-                                                      alignment:
-                                                          PlaceholderAlignment
-                                                              .middle,
-                                                      child: _PrCheck(
-                                                        status: check,
-                                                      ),
-                                                    )
-                                                  else if (pr?.mergeQueue
-                                                      case final queue?)
-                                                    WidgetSpan(
-                                                      alignment:
-                                                          PlaceholderAlignment
-                                                              .middle,
-                                                      child: _PrMergeQueue(
-                                                        queue: queue,
-                                                      ),
-                                                    ),
-                                              ],
-                                            ],
-                                          ),
-                                          key: const ValueKey(
-                                            'worktree-metadata',
-                                          ),
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          alignment: Alignment.centerLeft,
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              for (final signal in signals.skip(leadingSignals))
+                                Padding(
+                                  padding: const EdgeInsets.only(right: 4),
+                                  child: signal.widget(size: 12),
                                 ),
-                                if (hasDiff) ...[
-                                  const SizedBox(width: 8),
-                                  ConstrainedBox(
-                                    // Leave room for the identifier even with large diffs.
-                                    constraints: BoxConstraints(
-                                      maxWidth: constraints.maxWidth * 0.6,
-                                    ),
-                                    child: _DiffCounters(
-                                      insertions: worktree.insertions ?? 0,
-                                      deletions: worktree.deletions ?? 0,
-                                    ),
-                                  ),
-                                ],
-                              ],
-                            ),
+                            ],
                           ),
                         ),
-                      ],
+                      ),
+                    ],
+                    Expanded(
+                      child: Text.rich(
+                        TextSpan(
+                          children: [
+                            TextSpan(text: contextLabel ?? worktree.localId),
+                            if (worktree.mergeProgressLabel != null ||
+                                pr != null) ...[
+                              const TextSpan(text: ' · '),
+                              TextSpan(
+                                text: worktree.mergeProgressLabel ?? pr!.label,
+                                style: metadataStyle?.copyWith(
+                                  color: worktree.mergingPr
+                                      ? colors.active
+                                      : pr!.color(colors),
+                                  fontWeight: AppTypography.emphasisWeight,
+                                  fontVariations:
+                                      AppTypography.emphasisVariations,
+                                ),
+                              ),
+                              if (!worktree.mergingPr)
+                                if (pr?.checkStatus case final check?)
+                                  WidgetSpan(
+                                    alignment: PlaceholderAlignment.middle,
+                                    child: _PrCheck(status: check),
+                                  )
+                                else if (pr?.mergeQueue case final queue?)
+                                  WidgetSpan(
+                                    alignment: PlaceholderAlignment.middle,
+                                    child: _PrMergeQueue(queue: queue),
+                                  ),
+                            ],
+                          ],
+                        ),
+                        key: const ValueKey('worktree-metadata'),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
-            ),
+              if (hasDiff) ...[
+                const SizedBox(width: 8),
+                ConstrainedBox(
+                  // Leave room for the identifier even with large diffs.
+                  constraints: BoxConstraints(
+                    maxWidth: constraints.maxWidth * 0.6,
+                  ),
+                  child: _DiffCounters(
+                    insertions: worktree.insertions ?? 0,
+                    deletions: worktree.deletions ?? 0,
+                  ),
+                ),
+              ],
+            ],
           ),
         ),
       ),

@@ -1,18 +1,17 @@
+import 'package:mobile/ui/core/chat/widgets/chat_provisioning.dart';
+import 'package:mobile/ui/core/chat/widgets/queued_messages_status.dart';
 import 'dart:async';
 import 'dart:developer' show Timeline;
 
 import 'package:mobile/ui/features/remote/view_models/remote_draft_first_send.dart';
 import 'package:mobile/core/design-system/icon-button/canopy_icon_button.dart';
 import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
-import 'package:mobile/core/design-system/icon/canopy_icon.dart';
 import 'package:mobile/core/design-system/app-bar/canopy_app_bar.dart';
 import 'package:mobile/core/design-system/app-bar/canopy_scaffold.dart';
 import 'package:mobile/core/design-system/overlay-action/canopy_overlay_action.dart';
 
 import 'package:flutter/material.dart';
 import 'package:mobile/ui/core/app_route_observer.dart';
-import 'package:mobile/ui/core/design_tokens.dart';
-import 'package:mobile/ui/core/typography.dart';
 import 'package:mobile/ui/features/remote/view_models/pipeline_run_chat_activity_controller.dart';
 import 'package:mobile/ui/features/remote/views/widgets/pipeline_run_agent_activity.dart';
 import 'package:provider/provider.dart';
@@ -27,7 +26,6 @@ import 'package:mobile/services/platform_attachment_picker.dart';
 import 'package:mobile/services/satisfaction/satisfaction_policy.dart';
 import 'package:mobile/services/speech_recognizer.dart';
 import 'package:mobile/services/speech_to_text_recognizer.dart';
-import 'package:mobile/core/design-system/spinner/dot_spinner.dart';
 import 'package:mobile/ui/core/chat/view_models/chat_attachment_controller.dart';
 import 'package:mobile/ui/features/remote/view_models/remote_chat_attachment_uploader.dart';
 import 'package:mobile/ui/features/remote/view_models/remote_control_view_model.dart';
@@ -2066,7 +2064,7 @@ class _RemoteChatScreenState extends State<RemoteChatScreen>
     final transcriptStatus = messages.isNotEmpty || questionCards.isEmpty
         ? null
         : transcriptLoading
-        ? const _TranscriptLoading(
+        ? const ChatTranscriptLoading(
             key: ValueKey('transcript-status-loading'),
             label: 'Loading conversation…',
           )
@@ -2079,7 +2077,7 @@ class _RemoteChatScreenState extends State<RemoteChatScreen>
         : null;
     final trailingRows = <Widget>[
       if (queuedMessages.isNotEmpty)
-        _QueuedMessagesStatus(count: queuedMessages.length),
+        QueuedMessagesStatus(count: queuedMessages.length),
       ...questionCards,
     ];
 
@@ -2134,19 +2132,21 @@ class _RemoteChatScreenState extends State<RemoteChatScreen>
         ),
       );
     } else if (_worktreeProvisioning && _createError != null) {
-      transcriptArea = _WorktreeCreateFailed(
+      transcriptArea = ChatCreationFailed(
         message: _createError ?? "Couldn't create the worktree.",
         onRetry: () => unawaited(_createWorktree()),
       );
     } else if (_worktreeProvisioning) {
-      transcriptArea = _TranscriptLoading(
+      transcriptArea = ChatTranscriptLoading(
         label: _worktreeCreateLabel(viewModel),
         labelKey: const ValueKey('creating-worktree-status'),
       );
     } else if (chatsLoading) {
-      transcriptArea = const _TranscriptLoading(label: 'Loading chats…');
+      transcriptArea = const ChatTranscriptLoading(label: 'Loading chats…');
     } else if (transcriptLoading) {
-      transcriptArea = const _TranscriptLoading(label: 'Loading conversation…');
+      transcriptArea = const ChatTranscriptLoading(
+        label: 'Loading conversation…',
+      );
     } else if (discoveryError != null && worktree != null) {
       transcriptArea = _TranscriptHydrationError(
         message: discoveryError,
@@ -2161,7 +2161,7 @@ class _RemoteChatScreenState extends State<RemoteChatScreen>
         onRetry: () => viewModel.retryChatTranscript(target),
       );
     } else {
-      transcriptArea = _EmptyTranscript(
+      transcriptArea = ChatEmptyTranscript(
         isNewChat: chatId == null,
         composingNew: isProvisionalNewChat,
       );
@@ -2405,105 +2405,6 @@ class _RemoteChatScreenState extends State<RemoteChatScreen>
   }
 }
 
-class _QueuedMessagesStatus extends StatelessWidget {
-  const _QueuedMessagesStatus({required this.count});
-
-  final int count;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = AppColors.of(context);
-    final label = '$count ${count == 1 ? 'message' : 'messages'} queued';
-    return Semantics(
-      key: const ValueKey('chat-queue-status'),
-      liveRegion: true,
-      label: label,
-      excludeSemantics: true,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        child: Align(
-          alignment: Alignment.centerRight,
-          child: Text(
-            label,
-            style: AppTypography.bodySmall.copyWith(
-              color: colors.foregroundMuted,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// Centered spinner + label for the transcript region while a desktop
-/// round trip (chat-tab or transcript hydration) is in flight.
-class _TranscriptLoading extends StatelessWidget {
-  const _TranscriptLoading({super.key, required this.label, this.labelKey});
-
-  final String label;
-
-  /// Automation hook for the label, when a caller needs to find this state.
-  final Key? labelKey;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const LoadingSpinner(size: 20),
-          const SizedBox(height: 12),
-          Text(
-            label,
-            key: labelKey,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// In-place worktree create failure: replaces the progress row so the chrome
-/// and draft stay put, with a Retry that reuses the same create attempt.
-class _WorktreeCreateFailed extends StatelessWidget {
-  const _WorktreeCreateFailed({required this.message, required this.onRetry});
-
-  final String message;
-  final VoidCallback onRetry;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            CanopyIcon(
-              glyph: CanopyGlyph.warningSign,
-              tint: theme.colorScheme.error,
-              size: 32,
-            ),
-            const SizedBox(height: 12),
-            Text(message, textAlign: TextAlign.center),
-            const SizedBox(height: 12),
-            FilledButton.tonal(
-              key: const ValueKey('retry-worktree-create'),
-              onPressed: onRetry,
-              child: const Text('Retry'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 class _TranscriptHydrationError extends StatelessWidget {
   const _TranscriptHydrationError({
     super.key,
@@ -2530,37 +2431,6 @@ class _TranscriptHydrationError extends StatelessWidget {
             const SizedBox(height: 12),
             FilledButton.tonal(onPressed: onRetry, child: const Text('Retry')),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _EmptyTranscript extends StatelessWidget {
-  const _EmptyTranscript({required this.isNewChat, this.composingNew = false});
-
-  final bool isNewChat;
-
-  /// True when the user explicitly started a new conversation from the
-  /// new-chat chip (as opposed to a worktree that has no chats at all).
-  final bool composingNew;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Text(
-          composingNew
-              ? 'New conversation — send a message to start it.'
-              : isNewChat
-              ? 'No chats yet — send a message to start one.'
-              : 'No messages yet.',
-          textAlign: TextAlign.center,
-          style: theme.textTheme.bodyMedium?.copyWith(
-            color: theme.colorScheme.onSurfaceVariant,
-          ),
         ),
       ),
     );

@@ -1,5 +1,29 @@
 @import './app-icons.css';
 
+/* Action controls share the native app arrow on desktop, web, and UI mocks.
+ * Base rules leave text, resize, drag, and disabled utilities free to express
+ * their functional cursors. */
+@layer base {
+  a[href],
+  button,
+  summary,
+  [role='button'],
+  [role='link'],
+  [role='checkbox'],
+  [role='radio'],
+  [role='switch'],
+  [role='tab'],
+  [role='menuitem'] {
+    cursor: default;
+  }
+}
+
+/* Existing and third-party controls still request this Tailwind utility.
+ * Override its hand cursor centrally, including its hover/state variants. */
+@utility cursor-pointer {
+  cursor: default;
+}
+
 :root {
   /* Document canvases retain their own surfaces across app appearances.
    * Resolve selection with the matching default light/dark bg-muted value. */
@@ -245,6 +269,10 @@
     0 0 0 1px var(--line-destructive), 0 0 0 4px var(--bg-destructive-subtle);
   --shadow-focus: var(--effect-ring-focus);
   --shadow-tooltip: var(--shadow-tooltip);
+
+  /* A soft ease-out, the iOS drawer curve: fast to answer, long to settle.
+   * Emits `ease-drawer`. */
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
 
   /* Animations */
   --animate-accordion-down: accordion-down 0.2s ease-out;
@@ -531,6 +559,17 @@
 
 /* Canonical selected-tab underline. Keeping this as a named utility prevents
  * component-specific border colors from drifting away from the accent line. */
+/* The usage meter's hover fill (UsageIndicator): drawn at its open width
+ * and revealed from the ring's 32px circle, so the reveal never relayouts.
+ * Closed shows the right 32px as a circle; open shows the whole pill. */
+@utility usage-weekly-fill-closed {
+  clip-path: inset(0 0 0 37px round 16px);
+}
+
+@utility usage-weekly-fill-open {
+  clip-path: inset(0 round 16px);
+}
+
 @utility tab-accent-line {
   border-bottom-color: var(--line-accent);
 }
@@ -1266,6 +1305,11 @@ body {
   outline-offset: 2px;
 }
 
+/* Stretched targets in a scroll viewport keep the same ring inside the row. */
+.focus-ring-stretched.focus-ring-inset:focus-visible::before {
+  outline-offset: -2px;
+}
+
 /* Rows in a menu, picker or context menu show keyboard focus the way they
  * show hover, as a fill, never as the ring (DESIGN.md, Interaction states).
  * This holds for every menu, including rows that also carry `focus-ring`;
@@ -1695,6 +1739,39 @@ body {
   border-radius: var(--radius-sm);
 }
 
+/* Low-fidelity measured skeletons (`Skeleton`): a tinted badge reads as a
+ * plain grey block (`data-skeleton-chip`), lists and quotes lose their indent so their lines align
+ * with the rest, and the details `Skeleton` marks (separators, status dots,
+ * an icon beside a line of text) are left out of the measured copy. */
+[data-skeleton-fidelity='low'] [data-skeleton-chip],
+[data-skeleton-fidelity='low'] [skullet-loading] :is(code, kbd, mark) {
+  background-color: transparent !important;
+  border-color: transparent !important;
+}
+
+[data-skeleton-fidelity='low'] [skullet-loading] :is(code, kbd, mark) {
+  padding-inline: 0 !important;
+}
+
+[data-skeleton-fidelity='low'] [skullet-loading] :is(ul, ol, blockquote) {
+  margin-left: 0 !important;
+  padding-left: 0 !important;
+  border-left-width: 0 !important;
+  list-style: none !important;
+}
+
+[data-skeleton-fidelity='low'] [skullet-loading] * {
+  scrollbar-width: none;
+}
+
+[data-skeleton-fidelity='low'] [skullet-loading] *::-webkit-scrollbar {
+  display: none;
+}
+
+[data-skeleton-fidelity='low'] [data-skeleton-drop] {
+  display: none !important;
+}
+
 /* A busy button's hidden label (`canopy-reserved-label`): `LoadingButton`
  * lays its resting and busy labels in one grid cell so the button keeps one
  * width, and draws the label that is not showing from `data-reserved-label`,
@@ -1882,4 +1959,13 @@ body {
 
 @utility content-visible {
   content-visibility: visible;
+}
+
+/* The work drawer is app chrome: all its actions keep the default arrow. */
+[data-testid='composer-work-drawer'] button,
+[data-testid='composer-work-drawer'] button:disabled,
+[data-testid='composer-work-drawer'] [role='button'],
+[data-testid='completed-work-dialog'] button,
+[data-testid='completed-work-dialog'] button:disabled {
+  cursor: default;
 }

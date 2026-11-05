@@ -83,6 +83,20 @@ final class RemoteNewChatDraftTarget extends DraftTarget {
   String get key => 'rc:new:$workspaceLocalId';
 }
 
+/// A chat reached through a paired computer. The account/environment owns the
+/// store; peer identity separates equal project and chat ids on two computers.
+final class ComputerChatDraftTarget extends DraftTarget {
+  const ComputerChatDraftTarget({
+    required this.computerId,
+    required this.projectId,
+    required this.worktreeId,
+    required this.chatId,
+  });
+  final String computerId, projectId, worktreeId, chatId;
+  @override
+  String get key => 'computer:chat:$computerId/$projectId/$worktreeId/$chatId';
+}
+
 enum UnsentStatus {
   sending('sending'),
   notSent('notSent'),

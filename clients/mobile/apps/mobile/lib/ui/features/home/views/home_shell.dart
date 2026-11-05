@@ -25,7 +25,9 @@ import 'package:mobile/ui/features/remote/view_models/remote_control_view_model.
 import 'package:mobile/ui/features/home/views/organization_context_gate.dart';
 import 'package:mobile/ui/features/home/views/widgets/connect_remote_control_notice.dart';
 import 'package:mobile/ui/features/home/views/widgets/home_navigation_drawer.dart';
+import 'package:mobile/ui/core/navigation/home_extra_destination.dart';
 import 'package:mobile/ui/core/navigation/home_navigation_scope.dart';
+import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
 import 'package:mobile/ui/features/home/views/widgets/workspace_context_switcher.dart';
 import 'package:mobile/ui/features/members/views/members_screen.dart';
 import 'package:mobile/ui/features/remote/views/remote_app_advisor_screen.dart';
@@ -124,6 +126,12 @@ class _HomeShellState extends State<HomeShell>
   bool _chatHasConversation = false;
   bool _chatIsCreating = false;
 
+  /// Whether the app-composed [HomeExtraDestination] covers the selected tab.
+  /// It mounts on first open and then keeps its state like a tab does.
+  bool _extraSelected = false;
+  bool _extraMounted = false;
+  HomeTab? get _visibleTab => _extraSelected ? null : _tabController?.value;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -145,6 +153,8 @@ class _HomeShellState extends State<HomeShell>
   }
 
   void _handleTabChanged() {
+    // Selecting a tab, even the one under it, leaves the extra destination.
+    if (_extraSelected) setState(() => _extraSelected = false);
     if (_tabController?.value != HomeTab.chat) _returnTab = null;
     _syncRemoteVisibility();
     if (!_menu.isDismissed) _closeMenu();
@@ -152,7 +162,7 @@ class _HomeShellState extends State<HomeShell>
 
   void _syncRemoteVisibility() {
     final remote = context.read<RemoteControlViewModel>();
-    final tab = _tabController?.value;
+    final tab = _visibleTab;
     remote.setRemoteVisible(tab == HomeTab.remote);
     // A hosted Remote Control chat keeps overview reconciliation running the
     // way a pushed chat route does, but only while it is the visible tab.
@@ -172,6 +182,20 @@ class _HomeShellState extends State<HomeShell>
 
   void _openMenu() {
     _menu.fling(velocity: 1);
+  }
+
+  void _openExtraDestination() {
+    setState(() {
+      _extraSelected = true;
+      _extraMounted = true;
+    });
+    _syncRemoteVisibility();
+    _closeMenu();
+  }
+
+  void _leaveExtraDestination() {
+    setState(() => _extraSelected = false);
+    _syncRemoteVisibility();
   }
 
   void _closeMenu() {
@@ -312,6 +336,8 @@ class _HomeShellState extends State<HomeShell>
   Widget build(BuildContext context) {
     final tabController = context.watch<HomeTabController>();
     final tabs = tabController.tabs;
+    final extra = HomeExtraDestination.maybeOf(context);
+    final showsExtra = extra != null && _extraSelected;
     final outlineColor = Theme.of(context).colorScheme.outlineVariant;
     // Every shell lands on the cloud Chat draft, so a brand-new account gets
     // its first project here rather than on the web (see the binding).
@@ -341,6 +367,8 @@ class _HomeShellState extends State<HomeShell>
                       _closeMenu();
                     } else if (_backHandlers.consume()) {
                       return;
+                    } else if (showsExtra) {
+                      _leaveExtraDestination();
                     } else if (_returnTab case final returnTab?) {
                       _tabController?.select(returnTab);
                     } else if (parentTab != null) {
@@ -379,9 +407,23 @@ class _HomeShellState extends State<HomeShell>
                                       final desktopApp = context
                                           .watch<DesktopAppPromptController?>();
                                       return HomeNavigationDrawer(
+                                        extraDestination: extra == null
+                                            ? null
+                                            : HomeNavigationDrawerRow(
+                                                key: const ValueKey(
+                                                  'home-nav-computer-connect',
+                                                ),
+                                                glyph: CanopyGlyph.macbook,
+                                                label: extra.label,
+                                                subtitle: extra.subtitle,
+                                                selected: showsExtra,
+                                                onTap: _openExtraDestination,
+                                              ),
                                         contextRow: const WorkspaceContextRow(),
                                         tabs: tabs,
-                                        selectedTab: tabController.value,
+                                        selectedTab: showsExtra
+                                            ? null
+                                            : tabController.value,
                                         onSelected: (tab) {
                                           tabController.select(tab);
                                           _closeMenu();
@@ -484,11 +526,20 @@ class _HomeShellState extends State<HomeShell>
                                             openDrawer: _openMenu,
                                             backHandlers: _backHandlers,
                                             child: IndexedStack(
-                                              index:
-                                                  tabController.selectedIndex,
+                                              index: showsExtra
+                                                  ? tabs.length
+                                                  : tabController.selectedIndex,
                                               children: [
                                                 for (final tab in tabs)
                                                   _contentFor(tab),
+                                                if (extra != null &&
+                                                    _extraMounted)
+                                                  Builder(
+                                                    key: const ValueKey(
+                                                      'home-extra-destination',
+                                                    ),
+                                                    builder: extra.pageBuilder,
+                                                  ),
                                               ],
                                             ),
                                           ),
@@ -595,7 +646,7 @@ class _HomeShellState extends State<HomeShell>
     ),
     HomeTab.cloud => const CloudChatsScreen(),
     HomeTab.advisor => RemoteAppAdvisorScreen(
-      isActive: _tabController?.value == HomeTab.advisor,
+      isActive: _visibleTab == HomeTab.advisor,
     ),
     HomeTab.remote => const RemoteScreen(),
     HomeTab.account => widget.accountTab,
@@ -605,7 +656,7 @@ class _HomeShellState extends State<HomeShell>
   Widget _chatDestination() {
     final generation = _chatGeneration;
     final key = ValueKey('home-chat-$generation');
-    final isActive = _tabController?.value == HomeTab.chat;
+    final isActive = _visibleTab == HomeTab.chat;
     return switch (_openedChat) {
       CloudRecentChat(:final chat) => CloudChatScreen(
         key: key,

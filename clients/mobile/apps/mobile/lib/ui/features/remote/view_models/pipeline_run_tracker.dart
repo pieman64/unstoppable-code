@@ -85,14 +85,7 @@ final class PipelineRunTracker {
       for (final run in merged.values)
         if (!run.hidden) run,
     ];
-    rows.sort((a, b) {
-      final left = DateTime.tryParse(b.startedAt ?? '');
-      final right = DateTime.tryParse(a.startedAt ?? '');
-      if (left == null && right == null) return 0;
-      if (left == null) return -1;
-      if (right == null) return 1;
-      return left.compareTo(right);
-    });
+    rows.sort(comparePipelineRunRecency);
     return List.unmodifiable(rows);
   }
 

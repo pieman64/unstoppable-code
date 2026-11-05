@@ -35,6 +35,7 @@ class HomeNavigationDrawer extends StatelessWidget {
   const HomeNavigationDrawer({
     required this.tabs,
     this.contextRow,
+    this.extraDestination,
     required this.selectedTab,
     required this.onSelected,
     this.recentChats = const [],
@@ -52,7 +53,13 @@ class HomeNavigationDrawer extends StatelessWidget {
   /// The workspace context control, between the wordmark and the destination
   /// rows (CAN-4429); null omits it.
   final Widget? contextRow;
-  final HomeTab selectedTab;
+
+  /// An app-composed destination row after the tab rows, such as
+  /// [HomeNavigationDrawerRow] for Computer connect; null omits it.
+  final Widget? extraDestination;
+
+  /// The highlighted tab; null while [extraDestination] is showing instead.
+  final HomeTab? selectedTab;
   final ValueChanged<HomeTab> onSelected;
 
   /// Recent chat history, newest first.
@@ -241,29 +248,19 @@ class HomeNavigationDrawer extends StatelessWidget {
           if (!_hasNoRow(tab))
             Padding(
               padding: const EdgeInsets.only(bottom: 4),
-              child: ListTile(
+              child: HomeNavigationDrawerRow(
                 key: ValueKey('home-nav-${tab.name}'),
-                leading: _leadingFor(
-                  context,
-                  tab,
-                  selected: tab == selectedTab,
-                ),
+                glyph: glyphFor(tab),
+                label: labelFor(tab),
                 selected: tab == selectedTab,
-                selectedTileColor: colorScheme.surfaceContainerHighest,
-                selectedColor: colorScheme.onSurface,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                title: Text(
-                  labelFor(tab),
-                  style: const TextStyle(
-                    fontWeight: AppTypography.emphasisWeight,
-                    fontVariations: AppTypography.emphasisVariations,
-                  ),
-                ),
                 onTap: () => onSelected(tab),
               ),
             ),
+        if (extraDestination case final extraDestination?)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: extraDestination,
+          ),
         if (onGetDesktopApp case final onGetDesktopApp?)
           Padding(
             padding: const EdgeInsets.only(bottom: 4),
@@ -324,20 +321,6 @@ class HomeNavigationDrawer extends StatelessWidget {
     HomeTab.chat => 'Chat',
   };
 
-  /// Design-system glyphs, matching the desktop and web entries for the same
-  /// destinations, tinted like a [ListTile] leading icon.
-  static Widget _leadingFor(
-    BuildContext context,
-    HomeTab tab, {
-    required bool selected,
-  }) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return CanopyIcon(
-      glyph: glyphFor(tab),
-      tint: selected ? colorScheme.onSurface : colorScheme.onSurfaceVariant,
-    );
-  }
-
   /// The destination's glyph, shared with Settings' rows for the
   /// [settingsHomeTabs].
   static CanopyGlyph glyphFor(HomeTab tab) => switch (tab) {
@@ -350,6 +333,60 @@ class HomeNavigationDrawer extends StatelessWidget {
     HomeTab.account => CanopyGlyph.settingsGear2,
     HomeTab.chat => CanopyGlyph.editBig,
   };
+}
+
+/// One destination row in the drawer: a design-system glyph, an emphasized
+/// label and, optionally, a secondary line such as the connected computer.
+class HomeNavigationDrawerRow extends StatelessWidget {
+  const HomeNavigationDrawerRow({
+    required this.glyph,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+    this.subtitle,
+    super.key,
+  });
+
+  final CanopyGlyph glyph;
+  final String label;
+  final String? subtitle;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return ListTile(
+      // Tinted explicitly: an untinted glyph paints black, which vanishes
+      // on the dark drawer.
+      leading: CanopyIcon(
+        glyph: glyph,
+        tint: selected ? colorScheme.onSurface : colorScheme.onSurfaceVariant,
+      ),
+      selected: selected,
+      selectedTileColor: colorScheme.surfaceContainerHighest,
+      selectedColor: colorScheme.onSurface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      title: Text(
+        label,
+        style: const TextStyle(
+          fontWeight: AppTypography.emphasisWeight,
+          fontVariations: AppTypography.emphasisVariations,
+        ),
+      ),
+      subtitle: subtitle == null
+          ? null
+          : Text(
+              subtitle!,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+      onTap: onTap,
+    );
+  }
 }
 
 /// The drawer's pinned new-chat action, using the shared primary-action colors.

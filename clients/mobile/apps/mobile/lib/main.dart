@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:mobile/app/computer_connect_scope.dart';
+
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -1229,7 +1231,16 @@ class AuthGate extends StatelessWidget {
           selectWorkspaceContext: auth.selectWorkspaceContext,
           workspaceContext: () => auth.workspaceContext,
           personalActivityAvailable: () => auth.isPersonalActive,
-          child: DesktopAppPromptBinding(child: child),
+          child: ComputerConnectScope(
+            key: ValueKey(
+              '${AppConfig.apiBaseUrl}:${auth.user?.id ?? 'guest'}',
+            ),
+            accountId: auth.user?.id,
+            sessionToken: _sessionStore.currentToken,
+            twoFactorProof: _sessionStore.currentTwoFactorProof,
+            enabled: auth.hasAccount && AppConfig.hasAuthApiConfig,
+            child: DesktopAppPromptBinding(child: child),
+          ),
         ),
       ),
     );

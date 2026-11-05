@@ -317,6 +317,10 @@ crypto
 Version: 3.0.7
 Source: https://pub.dev
 
+cryptography
+Version: 2.9.0
+Source: https://pub.dev
+
 csslib
 Version: 1.0.2
 Source: https://pub.dev

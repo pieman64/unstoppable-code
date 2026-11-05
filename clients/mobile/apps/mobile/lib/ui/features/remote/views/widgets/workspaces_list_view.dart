@@ -1,3 +1,4 @@
+import 'package:mobile/ui/core/workspaces/workspace_section_header.dart';
 import 'dart:async';
 import 'package:mobile/core/design-system/app-bar/canopy_scaffold.dart';
 import 'package:mobile/core/design-system/button/canopy_button.dart';
@@ -410,7 +411,7 @@ class _WorkspaceHeader extends StatelessWidget {
     // assigned color, mirroring the desktop's grey temporary badge.
     final accent = workspace.temporary
         ? theme.colorScheme.onSurfaceVariant
-        : _hexColor(workspace.color) ?? theme.colorScheme.primary;
+        : workspaceColor(workspace.color) ?? theme.colorScheme.primary;
     final itemLabel = switch (workspace.type) {
       RemoteWorkspaceType.cowork =>
         '${chats.length} ${chats.length == 1 ? 'chat' : 'chats'}',
@@ -424,84 +425,16 @@ class _WorkspaceHeader extends StatelessWidget {
       ].join(' · '),
     };
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 4),
-          child: Material(
-            color: theme.colorScheme.surfaceContainerLow,
-            borderRadius: BorderRadius.circular(12),
-            child: InkWell(
-              onTap: onToggle,
-              borderRadius: BorderRadius.circular(12),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(10, 8, 4, 8),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 32,
-                      height: 32,
-                      decoration: BoxDecoration(
-                        color: accent.withValues(alpha: 0.18),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Icon(
-                        _workspaceIcon(workspace.type),
-                        size: 17,
-                        color: accent,
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            workspace.name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: theme.textTheme.titleSmall?.copyWith(
-                              fontWeight: AppTypography.emphasisWeight,
-                              fontVariations: AppTypography.emphasisVariations,
-                            ),
-                          ),
-                          Text(
-                            itemLabel,
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: theme.colorScheme.onSurfaceVariant,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    if (onCreateTask case final createTask?)
-                      IconButton(
-                        key: ValueKey('create-task-${workspace.localId}'),
-                        icon: const Icon(Icons.add, size: 20),
-                        tooltip: 'New task in ${workspace.name}',
-                        constraints: const BoxConstraints(
-                          minWidth: 48,
-                          minHeight: 48,
-                        ),
-                        color: theme.colorScheme.onSurfaceVariant,
-                        onPressed: createTaskEnabled ? createTask : null,
-                      ),
-                    SizedBox(
-                      width: 36,
-                      child: Icon(
-                        collapsed ? Icons.chevron_right : Icons.expand_more,
-                        size: 20,
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-      ],
+    return WorkspaceSectionHeader(
+      id: workspace.localId,
+      name: workspace.name,
+      itemLabel: itemLabel,
+      icon: workspaceTypeGlyph(workspace.type?.wire),
+      accent: accent,
+      collapsed: collapsed,
+      onToggle: onToggle,
+      onCreateTask: onCreateTask,
+      createTaskEnabled: createTaskEnabled,
     );
   }
 }
@@ -679,25 +612,7 @@ class _NoOrganizationProjects extends StatelessWidget {
 /// folders for multi-repo, and a single folder for cowork (non-git)
 /// workspaces. (Desktop's GitHub owner-avatar swap needs the local git
 /// remote, which the portal wire does not carry.)
-IconData _workspaceIcon(RemoteWorkspaceType? type) => switch (type) {
-  RemoteWorkspaceType.singleRepo => Icons.code,
-  RemoteWorkspaceType.multiRepo => Icons.folder_copy_outlined,
-  RemoteWorkspaceType.cowork => Icons.folder_outlined,
-  null => Icons.folder_off_outlined,
-};
 
 /// Parses a `#rgb`, `#rrggbb`, or `#aarrggbb` hex string into a [Color],
 /// returning null for absent/malformed values so callers can fall back to a
 /// theme color.
-Color? _hexColor(String? hex) {
-  if (hex == null) return null;
-  var value = hex.replaceFirst('#', '').trim();
-  // Expand 3-digit shorthand (`abc` -> `aabbcc`) before adding the alpha byte.
-  if (value.length == 3) {
-    value = value.split('').map((c) => '$c$c').join();
-  }
-  if (value.length == 6) value = 'ff$value';
-  if (value.length != 8) return null;
-  final parsed = int.tryParse(value, radix: 16);
-  return parsed == null ? null : Color(parsed);
-}

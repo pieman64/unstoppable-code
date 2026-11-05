@@ -1,3 +1,4 @@
+import 'package:mobile/ui/core/widgets/computer_connection_title.dart';
 import 'dart:async';
 
 import 'package:mobile/core/design-system/app-bar/canopy_app_bar.dart';
@@ -12,7 +13,6 @@ import 'package:mobile/data/models/remote_portal_event.dart';
 import 'package:mobile/core/design-system/spinner/dot_spinner.dart';
 import 'package:mobile/ui/core/design_tokens.dart';
 import 'package:mobile/ui/core/status_colors.dart';
-import 'package:mobile/ui/core/typography.dart';
 import 'package:mobile/ui/core/navigation/home_navigation_scope.dart';
 import 'package:mobile/ui/features/remote/view_models/remote_connection_status_label.dart';
 import 'package:mobile/ui/features/remote/view_models/remote_control_view_model.dart';
@@ -238,7 +238,6 @@ class _StackedTitle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final colors = AppColors.of(context);
     final statusColor = switch (label.tone) {
       RemoteConnectionTone.neutral => colors.foregroundSecondary,
@@ -246,35 +245,12 @@ class _StackedTitle extends StatelessWidget {
       RemoteConnectionTone.failed => StatusColors.of(context).failed,
     };
 
-    // The bar's height is fixed, so clamp scaling the same way Material's own
-    // AppBar does for toolbar text. The semantic styles continue to own their
-    // line heights.
-    return MediaQuery.withClampedTextScaling(
-      maxScaleFactor: 1.34,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Text(
-            title,
-            key: titleKey,
-            style: theme.textTheme.titleMedium?.copyWith(
-              color: colors.foreground,
-              fontWeight: AppTypography.emphasisWeight,
-              fontVariations: AppTypography.emphasisVariations,
-            ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-          Text(
-            label.text,
-            key: labelKey,
-            style: theme.textTheme.labelSmall?.copyWith(color: statusColor),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ],
-      ),
+    return ComputerConnectionTitle(
+      title: title,
+      label: label.text,
+      statusColor: statusColor,
+      titleKey: titleKey,
+      labelKey: labelKey,
     );
   }
 }

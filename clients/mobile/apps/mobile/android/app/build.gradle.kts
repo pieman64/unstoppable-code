@@ -17,7 +17,16 @@ plugins {
 // outright. Absence therefore just yields a build with no Firebase at all,
 // which main.dart already tolerates.
 val googleServicesFile = layout.projectDirectory.file("google-services.json")
-if (googleServicesFile.asFile.exists()) {
+// Native fixtures use a separate package so Flutter's reinstall fallback cannot
+// remove the signed-in app or its Android Keystore entries. The fixture has no
+// Firebase account and must never be built as a release artifact.
+val isolatedIntegration = providers.gradleProperty("canopyIntegrationTest").orNull == "true"
+check(!isolatedIntegration || gradle.startParameter.taskNames.none {
+    it.contains("release", ignoreCase = true) || it.contains("profile", ignoreCase = true)
+}) {
+    "The isolated integration package is debug-only."
+}
+if (googleServicesFile.asFile.exists() && !isolatedIntegration) {
     apply(plugin = "com.google.gms.google-services")
     apply(plugin = "com.google.firebase.crashlytics")
 }
@@ -83,6 +92,11 @@ android {
     }
 
     buildTypes {
+        debug {
+            if (isolatedIntegration) {
+                applicationIdSuffix = ".integrationtest"
+            }
+        }
         release {
             // Prefer the real release keystore when configured (see key.properties
             // above); fall back to debug signing only for local
@@ -104,6 +118,16 @@ dependencies {
 kotlin {
     compilerOptions {
         jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+    }
+}
+
+// Aggregate tasks such as assemble/build must also stay within the disposable
+// debug package. Their names alone do not reveal the variants they schedule.
+androidComponents {
+    beforeVariants(selector().all()) { variant ->
+        if (isolatedIntegration && variant.buildType != "debug") {
+            variant.enable = false
+        }
     }
 }
 

@@ -17,6 +17,8 @@
 /// `remote_session.dart`.
 library;
 
+import 'chat_tab_item.dart';
+
 import 'package:mobile/data/models/chat_message.dart';
 import 'package:mobile/data/models/chat_attachment.dart';
 
@@ -235,7 +237,7 @@ class RemoteQueuedMessage {
 }
 
 /// One chat tab row from `state.chatSummaries` (`PortalChatSummaryEntity`).
-class RemoteChatSummary {
+class RemoteChatSummary implements ChatTabItem {
   /// Desktop-owned unread state.
   final bool? hasUnread;
   const RemoteChatSummary({
@@ -292,12 +294,14 @@ class RemoteChatSummary {
   /// means an older host did not send it.
   final int? backgroundDelegations;
 
+  @override
   final String chatId;
   final RemoteChatScope? scope;
   final String title;
   final String? description;
 
   /// Matches the desktop chat tab label.
+  @override
   String get displayTitle => description ?? title;
 
   /// Owning workspace local id (worktree-scoped chats only).

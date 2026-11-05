@@ -16,6 +16,46 @@ For help getting started with Flutter development, view the
 [online documentation](https://docs.flutter.dev/), which offers tutorials,
 samples, guidance on mobile development, and a full API reference.
 
+## Computer connect
+
+The staging-only **Computer connect** destination is available in every build
+mode, including TestFlight release builds. It uses the signed-in personal
+account to discover computers with Remote access enabled. **Connect a computer**
+creates an account API key through the existing API and keeps its ID/secret in
+Keychain/Keystore, separately for each account and server. The key is visible
+and revocable in Account → API keys. It has the existing general account
+permissions, rather than a new connection-only scope.
+
+The app remembers paired computers and selection across launches, keeps
+offline computers visible, and reconnects while active or when resumed.
+**Disconnect** disables automatic reconnect for that computer while preserving
+pairing; **Forget computer** removes its pairing pin after confirmation. The
+initial matching-code approval still happens on desktop. The **Computers**
+menu opens the saved/discovered list. **Developer settings** retains manual
+URL/key entry with an independent device identity and memory-only credentials.
+
+If setup loses its response, it will not silently create another key. Review
+Account → API keys before choosing **Set up access again**. Unreadable saved
+state is preserved. Signing out stops active sessions and recovery; saved
+credentials are only loaded again inside their matching signed-in account and
+server context. Existing installation identity and pairing pins are retained.
+
+Computer connect requires desktop remote protocol 7 or later, with no upper
+version limit. It reads the version from the existing authenticated hello,
+then confirms that exact version before making IPC calls. Each computer keeps
+its own negotiated version, including subsequent status reads. Malformed,
+changing or older connection versions remain blocked. An unavailable operation
+or unreadable application response fails that feature without closing the
+connection. Newer versions can connect, but individual features may still need
+mobile changes if their APIs change. See the
+[compatibility notes](../../docs/planning/2026-11-03-computer-connect-protocol/README.md).
+
+Run `flutter test test/device_link test/architecture` for regression coverage.
+The native recovery target is
+`integration_test/computer_connect_recovery_test.dart`; the isolated runner and
+captures are described in the
+[recovery notes](../../docs/planning/2026-11-01-computer-connect-recovery/README.md).
+
 ## Android keyboard inset regression
 
 `ImeInsetsRecovery` requests fresh Android insets after an IME animation ends,
@@ -24,28 +64,10 @@ so Flutter retains its own animation listeners and normal keyboard avoidance.
 This works around [Flutter #191156](https://github.com/flutter/flutter/issues/191156).
 Re-evaluate the workaround when the upstream engine fix reaches our pinned SDK.
 
-The native integration test uses the real Remote UI and Gboard with local fake
-data (14 projects), checks zero keyboard inset and restored list bounds after
-each return, and verifies that the last project is reachable. Run on an explicit
-Android emulator with the `android` CLI on PATH:
-
-```sh
-KEYBOARD_TEST_ADB=/path/to/Android/sdk/platform-tools/adb \
-KEYBOARD_TEST_DEVICE=emulator-5568 \
-flutter drive --driver=test_driver/keyboard_recovery.dart \
-  --target=integration_test/remote_keyboard_recovery_test.dart \
-  --dart-define=INTERRUPT_KEYBOARD=true -d emulator-5568
-```
-
-The driver launches Home during keyboard opening and resumes the same Activity
-20 times with varied timing. It records actual lifecycle and inset events under
-`build/keyboard-lifecycle-<device>.json`, and captures native screenshots and IME
-state on failure. It uses and removes an `adb reverse` bridge on port 18765;
-run one instance at a time. Test gesture and three-button navigation separately.
-Omit `INTERRUPT_KEYBOARD` for six normal keyboard dismissal/navigation cycles,
-including checks that the composer stays above the keyboard. Add
-`--dart-define=CAPTURE_KEYBOARD_RECOVERY=true` to save successful screenshots
-under `build/keyboard-recovery/`.
+The native keyboard-recovery integration test and its driver were removed in
+the [golden-only test cut](../../docs/golden-tests.md). Re-verify the workaround on an explicit Android emulator with
+Gboard, covering gesture and three-button navigation, using a scratch
+integration test.
 
 ## Shared chat stack
 
@@ -57,8 +79,8 @@ thinking-level, and voice-dictation logic. Remote Control
 (`lib/ui/features/remote/`) and cloud chats (`lib/ui/features/cloud/`) both
 build on it. The two surfaces never depend on each other; `RemoteChatMessage`
 extends the neutral `ChatMessage` to carry its desktop scope.
-`test/architecture/chat_boundary_test.dart` fails the build if any of those
-import rules break. Design notes:
+The import rules are enforced by review; the architecture boundary test was
+removed in the [golden-only test cut](../../docs/golden-tests.md). Design notes:
 `docs/planning/2026-09-20-mobile-cloud-chats/design.md`. The authoritative
 maintainer reference for the cloud surface (routes, SSE stripping rule,
 sourceKey join, outbox and cursor-epoch invariants, availability gate, and
@@ -119,16 +141,7 @@ A desktop without `chat_assets_v1` keeps text and alt text and shows an update
 notice. Entry points from file lists and links are
 separate work; the device test reaches the viewer from a test-only launcher.
 
-```sh
-cd apps/mobile
-flutter test test/ui/features/remote/view_models/remote_file_image_path_test.dart \
-  test/ui/features/remote/view_models/remote_file_view_model_test.dart \
-  test/ui/features/remote/remote_file_screen_test.dart \
-  test/ui/features/remote/remote_image_screen_test.dart
-flutter drive --driver=test_driver/integration_test.dart \
-  --target=integration_test/can_5130_file_viewer_device_test.dart \
-  --dart-define=CAN5130_THEME=dark -d <device-id>
-```
+The viewer's unit, widget and device tests were removed in the [golden-only test cut](../../docs/golden-tests.md).
 
 ## Remote chat controllers (CAN-3429)
 
@@ -197,14 +210,8 @@ recovery behavior and are not covered by this guard. The screen
 calls `_syncWithViewModel` from its view-model listener to apply
 projection bookkeeping and the bound chat's side effects.
 
-```sh
-cd apps/mobile
-flutter test test/ui/features/remote/view_models/remote_chat_tabs_controller_test.dart \
-  test/ui/features/remote/view_models/composer_overrides_controller_test.dart \
-  test/ui/features/remote/remote_chat_screen_test.dart \
-  test/ui/features/remote/remote_chat_composer_test.dart \
-  test/architecture
-```
+`test/ui/features/remote/remote_chat_screen_test.dart` is the registered
+golden for this screen.
 
 ## Remote Control compatibility
 
@@ -218,26 +225,13 @@ cutoff. The cleanup removes local Dart aliases and an unused feedback loader.
 
 ## Remote Control request budgets (CAN-4872)
 
-`test/request_budget/` counts the HTTP requests and event-stream connections
-that the Remote Control client sends across user flows. Each flow fails
-when a count goes above its pinned budget. The tests have the `request-budget`
-tag. CI excludes that tag, so run them locally before and after a network
-change:
+The Remote Control client keeps the HTTP requests and event-stream
+connections of each user flow low. The pinned request-budget suite is retired
+under the [golden-only test policy](../../docs/golden-tests.md); write a local
+budget check under `test/__scratch__/` when a change touches the network path.
 
-```sh
-cd apps/mobile
-flutter test --tags request-budget
-```
-
-Each flow drives the real `HttpRemoteControlRepository`, view model and
-screens at phone width. A synthetic Portal server and desktop in
-`test/support/remote_request_budget_harness.dart` answer the requests. The
-recording client in `test/support/portal_request_recorder.dart` records each
-request before the server answers it. Fake time runs the one-, two- and
-five-minute waits.
-
-CAN-4877 covers a current server tail, a missing or stale tail, and cold-connect
-request ordering. A nonempty server tail can settle chat hydration when its
+For a current server tail, a missing or stale tail, and cold-connect request
+ordering (CAN-4877), a nonempty server tail can settle chat hydration when its
 projection cursor covers the overview and every observed event for that chat,
 and `chatTailCoverage` proves the exact cached message set was seeded by a
 completed targeted desktop snapshot. Mobile installs its ordered message IDs
@@ -253,66 +247,9 @@ so a fresh connect or restore does not depend on another overview push.
 Opening Advisor or chat search still loads it
 on demand. State responses of at least 64 KiB decode and map in an isolate.
 
-These request counts are deterministic regression evidence. They do not measure
-profile-mode device latency or transferred bytes. Measure tap-to-latest-message
-time and received bytes on the same physical device and paired desktop before
-and after a performance change.
-
-The counts use these keys:
-
-- `requests`: every request, including failed and refused requests.
-- `event streams`: event-stream connection attempts (SSE and long-poll). It
-  does not count TCP or TLS sockets.
-- `METHOD endpoint`: the route below the browser Portal path, without the
-  session id, for example `GET state` or `POST commands`.
-- `METHOD endpoint detail`: the state read's `scope`, or the command's
-  `type` with its payload `scope` or PR `action`.
-
-A key that a budget does not name has a limit of zero. Each window prints its
-counts and requests on a `REQUEST_BUDGET` line. A failure lists each count
-above its limit as `window: key: count > limit`.
-
-The fixture models these server and desktop behaviors:
-
-- One paired desktop with one workspace, one worktree with an open PR, and
-  one chat. It announces `foreground_worktree_chat`, `chat_mark_read` and
-  `pr_worktree_actions`; every other capability is off.
-- SSE stays open, with a `: keepalive` every 10 seconds. While the desktop is
-  inactive, each SSE connection gets one inactive batch and ends. After the
-  desktop wakes, the next connection gets one batch that reports it active.
-- A long-poll answers at once with new events or while the desktop is
-  inactive, and otherwise holds for 25 seconds.
-- A test can fail the next event-stream connections with 503, as during a
-  network change.
-- A test can add a working standalone chat. Its `standalone_chat` row
-  arrives in a cursored delta every 5 seconds (CAN-4874).
-- The server waits for `portal.state.request` and `portal.chat.send` results.
-  The desktop runs other commands 100 ms after the acknowledgement.
-- The overview state read returns the chat summary the desktop last
-  projected, as the server's cache does. A test can lose a read's summary,
-  send an older unread summary after the read's completion, send another
-  client's read and an older unread before the read's completion, delay a
-  read's completion by 2 seconds, or let another client read the chat
-  without a summary (CAN-4875).
-- The worktree has one hook. A hook pause or resume sends the desktop's
-  `portal.hook.event` descriptor upsert before its completion (CAN-4875).
-- A worktree create answers with its command id only. The desktop then sends
-  the new worktree's delta and the completion with its id.
-- A project clone sends the workspace delta and the completion. A test can
-  lose both; `GET .../commands/:id` then reports the clone completed.
-- Each action is followed by a fixed 5-second settle window.
-
-`remote_control_connection_reuse_test.dart`, in the same tag, counts real
-TLS connections. A loopback HTTPS server with keep-alive records the client
-port of each request; one port is one TCP and TLS handshake. Session,
-overview and chat-cache reads share one connection, and so do consecutive
-long-polls. Each window prints a `CONNECTION_REUSE` line. The test needs
-`openssl` to make a throwaway certificate, which only that run's clients
-accept.
-
-When a change removes a request, lower the budget in the same change. Do not
-raise a budget to make a change pass; explain any increase in the pull
-request. Post the counts from before and after the change in its issue.
+Measure tap-to-latest-message time, request counts and received bytes on the
+same physical device and paired desktop before and after a network or
+performance change, and post them in the change's issue.
 
 ## Remote Control on-device caches (CAN-4879)
 
@@ -339,30 +276,13 @@ persist subsequent live revisions without another navigation. Notifications to
 mounted, hidden screens do not advance recency or rewrite idle tails. Live
 transcript changes retain the existing write delay and partial-tail protection.
 
-Run the cache and request-count regressions from this directory:
+The cache, request-budget and five-diff profile tests were removed in the
+[golden-only test cut](../../docs/golden-tests.md). Profile cache changes with a scratch integration test that
+records the Dart timeline, frame timings, write count and encoded bytes, and
+run identical before and after builds on the same device.
 
-```sh
-flutter test test/ui/features/remote/remote_file_diff_cache_test.dart \
-  test/ui/features/remote/remote_file_diff_screen_test.dart \
-  test/ui/features/remote/remote_transcript_cache_idle_test.dart \
-  test/data/repositories/remote_transcript_cache_test.dart \
-  test/data/repositories/remote_transcript_cache_interleaving_test.dart
-flutter test --tags request-budget test/request_budget/remote_control_request_budget_test.dart
-```
-
-The [five-diff profile harness](integration_test/can_4879_diff_cache_profile_test.dart)
-uses synthetic patches and real SharedPreferences writes. It records the Dart
-timeline, frame timings, write count and encoded bytes. Run identical before
-and after builds on the same device:
-
-```sh
-flutter drive --profile --no-dds --no-pub \
-  --driver=test_driver/integration_test.dart \
-  --target=integration_test/can_4879_diff_cache_profile_test.dart -d <device-id>
-```
-
-Save `build/integration_response_data.json` after each run. Emulator results
-compare the workload; they do not establish physical-device frame performance.
+Emulator results compare the workload; they do not establish physical-device
+frame performance.
 
 ## Remote Control reconnect pacing (CAN-4873)
 
@@ -419,15 +339,7 @@ until the desktop settles it, like a worktree chat.
 Without the capability, worktree chats keep `portal.editor.list_slash_commands`
 and standalone chats keep built-in actions only, with no Plugins row.
 
-```sh
-cd apps/mobile
-flutter test test/data/models/remote_invocables_test.dart \
-  test/data/repositories/remote_composer_commands_test.dart \
-  test/ui/features/remote/view_models/remote_composer_command_source_test.dart \
-  test/ui/features/remote/view_models/remote_composer_plugins_source_test.dart \
-  test/ui/features/remote/remote_chat_composer_test.dart
-flutter test integration_test/can_3925_composer_inventory_device_test.dart -d <device-id>
-```
+The composer inventory unit and device tests were removed in the [golden-only test cut](../../docs/golden-tests.md).
 
 ## Worktree collation
 
@@ -470,8 +382,8 @@ folded and the full window when opened. This preserves the existing route
 and draft. The adapter supplies geometry only when Flutter's engine does
 not already report a fold. Older SDKs compile without the new UIKit calls.
 
-Run `flutter test test/ui/core/layout test/architecture` for the layout and
-bridge contract checks. The native verification record and remaining
+The layout and bridge contract tests were removed in the [golden-only test cut](../../docs/golden-tests.md).
+The native verification record and remaining
 physical-device checks are in
 [iPhone Duo readiness](../../docs/planning/2026-10-23-iphone-duo/README.md).
 
@@ -503,13 +415,7 @@ results and later user rows clear them. The session layer can call
 `clearPendingQuestions()` after an answer is accepted. Answer delivery and
 secret redaction belong to the structured API/session work, not this mapper.
 
-Focused coverage (ported from the web wire/mapper suites):
-
-```sh
-flutter test test/data/models/cloud_wire_frame_test.dart \
-  test/ui/features/cloud/view_models/cloud_transcript_mapper_test.dart \
-  test/architecture/chat_boundary_test.dart
-```
+The wire and mapper tests were removed in the [golden-only test cut](../../docs/golden-tests.md).
 
 ## Cloud chat session (CAN-3142)
 
@@ -541,10 +447,7 @@ the clock, retry/staleness/request durations and `openStream`, and disable the
 lifecycle observer. Transcript completion is never a substitute for a keyed
 Core terminal event. An unbound or unkeyed terminal forces bootstrap.
 
-```sh
-cd apps/mobile
-flutter test test/ui/features/cloud
-```
+The cloud chat tests were removed in the [golden-only test cut](../../docs/golden-tests.md).
 
 ## Cloud chat screens (CAN-3143)
 
@@ -574,7 +477,4 @@ banner with Retry. Every client-minted id
 (`clientRequestId`, created chat `externalId`) comes from `randomUuidV4`, as
 the routes reject non-UUIDs.
 
-```sh
-cd apps/mobile
-flutter test test/ui/features/cloud test/ui/features/home test/architecture
-```
+The cloud chat tests were removed in the [golden-only test cut](../../docs/golden-tests.md).

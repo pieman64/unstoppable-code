@@ -1,0 +1,245 @@
+import 'package:flutter/material.dart';
+import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
+import 'package:mobile/core/design-system/icon/canopy_icon.dart';
+import 'package:mobile/core/design-system/spinner/dot_spinner.dart';
+import 'package:mobile/device_link/chats/models.dart';
+import 'package:mobile/device_link/worktrees/repository.dart';
+import 'package:mobile/ui/core/chat/widgets/pending_question_indicator.dart';
+import 'package:mobile/ui/core/design_tokens.dart';
+import 'package:mobile/ui/core/dimens.dart';
+import 'package:mobile/ui/core/status_colors.dart';
+import 'package:mobile/ui/core/typography.dart';
+import 'package:mobile/ui/core/workspaces/workspace_navigation_row.dart';
+import 'package:mobile/ui/core/workspaces/workspace_section_header.dart';
+import 'controller.dart';
+
+class DeviceProjectsOverview extends StatefulWidget {
+  const DeviceProjectsOverview({
+    super.key,
+    required this.controller,
+    required this.onOpenWorktree,
+    this.opening = false,
+    this.openError,
+    required this.onOpenChat,
+    this.onCreateTask,
+  });
+  final ComputerConnectController controller;
+  final ValueChanged<DeviceProject>? onCreateTask;
+  final bool opening;
+  final String? openError;
+  final ValueChanged<DeviceWorktree> onOpenWorktree;
+  final ValueChanged<DeviceChatRef> onOpenChat;
+  @override
+  State<DeviceProjectsOverview> createState() => _DeviceProjectsOverviewState();
+}
+
+class _DeviceProjectsOverviewState extends State<DeviceProjectsOverview> {
+  final _expanded = <String>{};
+  @override
+  Widget build(BuildContext context) {
+    final controller = widget.controller;
+    final worktrees = controller.worktrees.worktrees;
+    final projects = controller.worktrees.projects;
+    final colors = AppColors.of(context);
+    final allChats = controller.chats.chats.catalog;
+    final coworkProjectIds = {
+      for (final project in projects)
+        if (project.type == 'cowork') project.id,
+    };
+    final standalone = allChats
+        .where((chat) => coworkProjectIds.contains(chat.projectId))
+        .toList();
+    final rows = <Widget>[
+      if (widget.opening) const LinearProgressIndicator(minHeight: 2),
+      if (controller.error case final error?) Text(error),
+      if (widget.openError case final error?) Text(error),
+      for (final worktree in worktrees.where(
+        (w) => w.status == 'Needs input' || w.unread,
+      ))
+        _worktree(context, worktree, contextLabel: worktree.projectName),
+      Padding(
+        padding: const EdgeInsets.only(bottom: 4),
+        child: Row(
+          children: [
+            Text(
+              'Projects',
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: colors.foregroundSecondary,
+                fontWeight: AppTypography.emphasisWeight,
+                fontVariations: AppTypography.emphasisVariations,
+              ),
+            ),
+            const SizedBox(width: 8),
+            if (projects.isNotEmpty)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 1),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  '${projects.length}',
+                  style: Theme.of(context).textTheme.labelSmall,
+                ),
+              ),
+          ],
+        ),
+      ),
+    ];
+    for (final project in projects) {
+      final branches = worktrees
+          .where((w) => w.projectId == project.id)
+          .toList();
+      final chats = standalone.where((c) => c.projectId == project.id).toList();
+      final empty = project.type == 'cowork' ? chats.isEmpty : branches.isEmpty;
+      if (!project.alwaysShow && empty) continue;
+      rows.add(
+        WorkspaceSectionHeader(
+          key: ValueKey('device-project-${project.id}'),
+          id: project.id,
+          name: project.name,
+          itemLabel: project.type == 'cowork'
+              ? '${chats.length} ${chats.length == 1 ? 'chat' : 'chats'}'
+              : '${branches.length} ${branches.length == 1 ? 'worktree' : 'worktrees'}',
+          icon: workspaceTypeGlyph(project.type),
+          accent: project.temporary
+              ? colors.foregroundSecondary
+              : workspaceColor(project.color) ??
+                    Theme.of(context).colorScheme.primary,
+          collapsed: !_expanded.contains(project.id),
+          onCreateTask: widget.onCreateTask == null
+              ? null
+              : () => widget.onCreateTask!(project),
+          createTaskEnabled: !widget.opening && controller.chats.online,
+          onToggle: () => setState(() {
+            if (!_expanded.remove(project.id)) _expanded.add(project.id);
+          }),
+        ),
+      );
+      if (!_expanded.contains(project.id)) continue;
+      if (branches.isEmpty && chats.isEmpty) {
+        rows.add(
+          Padding(
+            padding: const EdgeInsets.only(
+              left: AppDimens.navRowTitleInset,
+              bottom: 10,
+            ),
+            child: Text(
+              project.type == 'cowork' ? 'No chats' : 'No worktrees',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: colors.foregroundSecondary,
+              ),
+            ),
+          ),
+        );
+      }
+      for (final worktree in branches) {
+        rows.add(_worktree(context, worktree));
+      }
+      for (final chat in chats) {
+        rows.add(_chat(chat));
+      }
+      rows.add(const SizedBox(height: 4));
+    }
+    final nothingLoaded =
+        worktrees.isEmpty && standalone.isEmpty && projects.isEmpty;
+    if (controller.loading && nothingLoaded) {
+      // Like Remote Control, only a first load with nothing to show presents
+      // loading; refreshes behind loaded rows stay silent.
+      rows.add(
+        const Padding(
+          key: ValueKey('device-projects-loading'),
+          padding: EdgeInsets.all(24),
+          child: Center(child: LoadingSpinner(size: 22)),
+        ),
+      );
+    } else if (worktrees.isEmpty && standalone.isEmpty && !controller.loading) {
+      rows.add(
+        const Padding(
+          padding: EdgeInsets.all(24),
+          child: Text('No worktrees are available on this computer.'),
+        ),
+      );
+    }
+    final indexByKey = {
+      for (var index = 0; index < rows.length; index++) ?rows[index].key: index,
+    };
+    return RefreshIndicator(
+      onRefresh: controller.refresh,
+      child: ListView.builder(
+        key: const ValueKey('device-projects-list'),
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
+        itemCount: rows.length,
+        findChildIndexCallback: (key) => indexByKey[key],
+        itemBuilder: (_, index) => rows[index],
+      ),
+    );
+  }
+
+  Widget _chat(DeviceChatRef chat) => ListTile(
+    key: ValueKey('device-overview-chat-${chat.id}'),
+    contentPadding: const EdgeInsets.only(
+      left: AppDimens.navRowTitleInset,
+      right: 16,
+    ),
+    visualDensity: VisualDensity.compact,
+    minTileHeight: 48,
+    title: Text(
+      chat.title,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
+      ),
+    ),
+    onTap: () => widget.onOpenChat(chat),
+  );
+  Widget _worktree(
+    BuildContext context,
+    DeviceWorktree worktree, {
+    String? contextLabel,
+  }) {
+    final status = StatusColors.of(context);
+    return WorkspaceNavigationRow(
+      key: ValueKey(
+        contextLabel == null
+            ? 'device-worktree-${worktree.key}'
+            : 'device-attention-${worktree.key}',
+      ),
+      title: worktree.name,
+      centerLeading: worktree.status == 'Needs input',
+      leading: worktree.status == 'Needs input'
+          ? const PendingQuestionIndicator()
+          : worktree.status == 'Working'
+          ? const ThinkingSpinner(size: 18)
+          : worktree.status == 'Failed'
+          ? CanopyIcon(
+              glyph: CanopyGlyph.circleX,
+              size: 18,
+              tint: status.failed,
+            )
+          : null,
+      titleSignals: worktree.unread
+          ? Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(
+                color: status.unread,
+                shape: BoxShape.circle,
+              ),
+            )
+          : const SizedBox.shrink(),
+      metadata: Text(
+        contextLabel ?? worktree.id,
+        key: const ValueKey('worktree-metadata'),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
+      ),
+      onTap: () => widget.onOpenWorktree(worktree),
+    );
+  }
+}

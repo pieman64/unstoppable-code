@@ -13,6 +13,7 @@ class CanopyTextField extends StatefulWidget {
     this.errorText,
     this.enabled = true,
     this.autofocus = false,
+    this.obscureText = false,
     this.keyboardType,
     this.textInputAction,
     this.onChanged,
@@ -28,6 +29,7 @@ class CanopyTextField extends StatefulWidget {
   final String? errorText;
   final bool enabled;
   final bool autofocus;
+  final bool obscureText;
   final TextInputType? keyboardType;
   final TextInputAction? textInputAction;
   final ValueChanged<String>? onChanged;
@@ -75,6 +77,10 @@ class _CanopyTextFieldState extends State<CanopyTextField> {
       focusNode: _focusNode,
       enabled: widget.enabled,
       autofocus: widget.autofocus,
+      obscureText: widget.obscureText,
+      autocorrect: !widget.obscureText,
+      enableSuggestions: !widget.obscureText,
+      enableIMEPersonalizedLearning: !widget.obscureText,
       keyboardType: widget.keyboardType,
       textInputAction: widget.textInputAction,
       onChanged: widget.onChanged,
