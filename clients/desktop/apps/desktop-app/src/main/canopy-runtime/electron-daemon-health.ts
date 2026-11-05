@@ -18,6 +18,8 @@ import type { ElectronDaemonReachability } from './electron-daemon-connection';
  */
 export interface ElectronDaemonHealth {
   getStatus(): BackgroundServiceStatus;
+  /** Completed outage/reconnect cycles; startup maintenance can re-arm lazily. */
+  getRecoverySequence(): number;
   /** Returns its unsubscribe. Listeners see each change once, in order. */
   onStatusChanged(
     listener: (status: BackgroundServiceStatus) => void,
@@ -55,6 +57,8 @@ export interface ElectronDaemonHealth {
    * failed one re-arms it unless the service was reached meanwhile.
    */
   isLatched(): boolean;
+  /** Recovery handoff: one-way latch; no Try again or late reach can lift it. */
+  beginRecovery(): void;
   /** Quit: ignores every later event and retry. */
   stop(): void;
 }
@@ -87,6 +91,7 @@ export function createElectronDaemonHealth(
   let stopped = false;
   let latched = false;
   let reaches = 0;
+  let recoveries = 0;
 
   const update = (
     state: BackgroundServiceStatus['state'],
@@ -119,6 +124,7 @@ export function createElectronDaemonHealth(
     }
   };
   const reached = (): void => {
+    if (status.state !== 'ok') recoveries += 1;
     reaches += 1;
     latched = false;
     update('ok', 'idle');
@@ -130,6 +136,7 @@ export function createElectronDaemonHealth(
 
   return {
     getStatus: () => status,
+    getRecoverySequence: () => recoveries,
     onStatusChanged(listener): () => void {
       listeners.add(listener);
       return (): void => {
@@ -163,6 +170,10 @@ export function createElectronDaemonHealth(
         update('unavailable', status.retry, reason);
     },
     isLatched: () => latched,
+    beginRecovery(): void {
+      latched = true;
+      stopped = true;
+    },
     setConsumerEnabled(consumer, enabled): void {
       if (enabled) consumers.add(consumer);
       else consumers.delete(consumer);

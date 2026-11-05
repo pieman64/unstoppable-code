@@ -48,7 +48,7 @@ import {
   WORKER_TERMINAL_STREAM_DEFINITIONS,
 } from '@canopy/protocol/canopy-core';
 import {
-  getCanopyDataDir,
+  getResolvedCanopyDataDir,
   getCanopyRuntimeMode,
 } from '@canopy/desktop-shared/canopy-paths';
 import {
@@ -76,14 +76,14 @@ export const ELECTRON_DAEMON_DEFINITIONS = {
     // W6g's record port (CAN-5528): served only by a W5 qualification daemon,
     // so production's manifest refuses each call capability_unavailable.
     ...CORE_WORKSPACE_RECORDS_QUERY_DEFINITIONS,
-    // The daemon-code-graph experiment's renderer reads (CAN-5089).
+    // Default eligible local renderer summary reads (CAN-5719).
     'worker.codeGraph.query':
       WORKER_CODE_GRAPH_READ_QUERY_DEFINITIONS['worker.codeGraph.query'],
   },
   instructions: {
     ...CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
     ...CORE_WORKSPACE_RECORDS_INSTRUCTION_DEFINITIONS,
-    // The daemon-terminals experiment's renderer terminals (CAN-5088).
+    // Eligible local window terminals (CAN-5088).
     ...WORKER_TERMINAL_INSTRUCTION_DEFINITIONS,
     ...WORKER_TERMINAL_SESSION_INSTRUCTION_DEFINITIONS,
     // And its renderer worktree builds (CAN-5089).
@@ -169,7 +169,11 @@ export async function createElectronDaemonHost(
   const platform = hostPlatformServices(createPlatformEndpointServices(os), {
     ...(windowsProcessPath !== undefined && { windowsProcessPath }),
   });
-  const requestedRoot = resolve(inputs.dataRoot ?? getCanopyDataDir());
+  const runtimeMode =
+    inputs.runtimeMode ?? (app.isPackaged ? getCanopyRuntimeMode() : 'dev');
+  const requestedRoot = resolve(
+    inputs.dataRoot ?? getResolvedCanopyDataDir(runtimeMode).path,
+  );
   await mkdir(requestedRoot, { recursive: true, mode: 0o700 });
   const { authorityId, canonicalDataRoot: dataRoot } =
     await deriveLocalAuthorityIdentity(
@@ -263,7 +267,7 @@ export async function createElectronDaemonHost(
   const launch = createCanopyDaemonHostLaunch({
     ...(migration && { migration }),
     dataRoot,
-    runtimeMode: inputs.runtimeMode ?? getCanopyRuntimeMode(),
+    runtimeMode,
     executable,
     platform: os,
     supervision: platform.supervision,

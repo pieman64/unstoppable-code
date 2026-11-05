@@ -418,7 +418,10 @@ async function withWorktreeFileLock<T>(
 }
 
 /** Removes only the two W5 records; directory cleanup belongs to the caller. */
-export function removeWorkspaceRecords(workspaceId: string): Promise<void> {
+export function removeWorkspaceRecords(
+  workspaceId: string,
+  options?: { deferPluginDefaultsRefresh?: true },
+): Promise<void> {
   const removalCommit: W5CommitOptions = {
     operation: 'w5.workspace_records.remove',
   };
@@ -451,11 +454,12 @@ export function removeWorkspaceRecords(workspaceId: string): Promise<void> {
               recentWorktreesSelfWrites.set(workspaceId, Date.now());
               lastWorktreesSelfWriteContent.delete(workspaceId);
               release();
-              projectPluginDefaultsWritten({
-                configPath: getWorkspaceConfigPath(workspaceId),
-                workspaceId,
-                layerChanged: manifest.state === 'present',
-              });
+              if (!options?.deferPluginDefaultsRefresh)
+                projectPluginDefaultsWritten({
+                  configPath: getWorkspaceConfigPath(workspaceId),
+                  workspaceId,
+                  layerChanged: manifest.state === 'present',
+                });
               failedWorktreeWriteInvalidations.delete(
                 getWorkspaceWorktreesFilePath(workspaceId),
               );

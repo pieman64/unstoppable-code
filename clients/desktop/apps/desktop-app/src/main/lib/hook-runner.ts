@@ -644,7 +644,8 @@ async function executeHookActions(
 
           const { launchHookChat } = await import('./hook-chat');
           const startedAt = Date.now();
-          await launchHookChat({
+          const launched = await launchHookChat({
+            identity: { operationId: control.operationId, actionIndex: index },
             projectId: options.projectId,
             worktreeId: options.worktreeId,
             action,
@@ -663,6 +664,12 @@ async function executeHookActions(
               ? { selectedRepoId: options.hook.repoId }
               : {}),
           });
+          if (launched.status !== 'removed')
+            control.recordArtifact({
+              kind: 'chat',
+              id: launched.chatId,
+              actionIndex: index,
+            });
           return {
             success: true,
             stopped: false,

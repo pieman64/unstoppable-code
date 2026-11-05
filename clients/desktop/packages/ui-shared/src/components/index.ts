@@ -5,6 +5,7 @@ export * from './OpenCodeAccountCard';
 // and Node-only imports.
 export * from './StatusBlocks';
 export * from './Stack';
+export * from './Surface';
 export * from './PageColumn';
 export * from './useRetry';
 export * from './AgentDefinitionSummary';
@@ -84,6 +85,7 @@ export * from './IconToggleButton';
 export * from './StartingPointChip';
 export * from './ScrollToBottomButton';
 export * from './Choice';
+export * from './DateField';
 export * from './Field';
 export * from './FormField';
 export * from './InlineTextInput';
@@ -472,3 +474,5 @@ export * from './StartChatSummary';
 export * from './DrawerWatcherControl';
 export * from './DrawerInspectorAction';
 export * from './ReferenceHoverCard';
+
+export * from './W5RecoveryNotice';

@@ -1,4 +1,6 @@
 import { W5_UNREACHABLE_READ_MESSAGE } from '@canopy/core-runtime/node/w5/file-store';
+import { projectRemoteW5Recovery } from '@canopy/protocol/portal';
+import { getDesktopW5RecoveryController } from '../canopy-runtime/desktop-w5-recovery';
 import { listPortalWatchersForSnapshot } from './adapters/watchers-adapter';
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { validateId } from '../lib/validation';
@@ -1291,6 +1293,9 @@ export async function buildPortalSnapshot(
           ? activitySummary.payload
           : {}),
         ...(viewMode ? { viewMode } : {}),
+        w5Recovery: projectRemoteW5Recovery(
+          getDesktopW5RecoveryController().peek(),
+        ),
       },
     });
     recordSection(

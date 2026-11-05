@@ -53,14 +53,14 @@ export interface ConsolidationOutput {
 }
 
 /**
- * Nothing to consolidate: no pending note or import was selected, none was
- * left out by the import budget, and the index is within its limits.
+ * Nothing to consolidate: no pending note or import was selected and the
+ * index is within its limits. Files the budgets left out do not count: with
+ * nothing selected, a model call could consume none of them.
  */
 export function isConsolidationInputClean(input: ConsolidationInput): boolean {
   return (
     input.inboxFiles.length === 0 &&
     input.importFiles.length === 0 &&
-    (input.omittedImportFiles?.fileCount ?? 0) === 0 &&
     input.indexWithinLimits
   );
 }

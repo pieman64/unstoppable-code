@@ -284,7 +284,7 @@ async function directoryIdentity(path: string): Promise<string | null> {
  * removed one's inode and birth time. `create` adds the marker, before
  * effects; comparisons only read it.
  */
-const INCARNATION_MARKER = '.w5-incarnation';
+export const INCARNATION_MARKER = '.w5-incarnation';
 async function projectDirectoryIdentity(
   workspaceId: string,
   create = false,
@@ -322,11 +322,13 @@ async function readIncarnationToken(directory: string): Promise<string | null> {
   }
 }
 /** Publish a complete, synced file without replacing a concurrent lifecycle's token. */
-async function createIncarnationToken(directory: string): Promise<string> {
-  const token = randomUUID();
+async function createIncarnationToken(
+  directory: string,
+  token: string = randomUUID(),
+): Promise<string> {
   const staged = join(directory, `${INCARNATION_MARKER}.${token}`);
+  const handle = await open(staged, 'wx', 0o600);
   try {
-    const handle = await open(staged, 'wx', 0o600);
     try {
       await handle.writeFile(token);
       await handle.sync();
@@ -1004,6 +1006,7 @@ const CHILD_ARCHIVE_STEP_RULES = {
   'cowork-deletion': { resume: 'never' },
   'cowork-summaries-removal': { resume: 'never' },
   'workspace-directory-removal': { resume: 'never' },
+  'workspace-non-w5-children-removal': { resume: 'never' },
   'managed-repository-removal': { resume: 'never' },
   'canonical-index-removal': { resume: 'never' },
   'archived-git-refs': { resume: 'never' },
@@ -1336,6 +1339,72 @@ export function lifecycleTreeRemoval<
   return current()?.adoptedMetadata?.path === path
     ? removeEmptyDirectories
     : removeTree;
+}
+
+/** Removes only this deletion's marker and empty root, restoring the marker on refusal. */
+export async function removeDestructiveWorkspaceDirectory(
+  workspaceId: string,
+): Promise<void> {
+  const directory = getWorkspaceDir(workspaceId);
+  const lifecycle = current();
+  if (!lifecycle) return rmdir(directory);
+  if (
+    lifecycle.record.operation !== 'workspace-delete' ||
+    lifecycle.record.workspaceId !== workspaceId ||
+    lifecycle.record.worktreeId !== undefined
+  )
+    throw recoveryRequired(lifecycle.record);
+  await lifecycle.queue(async () => {
+    await lifecycle.checkIdentity();
+    const identity = await directoryIdentity(directory);
+    if (identity === null) {
+      try {
+        return await rmdir(directory);
+      } catch (error) {
+        await lifecycle.checkIdentity();
+        throw error;
+      }
+    }
+    const token = await readIncarnationToken(directory);
+    let markerRemoved = false;
+    try {
+      if (
+        token !== null &&
+        (await readdir(directory)).every(
+          (child) => child.toLowerCase() === INCARNATION_MARKER,
+        )
+      ) {
+        await lifecycle.checkIdentity();
+        await rm(join(directory, INCARNATION_MARKER));
+        markerRemoved = true;
+        if ((await directoryIdentity(directory)) !== identity)
+          throw recoveryRequired(lifecycle.record);
+      }
+      await rmdir(directory);
+    } catch (error) {
+      try {
+        const actual = await directoryIdentity(directory);
+        if (actual === identity) {
+          // Never overwrite a peer's marker, even when it kept the same root.
+          if (markerRemoved) {
+            if (
+              token === null ||
+              (await createIncarnationToken(directory, token)) !== token
+            )
+              throw recoveryRequired(lifecycle.record);
+            await syncDirectory(directory);
+          }
+          await lifecycle.checkIdentity();
+        } else if (actual !== null || !missing(error)) {
+          throw recoveryRequired(lifecycle.record);
+        }
+      } catch {
+        // Restoration and identity failures must not be tolerated as rmdir errno codes.
+        throw recoveryRequired(lifecycle.record);
+      }
+      throw error;
+    }
+  });
 }
 
 async function removeEmptyDirectories(directory: string): Promise<void> {

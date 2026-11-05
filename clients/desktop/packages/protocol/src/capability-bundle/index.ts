@@ -266,6 +266,33 @@ export interface CapabilityBundleFileTree {
 }
 
 /**
+ * Where a session's synced memory files materialize; mirrors
+ * `MEMORY_CLOUD_SESSION_FILE_TREE_ROOT` in `@canopy/protocol/memory-sync`.
+ */
+export const CAPABILITY_BUNDLE_MEMORY_TREE_ROOT = '.canopy/memory';
+
+/**
+ * A session's synced memory (CAN-5193). Mirrors `MemoryCloudSessionPayload`
+ * in `@canopy/protocol/memory-sync` structurally; that module's schema is
+ * the strict reader. Its files are the entries of exactly one file tree
+ * rooted at {@link CAPABILITY_BUNDLE_MEMORY_TREE_ROOT}, present exactly when
+ * there are files.
+ */
+export interface CapabilityBundleMemory {
+  schemaVersion: 1;
+  renderedAt: string;
+  renderedBlock: string;
+  scopes: {
+    scopeId: string;
+    kind: 'user' | 'project';
+    projectId: string | null;
+    revision: number;
+    cursor: string;
+  }[];
+  files: CapabilityBundleFileTreeEntry[];
+}
+
+/**
  * Reference to one selected shared skill. Mirrors the `skillRefs` element of
  * `PortalChatTabPluginSelections` (`packages/protocol/src/portal`).
  */
@@ -502,6 +529,8 @@ export interface CapabilityBundleV1 {
   skills: CapabilityBundleSkill[];
   mcpServers: CapabilityBundleMcpServer[];
   fileTrees?: CapabilityBundleFileTree[];
+  /** Synced memory for the session; omitted when it carries none. */
+  memory?: CapabilityBundleMemory;
   provenance: CapabilityBundleProvenance;
   warnings: string[];
 }
@@ -589,6 +618,37 @@ export function isCapabilityBundleFileTreeEntry(
     typeof value.size === 'number' &&
     Number.isSafeInteger(value.size) &&
     value.size >= 0
+  );
+}
+
+function isCapabilityBundleMemoryScope(
+  value: unknown,
+): value is CapabilityBundleMemory['scopes'][number] {
+  return (
+    isRecord(value) &&
+    isNonEmptyString(value.scopeId) &&
+    (value.kind === 'user' || value.kind === 'project') &&
+    (value.projectId === null || isNonEmptyString(value.projectId)) &&
+    typeof value.revision === 'number' &&
+    Number.isSafeInteger(value.revision) &&
+    value.revision >= 0 &&
+    isNonEmptyString(value.cursor)
+  );
+}
+
+/** Validates a session's synced memory structurally. */
+function isCapabilityBundleMemory(
+  value: unknown,
+): value is CapabilityBundleMemory {
+  return (
+    isRecord(value) &&
+    value.schemaVersion === 1 &&
+    isNonEmptyString(value.renderedAt) &&
+    typeof value.renderedBlock === 'string' &&
+    Array.isArray(value.scopes) &&
+    value.scopes.every(isCapabilityBundleMemoryScope) &&
+    Array.isArray(value.files) &&
+    value.files.every(isCapabilityBundleFileTreeEntry)
   );
 }
 
@@ -812,6 +872,7 @@ export function isCapabilityBundleV1(
     (value.fileTrees === undefined ||
       (Array.isArray(value.fileTrees) &&
         value.fileTrees.every(isCapabilityBundleFileTree))) &&
+    (value.memory === undefined || isCapabilityBundleMemory(value.memory)) &&
     isCapabilityBundleProvenance(value.provenance) &&
     isStringArray(value.warnings)
   );
@@ -1191,10 +1252,10 @@ export function validateCapabilityBundle(
   // {@link createDestinationCollisionTracker} (casefolded comparison — see
   // its doc for the case-insensitive-filesystem rationale).
   const treeDestinations = createDestinationCollisionTracker();
-  const fileTreeEntryCount = (bundle.fileTrees ?? []).reduce(
-    (total, tree) => total + tree.entries.length,
-    0,
-  );
+  // The memory tree has its own file limit, so plugin trees keep their cap.
+  const fileTreeEntryCount = (bundle.fileTrees ?? [])
+    .filter((tree) => tree.root !== CAPABILITY_BUNDLE_MEMORY_TREE_ROOT)
+    .reduce((total, tree) => total + tree.entries.length, 0);
   if (fileTreeEntryCount > CAPABILITY_BUNDLE_MAX_FILE_TREE_ENTRIES) {
     errors.push(
       `file trees exceed ${String(CAPABILITY_BUNDLE_MAX_FILE_TREE_ENTRIES)} aggregate entries`,
@@ -1244,6 +1305,7 @@ export function validateCapabilityBundle(
     }
   }
 
+  errors.push(...validateCapabilityBundleMemory(bundle));
   errors.push(...validateCapabilityUnavailable(bundle));
   const catalogBrand = bundle.provenance.catalogBrand;
   if (catalogBrand !== undefined) {
@@ -1255,6 +1317,52 @@ export function validateCapabilityBundle(
       );
   }
 
+  return errors;
+}
+
+function memoryEntryKey(entry: CapabilityBundleFileTreeEntry): string {
+  return `${entry.path}\0${entry.sha256}\0${String(entry.size)}`;
+}
+
+/**
+ * The memory file tree is exactly the memory's file list: one tree rooted at
+ * {@link CAPABILITY_BUNDLE_MEMORY_TREE_ROOT} with the same path, hash and
+ * size set, present exactly when there are files, and no such tree without
+ * memory.
+ */
+function validateCapabilityBundleMemory(bundle: CapabilityBundleV1): string[] {
+  const trees = (bundle.fileTrees ?? []).filter(
+    (tree) => tree.root === CAPABILITY_BUNDLE_MEMORY_TREE_ROOT,
+  );
+  const memory = bundle.memory;
+  if (memory === undefined) {
+    return trees.length === 0
+      ? []
+      : [`file tree "${CAPABILITY_BUNDLE_MEMORY_TREE_ROOT}" has no memory`];
+  }
+  const errors: string[] = [];
+  if (trees.length > 1) {
+    errors.push(`more than one "${CAPABILITY_BUNDLE_MEMORY_TREE_ROOT}" tree`);
+  }
+  const tree = trees.length === 0 ? undefined : trees[0];
+  if (memory.files.length === 0) {
+    if (tree !== undefined) errors.push('memory has a file tree but no files');
+    return errors;
+  }
+  if (tree === undefined) {
+    errors.push('memory files have no file tree');
+    return errors;
+  }
+  const expected = new Set(memory.files.map(memoryEntryKey));
+  const actual = new Set(tree.entries.map(memoryEntryKey));
+  if (
+    expected.size !== memory.files.length ||
+    actual.size !== tree.entries.length ||
+    expected.size !== actual.size ||
+    [...expected].some((key) => !actual.has(key))
+  ) {
+    errors.push('memory files and their file tree differ');
+  }
   return errors;
 }
 
@@ -1429,6 +1537,28 @@ export function serializeCanonicalCapabilityBundle(
               size: entry.size,
             })),
           })),
+        }),
+    // Omitted when absent, so a bundle without memory keeps its digest.
+    ...(bundle.memory === undefined
+      ? {}
+      : {
+          memory: {
+            schemaVersion: bundle.memory.schemaVersion,
+            renderedAt: bundle.memory.renderedAt,
+            renderedBlock: bundle.memory.renderedBlock,
+            scopes: bundle.memory.scopes.map((scope) => ({
+              scopeId: scope.scopeId,
+              kind: scope.kind,
+              projectId: scope.projectId,
+              revision: scope.revision,
+              cursor: scope.cursor,
+            })),
+            files: bundle.memory.files.map((file) => ({
+              path: file.path,
+              sha256: file.sha256,
+              size: file.size,
+            })),
+          },
         }),
     provenance: {
       collectionIds: bundle.provenance.collectionIds,

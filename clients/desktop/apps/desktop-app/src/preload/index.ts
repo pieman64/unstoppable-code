@@ -74,6 +74,7 @@ import { ipcRenderer, remoteWindowContext } from './ipc-router';
 import { createChatStateApi } from './api/chat-state-api';
 import { createChatEventSubscription } from './api/chat-event-api';
 import { createCodexSpeedApi } from './api/codex-speed-api';
+import { createW5RecoveryApi } from './api/w5-recovery-api';
 import { createBackgroundServiceApi } from './api/background-service-api';
 import { createPanelLayoutApi } from './api/panel-layout-api';
 import { createAccountOrganizationSettingsApi } from './api/account-organization-settings-api';
@@ -2609,6 +2610,14 @@ const canopyApi: CanopyApi = {
           workspaceId: data.workspaceId,
         };
         callback(event);
+      } else if (
+        typeof data === 'object' &&
+        data !== null &&
+        !('workspaceId' in data) &&
+        'scope' in data &&
+        data.scope === 'all'
+      ) {
+        callback({ scope: 'all' });
       }
     };
     ipcRenderer.on(IPC_CHANNELS.worktreesFileChanged, handler);
@@ -4415,6 +4424,7 @@ const canopyApi: CanopyApi = {
     },
   },
   backgroundService: createBackgroundServiceApi(ipcRenderer),
+  w5Recovery: createW5RecoveryApi(ipcRenderer),
   voice: {
     isSupported: () => ipcRenderer.invoke(IPC_CHANNELS.voiceIsSupported),
     recheckSupported: () => ipcRenderer.invoke(IPC_CHANNELS.voiceResetSupport),

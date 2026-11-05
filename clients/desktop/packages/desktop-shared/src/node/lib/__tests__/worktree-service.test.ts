@@ -1,3 +1,5 @@
+import { isRecord } from '../type-guards';
+import * as corePlatform from '@canopy/core-platform';
 import * as cliReads from '../worktree-cli-reads';
 import * as processLocks from '../../w5-host-cohort/process-file-lock';
 import { execFileSync } from 'node:child_process';
@@ -377,6 +379,72 @@ describe('desktop-shared node worktree service', () => {
     },
   );
 
+  it.each([false, true])(
+    'keeps a peer list edit made during Git, including unknown data (Git fails: %s)',
+    async (failGit) => {
+      const repoPath = path.join(tempDir, 'repo');
+      initRepo(repoPath);
+      const dataDir = process.env.CANOPY_DATA_DIR ?? '';
+      writeWorkspaceIndex(dataDir, [
+        { id: 'single', name: 'Single', type: 'single-repo' },
+      ]);
+      writeWorkspaceConfig(dataDir, 'single', {
+        type: 'single-repo',
+        repoPath,
+      });
+      const listPath = path.join(dataDir, 'workspaces/single/worktrees.json');
+      const git = cliReads.runGit;
+      jest.spyOn(cliReads, 'runGit').mockImplementation(async (args, cwd) => {
+        const result = await git(args, cwd);
+        if (args[0] === 'worktree' && args[1] === 'add') {
+          const previous: unknown = fs.existsSync(listPath)
+            ? JSON.parse(fs.readFileSync(listPath, 'utf8'))
+            : { version: 1, worktrees: [] };
+          if (!isRecord(previous) || !Array.isArray(previous.worktrees))
+            throw new Error('Invalid worktree document');
+          const previousRows: unknown[] = previous.worktrees;
+          fs.writeFileSync(
+            listPath,
+            JSON.stringify({
+              ...previous,
+              futureDocumentField: 'keep',
+              worktrees: [
+                ...previousRows,
+                {
+                  id: 'peer',
+                  branchName: 'peer',
+                  createdAt: '2026-01-01',
+                  futureRowField: { keep: true },
+                },
+              ],
+            }),
+          );
+          if (failGit) throw new Error('Git failed after peer edit');
+        }
+        return result;
+      });
+      const creation = createSingleRepoWorktree({
+        workspaceId: 'single',
+        branchName: 'new',
+      });
+      if (failGit)
+        await expect(creation).rejects.toThrow('Git failed after peer edit');
+      else await creation;
+      const expectedPeer: unknown = expect.arrayContaining([
+        {
+          id: 'peer',
+          branchName: 'peer',
+          createdAt: '2026-01-01',
+          futureRowField: { keep: true },
+        },
+      ]);
+      expect(readWorktrees(dataDir, 'single')).toMatchObject({
+        futureDocumentField: 'keep',
+        worktrees: expectedPeer,
+      });
+    },
+  );
+
   it('journals browser retirement after CLI owner removal without an Electron runtime', async () => {
     const repoPath = path.join(tempDir, 'repo');
     initRepo(repoPath);
@@ -470,6 +538,84 @@ describe('desktop-shared node worktree service', () => {
       ]);
     },
   );
+
+  describe('instruction alias platform selection', () => {
+    const filePorts = jest.requireActual<typeof FsPromises>('node:fs/promises');
+
+    beforeEach(() => {
+      jest.spyOn(filePorts, 'rm').mockResolvedValue(undefined);
+      jest.spyOn(filePorts, 'symlink').mockResolvedValue(undefined);
+      jest.spyOn(filePorts, 'link').mockResolvedValue(undefined);
+      jest.spyOn(filePorts, 'copyFile').mockResolvedValue(undefined);
+    });
+
+    it('selects the default host platform at each invocation', async () => {
+      const selectPlatform = jest
+        .spyOn(corePlatform, 'hostPlatformOperatingSystem')
+        .mockReturnValue('win32');
+      const agentsPath = path.join(tempDir, 'AGENTS.md');
+
+      await ensureAgentsMdSymlinkOrCopy(tempDir);
+
+      expect(filePorts.symlink).not.toHaveBeenCalled();
+      expect(filePorts.link).toHaveBeenCalledWith(
+        path.join(tempDir, 'CLAUDE.md'),
+        agentsPath,
+      );
+      selectPlatform.mockReturnValue('darwin');
+
+      await ensureAgentsMdSymlinkOrCopy(tempDir);
+
+      expect(selectPlatform).toHaveBeenCalledTimes(2);
+      expect(filePorts.symlink).toHaveBeenCalledWith('CLAUDE.md', agentsPath);
+      expect(filePorts.link).toHaveBeenCalledTimes(1);
+      expect(filePorts.copyFile).not.toHaveBeenCalled();
+    });
+
+    it('propagates host selection failure before changing instruction files', async () => {
+      const failure = new corePlatform.PlatformServicesError(
+        'unsupported_platform',
+        'Unsupported test host',
+      );
+      jest
+        .spyOn(corePlatform, 'hostPlatformOperatingSystem')
+        .mockImplementation(() => {
+          throw failure;
+        });
+
+      await expect(ensureAgentsMdSymlinkOrCopy(tempDir)).rejects.toBe(failure);
+
+      expect(filePorts.rm).not.toHaveBeenCalled();
+      expect(filePorts.symlink).not.toHaveBeenCalled();
+      expect(filePorts.link).not.toHaveBeenCalled();
+      expect(filePorts.copyFile).not.toHaveBeenCalled();
+    });
+
+    it.each(['win32', 'darwin', 'linux'] as const)(
+      'bypasses host selection with an explicit %s platform',
+      async (platform) => {
+        const selectPlatform = jest
+          .spyOn(corePlatform, 'hostPlatformOperatingSystem')
+          .mockImplementation(() => {
+            throw new Error('Host selection must not run');
+          });
+
+        await ensureAgentsMdSymlinkOrCopy(tempDir, platform);
+
+        expect(selectPlatform).not.toHaveBeenCalled();
+        expect(filePorts.rm).toHaveBeenCalledWith(
+          path.join(tempDir, 'AGENTS.md'),
+          { recursive: true, force: true },
+        );
+        expect(filePorts.symlink).toHaveBeenCalledTimes(
+          platform === 'win32' ? 0 : 1,
+        );
+        expect(filePorts.link).toHaveBeenCalledTimes(
+          platform === 'win32' ? 1 : 0,
+        );
+      },
+    );
+  });
 
   it('mirrors AGENTS.md without a symlink on Windows', async () => {
     const worktreeRoot = path.join(tempDir, 'windows-instructions');

@@ -1,3 +1,4 @@
+import { applyTerminalSettingsSaveRule } from '@canopy/desktop-shared/node/preferences/terminal-settings';
 import {
   applyOnboardingTipsUpdate,
   normalizeOnboardingTipDismissals,
@@ -657,6 +658,10 @@ export function registerPreferenceHandlers(): void {
       // Follows the proxy's own strategy, which accountProxy.setRoutingStrategy
       // changes first.
       delete rendererPatch.accountProxyLocalRoutingStrategy;
+      // Shells and presets belong to core.terminal.settings (CAN-4148). An
+      // older controller sends this exact two-key intent; a wider snapshot may
+      // be stale and never changes them.
+      applyTerminalSettingsSaveRule(preferences, rendererPatch);
       const previous = await readPreferencesFile();
       const previousCodeGraph = getCodeGraphPreferencesSnapshot();
       const proxy = getMcpHttpProxyService();

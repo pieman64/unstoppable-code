@@ -22,9 +22,8 @@ import { Notice, NoticeButton } from '@canopy/ui-shared/components';
 // control: the state ends only when GitHub is reconnected.
 //
 // Busy: the button keeps `aria-disabled` rather than `disabled`, so a focused
-// button stays focused while Connect runs and its changed label is announced.
-// `NoticeButton` owns its effects (design-system lint), so the busy cue is the
-// `Connecting…` label and `aria-busy`, not a restyle.
+// button stays focused while Connect runs. `NoticeButton` keeps its resting
+// width and shows a loader, with `Connecting…` as the accessible busy label.
 // When the notice unmounts after a successful reconnect, focus is the
 // consumer's to place (the consumer owns what sits around it).
 // ---------------------------------------------------------------------------
@@ -50,12 +49,13 @@ export function GitHubCloudReauthNotice({
           variant="secondary"
           data-testid="github-cloud-reauth-reconnect"
           aria-disabled={busy ? true : undefined}
-          aria-busy={busy ? true : undefined}
+          busy={busy}
+          busyLabel="Connecting…"
           onClick={() => {
             if (!busy) onReconnect();
           }}
         >
-          {busy ? 'Connecting…' : 'Reconnect GitHub'}
+          Reconnect GitHub
         </NoticeButton>
       }
     >

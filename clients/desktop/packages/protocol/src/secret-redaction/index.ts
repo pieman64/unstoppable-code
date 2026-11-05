@@ -26,6 +26,37 @@ export const SECRET_ASSIGNMENT_KEYS_SOURCE =
   'api[_-]?key|access[_-]?key|secret[_-]?access[_-]?key|secret[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|token|secret|password|passwd|pwd';
 
 /**
+ * The placeholders written by the passes from the header pass on, and by the
+ * memory redactor built on this module (`@canopy/memory-consolidation/redaction`),
+ * which runs after them all. The header and key passes leave a value made of
+ * them alone, so a second run changes nothing. A token placeholder written
+ * before those passes is still masked there as `<redacted>`, as it always
+ * was, since no later pass can write one after a key.
+ */
+const LATER_PLACEHOLDERS = [
+  REDACTED,
+  '<redacted-email>',
+  '<redacted-ip>',
+  '<user-home>',
+  '<CONNECTION_STRING>',
+  '<API_KEY>',
+  '<SECRET>',
+  '<TOKEN>',
+] as const;
+
+const LATER_PLACEHOLDER_SOURCE = LATER_PLACEHOLDERS.join('|');
+
+/**
+ * A lookahead that fails where placeholders alone, after `lead`, run to the
+ * end of what a pass would consume: `end` is a class of the characters that
+ * stop its match. `lead` covers optional whitespace the pass could otherwise
+ * give back to start its value before the placeholders.
+ */
+function notPlaceholdersBefore(end: string, lead = ''): string {
+  return `(?!${lead}(?:${LATER_PLACEHOLDER_SOURCE})+(?:${end}|$))`;
+}
+
+/**
  * Ordered list of redaction passes. Order matters: multi-line/structured
  * blocks (PEM) run before token-shaped patterns, and the generic
  * `key: value` / `key=value` masks run after the specific token shapes so a
@@ -33,20 +64,39 @@ export const SECRET_ASSIGNMENT_KEYS_SOURCE =
  */
 interface RedactionPass {
   readonly pattern: RegExp;
-  readonly replacement: string;
+  readonly replacement:
+    | string
+    | ((match: string, target: string | undefined) => string);
+}
+
+/**
+ * The replacement for a `(target)|skip` pattern, which keeps a `skip` match
+ * as it is. `skip` only matches where the target just failed, and consumes
+ * the rest of a run in which every later start fails the same way. The scan
+ * then resumes after the run instead of retrying each position in it, which
+ * takes quadratic time on a long run.
+ */
+function replaceTarget(
+  replacement: string,
+): (match: string, target: string | undefined) => string {
+  return (match, target) => (target === undefined ? match : replacement);
 }
 
 const SECRET_REDACTION_PASSES: ReadonlyArray<RedactionPass> = [
-  // PEM-encoded private key blocks (RSA/EC/OPENSSH/generic).
+  // PEM-encoded private key blocks (RSA/EC/OPENSSH/generic). A header with
+  // no footer after it leaves none for a later header either.
   {
     pattern:
-      /-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9 ]+ )?PRIVATE KEY-----/g,
-    replacement: '<redacted-private-key>',
+      /(-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9 ]+ )?PRIVATE KEY-----)|-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----[\s\S]*/g,
+    replacement: replaceTarget('<redacted-private-key>'),
   },
   // JSON Web Tokens (header.payload.signature, header starts with `eyJ`).
+  // Every start in one run of token characters ends its header segment at
+  // the same place.
   {
-    pattern: /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g,
-    replacement: '<redacted-jwt>',
+    pattern:
+      /(\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)|\beyJ[A-Za-z0-9_-]*/g,
+    replacement: replaceTarget('<redacted-jwt>'),
   },
   // GitHub fine-grained personal access tokens.
   {
@@ -75,8 +125,10 @@ const SECRET_REDACTION_PASSES: ReadonlyArray<RedactionPass> = [
   },
   // Authorization / Cookie / common API-key headers (mask the whole value).
   {
-    pattern:
-      /\b(Authorization|Proxy-Authorization|Cookie|Set-Cookie|X-Api-Key|X-Auth-Token|X-Amz-Security-Token)\s*:\s*([^\r\n]+)/gi,
+    pattern: new RegExp(
+      `\\b(Authorization|Proxy-Authorization|Cookie|Set-Cookie|X-Api-Key|X-Auth-Token|X-Amz-Security-Token)\\s*:${notPlaceholdersBefore('[\\r\\n]', '\\s*')}\\s*([^\\r\\n]+)`,
+      'gi',
+    ),
     replacement: `$1: ${REDACTED}`,
   },
   // Bearer tokens anywhere in the text.
@@ -87,7 +139,7 @@ const SECRET_REDACTION_PASSES: ReadonlyArray<RedactionPass> = [
   // key: value (quoted or unquoted) for secret-bearing keys.
   {
     pattern: new RegExp(
-      `(["']?(?:${SECRET_ASSIGNMENT_KEYS_SOURCE})["']?\\s*:\\s*["']?)([^"',}\\]\\s]+)`,
+      `(["']?(?:${SECRET_ASSIGNMENT_KEYS_SOURCE})["']?\\s*:\\s*["']?)${notPlaceholdersBefore(`["',}\\]\\s]`)}([^"',}\\]\\s]+)`,
       'gi',
     ),
     replacement: `$1${REDACTED}`,
@@ -95,7 +147,7 @@ const SECRET_REDACTION_PASSES: ReadonlyArray<RedactionPass> = [
   // key=value for secret-bearing keys (query strings, env-style, CLI flags).
   {
     pattern: new RegExp(
-      `\\b(${SECRET_ASSIGNMENT_KEYS_SOURCE})=([^\\s&"']+)`,
+      `\\b(${SECRET_ASSIGNMENT_KEYS_SOURCE})=${notPlaceholdersBefore(`[\\s&"']`)}([^\\s&"']+)`,
       'gi',
     ),
     replacement: `$1=${REDACTED}`,
@@ -103,10 +155,13 @@ const SECRET_REDACTION_PASSES: ReadonlyArray<RedactionPass> = [
 ];
 
 const PII_REDACTION_PASSES: ReadonlyArray<RedactionPass> = [
-  // Email addresses (PII).
+  // Email addresses (PII). Every start in one run of address characters
+  // reaches the same `@`. Runs shorter than 16 are not skipped: retrying
+  // them costs little, and ordinary words then never call the replacer.
   {
-    pattern: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g,
-    replacement: '<redacted-email>',
+    pattern:
+      /(\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b)|\b[A-Za-z0-9._%+-]{16,}/g,
+    replacement: replaceTarget('<redacted-email>'),
   },
   // IPv4 addresses (PII).
   {
@@ -119,18 +174,25 @@ const PII_REDACTION_PASSES: ReadonlyArray<RedactionPass> = [
   // `packages/desktop-instrumentation/src/privacy.ts` so direct `redactSecrets`
   // callers (telemetry transcript bodies, branch/workspace names, plan/PR
   // titles) do not leak the username. macOS `/Users/<name>`, Linux
-  // `/home/<name>`, and Windows `<drive>:\Users\<name>`.
+  // `/home/<name>`, and Windows `<drive>:\Users\<name>`. A username never
+  // starts with `<`, so a segment that does starts with a placeholder: it
+  // was already redacted.
   {
-    pattern: /\/Users\/[^/\s)]+/g,
+    pattern: /\/Users\/(?!<)[^/\s)]+/g,
     replacement: '<user-home>',
   },
   {
-    pattern: /\/home\/[^/\s)]+/g,
+    pattern: /\/home\/(?!<)[^/\s)]+/g,
     replacement: '<user-home>',
   },
+  // A drive letter glued to the letters and digits before it takes them
+  // along: masking from the drive letter alone would leave a token, such as
+  // an AWS key, newly ending at a word boundary for a second run to redact.
+  // Every start in one run of letters and digits reaches the same drive
+  // letter, so a run that holds none is skipped whole.
   {
-    pattern: /[A-Za-z]:\\Users\\[^\\\s)]+/g,
-    replacement: '<user-home>',
+    pattern: /([A-Za-z0-9]*[A-Za-z]:\\Users\\(?!<)[^\\\s)]+)|[A-Za-z0-9]{16,}/g,
+    replacement: replaceTarget('<user-home>'),
   },
 ];
 
@@ -140,8 +202,8 @@ const REDACTION_PASSES = [
 ] as const;
 
 /**
- * Mask secrets and PII out of an arbitrary string. Pure and idempotent enough
- * for repeated application (already-redacted markers contain no secret shapes).
+ * Mask secrets and PII out of an arbitrary string. Pure and idempotent:
+ * redacting a redacted text changes nothing.
  *
  * Coverage: API keys / tokens / secrets / passwords expressed as `key: value`
  * or `key=value`, `Authorization`/`Cookie`/`Bearer` headers, JWTs, GitHub
@@ -155,7 +217,9 @@ export function redactSecrets(text: string): string {
   }
   return REDACTION_PASSES.reduce(
     (current, { pattern, replacement }) =>
-      current.replace(pattern, replacement),
+      typeof replacement === 'string'
+        ? current.replace(pattern, replacement)
+        : current.replace(pattern, replacement),
     text,
   );
 }

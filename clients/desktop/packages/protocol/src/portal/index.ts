@@ -1,3 +1,5 @@
+export * from './w5-recovery';
+import type { W5RecoveryStatus } from './w5-recovery';
 import type {
   PortalWatcherDeletePayload,
   PortalWatcherEntity,
@@ -9566,6 +9568,8 @@ export function readPortalWorkspaceAvatarUrl(
 }
 
 export interface PortalSessionShellState {
+  /** Read-only recovery presentation from the paired computer. */
+  w5Recovery?: W5RecoveryStatus;
   /** Current provider account quotas, when the selected host publishes them. */
   providerUsage?: PortalProviderUsageProjection;
   workspaces: Array<{

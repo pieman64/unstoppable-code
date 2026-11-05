@@ -84,7 +84,9 @@ jest.mock('../../lib/script-runner', () => ({
   ),
 }));
 jest.mock('../../lib/hook-chat', () => ({
-  launchHookChat: jest.fn(() => Promise.resolve()),
+  launchHookChat: jest.fn(() =>
+    Promise.resolve({ status: 'started', chatId: 'chat-hook-mock-0' }),
+  ),
 }));
 jest.mock('../../lib/hook-pipeline', () => ({
   launchHookPipeline: jest.fn(() =>

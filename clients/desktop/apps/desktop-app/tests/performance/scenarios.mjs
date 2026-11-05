@@ -1296,6 +1296,7 @@ function prepareCodeGraphConcurrency(userDataDir, config) {
     tabs: [{ id: 'code-graph-probe-chat', title: 'Code Graph Probe' }],
   });
   return {
+    dataRoot: realpathSync(userDataDir),
     workspaceDir,
     worktrees,
     filesPerWorktree: config.codeGraphFixtureFilesPerWorktree,
@@ -13671,7 +13672,7 @@ export async function waitForCodeGraphQueueDrain(
   } catch (error) {
     if (last === null || last.total === 0) throw error;
     throw new Error(
-      `Code Graph queue retained ${last.total} entries after all requests completed`,
+      `Code Graph queue retained ${last.total} entries after all requests completed${last.detail ? `; ${last.detail}` : ''}`,
     );
   }
 }
@@ -13683,6 +13684,35 @@ export function codeGraphQueueCounts(snapshot) {
     running: entries.filter((entry) => entry.status === 'running').length,
     queued: entries.filter((entry) => entry.status === 'queued').length,
   };
+}
+
+/** Only writer hosts directly owned by this scenario's daemon, on macOS/Linux. */
+export function codeGraphDaemonWriterPids(table, daemonPid) {
+  return table.split('\n').flatMap((line) => {
+    const row = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+    return row &&
+      Number(row[2]) === daemonPid &&
+      /--canopy-execution-host=code-graph-build-host\.js(?:\s|$)/.test(row[3])
+      ? [Number(row[1])]
+      : [];
+  });
+}
+
+export function readDaemonCodeGraphWriters(dataRoot) {
+  if (!['darwin', 'linux'].includes(process.platform)) return [];
+  const descriptorPath = path.join(dataRoot, 'runtime', 'core.json');
+  if (!existsSync(descriptorPath)) return [];
+  // Descriptor only: never read the connection token or open a session.
+  const descriptor = JSON.parse(readFileSync(descriptorPath, 'utf8'));
+  if (!Number.isSafeInteger(descriptor.pid) || descriptor.pid <= 0)
+    throw new Error('Code Graph drain cannot identify the fixture daemon PID');
+  return codeGraphDaemonWriterPids(
+    execFileSync('ps', ['-axo', 'pid=,ppid=,args='], {
+      encoding: 'utf8',
+      timeout: 5_000,
+    }),
+    descriptor.pid,
+  );
 }
 
 function readCodeGraphDbCounters(dbPath) {
@@ -13795,21 +13825,61 @@ function startCodeGraphBackgroundBuildRequests(page, worktrees) {
   );
 }
 
-function readCodeGraphBuildRuntime(page) {
-  return page.evaluate(async () => {
-    const queue = await window.api.codeGraphGetGenerationQueue();
-    const builds = window.__CANOPY_PERF_CODE_GRAPH__ ?? null;
-    return {
-      queue,
-      builds:
-        builds === null
-          ? null
-          : {
-              ...builds,
-              admittedWorktreeIds: Object.keys(builds.admitted ?? {}),
-            },
-    };
-  });
+function readCodeGraphBuildRuntime(page, worktrees, backgroundScheduler) {
+  return page.evaluate(
+    async ({ workspaceId, worktreeIds, backgroundScheduler }) => {
+      const builds = window.__CANOPY_PERF_CODE_GRAPH__ ?? null;
+      let queue;
+      if (backgroundScheduler) {
+        queue = await window.api.codeGraphGetGenerationQueue();
+      } else {
+        // Queue view is intentionally local. Manual requests default to the
+        // daemon; summaries expose combined source state, not derived drains.
+        const entries = await Promise.all(
+          worktreeIds.map(async (worktreeId, index) => {
+            const summary = await window.api.codeGraphGetWorktreeSummary({
+              workspaceId,
+              worktreeId,
+            });
+            const status = summary.buildState;
+            if (!['idle', 'queued', 'running'].includes(status)) {
+              throw new Error(
+                `Code Graph build state unavailable for ${worktreeId}: ${JSON.stringify(summary)}`,
+              );
+            }
+            const result = builds?.results[index];
+            if (
+              builds &&
+              (status !== 'idle' ||
+                (result?.status === 'fulfilled' &&
+                  result.value?.ok !== false &&
+                  result.value?.state === 'ready'))
+            ) {
+              // A fast completed build also proves admission between samples.
+              builds.admitted[worktreeId] ??= performance.now();
+            }
+            return { worktreeId, status };
+          }),
+        );
+        queue = { entries: entries.filter((entry) => entry.status !== 'idle') };
+      }
+      return {
+        queue,
+        builds:
+          builds === null
+            ? null
+            : {
+                ...builds,
+                admittedWorktreeIds: Object.keys(builds.admitted ?? {}),
+              },
+      };
+    },
+    {
+      workspaceId: WORKSPACE_ID,
+      worktreeIds: worktrees.map((worktree) => worktree.id),
+      backgroundScheduler,
+    },
+  );
 }
 
 function stopCodeGraphAdmissionTracking(page) {
@@ -13849,10 +13919,12 @@ async function runCodeGraphConcurrencyMode(
   await recordTask(tasks, 'wait_for_empty_code_graph_queue', () =>
     waitUntil(
       async () => {
-        const snapshot = await page.evaluate(() =>
-          window.api.codeGraphGetGenerationQueue(),
+        const { queue } = await readCodeGraphBuildRuntime(
+          page,
+          fixture.worktrees,
+          backgroundScheduler,
         );
-        return snapshot.entries.length === 0 ? snapshot : false;
+        return queue.entries.length === 0 ? queue : false;
       },
       {
         timeoutMs: 120_000,
@@ -13871,7 +13943,11 @@ async function runCodeGraphConcurrencyMode(
   let peakRunningBuilds = 0;
   let peakQueuedBuilds = 0;
   const observeRuntime = async () => {
-    const runtime = await readCodeGraphBuildRuntime(page);
+    const runtime = await readCodeGraphBuildRuntime(
+      page,
+      fixture.worktrees,
+      backgroundScheduler,
+    );
     const counts = codeGraphQueueCounts(runtime.queue);
     peakRunningBuilds = Math.max(peakRunningBuilds, counts.running);
     peakQueuedBuilds = Math.max(peakQueuedBuilds, counts.queued);
@@ -14016,7 +14092,20 @@ async function runCodeGraphConcurrencyMode(
     );
   }
   await recordTask(tasks, 'code_graph_queue_drained', () =>
-    waitForCodeGraphQueueDrain(async () => (await observeRuntime()).counts),
+    waitForCodeGraphQueueDrain(async () => {
+      if (backgroundScheduler) return (await observeRuntime()).counts;
+      // Summary buildState deliberately ignores derived drains. No daemon
+      // queue/completion push reaches the app, and generation reports answer
+      // before derived analysis exits. Keep local queue drain unchanged and
+      // also wait for this fixture daemon's actual writers to exit.
+      const local = codeGraphQueueCounts(await readCodeGraphQueue(page));
+      const writers = readDaemonCodeGraphWriters(fixture.dataRoot);
+      return {
+        ...local,
+        total: local.total + writers.length,
+        detail: `local queue entries=${local.total}; daemon writer PIDs=${JSON.stringify(writers)}`,
+      };
+    }),
   );
   if (backgroundScheduler && peakRunningBuilds !== 1) {
     throw new Error(

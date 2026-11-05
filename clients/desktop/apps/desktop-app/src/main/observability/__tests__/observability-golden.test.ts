@@ -176,14 +176,16 @@ function auditScopes(
  */
 async function withZeroDelayTimers<T>(work: Promise<T>): Promise<T> {
   let settled = false;
-  const tracked = work.finally((): void => {
+  const markSettled = (): void => {
     settled = true;
-  });
+  };
+  void work.then(markSettled, markSettled);
   while (!settled) {
-    await jest.advanceTimersByTimeAsync(0);
+    // Async ticks defer promise-scheduled timeout(0) to now + 1 ms.
+    jest.advanceTimersByTime(0);
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  return tracked;
+  return work;
 }
 
 /** Every cost-index view over the stored audit, built by the real store. */
@@ -276,25 +278,30 @@ async function captureScenario(
   scenario: GoldenScenario,
 ): Promise<CapturedScenario> {
   const host = createDesktopHost(setCurrentService);
-  const run = await runGoldenScenario(host, scenario);
-  const aggregates = await captureAggregates(run.context.ingest);
-  const stores = await captureStores(host.dataRoot);
-  const auditEntries = finalAuditEntries(
-    await readFinalAuditLines(host.dataRoot),
-  );
-  // A fresh process reads only what the earlier ones stored.
-  const restarted = await host.boot();
-  await restarted.start();
-  const restartedAggregates = await captureAggregates(restarted);
-  const costIndex = await captureCostIndex(run, host.dataRoot);
-  return {
-    host,
-    stores,
-    aggregates,
-    restartedAggregates,
-    costIndex,
-    auditEntries,
-  };
+  try {
+    const run = await runGoldenScenario(host, scenario);
+    const aggregates = await captureAggregates(run.context.ingest);
+    const stores = await captureStores(host.dataRoot);
+    const auditEntries = finalAuditEntries(
+      await readFinalAuditLines(host.dataRoot),
+    );
+    // A fresh process reads only what the earlier ones stored.
+    const restarted = await host.boot();
+    await restarted.start();
+    const restartedAggregates = await captureAggregates(restarted);
+    const costIndex = await captureCostIndex(run, host.dataRoot);
+    return {
+      host,
+      stores,
+      aggregates,
+      restartedAggregates,
+      costIndex,
+      auditEntries,
+    };
+  } catch (error) {
+    await disposeAll(host);
+    throw error;
+  }
 }
 
 describe.each(GOLDEN_SCENARIOS.map((scenario) => [scenario.name, scenario]))(
@@ -308,8 +315,11 @@ describe.each(GOLDEN_SCENARIOS.map((scenario) => [scenario.name, scenario]))(
     });
 
     afterAll(async () => {
-      await disposeAll(captured.host);
-      restoreGoldenEnvironment(setCurrentService);
+      try {
+        await disposeAll(captured?.host);
+      } finally {
+        restoreGoldenEnvironment(setCurrentService);
+      }
     });
 
     it('stores the golden records', () => {

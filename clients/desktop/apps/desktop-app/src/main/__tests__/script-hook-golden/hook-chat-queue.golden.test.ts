@@ -1,3 +1,10 @@
+import type { BrowserWindow } from 'electron';
+import type * as PlaceholderModule from '../../lib/hook-chat-placeholders';
+import type {
+  HookChatClaimState,
+  HookChatClaim,
+  HookChatClaimRequest,
+} from '@canopy/core-runtime/node/initiated-work';
 import type {
   ChatHookAction,
   HookChatTabStartedEvent,
@@ -13,6 +20,18 @@ const mockActivityListeners = new Set<() => void>();
 let mockActiveTargets = new Set<string>();
 let mockRendererAvailable = true;
 let mockPreferences: PreferencesData;
+const mockClaimOutcomes: Array<{
+  id: string;
+  accepted: boolean;
+  reason?: string;
+}> = [];
+const mockRemovedChatIds = new Set<string>();
+const mockDeliveredWindows: unknown[] = [];
+let mockDispatchError: Error | undefined;
+let mockNativeAccepts = true;
+let mockAdmissionError: Error | undefined;
+const mockClaimStates = new Map<string, HookChatClaimState>();
+let mockBeforePrepare: (() => Promise<void>) | undefined;
 
 jest.mock('../../lib/window-send', () => ({
   sendToWindow: (
@@ -23,6 +42,7 @@ jest.mock('../../lib/window-send', () => ({
     if (!mockRendererAvailable) return false;
     const event = payload as HookChatTabStartedEvent;
     mockStartedEvents.push(event);
+    mockDeliveredWindows.push(_window);
     mockTrace.push(
       `${channel} ${event.worktreeId} ${event.chatId} ${event.queuedMessage ? 'queued' : 'started'}`,
     );
@@ -30,16 +50,6 @@ jest.mock('../../lib/window-send', () => ({
   },
 }));
 jest.mock('../../lib/chat-tab-dispatch-utils', () => ({
-  upsertPersistedChatTab: (args: {
-    worktreeId: string;
-    tab: { id: string };
-    activateTab: boolean;
-  }): Promise<void> => {
-    mockTrace.push(
-      `persist ${args.worktreeId} ${args.tab.id} activate=${args.activateTab}`,
-    );
-    return Promise.resolve();
-  },
   removePersistedChatTab: (args: { chatId: string }): Promise<void> => {
     mockTrace.push(`remove ${args.chatId}`);
     return Promise.resolve();
@@ -49,11 +59,15 @@ jest.mock('../../lib/chat-tab-dispatch-utils', () => ({
   commitProviderChatEvent: (): Promise<void> => Promise.resolve(),
 }));
 jest.mock('../../lib/worktree-chat-turn', () => ({
-  dispatchWorktreeChatTurn: (args: Record<string, unknown>): Promise<void> => {
+  dispatchWorktreeChatTurn: (
+    args: Record<string, unknown> & { onTurnAccepted?: () => void },
+  ): Promise<void> => {
     mockTrace.push(
       `dispatch ${String(args.worktreeId)} ${String(args.chatId)}`,
     );
     mockDispatches.push(args);
+    if (mockDispatchError) return Promise.reject(mockDispatchError);
+    if (mockNativeAccepts) args.onTurnAccepted?.();
     return Promise.resolve();
   },
 }));
@@ -63,17 +77,80 @@ jest.mock('../../services/chat-queue-service', () => ({
     _userMessageId: string,
     run: (authorization: unknown) => Promise<boolean>,
   ): Promise<void> => {
+    if (mockAdmissionError) {
+      const error = mockAdmissionError;
+      mockAdmissionError = undefined;
+      throw error;
+    }
     await run(undefined);
   },
 }));
 jest.mock('../../services/chat-state-service', () => ({
   getChatStateService: (): unknown => ({
+    createHookChat: (
+      scope: { worktreeId: string },
+      tab: { id: string },
+    ): Promise<string> => {
+      if (mockRemovedChatIds.has(tab.id)) return Promise.resolve('removed');
+      mockTrace.push(`persist ${scope.worktreeId} ${tab.id} activate=false`);
+      return Promise.resolve('created');
+    },
     runWithScopeActivity: async <T>(
       _scope: unknown,
       operation: () => Promise<T>,
     ): Promise<T> => operation(),
   }),
 }));
+const mockClaims = {
+  lookup: ({ chatId }: HookChatClaimRequest): Promise<HookChatClaim | null> =>
+    Promise.resolve(
+      mockClaimStates.has(chatId)
+        ? {
+            status: 'already_claimed',
+            claimOperationId: `claim-${chatId}`,
+            state: mockClaimStates.get(chatId) ?? 'pending',
+          }
+        : null,
+    ),
+  claim: ({ chatId }: HookChatClaimRequest): Promise<HookChatClaim> => {
+    const state = mockClaimStates.get(chatId);
+    if (state)
+      return Promise.resolve({
+        status: 'already_claimed',
+        claimOperationId: `claim-${chatId}`,
+        state,
+      });
+    mockClaimStates.set(chatId, 'pending');
+    return Promise.resolve({
+      status: 'claimed',
+      claimOperationId: `claim-${chatId}`,
+    });
+  },
+  recordAccepted: (id: string): Promise<void> => {
+    mockClaimStates.set(id.slice(6), 'accepted');
+    mockClaimOutcomes.push({ id, accepted: true });
+    return Promise.resolve();
+  },
+  recordNotAccepted: (
+    id: string,
+    _ids: unknown,
+    reason: string,
+  ): Promise<void> => {
+    void _ids;
+    mockClaimStates.set(id.slice(6), 'not_accepted');
+    mockClaimOutcomes.push({ id, accepted: false, reason });
+    return Promise.resolve();
+  },
+  recordFailed: (id: string): Promise<void> => {
+    mockClaimStates.set(id.slice(6), 'not_accepted');
+    mockClaimOutcomes.push({ id, accepted: false, reason: 'failed' });
+    return Promise.resolve();
+  },
+};
+jest.mock('../../lib/hook-initiated-work', () => ({
+  getHookChatClaims: (): unknown => mockClaims,
+}));
+let mockOperationSequence = 0;
 jest.mock('../../services/active-chat-input', () => ({
   notifyCanonicalChatStarted: (): Promise<void> => Promise.resolve(),
 }));
@@ -90,10 +167,13 @@ jest.mock('../../agents/session-manager', () => ({
   },
 }));
 jest.mock('../../lib/preferences-store', () => ({
-  readPreferencesFileDetailed: (): Promise<{
+  readPreferencesFileDetailed: async (): Promise<{
     preferences: PreferencesData;
     authority: 'ok';
-  }> => Promise.resolve({ preferences: mockPreferences, authority: 'ok' }),
+  }> => {
+    await mockBeforePrepare?.();
+    return { preferences: mockPreferences, authority: 'ok' };
+  },
   peekPreferencesLoadError: (): null => null,
   readPreferencesFile: (): Promise<PreferencesData> =>
     Promise.resolve(mockPreferences),
@@ -164,8 +244,12 @@ function launch(
   worktreeId: string,
   prompt: string,
   action: Partial<ChatHookAction> = {},
-): Promise<void> {
+): Promise<HookChatModule.HookChatLaunchResult> {
   return hookChat.launchHookChat({
+    identity: {
+      operationId: `op-${(mockOperationSequence += 1)}`,
+      actionIndex: 0,
+    },
     projectId: 'p',
     worktreeId,
     action: { type: 'chat', prompt, model: 'gpt-5.5', ...action },
@@ -194,6 +278,15 @@ function queueIdAt(index: number): string {
 beforeEach(() => {
   jest.resetModules();
   jest.spyOn(Date, 'now').mockReturnValue(1000);
+  mockOperationSequence = 0;
+  mockClaimStates.clear();
+  mockClaimOutcomes.length = 0;
+  mockRemovedChatIds.clear();
+  mockDeliveredWindows.length = 0;
+  mockDispatchError = undefined;
+  mockNativeAccepts = true;
+  mockAdmissionError = undefined;
+  mockBeforePrepare = undefined;
   mockTrace.length = 0;
   mockStartedEvents.length = 0;
   mockDispatches.length = 0;
@@ -214,18 +307,195 @@ afterEach(() => {
 });
 
 describe('CAN-5062 golden: hook chat start and queue', () => {
+  const sameIdentity = (): Promise<HookChatModule.HookChatLaunchResult> =>
+    hookChat.launchHookChat({
+      identity: { operationId: 'op-retry', actionIndex: 0 },
+      projectId: 'p',
+      worktreeId: 'w-1',
+      action: { type: 'chat', prompt: 'Review', model: 'gpt-5.5' },
+      prompt: 'Review',
+      triggerName: 'pr:checks:fail',
+      getWindow: (): null => null,
+    });
+  it('queues one identity once when concurrent preparation overlaps and cancellation removes it', async () => {
+    mockActiveTargets = new Set(['p/w-1']);
+    let release: (() => void) | undefined;
+    const preparing = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    mockBeforePrepare = (): Promise<void> => preparing;
+    const first = sameIdentity();
+    const second = sameIdentity();
+    await flush();
+    release?.();
+    const [one, two] = await Promise.all([first, second]);
+    expect(one).toEqual({
+      status: 'queued',
+      chatId: 'chat-hook-op-retry-0',
+      queueId: 'queued-hook-op-retry-0',
+    });
+    expect(two).toEqual(one);
+    expect(mockStartedEvents).toHaveLength(1);
+    expect(
+      await hookChat.cancelQueuedHookChat('queued-hook-op-retry-0'),
+    ).toEqual({ cancelled: true });
+    expect(
+      hookChat.hasQueuedHookChat({
+        projectId: 'p',
+        worktreeId: 'w-1',
+        chatId: 'chat-hook-op-retry-0',
+      }),
+    ).toBe(false);
+    await activityCleared();
+    expect(mockDispatches).toHaveLength(0);
+  });
+  it('returns removed when a cancelled queued identity is retried', async () => {
+    mockActiveTargets = new Set(['p/w-1']);
+    const queued = await sameIdentity();
+    expect(queued).toEqual({
+      status: 'queued',
+      chatId: 'chat-hook-op-retry-0',
+      queueId: 'queued-hook-op-retry-0',
+    });
+    expect(
+      await hookChat.cancelQueuedHookChat('queued-hook-op-retry-0'),
+    ).toEqual({ cancelled: true });
+    expect(await sameIdentity()).toEqual({
+      status: 'removed',
+      chatId: 'chat-hook-op-retry-0',
+    });
+    expect(mockStartedEvents).toHaveLength(1);
+    expect(
+      hookChat.hasQueuedHookChat({
+        projectId: 'p',
+        worktreeId: 'w-1',
+        chatId: 'chat-hook-op-retry-0',
+      }),
+    ).toBe(false);
+    await activityCleared();
+    expect(mockDispatches).toHaveLength(0);
+    expect(mockTrace.some((entry) => entry.startsWith('persist '))).toBe(false);
+    expect(mockClaimStates.size).toBe(0);
+  });
+
+  it('returns an existing durable claim without queueing a placeholder on a busy worktree', async () => {
+    expect(await sameIdentity()).toMatchObject({ status: 'started' });
+    mockActiveTargets = new Set(['p/w-1']);
+    const events = mockStartedEvents.length;
+    expect(await sameIdentity()).toEqual({
+      status: 'already_started',
+      chatId: 'chat-hook-op-retry-0',
+    });
+    expect(mockStartedEvents).toHaveLength(events);
+    expect(
+      hookChat.hasQueuedHookChat({
+        projectId: 'p',
+        worktreeId: 'w-1',
+        chatId: 'chat-hook-op-retry-0',
+      }),
+    ).toBe(false);
+    await activityCleared();
+    expect(mockDispatches).toHaveLength(1);
+  });
+
+  it('starts one turn and records acceptance for repeated launches of one action', async () => {
+    await sameIdentity();
+    expect(await sameIdentity()).toEqual({
+      status: 'already_started',
+      chatId: 'chat-hook-op-retry-0',
+    });
+    expect(mockDispatches).toHaveLength(1);
+    expect(
+      mockTrace.filter((entry) => entry.startsWith('persist ')),
+    ).toHaveLength(1);
+    expect(mockClaimOutcomes).toEqual([
+      { id: 'claim-chat-hook-op-retry-0', accepted: true },
+    ]);
+  });
+  it('records a native turn that returned without acceptance and never starts it twice', async () => {
+    mockNativeAccepts = false;
+    await sameIdentity();
+    expect(mockClaimOutcomes).toEqual([
+      { id: 'claim-chat-hook-op-retry-0', accepted: false, reason: 'returned' },
+    ]);
+    expect(await sameIdentity()).toMatchObject({ status: 'already_started' });
+    expect(mockDispatches).toHaveLength(1);
+  });
+  it('keeps a failed start claimed instead of dispatching another turn on retry', async () => {
+    mockDispatchError = new Error('provider down');
+    await expect(sameIdentity()).rejects.toThrow('provider down');
+    expect(mockClaimOutcomes).toEqual([
+      { id: 'claim-chat-hook-op-retry-0', accepted: false, reason: 'failed' },
+    ]);
+    expect(await sameIdentity()).toMatchObject({ status: 'already_started' });
+    expect(mockDispatches).toHaveLength(1);
+  });
+  it('records terminal acceptance and never relaunches a claimed terminal chat', async () => {
+    mockPreferences.defaultChatInterfaceMode = 'claude-code';
+    await launch('w-1', 'Review', { model: 'claude-sonnet-4-6' });
+    mockOperationSequence = 0;
+    expect(
+      await launch('w-1', 'Review', { model: 'claude-sonnet-4-6' }),
+    ).toMatchObject({ status: 'already_started' });
+    expect(
+      mockTrace.filter((entry) => entry.startsWith('terminal ')),
+    ).toHaveLength(1);
+    expect(mockClaimOutcomes).toEqual([
+      { id: 'claim-chat-hook-op-1-0', accepted: true },
+    ]);
+  });
+  it('does not recreate a removed chat and records its removed outcome', async () => {
+    mockRemovedChatIds.add('chat-hook-op-retry-0');
+    expect(await sameIdentity()).toMatchObject({ status: 'removed' });
+    expect(mockDispatches).toHaveLength(0);
+    expect(
+      mockTrace.filter((entry) => entry.startsWith('persist ')),
+    ).toHaveLength(0);
+    expect(mockClaimOutcomes).toEqual([
+      { id: 'claim-chat-hook-op-retry-0', accepted: false, reason: 'removed' },
+    ]);
+  });
+  it('takes no claim before ordinary admission succeeds', async () => {
+    mockAdmissionError = new Error('Another turn owns this chat.');
+    await expect(sameIdentity()).rejects.toThrow(
+      'Another turn owns this chat.',
+    );
+    expect(mockClaimStates.size).toBe(0);
+    expect(await sameIdentity()).toMatchObject({ status: 'started' });
+  });
+  it('replays queued placeholders in order to a window that comes up', async () => {
+    mockActiveTargets = new Set(['p/w-1']);
+    mockRendererAvailable = false;
+    await launch('w-1', 'first');
+    await launch('w-1', 'second');
+    const window = {} as BrowserWindow;
+    mockRendererAvailable = true;
+    jest
+      .requireActual<
+        typeof PlaceholderModule
+      >('../../lib/hook-chat-placeholders')
+      .replayHookChatPlaceholders(window);
+    expect(
+      mockStartedEvents.map((event) => event.queuedMessage?.queueId),
+    ).toEqual(['queued-hook-op-1-0', 'queued-hook-op-2-0']);
+    expect(
+      mockStartedEvents.every((event) => event.activateTab === false),
+    ).toBe(true);
+    expect(mockDeliveredWindows).toEqual([window, window]);
+  });
+
   it('starts at once on an idle worktree, in the background', async () => {
     await launch('w-1', 'Fix the checks');
     expect(mockTrace).toEqual([
-      'persist w-1 chat-hook-1000-1 activate=false',
-      'chat:hook-tab-started w-1 chat-hook-1000-1 started',
-      'dispatch w-1 chat-hook-1000-1',
+      'persist w-1 chat-hook-op-1-0 activate=false',
+      'chat:hook-tab-started w-1 chat-hook-op-1-0 started',
+      'dispatch w-1 chat-hook-op-1-0',
     ]);
     expect(mockDispatches[0]).toMatchObject({
       projectId: 'p',
       worktreeId: 'w-1',
-      chatId: 'chat-hook-1000-1',
-      userMessageId: 'msg-hook-1000-2',
+      chatId: 'chat-hook-op-1-0',
+      userMessageId: 'msg-hook-op-1-0',
       text: 'Fix the checks',
       executionContext: 'personal',
       planMode: false,
@@ -242,13 +512,13 @@ describe('CAN-5062 golden: hook chat start and queue', () => {
     mockActiveTargets = new Set(['p/w-1']);
     await launch('w-1', `  ${'x'.repeat(450)}  `);
     expect(mockTrace).toEqual([
-      'chat:hook-tab-started w-1 chat-hook-1000-1 queued',
+      'chat:hook-tab-started w-1 chat-hook-op-1-0 queued',
     ]);
     const queued = mockStartedEvents[0];
     expect(queued?.activateTab).toBe(false);
     expect(queued?.tab.messages).toEqual([]);
     expect(queued?.queuedMessage).toEqual({
-      queueId: 'queued-hook-1000-3',
+      queueId: 'queued-hook-op-1-0',
       text: `${'x'.repeat(400)}...`,
       reason: 'Waiting for active chat sessions to finish.',
       hookInfo: { triggerName: 'pr:checks:fail', timestamp: 1000 },
@@ -257,7 +527,7 @@ describe('CAN-5062 golden: hook chat start and queue', () => {
       hookChat.hasQueuedHookChat({
         projectId: 'p',
         worktreeId: 'w-1',
-        chatId: 'chat-hook-1000-1',
+        chatId: 'chat-hook-op-1-0',
       }),
     ).toBe(true);
 
@@ -266,15 +536,15 @@ describe('CAN-5062 golden: hook chat start and queue', () => {
 
     await activityCleared();
     expect(mockTrace.slice(1)).toEqual([
-      'persist w-1 chat-hook-1000-1 activate=false',
-      'chat:hook-tab-started w-1 chat-hook-1000-1 started',
-      'dispatch w-1 chat-hook-1000-1',
+      'persist w-1 chat-hook-op-1-0 activate=false',
+      'chat:hook-tab-started w-1 chat-hook-op-1-0 started',
+      'dispatch w-1 chat-hook-op-1-0',
     ]);
     expect(
       hookChat.hasQueuedHookChat({
         projectId: 'p',
         worktreeId: 'w-1',
-        chatId: 'chat-hook-1000-1',
+        chatId: 'chat-hook-op-1-0',
       }),
     ).toBe(false);
   });
@@ -285,11 +555,11 @@ describe('CAN-5062 golden: hook chat start and queue', () => {
     await launch('w-1', 'second');
     await launch('w-2', 'other');
     expect(mockTrace).toEqual([
-      'chat:hook-tab-started w-1 chat-hook-1000-1 queued',
-      'chat:hook-tab-started w-1 chat-hook-1000-4 queued',
-      'persist w-2 chat-hook-1000-7 activate=false',
-      'chat:hook-tab-started w-2 chat-hook-1000-7 started',
-      'dispatch w-2 chat-hook-1000-7',
+      'chat:hook-tab-started w-1 chat-hook-op-1-0 queued',
+      'chat:hook-tab-started w-1 chat-hook-op-2-0 queued',
+      'persist w-2 chat-hook-op-3-0 activate=false',
+      'chat:hook-tab-started w-2 chat-hook-op-3-0 started',
+      'dispatch w-2 chat-hook-op-3-0',
     ]);
 
     await activityCleared(['p/w-1']);
@@ -297,12 +567,12 @@ describe('CAN-5062 golden: hook chat start and queue', () => {
 
     await activityCleared();
     expect(mockTrace.slice(5)).toEqual([
-      'persist w-1 chat-hook-1000-1 activate=false',
-      'chat:hook-tab-started w-1 chat-hook-1000-1 started',
-      'dispatch w-1 chat-hook-1000-1',
-      'persist w-1 chat-hook-1000-4 activate=false',
-      'chat:hook-tab-started w-1 chat-hook-1000-4 started',
-      'dispatch w-1 chat-hook-1000-4',
+      'persist w-1 chat-hook-op-1-0 activate=false',
+      'chat:hook-tab-started w-1 chat-hook-op-1-0 started',
+      'dispatch w-1 chat-hook-op-1-0',
+      'persist w-1 chat-hook-op-2-0 activate=false',
+      'chat:hook-tab-started w-1 chat-hook-op-2-0 started',
+      'dispatch w-1 chat-hook-op-2-0',
     ]);
   });
 
@@ -313,14 +583,14 @@ describe('CAN-5062 golden: hook chat start and queue', () => {
     await launch('w-1', 'second');
     await flush();
     expect(mockTrace).toEqual([
-      'chat:hook-tab-started w-1 chat-hook-1000-1 queued',
-      'chat:hook-tab-started w-1 chat-hook-1000-4 queued',
-      'persist w-1 chat-hook-1000-1 activate=false',
-      'chat:hook-tab-started w-1 chat-hook-1000-1 started',
-      'dispatch w-1 chat-hook-1000-1',
-      'persist w-1 chat-hook-1000-4 activate=false',
-      'chat:hook-tab-started w-1 chat-hook-1000-4 started',
-      'dispatch w-1 chat-hook-1000-4',
+      'chat:hook-tab-started w-1 chat-hook-op-1-0 queued',
+      'chat:hook-tab-started w-1 chat-hook-op-2-0 queued',
+      'persist w-1 chat-hook-op-1-0 activate=false',
+      'chat:hook-tab-started w-1 chat-hook-op-1-0 started',
+      'dispatch w-1 chat-hook-op-1-0',
+      'persist w-1 chat-hook-op-2-0 activate=false',
+      'chat:hook-tab-started w-1 chat-hook-op-2-0 started',
+      'dispatch w-1 chat-hook-op-2-0',
     ]);
   });
 
@@ -328,18 +598,32 @@ describe('CAN-5062 golden: hook chat start and queue', () => {
     mockActiveTargets = new Set(['p/w-1']);
     await launch('w-1', 'concurrent', { allowChatConcurrency: true });
     expect(mockTrace).toEqual([
-      'persist w-1 chat-hook-1000-1 activate=false',
-      'chat:hook-tab-started w-1 chat-hook-1000-1 started',
-      'dispatch w-1 chat-hook-1000-1',
+      'persist w-1 chat-hook-op-1-0 activate=false',
+      'chat:hook-tab-started w-1 chat-hook-op-1-0 started',
+      'dispatch w-1 chat-hook-op-1-0',
     ]);
   });
 
-  it('refuses to queue without a renderer window', async () => {
+  it('queues without a renderer window and starts once activity clears', async () => {
     mockActiveTargets = new Set(['p/w-1']);
     mockRendererAvailable = false;
-    await expect(launch('w-1', 'nobody')).rejects.toThrow(
-      'Hook chat requires an active renderer window before it can start.',
-    );
+    await expect(launch('w-1', 'nobody')).resolves.toMatchObject({
+      status: 'queued',
+    });
+    expect(mockTrace).toEqual([]);
+    await activityCleared();
+    expect(mockTrace).toEqual([
+      'persist w-1 chat-hook-op-1-0 activate=false',
+      'dispatch w-1 chat-hook-op-1-0',
+    ]);
+  });
+  it('starts at once on an idle worktree without a renderer window', async () => {
+    mockRendererAvailable = false;
+    await launch('w-1', 'nobody');
+    expect(mockTrace).toEqual([
+      'persist w-1 chat-hook-op-1-0 activate=false',
+      'dispatch w-1 chat-hook-op-1-0',
+    ]);
   });
 });
 
@@ -347,7 +631,7 @@ describe('CAN-5062 golden: queued hook chat edits', () => {
   const target = {
     projectId: 'p',
     worktreeId: 'w-1',
-    chatId: 'chat-hook-1000-1',
+    chatId: 'chat-hook-op-1-0',
   };
 
   it('applies plan, approval, thinking, plugin and model edits to the start', async () => {
@@ -414,9 +698,9 @@ describe('CAN-5062 golden: queued hook chat edits', () => {
 
     await activityCleared();
     expect(mockTrace.slice(-3)).toEqual([
-      'persist w-1 chat-hook-1000-1 activate=false',
-      'chat:hook-tab-started w-1 chat-hook-1000-1 started',
-      'terminal chat-hook-1000-1',
+      'persist w-1 chat-hook-op-1-0 activate=false',
+      'chat:hook-tab-started w-1 chat-hook-op-1-0 started',
+      'terminal chat-hook-op-1-0',
     ]);
     const started = mockStartedEvents.at(-1)?.tab;
     expect(started).toMatchObject({
@@ -466,9 +750,9 @@ describe('CAN-5062 golden: queued hook chat cancel and force', () => {
 
     await activityCleared();
     expect(mockTrace.slice(2)).toEqual([
-      'persist w-1 chat-hook-1000-4 activate=false',
-      'chat:hook-tab-started w-1 chat-hook-1000-4 started',
-      'dispatch w-1 chat-hook-1000-4',
+      'persist w-1 chat-hook-op-2-0 activate=false',
+      'chat:hook-tab-started w-1 chat-hook-op-2-0 started',
+      'dispatch w-1 chat-hook-op-2-0',
     ]);
   });
 
@@ -481,9 +765,9 @@ describe('CAN-5062 golden: queued hook chat cancel and force', () => {
       forced: true,
     });
     expect(mockTrace.slice(1)).toEqual([
-      'persist w-1 chat-hook-1000-1 activate=false',
-      'chat:hook-tab-started w-1 chat-hook-1000-1 started',
-      'dispatch w-1 chat-hook-1000-1',
+      'persist w-1 chat-hook-op-1-0 activate=false',
+      'chat:hook-tab-started w-1 chat-hook-op-1-0 started',
+      'dispatch w-1 chat-hook-op-1-0',
     ]);
     expect(await hookChat.forceQueuedHookChat(queueId)).toEqual({
       forced: false,

@@ -123,4 +123,10 @@ export interface TerminalDrawerPreferences {
   disabledTerminalShellProfileIds: TerminalShellProfileId[];
   /** User-defined shell + command shortcuts offered in the panel picker. */
   terminalPresets: TerminalPreset[];
+  /**
+   * Revision of `disabledTerminalShellProfileIds` and `terminalPresets`
+   * (CAN-4148). It moves exactly when either committed value changes; the
+   * preference merge sets it and no patch can. Starts at 0.
+   */
+  terminalSettingsRevision: number;
 }

@@ -1,3 +1,4 @@
+import { assertHelperWorkerContext } from '../helper-runs/helper-worker-context';
 import { query as claudeQuery } from '@anthropic-ai/claude-agent-sdk';
 import { BRAND } from '@canopy/brand/current';
 import {
@@ -117,6 +118,7 @@ class PipelineAdvisorCodexTurnError extends PipelineAdvisorTurnError {
 export async function runPipelineAdvisorSdkTurn(
   input: PipelineAdvisorSdkTurnInput,
 ): Promise<PipelineAdvisorSdkTurnResult> {
+  assertHelperWorkerContext('runPipelineAdvisorSdkTurn');
   let retainedSessionId = input.sdkSessionId;
   return runWithTransientAgentRetry({
     provider: input.provider,

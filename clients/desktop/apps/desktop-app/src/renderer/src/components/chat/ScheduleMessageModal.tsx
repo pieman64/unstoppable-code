@@ -1,9 +1,12 @@
 import { useCallback, useMemo, useState, type JSX } from 'react';
 import {
   Button,
+  DateField,
   DialogModal,
   FormField,
-  TextInput,
+  Select,
+  toIsoDateValue,
+  type SelectOption,
 } from '@canopy/ui-shared/components';
 
 interface ScheduleMessageModalProps {
@@ -20,24 +23,51 @@ interface ScheduleMessageModalProps {
   ownerDocument?: Document;
 }
 
-function pad(value: number, length = 2): string {
-  return value.toString().padStart(length, '0');
+/** The time picker offers a send time every quarter hour. */
+const TIME_STEP_MINUTES = 15;
+const MINUTES_PER_DAY = 24 * 60;
+
+function pad(value: number): string {
+  return value.toString().padStart(2, '0');
 }
 
-function toDateInputValue(date: Date): string {
-  return `${pad(date.getFullYear(), 4)}-${pad(date.getMonth() + 1)}-${pad(
-    date.getDate(),
-  )}`;
+function toTimeValue(minutes: number): string {
+  return `${pad(Math.floor(minutes / 60))}:${pad(minutes % 60)}`;
 }
 
-function toTimeInputValue(date: Date): string {
-  return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+function minutesOfDay(date: Date): number {
+  return date.getHours() * 60 + date.getMinutes();
+}
+
+const TIME_LABEL_FORMAT = new Intl.DateTimeFormat(undefined, {
+  hour: 'numeric',
+  minute: '2-digit',
+});
+
+function timeLabel(minutes: number): string {
+  return TIME_LABEL_FORMAT.format(
+    new Date(2000, 0, 1, Math.floor(minutes / 60), minutes % 60),
+  );
+}
+
+/**
+ * The first quarter hour at least five minutes away, so a new schedule
+ * defaults to a time that is still in the future when the person saves.
+ */
+function defaultRunAt(): Date {
+  const earliest = new Date(Date.now() + 5 * 60 * 1000);
+  const minutes = minutesOfDay(earliest);
+  const rounded =
+    Math.ceil(minutes / TIME_STEP_MINUTES) * TIME_STEP_MINUTES - minutes;
+  earliest.setMinutes(earliest.getMinutes() + rounded, 0, 0);
+  return earliest;
 }
 
 /**
  * Minimal centered modal for staging a one-time scheduled send. Defaults to
- * today at the current time + 5 minutes. The composer owns persistence; this
- * modal only validates and hands back an ISO future-local time.
+ * the first quarter hour at least five minutes away. The composer owns
+ * persistence; this modal only validates and hands back an ISO future-local
+ * time.
  */
 export function ScheduleMessageModal({
   initialRunAt,
@@ -47,11 +77,11 @@ export function ScheduleMessageModal({
 }: ScheduleMessageModalProps): JSX.Element {
   const defaults = useMemo(() => {
     const seed = initialRunAt ? new Date(initialRunAt) : null;
-    const base =
-      seed && !Number.isNaN(seed.getTime())
-        ? seed
-        : new Date(Date.now() + 5 * 60 * 1000);
-    return { date: toDateInputValue(base), time: toTimeInputValue(base) };
+    const base = seed && !Number.isNaN(seed.getTime()) ? seed : defaultRunAt();
+    return {
+      date: toIsoDateValue(base),
+      time: toTimeValue(minutesOfDay(base)),
+    };
   }, [initialRunAt]);
 
   const [date, setDate] = useState(defaults.date);
@@ -62,6 +92,28 @@ export function ScheduleMessageModal({
     readonly field: 'date' | 'time';
     readonly message: string;
   } | null>(null);
+
+  const today = toIsoDateValue(new Date());
+  const timeOptions = useMemo((): SelectOption[] => {
+    const slots = new Set<string>([defaults.time]);
+    for (
+      let minutes = 0;
+      minutes < MINUTES_PER_DAY;
+      minutes += TIME_STEP_MINUTES
+    ) {
+      slots.add(toTimeValue(minutes));
+    }
+    // Earlier today has passed: those slots stay listed but can't be chosen.
+    const now = date === today ? toTimeValue(minutesOfDay(new Date())) : null;
+    return [...slots].sort().map((slot) => {
+      const [hours = 0, minutes = 0] = slot.split(':').map(Number);
+      return {
+        value: slot,
+        label: timeLabel(hours * 60 + minutes),
+        disabled: now !== null && slot <= now,
+      };
+    });
+  }, [date, today, defaults.time]);
 
   const handleSave = useCallback((): void => {
     if (!date || !time) {
@@ -117,12 +169,13 @@ export function ScheduleMessageModal({
         error={error?.field === 'date' ? error.message : undefined}
       >
         {(control) => (
-          <TextInput
+          <DateField
             {...control}
-            type="date"
             value={date}
-            onChange={(event): void => {
-              setDate(event.target.value);
+            min={today}
+            ownerDocument={ownerDocument}
+            onValueChange={(next): void => {
+              setDate(next);
               setError(null);
             }}
             data-testid="schedule-message-date"
@@ -134,12 +187,12 @@ export function ScheduleMessageModal({
         error={error?.field === 'time' ? error.message : undefined}
       >
         {(control) => (
-          <TextInput
+          <Select
             {...control}
-            type="time"
+            options={timeOptions}
             value={time}
-            onChange={(event): void => {
-              setTime(event.target.value);
+            onValueChange={(next): void => {
+              setTime(next);
               setError(null);
             }}
             data-testid="schedule-message-time"

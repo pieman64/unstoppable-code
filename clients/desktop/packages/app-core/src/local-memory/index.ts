@@ -1,8 +1,9 @@
 /**
  * Host port for the Memory panel: the personal memories agents save on this
  * computer, in a user scope (every project) and a workspace scope (one
- * project). The desktop host implements it over its local memory IPC; a host
- * without local memory does not mount the panel.
+ * project). The desktop host implements it over its local memory IPC; the
+ * web host serves the account's synced memory from the Cloud (CAN-5193). A
+ * host with neither does not mount the panel.
  *
  * This is the Memory feature's host adapter boundary, a feature port like
  * `SettingsHostPorts` rather than `CanopyClient` methods: only a host that
@@ -92,8 +93,14 @@ export interface LocalMemoryClient {
     request: { readonly fileKey: string; readonly revision: string },
   ): Promise<void>;
   status(scope: LocalMemoryScope): Promise<LocalMemoryStatus>;
-  consolidate(scope: LocalMemoryScope): Promise<LocalMemoryStatus>;
-  rebuild(scope: LocalMemoryScope): Promise<LocalMemoryRebuildOutcome>;
+  /**
+   * Consolidates the scope's waiting notes now. A host that cannot run
+   * consolidation (the web, which shows synced memory) leaves it out, and the
+   * panel offers no "Consolidate now".
+   */
+  consolidate?(scope: LocalMemoryScope): Promise<LocalMemoryStatus>;
+  /** Rebuilds the scope's memory; absent where consolidation is. */
+  rebuild?(scope: LocalMemoryScope): Promise<LocalMemoryRebuildOutcome>;
   /** Watches the scope for outside changes; returns the stop function. */
   watch(scope: LocalMemoryScope, onChange: () => void): () => void;
   /** Titles of the chats with these ids that the host still knows. */

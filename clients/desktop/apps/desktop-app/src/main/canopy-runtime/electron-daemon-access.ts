@@ -1,5 +1,5 @@
 import { app } from 'electron';
-import { toCanopyClientError } from '@canopy/core-client';
+import { CanopyClientError, toCanopyClientError } from '@canopy/core-client';
 import {
   attachOrStartCanopyDaemon,
   CanopyDaemonDeadline,
@@ -47,6 +47,7 @@ let host: Promise<ElectronDaemonHost> | undefined;
 let lifetime: ElectronDaemonCallerLifetime | undefined;
 let stopped = false;
 let w5HandoffPending = false;
+let w5AttachOnly = false;
 let filesConsumerEnabled = false;
 let w5DegradationAwaitingFiles = false;
 // W5e: every client instance id this process ever leased, so its subscriber
@@ -126,25 +127,50 @@ export function getElectronDaemonConnections(): ElectronDaemonConnectionService<
     ...(flip && { setupTimeoutMs: 30_000 + W5_FLIP_STEP_TIMEOUT_MS }),
     attach: async (signal): Promise<ElectronDaemonClient> => {
       const trusted = await getHost();
-      // Windows: the launcher cannot run the step, so it must have run.
-      if (flip && hostPlatformOperatingSystem() === 'win32')
-        (await import('../lib/w5-flip-backup')).requireW5FlipSpawnPrepared();
-      const result = await attachOrStartCanopyDaemon({
-        ...trusted.launch,
-        signal,
-        attach: (endpoint, setup) => connectTrusted(trusted, endpoint, setup),
-        dispose: (client) => client.close(),
-      });
+      let client: ElectronDaemonClient;
+      if (flip && w5AttachOnly) {
+        // A failed handoff cannot safely repeat admission or its backup.
+        const found = await probeCanopyDaemon({
+          dataRootHash: trusted.launch.dataRootHash,
+          ports: trusted.launch.ports,
+          signal,
+          connect: (endpoint, setup) =>
+            connectTrusted(trusted, endpoint, setup),
+          dispose: (late) => late.close(),
+        });
+        if (found.kind !== 'live')
+          throw new CanopyClientError({
+            kind: 'unavailable',
+            message: 'The background service could not be reached.',
+            retry: { kind: 'never' },
+          });
+        client = found.value;
+      } else {
+        // Windows: the launcher cannot run the step, so it must have run.
+        if (flip && hostPlatformOperatingSystem() === 'win32')
+          (await import('../lib/w5-flip-backup')).requireW5FlipSpawnPrepared();
+        const result = await attachOrStartCanopyDaemon({
+          ...trusted.launch,
+          signal,
+          attach: (endpoint, setup) => connectTrusted(trusted, endpoint, setup),
+          dispose: (connected) => connected.close(),
+        });
+        client = result.value;
+      }
       // Before the lease, on every connection: a reconnect may find another.
-      if (flip) await requireW5Capability(result.value, signal);
-      return result.value;
+      if (flip) await requireW5Capability(client, signal);
+      return client;
     },
     onSession: (session, caller) => {
       observeWorkspaceCommits(session, caller.clientInstanceId);
       // The resource monitor follows the daemon's status (CAN-5690).
       if (!stopped) getDaemonExecutionStatus().observe(session);
     },
-    onReachability: (event) => getElectronDaemonHealth().observe(event),
+    onReachability: (event) => {
+      // A later consumer must not replay a handoff failure already recovered.
+      if (event.kind === 'reached') w5DegradationAwaitingFiles = false;
+      getElectronDaemonHealth().observe(event);
+    },
     // The handoff waits a refused daemon out and settles any attach it
     // refuses; after it, a refusal is a failed start that warns and latches.
     isRestartRefusal: (error) => {
@@ -167,6 +193,7 @@ export function noteElectronW5Handoff(
   phase: 'pending' | 'ready' | 'degraded' | 'cancelled',
 ): void {
   w5HandoffPending = phase === 'pending';
+  w5AttachOnly = phase === 'degraded' || phase === 'cancelled';
   w5DegradationAwaitingFiles = phase === 'degraded' && !filesConsumerEnabled;
   if (phase === 'degraded')
     getElectronDaemonHealth().observe({

@@ -41,17 +41,6 @@ export type LabsAvailabilityFallbackPolicy = (
   mode: FeatureFlagDefaultMode,
 ) => LabsExperimentAvailability | undefined;
 
-export function createDesktopLabsAvailabilityFallback(
-  brandId: string,
-): LabsAvailabilityFallbackPolicy {
-  return (entry): LabsExperimentAvailability | undefined =>
-    entry.id === 'daemon-files-reads'
-      ? brandId === 'canopy'
-        ? 'on'
-        : 'offered'
-      : undefined;
-}
-
 export interface ResolvedLabsAvailability {
   availability: LabsExperimentAvailability;
   source: LabsExperimentAvailabilitySource;

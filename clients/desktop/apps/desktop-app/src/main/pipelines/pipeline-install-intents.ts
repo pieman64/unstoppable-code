@@ -42,7 +42,12 @@ import {
   isInstallReceipt,
   type InstallReceipt,
 } from '@canopy/desktop-shared/lib/resource-context-policy';
-import { getUserPipelinesDir } from '@canopy/desktop-shared/pipelines/config-paths';
+import {
+  inspectStoredPipelineDocument,
+  removeUnlistedStoredPipelineDocument,
+  removeStoredPipeline,
+  writeStoredPipeline,
+} from '@canopy/desktop-shared/pipelines/store';
 import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
 import type {
   CapabilityPackageInstallRecordV1,
@@ -466,10 +471,11 @@ async function restoreAssetFile(
 }
 
 const INSTALL_TEMPORARY = /^(.+)\.[0-9a-f-]{36}\.tmp$/;
+const DURABLE_INSTALL_TEMPORARY = /^\.(.+)\.[0-9]+\.[0-9a-f-]{36}\.tmp$/;
 
 /**
- * Removes the `<name>.<uuid>.tmp` files the installer writes before renaming
- * them over `targets`: an exit during a write leaves one behind.
+ * Removes legacy `<name>.<uuid>.tmp` and durable `.<name>.<pid>.<uuid>.tmp`
+ * files written before renaming over `targets`: an exit leaves one behind.
  */
 async function removeInstallTemporaries(
   targets: readonly string[],
@@ -491,7 +497,11 @@ async function removeInstallTemporaries(
     }
     for (const entry of entries) {
       const name = INSTALL_TEMPORARY.exec(entry)?.[1];
-      if (name !== undefined && inFolder.has(name))
+      const durableName = DURABLE_INSTALL_TEMPORARY.exec(entry)?.[1];
+      if (
+        (name !== undefined && inFolder.has(name)) ||
+        (durableName !== undefined && inFolder.has(durableName))
+      )
         await rm(path.join(folder, entry), { force: true });
     }
   }
@@ -591,44 +601,25 @@ async function undoAssetFiles(
 }
 
 function storedHash(definitionId: string): string | undefined {
-  const raw = localPipelineService.getPipelineText(definitionId);
-  return raw.success && raw.data !== undefined
-    ? hashPipelinePackageYaml(raw.data)
+  const state = inspectStoredPipelineDocument(definitionId);
+  return state.kind === 'stored'
+    ? hashPipelinePackageYaml(state.rawContent)
     : undefined;
 }
 
 type DefinitionState =
   | { kind: 'absent' }
-  | { kind: 'stored'; hash: string }
-  /** A document file the store does not list: a save interrupted mid-way. */
-  | { kind: 'unlisted'; file: string; hash: string };
+  | { kind: 'stored'; hash: string; revision: number }
+  | { kind: 'unlisted'; hash: string };
 
-/**
- * What the definition holds now. Only a missing document counts as absent;
- * one that exists but cannot be read rejects, so its records and the intent
- * stay for the next start instead of being undone around it.
- */
-async function readDefinition(definitionId: string): Promise<DefinitionState> {
-  const raw = localPipelineService.getPipelineText(definitionId);
-  if (raw.success && raw.data !== undefined)
-    return { kind: 'stored', hash: hashPipelinePackageYaml(raw.data) };
-  const file = path.join(getUserPipelinesDir(), `${definitionId}.yaml`);
-  try {
-    await lstat(file);
-  } catch (error) {
-    // The store drops a listing whose document is gone on its next read.
-    if (isRecord(error) && error.code === 'ENOENT') return { kind: 'absent' };
-    throw error;
-  }
-  if (localPipelineService.getPipeline(definitionId).success)
-    throw new Error(
-      raw.error ?? `Could not read workflow ${definitionId} to roll it back`,
-    );
-  return {
-    kind: 'unlisted',
-    file,
-    hash: hashPipelinePackageYaml(await readFile(file, 'utf8')),
-  };
+function readDefinition(definitionId: string): DefinitionState {
+  const state = inspectStoredPipelineDocument(definitionId);
+  if (state.kind === 'unreadable') throw new Error(state.message);
+  if (state.kind === 'absent') return state;
+  const hash = hashPipelinePackageYaml(state.rawContent);
+  return state.kind === 'stored'
+    ? { kind: 'stored', hash, revision: state.revision }
+    : { kind: 'unlisted', hash };
 }
 
 /**
@@ -676,7 +667,7 @@ async function undoDefinition(
 ): Promise<'removed' | 'undone' | 'kept'> {
   const id = definition.definitionId;
   if (definition.change === 'linked') return 'undone';
-  const state = await readDefinition(id);
+  const state = readDefinition(id);
   if (definition.change === 'created') {
     // Its metadata and supporting files go whenever the copy does, also
     // when an earlier rollback removed the copy and exited before them.
@@ -687,7 +678,11 @@ async function undoDefinition(
     }
     if (state.hash !== definition.contentHash) return 'kept';
     if (state.kind === 'unlisted') {
-      await rm(state.file, { force: true });
+      const removed = removeUnlistedStoredPipelineDocument(
+        id,
+        definition.contentHash,
+      );
+      if (!removed.ok) throw new Error(removed.message);
       await removeCreatedAssets(definition);
       return 'undone';
     }
@@ -700,12 +695,19 @@ async function undoDefinition(
     );
     if (record !== null && record !== (definition.installRecord?.next ?? null))
       return 'kept';
-    // Store reads and writes are synchronous: checked again in the same turn
-    // as the delete, a save made during the lookup above is kept.
-    if (storedHash(id) !== definition.contentHash) return 'kept';
-    const removed = localPipelineService.deletePipeline(id);
-    if (!removed.success)
-      throw new Error(removed.error ?? `Could not remove workflow ${id}`);
+    const current = inspectStoredPipelineDocument(id);
+    if (
+      current.kind !== 'stored' ||
+      hashPipelinePackageYaml(current.rawContent) !== definition.contentHash
+    )
+      return 'kept';
+    const removed = removeStoredPipeline(id, {
+      expectedRevision: current.revision,
+    });
+    if (!removed.ok) {
+      if (removed.reason === 'revision_conflict') return 'kept';
+      throw new Error(removed.message);
+    }
     deleteUserPipelineLocalMetadata(id);
     await removeCreatedAssets(definition);
     return 'removed';
@@ -714,17 +716,27 @@ async function undoDefinition(
   if (!previous || state.kind !== 'stored') return 'kept';
   if (state.hash === hashPipelinePackageYaml(previous.text)) return 'undone';
   if (state.hash !== definition.contentHash) return 'kept';
-  if (storedHash(id) !== definition.contentHash) return 'kept';
-  const restored = localPipelineService.savePipeline({
-    id,
-    name: previous.name,
-    description: previous.description,
-    icon: previous.icon,
-    content: parsePipelineText(previous.text),
-    rawContent: previous.text,
-  });
-  if (!restored.success)
-    throw new Error(restored.error ?? `Could not restore workflow ${id}`);
+  const current = inspectStoredPipelineDocument(id);
+  if (
+    current.kind !== 'stored' ||
+    hashPipelinePackageYaml(current.rawContent) !== definition.contentHash
+  )
+    return 'kept';
+  const restored = writeStoredPipeline(
+    {
+      id,
+      name: previous.name,
+      description: previous.description,
+      icon: previous.icon,
+      content: parsePipelineText(previous.text),
+      rawContent: previous.text,
+    },
+    { expectedRevision: current.revision, requireExisting: true },
+  );
+  if (!restored.ok) {
+    if (restored.reason === 'revision_conflict') return 'kept';
+    throw new Error(restored.message);
+  }
   return 'undone';
 }
 

@@ -1,6 +1,9 @@
 import type { IpcMainInvokeEvent } from 'electron';
 import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
-import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
+import {
+  IPC_CHANNELS,
+  type WorktreesFileChangedEvent,
+} from '@canopy/desktop-shared/types';
 import type { BackgroundServiceStatus } from '@canopy/desktop-shared/lib/background-service-status';
 import { getElectronDaemonHealth } from '../canopy-runtime/electron-daemon-health';
 import { retryDesktopDaemonFilesConnection } from '../canopy-runtime/electron-daemon-files-access';
@@ -26,7 +29,14 @@ export function registerBackgroundServiceHandlers(
     (event) =>
       retryDesktopDaemonFilesConnection(event.sender, resolveCaller(event)),
   );
-  return health.onStatusChanged((status) =>
-    sendToAllWindows(IPC_CHANNELS.backgroundServiceStatusChanged, status),
-  );
+  let previous = health.getStatus().state;
+  return health.onStatusChanged((status) => {
+    const recovered = previous !== 'ok' && status.state === 'ok';
+    previous = status.state;
+    sendToAllWindows(IPC_CHANNELS.backgroundServiceStatusChanged, status);
+    if (recovered) {
+      const event: WorktreesFileChangedEvent = { scope: 'all' };
+      sendToAllWindows(IPC_CHANNELS.worktreesFileChanged, event);
+    }
+  });
 }

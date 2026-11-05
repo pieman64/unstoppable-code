@@ -1,3 +1,5 @@
+import { W5AuthorityUnreachableError } from '../lib/w5-file-store';
+import { getElectronDaemonHealth } from './electron-daemon-health';
 import { notifyPortalStructureChanged } from '../portal/portal-event-bus';
 import { schedulePortalStructuralSync } from '../portal/portal-structural-sync';
 import { refreshWorkspaceRegistries } from '../lib/sidebar-items';
@@ -25,19 +27,30 @@ export class ManifestPluginDefaultsUndecidedError extends Error {
  * group signal, which stay with the issuing writer (W8 moves the first two).
  */
 export function createDesktopWorkspaceCommitEventHandlers(): WorkspaceCommitEventHandlers {
+  const requireReachable = (): void => {
+    if (getElectronDaemonHealth().isLatched())
+      throw new W5AuthorityUnreachableError('refused', 'held');
+  };
   return {
     schedulePortalStructuralSync,
     notifyPortalStructureChanged,
-    refreshWorkspaceRegistries,
+    refreshWorkspaceRegistries: async () => {
+      requireReachable();
+      await refreshWorkspaceRegistries();
+    },
     // An undecided reconcile leaves the session revision behind the file.
     // Past its bound it also returns undecided, so a stalled commit of the
     // manifest holds later events no longer than the bridge's retries.
     reconcileManifestPluginDefaults: async (workspaceId) => {
+      requireReachable();
       if (!(await reconcileManifestPluginDefaults(workspaceId, false)))
         throw new ManifestPluginDefaultsUndecidedError(workspaceId);
     },
     listWorkspaceIds: listRegisteredWorkspaceIds,
-    readWorktreeList: readWorkspaceWorktreesUnlocked,
+    readWorktreeList: async (workspaceId) => {
+      requireReachable();
+      return readWorkspaceWorktreesUnlocked(workspaceId);
+    },
     publishWorktreeListWrite: (previous, next) =>
       publishWorktreeListWrite(previous, next),
     publishWorktreeMembershipChange: () =>

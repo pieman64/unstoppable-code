@@ -17,7 +17,7 @@ import type {
 
 /**
  * The `worker.terminal` port every main-process caller uses: the in-process
- * engine, plus the renderer terminals the daemon-terminals experiment placed
+ * engine, plus eligible local window terminals placed
  * in the daemon's terminal host (CAN-5088). New terminals from the port's own
  * `create` stay in process; only the renderer route places one in the daemon.
  * Every call naming a terminal reaches whichever side holds it, and

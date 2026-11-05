@@ -470,8 +470,8 @@ export async function spawnTerminalAfterShellPrewarm(
 }
 
 /**
- * A renderer terminal in the daemon's terminal host when the
- * daemon-terminals experiment selects it (CAN-5088), after the checks the
+ * An eligible local window terminal in the daemon's terminal host
+ * (CAN-5088, CAN-5718), after the checks the
  * in-process engine runs; `null` keeps it in process. A daemon that can't be
  * reached opens it in process with the background service warning, and one
  * that cannot start its terminal host opens it in process too; any other
@@ -525,8 +525,8 @@ async function spawnDaemonTerminal(
 const DAEMON_RESTORE_SCROLLBACK_MAX_CHARS = 1024 * 1024;
 
 /**
- * Restarts a persisted shell in the daemon when the experiment selects its
- * worktree, as the engine restarts one in process; `null` leaves it to the
+ * Restarts an eligible persisted shell in the daemon, as the engine
+ * restarts one in process; `null` leaves it to the
  * engine, which also refuses a terminal that is not restorable.
  */
 async function restoreDaemonTerminal(
@@ -671,7 +671,7 @@ export async function restoreTerminalForRenderer(
 ): Promise<TerminalSession> {
   if (session?.projectId !== SHARED_CONTAINER_VIEWER_PROJECT_ID) {
     // A live daemon terminal stays there; a persisted one goes where the
-    // experiment sends the next terminal.
+    // eligibility rules send the next terminal.
     const daemon = workerTerminal.daemonTerminals;
     if (daemon?.has(request.terminalId))
       return daemon.reattach(request.terminalId, request.cols, request.rows);

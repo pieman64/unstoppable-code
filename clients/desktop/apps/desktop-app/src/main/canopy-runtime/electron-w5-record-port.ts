@@ -1,3 +1,5 @@
+import { electronW5RecoveryObservations } from './w5-recovery-observations';
+import type { W5RecordPortRunner } from '../lib/w5-daemon-record-store';
 import { randomUUID } from 'node:crypto';
 import {
   W5_RECORD_PORT_GRANTS,
@@ -11,8 +13,12 @@ import {
   getElectronDaemonConnections,
   getElectronDaemonFilesContext,
 } from './electron-daemon-access';
-import { markUnreachable } from './electron-daemon-connection';
+import {
+  markUnreachable,
+  type ElectronDaemonSession,
+} from './electron-daemon-connection';
 import { getElectronDaemonHealth } from './electron-daemon-health';
+import type { ElectronDaemonClient } from './electron-daemon-host';
 import { guardW5RecordPortCalls } from './w5-record-port-guard';
 
 /*
@@ -33,13 +39,25 @@ export interface ElectronW5RecordPortLease {
 }
 
 // Open leases: the notice covers W5 records until the last one closes.
-let openLeases = 0;
+const retries = new Set<() => Promise<boolean>>();
+
+/** Try again evicts each W5 caller's cached failed get, not just Files'. */
+export async function retryElectronW5RecordPorts(): Promise<boolean> {
+  const results = await Promise.allSettled(
+    [...retries].map((retry) => retry()),
+  );
+  return results.every(
+    (result) => result.status === 'fulfilled' && result.value,
+  );
+}
 
 export function leaseElectronW5RecordPort(): ElectronW5RecordPortLease {
   const owner = new AbortController();
   // Unique per process, so no other Electron's commits count as this one's.
   const clientInstanceId = `electron-main:w5-records:${randomUUID()}`;
-  const client = async (): Promise<W5RecordPortClient> => {
+  const session = async (
+    reprobe = false,
+  ): Promise<ElectronDaemonSession<ElectronDaemonClient>> => {
     let authorityId: string;
     try {
       ({ authorityId } = await getElectronDaemonFilesContext());
@@ -47,7 +65,7 @@ export function leaseElectronW5RecordPort(): ElectronW5RecordPortLease {
       // Without a trusted host no daemon can start.
       throw markUnreachable(error, 'host_unavailable');
     }
-    const session = await getElectronDaemonConnections().get(
+    return getElectronDaemonConnections().get(
       {
         principalId: 'local-desktop-user',
         clientInstanceId,
@@ -56,36 +74,49 @@ export function leaseElectronW5RecordPort(): ElectronW5RecordPortLease {
         grants: [...W5_RECORD_PORT_GRANTS],
       },
       owner.signal,
+      { reprobe },
     );
-    // Read per call: after a drop the lease adopts a replacement connection.
-    // Until then the getter throws its failure tagged `connection_lost`.
-    return session.client;
+  };
+  const client = async (): Promise<W5RecordPortClient> =>
+    (await session()).client;
+  const retry = async (): Promise<boolean> => {
+    if (owner.signal.aborted) return true;
+    return (await session(true)).lease.state === 'active';
   };
   // While leased, the background service notice covers W5 records too; its
   // reachability comes from this lease's own `get` calls.
   const health = getElectronDaemonHealth();
-  openLeases += 1;
+  retries.add(retry);
   health.setConsumerEnabled('workspace_records', true);
+  const guarded = guardW5RecordPortCalls({
+    connect: client,
+    owner: owner.signal,
+    // A start-class failure since the last reach: refuse without a
+    // respawn or a setup timeout per call, until Try again or a reach.
+    held: () => health.isLatched(),
+    // Like a Files fallback read: shows the notice and latches even when
+    // no connection event did; a dropped session (`connection_lost`)
+    // stays hidden while the lease restarts the daemon.
+    onUnreachable: (tag) => health.noteFallback('workspace_records', tag),
+  });
+  const observed: W5RecordPortRunner = async (call) => {
+    try {
+      const result = await guarded(call);
+      electronW5RecoveryObservations.result(call, result);
+      return result;
+    } catch (error) {
+      electronW5RecoveryObservations.failure(error);
+      throw error;
+    }
+  };
   return {
     clientInstanceId,
-    transport: w5RecordPortTransportOver(
-      guardW5RecordPortCalls({
-        connect: client,
-        owner: owner.signal,
-        // A start-class failure since the last reach: refuse without a
-        // respawn or a setup timeout per call, until Try again or a reach.
-        held: () => health.isLatched(),
-        // Like a Files fallback read: shows the notice and latches even when
-        // no connection event did; a dropped session (`connection_lost`)
-        // stays hidden while the lease restarts the daemon.
-        onUnreachable: (tag) => health.noteFallback('workspace_records', tag),
-      }),
-    ),
+    transport: w5RecordPortTransportOver(observed),
     close: (): void => {
       if (owner.signal.aborted) return;
       owner.abort();
-      openLeases -= 1;
-      if (openLeases === 0)
+      retries.delete(retry);
+      if (retries.size === 0)
         health.setConsumerEnabled('workspace_records', false);
     },
   };

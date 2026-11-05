@@ -60,38 +60,6 @@ export const LABS_EXPERIMENTS: readonly LabsExperiment[] = [
     requiresEarlyAccess: false,
   },
   {
-    id: 'daemon-files-reads',
-    name: 'Files reads',
-    description:
-      'Use a local background service to list files and folders. Saving files is unchanged.',
-    pages: [],
-    sidebarKeys: [],
-    flagKey: CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonFilesReads.key,
-    requiresEarlyAccess: false,
-  },
-  {
-    // CAN-5088: desktop only, macOS and Linux, so not in WEB_LABS_EXPERIMENTS.
-    id: 'daemon-terminals',
-    name: 'Background terminals',
-    description:
-      'Run new terminals in a separate background service on this computer. Turn it off to open the next terminal in the app.',
-    pages: [],
-    sidebarKeys: [],
-    flagKey: CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonTerminals.key,
-    requiresEarlyAccess: false,
-  },
-  {
-    // CAN-5089: desktop only, macOS and Linux, so not in WEB_LABS_EXPERIMENTS.
-    id: 'daemon-code-graph',
-    name: 'Background code graph',
-    description:
-      'Generate and read code graphs you open from the app in a separate background service on this computer. Turn it off to run the next generation in the app.',
-    pages: [],
-    sidebarKeys: [],
-    flagKey: CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonCodeGraph.key,
-    requiresEarlyAccess: false,
-  },
-  {
     // CAN-4551: desktop only, so not in WEB_LABS_EXPERIMENTS.
     id: 'chat-automation-pipelines',
     name: 'Chat automations as workflows',

@@ -1,3 +1,4 @@
+import { createChatStateServiceFixture } from '../../__tests__/helpers/chat-state-service-fixture';
 import type {
   ChatStateCommit,
   TranscriptFieldPreparation,
@@ -832,10 +833,13 @@ describe('chat state service', () => {
       changedTabIds: ['chat-1'],
     });
     expect(await store.read(scope)).toEqual(activation);
-    const restarted = service();
-    expect(await new McpActivationStore(restarted).read(scope)).toEqual(
-      activation,
-    );
+    // Each restart reads through its own repository, closed before the live
+    // one writes again: a second open writer races its checkpoints.
+    expect(
+      await readThroughFreshRepository(target, (restarted) =>
+        new McpActivationStore(restarted).read(scope),
+      ),
+    ).toEqual(activation);
     const next = {
       ...activation,
       phase: 'failed' as const,
@@ -843,10 +847,12 @@ describe('chat state service', () => {
       retryEligible: true,
     };
     expect(await store.compareAndSet(scope, activation, next)).toBe(true);
-    const persisted = await restarted.getCompatibilityTabs(SCOPE, {
-      chatIds: ['chat-1'],
-      fullTranscript: true,
-    });
+    const persisted = await readThroughFreshRepository(target, (restarted) =>
+      restarted.getCompatibilityTabs(SCOPE, {
+        chatIds: ['chat-1'],
+        fullTranscript: true,
+      }),
+    );
     const recovery = persisted.tabs[0].messages.filter((message) =>
       message.blocks.some((block) => block.type === 'mcp_activation'),
     );
@@ -1256,7 +1262,21 @@ describe('chat state service', () => {
     chatStateServiceModule.resetChatStateServiceForTests();
     // Hydration can arm queue timers; no host work may outlive its repository.
     getChatQueueService().resetForTests();
-    await Promise.all(repositories.map((repository) => repository.drainAll()));
+    await Promise.all(
+      repositories.map((repository) => repository.drainAll()),
+    ).catch((error: unknown) => {
+      // The aggregate alone does not say which scope write failed.
+      if (
+        error instanceof Error &&
+        'errors' in error &&
+        Array.isArray(error.errors)
+      )
+        throw new Error(
+          `${error.message}: ${error.errors.map(String).join('; ')}`,
+          { cause: error },
+        );
+      throw error;
+    });
     rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -38532,5 +38552,105 @@ describe('chat state service', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(projection).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('hook chat creation (CAN-4138)', () => {
+  const scope = { projectId: 'project-1', worktreeId: 'worktree-1' };
+  let fixture: ReturnType<typeof createChatStateServiceFixture>;
+  const hookTab = (id: string): PersistedChatTab => ({
+    id,
+    title: 'Hook prompt',
+    createdAt: '2026-11-04T12:00:00Z',
+    thinkingLevel: 'medium',
+    messages: [
+      {
+        id: `${id}-info`,
+        role: 'system',
+        timestamp: 1,
+        blocks: [{ type: 'hook_info', triggerName: 'pr:create', timestamp: 1 }],
+      },
+      {
+        id: `${id}-user`,
+        role: 'user',
+        timestamp: 1,
+        userMessageSource: 'hook',
+        blocks: [{ type: 'text', text: 'Hook prompt' }],
+      },
+    ],
+  });
+  beforeEach(() => {
+    mockedGetChatQueueService.mockReturnValue(new ChatQueueService());
+    fixture = createChatStateServiceFixture();
+  });
+  afterEach(async () => {
+    await fixture.dispose();
+  });
+  it('creates a hook chat with its seeded messages behind the active tab', async () => {
+    await fixture.createChat(scope);
+    const tab = hookTab('chat-hook-op-1-0');
+    expect(await fixture.service.createHookChat(scope, tab)).toBe('created');
+    const state = await fixture.service.getState(scope);
+    expect(state.tabsFile.tabs).toHaveLength(2);
+    expect(state.tabsFile.activeTabId).toBe('chat-1');
+    expect(
+      (await fixture.service.getTranscriptPage({ ...scope, chatId: tab.id }))
+        .messages,
+    ).toEqual(tab.messages);
+    expect(
+      await fixture.service.hasMutation(scope, `hook-chat:${tab.id}:created`),
+    ).toBe(true);
+  });
+  it('selects the hook chat when the scope has no active tab', async () => {
+    const tab = hookTab('chat-hook-op-1-0');
+    await fixture.service.createHookChat(scope, tab);
+    expect((await fixture.service.getState(scope)).tabsFile.activeTabId).toBe(
+      tab.id,
+    );
+  });
+  it('keeps the stored hook chat when the same chat is created again', async () => {
+    const tab = hookTab('chat-hook-op-1-0');
+    expect(await fixture.service.createHookChat(scope, tab)).toBe('created');
+    expect(
+      await fixture.service.createHookChat(scope, {
+        ...tab,
+        title: 'Replacement',
+      }),
+    ).toBe('already_exists');
+    const state = await fixture.service.getState(scope);
+    expect(state.tabsFile.tabs).toHaveLength(1);
+    expect(state.tabsFile.tabs[0]?.title).toBe(tab.title);
+  });
+  it('does not resurrect an archived hook chat', async () => {
+    const tab = hookTab('chat-hook-op-1-0');
+    await fixture.service.createHookChat(scope, tab);
+    expect(
+      (
+        await fixture.service.command({
+          schemaVersion: 1,
+          commandId: 'close-hook',
+          ...scope,
+          command: { type: 'chat.close_tab', tabId: tab.id, mode: 'archive' },
+        })
+      ).outcome,
+    ).toBe('applied');
+    expect(await fixture.service.createHookChat(scope, tab)).toBe('removed');
+    expect(
+      await fixture.service.createHookChat(scope, {
+        ...tab,
+        title: 'Replacement',
+      }),
+    ).toBe('removed');
+    const state = await fixture.service.getState(scope);
+    expect(
+      state.tabsFile.tabs.some((candidate) => candidate.id === tab.id),
+    ).toBe(false);
+    const archived = await fixture.repository.getState(scope, {
+      chatIds: [tab.id],
+    });
+    expect(
+      archived.archivesFile.archived.filter((entry) => entry.tab.id === tab.id),
+    ).toHaveLength(1);
+    expect(archived.archivesFile.archived[0]?.tab.title).toBe(tab.title);
   });
 });

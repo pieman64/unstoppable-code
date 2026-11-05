@@ -152,7 +152,7 @@ export function createDesktopTerminalEngine(
 
 /**
  * The `worker.terminal` port every main-process caller uses: the in-process
- * engine, and the terminals the daemon-terminals experiment placed in the
+ * engine, and eligible local window terminals placed in the
  * daemon (CAN-5088).
  */
 export const workerTerminal = new RoutedWorkerTerminal(

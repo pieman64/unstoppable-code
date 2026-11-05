@@ -11,7 +11,7 @@ test seam. CAN-4153, CAN-4143, CAN-4144, CAN-4146 and CAN-5074 run against them.
 | `script-runner.golden.test.ts`   | Shell selection on Linux, macOS and Windows, exit codes, spawn errors, output truncation, timeouts, stop, abort, the forced kill, the drain on worktree removal, the archive and Auto Delete fences, and interactive PTY outcomes      |
 | `hook-runner.golden.test.ts`     | Per-target queue order, action sequencing, chat if-command outcomes, workflow action outcomes, the archive fence and cancellation by repo target, worktree, hook key and app shutdown                                                  |
 | `hook-gates.golden.test.ts`      | The paused gate on automatic hooks, the split lock, the active-PR requirement for manual runs, and the owner gate on organization execution-context overlays                                                                           |
-| `hook-chat-queue.golden.test.ts` | Hook chat start and queueing per worktree, the queued placeholder, edits to a queued chat, cancel and force                                                                                                                            |
+| `hook-chat-queue.golden.test.ts` | Hook chat start and queueing per worktree, the queued placeholder, edits to a queued chat, cancel and force, and starting and queueing without a renderer window (CAN-4138)                                                            |
 
 ## What CI runs
 
@@ -48,6 +48,10 @@ temporary directory.
 (`helpers/initiated-work-runtime.ts`); its expectations are unchanged. The
 target queue, cancellation generations and the archive fence now come from
 the engine.
+
+## Hook chats without a window (CAN-4138)
+
+Hook chat ids now come from the launch's identity (run operation and action index), so the expected ids changed from `chat-hook-1000-N` to `chat-hook-op-K-0` by launch order. The only behavior change is the no-renderer case: a queued hook chat no longer refuses without a window; it queues and starts once activity clears.
 
 ## Changing a golden
 

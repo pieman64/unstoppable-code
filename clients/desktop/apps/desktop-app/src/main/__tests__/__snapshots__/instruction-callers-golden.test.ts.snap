@@ -1657,6 +1657,7 @@ exports[`temporary workspace create (workspace-service) fails and cleans up when
   "writes": [
     "writeFile /data/workspaces/alpha/CLAUDE.md",
     "symlink /data/workspaces/alpha/AGENTS.md",
+    "rm /data/workspaces/alpha/CLAUDE.md",
   ],
 }
 `;

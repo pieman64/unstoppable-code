@@ -1,3 +1,4 @@
+import { assertHelperWorkerContext } from '../helper-runs/helper-worker-context';
 import { BRAND } from '@canopy/brand/current';
 import {
   getExecutionHarnessForModel,
@@ -296,6 +297,7 @@ export const codexStructuredHelperRunner: CodexStructuredHelperRunner = {
   async run<T>(
     options: Omit<CodexStructuredHelperQueryOptions<T>, 'runner'>,
   ): Promise<StructuredHelperQueryResult<T>> {
+    assertHelperWorkerContext('codexStructuredHelperRunner.run');
     // Admit the exact requested speed before any effect: no attempt marker,
     // config read, thread, or turn happens for a speed this route cannot run.
     // A rejection surfaces through the caller's existing helper failure path;
@@ -394,6 +396,7 @@ async function appendWorkerTranscriptJsonl(
 export async function runStructuredHelper<T>(
   options: StructuredHelperDispatchOptions<T>,
 ): Promise<StructuredHelperQueryResult<T>> {
+  assertHelperWorkerContext('runStructuredHelper');
   const preferences = await readPreferencesFile().catch(() => null);
   const effectivePreferences = preferences
     ? getEffectiveClaudeWorkerModePreferences(preferences)
@@ -555,4 +558,11 @@ export function createStructuredHelperRunner(args: {
       settingSources: args.settingSources,
       executionHarness: args.executionHarness,
     });
+}
+
+export function runDesktopClaudeStructuredHelperQuery<T>(
+  options: ClaudeStructuredHelperQueryOptions<T>,
+): Promise<StructuredHelperQueryResult<T>> {
+  assertHelperWorkerContext('runDesktopClaudeStructuredHelperQuery');
+  return runClaudeStructuredHelperQuery(options);
 }

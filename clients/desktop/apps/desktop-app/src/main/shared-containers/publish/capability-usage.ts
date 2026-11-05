@@ -16,8 +16,8 @@
  * still changes {@link SharedContainerCapabilityUsage.sourceVersion}.
  */
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, readdir, rm, stat } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { mkdir, readFile, readdir, rm } from 'node:fs/promises';
+import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { dump } from 'js-yaml';
 import { BRAND } from '@canopy/brand/current';
 import {
@@ -51,6 +51,7 @@ import type {
   ScheduledActivityRun,
 } from '@canopy/desktop-shared/types';
 import { writeFileAtomically } from '@canopy/desktop-shared/node/lib/atomic-file';
+import { readStoredPipelinePresence } from '@canopy/desktop-shared/pipelines/store';
 import { stableStringify } from '@canopy/desktop-shared/lib/stable-hash';
 import {
   pipelineAutomationTaskId,
@@ -370,36 +371,13 @@ class SharedContainerSourceUnreadableError extends Error {
  * index entry, or no file. Rejects when the index or file exists but cannot
  * be read.
  */
-async function userPipelineIsAbsent(pipelineId: string): Promise<boolean> {
-  const { getUserPipelineIndexPath, getUserPipelinesDir } =
-    await import('@canopy/desktop-shared/pipelines/config-paths');
-  let raw: string;
-  try {
-    raw = await readFile(getUserPipelineIndexPath(), 'utf8');
-  } catch (error) {
-    if (isErrnoException(error) && error.code === 'ENOENT') return true;
-    throw error;
-  }
-  const index: unknown = JSON.parse(raw);
-  if (!isRecord(index) || !Array.isArray(index.pipelines))
+function userPipelineIsAbsent(pipelineId: string): boolean {
+  const presence = readStoredPipelinePresence(pipelineId);
+  if (presence === 'unreadable')
     throw new SharedContainerSourceUnreadableError(
       'The user pipeline index is unreadable',
     );
-  const entry: unknown = index.pipelines.find(
-    (candidate: unknown) => isRecord(candidate) && candidate.id === pipelineId,
-  );
-  if (!isRecord(entry) || typeof entry.filename !== 'string') return true;
-  const directory = resolve(getUserPipelinesDir());
-  const filePath = resolve(directory, entry.filename);
-  const inside = relative(directory, filePath);
-  if (!inside || inside.startsWith('..') || isAbsolute(inside)) return true;
-  try {
-    await stat(filePath);
-  } catch (error) {
-    if (isErrnoException(error) && error.code === 'ENOENT') return true;
-    throw error;
-  }
-  return false;
+  return presence === 'absent';
 }
 
 /**
@@ -412,7 +390,7 @@ async function userPipelineIsAbsent(pipelineId: string): Promise<boolean> {
 export async function readSharedContainerUserPipeline(
   pipelineId: string,
 ): Promise<PipelineData | null> {
-  if (await userPipelineIsAbsent(pipelineId)) return null;
+  if (userPipelineIsAbsent(pipelineId)) return null;
   const { getStoredPipelineBySource } =
     await import('../../pipelines/pipeline-service');
   const stored = getStoredPipelineBySource('user', pipelineId);

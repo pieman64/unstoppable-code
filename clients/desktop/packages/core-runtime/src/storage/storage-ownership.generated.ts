@@ -43,6 +43,32 @@ export const STORAGE_OWNERSHIP = [
     "backupShape": "namespace_backup"
   },
   {
+    "id": "pipeline_definitions",
+    "transitionOwner": "legacy",
+    "currentWriters": [
+      "desktop_cli",
+      "electron_main"
+    ],
+    "schemaVersion": "none",
+    "backupPolicy": "none",
+    "admittedWriters": [
+      "main/pipelines/pipeline-service",
+      "shared/pipelines/store"
+    ]
+  },
+  {
+    "id": "pipeline_local_metadata",
+    "transitionOwner": "legacy",
+    "currentWriters": [
+      "electron_main"
+    ],
+    "schemaVersion": 1,
+    "backupPolicy": "none",
+    "admittedWriters": [
+      "main/pipelines/pipeline-local-metadata-store"
+    ]
+  },
+  {
     "id": "pipeline_plugin_preferences",
     "transitionOwner": "legacy",
     "currentWriters": [

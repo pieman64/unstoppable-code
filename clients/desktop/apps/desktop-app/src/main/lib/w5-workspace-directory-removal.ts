@@ -1,11 +1,15 @@
 import type { BigIntStats } from 'node:fs';
-import { lstat, readdir, realpath, rmdir } from 'node:fs/promises';
+import { lstat, readdir, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { removeArchiveTree } from '../archive/archive-file-operations';
 import { getWorkspaceDir } from './paths';
 import { currentW5CommitScope } from './w5-commit-scope';
 import { logMainProcessWarn } from './main-process-logging';
 import { isErrnoException } from './type-guards';
+import {
+  INCARNATION_MARKER,
+  removeDestructiveWorkspaceDirectory,
+} from './w5-destructive-recovery';
 
 async function entryIdentity(path: string): Promise<BigIntStats | null> {
   try {
@@ -20,11 +24,19 @@ async function isReservedRecordEntry(
   directory: string,
   child: string,
 ): Promise<boolean> {
-  if (/^(?:workspace|worktrees)\.json$/iu.test(child)) return true;
+  if (
+    child.toLowerCase() === INCARNATION_MARKER ||
+    /^(?:workspace|worktrees)\.json$/iu.test(child)
+  )
+    return true;
   const entry = await entryIdentity(join(directory, child));
   if (!entry) return true;
   // Filesystem alias rules need not match Unicode case folding. Do not follow links.
-  for (const recordName of ['workspace.json', 'worktrees.json']) {
+  for (const recordName of [
+    INCARNATION_MARKER,
+    'workspace.json',
+    'worktrees.json',
+  ]) {
     const record = await entryIdentity(join(directory, recordName));
     if (record && record.dev === entry.dev && record.ino === entry.ino)
       return true;
@@ -99,7 +111,7 @@ export async function removeWorkspaceDirectoryAfterRecordRemoval(
 ): Promise<void> {
   assertOutsideCommit();
   try {
-    await rmdir(getWorkspaceDir(workspaceId));
+    await removeDestructiveWorkspaceDirectory(workspaceId);
   } catch (error) {
     const code =
       typeof error === 'object' && error !== null && 'code' in error

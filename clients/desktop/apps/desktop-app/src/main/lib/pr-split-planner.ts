@@ -14,6 +14,7 @@
  * orchestrator) owns all mutations after the human gate.
  */
 
+import { runHelperThroughWorker } from '../helper-runs/helper-runs';
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { type ThinkingLevel } from '@canopy/desktop-shared/types';
@@ -737,13 +738,21 @@ export async function planPrSplit(
   });
 
   try {
-    const { response, usage } = await runPlanningLoop({
-      projectId,
-      worktreeId,
-      inputs,
+    const { response, usage } = await runHelperThroughWorker({
+      kind: 'pr_split_planning',
       model,
-      thinkingLevel: preferences.splitPrPlannerThinkingLevel,
-      taskKey,
+      scope: { workspaceId: projectId, worktreeId },
+      origin: 'client',
+      launch: async () =>
+        runPlanningLoop({
+          projectId,
+          worktreeId,
+          inputs,
+          model,
+          thinkingLevel: preferences.splitPrPlannerThinkingLevel,
+          taskKey,
+        }),
+      usageOf: (result) => result.usage,
     });
     finalizeObservedHelperTask(taskKey, 'success', undefined, usage);
     return response;

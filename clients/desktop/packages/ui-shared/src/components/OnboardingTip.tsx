@@ -172,19 +172,15 @@ export function OnboardingTip({
               <NoticeButton
                 variant={action.variant ?? 'secondary'}
                 aria-label={action.ariaLabel}
-                aria-busy={action.busy || undefined}
+                busy={action.busy}
+                busyLabel={action.busyText}
                 aria-disabled={action.busy || undefined}
                 onClick={(): void => {
                   if (!action.busy) action.onClick();
                 }}
                 data-testid={action.testId}
               >
-                <BusyLabel
-                  busy={action.busy === true}
-                  busyText={action.busyText}
-                >
-                  {action.label}
-                </BusyLabel>
+                {action.label}
               </NoticeButton>
             ) : null}
             {dismissLabel === null ? null : (

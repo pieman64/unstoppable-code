@@ -273,12 +273,12 @@ export function SharePublishIssue({
           <NoticeButton
             variant={offerBudgetPush ? 'secondary' : 'primary'}
             disabled={retrying}
-            aria-busy={retrying}
+            busy={retrying}
+            busyLabel="Trying again…"
             data-testid="shared-container-invite-modal-publication-retry"
             onClick={onRetry}
           >
-            {retrying && <LoadingSpinner decorative />}
-            {retrying ? 'Trying again…' : 'Try again'}
+            Try again
           </NoticeButton>
           {offerBudgetPush && (
             <ShareBudgetPushAction

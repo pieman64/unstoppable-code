@@ -145,6 +145,7 @@ import { registerOrgProjectsHandlers } from './org-projects';
 import { registerAccountOrganizationSettingsHandlers } from './account-organization-settings';
 import { registerGlobalFocusShortcutHandlers } from './global-focus-shortcut';
 import { registerLaunchAtLoginHandlers } from './launch-at-login';
+import { registerW5RecoveryHandlers } from './w5-recovery';
 import { registerBackgroundServiceHandlers } from './background-service';
 import { registerExternalProjectHandlers } from './external-projects';
 import {
@@ -442,6 +443,10 @@ export function registerAllIpcHandlers(
   registerSpaceNotificationHandlers();
   registerGlobalFocusShortcutHandlers();
   registerLaunchAtLoginHandlers();
+  registerW5RecoveryHandlers(
+    canopyRuntime.resolveCaller,
+    () => accessors.unsavedCloseGuard?.isDirty() === true,
+  );
   const closeBackgroundService = registerBackgroundServiceHandlers(
     canopyRuntime.resolveCaller,
   );

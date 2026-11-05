@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { constants as fsConstants } from 'node:fs';
 import { z } from 'zod';
 import type { W5CommitOptions } from './w5-commit-scope';
 import type { W5KeyedAttempt } from './w5-keyed-operation';
@@ -28,13 +29,14 @@ import {
   access,
   copyFile,
   cp,
+  link,
+  lstat,
   mkdir,
   readFile,
   readdir,
-  rename,
   rm,
-  writeFile,
 } from 'node:fs/promises';
+import { installRestoredExecutionState } from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import {
   resolvePersistedChatExecutionHarness,
@@ -1162,6 +1164,52 @@ async function listArchivedExecutionIds(
     .map((entry) => basename(entry.name, '.json'));
 }
 
+async function copyRestoredExecutionArtifacts(
+  source: string,
+  destination: string,
+): Promise<void> {
+  const stat = await lstat(source);
+  if (stat.isDirectory()) {
+    await cp(source, destination, {
+      recursive: true,
+      force: false,
+      errorOnExist: false,
+      filter: (candidate) => candidate === source,
+    });
+    for (const entry of await readdir(source)) {
+      await copyRestoredExecutionArtifacts(
+        join(source, entry),
+        join(destination, entry),
+      );
+    }
+    return;
+  }
+  if (!stat.isFile()) {
+    await cp(source, destination, { force: false, errorOnExist: false });
+    return;
+  }
+  try {
+    if ((await lstat(destination)).isDirectory()) {
+      throw new Error('Artifact destination is a directory');
+    }
+    return;
+  } catch (error) {
+    if (!isErrnoException(error) || error.code !== 'ENOENT') throw error;
+  }
+  const staging = join(dirname(destination), `.restore-${randomUUID()}`);
+  try {
+    await copyFile(source, staging, fsConstants.COPYFILE_EXCL);
+    try {
+      await link(staging, destination);
+    } catch (error) {
+      if (!isErrnoException(error) || error.code !== 'EEXIST') throw error;
+      if ((await lstat(destination)).isDirectory()) throw error;
+    }
+  } finally {
+    await rm(staging, { force: true });
+  }
+}
+
 async function restoreExecutions(args: {
   manifest: ArchivedContainerManifest;
   destinationId: string;
@@ -1176,8 +1224,7 @@ async function restoreExecutions(args: {
   const cwd = resolveWorktreeCwd(args.manifest.projectId, args.destinationId);
   for (const executionId of args.executionIds) {
     const sourceState = join(archiveDir, `${executionId}.json`);
-    const destinationState = join(liveDir, `${executionId}.json`);
-    const tempState = join(liveDir, `.${executionId}.${randomUUID()}.tmp`);
+    const sourceArtifacts = join(archiveDir, executionId);
     try {
       const parsed: unknown = JSON.parse(await readFile(sourceState, 'utf8'));
       const rewritten = rewriteExecutionState(
@@ -1192,28 +1239,42 @@ async function restoreExecutions(args: {
         liveDir,
         executionId,
       );
-      await mkdir(liveDir, { recursive: true });
-      await writeFile(tempState, JSON.stringify(relocated, null, 2), 'utf8');
-      // Windows rename does not replace an existing destination. A previous
-      // interrupted restore may have installed the state before artifact copy
-      // failed, so clear it to keep retries idempotent on every platform.
-      await rm(destinationState, { force: true });
-      await rename(tempState, destinationState);
-      const sourceArtifacts = join(archiveDir, executionId);
-      const destinationArtifacts = join(liveDir, executionId);
-      if (await pathExists(sourceArtifacts)) {
-        await cp(sourceArtifacts, destinationArtifacts, {
-          recursive: true,
-          force: true,
-        });
+      const installed = await installRestoredExecutionState(
+        executionId,
+        liveDir,
+        relocated,
+      );
+      if (installed === 'already_present') {
+        const live: unknown = JSON.parse(
+          await readFile(join(liveDir, `${executionId}.json`), 'utf8'),
+        );
+        if (
+          !isRecord(live) ||
+          live.project_id !== args.manifest.projectId ||
+          live.worktree_id !== args.destinationId ||
+          (isRecord(relocated.target) &&
+            relocated.target.scope === 'worktree' &&
+            (!isRecord(live.target) ||
+              live.target.scope !== 'worktree' ||
+              live.target.workspace_id !== relocated.target.workspace_id ||
+              live.target.worktree_id !== relocated.target.worktree_id))
+        ) {
+          throw new Error(
+            'Live execution is not bound to the restore destination',
+          );
+        }
       }
-      JSON.parse(await readFile(destinationState, 'utf8'));
+      if (await pathExists(sourceArtifacts)) {
+        await copyRestoredExecutionArtifacts(
+          sourceArtifacts,
+          join(liveDir, executionId),
+        );
+      }
       await settleAll([
         rm(sourceState, { force: true }),
         rm(sourceArtifacts, { recursive: true, force: true }),
       ]);
     } catch {
-      await rm(tempState, { force: true }).catch(() => undefined);
       failed.push(executionId);
     }
   }

@@ -1,6 +1,4 @@
 import { LABS_EXPERIMENTS_VERSION_HEADER } from '@canopy/protocol/experiments';
-import { BRAND } from '@canopy/brand/current';
-import { createDesktopLabsAvailabilityFallback } from '../feature-flags/labs-availability';
 import type { LabsAvailabilityState } from '../feature-flags/labs-availability';
 import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
 import {
@@ -85,7 +83,6 @@ export function getLabsExperimentsService(): LabsExperimentsService {
   const instance = new LabsExperimentsService(
     {
       ...labsExperimentStorageDependencies(),
-      availabilityFallback: createDesktopLabsAvailabilityFallback(BRAND.id),
       availability: (): LabsAvailabilityState =>
         flags.getLabsAvailabilityState(),
       fetchChoices: (session): Promise<unknown> =>

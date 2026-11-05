@@ -95,12 +95,17 @@ function getPipelineExecutionsDir(): string {
   return path.join(getCanopyDataDir(), 'pipeline-executions');
 }
 
-export async function runGit(args: string[], cwd?: string): Promise<string> {
+export async function runGit(
+  args: string[],
+  cwd?: string,
+  signal?: AbortSignal,
+): Promise<string> {
   const { stdout } = await execFileAsync(
     getGitExecutableCommand(process.env),
     args,
     {
       cwd,
+      signal,
       maxBuffer: 1024 * 1024 * 8,
       // Ignored off Windows; a platform read here would be a new
       // platform-boundary site.

@@ -28,11 +28,14 @@ const DATA_ROOT_FILES: ReadonlyMap<string, AdmittedStorageNamespace> = new Map([
   ['migrations.json', 'startup_migrations'],
   ['migrations.last-good.json', 'startup_migrations'],
   ['pipeline-plugin-preferences.json', 'pipeline_plugin_preferences'],
+  ['pipeline-local-metadata.json', 'pipeline_local_metadata'],
 ]);
 const PREFERENCES_BACKUP = /^preferences\.backup-.+\.json$/;
 const MIGRATIONS_DAMAGED = /^migrations\.damaged-.+\.json$/;
 const PIPELINE_PREFERENCES_DAMAGED =
   /^pipeline-plugin-preferences\.json\.damaged-.+$/;
+const PIPELINE_DEFINITION_FILE =
+  /^(?:index\.json|index\.json\.damaged-\d+|[a-z0-9_-]+\.yaml|\.project-share-links\.json)$/;
 const APPROVALS_FILE = 'approvals.json';
 const APPROVALS_ROOTS = ['workspaces', 'app-workspaces'];
 
@@ -55,7 +58,13 @@ function dataRootFile(name: string): AdmittedStorageNamespace | undefined {
 /** Whether `targetPath` has a curated row's file name; no data root needed. */
 export function isAdmittedStorageCandidate(targetPath: string): boolean {
   const name = basename(targetPath).toLowerCase();
-  return dataRootFile(name) !== undefined || name === APPROVALS_FILE;
+  return (
+    dataRootFile(name) !== undefined ||
+    name === APPROVALS_FILE ||
+    name === 'pipelines' ||
+    (basename(dirname(targetPath)).toLowerCase() === 'pipelines' &&
+      PIPELINE_DEFINITION_FILE.test(name))
+  );
 }
 
 /**
@@ -69,6 +78,15 @@ export function admittedStorageRowForPath(
 ): AdmittedStorageNamespace | undefined {
   const name = basename(targetPath).toLowerCase();
   const parent = fold(dirname(targetPath));
+  if (
+    (name === 'pipelines' &&
+      (dataRoot === null || parent === fold(dataRoot))) ||
+    (PIPELINE_DEFINITION_FILE.test(name) &&
+      (dataRoot === null
+        ? basename(parent) === 'pipelines'
+        : parent === fold(resolve(dataRoot, 'pipelines'))))
+  )
+    return 'pipeline_definitions';
   const rootFile = dataRootFile(name);
   if (rootFile !== undefined)
     return dataRoot === null || parent === fold(dataRoot)

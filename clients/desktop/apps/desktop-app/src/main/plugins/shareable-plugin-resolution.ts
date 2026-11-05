@@ -1,7 +1,9 @@
 import { filterStoredSkillContexts } from '../skills/skill-install-context';
 import * as fs from 'node:fs';
+import { normalizeShareablePluginRef } from '@canopy/protocol';
 import {
   buildShareablePluginDisplay,
+  computePluginShareableRef,
   getShareablePluginRefKey,
   normalizeGitHubRepoRef,
   normalizeShareableSource,
@@ -17,6 +19,7 @@ import {
 import { loadSkills } from '../skills/skill-service';
 import { loadMarketplaces } from './plugin-service';
 import { parseGitHubSource } from '../skills/source-parser';
+import { CUSTOM_SOURCE_ID } from '../skills/paths';
 
 export interface ShareablePluginCatalog {
   skills: InstalledSkillInfo[];
@@ -324,6 +327,44 @@ function toClaudePluginRef(
     marketplace: ref.marketplace,
     plugin_name: ref.plugin_name,
   };
+}
+
+/** The shareable ref an installed skill travels as, or none for a local one. */
+export function portableSkillRef(
+  ref: { sourceId: string; skillName: string },
+  catalog: ShareablePluginCatalog,
+): ShareablePluginRef | undefined {
+  if (ref.sourceId === CUSTOM_SOURCE_ID) return undefined;
+  const skill = catalog.skills.find(
+    (candidate) =>
+      candidate.sourceId === ref.sourceId && candidate.name === ref.skillName,
+  );
+  if (!skill?.shareableSource) return undefined;
+  try {
+    return normalizeShareablePluginRef({
+      type: 'skill',
+      source: skill.shareableSource,
+      skill_name: skill.name,
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+/** The shareable ref an installed plugin travels as, or none for a local one. */
+export function portablePluginRef(
+  ref: { marketplaceId: string; pluginName: string },
+  catalog: ShareablePluginCatalog,
+): ShareablePluginRef | undefined {
+  const marketplace = catalog.marketplaces.find(
+    (candidate) => candidate.id === ref.marketplaceId,
+  );
+  const plugin = marketplace?.plugins.find(
+    (candidate) => candidate.name === ref.pluginName,
+  );
+  return marketplace && plugin
+    ? computePluginShareableRef(plugin, marketplace)
+    : undefined;
 }
 
 export function matchShareablePluginRef(

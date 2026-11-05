@@ -11,7 +11,7 @@ import { LOCAL_DESKTOP_AUTHORITY_ID } from './desktop-runtime-identity';
  * Which local reads may be sent to the core daemon, as code (CAN-5501).
  * The eligibility half of each daemon read route: the operation × platform
  * table, the caller and scope rules, and local lookups only, never daemon
- * contact. A route still applies its own disposal, selection set and flag.
+ * contact. A route still applies its own disposal and selection set.
  * Nothing here reads a user setting; under the always-on daemon model there
  * is no switch.
  */

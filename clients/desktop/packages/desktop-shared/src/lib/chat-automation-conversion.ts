@@ -5,10 +5,10 @@
  * Browser-safe; it reads only the model catalog, to keep a Claude interface
  * mode for a Claude model alone. Conversion is lossless or refused: an action
  * whose settings the steps can't carry exactly stays native. Every local ID,
- * attachment, Agent and local plugin selection is a pipeline input or an
- * automation model or plugin collection preference, never a YAML literal:
- * local plugin selections are the automation's preferences for a plugin
- * collection the YAML names with no defaults. The prompt stays literal
+ * attachment and Agent is a pipeline input or an automation model preference,
+ * never a YAML literal. Plugin selections go through a plugin collection: one
+ * that travels as a shareable ref is one of its YAML defaults, and the rest
+ * are the pipeline's preferences on this machine. The prompt stays literal
  * in the YAML (`literal_text`), so sharing, which strips input values, keeps
  * it. A run restriction isn't converted: a valid one is the chat action's own
  * single context, which desktop main checks before it drops it (CAN-5479).
@@ -35,8 +35,10 @@ import type {
   PipelineAgentModelAliasPreference,
   PipelineInputDef,
   PipelinePluginCollectionPreference,
+  PipelinePluginDefault,
   Step,
 } from '../types/pipeline';
+import { getPipelinePluginDefaultKey } from '../pipelines/plugin-collections';
 import { parseAgentRouteModelId } from '@canopy/protocol/agents';
 import type { ConfiguredPromptReference } from '@canopy/protocol/configured-prompt-references';
 import type {
@@ -76,17 +78,40 @@ const ENTRY_TITLE_MAX = 200;
 export const CHAT_AUTOMATION_MODEL_ALIAS = 'chat_model';
 
 /**
- * The plugin collection local plugin selections convert to: the YAML names
- * it with no defaults, and the automation's plugin collection preferences
- * hold the selections, so they stay out of the YAML (CAN-5479).
+ * The plugin collection plugin selections convert to (CAN-5479): a selection
+ * that travels is one of its YAML defaults, so the workflow shows and shares
+ * it; the rest are the pipeline's preferences on this machine, out of the
+ * YAML.
  */
 export const CHAT_AUTOMATION_PLUGIN_COLLECTION = 'chat_plugins';
 
-/** The automation's plugin collection preferences for its owned pipeline. */
+/** The owned pipeline's plugin collection preferences on this machine. */
 export type ChatAutomationPluginCollectionPreferences = Record<
   string,
   PipelinePluginCollectionPreference
 >;
+
+/** An installed skill or plugin a chat automation selects. */
+export type ChatPluginSelection =
+  | { kind: 'skill'; sourceId: string; skillName: string }
+  | { kind: 'plugin'; marketplaceId: string; pluginName: string };
+
+/**
+ * A `chat_plugins` default and the selection it stood for when main wrote
+ * it, which converting back reads without the plugin catalog.
+ */
+export interface ChatPluginDefault {
+  defaultKey: string;
+  selection: ChatPluginSelection;
+}
+
+/**
+ * The shareable default a selection travels as, or none to keep it local:
+ * main answers only for a ref that resolves back to that same selection.
+ */
+export type ChatPluginPortability = (
+  selection: ChatPluginSelection,
+) => PipelinePluginDefault | undefined;
 
 /** The automation's model preferences for its owned pipeline's alias. */
 export type ChatAutomationModelAliasPreferences = Record<
@@ -167,8 +192,9 @@ function unescapeExpressions(text: string): string {
   return text.split(ESCAPED_EXPRESSION).join(EXPRESSION);
 }
 
-function hasLocalPluginSelections(action: ChatAutomationAction): boolean {
-  const selections = action.pluginSelections;
+function selectsPlugins(
+  selections: ChatTabPluginSelections | undefined,
+): boolean {
   if (!selections) return false;
   return (
     selections.collectionIds.length > 0 ||
@@ -233,7 +259,7 @@ export function convertibleChatAutomation(
     if (
       action.type === 'worktree_session_prompt' &&
       (setsAuthority(action) ||
-        hasLocalPluginSelections(action) ||
+        selectsPlugins(action.pluginSelections) ||
         (action.fileReferences?.length ?? 0) > 0)
     )
       return refuse('agent_settings');
@@ -325,15 +351,30 @@ function valueInputs(action: ChatAutomationAction): Record<string, string> {
   return values;
 }
 
+/** The action's plugin selections, split by whether they travel. */
+interface ChatPluginCollection {
+  /** The YAML defaults, in the order the action selects them. */
+  defaults: PipelinePluginDefault[];
+  /** The selection each default stands for. */
+  recorded: ChatPluginDefault[];
+  /**
+   * The rest, exactly as the preference store keeps them; none when every
+   * selection is a default.
+   */
+  preferences?: ChatAutomationPluginCollectionPreferences;
+}
+
 /**
- * The automation's preferences for its plugin collection: the action's local
- * selections, exactly as the preference store keeps them. None when it
- * selects nothing.
+ * The action's plugin collection: a skill or plugin `portable` answers for is
+ * a default, everything else (collections, MCP servers, sign-in choices,
+ * capabilities not yet installed, local skills and plugins) a preference.
+ * None when the action selects nothing.
  */
-function pluginCollectionPreferences(
+function chatPluginCollection(
   action: ChatAutomationAction,
-): ChatAutomationPluginCollectionPreferences | undefined {
-  if (!action.pluginSelections || !hasLocalPluginSelections(action))
+  portable: ChatPluginPortability | undefined,
+): ChatPluginCollection | undefined {
+  if (!action.pluginSelections || !selectsPlugins(action.pluginSelections))
     return undefined;
   const {
     collectionIds,
@@ -343,20 +384,54 @@ function pluginCollectionPreferences(
     mcpHttpAuthPreferences,
     unresolvedCapabilities,
   } = normalizePluginSelections(action.pluginSelections);
+  const defaults: PipelinePluginDefault[] = [];
+  const recorded: ChatPluginDefault[] = [];
+  /** Whether `selection` stays local: no default, or one already taken. */
+  const staysLocal = (selection: ChatPluginSelection): boolean => {
+    const ref = portable?.(selection);
+    if (ref === undefined) return true;
+    const defaultKey = getPipelinePluginDefaultKey(ref);
+    // One default can't come back as two selections.
+    if (recorded.some((entry) => entry.defaultKey === defaultKey)) return true;
+    defaults.push(ref);
+    recorded.push({ defaultKey, selection });
+    return false;
+  };
+  const localSkills = skillRefs.filter(({ sourceId, skillName }) =>
+    staysLocal({ kind: 'skill', sourceId, skillName }),
+  );
+  const localPlugins = pluginRefs.filter(({ marketplaceId, pluginName }) =>
+    staysLocal({ kind: 'plugin', marketplaceId, pluginName }),
+  );
+  const local =
+    collectionIds.length > 0 ||
+    localSkills.length > 0 ||
+    localPlugins.length > 0 ||
+    (mcpServerRefs?.length ?? 0) > 0 ||
+    (mcpHttpAuthPreferences?.length ?? 0) > 0 ||
+    (unresolvedCapabilities?.length ?? 0) > 0;
   return {
-    [CHAT_AUTOMATION_PLUGIN_COLLECTION]: {
-      disabledDefaultKeys: [],
-      extraSelections: {
-        collectionIds,
-        skillRefs,
-        pluginRefs,
-        mcpServerRefs: mcpServerRefs ?? [],
-        mcpHttpAuthPreferences: mcpHttpAuthPreferences ?? [],
-        ...(unresolvedCapabilities !== undefined
-          ? { unresolvedCapabilities }
-          : {}),
-      },
-    },
+    defaults,
+    recorded,
+    ...(local
+      ? {
+          preferences: {
+            [CHAT_AUTOMATION_PLUGIN_COLLECTION]: {
+              disabledDefaultKeys: [],
+              extraSelections: {
+                collectionIds,
+                skillRefs: localSkills,
+                pluginRefs: localPlugins,
+                mcpServerRefs: mcpServerRefs ?? [],
+                mcpHttpAuthPreferences: mcpHttpAuthPreferences ?? [],
+                ...(unresolvedCapabilities !== undefined
+                  ? { unresolvedCapabilities }
+                  : {}),
+              },
+            },
+          },
+        }
+      : {}),
   };
 }
 
@@ -414,7 +489,7 @@ function sendStep(
       ...target,
       ...textInputs(action),
       ...settingsInputs(action),
-      ...(pluginCollectionPreferences(action) !== undefined
+      ...(selectsPlugins(action.pluginSelections)
         ? { plugin_collection_id: CHAT_AUTOMATION_PLUGIN_COLLECTION }
         : {}),
       ...values,
@@ -620,16 +695,29 @@ function steps(
   }
 }
 
+export interface ChatAutomationToPipelineOptions {
+  /**
+   * Which selections travel as defaults; without it every selection is a
+   * preference on this machine.
+   */
+  portable?: ChatPluginPortability;
+}
+
 /**
- * The owned pipeline for a convertible activity, and the automation's inputs
- * and model preferences for it. Throws for an activity
- * `convertibleChatAutomation` refuses.
+ * The owned pipeline for a convertible activity, the automation's inputs and
+ * model preferences for it, and the pipeline's plugin collection preferences
+ * on this machine with the selection each default stands for. Throws for an
+ * activity `convertibleChatAutomation` refuses.
  */
-export function chatAutomationToPipeline(activity: ConvertibleActivity): {
+export function chatAutomationToPipeline(
+  activity: ConvertibleActivity,
+  options: ChatAutomationToPipelineOptions = {},
+): {
   pipeline: Pipeline;
   inputs: Record<string, string>;
   modelAliasPreferences?: ChatAutomationModelAliasPreferences;
   pluginCollectionPreferences?: ChatAutomationPluginCollectionPreferences;
+  pluginDefaults?: ChatPluginDefault[];
 } {
   const verdict = convertibleChatAutomation(activity);
   if (!verdict.convertible)
@@ -640,7 +728,7 @@ export function chatAutomationToPipeline(activity: ConvertibleActivity): {
   const built = steps(activity, action);
   const inputs = { ...built.inputs, ...valueInputs(action) };
   const agent = isAgentModel(action.model) ? action.model : undefined;
-  const plugins = pluginCollectionPreferences(action);
+  const plugins = chatPluginCollection(action, options.portable);
   return {
     pipeline: {
       name: activity.name,
@@ -659,7 +747,7 @@ export function chatAutomationToPipeline(activity: ConvertibleActivity): {
               {
                 id: CHAT_AUTOMATION_PLUGIN_COLLECTION,
                 name: 'Chat plugins',
-                defaults: [],
+                defaults: plugins.defaults,
               },
             ],
           }
@@ -674,7 +762,12 @@ export function chatAutomationToPipeline(activity: ConvertibleActivity): {
           },
         }
       : {}),
-    ...(plugins !== undefined ? { pluginCollectionPreferences: plugins } : {}),
+    ...(plugins?.preferences !== undefined
+      ? { pluginCollectionPreferences: plugins.preferences }
+      : {}),
+    ...(plugins !== undefined && plugins.recorded.length > 0
+      ? { pluginDefaults: plugins.recorded }
+      : {}),
   };
 }
 
@@ -718,31 +811,88 @@ function aliasAgent(
   return mode === 'agent' && typeof agentId === 'string' ? agentId : undefined;
 }
 
-/** The local selections an automation's plugin collection preferences hold. */
-function collectionSelections(
+/** What converting back reads of a pipeline's plugin collection. */
+interface ChatPluginState {
+  /** The pipeline's `chat_plugins` defaults. */
+  defaults: readonly PipelinePluginDefault[];
+  /** The selection main recorded for each default. */
+  recorded: readonly ChatPluginDefault[];
+  /** The collection preferences: the pipeline's on this machine, or a legacy automation's. */
+  preferences: Readonly<Record<string, unknown>> | undefined;
+}
+
+/** The selection a default stands for, if main recorded one. */
+function recordedSelection(
+  state: ChatPluginState,
+  ref: PipelinePluginDefault,
+): ChatPluginSelection | undefined {
+  const defaultKey = getPipelinePluginDefaultKey(ref);
+  return state.recorded.find((entry) => entry.defaultKey === defaultKey)
+    ?.selection;
+}
+
+/** The selections a preference's extras hold, or `null` when it isn't one. */
+function preferenceExtras(
   preferences: Readonly<Record<string, unknown>> | undefined,
-): ChatTabPluginSelections | undefined {
+): ChatTabPluginSelections | null | undefined {
   const preference: unknown = preferences?.[CHAT_AUTOMATION_PLUGIN_COLLECTION];
-  if (typeof preference !== 'object' || preference === null) return undefined;
+  if (preference === undefined) return undefined;
+  if (typeof preference !== 'object' || preference === null) return null;
   const extras: unknown = Reflect.get(preference, 'extraSelections');
-  if (typeof extras !== 'object' || extras === null) return undefined;
-  const { mcpServerRefs, mcpHttpAuthPreferences, ...selections } =
-    normalizePluginSelections(extras);
+  if (typeof extras !== 'object' || extras === null) return null;
+  return normalizePluginSelections(extras);
+}
+
+/**
+ * The chat's selections: each default's recorded selection, then the
+ * preferences' extras. `undefined` when nothing is selected, as after the
+ * editor removed the last default; `null` when a default has no recorded
+ * selection, as after a hand edit.
+ */
+function collectionSelections(
+  state: ChatPluginState,
+): ChatTabPluginSelections | null | undefined {
+  const skillRefs: ChatTabPluginSelections['skillRefs'] = [];
+  const pluginRefs: ChatTabPluginSelections['pluginRefs'] = [];
+  for (const ref of state.defaults) {
+    const selection = recordedSelection(state, ref);
+    if (selection === undefined) return null;
+    if (selection.kind === 'skill')
+      skillRefs.push({
+        sourceId: selection.sourceId,
+        skillName: selection.skillName,
+      });
+    else
+      pluginRefs.push({
+        marketplaceId: selection.marketplaceId,
+        pluginName: selection.pluginName,
+      });
+  }
+  const extras = preferenceExtras(state.preferences);
+  if (extras === null) return null;
+  const { mcpServerRefs, mcpHttpAuthPreferences, ...rest } = extras ?? {
+    collectionIds: [],
+    skillRefs: [],
+    pluginRefs: [],
+  };
   // The store keeps an empty list; the action had none.
-  return {
-    ...selections,
+  const selections: ChatTabPluginSelections = {
+    ...rest,
+    skillRefs: [...skillRefs, ...rest.skillRefs],
+    pluginRefs: [...pluginRefs, ...rest.pluginRefs],
     ...((mcpServerRefs?.length ?? 0) > 0 ? { mcpServerRefs } : {}),
     ...((mcpHttpAuthPreferences?.length ?? 0) > 0
       ? { mcpHttpAuthPreferences }
       : {}),
   };
+  return selectsPlugins(selections) ? selections : undefined;
 }
 
 /** The action fields the send step carries, through the step's own parser. */
 function sendFields(
   send: Record<string, string>,
   inputs: Readonly<Record<string, string>>,
-  pluginPreferences: Readonly<Record<string, unknown>> | undefined,
+  plugins: ChatPluginState,
 ): {
   prompt: string;
   promptReferences?: ConfiguredPromptReference[];
@@ -773,13 +923,13 @@ function sendFields(
   const { pluginCollectionId } = parsed.value;
   const settings = { ...parsed.value.settings };
   if (pluginCollectionId !== undefined) {
-    const selections = collectionSelections(pluginPreferences);
+    const selections = collectionSelections(plugins);
     if (
       pluginCollectionId !== CHAT_AUTOMATION_PLUGIN_COLLECTION ||
-      selections === undefined
+      selections === null
     )
       return null;
-    settings.pluginSelections = selections;
+    if (selections !== undefined) settings.pluginSelections = selections;
   }
   const modelConfig: AgentModelConfig = {
     ...(settings.thinkingEffort !== undefined
@@ -835,7 +985,7 @@ function candidate(
   inputs: Readonly<Record<string, string>>,
   isCoworkProject: (projectId: string) => boolean,
   modelAliasPreferences: Readonly<Record<string, unknown>> | undefined,
-  pluginCollectionPreferences: Readonly<Record<string, unknown>> | undefined,
+  plugins: ChatPluginState,
 ): { name: string; action: AutomationAction } | null {
   const job = pipeline.jobs[CHAT_AUTOMATION_JOB];
   if (!job) return null;
@@ -843,7 +993,7 @@ function candidate(
   const send = stringWith(job.steps.find((step) => step.id === STEP.send));
   const firstWith = stringWith(first);
   if (!first || !send || !firstWith) return null;
-  const fields = sendFields(send, inputs, pluginCollectionPreferences);
+  const fields = sendFields(send, inputs, plugins);
   if (!fields) return null;
   if (fields.model === CHAT_AUTOMATION_MODEL_ALIAS) {
     const agent = aliasAgent(pipeline, modelAliasPreferences);
@@ -1006,6 +1156,77 @@ function sameJson(left: unknown, right: unknown): boolean {
 }
 
 /**
+ * The preferences without a `chat_plugins` entry that changes nothing, which
+ * the Run dialog can save; the converter writes none.
+ */
+function withoutEmptyChatPreference(
+  preferences: Readonly<Record<string, unknown>> | undefined,
+): Readonly<Record<string, unknown>> {
+  if (preferences === undefined) return {};
+  const preference: unknown = preferences[CHAT_AUTOMATION_PLUGIN_COLLECTION];
+  if (typeof preference !== 'object' || preference === null) return preferences;
+  const disabled: unknown = Reflect.get(preference, 'disabledDefaultKeys');
+  const extras = preferenceExtras(preferences);
+  if (
+    !Array.isArray(disabled) ||
+    disabled.length > 0 ||
+    extras === null ||
+    selectsPlugins(extras)
+  )
+    return preferences;
+  const rest = { ...preferences };
+  delete rest[CHAT_AUTOMATION_PLUGIN_COLLECTION];
+  return rest;
+}
+
+/**
+ * `pipeline` without an empty `chat_plugins` collection and the step inputs
+ * that name it.
+ */
+function withoutEmptyChatCollection(pipeline: Pipeline): Pipeline {
+  const collections = pipeline.plugin_collections ?? [];
+  const chat = collections.find(
+    (collection) => collection.id === CHAT_AUTOMATION_PLUGIN_COLLECTION,
+  );
+  if (chat === undefined || chat.defaults.length > 0) return pipeline;
+  const { plugin_collections: _collections, ...rest } = pipeline;
+  void _collections;
+  const remaining = collections.filter((collection) => collection !== chat);
+  const jobs: Pipeline['jobs'] = {};
+  for (const [id, job] of Object.entries(pipeline.jobs))
+    jobs[id] = {
+      ...job,
+      steps: job.steps.map((step) => {
+        if (
+          step.with?.plugin_collection_id !== CHAT_AUTOMATION_PLUGIN_COLLECTION
+        )
+          return step;
+        const { plugin_collection_id: _id, ...inputs } = step.with;
+        void _id;
+        return { ...step, with: inputs };
+      }),
+    };
+  return {
+    ...rest,
+    ...(remaining.length > 0 ? { plugin_collections: remaining } : {}),
+    jobs,
+  };
+}
+
+/** What {@link ownedPipelineToChatAction} reads besides the pipeline's content. */
+export interface OwnedChatPipelineState {
+  /** The automation's `modelAliasPreferences`, which name its Agent. */
+  modelAliasPreferences?: Readonly<Record<string, unknown>>;
+  /**
+   * The pipeline's plugin collection preferences on this machine; a legacy
+   * automation's own `pluginCollectionPreferences` instead, when it has them.
+   */
+  pluginCollectionPreferences?: Readonly<Record<string, unknown>>;
+  /** The selections main recorded for the pipeline's `chat_plugins` defaults. */
+  pluginDefaults?: readonly ChatPluginDefault[];
+}
+
+/**
  * The chat action an owned pipeline was generated from, or `null` when the
  * pipeline no longer has a shape the converter produces (a hand edit, for
  * example). The candidate is regenerated and must match exactly.
@@ -1016,27 +1237,54 @@ export function ownedPipelineToChatAction(
   pipeline: Pipeline,
   inputs: Readonly<Record<string, string>>,
   isCoworkProject: (projectId: string) => boolean,
-  /** The automation's `modelAliasPreferences`, which name its Agent. */
-  modelAliasPreferences?: Readonly<Record<string, unknown>>,
-  /** The automation's `pluginCollectionPreferences`, which hold its plugins. */
-  pluginCollectionPreferences?: Readonly<Record<string, unknown>>,
+  state: OwnedChatPipelineState = {},
 ): ChatAutomationAction | null {
+  const { modelAliasPreferences } = state;
+  const pluginCollectionPreferences = withoutEmptyChatPreference(
+    state.pluginCollectionPreferences,
+  );
+  const plugins: ChatPluginState = {
+    defaults:
+      pipeline.plugin_collections?.find(
+        (collection) => collection.id === CHAT_AUTOMATION_PLUGIN_COLLECTION,
+      )?.defaults ?? [],
+    recorded: state.pluginDefaults ?? [],
+    preferences: pluginCollectionPreferences,
+  };
   const found = candidate(
     pipeline,
     inputs,
     isCoworkProject,
     modelAliasPreferences,
-    pluginCollectionPreferences,
+    plugins,
   );
   if (!found || !isChatAutomationAction(found.action)) return null;
   const activity = { name: found.name, action: found.action };
   if (!convertibleChatAutomation(activity).convertible) return null;
-  const regenerated = chatAutomationToPipeline(activity);
+  // Each selection travels as the default it was read from, so the
+  // regenerated defaults are the stored ones unless someone changed them.
+  // The converter never writes `required`, so a default that sets it is a
+  // hand edit a regeneration would otherwise drop.
+  const regenerated = chatAutomationToPipeline(activity, {
+    portable: (selection) => {
+      const stored = plugins.defaults.find((ref) => {
+        const recorded = recordedSelection(plugins, ref);
+        return recorded !== undefined && sameJson(recorded, selection);
+      });
+      if (stored === undefined) return undefined;
+      const { required, ...ref } = stored;
+      void required;
+      return ref;
+    },
+  });
   // The pipeline's name is the automation's own; everything else must match,
   // so any hand edit (a step, env, defaults, a model or plugin collection
-  // preference) keeps the pipeline as it is.
+  // preference) keeps the pipeline as it is. A collection the editor emptied
+  // is the chat's choice of no plugins, which regenerates without it.
   return sameJson(regenerated.pipeline, {
-    ...pipeline,
+    ...(found.action.pluginSelections === undefined
+      ? withoutEmptyChatCollection(pipeline)
+      : pipeline),
     name: regenerated.pipeline.name,
   }) &&
     sameJson(regenerated.inputs, inputs) &&
@@ -1046,7 +1294,7 @@ export function ownedPipelineToChatAction(
     ) &&
     sameJson(
       regenerated.pluginCollectionPreferences ?? {},
-      pluginCollectionPreferences ?? {},
+      pluginCollectionPreferences,
     )
     ? found.action
     : null;

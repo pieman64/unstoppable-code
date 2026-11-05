@@ -43,7 +43,11 @@ import {
   withNativeGrantAuthority,
 } from './chat-automation-native-grant';
 import { chatAutomationPipelinesEnabled } from './chat-automation-experiment';
-import { deleteOwnedPipeline, ownedPipelineId } from './owned-pipeline';
+import {
+  deleteOwnedPipeline,
+  ownedChatPipelineState,
+  ownedPipelineId,
+} from './owned-pipeline';
 import { projectOwnedChatAutomation } from './owned-chat-projection';
 import {
   getAutomationsService,
@@ -257,8 +261,7 @@ function ownedPipelineMatchesChat(
       current.content,
       action.inputs ?? {},
       isCoworkWorkspace,
-      action.modelAliasPreferences,
-      action.pluginCollectionPreferences,
+      ownedChatPipelineState(action, action.pipelineId),
     ) !== null
   );
 }
@@ -400,8 +403,7 @@ export async function updateAutomationForAgent(
           current.content,
           stored.action.inputs ?? {},
           isCoworkWorkspace,
-          stored.action.modelAliasPreferences,
-          stored.action.pluginCollectionPreferences,
+          ownedChatPipelineState(stored.action, owned),
         )
       : null;
   // CAN-5479: the authority the automation has, which an agent's write

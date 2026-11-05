@@ -1,13 +1,16 @@
-import { rm } from 'node:fs/promises';
 import type { WorktreeHealthIssue } from '@canopy/desktop-shared/types';
 import { removePersistedWorktreeDataDirectory } from '@canopy/desktop-shared/node/lib/worktree-data-cleanup';
 import {
-  getWorkspaceDir,
-  getWorkspaceIndexFilePath,
-  getWorkspaceWorktreesFilePath,
-} from './paths';
-import { withW5RepositoryLocks } from './w5-repository-locks';
-import type { W5CommitOptions } from './w5-commit-scope';
+  type W5CommitOptions,
+  afterW5Apply,
+  afterW5Commit,
+  outsideW5CommitScope,
+} from './w5-commit-scope';
+import { PROJECT_W5_STORAGE, withStorageAdmission } from './w5-storage';
+import {
+  removeWorkspaceNonW5Children,
+  removeWorkspaceDirectoryAfterRecordRemoval,
+} from './w5-workspace-directory-removal';
 import {
   commitW5BoundaryStep,
   w5CompositionLocks,
@@ -34,6 +37,7 @@ import {
   applyWorktreeListUpdate,
   applyWorktreeListRemoval,
   applyWorkspaceIndexRemoval,
+  applyWorkspaceRecordsRemoval,
 } from './workspace-record-decision-port';
 
 export interface SplitRecordIdentity {
@@ -244,8 +248,7 @@ export async function recordSplitArchiveDestination(request: {
 
 /**
  * Called under the existing allocation/creation locks. Keep the list lock through
- * the emptiness decision, index removal and file cleanup. No multi-file atomicity
- * is implied: a crash after index removal still leaves the old cleanup gap.
+ * the emptiness decision, index and records removal, and after-apply cleanup.
  */
 export async function removeSplitCreatedWorkspace(request: {
   source: SplitRecordSource;
@@ -255,44 +258,63 @@ export async function removeSplitCreatedWorkspace(request: {
 }): Promise<boolean> {
   admit(request);
   request.worktreeIds.forEach((id) => admit({ ...request, worktreeId: id }));
-  let removed = false;
+  const removeEmptySplitRecords = async (): Promise<boolean> => {
+    let empty = false;
+    await updateWorkspaceWorktrees(
+      request.workspaceId,
+      async (rows) => {
+        if (rows.length > 0 || (await request.containsRollbackData()))
+          return rows;
+        empty = true;
+        return rows;
+      },
+      { ...EXISTING_LIST, shouldWrite: (): boolean => false },
+    );
+    if (!empty) return false;
+    // The outer boundary retains the list lock; do not reenter its active updater.
+    await applyWorkspaceIndexRemoval(request.workspaceId, {
+      kind: 'split.created-workspace.cleanup',
+    });
+    await outsideW5CommitScope(() =>
+      removeWorkspaceNonW5Children(request.workspaceId),
+    );
+    await applyWorkspaceRecordsRemoval(request.workspaceId, {
+      kind: 'split.created-workspace.records',
+    });
+    let cleanupFailure: { error: unknown } | undefined;
+    await afterW5Apply(async () => {
+      try {
+        for (const worktreeId of request.worktreeIds) {
+          await removePersistedWorktreeDataDirectory(
+            request.workspaceId,
+            worktreeId,
+            { removeTree: removeTreeWithoutAsar },
+          );
+        }
+        await removeWorkspaceDirectoryAfterRecordRemoval(request.workspaceId);
+      } catch (error: unknown) {
+        cleanupFailure = { error };
+      }
+    });
+    // Publish the committed index before surfacing a host cleanup failure.
+    await afterW5Commit(() => {
+      if (cleanupFailure) throw cleanupFailure.error;
+    });
+    return true;
+  };
   try {
-    await withW5RepositoryLocks(
-      [
-        { kind: 'index', path: getWorkspaceIndexFilePath() },
-        {
-          kind: 'list',
-          path: getWorkspaceWorktreesFilePath(request.workspaceId),
-        },
-      ],
-      () =>
-        updateWorkspaceWorktrees(
-          request.workspaceId,
-          async (rows) => {
-            if (rows.length > 0 || (await request.containsRollbackData()))
-              return rows;
-            await applyWorkspaceIndexRemoval(request.workspaceId, {
-              kind: 'split.created-workspace.cleanup',
-            });
-            for (const worktreeId of request.worktreeIds) {
-              await removePersistedWorktreeDataDirectory(
-                request.workspaceId,
-                worktreeId,
-                { removeTree: removeTreeWithoutAsar },
-              );
-            }
-            await rm(getWorkspaceDir(request.workspaceId), {
-              recursive: true,
-              force: true,
-            });
-            removed = true;
-            return rows;
-          },
-          { ...EXISTING_LIST, shouldWrite: (): boolean => false },
-        ),
+    return await withStorageAdmission(PROJECT_W5_STORAGE, () =>
+      commitW5BoundaryStep(
+        { operation: 'core.workspace.composition.split' },
+        w5CompositionLocks({
+          index: true,
+          manifests: [request.workspaceId],
+          lists: [request.workspaceId],
+        }),
+        removeEmptySplitRecords,
+      ),
     );
   } catch (error) {
     translateRefusal(error);
   }
-  return removed;
 }

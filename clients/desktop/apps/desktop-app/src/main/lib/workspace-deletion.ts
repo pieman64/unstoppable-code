@@ -23,9 +23,11 @@ import {
 } from './w5-boundary-operation';
 import {
   withW5Commit,
+  desktopW5FileStore,
   W5RevisionConflictError,
   type W5CommitOptions,
 } from './w5-commit-log-file-store';
+import { afterW5Apply } from './w5-commit-scope';
 import {
   admitLifecycleJournals,
   type W5KeyedAttempt,
@@ -63,7 +65,7 @@ import {
   getWorkspaceIndexFilePath,
   getDefaultReposDir,
   getWorkspaceConfigPath,
-  getWorkspaceDir,
+  getWorkspaceWorktreesFilePath,
 } from './paths';
 import { isPathInside } from './path-safety';
 import { cleanupUnreferencedRepoShadows } from './repo-shadow';
@@ -77,7 +79,14 @@ import {
   readWorkspaceIndexEntry,
   getWorkspaceIndexRepository,
 } from './sidebar-items';
-import { applyWorkspaceIndexRemoval } from './workspace-record-decision-port';
+import {
+  applyWorkspaceIndexRemoval,
+  applyWorkspaceRecordsRemoval,
+} from './workspace-record-decision-port';
+import {
+  removeWorkspaceNonW5Children,
+  removeWorkspaceDirectoryAfterRecordRemoval,
+} from './w5-workspace-directory-removal';
 import { readWorkspaceConfigDetailed } from './workspace-persistence';
 import { getSidebarItemsPreserveWorkspaceIds } from './sidebar-items-preservation';
 import { validateId } from './validation';
@@ -89,6 +98,7 @@ import {
   SplitLockError,
 } from '../services/split-lock-service';
 import { projectPluginDefaultsWritten } from '../plugins/project-plugin-defaults-cache';
+import { reconcileWorkspaceRemovalPluginDefaults } from './workspace-plugin-defaults';
 import {
   listArchivedContainerManifests,
   listArchivedContainerManifestsStrict,
@@ -666,6 +676,18 @@ async function readDeletionTarget(request: WorkspaceDeletionRequest): Promise<{
       'configuration-unavailable',
       CONFIGURATION_UNAVAILABLE_REFUSAL,
     );
+  if (kind === 'single-repo' || kind === 'multi-repo') {
+    // Store-level admission matches removal: corrupt JSON is still removable.
+    const records = await settleAll([
+      desktopW5FileStore.read(getWorkspaceConfigPath(workspaceId)),
+      desktopW5FileStore.read(getWorkspaceWorktreesFilePath(workspaceId)),
+    ]);
+    if (records.some((record) => record.state === 'unreadable'))
+      throw new WorkspaceDeletionRefusedError(
+        'configuration-unavailable',
+        CONFIGURATION_UNAVAILABLE_REFUSAL,
+      );
+  }
   const managedRepoPath = request.singleRepoProject
     ? admitSingleRepoProjectDeletion(workspaceId, sidebarItems, target, kind)
     : undefined;
@@ -819,30 +841,69 @@ async function deleteWorkspaceWithLease(
   const { workspaceId, source: telemetrySource } = request;
   const { kind, managedRepoPath } = await readDeletionTarget(request);
   if (managedRepoPath) await protectDestructivePath(managedRepoPath);
-  // One X4 decision for both branches; the Cowork branch commits it through
+  // One record commit for both branches; the Cowork branch commits it through
   // `deleteCoworkWorkspace`. The commit, lock and revisions stay host-side.
   async function removeDeletedWorkspaceIndexEntry(): Promise<void> {
     await applyWorkspaceIndexRemoval(workspaceId, {
       kind: 'workspace.delete.index',
     });
-  }
-  const commitIndexRemoval = (): Promise<void> =>
-    destructiveStep(
-      'canonical-index-removal',
-      () =>
-        withW5Commit(
-          {
-            ...options,
-            locks: [{ kind: 'index', path: getWorkspaceIndexFilePath() }],
-            expectedRevisions: w5ExpectedRevision(
-              { kind: 'workspace', workspaceId },
-              request.expectedRevision,
-            ),
-          },
-          removeDeletedWorkspaceIndexEntry,
-        ),
-      true,
+    // Deletion owns the refresh, including its post-commit failure paths.
+    await applyWorkspaceRecordsRemoval(
+      workspaceId,
+      { kind: 'workspace.delete.records' },
+      { deferPluginDefaultsRefresh: true },
     );
+  }
+  async function commitIndexRemoval(): Promise<void> {
+    let recordsApplied = false;
+    let recordsStaged = false;
+    try {
+      await destructiveStep(
+        'canonical-index-removal',
+        async () => {
+          // Keep confirmed superseding of interrupted index removals unchanged.
+          if (kind !== 'cowork')
+            await removeWorkspaceNonW5Children(workspaceId);
+          await withW5Commit(
+            {
+              ...options,
+              locks: [
+                { kind: 'index', path: getWorkspaceIndexFilePath() },
+                { kind: 'manifest', path: getWorkspaceConfigPath(workspaceId) },
+                {
+                  kind: 'list',
+                  path: getWorkspaceWorktreesFilePath(workspaceId),
+                },
+              ],
+              expectedRevisions: w5ExpectedRevision(
+                { kind: 'workspace', workspaceId },
+                request.expectedRevision,
+              ),
+            },
+            async () => {
+              await afterW5Apply(() => {
+                recordsApplied = true;
+              });
+              await removeDeletedWorkspaceIndexEntry();
+              recordsStaged = true;
+            },
+          );
+        },
+        true,
+      );
+    } catch (error) {
+      // Publication or the step's completion save can reject a durable removal.
+      if (recordsApplied)
+        projectPluginDefaultsWritten({
+          configPath: getWorkspaceConfigPath(workspaceId),
+          workspaceId,
+          layerChanged: true,
+        });
+      else if (recordsStaged)
+        reconcileWorkspaceRemovalPluginDefaults(workspaceId);
+      throw error;
+    }
+  }
   // Capture the retained Git state while manifests are still readable, but do
   // not release any refs until the parent deletion has committed. A failed
   // teardown must leave every retained container recoverable.
@@ -918,8 +979,8 @@ async function deleteWorkspaceWithLease(
       await prepareWorkspaceBrowserRetirement(workspaceId);
     // The project directory holds every worktree's graph.db, and an idle code
     // graph read worker keeps a read-only connection to it for minutes. Stop
-    // them all (and refuse new ones) before the sidebar commit, so the rm
-    // below cannot fail on an open graph.db (EBUSY/EPERM on Windows) after the
+    // them all (and refuse new ones) before non-W5 cleanup and the sidebar
+    // commit, so an open graph.db (EBUSY/EPERM on Windows) cannot fail after the
     // project has already left the sidebar.
     const releaseCodeGraphReadFence =
       fenceCodeGraphReadsForWorkspace(workspaceId);
@@ -933,19 +994,20 @@ async function deleteWorkspaceWithLease(
           commitTaskBrowserRetirement(workspaceId, entry.worktreeId),
         );
       await destructiveStep('workspace-directory-removal', () =>
-        removeDeletedWorkspaceDirectory(workspaceId),
+        removeWorkspaceDirectoryAfterRecordRemoval(workspaceId),
       );
-      projectPluginDefaultsWritten({
-        configPath: getWorkspaceConfigPath(workspaceId),
-        workspaceId,
-        layerChanged: true,
-      });
     } catch (error) {
       if (!ownerCommitted)
         for (const entry of browserRetirements)
           await abortTaskBrowserRetirement(entry.operationId);
       throw error;
     } finally {
+      if (ownerCommitted)
+        projectPluginDefaultsWritten({
+          configPath: getWorkspaceConfigPath(workspaceId),
+          workspaceId,
+          layerChanged: true,
+        });
       releaseCodeGraphReadFence();
     }
   }
@@ -1068,10 +1130,4 @@ function collectReferencedRepoPaths(items: SidebarItem[]): string[] {
     }
   }
   return paths;
-}
-
-async function removeDeletedWorkspaceDirectory(
-  workspaceId: string,
-): Promise<void> {
-  await rm(getWorkspaceDir(workspaceId), { recursive: true, force: true });
 }

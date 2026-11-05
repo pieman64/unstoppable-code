@@ -198,8 +198,8 @@ export function finalAuditEntries(
  * boot holds its own isolated module graph, so a suite that keeps disposed
  * hosts alive until the file ends holds every graph it ever loaded.
  */
-export async function disposeAll(host: DesktopHost): Promise<void> {
-  for (const { service } of host.incarnations.splice(0)) {
+export async function disposeAll(host?: DesktopHost): Promise<void> {
+  for (const { service } of host?.incarnations.splice(0) ?? []) {
     await service.dispose().catch(() => undefined);
   }
 }

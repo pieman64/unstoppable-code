@@ -27,7 +27,9 @@ import { CHAT_MARKERS_LAB_ENTRIES } from './componentsLabChatMarkers';
 import { CHAT_QUEUE_LAB_ENTRIES } from './componentsLabChatQueue';
 import { CHAT_SUBAGENTS_LAB_ENTRIES } from './componentsLabChatSubagents';
 import { CHAT_TURN_LAB_ENTRIES } from './componentsLabChatTurn';
+import { AgentSentSpecimen } from './componentsLabAgentSent';
 import { LoadingSpecimen } from './componentsLabLoading';
+import { SurfacesSpecimen } from './componentsLabSurfaces';
 import { SidebarPartsSpecimen } from './componentsLabSidebar';
 import { StatusPartsSpecimen } from './componentsLabStatus';
 import { UsagePartsSpecimen } from './componentsLabUsage';
@@ -38,6 +40,7 @@ import { SharedCSpecimen } from './componentsLabSharedC';
 import { CustomizePartsSpecimen } from './componentsLabCustomize';
 import { CuratedWorkflowsSpecimen } from './componentsLabCurated';
 import { CreditsNoticesSpecimen } from './componentsLabCredits';
+import { W5RecoverySpecimen } from './componentsLabW5Recovery';
 import { SettingsAndAgentsSpecimen } from './componentsLabSettings';
 import { TablesSpecimen } from './componentsLabTables';
 import { DetailHeaderSpecimen } from './componentsLabDetail';
@@ -295,6 +298,25 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     View: CreditsNoticesSpecimen,
   },
   {
+    id: 'agent-sent',
+    name: 'Agent-sent messages and lifetime limit',
+    group: 'Unified',
+    note: 'The title row above a message another agent sent, as a block or inline, and the helper lifetime limit notice in each state.',
+    source:
+      'packages/ui-shared/src/components/chat/{AgentSentTitle,subagents/panel/LifetimeLimitNoticeDisplay}.tsx',
+    prs: [],
+    View: AgentSentSpecimen,
+  },
+  {
+    id: 'w5-recovery-notice',
+    name: 'Workspace recovery notice',
+    group: 'Unified',
+    note: 'Workspace recovery in every lifecycle and refusal state, with host and target capability gates, busy actions and bounded diagnostic entries.',
+    source: 'packages/ui-shared/src/components/W5RecoveryNotice.tsx',
+    prs: [7548],
+    View: W5RecoverySpecimen,
+  },
+  {
     id: 'spacing',
     name: 'Spacing',
     group: 'Unified',
@@ -302,6 +324,15 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     source: 'packages/ui-shared/src/components/Stack.tsx',
     prs: [7215],
     View: SpacingSpecimen,
+  },
+  {
+    id: 'surfaces',
+    name: 'Surface and Divider',
+    group: 'Unified',
+    note: 'Every box is a Surface named by what it is (outline, group, card, raised, inset), with padding roles and a selected state; a light boundary is a Divider. Raw elements stay plain layout.',
+    source: 'packages/ui-shared/src/components/Surface.tsx',
+    prs: [],
+    View: SurfacesSpecimen,
   },
   {
     id: 'detail-header',

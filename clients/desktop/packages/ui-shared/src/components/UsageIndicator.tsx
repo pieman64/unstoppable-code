@@ -758,36 +758,36 @@ export interface UsageIndicatorWeeklyLimit {
 // ring. Nothing resizes: the trigger keeps its 32px box, the hover fill is
 // drawn at its open width and revealed with clip-path, and the % fades and
 // slides in, so the row never relayouts. `ComposerAccessUsage` slides the
-// access control before the meter aside by the same 37px, on the same curve.
+// access control before the meter aside with room for the widest label.
 // Tailwind needs each class written out, so the open states are spelled per
 // element; `data-open` holds a still frame open for captures and tests.
 //
 // Motion (Emil Kowalski's rules): one soft ease-out, `ease-drawer`,
-// on every part; 300 ms in and a slightly quicker 240 ms out; CSS
+// on every part; 180 ms in and a quicker 120 ms out; CSS
 // transitions, so a pointer that leaves mid-way reverses from where it is.
 // Hover counts only for a fine pointer, so a tap cannot leave it open.
 // Reduced motion keeps the fades and drops the movement.
 
-/** Leaving: 240 ms. */
-const WEEKLY_EXIT = 'duration-240 ease-drawer motion-reduce:transition-none';
+/** Leaving: 120 ms, with no delayed tail on quick pointer exits. */
+const WEEKLY_EXIT = 'duration-120 ease-drawer motion-reduce:transition-none';
 
-/** Arriving: 300 ms, the duration taken from the open state. */
+/** Arriving: 180 ms, the duration taken from the open state. */
 const WEEKLY_ENTER =
-  'pointer-fine:group-hover/weekly:duration-300 group-focus-visible/weekly:duration-300 group-aria-expanded/weekly:duration-300 group-data-[open=true]/weekly:duration-300';
+  'pointer-fine:group-hover/weekly:duration-180 group-focus-visible/weekly:duration-180 group-aria-expanded/weekly:duration-180 group-data-[open=true]/weekly:duration-180';
 
 /**
  * The hover fill: the composer controls' 32px round hover, grown leftward
  * into a pill around the %. Right to left it holds its usual 8px edge, the
- * ring, a 6px gap, a two-digit box (25px) and a 14px edge, so it and the row
- * grow by 37px; "100%" reaches about 4px into the left edge.
+ * ring, a 10px gap, the label's intrinsic width and a 14px leading edge.
+ * The transparent ring slot keeps the real ring stationary during reveal.
  */
-const WEEKLY_HOVER_FILL = `pointer-events-none absolute -right-2 -top-2 h-8 w-17.25 bg-subtle opacity-0 usage-weekly-fill-closed transition-[clip-path,opacity] ${WEEKLY_EXIT} ${WEEKLY_ENTER} pointer-fine:group-hover/weekly:opacity-100 group-focus-visible/weekly:opacity-100 group-aria-expanded/weekly:opacity-100 group-data-[open=true]/weekly:opacity-100 pointer-fine:group-hover/weekly:usage-weekly-fill-open group-focus-visible/weekly:usage-weekly-fill-open group-aria-expanded/weekly:usage-weekly-fill-open group-data-[open=true]/weekly:usage-weekly-fill-open`;
+const WEEKLY_HOVER_FILL = `pointer-events-none absolute -right-2 -top-2 flex h-8 w-max items-center gap-2.5 bg-subtle pl-3.5 pr-2 opacity-0 usage-weekly-fill-closed transition-[clip-path,opacity] ${WEEKLY_EXIT} ${WEEKLY_ENTER} pointer-fine:group-hover/weekly:opacity-100 group-focus-visible/weekly:opacity-100 group-aria-expanded/weekly:opacity-100 group-data-[open=true]/weekly:opacity-100 pointer-fine:group-hover/weekly:usage-weekly-fill-open group-focus-visible/weekly:usage-weekly-fill-open group-aria-expanded/weekly:usage-weekly-fill-open group-data-[open=true]/weekly:usage-weekly-fill-open`;
 
 /**
- * The %, one step below the row's labels, 6px left of the ring. It fades in
- * a beat after the fill starts to grow, with a short slide.
+ * The %, one step below the row's labels, 10px left of the ring. It fades in
+ * with the fill, without a stagger that can trail rapid pointer reversals.
  */
-const WEEKLY_PERCENT = `pointer-events-none absolute right-5.5 top-0 flex h-4 items-center whitespace-nowrap text-2xs fg-primary opacity-0 translate-x-1 motion-reduce:translate-x-0 transition-[opacity,translate] motion-reduce:transition-opacity duration-150 ease-drawer pointer-fine:group-hover/weekly:duration-240 group-focus-visible/weekly:duration-240 group-aria-expanded/weekly:duration-240 group-data-[open=true]/weekly:duration-240 pointer-fine:group-hover/weekly:opacity-100 group-focus-visible/weekly:opacity-100 group-aria-expanded/weekly:opacity-100 group-data-[open=true]/weekly:opacity-100 pointer-fine:group-hover/weekly:translate-x-0 group-focus-visible/weekly:translate-x-0 group-aria-expanded/weekly:translate-x-0 group-data-[open=true]/weekly:translate-x-0 pointer-fine:group-hover/weekly:delay-40 group-focus-visible/weekly:delay-40 group-aria-expanded/weekly:delay-40 group-data-[open=true]/weekly:delay-40`;
+const WEEKLY_PERCENT = `pointer-events-none flex h-4 items-center whitespace-nowrap text-2xs fg-primary opacity-0 translate-x-1 motion-reduce:translate-x-0 transition-[opacity,translate] motion-reduce:transition-opacity ${WEEKLY_EXIT} ${WEEKLY_ENTER} pointer-fine:group-hover/weekly:opacity-100 group-focus-visible/weekly:opacity-100 group-aria-expanded/weekly:opacity-100 group-data-[open=true]/weekly:opacity-100 pointer-fine:group-hover/weekly:translate-x-0 group-focus-visible/weekly:translate-x-0 group-aria-expanded/weekly:translate-x-0 group-data-[open=true]/weekly:translate-x-0`;
 
 /** The ring with the weekly % that appears beside it. */
 function WeeklyRing({
@@ -801,9 +801,11 @@ function WeeklyRing({
 }): JSX.Element {
   return (
     <span className="relative block h-4 w-4" aria-hidden>
-      <span className={WEEKLY_HOVER_FILL} data-part="weekly-fill" />
-      <span className={WEEKLY_PERCENT} data-part="weekly-percent">
-        {text}
+      <span className={WEEKLY_HOVER_FILL} data-part="weekly-fill">
+        <span className={WEEKLY_PERCENT} data-part="weekly-percent">
+          {text}
+        </span>
+        <span className="h-4 w-4 shrink-0" />
       </span>
       <ProgressRing value={value} tone={tone} className="relative" />
     </span>

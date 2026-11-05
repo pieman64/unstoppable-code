@@ -1,14 +1,23 @@
 import { withW5RepositoryLocks } from './w5-repository-locks';
-import { commitW5BoundaryStep } from './w5-composition-operation';
-import { afterW5Commit } from './w5-commit-scope';
-import { rm } from 'node:fs/promises';
+import {
+  commitW5BoundaryStep,
+  w5CompositionLocks,
+} from './w5-composition-operation';
+import {
+  afterW5Commit,
+  afterW5Apply,
+  outsideW5CommitScope,
+} from './w5-commit-scope';
+import {
+  removeWorkspaceNonW5Children,
+  removeWorkspaceDirectoryAfterRecordRemoval,
+} from './w5-workspace-directory-removal';
 import type {
   MultiRepoSidebarItem,
   WorkspaceRepoData,
   WorktreeData,
 } from '@canopy/desktop-shared/types';
 import {
-  getWorkspaceDir,
   getWorkspaceConfigPath,
   getWorkspaceWorktreesFilePath,
   getWorkspaceIndexFilePath,
@@ -33,6 +42,7 @@ import {
 import {
   applyWorkspaceIndexDecision,
   applyWorkspaceIndexRemoval,
+  applyWorkspaceRecordsRemoval,
   applyWorkspaceManifestDecision,
   applyWorktreeListRemoval,
   applyWorktreeListUpdate,
@@ -426,10 +436,29 @@ export async function cleanupCompositionDestination(
   await applyWorkspaceIndexRemoval(request.workspaceId, {
     kind: 'composition.destination.cleanup',
   }).catch(() => undefined);
-  await rm(getWorkspaceDir(request.workspaceId), {
-    recursive: true,
-    force: true,
-  }).catch(() => undefined);
+  const removeDestinationRecords = async (): Promise<void> => {
+    await outsideW5CommitScope(() =>
+      removeWorkspaceNonW5Children(request.workspaceId),
+    );
+    await applyWorkspaceRecordsRemoval(request.workspaceId, {
+      kind: 'composition.destination.records',
+    });
+    await afterW5Apply(() =>
+      removeWorkspaceDirectoryAfterRecordRemoval(request.workspaceId),
+    );
+  };
+  await withStorageAdmission(
+    [WORKSPACE_MANIFEST_STORAGE, WORKTREE_LIST_STORAGE],
+    () =>
+      commitW5BoundaryStep(
+        { operation: 'core.workspace.create' },
+        w5CompositionLocks({
+          manifests: [request.workspaceId],
+          lists: [request.workspaceId],
+        }),
+        removeDestinationRecords,
+      ),
+  ).catch(() => undefined);
 }
 
 export interface TemporaryCompositionPromotion {

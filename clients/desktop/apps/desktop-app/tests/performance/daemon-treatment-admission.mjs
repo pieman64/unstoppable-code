@@ -1,120 +1,16 @@
 // Fail-closed trial admission for daemon Files treatment measurements. Inputs
-// are the read-only production observers (CAN-4604) and the Labs treatment
-// projection (CAN-4603); every rule rejects missing evidence instead of
-// inferring a route, treatment or renderer completion.
+// are the read-only production observers (CAN-4604). Build identity and
+// route/renderer evidence decide admission; no Labs state is read.
 
-export const DAEMON_FILES_EXPERIMENT_ID = 'daemon-files-reads';
+// Off/on labels describe historical artifact arms, not a product toggle.
 export const TREATMENT_ARMS = Object.freeze(['off', 'on']);
-
-/**
- * Winning availability sources `resolveLabsAvailability` can select in a
- * production build. `fixture` is E2E-only; anything else (a raw flag snapshot
- * included) is not an effective Labs value.
- */
-export const EFFECTIVE_TREATMENT_SOURCES = Object.freeze([
-  'live',
-  'cached',
-  'fallback:launchdarkly_disabled',
-  'fallback:launchdarkly_enabled_unavailable',
-]);
 
 const MAIN_SOURCE = 'desktop-main-files-singleton-v1';
 const RENDERER_SOURCE = 'desktop-renderer-file-list-store-v1';
-const CONTEXT_IDENTITY = /^[a-f0-9]{64}$/;
 const isCount = (value) => Number.isSafeInteger(value) && value >= 0;
 
 function verdict(reasons, extra = {}) {
   return { admitted: reasons.length === 0, reasons, ...extra };
-}
-
-/**
- * Flattens main's Labs snapshot (`labsExperimentsSnapshotSchema`) for
- * admission. The snapshot has no provenance; `provenance` (`source`,
- * `contextIdentity`, `rawFlag`) comes from the CAN-4603 projection.
- */
-export function labsTreatmentObservation(snapshot, provenance) {
-  const entry = snapshot?.experiments?.find(
-    (experiment) => experiment.id === DAEMON_FILES_EXPERIMENT_ID,
-  );
-  if (!entry) return null;
-  return {
-    experimentId: entry.id,
-    generation: snapshot.generation,
-    revision: snapshot.revision,
-    scope: snapshot.scope,
-    ready: snapshot.ready,
-    choicesReady: snapshot.choicesReady,
-    availability: entry.availability,
-    choice: entry.choice,
-    enabled: entry.enabled,
-    source: provenance?.source,
-    contextIdentity: provenance?.contextIdentity,
-    rawFlag: provenance?.rawFlag,
-  };
-}
-
-/**
- * One authoritative Labs entry for the experiment. Admission additionally
- * awaits settled account choices (`choicesReady`); the product keeps acting on
- * cached choices before then, which is unchanged here.
- */
-export function admitTreatment(observation, arm) {
-  const reasons = [];
-  const on = arm === 'on';
-  if (!TREATMENT_ARMS.includes(arm)) reasons.push(`unknown arm ${arm}`);
-  if (!observation || observation.experimentId !== DAEMON_FILES_EXPERIMENT_ID)
-    return verdict(['treatment observation missing']);
-  if (observation.ready !== true) reasons.push('Labs not ready');
-  if (observation.choicesReady !== true) reasons.push('choices not settled');
-  if (!isCount(observation.generation) || !isCount(observation.revision))
-    reasons.push('treatment generation/revision missing');
-  // Cached availability is keyed by context, so it cannot win without one.
-  if (
-    (observation.contextIdentity !== null || observation.source === 'cached') &&
-    !CONTEXT_IDENTITY.test(observation.contextIdentity ?? '')
-  )
-    reasons.push('treatment context identity missing');
-  if (!EFFECTIVE_TREATMENT_SOURCES.includes(observation.source))
-    reasons.push(`not an effective treatment source: ${observation.source}`);
-  if (!['hidden', 'offered', 'on'].includes(observation.availability))
-    reasons.push('availability missing');
-  else if (on && observation.availability === 'hidden')
-    reasons.push('experiment hidden');
-  if (observation.choice !== on)
-    reasons.push('persisted choice is not the arm');
-  if (observation.enabled !== on)
-    reasons.push('effective enabled is not the arm');
-  const treatment = {
-    experimentId: observation.experimentId,
-    arm,
-    enabled: observation.enabled,
-    choice: observation.choice,
-    availability: observation.availability,
-    source: observation.source,
-    contextIdentity: observation.contextIdentity,
-    rawFlag: observation.rawFlag ?? null,
-  };
-  return verdict(reasons, { treatment });
-}
-
-/** A revision increase alone is harmless; a treatment or context change is not. */
-export function assertStableTreatment(before, after) {
-  const reasons = [];
-  if (!before || !after) return verdict(['treatment observation missing']);
-  for (const key of [
-    'generation',
-    'scope',
-    'contextIdentity',
-    'source',
-    'availability',
-    'choice',
-    'enabled',
-    'ready',
-    'choicesReady',
-  ])
-    if (before[key] !== after[key]) reasons.push(`treatment ${key} changed`);
-  if (!(after.revision >= before.revision)) reasons.push('revision regressed');
-  return verdict(reasons);
 }
 
 function counterDeltas(before, after) {
@@ -391,18 +287,12 @@ export function admitTrial({
   workload,
   artifactSha256,
   brand,
-  treatment,
   main,
   renderer,
 }) {
   const parts = [
     ['artifact', verdict(artifactReasons(artifactSha256, brand))],
-    ['treatment', admitTreatment(treatment?.before, arm)],
-    ['treatment-after', admitTreatment(treatment?.after, arm)],
-    [
-      'treatment-stability',
-      assertStableTreatment(treatment?.before, treatment?.after),
-    ],
+    ['arm', verdict(TREATMENT_ARMS.includes(arm) ? [] : ['unknown arm'])],
     ['main', admitMainInterval({ ...main, arm })],
   ];
   if (workload === 'visible')
@@ -412,8 +302,7 @@ export function admitTrial({
   const reasons = parts.flatMap(([part, result]) =>
     result.reasons.map((reason) => `${part}: ${reason}`),
   );
-  const record = parts[1][1].treatment;
   return verdict(reasons, {
-    treatment: record && { ...record, artifactSha256, brand },
+    treatment: { routeSelection: 'build-default', arm, artifactSha256, brand },
   });
 }

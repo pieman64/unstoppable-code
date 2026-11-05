@@ -165,10 +165,11 @@ export function CapabilityPackageProblems({
         variant="primary"
         data-testid={`${testIdPrefix}-dependency-problems-fix-with-ai`}
         disabled={disabled || fixWithAIDisabled}
-        aria-busy={fixWithAIPending}
+        busy={fixWithAIPending}
+        busyLabel={FIX_WITH_AI_PENDING_LABEL}
         onClick={onFixWithAI}
       >
-        {fixWithAIPending ? FIX_WITH_AI_PENDING_LABEL : FIX_WITH_AI_LABEL}
+        {FIX_WITH_AI_LABEL}
       </NoticeButton>
     ) : undefined;
   const noticeTestId = `${testIdPrefix}-dependency-problems-notice`;

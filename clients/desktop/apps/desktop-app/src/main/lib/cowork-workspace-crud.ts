@@ -37,7 +37,11 @@ import {
   discardCoworkWorkspaceRecord,
   provisionCoworkWorkspaceRecord,
 } from './cowork-workspace-records';
-import { rm, writeFile } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
+import {
+  removeWorkspaceNonW5Children,
+  removeWorkspaceDirectoryAfterRecordRemoval,
+} from './w5-workspace-directory-removal';
 import {
   recordSharedItemInstall,
   recordSharedItemUninstall,
@@ -932,6 +936,9 @@ export async function deleteCoworkWorkspace(
     await destructiveStep('cowork-summaries-removal', () =>
       clearWorkEntrySummariesForWorkspace(workspaceId),
     );
+    await destructiveStep('workspace-non-w5-children-removal', () =>
+      removeWorkspaceNonW5Children(workspaceId),
+    );
     await options.commitIndexRemoval();
     ownerCommitted = true;
     if (existing?.installedFromTemplateExternalId !== undefined)
@@ -946,13 +953,8 @@ export async function deleteCoworkWorkspace(
         commitTaskBrowserRetirement(workspaceId, entry.worktreeId),
       );
     await destructiveStep('workspace-directory-removal', () =>
-      rm(getWorkspaceDir(workspaceId), { recursive: true, force: true }),
+      removeWorkspaceDirectoryAfterRecordRemoval(workspaceId),
     );
-    projectPluginDefaultsWritten({
-      configPath: getWorkspaceConfigPath(workspaceId),
-      workspaceId,
-      layerChanged: true,
-    });
   } catch (error) {
     if (!ownerCommitted) {
       for (const entry of browserRetirements)
@@ -960,5 +962,12 @@ export async function deleteCoworkWorkspace(
       activateWorkEntryWorkspace(workspaceId);
     }
     throw error;
+  } finally {
+    if (ownerCommitted)
+      projectPluginDefaultsWritten({
+        configPath: getWorkspaceConfigPath(workspaceId),
+        workspaceId,
+        layerChanged: true,
+      });
   }
 }

@@ -1,4 +1,8 @@
 import {
+  runHelperThroughWorker,
+  linkHelperAbort,
+} from '../helper-runs/helper-runs';
+import {
   clampThinkingLevelForModel,
   type AgentModelConfig,
   type AiCreditsRoutingMode,
@@ -378,81 +382,107 @@ async function attemptCommitMessageWithModel(
           return auditObserver.appendEvent(event);
         },
       };
-      const result = await runWithOptionalHelperPlugins(
-        buildHelperPluginRunOptions({
-          helperName: 'commit-message',
-          model,
-          pluginSelections: options.pluginSelections,
-          auditContext,
-        }),
-        (pluginRuntime) =>
-          generateCommitMessageWithUsage(
-            {
-              ...options,
-              abortController: attemptController,
-              localMemoryEnabled,
-              model: resolvedInvocation.sdkModel ?? model,
-              thinkingLevel: options.thinkingLevel
-                ? clampThinkingLevelForModel(
-                    options.thinkingLevel,
-                    resolvedInvocation.resolvedModel ?? model,
-                    undefined,
-                    resolvedInvocation.aiCreditsRouted,
-                  )
-                : undefined,
-              workspaceId: effectiveWorkspaceId,
-              claudeEnvOverride: {
-                ...options.claudeEnvOverride,
-                ...resolvedInvocation.envOverride,
-              },
-              ...(resolvedInvocation.codexConfig
-                ? { codexConfigOverride: resolvedInvocation.codexConfig }
-                : {}),
-              executionHarness: resolvedInvocation.harness,
-              waitForQuotaRecovery: allowQuotaWait
-                ? resolvedInvocation.waitForQuotaRecovery
-                : undefined,
-              // With other candidates left, a usage limit advances the chain
-              // rather than spending a second try on the exhausted lane.
-              ...(allowQuotaWait
-                ? {}
-                : {
-                    shouldRetryAfterError: (error: unknown): boolean =>
-                      classifyUsageLimit(
-                        resolvedInvocation,
-                        model,
-                        events,
-                        error,
-                      ) === null,
+      const result = await runHelperThroughWorker({
+        kind: 'commit_message_generation',
+        model,
+        scope: {
+          ...(effectiveWorkspaceId !== undefined
+            ? { workspaceId: effectiveWorkspaceId }
+            : {}),
+          ...(auditContext?.worktreeId !== undefined
+            ? { worktreeId: auditContext.worktreeId }
+            : {}),
+          ...(auditContext?.chatId !== undefined
+            ? { chatId: auditContext.chatId }
+            : {}),
+        },
+        origin: 'client',
+        workOwner,
+        signal: attemptController.signal,
+        launch: async (workerSignal) => {
+          const unlink = linkHelperAbort(workerSignal, attemptController);
+          try {
+            return await runWithOptionalHelperPlugins(
+              buildHelperPluginRunOptions({
+                helperName: 'commit-message',
+                model,
+                pluginSelections: options.pluginSelections,
+                auditContext,
+              }),
+              (pluginRuntime) =>
+                generateCommitMessageWithUsage(
+                  {
+                    ...options,
+                    abortController: attemptController,
+                    localMemoryEnabled,
+                    model: resolvedInvocation.sdkModel ?? model,
+                    thinkingLevel: options.thinkingLevel
+                      ? clampThinkingLevelForModel(
+                          options.thinkingLevel,
+                          resolvedInvocation.resolvedModel ?? model,
+                          undefined,
+                          resolvedInvocation.aiCreditsRouted,
+                        )
+                      : undefined,
+                    workspaceId: effectiveWorkspaceId,
+                    claudeEnvOverride: {
+                      ...options.claudeEnvOverride,
+                      ...resolvedInvocation.envOverride,
+                    },
+                    ...(resolvedInvocation.codexConfig
+                      ? { codexConfigOverride: resolvedInvocation.codexConfig }
+                      : {}),
+                    executionHarness: resolvedInvocation.harness,
+                    waitForQuotaRecovery: allowQuotaWait
+                      ? resolvedInvocation.waitForQuotaRecovery
+                      : undefined,
+                    // With other candidates left, a usage limit advances the chain
+                    // rather than spending a second try on the exhausted lane.
+                    ...(allowQuotaWait
+                      ? {}
+                      : {
+                          shouldRetryAfterError: (error: unknown): boolean =>
+                            classifyUsageLimit(
+                              resolvedInvocation,
+                              model,
+                              events,
+                              error,
+                            ) === null,
+                        }),
+                    transcriptObserver,
+                    pluginRuntime,
+                    codexRunner: codexStructuredHelperRunner,
+                  },
+                  createStructuredHelperRunner({
+                    kind: 'commit_message_generation',
+                    label: 'Commit Message',
+                    provider:
+                      resolvedInvocation.providerType === 'ollama'
+                        ? 'ollama'
+                        : 'claude',
+                    projectId: effectiveWorkspaceId,
+                    worktreeId: auditContext?.worktreeId,
+                    linkTarget: auditContext
+                      ? {
+                          page: 'main',
+                          kind: 'worktree-chat',
+                          projectId: auditContext.projectId,
+                          worktreeId: auditContext.worktreeId,
+                          planId: auditContext.planId,
+                        }
+                      : undefined,
+                    permission: structuredHelperReadOnlyPermission(),
+                    settingSources: ['user', 'project', 'local'],
+                    executionHarness: resolvedInvocation.harness,
                   }),
-              transcriptObserver,
-              pluginRuntime,
-              codexRunner: codexStructuredHelperRunner,
-            },
-            createStructuredHelperRunner({
-              kind: 'commit_message_generation',
-              label: 'Commit Message',
-              provider:
-                resolvedInvocation.providerType === 'ollama'
-                  ? 'ollama'
-                  : 'claude',
-              projectId: effectiveWorkspaceId,
-              worktreeId: auditContext?.worktreeId,
-              linkTarget: auditContext
-                ? {
-                    page: 'main',
-                    kind: 'worktree-chat',
-                    projectId: auditContext.projectId,
-                    worktreeId: auditContext.worktreeId,
-                    planId: auditContext.planId,
-                  }
-                : undefined,
-              permission: structuredHelperReadOnlyPermission(),
-              settingSources: ['user', 'project', 'local'],
-              executionHarness: resolvedInvocation.harness,
-            }),
-          ),
-      );
+                ),
+            );
+          } finally {
+            unlink();
+          }
+        },
+        usageOf: (result) => result.usage,
+      });
       if (result.source === 'model') {
         finalizeAttempt('success', undefined, result.usage);
         return { outcome: 'success', message: result.message };

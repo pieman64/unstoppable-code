@@ -594,11 +594,24 @@ export class W5CommitLog {
   ): void {
     this.transaction(() => {
       this.requireReservationState(reservationId, 'reserved');
+      const row = this.db
+        .prepare(
+          'SELECT diagnostics_json FROM w5_reservations WHERE reservation_id = ?',
+        )
+        .get(reservationId);
+      const previous = row ? asText(row.diagnostics_json) : 'null';
+      // Keep owned-path evidence; error-only reservations retain failure facts.
+      const keepCreation = workspaceCreationDiagnosticsSchema.safeParse(
+        parseJson(previous),
+      ).success;
       this.db
         .prepare(
           "UPDATE w5_reservations SET state = 'recovery-required', diagnostics_json = ? WHERE reservation_id = ?",
         )
-        .run(JSON.stringify(diagnostics), reservationId);
+        .run(
+          keepCreation ? previous : JSON.stringify(diagnostics),
+          reservationId,
+        );
     });
   }
 

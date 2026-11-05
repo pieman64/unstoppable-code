@@ -544,6 +544,56 @@ export interface W5MaintenanceExclusion {
   release(): Promise<void>;
 }
 
+/** Advisory pre-check only. RX2 rechecks under exclusion; this never prunes. */
+export async function listW5HostPeers(options: {
+  readonly dataRoot: string;
+  readonly inspect: W5ProcessInspector;
+  readonly secureFiles: Pick<PlatformSecureFileServices, 'permissions'>;
+  readonly signal?: AbortSignal;
+}): Promise<readonly string[]> {
+  const runtime = join(options.dataRoot, 'runtime');
+  const hosts = join(runtime, 'hosts');
+  let names: string[];
+  try {
+    names = await readdir(hosts);
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return [];
+    throw new W5HostCohortRefusedError('cohort-ambiguous', error);
+  }
+  for (const path of [runtime, hosts]) {
+    if ((await realpath(path)) !== path || !(await lstat(path)).isDirectory())
+      throw new W5HostCohortRefusedError('cohort-ambiguous');
+    const permission = await options.secureFiles.permissions({
+      path,
+      kind: 'directory',
+      mode: 'owner-only',
+      action: 'verify',
+    });
+    if (permission.state !== 'private')
+      throw new W5HostCohortRefusedError('cohort-ambiguous');
+  }
+  const peers: string[] = [];
+  for (const name of names.filter((name) => !name.startsWith('.')).sort()) {
+    const text = MEMBER.test(name) ? await readRecord(join(hosts, name)) : '';
+    if (text === null) continue;
+    const record = decodeMemberRecord(text);
+    if (!record) {
+      peers.push('unknown');
+      continue;
+    }
+    if (record.pid === process.pid) continue;
+    const inspected = await inspectSafely(
+      options.inspect,
+      record.pid,
+      options.signal,
+    );
+    const liveness = inspected ? memberLiveness(record, inspected) : 'unknown';
+    if (liveness === 'live') peers.push(record.hostKind);
+    else if (liveness === 'unknown') peers.push('unknown');
+  }
+  return peers;
+}
+
 /** Only claim holders write the record, so a departed one may be replaced. */
 async function publishMaintenanceRecord(
   runtime: string,

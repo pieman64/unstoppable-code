@@ -10,6 +10,7 @@ import {
   MemoryChangeSeqSchema,
   MemoryCommitIdSchema,
   MemoryDeviceIdSchema,
+  MemoryDocumentPathSchema,
   MemoryInstallationGenerationSchema,
   MemoryLeaseEpochSchema,
   MemoryNoteFileKeySchema,
@@ -22,6 +23,7 @@ import {
   MemoryTimestampSchema,
   MemoryUuidSchema,
   isMemoryDocumentPath,
+  memoryDocumentIdentity,
 } from './identifiers';
 import {
   MemoryChangeSchema,
@@ -412,8 +414,35 @@ export const MemoryCommitRequestSchema = z
       consolidationPackageVersion: z.string().min(1).max(64).nullable(),
       inputHash: MemorySha256Schema.nullable(),
     }),
+    /**
+     * Topics this commit deletes because nothing used them (design §15).
+     * The server refuses the commit with `memory_notes_changed` when any of
+     * them was used since the usage aggregate the holder pruned from, so a
+     * use from another device after the lease grant keeps the topic.
+     */
+    prunedTopicPaths: z
+      .array(MemoryDocumentPathSchema)
+      .max(MEMORY_SYNC_LIMITS.commitChangesMax)
+      .optional(),
   })
   .superRefine((commit, context): void => {
+    const deleted = new Set(
+      commit.changes.flatMap((change) =>
+        change.op === 'delete' ? [memoryDocumentIdentity(change.path)] : [],
+      ),
+    );
+    const pruned = (commit.prunedTopicPaths ?? []).map(memoryDocumentIdentity);
+    if (
+      new Set(pruned).size !== pruned.length ||
+      pruned.some(
+        (identity) => identity === 'MEMORY.md' || !deleted.has(identity),
+      )
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'A pruned topic is listed once and deleted by the commit',
+      });
+    }
     if (LEASED_COMMIT_KINDS.has(commit.kind) && commit.lease === null) {
       context.addIssue({
         code: 'custom',

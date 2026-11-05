@@ -57,12 +57,14 @@ import {
   hiddenFilterCount,
   memoryContent,
   memoryEntries,
+  memoryScopeKey,
   rowTime,
   savedTime,
   visibleEntries,
   type MemoryContent,
   type MemoryEntry,
   type MemoryFilters,
+  type MemoryKind,
   type MemoryPanelScope,
 } from './memory-model';
 import {
@@ -146,6 +148,29 @@ interface PendingDelete {
   readonly timer: ReturnType<typeof setTimeout>;
 }
 
+/** "Consolidate now", where the host can consolidate. */
+function ConsolidateNowButton({
+  available,
+  disabled,
+  onClick,
+}: {
+  readonly available: boolean;
+  readonly disabled: boolean;
+  readonly onClick: () => void;
+}): JSX.Element | null {
+  if (!available) return null;
+  return (
+    <Button
+      variant="link"
+      onClick={onClick}
+      disabled={disabled}
+      data-testid="memory-consolidate"
+    >
+      Consolidate now
+    </Button>
+  );
+}
+
 function errorText(failure: unknown): string {
   return failure instanceof Error ? failure.message : '';
 }
@@ -210,16 +235,19 @@ export function MemoryPanel({
   hideWhenEmpty = false,
   onEmptyChange,
 }: MemoryPanelProps): JSX.Element {
-  const [lists, setLists] = useState<readonly (readonly LocalMemoryFile[])[]>(
-    [],
-  );
+  // Each scope's files under the scope's key, so a scope added or removed
+  // leaves every other scope's rows, ids and filter choice as they were.
+  const [lists, setLists] = useState<
+    ReadonlyMap<string, readonly LocalMemoryFile[]>
+  >(new Map());
   const [loading, setLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [query, setQuery] = useState('');
-  const [filters, setFilters] = useState<MemoryFilters>(() =>
-    defaultFilters(scopes.length),
-  );
+  const [filterChoice, setFilterChoice] = useState<{
+    readonly kinds: ReadonlySet<MemoryKind>;
+    readonly hiddenScopes: ReadonlySet<string>;
+  }>(() => ({ kinds: defaultFilters(0).kinds, hiddenScopes: new Set() }));
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
   const [view, setView] = useState<View>({ kind: 'list' });
   const [documentState, setDocumentState] = useState<DocumentState | null>(
@@ -248,14 +276,35 @@ export function MemoryPanel({
   // Changes whenever the panel opens or leaves a memory, so a read that
   // finishes late never replaces another memory's view or draft.
   const navigation = useRef(0);
-  const scopeKey = scopes
-    .map(({ scope }) =>
-      scope.scope === 'user' ? 'user' : `workspace:${scope.workspaceId}`,
-    )
-    .join('|');
+  const scopeKey = scopes.map(({ scope }) => memoryScopeKey(scope)).join('|');
   // Scopes arrive as a fresh array each render; the key holds them steady.
   // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by scopeKey
   const stableScopes = useMemo(() => scopes, [scopeKey]);
+  const scopeKeys = useMemo(
+    () => stableScopes.map(({ scope }) => memoryScopeKey(scope)),
+    [stableScopes],
+  );
+  const filters = useMemo<MemoryFilters>(
+    () => ({
+      kinds: filterChoice.kinds,
+      scopes: new Set(
+        scopeKeys.flatMap((key, index) =>
+          filterChoice.hiddenScopes.has(key) ? [] : [index],
+        ),
+      ),
+    }),
+    [filterChoice, scopeKeys],
+  );
+  const setFilters = useCallback(
+    (next: MemoryFilters): void =>
+      setFilterChoice({
+        kinds: next.kinds,
+        hiddenScopes: new Set(
+          scopeKeys.filter((_key, index) => !next.scopes.has(index)),
+        ),
+      }),
+    [scopeKeys],
+  );
   const maintenance = stableScopes[stableScopes.length - 1]?.scope;
   const now = new Date();
 
@@ -284,10 +333,17 @@ export function MemoryPanel({
 
   useEffect(() => {
     let current = true;
-    void Promise.all(stableScopes.map(({ scope }) => client.list(scope)))
+    void Promise.all(
+      stableScopes.map(
+        async ({ scope }): Promise<[string, readonly LocalMemoryFile[]]> => [
+          memoryScopeKey(scope),
+          await client.list(scope),
+        ],
+      ),
+    )
       .then((next) => {
         if (!current) return;
-        setLists(next);
+        setLists(new Map(next));
         setListError(null);
         setLoading(false);
         // A deleted row stays hidden until a list fetched after its delete
@@ -332,7 +388,15 @@ export function MemoryPanel({
     };
   }, [client, maintenance, refreshVersion]);
 
-  const entries = useMemo(() => memoryEntries(lists), [lists]);
+  // A scope that is gone has no rows, even before the next list arrives.
+  const entries = useMemo(
+    () =>
+      memoryEntries(
+        scopeKeys.map((key) => lists.get(key) ?? []),
+        scopeKeys,
+      ),
+    [lists, scopeKeys],
+  );
   const chatIds = useMemo(
     () =>
       Array.from(
@@ -706,7 +770,8 @@ export function MemoryPanel({
   }
 
   async function consolidateNow(): Promise<void> {
-    if (!maintenance || consolidating) return;
+    if (!maintenance || consolidating || client.consolidate === undefined)
+      return;
     setConsolidating(true);
     setRebuildMessage(null);
     try {
@@ -732,7 +797,7 @@ export function MemoryPanel({
 
   async function rebuildNow(): Promise<void> {
     setConfirmingRebuild(false);
-    if (!maintenance || rebuilding) return;
+    if (!maintenance || rebuilding || client.rebuild === undefined) return;
     setRebuilding(true);
     setRebuildMessage(null);
     try {
@@ -768,13 +833,17 @@ export function MemoryPanel({
       icon: <RefreshIcon width={14} height={14} />,
       onSelect: refresh,
     },
-    {
-      key: 'rebuild',
-      label: 'Rebuild memories…',
-      icon: <RerunIcon width={14} height={14} />,
-      disabled: running || editing,
-      onSelect: () => setConfirmingRebuild(true),
-    },
+    ...(client.rebuild === undefined
+      ? []
+      : [
+          {
+            key: 'rebuild',
+            label: 'Rebuild memories…',
+            icon: <RerunIcon width={14} height={14} />,
+            disabled: running || editing,
+            onSelect: () => setConfirmingRebuild(true),
+          },
+        ]),
     ...(showSettingsLink
       ? [
           {
@@ -819,16 +888,13 @@ export function MemoryPanel({
         }
       >
         <span className="min-w-0">{message}</span>
-        <Button
-          variant="link"
+        <ConsolidateNowButton
+          available={client.consolidate !== undefined}
+          disabled={running || editing}
           onClick={() => {
             void consolidateNow();
           }}
-          disabled={running || editing}
-          data-testid="memory-consolidate"
-        >
-          Consolidate now
-        </Button>
+        />
       </p>
     );
   }

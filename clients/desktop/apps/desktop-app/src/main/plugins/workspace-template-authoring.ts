@@ -1,7 +1,6 @@
 import {
   getShareablePluginRefKey,
   MAX_WORKSPACE_TEMPLATE_MCP_SERVER_REFS,
-  normalizeShareablePluginRef,
   WORKSPACE_TEMPLATE_SHARE_LABEL_LOWER,
   type ShareablePluginRef,
   type SharedWorkspaceTemplateCustomSkill,
@@ -12,7 +11,6 @@ import type { AccountMcpConnection } from '@canopy/desktop-shared/types/mcp-serv
 import { accountMcpConnectionForRef } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import { loadAccountMcpRefConnections } from '../mcp/account-catalog';
 import type { PipelinePackageEnvironmentRequirement } from '@canopy/protocol/pipelines';
-import { computePluginShareableRef } from '@canopy/desktop-shared/plugin-refs';
 import type {
   ChatProjectData,
   ChatTabPluginSelections,
@@ -23,6 +21,8 @@ import { readRawSkill } from '../skills/skill-service';
 import { CUSTOM_SOURCE_ID } from '../skills/paths';
 import {
   loadShareablePluginCatalog,
+  portablePluginRef,
+  portableSkillRef,
   type ShareablePluginCatalog,
 } from './shareable-plugin-resolution';
 import { mcpSelectionToPortableIdentity } from '../mcp/share-requirement';
@@ -111,44 +111,17 @@ export async function mapPluginSelectionsToPortable(
   const catalog = await dependencies.loadCatalog();
   const refs = new Map<string, ShareablePluginRef>();
   for (const ref of Array.from(skills.values())) {
-    const localKey = `${ref.sourceId}/${ref.skillName}`;
-    if (ref.sourceId === CUSTOM_SOURCE_ID) {
-      unresolved.add(`skill:${localKey}`);
+    const portable = portableSkillRef(ref, catalog);
+    if (!portable) {
+      unresolved.add(`skill:${ref.sourceId}/${ref.skillName}`);
       continue;
     }
-    const skill = catalog.skills.find(
-      (candidate) =>
-        candidate.sourceId === ref.sourceId && candidate.name === ref.skillName,
-    );
-    if (!skill?.shareableSource) {
-      unresolved.add(`skill:${localKey}`);
-      continue;
-    }
-    try {
-      const portable = normalizeShareablePluginRef({
-        type: 'skill',
-        source: skill.shareableSource,
-        skill_name: skill.name,
-      });
-      refs.set(getShareablePluginRefKey(portable), portable);
-    } catch {
-      unresolved.add(`skill:${localKey}`);
-    }
+    refs.set(getShareablePluginRefKey(portable), portable);
   }
   for (const ref of Array.from(plugins.values())) {
-    const localKey = `${ref.marketplaceId}/${ref.pluginName}`;
-    const marketplace = catalog.marketplaces.find(
-      (candidate) => candidate.id === ref.marketplaceId,
-    );
-    const plugin = marketplace?.plugins.find(
-      (candidate) => candidate.name === ref.pluginName,
-    );
-    const portable =
-      marketplace && plugin
-        ? computePluginShareableRef(plugin, marketplace)
-        : undefined;
+    const portable = portablePluginRef(ref, catalog);
     if (!portable) {
-      unresolved.add(`plugin:${localKey}`);
+      unresolved.add(`plugin:${ref.marketplaceId}/${ref.pluginName}`);
       continue;
     }
     refs.set(getShareablePluginRefKey(portable), portable);
@@ -244,40 +217,18 @@ export async function buildDesktopWorkspaceTemplateDocument(
       }
       continue;
     }
-    const skill = catalog.skills.find(
-      (candidate) =>
-        candidate.sourceId === ref.sourceId && candidate.name === ref.skillName,
-    );
-    if (!skill?.shareableSource) {
+    const portable = portableSkillRef(ref, catalog);
+    if (!portable) {
       unresolved.add(`skill:${localKey}`);
       continue;
     }
-    try {
-      const portable = normalizeShareablePluginRef({
-        type: 'skill',
-        source: skill.shareableSource,
-        skill_name: skill.name,
-      });
-      plugins.set(getShareablePluginRefKey(portable), portable);
-    } catch {
-      unresolved.add(`skill:${localKey}`);
-    }
+    plugins.set(getShareablePluginRefKey(portable), portable);
   }
 
   for (const ref of Array.from(pluginSelections.values())) {
-    const localKey = `${ref.marketplaceId}/${ref.pluginName}`;
-    const marketplace = catalog.marketplaces.find(
-      (candidate) => candidate.id === ref.marketplaceId,
-    );
-    const plugin = marketplace?.plugins.find(
-      (candidate) => candidate.name === ref.pluginName,
-    );
-    const portable =
-      marketplace && plugin
-        ? computePluginShareableRef(plugin, marketplace)
-        : undefined;
+    const portable = portablePluginRef(ref, catalog);
     if (!portable || portable.type === 'codex_plugin') {
-      unresolved.add(`plugin:${localKey}`);
+      unresolved.add(`plugin:${ref.marketplaceId}/${ref.pluginName}`);
       continue;
     }
     plugins.set(getShareablePluginRefKey(portable), portable);

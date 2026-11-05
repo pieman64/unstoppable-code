@@ -1,4 +1,10 @@
-import type { ScheduledActivity } from '@canopy/desktop-shared/types';
+import type { OwnedChatPipelineState } from '@canopy/desktop-shared/lib/chat-automation-conversion';
+import { loadPipelinePluginCollectionPreferences } from '@canopy/desktop-shared/node/pipelines/plugin-collection-store';
+import type {
+  AutomationAction,
+  ScheduledActivity,
+} from '@canopy/desktop-shared/types';
+import type { PipelinePreferenceLocator } from '@canopy/desktop-shared/types/pipeline';
 import { logMainProcessError } from '../lib/main-process-logging';
 import { readPipelineLocalMetadata } from '../pipelines/pipeline-local-metadata-store';
 
@@ -19,6 +25,35 @@ export function ownedPipelineId(
     value: action.pipelineId,
   });
   return ownerAutomationId === activity.id ? action.pipelineId : undefined;
+}
+
+/**
+ * What converting an owned pipeline back reads besides its content: the
+ * action's model preferences, and its plugin preferences (CAN-5479). A legacy
+ * conversion kept those on the action; a current one keeps them as the
+ * pipeline's own on this machine, with the selections its defaults stand for.
+ */
+export function ownedChatPipelineState(
+  action: Extract<AutomationAction, { type: 'worktree_pipeline' }>,
+  pipelineId: string,
+): OwnedChatPipelineState {
+  const locator: PipelinePreferenceLocator = {
+    type: 'stored',
+    source: 'user',
+    value: pipelineId,
+  };
+  const { chatPluginDefaults } = readPipelineLocalMetadata(locator);
+  return {
+    ...(action.modelAliasPreferences !== undefined
+      ? { modelAliasPreferences: action.modelAliasPreferences }
+      : {}),
+    pluginCollectionPreferences:
+      action.pluginCollectionPreferences ??
+      loadPipelinePluginCollectionPreferences(locator),
+    ...(chatPluginDefaults !== undefined
+      ? { pluginDefaults: chatPluginDefaults }
+      : {}),
+  };
 }
 
 /**

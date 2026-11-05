@@ -1,11 +1,10 @@
+import { retryElectronW5RecordPorts } from './electron-w5-record-port';
 import type { ReadEvidenceCursor } from '@canopy/desktop-shared/lib/bounded-read-evidence';
 import { snapshotFilesWorkCounters } from '@canopy/desktop-shared/node/work-counters';
 import { BRAND } from '@canopy/brand/current';
 import { getCanopyDataDir } from '@canopy/desktop-shared/canopy-paths';
-import type { LabsExperimentsSnapshot } from '@canopy/desktop-shared/lib/labs-experiments';
 import type { BackgroundServiceStatus } from '@canopy/desktop-shared/lib/background-service-status';
 import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
-import { getLabsExperimentsService } from '../services/labs-experiments-runtime';
 import { resolveWorktreeTargetIds } from '../lib/resolve-worktree';
 import { getWorkspaceType } from '../lib/workspace-registry';
 import {
@@ -31,29 +30,13 @@ let route: ObservedDaemonFilesRoute | undefined;
 
 /**
  * The production Files route, built on the first file-tree read. Building it
- * subscribes to authoritative Labs changes only; the daemon is contacted only for a read
- * the route selects.
+ * enables the Files consumer; the daemon is contacted only for a selected read.
  */
 export function getDesktopDaemonFilesRoute(): ObservedDaemonFilesRoute {
   if (route) return route;
-  const labs = getLabsExperimentsService();
-  const projectEnabled = (snapshot: LabsExperimentsSnapshot): boolean =>
-    snapshot.ready &&
-    snapshot.experiments.some(
-      (entry) => entry.id === 'daemon-files-reads' && entry.enabled,
-    );
   const health = getElectronDaemonHealth();
-  // getSnapshot clones the whole registry; read eligibility needs only this bit.
-  let enabled = projectEnabled(labs.getSnapshot());
-  setElectronDaemonFilesConsumerEnabled(enabled);
+  setElectronDaemonFilesConsumerEnabled(true);
   route = createDaemonFilesRoute({
-    isFlagEnabled: (): boolean => enabled,
-    onFlagChanged: (listener) =>
-      labs.onSnapshotChanged((snapshot) => {
-        enabled = projectEnabled(snapshot);
-        setElectronDaemonFilesConsumerEnabled(enabled);
-        listener();
-      }),
     lifetime: getElectronDaemonCallerLifetime(),
     connections: getElectronDaemonConnections,
     hostContext: getElectronDaemonFilesContext,
@@ -82,9 +65,9 @@ export function retryDesktopDaemonFilesConnection(
   caller: CanopyCallerDescriptor,
 ): Promise<BackgroundServiceStatus> {
   const health = getElectronDaemonHealth();
-  if (!isLocalWindowCaller(caller, sender.id))
+  if (!isLocalWindowCaller(caller, sender.id) || isElectronW5HandoffPending())
     return Promise.resolve(health.getStatus());
-  return health.retry(async () => {
+  const retryFiles = async (): Promise<boolean> => {
     const host = await getElectronDaemonFilesContext();
     const session = await getElectronDaemonConnections().get(
       { ...caller, authorityId: host.authorityId },
@@ -93,6 +76,15 @@ export function retryDesktopDaemonFilesConnection(
     );
     // A reused session may still be reconnecting: that is not reached yet.
     return session.lease.state === 'active';
+  };
+  return health.retry(async () => {
+    const results = await Promise.allSettled([
+      retryFiles(),
+      retryElectronW5RecordPorts(),
+    ]);
+    return results.every(
+      (result) => result.status === 'fulfilled' && result.value,
+    );
   });
 }
 

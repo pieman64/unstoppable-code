@@ -44,16 +44,19 @@ export function createW5RecordPortModule(
       queries: {
         'core.workspaceRecords.capture': (params) => authority.capture(params),
         'core.workspaceRecords.recovery.get': () => authority.recovery(),
-        'core.workspaceRecords.receipt.lookup': ({ receipt }) =>
-          authority.lookupReceipt(receipt),
+        'core.workspaceRecords.receipt.lookup': ({ receipt }, { caller }) =>
+          authority.lookupReceipt(receipt, caller),
         'core.workspaceRecords.reservation.list': () =>
           authority.listReservations(),
       },
       instructions: {
         'core.workspaceRecords.commit': (params, { caller }) =>
           authority.commit(caller, params),
-        'core.workspaceRecords.reservation.reserve': async (params) => {
-          await authority.reserve(params);
+        'core.workspaceRecords.reservation.reserve': async (
+          params,
+          { caller },
+        ) => {
+          await authority.reserve(params, caller);
           return {};
         },
         'core.workspaceRecords.reservation.updateDiagnostics': async ({

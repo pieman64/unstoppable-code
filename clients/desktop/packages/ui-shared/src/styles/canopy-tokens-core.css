@@ -563,7 +563,7 @@
  * and revealed from the ring's 32px circle, so the reveal never relayouts.
  * Closed shows the right 32px as a circle; open shows the whole pill. */
 @utility usage-weekly-fill-closed {
-  clip-path: inset(0 0 0 37px round 16px);
+  clip-path: inset(0 0 0 calc(100% - 32px) round 16px);
 }
 
 @utility usage-weekly-fill-open {

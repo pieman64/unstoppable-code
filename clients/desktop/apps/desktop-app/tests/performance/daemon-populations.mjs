@@ -200,19 +200,15 @@ function coldnessReasons({ population, preflight }) {
 }
 
 /**
- * Arm preparation outside timing: a disposable profile, an ordinary durable
- * `setChoice`, preparation processes gone, no daemon or publication left, the
- * choice surviving fixture refresh, and no pre-measurement daemon read.
+ * Build-default preparation outside timing: a disposable profile, preparation
+ * processes gone, no daemon or publication left, and no pre-measurement daemon
+ * read. Retired Labs choices cannot affect classification.
  * A leftover daemon makes the launch warm; it is never cold.
  */
-export function verifyArmPreparation(record, arm) {
+export function verifyArmPreparation(record) {
   const reasons = [];
-  const choice = arm === 'on';
   if (record?.disposableProfile !== true)
     reasons.push('profile not disposable');
-  if (record?.persistedChoice !== choice) reasons.push('choice not durable');
-  if (record?.choiceAfterFixtureRefresh !== choice)
-    reasons.push('fixture refresh changed the choice');
   if (record?.preparationProcessesExited !== true)
     reasons.push('preparation processes remain');
   const daemon = record?.daemon;
@@ -223,7 +219,10 @@ export function verifyArmPreparation(record, arm) {
     reasons.push('daemon state unverifiable');
   else if (daemon.ownerState === 'absent' && daemon.descriptorPresent)
     reasons.push('stale daemon publication');
-  if (!Number.isSafeInteger(record?.preMeasurementDaemonReads))
+  if (
+    !Number.isSafeInteger(record?.preMeasurementDaemonReads) ||
+    record.preMeasurementDaemonReads < 0
+  )
     reasons.push('pre-measurement read evidence missing');
   if (reasons.length) return { status: 'rejected', reasons };
   const warm = [];

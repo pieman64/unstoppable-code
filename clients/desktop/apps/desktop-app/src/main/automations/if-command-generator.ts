@@ -1,3 +1,4 @@
+import { runHelperThroughWorker } from '../helper-runs/helper-runs';
 import { randomUUID } from 'node:crypto';
 import { app } from 'electron';
 import {
@@ -20,9 +21,11 @@ import {
   startObservedHelperTask,
 } from '../lib/helper-observed-task';
 import { getObservabilityService } from '../observability';
-import { runClaudeStructuredHelperQuery } from '@canopy/desktop-shared/lib/structured-helper-query';
 import { readLocalMemoryEnabledPreference } from '../lib/preferences-store';
-import { codexStructuredHelperRunner } from '../integration/structured-helper-dispatch';
+import {
+  codexStructuredHelperRunner,
+  runDesktopClaudeStructuredHelperQuery,
+} from '../integration/structured-helper-dispatch';
 import { spawnClaudeCodeProcessOffMain } from '../agents/claude-process-host-runner';
 import {
   resolveHelperInvocation,
@@ -172,10 +175,17 @@ export async function generateAutomationIfCommand(
       invocation.aiCreditsRouted,
       invocation.accountProxyRouted === true,
     );
-    const result =
-      invocation.harness === 'codex'
-        ? await generateWithCodex(input, description, taskKey, invocation)
-        : await generateWithClaude(input, description, taskKey, invocation);
+    const result = await runHelperThroughWorker({
+      kind: 'automation_if_command_generation',
+      model: input.model,
+      scope: {},
+      origin: 'client',
+      launch: async () =>
+        invocation.harness === 'codex'
+          ? await generateWithCodex(input, description, taskKey, invocation)
+          : await generateWithClaude(input, description, taskKey, invocation),
+      usageOf: (r) => r.usage,
+    });
 
     const command = result.command.trim();
     if (!command) {
@@ -214,7 +224,7 @@ async function generateWithClaude(
     shellPrompt,
   );
 
-  const queryResult = await runClaudeStructuredHelperQuery({
+  const queryResult = await runDesktopClaudeStructuredHelperQuery({
     spawnClaudeCodeProcess: spawnClaudeCodeProcessOffMain,
     repoPath: app.getPath('userData'),
     model: invocation.sdkModel ?? input.model,

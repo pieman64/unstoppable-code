@@ -606,6 +606,14 @@ function installGoldenCloud(
       requests.push(`${method} ${url.origin} (outside the golden cloud)`);
       return Promise.reject(new Error(`Unexpected request to ${url.origin}`));
     }
+    // Subscription uploads run independently of the foreground operation.
+    // Keep their fixture response outside its request capture window.
+    if (
+      method === 'POST' &&
+      url.pathname === '/api/v1/shared-item-subscriptions/batch'
+    ) {
+      return Promise.resolve(routeCloudRequest(method, url, publicShares));
+    }
     requests.push(`${method} ${url.pathname}${url.search}`);
     return Promise.resolve(routeCloudRequest(method, url, publicShares));
   };

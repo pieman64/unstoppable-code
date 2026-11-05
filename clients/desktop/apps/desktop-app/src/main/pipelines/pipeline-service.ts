@@ -1,6 +1,8 @@
-import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { isStorageOutcomeUnknownError } from '@canopy/core-runtime/storage';
+import { writeFileAtomicallySync } from '@canopy/desktop-shared/node/lib/atomic-file';
+import { logMainProcessWarn } from '../lib/main-process-logging';
 import {
   getProjectPipelinesDirCandidates,
   getUserPipelinesDir,
@@ -142,17 +144,22 @@ function writeProjectPipelineShareLinks(
 ): void {
   const filePath = getProjectPipelineShareLinksPath();
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const temporaryPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
-  fs.writeFileSync(
-    temporaryPath,
-    `${JSON.stringify(links, null, 2)}\n`,
-    'utf8',
-  );
   try {
-    fs.renameSync(temporaryPath, filePath);
+    writeFileAtomicallySync(filePath, `${JSON.stringify(links, null, 2)}\n`, {
+      encoding: 'utf8',
+      durable: true,
+      admittedWriter: {
+        namespace: 'pipeline_definitions',
+        writer: 'electron_main',
+        module: 'main/pipelines/pipeline-service',
+      },
+    });
   } catch (error) {
-    fs.rmSync(temporaryPath, { force: true });
-    throw error;
+    if (!isStorageOutcomeUnknownError(error)) throw error;
+    logMainProcessWarn(
+      '[pipelines] Project share links installed, but their folder flush failed.',
+      error,
+    );
   }
 }
 

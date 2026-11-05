@@ -60,13 +60,13 @@ const DIAGNOSTIC_UNITS = {
 const drainMetric = (stop) =>
   stop === 'signal' ? 'shutdownDrainMs' : 'idleGraceExitMs';
 
-/** Only standalone daemons are collected; product arms need authoritative provenance. */
+/** Only standalone daemons are collected; no build-default product collector exists. */
 export function resolvePopulation(arm) {
   if (arm === 'standalone') return { arm, status: 'collected' };
   if (!POPULATION_ARMS.includes(arm))
     throw new Error(`Unknown population arm: ${arm}`);
   const reason =
-    'Labs availability, choice, enabled, readiness, generation and source provenance (CAN-4603) is not merged; this population is never inferred from counters or substituted.';
+    'A build-default product collector is not implemented. Historical product-on/flag-off labels do not select a Files route (CAN-5561); this population is never inferred from counters or substituted.';
   return { arm, status: 'unavailable', reason };
 }
 

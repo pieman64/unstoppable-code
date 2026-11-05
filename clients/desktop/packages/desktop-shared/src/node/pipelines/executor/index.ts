@@ -12,6 +12,8 @@ export {
   EXECUTION_STATE_LOCK_TIMEOUT_MESSAGE,
   type ExecutionStateWriteRefusal,
   type SaveExecutionStateOptions,
+  type RestoredExecutionStateInstall,
+  installRestoredExecutionState,
   executionHasBlockers,
   executionHasNonTerminalWork,
   findResumePoint,

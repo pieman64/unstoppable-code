@@ -362,7 +362,7 @@ test('worktree_create_local/concurrent_client: of two parallel app creates of on
   }
 });
 
-test('worktree_create_local/concurrent_client: a CLI create that read the list before an app create drops the app row and orphans its checkout', async () => {
+test('worktree_create_local/concurrent_client: a CLI create that read the list before an app create preserves the app row and checkout', async () => {
   test.skip(
     process.platform === 'win32',
     'The race gate is a POSIX shell hook.',
@@ -393,8 +393,11 @@ test('worktree_create_local/concurrent_client: a CLI create that read the list b
     const result = await cli;
 
     expect(result.code).toBe(0);
-    expect(rowSummaries().map((row) => row.id)).toEqual(['from-cli']);
-    // The app's acknowledged checkout is registered but listed nowhere.
+    expect(rowSummaries().map((row) => row.id)).toEqual([
+      'from-cli',
+      appCreated.id,
+    ]);
+    // Publication rereads after Git; both acknowledged checkouts stay tracked.
     expect(registeredWorktreePaths(repoPath)).toEqual(
       [checkout(appCreated.id), checkout('from-cli')].sort(),
     );
@@ -404,7 +407,13 @@ test('worktree_create_local/concurrent_client: a CLI create that read the list b
       PROJECT_ID,
       'list',
     ]);
-    expect(listed.stdout.split('\t')[0]).toBe('from-cli');
+    expect(listed.code).toBe(0);
+    expect(
+      listed.stdout
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((row) => row.split('\t')[0]),
+    ).toEqual(['from-cli', appCreated.id]);
   } finally {
     await closeCanopy(launched.electronApp, userDataDir);
   }

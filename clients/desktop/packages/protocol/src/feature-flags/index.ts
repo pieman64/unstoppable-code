@@ -111,26 +111,29 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: 'offered',
     description: 'Availability of the Smooth streaming experiment.',
   },
+  // Retired Labs selector; preserve its wire key and availability values.
   canopyDesktopLabsDaemonFilesReads: {
     key: 'canopy-desktop-labs-daemon-files-reads',
-    // Brand defaults are injected by desktop main; raw snapshots stay offered.
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
-    description: 'Availability of the independent Files reads experiment.',
+    description:
+      'Obsolete Files Labs selector. Retained only for wire compatibility.',
   },
+  // Retired Labs selector; preserve its wire key and availability values.
   canopyDesktopLabsDaemonTerminals: {
     key: 'canopy-desktop-labs-daemon-terminals',
-    // Off until opted in: new terminals run in the daemon's terminal host.
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
-    description: 'Availability of the daemon terminals experiment.',
+    description:
+      'Obsolete terminal Labs selector. Retained only for wire compatibility.',
   },
+  // Retired Labs selector; preserve its wire key and availability values.
   canopyDesktopLabsDaemonCodeGraph: {
     key: 'canopy-desktop-labs-daemon-code-graph',
-    // Off until opted in: renderer graph builds and reads run in the daemon.
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
-    description: 'Availability of the daemon code graph experiment.',
+    description:
+      'Obsolete code graph Labs selector. Retained only for wire compatibility.',
   },
   canopyDesktopLabsChatAutomationPipelines: {
     key: 'canopy-desktop-labs-chat-automation-pipelines',
@@ -597,7 +600,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: false,
     launchDarklyEnabledUnavailableValue: false,
     description:
-      'Obsolete Files selector. Use the daemon-files-reads Labs experiment.',
+      'Obsolete Files selector. Retained only for wire compatibility.',
   },
   canopyDesktopExternalAgentsMenu: {
     key: 'canopy-desktop-external-agents-menu',

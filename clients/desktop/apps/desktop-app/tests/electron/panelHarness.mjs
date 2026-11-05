@@ -29,7 +29,7 @@ import {
   reportOwnedSetupFailure,
 } from './browser-profile-test-lifecycle.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
-import { seedWorktreeChat } from './seeders/index.mjs';
+import { seedWorktreeChat } from './seeders/seedWorktreeChat.mjs';
 import { closeCanopy, getMainWindow, launchCanopy } from './launchCanopy.mjs';
 
 /** Stable ids of the default per-worktree layout (default-layout.ts). */
@@ -599,53 +599,23 @@ export async function seedVisibleBrowserPanel(
   return { browser, panelId };
 }
 
-/**
- * Spawns the first terminal in the terminal panel group and waits for the
- * xterm pane. A fresh unbound terminal panel shows only "Start terminal".
- */
-export async function spawnPanelTerminal(window) {
+/** Reveals the default terminal through a user gesture and awaits its spawn. */
+export async function spawnPanelTerminal(window, { timeout = 20_000 } = {}) {
   const expand = window.locator(
-    `[data-testid="panel-group-expand-${DEFAULT_GROUP_IDS.terminal}"]:visible`,
+    `[data-testid="panel-group-expand-${DEFAULT_GROUP_IDS.terminal}"]:visible, ` +
+      `[data-testid="panel-branch-expand-${DEFAULT_GROUP_IDS.terminal}"]:visible`,
   );
   if ((await expand.count()) > 0) {
     await expand.first().click();
+  } else {
+    await window.getByTestId(`panel-tab-${DEFAULT_PANEL_IDS.terminal}`).click();
   }
 
   const surface = window.getByTestId('terminal-panel-surface');
   await expect(surface).toBeVisible();
-
   const pane = window.getByTestId('terminal-pane');
-  const startButton = surface.getByRole('button', {
-    name: 'Start terminal',
-    exact: true,
-  });
-
-  // Expanding the group now auto-starts an unbound terminal, so at this
-  // instant the pane may be mid-spawn while the Start button has already
-  // gone. A point-in-time `count()` on either locator races that handoff:
-  // wait for whichever outcome actually materializes, and only click Start
-  // if the button is the one that resolved. The fallback is kept so a
-  // genuine spawn failure (which re-renders the empty state) still fails
-  // loudly rather than hanging.
-  // Keep the reason: swallowing it burns the full timeout and then fails on
-  // the unrelated `toBeVisible` below, pointing triage at the wrong thing.
-  let revealError;
-  await Promise.race([
-    pane.waitFor({ state: 'visible', timeout: 20_000 }),
-    startButton.waitFor({ state: 'visible', timeout: 20_000 }),
-  ]).catch((error) => {
-    revealError = error;
-  });
-  if (revealError !== undefined) {
-    throw new Error(
-      `Terminal panel revealed neither a pane nor a Start terminal button: ${revealError}`,
-    );
-  }
-
-  if ((await pane.count()) === 0 && (await startButton.count()) > 0) {
-    // The workspace panel tab is the only terminal tab chrome.
-    await startButton.click();
-  }
-  await expect(pane).toBeVisible({ timeout: 20_000 });
+  // Reveal already requests a spawn. A disabled Start button is its pending
+  // state, not another action; retrying Start can also hide a real failure.
+  await expect(pane).toBeVisible({ timeout });
   return pane;
 }

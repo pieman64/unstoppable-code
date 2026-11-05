@@ -80,6 +80,7 @@ import { isDevPage } from './components/pages/dev-pages';
 import { PipelineEditorRuntimeBridge } from './components/pipeline/PipelineEditorRuntimeBridge';
 import { ReleaseHighlightsHost } from './components/release-highlights/ReleaseHighlightsHost';
 import { RemoteAccessControlledNotice } from './components/remote-access/RemoteAccessControlledNotice';
+import { WorkspaceRecoveryNotice } from './components/background-service/WorkspaceRecoveryNotice';
 import { BackgroundServiceUnavailableNotice } from './components/background-service/BackgroundServiceUnavailableNotice';
 import { RemoteAccessHost } from './components/remote-access/RemoteAccessHost';
 import { RepoRulesModalHost } from './components/repo-rules/RepoRulesModalHost';
@@ -2377,6 +2378,7 @@ function App(): JSX.Element {
           <RemoteAccessControlledNotice />
           {/* Persistent until the background service is reached again. */}
           <BackgroundServiceUnavailableNotice />
+          <WorkspaceRecoveryNotice />
           <GuestUpgradeNudge />
           <OsNotificationOfferProducer />
           <RepeatTaskOfferProducer />

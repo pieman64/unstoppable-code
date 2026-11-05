@@ -1,3 +1,4 @@
+import { createServer, type Server } from 'node:net';
 import { duplexPair, type Duplex } from 'node:stream';
 import { createCanopyClient, type CanopyClient } from '@canopy/core-client';
 import {
@@ -27,7 +28,10 @@ import {
  * Shared by the Electron and CLI suites (W6h0, CAN-5554).
  */
 
-const AUTH = { secret: 'w5-record-port-test', dataRootHash: '0'.repeat(64) };
+export const W5_RECORD_TEST_AUTH = {
+  secret: 'w5-record-port-test',
+  dataRootHash: '0'.repeat(64),
+};
 
 /** The record-port client the Electron daemon-backed store takes. */
 export type W5RecordPortClient = CanopyClient<
@@ -72,7 +76,10 @@ export interface W5DaemonRecordHarness {
   serve(peer: {
     readonly clientInstanceId: string;
     readonly interfaceKind: CanopyCallerDescriptor['interfaceKind'];
+    readonly principalId?: string;
   }): Promise<CanopyFramedConnection>;
+  /** A subprocess peer on the same qualification runtime, without a production daemon. */
+  listen(path: string): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -102,6 +109,7 @@ export async function startW5DaemonRecordHarness(options: {
   await runtime.start();
   const sessions: { close(): Promise<void> }[] = [];
   const clients: W5RecordPortClient[] = [];
+  const servers: Server[] = [];
   const open = async (
     caller: CanopyCallerDescriptor,
     leaseBoundOperations?: readonly string[],
@@ -110,7 +118,7 @@ export async function startW5DaemonRecordHarness(options: {
     sessions.push(
       serveCanopyControlStream({
         stream: byteStream(serverWire),
-        auth: AUTH,
+        auth: W5_RECORD_TEST_AUTH,
         dispatcher: runtime.dispatcher,
         operations: runtime.operations,
         caller,
@@ -121,7 +129,7 @@ export async function startW5DaemonRecordHarness(options: {
     );
     return createCanopyFramedConnection(clientWire, {
       role: 'client',
-      auth: AUTH,
+      auth: W5_RECORD_TEST_AUTH,
     });
   };
   return {
@@ -153,7 +161,7 @@ export async function startW5DaemonRecordHarness(options: {
       // The daemon's grants and lease binding for any same-user peer.
       open(
         {
-          principalId: 'local-user',
+          principalId: peer.principalId ?? 'local-user',
           clientInstanceId: peer.clientInstanceId,
           authorityId: 'w6g',
           interfaceKind: peer.interfaceKind,
@@ -165,9 +173,48 @@ export async function startW5DaemonRecordHarness(options: {
         },
         W5_RECORD_PORT_OPERATIONS,
       ),
+    async listen(path: string): Promise<void> {
+      const server = createServer((socket) => {
+        sessions.push(
+          serveCanopyControlStream({
+            stream: byteStream(socket),
+            auth: W5_RECORD_TEST_AUTH,
+            dispatcher: runtime.dispatcher,
+            operations: runtime.operations,
+            caller: {
+              principalId: 'local-user',
+              clientInstanceId: 'cli-subprocess',
+              authorityId: 'w6g',
+              interfaceKind: 'cli',
+              grants: [
+                'core.runtime.read',
+                'core.client.manage',
+                ...W5_RECORD_PORT_GRANTS,
+              ],
+            },
+            obligations: { hold: () => (): void => undefined },
+            buildVersion: 'test',
+            leaseBoundOperations: W5_RECORD_PORT_OPERATIONS,
+          }),
+        );
+      });
+      servers.push(server);
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(path, resolve);
+      });
+    },
     async close(): Promise<void> {
       await Promise.all(clients.splice(0).map((client) => client.close()));
       await Promise.all(sessions.splice(0).map((session) => session.close()));
+      await Promise.all(
+        servers
+          .splice(0)
+          .map(
+            (server) =>
+              new Promise<void>((resolve) => server.close(() => resolve())),
+          ),
+      );
       await runtime.shutdown('test');
     },
   };

@@ -30,6 +30,8 @@ export const REALTIME_EVENT_TYPES = [
   'credit.pool',
   'sharedcontainer.detail',
   'cloud.workspace',
+  'memory.scope',
+  'project.lifecycle',
 ] as const satisfies readonly string[];
 export type RealtimeEventType = (typeof REALTIME_EVENT_TYPES)[number];
 
@@ -180,6 +182,21 @@ export interface CloudWorkspaceRealtimeSignal {
 
 export type RealtimeCloudWorkspaceEnvelope =
   RealtimeEventEnvelope<CloudWorkspaceRealtimeSignal>;
+
+/**
+ * Refetch-only signal that a cloud project the owner uses has a new lifecycle
+ * event (CAN-5189): a rename, a redirect, a move, an archive or a delete. The
+ * client reads `GET /api/v1/projects/{projectId}/events` after its cursor.
+ */
+export interface ProjectLifecycleRealtimeSignal {
+  /** External (uuid) id of the project whose event feed grew. */
+  projectId: string;
+  /** Opaque cursor of the new event in that feed (`CloudProjectEventCursorSchema`). */
+  cursor: string;
+}
+
+export type RealtimeProjectLifecycleEnvelope =
+  RealtimeEventEnvelope<ProjectLifecycleRealtimeSignal>;
 
 // ===========================================================================
 // Transport limits.

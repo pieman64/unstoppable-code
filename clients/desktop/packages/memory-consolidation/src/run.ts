@@ -3,6 +3,7 @@ import {
   isConsolidationInputClean,
   type ConsolidationInput,
   type ConsolidationInputFile,
+  type ConsolidationInputOmission,
   type ConsolidationOutput,
 } from './input';
 import {
@@ -216,23 +217,41 @@ async function fitIndexToLimits(
   return { output: { ...candidate, memoryMd }, clipped: true };
 }
 
+function warnAboutOmission(
+  omission: ConsolidationInputOmission | undefined,
+  label: string,
+  code: string,
+  ports: MemoryConsolidationPorts,
+): void {
+  if (!omission || omission.fileCount === 0) return;
+  const fileNoun = omission.fileCount === 1 ? 'file' : 'files';
+  const kilobytes = Math.ceil(omission.totalBytes / 1024);
+  ports.warn(
+    `Local memory consolidation classified the scope clean while ${omission.fileCount} ${label} ${fileNoun} (${kilobytes} KB) over the input budget remain pending`,
+    code,
+  );
+}
+
 function warnAboutCleanOmission(
   input: ConsolidationInput,
   ports: MemoryConsolidationPorts,
 ): void {
-  // Reachable only through user-placed files (saved notes are clamped far
-  // below the budget): an oldest note that alone busts the budget selects
-  // nothing yet leaves work pending — surface it rather than letting a
-  // 'clean' classification hide it indefinitely.
-  const omittedInbox = input.omittedInboxFiles;
-  if (omittedInbox && omittedInbox.fileCount > 0) {
-    const fileNoun = omittedInbox.fileCount === 1 ? 'file' : 'files';
-    const kilobytes = Math.ceil(omittedInbox.totalBytes / 1024);
-    ports.warn(
-      `Local memory consolidation classified the scope clean while ${omittedInbox.fileCount} inbox ${fileNoun} (${kilobytes} KB) over the input budget remain pending`,
-      'LOCAL_MEMORY_CONSOLIDATION_INBOX_OMITTED',
-    );
-  }
+  // Reachable only through files no budget can hold (saved notes are clamped
+  // far below it, and import staging refuses such sources): an oldest file
+  // that alone busts the budget selects nothing yet leaves work pending, so
+  // surface it rather than letting a 'clean' classification hide it.
+  warnAboutOmission(
+    input.omittedInboxFiles,
+    'inbox',
+    'LOCAL_MEMORY_CONSOLIDATION_INBOX_OMITTED',
+    ports,
+  );
+  warnAboutOmission(
+    input.omittedImportFiles,
+    'imported',
+    'LOCAL_MEMORY_CONSOLIDATION_IMPORT_OMITTED',
+    ports,
+  );
 }
 
 function pruneCandidates(

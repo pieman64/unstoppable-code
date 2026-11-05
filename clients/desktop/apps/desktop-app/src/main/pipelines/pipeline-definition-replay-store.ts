@@ -6,7 +6,8 @@ import type {
   PipelineDefinitionReplayStore,
 } from '@canopy/core-runtime/node/pipeline';
 import { getPipelineDefinitionReplaysFilePath } from '../lib/paths';
-import { atomicWriteFile, ensureDir } from './fs-utils';
+import { writeStoreFileDurably } from '../lib/durable-store-write';
+import { ensureDir } from './fs-utils';
 
 const operation = z.enum([
   'core.pipeline.definition.upsert',
@@ -83,17 +84,13 @@ export function createPipelineDefinitionReplayStore(
         );
       }
     },
-    save: (ledger): Promise<void> => {
-      try {
-        const file = filePath();
-        ensureDir(dirname(file));
-        atomicWriteFile(file, `${JSON.stringify({ version: 1, ...ledger })}\n`);
-        return Promise.resolve();
-      } catch (error) {
-        return Promise.reject(
-          error instanceof Error ? error : new Error(String(error)),
-        );
-      }
+    save: async (ledger): Promise<void> => {
+      const file = filePath();
+      ensureDir(dirname(file));
+      await writeStoreFileDurably(
+        file,
+        `${JSON.stringify({ version: 1, ...ledger })}\n`,
+      );
     },
   };
 }

@@ -35,6 +35,8 @@ export type WorktreeRemovalCapability = false | 'archive' | 'delete';
  * readonly: capabilities are fixed for the lifetime of a client instance.
  */
 export interface CanopyCapabilities {
+  /** Native recovery launch on this computer. Missing is default-deny. */
+  readonly workspaceRecovery?: boolean;
   /** Selected host implements shared creation/recovery. Missing is default-deny. */
   readonly sharedMultiRepo?: boolean;
   /** Source management is wired. Optional; unconfigured/unavailable hosts deny. */

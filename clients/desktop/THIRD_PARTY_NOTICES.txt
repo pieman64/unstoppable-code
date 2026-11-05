@@ -1903,7 +1903,7 @@ Version: 3.2.7
 License: (MPL-2.0 OR Apache-2.0)
 
 dompurify
-Version: 3.4.15
+Version: 3.4.17
 License: (MPL-2.0 OR Apache-2.0)
 
 duck

@@ -5,6 +5,7 @@ import {
   useId,
   useRef,
   useState,
+  type ButtonHTMLAttributes,
   type InputHTMLAttributes,
   type JSX,
   type ReactNode,
@@ -433,14 +434,13 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(
 
     return (
       <span className={withPlacement('relative flex w-full', className)}>
-        <button
+        <FieldPickerTrigger
           ref={(element) => {
             triggerRef.current = element;
             if (typeof forwardedRef === 'function') forwardedRef(element);
             else if (forwardedRef) forwardedRef.current = element;
           }}
           id={triggerId}
-          type="button"
           role="combobox"
           aria-haspopup="listbox"
           aria-expanded={open}
@@ -454,19 +454,14 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(
           data-testid={dataTestId}
           data-value={chosen?.value}
           onClick={() => setOpen((current) => !current)}
-          // Presses, hovers, and holds its open look like the secondary Button;
-          // the transition keeps the focus edge and adds the press (the
-          // press sets `scale`, not `transform`). Open, focus is in the menu,
-          // so the trigger keeps the focus edge itself, as SettingsSelect does.
-          className={`${FIELD_CLASS.replace('transition-shadow', 'transition-[box-shadow,transform,scale]')} ${DROPDOWN_TRIGGER_INTERACTION_CLASS} ${SELECT_OPEN_EDGE_CLASS} flex cursor-pointer items-center pr-9 text-left disabled:pointer-events-none disabled:cursor-not-allowed`}
         >
           <span
             className={`min-w-0 flex-1 truncate ${chosen ? '' : 'fg-tertiary'}${chosen?.maskInReplay ? ` ${REPLAY_MASK_CLASS}` : ''}`}
           >
             {chosen?.label ?? placeholder}
           </span>
-        </button>
-        <SelectChevron />
+        </FieldPickerTrigger>
+        <FieldPickerChevron />
         <FloatingPickerMenu
           open={open}
           onOpenChange={setOpen}
@@ -519,7 +514,34 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(
 
 Select.displayName = 'Select';
 
-function SelectChevron(): JSX.Element {
+/**
+ * The 36px field that opens a Canopy-drawn picker: `Select`'s listbox and
+ * `DateField`'s calendar. Same edge, focus, inset, and press as `TextInput`;
+ * open, it keeps the focus edge while focus is in the picker. Pair it with
+ * `FieldPickerChevron` inside a `relative` wrapper.
+ */
+export const FieldPickerTrigger = forwardRef<
+  HTMLButtonElement,
+  Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'className' | 'type'>
+>(function FieldPickerTrigger(props, ref): JSX.Element {
+  return (
+    <button
+      {...props}
+      ref={ref}
+      type="button"
+      // Presses, hovers, and holds its open look like the secondary Button;
+      // the transition keeps the focus edge and adds the press (the
+      // press sets `scale`, not `transform`). Open, focus is in the menu,
+      // so the trigger keeps the focus edge itself, as SettingsSelect does.
+      className={`${FIELD_CLASS.replace('transition-shadow', 'transition-[box-shadow,transform,scale]')} ${DROPDOWN_TRIGGER_INTERACTION_CLASS} ${SELECT_OPEN_EDGE_CLASS} flex cursor-pointer items-center pr-9 text-left disabled:pointer-events-none disabled:cursor-not-allowed`}
+    />
+  );
+});
+
+FieldPickerTrigger.displayName = 'FieldPickerTrigger';
+
+/** The app chevron at the end of a `FieldPickerTrigger`. */
+export function FieldPickerChevron(): JSX.Element {
   return (
     <span
       aria-hidden="true"

@@ -1,5 +1,4 @@
 export {
-  atomicWriteFile,
   ensureDir,
   safeDeleteFile,
   safeReadFile,

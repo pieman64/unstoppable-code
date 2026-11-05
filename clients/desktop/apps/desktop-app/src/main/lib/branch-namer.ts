@@ -1,3 +1,7 @@
+import {
+  runHelperThroughWorker,
+  linkHelperAbort,
+} from '../helper-runs/helper-runs';
 import type { BrowserWindow } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { readdir } from 'node:fs/promises';
@@ -973,32 +977,48 @@ async function prepareBranchNaming(
       return null;
     }
 
-    const result = await withResolvedHelperPlugins(
-      {
-        projectId: options.projectId,
-        worktreeId: options.worktreeId,
-        helperName: 'branch-namer',
-        model: branchNamingModel,
-        selections: preferences.branchNamingPluginSelections,
+    const result = await runHelperThroughWorker({
+      kind: 'branch_naming',
+      model: branchNamingModel,
+      scope: { workspaceId: options.projectId, worktreeId: options.worktreeId },
+      origin: 'system',
+      workOwner,
+      signal: abortController.signal,
+      launch: async (workerSignal) => {
+        const unlink = linkHelperAbort(workerSignal, abortController);
+        try {
+          return await withResolvedHelperPlugins(
+            {
+              projectId: options.projectId,
+              worktreeId: options.worktreeId,
+              helperName: 'branch-namer',
+              model: branchNamingModel,
+              selections: preferences.branchNamingPluginSelections,
+            },
+            (runtime) =>
+              generateBranchName(
+                options.cwd,
+                options.projectId,
+                options.userMessage,
+                branchNamingModel,
+                preferences.branchNamingThinkingLevel,
+                preferences.branchNamingInstructions,
+                runtime,
+                abortController,
+                Object.prototype.hasOwnProperty.call(options, 'workOwner')
+                  ? (options.workOwner ?? null)
+                  : undefined,
+                options.observabilityTaskKey,
+                options.modelConfig,
+                onTransientRetry,
+              ),
+          );
+        } finally {
+          unlink();
+        }
       },
-      (runtime) =>
-        generateBranchName(
-          options.cwd,
-          options.projectId,
-          options.userMessage,
-          branchNamingModel,
-          preferences.branchNamingThinkingLevel,
-          preferences.branchNamingInstructions,
-          runtime,
-          abortController,
-          Object.prototype.hasOwnProperty.call(options, 'workOwner')
-            ? (options.workOwner ?? null)
-            : undefined,
-          options.observabilityTaskKey,
-          options.modelConfig,
-          onTransientRetry,
-        ),
-    );
+      usageOf: (result) => result.usage,
+    });
     generatedBranchName = result.branchName;
     branchUsage = result.usage;
   }

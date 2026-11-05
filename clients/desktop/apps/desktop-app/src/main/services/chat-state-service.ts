@@ -420,6 +420,8 @@ export interface ProviderEventInput extends ChatScopeKey {
   onCommitQueued?: () => void;
 }
 
+export type HookChatCreateOutcome = 'created' | 'already_exists' | 'removed';
+
 /**
  * `applied` committed a canonical change. `activity-only` committed nothing
  * because the event only refreshed runtime activity, yet it is still a live
@@ -7826,6 +7828,61 @@ export class ChatStateService implements ChatStateCommandPort {
       },
     );
     await this.commitAutomationStartBanner(scope, request);
+  }
+
+  /**
+   * Create a hook-started chat behind the active tab without replacing a stored
+   * chat or recreating an archived or removed one (CAN-4138).
+   */
+  public async createHookChat(
+    scope: ChatScopeKey,
+    tab: PersistedChatTab,
+  ): Promise<HookChatCreateOutcome> {
+    if (this.isScopeDeletionBlocking(chatScopeLifecycleKey(scope)))
+      throw new ChatScopeDeletingError();
+    let outcome: HookChatCreateOutcome = 'created';
+    const commit = await this.repository.transactWith(
+      scope,
+      (current, _revision, context) => {
+        outcome = 'created';
+        if (
+          current.tabsFile.tabs.some((candidate) => candidate.id === tab.id)
+        ) {
+          outcome = 'already_exists';
+          return [];
+        }
+        if (
+          current.archivesFile.archived.some(
+            (entry) => entry.tab.id === tab.id,
+          ) ||
+          context.hasRemovedTab(tab.id)
+        ) {
+          outcome = 'removed';
+          return [];
+        }
+        const keepActiveTab = current.tabsFile.tabs.some(
+          (candidate) => candidate.id === current.tabsFile.activeTabId,
+        );
+        return [
+          { type: 'tab.created' as const, tab },
+          ...(keepActiveTab
+            ? []
+            : [{ type: 'tab.active_changed' as const, activeTabId: tab.id }]),
+        ];
+      },
+      {
+        source: 'hook',
+        mutationId: `hook-chat:${tab.id}:created`,
+        chatIds: [tab.id],
+      },
+    );
+    if (!commit.applied)
+      return commit.state.tabsFile.tabs.some(
+        (candidate) => candidate.id === tab.id,
+      )
+        ? 'already_exists'
+        : 'removed';
+    return outcome;
   }
 
   /**

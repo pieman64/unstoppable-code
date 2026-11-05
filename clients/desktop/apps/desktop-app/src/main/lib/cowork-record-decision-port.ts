@@ -1,4 +1,3 @@
-import { rm } from 'node:fs/promises';
 import { PROJECT_COLORS } from '@canopy/desktop-shared/constants/project-colors';
 import type {
   CoworkSidebarItem,
@@ -7,6 +6,16 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { ensureCoworkHomeScaffold } from './chat-project-utils';
 import { getWorkspaceDir } from './paths';
+import {
+  commitW5BoundaryStep,
+  w5CompositionLocks,
+} from './w5-composition-operation';
+import { afterW5Apply, outsideW5CommitScope } from './w5-commit-scope';
+import { applyWorkspaceRecordsRemoval } from './workspace-record-decision-port';
+import {
+  removeWorkspaceNonW5Children,
+  removeWorkspaceDirectoryAfterRecordRemoval,
+} from './w5-workspace-directory-removal';
 import { slugify, uniqueId } from './string-utils';
 import { workspaceCreationPathOccupied } from './w5-workspace-creation-commit';
 import {
@@ -372,43 +381,62 @@ export function applyCoworkMetadataDecision(
 
 /**
  * Removes an unpublished staging's metadata directory: the index read under
- * its queue proves it unpublished, then the manifest read in the manifest
- * queue proves it this project's. Commits nothing; an attached folder lies
- * outside the directory and is never removed.
+ * its queue proves it unpublished, then the manifest proves it this project's.
+ * Both proofs and record removals share one decision; attached folders stay.
  */
 export function applyCoworkDiscardDecision(
   decision: CoworkDiscardDecision,
 ): Promise<CoworkDiscardStatus> {
-  return getWorkspaceIndexRepository().update(async (snapshot) => {
-    const held = checkCoworkDiscardIndex(
-      snapshot.authority,
-      snapshot.entries,
-      decision,
-    );
-    if (held) return { result: held };
-    const removed = await getWorkspaceManifestRepository().serialize(
-      decision.workspaceId,
-      async (): Promise<boolean> => {
-        const read = await readWorkspaceConfigDetailed(decision.workspaceId);
-        if (
-          !discardsCoworkStaging(
-            {
-              authority: read.authority,
-              ownerMalformed: read.ownerMalformed,
-              type: read.config.type,
-              owner: read.config.owner,
-            },
+  const discardStagingRecords = async (): Promise<CoworkDiscardStatus> => {
+    const status =
+      await getWorkspaceIndexRepository().update<CoworkDiscardStatus>(
+        async (snapshot) => {
+          const held = checkCoworkDiscardIndex(
+            snapshot.authority,
+            snapshot.entries,
             decision,
-          )
-        )
-          return false;
-        await rm(getWorkspaceDir(decision.workspaceId), {
-          recursive: true,
-          force: true,
-        });
-        return true;
-      },
+          );
+          if (held) return { result: held };
+          const matches = await getWorkspaceManifestRepository().serialize(
+            decision.workspaceId,
+            async (): Promise<boolean> => {
+              const read = await readWorkspaceConfigDetailed(
+                decision.workspaceId,
+              );
+              return discardsCoworkStaging(
+                {
+                  authority: read.authority,
+                  ownerMalformed: read.ownerMalformed,
+                  type: read.config.type,
+                  owner: read.config.owner,
+                },
+                decision,
+              );
+            },
+          );
+          return { result: matches ? 'removed' : 'kept' };
+        },
+      );
+    if (status !== 'removed') return status;
+    // Outer reservations keep both proofs locked without reentering their updaters.
+    await outsideW5CommitScope(() =>
+      removeWorkspaceNonW5Children(decision.workspaceId),
     );
-    return { result: removed ? 'removed' : 'kept' };
-  });
+    await applyWorkspaceRecordsRemoval(decision.workspaceId, {
+      kind: 'workspace.delete.records',
+    });
+    await afterW5Apply(() =>
+      removeWorkspaceDirectoryAfterRecordRemoval(decision.workspaceId),
+    );
+    return status;
+  };
+  return commitW5BoundaryStep(
+    { operation: 'core.workspace.create' },
+    w5CompositionLocks({
+      index: true,
+      manifests: [decision.workspaceId],
+      lists: [decision.workspaceId],
+    }),
+    discardStagingRecords,
+  );
 }

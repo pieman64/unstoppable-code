@@ -136,11 +136,11 @@ const CAPTURE_TIMEOUT_MS = 30_000;
 describe.each(['posix', 'win32'] as const)(
   'Files route golden (%s entry names)',
   (entryNamePlatform) => {
-    it.each([true, false])(
-      'keeps roots and directory byte-identical with the flag %s',
-      async (flag) => {
+    it(
+      'keeps roots and directory byte-identical on the eligible route',
+      async () => {
         expect(
-          await captureFilesRouteGolden({ flag, entryNamePlatform }),
+          await captureFilesRouteGolden({ entryNamePlatform }),
         ).toMatchSnapshot();
       },
       CAPTURE_TIMEOUT_MS,
@@ -153,16 +153,14 @@ describe('Files route golden on an injected host', () => {
   let host: string[] = [];
 
   beforeAll(async () => {
-    host = await captureFilesRouteGolden({ flag: true });
+    host = await captureFilesRouteGolden({});
   }, CAPTURE_TIMEOUT_MS);
 
   it.each(['darwin', 'win32', 'linux'] as const)(
     'keeps the golden on an injected %s host',
     async (platform) => {
       expect(host).not.toHaveLength(0);
-      expect(await captureFilesRouteGolden({ flag: true, platform })).toEqual(
-        host,
-      );
+      expect(await captureFilesRouteGolden({ platform })).toEqual(host);
     },
     CAPTURE_TIMEOUT_MS,
   );

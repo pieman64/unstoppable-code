@@ -1,3 +1,5 @@
+import { assertHelperWorkerContext } from '../helper-runs/helper-worker-context';
+import { runHelperThroughWorker } from '../helper-runs/helper-runs';
 import { query as claudeQuery } from '@anthropic-ai/claude-agent-sdk';
 import {
   buildClaudeThinkingOptions,
@@ -184,19 +186,28 @@ export async function generateWorktreeSummary(
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const result = useCodex
-        ? await runCodexSummaryQuery(
-            options,
-            systemPrompt,
-            userMessage,
-            workOwner,
-          )
-        : await runClaudeSummaryQuery(
-            options,
-            systemPrompt,
-            userMessage,
-            workOwner,
-          );
+      const result = await runHelperThroughWorker({
+        kind: 'worktree_summary',
+        model: options.model,
+        scope: { workspaceId: options.projectId },
+        origin: options.userInitiated === true ? 'client' : 'system',
+        workOwner: workOwner,
+        launch: async () =>
+          useCodex
+            ? await runCodexSummaryQuery(
+                options,
+                systemPrompt,
+                userMessage,
+                workOwner,
+              )
+            : await runClaudeSummaryQuery(
+                options,
+                systemPrompt,
+                userMessage,
+                workOwner,
+              ),
+        usageOf: (r) => r.usage,
+      });
       accumulatedUsage = mergeHelperUsage(accumulatedUsage, result.usage);
       if (!result.generated) {
         continue;
@@ -360,6 +371,7 @@ async function runClaudeSummaryQuery(
   userMessage: string,
   workOwner: WorkOwner | null,
 ): Promise<InternalQueryResult> {
+  assertHelperWorkerContext('runClaudeSummaryQuery');
   // Same routing options as the Codex branch below, and load-bearing here in
   // particular: `generateWorktreeSummary` dispatches on the model's provider and
   // the default `worktreeSummaryModel` is a Claude one, so this is the path a

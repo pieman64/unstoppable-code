@@ -156,7 +156,7 @@ function temporarySiblingPath(targetPath: string): string {
 
 export type AtomicFileWriteSyncOptions = Pick<
   AtomicFileWriteOptions,
-  'encoding' | 'mode' | 'durable'
+  'encoding' | 'mode' | 'durable' | 'admittedWriter'
 >;
 
 const RENAME_SYNC_RETRY_DELAYS_MS = [10, 20, 40, 80] as const;
@@ -194,8 +194,8 @@ function renameWithRetrySync(source: string, target: string): void {
  * await, and for small, rare read-modify-writes that must stay synchronous so
  * no other writer in the process interleaves. It blocks the calling thread,
  * including `fsync` when `durable` and short sleeps between rename retries.
- * It never writes a row with `admittedWriters`; without the data root, which
- * it cannot load synchronously, it refuses their file shapes in any folder.
+ * It writes a row with `admittedWriters` only as one of them; without the data
+ * root, which it cannot load synchronously, it checks file shapes in any folder.
  */
 export function writeFileAtomicallySync(
   targetPath: string,
@@ -204,9 +204,18 @@ export function writeFileAtomicallySync(
 ): void {
   assertAdmittedRow(
     admittedStorageRowForPath(targetPath, null),
-    undefined,
+    options?.admittedWriter,
     'undeclared',
   );
+  const admitted = options?.admittedWriter;
+  if (admitted) {
+    assertAdmittedWriter(
+      admitted.namespace,
+      admitted.writer,
+      admitted.module,
+      STORAGE_OWNERSHIP,
+    );
+  }
   const tempPath = temporarySiblingPath(targetPath);
   let installed = false;
   try {

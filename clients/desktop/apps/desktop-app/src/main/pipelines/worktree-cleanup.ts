@@ -214,6 +214,7 @@ export async function cleanupWorktreePipelines(
               summary.id,
             ),
             destinationRoot,
+            { durable: true },
           );
           relocatedCount += 1;
         } catch {

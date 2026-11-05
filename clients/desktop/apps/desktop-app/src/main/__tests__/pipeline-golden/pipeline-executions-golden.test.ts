@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import { PIPELINE_CHANNELS } from '@canopy/desktop-shared/constants/ipc-channels';
 import { loadExecutionState } from '@canopy/desktop-shared/node/pipelines/executor';
 import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import type { OperationRecord } from '@canopy/protocol/canopy-core';
 import type { ExecutionState } from '@canopy/desktop-shared/types/pipeline';
 import { GOLDEN_INVALID_PIPELINE_YAML } from '@canopy/desktop-shared/node/pipelines/__tests__/golden-fixtures';
 import { getStoredPipelinePath } from '@canopy/desktop-shared/pipelines/store';
@@ -24,6 +25,7 @@ import {
   type DesktopCanopyDispatcher,
 } from '../../canopy-runtime/desktop-runtime';
 import { setDesktopCanopyRuntime } from '../../canopy-runtime/desktop-runtime-access';
+import { getActiveExecutionHandle } from '../../pipelines/pipeline-execution-registry';
 import {
   dispatchAgentAction,
   forkGoldenUtilityProcess,
@@ -42,7 +44,7 @@ import {
   projectExecution,
   SLOW_ONCE_YAML,
   SUCCESS_YAML,
-  waitForExecution,
+  waitForExecution as waitForPersistedExecution,
   waitForRunningStep,
 } from './executions';
 import {
@@ -260,6 +262,22 @@ async function start(
 async function settled(executionId: string | undefined): Promise<unknown> {
   if (!executionId) return null;
   return projectExecution(await waitForExecution(executionsDir, executionId));
+}
+
+async function waitForExecution(
+  directory: string,
+  executionId: string,
+  statuses?: readonly string[],
+): Promise<ExecutionState> {
+  const state = await waitForPersistedExecution(
+    directory,
+    executionId,
+    statuses,
+  );
+  await getActiveExecutionHandle(executionId)
+    ?.waitForCompletion()
+    .catch(() => undefined);
+  return state;
 }
 
 function pauseResponse(
@@ -951,55 +969,65 @@ describe('desktop shutdown', () => {
 // CAN-4140: each run is a core operation that follows its execution across
 // the pause and the resume's new handle.
 describe('core run records', () => {
-  const waitFor = async (check: () => Promise<boolean>): Promise<void> => {
+  const waitFor = async (
+    executionId: string | undefined,
+    check: () => Promise<boolean>,
+  ): Promise<void> => {
     for (let attempt = 0; attempt < 200; attempt += 1) {
       if (await check()) return;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    throw new Error('The run record never reached the expected status.');
+    // Tell a slow run record from one left behind its settled execution.
+    const runs = await runRecords(executionId)
+      .then((items) =>
+        items.map(({ status, revision, updatedAt }) => ({
+          status,
+          revision,
+          updatedAt,
+        })),
+      )
+      .catch((error: unknown) => String(error));
+    const execution = await loadExecutionState(executionId ?? '', executionsDir)
+      .then((state) =>
+        state === null
+          ? 'missing'
+          : { status: state.status, completedAt: state.completed_at },
+      )
+      .catch((error: unknown) => String(error));
+    throw new Error(
+      `The run record never reached the expected status. Runs: ${JSON.stringify(
+        runs,
+      )}; execution: ${JSON.stringify(execution)}`,
+    );
+  };
+  const runRecords = async (
+    executionId: string | undefined,
+  ): Promise<OperationRecord[]> => {
+    const { items } = await runtime.query(
+      'core.operation.list',
+      {
+        kinds: ['core.pipeline.run'],
+        scope: { executionId: executionId ?? '' },
+      },
+      {
+        caller: {
+          principalId: 'local-desktop-user',
+          clientInstanceId: 'golden',
+          authorityId: 'local-desktop',
+          interfaceKind: 'test',
+          grants: ['core.operation.read'],
+        },
+      },
+    );
+    return items;
   };
   const runStatuses = async (
     executionId: string | undefined,
-  ): Promise<string[]> => {
-    const { items } = await runtime.query(
-      'core.operation.list',
-      {
-        kinds: ['core.pipeline.run'],
-        scope: { executionId: executionId ?? '' },
-      },
-      {
-        caller: {
-          principalId: 'local-desktop-user',
-          clientInstanceId: 'golden',
-          authorityId: 'local-desktop',
-          interfaceKind: 'test',
-          grants: ['core.operation.read'],
-        },
-      },
-    );
-    return items.map((item) => item.status);
-  };
+  ): Promise<string[]> =>
+    (await runRecords(executionId)).map((item) => item.status);
   const runRecord = async (
     executionId: string | undefined,
-  ): Promise<string | undefined> => {
-    const { items } = await runtime.query(
-      'core.operation.list',
-      {
-        kinds: ['core.pipeline.run'],
-        scope: { executionId: executionId ?? '' },
-      },
-      {
-        caller: {
-          principalId: 'local-desktop-user',
-          clientInstanceId: 'golden',
-          authorityId: 'local-desktop',
-          interfaceKind: 'test',
-          grants: ['core.operation.read'],
-        },
-      },
-    );
-    return items[0]?.status;
-  };
+  ): Promise<string | undefined> => (await runRecords(executionId))[0]?.status;
 
   it('pauses, resumes and finishes the run with its execution', async () => {
     const run = await start('record-pause', () =>
@@ -1010,12 +1038,16 @@ describe('core run records', () => {
       run.executionId ?? '',
       ['paused'],
     );
-    await waitFor(async () => (await runRecord(run.executionId)) === 'paused');
+    await waitFor(
+      run.executionId,
+      async () => (await runRecord(run.executionId)) === 'paused',
+    );
     await invokeIpc(PIPELINE_CHANNELS.RESUME, run.executionId, {
       pauseResponses: [pauseResponse(pausedState, { approved: true })],
     });
     await settled(run.executionId);
     await waitFor(
+      run.executionId,
       async () => (await runRecord(run.executionId)) === 'completed',
     );
     // The resume ran under the run it resumed.
@@ -1063,11 +1095,13 @@ describe('core run records', () => {
     );
     await settled(flaky.executionId);
     await waitFor(
+      flaky.executionId,
       async () => (await runRecord(flaky.executionId)) === 'failed',
     );
     await invokeIpc(PIPELINE_CHANNELS.RETRY_EXECUTION, flaky.executionId);
     await settled(flaky.executionId);
     await waitFor(
+      flaky.executionId,
       async () =>
         (await runStatuses(flaky.executionId)).join() === 'completed,failed',
     );
@@ -1076,6 +1110,7 @@ describe('core run records', () => {
     );
     await settled(rerun.executionId);
     await waitFor(
+      rerun.executionId,
       async () => (await runStatuses(rerun.executionId)).join() === 'completed',
     );
     await invokeIpc(PIPELINE_CHANNELS.RESUME, flaky.executionId, {

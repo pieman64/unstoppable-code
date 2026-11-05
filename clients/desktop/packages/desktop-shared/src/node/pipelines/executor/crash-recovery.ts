@@ -1,9 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { ExecutionState } from '../../../types/pipeline';
-import { loadExecutionState, saveExecutionState } from './execution-state';
+import {
+  isExecutionCancellationRequested,
+  loadExecutionState,
+  requestExecutionCancellation,
+  saveExecutionState,
+} from './execution-state';
 import { refreshAllJobGroups } from './job-scheduler';
-import { isKnownOrphanedExecution } from './pipeline-executor';
+import {
+  cancelRecoveredExecutionState,
+  isKnownOrphanedExecution,
+} from './pipeline-executor';
 import {
   buildAgentRecoveryStepResult,
   buildNestedPipelineOutputs,
@@ -24,8 +32,13 @@ export async function recoverOrphanedPipelineExecutions(
   const errors: string[] = [];
   const recovered = new Map<string, ExecutionState | null>();
   const visiting = new Set<string>();
-  const recover = async (id: string): Promise<ExecutionState | null> => {
-    if (recovered.has(id)) return recovered.get(id) ?? null;
+  const recover = async (
+    id: string,
+    cancelFromParent = false,
+  ): Promise<ExecutionState | null> => {
+    const cancelRecovered =
+      cancelFromParent && recovered.get(id)?.status === 'paused';
+    if (recovered.has(id) && !cancelRecovered) return recovered.get(id) ?? null;
     if (visiting.has(id))
       throw new Error(`Cyclic child execution reference: ${id}`);
     visiting.add(id);
@@ -33,11 +46,39 @@ export async function recoverOrphanedPipelineExecutions(
       const state = await loadExecutionState(id, executionsDir);
       if (
         !state ||
-        !['pending', 'running'].includes(state.status) ||
-        !(await isKnownOrphanedExecution(state))
+        (!['pending', 'running'].includes(state.status) &&
+          !(cancelFromParent && state.status === 'paused')) ||
+        (state.status !== 'paused' && !(await isKnownOrphanedExecution(state)))
       ) {
         recovered.set(id, state);
         return state;
+      }
+      if (await isExecutionCancellationRequested(id, executionsDir)) {
+        const children = Object.values(state.jobs).flatMap((job) =>
+          Object.values(job.steps).flatMap((step) =>
+            step.child_execution_id &&
+            (step.status === 'running' ||
+              (cancelFromParent && ['paused', 'pending'].includes(step.status)))
+              ? [step.child_execution_id]
+              : [],
+          ),
+        );
+        for (const childId of children) {
+          await requestExecutionCancellation(childId, executionsDir);
+          const child = await recover(childId, true);
+          if (child && ['running', 'pending'].includes(child.status)) {
+            throw new Error(
+              `Child execution ${child.id} still has a live or unknown owner`,
+            );
+          }
+        }
+        const cancelled = cancelRecoveredExecutionState(state);
+        await saveExecutionState(cancelled, executionsDir, {
+          cancellation: 'clear_after',
+          durable: true,
+        });
+        recovered.set(id, cancelled);
+        return cancelled;
       }
       const interrupted = new Set<string>();
       for (const [jobId, job] of Object.entries(state.jobs)) {

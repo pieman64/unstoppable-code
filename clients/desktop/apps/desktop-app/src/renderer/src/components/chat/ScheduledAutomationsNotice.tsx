@@ -275,10 +275,11 @@ export function ScheduledAutomationsNoticeView({
               variant="secondary"
               onClick={(): void => void handleRunNow()}
               disabled={runBusy}
-              aria-busy={runBusy}
+              busy={runBusy}
+              busyLabel="Running…"
               data-testid="scheduled-automation-run-now"
             >
-              {runBusy ? 'Running…' : 'Run now'}
+              Run now
             </NoticeButton>
             <NoticeButton
               ref={moreButtonRef}

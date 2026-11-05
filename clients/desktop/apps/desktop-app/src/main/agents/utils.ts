@@ -1,3 +1,5 @@
+import { assertHelperWorkerContext } from '../helper-runs/helper-worker-context';
+import { runHelperThroughWorker } from '../helper-runs/helper-runs';
 import { query as claudeQuery } from '@anthropic-ai/claude-agent-sdk';
 import {
   AGENT_TRANSIENT_RETRY_CONTINUE_PROMPT,
@@ -133,6 +135,7 @@ async function runBackgroundTextWorker(options: {
   provider: AgentProviderType;
   observabilityTaskKey?: string;
 }): Promise<SummaryResult> {
+  assertHelperWorkerContext('runBackgroundTextWorker');
   let resumeSessionId: string | undefined;
   await updateHelperRetryMetadata(options.observabilityTaskKey, { attempt: 1 });
   return runWithTransientAgentRetry({
@@ -555,6 +558,7 @@ async function runObservedClaudeQuery(
   captureEvent?: (event: unknown) => void,
   rememberSessionId?: (sessionId: string) => void,
 ): Promise<{ text: string; usage: HelperUsage }> {
+  assertHelperWorkerContext('runObservedClaudeQuery');
   const observabilityService =
     queryId && provider === 'claude'
       ? await loadObservabilityService()
@@ -766,6 +770,7 @@ async function runCodexHelperText(
     systemPrompt: string;
   },
 ): Promise<SummaryResult> {
+  assertHelperWorkerContext('runCodexHelperText');
   const {
     model,
     cwd,
@@ -983,28 +988,46 @@ export async function generateChatSummary(
   try {
     await mkdir(effectiveCwd, { recursive: true });
     if (getExecutionHarnessForModel(effectiveModel) === 'codex') {
-      return await generateChatSummaryWithCodex(
-        userMessage,
-        effectiveModel,
-        effectiveCwd,
-        effectiveThinking,
-        options?.workspaceId,
-        workOwner,
-        options?.observabilityTaskKey,
-        options?.modelConfig,
-        options?.purpose,
-      );
+      return await runHelperThroughWorker({
+        kind: 'chat_summary',
+        model: effectiveModel,
+        scope: { workspaceId: options?.workspaceId },
+        origin: 'system',
+        workOwner: policyOwner,
+        launch: async () =>
+          generateChatSummaryWithCodex(
+            userMessage,
+            effectiveModel,
+            effectiveCwd,
+            effectiveThinking,
+            options?.workspaceId,
+            workOwner,
+            options?.observabilityTaskKey,
+            options?.modelConfig,
+            options?.purpose,
+          ),
+        usageOf: (r) => r.usage,
+      });
     }
-    return await generateChatSummaryWithClaude(
-      userMessage,
-      effectiveModel,
-      effectiveCwd,
-      effectiveThinking,
-      options?.workspaceId,
-      workOwner,
-      options?.observabilityTaskKey,
-      options?.purpose,
-    );
+    return await runHelperThroughWorker({
+      kind: 'chat_summary',
+      model: effectiveModel,
+      scope: { workspaceId: options?.workspaceId },
+      origin: 'system',
+      workOwner: policyOwner,
+      launch: async () =>
+        generateChatSummaryWithClaude(
+          userMessage,
+          effectiveModel,
+          effectiveCwd,
+          effectiveThinking,
+          options?.workspaceId,
+          workOwner,
+          options?.observabilityTaskKey,
+          options?.purpose,
+        ),
+      usageOf: (r) => r.usage,
+    });
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error('[generateChatSummary] failed:', err);
@@ -1062,113 +1085,129 @@ ${conversationText}`;
   }
 
   let disposeInvocation: (() => void) | undefined;
-  try {
-    const invocation = await resolveHelperInvocation(archiveModel, undefined, {
-      ...(options?.workspaceId !== undefined
-        ? { workspaceId: options.workspaceId }
-        : {}),
-    });
-    disposeInvocation = invocation.dispose;
-    if (options?.observabilityTaskKey) {
-      markObservedHelperTaskAiCreditsRouted(
-        options.observabilityTaskKey,
-        invocation.aiCreditsRouted,
-        invocation.accountProxyRouted === true,
-      );
-    }
-    await seedHelperTranscript(options?.observabilityTaskKey, {
-      provider: 'claude',
-      originalText: conversationText,
-      submittedText: prompt,
-      systemPrompt,
-    });
-    if (await shouldUseBackgroundTextWorker(archiveModel)) {
-      const result = await runBackgroundTextWorker({
-        kind: 'archive_summary',
-        label: 'Archive Summary',
-        cwd: effectiveCwd,
-        model: invocation.sdkModel ?? archiveModel,
-        prompt,
-        systemPrompt,
-        workspaceId: options?.workspaceId,
-        claudeEnvOverride: invocation.envOverride,
-        waitForQuotaRecovery: invocation.waitForQuotaRecovery,
-        maxTurns: 1,
-        provider: invocation.providerType,
-        observabilityTaskKey: options?.observabilityTaskKey,
-      });
-      return {
-        text: result.text || 'No summary available.',
-        usage: result.usage,
-      };
-    }
-    const effectiveModel = invocation.sdkModel ?? archiveModel;
-    const localMemoryEnabled = await readLocalMemoryEnabledPreference();
-    let resumeSessionId: string | undefined;
-    await updateHelperRetryMetadata(options?.observabilityTaskKey, {
-      attempt: 1,
-    });
-    const result = await runWithTransientAgentRetry({
-      waitForQuotaRecovery: invocation.waitForQuotaRecovery,
-      provider: invocation.providerType,
-      model: effectiveModel,
-      runAttempt: (captureEvent) =>
-        runObservedClaudeQuery(
-          options?.observabilityTaskKey,
-          invocation.providerType,
-          resumeSessionId,
-          () =>
-            claudeQuery({
-              prompt: resumeSessionId
-                ? AGENT_TRANSIENT_RETRY_CONTINUE_PROMPT
-                : prompt,
-              options: {
-                model: effectiveModel,
-                maxTurns: 1,
-                cwd: effectiveCwd,
-                pathToClaudeCodeExecutable: getBundledClaudeBinaryPath(),
-                spawnClaudeCodeProcess: spawnClaudeCodeProcessOffMain,
-                env: buildSummaryHelperEnv(
-                  getEnhancedEnv({
-                    environment: resolveAgentEnvironment(options?.workspaceId),
-                  }),
-                  invocation.envOverride,
-                ),
-                sandbox: {
-                  ripgrep: {
-                    command: getBundledRgBinaryPath(),
-                  },
-                },
-                systemPrompt,
-                // Native-memory suppression while local memory is enabled
-                // (CAN-1969).
-                ...claudeNativeMemoryOptions(localMemoryEnabled),
-                ...(resumeSessionId ? { resume: resumeSessionId } : {}),
-              },
-            }),
-          captureEvent,
-          (sessionId) => {
-            resumeSessionId = sessionId;
+  return await runHelperThroughWorker({
+    kind: 'chat_archive_summary',
+    model: archiveModel,
+    scope: { workspaceId: options?.workspaceId },
+    origin: 'system',
+    workOwner: policyOwner,
+    launch: async () => {
+      try {
+        const invocation = await resolveHelperInvocation(
+          archiveModel,
+          undefined,
+          {
+            ...(options?.workspaceId !== undefined
+              ? { workspaceId: options.workspaceId }
+              : {}),
           },
-        ),
-      onRetry: (notice) =>
-        updateHelperRetryMetadata(options?.observabilityTaskKey, {
-          attempt: notice.nextAttempt,
-        }),
-    });
+        );
+        disposeInvocation = invocation.dispose;
+        if (options?.observabilityTaskKey) {
+          markObservedHelperTaskAiCreditsRouted(
+            options.observabilityTaskKey,
+            invocation.aiCreditsRouted,
+            invocation.accountProxyRouted === true,
+          );
+        }
+        await seedHelperTranscript(options?.observabilityTaskKey, {
+          provider: 'claude',
+          originalText: conversationText,
+          submittedText: prompt,
+          systemPrompt,
+        });
+        if (await shouldUseBackgroundTextWorker(archiveModel)) {
+          const result = await runBackgroundTextWorker({
+            kind: 'archive_summary',
+            label: 'Archive Summary',
+            cwd: effectiveCwd,
+            model: invocation.sdkModel ?? archiveModel,
+            prompt,
+            systemPrompt,
+            workspaceId: options?.workspaceId,
+            claudeEnvOverride: invocation.envOverride,
+            waitForQuotaRecovery: invocation.waitForQuotaRecovery,
+            maxTurns: 1,
+            provider: invocation.providerType,
+            observabilityTaskKey: options?.observabilityTaskKey,
+          });
+          return {
+            text: result.text || 'No summary available.',
+            usage: result.usage,
+          };
+        }
+        const effectiveModel = invocation.sdkModel ?? archiveModel;
+        const localMemoryEnabled = await readLocalMemoryEnabledPreference();
+        let resumeSessionId: string | undefined;
+        await updateHelperRetryMetadata(options?.observabilityTaskKey, {
+          attempt: 1,
+        });
+        const result = await runWithTransientAgentRetry({
+          waitForQuotaRecovery: invocation.waitForQuotaRecovery,
+          provider: invocation.providerType,
+          model: effectiveModel,
+          runAttempt: (captureEvent) =>
+            runObservedClaudeQuery(
+              options?.observabilityTaskKey,
+              invocation.providerType,
+              resumeSessionId,
+              () =>
+                claudeQuery({
+                  prompt: resumeSessionId
+                    ? AGENT_TRANSIENT_RETRY_CONTINUE_PROMPT
+                    : prompt,
+                  options: {
+                    model: effectiveModel,
+                    maxTurns: 1,
+                    cwd: effectiveCwd,
+                    pathToClaudeCodeExecutable: getBundledClaudeBinaryPath(),
+                    spawnClaudeCodeProcess: spawnClaudeCodeProcessOffMain,
+                    env: buildSummaryHelperEnv(
+                      getEnhancedEnv({
+                        environment: resolveAgentEnvironment(
+                          options?.workspaceId,
+                        ),
+                      }),
+                      invocation.envOverride,
+                    ),
+                    sandbox: {
+                      ripgrep: {
+                        command: getBundledRgBinaryPath(),
+                      },
+                    },
+                    systemPrompt,
+                    // Native-memory suppression while local memory is enabled
+                    // (CAN-1969).
+                    ...claudeNativeMemoryOptions(localMemoryEnabled),
+                    ...(resumeSessionId ? { resume: resumeSessionId } : {}),
+                  },
+                }),
+              captureEvent,
+              (sessionId) => {
+                resumeSessionId = sessionId;
+              },
+            ),
+          onRetry: (notice) =>
+            updateHelperRetryMetadata(options?.observabilityTaskKey, {
+              attempt: notice.nextAttempt,
+            }),
+        });
 
-    return {
-      text: result.text || 'No summary available.',
-      usage: result.usage,
-    };
-  } catch (error) {
-    return {
-      text: 'Summary generation failed.',
-      usage: readHelperUsage(error) ?? {},
-    };
-  } finally {
-    disposeInvocation?.();
-  }
+        return {
+          text: result.text || 'No summary available.',
+          usage: result.usage,
+        };
+      } catch (error) {
+        return {
+          text: 'Summary generation failed.',
+          usage: readHelperUsage(error) ?? {},
+        };
+      } finally {
+        disposeInvocation?.();
+      }
+    },
+    usageOf: (r) => r.usage,
+  });
 }
 
 export async function generateHandoffSummary(
@@ -1235,175 +1274,193 @@ ${conversationText}`;
     ...(selectedLocal ? { preserveModelSelection: true } : {}),
   });
   try {
-    if (selectedLocal && invocation.source !== 'ollama') {
-      throw new Error(
-        'The local conversation handoff model is unavailable. Choose an installed local model in Settings.',
-      );
-    }
-    if (options?.observabilityTaskKey) {
-      const observabilityService = await loadObservabilityService();
-      observabilityService.updateObservedTask(options.observabilityTaskKey, {
-        model: invocation.resolvedModel ?? invocation.sdkModel ?? selectedModel,
-        provider: invocation.providerType,
-        modelSource: invocation.source,
-        executionHarness: invocation.harness,
-        serviceTier:
-          invocation.harness === 'codex'
-            ? codexServiceTierForModelConfig(options.modelConfig)
-            : undefined,
-      });
-    }
-    const resolvedModel = invocation.resolvedModel ?? selectedModel;
-    const thinkingLevel = clampThinkingLevelForModel(
-      selectedThinking,
-      resolvedModel,
-      invocation.providerType,
-      invocation.aiCreditsRouted,
-    );
-    if (invocation.harness === 'codex') {
-      const result = await runCodexHelperText(invocation, {
-        model: selectedModel,
-        cwd: effectiveCwd,
-        thinkingLevel,
-        permissionMode: 'report-only',
-        reasoningContext: {
-          model: resolvedModel,
-          aiCreditsRouted: invocation.aiCreditsRouted,
-        },
-        workspaceId: options?.workspaceId,
-        observabilityTaskKey: options?.observabilityTaskKey,
-        modelConfig: options?.modelConfig,
-        originalText: conversationText,
-        submittedPrompt: prompt,
-        systemPrompt: HANDOFF_SUMMARY_SYSTEM_PROMPT,
-      });
-      const text = result.text.trim();
-      if (!text)
-        throw new StructuredHelperQueryError(
-          'Summary generation returned no content.',
-          result.usage,
-        );
-      return { text, usage: result.usage };
-    }
-    if (options?.observabilityTaskKey) {
-      markObservedHelperTaskAiCreditsRouted(
-        options.observabilityTaskKey,
-        invocation.aiCreditsRouted,
-        invocation.accountProxyRouted === true,
-      );
-    }
-    await seedHelperTranscript(options?.observabilityTaskKey, {
-      provider: invocation.providerType,
-      originalText: conversationText,
-      submittedText: prompt,
-      systemPrompt: HANDOFF_SUMMARY_SYSTEM_PROMPT,
-    });
-    if (
-      await shouldUseBackgroundTextWorker(selectedModel, invocation.harness)
-    ) {
-      const result = await runBackgroundTextWorker({
-        kind: 'handoff_summary',
-        label: 'Handoff Summary',
-        cwd: effectiveCwd,
-        model: invocation.sdkModel ?? selectedModel,
-        prompt,
-        systemPrompt: HANDOFF_SUMMARY_SYSTEM_PROMPT,
-        workspaceId: options?.workspaceId,
-        claudeEnvOverride: invocation.envOverride,
-        waitForQuotaRecovery: invocation.waitForQuotaRecovery,
-        thinkingLevel,
-        maxTurns: 1,
-        provider: invocation.providerType,
-        observabilityTaskKey: options?.observabilityTaskKey,
-      });
-      const summary = result.text.trim();
-      if (!summary) {
-        throw new StructuredHelperQueryError(
-          'Summary generation returned no content.',
-          result.usage,
-        );
-      }
-      return { text: summary, usage: result.usage };
-    }
-    const effectiveModel = invocation.sdkModel ?? selectedModel;
-    const thinkingOptions = buildClaudeThinkingOptions(thinkingLevel);
-    const localMemoryEnabled = await readLocalMemoryEnabledPreference();
-    let resumeSessionId: string | undefined;
-    await updateHelperRetryMetadata(options?.observabilityTaskKey, {
-      attempt: 1,
-    });
-    const result = await runWithTransientAgentRetry({
-      waitForQuotaRecovery: invocation.waitForQuotaRecovery,
-      provider: invocation.providerType,
-      model: effectiveModel,
-      runAttempt: (captureEvent) =>
-        runObservedClaudeQuery(
-          options?.observabilityTaskKey,
+    return await runHelperThroughWorker({
+      kind: 'chat_handoff_summary',
+      model: selectedModel,
+      scope: { workspaceId: options?.workspaceId },
+      origin: 'client',
+      workOwner: policyOwner,
+      launch: async () => {
+        if (selectedLocal && invocation.source !== 'ollama') {
+          throw new Error(
+            'The local conversation handoff model is unavailable. Choose an installed local model in Settings.',
+          );
+        }
+        if (options?.observabilityTaskKey) {
+          const observabilityService = await loadObservabilityService();
+          observabilityService.updateObservedTask(
+            options.observabilityTaskKey,
+            {
+              model:
+                invocation.resolvedModel ??
+                invocation.sdkModel ??
+                selectedModel,
+              provider: invocation.providerType,
+              modelSource: invocation.source,
+              executionHarness: invocation.harness,
+              serviceTier:
+                invocation.harness === 'codex'
+                  ? codexServiceTierForModelConfig(options.modelConfig)
+                  : undefined,
+            },
+          );
+        }
+        const resolvedModel = invocation.resolvedModel ?? selectedModel;
+        const thinkingLevel = clampThinkingLevelForModel(
+          selectedThinking,
+          resolvedModel,
           invocation.providerType,
-          resumeSessionId,
-          () =>
-            claudeQuery({
-              prompt: resumeSessionId
-                ? AGENT_TRANSIENT_RETRY_CONTINUE_PROMPT
-                : prompt,
-              options: {
-                model: effectiveModel,
-                maxTurns: 1,
-                cwd: effectiveCwd,
-                pathToClaudeCodeExecutable: getBundledClaudeBinaryPath(),
-                spawnClaudeCodeProcess: spawnClaudeCodeProcessOffMain,
-                env: buildSummaryHelperEnv(
-                  getEnhancedEnv({
-                    environment: resolveAgentEnvironment(options?.workspaceId),
-                  }),
-                  invocation.envOverride,
-                ),
-                sandbox: {
-                  ripgrep: {
-                    command: getBundledRgBinaryPath(),
+          invocation.aiCreditsRouted,
+        );
+        if (invocation.harness === 'codex') {
+          const result = await runCodexHelperText(invocation, {
+            model: selectedModel,
+            cwd: effectiveCwd,
+            thinkingLevel,
+            permissionMode: 'report-only',
+            reasoningContext: {
+              model: resolvedModel,
+              aiCreditsRouted: invocation.aiCreditsRouted,
+            },
+            workspaceId: options?.workspaceId,
+            observabilityTaskKey: options?.observabilityTaskKey,
+            modelConfig: options?.modelConfig,
+            originalText: conversationText,
+            submittedPrompt: prompt,
+            systemPrompt: HANDOFF_SUMMARY_SYSTEM_PROMPT,
+          });
+          const text = result.text.trim();
+          if (!text)
+            throw new StructuredHelperQueryError(
+              'Summary generation returned no content.',
+              result.usage,
+            );
+          return { text, usage: result.usage };
+        }
+        if (options?.observabilityTaskKey) {
+          markObservedHelperTaskAiCreditsRouted(
+            options.observabilityTaskKey,
+            invocation.aiCreditsRouted,
+            invocation.accountProxyRouted === true,
+          );
+        }
+        await seedHelperTranscript(options?.observabilityTaskKey, {
+          provider: invocation.providerType,
+          originalText: conversationText,
+          submittedText: prompt,
+          systemPrompt: HANDOFF_SUMMARY_SYSTEM_PROMPT,
+        });
+        if (
+          await shouldUseBackgroundTextWorker(selectedModel, invocation.harness)
+        ) {
+          const result = await runBackgroundTextWorker({
+            kind: 'handoff_summary',
+            label: 'Handoff Summary',
+            cwd: effectiveCwd,
+            model: invocation.sdkModel ?? selectedModel,
+            prompt,
+            systemPrompt: HANDOFF_SUMMARY_SYSTEM_PROMPT,
+            workspaceId: options?.workspaceId,
+            claudeEnvOverride: invocation.envOverride,
+            waitForQuotaRecovery: invocation.waitForQuotaRecovery,
+            thinkingLevel,
+            maxTurns: 1,
+            provider: invocation.providerType,
+            observabilityTaskKey: options?.observabilityTaskKey,
+          });
+          const summary = result.text.trim();
+          if (!summary) {
+            throw new StructuredHelperQueryError(
+              'Summary generation returned no content.',
+              result.usage,
+            );
+          }
+          return { text: summary, usage: result.usage };
+        }
+        const effectiveModel = invocation.sdkModel ?? selectedModel;
+        const thinkingOptions = buildClaudeThinkingOptions(thinkingLevel);
+        const localMemoryEnabled = await readLocalMemoryEnabledPreference();
+        let resumeSessionId: string | undefined;
+        await updateHelperRetryMetadata(options?.observabilityTaskKey, {
+          attempt: 1,
+        });
+        const result = await runWithTransientAgentRetry({
+          waitForQuotaRecovery: invocation.waitForQuotaRecovery,
+          provider: invocation.providerType,
+          model: effectiveModel,
+          runAttempt: (captureEvent) =>
+            runObservedClaudeQuery(
+              options?.observabilityTaskKey,
+              invocation.providerType,
+              resumeSessionId,
+              () =>
+                claudeQuery({
+                  prompt: resumeSessionId
+                    ? AGENT_TRANSIENT_RETRY_CONTINUE_PROMPT
+                    : prompt,
+                  options: {
+                    model: effectiveModel,
+                    maxTurns: 1,
+                    cwd: effectiveCwd,
+                    pathToClaudeCodeExecutable: getBundledClaudeBinaryPath(),
+                    spawnClaudeCodeProcess: spawnClaudeCodeProcessOffMain,
+                    env: buildSummaryHelperEnv(
+                      getEnhancedEnv({
+                        environment: resolveAgentEnvironment(
+                          options?.workspaceId,
+                        ),
+                      }),
+                      invocation.envOverride,
+                    ),
+                    sandbox: {
+                      ripgrep: {
+                        command: getBundledRgBinaryPath(),
+                      },
+                    },
+                    settingSources: [],
+                    tools: [],
+                    allowedTools: [],
+                    mcpServers: {},
+                    extraArgs: {
+                      'strict-mcp-config': null,
+                      ...(thinkingOptions.extraArgs ?? {}),
+                    },
+                    thinking: thinkingOptions.thinking,
+                    ...(thinkingOptions.effort
+                      ? { effort: thinkingOptions.effort }
+                      : {}),
+                    systemPrompt: HANDOFF_SUMMARY_SYSTEM_PROMPT,
+                    // Native-memory suppression while local memory is enabled
+                    // (CAN-1969).
+                    ...claudeNativeMemoryOptions(
+                      localMemoryEnabled,
+                      thinkingOptions.settings,
+                    ),
+                    ...(resumeSessionId ? { resume: resumeSessionId } : {}),
                   },
-                },
-                settingSources: [],
-                tools: [],
-                allowedTools: [],
-                mcpServers: {},
-                extraArgs: {
-                  'strict-mcp-config': null,
-                  ...(thinkingOptions.extraArgs ?? {}),
-                },
-                thinking: thinkingOptions.thinking,
-                ...(thinkingOptions.effort
-                  ? { effort: thinkingOptions.effort }
-                  : {}),
-                systemPrompt: HANDOFF_SUMMARY_SYSTEM_PROMPT,
-                // Native-memory suppression while local memory is enabled
-                // (CAN-1969).
-                ...claudeNativeMemoryOptions(
-                  localMemoryEnabled,
-                  thinkingOptions.settings,
-                ),
-                ...(resumeSessionId ? { resume: resumeSessionId } : {}),
+                }),
+              captureEvent,
+              (sessionId) => {
+                resumeSessionId = sessionId;
               },
+            ),
+          onRetry: (notice) =>
+            updateHelperRetryMetadata(options?.observabilityTaskKey, {
+              attempt: notice.nextAttempt,
             }),
-          captureEvent,
-          (sessionId) => {
-            resumeSessionId = sessionId;
-          },
-        ),
-      onRetry: (notice) =>
-        updateHelperRetryMetadata(options?.observabilityTaskKey, {
-          attempt: notice.nextAttempt,
-        }),
-    });
-    const summary = result.text.trim();
-    if (!summary) {
-      throw new StructuredHelperQueryError(
-        'Summary generation returned no content.',
-        result.usage,
-      );
-    }
+        });
+        const summary = result.text.trim();
+        if (!summary) {
+          throw new StructuredHelperQueryError(
+            'Summary generation returned no content.',
+            result.usage,
+          );
+        }
 
-    return { text: summary, usage: result.usage };
+        return { text: summary, usage: result.usage };
+      },
+      usageOf: (r) => r.usage,
+    });
   } finally {
     invocation.dispose?.();
   }

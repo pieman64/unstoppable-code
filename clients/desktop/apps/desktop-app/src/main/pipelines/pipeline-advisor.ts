@@ -30,6 +30,10 @@ import type {
   PipelineAdvisorTurnKind,
 } from '@canopy/desktop-shared/types/pipeline';
 import { randomUUID } from 'node:crypto';
+import {
+  runHelperThroughWorker,
+  linkHelperAbort,
+} from '../helper-runs/helper-runs';
 import { sendToWindow } from '../lib/window-send';
 import { readPreferencesFile } from '../lib/preferences-store';
 import { isModelBlockedByStoredPolicy } from '../lib/model-policy-state';
@@ -609,29 +613,53 @@ export class PipelineAdvisorService {
       if (invocation.accountProxyRouted) {
         observability.markObservedTaskAccountProxyRouted(taskKey);
       }
-      const result = await runPipelineAdvisorSdkTurn({
-        abortController,
-        waitForQuotaRecovery: invocation.waitForQuotaRecovery,
-        provider: invocation.harness,
-        providerType: invocation.providerType,
-        model: invocation.sdkModel ?? active.snapshot.model,
-        modelConfig: state.model_config,
-        envOverride: invocation.envOverride,
-        codexConfig: invocation.codexConfig,
-        codexSpeedRoute: {
-          selectedModel: active.snapshot.model,
-          modelSource: invocation.source,
-          providerType: invocation.providerType,
-          gateway: invocation.aiCreditsRouted ? 'ai-credits' : null,
+      const result = await runHelperThroughWorker({
+        kind: 'pipeline_advisor',
+        model: active.snapshot.model,
+        scope: {
+          ...(state.project_id !== undefined
+            ? { workspaceId: state.project_id }
+            : {}),
+          ...(state.worktree_id !== undefined
+            ? { worktreeId: state.worktree_id }
+            : {}),
+          executionId: state.id,
         },
-        thinkingLevel: active.snapshot.thinkingLevel,
-        executionDataDir: active.snapshot.executionDataDir,
-        systemPrompt: PIPELINE_ADVISOR_SYSTEM_PROMPT,
-        userPrompt,
-        schema: PIPELINE_ADVISOR_REPORT_SCHEMA,
-        sdkSessionId: active.snapshot.sdkSessionId,
-        observabilityTaskKey: taskKey,
-        workspaceId: state.project_id,
+        origin: 'system',
+        workOwner,
+        signal: abortController.signal,
+        launch: async (workerSignal) => {
+          const unlink = linkHelperAbort(workerSignal, abortController);
+          try {
+            return await runPipelineAdvisorSdkTurn({
+              abortController,
+              waitForQuotaRecovery: invocation.waitForQuotaRecovery,
+              provider: invocation.harness,
+              providerType: invocation.providerType,
+              model: invocation.sdkModel ?? active.snapshot.model,
+              modelConfig: state.model_config,
+              envOverride: invocation.envOverride,
+              codexConfig: invocation.codexConfig,
+              codexSpeedRoute: {
+                selectedModel: active.snapshot.model,
+                modelSource: invocation.source,
+                providerType: invocation.providerType,
+                gateway: invocation.aiCreditsRouted ? 'ai-credits' : null,
+              },
+              thinkingLevel: active.snapshot.thinkingLevel,
+              executionDataDir: active.snapshot.executionDataDir,
+              systemPrompt: PIPELINE_ADVISOR_SYSTEM_PROMPT,
+              userPrompt,
+              schema: PIPELINE_ADVISOR_REPORT_SCHEMA,
+              sdkSessionId: active.snapshot.sdkSessionId,
+              observabilityTaskKey: taskKey,
+              workspaceId: state.project_id,
+            });
+          } finally {
+            unlink();
+          }
+        },
+        usageOf: (result) => result.usage,
       });
       turnUsage = result.usage;
       if (active.shuttingDown) {

@@ -39,3 +39,10 @@ export {
   type HookRef,
   type LiveHookRun,
 } from './hook-firing';
+export {
+  HookChatClaims,
+  HOOK_CHAT_CLAIM_DOMAIN,
+  type HookChatClaim,
+  type HookChatClaimState,
+  type HookChatClaimRequest,
+} from './hook-chat-claims';

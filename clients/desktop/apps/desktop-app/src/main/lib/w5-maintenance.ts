@@ -90,6 +90,7 @@ export type W5MaintenanceRequest = {
   readonly source: 'offline_maintenance';
 } & (
   | { readonly mode: 'diagnose' }
+  | { readonly mode: 'reopen' }
   | {
       readonly mode: 'restore';
       readonly backupPath: string;
@@ -102,6 +103,7 @@ export type W5MaintenanceRequest = {
 );
 export type W5MaintenanceResult =
   | { readonly mode: 'diagnose'; readonly diagnosis: W5Diagnosis }
+  | { readonly mode: 'reopen'; readonly diagnosis: W5Diagnosis }
   | { readonly mode: 'restore'; readonly commitId: number }
   | {
       readonly mode: 'resolve';
@@ -110,7 +112,7 @@ export type W5MaintenanceResult =
       readonly diagnosis: W5Diagnosis;
     };
 
-/** Trusted offline host composition only; no IPC/UI/CLI/startup callers. */
+/** Trusted cold maintenance composition only; never the admitted app host. */
 export interface W5MaintenanceContext extends W5BackupContext {
   readonly platform: Pick<
     PlatformServices,
@@ -125,6 +127,19 @@ interface HeldMaintenance {
   readonly exclusion: W5MaintenanceExclusion;
 }
 const held = new WeakMap<W5ExclusiveMaintenance, HeldMaintenance>();
+const heldHosts = new WeakMap<
+  W5MaintenanceContext['host'],
+  W5ExclusiveMaintenance
+>();
+
+/** Cold-host admission, revoked before the exclusion or startup claim releases. */
+export async function isW5MaintenanceHostHeld(
+  host: W5MaintenanceContext['host'],
+  dataRoot: string,
+): Promise<boolean> {
+  const exclusive = heldHosts.get(host);
+  return exclusive !== undefined && isW5MaintenanceHeld(exclusive, dataRoot);
+}
 
 /** Validation only: callers cannot mint or retain admission after completion. */
 export async function isW5MaintenanceHeld(
@@ -167,6 +182,7 @@ export async function runW5Maintenance(
   if (
     request.source !== 'offline_maintenance' ||
     (request.mode !== 'diagnose' &&
+      request.mode !== 'reopen' &&
       request.mode !== 'restore' &&
       request.mode !== 'resolve')
   )
@@ -272,6 +288,7 @@ export async function runW5Maintenance(
     }
   }
   async function finishMaintenance(): Promise<void> {
+    heldHosts.delete(context.host);
     held.delete(exclusive);
     // Preserve departed bind evidence when a refused/uncertain endpoint remains.
     try {
@@ -301,7 +318,13 @@ export async function runW5Maintenance(
     // A published daemon no longer holds the startup claim. Probe its lifetime
     // lock even when discovery is missing, and never unlink runtime artifacts.
     const endpoints = platform.endpoints;
-    const address = endpoints.address({ dataRoot, endpointName: 'core' });
+    const address = ((): ReturnType<typeof endpoints.address> => {
+      try {
+        return endpoints.address({ dataRoot, endpointName: 'core' });
+      } catch {
+        return refuse('runtime-unavailable');
+      }
+    })();
     const probe =
       endpoints.semantics === 'filesystem-socket'
         ? await endpoints.probe(
@@ -388,6 +411,7 @@ export async function runW5Maintenance(
       verifyRuntime,
       exclusion,
     });
+    heldHosts.set(context.host, exclusive);
     if (!(await isW5MaintenanceHeld(exclusive, dataRoot))) refuse('claim-lost');
     // Local import keeps SQLite and offline scans off the desktop startup graph.
     const { diagnoseW5State } = await import('./w5-maintenance-diagnosis');
@@ -395,6 +419,17 @@ export async function runW5Maintenance(
     signal?.throwIfAborted();
     if (!(await isW5MaintenanceHeld(exclusive, dataRoot))) refuse('claim-lost');
     if (request.mode === 'diagnose') return { mode: 'diagnose', diagnosis };
+    if (request.mode === 'reopen') {
+      if (diagnosis.logIssue) refuse('log-unavailable');
+      await context.host.recoveryReport();
+      await stopWriter();
+      if (!(await isW5MaintenanceHeld(exclusive, dataRoot)))
+        refuse('claim-lost');
+      const after = await diagnoseW5State(dataRoot);
+      if (!(await isW5MaintenanceHeld(exclusive, dataRoot)))
+        refuse('claim-lost');
+      return { mode: 'reopen', diagnosis: after };
+    }
     if (request.mode === 'resolve') {
       if (!decisions) refuse('invalid-request');
       const refusal = refuseW5MaintenanceDecisions(diagnosis, decisions);

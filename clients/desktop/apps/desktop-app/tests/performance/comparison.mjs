@@ -102,8 +102,8 @@ function compareWorkCounters(baseline, current, baselineCounts, currentCounts) {
 
 // Treatment arms (CAN-4607, `daemon-treatment-admission.mjs`). Arms of one
 // artifact may differ only by the treatment itself; one arm across builds
-// only by the artifact and its Labs context, whose hash includes the app
-// version. Kept here so the comparator's study closure gains no file.
+// only by the artifact (and historical Labs context, whose hash includes the
+// app version). Build-default metadata never claims a Labs choice. Kept here so the comparator's study closure gains no file.
 const TREATMENT_ARMS = ['off', 'on'];
 const ARM_DIFFERENCES = ['arm', 'enabled', 'choice'];
 const BUILD_DIFFERENCES = ['artifactSha256', 'contextIdentity'];
@@ -122,10 +122,24 @@ function treatmentMismatches(baseline, current) {
   if (left === undefined && right === undefined) return mismatches;
   if (!left || !right) return [...mismatches, 'treatment'];
   for (const side of [left, right]) {
+    const buildDefault = side.routeSelection === 'build-default';
+    if (
+      (side.routeSelection !== undefined && !buildDefault) ||
+      (buildDefault &&
+        [
+          'enabled',
+          'choice',
+          'experimentId',
+          'source',
+          'contextIdentity',
+          'availability',
+        ].some((key) => side[key] !== undefined))
+    )
+      return [...mismatches, 'treatment.selection'];
     if (
       !TREATMENT_ARMS.includes(side.arm) ||
-      side.enabled !== (side.arm === 'on') ||
-      side.choice !== side.enabled
+      (!buildDefault &&
+        (side.enabled !== (side.arm === 'on') || side.choice !== side.enabled))
     )
       return [...mismatches, 'treatment.arm'];
     if (
@@ -135,6 +149,8 @@ function treatmentMismatches(baseline, current) {
     )
       return [...mismatches, 'treatment.artifact'];
   }
+  if (left.routeSelection !== right.routeSelection)
+    return [...mismatches, 'treatment.selection'];
   // One build compares one Labs context: a context change needs a new artifact.
   const allowed =
     left.arm !== right.arm

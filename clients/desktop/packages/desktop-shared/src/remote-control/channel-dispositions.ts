@@ -138,6 +138,8 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     launchAtLoginStatusChanged: 'tunnel',
     // This computer's own daemon health; a window showing another computer
     // reads Files through the bridge, never a daemon (CAN-5541).
+    w5RecoveryStatus: 'blocked',
+    w5RecoveryPrepare: 'blocked',
     backgroundServiceStatus: 'blocked',
     backgroundServiceRetry: 'blocked',
     backgroundServiceStatusChanged: 'blocked',

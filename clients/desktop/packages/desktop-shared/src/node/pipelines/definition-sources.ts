@@ -21,7 +21,9 @@ import {
 } from '@canopy/protocol/canopy-core';
 import type { PipelineIndexEntry, PipelineInfo } from '../../types/pipeline';
 import {
-  deleteStoredPipeline,
+  removeStoredPipeline,
+  writeStoredPipeline,
+  type StoredPipelineWriteResult,
   listStoredPipelines,
   readStoredPipelineDocument,
   readStoredPipelineRevision,
@@ -158,10 +160,24 @@ function storeFailure(error: string | undefined, fallback: string): Error {
   );
 }
 
+function refusalError(
+  result: Extract<StoredPipelineWriteResult<unknown>, { ok: false }>,
+): Error {
+  const code =
+    result.reason === 'revision_conflict'
+      ? 'core.pipeline.revisionConflict'
+      : result.reason === 'not_found'
+        ? 'core.pipeline.definitionNotFound'
+        : result.reason === 'read_only'
+          ? 'core.pipeline.definitionReadOnly'
+          : 'core.pipeline.sourceUnavailable';
+  return new PipelineDefinitionSourceError(code, result.message);
+}
+
 /**
  * Writes the user definitions of the local pipeline store, which stays their
- * writer. Each revision check runs in the same synchronous turn as its
- * write, so writes through this process cannot interleave between them.
+ * writer. Each expected revision is checked under the cross-process writer
+ * lock against the fresh index before the write.
  */
 export function createStoredPipelineDefinitionWriter(
   options: StoredPipelineDefinitionPortOptions = {},
@@ -176,20 +192,27 @@ export function createStoredPipelineDefinitionWriter(
           storedRevision(write.definitionId, write.expectedRevision, 'update');
           owner = options.owner?.(write.definitionId) ?? null;
         }
-        const saved = saveStoredPipeline({
-          ...(write.definitionId === null ? {} : { id: write.definitionId }),
-          name: write.name,
-          description: write.description,
-          icon: write.icon,
-          content: write.pipeline,
-          rawContent: write.text,
-        });
-        if (!saved.success || !saved.data)
-          throw storeFailure(saved.error, 'Failed to save the workflow');
+        const saved = writeStoredPipeline(
+          {
+            ...(write.definitionId === null ? {} : { id: write.definitionId }),
+            name: write.name,
+            description: write.description,
+            icon: write.icon,
+            content: write.pipeline,
+            rawContent: write.text,
+          },
+          write.definitionId === null
+            ? {}
+            : {
+                expectedRevision: write.expectedRevision,
+                requireExisting: true,
+              },
+        );
+        if (!saved.ok) throw refusalError(saved);
         // The save committed: answer from its entry and the bytes written,
         // so nothing after it can fail the request.
         return Promise.resolve({
-          ...storedEntry(saved.data, 'user', options, () => owner),
+          ...storedEntry(saved.value, 'user', options, () => owner),
           format: 'yaml',
           text: write.text,
         });
@@ -240,15 +263,12 @@ export function createStoredPipelineDefinitionWriter(
     },
     delete: (definitionId, expectedRevision): Promise<number> => {
       try {
-        const revision = storedRevision(
-          definitionId,
+        storedRevision(definitionId, expectedRevision, 'delete');
+        const deleted = removeStoredPipeline(definitionId, {
           expectedRevision,
-          'delete',
-        );
-        const deleted = deleteStoredPipeline(definitionId);
-        if (!deleted.success)
-          throw storeFailure(deleted.error, 'Failed to delete the workflow');
-        return Promise.resolve(revision);
+        });
+        if (!deleted.ok) throw refusalError(deleted);
+        return Promise.resolve(deleted.value.revision);
       } catch (error) {
         return Promise.reject(asError(error));
       }

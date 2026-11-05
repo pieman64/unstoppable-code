@@ -199,7 +199,9 @@ export interface PanelTabBarProps {
    * {@link renderTabTooltip}) with a card that opens after the pointer rests
    * on the tab, including its close button, hanging below it. Never asked for
    * the active tab, whose content is already on screen, or pinned tabs, which keep
-   * their own tooltip. The content mounts only while the card is open.
+   * their own tooltip. Other unpinned tabs use a shared label tooltip, so
+   * crossing the active tab participates in the same handoff. Preview cards
+   * stay anchored to their own tabs; the content mounts only while open.
    */
   renderTabHoverCard?: (tab: PanelTabModel) => ReactNode | null;
   /** Optional add-tab affordance; omitted, no `+` button renders. */
@@ -489,7 +491,7 @@ function PanelTabWithHoverCard({
       suppressed={card === null}
       dataTestId={`panel-tab-hover-card-${panelId}`}
       deferUntilInteraction
-      handoffMotion="slide"
+      handoffMotion="jump"
       elevation="menu"
       surfacePadding="compact"
       surfaceClassName="w-70"
@@ -1144,6 +1146,7 @@ function PanelTabBarComponent({
             <Tooltip
               placement="top"
               label={customTooltip}
+              suppressed={draggingPanelId !== null}
               allowShrink
               className="flex-auto"
             >
@@ -1169,9 +1172,15 @@ function PanelTabBarComponent({
     const tabIsPinned = tab.pinned === true;
     const icon = renderTabIcon?.(tab);
     const title = getTabTitle?.(tab) ?? tab.title;
-    // A non-null custom tooltip REPLACES the native `title` tooltip (never
-    // both, so tooltips can't double up); other tabs keep the plain string.
-    const customTooltip = renderTabTooltip?.(tab) ?? null;
+    // Preview-capable strips coordinate label tooltips too: a native title
+    // on the active tab cannot dismiss the previous tab's preview.
+    const customTooltip =
+      renderTabTooltip?.(tab) ??
+      (renderTabHoverCard && !tabIsPinned ? (
+        <span className="block max-w-80 break-words whitespace-normal">
+          {renderTabLabel?.(tab) ?? title}
+        </span>
+      ) : null);
     // A hover card previews a tab you cannot see, so the active tab and the
     // icon-only pinned tiles (which keep their own tooltip) never get one.
     const hoverCard =
@@ -1353,7 +1362,11 @@ function PanelTabBarComponent({
                   </span>
                 </span>
               ) : customTooltip !== null ? (
-                <Tooltip placement="top" label={customTooltip}>
+                <Tooltip
+                  placement="top"
+                  label={customTooltip}
+                  suppressed={draggingPanelId !== null}
+                >
                   <span className="canopy-panel-tab-title">
                     {renderTabLabel ? renderTabLabel(tab) : tab.title}
                   </span>

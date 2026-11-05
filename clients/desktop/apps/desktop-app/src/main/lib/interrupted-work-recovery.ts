@@ -1,3 +1,5 @@
+import { reconcileStoredPipelineIndex } from '@canopy/desktop-shared/pipelines/store';
+import { logMainProcessWarn } from './main-process-logging';
 import { join } from 'node:path';
 import { utilityProcess } from 'electron';
 import { getAppWorkspacesRootDir, getWorkspacesRootDir } from './paths';
@@ -60,6 +62,12 @@ let interruptedPipelineIds: string[] = [];
  * themselves. Each item is retryable.
  */
 export async function recoverInterruptedWorkAtStartup(): Promise<void> {
+  const reconciled = reconcileStoredPipelineIndex();
+  if (!reconciled.ok)
+    logMainProcessWarn(
+      '[pipelines] Pipeline index reconcile skipped',
+      reconciled.message,
+    );
   const runtime = createElectronExecutionRuntime();
   // The inspector is installed before recovery; this process's own start
   // identity resolves in the background, and runs that start first record

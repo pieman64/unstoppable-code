@@ -108,20 +108,6 @@ export const PENDING_UNIFICATIONS: readonly PendingUnification[] = [
     planned: 'A shared Slider with keyboard, disabled and value states',
   },
   {
-    id: 'cards',
-    status: 'waiting',
-    name: 'Cards and surfaces',
-    count:
-      'about 510 class strings that pair a large radius with a border, ring or shadow in 306 files · 121 local *Card components',
-    shared: [],
-    copies: [
-      `${DESKTOP}/settings/SettingsLayout.tsx`,
-      `${DESKTOP}/settings/OllamaTab.tsx`,
-    ],
-    planned: 'A shared Card, then a ratchet',
-    note: 'Needs a design decision first: docs/design/layout.md assumes a card primitive that does not exist.',
-  },
-  {
     id: 'code-blocks',
     status: 'waiting',
     name: 'Code blocks',
@@ -196,6 +182,13 @@ export const RATCHET_BACKLOG: readonly RatchetBacklog[] = [
     remaining: 10,
     breakdown: '10 <dl> elements',
     baseline: 'docs/design/legacy-facts.baseline.json',
+  },
+  {
+    family: 'Surfaces',
+    remaining: 2962,
+    breakdown:
+      '1026 radius, 987 background, 876 edge, 73 shadow on raw elements, across 596 files; Surface and Divider replace them',
+    baseline: 'docs/design/legacy-surfaces.baseline.json',
   },
   {
     family: 'Tables',

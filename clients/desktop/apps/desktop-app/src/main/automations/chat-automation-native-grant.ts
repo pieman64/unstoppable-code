@@ -28,22 +28,58 @@ import type {
   PipelineNativeGrantAuthority,
 } from '../pipelines/pipeline-local-metadata-store';
 
+/** `values` in a fixed order, so the same set always compares equal. */
+function sortedBy<T>(values: readonly T[], key: (value: T) => string): T[] {
+  return [...values].sort((left, right) => {
+    const a = key(left);
+    const b = key(right);
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
+}
+
 /**
  * Selections that choose something, normalized, with an empty optional list
  * the same as none: a plugin collection's stored selections always carry
- * them (CAN-5479). Else no selections.
+ * them (CAN-5479). Order doesn't count: a run's collection lists its
+ * defaults before its preferences, whatever order the chat chose them in.
+ * Else no selections.
  */
 function chosenSelections(
   selections: ChatTabPluginSelections | undefined,
 ): ChatTabPluginSelections | undefined {
   if (selections === undefined) return undefined;
-  const { mcpServerRefs, mcpHttpAuthPreferences, ...normalized } =
-    normalizePluginSelections(selections);
+  const {
+    collectionIds,
+    skillRefs,
+    pluginRefs,
+    mcpServerRefs,
+    mcpHttpAuthPreferences,
+    unresolvedCapabilities,
+    ...normalized
+  } = normalizePluginSelections(selections);
   const chosen: ChatTabPluginSelections = {
     ...normalized,
-    ...((mcpServerRefs?.length ?? 0) > 0 ? { mcpServerRefs } : {}),
+    collectionIds: sortedBy(collectionIds, (id) => id),
+    skillRefs: sortedBy(skillRefs, stableStringify),
+    pluginRefs: sortedBy(pluginRefs, stableStringify),
+    ...((mcpServerRefs?.length ?? 0) > 0
+      ? { mcpServerRefs: sortedBy(mcpServerRefs ?? [], stableStringify) }
+      : {}),
     ...((mcpHttpAuthPreferences?.length ?? 0) > 0
-      ? { mcpHttpAuthPreferences }
+      ? {
+          mcpHttpAuthPreferences: sortedBy(
+            mcpHttpAuthPreferences ?? [],
+            stableStringify,
+          ),
+        }
+      : {}),
+    ...(unresolvedCapabilities !== undefined
+      ? {
+          unresolvedCapabilities: sortedBy(
+            unresolvedCapabilities,
+            stableStringify,
+          ),
+        }
       : {}),
   };
   return chosen.collectionIds.length > 0 ||

@@ -12,6 +12,8 @@ export interface SuggestionCardAction {
   disabled?: boolean;
   /** Sets `aria-busy` while this action's answer is being saved. */
   busy?: boolean;
+  /** Accessible progress copy; keep label as the resting sizing content. */
+  busyLabel?: ReactNode;
   testId?: string;
 }
 
@@ -76,7 +78,8 @@ export function SuggestionCard({
             <NoticeButton
               variant="secondary"
               disabled={secondaryAction.disabled}
-              aria-busy={secondaryAction.busy}
+              busy={secondaryAction.busy}
+              busyLabel={secondaryAction.busyLabel}
               onClick={secondaryAction.onClick}
               data-testid={secondaryAction.testId}
             >
@@ -85,7 +88,8 @@ export function SuggestionCard({
             <NoticeButton
               variant="primary"
               disabled={primaryAction.disabled}
-              aria-busy={primaryAction.busy}
+              busy={primaryAction.busy}
+              busyLabel={primaryAction.busyLabel}
               onClick={primaryAction.onClick}
               data-testid={primaryAction.testId}
             >

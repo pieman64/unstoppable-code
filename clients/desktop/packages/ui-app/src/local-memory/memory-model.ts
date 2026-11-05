@@ -17,7 +17,7 @@ export type MemoryKind = LocalMemoryFile['kind'];
 
 /** A scope's index, a topic or a recent note. */
 export interface MemoryEntry {
-  /** Unique across scopes: the scope index and the file key. */
+  /** Unique across scopes: the scope's key (or position) and the file key. */
   readonly id: string;
   readonly scopeIndex: number;
   readonly file: LocalMemoryFile;
@@ -73,15 +73,25 @@ function fileName(fileKey: string): string {
   return fileKey.replace(/^(topics|inbox)\//, '');
 }
 
-/** Every scope's index, topics and recent notes, newest first. */
+/** A scope's lasting key, so its rows keep their ids as scopes change. */
+export function memoryScopeKey(scope: LocalMemoryScope): string {
+  return scope.scope === 'user' ? 'user' : `workspace:${scope.workspaceId}`;
+}
+
+/**
+ * Every scope's index, topics and recent notes, newest first. Ids start with
+ * the scope's key from `scopeKeys` when given, else its position.
+ */
 export function memoryEntries(
   lists: readonly (readonly LocalMemoryFile[])[],
+  scopeKeys?: readonly string[],
 ): MemoryEntry[] {
   const entries: MemoryEntry[] = [];
   lists.forEach((files, scopeIndex) => {
+    const scopeKey = scopeKeys?.[scopeIndex] ?? String(scopeIndex);
     for (const file of files) {
       entries.push({
-        id: `${scopeIndex}:${file.fileKey}`,
+        id: `${scopeKey}:${file.fileKey}`,
         scopeIndex,
         file,
         title: file.title ?? fileName(file.fileKey),

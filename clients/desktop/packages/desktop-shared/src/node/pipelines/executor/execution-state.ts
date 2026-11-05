@@ -19,7 +19,7 @@ import { isModelHarness } from '../../../model-harnesses';
 import { brandEnvName } from '../../../brand/env';
 import { redactSecrets } from '../../../lib/redaction';
 import { validateId } from '../../lib/validation';
-import { writeFileAtomically } from '../../lib/atomic-file';
+import { syncDirectory, writeFileAtomically } from '../../lib/atomic-file';
 import type {
   AgentRecoveryCheckpoint,
   ExecutionRerunContext,
@@ -323,6 +323,71 @@ export async function deleteExecutionState(
     await pruneDamagedCopies(statePath, 0);
     forgetInstalledState(statePath);
   });
+}
+
+export type RestoredExecutionStateInstall = 'installed' | 'already_present';
+
+export async function installRestoredExecutionState(
+  executionId: string,
+  executionsDir: string,
+  document: Readonly<Record<string, unknown>>,
+): Promise<RestoredExecutionStateInstall> {
+  validateId(executionId, 'executionId');
+  if (document.id !== executionId) {
+    throw new Error(
+      `Archived execution state identity mismatch: expected "${executionId}"`,
+    );
+  }
+  return withExecutionWriteLock<RestoredExecutionStateInstall>(
+    executionId,
+    executionsDir,
+    async () => {
+      const installed = await readInstalledExecutionState(
+        executionId,
+        executionsDir,
+      );
+      const statePath = getExecutionStatePath(executionId, executionsDir);
+      switch (installed.kind) {
+        case 'ok':
+        case 'newer': {
+          const handle = await fs.open(statePath, 'r+');
+          try {
+            await handle.sync();
+          } finally {
+            await handle.close();
+          }
+          await syncDirectory(executionsDir);
+          return 'already_present';
+        }
+        case 'unreadable':
+          throw new ExecutionStateWriteRefusedError(executionId, 'unreadable');
+        case 'damaged':
+          try {
+            await fs.copyFile(
+              statePath,
+              damagedCopyPath(statePath),
+              fsConstants.COPYFILE_EXCL,
+            );
+          } catch {
+            throw new ExecutionStateWriteRefusedError(
+              executionId,
+              'damaged_copy_failed',
+            );
+          }
+          await pruneDamagedCopies(statePath);
+          break;
+        case 'absent':
+          break;
+      }
+      await writeFileAtomically(statePath, JSON.stringify(document, null, 2), {
+        encoding: 'utf8',
+        durable: true,
+        ...(installed.kind === 'absent' ? { overwrite: false } : {}),
+      });
+      forgetInstalledState(statePath);
+      return 'installed';
+    },
+  );
 }
 
 /**
@@ -1486,7 +1551,19 @@ function prepareExecutionStateForInstall(
 }
 
 export interface SaveExecutionStateOptions {
-  readonly cancellation?: 'clear_before';
+  readonly durable?: boolean;
+  readonly cancellation?: 'clear_before' | 'clear_after';
+}
+
+async function unlinkExecutionCancellation(
+  executionId: string,
+  executionsDir: string,
+): Promise<void> {
+  try {
+    await fs.unlink(getExecutionCancellationPath(executionId, executionsDir));
+  } catch (error) {
+    if (fileErrorCode(error) !== 'ENOENT') throw error;
+  }
 }
 
 async function installUnderLock(
@@ -1497,25 +1574,22 @@ async function installUnderLock(
   const targetPath = getExecutionStatePath(persistedState.id, executionsDir);
   await admitExecutionWrite(persistedState.id, executionsDir);
   if (options?.cancellation === 'clear_before') {
-    try {
-      await fs.unlink(
-        getExecutionCancellationPath(persistedState.id, executionsDir),
-      );
-    } catch (error) {
-      if (fileErrorCode(error) !== 'ENOENT') throw error;
-    }
+    await unlinkExecutionCancellation(persistedState.id, executionsDir);
   }
   try {
     await writeFileAtomically(
       targetPath,
       JSON.stringify(persistedState, null, 2),
-      { encoding: 'utf8', durable: false },
+      { encoding: 'utf8', durable: options?.durable ?? false },
     );
     rememberInstalledState(
       targetPath,
       await readStateFileSignature(targetPath),
       persistedState,
     );
+    if (options?.cancellation === 'clear_after') {
+      await unlinkExecutionCancellation(persistedState.id, executionsDir);
+    }
   } catch (error) {
     forgetInstalledState(targetPath);
     throw error;
@@ -2067,10 +2141,10 @@ export async function requestExecutionCancellation(
   executionsDir: string,
 ): Promise<void> {
   await fs.mkdir(executionsDir, { recursive: true });
-  await fs.writeFile(
+  await writeFileAtomically(
     getExecutionCancellationPath(executionId, executionsDir),
     'cancel',
-    'utf8',
+    { encoding: 'utf8', durable: true },
   );
 }
 
@@ -2078,9 +2152,10 @@ export async function clearExecutionCancellation(
   executionId: string,
   executionsDir: string,
 ): Promise<void> {
-  await fs
-    .unlink(getExecutionCancellationPath(executionId, executionsDir))
-    .catch(() => {});
+  await withExecutionWriteLock(executionId, executionsDir, async () => {
+    await admitExecutionWrite(executionId, executionsDir);
+    await unlinkExecutionCancellation(executionId, executionsDir);
+  });
 }
 
 export async function isExecutionCancellationRequested(

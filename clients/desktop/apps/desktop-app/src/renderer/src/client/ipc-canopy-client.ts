@@ -158,6 +158,7 @@ export function createDesktopCapabilities(
   hostedSettings: Pick<CanopyCapabilities, 'accountOrganizationSettings'> = {},
 ): CanopyCapabilities {
   return {
+    workspaceRecovery: true,
     sharedMultiRepo: true,
     githubConnection: true,
     localExecution: true,

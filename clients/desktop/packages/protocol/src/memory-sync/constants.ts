@@ -53,6 +53,7 @@ export const MEMORY_SYNC_ROUTES = {
 const DOCUMENT_MAX_BYTES = 512 * 1024;
 const FILE_NAME_MAX_BYTES = 200;
 const TOPIC_DOCUMENTS_PER_SCOPE_MAX = 500;
+const PENDING_NOTES_PER_SCOPE_MAX = 5_000;
 const DOCUMENT_PATH_MAX_BYTES = 'topics/'.length + FILE_NAME_MAX_BYTES;
 // Every topic and MEMORY.md deleted and put again, so a restore across
 // renames always fits one revision.
@@ -72,7 +73,7 @@ export const MEMORY_SYNC_LIMITS = {
   memoryIndexMaxBytes: 25 * 1024,
   fileNameMaxBytes: FILE_NAME_MAX_BYTES,
   topicDocumentsPerScopeMax: TOPIC_DOCUMENTS_PER_SCOPE_MAX,
-  pendingNotesPerScopeMax: 5_000,
+  pendingNotesPerScopeMax: PENDING_NOTES_PER_SCOPE_MAX,
   pushOpsMax: 100,
   pushRequestMaxBytes: 4 * 1024 * 1024,
   commitChangesMax: COMMIT_CHANGES_MAX,
@@ -128,4 +129,8 @@ export const MEMORY_SYNC_QUOTAS = {
   scopesPerAccount: 1_000,
   devicesPerAccount: 50,
   scopeStoredBytesMax: 64 * 1024 * 1024,
+  // A usage counter names a current document or a pending note, so a scope
+  // never needs more keys than every topic, MEMORY.md and its pending notes.
+  usageKeysPerScopeMax:
+    TOPIC_DOCUMENTS_PER_SCOPE_MAX + 1 + PENDING_NOTES_PER_SCOPE_MAX,
 } as const;

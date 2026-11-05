@@ -1,8 +1,7 @@
-// Lane setup for the Files dry run (CAN-5544). Inert unless the suite's
-// resolved Files pin is `on`; Cut A then only deletes the pin, with no
-// workflow edit. When on, every launch's host must find a launchable daemon
-// at the product lookup paths, so this installs (or finds) one and proves it
-// with the packaged health/stop smoke once per Playwright invocation.
+// Every Electron lane needs a launchable daemon for always-on Files reads.
+// Install (or verify) it at the product lookup paths and run the packaged
+// health/stop smoke once per Playwright invocation. Dry-run mode adds evidence
+// collection, not a routing switch (CAN-5561).
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
@@ -31,8 +30,6 @@ import {
 import {
   DAEMON_DRY_RUN_DIRECTORY,
   DAEMON_DRY_RUN_ID_ENV,
-  DAEMON_FILES_FLAG,
-  resolveDefaultE2eClientFeatureFlags,
 } from './launchCanopy.mjs';
 
 const repoRoot = path.resolve(import.meta.dirname, '../../../..');
@@ -120,8 +117,7 @@ const gitHead = (cwd) =>
   execFileSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8' }).trim();
 
 /**
- * Makes the product lookup paths hold a launchable daemon when the Files pin
- * is `on`: the verified lane artifact when one is unpacked (shards), else a
+ * Makes the product lookup paths hold a launchable daemon for every lane: the verified lane artifact when one is unpacked (shards), else a
  * local `pnpm run dev:core-daemon` output that matches its sources. A stale
  * local build is always refused; with neither, CI refuses the lane and a
  * local run only warns.
@@ -141,9 +137,6 @@ export function prepareLaneDaemon({
   warn = (message) => console.warn(message),
   now = () => Date.now(),
 } = {}) {
-  if (resolveDefaultE2eClientFeatureFlags(env)[DAEMON_FILES_FLAG] !== 'on')
-    return { state: 'inert' };
-  // Resolved only here, so an inert run never loads the brand.
   brand ??= loadBrand(env.CANOPY_BRAND ?? 'canopy');
   const socket = preflightLaneSocketRoot({ platform, tmpdir });
   const targets = productDaemonTargets({ runtimeRoot, brand, platform, arch });
@@ -179,7 +172,7 @@ export function prepareLaneDaemon({
     const message = `Files dry run: lane has no launchable daemon. Neither a verified ${E2E_DAEMON_DIRECTORY} artifact nor a local build at ${targets.executable} (with its identity and node-pty) and ${targets.ownedChildNativePath} exists`;
     if (env.CI) throw new Error(message);
     warn(
-      `${message}; launches that read files will fail. Run pnpm run dev:core-daemon first.`,
+      `${message}; Files reads will fall back to the in-process reader. Run pnpm run dev:core-daemon first.`,
     );
     return { state: 'missing', socket };
   }

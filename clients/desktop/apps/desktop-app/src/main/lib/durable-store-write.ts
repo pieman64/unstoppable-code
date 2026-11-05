@@ -13,7 +13,7 @@ import { logMainProcessWarn } from './main-process-logging';
  */
 export async function writeStoreFileDurably(
   targetPath: string,
-  data: string,
+  data: string | Uint8Array,
   options: Omit<AtomicFileWriteOptions, 'durable'> = {},
 ): Promise<void> {
   try {

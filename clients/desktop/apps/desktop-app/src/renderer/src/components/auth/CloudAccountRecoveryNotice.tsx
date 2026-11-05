@@ -68,11 +68,12 @@ export function CloudAccountRecoveryNotice({
           <NoticeButton
             variant="secondary"
             disabled={resetting}
-            aria-busy={resetting || undefined}
+            busy={resetting}
+            busyLabel="Resetting…"
             onClick={(): void => setConfirmOpen(true)}
             data-testid="cloud-account-recovery-reset"
           >
-            {resetting ? 'Resetting…' : 'Reset saved sign-in'}
+            Reset saved sign-in
           </NoticeButton>
         }
       >

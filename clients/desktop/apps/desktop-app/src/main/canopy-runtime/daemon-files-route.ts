@@ -79,7 +79,7 @@ import type {
 
 /**
  * Routing of Files reads through the local core daemon (CAN-4305, CAN-5509),
- * selected by the authoritative `daemon-files-reads` Labs entry.
+ * always selected for eligible local Files requests.
  *
  * Only the Files IPC handlers mark a request as routable; every other caller
  * of the same operations keeps the direct desktop reader. The backend is
@@ -195,9 +195,6 @@ export interface DaemonFilesHostContext {
 }
 
 export interface DaemonFilesRouteOptions {
-  readonly isFlagEnabled: () => boolean;
-  /** Registers a flag-snapshot listener; returns its unsubscribe. */
-  readonly onFlagChanged: (listener: () => void) => () => void;
   readonly lifetime: ElectronDaemonCallerLifetime;
   /** Lazy: called only for a request already selected for the daemon. */
   readonly connections: () => DaemonFilesConnections;
@@ -254,9 +251,8 @@ export interface DaemonFilesSearchWalk {
   readonly backend: 'direct' | 'daemon';
   /**
    * The index coalescing lane, `null` for the lane retained direct callers
-   * share. A walk the flag decides gets its own, per flag generation and, for
-   * a daemon walk, per document, so no request waits on a walk that another
-   * document's reload or an earlier flip would end.
+   * share. A daemon walk gets its own lane per document, so a request never
+   * waits on a walk that another document's reload would end.
    */
   readonly lane: string | null;
 }
@@ -543,24 +539,10 @@ export function createDaemonFilesRoute(
       throw error;
     }
   };
-  let enabled = options.isFlagEnabled();
-  // Changes on every flip, both ways; a read that spans one is discarded.
-  let generation = 0;
-  let flagEpoch = new AbortController();
+  const enabled = true;
+  const generation = 0;
+  const routeLifetime = new AbortController();
   let disposed = false;
-  const unsubscribe = options.onFlagChanged(() => {
-    const next = options.isFlagEnabled();
-    if (next === enabled) return;
-    enabled = next;
-    generation += 1;
-    if (!next) {
-      // Off: routed reads in flight end now and their sessions close.
-      const previous = flagEpoch;
-      flagEpoch = new AbortController();
-      previous.abort();
-      options.lifetime.renewAll();
-    }
-  });
 
   let resolver:
     | { key: string; resolve: Promise<FilesystemScopeResolver> }
@@ -595,10 +577,10 @@ export function createDaemonFilesRoute(
   };
 
   /**
-   * Whether the flag decides this request's backend: the shared read-route
+   * Whether the route decides this request's backend: the shared read-route
    * guard (platform table, trusted caller for this exact sender, an eligible
    * scope, nothing foreign selected). Local lookups only, never daemon
-   * contact; `null` keeps the direct reader whatever the flag says.
+   * contact; `null` keeps the direct reader when ineligible.
    */
   const eligibility = (
     operation: DaemonFilesOperation,
@@ -639,52 +621,21 @@ export function createDaemonFilesRoute(
     caller: CanopyCallerDescriptor,
     request: DaemonFilesRouteRequest,
   ): DaemonPlan | null => {
-    if (!enabled || !options.isFlagEnabled()) return null;
     if (!selectable.has(operation)) return null;
     return eligibility(operation, scope, caller, request);
   };
 
-  /** Whether the flag picks this request's backend now. */
-  const routable =
-    (
-      operation: DaemonFilesOperation,
-      scope: CanopyWorkspaceScope,
-      caller: CanopyCallerDescriptor,
-      request: DaemonFilesRouteRequest,
-    ): (() => boolean) =>
-    () =>
-      selectable.has(operation) &&
-      eligibility(operation, scope, caller, request) !== null;
-  const NEVER_ROUTABLE = (): boolean => false;
-
-  /**
-   * The direct reader. A read that spans a flip (since `startedAt`, a whole
-   * walk for search) is discarded only where the flag picks the backend;
-   * excluded scopes, callers and host-base links, and reads production never
-   * selects, are not affected by it.
-   */
   const runDirect = async <Result>(
     operation: DaemonFilesOperation,
-    isRoutable: () => boolean,
     direct: () => Promise<Result>,
-    startedAt = generation,
     /** A fallback: the request already counted its `daemon` selection. */
     selected = false,
   ): Promise<Result> => {
     if (!selected) recordFilesRouteSelected(operation, 'direct');
-    const discardIfFlipped = (): void => {
-      if (generation === startedAt || !isRoutable()) return;
-      recordFilesRouteOutcome(operation, 'direct.discarded');
-      throw routeChangedError();
-    };
-    discardIfFlipped();
-    const result = await direct();
-    discardIfFlipped();
-    return result;
+    return direct();
   };
 
   interface SearchWalkPin {
-    readonly generation: number;
     /** `owner` is the requesting document at the start; its reload ends the walk. */
     readonly daemon: { plan: DaemonPlan; owner: AbortSignal } | null;
     /** Selected while latched: every page reads directly, counted as bypassed. */
@@ -707,7 +658,6 @@ export function createDaemonFilesRoute(
    */
   interface DaemonFallback<Result> {
     readonly direct: () => Promise<Result>;
-    readonly routable: () => boolean;
     readonly read: ObservedRead;
   }
   type DaemonAttempt<Canonical, Legacy> =
@@ -749,13 +699,10 @@ export function createDaemonFilesRoute(
       checks: ProjectionChecks,
     ) => Legacy | Promise<Legacy>,
     {
-      startedAt = generation,
       owner = options.lifetime.ownerFor(plan.sender),
       refreshOnConflict = true,
       fallback,
     }: {
-      /** The plan's generation; a flip since then fails before contact. */
-      readonly startedAt?: number;
       /** The plan's document; once it retires, the read fails before contact. */
       readonly owner?: AbortSignal;
       /** False for a cursor page: the daemon already consumed its cursor. */
@@ -763,9 +710,13 @@ export function createDaemonFilesRoute(
       readonly fallback?: DaemonFallback<Canonical>;
     } = {},
   ): Promise<DaemonRead<Canonical, Legacy>> => {
-    const signal = AbortSignal.any([context.signal, owner, flagEpoch.signal]);
+    const signal = AbortSignal.any([
+      context.signal,
+      owner,
+      routeLifetime.signal,
+    ]);
     const throwIfInvalidated = (): void => {
-      if (generation !== startedAt || disposed) throw routeChangedError();
+      if (disposed) throw routeChangedError();
       if (owner.aborted) throw documentClosedError();
     };
     // The current attempt's stage, so only a host, connect or connection
@@ -778,7 +729,7 @@ export function createDaemonFilesRoute(
       if (hostFailed) return 'host_unavailable';
       if (contacted === null) return daemonUnreachableReason(error);
       // Its own connection closed, and not because the request ended (its
-      // document, the flag and disposal were checked before this).
+      // document, route disposal were checked before this).
       return contacted.signal.aborted && !signal.aborted
         ? 'connection_lost'
         : null;
@@ -910,14 +861,9 @@ export function createDaemonFilesRoute(
       reachability.noteFallback(outcome.reason);
     }
     outcome.fallback.read.fellBack = true;
-    // The plan's generation: a flip during either backend discards the read.
-    const canonical = await runDirect(
-      operation,
-      outcome.fallback.routable,
-      outcome.fallback.direct,
-      startedAt,
-      true,
-    );
+    throwIfInvalidated();
+    const canonical = await runDirect(operation, outcome.fallback.direct, true);
+    throwIfInvalidated();
     return { served: false, canonical };
   };
 
@@ -934,13 +880,7 @@ export function createDaemonFilesRoute(
         plan ? 'daemon' : 'direct',
         request.sender.id,
         async (read) => {
-          const isRoutable = routable(
-            'roots',
-            params.scope,
-            context.caller,
-            request,
-          );
-          if (!plan) return runDirect('roots', isRoutable, run.direct);
+          if (!plan) return runDirect('roots', run.direct);
           recordFilesRouteSelected('roots', 'daemon');
           checkDirectReaderRequest('roots', params.scope);
           const served = await runDaemon<
@@ -957,7 +897,7 @@ export function createDaemonFilesRoute(
                 queryOptions,
               ),
             projectRoots,
-            { fallback: { direct: run.direct, routable: isRoutable, read } },
+            { fallback: { direct: run.direct, read } },
           );
           if (served.served) run.capture(served.legacy);
           return served.canonical;
@@ -976,13 +916,7 @@ export function createDaemonFilesRoute(
         plan ? 'daemon' : 'direct',
         request.sender.id,
         async (read) => {
-          const isRoutable = routable(
-            'directory',
-            params.scope,
-            context.caller,
-            request,
-          );
-          if (!plan) return runDirect('directory', isRoutable, run.direct);
+          if (!plan) return runDirect('directory', run.direct);
           recordFilesRouteSelected('directory', 'daemon');
           const relativePath = checkDirectReaderRequest(
             'directory',
@@ -1014,7 +948,7 @@ export function createDaemonFilesRoute(
                 entryNamePlatform,
                 checks,
               ),
-            { fallback: { direct: run.direct, routable: isRoutable, read } },
+            { fallback: { direct: run.direct, read } },
           );
           if (served.served) run.capture(served.legacy);
           return served.canonical;
@@ -1033,13 +967,7 @@ export function createDaemonFilesRoute(
         plan ? 'daemon' : 'direct',
         request.sender.id,
         async (read) => {
-          const isRoutable = routable(
-            'file',
-            params.scope,
-            context.caller,
-            request,
-          );
-          if (!plan) return runDirect('file', isRoutable, run.direct);
+          if (!plan) return runDirect('file', run.direct);
           recordFilesRouteSelected('file', 'daemon');
           checkDirectReaderRequest('file', params.scope);
           const served = await runDaemon<
@@ -1056,7 +984,7 @@ export function createDaemonFilesRoute(
                 queryOptions,
               ),
             (result, catalog) => projectFileRead(params, result, catalog),
-            { fallback: { direct: run.direct, routable: isRoutable, read } },
+            { fallback: { direct: run.direct, read } },
           );
           if (served.served) run.capture(served.legacy);
           return served.canonical;
@@ -1075,15 +1003,13 @@ export function createDaemonFilesRoute(
       const walk: DaemonFilesSearchWalk = daemon
         ? {
             backend: 'daemon',
-            lane: `daemon:${generation}:${documentLane(daemon.owner)}`,
+            lane: `daemon:${documentLane(daemon.owner)}`,
           }
         : {
             backend: 'direct',
-            lane: routable('search', scope, caller, request)()
-              ? `direct:${generation}`
-              : null,
+            lane: bypassed ? 'direct:unreachable' : null,
           };
-      searchWalks.set(walk, { generation, daemon, bypassed });
+      searchWalks.set(walk, { daemon, bypassed });
       return walk;
     },
     async search(
@@ -1104,23 +1030,9 @@ export function createDaemonFilesRoute(
             checkDirectReaderRequest('search', params.scope);
             recordFilesRouteOutcome('search', 'daemon.bypassed');
             read.fellBack = true;
-            return runDirect(
-              'search',
-              routable('search', params.scope, context.caller, request),
-              run.direct,
-              pin.generation,
-              true,
-            );
+            return runDirect('search', run.direct, true);
           }
-          if (!pin || !daemon)
-            return runDirect(
-              'search',
-              pin
-                ? routable('search', params.scope, context.caller, request)
-                : NEVER_ROUTABLE,
-              run.direct,
-              pin?.generation,
-            );
+          if (!pin || !daemon) return runDirect('search', run.direct);
           recordFilesRouteSelected('search', 'daemon');
           checkDirectReaderRequest('search', params.scope);
           const served = await runDaemon<
@@ -1145,7 +1057,6 @@ export function createDaemonFilesRoute(
                 entryNamePlatform,
               ),
             {
-              startedAt: pin.generation,
               owner: daemon.owner,
               refreshOnConflict: params.cursor === undefined,
             },
@@ -1169,10 +1080,7 @@ export function createDaemonFilesRoute(
         plan ? 'daemon' : 'direct',
         request.sender.id,
         async (read) => {
-          const isRoutable = run.hostBase
-            ? NEVER_ROUTABLE
-            : routable('link', params.scope, context.caller, request);
-          if (!plan) return runDirect('link', isRoutable, run.direct);
+          if (!plan) return runDirect('link', run.direct);
           recordFilesRouteSelected('link', 'daemon');
           checkDirectReaderRequest('link', params.scope);
           const served = await runDaemon<
@@ -1190,7 +1098,7 @@ export function createDaemonFilesRoute(
               ),
             (result, catalog, projectPath) =>
               projectLink(result, catalog, projectPath, entryNamePlatform),
-            { fallback: { direct: run.direct, routable: isRoutable, read } },
+            { fallback: { direct: run.direct, read } },
           );
           if (served.served) run.capture(served.legacy);
           return served.canonical;
@@ -1203,8 +1111,7 @@ export function createDaemonFilesRoute(
     dispose(): void {
       if (disposed) return;
       disposed = true;
-      unsubscribe();
-      flagEpoch.abort();
+      routeLifetime.abort();
     },
   };
 }

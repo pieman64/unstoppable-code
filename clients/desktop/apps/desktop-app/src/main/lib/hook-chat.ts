@@ -19,6 +19,7 @@ import {
   type ForceQueuedHookChatResponse,
   type FileReference,
   type ChatHookAction,
+  type HookChatTabStartedEvent,
   type PersistedChatMessage,
   type PersistedChatTab,
   type PreferencesData,
@@ -66,7 +67,6 @@ import {
   completePersistedChatTabTurn,
   emitChatDispatchFailure,
   removePersistedChatTab,
-  upsertPersistedChatTab,
 } from './chat-tab-dispatch-utils';
 import { getClaudeTerminalSessionService } from '../integration/claude-terminal-session-service';
 import { notifyCanonicalChatStarted } from '../services/active-chat-input';
@@ -74,11 +74,55 @@ import { resolveConfiguredPrompt } from './configured-prompt-resolution';
 import { buildSubmittedMessageText } from './chat-submitted-message';
 import { resolveWorktreeCwd } from './resolve-worktree';
 
-let generatedIdCounter = 0;
+import { validateId } from './validation';
+import { getHookChatClaims } from './hook-initiated-work';
+import { logMainProcessInfo, logMainProcessWarn } from './main-process-logging';
+import { registerHookChatPlaceholderReplayer } from './hook-chat-placeholders';
+
+export interface HookChatLaunchIdentity {
+  operationId: string;
+  actionIndex: number;
+}
+export interface HookChatIds {
+  chatId: string;
+  userMessageId: string;
+  queueId: string;
+  hookInfoMessageId: string;
+  unavailablePluginsMessageId: string;
+}
+export function hookChatIds(identity: HookChatLaunchIdentity): HookChatIds {
+  if (!Number.isInteger(identity.actionIndex) || identity.actionIndex < 0)
+    throw new Error('Invalid hook chat action index.');
+  const suffix = `${identity.operationId}-${identity.actionIndex}`;
+  const ids = {
+    chatId: `chat-hook-${suffix}`,
+    userMessageId: `msg-hook-${suffix}`,
+    queueId: `queued-hook-${suffix}`,
+    hookInfoMessageId: `msg-hook-${suffix}-info`,
+    unavailablePluginsMessageId: `msg-hook-${suffix}-unavailable`,
+  };
+  validateId(ids.chatId, 'chatId');
+  validateId(ids.userMessageId, 'userMessageId');
+  return ids;
+}
+export type HookChatLaunchResult =
+  | { status: 'started'; chatId: string }
+  | { status: 'queued'; chatId: string; queueId: string }
+  | { status: 'already_started'; chatId: string }
+  | { status: 'removed'; chatId: string };
+
+type HookChatStartOutcome =
+  | 'started'
+  | 'already_started'
+  | 'removed'
+  | 'cancelled';
+const startingHookChatIds = new Set<string>();
 const hookChatStartInProgressTargetKeys = new Set<string>();
 const QUEUED_PROMPT_PREVIEW_MAX_LENGTH = 400;
 
 interface PreparedHookChatLaunch {
+  identity: HookChatLaunchIdentity;
+  ids: HookChatIds;
   projectId: string;
   worktreeId: string;
   prompt: string;
@@ -138,10 +182,11 @@ interface QueuedHookChatEntry {
   startExposed: boolean;
   latestModelUpdateSequence: number;
   pendingModelUpdateCount: number;
-  startCompletion?: Promise<void>;
+  startCompletion?: Promise<HookChatStartOutcome>;
 }
 
 const queuedHookChats: QueuedHookChatEntry[] = [];
+const cancelledHookChatIds = new Set<string>();
 const startingQueuedHookChats = new Map<string, QueuedHookChatEntry>();
 
 function isQueuedHookChatCancelled(
@@ -150,9 +195,8 @@ function isQueuedHookChatCancelled(
   return entry?.cancelled === true;
 }
 
-function nextGeneratedId(prefix: string): string {
-  generatedIdCounter += 1;
-  return `${prefix}-hook-${Date.now()}-${generatedIdCounter}`;
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function buildInitialTitle(prompt: string): string {
@@ -230,6 +274,7 @@ async function resolveHookChatPluginSelections(
 }
 
 function buildInitialMessages(
+  ids: HookChatIds,
   prompt: string,
   userMessageId: string,
   triggerName: string,
@@ -246,7 +291,7 @@ function buildInitialMessages(
         : undefined;
   return [
     {
-      id: nextGeneratedId('msg'),
+      id: ids.hookInfoMessageId,
       role: 'system',
       blocks: [{ type: 'hook_info', triggerName, timestamp: triggeredAt }],
       timestamp: triggeredAt,
@@ -254,7 +299,7 @@ function buildInitialMessages(
     ...(unavailableText
       ? [
           {
-            id: nextGeneratedId('msg'),
+            id: ids.unavailablePluginsMessageId,
             role: 'system' as const,
             blocks: [{ type: 'text' as const, text: unavailableText }],
             timestamp,
@@ -277,6 +322,7 @@ function buildInitialMessages(
 }
 
 function buildHookChatTab(args: {
+  ids: HookChatIds;
   projectId: string;
   chatId: string;
   prompt: string;
@@ -307,6 +353,7 @@ function buildHookChatTab(args: {
     id: args.chatId,
     title: buildInitialTitle(args.prompt),
     messages: buildInitialMessages(
+      args.ids,
       args.prompt,
       args.userMessageId,
       args.triggerName,
@@ -431,15 +478,6 @@ function readRetainedHookCodexSpeed(
   return speed === undefined ? {} : { retainedCodexSpeed: speed };
 }
 
-async function persistHookChatTab(args: {
-  projectId: string;
-  worktreeId: string;
-  tab: PersistedChatTab;
-  activateTab: boolean;
-}): Promise<void> {
-  await upsertPersistedChatTab(args);
-}
-
 async function rollbackHookChatTab(args: {
   projectId: string;
   worktreeId: string;
@@ -460,6 +498,7 @@ async function markHookChatDispatchFailed(args: {
 }
 
 async function prepareHookChatLaunch(args: {
+  identity: HookChatLaunchIdentity;
   projectId: string;
   worktreeId: string;
   action: ChatHookAction;
@@ -544,8 +583,8 @@ async function prepareHookChatLaunch(args: {
     prefs.providerModelConfigDefaults,
   );
   const thinkingLevel = modelConfig.thinkingLevel;
-  const chatId = nextGeneratedId('chat');
-  const userMessageId = nextGeneratedId('msg');
+  const ids = hookChatIds(args.identity);
+  const { chatId, userMessageId } = ids;
   const { selections: pluginSelections, missingDisplays } =
     await resolveHookChatPluginSelections(
       executionHarness,
@@ -609,6 +648,8 @@ async function prepareHookChatLaunch(args: {
     missingPluginDisplays: missingDisplays,
     chatId,
     userMessageId,
+    identity: args.identity,
+    ids,
     ...(interfaceMode ? { interfaceMode } : {}),
     ...(args.selectedRepoId ? { selectedRepoId: args.selectedRepoId } : {}),
     ...(args.action.autoArchive === true ? { autoArchive: true } : {}),
@@ -621,9 +662,27 @@ async function startPreparedHookChatWithScopeLease(
     activateTab: boolean;
     queuedEntry?: QueuedHookChatEntry;
   },
-): Promise<void> {
+): Promise<HookChatStartOutcome> {
+  const scope = {
+    projectId: prepared.projectId,
+    worktreeId: prepared.worktreeId,
+  };
+  const state = getChatStateService();
+  const claims = getHookChatClaims();
+  const claimIds = {
+    chatId: prepared.chatId,
+    userMessageId: prepared.userMessageId,
+  };
+  const recordClaim = (write: Promise<void>): Promise<void> =>
+    write.catch((error: unknown) =>
+      logMainProcessWarn(
+        '[hook-chat] Could not record the hook chat start claim.',
+        error,
+      ),
+    );
   const newChatStartedAt = new Date().toISOString();
   const tab = buildHookChatTab({
+    ids: prepared.ids,
     projectId: prepared.projectId,
     chatId: prepared.chatId,
     prompt: prepared.prompt,
@@ -652,7 +711,8 @@ async function startPreparedHookChatWithScopeLease(
     ...(prepared.autoArchive === true ? { autoArchive: true } : {}),
   });
 
-  if (isQueuedHookChatCancelled(options.queuedEntry)) return;
+  if (isQueuedHookChatCancelled(options.queuedEntry)) return 'cancelled';
+  let outcome: HookChatStartOutcome = 'started';
 
   // Ordinary admission precedes the prompt's first effect (contracts §6).
   await runAdmittedDirectDispatch(
@@ -663,22 +723,48 @@ async function startPreparedHookChatWithScopeLease(
     },
     prepared.userMessageId,
     async (authorization): Promise<boolean> => {
-      await persistHookChatTab({
-        projectId: prepared.projectId,
-        worktreeId: prepared.worktreeId,
-        tab,
-        activateTab: options.activateTab,
-      });
-
-      if (isQueuedHookChatCancelled(options.queuedEntry)) {
-        await rollbackHookChatTab({
-          projectId: prepared.projectId,
+      const claim = await claims.claim({
+        runOperationId: prepared.identity.operationId,
+        ...claimIds,
+        scope: {
+          workspaceId: prepared.projectId,
           worktreeId: prepared.worktreeId,
-          chatId: prepared.chatId,
-        });
+        },
+      });
+      if (claim.status === 'already_claimed') {
+        outcome = 'already_started';
         return false;
       }
-      // No await may appear between exposing the real tab and marking this flag:
+      const claimId = claim.claimOperationId;
+      let created;
+      try {
+        created = await state.createHookChat(scope, tab);
+      } catch (error) {
+        await recordClaim(claims.recordFailed(claimId, errorMessage(error)));
+        throw error;
+      }
+      if (created === 'removed') {
+        await recordClaim(
+          claims.recordNotAccepted(claimId, claimIds, 'removed'),
+        );
+        outcome = 'removed';
+        return false;
+      }
+
+      if (isQueuedHookChatCancelled(options.queuedEntry)) {
+        if (created === 'created')
+          await rollbackHookChatTab({
+            projectId: prepared.projectId,
+            worktreeId: prepared.worktreeId,
+            chatId: prepared.chatId,
+          });
+        await recordClaim(
+          claims.recordNotAccepted(claimId, claimIds, 'cancelled'),
+        );
+        outcome = 'cancelled';
+        return false;
+      }
+      // No await may appear between exposing the canonical chat and marking this flag:
       // cancelQueuedHookChat uses it as the atomic boundary between "still safe to
       // cancel the queued launch" and "the normal active-chat lifecycle owns it".
       if (options.queuedEntry) options.queuedEntry.startExposed = true;
@@ -694,23 +780,19 @@ async function startPreparedHookChatWithScopeLease(
           activateTab: options.activateTab,
         },
       );
-      if (!startedDelivered) {
-        await rollbackHookChatTab({
-          projectId: prepared.projectId,
-          worktreeId: prepared.worktreeId,
-          chatId: prepared.chatId,
-        });
-        throw new Error(
-          'Hook chat requires an active renderer window before it can start.',
+      if (!startedDelivered)
+        logMainProcessInfo(
+          `[hook-chat] No window received hook chat ${prepared.chatId}; it runs in the background.`,
         );
-      }
 
-      await notifyCanonicalChatStarted(
-        prepared,
-        prepared.userMessageId,
-        newChatStartedAt,
-      ).catch(() => undefined);
+      if (created === 'created')
+        await notifyCanonicalChatStarted(
+          prepared,
+          prepared.userMessageId,
+          newChatStartedAt,
+        ).catch(() => undefined);
 
+      let accepted = false;
       try {
         if (
           prepared.providerType === 'claude' &&
@@ -742,10 +824,14 @@ async function startPreparedHookChatWithScopeLease(
               executionContext: prepared.executionContext,
             },
           );
+          await recordClaim(claims.recordAccepted(claimId, claimIds));
           return false;
         }
 
         await dispatchWorktreeChatTurn({
+          onTurnAccepted: () => {
+            accepted = true;
+          },
           ...(authorization ? { authorization } : {}),
           projectId: prepared.projectId,
           worktreeId: prepared.worktreeId,
@@ -781,14 +867,23 @@ async function startPreparedHookChatWithScopeLease(
               event,
             }),
         });
+        await recordClaim(
+          accepted
+            ? claims.recordAccepted(claimId, claimIds)
+            : claims.recordNotAccepted(claimId, claimIds, 'returned'),
+        );
       } catch (error) {
-        const errorMessage =
-          error instanceof Error ? error.message : String(error);
+        const message = errorMessage(error);
+        await recordClaim(
+          accepted
+            ? claims.recordAccepted(claimId, claimIds)
+            : claims.recordFailed(claimId, message),
+        );
         await markHookChatDispatchFailed({
           projectId: prepared.projectId,
           worktreeId: prepared.worktreeId,
           chatId: prepared.chatId,
-          errorMessage,
+          errorMessage: message,
           getWindow: prepared.getWindow,
         });
         throw error;
@@ -796,6 +891,7 @@ async function startPreparedHookChatWithScopeLease(
       return true;
     },
   );
+  return outcome;
 }
 
 async function startPreparedHookChat(
@@ -804,7 +900,7 @@ async function startPreparedHookChat(
     activateTab: boolean;
     queuedEntry?: QueuedHookChatEntry;
   },
-): Promise<void> {
+): Promise<HookChatStartOutcome> {
   return getChatStateService().runWithScopeActivity(
     {
       projectId: prepared.projectId,
@@ -814,34 +910,39 @@ async function startPreparedHookChat(
   );
 }
 
-function queuePreparedHookChat(prepared: PreparedHookChatLaunch): void {
-  const queueId = nextGeneratedId('queued');
+function queuedPlaceholderEvent(
+  prepared: PreparedHookChatLaunch,
+  queueId: string,
+): HookChatTabStartedEvent {
+  return {
+    projectId: prepared.projectId,
+    worktreeId: prepared.worktreeId,
+    chatId: prepared.chatId,
+    tab: buildQueuedHookChatTab(prepared),
+    activateTab: false,
+    queuedMessage: {
+      queueId,
+      text: buildQueuedPromptPreview(prepared.prompt),
+      reason: 'Waiting for active chat sessions to finish.',
+      hookInfo: {
+        triggerName: prepared.triggerName,
+        timestamp: prepared.triggeredAt,
+      },
+    },
+  };
+}
+
+function queuePreparedHookChat(prepared: PreparedHookChatLaunch): string {
+  const queueId = prepared.ids.queueId;
   const startedDelivered = sendToWindow(
     prepared.getWindow(),
     IPC_CHANNELS.chatHookTabStarted,
-    {
-      projectId: prepared.projectId,
-      worktreeId: prepared.worktreeId,
-      chatId: prepared.chatId,
-      tab: buildQueuedHookChatTab(prepared),
-      activateTab: false,
-      queuedMessage: {
-        queueId,
-        text: buildQueuedPromptPreview(prepared.prompt),
-        reason: 'Waiting for active chat sessions to finish.',
-        hookInfo: {
-          triggerName: prepared.triggerName,
-          timestamp: prepared.triggeredAt,
-        },
-      },
-    },
+    queuedPlaceholderEvent(prepared, queueId),
   );
-  if (!startedDelivered) {
-    throw new Error(
-      'Hook chat requires an active renderer window before it can start.',
+  if (!startedDelivered)
+    logMainProcessInfo(
+      `[hook-chat] No window received hook chat ${prepared.chatId}; it is queued in the background.`,
     );
-  }
-
   queuedHookChats.push({
     queueId,
     prepared,
@@ -851,6 +952,7 @@ function queuePreparedHookChat(prepared: PreparedHookChatLaunch): void {
     pendingModelUpdateCount: 0,
   });
   scheduleDrain();
+  return queueId;
 }
 
 function scheduleDrain(): void {
@@ -924,6 +1026,19 @@ function scheduleDrain(): void {
 
 subscribeChatSessionActivity(scheduleDrain);
 
+function replayQueuedHookChatPlaceholders(window: BrowserWindow | null): void {
+  for (const entry of queuedHookChats) {
+    if (entry.cancelled) continue;
+    const replayed = sendToWindow(
+      window,
+      IPC_CHANNELS.chatHookTabStarted,
+      queuedPlaceholderEvent(entry.prepared, entry.queueId),
+    );
+    if (!replayed) return;
+  }
+}
+registerHookChatPlaceholderReplayer(replayQueuedHookChatPlaceholders);
+
 export async function cancelQueuedHookChat(
   queueId: string,
 ): Promise<CancelQueuedHookChatResponse> {
@@ -961,6 +1076,11 @@ export async function cancelQueuedHookChat(
   }
 
   entry.cancelled = true;
+  cancelledHookChatIds.add(entry.prepared.chatId);
+  if (cancelledHookChatIds.size > 1_000) {
+    const oldest = cancelledHookChatIds.values().next().value;
+    if (oldest !== undefined) cancelledHookChatIds.delete(oldest);
+  }
   queuedHookChats.splice(entryIndex, 1);
   scheduleDrain();
   return { cancelled: true };
@@ -1199,6 +1319,7 @@ export function updateQueuedHookChatPluginSelections(args: {
 }
 
 type LaunchHookChatArgs = {
+  identity: HookChatLaunchIdentity;
   projectId: string;
   worktreeId: string;
   action: ChatHookAction;
@@ -1215,37 +1336,86 @@ type LaunchHookChatArgs = {
   selectedRepoId?: string;
 };
 
+function toLaunchResult(
+  outcome: HookChatStartOutcome,
+  chatId: string,
+): HookChatLaunchResult {
+  return { status: outcome === 'cancelled' ? 'removed' : outcome, chatId };
+}
+
+function inFlightHookChatLaunch(
+  chatId: string,
+): HookChatLaunchResult | undefined {
+  if (cancelledHookChatIds.has(chatId)) return { status: 'removed', chatId };
+  const queued = queuedHookChats.find(
+    (entry) => !entry.cancelled && entry.prepared.chatId === chatId,
+  );
+  if (queued)
+    return { status: 'queued', chatId: chatId, queueId: queued.queueId };
+  if (
+    startingHookChatIds.has(chatId) ||
+    Array.from(startingQueuedHookChats.values()).some(
+      (entry) => entry.prepared.chatId === chatId,
+    )
+  )
+    return { status: 'already_started', chatId: chatId };
+  return undefined;
+}
+
 async function launchHookChatWithScopeLease(
   args: LaunchHookChatArgs,
-): Promise<void> {
+): Promise<HookChatLaunchResult> {
+  const ids = hookChatIds(args.identity);
+  const inFlight = inFlightHookChatLaunch(ids.chatId);
+  if (inFlight) return inFlight;
   const prepared = await prepareHookChatLaunch(args);
-
-  // Hook chats open in the background: the user stays on the tab they are
-  // using, and a worktree they come back to reopens on the tab they left.
+  const recorded = await getHookChatClaims().lookup({
+    runOperationId: args.identity.operationId,
+    chatId: ids.chatId,
+    userMessageId: ids.userMessageId,
+    scope: { workspaceId: args.projectId, worktreeId: args.worktreeId },
+  });
+  const preparedInFlight = inFlightHookChatLaunch(ids.chatId);
+  if (preparedInFlight) return preparedInFlight;
+  if (recorded) return { status: 'already_started', chatId: ids.chatId };
   if (args.action.allowChatConcurrency === true) {
-    await startPreparedHookChat(prepared, { activateTab: false });
-    return;
+    startingHookChatIds.add(ids.chatId);
+    try {
+      return toLaunchResult(
+        await startPreparedHookChat(prepared, { activateTab: false }),
+        ids.chatId,
+      );
+    } finally {
+      startingHookChatIds.delete(ids.chatId);
+    }
   }
-
   if (
     isHookChatStartInProgressForTarget(prepared) ||
     hasActiveChatTurnsForWorktree(prepared.projectId, prepared.worktreeId) ||
     hasQueuedHookChatForTarget(prepared)
-  ) {
-    queuePreparedHookChat(prepared);
-    return;
-  }
-
+  )
+    return {
+      status: 'queued',
+      chatId: ids.chatId,
+      queueId: queuePreparedHookChat(prepared),
+    };
   hookChatStartInProgressTargetKeys.add(getHookChatTargetKey(prepared));
+  startingHookChatIds.add(ids.chatId);
   try {
-    await startPreparedHookChat(prepared, { activateTab: false });
+    return toLaunchResult(
+      await startPreparedHookChat(prepared, { activateTab: false }),
+      ids.chatId,
+    );
   } finally {
+    startingHookChatIds.delete(ids.chatId);
     hookChatStartInProgressTargetKeys.delete(getHookChatTargetKey(prepared));
     scheduleDrain();
   }
 }
 
-export async function launchHookChat(args: LaunchHookChatArgs): Promise<void> {
+export async function launchHookChat(
+  args: LaunchHookChatArgs,
+): Promise<HookChatLaunchResult> {
   return getChatStateService().runWithScopeActivity(
     { projectId: args.projectId, worktreeId: args.worktreeId },
     () => launchHookChatWithScopeLease(args),

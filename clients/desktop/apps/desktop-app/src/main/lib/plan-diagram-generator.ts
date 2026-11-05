@@ -1,3 +1,4 @@
+import { runHelperThroughWorker } from '../helper-runs/helper-runs';
 import {
   isDataModelDiffGenerationResult,
   isLogicDiffDiagram,
@@ -9,10 +10,7 @@ import {
   type ParsedPlanGraph,
   type ThinkingLevel,
 } from '@canopy/desktop-shared/types';
-import {
-  runClaudeStructuredHelperQuery,
-  runCodexStructuredHelperQuery,
-} from '@canopy/desktop-shared/lib/structured-helper-query';
+import { runCodexStructuredHelperQuery } from '@canopy/desktop-shared/lib/structured-helper-query';
 import {
   LOGIC_DIFF_DIAGRAM_JSON_SCHEMA,
   PARSED_PLAN_GRAPH_JSON_SCHEMA,
@@ -26,7 +24,10 @@ import type { HelperTranscriptObserver } from '@canopy/desktop-shared/lib/helper
 import type { HelperUsage } from '../agents/utils';
 import { resolveHelperInvocation } from '../ollama/helper-invocation';
 import { readLocalMemoryEnabledPreference } from './preferences-store';
-import { codexStructuredHelperRunner } from '../integration/structured-helper-dispatch';
+import {
+  codexStructuredHelperRunner,
+  runDesktopClaudeStructuredHelperQuery,
+} from '../integration/structured-helper-dispatch';
 import { spawnClaudeCodeProcessOffMain } from '../agents/claude-process-host-runner';
 
 interface PlanDiagramGeneratorBaseOptions {
@@ -107,62 +108,73 @@ export async function generateSequenceDiagram(
     buildHelperRoutingOptions(options),
   );
   try {
-    if (invocation.harness === 'codex') {
-      const combinedPrompt = `${systemPrompt}\n\n${userMessage}`;
-      await seedTranscript(
-        options,
-        systemPrompt,
-        userMessage,
-        combinedPrompt,
-        invocation.providerType,
-      );
-      const result = await runCodexStructuredHelperQuery<ParsedPlanGraph>({
-        waitForQuotaRecovery: invocation.waitForQuotaRecovery,
-        runner: codexStructuredHelperRunner,
-        repoPath: options.repoPath,
-        model: invocation.sdkModel ?? options.model,
-        systemPrompt,
-        userMessage,
-        combinedPrompt,
-        schema: PARSED_PLAN_GRAPH_JSON_SCHEMA,
-        thinkingLevel: options.thinkingLevel,
-        modelConfig: options.modelConfig,
-        workspaceId: options.projectId,
-        localMemoryEnabled: await readLocalMemoryEnabledPreference(),
-        transcriptObserver: options.transcriptObserver,
-        isResult: isParsedPlanGraph,
-        ...(invocation.codexConfig
-          ? { codexConfigOverride: invocation.codexConfig }
-          : {}),
-      });
-      return { value: result.value, usage: result.usage };
-    }
+    return await runHelperThroughWorker({
+      kind: 'worktree_plan_diagram',
+      model: options.model,
+      scope: { workspaceId: options.projectId },
+      origin: options.userInitiated === true ? 'client' : 'system',
+      launch: async () => {
+        if (invocation.harness === 'codex') {
+          const combinedPrompt = `${systemPrompt}\n\n${userMessage}`;
+          await seedTranscript(
+            options,
+            systemPrompt,
+            userMessage,
+            combinedPrompt,
+            invocation.providerType,
+          );
+          const result = await runCodexStructuredHelperQuery<ParsedPlanGraph>({
+            waitForQuotaRecovery: invocation.waitForQuotaRecovery,
+            runner: codexStructuredHelperRunner,
+            repoPath: options.repoPath,
+            model: invocation.sdkModel ?? options.model,
+            systemPrompt,
+            userMessage,
+            combinedPrompt,
+            schema: PARSED_PLAN_GRAPH_JSON_SCHEMA,
+            thinkingLevel: options.thinkingLevel,
+            modelConfig: options.modelConfig,
+            workspaceId: options.projectId,
+            localMemoryEnabled: await readLocalMemoryEnabledPreference(),
+            transcriptObserver: options.transcriptObserver,
+            isResult: isParsedPlanGraph,
+            ...(invocation.codexConfig
+              ? { codexConfigOverride: invocation.codexConfig }
+              : {}),
+          });
+          return { value: result.value, usage: result.usage };
+        }
 
-    await seedTranscript(
-      options,
-      systemPrompt,
-      userMessage,
-      userMessage,
-      invocation.providerType,
-    );
-    const result = await runClaudeStructuredHelperQuery<ParsedPlanGraph>({
-      spawnClaudeCodeProcess: spawnClaudeCodeProcessOffMain,
-      repoPath: options.repoPath,
-      model: invocation.sdkModel ?? options.model,
-      provider: invocation.providerType === 'ollama' ? 'ollama' : 'claude',
-      maxTurns: 50,
-      systemPrompt,
-      userMessage,
-      schema: PARSED_PLAN_GRAPH_JSON_SCHEMA,
-      thinkingLevel: options.thinkingLevel,
-      workspaceId: options.projectId,
-      localMemoryEnabled: await readLocalMemoryEnabledPreference(),
-      transcriptObserver: options.transcriptObserver,
-      isResult: isParsedPlanGraph,
-      claudeEnvOverride: invocation.envOverride,
-      waitForQuotaRecovery: invocation.waitForQuotaRecovery,
+        await seedTranscript(
+          options,
+          systemPrompt,
+          userMessage,
+          userMessage,
+          invocation.providerType,
+        );
+        const result =
+          await runDesktopClaudeStructuredHelperQuery<ParsedPlanGraph>({
+            spawnClaudeCodeProcess: spawnClaudeCodeProcessOffMain,
+            repoPath: options.repoPath,
+            model: invocation.sdkModel ?? options.model,
+            provider:
+              invocation.providerType === 'ollama' ? 'ollama' : 'claude',
+            maxTurns: 50,
+            systemPrompt,
+            userMessage,
+            schema: PARSED_PLAN_GRAPH_JSON_SCHEMA,
+            thinkingLevel: options.thinkingLevel,
+            workspaceId: options.projectId,
+            localMemoryEnabled: await readLocalMemoryEnabledPreference(),
+            transcriptObserver: options.transcriptObserver,
+            isResult: isParsedPlanGraph,
+            claudeEnvOverride: invocation.envOverride,
+            waitForQuotaRecovery: invocation.waitForQuotaRecovery,
+          });
+        return { value: result.value, usage: result.usage };
+      },
+      usageOf: (r) => r.usage,
     });
-    return { value: result.value, usage: result.usage };
   } finally {
     invocation.dispose?.();
   }
@@ -186,62 +198,73 @@ export async function generateLogicDiffDiagram(
     buildHelperRoutingOptions(options),
   );
   try {
-    if (invocation.harness === 'codex') {
-      const combinedPrompt = `${systemPrompt}\n\n${userMessage}`;
-      await seedTranscript(
-        options,
-        systemPrompt,
-        userMessage,
-        combinedPrompt,
-        invocation.providerType,
-      );
-      const result = await runCodexStructuredHelperQuery<LogicDiffDiagram>({
-        waitForQuotaRecovery: invocation.waitForQuotaRecovery,
-        runner: codexStructuredHelperRunner,
-        repoPath: options.repoPath,
-        model: invocation.sdkModel ?? options.model,
-        systemPrompt,
-        userMessage,
-        combinedPrompt,
-        schema: LOGIC_DIFF_DIAGRAM_JSON_SCHEMA,
-        thinkingLevel: options.thinkingLevel,
-        modelConfig: options.modelConfig,
-        workspaceId: options.projectId,
-        localMemoryEnabled: await readLocalMemoryEnabledPreference(),
-        transcriptObserver: options.transcriptObserver,
-        isResult: isLogicDiffDiagram,
-        ...(invocation.codexConfig
-          ? { codexConfigOverride: invocation.codexConfig }
-          : {}),
-      });
-      return { value: result.value, usage: result.usage };
-    }
+    return await runHelperThroughWorker({
+      kind: 'worktree_plan_diagram',
+      model: options.model,
+      scope: { workspaceId: options.projectId },
+      origin: options.userInitiated === true ? 'client' : 'system',
+      launch: async () => {
+        if (invocation.harness === 'codex') {
+          const combinedPrompt = `${systemPrompt}\n\n${userMessage}`;
+          await seedTranscript(
+            options,
+            systemPrompt,
+            userMessage,
+            combinedPrompt,
+            invocation.providerType,
+          );
+          const result = await runCodexStructuredHelperQuery<LogicDiffDiagram>({
+            waitForQuotaRecovery: invocation.waitForQuotaRecovery,
+            runner: codexStructuredHelperRunner,
+            repoPath: options.repoPath,
+            model: invocation.sdkModel ?? options.model,
+            systemPrompt,
+            userMessage,
+            combinedPrompt,
+            schema: LOGIC_DIFF_DIAGRAM_JSON_SCHEMA,
+            thinkingLevel: options.thinkingLevel,
+            modelConfig: options.modelConfig,
+            workspaceId: options.projectId,
+            localMemoryEnabled: await readLocalMemoryEnabledPreference(),
+            transcriptObserver: options.transcriptObserver,
+            isResult: isLogicDiffDiagram,
+            ...(invocation.codexConfig
+              ? { codexConfigOverride: invocation.codexConfig }
+              : {}),
+          });
+          return { value: result.value, usage: result.usage };
+        }
 
-    await seedTranscript(
-      options,
-      systemPrompt,
-      userMessage,
-      userMessage,
-      invocation.providerType,
-    );
-    const result = await runClaudeStructuredHelperQuery<LogicDiffDiagram>({
-      spawnClaudeCodeProcess: spawnClaudeCodeProcessOffMain,
-      repoPath: options.repoPath,
-      model: invocation.sdkModel ?? options.model,
-      provider: invocation.providerType === 'ollama' ? 'ollama' : 'claude',
-      maxTurns: 50,
-      systemPrompt,
-      userMessage,
-      schema: LOGIC_DIFF_DIAGRAM_JSON_SCHEMA,
-      thinkingLevel: options.thinkingLevel,
-      workspaceId: options.projectId,
-      localMemoryEnabled: await readLocalMemoryEnabledPreference(),
-      transcriptObserver: options.transcriptObserver,
-      isResult: isLogicDiffDiagram,
-      claudeEnvOverride: invocation.envOverride,
-      waitForQuotaRecovery: invocation.waitForQuotaRecovery,
+        await seedTranscript(
+          options,
+          systemPrompt,
+          userMessage,
+          userMessage,
+          invocation.providerType,
+        );
+        const result =
+          await runDesktopClaudeStructuredHelperQuery<LogicDiffDiagram>({
+            spawnClaudeCodeProcess: spawnClaudeCodeProcessOffMain,
+            repoPath: options.repoPath,
+            model: invocation.sdkModel ?? options.model,
+            provider:
+              invocation.providerType === 'ollama' ? 'ollama' : 'claude',
+            maxTurns: 50,
+            systemPrompt,
+            userMessage,
+            schema: LOGIC_DIFF_DIAGRAM_JSON_SCHEMA,
+            thinkingLevel: options.thinkingLevel,
+            workspaceId: options.projectId,
+            localMemoryEnabled: await readLocalMemoryEnabledPreference(),
+            transcriptObserver: options.transcriptObserver,
+            isResult: isLogicDiffDiagram,
+            claudeEnvOverride: invocation.envOverride,
+            waitForQuotaRecovery: invocation.waitForQuotaRecovery,
+          });
+        return { value: result.value, usage: result.usage };
+      },
+      usageOf: (r) => r.usage,
     });
-    return { value: result.value, usage: result.usage };
   } finally {
     invocation.dispose?.();
   }
@@ -266,64 +289,76 @@ export async function generateDataModelDiffDiagram(
     buildHelperRoutingOptions(options),
   );
   try {
-    if (invocation.harness === 'codex') {
-      const combinedPrompt = `${systemPrompt}\n\n${userMessage}`;
-      await seedTranscript(
-        options,
-        systemPrompt,
-        userMessage,
-        combinedPrompt,
-        invocation.providerType,
-      );
-      const result =
-        await runCodexStructuredHelperQuery<DataModelDiffGenerationResult>({
-          waitForQuotaRecovery: invocation.waitForQuotaRecovery,
-          runner: codexStructuredHelperRunner,
-          repoPath: options.repoPath,
-          model: invocation.sdkModel ?? options.model,
+    return await runHelperThroughWorker({
+      kind: 'worktree_plan_diagram',
+      model: options.model,
+      scope: { workspaceId: options.projectId },
+      origin: options.userInitiated === true ? 'client' : 'system',
+      launch: async () => {
+        if (invocation.harness === 'codex') {
+          const combinedPrompt = `${systemPrompt}\n\n${userMessage}`;
+          await seedTranscript(
+            options,
+            systemPrompt,
+            userMessage,
+            combinedPrompt,
+            invocation.providerType,
+          );
+          const result =
+            await runCodexStructuredHelperQuery<DataModelDiffGenerationResult>({
+              waitForQuotaRecovery: invocation.waitForQuotaRecovery,
+              runner: codexStructuredHelperRunner,
+              repoPath: options.repoPath,
+              model: invocation.sdkModel ?? options.model,
+              systemPrompt,
+              userMessage,
+              combinedPrompt,
+              schema: DATA_MODEL_DIFF_GENERATION_JSON_SCHEMA,
+              thinkingLevel: options.thinkingLevel,
+              modelConfig: options.modelConfig,
+              workspaceId: options.projectId,
+              localMemoryEnabled: await readLocalMemoryEnabledPreference(),
+              transcriptObserver: options.transcriptObserver,
+              isResult: isDataModelDiffGenerationResult,
+              ...(invocation.codexConfig
+                ? { codexConfigOverride: invocation.codexConfig }
+                : {}),
+            });
+          return { value: result.value, usage: result.usage };
+        }
+
+        await seedTranscript(
+          options,
           systemPrompt,
           userMessage,
-          combinedPrompt,
-          schema: DATA_MODEL_DIFF_GENERATION_JSON_SCHEMA,
-          thinkingLevel: options.thinkingLevel,
-          modelConfig: options.modelConfig,
-          workspaceId: options.projectId,
-          localMemoryEnabled: await readLocalMemoryEnabledPreference(),
-          transcriptObserver: options.transcriptObserver,
-          isResult: isDataModelDiffGenerationResult,
-          ...(invocation.codexConfig
-            ? { codexConfigOverride: invocation.codexConfig }
-            : {}),
-        });
-      return { value: result.value, usage: result.usage };
-    }
-
-    await seedTranscript(
-      options,
-      systemPrompt,
-      userMessage,
-      userMessage,
-      invocation.providerType,
-    );
-    const result =
-      await runClaudeStructuredHelperQuery<DataModelDiffGenerationResult>({
-        spawnClaudeCodeProcess: spawnClaudeCodeProcessOffMain,
-        repoPath: options.repoPath,
-        model: invocation.sdkModel ?? options.model,
-        provider: invocation.providerType === 'ollama' ? 'ollama' : 'claude',
-        maxTurns: 50,
-        systemPrompt,
-        userMessage,
-        schema: DATA_MODEL_DIFF_GENERATION_JSON_SCHEMA,
-        thinkingLevel: options.thinkingLevel,
-        workspaceId: options.projectId,
-        localMemoryEnabled: await readLocalMemoryEnabledPreference(),
-        transcriptObserver: options.transcriptObserver,
-        isResult: isDataModelDiffGenerationResult,
-        claudeEnvOverride: invocation.envOverride,
-        waitForQuotaRecovery: invocation.waitForQuotaRecovery,
-      });
-    return { value: result.value, usage: result.usage };
+          userMessage,
+          invocation.providerType,
+        );
+        const result =
+          await runDesktopClaudeStructuredHelperQuery<DataModelDiffGenerationResult>(
+            {
+              spawnClaudeCodeProcess: spawnClaudeCodeProcessOffMain,
+              repoPath: options.repoPath,
+              model: invocation.sdkModel ?? options.model,
+              provider:
+                invocation.providerType === 'ollama' ? 'ollama' : 'claude',
+              maxTurns: 50,
+              systemPrompt,
+              userMessage,
+              schema: DATA_MODEL_DIFF_GENERATION_JSON_SCHEMA,
+              thinkingLevel: options.thinkingLevel,
+              workspaceId: options.projectId,
+              localMemoryEnabled: await readLocalMemoryEnabledPreference(),
+              transcriptObserver: options.transcriptObserver,
+              isResult: isDataModelDiffGenerationResult,
+              claudeEnvOverride: invocation.envOverride,
+              waitForQuotaRecovery: invocation.waitForQuotaRecovery,
+            },
+          );
+        return { value: result.value, usage: result.usage };
+      },
+      usageOf: (r) => r.usage,
+    });
   } finally {
     invocation.dispose?.();
   }

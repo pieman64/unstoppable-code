@@ -97,6 +97,21 @@ test('launches the built Electron shell', async ({}, testInfo) => {
         height: 900,
       });
     await expect(window.getByTestId('app-sidebar')).toBeVisible();
+    // Exercise w5-recovery:status and w5-recovery:prepare through the real
+    // preload/main boundary. The registration-release gate must prevent intent.
+    const recovery = await window.evaluate(async () => ({
+      status: await window.api.w5Recovery.getStatus(),
+      prepared: await window.api.w5Recovery.prepare(),
+    }));
+    const hiddenRecovery = { state: 'hidden', canRecover: false, entries: [] };
+    expect(recovery).toEqual({
+      status: hiddenRecovery,
+      prepared: hiddenRecovery,
+    });
+    // getCanopyDataDir projects the harness-owned CANOPY_DATA_DIR here.
+    expect(
+      existsSync(path.join(userDataDir, 'runtime/w5-recovery-request.json')),
+    ).toBe(false);
     // A fresh launch (no lastActiveContext MRU, no legacy last-selected
     // worktree) lands on the standalone Home page — the chat-centric surface
     // that replaced the old welcome empty state.

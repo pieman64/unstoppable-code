@@ -41,24 +41,16 @@ export function notificationOfferCardProps({
         }
       : {}),
     secondaryAction: {
-      label:
-        busyAction === 'dismiss'
-          ? 'Saving…'
-          : retryAction === 'dismiss'
-            ? 'Try again'
-            : 'Not now',
+      label: retryAction === 'dismiss' ? 'Try again' : 'Not now',
+      busyLabel: 'Saving…',
       disabled: busy || retryAction === 'enable',
       busy: busyAction === 'dismiss',
       onClick: onDismiss,
       testId: `${testId}-dismiss`,
     },
     primaryAction: {
-      label:
-        busyAction === 'enable'
-          ? 'Turning on…'
-          : retryAction === 'enable'
-            ? 'Try again'
-            : 'Turn on notifications',
+      label: retryAction === 'enable' ? 'Try again' : 'Turn on notifications',
+      busyLabel: 'Turning on…',
       disabled: busy || retryAction === 'dismiss',
       busy: busyAction === 'enable',
       onClick: onEnable,

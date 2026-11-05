@@ -1,3 +1,4 @@
+import { runHelperThroughWorker } from '../helper-runs/helper-runs';
 import { randomUUID } from 'node:crypto';
 import { app } from 'electron';
 import {
@@ -21,9 +22,11 @@ import {
 } from '../lib/helper-observed-task';
 import { getObservabilityService } from '../observability';
 import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/generated/serde_json/JsonValue';
-import { runClaudeStructuredHelperQuery } from '@canopy/desktop-shared/lib/structured-helper-query';
 import { readLocalMemoryEnabledPreference } from '../lib/preferences-store';
-import { codexStructuredHelperRunner } from '../integration/structured-helper-dispatch';
+import {
+  codexStructuredHelperRunner,
+  runDesktopClaudeStructuredHelperQuery,
+} from '../integration/structured-helper-dispatch';
 import { spawnClaudeCodeProcessOffMain } from '../agents/claude-process-host-runner';
 import {
   resolveHelperInvocation,
@@ -152,10 +155,17 @@ export async function generateCronExpression(
       invocation.aiCreditsRouted,
       invocation.accountProxyRouted === true,
     );
-    const result =
-      invocation.harness === 'codex'
-        ? await generateWithCodex(input, description, taskKey, invocation)
-        : await generateWithClaude(input, description, taskKey, invocation);
+    const result = await runHelperThroughWorker({
+      kind: 'cron_generation',
+      model: input.model,
+      scope: {},
+      origin: 'client',
+      launch: async () =>
+        invocation.harness === 'codex'
+          ? await generateWithCodex(input, description, taskKey, invocation)
+          : await generateWithClaude(input, description, taskKey, invocation),
+      usageOf: (r) => r.usage,
+    });
 
     const validationError = validateGeneratedExpression(result.expression);
     if (validationError) {
@@ -194,7 +204,7 @@ async function generateWithClaude(
     prompt,
   );
 
-  const queryResult = await runClaudeStructuredHelperQuery({
+  const queryResult = await runDesktopClaudeStructuredHelperQuery({
     spawnClaudeCodeProcess: spawnClaudeCodeProcessOffMain,
     repoPath: app.getPath('userData'),
     model: invocation.sdkModel ?? input.model,

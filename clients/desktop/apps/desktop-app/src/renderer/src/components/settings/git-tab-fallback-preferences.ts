@@ -205,6 +205,7 @@ export function createGitTabFailedLoadPreferences(): PreferencesData {
     terminalDrawerActiveTabId: 'terminal',
     disabledTerminalShellProfileIds: [],
     terminalPresets: [],
+    terminalSettingsRevision: 0,
     osNotifications: {
       enabled: false,
       skipWhenFocused: true,

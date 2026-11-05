@@ -26,7 +26,6 @@ import {
   resolveWorktreeCwd,
   resolveWorktreeTargetIds,
 } from '../lib/resolve-worktree';
-import { getLabsExperimentsService } from '../services/labs-experiments-runtime';
 import { daemonUnreachableReason } from '../canopy-runtime/electron-daemon-connection';
 import {
   getElectronDaemonConnections,
@@ -44,12 +43,11 @@ import { createDesktopTerminalHost, workerTerminal } from './worker-terminal';
 
 /**
  * Routing of renderer terminals to the daemon's terminal host (CAN-5088),
- * selected by the `daemon-terminals` Labs experiment. Only the renderer
+ * used by eligible local main and App Advisor windows. Only the renderer
  * terminal IPC handlers pass a route context, so Portal, script, Claude and
  * every other caller keep the in-process engine. The placement is decided
- * once, before any daemon contact; turning the experiment off sends the next
- * terminal in process, and terminals already placed keep running where they
- * are, with nothing to repair.
+ * once, before any daemon contact, without a Labs or feature-flag gate.
+ * Terminals already placed keep running where they are.
  */
 
 /** Which hosts may place terminals in the daemon. Windows waits for CAN-5091. */
@@ -77,7 +75,6 @@ export interface DaemonTerminalRouteRequest {
 
 export interface DaemonTerminalRouteInput {
   readonly platform: PlatformOperatingSystem | null;
-  readonly experimentEnabled: boolean;
   readonly context: DaemonTerminalRouteContext | undefined;
   readonly request: DaemonTerminalRouteRequest;
   /** Main's record says the daemon cannot be reached right now. */
@@ -102,7 +99,6 @@ export function isDaemonTerminalRouteEligible(
 ): boolean {
   const { platform, context, request } = input;
   return (
-    input.experimentEnabled &&
     platform !== null &&
     DAEMON_TERMINAL_PLATFORMS[platform] &&
     context?.localWindow === true &&
@@ -120,16 +116,6 @@ export interface DaemonTerminalTarget {
   readonly cwdRootId: string;
   /** The worktree directory both sides resolve the root to. */
   readonly rootPath: string;
-}
-
-function isExperimentEnabled(): boolean {
-  const snapshot = getLabsExperimentsService().getSnapshot();
-  return (
-    snapshot.ready &&
-    snapshot.experiments.some(
-      (entry) => entry.id === 'daemon-terminals' && entry.enabled,
-    )
-  );
 }
 
 function hostPlatform(): PlatformOperatingSystem | null {
@@ -218,7 +204,6 @@ export async function selectDaemonTerminalTarget(
   const health = getElectronDaemonHealth();
   const eligible = isDaemonTerminalRouteEligible({
     platform: hostPlatform(),
-    experimentEnabled: context !== undefined && isExperimentEnabled(),
     context,
     request,
     daemonLatched: health.isLatched(),

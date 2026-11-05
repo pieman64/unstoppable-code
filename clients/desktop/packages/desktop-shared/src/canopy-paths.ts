@@ -41,6 +41,11 @@ function isTsxRuntime(): boolean {
 }
 
 export function getCanopyRuntimeMode(): CanopyRuntimeMode {
+  const electronMode = getElectronRuntimeMode();
+  if (electronMode === 'dev' || (!electronMode && isTsxRuntime())) {
+    return 'dev';
+  }
+
   if (
     typeof __CANOPY_RELEASE_FLAVOR__ !== 'undefined' &&
     __CANOPY_RELEASE_FLAVOR__ === 'rc'
@@ -48,7 +53,6 @@ export function getCanopyRuntimeMode(): CanopyRuntimeMode {
     return 'rc';
   }
 
-  const electronMode = getElectronRuntimeMode();
   if (electronMode) {
     return electronMode;
   }
@@ -65,10 +69,6 @@ export function getCanopyRuntimeMode(): CanopyRuntimeMode {
   if (process.env.NODE_ENV === 'production') {
     return 'prod';
   }
-  if (isTsxRuntime()) {
-    return 'dev';
-  }
-
   return 'prod';
 }
 

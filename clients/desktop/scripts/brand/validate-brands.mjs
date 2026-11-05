@@ -7,6 +7,7 @@ import { dirname, extname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
 import { collectLogoSvgSafetyErrors, loadBrand } from './load-brand.mjs';
+import { isCliEntrypoint } from './is-cli-entrypoint.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const brandsDir = join(root, 'brands');
@@ -220,7 +221,7 @@ function addUnique(seen, errors, key, value, brandId) {
   seen.set(`${key}:${normalized}`, brandId);
 }
 
-function validateGlobalUniqueness(brands, errors) {
+export function validateGlobalUniqueness(brands, errors) {
   const seen = new Map();
   for (const brand of brands) {
     addUnique(seen, errors, 'id', brand.id, brand.id);
@@ -313,6 +314,22 @@ function validateGlobalUniqueness(brands, errors) {
       .normalize('NFC')
       .toLowerCase();
   for (const owner of brands) {
+    for (const devDir of owner.storage.dataDirNames.dev) {
+      const devDirKey = directoryCollisionKey(devDir);
+      for (const candidate of brands) {
+        for (const mode of ['prod', 'rc']) {
+          if (
+            candidate.storage.dataDirNames[mode].some(
+              (name) => directoryCollisionKey(name) === devDirKey,
+            )
+          ) {
+            errors.push(
+              `${owner.id}: storage.dataDirNames.dev "${devDir}" collides with ${candidate.id} storage.dataDirNames.${mode}`,
+            );
+          }
+        }
+      }
+    }
     const internalSecureDir = owner.storage.secureDataDirNames.internal;
     const internalSecureDirKey = directoryCollisionKey(internalSecureDir);
     for (const candidate of brands) {
@@ -556,29 +573,33 @@ function validateBrandPlugins(brand, errors) {
   validateGeneratedMarketplace(brand, errors);
 }
 
-const errors = [];
-const brands = [];
+function main() {
+  const errors = [];
+  const brands = [];
 
-for (const brandId of listBrandIds()) {
-  try {
-    const brand = loadBrand(brandId, { repoRoot: root });
-    const manifest = readJson(join(brandsDir, brandId, 'brand.json'));
-    validateAssets(brand, manifest, errors);
-    validateInternalNameSchemeSafety(brand, errors);
-    validateBrandPlugins(brand, errors);
-    brands.push(brand);
-  } catch (error) {
-    errors.push(
-      `${brandId}: ${error instanceof Error ? error.message : String(error)}`,
-    );
+  for (const brandId of listBrandIds()) {
+    try {
+      const brand = loadBrand(brandId, { repoRoot: root });
+      const manifest = readJson(join(brandsDir, brandId, 'brand.json'));
+      validateAssets(brand, manifest, errors);
+      validateInternalNameSchemeSafety(brand, errors);
+      validateBrandPlugins(brand, errors);
+      brands.push(brand);
+    } catch (error) {
+      errors.push(
+        `${brandId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
+
+  validateGlobalUniqueness(brands, errors);
+
+  if (errors.length > 0) {
+    process.stderr.write(`Brand validation failed:\n${errors.join('\n')}\n`);
+    process.exit(1);
+  }
+
+  process.stdout.write(`Validated ${brands.length} brand pack(s).\n`);
 }
 
-validateGlobalUniqueness(brands, errors);
-
-if (errors.length > 0) {
-  process.stderr.write(`Brand validation failed:\n${errors.join('\n')}\n`);
-  process.exit(1);
-}
-
-process.stdout.write(`Validated ${brands.length} brand pack(s).\n`);
+if (isCliEntrypoint(import.meta.url)) main();

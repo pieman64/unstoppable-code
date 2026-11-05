@@ -28,6 +28,7 @@ import {
   Radio,
   SearchField,
   SegmentedControl,
+  DateField,
   Select,
   SettingsSelect,
   SortDropdown,
@@ -402,6 +403,64 @@ function selectCell(
   }
 }
 
+function dateCell(state: StateColumn, focused: boolean): ReactNode {
+  const render = (props: {
+    readonly value: string;
+    readonly disabled?: boolean;
+    readonly id?: string;
+    readonly 'aria-describedby'?: string;
+    readonly 'aria-invalid'?: true;
+  }): JSX.Element => (
+    <DateField
+      {...props}
+      aria-label="Start date"
+      onValueChange={() => undefined}
+    />
+  );
+  switch (state) {
+    case 'Empty, placeholder':
+      return render({ value: '' });
+    case 'Filled':
+      return render({ value: '2026-11-04' });
+    case 'Long value':
+      return NOT_APPLICABLE;
+    case 'Focused':
+      return (
+        <Drive active={focused} action="focus">
+          {render({ value: '2026-11-04' })}
+        </Drive>
+      );
+    case 'Disabled':
+      return render({ value: '2026-11-04', disabled: true });
+    case 'Read-only':
+      return NOT_APPLICABLE;
+    case 'Invalid + error':
+      return (
+        <FormField label="Start date" error="Choose a date.">
+          {(control) => render({ ...control, value: '' })}
+        </FormField>
+      );
+    case 'Help text':
+      return (
+        <FormField label="Start date" description="The first day it runs.">
+          {(control) => render({ ...control, value: '2026-11-04' })}
+        </FormField>
+      );
+    case 'Error + help':
+      return (
+        <FormField
+          label="Start date"
+          description="The first day it runs."
+          error="Choose a date."
+        >
+          {(control) => render({ ...control, value: '' })}
+        </FormField>
+      );
+    case 'Leading / trailing':
+      return NOT_APPLICABLE;
+  }
+}
+
 function searchRow(size: 'sm' | 'md'): StateRow {
   return {
     id: `search-${size}`,
@@ -745,6 +804,11 @@ const STATE_ROWS: readonly StateRow[] = [
     id: 'settings-select',
     name: 'SettingsSelect 28px',
     cell: (state, focused) => selectCell('settings-select', state, focused),
+  },
+  {
+    id: 'date-field',
+    name: 'DateField 36px',
+    cell: (state, focused) => dateCell(state, focused),
   },
   searchRow('sm'),
   searchRow('md'),

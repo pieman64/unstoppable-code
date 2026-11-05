@@ -277,6 +277,7 @@ export const DEFAULT_PREFERENCES: PreferencesData = {
   terminalDrawerActiveTabId: DEFAULT_TERMINAL_DRAWER_ACTIVE_TAB_ID,
   disabledTerminalShellProfileIds: [],
   terminalPresets: [],
+  terminalSettingsRevision: 0,
   osNotifications: {
     enabled: false,
     skipWhenFocused: true,

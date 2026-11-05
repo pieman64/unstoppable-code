@@ -1,3 +1,4 @@
+import { replayHookChatPlaceholders } from './lib/hook-chat-placeholders';
 import { BRAND } from '@canopy/brand/current';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import type { TurnBinding } from '@canopy/protocol/canopy-core';
@@ -506,6 +507,7 @@ import {
   uiZoomWebPreferences,
 } from './lib/ui-zoom';
 import { validateId } from './lib/validation';
+import { runRequestedW5Recovery } from './lib/w5-recovery-startup';
 import { admitDesktopW5Host } from './lib/w5-host-admission';
 import {
   cancelPendingW5FlipHandoff,
@@ -4890,6 +4892,10 @@ if (hasSingleInstanceLock) {
 void app.whenReady().then(async (): Promise<void> => {
   if (!hasSingleInstanceLock) return;
   recordDesktopInstanceEvent({ event: 'app-ready' });
+  if (!(await runRequestedW5Recovery(getCanopyDataDir()))) {
+    app.exit(1);
+    return;
+  }
   // TRANSITIONAL (CAN-3797): joins the W5 host cohort before any W5 I/O.
   // Remove when the W5 rows move to `daemon` and the legacy Electron writers
   // are deleted (CAN-3795 / CAN-3802).
@@ -6673,6 +6679,15 @@ void app.whenReady().then(async (): Promise<void> => {
         flushPendingAutoArchiveNotifications();
         unlockStartupWork();
         void getAppAdvisorWatcherService().reconcileAtStartup();
+        replayHookChatPlaceholders(getMainWindow());
+        void getAppAdvisorWatcherService()
+          .resumePresenterHeldDeliveries()
+          .catch((error: unknown) =>
+            logMainProcessWarn(
+              '[watchers] Held watcher deliveries could not resume.',
+              error,
+            ),
+          );
         notifyDeepLinkStartupUnlocked();
         flushPendingOrgProjectDeepLink();
         // Same retry rationale as deep links: a campaign click buffered while

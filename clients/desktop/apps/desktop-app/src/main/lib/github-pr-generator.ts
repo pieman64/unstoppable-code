@@ -1,4 +1,8 @@
 import {
+  runHelperThroughWorker,
+  linkHelperAbort,
+} from '../helper-runs/helper-runs';
+import {
   type AgentModelConfig,
   type ChatTabPluginSelections,
 } from '@canopy/desktop-shared/types';
@@ -114,55 +118,80 @@ export async function generatePrContent(
     // Local memory is opt-in; only an enabled preference suppresses
     // harness-native memory on the helper launch (CAN-1969).
     const localMemoryEnabled = await readLocalMemoryEnabledPreference();
-    const result = await runWithOptionalHelperPlugins(
-      buildHelperPluginRunOptions({
-        helperName: 'pr-generation',
-        model: options.model,
-        pluginSelections: options.pluginSelections,
-        auditContext,
-      }),
-      (pluginRuntime) =>
-        generatePrContentWithUsage(
-          {
-            ...options,
-            localMemoryEnabled,
-            model: invocation.sdkModel ?? options.model,
-            workspaceId: effectiveWorkspaceId,
-            claudeEnvOverride: {
-              ...options.claudeEnvOverride,
-              ...invocation.envOverride,
-            },
-            ...(invocation.codexConfig
-              ? { codexConfigOverride: invocation.codexConfig }
-              : {}),
-            executionHarness: invocation.harness,
-            waitForQuotaRecovery: invocation.waitForQuotaRecovery,
-            transcriptObserver: createHelperTranscriptObserver(taskKey),
-            pluginRuntime,
-            codexRunner: codexStructuredHelperRunner,
-          },
-          createStructuredHelperRunner({
-            kind: 'pr_generation',
-            label: 'PR Content Generation',
-            provider:
-              invocation.providerType === 'ollama' ? 'ollama' : 'claude',
-            projectId: effectiveWorkspaceId,
-            worktreeId: auditContext?.worktreeId,
-            linkTarget: auditContext
-              ? {
-                  page: 'main',
-                  kind: 'worktree-chat',
-                  projectId: auditContext.projectId,
-                  worktreeId: auditContext.worktreeId,
-                  planId: auditContext.planId,
-                }
-              : undefined,
-            permission: structuredHelperReadOnlyPermission(),
-            settingSources: ['user', 'project', 'local'],
-            executionHarness: invocation.harness,
-          }),
-        ),
-    );
+    const result = await runHelperThroughWorker({
+      kind: 'pr_generation',
+      model: options.model,
+      scope: {
+        ...(effectiveWorkspaceId !== undefined
+          ? { workspaceId: effectiveWorkspaceId }
+          : {}),
+        ...(auditContext?.worktreeId !== undefined
+          ? { worktreeId: auditContext.worktreeId }
+          : {}),
+      },
+      origin: 'client',
+      workOwner,
+      signal: options.abortController?.signal,
+      launch: async (workerSignal) => {
+        const unlink = options.abortController
+          ? linkHelperAbort(workerSignal, options.abortController)
+          : (): void => undefined;
+        try {
+          return await runWithOptionalHelperPlugins(
+            buildHelperPluginRunOptions({
+              helperName: 'pr-generation',
+              model: options.model,
+              pluginSelections: options.pluginSelections,
+              auditContext,
+            }),
+            (pluginRuntime) =>
+              generatePrContentWithUsage(
+                {
+                  ...options,
+                  localMemoryEnabled,
+                  model: invocation.sdkModel ?? options.model,
+                  workspaceId: effectiveWorkspaceId,
+                  claudeEnvOverride: {
+                    ...options.claudeEnvOverride,
+                    ...invocation.envOverride,
+                  },
+                  ...(invocation.codexConfig
+                    ? { codexConfigOverride: invocation.codexConfig }
+                    : {}),
+                  executionHarness: invocation.harness,
+                  waitForQuotaRecovery: invocation.waitForQuotaRecovery,
+                  transcriptObserver: createHelperTranscriptObserver(taskKey),
+                  pluginRuntime,
+                  codexRunner: codexStructuredHelperRunner,
+                },
+                createStructuredHelperRunner({
+                  kind: 'pr_generation',
+                  label: 'PR Content Generation',
+                  provider:
+                    invocation.providerType === 'ollama' ? 'ollama' : 'claude',
+                  projectId: effectiveWorkspaceId,
+                  worktreeId: auditContext?.worktreeId,
+                  linkTarget: auditContext
+                    ? {
+                        page: 'main',
+                        kind: 'worktree-chat',
+                        projectId: auditContext.projectId,
+                        worktreeId: auditContext.worktreeId,
+                        planId: auditContext.planId,
+                      }
+                    : undefined,
+                  permission: structuredHelperReadOnlyPermission(),
+                  settingSources: ['user', 'project', 'local'],
+                  executionHarness: invocation.harness,
+                }),
+              ),
+          );
+        } finally {
+          unlink();
+        }
+      },
+      usageOf: (result) => result.usage,
+    });
     if (result.source === 'model') {
       finalizeObservedHelperTask(taskKey, 'success', undefined, result.usage);
     } else {

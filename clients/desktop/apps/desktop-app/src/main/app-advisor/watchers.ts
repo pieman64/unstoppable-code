@@ -567,6 +567,7 @@ const GITHUB_DELIVERY_RETRY_DELAYS_MS = [5_000, 30_000, 120_000];
 
 /** A watcher delivery outlived its deadline; the chat may still take it. */
 class WatcherDeliveryDeadlineError extends Error {}
+class WatcherPresenterUnavailableError extends Error {}
 
 function withWatcherDeliveryDeadline<T>(
   pending: Promise<T>,
@@ -599,6 +600,7 @@ const MAX_WATCHER_LABEL_LENGTH = 160;
 const MAX_GITHUB_FOLLOW_UP_INSTRUCTION_LENGTH = 1_000;
 /** Matches the scheduler's retry for a retained delegate that is not loaded. */
 const DELEGATE_RECIPIENT_RETRY_MS = 5_000;
+const PRESENTER_UNAVAILABLE_RETRY_MS = 60_000;
 const DELEGATE_RECIPIENT_GONE_ERROR =
   "The delegated task's parent chat is no longer available.";
 
@@ -5648,6 +5650,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
   private lastAppAdvisorDestinationChatIds = new Set<string>();
 
   private localDeliveriesInFlight = new Set<string>();
+  private presenterHeldWatcherIds = new Set<string>();
   /** Pending deliveries waiting for a retained delegate recipient to load. */
   private delegateDeliveryRetryTimers = new Map<
     string,
@@ -7541,6 +7544,27 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
         await this.deliverWatcher(row);
   }
 
+  async resumePresenterHeldDeliveries(): Promise<void> {
+    if (!this.configured || this.presenterHeldWatcherIds.size === 0) return;
+    const generation = this.configurationGeneration;
+    const held = new Set(this.presenterHeldWatcherIds);
+    for (const row of (await this.readFile()).watchers)
+      if (
+        held.has(row.id) &&
+        row.pendingLocalDelivery &&
+        !COMPLETED_STATUSES.has(row.status)
+      ) {
+        await this.deliverWatcher(row);
+        if (!row.pendingLocalDelivery.consume) {
+          const refreshed = (await this.readFile()).watchers.find(
+            (watcher) => watcher.id === row.id,
+          );
+          if (refreshed?.status === 'active' && !refreshed.pendingLocalDelivery)
+            await this.reconcileLocalWatchers(generation, new Set([row.id]));
+        }
+      }
+  }
+
   private scheduleCanonicalDeliveryRetry(): void {
     if (this.canonicalDeliveryRetry || !this.configured) return;
     this.canonicalDeliveryRetry = setTimeout(() => {
@@ -7670,13 +7694,17 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     );
   }
 
-  private async reconcileLocalWatchers(generation: number): Promise<void> {
+  private async reconcileLocalWatchers(
+    generation: number,
+    watcherIds?: ReadonlySet<string>,
+  ): Promise<void> {
     const file = await this.readFile();
     const current = (): boolean =>
       this.configured && generation === this.configurationGeneration;
     let pipelineIds: string[] | undefined;
     const executionsDir = join(getDataDir(), 'pipeline-executions');
     for (const savedWatcher of file.watchers) {
+      if (watcherIds && !watcherIds.has(savedWatcher.id)) continue;
       let watcher = savedWatcher;
       if (!current()) return;
       try {
@@ -7818,6 +7846,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     for (const timer of Array.from(this.delegateDeliveryRetryTimers.values()))
       clearTimeout(timer);
     this.delegateDeliveryRetryTimers.clear();
+    this.presenterHeldWatcherIds.clear();
     this.lastAppAdvisorDestinationChatIds = new Set();
     this.busyChatCompletions.clear();
     this.firedCompletions.clear();
@@ -8047,6 +8076,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     );
     for (const row of removed) {
       this.clearDelegateDeliveryRetry(row.id);
+      this.presenterHeldWatcherIds.delete(row.id);
       this.cancelPendingDelivery(row.id);
       for (const key of Array.from(this.localDeliveriesInFlight)) {
         if (key.endsWith(`:${row.id}`))
@@ -10600,12 +10630,26 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
           watcherOwnerScope(file.watchers[index].destination),
         );
       if (
+        index !== -1 &&
+        this.canDeletePresenterHeldWatcher(file.watchers[index])
+      ) {
+        if (options.notifySubscriber === true)
+          await this.deliverDeletedWatcherNotification(
+            file.watchers[index],
+          ).catch((error: unknown) => {
+            if (!(error instanceof WatcherPresenterUnavailableError))
+              throw error;
+          });
+        await this.deletePresenterHeldWatcher(file, index);
+        return { found: true, markedLocal: false, deletedPresenter: true };
+      }
+      if (
         index === -1 ||
         file.watchers[index].status === 'firing' ||
         (file.watchers[index].runtimeState?.kind === 'local_watcher' &&
           file.watchers[index].runtimeState.cancellationPending !== undefined)
       ) {
-        return { found: false, markedLocal: false };
+        return { found: false, markedLocal: false, deletedPresenter: false };
       }
       const watcher = file.watchers[index];
       const markedLocal =
@@ -10619,10 +10663,11 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
         await this.writeFile(file);
         this.notifyChange(file.watchers);
       }
-      return { found: true, markedLocal };
+      return { found: true, markedLocal, deletedPresenter: false };
     }, wait);
 
     if (!prepared.found) return false;
+    if (prepared.deletedPresenter) return true;
     try {
       wait.phase('scheduler_cancel');
       await this.localScheduler.cancel(id);
@@ -10685,6 +10730,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
       this.notifyChange(file.watchers);
     }, wait);
     this.clearDelegateDeliveryRetry(id);
+    this.presenterHeldWatcherIds.delete(id);
     if (delegateNotice)
       this.notifyDelegateOfDeletion(
         delegateNotice.watcher,
@@ -10756,6 +10802,12 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
           }
 
           const watcher = file.watchers[index];
+          if (this.canDeletePresenterHeldWatcher(watcher)) {
+            await this.deletePresenterHeldWatcher(file, index);
+            changed = true;
+            results.push({ watcherId, status: 'deleted' });
+            continue;
+          }
           if (watcher.status === 'firing') {
             results.push({ watcherId, status: 'busy' });
             continue;
@@ -10919,6 +10971,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
           )
             return true;
           this.clearDelegateDeliveryRetry(watcher.id);
+          this.presenterHeldWatcherIds.delete(watcher.id);
           changed = true;
           if (watcher.runtimeState?.kind === 'local_watcher') {
             // Stop the scheduler's task before the row is removed.
@@ -12121,6 +12174,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
   ): Promise<void> {
     this.cancelPendingDelivery(watcherId);
     this.clearDelegateDeliveryRetry(watcherId);
+    this.presenterHeldWatcherIds.delete(watcherId);
     await this.enqueueMutation(
       async (wait) => {
         const file = await this.readFile();
@@ -12222,10 +12276,96 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     );
   }
 
+  private canDeletePresenterHeldWatcher(watcher: AppAdvisorWatcher): boolean {
+    return (
+      watcher.status === 'firing' &&
+      watcher.pendingLocalDelivery !== undefined &&
+      this.presenterHeldWatcherIds.has(watcher.id) &&
+      !this.localDeliveriesInFlight.has(
+        `${this.configurationGeneration}:${watcher.id}`,
+      )
+    );
+  }
+
+  private async deletePresenterHeldWatcher(
+    file: AppAdvisorWatchersFile,
+    index: number,
+  ): Promise<void> {
+    const watcher = file.watchers[index];
+    const deliveryIds = new Set(
+      [watcher.pendingLocalDelivery?.deliveryId, watcher.chatDeliveryId].filter(
+        (id): id is string => id !== undefined,
+      ),
+    );
+    file.watchers.splice(index, 1);
+    delete watcher.pendingLocalDelivery;
+    await this.writeFile(file);
+    const previous = await this.loadCanonicalRows();
+    const released = releaseChatAuthorityReceipts(previous, deliveryIds);
+    if (released.some((row, position) => row !== previous[position])) {
+      this.canonicalSnapshot = null;
+      await writeCanonicalWatcherStore(
+        canonicalStorePath(),
+        retainChatAuthorityReceipts(released),
+      );
+    }
+    this.cancelPendingDelivery(watcher.id);
+    this.presenterHeldWatcherIds.delete(watcher.id);
+    for (const id of deliveryIds) this.unsubmittedChatDeliveries.delete(id);
+    this.notifyChange(file.watchers);
+  }
+
   private async deliverWatcher(
     watcher: AppAdvisorWatcher,
     event?: WatcherFiringEvent,
     stableDeliveryId?: string,
+  ): Promise<void> {
+    if (event || stableDeliveryId || !watcher.pendingLocalDelivery)
+      return this.deliverWatcherAttempt(watcher, event, stableDeliveryId);
+
+    // Replay and held deletion reserve the same identity under the mutation queue.
+    const reserved = await this.enqueueMutation(
+      async () => {
+        if (!this.configured) return null;
+        const file = await this.readFile();
+        const current = file.watchers.find((row) => row.id === watcher.id);
+        if (
+          !current ||
+          COMPLETED_STATUSES.has(current.status) ||
+          current.pendingLocalDelivery?.deliveryId !==
+            watcher.pendingLocalDelivery?.deliveryId
+        )
+          return null;
+        const key = `${this.configurationGeneration}:${current.id}`;
+        if (this.localDeliveriesInFlight.has(key)) return null;
+        this.localDeliveriesInFlight.add(key);
+        this.presenterHeldWatcherIds.delete(current.id);
+        return { watcher: current, key };
+      },
+      undefined,
+      {
+        name: 'watcher.reserve_presenter_retry',
+        scope: watcherOwnerScope(watcher.destination),
+      },
+    );
+    if (!reserved) return;
+    try {
+      await this.deliverWatcherAttempt(
+        reserved.watcher,
+        undefined,
+        undefined,
+        reserved.key,
+      );
+    } finally {
+      this.localDeliveriesInFlight.delete(reserved.key);
+    }
+  }
+
+  private async deliverWatcherAttempt(
+    watcher: AppAdvisorWatcher,
+    event?: WatcherFiringEvent,
+    stableDeliveryId?: string,
+    reservedInFlightKey?: string,
   ): Promise<void> {
     const generation = this.configurationGeneration;
     if (isChatWatcher(watcher)) {
@@ -12330,7 +12470,11 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
       deliveryId = stableDeliveryId;
     }
     const inFlightKey = `${generation}:${watcher.id}`;
-    if (this.localDeliveriesInFlight.has(inFlightKey)) return;
+    if (
+      this.localDeliveriesInFlight.has(inFlightKey) &&
+      reservedInFlightKey !== inFlightKey
+    )
+      return;
     this.localDeliveriesInFlight.add(inFlightKey);
     // A recovered/previously held outbox may already have crossed ingress.
     const priorQueueHandoff =
@@ -12479,6 +12623,15 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
       if (stableDeliveryId) throw error;
       if (!this.configured || generation !== this.configurationGeneration)
         return;
+      if (error instanceof WatcherPresenterUnavailableError) {
+        if (isChatWatcher(watcher) && !priorQueueHandoff)
+          this.unsubmittedChatDeliveries.add(deliveryId);
+        this.presenterHeldWatcherIds.add(watcher.id);
+        logMainProcessInfo(
+          `[watchers] Watcher ${watcher.id} delivery ${deliveryId} waits for a window that can show its chat.`,
+        );
+        return;
+      }
       if (
         isChatWatcher(watcher) &&
         ((error instanceof Error &&
@@ -12633,6 +12786,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
 
       let deliveryError: string | undefined;
       let recipientNotReady = false;
+      let presenterUnavailable = false;
       const delegationId = watcher.destination.delegationId;
       try {
         if (delegationId) {
@@ -12661,6 +12815,8 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
         }
       } catch (error) {
         recipientNotReady = error instanceof WatcherRecipientNotReadyError;
+        presenterUnavailable =
+          error instanceof WatcherPresenterUnavailableError;
         deliveryError = error instanceof Error ? error.message : String(error);
       }
 
@@ -12715,6 +12871,12 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
             current.updatedAt = now;
             currentPending.nextAttemptAt = new Date(
               Date.now() + DELEGATE_RECIPIENT_RETRY_MS,
+            ).toISOString();
+          } else if (presenterUnavailable) {
+            current.status = 'firing';
+            current.updatedAt = now;
+            currentPending.nextAttemptAt = new Date(
+              Date.now() + PRESENTER_UNAVAILABLE_RETRY_MS,
             ).toISOString();
           } else {
             currentPending.attempts += 1;
@@ -12889,7 +13051,9 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
         : this.sendChatWindowCommandWithRetry(command));
       if (!sent) {
         this.cancelPendingDelivery(watcher.id);
-        throw new Error('Main window is not available.');
+        throw new WatcherPresenterUnavailableError(
+          'Main window is not available.',
+        );
       }
       const ack = await ackPromise;
       if (!ack.ok) {

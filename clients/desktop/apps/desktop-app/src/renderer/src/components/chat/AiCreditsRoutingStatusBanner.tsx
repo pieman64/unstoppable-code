@@ -10,7 +10,6 @@ import { getModelCatalogProviderLabel } from '@canopy/ui-shared';
 import { CoinsIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
   aiCreditsArrivalTitle,
-  LoadingSpinner,
   Notice,
   NoticeButton,
 } from '@canopy/ui-shared/components';
@@ -719,15 +718,8 @@ export function AiCreditsRoutingStatusBanner({
       // inside this button (CAN-2349 decision 5) rather than as a detail line,
       // so the banner does not reflow when it settles.
       disabled={checking}
-      aria-busy={checking}
-      icon={
-        checking ? (
-          <LoadingSpinner
-            decorative
-            dataTestId="chat-input-ai-credits-switch-checking"
-          />
-        ) : undefined
-      }
+      busy={checking}
+      busyLabel="Checking…"
       onClick={handleSwitch}
     >
       Switch to subscription

@@ -22,7 +22,14 @@ import {
 import type {
   Pipeline,
   PipelineData,
+  PipelinePluginCollectionPreference,
+  PipelinePreferenceLocator,
 } from '@canopy/desktop-shared/types/pipeline';
+import {
+  deletePipelinePluginCollectionPreferences,
+  loadPipelinePluginCollectionPreferences,
+  savePipelinePluginCollectionPreferences,
+} from '@canopy/desktop-shared/node/pipelines/plugin-collection-store';
 import {
   APP_ADVISOR_PROJECT_ID,
   type AutomationAction,
@@ -37,12 +44,14 @@ import {
   readPipelineLocalMetadata,
   recordUserPipelineOwner,
   setUserPipelineAgentAuthor,
+  setUserPipelineChatPluginDefaults,
   setUserPipelineNativeGrant,
   setUserPipelineOwnerAutomation,
   type PipelineNativeGrant,
 } from '../pipelines/pipeline-local-metadata-store';
 import { getStoredPipelineBySource } from '../pipelines/pipeline-service';
 import { automationSendCaller } from './automation-send';
+import { chatPluginPortability } from './chat-plugin-portability';
 import {
   nativeGrantAuthority,
   nativeGrantContentHash,
@@ -217,12 +226,7 @@ type ChatAutomationPipeline = ReturnType<typeof chatAutomationToPipeline>;
 /** The action that runs `pipeline` as the owned pipeline `pipelineId`. */
 function ownedPipelineAction(
   pipelineId: string,
-  {
-    pipeline,
-    inputs,
-    modelAliasPreferences,
-    pluginCollectionPreferences,
-  }: ChatAutomationPipeline,
+  { pipeline, inputs, modelAliasPreferences }: ChatAutomationPipeline,
 ): AutomationAction {
   return {
     type: 'worktree_pipeline',
@@ -231,11 +235,36 @@ function ownedPipelineAction(
     pipelineSource: 'user',
     pipelineName: pipeline.name,
     inputs,
-    // An Agent runs through the pipeline's model alias.
+    // An Agent runs through the pipeline's model alias. Plugin selections
+    // are the pipeline's own: its defaults, and its preferences on this
+    // machine (CAN-5479).
     ...(modelAliasPreferences ? { modelAliasPreferences } : {}),
-    // Local plugin selections, through the pipeline's plugin collection.
-    ...(pluginCollectionPreferences ? { pluginCollectionPreferences } : {}),
   };
+}
+
+function userPipelineLocator(pipelineId: string): PipelinePreferenceLocator {
+  return { type: 'stored', source: 'user', value: pipelineId };
+}
+
+/**
+ * Replaces the pipeline's plugin collection preferences on this machine
+ * with `preferences`; none deletes them.
+ */
+async function writePluginPreferences(
+  pipelineId: string,
+  preferences: Record<string, PipelinePluginCollectionPreference> | undefined,
+): Promise<void> {
+  const locator = userPipelineLocator(pipelineId);
+  if (preferences !== undefined && Object.keys(preferences).length > 0) {
+    await savePipelinePluginCollectionPreferences(
+      locator,
+      preferences,
+      'electron_main',
+    );
+    return;
+  }
+  if (Object.keys(loadPipelinePluginCollectionPreferences(locator)).length > 0)
+    await deletePipelinePluginCollectionPreferences(locator, 'electron_main');
 }
 
 /**
@@ -269,8 +298,6 @@ export async function saveOwnedChatPipeline(
     throw new Error(`This automation can't convert (${verdict.reason}).`);
   if (!convertsToOwnedChatPipeline(activity))
     throw new Error("This automation can't convert (target_requirement).");
-  const converted = chatAutomationToPipeline(activity);
-  const { pipeline } = converted;
   const { action } = activity;
   if (
     action.type !== 'worktree_prompt' &&
@@ -279,6 +306,11 @@ export async function saveOwnedChatPipeline(
     action.type !== 'worktree_session_prompt'
   )
     throw new Error("This automation can't convert (not_a_chat_action).");
+  // CAN-5479: the selections that travel are the pipeline's defaults.
+  const converted = chatAutomationToPipeline(activity, {
+    portable: await chatPluginPortability(action.pluginSelections),
+  });
+  const { pipeline } = converted;
   const owner = await conversionOwner(activity, action);
   // CAN-5479: the settings its runs keep, which D11 would refuse an agent's.
   const authority = nativeGrantAuthority(action);
@@ -286,11 +318,13 @@ export async function saveOwnedChatPipeline(
   // owner, the agent author, whose runs keep their admission (D11), and the
   // native grant.
   const previousMetadata = inPlace
-    ? readPipelineLocalMetadata({
-        type: 'stored',
-        source: 'user',
-        value: inPlace.pipelineId,
-      })
+    ? readPipelineLocalMetadata(userPipelineLocator(inPlace.pipelineId))
+    : undefined;
+  // And its plugin preferences on this machine (CAN-5479).
+  const previousPreferences = inPlace
+    ? loadPipelinePluginCollectionPreferences(
+        userPipelineLocator(inPlace.pipelineId),
+      )
     : undefined;
   const { saveUserPipeline, deleteUserPipeline } =
     await import('../canopy-runtime/pipeline-definition-dispatch');
@@ -358,6 +392,18 @@ export async function saveOwnedChatPipeline(
         pipelineId,
       ),
     );
+    setUserPipelineChatPluginDefaults(
+      pipelineId,
+      previousMetadata?.chatPluginDefaults ?? null,
+    );
+    try {
+      await writePluginPreferences(pipelineId, previousPreferences);
+    } catch (error) {
+      logMainProcessWarn('Could not restore a workflow’s plugin preferences', {
+        operation: 'restore-owned-pipeline',
+        errorType: error instanceof Error ? error.name : typeof error,
+      });
+    }
   };
   try {
     // The grant names the revision this save wrote and its content as
@@ -383,13 +429,18 @@ export async function saveOwnedChatPipeline(
     setUserPipelineAgentAuthor(pipelineId, activity.agentAuthor ?? null);
     setUserPipelineOwnerAutomation(pipelineId, activity.id);
     setUserPipelineNativeGrant(pipelineId, grant);
+    setUserPipelineChatPluginDefaults(
+      pipelineId,
+      converted.pluginDefaults ?? null,
+    );
+    // The selections that don't travel, as the pipeline's own preferences.
+    await writePluginPreferences(
+      pipelineId,
+      converted.pluginCollectionPreferences,
+    );
     // The store logs a failed write instead of throwing; without the marker
     // the automation's delete could never find its pipeline.
-    const recorded = readPipelineLocalMetadata({
-      type: 'stored',
-      source: 'user',
-      value: pipelineId,
-    });
+    const recorded = readPipelineLocalMetadata(userPipelineLocator(pipelineId));
     if (
       recorded.owner !== owner ||
       recorded.ownerAutomationId !== activity.id ||
@@ -400,6 +451,14 @@ export async function saveOwnedChatPipeline(
     // action ran with; a stale one would keep authority the action dropped.
     if (!isDeepStrictEqual(recorded.nativeGrant ?? null, grant))
       throw new Error('The workflow’s settings could not be recorded.');
+    // Without them converting back would take the pipeline as hand edited.
+    if (
+      !isDeepStrictEqual(
+        recorded.chatPluginDefaults ?? null,
+        converted.pluginDefaults ?? null,
+      )
+    )
+      throw new Error('The workflow’s plugins could not be recorded.');
   } catch (error) {
     await rollback();
     throw error;

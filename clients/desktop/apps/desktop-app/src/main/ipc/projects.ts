@@ -5,6 +5,7 @@ import {
 import type { BrowserWindow, IpcMainInvokeEvent } from 'electron';
 import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import { CanopyOperationError } from '@canopy/core-runtime';
+import { getElectronDaemonHealth } from '../canopy-runtime/electron-daemon-health';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 import { projectedSourceCompositionCommands } from '../canopy-runtime/source-composition-dispatch';
 import {
@@ -349,11 +350,35 @@ export function registerProjectHandlers(
     IpcMainInvokeEvent['sender'],
     readonly SidebarItem[]
   >();
+  const projectsLoadGenerations = new WeakMap<
+    IpcMainInvokeEvent['sender'],
+    number
+  >();
+  const needsReload = new WeakSet<IpcMainInvokeEvent['sender']>();
+  const refuseUntilReloaded = (event: IpcMainInvokeEvent): void => {
+    if (event?.sender && needsReload.has(event.sender))
+      throw new Error('Reload your projects before saving changes.');
+  };
+  const markNeedsReload = (
+    event: IpcMainInvokeEvent,
+    generation: number,
+  ): void => {
+    if (
+      !event?.sender ||
+      projectsLoadGenerations.get(event.sender) !== generation
+    )
+      return;
+    needsReload.add(event.sender);
+    deliveredSidebarItems.delete(event.sender);
+  };
   startPolling(getWindow, dispatcher);
   recordRealisticStartupPerformanceEvent('startup:github-poller:started');
   startCodeGraphBaseManager();
   let didReconcileGitPendingWorktrees = false;
   let didScheduleChatBadgeBackfill = false;
+  let startupRecoveryWork: Promise<void> = Promise.resolve();
+  let startupBadgeWork: Promise<void> = Promise.resolve();
+  let startupRecoverySequence = getElectronDaemonHealth().getRecoverySequence();
   const reconcileExternalSnapshot = (
     workspaceId: string,
     worktrees: Parameters<typeof reconcileExternalWorktreeSnapshot>[1],
@@ -368,6 +393,16 @@ export function registerProjectHandlers(
   };
 
   registerIpcHandler(IPC_CHANNELS.projectsLoad, async (event) => {
+    const generation = event?.sender
+      ? (projectsLoadGenerations.get(event.sender) ?? 0) + 1
+      : 0;
+    if (event?.sender) projectsLoadGenerations.set(event.sender, generation);
+    const recoverySequence = getElectronDaemonHealth().getRecoverySequence();
+    if (recoverySequence !== startupRecoverySequence) {
+      startupRecoverySequence = recoverySequence;
+      didReconcileGitPendingWorktrees = false;
+      didScheduleChatBadgeBackfill = false;
+    }
     const observer = __CANOPY_E2E__
       ? getFirstProjectsLoadMainObserver()
       : undefined;
@@ -392,11 +427,13 @@ export function registerProjectHandlers(
         )
       ).legacyResult;
       // A stale projection may only be delivered, never reconciled or remembered.
-      if (initial.stale)
+      if (initial.stale) {
+        markNeedsReload(event, generation);
         return {
           ...initial,
           items: initial.items.filter(isVisibleSidebarItem),
         };
+      }
       const initialItems = initial.items.filter(isVisibleSidebarItem);
       const initialFailedWorkspaceIds = getFailedWorkspaceIds(initial);
       syncTrackedGitHubWorktrees(initialItems, initialFailedWorkspaceIds);
@@ -421,27 +458,32 @@ export function registerProjectHandlers(
       ).legacyResult;
       if (Array.isArray(refreshed))
         throw new Error('Unscoped worktree projection was not captured.');
-      if (refreshed.stale)
+      if (refreshed.stale) {
+        markNeedsReload(event, generation);
         return {
           ...refreshed,
           items: refreshed.items.filter(isVisibleSidebarItem),
         };
+      }
       if (!didReconcileGitPendingWorktrees) {
         didReconcileGitPendingWorktrees = true;
         // Recovery may copy an interrupted archive for minutes. It owns its
         // existing lifecycle locks and publishes changes when it finishes;
         // loading the project inventory must not wait for that maintenance.
-        trackDetachedWork(() =>
-          reconcileGitPendingWorktrees(getWindow).catch(
-            (error: unknown): void => {
+        const previous = startupRecoveryWork;
+        trackDetachedWork(() => {
+          // A recovery reload must not overlap an archive still being copied.
+          startupRecoveryWork = previous
+            .then(() => reconcileGitPendingWorktrees(getWindow))
+            .catch((error: unknown): void => {
               const message =
                 error instanceof Error ? error.message : String(error);
               process.stderr.write(
                 `[worktree-boot-recovery] Startup recovery failed: ${message}\n`,
               );
-            },
-          ),
-        );
+            });
+          return startupRecoveryWork;
+        });
       }
       const refreshedItems = refreshed.items.filter(isVisibleSidebarItem);
       const refreshedFailedWorkspaceIds = getFailedWorkspaceIds(refreshed);
@@ -464,9 +506,13 @@ export function registerProjectHandlers(
         didScheduleChatBadgeBackfill = true;
         // Background trickle deriving chatBadges for legacy worktrees so the
         // renderer can skip eager transcript hydration for them next launch.
-        trackDetachedWork(() =>
-          backfillMissingWorktreeChatBadges(refreshedItems),
-        );
+        const previous = startupBadgeWork;
+        const backfill = (): Promise<void> =>
+          backfillMissingWorktreeChatBadges(refreshedItems);
+        trackDetachedWork(() => {
+          startupBadgeWork = previous.then(backfill, backfill);
+          return startupBadgeWork;
+        });
       }
       const response = {
         ...refreshed,
@@ -485,8 +531,14 @@ export function registerProjectHandlers(
             ),
           }),
         );
-      if (event?.sender)
+      // The renderer discards superseded loads; their edit baselines must too.
+      if (
+        event?.sender &&
+        projectsLoadGenerations.get(event.sender) === generation
+      ) {
         deliveredSidebarItems.set(event.sender, response.items);
+        needsReload.delete(event.sender);
+      }
       return response;
     } catch (error) {
       const legacyError =
@@ -608,6 +660,7 @@ export function registerProjectHandlers(
   registerIpcHandler(
     IPC_CHANNELS.projectsSave,
     async (event, items: SidebarItem[], options?: SidebarItemsSaveOptions) => {
+      refuseUntilReloaded(event);
       validateSidebarItems(items);
       options?.preserveWorkspaceIds?.forEach((workspaceId) => {
         validateId(workspaceId, 'preserved project id');
@@ -616,6 +669,7 @@ export function registerProjectHandlers(
       const commands = metadataCommands(event);
       const worktreeCommands = guardedCommands(event);
       return serializeChatProjectOperation(async () => {
+        refuseUntilReloaded(event);
         const previousItems = event?.sender
           ? deliveredSidebarItems.get(event.sender)
           : undefined;

@@ -10,6 +10,7 @@ import {
   type W5RecordPortTransport,
 } from '@canopy/core-runtime/node/w5/record-port';
 import type {
+  CoreWorkspaceRecordsCommitParams,
   CORE_WORKSPACE_RECORDS_INSTRUCTION_DEFINITIONS,
   CORE_WORKSPACE_RECORDS_QUERY_DEFINITIONS,
 } from '@canopy/protocol/canopy-core';
@@ -57,7 +58,10 @@ export type W5RecordPortClient = CanopyClient<
 const CAPTURE_OPERATION = 'core.workspaceRecords.capture';
 
 /** One record-port call: its operation, whether it is an instruction, and its run. */
-export type W5RecordPortCall<T> =
+export type W5RecordRecoveryTarget =
+  CoreWorkspaceRecordsCommitParams['files'][number]['target'];
+
+export type W5RecordPortCall<T> = (
   | {
       readonly kind: 'query';
       readonly operation: keyof typeof CORE_WORKSPACE_RECORDS_QUERY_DEFINITIONS;
@@ -67,7 +71,8 @@ export type W5RecordPortCall<T> =
       readonly kind: 'instruction';
       readonly operation: keyof typeof CORE_WORKSPACE_RECORDS_INSTRUCTION_DEFINITIONS;
       run(client: W5RecordPortClient): Promise<T>;
-    };
+    }
+) & { readonly recoveryTargets?: readonly W5RecordRecoveryTarget[] };
 
 /** Runs each record-port call over the client it resolves for that call. */
 export type W5RecordPortRunner = <T>(call: W5RecordPortCall<T>) => Promise<T>;
@@ -111,6 +116,7 @@ export function w5RecordPortTransportOver(
       run({
         kind: 'instruction',
         operation: 'core.workspaceRecords.commit',
+        recoveryTargets: request.files.map(({ target }) => ({ ...target })),
         run: (c) => c.instruction('core.workspaceRecords.commit', request),
       }),
     lookupReceipt: (receipt) =>

@@ -12,7 +12,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
 import { getStoredPipelineBySource } from '../pipelines/pipeline-service';
-import { ownedPipelineId } from './owned-pipeline';
+import { ownedChatPipelineState, ownedPipelineId } from './owned-pipeline';
 
 export function projectOwnedChatAutomation(
   activity: ScheduledActivity,
@@ -27,8 +27,7 @@ export function projectOwnedChatAutomation(
     stored.data.content,
     action.inputs ?? {},
     isCoworkWorkspace,
-    action.modelAliasPreferences,
-    action.pluginCollectionPreferences,
+    ownedChatPipelineState(action, pipelineId),
   );
   return chatAction
     ? {

@@ -145,32 +145,6 @@ export function bridgeCaller(
   };
 }
 
-export interface ControllableFlag {
-  readonly isEnabled: () => boolean;
-  readonly onChanged: (listener: () => void) => () => void;
-  set(value: boolean): void;
-  listeners(): number;
-}
-
-export function controllableFlag(initial: boolean): ControllableFlag {
-  let value = initial;
-  const listeners = new Set<() => void>();
-  return {
-    isEnabled: () => value,
-    onChanged: (listener) => {
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
-    },
-    set(next): void {
-      value = next;
-      for (const listener of Array.from(listeners)) listener();
-    },
-    listeners: () => listeners.size,
-  };
-}
-
 export interface Deferred<T = void> {
   readonly promise: Promise<T>;
   resolve(value: T): void;
@@ -494,7 +468,6 @@ export interface RouteHarness {
   readonly base: string;
   readonly dataRoot: string;
   readonly displayRoot: string;
-  readonly flag: ControllableFlag;
   readonly lifetime: ElectronDaemonCallerLifetime;
   readonly daemon: FakeDaemon;
   readonly connections: FakeConnections;
@@ -533,7 +506,6 @@ export interface RouteHarness {
 }
 
 export interface RouteHarnessOptions {
-  readonly flag?: boolean;
   readonly queryDeadlineMs?: number;
   /** Ignore results for the in-process daemon; legacy uses real Git. */
   readonly git?: GitIgnoreHostPort;
@@ -583,7 +555,6 @@ export async function createRouteHarness(
       ),
   );
   const connections = new FakeConnections(daemon);
-  const flag = controllableFlag(options.flag ?? true);
   const lifetime = createElectronDaemonCallerLifetime();
   const hostContext = jest.fn(() =>
     Promise.resolve({ authorityId: AUTHORITY, canonicalDataRoot: dataRoot }),
@@ -599,8 +570,6 @@ export async function createRouteHarness(
     directory: jest.fn(listFileTreeDirectory),
   };
   const route = createDaemonFilesRoute({
-    isFlagEnabled: flag.isEnabled,
-    onFlagChanged: flag.onChanged,
     lifetime,
     connections: connectionsFactory,
     hostContext,
@@ -634,7 +603,6 @@ export async function createRouteHarness(
     base,
     dataRoot,
     displayRoot,
-    flag,
     lifetime,
     daemon,
     connections,

@@ -1,3 +1,4 @@
+import { w5DaemonReceiptCaller } from '../workspace-metadata/receipt-caller';
 import { isW5CommitOutcome } from '../commit-log/worker-contract';
 import { W5ProcessFileLockTimeoutError } from '../commit-log/errors';
 import {
@@ -70,6 +71,18 @@ import {
  * in them.
  */
 
+function receiptForCaller(
+  receipt: CoreWorkspaceRecordsReceipt,
+  caller?: CanopyCallerDescriptor,
+): CoreWorkspaceRecordsReceipt {
+  return caller?.interfaceKind === 'cli'
+    ? {
+        ...receipt,
+        caller: w5DaemonReceiptCaller(caller.principalId, receipt.caller),
+      }
+    : { ...receipt };
+}
+
 export interface W5RecordAuthorityOptions {
   /** The daemon's W5 host; its identity keys the shared decision queue. */
   readonly host: W5CommitLogHostPort;
@@ -93,9 +106,13 @@ export interface W5RecordAuthority {
   ): Promise<CoreWorkspaceRecordsCommitResult>;
   lookupReceipt(
     receipt: CoreWorkspaceRecordsReceipt,
+    caller?: CanopyCallerDescriptor,
   ): Promise<CoreWorkspaceRecordsReceiptLookup>;
   listReservations(): Promise<CoreWorkspaceRecordsReservationList>;
-  reserve(params: CoreWorkspaceRecordsReserveParams): Promise<void>;
+  reserve(
+    params: CoreWorkspaceRecordsReserveParams,
+    caller?: CanopyCallerDescriptor,
+  ): Promise<void>;
   updateReservationDiagnostics(
     reservationId: string,
     diagnostics: string,
@@ -534,7 +551,9 @@ export function createW5RecordAuthority(
           assertStorageWriteAllowed(namespace, 'daemon', STORAGE_OWNERSHIP);
         const request: W5CommitRequest = {
           operation: params.operation,
-          ...(params.receipt && { receipt: { ...params.receipt } }),
+          ...(params.receipt && {
+            receipt: receiptForCaller(params.receipt, caller),
+          }),
           ...(params.reservationId !== undefined && {
             reservationId: params.reservationId,
           }),
@@ -598,9 +617,11 @@ export function createW5RecordAuthority(
       }),
     // Keyed admission and reservations are not queued, as in-process: the
     // log orders them, and only final decisions share the queue.
-    lookupReceipt: (receipt) =>
+    lookupReceipt: (receipt, caller) =>
       wire(async () =>
-        receiptLookupResult(await host.lookupReceipt({ ...receipt })),
+        receiptLookupResult(
+          await host.lookupReceipt(receiptForCaller(receipt, caller)),
+        ),
       ),
     listReservations: () =>
       wire(async () => {
@@ -625,12 +646,14 @@ export function createW5RecordAuthority(
           );
         return result;
       }),
-    reserve: (params) =>
+    reserve: (params, caller) =>
       keyedWrite(() =>
         host.reserve({
           reservationId: params.reservationId,
           operation: params.operation,
-          ...(params.receipt && { receipt: { ...params.receipt } }),
+          ...(params.receipt && {
+            receipt: receiptForCaller(params.receipt, caller),
+          }),
           ...(params.diagnostics !== undefined && {
             diagnostics: parseDiagnostics(params.diagnostics),
           }),

@@ -1,3 +1,8 @@
+import type { WorkerAgentHelperKind } from '@canopy/protocol/canopy-core';
+import {
+  runHelperThroughWorker,
+  linkHelperAbort,
+} from '../../helper-runs/helper-runs';
 import { LOCAL_MEMORY_MODEL_BLOCKED_MESSAGE } from '@canopy/desktop-shared/types/local-memory';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 import {
@@ -29,7 +34,10 @@ export const LOCAL_MEMORY_HELPER_TIMEOUT_MS = 25 * 60_000;
 export interface LocalMemoryStructuredHelperOptions<T> {
   /** Observed task already started by the caller; routing is recorded on it. */
   taskKey: string;
-  kind: string;
+  kind:
+    | 'local-memory-consolidation'
+    | 'local-memory-chat-profile'
+    | 'skill-suggestion-scan';
   label: string;
   /** Working directory: the memory scope the helper reports on. */
   scopeDir: string;
@@ -57,6 +65,15 @@ export interface LocalMemoryStructuredHelperOptions<T> {
   /** Defaults to {@link LOCAL_MEMORY_HELPER_TIMEOUT_MS}. */
   timeoutMs?: number;
 }
+
+const HELPER_KIND_BY_MEMORY_KIND = {
+  'local-memory-consolidation': 'local_memory_consolidation',
+  'local-memory-chat-profile': 'local_memory_chat_profile',
+  'skill-suggestion-scan': 'skill_suggestion_scan',
+} as const satisfies Record<
+  LocalMemoryStructuredHelperOptions<unknown>['kind'],
+  WorkerAgentHelperKind
+>;
 
 function timeoutError(timeoutMs: number, cause: unknown): Error {
   const message = `Local memory helper timed out after ${Math.round(timeoutMs / 60_000)} minutes.`;
@@ -114,51 +131,87 @@ export async function runLocalMemoryStructuredHelper<T>(
       invocation.aiCreditsRouted,
       invocation.accountProxyRouted === true,
     );
+    const helperInvocation = invocation;
     if (invocation.harness === 'codex') {
-      return await codexStructuredHelperRunner.run<T>({
-        repoPath: options.scopeDir,
-        model: invocation.sdkModel ?? model,
-        systemPrompt: options.systemPrompt,
-        userMessage: options.userMessage,
-        combinedPrompt: options.userMessage,
-        permissionMode: 'report-only',
-        schema: options.schema,
-        thinkingLevel,
-        modelConfig,
-        workspaceId: options.workspaceId,
-        localMemoryEnabled,
-        isResult: options.isResult,
-        codexConfigOverride: invocation.codexConfig,
-        waitForQuotaRecovery: invocation.waitForQuotaRecovery,
-        abortController,
+      return await runHelperThroughWorker({
+        kind: HELPER_KIND_BY_MEMORY_KIND[options.kind],
+        model,
+        scope: { workspaceId: options.workspaceId },
+        origin: 'system',
+        workOwner: options.workOwner,
+        signal: abortController.signal,
+        launch: async (workerSignal) => {
+          const invocation = helperInvocation;
+          const unlink = linkHelperAbort(workerSignal, abortController);
+          try {
+            return await codexStructuredHelperRunner.run<T>({
+              repoPath: options.scopeDir,
+              model: invocation.sdkModel ?? model,
+              systemPrompt: options.systemPrompt,
+              userMessage: options.userMessage,
+              combinedPrompt: options.userMessage,
+              permissionMode: 'report-only',
+              schema: options.schema,
+              thinkingLevel,
+              modelConfig,
+              workspaceId: options.workspaceId,
+              localMemoryEnabled,
+              isResult: options.isResult,
+              codexConfigOverride: invocation.codexConfig,
+              waitForQuotaRecovery: invocation.waitForQuotaRecovery,
+              abortController,
+            });
+          } finally {
+            unlink();
+          }
+        },
+        usageOf: (r) => r.usage,
       });
     }
-    return await runStructuredHelper<T>({
-      kind: options.kind,
-      label: options.label,
-      repoPath: options.scopeDir,
-      model: invocation.sdkModel ?? model,
-      provider: invocation.providerType === 'ollama' ? 'ollama' : 'claude',
-      executionHarness: invocation.harness,
-      maxTurns: 10,
-      systemPrompt: options.systemPrompt,
-      userMessage: options.userMessage,
-      schema: options.schema,
-      ...(options.resultValidationSchema
-        ? { resultValidationSchema: options.resultValidationSchema }
-        : {}),
-      ...(options.onResultRejected
-        ? { onResultRejected: options.onResultRejected }
-        : {}),
-      thinkingLevel,
-      workspaceId: options.workspaceId,
-      localMemoryEnabled,
-      isResult: options.isResult,
-      claudeEnvOverride: invocation.envOverride,
-      waitForQuotaRecovery: invocation.waitForQuotaRecovery,
-      permission: structuredHelperReportOnlyPermission(),
-      abortController,
-      timeoutMs,
+    return await runHelperThroughWorker({
+      kind: HELPER_KIND_BY_MEMORY_KIND[options.kind],
+      model,
+      scope: { workspaceId: options.workspaceId },
+      origin: 'system',
+      workOwner: options.workOwner,
+      signal: abortController.signal,
+      launch: async (workerSignal) => {
+        const invocation = helperInvocation;
+        const unlink = linkHelperAbort(workerSignal, abortController);
+        try {
+          return await runStructuredHelper<T>({
+            kind: options.kind,
+            label: options.label,
+            repoPath: options.scopeDir,
+            model: invocation.sdkModel ?? model,
+            provider:
+              invocation.providerType === 'ollama' ? 'ollama' : 'claude',
+            executionHarness: invocation.harness,
+            maxTurns: 10,
+            systemPrompt: options.systemPrompt,
+            userMessage: options.userMessage,
+            schema: options.schema,
+            ...(options.resultValidationSchema
+              ? { resultValidationSchema: options.resultValidationSchema }
+              : {}),
+            ...(options.onResultRejected
+              ? { onResultRejected: options.onResultRejected }
+              : {}),
+            thinkingLevel,
+            workspaceId: options.workspaceId,
+            localMemoryEnabled,
+            isResult: options.isResult,
+            claudeEnvOverride: invocation.envOverride,
+            waitForQuotaRecovery: invocation.waitForQuotaRecovery,
+            permission: structuredHelperReportOnlyPermission(),
+            abortController,
+            timeoutMs,
+          });
+        } finally {
+          unlink();
+        }
+      },
+      usageOf: (r) => r.usage,
     });
   } catch (error) {
     if (abortController.signal.aborted) throw timeoutError(timeoutMs, error);

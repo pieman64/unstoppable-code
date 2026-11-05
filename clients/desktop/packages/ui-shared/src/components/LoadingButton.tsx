@@ -180,9 +180,9 @@ export function LoadingButton({
  * The inside of a button that can turn busy: the resting label and the busy
  * one (spinner plus `busyLabel`) on top of each other in one grid cell, so
  * the button is as wide as the wider of them from the first render. Only
- * the showing layer is exposed to assistive technology. `LoadingButton` and
- * a busy-capable `NoticeButton` draw their labels through it; the button
- * itself still sets `aria-busy` and `disabled`.
+ * the showing layer is exposed to assistive technology. `LoadingButton`
+ * draws its labels through it; the button itself still sets `aria-busy`
+ * and `disabled`.
  */
 export function BusyLayers({
   busy,

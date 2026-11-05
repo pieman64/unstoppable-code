@@ -14,6 +14,7 @@ export * from './memory-index';
 export * from './output';
 export * from './prompt';
 export * from './pruning';
+export * from './recall';
 export * from './redaction';
 export * from './run';
 export * from './text';

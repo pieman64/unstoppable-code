@@ -69,8 +69,9 @@ export function ErrorBanner({
    */
   retryLabel?: string;
   /**
-   * The retry is running: its capsule spins in place (`Trying again…` for a
-   * `Try again` action) while the banner stays, so nothing blanks.
+   * The retry is running: its capsule keeps its resting width and shows only
+   * a spinner. `Trying again…` is the accessible label for a `Try again`
+   * action; the banner stays, so nothing blanks.
    */
   retrying?: boolean;
 }): JSX.Element | null {

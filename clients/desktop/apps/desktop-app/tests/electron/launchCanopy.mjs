@@ -184,10 +184,6 @@ const defaultViewportSize = { width: 1400, height: 900 };
 //   LaunchDarkly; its spec drives it off explicitly.
 const DEFAULT_E2E_CLIENT_FEATURE_FLAGS = {
   'canopy-desktop-labs-early-access': 'offered',
-  // Keep ordinary UI specs direct; Files acceptance opts in through Labs. The
-  // CAN-5544 dry run (`CANOPY_E2E_DAEMON_FILES_DRY_RUN=1`) forces it `on`; see
-  // resolveDefaultE2eClientFeatureFlags.
-  'canopy-desktop-labs-daemon-files-reads': 'offered',
   // Terminals stay in the app; terminal acceptance opts in through Labs.
   'canopy-desktop-labs-daemon-terminals': 'offered',
   'canopy-desktop-labs-daemon-code-graph': 'offered',
@@ -230,7 +226,6 @@ const DEFAULT_E2E_CLIENT_FEATURE_FLAGS = {
   'canopy-desktop-shared-containers': true,
 };
 
-export const DAEMON_FILES_FLAG = 'canopy-desktop-labs-daemon-files-reads';
 export const DAEMON_FILES_DRY_RUN_ENV = 'CANOPY_E2E_DAEMON_FILES_DRY_RUN';
 
 export function isDaemonFilesDryRun(env = process.env) {
@@ -238,14 +233,11 @@ export function isDaemonFilesDryRun(env = process.env) {
 }
 
 /**
- * The suite-wide flag defaults for a runner environment. Only the dry run
- * changes them: it forces Files reads `on` as a Cut A rehearsal. A spec's own
- * `CANOPY_E2E_CLIENT_FEATURE_FLAGS` still wins over every default.
+ * Suite-wide flag defaults. Dry-run evidence does not change product routing.
  */
-export function resolveDefaultE2eClientFeatureFlags(env = process.env) {
+export function resolveDefaultE2eClientFeatureFlags() {
   return {
     ...DEFAULT_E2E_CLIENT_FEATURE_FLAGS,
-    [DAEMON_FILES_FLAG]: isDaemonFilesDryRun(env) ? 'on' : 'offered',
   };
 }
 
@@ -2102,7 +2094,11 @@ export function packagedMainWindowRendererUrl(
   return rendererCodeCacheSchemeRequested(env)
     ? RENDERER_SCHEME_MAIN_PAGE_URL
     : pathToFileURL(
-        path.resolve(path.dirname(mainEntryPath), '../renderer/index.html'),
+        // Electron resolves the main module's symlinks before computing __dirname.
+        path.resolve(
+          path.dirname(realpathSync(mainEntryPath)),
+          '../renderer/index.html',
+        ),
       ).href;
 }
 

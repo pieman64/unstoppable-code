@@ -1,7 +1,10 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { InitiatedWorkEngine } from '@canopy/core-runtime/node/initiated-work';
+import {
+  HookChatClaims,
+  InitiatedWorkEngine,
+} from '@canopy/core-runtime/node/initiated-work';
 import { OperationService } from '@canopy/core-runtime/node/operations';
 import { OperationLedger } from '@canopy/core-runtime/node/operations/ledger';
 
@@ -21,6 +24,7 @@ import { OperationLedger } from '@canopy/core-runtime/node/operations/ledger';
 
 export interface TestInitiatedWork {
   engine: InitiatedWorkEngine;
+  hookChatClaims: HookChatClaims;
   operations: OperationService;
 }
 
@@ -37,6 +41,7 @@ export function testInitiatedWork(): TestInitiatedWork {
     dir,
     operations,
     engine: new InitiatedWorkEngine({ operations }),
+    hookChatClaims: new HookChatClaims({ operations }),
   };
   return current;
 }

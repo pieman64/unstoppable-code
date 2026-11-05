@@ -105,8 +105,7 @@ function createDataRoot() {
  * Deliberate exception to apps/desktop-app AGENTS.md's central binary lookup
  * and enhanced environment rule: like scripts/smoke-core-daemon.mjs, the
  * standalone population measures the built artifact itself under a controlled
- * environment, not the desktop launch path. Product arms launch nothing until
- * CAN-4603.
+ * environment, not the desktop launch path. Product arms launch nothing: their build-default collector is not implemented.
  */
 function spawnDaemon(dataRoot) {
   return spawn(executable, ['--data-root', dataRoot, '--runtime-mode', 'dev'], {

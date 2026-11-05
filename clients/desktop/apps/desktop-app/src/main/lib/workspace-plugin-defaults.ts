@@ -766,6 +766,17 @@ export function reconcileManifestPluginDefaults(
 }
 
 /**
+ * A failed removal may already have applied. Bypass the cached layer until an
+ * authoritative manifest read reconciles it, including an absent manifest.
+ * Unreadable storage leaves the hand-off owed for later reads to retry.
+ */
+export function reconcileWorkspaceRemovalPluginDefaults(
+  workspaceId: string,
+): void {
+  reconcileHandOffInBackground(workspaceId, {});
+}
+
+/**
  * Receipts of keyed attempts of this process that failed after staging and
  * whose reconcile decided nothing, so the refresh of a decision that landed
  * may still be owed, with the project revision at the failure. The cached

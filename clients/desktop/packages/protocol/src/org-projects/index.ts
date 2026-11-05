@@ -517,6 +517,13 @@ export interface ClaimOrgProjectInstanceResponse {
   /** Echoed back on completion so a stale attempt cannot finish a newer claim. */
   fencingGeneration: number;
   state: OrgProjectInstanceState;
+  /**
+   * The project's lifecycle event cursor when this answer was made (CAN-5189),
+   * in the opaque format of `GET /api/v1/projects/{projectId}/events`: every
+   * event after it happened after the claim was answered, so a device follows
+   * the feed from here. Absent from servers that predate it.
+   */
+  eventsCursor?: string;
 }
 
 export interface CompleteOrgProjectInstanceRequest {

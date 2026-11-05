@@ -5,6 +5,7 @@ import {
   forwardRef,
   isValidElement,
   useContext,
+  useState,
   type ButtonHTMLAttributes,
   type HTMLAttributes,
   type JSX,
@@ -17,8 +18,9 @@ import {
   InfoIcon,
   WarningIcon,
 } from '../icons/AppIcons';
-import { Button, buttonClassName } from './Button';
-import { BusyLayers } from './LoadingButton';
+import { Button, buttonClassName, isAriaDisabled } from './Button';
+import { ReservedLabel } from './LoadingButton';
+import { LoadingSpinner } from './LoadingSpinner';
 
 /**
  * The two tiers of action a notice can offer. `primary` is the single
@@ -66,16 +68,14 @@ export interface NoticeButtonProps extends ButtonHTMLAttributes<HTMLButtonElemen
    */
   icon?: ReactNode;
   /**
-   * The work this button started is still running: the spinner takes the
-   * glyph's place inside the capsule, `busyLabel` (when given) replaces the
-   * label, and the button announces `aria-busy` and stops taking presses, so
-   * a retry never blanks or runs twice. Pass it (`false` while resting) on
-   * any button whose work can run: the busy label's room is then held from
-   * the first render, so the capsule keeps one width and its neighbours
-   * never move.
+   * The work this button started is still running. Only the loader is
+   * visible; the capsule keeps the width of its resting label and glyph.
+   * No extra room is reserved for the loader or the busy label.
+   * The button keeps an accessible name, announces `aria-busy` and stops
+   * taking presses until the work finishes.
    */
   busy?: boolean;
-  /** The label while `busy`. Defaults to the resting label. */
+  /** Screen-reader label while busy. Defaults to the resting label. */
   busyLabel?: ReactNode;
 }
 
@@ -100,10 +100,28 @@ export const NoticeButton = forwardRef<HTMLButtonElement, NoticeButtonProps>(
     ref,
   ): JSX.Element {
     const size = useContext(NoticeButtonSizeContext);
-    const hasIcon = icon !== undefined && icon !== null;
+    const isBusy =
+      busy === true ||
+      props['aria-busy'] === true ||
+      props['aria-busy'] === 'true';
+    // Retain the last idle content even when a caller clears an error or
+    // changes its label/glyph in the render that starts the request. Sync
+    // during idle renders so there is no effect frame with stale sizing.
+    const [restingContent, setRestingContent] = useState({
+      label: children,
+      icon,
+    });
+    if (
+      !isBusy &&
+      (restingContent.label !== children || restingContent.icon !== icon)
+    ) {
+      setRestingContent({ label: children, icon });
+    }
+    const sizingIcon = isBusy ? restingContent.icon : icon;
+    const hasIcon = sizingIcon !== undefined && sizingIcon !== null;
     const glyph = hasIcon ? (
       <span aria-hidden="true" className="inline-flex shrink-0">
-        {icon}
+        {sizingIcon}
       </span>
     ) : undefined;
     return (
@@ -114,21 +132,29 @@ export const NoticeButton = forwardRef<HTMLButtonElement, NoticeButtonProps>(
         size={size}
         className={`max-w-full whitespace-nowrap ${className}`}
         {...props}
-        disabled={busy === true || disabled}
-        aria-busy={busy === true ? true : props['aria-busy']}
+        disabled={
+          (isBusy && !isAriaDisabled(props['aria-disabled'])) || disabled
+        }
+        aria-busy={isBusy ? true : props['aria-busy']}
+        busyAppearance="preserved"
       >
-        {busy === undefined ? (
-          <>
+        <span className="relative inline-flex min-w-0 max-w-full">
+          <span
+            aria-hidden={isBusy ? true : undefined}
+            className={`inline-flex min-w-0 max-w-full items-center justify-center gap-1.5 ${isBusy ? 'invisible' : ''}`}
+          >
             {glyph}
-            {children}
-          </>
-        ) : (
-          // The resting and busy labels share one cell (`BusyLayers`, as in
-          // `LoadingButton`), so turning busy never widens the capsule.
-          <BusyLayers busy={busy} busyLabel={busyLabel} leading={glyph}>
-            {children}
-          </BusyLayers>
-        )}
+            {isBusy ? <ReservedLabel label={restingContent.label} /> : children}
+          </span>
+          {isBusy ? (
+            <span className="absolute inset-0 flex items-center justify-center">
+              <LoadingSpinner decorative />
+              <span className="sr-only">
+                {busyLabel ?? restingContent.label}
+              </span>
+            </span>
+          ) : null}
+        </span>
       </Button>
     );
   },
@@ -604,7 +630,7 @@ export function Notice({
                             ? '@max-sm/notice:pl-4'
                             : '@max-sm/notice:pl-6'
                     } ${onDismiss ? NARROW_UNDER_DISMISS : pullControlsIn ? '-mr-1' : ''}`
-                  : `flex basis-full flex-wrap items-center gap-2 ${onDismiss ? NARROW_UNDER_DISMISS : ''} ${
+                  : `flex min-w-0 max-w-full basis-full flex-wrap items-center gap-2 ${onDismiss ? NARROW_UNDER_DISMISS : ''} ${
                       resolvedIcon === null
                         ? ''
                         : composerShape

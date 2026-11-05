@@ -1,12 +1,5 @@
-import { createHash, randomUUID } from 'node:crypto';
-import {
-  lstat,
-  mkdir,
-  readFile,
-  rename,
-  rm,
-  writeFile,
-} from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { lstat, mkdir, readFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { isSafeCapabilityRelativePath } from '@canopy/protocol/capability-files';
 import type { PipelinePackageResource } from '@canopy/protocol/pipelines';
@@ -17,6 +10,7 @@ import {
   getPipelineAssetsDir,
   getPipelineAssetsManifestPath,
 } from '../lib/paths';
+import { writeStoreFileDurably } from '../lib/durable-store-write';
 
 /**
  * Installs an automation package's `file_asset` resources into the data dir
@@ -83,24 +77,6 @@ export async function readPipelineAssetsManifest(
     if (errorCode(error) === 'ENOENT' || error instanceof SyntaxError)
       return { version: 1, assets: {} };
     throw error;
-  }
-}
-
-async function writeFileAtomically(
-  destination: string,
-  contents: Uint8Array | string,
-  options: { executable?: boolean } = {},
-): Promise<void> {
-  await mkdir(path.dirname(destination), { recursive: true });
-  const temporaryPath = `${destination}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporaryPath, contents, {
-      flag: 'wx',
-      ...(options.executable ? { mode: 0o755 } : {}),
-    });
-    await rename(temporaryPath, destination);
-  } finally {
-    await rm(temporaryPath, { force: true });
   }
 }
 
@@ -280,6 +256,27 @@ export async function installPipelineAssets(input: {
 }): Promise<PipelineAssetsManifestV1> {
   const assetsRoot = getPipelineAssetsDir(input.localPipelineId);
   const plan = await planPipelineAssetInstall(input);
+  try {
+    const raw: unknown = JSON.parse(
+      await readFile(
+        getPipelineAssetsManifestPath(input.localPipelineId),
+        'utf8',
+      ),
+    );
+    if (
+      isRecord(raw) &&
+      typeof raw.version === 'number' &&
+      Number.isFinite(raw.version) &&
+      raw.version > 1
+    ) {
+      throw new Error(
+        'The supporting files of this workflow were saved by a newer version of the app. Update the app and try again.',
+      );
+    }
+  } catch (error) {
+    if (errorCode(error) !== 'ENOENT' && !(error instanceof SyntaxError))
+      throw error;
+  }
   await input.beforeWrite?.(plan);
   for (const folder of plan.directories) {
     await mkdir(path.resolve(assetsRoot, folder), { recursive: true });
@@ -294,16 +291,17 @@ export async function installPipelineAssets(input: {
       );
     }
     // A script the analyzer accepted as executable stays runnable.
-    await writeFileAtomically(
-      path.resolve(assetsRoot, ...file.path.split('/')),
+    const destination = path.resolve(assetsRoot, ...file.path.split('/'));
+    await mkdir(path.dirname(destination), { recursive: true });
+    await writeStoreFileDurably(
+      destination,
       bytes,
-      { executable: file.executable },
+      file.executable ? { mode: 0o755 } : {},
     );
   }
-  await writeFileAtomically(
-    getPipelineAssetsManifestPath(input.localPipelineId),
-    plan.manifestText,
-  );
+  const manifestPath = getPipelineAssetsManifestPath(input.localPipelineId);
+  await mkdir(path.dirname(manifestPath), { recursive: true });
+  await writeStoreFileDurably(manifestPath, plan.manifestText);
   return plan.manifest;
 }
 

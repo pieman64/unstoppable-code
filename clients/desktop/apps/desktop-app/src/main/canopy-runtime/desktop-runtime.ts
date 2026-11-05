@@ -1,12 +1,17 @@
+import { CoreHelperRuns } from '@canopy/core-runtime/node/agent/helpers';
+import {
+  createWorkerAgentHelperAdapter,
+  type WorkerAgentHelperAdapter,
+} from './worker-agent-helper-adapter';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { basename, join, sep } from 'node:path';
 import {
   CANOPY_QUERY_DEFINITIONS,
   CANOPY_INSTRUCTION_DEFINITIONS,
+  WORKER_AGENT_HELPER_INSTRUCTION_DEFINITIONS,
   CANOPY_STREAM_DEFINITIONS,
   type CanopyStreamCursor,
   type CanopyInstructionDefinitionMap,
-  type CanopyInstructionHandlerMap,
   type CanopyQueryHandlerMap,
   type CanopyQueryParams,
   type CanopyQueryResult,
@@ -46,6 +51,7 @@ import {
   createWorkerExecutorReceipts,
   type CanopyDispatcher,
   type CanopyDispatcherStreamHandlerMap,
+  type CanopyDispatcherInstructionHandlerMap,
   type CanopyRuntimeQueries,
   type CanopyRuntimeStreams,
   type RuntimeService,
@@ -189,7 +195,10 @@ import {
 } from './core-operation-adapter';
 import { LocalWorkerExecution } from '@canopy/core-runtime/node/operations';
 import { CoreScriptRuns } from '@canopy/core-runtime/node/script/execution';
-import { InitiatedWorkEngine } from '@canopy/core-runtime/node/initiated-work';
+import {
+  HookChatClaims,
+  InitiatedWorkEngine,
+} from '@canopy/core-runtime/node/initiated-work';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import type { CostService } from '../cost-index/service';
 import type { ObservabilityReadModel } from '@canopy/core-runtime/observability';
@@ -292,6 +301,7 @@ export interface CreateDesktopRuntimeOptions {
   scriptDefinitionsHost?: CoreScriptDefinitionsHost;
   /** `worker.script.*` over this process's local worker (CAN-4143). */
   workerScriptAdapter?: WorkerScriptAdapter;
+  workerAgentHelperAdapter?: WorkerAgentHelperAdapter;
   /** Host port for the W5 `core.workspace.*` metadata commands (W7a). */
   workspaceMetadataHost?: CoreWorkspaceMetadataHost;
   /**
@@ -376,7 +386,9 @@ function defaultEntryMutationPlatform(): DesktopEntryMutationPlatform {
 
 export interface DesktopDomainAdapter {
   queries?: Partial<CanopyQueryHandlerMap<CanopyHandlerContext>>;
-  instructions?: Partial<CanopyInstructionHandlerMap<CanopyHandlerContext>>;
+  instructions?: Partial<
+    CanopyDispatcherInstructionHandlerMap<DesktopInstructionDefinitions>
+  >;
   streams?: Partial<CanopyStreamHandlerMap<CanopyHandlerContext>>;
 }
 
@@ -600,11 +612,14 @@ export interface DesktopCanopyDispatcher extends CanopyDispatcher<
    * `worker.script.execute` dispatch runs on the local worker.
    */
   readonly scriptRuns: CoreScriptRuns;
+  /** Helper model calls (CAN-4122): each a core.helper.run operation whose worker.agent.helper.run dispatch runs on the local worker. */
+  readonly helperRuns: CoreHelperRuns;
   /**
    * Initiated work (CAN-4144): each hook firing is a `core.initiatedWork.run`
    * operation with its gates, target queue and cancellation.
    */
   readonly initiatedWork: InitiatedWorkEngine;
+  readonly hookChatClaims: HookChatClaims;
   /**
    * Pipeline runs (CAN-4140): each run is a core operation whose start and
    * cancel are dispatched to the local worker.
@@ -1132,6 +1147,8 @@ export function createDesktopRuntime(
   );
   const workerScriptAdapter =
     options.workerScriptAdapter ?? createWorkerScriptAdapter();
+  const workerAgentHelperAdapter =
+    options.workerAgentHelperAdapter ?? createWorkerAgentHelperAdapter();
   const workerScriptHandlers: DesktopDomainAdapter = {
     queries: workerScriptAdapter.queries,
     instructions: workerScriptAdapter.instructions,
@@ -1252,6 +1269,7 @@ export function createDesktopRuntime(
     sharedMultiRepoAdapter,
     scriptDefinitionsAdapter,
     workerScriptHandlers,
+    workerAgentHelperAdapter,
     workerGitAdapter,
     workerGitSyncAdapter,
     integrationAdapter,
@@ -1268,7 +1286,7 @@ export function createDesktopRuntime(
     ...workspaceAdapter,
   };
   const instructions: Partial<
-    CanopyInstructionHandlerMap<CanopyHandlerContext>
+    CanopyDispatcherInstructionHandlerMap<DesktopInstructionDefinitions>
   > = {};
   const streams: Partial<
     CanopyDispatcherStreamHandlerMap<typeof CANOPY_STREAM_DEFINITIONS>
@@ -1300,8 +1318,10 @@ export function createDesktopRuntime(
   // writes (CAN-4108), the entry instructions (CAN-5502) and the git fetch
   // and pull (CAN-5517), which the transport carries. file.write and
   // directory.create stay outside it.
-  const instructionDefinitions: CanopyInstructionDefinitionMap =
-    CANOPY_INSTRUCTION_DEFINITIONS;
+  const instructionDefinitions: CanopyInstructionDefinitionMap = {
+    ...CANOPY_INSTRUCTION_DEFINITIONS,
+    ...WORKER_AGENT_HELPER_INSTRUCTION_DEFINITIONS,
+  };
   const workerInstructions: CanopyInstructionDefinitionMap = Object.fromEntries(
     Object.entries(instructionDefinitions).filter(
       ([, definition]) => definition.plane === 'worker',
@@ -1392,6 +1412,7 @@ export function createDesktopRuntime(
       ownedAdapter('core.workspace.sharedMultiRepo', sharedMultiRepoAdapter),
       ownedAdapter('core.script.definition', scriptDefinitionsAdapter),
       ownedAdapter('worker.script', workerScriptHandlers),
+      ownedAdapter('worker.agent', workerAgentHelperAdapter),
       owned('core.workspace.metadata', workspaceMetadataAdapter.instructions),
       owned('core.workspace.lifecycle', workspaceLifecycleAdapter.instructions),
       owned('core.workspace.guarded', workspaceGuardedAdapter.instructions),
@@ -1486,6 +1507,10 @@ export function createDesktopRuntime(
     observe: (executionId, observer): Promise<() => void> =>
       workerScriptAdapter.observe(executionId, observer),
   });
+  const helperRuns = new CoreHelperRuns({
+    operations: operationAdapter.service,
+    localWorker,
+  });
   const initiatedWork = new InitiatedWorkEngine({
     operations: operationAdapter.service,
     // Hook runs a restart interrupted resume through the hook source
@@ -1494,6 +1519,9 @@ export function createDesktopRuntime(
     onError: (error, context): void => {
       logMainProcessWarn(`[initiated-work] ${context} failed`, error);
     },
+  });
+  const hookChatClaims = new HookChatClaims({
+    operations: operationAdapter.service,
   });
   const pipelineRuns = new CorePipelineRuns({
     operations: operationAdapter.service,
@@ -2042,7 +2070,9 @@ export function createDesktopRuntime(
     isShuttingDown: (): boolean => shuttingDown,
     localWorker,
     scriptRuns,
+    helperRuns,
     initiatedWork,
+    hookChatClaims,
     pipelineRuns,
     pipelineHostRequests,
     queryWorkspaceListForLegacyIpc: refuseOnceShuttingDown(

@@ -1033,7 +1033,9 @@ export function formatPendingInputCheckpoint(
   return `${input.job_id}.${input.step_id}`;
 }
 
-function cancelRecoveredExecutionState(state: ExecutionState): ExecutionState {
+export function cancelRecoveredExecutionState(
+  state: ExecutionState,
+): ExecutionState {
   const cancelledState = recoverInterruptedState(state);
   markRemainingJobsCancelled(cancelledState);
   refreshAllJobGroups(cancelledState);
@@ -2046,6 +2048,8 @@ function executeState(
         ) {
           abortExecution();
         }
+      } catch {
+        // A failed read is retried on the next cancellation tick.
       } finally {
         cancelCheckInFlight = false;
       }
@@ -2504,7 +2508,7 @@ function executeState(
         await clearExecutionCancellation(
           currentState.id,
           options.runtime.executionsDir,
-        );
+        ).catch(() => undefined);
         completionResolve(cloneState(currentState));
         return;
       }
@@ -2527,7 +2531,7 @@ function executeState(
         await clearExecutionCancellation(
           currentState.id,
           options.runtime.executionsDir,
-        );
+        ).catch(() => undefined);
         completionResolve(cloneState(currentState));
         return;
       }
@@ -2548,7 +2552,7 @@ function executeState(
         await clearExecutionCancellation(
           currentState.id,
           options.runtime.executionsDir,
-        );
+        ).catch(() => undefined);
         completionResolve(cloneState(currentState));
         return;
       }
@@ -2574,7 +2578,7 @@ function executeState(
         await clearExecutionCancellation(
           currentState.id,
           options.runtime.executionsDir,
-        );
+        ).catch(() => undefined);
         completionResolve(cloneState(currentState));
         return;
       }
@@ -2598,7 +2602,7 @@ function executeState(
         await clearExecutionCancellation(
           currentState.id,
           options.runtime.executionsDir,
-        );
+        ).catch(() => undefined);
         completionResolve(cloneState(currentState));
         return;
       }
@@ -2616,7 +2620,7 @@ function executeState(
       await clearExecutionCancellation(
         currentState.id,
         options.runtime.executionsDir,
-      );
+      ).catch(() => undefined);
       completionResolve(cloneState(currentState));
     } catch (error) {
       currentState.plan_hash_after = await hashPlanFile(currentState).catch(
@@ -3530,8 +3534,10 @@ export async function cancelPipelineExecution(
     cancelledState.pending_input = undefined;
     cancelledState.status_reasons = [];
     try {
-      await saveExecutionState(cancelledState, runtime.executionsDir);
-      await clearExecutionCancellation(executionId, runtime.executionsDir);
+      await saveExecutionState(cancelledState, runtime.executionsDir, {
+        cancellation: 'clear_after',
+        durable: true,
+      });
       runtime.lifecycle?.onExecutionStart?.(loadedState);
       runtime.lifecycle?.onExecutionSettled?.(cancelledState);
       await cleanupExecutionTempDir(cancelledState, runtime);
@@ -3586,13 +3592,15 @@ export async function cancelPipelineExecution(
     // may still be force-finalized after the cooperative window.
     const cancelledState = cancelRecoveredExecutionState(latestState);
     try {
-      await saveExecutionState(cancelledState, runtime.executionsDir);
+      await saveExecutionState(cancelledState, runtime.executionsDir, {
+        cancellation: 'clear_after',
+        durable: true,
+      });
     } catch (error) {
       if (isExecutionStateWriteRefusal(error, 'owned_by_other_process'))
         return latestState;
       throw error;
     }
-    await clearExecutionCancellation(executionId, runtime.executionsDir);
     runtime.lifecycle?.onExecutionStart?.(latestState);
     runtime.lifecycle?.onExecutionSettled?.(cancelledState);
     await cleanupExecutionTempDir(cancelledState, runtime);

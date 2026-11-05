@@ -390,9 +390,12 @@ export async function applyWorkspaceRecordsRemoval(
       | 'split.created-workspace.records'
       | 'composition.destination.records';
   },
+  options?: { deferPluginDefaultsRefresh?: true },
 ): Promise<void> {
   switch (decision.kind) {
     case 'workspace.delete.records':
+      await removeWorkspaceRecords(workspaceId, options);
+      return;
     case 'split.created-workspace.records':
     case 'composition.destination.records':
       await removeWorkspaceRecords(workspaceId);

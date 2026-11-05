@@ -180,6 +180,18 @@ export type InitiatedWorkCodeGraphBaseMaintenanceOriginContext = z.output<
   typeof InitiatedWorkCodeGraphBaseMaintenanceOriginContextSchema
 >;
 
+export const CORE_INITIATED_WORK_HOOK_CHAT_KIND = 'core.initiatedWork.hookChat';
+
+export const InitiatedWorkHookChatOutcomeSchema = z.strictObject({
+  chatId: id,
+  userMessageId: id,
+  accepted: z.boolean(),
+  reason: z.enum(['returned', 'removed', 'cancelled']).optional(),
+});
+export type InitiatedWorkHookChatOutcome = z.output<
+  typeof InitiatedWorkHookChatOutcomeSchema
+>;
+
 export const CORE_INITIATED_WORK_RUN_ERROR_CODES = [
   'core.initiatedWork.gate.dedup',
   'core.initiatedWork.gate.pause',
@@ -193,6 +205,7 @@ export const CORE_INITIATED_WORK_RUN_ERROR_CODES = [
   'core.initiatedWork.gate.commandGate',
   'core.initiatedWork.run.failed',
   'core.initiatedWork.run.invalidated',
+  'core.initiatedWork.hookChat.failed',
 ] as const;
 export type CoreInitiatedWorkRunErrorCode =
   (typeof CORE_INITIATED_WORK_RUN_ERROR_CODES)[number];
@@ -205,9 +218,9 @@ export type CoreInitiatedWorkRunErrorCode =
  * no client is connected.
  *
  * Hooks are the only origin the initiated-work engine runs today. Their
- * commands and pipelines run headless; a hook with a chat action defers until
- * hook chats can start without a client (CAN-4138). Every other origin keeps
- * running its work in core whether or not a client is connected.
+ * commands, pipelines and chats run headless: hook chats start without a client
+ * since CAN-4138. Every other origin keeps running its work in core whether or
+ * not a client is connected. The `client` gate stays for a policy that defers.
  */
 export const INITIATED_WORK_NO_CLIENT_POLICIES = {
   client: { default: 'headless' },
@@ -215,7 +228,7 @@ export const INITIATED_WORK_NO_CLIENT_POLICIES = {
     default: 'headless',
     command: 'headless',
     pipeline: 'headless',
-    chat: 'defer',
+    chat: 'headless',
   },
   automation: { default: 'headless' },
   watcher: { default: 'headless' },

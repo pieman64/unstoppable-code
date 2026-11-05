@@ -1,5 +1,11 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { isStorageOutcomeUnknownError } from '@canopy/core-runtime/storage';
+import { writeFileAtomicallySync } from '@canopy/desktop-shared/node/lib/atomic-file';
+import type {
+  ChatPluginDefault,
+  ChatPluginSelection,
+} from '@canopy/desktop-shared/lib/chat-automation-conversion';
 import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
 import { serializePipelinePreferenceLocator } from '@canopy/desktop-shared/pipelines/plugin-collections';
 import {
@@ -18,7 +24,6 @@ import type {
 } from '@canopy/desktop-shared/types/pipeline';
 import { parseWorkspaceContext } from '@canopy/protocol/workspace-context';
 import { getPipelineLocalMetadataFilePath } from '../lib/paths';
-import { atomicWriteFile } from './fs-utils';
 
 /**
  * Main-only facts about a user pipeline that never travel with its content:
@@ -43,6 +48,12 @@ export interface PipelineLocalMetadata {
    * of the pipeline clears it.
    */
   nativeGrant?: PipelineNativeGrant;
+  /**
+   * CAN-5479: the selection each `chat_plugins` default of the automation's
+   * pipeline stood for when main last generated it, so converting back needs
+   * no plugin catalog. Written by main alone.
+   */
+  chatPluginDefaults?: ChatPluginDefault[];
 }
 
 /**
@@ -120,7 +131,51 @@ function normalizeEntry(value: unknown): PipelineLocalMetadata {
   if (ownerAutomationId) entry.ownerAutomationId = ownerAutomationId;
   const nativeGrant = normalizeNativeGrant(value.nativeGrant);
   if (nativeGrant) entry.nativeGrant = nativeGrant;
+  const chatPluginDefaults = normalizeChatPluginDefaults(
+    value.chatPluginDefaults,
+  );
+  if (chatPluginDefaults) entry.chatPluginDefaults = chatPluginDefaults;
   return entry;
+}
+
+function normalizeChatPluginSelection(
+  value: unknown,
+): ChatPluginSelection | undefined {
+  if (!isRecord(value)) return undefined;
+  if (value.kind === 'skill') {
+    const sourceId = nonEmptyString(value.sourceId);
+    const skillName = nonEmptyString(value.skillName);
+    return sourceId && skillName
+      ? { kind: 'skill', sourceId, skillName }
+      : undefined;
+  }
+  if (value.kind === 'plugin') {
+    const marketplaceId = nonEmptyString(value.marketplaceId);
+    const pluginName = nonEmptyString(value.pluginName);
+    return marketplaceId && pluginName
+      ? { kind: 'plugin', marketplaceId, pluginName }
+      : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * A list with an entry it can't read is dropped whole: converting back then
+ * finds a default with no selection and leaves the pipeline as it is.
+ */
+function normalizeChatPluginDefaults(
+  value: unknown,
+): ChatPluginDefault[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  const defaults: ChatPluginDefault[] = [];
+  for (const raw of value) {
+    if (!isRecord(raw)) return undefined;
+    const defaultKey = nonEmptyString(raw.defaultKey);
+    const selection = normalizeChatPluginSelection(raw.selection);
+    if (!defaultKey || !selection) return undefined;
+    defaults.push({ defaultKey, selection });
+  }
+  return defaults;
 }
 
 /** A grant with any field it can't trust is dropped whole: it fails closed. */
@@ -254,13 +309,27 @@ function writeMetadataFile(file: PipelineLocalMetadataFile): void {
   // Metadata never fails the save or run that records it.
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    atomicWriteFile(
+    writeFileAtomicallySync(
       filePath,
       `${JSON.stringify({ version: 1, entries }, null, 2)}\n`,
+      {
+        encoding: 'utf8',
+        mode: 0o600,
+        durable: true,
+        admittedWriter: {
+          namespace: 'pipeline_local_metadata',
+          writer: 'electron_main',
+          module: 'main/pipelines/pipeline-local-metadata-store',
+        },
+      },
     );
-    fs.chmodSync(filePath, 0o600);
     rememberFile(filePath, { version: 1, entries });
   } catch (error) {
+    if (isStorageOutcomeUnknownError(error)) {
+      rememberFile(filePath, { version: 1, entries });
+      warn('Metadata file installed, but its folder flush failed.');
+      return;
+    }
     warn(
       `Failed to write metadata file: ${error instanceof Error ? error.message : String(error)}`,
     );
@@ -348,6 +417,30 @@ export function setUserPipelineNativeGrant(
     const { nativeGrant, ...rest } = entry;
     void nativeGrant;
     return grant === null ? rest : { ...rest, nativeGrant: grant };
+  });
+}
+
+/**
+ * Records, or with `null` clears, the selections the automation's pipeline's
+ * `chat_plugins` defaults stand for (CAN-5479). Main alone writes them, when
+ * it generates the pipeline.
+ */
+export function setUserPipelineChatPluginDefaults(
+  pipelineId: string,
+  defaults: readonly ChatPluginDefault[] | null,
+): void {
+  const key = userPipelineKey(pipelineId);
+  if (
+    (defaults === null || defaults.length === 0) &&
+    !readMetadataFile().entries[key]?.chatPluginDefaults
+  )
+    return;
+  updateUserPipelineEntry(pipelineId, (entry) => {
+    const { chatPluginDefaults, ...rest } = entry;
+    void chatPluginDefaults;
+    return defaults === null || defaults.length === 0
+      ? rest
+      : { ...rest, chatPluginDefaults: [...defaults] };
   });
 }
 

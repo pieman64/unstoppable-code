@@ -34,7 +34,16 @@ export type ButtonLinkVariant = 'link';
 
 export type ButtonSize = 'sm' | 'md' | 'lg' | 'control' | 'compact' | 'field';
 
-interface CapsuleButtonBaseProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+interface BusyButtonAppearanceProps {
+  /**
+   * Keep the normal variant paint while busy. Only opt in when the caller
+   * renders a visible loader; `aria-busy` alone keeps the disabled feedback.
+   */
+  busyAppearance?: 'default' | 'preserved';
+}
+
+interface CapsuleButtonBaseProps
+  extends ButtonHTMLAttributes<HTMLButtonElement>, BusyButtonAppearanceProps {
   /** Visual treatment for the button. */
   variant?: ButtonVariant;
   /**
@@ -111,7 +120,8 @@ type CapsuleButtonProps = CapsuleButtonBaseProps &
  * copy around it. The capsule-only props do not apply, so they are not
  * accepted.
  */
-interface LinkButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+interface LinkButtonProps
+  extends ButtonHTMLAttributes<HTMLButtonElement>, BusyButtonAppearanceProps {
   variant: ButtonLinkVariant;
   size?: undefined;
   iconOnly?: false;
@@ -160,39 +170,43 @@ export const DROPDOWN_INVALID_CLASS =
 // rather than handed to a clickable row behind it (no `pointer-events-none`).
 // Its look ignores hover and press instead: Tailwind sorts `disabled:` after
 // `hover:` and `active:`, so each disabled class below outranks the hover or
-// press class for the same property.
-const BASE_CLASS_NAME = `focus-ring inline-flex max-h-9 shrink-0 select-none items-center justify-center gap-1.5 font-medium transition-[opacity,transform,scale] ${BUTTON_PRESS_CLASS} before:absolute before:inset-x-0 before:content-[''] disabled:scale-100 disabled:cursor-not-allowed disabled:shadow-none aria-disabled:scale-100 aria-disabled:cursor-not-allowed aria-disabled:opacity-60`;
+// press class for the same property. Loader-equipped busy buttons can opt
+// into retaining their variant paint; disabled semantics still block presses.
+const BASE_CLASS_NAME = `focus-ring inline-flex max-h-9 shrink-0 select-none items-center justify-center gap-1.5 font-medium transition-[opacity,transform,scale] ${BUTTON_PRESS_CLASS} before:absolute before:inset-x-0 before:content-[''] disabled:scale-100 disabled:cursor-not-allowed disabled:not-data-[busy-appearance=preserved]:shadow-none aria-disabled:scale-100 aria-disabled:cursor-not-allowed aria-disabled:not-data-[busy-appearance=preserved]:opacity-60`;
 
 // Disabled, the label takes the disabled ink; `quietWhenDisabled` keeps the
 // variant's ink at 80% instead.
 const DISABLED_INK_CLASS_NAME =
-  'disabled:text-[var(--fg-disabled)] disabled:opacity-100';
-const QUIET_DISABLED_INK_CLASS_NAME = 'disabled:opacity-80';
+  'disabled:not-data-[busy-appearance=preserved]:text-[var(--fg-disabled)] disabled:not-data-[busy-appearance=preserved]:opacity-100';
+const QUIET_DISABLED_INK_CLASS_NAME =
+  'disabled:not-data-[busy-appearance=preserved]:opacity-80';
 
 // Disabled, a filled variant swaps its fill for the disabled fill. The ghost
 // variants (transparent at rest) keep no fill: a disabled ghost reads as a
 // dimmed icon or label, never a grey disc, and their hover fill is reset.
-const DISABLED_FILL_CLASS_NAME = 'disabled:bg-[var(--bg-disabled)]';
-const DISABLED_NO_FILL_CLASS_NAME = 'disabled:bg-transparent';
+const DISABLED_FILL_CLASS_NAME =
+  'disabled:not-data-[busy-appearance=preserved]:bg-[var(--bg-disabled)]';
+const DISABLED_NO_FILL_CLASS_NAME =
+  'disabled:bg-transparent aria-busy:data-[busy-appearance=preserved]:bg-transparent';
 
 const VARIANT_CLASS_NAMES: Record<ButtonVariant, string> = {
-  primary: `bg-accent fg-emphasis hover:bg-[color-mix(in_srgb,var(--bg-accent),#000_12%)] ${DISABLED_FILL_CLASS_NAME}`,
+  primary: `bg-accent fg-emphasis hover:bg-[color-mix(in_srgb,var(--bg-accent),#000_12%)] ${DISABLED_FILL_CLASS_NAME} aria-busy:data-[busy-appearance=preserved]:bg-accent`,
   // The house secondary control surface shared with action chips and the
   // header `Open in` split control; only the ink is added here.
-  secondary: `${SECONDARY_SURFACE_CLASS} ${SECONDARY_SURFACE_OPEN_CLASS} fg-primary ${DISABLED_FILL_CLASS_NAME} disabled:[background-image:none]`,
-  outline: `border bg-base fg-primary hover:bg-secondary active:bg-muted ${DISABLED_FILL_CLASS_NAME}`,
-  ghost: `bg-transparent fg-secondary hover:bg-secondary hover:fg-primary ${DISABLED_NO_FILL_CLASS_NAME}`,
+  secondary: `${SECONDARY_SURFACE_CLASS} ${SECONDARY_SURFACE_OPEN_CLASS} fg-primary ${DISABLED_FILL_CLASS_NAME} disabled:[background-image:none] aria-busy:data-[busy-appearance=preserved]:[background-image:none]`,
+  outline: `border bg-base fg-primary hover:bg-secondary active:bg-muted ${DISABLED_FILL_CLASS_NAME} aria-busy:data-[busy-appearance=preserved]:bg-base`,
+  ghost: `bg-transparent fg-secondary hover:bg-secondary hover:fg-primary ${DISABLED_NO_FILL_CLASS_NAME} aria-busy:data-[busy-appearance=preserved]:fg-secondary`,
   // Ghost for a control on a raised or hovered surface (a card's row): the
   // translucent hover layers over whatever is beneath, where `ghost`'s
   // opaque fill would punch a hole in it.
-  'ghost-overlay': `bg-transparent fg-secondary hover:bg-subtle hover:fg-primary ${DISABLED_NO_FILL_CLASS_NAME}`,
+  'ghost-overlay': `bg-transparent fg-secondary hover:bg-subtle hover:fg-primary ${DISABLED_NO_FILL_CLASS_NAME} aria-busy:data-[busy-appearance=preserved]:fg-secondary`,
   // A ghost a step quieter at rest, for actions that repeat on every row of
   // a list (a chat reply's Copy, Fork, "•••"); hover and focus bring the
   // full ink back.
   // Disabled, it keeps no fill: a quiet action that can't run now reads as
   // a dimmed icon, not a grey disc. Open (a menu) or pressed (a toggle), it
   // takes the full ink, and its small icons draw a 1.5px visible stroke.
-  'ghost-quiet': `canopy-small-icon-stroke bg-transparent fg-tertiary hover:bg-subtle hover:fg-primary focus-visible:fg-primary not-disabled:aria-expanded:bg-subtle not-disabled:aria-expanded:fg-primary not-disabled:aria-pressed:fg-primary ${DISABLED_NO_FILL_CLASS_NAME}`,
+  'ghost-quiet': `canopy-small-icon-stroke bg-transparent fg-tertiary hover:bg-subtle hover:fg-primary focus-visible:fg-primary not-disabled:aria-expanded:bg-subtle not-disabled:aria-expanded:fg-primary not-disabled:aria-pressed:fg-primary ${DISABLED_NO_FILL_CLASS_NAME} aria-busy:data-[busy-appearance=preserved]:fg-tertiary`,
   'ghost-accent': `bg-transparent fg-accent hover:bg-accent-subtle hover:fg-accent ${DISABLED_NO_FILL_CLASS_NAME}`,
   // A quiet destructive action beside other actions (Delete next to Edit),
   // where the filled `destructive` would outweigh the primary choice.
@@ -201,8 +215,8 @@ const VARIANT_CLASS_NAMES: Record<ButtonVariant, string> = {
   // conflicts in a header, Install on a plugin row), where the filled
   // `warning` would outweigh its neighbours.
   'ghost-warning': `bg-transparent fg-warning hover:bg-warning-subtle hover:fg-warning ${DISABLED_NO_FILL_CLASS_NAME}`,
-  warning: `bg-warning-subtle fg-warning hover:bg-warning-subtle/80 active:bg-warning-subtle ${DISABLED_FILL_CLASS_NAME}`,
-  destructive: `bg-destructive fg-emphasis hover:bg-destructive-hover ${DISABLED_FILL_CLASS_NAME}`,
+  warning: `bg-warning-subtle fg-warning hover:bg-warning-subtle/80 active:bg-warning-subtle ${DISABLED_FILL_CLASS_NAME} aria-busy:data-[busy-appearance=preserved]:bg-warning-subtle`,
+  destructive: `bg-destructive fg-emphasis hover:bg-destructive-hover ${DISABLED_FILL_CLASS_NAME} aria-busy:data-[busy-appearance=preserved]:bg-destructive`,
 };
 
 // The `link` variant: an action that reads as a text link inside a sentence
@@ -210,7 +224,7 @@ const VARIANT_CLASS_NAMES: Record<ButtonVariant, string> = {
 // height, padding, radius or label size applies, and it does not press-scale.
 // Same ink as `ExternalTextLink`, so a link and a link action match.
 const LINK_CLASS_NAME =
-  'focus-ring rounded font-medium fg-accent hover:underline disabled:cursor-not-allowed disabled:no-underline disabled:fg-disabled aria-disabled:cursor-not-allowed aria-disabled:opacity-60';
+  'focus-ring rounded font-medium fg-accent hover:underline disabled:cursor-not-allowed disabled:no-underline disabled:not-data-[busy-appearance=preserved]:fg-disabled aria-disabled:cursor-not-allowed aria-disabled:not-data-[busy-appearance=preserved]:opacity-60';
 
 // Shape and label size belong to the size, so the pill and the control
 // rectangle never carry each other's radius or type.
@@ -428,6 +442,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
       groupHover = false,
       pressedHover = false,
       quietWhenDisabled = false,
+      busyAppearance = 'default',
       touchArea = 'expanded',
       type = 'button',
       className = '',
@@ -442,6 +457,9 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
     const placementClassName = withShortcut
       ? `${SHORTCUT_END_PADDING_CLASS_NAMES[size]} ${className}`
       : className;
+    const preserveBusyAppearance =
+      busyAppearance === 'preserved' &&
+      (props['aria-busy'] === true || props['aria-busy'] === 'true');
     return (
       <button
         ref={ref}
@@ -460,6 +478,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
         })}
         style={fillRow ? { ...FILL_ROW_STYLE, ...style } : style}
         {...props}
+        data-busy-appearance={preserveBusyAppearance ? 'preserved' : undefined}
         onClick={
           isAriaDisabled(props['aria-disabled'])
             ? swallowUnavailableClick

@@ -1,3 +1,4 @@
+import type { W5RecoveryApi } from '@canopy/protocol/portal';
 import type {
   FileImageSaveSupport,
   FileSaveOptions,
@@ -8427,9 +8428,9 @@ export interface WorktreeBranchChangedEvent {
   repoId?: string;
 }
 
-export interface WorktreesFileChangedEvent {
-  workspaceId: string;
-}
+export type WorktreesFileChangedEvent =
+  | { workspaceId: string }
+  | { scope: 'all' };
 
 /**
  * Broadcast on `IPC_CHANNELS.workspaceWorktreesUpdated` when a main-initiated
@@ -21957,6 +21958,7 @@ export interface CanopyApi {
   launchAtLogin: LaunchAtLoginApi;
   /** Local background service health (CAN-5541). See {@link BackgroundServiceApi}. */
   backgroundService: BackgroundServiceApi;
+  w5Recovery: W5RecoveryApi;
   /** Codex speed capability projection. See {@link CodexSpeedApi}. */
   codexSpeed: CodexSpeedApi;
   terminal: TerminalApi;
@@ -28391,6 +28393,8 @@ export const IPC_CHANNELS = {
   launchAtLoginSetEnabled: 'launch-at-login:set-enabled',
   launchAtLoginOpenSystemSettings: 'launch-at-login:open-system-settings',
   launchAtLoginStatusChanged: 'launch-at-login:status-changed',
+  w5RecoveryStatus: 'w5-recovery:status',
+  w5RecoveryPrepare: 'w5-recovery:prepare',
   backgroundServiceStatus: 'background-service:status', // renderer → main invoke
   backgroundServiceRetry: 'background-service:retry', // renderer → main invoke
   backgroundServiceStatusChanged: 'background-service:status-changed', // main → renderer event

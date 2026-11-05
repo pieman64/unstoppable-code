@@ -10,6 +10,18 @@ import {
   unlink,
   writeFile,
 } from 'node:fs/promises';
+import {
+  chmodSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  rmdirSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+  closeSync,
+} from 'node:fs';
 import path from 'node:path';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 
@@ -332,5 +344,251 @@ export async function withOwnerLockFile<T>(
     }
   }
 
+  throw new Error(options.timeoutMessage);
+}
+
+function assertOwnedPathSync(
+  target: string,
+  expected: 'directory' | 'file',
+): void {
+  const targetStat = lstatSync(target);
+  if (targetStat.isSymbolicLink()) {
+    throw new Error(`Refusing symbolic link for lock ${expected}: ${target}`);
+  }
+  const matchesType =
+    expected === 'directory' ? targetStat.isDirectory() : targetStat.isFile();
+  if (!matchesType) {
+    throw new Error(`Lock ${expected} has the wrong type: ${target}`);
+  }
+  if (
+    typeof process.getuid === 'function' &&
+    targetStat.uid !== process.getuid()
+  ) {
+    throw new Error(`Lock ${expected} is not owned by this user: ${target}`);
+  }
+}
+
+/** Synchronous {@link ensurePrivateLockDirectory}. */
+export function ensurePrivateLockDirectorySync(directory: string): void {
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  assertOwnedPathSync(directory, 'directory');
+  if (hostOperatingSystem() !== 'win32') {
+    chmodSync(directory, 0o700);
+  }
+}
+
+function staleLockSnapshotSync(
+  lockPath: string,
+): string | typeof MISSING_LOCK | null {
+  try {
+    assertOwnedPathSync(lockPath, 'file');
+    const contents = readFileSync(lockPath, 'utf8');
+    const owner = parseLockOwner(contents);
+    if (owner) {
+      return isProcessAlive(owner.pid) ? null : contents;
+    }
+    try {
+      const lockStat = statSync(lockPath);
+      return Date.now() - lockStat.mtimeMs >= INCOMPLETE_OWNER_GRACE_MS
+        ? contents
+        : null;
+    } catch (error) {
+      return errorCode(error) === 'ENOENT' ? MISSING_LOCK : null;
+    }
+  } catch (error) {
+    return errorCode(error) === 'ENOENT' ? MISSING_LOCK : null;
+  }
+}
+
+function tryReclaimStaleLockSync(lockPath: string): boolean {
+  const staleSnapshot = staleLockSnapshotSync(lockPath);
+  if (staleSnapshot === null) {
+    return false;
+  }
+  if (staleSnapshot === MISSING_LOCK) {
+    return true;
+  }
+
+  const reclaimPath = `${lockPath}.reclaim`;
+  const reclaimOwnerPath = path.join(reclaimPath, 'owner.json');
+  const reclaimOwner = newOwner();
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      mkdirSync(reclaimPath, { mode: 0o700 });
+      assertOwnedPathSync(reclaimPath, 'directory');
+      try {
+        writeFileSync(reclaimOwnerPath, JSON.stringify(reclaimOwner), {
+          encoding: 'utf8',
+          mode: 0o600,
+          flag: 'wx',
+        });
+      } catch (error) {
+        try {
+          rmdirSync(reclaimPath);
+        } catch {
+          // Preserve the original failure if cleanup also fails.
+        }
+        throw error;
+      }
+    } catch (error) {
+      if (errorCode(error) !== 'EEXIST') {
+        throw error;
+      }
+      assertOwnedPathSync(reclaimPath, 'directory');
+      if (removeStaleReclaimDirectorySync(reclaimPath, reclaimOwnerPath)) {
+        continue;
+      }
+      return false;
+    }
+
+    try {
+      let current: string | typeof MISSING_LOCK;
+      try {
+        current = readFileSync(lockPath, 'utf8');
+      } catch (error) {
+        if (errorCode(error) !== 'ENOENT') throw error;
+        current = MISSING_LOCK;
+      }
+      if (current !== staleSnapshot) {
+        return current === MISSING_LOCK;
+      }
+      unlinkSync(lockPath);
+      return true;
+    } finally {
+      releaseReclaimDirectorySync(reclaimPath, reclaimOwnerPath, reclaimOwner);
+    }
+  }
+
+  return false;
+}
+
+function removeStaleReclaimDirectorySync(
+  reclaimPath: string,
+  ownerPath: string,
+): boolean {
+  assertOwnedPathSync(reclaimPath, 'directory');
+  let snapshot: string;
+  try {
+    snapshot = readFileSync(ownerPath, 'utf8');
+    const owner = parseLockOwner(snapshot);
+    if (owner) {
+      if (isProcessAlive(owner.pid)) return false;
+    } else if (
+      Date.now() - statSync(ownerPath).mtimeMs <
+      INCOMPLETE_OWNER_GRACE_MS
+    ) {
+      return false;
+    }
+  } catch (error) {
+    if (errorCode(error) !== 'ENOENT') return false;
+    try {
+      if (
+        Date.now() - statSync(reclaimPath).mtimeMs <
+        INCOMPLETE_OWNER_GRACE_MS
+      ) {
+        return false;
+      }
+      rmdirSync(reclaimPath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  try {
+    if (readFileSync(ownerPath, 'utf8') !== snapshot) return false;
+    unlinkSync(ownerPath);
+    rmdirSync(reclaimPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function releaseReclaimDirectorySync(
+  reclaimPath: string,
+  ownerPath: string,
+  owner: OwnerLockRecord,
+): void {
+  try {
+    assertOwnedPathSync(reclaimPath, 'directory');
+    const current = parseLockOwner(readFileSync(ownerPath, 'utf8'));
+    if (current?.nonce !== owner.nonce) return;
+    unlinkSync(ownerPath);
+    rmdirSync(reclaimPath);
+  } catch (error) {
+    if (errorCode(error) !== 'ENOENT') throw error;
+  }
+}
+
+function releaseOwnedLockSync(lockPath: string, owner: OwnerLockRecord): void {
+  try {
+    assertOwnedPathSync(lockPath, 'file');
+    const current = parseLockOwner(readFileSync(lockPath, 'utf8'));
+    if (current?.nonce === owner.nonce) {
+      unlinkSync(lockPath);
+    }
+  } catch (error) {
+    if (errorCode(error) !== 'ENOENT') {
+      throw error;
+    }
+  }
+}
+
+/**
+ * Synchronous {@link withOwnerLockFile}. Blocks between attempts and refuses
+ * after `maxWaitMs`; `operation` must be synchronous.
+ */
+export function withOwnerLockFileSync<T>(
+  lockPath: string,
+  operation: () => T,
+  options: OwnerLockFileOptions,
+): T {
+  const deadline = Date.now() + options.maxWaitMs;
+  const pollMs = options.pollMs ?? DEFAULT_POLL_MS;
+  while (Date.now() < deadline) {
+    const owner = newOwner();
+    let fd: number;
+    try {
+      fd = openSync(lockPath, 'wx', 0o600);
+    } catch (error) {
+      if (errorCode(error) !== 'EEXIST') throw error;
+      if (tryReclaimStaleLockSync(lockPath)) continue;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, pollMs);
+      continue;
+    }
+    try {
+      writeFileSync(fd, JSON.stringify(owner), 'utf8');
+    } catch (error) {
+      try {
+        closeSync(fd);
+      } catch {
+        // Preserve the original failure if cleanup also fails.
+      }
+      try {
+        unlinkSync(lockPath);
+      } catch {
+        // Preserve the original failure if cleanup also fails.
+      }
+      throw error;
+    }
+    try {
+      closeSync(fd);
+    } catch (error) {
+      try {
+        unlinkSync(lockPath);
+      } catch {
+        // Preserve the original failure if cleanup also fails.
+      }
+      throw error;
+    }
+    assertOwnedPathSync(lockPath, 'file');
+    try {
+      return operation();
+    } finally {
+      releaseOwnedLockSync(lockPath, owner);
+    }
+  }
   throw new Error(options.timeoutMessage);
 }

@@ -1,0 +1,196 @@
+import type { HTMLAttributes, JSX, ReactNode } from 'react';
+import { HAIRLINE_INSET_RING_CLASS } from '../lib/row-chips';
+import {
+  SPACE_ROLE_GAP_CLASS,
+  type LayoutElement,
+  type SpaceRole,
+} from './Stack';
+
+/**
+ * The one way to draw a box. `docs/design/surfaces.md` keeps raw elements
+ * plain layout; a surface's radius, fill, edge and shadow come from here,
+ * named by what the box is rather than by its classes, so a surface type has
+ * one look everywhere.
+ *
+ * - `outline`: a hairline box with no fill, on whatever is behind it (a
+ *   bordered list, a preview frame, a group of fields).
+ * - `group`: the secondary fill with a hairline edge, the grouped box of
+ *   Settings and of any list of rows.
+ * - `card`: the card fill with a hairline edge, a standalone item that sits
+ *   on the page (a stat, a summary, a result).
+ * - `raised`: the card fill lifted by the small shadow instead of an edge,
+ *   for a card that floats over a busy or tinted background.
+ * - `inset`: the page fill with a hairline edge, a well inside a group or
+ *   card (a code sample, a nested preview).
+ */
+export type SurfaceVariant = 'outline' | 'group' | 'card' | 'raised' | 'inset';
+
+/**
+ * The inner padding, by role. `none` lets the content lay itself out (a
+ * list of rows, a full-bleed image).
+ */
+export type SurfacePadding = 'none' | 'tight' | 'compact' | 'default' | 'roomy';
+
+/**
+ * Radius, fill, edge and shadow per variant: the one place a surface's look
+ * changes. Radius nests: `inset` sits inside a `group` or `card` with the
+ * smaller corner.
+ */
+export const SURFACE_VARIANT_CLASS: Readonly<Record<SurfaceVariant, string>> = {
+  outline: `rounded-lg ${HAIRLINE_INSET_RING_CLASS} ring-line-base`,
+  group: `rounded-lg bg-secondary ${HAIRLINE_INSET_RING_CLASS} ring-line-base`,
+  card: `rounded-xl bg-card ${HAIRLINE_INSET_RING_CLASS} ring-line-base`,
+  raised: 'rounded-xl bg-card shadow-sm',
+  inset: `rounded-md bg-base ${HAIRLINE_INSET_RING_CLASS} ring-line-base`,
+};
+
+/**
+ * The selected state: the accent's subtle fill and edge, for a box the user
+ * picked (a plan, a project, a template). It replaces the variant's own fill
+ * and edge and keeps its radius.
+ */
+export const SURFACE_SELECTED_CLASS = `bg-accent-subtle ${HAIRLINE_INSET_RING_CLASS} ring-line-accent`;
+
+const SURFACE_RADIUS_CLASS: Readonly<Record<SurfaceVariant, string>> = {
+  outline: 'rounded-lg',
+  group: 'rounded-lg',
+  card: 'rounded-xl',
+  raised: 'rounded-xl',
+  inset: 'rounded-md',
+};
+
+export const SURFACE_PADDING_CLASS: Readonly<Record<SurfacePadding, string>> = {
+  none: '',
+  tight: 'p-2',
+  compact: 'p-3',
+  default: 'p-4',
+  roomy: 'p-6',
+};
+
+type SurfaceAttributes = Omit<
+  HTMLAttributes<HTMLElement>,
+  'className' | 'style' | 'children'
+>;
+
+export interface SurfaceProps extends SurfaceAttributes {
+  /** What the box is; see {@link SurfaceVariant}. */
+  readonly variant: SurfaceVariant;
+  /** The element to render; `div` by default. */
+  readonly as?: LayoutElement;
+  /** Inner padding by role; `none` by default. */
+  readonly padding?: SurfacePadding;
+  /**
+   * Lay the children out as a vertical stack with this gap, so the box and
+   * its column are one element. Leave it out to lay the children out with
+   * a `Stack` or `Inline` inside.
+   */
+  readonly gap?: SpaceRole;
+  /** The picked state; see {@link SURFACE_SELECTED_CLASS}. */
+  readonly selected?: boolean;
+  /**
+   * Placement only (width, flex participation, position, overflow); never
+   * the surface's radius, fill, edge, shadow or padding.
+   */
+  readonly className?: string;
+  readonly children?: ReactNode;
+}
+
+/** The class list a {@link Surface} renders, for tests and lab sheets. */
+export function surfaceClassName({
+  variant,
+  padding = 'none',
+  gap,
+  selected = false,
+  className,
+}: Pick<
+  SurfaceProps,
+  'variant' | 'padding' | 'gap' | 'selected' | 'className'
+>): string {
+  return [
+    gap ? `flex flex-col ${SPACE_ROLE_GAP_CLASS[gap]}` : '',
+    selected
+      ? `${SURFACE_RADIUS_CLASS[variant]} ${SURFACE_SELECTED_CLASS}`
+      : SURFACE_VARIANT_CLASS[variant],
+    SURFACE_PADDING_CLASS[padding],
+    className ?? '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
+/**
+ * A box drawn by role. Children never set the box's look, and the caller's
+ * `className` never does either: a box that needs another look is a new
+ * variant here, with its lab sheet.
+ */
+export function Surface({
+  as: Tag = 'div',
+  variant,
+  padding,
+  gap,
+  selected,
+  className,
+  children,
+  ...rest
+}: SurfaceProps): JSX.Element {
+  return (
+    <Tag
+      {...rest}
+      data-surface={variant}
+      data-selected={selected ? '' : undefined}
+      className={surfaceClassName({
+        variant,
+        padding,
+        gap,
+        selected,
+        className,
+      })}
+    >
+      {children}
+    </Tag>
+  );
+}
+
+export type DividerOrientation = 'horizontal' | 'vertical';
+
+export interface DividerProps {
+  /** `horizontal` (a full-width line) by default. */
+  readonly orientation?: DividerOrientation;
+  /**
+   * Placement only: inset (`mx-4`), flex participation. The line's weight
+   * and color are the divider's own.
+   */
+  readonly className?: string;
+  readonly 'data-testid'?: string;
+  /**
+   * Hide a decorative line (between two labelled steps, beside "Or") from
+   * assistive technology.
+   */
+  readonly 'aria-hidden'?: boolean;
+}
+
+/**
+ * The shared hairline divider: the light boundary `docs/design/layout.md`
+ * reaches for before a card. One physical pixel in the base line color. A
+ * horizontal divider fills a block or column parent's width (give it
+ * `flex-1` or a width in a row); a vertical one stretches to its row's
+ * height.
+ */
+export function Divider({
+  orientation = 'horizontal',
+  className,
+  ...rest
+}: DividerProps): JSX.Element {
+  const line =
+    orientation === 'horizontal'
+      ? 'h-0 shrink-0 border-t'
+      : 'w-0 shrink-0 self-stretch border-l';
+  return (
+    <div
+      {...rest}
+      role="separator"
+      aria-orientation={orientation}
+      className={className ? `${line} ${className}` : line}
+    />
+  );
+}

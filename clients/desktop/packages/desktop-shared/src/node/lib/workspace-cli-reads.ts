@@ -1,3 +1,4 @@
+import type { W5FileStore } from '@canopy/core-runtime/node/w5/file-store';
 import { readFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { getCanopyDataDir } from '../../canopy-paths';
@@ -18,6 +19,20 @@ import { settleAll } from './detached-work';
 
 // CLI reads of the workspace index, manifests and worktree lists. Writers
 // live in ./workspace-service; this module must not import it.
+
+async function readWorkspaceRecord(
+  filePath: string,
+  store?: W5FileStore,
+): Promise<string> {
+  if (!store) return readFile(filePath, 'utf8');
+  const read = await store.read(filePath);
+  if (read.state === 'present') return read.raw;
+  if (read.state === 'absent')
+    throw Object.assign(new Error('Project record not found'), {
+      code: 'ENOENT',
+    });
+  throw read.error ?? new Error('Project record is unreadable');
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -116,10 +131,12 @@ interface LoadedWorkspaceIndex {
 }
 
 /** `null` when the index exists but cannot be read or parsed. */
-export async function loadWorkspaceIndex(): Promise<LoadedWorkspaceIndex | null> {
+export async function loadWorkspaceIndex(
+  store?: W5FileStore,
+): Promise<LoadedWorkspaceIndex | null> {
   let raw: string;
   try {
-    raw = await readFile(getWorkspaceIndexFilePath(), 'utf8');
+    raw = await readWorkspaceRecord(getWorkspaceIndexFilePath(), store);
   } catch (error) {
     return isRecord(error) && error.code === 'ENOENT'
       ? { entries: [], completeRaw: null, partial: false }
@@ -196,10 +213,11 @@ function normalizeStringArray(value: unknown): string[] | undefined {
 
 async function readWorkspaceConfig(
   workspaceId: string,
+  store?: W5FileStore,
 ): Promise<WorkspaceConfigFile> {
   try {
     const parsed: unknown = JSON.parse(
-      await readFile(getWorkspaceConfigPath(workspaceId), 'utf8'),
+      await readWorkspaceRecord(getWorkspaceConfigPath(workspaceId), store),
     );
     if (!isRecord(parsed)) {
       throw new Error('Invalid project config');
@@ -235,7 +253,8 @@ async function readWorkspaceConfig(
       alwaysShow:
         typeof parsed.alwaysShow === 'boolean' ? parsed.alwaysShow : true,
     };
-  } catch {
+  } catch (error) {
+    if (store) throw error;
     return { version: 1, type: 'multi-repo', repos: [], alwaysShow: true };
   }
 }
@@ -277,10 +296,14 @@ function normalizeWorktree(value: unknown): WorktreeData | null {
 
 async function readWorkspaceWorktrees(
   workspaceId: string,
+  store?: W5FileStore,
 ): Promise<WorktreeData[]> {
   try {
     const parsed: unknown = JSON.parse(
-      await readFile(getWorkspaceWorktreesFilePath(workspaceId), 'utf8'),
+      await readWorkspaceRecord(
+        getWorkspaceWorktreesFilePath(workspaceId),
+        store,
+      ),
     );
     if (!isRecord(parsed) || !Array.isArray(parsed.worktrees)) {
       return [];
@@ -295,10 +318,11 @@ async function readWorkspaceWorktrees(
 
 async function buildSidebarItem(
   entry: WorkspaceIndexEntry,
+  store?: W5FileStore,
 ): Promise<SidebarItem | null> {
   const [config, worktrees] = await settleAll([
-    readWorkspaceConfig(entry.id),
-    readWorkspaceWorktrees(entry.id),
+    readWorkspaceConfig(entry.id, store),
+    readWorkspaceWorktrees(entry.id, store),
   ]);
 
   if (entry.type === 'cowork') {
@@ -411,7 +435,18 @@ export async function listWorkspaceItems(): Promise<SidebarItem[]> {
 
 export async function getWorkspaceItem(
   workspaceId: string,
+  store?: W5FileStore,
 ): Promise<SidebarItem> {
+  if (store) {
+    const index = await loadWorkspaceIndex(store);
+    if (!index || index.partial) throw new Error('Project list is unreadable');
+    const entry = index.entries.find(
+      (candidate) => candidate.id === workspaceId,
+    );
+    const item = entry ? await buildSidebarItem(entry, store) : null;
+    if (!item) throw new Error(`Project ${workspaceId} not found`);
+    return item;
+  }
   const item = (await listWorkspaceItems()).find(
     (workspace) => workspace.id === workspaceId,
   );
