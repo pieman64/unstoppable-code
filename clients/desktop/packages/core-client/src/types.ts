@@ -37,6 +37,13 @@ export interface CanopyClientOptions<
   /** Defaults to `CANOPY_CLIENT_PROTOCOL_VERSIONS`. */
   readonly protocolVersions?: readonly number[];
   readonly clientCapabilities?: readonly string[];
+  /**
+   * Owner sessions only (CAN-5771): proves the daemon's owner secret for this
+   * connection. Called once with the connection's server-issued id; the
+   * result is sent as `client.ownerProof` in `core.runtime.initialize`.
+   * Trusted main composition only; never from renderer, Portal or remote input.
+   */
+  readonly ownerProof?: (connectionId: string) => string;
   /** Aborting closes the client and the connection. */
   readonly signal?: AbortSignal;
 }

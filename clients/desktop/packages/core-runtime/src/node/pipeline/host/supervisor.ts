@@ -1,0 +1,634 @@
+import {
+  WorkerPipelineExecutionSchema,
+  WorkerPipelineRecoveryCheckpointResultSchema,
+  WorkerPipelineRecoverySweepResultSchema,
+  type CanopyHostExecution,
+  type WorkerPipelineCancelMode,
+  type WorkerPipelineControlResult,
+  type WorkerPipelineExecution,
+  type WorkerPipelineExecutionStartParams,
+  type WorkerPipelineHostLaunch,
+  type WorkerPipelineRecoveryCheckpointResult,
+  type WorkerPipelineRecoverySweepParams,
+  type WorkerPipelineRecoverySweepResult,
+} from '@canopy/protocol/canopy-core';
+
+import type { RedeemedExecutionSecrets } from '../../execution-secrets';
+import {
+  PipelineDrainTimeoutError,
+  isTerminalPipelineExecution,
+  pipelineCheckpointFailedError,
+  pipelineExecutionNotFoundError,
+  pipelineHostLostError,
+  pipelineHostUnavailableError,
+  pipelineLaunchUnavailableError,
+  pipelineModelStepsUnsupportedError,
+  pipelineStartFailedError,
+  type PipelineControlRequest,
+  type PipelineExecutionObserver,
+  type PipelineExecutionWorker,
+} from '../execution/worker-pipelines';
+import {
+  isPipelineHostMessage,
+  type PipelineHostErrorCode,
+  type PipelineHostLaunch,
+  type PipelineHostMessage,
+  type PipelineHostRequest,
+  type PipelineHostRequestMessage,
+} from './protocol';
+
+/** A launched pipeline host, as the execution host port reports it. */
+export interface PipelineHostProcess {
+  postMessage(message: PipelineHostRequestMessage): void;
+  kill(): boolean;
+  on(event: 'message', listener: (message: unknown) => void): unknown;
+  on(event: 'exit', listener: (code: number) => void): unknown;
+}
+
+export interface PipelineHostSupervisorOptions {
+  /** Starts a new pipeline host process. Throws when it cannot. */
+  readonly launch: () => PipelineHostProcess;
+  /** Sent as each new host's first request. */
+  readonly configure: { readonly dataRoot: string };
+  /**
+   * Verifies a start's host-local launch and resolves it for the host.
+   * Throws {@link pipelineLaunchRefusedError}.
+   */
+  readonly resolveLaunch: (
+    params: WorkerPipelineExecutionStartParams,
+    execution: CanopyHostExecution & {
+      pipelineLaunch: WorkerPipelineHostLaunch;
+    },
+  ) => Promise<PipelineHostLaunch>;
+  /** Holds the daemon up while `executionId` runs; returns its release. */
+  readonly holdExecution?: (executionId: string) => () => void;
+  /** Ends a step's process group that outlived its host. */
+  readonly killProcessGroup?: (processGroupId: number) => void;
+  /** Default 30_000. */
+  readonly requestTimeoutMs?: number;
+  /** Default 60_000. */
+  readonly checkpointTimeoutMs?: number;
+  /** Default 5_000. */
+  readonly idleStopMs?: number;
+  /** Observes each host that ended unexpectedly, with how many executions it ran. */
+  readonly onHostLost?: (report: {
+    readonly code: number;
+    readonly lost: number;
+  }) => void;
+}
+
+const REQUEST_TIMEOUT_MS = 30_000;
+const CHECKPOINT_TIMEOUT_MS = 60_000;
+const IDLE_STOP_MS = 5_000;
+const EXIT_GRACE_MS = 5_000;
+// A drain waits up to 10 s for the run to stop inside the host.
+const CANCEL_EXTRA_MS = 10_000;
+
+/** Why a host request failed; the host's own message is never kept. */
+class HostRequestFailure extends Error {
+  public constructor(
+    public readonly reason: 'refused' | 'timeout' | 'exited' | 'unavailable',
+    public readonly code?: PipelineHostErrorCode,
+  ) {
+    super('The pipeline host request failed.');
+    this.name = 'HostRequestFailure';
+  }
+}
+
+interface Pending {
+  resolve(value: unknown): void;
+  reject(error: Error): void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+interface LiveHost {
+  readonly process: PipelineHostProcess;
+  readonly pending: Map<number, Pending>;
+  /** Executions this host runs that have not paused or ended. */
+  readonly executions: Set<string>;
+  /** Each step process the host reported, by registration id. */
+  readonly processGroups: Map<string, number>;
+  readonly observers: Map<string, Set<PipelineExecutionObserver>>;
+  /** Executions whose start request this host has not answered yet. */
+  readonly pendingStarts: Set<string>;
+  /** Executions that paused or ended while their start was still pending. */
+  readonly settledEarly: Set<string>;
+  readonly exitWaiters: Array<() => void>;
+  expectedExit: boolean;
+  exited: boolean;
+  idleTimer?: ReturnType<typeof setTimeout>;
+}
+
+function isSettled(execution: WorkerPipelineExecution): boolean {
+  return (
+    execution.status === 'paused' || isTerminalPipelineExecution(execution)
+  );
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms).unref?.();
+  });
+}
+
+/**
+ * Runs host-local pipeline launches in a supervised pipeline host
+ * (CAN-5086): starts the host on first use, routes requests and execution
+ * events, and starts a new host on the next request after one ends. A host
+ * that ends unexpectedly takes its executions with it: their step process
+ * groups are killed and their event streams end with
+ * `worker.pipeline.hostLost`. Recovery controls are not served (D10).
+ */
+export class PipelineHostSupervisor implements PipelineExecutionWorker {
+  private host: LiveHost | null = null;
+
+  private starting: Promise<LiveHost> | null = null;
+
+  private stopped = false;
+
+  private nextId = 1;
+
+  private readonly releases = new Map<string, () => void>();
+
+  private readonly starts = new Map<string, Promise<WorkerPipelineExecution>>();
+
+  public constructor(private readonly options: PipelineHostSupervisorOptions) {}
+
+  /** Starts the host if none runs. Throws {@link pipelineHostUnavailableError}. */
+  public async ready(): Promise<void> {
+    await this.liveHost();
+  }
+
+  public async start(
+    params: WorkerPipelineExecutionStartParams,
+    signal: AbortSignal,
+    _secrets: RedeemedExecutionSecrets,
+    execution?: CanopyHostExecution,
+  ): Promise<WorkerPipelineExecution> {
+    void _secrets;
+    const pipelineLaunch = execution?.pipelineLaunch;
+    if (!execution || !pipelineLaunch) throw pipelineLaunchUnavailableError();
+    const { executionId } = params;
+    const joined = this.starts.get(executionId);
+    if (joined) return joined;
+    if (this.host?.executions.has(executionId)) {
+      // A resent keyed start joins the run its host is running.
+      const current = await this.get(executionId);
+      if (current) return current;
+    }
+    const run = this.runStart(params, signal, { ...execution, pipelineLaunch });
+    this.starts.set(executionId, run);
+    try {
+      return await run;
+    } finally {
+      if (this.starts.get(executionId) === run) this.starts.delete(executionId);
+    }
+  }
+
+  private async runStart(
+    params: WorkerPipelineExecutionStartParams,
+    signal: AbortSignal,
+    execution: CanopyHostExecution & {
+      pipelineLaunch: WorkerPipelineHostLaunch;
+    },
+  ): Promise<WorkerPipelineExecution> {
+    const start = await this.options.resolveLaunch(params, execution);
+    const host = await this.liveHost();
+    if (signal.aborted)
+      throw pipelineStartFailedError(
+        new Error('The workflow start was cancelled.'),
+      );
+    // From here on the signal is ignored: a dropped connection never
+    // cancels a started run.
+    const { executionId } = params;
+    // Another client may follow the run before its start answers.
+    host.pendingStarts.add(executionId);
+    let projection: WorkerPipelineExecution;
+    let settledEarly: boolean;
+    try {
+      projection = await this.sendStart(host, start);
+    } catch (error) {
+      this.endObservers(host, executionId);
+      throw error;
+    } finally {
+      host.pendingStarts.delete(executionId);
+      settledEarly = host.settledEarly.delete(executionId);
+    }
+    // A run can settle in the same tick its start answers.
+    if (!host.exited && !settledEarly && !isSettled(projection)) {
+      host.executions.add(executionId);
+      const release = this.options.holdExecution?.(executionId);
+      if (release) this.releases.set(executionId, release);
+    }
+    return projection;
+  }
+
+  private async sendStart(
+    host: LiveHost,
+    start: PipelineHostLaunch,
+  ): Promise<WorkerPipelineExecution> {
+    let value: unknown;
+    try {
+      value = await this.send(
+        host,
+        { op: 'start', start },
+        this.requestTimeoutMs,
+      );
+    } catch (error) {
+      if (error instanceof HostRequestFailure) {
+        if (error.code === 'model_steps')
+          throw pipelineModelStepsUnsupportedError();
+        if (error.reason === 'exited') throw pipelineHostLostError();
+        if (error.reason === 'timeout') {
+          // A host that stops answering is faulted; its exit runs the loss path.
+          host.process.kill();
+          throw pipelineStartFailedError(
+            new Error('The pipeline host did not answer.'),
+          );
+        }
+      }
+      throw pipelineStartFailedError(
+        new Error('The pipeline host refused the start.'),
+      );
+    }
+    const parsed = WorkerPipelineExecutionSchema.safeParse(value);
+    if (!parsed.success)
+      throw pipelineStartFailedError(
+        new Error('The pipeline host refused the start.'),
+      );
+    return parsed.data;
+  }
+
+  /** Ends the streams that followed a start that never ran. */
+  private endObservers(host: LiveHost, executionId: string): void {
+    const observers = host.observers.get(executionId);
+    if (!observers) return;
+    host.observers.delete(executionId);
+    const notFound = pipelineExecutionNotFoundError().payload;
+    for (const observer of [...observers]) observer.onEnd?.(notFound);
+    this.scheduleIdleStop(host);
+  }
+
+  public control(
+    _request: PipelineControlRequest,
+    _signal: AbortSignal,
+    _secrets: RedeemedExecutionSecrets,
+  ): Promise<WorkerPipelineControlResult> {
+    void _request;
+    void _signal;
+    void _secrets;
+    return Promise.reject(pipelineLaunchUnavailableError());
+  }
+
+  public async get(
+    executionId: string,
+  ): Promise<WorkerPipelineExecution | null> {
+    const host = await this.liveHost();
+    let value: unknown;
+    try {
+      value = await this.send(
+        host,
+        { op: 'get', executionId },
+        this.requestTimeoutMs,
+      );
+    } catch {
+      throw pipelineHostUnavailableError();
+    }
+    if (value === null) return null;
+    const parsed = WorkerPipelineExecutionSchema.safeParse(value);
+    if (!parsed.success) throw pipelineHostUnavailableError();
+    return parsed.data;
+  }
+
+  public async cancel(
+    executionId: string,
+    mode: WorkerPipelineCancelMode,
+  ): Promise<WorkerPipelineExecution> {
+    const host = await this.liveHost();
+    let value: unknown;
+    try {
+      value = await this.send(
+        host,
+        { op: 'cancel', executionId, mode },
+        this.requestTimeoutMs + CANCEL_EXTRA_MS,
+      );
+    } catch (error) {
+      if (error instanceof HostRequestFailure) {
+        if (error.code === 'not_found') throw pipelineExecutionNotFoundError();
+        if (error.code === 'drain_timed_out')
+          throw new PipelineDrainTimeoutError();
+        if (error.reason === 'exited') throw pipelineHostUnavailableError();
+      }
+      throw new Error('The workflow run could not be cancelled.');
+    }
+    const parsed = WorkerPipelineExecutionSchema.safeParse(value);
+    if (!parsed.success)
+      throw new Error('The workflow run could not be cancelled.');
+    return parsed.data;
+  }
+
+  public async sweep(
+    params: WorkerPipelineRecoverySweepParams,
+  ): Promise<WorkerPipelineRecoverySweepResult> {
+    const host = await this.liveHost();
+    let value: unknown;
+    try {
+      value = await this.send(
+        host,
+        { op: 'sweep', executionIds: [...params.executionIds] },
+        this.requestTimeoutMs,
+      );
+    } catch {
+      throw pipelineHostUnavailableError();
+    }
+    const parsed = WorkerPipelineRecoverySweepResultSchema.safeParse(value);
+    if (!parsed.success) throw pipelineHostUnavailableError();
+    return parsed.data;
+  }
+
+  public async checkpoint(_params?: {
+    requestId: string;
+  }): Promise<WorkerPipelineRecoveryCheckpointResult> {
+    void _params;
+    const host = this.host;
+    if (!host || host.exited) return { checkpointedCount: 0 };
+    let value: unknown;
+    try {
+      value = await this.send(
+        host,
+        { op: 'checkpoint' },
+        this.options.checkpointTimeoutMs ?? CHECKPOINT_TIMEOUT_MS,
+      );
+    } catch {
+      throw pipelineCheckpointFailedError(
+        new Error('The pipeline host could not checkpoint.'),
+      );
+    }
+    const parsed =
+      WorkerPipelineRecoveryCheckpointResultSchema.safeParse(value);
+    if (!parsed.success)
+      throw pipelineCheckpointFailedError(
+        new Error('The pipeline host could not checkpoint.'),
+      );
+    return parsed.data;
+  }
+
+  public observe(
+    executionId: string,
+    observer: PipelineExecutionObserver,
+  ): (() => void) | null {
+    const host = this.host;
+    if (
+      !host ||
+      host.exited ||
+      !(host.executions.has(executionId) || host.pendingStarts.has(executionId))
+    )
+      return null;
+    let set = host.observers.get(executionId);
+    if (!set) {
+      set = new Set();
+      host.observers.set(executionId, set);
+    }
+    set.add(observer);
+    this.clearIdle(host);
+    let removed = false;
+    return () => {
+      if (removed) return;
+      removed = true;
+      const current = host.observers.get(executionId);
+      current?.delete(observer);
+      if (current?.size === 0) host.observers.delete(executionId);
+      this.scheduleIdleStop(host);
+    };
+  }
+
+  /** Phase 5: checkpoint every live execution, then stop the host. */
+  public async stop(): Promise<void> {
+    if (this.stopped) return;
+    this.stopped = true;
+    const host = this.host;
+    if (host && !host.exited) {
+      this.clearIdle(host);
+      try {
+        await this.checkpoint();
+      } catch {
+        // The host is stopped below whatever it answered.
+      }
+      host.expectedExit = true;
+      this.send(host, { op: 'exit' }, this.requestTimeoutMs).catch(
+        () => undefined,
+      );
+      await Promise.race([this.waitForExit(host), delay(EXIT_GRACE_MS)]);
+      if (!host.exited) host.process.kill();
+    }
+    this.host = null;
+    for (const release of this.releases.values()) release();
+    this.releases.clear();
+  }
+
+  private get requestTimeoutMs(): number {
+    return this.options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS;
+  }
+
+  private liveHost(): Promise<LiveHost> {
+    if (this.stopped) return Promise.reject(pipelineHostUnavailableError());
+    if (this.host && !this.host.exited) return Promise.resolve(this.host);
+    this.starting ??= this.launchHost().finally(() => {
+      this.starting = null;
+    });
+    return this.starting;
+  }
+
+  private async launchHost(): Promise<LiveHost> {
+    let process: PipelineHostProcess;
+    try {
+      process = this.options.launch();
+    } catch {
+      throw pipelineHostUnavailableError();
+    }
+    const host: LiveHost = {
+      process,
+      pending: new Map(),
+      executions: new Set(),
+      processGroups: new Map(),
+      observers: new Map(),
+      pendingStarts: new Set(),
+      settledEarly: new Set(),
+      exitWaiters: [],
+      expectedExit: false,
+      exited: false,
+    };
+    process.on('message', (message) => this.receive(host, message));
+    process.on('exit', (code) => this.ended(host, code));
+    try {
+      await this.send(
+        host,
+        { op: 'configure', dataRoot: this.options.configure.dataRoot },
+        this.requestTimeoutMs,
+      );
+    } catch {
+      host.expectedExit = true;
+      process.kill();
+      throw pipelineHostUnavailableError();
+    }
+    if (this.stopped || host.exited) {
+      host.expectedExit = true;
+      process.kill();
+      throw pipelineHostUnavailableError();
+    }
+    this.host = host;
+    this.scheduleIdleStop(host);
+    return host;
+  }
+
+  private send(
+    host: LiveHost,
+    request: PipelineHostRequest,
+    timeoutMs: number,
+  ): Promise<unknown> {
+    if (host.exited) return Promise.reject(new HostRequestFailure('exited'));
+    this.clearIdle(host);
+    const id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        host.pending.delete(id);
+        reject(new HostRequestFailure('timeout'));
+        this.scheduleIdleStop(host);
+      }, timeoutMs);
+      host.pending.set(id, { resolve, reject, timer });
+      try {
+        host.process.postMessage({ id, request });
+      } catch {
+        clearTimeout(timer);
+        host.pending.delete(id);
+        reject(new HostRequestFailure('unavailable'));
+      }
+    });
+  }
+
+  private receive(host: LiveHost, message: unknown): void {
+    if (host.exited || !isPipelineHostMessage(message)) return;
+    this.handle(host, message);
+    this.scheduleIdleStop(host);
+  }
+
+  private handle(host: LiveHost, message: PipelineHostMessage): void {
+    switch (message.kind) {
+      case 'response': {
+        const pending = host.pending.get(message.id);
+        if (!pending) return;
+        host.pending.delete(message.id);
+        clearTimeout(pending.timer);
+        if (message.ok) pending.resolve(message.value);
+        else
+          pending.reject(new HostRequestFailure('refused', message.error.code));
+        return;
+      }
+      case 'execution': {
+        const { executionId, event, execution } = message;
+        for (const observer of [...(host.observers.get(executionId) ?? [])])
+          observer.onExecution(event, execution);
+        if (!isSettled(execution)) return;
+        if (host.executions.delete(executionId))
+          this.releaseExecution(executionId);
+        else if (host.pendingStarts.has(executionId))
+          host.settledEarly.add(executionId);
+        return;
+      }
+      case 'output': {
+        const { executionId, jobId, stepId, stream, text } = message;
+        for (const observer of [...(host.observers.get(executionId) ?? [])])
+          observer.onOutput({ jobId, stepId, stream, text });
+        return;
+      }
+      case 'process':
+        if (message.state === 'started')
+          host.processGroups.set(message.id, message.processGroupId);
+        else host.processGroups.delete(message.id);
+        return;
+    }
+  }
+
+  private releaseExecution(executionId: string): void {
+    const release = this.releases.get(executionId);
+    this.releases.delete(executionId);
+    release?.();
+  }
+
+  private clearIdle(host: LiveHost): void {
+    if (host.idleTimer === undefined) return;
+    clearTimeout(host.idleTimer);
+    host.idleTimer = undefined;
+  }
+
+  private busy(host: LiveHost): boolean {
+    return (
+      host.executions.size > 0 ||
+      host.observers.size > 0 ||
+      host.pending.size > 0
+    );
+  }
+
+  /**
+   * Stops a host that holds nothing: no execution, observer or request. It
+   * leaves the current slot first, so a request meanwhile starts another.
+   */
+  private scheduleIdleStop(host: LiveHost): void {
+    if (
+      host.exited ||
+      host.idleTimer !== undefined ||
+      this.host !== host ||
+      this.busy(host)
+    )
+      return;
+    const timer = setTimeout(() => {
+      host.idleTimer = undefined;
+      if (this.host !== host || this.busy(host)) return;
+      this.host = null;
+      host.expectedExit = true;
+      this.send(host, { op: 'exit' }, this.requestTimeoutMs).catch(
+        () => undefined,
+      );
+      const kill = setTimeout(() => {
+        if (!host.exited) host.process.kill();
+      }, EXIT_GRACE_MS);
+      kill.unref?.();
+    }, this.options.idleStopMs ?? IDLE_STOP_MS);
+    timer.unref?.();
+    host.idleTimer = timer;
+  }
+
+  private waitForExit(host: LiveHost): Promise<void> {
+    if (host.exited) return Promise.resolve();
+    return new Promise((resolve) => {
+      host.exitWaiters.push(resolve);
+    });
+  }
+
+  private ended(host: LiveHost, code: number): void {
+    if (host.exited) return;
+    host.exited = true;
+    this.clearIdle(host);
+    if (this.host === host) this.host = null;
+    for (const pending of host.pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(new HostRequestFailure('exited'));
+    }
+    host.pending.clear();
+    // Step process groups outlive their host's tree, however it ended.
+    for (const group of host.processGroups.values())
+      if (group > 0) this.options.killProcessGroup?.(group);
+    if (!host.expectedExit) {
+      const lost = pipelineHostLostError().payload;
+      for (const observers of host.observers.values())
+        for (const observer of [...observers]) observer.onEnd?.(lost);
+      this.options.onHostLost?.({ code, lost: host.executions.size });
+    }
+    host.processGroups.clear();
+    host.observers.clear();
+    for (const executionId of host.executions)
+      this.releaseExecution(executionId);
+    host.executions.clear();
+    for (const resolve of host.exitWaiters.splice(0)) resolve();
+  }
+}

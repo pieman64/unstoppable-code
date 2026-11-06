@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useCanopyCloudAccountState } from './useCanopyCloudAccountState';
 import type {
+  CanopyAccountResponse,
   CanopyOrgEnforcedSettings,
   ModelGatewayEnforcedPolicy,
 } from '@canopy/protocol/canopy-server';
+import { gatewayHostname } from '@canopy/protocol/model-gateway/discovery';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 import { normalizeUuid } from '@canopy/desktop-shared/lib/workspace-owner';
 
@@ -55,10 +57,29 @@ function flatten(
 ): OrgModelGateway {
   return {
     organizationId: org.organizationId,
-    organizationName: org.organizationName,
+    // A gateway's own name wins over its organization's.
+    organizationName: policy.displayName || org.organizationName,
     baseUrl: policy.baseUrl,
     enforced: policy.enforced === true,
     modelIds: policy.models.map((model) => model.id),
+  };
+}
+
+/**
+ * The account's enabled Personal gateway, named by its display name or
+ * hostname. Kept apart from the organization gateways: Personal only mode
+ * applies to Personal work and never joins another organization's policy.
+ */
+export function resolvePersonalModelGateway(
+  personal: CanopyAccountResponse['personalModelGateway'] | null | undefined,
+): OrgModelGateway | null {
+  if (!personal) return null;
+  return {
+    organizationId: personal.organizationId,
+    organizationName: personal.displayName || gatewayHostname(personal.baseUrl),
+    baseUrl: personal.baseUrl,
+    enforced: personal.enforced === true,
+    modelIds: personal.models.map((model) => model.id),
   };
 }
 
@@ -130,34 +151,14 @@ export function orderGatewaysForContext(
  * enforcement, which lives in the main-process session guard.
  */
 export function useOrgModelGateways(): OrgModelGateway[] | undefined {
-  const [gateways, setGateways] = useState<OrgModelGateway[] | undefined>(
-    undefined,
-  );
+  const { account } = useCanopyCloudAccountState();
+  return account
+    ? resolveOrgModelGateways(account.enforcedSettings)
+    : undefined;
+}
 
-  useEffect(() => {
-    let cancelled = false;
-    const read = async (): Promise<void> => {
-      try {
-        // Optional access throughout: this hook renders on surfaces (and in
-        // unit tests) that mount without the full preload bridge, and an
-        // affordance must never be the thing that takes the page down.
-        const account = await window.api?.loadCanopyCloudAccount();
-        if (!cancelled) {
-          setGateways(resolveOrgModelGateways(account?.enforcedSettings));
-        }
-      } catch {
-        if (!cancelled) setGateways([]);
-      }
-    };
-    void read();
-    const unsubscribe = window.api?.onPreferencesChanged?.(() => {
-      void read();
-    });
-    return (): void => {
-      cancelled = true;
-      unsubscribe?.();
-    };
-  }, []);
-
-  return gateways;
+/** {@link resolvePersonalModelGateway} for the signed-in account, kept current. */
+export function usePersonalModelGateway(): OrgModelGateway | null {
+  const { account } = useCanopyCloudAccountState();
+  return resolvePersonalModelGateway(account?.personalModelGateway);
 }

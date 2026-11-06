@@ -4,7 +4,10 @@ import {
   type VaultStatusGetResult,
 } from '@canopy/protocol/canopy-core';
 
-import type { PlatformSecretProtectionServices } from '../../../platform/secret-protection';
+import type {
+  PlatformKeySlotBlocked,
+  PlatformSecretProtectionServices,
+} from '../../../platform/secret-protection';
 import type {
   VaultAdmission,
   VaultBlockReason,
@@ -36,7 +39,7 @@ import { zeroBytes } from './zero-bytes';
  * the put and delete paths beside them (units D1 and D2), and tombstone
  * retention and reconciliation (unit E). Entry state precedence follows
  * `VaultRepository`; only `get` (while the key is not held) and the trusted
- * `refresh` reach the backend after open.
+ * `refresh` and `probeKeyIfDue` reach the backend after open.
  */
 
 export interface VaultReadRepositoryOptions
@@ -56,6 +59,8 @@ export interface VaultReadRepository {
   readonly repository: VaultRepository;
   /** Trusted internal re-probe; never handed to a repository consumer. */
   refresh(): Promise<void>;
+  /** Trusted key recovery for writers; shares get's throttle and in-flight probe. */
+  probeKeyIfDue(): Promise<void>;
   /**
    * Trusted in-process reconciliation (unit E): reopens a faulted store,
    * promotes each uncertain write that landed and nothing superseded, and
@@ -80,6 +85,8 @@ export type VaultReadOpenStep =
 export interface VaultReadUnavailable {
   readonly kind: 'vault_unavailable';
   readonly step: VaultReadOpenStep;
+  /** Retains a refused first-init slot call without another backend probe. */
+  readonly slotBlock?: PlatformKeySlotBlocked;
 }
 
 export type VaultReadOpenResult =
@@ -89,8 +96,15 @@ export type VaultReadOpenResult =
 const PROBE_TIMEOUT_MS = 5_000;
 const MIN_PROBE_INTERVAL_MS = 2_000;
 
-function unavailable(step: VaultReadOpenStep): VaultReadUnavailable {
-  return Object.freeze({ kind: 'vault_unavailable', step });
+function unavailable(
+  step: VaultReadOpenStep,
+  slotBlock?: PlatformKeySlotBlocked,
+): VaultReadUnavailable {
+  return Object.freeze({
+    kind: 'vault_unavailable',
+    step,
+    ...(slotBlock && { slotBlock }),
+  });
 }
 
 type Usability =
@@ -277,6 +291,7 @@ function createReadRepository(
     vaultId,
     repository,
     refresh: () => refreshed(holder.refresh()),
+    probeKeyIfDue: () => refreshed(holder.probeIfDue()),
     reconcile(): Promise<void> {
       try {
         writes.reconcile();
@@ -304,6 +319,7 @@ export async function openVaultReadRepository(
   let header = store.header;
   if (header === null) {
     const initialized = await initializeVault(store, slots, signal);
+    if (initialized.kind === 'blocked') return unavailable('init', initialized);
     if (initialized.kind !== 'initialized') return unavailable('init');
     ({ header, dataKey } = initialized);
   }

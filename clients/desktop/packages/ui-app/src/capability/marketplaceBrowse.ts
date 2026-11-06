@@ -97,6 +97,8 @@ export function marketplaceBrowseEntries(
   entries: readonly UnifiedPluginEntry[],
   installedKeys: ReadonlySet<string> = new Set(),
   states?: InstalledEntryStatusStates,
+  /** MCP search only: results that link to their plugin stay listed. */
+  options: { readonly keepPluginProvided?: boolean } = {},
 ): UnifiedPluginEntry[] {
   return entries.filter(
     (entry) =>
@@ -104,8 +106,8 @@ export function marketplaceBrowseEntries(
       (entry.kind === 'blueprint' ||
         !marketplaceEntryIsInstalled(entry, states)) &&
       entry.installedEntryId === undefined &&
-      entry.installedVia === undefined &&
-      !listedAsItsPlugin(entry),
+      (options.keepPluginProvided === true ||
+        (entry.installedVia === undefined && !listedAsItsPlugin(entry))),
   );
 }
 

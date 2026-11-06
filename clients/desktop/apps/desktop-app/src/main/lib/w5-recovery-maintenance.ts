@@ -14,7 +14,10 @@ import {
 /** Cold composition shared by recovery launches; never joins the host cohort. */
 export function createW5RecoveryMaintenanceContext(
   dataRoot: string,
-  options: { readonly workerEntry?: string } = {},
+  options: {
+    readonly workerEntry?: string;
+    readonly admission?: () => Promise<void>;
+  } = {},
 ): W5MaintenanceContext {
   const platform = hostPlatformServices(
     createPlatformEndpointServices(hostPlatformOperatingSystem()),
@@ -26,6 +29,7 @@ export function createW5RecoveryMaintenanceContext(
     workerEntry:
       options.workerEntry ?? join(__dirname, 'w5-commit-log-worker.js'),
     admission: async (): Promise<void> => {
+      await options.admission?.();
       if (!(await isW5MaintenanceHostHeld(host, dataRoot)))
         throw new W5MaintenanceRefusedError('claim-lost');
     },

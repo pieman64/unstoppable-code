@@ -13,6 +13,8 @@ import {
   type DesktopCanopyDispatcher,
 } from '../canopy-runtime/desktop-runtime';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
+import { withDaemonCodeGraphRoute } from './daemon-code-graph-route-context';
+import { selectDaemonCodeGraphForMain } from './daemon-code-graph-route';
 
 /*
  * Electron main's client of `worker.codeGraph.build` for the agent build
@@ -20,7 +22,8 @@ import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-id
  * `BuildOrUpdateCodeGraph`, and through it the Orchestrator action and the
  * MCP, Codex and delegation tool surfaces, builds through the operation on
  * the desktop dispatcher instead of calling the build service. Refusals come
- * back as the operation's typed `CanopyOperationError`s.
+ * back as the operation's typed `CanopyOperationError`s. On eligible hosts
+ * the agent build takes the daemon route (CAN-5625).
  */
 
 const CODE_GRAPH_BUILDS_CALLER: CanopyCallerDescriptor = {
@@ -62,21 +65,25 @@ export async function buildWorktreeCodeGraphForAgent(scope: {
   const dispatcher = dispatcherForTests ?? getActiveDesktopRuntimeIfAccepting();
   // No runtime means the app is starting or quitting: the build is canceled.
   if (dispatcher === null) throw codeGraphBuildCanceledError();
-  const result = await dispatcher.instruction(
-    'worker.codeGraph.build',
-    {
-      graphScope: {
-        kind: 'worktree',
-        workspaceId: scope.projectId,
-        worktreeId: scope.worktreeId,
-        mode: 'verified',
-        requestedBy: 'agent',
-      },
-    },
-    {
-      caller: CODE_GRAPH_BUILDS_CALLER,
-      metadata: { idempotencyKey: randomUUID() },
-    },
+  const { value: result } = await withDaemonCodeGraphRoute(
+    selectDaemonCodeGraphForMain(scope.projectId),
+    () =>
+      dispatcher.instruction(
+        'worker.codeGraph.build',
+        {
+          graphScope: {
+            kind: 'worktree',
+            workspaceId: scope.projectId,
+            worktreeId: scope.worktreeId,
+            mode: 'verified',
+            requestedBy: 'agent',
+          },
+        },
+        {
+          caller: CODE_GRAPH_BUILDS_CALLER,
+          metadata: { idempotencyKey: randomUUID() },
+        },
+      ),
   );
   if (result.kind !== 'worktree')
     throw codeGraphBuildFailedError('malformed_response');

@@ -2,6 +2,7 @@ export * from './platform-services';
 export * from './endpoints';
 export {
   deriveLocalAuthorityIdentity,
+  observeLocalAuthorityRelocation,
   hostLocalAuthorityObservation,
   LocalAuthorityIdentityError,
   type LocalAuthorityIdentity,
@@ -73,3 +74,8 @@ export {
   windowsPrincipalObserver,
   windowsPrincipalSid,
 } from './supervision/windows-process';
+export {
+  createSecretProtectionServices,
+  SECRET_PROTECTION_FILE,
+  type SecretProtectionOptions,
+} from './secret-protection';

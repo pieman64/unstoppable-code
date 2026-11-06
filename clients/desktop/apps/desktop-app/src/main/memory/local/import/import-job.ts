@@ -28,7 +28,7 @@ import {
   runCodexMemoryImport,
   type ClaudeMemoryImportResult,
 } from './import-runner';
-import { readImportState } from './ledger';
+import { isLiveImportEntry, readImportState } from './ledger';
 import { routeClaudeMemoryContent } from './scope-routing';
 
 export const CLAUDE_MEMORY_IMPORT_MIN_INTERVAL_MS = 24 * 60 * 60 * 1_000;
@@ -100,7 +100,8 @@ async function scopeHasPendingStagedImports(
     const state = await readImportState(scopeDir);
     if (
       Object.values(state.sources).some(
-        (entry) => 'stagedAs' in entry && entry.consolidatedAt === undefined,
+        (entry) =>
+          isLiveImportEntry(entry) && entry.consolidatedAt === undefined,
       )
     ) {
       return true;

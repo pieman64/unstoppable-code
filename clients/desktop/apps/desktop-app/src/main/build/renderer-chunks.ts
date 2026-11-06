@@ -1,20 +1,16 @@
 import type { Plugin } from 'vite';
 
-function isDatadogRendererModule(id: string): boolean {
-  return id.includes('/node_modules/@datadog/');
-}
-
 /**
  * Vite's dynamic-import preload helper. Every chunk that lazy-loads another
  * chunk imports it, so it must not be absorbed into a manual chunk: Rollup
  * pulls a manual chunk's unassigned dependencies into that chunk, and the
  * startup entry would then statically load the whole host chunk (it once
- * loaded all of `datadog-sdk` for this one helper, even with RUM disabled).
+ * loaded a whole on-demand SDK chunk for this one helper).
  */
 const VITE_PRELOAD_HELPER_ID = '\0vite/preload-helper.js';
 
 /**
- * Renderer `manualChunks`. Names starting with `vendor-` (and the Datadog
+ * Renderer `manualChunks`. Names starting with `vendor-` (and the PostHog
  * chunk) hold third-party code.
  */
 export function rendererManualChunk(id: string): string | undefined {
@@ -27,9 +23,6 @@ export function rendererManualChunk(id: string): string | undefined {
   )
     return 'posthog-sdk';
   if (id.includes('/node_modules/pdfjs-dist/')) return 'vendor-pdfjs';
-  if (isDatadogRendererModule(id)) {
-    return 'datadog-sdk';
-  }
   // ~27KB of base64 store-badge data URIs (CAN-1939). Isolated so
   // the always-mounted shell's lazy CTA banner does not drag them
   // onto the startup path.
@@ -89,7 +82,6 @@ export function rendererManualChunk(id: string): string | undefined {
 
 /** Manual chunks that must load on demand, never with a window's startup. */
 export const RENDERER_ON_DEMAND_CHUNKS: readonly string[] = [
-  'datadog-sdk',
   'posthog-sdk',
   'store-badges',
   'vendor-diff',

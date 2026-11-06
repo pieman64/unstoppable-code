@@ -11,7 +11,12 @@ import {
 import { logMainProcessWarn } from '../../lib/main-process-logging';
 import { readPreferencesFile } from '../../lib/preferences-store';
 import { broadcastLocalMemoryChanged } from './change-events';
+import {
+  LOCAL_MEMORY_SYNCED_CONSOLIDATION_MESSAGE,
+  LOCAL_MEMORY_SYNCED_RESTORE_MESSAGE,
+} from '@canopy/protocol/local-memory';
 import { localMemoryScopeDir } from './scope-resolver';
+import { isSyncedMemoryReplica } from './replica-hooks';
 import {
   beginLocalMemoryConsolidationRun,
   endLocalMemoryConsolidationRun,
@@ -615,6 +620,9 @@ export async function runManualLocalMemoryRebuild(
   request: LocalMemoryScopeRequest,
 ): Promise<LocalMemoryRebuildResult> {
   const scopeDir = scopeDirectory(request);
+  if (await isSyncedMemoryReplica(scopeDir)) {
+    return rebuildResult('skipped', LOCAL_MEMORY_SYNCED_CONSOLIDATION_MESSAGE);
+  }
   if (!beginLocalMemoryConsolidationRun(scopeDir, 'rebuild')) {
     return rebuildResult('skipped', 'already-running');
   }
@@ -734,6 +742,13 @@ export async function restoreManualLocalMemorySnapshot(
     throw new Error('Choose a memory snapshot.');
   }
   const scopeDir = scopeDirectory(request);
+  if (await isSyncedMemoryReplica(scopeDir)) {
+    return {
+      status: 'skipped',
+      reason: LOCAL_MEMORY_SYNCED_RESTORE_MESSAGE,
+      previousSnapshotId: null,
+    };
+  }
   if (!beginLocalMemoryConsolidationRun(scopeDir, 'restore')) {
     return {
       status: 'skipped',

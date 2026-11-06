@@ -1,5 +1,10 @@
+import {
+  gatewayDisplayNameSchema,
+  gatewayModelSchema,
+  aiGatewayConnectSchema,
+} from '../model-gateway';
+import { aiGatewayConnectionResultSchema } from '../model-gateway/discovery';
 import { z } from 'zod';
-import { AI_GATEWAY_THINKING_LEVELS } from '../ai-gateway-models';
 import {
   isMemoryParticipationMember,
   isViewerDataSharingStatus,
@@ -190,6 +195,10 @@ function memoryExplorerPath(organizationId: string, suffix: string): string {
   return organizationPath(organizationId, `/memory-explorer${suffix}`);
 }
 
+function cloudGatewayKeyPath(organizationId: string): string {
+  return `/api/v1/settings/ai-gateway/organization/${settingsPathSegment(organizationId)}/cloud-key`;
+}
+
 function get(path: string): SettingsOperationRequest {
   return { method: 'GET', path };
 }
@@ -212,6 +221,9 @@ function signedUploadFilePath(signed: SettingsSignedUpload): string {
 
 const organizationIdField = { organizationId: settingsRouteIdSchema };
 const organizationInputSchema = z.strictObject(organizationIdField);
+const cloudGatewayKeyStatusSchema = z.looseObject({
+  status: z.enum(['none', 'saved', 'rejected', 'stale_url']),
+});
 const cursorSchema = z.string().min(1).max(2048);
 const pageLimitSchema = z.number().int().positive().max(500);
 const organizationNameSchema = z.string().trim().min(1).max(256);
@@ -269,15 +281,7 @@ const orgProjectGrantsInputSchema = z
   .array(orgProjectGrantInputSchema)
   .max(ORG_PROJECT_LIMITS.grantsPerProject);
 
-const modelGatewayModelInputSchema = z.strictObject({
-  id: z.string().min(1).max(256),
-  gatewayId: z.string().min(1).max(256),
-  label: z.string().min(1).max(256),
-  harness: z.enum(['claude', 'codex']),
-  contextWindow: z.number().int().positive(),
-  supportedThinkingLevels: z.array(z.enum(AI_GATEWAY_THINKING_LEVELS)),
-  toolSchemaProfile: z.enum(['standard', 'flat']),
-});
+const modelGatewayModelInputSchema = gatewayModelSchema;
 
 const enforcedSyncScopesInputSchema = z.strictObject({
   transcripts: z.boolean().nullable(),
@@ -303,6 +307,8 @@ const policiesUpdateFields = {
   blockedModelIds: modelIdListSchema.optional(),
   reviewedModelIds: modelIdListSchema.optional(),
   enforceMemberModelGateway: z.boolean().optional(),
+  modelGatewayDisplayName: gatewayDisplayNameSchema.optional(),
+  expectedModelGatewayRevision: z.string().max(128).optional(),
   modelGatewayBaseUrl: z.string().max(2048).nullable().optional(),
   modelGatewayModels: z.array(modelGatewayModelInputSchema).max(100).optional(),
   modelGatewayEnforced: z.boolean().optional(),
@@ -609,6 +615,47 @@ const digestSharingResultSchema = settingsDtoSchema<{
 /* -------------------------------------------------------------------------- */
 
 export const ORGANIZATION_SETTINGS_OPERATIONS = {
+  'organization.settings.ai-gateway.connect': defineSettingsWrite({
+    transport: 'backend',
+    input: aiGatewayConnectSchema.extend({ organizationId: z.uuid() }),
+    result: aiGatewayConnectionResultSchema,
+    request: (input) => ({
+      method: 'POST',
+      path: '/api/v1/settings/ai-gateway/organization/connect',
+      body: input,
+    }),
+  }),
+  // The member's own key for cloud chats (CAN-5809). Personal uses these too,
+  // with the Personal organization's id, so a key is never saved into a
+  // Personal promoted since the page loaded. Responses carry status only.
+  'organization.settings.ai-gateway.cloud-key.read': defineSettingsRead({
+    transport: 'backend',
+    input: organizationInputSchema,
+    result: cloudGatewayKeyStatusSchema,
+    request: (input) => get(cloudGatewayKeyPath(input.organizationId)),
+  }),
+  'organization.settings.ai-gateway.cloud-key.save': defineSettingsWrite({
+    transport: 'backend',
+    input: z.strictObject({
+      ...organizationIdField,
+      apiKey: z.string().min(1).max(4096),
+    }),
+    result: cloudGatewayKeyStatusSchema,
+    request: (input) => ({
+      method: 'PUT',
+      path: cloudGatewayKeyPath(input.organizationId),
+      body: { apiKey: input.apiKey },
+    }),
+  }),
+  'organization.settings.ai-gateway.cloud-key.remove': defineSettingsWrite({
+    transport: 'backend',
+    input: organizationInputSchema,
+    result: cloudGatewayKeyStatusSchema,
+    request: (input) => ({
+      method: 'DELETE',
+      path: cloudGatewayKeyPath(input.organizationId),
+    }),
+  }),
   /* Organizations list, lifecycle, and branding --------------------------- */
 
   'organization.list': defineSettingsRead({
@@ -1249,6 +1296,7 @@ export const ORGANIZATION_SETTINGS_OPERATIONS = {
   }),
   /** Policies subtab: sharing enforcement, model access, model gateway. */
   'organization.settings.policies.update': defineSettingsWrite({
+    maxInputBytes: 512 * 1024,
     transport: 'backend',
     input: z
       .strictObject({ ...organizationIdField, ...policiesUpdateFields })

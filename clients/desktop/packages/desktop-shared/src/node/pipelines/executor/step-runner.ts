@@ -570,7 +570,7 @@ export function applyClaudeMockPipelineEnv(
 function buildSafeProcessEnv(): Record<string, string> {
   const safe: Record<string, string> = {};
   for (const [key, value] of Object.entries(
-    getEnhancedEnv({ environment: false }),
+    getEnhancedEnv({ environment: false, includeCanopySecrets: false }),
   )) {
     if (value === undefined) continue;
     if (EXECUTOR_MANAGED_ENV_KEYS.has(key)) {

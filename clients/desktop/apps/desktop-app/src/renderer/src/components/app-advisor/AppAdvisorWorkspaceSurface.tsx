@@ -520,7 +520,7 @@ export function AppAdvisorWorkspaceSurface({
             >
               <div className="flex flex-col items-center gap-3 fg-secondary">
                 <LoadingSpinner tone="secondary" />
-                <span className="text-sm">Loading {ORCHESTRATOR_LABEL}…</span>
+                <span className="text-s">Loading {ORCHESTRATOR_LABEL}…</span>
               </div>
             </div>
           )}

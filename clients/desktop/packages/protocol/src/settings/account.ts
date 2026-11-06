@@ -269,6 +269,13 @@ export type SetPasswordResponse = OkResponse;
 /** `400` error for password validation / already-set (Contract B5). */
 export const SET_PASSWORD_ERROR = 'Unable to set password.';
 
+/** Structured `code` for a password found in a known data breach. */
+export const PASSWORD_COMPROMISED_CODE = 'PASSWORD_COMPROMISED';
+
+/** Shared copy for {@link PASSWORD_COMPROMISED_CODE} on every password form. */
+export const PASSWORD_COMPROMISED_ERROR =
+  'That password has appeared in a data breach. Choose a different one.';
+
 /** Minimum password length enforced server-side (Contract B5). */
 export const PASSWORD_MIN_LENGTH = 12;
 

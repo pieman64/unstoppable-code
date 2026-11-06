@@ -217,7 +217,7 @@ export function PublishedArtifactsManager(): JSX.Element {
                   <span className="shrink-0 rounded-full border px-2 py-0.5 text-2xs font-medium fg-secondary">
                     {KIND_LABELS[item.kind]}
                   </span>
-                  <p className="truncate text-sm font-medium fg-primary">
+                  <p className="truncate text-s font-medium fg-primary">
                     {item.title}
                   </p>
                 </div>
@@ -415,7 +415,7 @@ function AddWorkDialog({
     >
       {atLimit && (
         <p
-          className="rounded-md border bg-secondary px-3 py-2 text-sm fg-warning"
+          className="rounded-md border bg-secondary px-3 py-2 text-s fg-warning"
           role="status"
         >
           You&apos;ve reached the {MAX_FEATURED_ARTIFACTS}-item limit. Remove
@@ -444,10 +444,10 @@ function AddWorkDialog({
 
       <div className="max-h-80 overflow-y-auto">
         {searching && results === null && (
-          <p className="px-1 py-4 text-sm fg-secondary">Searching…</p>
+          <p className="px-1 py-4 text-s fg-secondary">Searching…</p>
         )}
         {results && results.length === 0 && !searching && (
-          <p className="px-1 py-4 text-sm fg-secondary">
+          <p className="px-1 py-4 text-s fg-secondary">
             {query
               ? `No ${KIND_TAB_LABELS[kind].toLowerCase()} match “${query}”.`
               : `You don't have any ${KIND_TAB_LABELS[kind].toLowerCase()} yet.`}
@@ -465,7 +465,7 @@ function AddWorkDialog({
                   data-testid={`add-work-row-${item.id}`}
                 >
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-medium fg-primary">
+                    <p className="truncate text-s font-medium fg-primary">
                       {item.title}
                     </p>
                     <p className="text-xs fg-secondary">

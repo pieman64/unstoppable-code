@@ -116,7 +116,7 @@ export interface ChatComposerProps {
 // min-h-26 + px-4 would otherwise dominate the height and double the pad.
 const CONTAINER_CLASS = 'cursor-text';
 const EDITABLE_CLASS =
-  'min-h-11 max-h-64 overflow-y-auto whitespace-pre-wrap break-words bg-transparent px-1 py-1 text-s leading-5 fg-primary outline-none placeholder:fg-secondary';
+  'min-h-11 max-h-64 overflow-y-auto whitespace-pre-wrap break-words bg-transparent px-1 py-1 text-s pointer-coarse:text-m leading-5 fg-primary outline-none placeholder:fg-secondary';
 // A single stable empty array so the slash hook's `commands` dep identity does
 // not churn every render when no host commands are supplied. The hook never
 // mutates it.

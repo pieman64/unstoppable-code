@@ -121,6 +121,8 @@ export interface CuratedDetailProps<
   /** Other ways to reach the service, after this entry's own route. */
   routes?: CuratedMcpDetailRoutes;
   toolsRevision?: number;
+  statusContent?: ReactNode;
+  renderManagement?: (tools: ReactNode) => ReactNode;
 }
 
 /**
@@ -138,6 +140,8 @@ export function CuratedDetail<T extends McpDetailEntry>({
   connectionContent,
   routes,
   toolsRevision,
+  statusContent,
+  renderManagement,
 }: CuratedDetailProps<T>): JSX.Element {
   // Discovered tools are INSTALLED-ONLY: the catalog carries none, and
   // discovery needs a live endpoint + the user's credentials that do not exist
@@ -190,6 +194,8 @@ export function CuratedDetail<T extends McpDetailEntry>({
       actions={actions}
       connectionContent={connectionContent}
       routes={routes}
+      statusContent={statusContent}
+      renderManagement={renderManagement}
       renderLogo={(catalogEntry) => (
         <CuratedLogo
           curatedKey={catalogEntry.key}
@@ -235,9 +241,7 @@ function CuratedCard({ entry, onOpen, onAdd }: CuratedCardProps): JSX.Element {
           size={28}
         />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium fg-primary">
-            {entry.name}
-          </p>
+          <p className="truncate text-s font-medium fg-primary">{entry.name}</p>
           <p className="mt-0.5 line-clamp-2 text-xs fg-secondary">
             {entry.shortDescription}
           </p>
@@ -390,7 +394,7 @@ export function McpBrowseDialog({
           />
           <div className="flex flex-1 min-h-0 flex-col gap-4 overflow-y-auto">
             {filtered.length === 0 ? (
-              <p className="py-8 text-center text-sm fg-secondary">
+              <p className="py-8 text-center text-s fg-secondary">
                 No servers match your search.
               </p>
             ) : (

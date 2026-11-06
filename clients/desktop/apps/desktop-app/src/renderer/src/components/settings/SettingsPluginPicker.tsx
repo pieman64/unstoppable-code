@@ -2,6 +2,7 @@ import { type JSX, useEffect, useState } from 'react';
 import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
 import { Button, DialogModal } from '@canopy/ui-shared/components';
 import { PluginsIcon } from '@canopy/ui-shared/icons/AppIcons';
+import type { PluginPickerSelectionCopy } from '@canopy/ui-shared/lib';
 import { PluginSelector } from '../shared/PluginSelector';
 import { SettingsRow } from './SettingsLayout';
 
@@ -11,6 +12,8 @@ interface SettingsPluginPickerProps {
   selections: ChatTabPluginSelections;
   onChange: (selections: ChatTabPluginSelections) => void;
   disabled?: boolean;
+  /** What selecting means in this picker; words only. */
+  selectionCopy?: PluginPickerSelectionCopy;
 }
 
 function countSelections(selections: ChatTabPluginSelections): number {
@@ -28,6 +31,7 @@ export function SettingsPluginPicker({
   selections,
   onChange,
   disabled = false,
+  selectionCopy,
 }: SettingsPluginPickerProps): JSX.Element {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<ChatTabPluginSelections>(selections);
@@ -40,7 +44,9 @@ export function SettingsPluginPicker({
   }, [open, selections]);
 
   const count = countSelections(selections);
-  const summary = count === 0 ? 'No plugins selected' : `${count} selected`;
+  const summary =
+    selectionCopy?.countText(count) ??
+    (count === 0 ? 'No plugins selected' : `${count} selected`);
 
   function handleSave(): void {
     onChange(draft);
@@ -96,7 +102,11 @@ export function SettingsPluginPicker({
             </>
           }
         >
-          <PluginSelector selections={draft} onChange={setDraft} />
+          <PluginSelector
+            selections={draft}
+            onChange={setDraft}
+            selectionCopy={selectionCopy}
+          />
         </DialogModal>
       )}
     </>

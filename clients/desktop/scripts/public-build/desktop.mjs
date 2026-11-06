@@ -78,28 +78,10 @@ const env = {
     'CANOPY_UPDATE_BASE_URL',
     'https://releases.unstoppable.ai',
   ),
-  CANOPY_DATADOG_ENABLED: clientConfig(
-    'CANOPY_DATADOG_ENABLED',
-    'true',
-    'false',
-  ),
   CANOPY_POSTHOG_ENABLED: clientConfig(
     'CANOPY_POSTHOG_ENABLED',
     'true',
     'false',
-  ),
-  CANOPY_DATADOG_CLIENT_TOKEN: clientConfig(
-    'CANOPY_DATADOG_CLIENT_TOKEN',
-    'pub4ec38577123771d227b45a9f67ed001e',
-  ),
-  CANOPY_DATADOG_APPLICATION_ID: clientConfig(
-    'CANOPY_DATADOG_APPLICATION_ID',
-    '63d8fced-9c25-43fd-9e75-f2d1d079725d',
-  ),
-  CANOPY_DATADOG_SITE: clientConfig('CANOPY_DATADOG_SITE', 'datadoghq.com'),
-  CANOPY_DATADOG_SERVICE: clientConfig(
-    'CANOPY_DATADOG_SERVICE',
-    'canopy-desktop',
   ),
   CANOPY_POSTHOG_PROJECT_KEY: clientConfig(
     'CANOPY_POSTHOG_PROJECT_KEY',

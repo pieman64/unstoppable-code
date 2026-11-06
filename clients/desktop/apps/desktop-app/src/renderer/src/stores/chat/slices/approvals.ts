@@ -21,6 +21,7 @@ import {
   getApprovalDefaultsGeneration,
 } from '../approval-defaults';
 import { pendingTabCreation } from '../pending-tab-creation';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 
 interface InFlightApprovalDefaultFetch {
   generation: number;
@@ -268,6 +269,40 @@ export const createApprovalsSlice: StateCreator<
         worktreeChats: resolved
           ? resumeApprovalTurnTimer(state, pending)
           : state.worktreeChats,
+      };
+    });
+  },
+
+  respondToSecretApproval: async (
+    requestId,
+    bindingId,
+    secret,
+  ): Promise<void> => {
+    const pending = get().pendingApprovals[requestId];
+    if (!pending || pending.secretInput?.bindingId !== bindingId) return;
+    let resolved: boolean;
+    try {
+      resolved = await window.api.approvals.respondSecretInput({
+        requestId,
+        projectId: pending.projectId,
+        worktreeId: pending.worktreeId,
+        chatId: pending.chatId,
+        bindingId,
+        secret,
+      });
+    } catch {
+      // Never send secret-input transport details to telemetry.
+      reportClientAppError(new Error('Secret approval response failed'));
+      return;
+    }
+    // A refused response leaves the card for another try or Deny.
+    if (!resolved) return;
+    set((state) => {
+      const nextPendingApprovals = { ...state.pendingApprovals };
+      delete nextPendingApprovals[requestId];
+      return {
+        pendingApprovals: nextPendingApprovals,
+        worktreeChats: resumeApprovalTurnTimer(state, pending),
       };
     });
   },

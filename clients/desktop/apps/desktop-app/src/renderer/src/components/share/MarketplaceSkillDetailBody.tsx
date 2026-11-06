@@ -29,6 +29,8 @@ import { Button } from '../shared/Button';
 import {
   CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
+  Fact,
+  FactList,
   Heading,
 } from '@canopy/ui-shared/components';
 import { SkillPublisherProvenance } from '@canopy/ui-shared/components/SkillPublisherProvenance';
@@ -249,12 +251,13 @@ export function MarketplaceSkillDetailBody({
             ) : (
               <p className="text-s fg-secondary">No description provided.</p>
             )}
-            <dl className="mt-3 text-xs fg-secondary">
-              <div className="flex gap-2">
-                <dt className="font-medium fg-primary">Source</dt>
-                <dd>{snapshot.marketplaceOrigin}</dd>
-              </div>
-            </dl>
+            <FactList placement="mt-3" columnGap="2" valueTone="secondary">
+              <Fact
+                label={<span className="font-medium fg-primary">Source</span>}
+              >
+                {snapshot.marketplaceOrigin}
+              </Fact>
+            </FactList>
           </div>
         )}
       </div>

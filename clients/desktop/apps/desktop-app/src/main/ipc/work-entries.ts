@@ -24,7 +24,6 @@ import {
   onWorkEntryListChanged,
   removeWorkEntryRow,
   reorderWorkEntries,
-  resolveWorkEntryForChat,
   updateWorkEntry,
 } from '../lib/cowork-work-entries';
 import { assertWorktreeCanBeRemoved } from '../agents/background-work';
@@ -33,6 +32,9 @@ import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
 import { cleanupPersistedWorktreeData } from '../lib/worktree-data-cleanup';
 import { validateId } from '../lib/validation';
+import { getActiveDesktopRuntime } from '../canopy-runtime/desktop-runtime';
+import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
+import { preserveRuntimeCauseError } from '../canopy-runtime/runtime-cause-error';
 import { registerIpcHandler } from './register';
 import { broadcastArchivedContainersChanged } from '../lib/archived-containers';
 import { resolveContainerRetentionDays } from '../lib/archived-container-retention';
@@ -387,6 +389,24 @@ export function registerWorkEntryHandlers(): void {
   >(IPC_CHANNELS.workEntriesResolveChat, async (_event, request) => {
     const workspaceId = assertWorkEntryWorkspace(request.projectId);
     validateId(request.chatId, 'chatId');
-    return resolveWorkEntryForChat(workspaceId, request.chatId);
+    const located = await preserveRuntimeCauseError(
+      getActiveDesktopRuntime().query(
+        'core.chat.locate',
+        { scope: { workspaceId }, chatId: request.chatId },
+        {
+          caller: {
+            principalId: 'local-desktop-user',
+            clientInstanceId: 'desktop-main-work-entries',
+            authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+            interfaceKind: 'desktop',
+            grants: ['core.chat.read'],
+          },
+        },
+      ),
+    );
+    return {
+      entryId: located.worktreeId,
+      archivedInEntryId: located.archivedInWorktreeId,
+    };
   });
 }

@@ -3,6 +3,7 @@ import {
   W5RevisionConflictError,
 } from './commit-log-file-store';
 import { setW5CommitOutcome, type W5CommitOptions } from './commit-scope';
+import { W5RecordOverloadedError } from './file-store';
 import type { W5KeyedOperationRunner } from './keyed-operation';
 import type { W5StorageAdmission } from './storage-binding';
 import type { W5StorageTarget } from './storage-target';
@@ -64,11 +65,12 @@ export interface W5SingleDecisionBindings<Source extends string> {
  * `save` with its result, so the files, revisions, receipt and outcome are
  * one decision. That decision is the only effect, so it is not signalled
  * through `beforeDecision`: a refusal before or at it (the boundary's own, a
- * stale file or revision, a host refusal) releases the key, and any other
- * failure leaves it recovery-required. An optional `reservedAdmit` runs
- * between the reservation and `execute`; its errors release the key. With
- * `retryStaleDecision`, a keyed retry's `admit` runs under the reservation
- * too, and its errors release the key as they would before one.
+ * stale file or revision, a live overload, a host refusal) releases the key,
+ * and any other failure leaves it recovery-required. An optional
+ * `reservedAdmit` runs between the reservation and `execute`; its errors
+ * release the key. With `retryStaleDecision`, a keyed retry's `admit` runs
+ * under the reservation too, and its errors release the key as they would
+ * before one.
  */
 export function createW5SingleDecisionOperation<Source extends string>(
   bindings: W5SingleDecisionBindings<Source>,
@@ -78,6 +80,7 @@ export function createW5SingleDecisionOperation<Source extends string>(
     isBoundaryRefusal(error) ||
     error instanceof W5RevisionConflictError ||
     error instanceof W5FileWriteRefusedError ||
+    error instanceof W5RecordOverloadedError ||
     bindings.isHostRefusal(error);
 
   return function runW5SingleDecisionOperation<A, T>(

@@ -22,6 +22,7 @@ import { TextInput } from '../Field';
 import { ComposerIconButton } from './ComposerIconButton';
 import {
   COMPOSER_PROMPT_HEADER_CLASS,
+  COMPOSER_PROMPT_HEADER_WITH_GLYPH_CLASS,
   COMPOSER_PROMPT_ROW_GLYPH_CLASS,
   COMPOSER_PROMPT_ROWS_CLASS,
   isTypingOutside,
@@ -202,7 +203,13 @@ export function QuestionPrompt({
       {expanded && (
         <>
           {/* The title's first line centres on x's 32px circle. */}
-          <div className={`${COMPOSER_PROMPT_HEADER_CLASS} items-start`}>
+          <div
+            className={`${
+              step > 0
+                ? COMPOSER_PROMPT_HEADER_WITH_GLYPH_CLASS
+                : COMPOSER_PROMPT_HEADER_CLASS
+            } items-start`}
+          >
             {step > 0 && (
               <ComposerIconButton
                 capsule
@@ -211,8 +218,6 @@ export function QuestionPrompt({
                 onClick={prompt.back}
                 disabled={locked}
                 data-testid="chat-question-back"
-                // A circle sits 8px in, as the numbers do; the title keeps 16px.
-                className="-ml-2"
               >
                 <ChevronLeftMediumIcon size={16} />
               </ComposerIconButton>

@@ -108,6 +108,10 @@ export default defineConfig({
       ),
       '@canopy/brand/web': resolve(repoRoot, '.cache/brand/web-brands.ts'),
       '@repo/package.json': resolve(repoRoot, 'package.json'),
+      'composer-lab/gateway-catalog': resolve(
+        repoRoot,
+        'apps/desktop-app/tests/electron/fixtures/pr3519-gateway-catalog.json',
+      ),
     },
   },
 });

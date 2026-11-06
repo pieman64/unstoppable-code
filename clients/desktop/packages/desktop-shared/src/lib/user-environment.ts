@@ -721,6 +721,48 @@ export function resolveEnvironmentForRuntime<V extends EnvironmentValue>(
   return resolveEnvironmentVariables(config, environmentId);
 }
 
+/** Secret entries the runtime applies, with the environment that supplies each. */
+export function resolveEnvironmentSecretSlots(
+  config: EnvironmentConfigData,
+  request: ResolveEnvironmentRequest,
+): Array<{ key: string; environmentId: string }> {
+  const resolved = resolveEnvironmentForRuntime(config, request);
+  const environmentId = resolved.environmentId;
+  const appliedKeys = new Set(Object.keys(resolved.secretApplied));
+  const byId = new Map(
+    config.environments.map((environment) => [environment.id, environment]),
+  );
+  const chain: EnvironmentDefinition[] = [];
+  const seen = new Set<string>();
+  let environment = environmentId ? byId.get(environmentId) : undefined;
+  while (environment && !seen.has(environment.id)) {
+    chain.push(environment);
+    seen.add(environment.id);
+    environment = environment.parentId
+      ? byId.get(environment.parentId)
+      : undefined;
+  }
+  const byKey = new Map<
+    string,
+    { key: string; environmentId: string; secret: boolean }
+  >();
+  for (const item of chain.reverse()) {
+    for (const entry of item.variables) {
+      if (!isReservedUserEnvironmentKey(entry.key))
+        byKey.set(entry.key, {
+          key: entry.key,
+          environmentId: item.id,
+          secret: entry.secret === true,
+        });
+    }
+  }
+  return Array.from(byKey.values()).flatMap((entry) =>
+    entry.secret && appliedKeys.has(entry.key)
+      ? [{ key: entry.key, environmentId: entry.environmentId }]
+      : [],
+  );
+}
+
 export function validateEnvironmentConfig<V extends EnvironmentValue>(
   config: EnvironmentConfigData<V>,
 ): { ok: true } | { ok: false; message: string } {

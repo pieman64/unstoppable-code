@@ -11,16 +11,17 @@ import type {
 } from '@canopy/desktop-shared/types';
 import type { BoundaryClip } from '@canopy/memory-consolidation/boundary-truncation';
 import type { ManualConsolidationOutcome } from './manual-consolidation-trigger';
+import type { LocalMemoryNoteOrigin } from './replica-hooks';
 import {
   localMemoryScopeDir,
   resolveLocalMemoryScope,
   type ResolvedLocalMemoryScope,
 } from './scope-resolver';
 import {
-  appendInboxNote,
   readMemoryFile,
   readMemoryIndex,
   readRecentInboxNoteEntries,
+  saveInboxNote,
   searchMemory,
   type RecentInboxNote,
 } from './store';
@@ -48,11 +49,16 @@ export interface LocalMemoryStore {
    * Saves a note into the inbox; its file key, or '' when not written.
    * Rejects with `LocalMemoryScopeReadOnlyError` or, when another process
    * took the scope's lock over first, `LocalMemoryScopeLockLostError`;
-   * neither is retried.
+   * neither is retried. In a synced replica the note records `origin` and
+   * is queued for sync (design §10.4).
    */
   saveNote(
     scope: LocalMemoryScopeRequest,
-    note: { text: string; source: MemorySource },
+    note: {
+      text: string;
+      source: MemorySource;
+      origin?: LocalMemoryNoteOrigin;
+    },
   ): Promise<string>;
   search(
     scopes: readonly LocalMemoryScopeRequest[],
@@ -160,10 +166,13 @@ async function listWithUsage(
 }
 
 // The explorer, snapshot, status and consolidation modules load on first
-// use, keeping the turn path (save, search, recall) free of them.
+// use, keeping the turn path (save, search, recall) free of them. An
+// explorer write resolves its scope before that load, and is bound to the
+// replica it resolved while it waits for the scope's lock.
 export const localMemoryStore: LocalMemoryStore = {
   resolve: resolveLocalMemoryScope,
-  saveNote: (scope, note) => appendInboxNote(dir(scope), note),
+  saveNote: (scope, note) =>
+    saveInboxNote(() => resolveLocalMemoryScope(scope), note),
   search: (scopes, query) =>
     searchMemory(
       scopes.map((scope) => ({ scope: scope.scope, dir: dir(scope) })),
@@ -179,16 +188,19 @@ export const localMemoryStore: LocalMemoryStore = {
     return readLocalMemoryDocument(dir(scope), fileKey);
   },
   writeDocument: async (scope, request) => {
+    const target = resolveLocalMemoryScope(scope);
     const { updateLocalMemoryFile } = await import('./explorer');
-    return updateLocalMemoryFile(dir(scope), request);
+    return updateLocalMemoryFile(target, request);
   },
   deleteDocument: async (scope, request) => {
+    const target = resolveLocalMemoryScope(scope);
     const { deleteLocalMemoryFile } = await import('./explorer');
-    return deleteLocalMemoryFile(dir(scope), request);
+    return deleteLocalMemoryFile(target, request);
   },
   mutateItem: async (scope, request) => {
+    const target = resolveLocalMemoryScope(scope);
     const { mutateLocalMemoryItem } = await import('./explorer');
-    return mutateLocalMemoryItem(dir(scope), request);
+    return mutateLocalMemoryItem(target, request);
   },
   consolidationStatus: async (scope) => {
     const { readLocalMemoryConsolidationStatus } =

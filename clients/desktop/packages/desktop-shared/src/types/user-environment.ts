@@ -171,6 +171,7 @@ export type SaveEnvironmentConfigResponse =
  * key the renderer used when saving a workspace assignment.
  */
 export interface ResolveEnvironmentRequest {
+  values?: 'all' | 'public';
   workspaceId?: string;
   runtime: EnvironmentRuntime;
 }

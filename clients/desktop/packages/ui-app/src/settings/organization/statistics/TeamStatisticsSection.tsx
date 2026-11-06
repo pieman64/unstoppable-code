@@ -1,5 +1,6 @@
 'use client';
 
+import { SettingsChartLoading } from '../../pages/loading-skeletons';
 import {
   lazy,
   Suspense,
@@ -22,7 +23,6 @@ import {
   FactList,
   FormField,
   SegmentedControl,
-  SettingsChartSkeleton,
   SettingsSelect,
   TabBar,
   type SegmentedControlOption,
@@ -571,7 +571,7 @@ export function TeamStatisticsSection({
       ) : loading && !usage ? (
         <div data-testid="usage-loading">
           <DelayedLoadingPlaceholder>
-            <SettingsChartSkeleton variant="bars" />
+            <SettingsChartLoading />
           </DelayedLoadingPlaceholder>
         </div>
       ) : error ? null : !usage ? (

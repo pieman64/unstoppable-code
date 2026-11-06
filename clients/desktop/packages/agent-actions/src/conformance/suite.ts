@@ -893,14 +893,19 @@ export function runAgentActionConformance<H>(
         }
         if (before !== null)
           checkEqual(await opened(), before, 'malformed routes open nothing');
-        const account = { scope: 'account', page: 'security' };
-        const accountResult = await open(account);
-        check(at(accountResult.json, 'ok') === true, 'account settings open');
-        checkEqual(
-          at(accountResult.json, 'result'),
-          { status: 'opened', destination: account },
-          'opened account destination',
-        );
+        const accounts = ['security', 'plugins', 'mcp'].map((page) => ({
+          scope: 'account',
+          page,
+        }));
+        for (const account of accounts) {
+          const accountResult = await open(account);
+          check(at(accountResult.json, 'ok') === true, 'account settings open');
+          checkEqual(
+            at(accountResult.json, 'result'),
+            { status: 'opened', destination: account },
+            'opened account destination',
+          );
+        }
         // Every current membership opens; none is singled out.
         const organizations = world.organizations.map((membership) => ({
           scope: 'organization',
@@ -934,7 +939,7 @@ export function runAgentActionConformance<H>(
         if (before !== null)
           checkEqual(
             finalOpened,
-            [...before, account, ...organizations],
+            [...before, ...accounts, ...organizations],
             'only validated member destinations were opened',
           );
       },

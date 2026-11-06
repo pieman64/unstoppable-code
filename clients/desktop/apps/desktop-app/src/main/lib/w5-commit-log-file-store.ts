@@ -1,4 +1,8 @@
-import { W5AuthorityUnreachableError } from '@canopy/core-runtime/node/w5/file-store';
+import {
+  W5AuthorityUnreachableError,
+  w5NamedUnreadable,
+  type W5NamedUnreadableError,
+} from '@canopy/core-runtime/node/w5/file-store';
 import {
   allowsW5ProjectionOnlyRead,
   runW5FallbackRead,
@@ -277,14 +281,105 @@ function discoverySkippedReads(
   return isUtf8(bytes) ? 'unsupported-id' : 'undecodable-index';
 }
 
+export type W5PreparationFallbackReason =
+  | 'mutation-scope'
+  | 'direct-store'
+  | 'preparation-unsupported'
+  | 'unsupported-id'
+  | 'unsupported-platform'
+  | 'confinement-unavailable'
+  | 'handoff-degraded'
+  | 'capture-limit'
+  | 'undecodable-index';
+
+export type W5MetadataCaptureOutcome =
+  | { status: 'captured'; capture: W5CaptureResult }
+  | {
+      status: 'failed-closed';
+      reason: 'root-changed' | 'root-unavailable' | 'capture-failed';
+      cause: unknown;
+      readError?: Error;
+      named?: W5NamedUnreadableError;
+    };
+
+export type W5PreparationBinding =
+  | { status: 'fallback'; reason: W5PreparationFallbackReason; cause?: unknown }
+  | {
+      status: 'prepared';
+      outcome: W5MetadataCaptureOutcome;
+      bind<T>(work: () => Promise<T>): Promise<T>;
+    };
+
+/** Capture admission ends before this short, decoder-only binding can be used. */
+export async function prepareW5ReadBinding(
+  request: W5CaptureRequest,
+): Promise<W5PreparationBinding> {
+  if (currentW5CommitScope())
+    return { status: 'fallback', reason: 'mutation-scope' };
+  const store = currentStore();
+  if (!isCommitLogStore(store))
+    return { status: 'fallback', reason: 'direct-store' };
+  if (!store.captureForPreparation)
+    return { status: 'fallback', reason: 'preparation-unsupported' };
+  if (
+    !request.files.every(
+      (file) =>
+        !('workspaceId' in file) || isW5CaptureWorkspaceId(file.workspaceId),
+    )
+  )
+    return { status: 'fallback', reason: 'unsupported-id' };
+  try {
+    const result = await store.captureForPreparation(request);
+    if (result.status === 'unsupported')
+      return { status: 'fallback', reason: 'preparation-unsupported' };
+    const skipped = discoverySkippedReads(result.capture);
+    if (skipped === 'unsupported-id' || skipped === 'undecodable-index')
+      return { status: 'fallback', reason: skipped };
+    return {
+      status: 'prepared',
+      outcome: { status: 'captured', capture: result.capture },
+      bind: (work) => runInW5CapturedView(result.capture, result.root, work),
+    };
+  } catch (cause) {
+    const reason = captureRefusal(cause);
+    if (
+      reason === 'unsupported-platform' ||
+      reason === 'confinement-unavailable' ||
+      reason === 'handoff-degraded' ||
+      reason === 'capture-limit'
+    )
+      return { status: 'fallback', reason, cause };
+    const failedReason =
+      reason === 'root-changed' || reason === 'root-unavailable'
+        ? reason
+        : 'capture-failed';
+    const readError = cause instanceof Error ? cause : undefined;
+    const named = w5NamedUnreadable(cause);
+    return {
+      status: 'prepared',
+      outcome: {
+        status: 'failed-closed',
+        reason: failedReason,
+        cause,
+        ...(readError ? { readError } : {}),
+        ...(named ? { named } : {}),
+      },
+      bind: (work) => runInW5UncapturedView(failedReason, work, readError),
+    };
+  }
+}
+
 /** Current revisions through the recovered worker, for a later edit's preconditions. */
 export function readW5Revisions(
   resources: readonly W5Resource[],
+  forCommit?: boolean,
 ): Promise<NonNullable<W5CommitRequest['expectedRevisions']>> {
   const store = currentStore();
   if (!isCommitLogStore(store))
     throw new Error('Revision reads require the W5 commit log store');
-  return store.readRevisions(resources);
+  return forCommit
+    ? store.readRevisions(resources, true)
+    : store.readRevisions(resources);
 }
 
 /** Keyed admission never acquires repository leases or the final decision queue. */

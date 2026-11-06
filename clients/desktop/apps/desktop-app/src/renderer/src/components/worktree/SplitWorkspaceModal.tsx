@@ -1,3 +1,4 @@
+import { Heading } from '@canopy/ui-shared/components';
 import { Button } from '@canopy/ui-shared/components';
 import {
   useCallback,
@@ -520,7 +521,9 @@ export function SplitWorkspaceModal({
             className="rounded-xl border bg-secondary/10 p-4"
             data-testid="split-workspace-modal-empty"
           >
-            <h3 className="text-s font-medium fg-primary">No repos to split</h3>
+            <Heading level={3} variant="title">
+              No repos to split
+            </Heading>
           </div>
         ) : (
           <div className="space-y-2">

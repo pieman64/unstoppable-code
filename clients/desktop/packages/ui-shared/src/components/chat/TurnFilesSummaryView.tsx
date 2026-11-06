@@ -1,15 +1,37 @@
 import {
   Children,
+  useCallback,
   useEffect,
   useId,
+  useRef,
   useState,
   type JSX,
   type ReactNode,
+  type Ref,
 } from 'react';
+import {
+  defaultRangeExtractor,
+  useVirtualizer,
+  type Range,
+} from '@tanstack/react-virtual';
 import { ChevronDownIcon, ChevronRightIcon } from '../../icons';
 import { FileDiff } from '../../icons/AppIcons';
 import { OverlayScrollArea } from '../OverlayScrollArea';
 import { useCleanChatLook } from '../chat-look';
+
+/** Git rows the list renders by index, so a long list mounts only those in view. */
+export interface TurnChangedFileRows {
+  readonly count: number;
+  /** One keyed row. */
+  readonly renderRow: (index: number) => ReactNode;
+}
+
+/** Rows from a list already built, for short fixed lists such as samples. */
+export function turnChangedFileRowsFrom(
+  rows: readonly ReactNode[],
+): TurnChangedFileRows {
+  return { count: rows.length, renderRow: (index) => rows[index] };
+}
 
 export interface TurnFilesSummaryViewProps {
   readonly heading: string | undefined;
@@ -23,7 +45,7 @@ export interface TurnFilesSummaryViewProps {
   /** A single file takes the header's content slot, without a duplicate row. */
   readonly singleFile?: ReactNode;
   /** Git rows form their own list, separated from saved outputs by a hairline. */
-  readonly changedFiles?: ReactNode;
+  readonly changedFiles?: TurnChangedFileRows;
   /** Count stays available while a folded host defers its Git row elements. */
   readonly changedFileCount?: number;
   readonly children: ReactNode;
@@ -50,10 +72,14 @@ function FileList({
   children,
   label,
   inline = false,
+  focusable = Children.toArray(children).length > 3,
+  viewportRef,
 }: {
   children: ReactNode;
   label: string;
   inline?: boolean;
+  focusable?: boolean;
+  viewportRef?: Ref<HTMLDivElement>;
 }): JSX.Element {
   // The wrapper is stable for 1, 2, 3 and 4+ files, preserving host file state.
   return (
@@ -63,11 +89,11 @@ function FileList({
       contentClassName={inline ? '' : 'flex flex-col py-1'}
       railClassName={inline ? 'hidden' : '-right-1'}
       edgeFadeSize={inline ? 0 : 8}
+      viewportRef={viewportRef}
       viewportProps={{
         role: inline ? undefined : 'region',
         'aria-label': inline ? undefined : label,
-        tabIndex:
-          !inline && Children.toArray(children).length > 3 ? 0 : undefined,
+        tabIndex: !inline && focusable ? 0 : undefined,
         'data-testid': 'turn-files-scroll',
       }}
     >
@@ -76,12 +102,96 @@ function FileList({
   );
 }
 
+/**
+ * Above this many Git rows the list mounts only the rows in view, so a turn
+ * that touched thousands of files stays cheap. Every row is still reachable by
+ * scrolling; shorter lists keep every row in the DOM and in the tab order.
+ */
+const MOUNT_ALL_ROWS_UP_TO = 100;
+const ROW_HEIGHT = 32;
+/** The 120px viewport, so the first render (and server render) fills it. */
+const INITIAL_VIEWPORT = { width: 0, height: 120 };
+
+function VirtualRows({
+  rows,
+  viewport,
+}: {
+  rows: TurnChangedFileRows;
+  viewport: HTMLDivElement | null;
+}): JSX.Element {
+  // A focused row stays mounted when it scrolls away, so keyboard focus
+  // never falls to the page body.
+  const focusedIndex = useRef<number | null>(null);
+  const rangeExtractor = useCallback((range: Range): number[] => {
+    const indexes = defaultRangeExtractor(range);
+    const focused = focusedIndex.current;
+    // A row removed while focused may never blur, so its index can outlive the list.
+    if (focused === null || focused >= range.count || indexes.includes(focused))
+      return indexes;
+    return [...indexes, focused].sort((a, b) => a - b);
+  }, []);
+  const virtualizer = useVirtualizer({
+    count: rows.count,
+    getScrollElement: useCallback(() => viewport, [viewport]),
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 8,
+    initialRect: INITIAL_VIEWPORT,
+    rangeExtractor,
+  });
+  const measure = useCallback(
+    (element: HTMLDivElement | null): void => {
+      virtualizer.measureElement(element);
+    },
+    [virtualizer],
+  );
+  // Rows sit at their own offsets: the focused row can be far from the rest.
+  return (
+    <div className="relative" style={{ height: virtualizer.getTotalSize() }}>
+      {virtualizer.getVirtualItems().map((item) => (
+        <div
+          key={item.key}
+          data-index={item.index}
+          ref={measure}
+          className="absolute inset-x-0 top-0"
+          style={{ transform: `translateY(${String(item.start)}px)` }}
+          onFocus={() => {
+            focusedIndex.current = item.index;
+          }}
+          onBlur={() => {
+            focusedIndex.current = null;
+          }}
+        >
+          {rows.renderRow(item.index)}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ChangedFileList({ rows }: { rows: TurnChangedFileRows }): JSX.Element {
+  const [viewport, setViewport] = useState<HTMLDivElement | null>(null);
+  if (rows.count <= MOUNT_ALL_ROWS_UP_TO) {
+    return <FileList label="Changed files">{renderAllRows(rows)}</FileList>;
+  }
+  return (
+    <FileList label="Changed files" focusable viewportRef={setViewport}>
+      <VirtualRows rows={rows} viewport={viewport} />
+    </FileList>
+  );
+}
+
+function renderAllRows(rows: TurnChangedFileRows | undefined): ReactNode[] {
+  return Array.from({ length: rows?.count ?? 0 }, (_, index) =>
+    rows?.renderRow(index),
+  );
+}
+
 function SummaryFiles({
   changedFiles,
   children,
   inline,
 }: {
-  changedFiles: ReactNode;
+  changedFiles: TurnChangedFileRows | undefined;
   children: ReactNode;
   inline: boolean;
 }): JSX.Element {
@@ -89,15 +199,15 @@ function SummaryFiles({
   if (!clean)
     return (
       <>
-        {changedFiles}
+        {renderAllRows(changedFiles)}
         {children}
       </>
     );
-  const hasChanges = Children.toArray(changedFiles).length > 0;
+  const hasChanges = (changedFiles?.count ?? 0) > 0;
   const hasOutputs = Children.toArray(children).length > 0;
   return (
     <>
-      {hasChanges && <FileList label="Changed files">{changedFiles}</FileList>}
+      {changedFiles && hasChanges && <ChangedFileList rows={changedFiles} />}
       {hasOutputs && (
         <div className={hasChanges ? 'border-t' : undefined}>
           <FileList label="Saved files" inline={inline}>
@@ -173,7 +283,7 @@ export function TurnFilesSummaryView({
 }: TurnFilesSummaryViewProps): JSX.Element {
   const clean = useCleanChatLook();
   const id = useId();
-  const changeCount = changedFileCount ?? Children.toArray(changedFiles).length;
+  const changeCount = changedFileCount ?? changedFiles?.count ?? 0;
   const singleOutput =
     clean &&
     !singleFile &&

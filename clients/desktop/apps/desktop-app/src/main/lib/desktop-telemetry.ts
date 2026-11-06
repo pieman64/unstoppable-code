@@ -38,7 +38,7 @@ import { invitationReference } from './invitation-reference';
 import type { ConfirmedProviderAuthEvent } from '../auth/provider-auth-state';
 import type { ConfirmedCursorAccountEvent } from '../cursor/connection';
 import { getChatProjectsFilePath } from './paths';
-import { readAllSidebarItems } from './sidebar-items';
+import { readSidebarItemsForTelemetry } from './sidebar-items';
 import { loadHistoryIndex } from './standalone-history-index';
 import {
   listWorkEntryIds,
@@ -147,7 +147,8 @@ function emitTelemetryOperation(
     const operationKey = createDesktopInstrumentationOperationKey(
       `${name}:${seed}:${Date.now()}`,
     );
-    // Datadog exposes operation APIs rather than a counter/event API here.
+    // Instrumentation exposes operation APIs rather than a counter/event API;
+    // a finished product operation becomes one PostHog event.
     startDesktopOperation(name, { operationKey, context });
     succeedDesktopOperation(name, { operationKey, context });
   } catch {
@@ -161,7 +162,7 @@ async function readCachedSidebarItems(): Promise<SidebarItem[]> {
     return workspaceItemsCache.promise;
   }
 
-  const promise = readAllSidebarItems().then(({ items }) => items);
+  const promise = readSidebarItemsForTelemetry().then(({ items }) => items);
   workspaceItemsCache = {
     expiresAt: now + TELEMETRY_TOTALS_CACHE_TTL_MS,
     promise,

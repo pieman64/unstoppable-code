@@ -25,6 +25,17 @@ import {
 } from '../lib/worktree-create-effects';
 import type { CreateWorktreeServiceOptions } from '../lib/worktree-service';
 import type { WorktreeData } from '../../types';
+import { acquireW5DesktopDeleteGate } from '@canopy/core-platform/w5-process-file-lock';
+import { getCanopyDataDir } from '../../canopy-paths';
+import { validateId } from '../lib/validation';
+import { assertNoConflictingW5Reservation } from './worktree-delete-records';
+
+export class CliWorktreeCoworkError extends Error {
+  constructor(workspaceId: string) {
+    super(`Project ${workspaceId} is not single-repo`);
+    this.name = 'CliWorktreeCoworkError';
+  }
+}
 
 /** W6h1: only the reserve and promote units retry; Git is never replayed. */
 export function createRoutedCliWorktree(
@@ -33,6 +44,8 @@ export function createRoutedCliWorktree(
     store: W5CommitLogFileStore;
     idempotencyKey: string;
     signal: AbortSignal;
+    /** Acknowledged durable outcome, before optional sidecar work. */
+    onOutcome?: (outcome: WorktreeData) => void;
   },
 ): Promise<WorktreeData> {
   const { store, signal } = context;
@@ -73,6 +86,25 @@ export function createRoutedCliWorktree(
             restoreClaudeMd: options.restoreClaudeMd,
           },
           isPreEffectRefusal: () => false,
+          hold: async (run) => {
+            validateId(options.workspaceId, 'workspaceId');
+            const gate = await acquireW5DesktopDeleteGate(
+              getCanopyDataDir(),
+              'desktop',
+            );
+            try {
+              signal.throwIfAborted();
+              await assertNoConflictingW5Reservation(
+                store,
+                options.workspaceId,
+                undefined,
+                'core.worktree.delete',
+              );
+              return await run();
+            } finally {
+              gate.close();
+            }
+          },
         },
         decodeW5WorktreeOutcome,
         async (binding, attempt) => {
@@ -86,7 +118,7 @@ export function createRoutedCliWorktree(
           });
           if (workspace.type === 'cowork')
             throw attempt.validationError(
-              new Error(`Project ${options.workspaceId} is not single-repo`),
+              new CliWorktreeCoworkError(options.workspaceId),
             );
           const explicitBranch = normalizeBranchName(options.branchName);
           const operationId = binding.reservationId;
@@ -214,6 +246,7 @@ export function createRoutedCliWorktree(
               }),
             ),
           );
+          context.onOutcome?.(outcome);
           if (!signal.aborted)
             await seedCreatedWorktreePanelLayoutMode(options, worktree.id);
           return outcome;

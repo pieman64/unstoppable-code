@@ -3,6 +3,7 @@ import type { CanopyCloudAccountPublicState } from '@canopy/desktop-shared/types
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import { isConclusiveAccountRead } from '@canopy/desktop-shared/lib/canopy-cloud-account-read';
 import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
+import { PROJECT_IDENTITY_CAPABILITY } from '@canopy/protocol/memory-sync';
 
 /**
  * Whether a saved Canopy Cloud credential currently resolves to account
@@ -131,6 +132,21 @@ export function useCanopyCloudConnected(): boolean | null {
  */
 export function useCanopyCloudCredentialUsable(): boolean | null {
   return useCloudAccountPredicate(hasResolvedCloudCredential, false);
+}
+
+function hasProjectIdentity(account: CanopyCloudAccountPublicState): boolean {
+  return (
+    isConnected(account) &&
+    account.capabilities.includes(PROJECT_IDENTITY_CAPABILITY)
+  );
+}
+
+/**
+ * Whether the signed-in account has cloud project identity (CAN-5190), which
+ * the Link to cloud project menu entry needs. `null` while the account loads.
+ */
+export function useCanopyProjectIdentityAvailable(): boolean | null {
+  return useCloudAccountPredicate(hasProjectIdentity, false);
 }
 
 /** A real account's id, or `guest` for a guest or signed-out viewer. */

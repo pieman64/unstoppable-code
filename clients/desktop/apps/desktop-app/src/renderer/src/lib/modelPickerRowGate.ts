@@ -402,8 +402,8 @@ export function resolveModelRowGate(input: ModelRowGateInput): ModelRowGate {
           kind: 'hard-disabled',
           cause: 'org-gateway',
           reason: organizationName
-            ? `${organizationName} requires its configured model gateway.`
-            : 'Your organization requires its configured model gateway.',
+            ? `${organizationName} requires its configured AI gateway.`
+            : 'Your organization requires its configured AI gateway.',
         }
       : { kind: 'hidden', cause: 'org-gateway-only' };
   }
@@ -583,7 +583,7 @@ export function resolveModelRowGate(input: ModelRowGateInput): ModelRowGate {
   const creditsEligible = availability ? availability.creditsEligible : false;
   const isOllama = provider === 'ollama';
 
-  // Organization gateway traffic is billed under the organization's own
+  // AI gateway traffic is billed under the organization's own
   // provider contract. Hosted AI Credits and native-login availability do not
   // gate it; credential readiness is surfaced by the dedicated setup banner.
   if (organizationGatewayRoute) {

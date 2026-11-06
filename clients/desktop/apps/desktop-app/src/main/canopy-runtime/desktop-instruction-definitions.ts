@@ -1,7 +1,9 @@
 import {
   CANOPY_INSTRUCTION_DEFINITIONS,
+  CORE_CHAT_QUESTION_INSTRUCTION_DEFINITIONS,
   WORKER_FILESYSTEM_WRITE_INSTRUCTION_DEFINITIONS,
   WORKER_AGENT_HELPER_INSTRUCTION_DEFINITIONS,
+  WORKER_AGENT_RUN_INSTRUCTION_DEFINITIONS,
   composeCanopyInstructionRegistries,
   type WorkerFilesystemEntryInstructionDefinitions,
 } from '@canopy/protocol/canopy-core';
@@ -27,6 +29,15 @@ const DESKTOP_WRITE_INSTRUCTION_DEFINITIONS = {
     ],
 };
 
+// Credential writes are daemon-only: Electron never owns or opens the vault.
+const {
+  'core.integration.credential.set': daemonCredentialSet,
+  'core.integration.credential.clear': daemonCredentialClear,
+  ...DESKTOP_BASE_INSTRUCTION_DEFINITIONS
+} = CANOPY_INSTRUCTION_DEFINITIONS;
+void daemonCredentialSet;
+void daemonCredentialClear;
+
 /**
  * The desktop dispatcher's instructions: the composed registry, which carries
  * the entry instructions (CAN-5502), plus the two write instructions, the
@@ -36,19 +47,23 @@ const DESKTOP_WRITE_INSTRUCTION_DEFINITIONS = {
  * only), the guarded W5 commands (W7b-1b/1c, D-1(a): the in-process
  * dispatcher only, over the Electron boundaries of W5d2's M-1(a)) and
  * the keyed source, composition, rename and fork lifecycles (W7b-4,
- * D-1(a): this dispatcher only, whose handlers call the Electron boundaries).
+ * D-1(a): this dispatcher only, whose handlers call the Electron boundaries)
+ * and `core.chat.question.respond` (CAN-4128), the registry the web core also
+ * serves.
  * Composing throws on a name two maps define, so a registry that later
  * gains one of these fails at startup instead of serving two definitions.
  */
 export const DESKTOP_INSTRUCTION_DEFINITIONS =
   composeCanopyInstructionRegistries(
-    CANOPY_INSTRUCTION_DEFINITIONS,
+    DESKTOP_BASE_INSTRUCTION_DEFINITIONS,
     WORKER_AGENT_HELPER_INSTRUCTION_DEFINITIONS,
+    WORKER_AGENT_RUN_INSTRUCTION_DEFINITIONS,
     DESKTOP_WRITE_INSTRUCTION_DEFINITIONS,
     CORE_WORKSPACE_METADATA_COMMAND_DEFINITIONS,
     CORE_WORKSPACE_LIFECYCLE_COMMAND_DEFINITIONS,
     CORE_WORKSPACE_GUARDED_COMMAND_DEFINITIONS,
     CORE_SOURCE_COMPOSITION_COMMAND_DEFINITIONS,
+    CORE_CHAT_QUESTION_INSTRUCTION_DEFINITIONS,
   );
 
 export type DesktopInstructionDefinitions =

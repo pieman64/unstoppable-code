@@ -218,6 +218,21 @@ export function queuePendingHydrationEvent(
   pendingHydrationEvents.set(key, events);
 }
 
+export function discardPendingHookPlaceholder(
+  key: string,
+  queueId: string,
+): void {
+  const events = pendingHydrationEvents.get(key);
+  if (!events) return;
+  const retained = events.filter(
+    (item) =>
+      item.kind !== 'hook-started' ||
+      item.event.queuedMessage?.queueId !== queueId,
+  );
+  if (retained.length > 0) pendingHydrationEvents.set(key, retained);
+  else pendingHydrationEvents.delete(key);
+}
+
 export async function waitForWorktreeHydration(
   key: string,
   timeoutMs = 10_000,

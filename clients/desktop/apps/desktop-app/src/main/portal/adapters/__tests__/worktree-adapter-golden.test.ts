@@ -1,7 +1,8 @@
 // CAN-5527 (W5d2 O-7): `portal.worktree.update` and `portal.worktree.reorder`
 // write through the unkeyed `updateWorktree` and `moveWorktree` boundaries,
 // keeping the Portal's codes, messages, broadcasts, golden bytes, labels and
-// revisions. Real commit-log worker, filesystem and adapters, over both the
+// revisions. A label set or cleared through the Portal is the user's: a
+// generated label never replaces it. Real commit-log worker, filesystem and adapters, over both the
 // in-process and the daemon-backed W5 store.
 import { createW5BoundaryFixture } from '../../../lib/__tests__/fixtures/w5-boundary-fixture';
 import { shutdownW5BoundaryHost } from '../../../lib/__tests__/fixtures/w5-boundary-host';
@@ -80,6 +81,7 @@ import { __setDesktopW5FileStoreForTests } from '../../../lib/w5-commit-log-file
 import { nodeW5FileStore } from '../../../lib/w5-file-store';
 import { updateWorkspaceWorktrees } from '../../../lib/workspace-persistence';
 import { READ_ONLY_SCOPE_ERROR } from '../../../lib/read-only-scope';
+import { recordGeneratedWorktreeLabel } from '../../../lib/worktree-repair';
 import { sendToWindow } from '../../../lib/window-send';
 import { notifyPortalStructureChanged } from '../../portal-event-bus';
 import type { PortalAdapterContext } from '../types';
@@ -294,21 +296,21 @@ describe.each(W5_STORE_SIDES)('over the %s store', (side) => {
         'clears a null label',
         { worktreeId: 'one', label: null },
         'one',
-        {},
+        { labelSource: 'manual' },
         { ...SEEDED, one: 2 },
       ],
       [
         'clears an empty label',
         { worktreeId: 'one', label: '' },
         'one',
-        {},
+        { labelSource: 'manual' },
         { ...SEEDED, one: 2 },
       ],
       [
         'clears a blank label',
         { worktreeId: 'one', label: ' \t\n ' },
         'one',
-        {},
+        { labelSource: 'manual' },
         { ...SEEDED, one: 2 },
       ],
       [
@@ -403,6 +405,61 @@ describe.each(W5_STORE_SIDES)('over the %s store', (side) => {
         ]);
       },
     );
+
+    it('keeps a Portal label over a generated one, before and after it', async () => {
+      await expect(
+        recordGeneratedWorktreeLabel({
+          workspaceId: 'a',
+          worktreeId: 'three',
+          label: 'Cloud setup',
+          provisional: true,
+        }),
+      ).resolves.toMatchObject({ status: 'recorded' });
+      await expect(
+        recordGeneratedWorktreeLabel({
+          workspaceId: 'a',
+          worktreeId: 'one',
+          label: 'Cloud setup',
+          provisional: false,
+        }),
+      ).resolves.toMatchObject({ status: 'unchanged' });
+      expect(readFileSync(listPath(), 'utf8')).toBe(
+        goldenList([
+          { id: 'one', fields: { label: 'Old label' } },
+          { id: 'two', fields: { hidden: true } },
+          {
+            id: 'three',
+            fields: {
+              label: 'Cloud setup',
+              labelSource: 'generated',
+              labelProvisional: true,
+            },
+          },
+          { id: 'four' },
+        ]),
+      );
+
+      await update({ worktreeId: 'three', label: 'Mine' });
+      await expect(
+        recordGeneratedWorktreeLabel({
+          workspaceId: 'a',
+          worktreeId: 'three',
+          label: 'Cloud worktree setup failure',
+          provisional: false,
+        }),
+      ).resolves.toMatchObject({ status: 'unchanged' });
+      expect(outcomes).toEqual([
+        { kind: 'completed', result: { success: true } },
+      ]);
+      expect(readFileSync(listPath(), 'utf8')).toBe(
+        goldenList([
+          { id: 'one', fields: { label: 'Old label' } },
+          { id: 'two', fields: { hidden: true } },
+          { id: 'three', fields: { label: 'Mine' } },
+          { id: 'four' },
+        ]),
+      );
+    });
 
     it('keeps not_found and its message for a missing row, writing nothing', async () => {
       const before = images();

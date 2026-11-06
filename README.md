@@ -13,7 +13,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
-  <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20iOS%20%7C%20Android-lightgrey" alt="Platforms: macOS, Windows, iOS, and Android">
+  <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20iOS%20%7C%20Android-lightgrey" alt="Platforms: macOS, Windows, Linux, iOS, and Android">
 </p>
 
 <p align="center">
@@ -57,12 +57,16 @@ repository.
 | macOS (Apple Silicon) | [Download for Apple Silicon](https://unstoppable.ai/download/started?platform=macArm64&source=github) |
 | macOS (Intel)         | [Download for Intel](https://unstoppable.ai/download/started?platform=macIntel&source=github)         |
 | Windows (x64)         | [Download for Windows](https://unstoppable.ai/download/started?platform=windowsX64&source=github)     |
+| Linux (x64)           | [Download for Linux x64](https://unstoppable.ai/download/started?platform=linuxX64&source=github)     |
+| Linux (arm64)         | [Download for Linux arm64](https://unstoppable.ai/download/started?platform=linuxArm64&source=github) |
 
 - **Phone or tablet:** get the app on the
   [App Store](https://apps.apple.com/us/app/unstoppable-ai/id6786961568), or
   find the Google Play link on the [download page](https://unstoppable.ai/download).
 - **Every option** is on [unstoppable.ai/download](https://unstoppable.ai/download).
-- **Linux** isn't available yet.
+- **Linux** packages are `.deb` files for Ubuntu 24.04 LTS or newer. Arch
+  Linux installs from a pacman repository; see the
+  [download page](https://unstoppable.ai/download).
 - **Not sure which Mac you have?** See
   [Install the desktop app](https://unstoppable.ai/support/getting-started/install-the-app).
 
@@ -86,6 +90,14 @@ features.
 - [Desktop source and build instructions](clients/desktop/README.md)
 - [Mobile source and build instructions](clients/mobile/README.md)
 
+## What runs on our servers
+
+Accounts, AI credits, Remote Control, cloud chats, and a few other features
+rely on services we run. [What runs on our servers](HOSTED-SERVICES.md) lists
+each one, the data it handles, and the telemetry the apps send. To run Claude
+Code and Codex chats through a gateway you control, see
+[Use your own AI gateway](docs/ai-gateway.md).
+
 ## Documentation
 
 The [help centre](https://unstoppable.ai/support) covers the app in depth. New
@@ -100,7 +112,7 @@ here? Start with
 
 ## What's in this repository
 
-- [`clients/desktop/`](clients/desktop/README.md): the desktop app for macOS and Windows
+- [`clients/desktop/`](clients/desktop/README.md): the desktop app for macOS, Windows, and Linux
 - [`clients/mobile/`](clients/mobile/README.md): the iOS and Android app
 
 Each folder holds its latest exported source, which may be a development
@@ -118,9 +130,10 @@ fork it. Snapshots can be synced manually or daily. They may be stale when
 syncs are disabled, delayed, or failed.
 
 This repository holds the desktop and mobile apps only. Our hosted services,
-like accounts and cloud features, stay closed source. See each client's build
-instructions for service configuration. We don't take pull requests here: we
-build every fix ourselves, so a clear issue is the best way to help.
+like accounts and cloud features, stay closed source.
+[What runs on our servers](HOSTED-SERVICES.md) lists them, and each client's
+build instructions cover service configuration. We don't take pull requests
+here: we build every fix ourselves, so a clear issue is the best way to help.
 
 ## Getting help
 

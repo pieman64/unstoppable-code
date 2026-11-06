@@ -3,7 +3,8 @@
  *
  * The executor parses inputs with {@link parseCreateWorktreeInputs}; desktop
  * main creates the worktree through its canonical creation boundary. The CLI
- * keeps a Node fallback that refuses the desktop-only inputs.
+ * injects a routed creation host when W5 ownership selects it, and otherwise
+ * keeps the Node fallback. Both CLI paths refuse desktop-only inputs.
  */
 import { presentInput, SAFE_ID_RE, type HostInputParse } from './host-actions';
 

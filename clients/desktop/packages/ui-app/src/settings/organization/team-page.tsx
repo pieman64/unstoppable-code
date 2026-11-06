@@ -137,6 +137,12 @@ export interface TeamPageProps {
    * Settings → Policies. Other routes omit it.
    */
   externalAgentsEnabled?: boolean;
+  /**
+   * Settings route only: AI gateway setup is on for this viewer. Adds the AI
+   * gateway page for owners and admins, and moves gateway configuration out
+   * of Policies.
+   */
+  aiGatewayEnabled?: boolean;
 }
 
 /**
@@ -167,6 +173,7 @@ export function TeamPage({
   justJoined = false,
   inviteOnLoad = false,
   externalAgentsEnabled = false,
+  aiGatewayEnabled = false,
 }: TeamPageProps): JSX.Element {
   const router = useSettingsRouter();
   const navigation = useSettingsNavigation();
@@ -226,6 +233,7 @@ export function TeamPage({
   // share one visibility rule; a stale or hidden `?tab=` shows the first
   // page the viewer gets.
   const settingsSubtabs = visibleOrganizationSettingsSubtabs({
+    aiGatewayEnabled,
     viewerRole: detail.viewerRole,
     lapsed: lapsed !== null,
     billingEnabled,
@@ -532,6 +540,7 @@ export function TeamPage({
             lapsed={lapsed}
             onDeleted={afterMembershipRemoved}
             externalAgentsEnabled={externalAgentsEnabled}
+            aiGatewayEnabled={aiGatewayEnabled}
           />
         );
     }

@@ -18,6 +18,8 @@ import {
   type DesktopCanopyDispatcher,
 } from '../canopy-runtime/desktop-runtime';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
+import { withDaemonCodeGraphRoute } from './daemon-code-graph-route-context';
+import { selectDaemonCodeGraphForMain } from './daemon-code-graph-route';
 
 /*
  * The code-graph scheduler's automatic builds as core initiated work
@@ -28,7 +30,9 @@ import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-id
  * trigger and observed fingerprint. The worker queues it in the background
  * class it always had, so queue policy is unchanged. Debounce, coalescing and
  * the fingerprint check stay with the scheduler: an unchanged fingerprint
- * starts no build and records no run.
+ * starts no build and records no run. On eligible hosts the build takes the
+ * daemon route (CAN-5625); the run, its gates and its outcomes stay in
+ * Electron main.
  */
 
 const SCHEDULED_BUILDS_CALLER: CanopyCallerDescriptor = {
@@ -69,8 +73,12 @@ export interface ScheduledCodeGraphBuild {
   available(): boolean;
   /** Cleanup canceled the worktree's builds after the fingerprint was read. */
   canceled(): boolean;
-  /** Called once the run passed its gates and is recorded. */
-  onStarted?(): void;
+  /**
+   * `in-process` keeps the build in Electron main's graph hosts, as the
+   * performance harness needs (CAN-5719); `default` lets an eligible host
+   * send it to the daemon (CAN-5625). Absent means `default`.
+   */
+  placement?: 'default' | 'in-process';
 }
 
 /**
@@ -132,28 +140,36 @@ async function execute(
   // and worker.codeGraph.build.cancel stops the build itself.
   if (control.signal.aborted) throw new Error('The run was cancelled.');
   try {
-    await runtime.instruction(
-      'worker.codeGraph.build',
-      {
-        graphScope: {
-          kind: 'worktree',
-          workspaceId: build.projectId,
-          worktreeId: build.worktreeId,
-          mode: 'incremental',
-          background: {
-            trigger: build.trigger,
-            observedFingerprint: {
-              value: build.observedFingerprint,
-              observedMs: Math.max(0, Math.round(build.observedFingerprintMs)),
+    await withDaemonCodeGraphRoute(
+      build.placement !== 'in-process' &&
+        selectDaemonCodeGraphForMain(build.projectId),
+      () =>
+        runtime.instruction(
+          'worker.codeGraph.build',
+          {
+            graphScope: {
+              kind: 'worktree',
+              workspaceId: build.projectId,
+              worktreeId: build.worktreeId,
+              mode: 'incremental',
+              background: {
+                trigger: build.trigger,
+                observedFingerprint: {
+                  value: build.observedFingerprint,
+                  observedMs: Math.max(
+                    0,
+                    Math.round(build.observedFingerprintMs),
+                  ),
+                },
+              },
             },
           },
-        },
-      },
-      {
-        caller: SCHEDULED_BUILDS_CALLER,
-        // One build per run: a retry of the run's dispatch joins it.
-        metadata: { idempotencyKey: control.operationId },
-      },
+          {
+            caller: SCHEDULED_BUILDS_CALLER,
+            // One build per run: a retry of the run's dispatch joins it.
+            metadata: { idempotencyKey: control.operationId },
+          },
+        ),
     );
     return 'succeeded';
   } catch (error) {
@@ -197,9 +213,6 @@ export async function startScheduledCodeGraphBuild(
       scope: { workspaceId: build.projectId, worktreeId: build.worktreeId },
       targetKey: targetKey(build.projectId, build.worktreeId),
       gates: gates(build),
-      onQueued: () => {
-        build.onStarted?.();
-      },
       execute: async (control) => {
         const startedAt = Date.now();
         const status = await execute(runtime, build, control);

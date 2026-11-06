@@ -1,3 +1,4 @@
+import { Heading } from '@canopy/ui-shared/components';
 import { useEffect, useRef, type JSX, type ReactNode } from 'react';
 
 /**
@@ -16,7 +17,9 @@ export function SpecimenPanel({
   return (
     <div className="flex flex-col gap-3">
       {title ? (
-        <h3 className="text-xs font-medium fg-secondary">{title}</h3>
+        <Heading level={3} variant="label">
+          {title}
+        </Heading>
       ) : null}
       <div className="flex flex-col gap-4 rounded-lg bg-secondary p-4">
         {children}

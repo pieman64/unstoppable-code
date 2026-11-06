@@ -39,7 +39,7 @@ function CatalogStatus({
       <span className="break-words">{catalog.error}</span>
     </Notice>
   ) : (
-    <p role="status" className="text-sm fg-secondary">
+    <p role="status" className="text-s fg-secondary">
       Loading workflow templates…
     </p>
   );

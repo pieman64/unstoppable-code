@@ -26,7 +26,7 @@ export function StartChatSummary({
 }: StartChatSummaryProps): JSX.Element {
   return (
     <section
-      className="rounded-xl border bg-card p-4 text-sm"
+      className="rounded-xl border bg-card p-4 text-s"
       data-testid="start-chat-summary"
     >
       <div className="flex items-start justify-between gap-3">

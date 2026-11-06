@@ -45,6 +45,8 @@ import type {
   DeferredToolsReloadScopeKey,
 } from '@canopy/desktop-shared/types';
 import {
+  DEFERRED_TOOLS_ENABLE_FAILURE_MESSAGE,
+  DEFERRED_TOOLS_RESUME_FAILURE_MESSAGE,
   buildDeferredToolsReloadContinuation,
   isTerminalDeferredToolsReloadLifecycle,
 } from '@canopy/desktop-shared/types';
@@ -60,20 +62,10 @@ import type { ChatTab } from './types';
 // modal / toast / progress stepper — a failure appends a single `role: 'system'`
 // message and closes the original turn timer.
 
-/**
- * Shown when the deferred items could not be enabled at all (the original turn
- * was interrupted but never resumed). Closes the original timer.
- */
-export const DEFERRED_TOOLS_ENABLE_FAILURE_MESSAGE =
-  'Couldn’t enable the requested deferred items. The chat was not resumed.';
-
-/**
- * Shown when the selections WERE persisted/enabled but the automatic resume
- * failed. The enabled selections remain active; the user can type "Continue" to
- * retry. Closes the original timer.
- */
-export const DEFERRED_TOOLS_RESUME_FAILURE_MESSAGE =
-  'The requested items were enabled, but the chat could not resume automatically. Send “Continue” to retry.';
+export {
+  DEFERRED_TOOLS_ENABLE_FAILURE_MESSAGE,
+  DEFERRED_TOOLS_RESUME_FAILURE_MESSAGE,
+} from '@canopy/desktop-shared/types';
 
 // ---------------------------------------------------------------------------
 // Pure helpers

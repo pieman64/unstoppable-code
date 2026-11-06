@@ -20,6 +20,7 @@ import { brandEnvName } from '../../../brand/env';
 import { redactSecrets } from '../../../lib/redaction';
 import { validateId } from '../../lib/validation';
 import { syncDirectory, writeFileAtomically } from '../../lib/atomic-file';
+import { isStorageOutcomeUnknownError } from '@canopy/core-runtime/storage';
 import type {
   AgentRecoveryCheckpoint,
   ExecutionRerunContext,
@@ -1551,8 +1552,17 @@ function prepareExecutionStateForInstall(
 }
 
 export interface SaveExecutionStateOptions {
+  /**
+   * Omitted: sync the snapshot and flush its folder, reporting a failed flush
+   * after the install instead of rejecting. `true`: reject that failure with
+   * `StorageOutcomeUnknownError`. `false`: no sync.
+   */
   readonly durable?: boolean;
   readonly cancellation?: 'clear_before' | 'clear_after';
+}
+
+interface InstallOptions extends SaveExecutionStateOptions {
+  readonly expectedRevision?: string;
 }
 
 async function unlinkExecutionCancellation(
@@ -1569,19 +1579,36 @@ async function unlinkExecutionCancellation(
 async function installUnderLock(
   persistedState: ExecutionState,
   executionsDir: string,
-  options?: SaveExecutionStateOptions,
-): Promise<void> {
+  options?: InstallOptions,
+): Promise<boolean> {
   const targetPath = getExecutionStatePath(persistedState.id, executionsDir);
+  if (
+    options?.expectedRevision !== undefined &&
+    (await readStateFileSignature(targetPath)) !== options.expectedRevision
+  ) {
+    return false;
+  }
   await admitExecutionWrite(persistedState.id, executionsDir);
   if (options?.cancellation === 'clear_before') {
     await unlinkExecutionCancellation(persistedState.id, executionsDir);
   }
   try {
-    await writeFileAtomically(
-      targetPath,
-      JSON.stringify(persistedState, null, 2),
-      { encoding: 'utf8', durable: options?.durable ?? false },
-    );
+    try {
+      await writeFileAtomically(
+        targetPath,
+        JSON.stringify(persistedState, null, 2),
+        { encoding: 'utf8', durable: options?.durable ?? true },
+      );
+    } catch (error) {
+      if (
+        options?.durable !== undefined ||
+        !isStorageOutcomeUnknownError(error)
+      )
+        throw error;
+      process.stderr.write(
+        `[pipelines] ${targetPath} installed, but its folder flush failed: ${String(error)}\n`,
+      );
+    }
     rememberInstalledState(
       targetPath,
       await readStateFileSignature(targetPath),
@@ -1594,6 +1621,7 @@ async function installUnderLock(
     forgetInstalledState(targetPath);
     throw error;
   }
+  return true;
 }
 
 export async function saveExecutionState(
@@ -1601,11 +1629,28 @@ export async function saveExecutionState(
   executionsDir: string,
   options?: SaveExecutionStateOptions,
 ): Promise<void> {
+  await saveExecutionStateIfUnchanged(state, executionsDir, undefined, options);
+}
+
+/**
+ * {@link saveExecutionState}, installing only while the file still has
+ * `expectedRevision` from {@link loadExecutionStateRevision}. Resolves false,
+ * having written nothing, when another install came first.
+ */
+export async function saveExecutionStateIfUnchanged(
+  state: ExecutionState,
+  executionsDir: string,
+  expectedRevision: string | undefined,
+  options?: SaveExecutionStateOptions,
+): Promise<boolean> {
   await fs.mkdir(executionsDir, { recursive: true });
   getExecutionStatePath(state.id, executionsDir);
   const persistedState = prepareExecutionStateForInstall(state, executionsDir);
-  await withExecutionWriteLock(state.id, executionsDir, () =>
-    installUnderLock(persistedState, executionsDir, options),
+  return withExecutionWriteLock(state.id, executionsDir, () =>
+    installUnderLock(persistedState, executionsDir, {
+      ...options,
+      expectedRevision,
+    }),
   );
 }
 
@@ -1867,6 +1912,40 @@ export async function loadExecutionState(
       return null;
     }
     throw error;
+  }
+}
+
+/**
+ * The state with the revision of the file it was read from, for
+ * {@link saveExecutionStateIfUnchanged}. Every install replaces the file, so a
+ * later install changes the revision.
+ */
+export async function loadExecutionStateRevision(
+  executionId: string,
+  executionsDir: string,
+): Promise<{ state: ExecutionState; revision: string } | null> {
+  let handle: Awaited<ReturnType<typeof fs.open>>;
+  try {
+    handle = await fs.open(
+      getExecutionStatePath(executionId, executionsDir),
+      'r',
+    );
+  } catch (error) {
+    if (fileErrorCode(error) === 'ENOENT') return null;
+    throw error;
+  }
+  // One handle pins one file: installs replace the file by rename, so these
+  // bytes and this revision belong together, and a later install changes the
+  // revision at the path.
+  try {
+    const stats = await handle.stat({ bigint: true });
+    const parsed: unknown = JSON.parse(await handle.readFile('utf8'));
+    return {
+      state: parseExecutionStateDocument(parsed, executionId, executionsDir),
+      revision: `${stats.ino}:${stats.size}:${stats.mtimeNs}:${stats.ctimeNs}`,
+    };
+  } finally {
+    await handle.close();
   }
 }
 

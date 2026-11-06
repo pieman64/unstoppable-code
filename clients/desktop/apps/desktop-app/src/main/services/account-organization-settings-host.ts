@@ -41,7 +41,23 @@ async function currentAccountId(): Promise<string | null> {
 export function getAccountOrganizationSettingsService(): AccountOrganizationSettingsService {
   service ??= createAccountOrganizationSettingsService<SettingsBridgeSession>({
     acquireSession: acquireSettingsBridgeSession,
-    execute: executeSettingsOperation,
+    execute: async (session, name, input, options) => {
+      if (
+        name.startsWith('account.settings.ai-gateway.') ||
+        name === 'organization.settings.ai-gateway.connect'
+      ) {
+        const gateway = await import('./ai-gateway-settings');
+        gateway.requireAiGatewaySettings();
+        if (name.endsWith('.connect'))
+          return gateway.connectDesktopGateway(
+            session,
+            name,
+            input,
+            options?.signal,
+          );
+      }
+      return executeSettingsOperation(session, name, input, options);
+    },
     openFeedStream: openSettingsFeedStream,
     credentials: settingsBridgeCredentials,
     currentAccountId,

@@ -368,6 +368,10 @@ async function runPipelineAction(args: {
   }
 
   const launched = await launchHookPipeline({
+    identity: {
+      operationId: args.control.operationId,
+      actionIndex: args.actionIndex,
+    },
     action: args.action,
     cwd: args.cwd,
     projectId: args.projectId,
@@ -385,7 +389,9 @@ async function runPipelineAction(args: {
   const line =
     launched.status === 'started'
       ? `Started workflow "${launched.pipelineName}".`
-      : `Queued workflow "${launched.pipelineName}" — waiting for active workflow runs to finish.`;
+      : launched.status === 'ended'
+        ? `Workflow "${launched.pipelineName}" was already handled by an earlier attempt.`
+        : `Queued workflow "${launched.pipelineName}" — waiting for active workflow runs to finish.`;
 
   await emitHookOutput({
     ref: args.logRef,

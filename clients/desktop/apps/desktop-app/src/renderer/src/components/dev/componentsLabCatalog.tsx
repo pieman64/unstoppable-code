@@ -28,6 +28,7 @@ import { CHAT_QUEUE_LAB_ENTRIES } from './componentsLabChatQueue';
 import { CHAT_SUBAGENTS_LAB_ENTRIES } from './componentsLabChatSubagents';
 import { CHAT_TURN_LAB_ENTRIES } from './componentsLabChatTurn';
 import { AgentSentSpecimen } from './componentsLabAgentSent';
+import { HeadingsSpecimen } from './componentsLabHeadings';
 import { LoadingSpecimen } from './componentsLabLoading';
 import { SurfacesSpecimen } from './componentsLabSurfaces';
 import { SidebarPartsSpecimen } from './componentsLabSidebar';
@@ -233,7 +234,7 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     group: 'Unified',
     note: 'Nothing for 200ms, then a skeleton in the content’s own layout, then one slow note after 8s; spinners only inside the busy control.',
     source:
-      'packages/ui-shared/src/components/{SkeletonBlock,LoadingButton,BusyLabel,DelayedLoadingPlaceholder}.tsx',
+      'packages/ui-shared/src/components/{Skeleton,LoadingButton,BusyLabel,DelayedLoadingPlaceholder}.tsx',
     prs: [7081],
     Stage: LoadingStage,
     View: LoadingSpecimen,
@@ -272,9 +273,9 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     id: 'customize-parts',
     name: 'Customize page parts',
     group: 'Unified',
-    note: 'The Customize breadcrumb trail, the capability-gated Installed state and a row menu with its disabled and destructive items.',
+    note: 'The Customize breadcrumb trail, Installed availability, MCP health and inline action states, and a row menu with its disabled and destructive items.',
     source:
-      'packages/ui-shared/src/components/{CustomizeBreadcrumbs,CustomizeInstalledUnavailable,CustomizeRowMenu}.tsx',
+      'packages/ui-shared/src/components/{CustomizeBreadcrumbs,CustomizeInstalledUnavailable,CustomizeRowMenu,McpRowHealth}.tsx',
     prs: [],
     View: CustomizePartsSpecimen,
   },
@@ -315,6 +316,15 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     source: 'packages/ui-shared/src/components/W5RecoveryNotice.tsx',
     prs: [7548],
     View: W5RecoverySpecimen,
+  },
+  {
+    id: 'headings',
+    name: 'Headings',
+    group: 'Unified',
+    note: 'Every heading is a Heading with a role and an outline level; a tone gives a heading status ink.',
+    source: 'packages/ui-shared/src/components/Heading.tsx',
+    prs: [],
+    View: HeadingsSpecimen,
   },
   {
     id: 'spacing',

@@ -1,9 +1,14 @@
+import { buildScriptSecretBindings } from '../execution-secrets/bindings';
+import { getDesktopExecutionSecrets } from '../execution-secrets/owner';
 import { randomUUID } from 'node:crypto';
-import type { ScriptProcessOutcome } from '@canopy/core-runtime/node/script/execution';
+import type {
+  CoreScriptRunResult,
+  ScriptProcessOutcome,
+} from '@canopy/core-runtime/node/script/execution';
 import { CanopyOperationError } from '@canopy/core-runtime';
 import type {
+  ExecutionSecretBinding,
   CanopyCallerDescriptor,
-  DelegationSecretFingerprint,
   OperationOrigin,
   WorkerScriptContext,
   WorkerScriptExecuteParams,
@@ -62,8 +67,6 @@ export interface DesktopScriptRun {
   /** Names the run; minted when omitted. */
   runId?: string;
   origin?: OperationOrigin;
-  /** Fingerprints of the secrets the run's environment holds. */
-  secrets?: readonly DelegationSecretFingerprint[];
 }
 
 export interface DesktopScriptRunObserver {
@@ -78,6 +81,14 @@ export interface DesktopScriptRunOutcome {
   logRef: ScriptRunLogRef | null;
   response: ScriptRunResponse;
 }
+
+const pendingDiscoveries = new Set<{
+  projectId: string;
+  worktreeId: string;
+  scriptKey: string;
+  runId: string;
+  cancelled: boolean;
+}>();
 
 function defaultOrigin(invocation: ScriptInvocation): OperationOrigin {
   return invocation === 'manual-run' || invocation === 'manual-lifecycle'
@@ -112,12 +123,47 @@ export async function runDesktopScript(
   const runId = run.runId ?? randomUUID();
   // The host's worktree fences refuse a start before anything is recorded.
   assertWorkspaceTargetRuntimeStartAllowed(run.projectId, run.worktreeId);
+  const pending = {
+    projectId: run.projectId,
+    worktreeId: run.worktreeId,
+    scriptKey: run.script.scriptKey,
+    runId,
+    cancelled: false,
+  };
+  pendingDiscoveries.add(pending);
+  let bindings: ExecutionSecretBinding[];
+  try {
+    bindings = await buildScriptSecretBindings({
+      context: run.context,
+      workspaceId: run.projectId,
+      worktreeId: run.worktreeId,
+    });
+  } finally {
+    pendingDiscoveries.delete(pending);
+  }
+  if (pending.cancelled || options.signal?.aborted)
+    return {
+      runId,
+      logRef: null,
+      response: {
+        success: false,
+        exitCode: null,
+        output: '',
+        timedOut: false,
+        durationMs: 0,
+      },
+    };
+  const grant = getDesktopExecutionSecrets().stage(
+    { operation: 'worker.script.execute', key: runId },
+    bindings,
+  );
   const capture: { finished: ScriptProcessOutcome | null } = {
     finished: null,
   };
   const params: WorkerScriptExecuteParams = {
     scope: { workspaceId: run.projectId, worktreeId: run.worktreeId },
     executionId: runId,
+    ...(bindings.length ? { secrets: bindings } : {}),
     context: run.context,
     command: run.command,
     ...(run.shell ? { shell: run.shell } : {}),
@@ -127,24 +173,28 @@ export async function runDesktopScript(
     ...(run.interactive ? { terminal: {} } : {}),
     record: { script: run.script, invocation: run.invocation },
   };
-  const outcome = await getActiveDesktopRuntime().scriptRuns.run(
-    {
-      params,
-      origin: run.origin ?? defaultOrigin(run.invocation),
-      owner: { kind: 'system', id: LOCAL_DESKTOP_AUTHORITY_ID },
-      ...(run.secrets ? { secrets: run.secrets } : {}),
-    },
-    {
-      ...(options.signal ? { signal: options.signal } : {}),
-      observer: {
-        onProcessStarted: () => options.observer?.onProcessStarted?.(),
-        onLines: (lines) => options.observer?.onLines?.(lines),
-        onFinished: (result) => {
-          capture.finished = result;
+  let outcome: CoreScriptRunResult;
+  try {
+    outcome = await getActiveDesktopRuntime().scriptRuns.run(
+      {
+        params,
+        origin: run.origin ?? defaultOrigin(run.invocation),
+        owner: { kind: 'system', id: LOCAL_DESKTOP_AUTHORITY_ID },
+      },
+      {
+        ...(options.signal ? { signal: options.signal } : {}),
+        observer: {
+          onProcessStarted: () => options.observer?.onProcessStarted?.(),
+          onLines: (lines) => options.observer?.onLines?.(lines),
+          onFinished: (result) => {
+            capture.finished = result;
+          },
         },
       },
-    },
-  );
+    );
+  } finally {
+    grant.revoke();
+  }
   const finished = capture.finished;
   const logRef: ScriptRunLogRef = {
     projectId: run.projectId,
@@ -231,6 +281,18 @@ export async function cancelScriptRuns(request: {
   scriptKey: string;
   runId?: string;
 }): Promise<WorkerScriptExecutionCancelResult> {
+  const pendingRunIds: string[] = [];
+  for (const pending of pendingDiscoveries) {
+    if (
+      pending.projectId === request.projectId &&
+      pending.worktreeId === request.worktreeId &&
+      pending.scriptKey === request.scriptKey &&
+      (request.runId === undefined || pending.runId === request.runId)
+    ) {
+      pending.cancelled = true;
+      pendingRunIds.push(pending.runId);
+    }
+  }
   const runtime = getActiveDesktopRuntime();
   const [inFlight, onWorker] = await Promise.all([
     runtime.scriptRuns.cancelInFlight({
@@ -267,6 +329,19 @@ export async function cancelScriptRuns(request: {
             recorded: false,
           },
     );
+  }
+  for (const executionId of pendingRunIds) {
+    if (stopped.some((run) => run.executionId === executionId)) continue;
+    stopped.push({
+      executionId,
+      status: 'cancelled',
+      exitCode: null,
+      timedOut: false,
+      durationMs: 0,
+      outputBytes: 0,
+      outputTruncated: false,
+      recorded: false,
+    });
   }
   return { stopped };
 }
@@ -310,32 +385,50 @@ export async function runCommandGate(args: {
       failure: ended.failure,
     };
   }
+  const executionId = randomUUID();
+  const context = { kind: 'automation-home' } as const;
+  const bindings = await buildScriptSecretBindings({
+    context,
+    workspaceId: undefined,
+    worktreeId: undefined,
+  });
+  const grant = getDesktopExecutionSecrets().stage(
+    { operation: 'worker.script.execute', key: executionId },
+    bindings,
+  );
   const capture: { finished: ScriptProcessOutcome | null } = {
     finished: null,
   };
-  const outcome = await getActiveDesktopRuntime().scriptRuns.run(
-    {
-      params: {
-        scope: {},
-        context: { kind: 'automation-home' },
-        command: args.command,
-        shellStartup: 'login',
-        timeoutMs: null,
-        priority: 'normal',
+  let outcome: CoreScriptRunResult;
+  try {
+    outcome = await getActiveDesktopRuntime().scriptRuns.run(
+      {
+        params: {
+          scope: {},
+          context,
+          executionId,
+          ...(bindings.length ? { secrets: bindings } : {}),
+          command: args.command,
+          shellStartup: 'login',
+          timeoutMs: null,
+          priority: 'normal',
+        },
+        origin: { kind: 'automation', sourceId: 'if-command' },
+        owner: { kind: 'system', id: LOCAL_DESKTOP_AUTHORITY_ID },
       },
-      origin: { kind: 'automation', sourceId: 'if-command' },
-      owner: { kind: 'system', id: LOCAL_DESKTOP_AUTHORITY_ID },
-    },
-    {
-      signal: args.signal,
-      observer: {
-        onData: args.onData,
-        onFinished: (result) => {
-          capture.finished = result;
+      {
+        signal: args.signal,
+        observer: {
+          onData: args.onData,
+          onFinished: (result) => {
+            capture.finished = result;
+          },
         },
       },
-    },
-  );
+    );
+  } finally {
+    grant.revoke();
+  }
   if (outcome.status === 'failed')
     throw new CanopyOperationError(
       outcome.error ?? {

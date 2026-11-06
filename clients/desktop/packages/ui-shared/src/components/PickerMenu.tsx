@@ -22,7 +22,7 @@ import {
   type FloatingMenuProps,
 } from './FloatingMenu';
 import { OverlayScrollArea } from './OverlayScrollArea';
-import { SKELETON_KEEP, Skeleton } from './Skeleton';
+import { SKELETON_KEEP } from './Skeleton';
 
 type PickerMenuStyle = CSSProperties & {
   '--canopy-picker-minimum-width'?: string;
@@ -759,22 +759,14 @@ export function PickerMenuState({
   );
 }
 
-/** A placeholder label's width, in Tailwind's spacing steps. */
-export type PickerMenuSkeletonLabelWidth =
-  | 20
-  | 22
-  | 24
-  | 28
-  | 32
-  | 34
-  | 36
-  | 40;
+/** A sample label's width, in Tailwind's spacing steps. */
+export type PickerMenuSampleLabelWidth = 20 | 22 | 24 | 28 | 32 | 34 | 36 | 40;
 
 /**
  * Sample labels about as wide as each step (80px to 160px in the row's
  * text), so the measured bars keep the varied widths of a real list.
  */
-const SAMPLE_LABELS: Record<PickerMenuSkeletonLabelWidth, string> = {
+const SAMPLE_LABELS: Record<PickerMenuSampleLabelWidth, string> = {
   20: 'Release notes',
   22: 'Sample option',
   24: 'Another option',
@@ -788,7 +780,7 @@ const SAMPLE_LABELS: Record<PickerMenuSkeletonLabelWidth, string> = {
 /** Varied label widths so placeholder rows read as a list, not a block. */
 const SKELETON_LABEL_WIDTHS = [
   32, 24, 40, 28, 36, 20,
-] as const satisfies readonly PickerMenuSkeletonLabelWidth[];
+] as const satisfies readonly PickerMenuSampleLabelWidth[];
 
 /**
  * One sample option for a measured `Skeleton`: the real `PickerMenuOption`
@@ -796,11 +788,11 @@ const SKELETON_LABEL_WIDTHS = [
  * sample content, so render it only inside a `Skeleton`, which draws it as
  * bars and keeps it inert.
  */
-export function PickerMenuSkeletonRow({
+export function PickerMenuSampleOption({
   labelWidth,
   leading = true,
 }: {
-  readonly labelWidth: PickerMenuSkeletonLabelWidth;
+  readonly labelWidth: PickerMenuSampleLabelWidth;
   /** Keep the 16px leading rail, for a list whose rows lead with an icon. */
   readonly leading?: boolean;
 }): JSX.Element {
@@ -816,45 +808,33 @@ export function PickerMenuSkeletonRow({
   );
 }
 
-export interface PickerMenuSkeletonProps {
-  /** Placeholder rows to draw. */
+export interface PickerMenuSampleOptionsProps {
+  /** Sample rows to draw. */
   readonly rows?: number;
-  /** Announced to assistive tech while the real rows load. */
-  readonly label?: string;
-  /** Placement only: margin, width, and flex participation. */
-  readonly className?: string;
-  /** Marks the status region. */
-  readonly 'data-testid'?: string;
   /** Whether the list's rows lead with an icon (branches, models). */
   readonly leading?: boolean;
 }
 
 /**
- * Placeholder rows shown while a picker's options load or render, so the
- * picker can open at once: real option rows with sample labels, measured
- * into bars by the shared `Skeleton`, so each bar sits where an option's
- * label will.
+ * Sample rows for a picker whose options are loading, so the picker can open
+ * at once. Wrap them in `Skeleton`: they are real option rows with sample
+ * labels, so each bar sits where an option's label will.
  */
-export function PickerMenuSkeleton({
+export function PickerMenuSampleOptions({
   rows = 6,
-  label = 'Loading',
-  className = '',
-  'data-testid': testId,
   leading = true,
-}: PickerMenuSkeletonProps): JSX.Element {
+}: PickerMenuSampleOptionsProps): JSX.Element {
   return (
-    <Skeleton loading label={label} testId={testId} className={className}>
-      <div className="flex flex-col">
-        {Array.from({ length: rows }, (_, index) => (
-          <PickerMenuSkeletonRow
-            key={index}
-            leading={leading}
-            labelWidth={
-              SKELETON_LABEL_WIDTHS[index % SKELETON_LABEL_WIDTHS.length] ?? 32
-            }
-          />
-        ))}
-      </div>
-    </Skeleton>
+    <div className="flex flex-col">
+      {Array.from({ length: rows }, (_, index) => (
+        <PickerMenuSampleOption
+          key={index}
+          leading={leading}
+          labelWidth={
+            SKELETON_LABEL_WIDTHS[index % SKELETON_LABEL_WIDTHS.length] ?? 32
+          }
+        />
+      ))}
+    </div>
   );
 }

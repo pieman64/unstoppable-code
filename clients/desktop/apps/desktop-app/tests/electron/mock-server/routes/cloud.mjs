@@ -3234,6 +3234,9 @@ export async function handleCloudRequest(request, response, url) {
             ],
           }
         : {}),
+      ...(cloudScenario?.personalModelGateway
+        ? { personalModelGateway: cloudScenario.personalModelGateway }
+        : {}),
       ...(typeof cloudScenario?.personalOrganizationId === 'string'
         ? { personalOrganizationId: cloudScenario.personalOrganizationId }
         : {}),

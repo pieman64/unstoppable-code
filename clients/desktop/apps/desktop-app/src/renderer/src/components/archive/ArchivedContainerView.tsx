@@ -759,7 +759,7 @@ export function ArchivedContainerView({
           <ChatIcon width={14} height={14} className="shrink-0 fg-secondary" />
         )}
         <span
-          className={`${POSTHOG_REPLAY_MASK_CLASS} min-w-0 truncate text-sm font-medium fg-primary`}
+          className={`${POSTHOG_REPLAY_MASK_CLASS} min-w-0 truncate text-s font-medium fg-primary`}
         >
           {displayName}
         </span>
@@ -1123,7 +1123,7 @@ export function ArchivedContainerView({
             />
           </DelayedLoadingPlaceholder>
         ) : chats.length === 0 ? (
-          <div className="flex min-h-30 flex-1 items-center justify-center text-sm fg-secondary">
+          <div className="flex min-h-30 flex-1 items-center justify-center text-s fg-secondary">
             No chats were retained with this archive.
           </div>
         ) : (
@@ -1261,7 +1261,7 @@ export function ArchivedContainerView({
                     />
                   </Suspense>
                 ) : (
-                  <div className="flex flex-1 items-center justify-center text-sm fg-secondary">
+                  <div className="flex flex-1 items-center justify-center text-s fg-secondary">
                     {selectedChatId !== undefined
                       ? 'Archived chat is unavailable.'
                       : 'Select a chat to view its transcript.'}
@@ -1278,7 +1278,7 @@ export function ArchivedContainerView({
               <ArchivedExecutionListSkeleton />
             </DelayedLoadingPlaceholder>
           ) : topLevelExecutions.length === 0 ? (
-            <div className="flex min-h-30 items-center justify-center text-sm fg-secondary">
+            <div className="flex min-h-30 items-center justify-center text-s fg-secondary">
               No workflow runs were retained with this archive.
             </div>
           ) : (
@@ -1301,7 +1301,7 @@ export function ArchivedContainerView({
               <ArchivedAttachmentListSkeleton />
             </DelayedLoadingPlaceholder>
           ) : attachments.length === 0 ? (
-            <div className="flex min-h-30 items-center justify-center text-sm fg-secondary">
+            <div className="flex min-h-30 items-center justify-center text-s fg-secondary">
               No attachments were retained with this archive.
             </div>
           ) : (
@@ -1352,7 +1352,7 @@ export function ArchivedContainerView({
           />
         </DelayedLoadingPlaceholder>
       ) : plans.length === 0 ? (
-        <div className="flex min-h-30 flex-1 items-center justify-center text-sm fg-secondary">
+        <div className="flex min-h-30 flex-1 items-center justify-center text-s fg-secondary">
           No plans were retained with this archive.
         </div>
       ) : (
@@ -1410,7 +1410,7 @@ export function ArchivedContainerView({
                 </div>
               </>
             ) : (
-              <div className="flex flex-1 items-center justify-center text-sm fg-secondary">
+              <div className="flex flex-1 items-center justify-center text-s fg-secondary">
                 Select a plan to view its contents.
               </div>
             )}

@@ -11,9 +11,12 @@ import {
 
 // One record holds every environment, so a kept value may move between
 // environments, as duplicating or reorganizing them does.
-const RECORD = 'config';
+export const ENVIRONMENT_SECRET_RECORD = 'config';
 
-function slot(environmentId: string, key: string): string {
+export function environmentSecretSlot(
+  environmentId: string,
+  key: string,
+): string {
   return `${environmentId}/${key}`;
 }
 
@@ -32,8 +35,8 @@ export function projectEnvironmentConfig(
                 ...entry,
                 value: toStoredSecretValue(
                   'environment',
-                  RECORD,
-                  slot(environment.id, entry.key),
+                  ENVIRONMENT_SECRET_RECORD,
+                  environmentSecretSlot(environment.id, entry.key),
                   entry.value,
                 ),
               }
@@ -55,12 +58,12 @@ export function resolveEnvironmentConfigInput(
 ): EnvironmentConfigData {
   const resolver = createStoredSecretResolver(
     'environment',
-    RECORD,
+    ENVIRONMENT_SECRET_RECORD,
     current.environments.flatMap((environment) =>
       environment.variables
         .filter((entry) => entry.secret === true)
         .map((entry) => ({
-          slot: slot(environment.id, entry.key),
+          slot: environmentSecretSlot(environment.id, entry.key),
           value: entry.value,
         })),
     ),

@@ -72,7 +72,7 @@ export function SharedContainerPastSharesPage({
             Back
           </HeaderActionButton>
           <span
-            className="text-sm font-medium fg-primary"
+            className="text-s font-medium fg-primary"
             data-testid={`${TEST_ID}-title`}
           >
             Past shares

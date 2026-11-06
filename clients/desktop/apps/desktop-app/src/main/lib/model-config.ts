@@ -245,7 +245,10 @@ function applyModelConfig(
   initClaudeModels(merged.claudeModels, featureFlags);
   initCodexModels(merged.codexModels, featureFlags);
   initAiGatewayModels(merged.aiGatewayModels, merged.gatewayRoutes);
-  initOrgGatewayModelAliases(merged.orgGatewayModelAliases);
+  initOrgGatewayModelAliases(
+    merged.orgGatewayModelAliases,
+    cachedOrgGateways.find((gateway) => gateway.personal)?.organizationId,
+  );
   initModelAliases(merged.modelAliases);
   authoritativeConfigAvailable = true;
 }

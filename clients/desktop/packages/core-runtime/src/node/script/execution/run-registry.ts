@@ -228,4 +228,11 @@ export class ScriptRunRegistry {
     const failed = results.find((result) => result.status === 'rejected');
     if (failed?.status === 'rejected') throw failed.reason;
   }
+
+  /** Drain every run, scripts and hooks, and resolve once each has settled. */
+  async drainAll(): Promise<void> {
+    await Promise.all(
+      [...this.runs].map((run) => run.drain().catch(() => undefined)),
+    );
+  }
 }

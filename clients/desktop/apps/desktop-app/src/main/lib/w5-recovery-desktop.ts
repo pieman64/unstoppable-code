@@ -5,7 +5,10 @@ import {
   W5RecoveryStatusSchema,
   type W5RecoveryStatus,
 } from '@canopy/protocol/portal';
-import { w5RecoveryGuidance } from '@canopy/ui-shared/lib/w5-recovery-copy';
+import {
+  w5RecoveryGuidance,
+  W5_RECOVERY_QUIT_ALL_GUIDANCE,
+} from '@canopy/ui-shared/lib/w5-recovery-copy';
 import { writeFileAtomically } from './atomic-file';
 import {
   runW5Maintenance,
@@ -14,7 +17,7 @@ import {
 } from './w5-maintenance';
 import type { W5Diagnosis } from './w5-maintenance-diagnosis';
 import {
-  isW5RecoveryEntryEnabled,
+  isW5RecoveryAvailable,
   isW5ReservationReleaseQualified,
 } from './w5-recovery-gates';
 import {
@@ -44,8 +47,7 @@ async function progress<T>(
     .showMessageBox(parent, {
       type: 'info',
       message,
-      detail:
-        'Recovery will not stop another process. You can cancel while waiting.',
+      detail: `${W5_RECOVERY_QUIT_ALL_GUIDANCE} Recovery will not stop another process. You can cancel while waiting.`,
       buttons: ['Cancel recovery'],
       signal: owner.signal,
     })
@@ -167,7 +169,7 @@ export async function runDesktopW5RecoveryLaunch(
       throw Object.assign(new Error(), { reason: 'platform-unsupported' });
     const intent = await consumeW5RecoveryRequest(dataRoot);
     if (!intent) return true;
-    if (!isW5RecoveryEntryEnabled())
+    if (!isW5RecoveryAvailable())
       throw Object.assign(new Error(), { reason: 'exposure-gated' });
     // No preload or app renderer is loaded; this blank sandboxed parent makes no W5 calls.
     const window = new BrowserWindow({

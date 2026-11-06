@@ -210,6 +210,7 @@ export function PanelAddTabMenu({
   const [terminalPreferences, setTerminalPreferences] = useState(
     () =>
       getCachedTerminalPanelPreferences() ?? {
+        revision: 0,
         disabledTerminalShellProfileIds: [],
         terminalPresets: [],
       },

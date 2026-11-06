@@ -34,7 +34,6 @@ export interface CodeGraphReadObservationInput {
 
 /** The read scheduler host's recorders, which a report replays into. */
 export interface CodeGraphReadRecorders {
-  recordQueryTelemetry(input: Omit<Read, 'readFailure'>): void;
   recordReadDiagnostic(input: Read & { key: string }): void;
 }
 
@@ -102,8 +101,8 @@ export function codeGraphReadReportOf(
 
 /**
  * Records a report's reads as the requester's read scheduler records its
- * own: each read's query telemetry, and its local read diagnostic under
- * `key` (`${workspaceId}/${worktreeId}`).
+ * own: each read's local read diagnostic under `key`
+ * (`${workspaceId}/${worktreeId}`).
  */
 export function recordCodeGraphReadReport(
   report: WorkerCodeGraphReadReport,
@@ -111,13 +110,6 @@ export function recordCodeGraphReadReport(
   recorders: CodeGraphReadRecorders,
 ): void {
   for (const read of report.reads) {
-    const { kind, outcome, queueDurationMs, executionDurationMs } = read;
-    recorders.recordQueryTelemetry({
-      kind,
-      outcome,
-      queueDurationMs,
-      executionDurationMs,
-    });
     try {
       recorders.recordReadDiagnostic({ ...read, key });
     } catch {

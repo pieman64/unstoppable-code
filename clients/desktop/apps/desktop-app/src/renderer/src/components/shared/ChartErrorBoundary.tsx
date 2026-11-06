@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { captureClientInstrumentationError } from '@canopy/desktop-instrumentation/client';
 import { reportRendererConsoleError } from '@/lib/renderer-error-logging';
 import { ErrorState } from '@canopy/ui-shared/components';
 
@@ -29,6 +30,9 @@ export class ChartErrorBoundary extends Component<
   }
 
   override componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
+    captureClientInstrumentationError(error, {
+      context: { boundary: 'chart' },
+    });
     reportRendererConsoleError('Chart error boundary caught an error', {
       name: error.name,
       message: error.message,

@@ -15,6 +15,7 @@ import {
   listOrgGatewayModelsForOrganization,
   resolveModelGatewayIndex,
   soleEnforcingOrganizationId,
+  type OrganizationModelGateway,
   type ModelGatewayIndex,
   type ModelGatewayRequirement,
 } from '@canopy/desktop-shared/lib/org-model-gateway';
@@ -28,21 +29,31 @@ import {
 import { updateOrgGatewayModelCatalog } from './model-config';
 import { getModelGatewayMarkerFilePath } from './paths';
 import { writeFileAtomically } from './atomic-file';
-import {
-  resolveEnforcementOwner,
-  shouldRecordUnknownEnforcementOwner,
-} from '../agents/work-owner';
+import { shouldRecordUnknownEnforcementOwner } from '../agents/work-owner';
+import { personalGatewayAccountFields } from '@canopy/desktop-shared/lib/org-enforced-parsing';
 
 interface ModelGatewayMarkerFile {
   version: 1;
+  personalOrganizationId?: string;
+  personalGatewayEnforced?: boolean;
+  personalModelGateway?: CanopyCloudAccountPublicState['personalModelGateway'];
   orgEnforced: boolean;
   governedOrganizationIds?: string[];
   ungovernedOrganizationIds?: string[];
 }
 
 export type ModelGatewayAccountUpdate =
-  | { changed: false; changedOrganizationIds: readonly string[] }
-  | { changed: true; changedOrganizationIds: readonly string[] | 'all' };
+  | {
+      changed: false;
+      changedOrganizationIds: readonly string[];
+      catalogChanged?: boolean;
+    }
+  | {
+      changed: true;
+      catalogChanged?: boolean;
+      changedOrganizationIds: readonly string[] | 'all';
+      personalOrganizationIds?: readonly string[];
+    };
 
 let currentIndex: ModelGatewayIndex = resolveModelGatewayIndex(null);
 let markerCache: ModelGatewayMarkerFile | null = null;
@@ -77,6 +88,10 @@ function normalizeMarker(value: unknown): ModelGatewayMarkerFile {
   return {
     version: 1,
     orgEnforced: value.orgEnforced,
+    personalOrganizationId:
+      normalizeUuid(value.personalOrganizationId) ?? undefined,
+    personalGatewayEnforced: value.personalGatewayEnforced === true,
+    ...personalGatewayAccountFields(value),
     ...(governedOrganizationIds === undefined
       ? {}
       : { governedOrganizationIds }),
@@ -101,7 +116,10 @@ async function readMarker(): Promise<ModelGatewayMarkerFile> {
 }
 
 function markerForAccount(
-  account: Pick<CanopyCloudAccountPublicState, 'organizations'> | null,
+  account: Pick<
+    CanopyCloudAccountPublicState,
+    'organizations' | 'personalModelGateway'
+  > | null,
   index: ModelGatewayIndex,
 ): ModelGatewayMarkerFile {
   const governanceByOrganization = new Map<string, boolean>();
@@ -112,6 +130,7 @@ function markerForAccount(
     }
   }
   index.byOrganization.forEach((gateway, organizationId) => {
+    if (organizationId === index.personalOrganizationId) return;
     governanceByOrganization.set(
       organizationId,
       index.accountUnavailable || gateway.enforced || gateway.unavailable,
@@ -126,6 +145,13 @@ function markerForAccount(
   );
   return {
     version: 1,
+    personalOrganizationId: index.personalOrganizationId,
+    personalGatewayEnforced:
+      index.personalUnavailable ||
+      (index.personalOrganizationId
+        ? index.byOrganization.get(index.personalOrganizationId)?.enforced
+        : false),
+    personalModelGateway: account?.personalModelGateway,
     orgEnforced: index.accountUnavailable || governedOrganizationIds.length > 0,
     governedOrganizationIds,
     ungovernedOrganizationIds,
@@ -199,7 +225,10 @@ function requirementFromMarker(
   marker: ModelGatewayMarkerFile,
   owner: WorkOwner | undefined,
 ): ModelGatewayRequirement {
-  if (owner?.kind === 'personal') return { kind: 'unrestricted' };
+  if (owner?.kind === 'personal')
+    return marker.personalGatewayEnforced
+      ? { kind: 'blocked', reason: 'account-unavailable' }
+      : { kind: 'unrestricted' };
   const hasLists =
     marker.governedOrganizationIds !== undefined ||
     marker.ungovernedOrganizationIds !== undefined;
@@ -227,11 +256,13 @@ function catalogGateways(
     baseUrl: string;
     models: readonly ModelGatewayModel[];
     promptCachePassthrough: boolean;
+    personal?: boolean;
   }> = [];
   index.byOrganization.forEach((gateway, organizationId) => {
     if (gateway.unavailable || !gateway.baseUrl) return;
     gateways.push({
       organizationId,
+      personal: organizationId === index.personalOrganizationId,
       organizationName: gateway.organizationName,
       baseUrl: gateway.baseUrl,
       models: gateway.models,
@@ -244,7 +275,13 @@ function catalogGateways(
 export function setCurrentModelGatewayAccount(
   account: Pick<
     CanopyCloudAccountPublicState,
-    'enforcedSettings' | 'modelGatewayEnforcementUnavailable' | 'organizations'
+    | 'account'
+    | 'enforcedSettings'
+    | 'modelGatewayEnforcementUnavailable'
+    | 'organizations'
+    | 'personalOrganizationId'
+    | 'personalModelGateway'
+    | 'personalModelGatewayEnforcementUnavailable'
   > | null,
 ): ModelGatewayAccountUpdate {
   const next = resolveModelGatewayIndex(account);
@@ -255,23 +292,50 @@ export function setCurrentModelGatewayAccount(
   next.byOrganization.forEach((_gateway, organizationId) =>
     allOrganizationIds.add(organizationId),
   );
+  const catalogChanged = Array.from(allOrganizationIds).some(
+    (id) =>
+      JSON.stringify(currentIndex.byOrganization.get(id)) !==
+      JSON.stringify(next.byOrganization.get(id)),
+  );
+  const personalOrganizationIds = [
+    currentIndex.personalOrganizationId,
+    next.personalOrganizationId,
+  ].filter((id): id is string => id !== undefined);
+  const executionPolicy = (
+    gateway: OrganizationModelGateway | undefined,
+  ):
+    | Omit<OrganizationModelGateway, 'organizationName' | 'displayName'>
+    | undefined =>
+    gateway
+      ? {
+          baseUrl: gateway.baseUrl,
+          enforced: gateway.enforced,
+          promptCachePassthrough: gateway.promptCachePassthrough,
+          models: gateway.models,
+          unavailable: gateway.unavailable,
+        }
+      : undefined;
   const changedOrganizationIds = Array.from(allOrganizationIds).filter(
     (organizationId) =>
-      JSON.stringify(currentIndex.byOrganization.get(organizationId)) !==
-      JSON.stringify(next.byOrganization.get(organizationId)),
+      JSON.stringify(
+        executionPolicy(currentIndex.byOrganization.get(organizationId)),
+      ) !==
+      JSON.stringify(executionPolicy(next.byOrganization.get(organizationId))),
   );
   const accountChanged =
-    currentIndex.accountUnavailable !== next.accountUnavailable;
+    currentIndex.accountId !== next.accountId ||
+    currentIndex.accountUnavailable !== next.accountUnavailable ||
+    currentIndex.personalUnavailable !== next.personalUnavailable;
   currentIndex = next;
   writeMarker(markerForAccount(account, next));
-  if (accountChanged || changedOrganizationIds.length > 0) {
+  if (accountChanged || catalogChanged) {
     updateOrgGatewayModelCatalog(catalogGateways(next));
   }
   return accountChanged
-    ? { changed: true, changedOrganizationIds: 'all' }
+    ? { changed: true, changedOrganizationIds: 'all', personalOrganizationIds }
     : changedOrganizationIds.length > 0
-      ? { changed: true, changedOrganizationIds }
-      : { changed: false, changedOrganizationIds: [] };
+      ? { changed: true, changedOrganizationIds, personalOrganizationIds }
+      : { changed: false, changedOrganizationIds: [], catalogChanged };
 }
 
 export async function getModelGatewayRequirementForOwner(
@@ -279,12 +343,13 @@ export async function getModelGatewayRequirementForOwner(
   callSite = 'unknown',
 ): Promise<ModelGatewayRequirement> {
   recordUnknownOwner(owner, callSite);
-  const enforcementOwner = resolveEnforcementOwner(owner);
+  const enforcementOwner = owner;
   const result = await readCanopyCloudAccountWithStatus();
   if (result.status === 'ok') {
     const account = toPublicCanopyCloudAccountState(result.entry);
     const index = resolveModelGatewayIndex(account);
-    currentIndex = index;
+    // Only the account applier advances the shared index: an admission read
+    // must not consume the diff before session invalidation processes it.
     writeMarker(markerForAccount(account, index));
     return gatewayRequirementForOwner(index, enforcementOwner);
   }
@@ -302,21 +367,19 @@ export async function getModelGatewayRequirementForOwner(
 export function getCurrentModelGatewayRequirementForOwner(
   owner: WorkOwner | undefined,
 ): ModelGatewayRequirement {
-  return gatewayRequirementForOwner(
-    currentIndex,
-    resolveEnforcementOwner(owner),
-  );
+  return gatewayRequirementForOwner(currentIndex, owner);
 }
 
 export function isModelExcludedByCurrentGatewayRequirement(
   modelId: string | undefined,
   owner: WorkOwner | undefined,
 ): boolean {
-  const enforcementOwner = resolveEnforcementOwner(owner);
+  const enforcementOwner = owner;
   return isModelExcludedByGatewayRequirement(
     modelId,
     gatewayRequirementForOwner(currentIndex, enforcementOwner),
     enforcementOwner,
+    currentIndex.personalOrganizationId,
   );
 }
 
@@ -332,7 +395,7 @@ export async function checkModelGatewayRoute(
   modelId: string | undefined,
   owner: WorkOwner | undefined,
 ): Promise<{ ok: true; orgRoute: boolean } | { ok: false; message: string }> {
-  const enforcementOwner = resolveEnforcementOwner(owner);
+  const enforcementOwner = owner;
   const requirement = await getModelGatewayRequirementForOwner(
     owner,
     'checkModelGatewayRoute',
@@ -340,31 +403,48 @@ export async function checkModelGatewayRoute(
   const routeOrganizationId = normalizeUuid(
     resolveOrgGatewayOrganizationId(modelId),
   );
-  if (!isOrgGatewayRouteUsableByOwner(modelId, enforcementOwner)) {
+  if (
+    !isOrgGatewayRouteUsableByOwner(
+      modelId,
+      enforcementOwner,
+      currentIndex.personalOrganizationId,
+    )
+  ) {
     return {
       ok: false,
-      message: "This model belongs to another organization's gateway.",
+      message: 'This model belongs to another AI gateway.',
     };
   }
   if (requirement.kind === 'blocked') {
     return {
       ok: false,
-      message: `${organizationName(
-        enforcementOwner?.kind === 'organization'
-          ? enforcementOwner.organizationId
-          : undefined,
-      )}'s model gateway settings are unavailable.`,
+      message:
+        enforcementOwner?.kind === 'personal'
+          ? 'Your AI gateway settings are unavailable.'
+          : `${organizationName(
+              enforcementOwner?.kind === 'organization'
+                ? enforcementOwner.organizationId
+                : undefined,
+            )}'s AI gateway settings are unavailable.`,
     };
   }
   if (
-    isModelExcludedByGatewayRequirement(modelId, requirement, enforcementOwner)
+    isModelExcludedByGatewayRequirement(
+      modelId,
+      requirement,
+      enforcementOwner,
+      currentIndex.personalOrganizationId,
+    )
   ) {
     const requiredOrganizationId = soleEnforcingOrganizationId(requirement);
     return {
       ok: false,
-      message: `${organizationName(
-        requiredOrganizationId,
-      )} requires model traffic to use its configured gateway.`,
+      message:
+        enforcementOwner?.kind === 'personal'
+          ? 'Use a model from your AI gateway to send this.'
+          : `${organizationName(
+              requiredOrganizationId,
+            )} requires model traffic to use its configured gateway.`,
     };
   }
   return { ok: true, orgRoute: routeOrganizationId !== null };
@@ -374,18 +454,30 @@ export async function resolveHelperModelForEnforcedGateway(
   model: ChatModel | undefined,
   owner: WorkOwner | undefined,
 ): Promise<ChatModel | undefined> {
-  const enforcementOwner = resolveEnforcementOwner(owner);
+  const enforcementOwner = owner;
   const requirement = await getModelGatewayRequirementForOwner(
     owner,
     'resolveHelperModelForEnforcedGateway',
   );
   if (requirement.kind !== 'enforced') return model;
-  if (model && !isOrgGatewayRouteUsableByOwner(model, enforcementOwner)) {
+  if (
+    model &&
+    !isOrgGatewayRouteUsableByOwner(
+      model,
+      enforcementOwner,
+      currentIndex.personalOrganizationId,
+    )
+  ) {
     return undefined;
   }
   if (
     model &&
-    !isModelExcludedByGatewayRequirement(model, requirement, enforcementOwner)
+    !isModelExcludedByGatewayRequirement(
+      model,
+      requirement,
+      enforcementOwner,
+      currentIndex.personalOrganizationId,
+    )
   ) {
     return model;
   }

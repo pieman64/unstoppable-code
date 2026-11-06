@@ -73,12 +73,12 @@ export const BILLING_CAPABILITIES = [
 export type BillingCapability = (typeof BILLING_CAPABILITIES)[number];
 
 /**
- * Free AI credits an opted-in user wallet tops up to each Pacific day. The daily
- * drip is off by default; users turn it on explicitly. Mirrors
- * billing_plans.daily_drip_cap_credits (the plan cap, shown even to opted-out
- * users so they can see what turning it on gets them).
+ * Free AI credits a user wallet tops up to each Pacific day. The free daily
+ * allowance is retired (CAN-4763): every plan row carries 0, so no read mints a
+ * drip. The constant stays as the typed mirror of
+ * billing_plans.daily_drip_cap_credits until the drip mechanism is removed.
  */
-export const DEFAULT_DAILY_DRIP_CAP_CREDITS = 10;
+export const DEFAULT_DAILY_DRIP_CAP_CREDITS = 0;
 
 const BILLING_CAPABILITY_SET: ReadonlySet<string> = new Set(
   BILLING_CAPABILITIES,

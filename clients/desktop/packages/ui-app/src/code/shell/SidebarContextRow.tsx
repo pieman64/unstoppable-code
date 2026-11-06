@@ -497,7 +497,7 @@ export function SidebarContextRow({
           aria-label={triggerLabel}
           className={
             atTop
-              ? `focus-ring flex h-8 w-full min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap rounded-row py-0 pl-1 pr-2 text-left text-base font-bold fg-primary hover:bg-subtle focus-visible:bg-subtle aria-expanded:bg-subtle disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:min-h-11`
+              ? `focus-ring flex h-8 w-full min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap rounded-row py-0 pl-1 pr-2 text-left text-m font-bold fg-primary hover:bg-subtle focus-visible:bg-subtle aria-expanded:bg-subtle disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:min-h-11`
               : 'focus-ring flex h-8 w-full min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap rounded-row px-2 text-left text-s font-normal fg-primary hover:bg-subtle disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:min-h-11'
           }
         >

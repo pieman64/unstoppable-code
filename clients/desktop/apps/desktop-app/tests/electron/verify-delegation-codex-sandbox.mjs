@@ -16,6 +16,11 @@
 // a local TCP connection (an actually measured denial, not just a declared
 // one).
 //
+// Scope: this verifier supplies primary-checkout metadata grants itself. It
+// does not exercise git-access.ts validation, its `execute` runtime probes, or
+// linked-checkout sibling isolation. Those need separate native preparation
+// evidence; a passing run here alone does not qualify that boundary.
+//
 // The probes run with a private, credential-free HOME and CODEX_HOME. HOME is a
 // sibling of the sandbox-writable TMPDIR, never a descendant, so a private-HOME
 // denial is not masked by the TMPDIR write grant.
@@ -36,7 +41,7 @@
 // It reports whether `turn/start` accepts a profile.
 import { execFileSync, spawnSync } from 'node:child_process';
 import net from 'node:net';
-import { constants as fsConstants, existsSync } from 'node:fs';
+import { accessSync, constants as fsConstants, existsSync } from 'node:fs';
 import {
   access,
   mkdir,
@@ -125,6 +130,7 @@ const temporary = await realpath(
   await mkdtemp(path.join(tmpdir(), 'codex-delegation-sandbox-')),
 );
 const failures = [];
+const sharedFixtures = [];
 let checks = 0;
 try {
   const cwd = path.join(temporary, 'worktree');
@@ -176,14 +182,40 @@ try {
       timeout: 20_000,
       maxBuffer: 1024 * 1024,
     });
-  const run = (profile, script) => runWith(profile, ['/bin/sh', '-c', script]);
+  const probeStarted = 'CANOPY_SANDBOX_PROBE_STARTED';
+  // bwrap reports EROFS for writes outside its writable binds.
+  const denialPattern =
+    os === 'linux'
+      ? /Operation not permitted|Permission denied|Read-only file system/i
+      : /Operation not permitted|Permission denied/i;
+  const run = (profile, script) =>
+    runWith(profile, [
+      '/bin/sh',
+      '-c',
+      `cat ${JSON.stringify(path.join(cwd, 'notes.txt'))} >/dev/null || exit 99; printf '${probeStarted}\\n'; ${script}`,
+    ]);
   const expectResult = (label, profile, script, allowed) => {
     checks += 1;
+    // These probes have one literal cat/redirection target. Check it on the
+    // host; a missing create target requires an accessible parent instead.
+    const match = script.match(/(?:^cat |>>? )(.+)$/);
+    if (match) {
+      const target = path.resolve(cwd, match[1].replace(/^"|"$/g, ''));
+      const hostTarget = existsSync(target) ? target : path.dirname(target);
+      accessSync(hostTarget, fsConstants.R_OK);
+      if (script.startsWith('cat ')) accessSync(target, fsConstants.R_OK);
+    }
     const result = run(profile, script);
     const succeeded = result.status === 0;
-    if (succeeded !== allowed)
+    if (
+      result.error ||
+      result.signal ||
+      !result.stdout?.includes(probeStarted) ||
+      succeeded !== allowed ||
+      (!allowed && !denialPattern.test(result.stderr))
+    )
       failures.push(
-        `${label} [${profile}]: expected ${allowed ? 'allowed' : 'denied'}, exit ${result.status}: ${(result.stderr || result.stdout || '').trim().slice(0, 300)}`,
+        `${label} [${profile}]: expected ${allowed ? 'allowed' : 'permission denial after authorized control'}, exit ${result.status}, signal ${result.signal}, error ${result.error?.message ?? 'none'}: ${(result.stderr || result.stdout || '').trim().slice(0, 300)}`,
       );
   };
 
@@ -306,6 +338,100 @@ try {
   const env = await readFile(path.join(cwd, '.env'), 'utf8');
   if (env !== files['.env']) failures.push('.env changed on disk');
 
+  // Shared-temp filesystem policy changes are macOS-only.
+  // Canaries deliberately remain in the exposed namespaces, not a relocated
+  // short socket fixture. Per-user T was already denied on the unchanged base.
+  if (os === 'darwin') {
+    for (const root of [
+      '/private/tmp',
+      '/private/var/tmp',
+      await realpath(tmpdir()),
+    ]) {
+      const other = await realpath(
+        await mkdtemp(path.join(root, 'canopy-other-task-')),
+      );
+      sharedFixtures.push(other);
+      await writeFile(path.join(other, 'ordinary'), 'other task\n');
+      await writeFile(path.join(other, '.env'), 'SYNTHETIC_OTHER_TASK=1\n');
+      const selected = path.join(other, 'selected');
+      const selectedTemporary = path.join(other, 'private-tmp');
+      const capability = path.join(other, 'selected-capability');
+      for (const directory of [selected, selectedTemporary, capability])
+        await mkdir(directory);
+      await writeFile(path.join(selected, 'source'), 'authorized\n');
+      await writeFile(path.join(selected, '.env'), 'SYNTHETIC_PRIVATE=1\n');
+      await writeFile(
+        path.join(capability, 'SKILL.md'),
+        'selected capability\n',
+      );
+      const profiles = buildCodexDelegationPermissionProfiles({
+        cwd: selected,
+        writePaths: [selected],
+        readRoots: [cwd, capability],
+        gitRoots: [],
+        temporaryDirectory: selectedTemporary,
+      });
+      await writeFile(
+        path.join(codexHome, 'config.toml'),
+        Object.entries(profiles)
+          .map(([name, profile]) => profileToml(name, profile))
+          .join('\n'),
+      );
+      // Not present when the permission maps were built or written.
+      await writeFile(path.join(other, 'late'), 'late other task\n');
+      for (const profile of ['delegated_read_only', 'delegated_write']) {
+        for (const spelling of new Set([
+          other,
+          other.replace(/^\/private\//, '/'),
+        ])) {
+          for (const name of ['ordinary', '.env', 'late'])
+            expectResult(
+              `unrelated temporary read ${spelling}/${name}`,
+              profile,
+              `cat "${spelling}/${name}"`,
+              false,
+            );
+        }
+        expectResult(
+          'selected temporary checkout read',
+          profile,
+          `cat "${selected}/source"`,
+          true,
+        );
+        expectResult(
+          'selected temporary checkout private file',
+          profile,
+          `cat "${selected}/.env"`,
+          false,
+        );
+        expectResult(
+          'selected capability read',
+          profile,
+          `cat "${capability}/SKILL.md"`,
+          true,
+        );
+        expectResult(
+          'selected capability stays read-only',
+          profile,
+          `echo x >> "${capability}/SKILL.md"`,
+          false,
+        );
+        expectResult(
+          'selected private TMPDIR write',
+          profile,
+          `echo x > "${selectedTemporary}/writable"`,
+          true,
+        );
+        expectResult(
+          'selected temporary checkout write',
+          profile,
+          `echo x >> "${selected}/source"`,
+          profile === 'delegated_write',
+        );
+      }
+    }
+  }
+
   // A network-disabled profile must deny even a loopback TCP connection. A real
   // listener on the host measures the denial instead of merely declaring it.
   // This proof is required, so a missing shell or an unreachable control fails
@@ -356,10 +482,20 @@ try {
       } else {
         for (const profile of ['delegated_write', 'delegated_read_only']) {
           checks += 1;
-          const result = runWith(profile, [bash, '-c', connect]);
-          if (result.status === 0)
+          const result = runWith(profile, [
+            bash,
+            '-c',
+            `printf '${probeStarted}\\n'; ${connect}`,
+          ]);
+          if (
+            result.error ||
+            result.signal ||
+            result.status === 0 ||
+            !result.stdout?.includes(probeStarted) ||
+            !/Operation not permitted|Permission denied/i.test(result.stderr)
+          )
             failures.push(
-              `loopback connect [${profile}]: expected denied, exit ${result.status}: the network-disabled profile allowed a local TCP connection`,
+              `loopback connect [${profile}]: expected permission denial after startup, exit ${result.status}, signal ${result.signal}, error ${result.error?.message ?? 'none'}: ${result.stderr}`,
             );
         }
       }
@@ -512,6 +648,8 @@ try {
     }
   }
 } finally {
+  for (const directory of sharedFixtures)
+    await rm(directory, { recursive: true, force: true, maxRetries: 3 });
   await rm(temporary, { recursive: true, force: true, maxRetries: 3 });
 }
 

@@ -15,6 +15,7 @@ import { ModelGatewayCredentialSection } from './ModelGatewayCredentialSection';
 import {
   orderGatewaysForContext,
   useOrgModelGateways,
+  usePersonalModelGateway,
 } from '@/hooks/useOrgModelGateway';
 import { useSidebarScopingContext } from '@/components/sidebar/useSidebarScopingContext';
 import { LinearKeyRow } from './LinearKeyRow';
@@ -62,6 +63,7 @@ function LlmProviderSection({
   // right there.
   // One block per org, the selected context's org first.
   const orgGateways = useOrgModelGateways();
+  const personalGateway = usePersonalModelGateway();
   const scopingContext = useSidebarScopingContext();
   const selectedOrganizationId =
     scopingContext?.kind === 'organization'
@@ -75,6 +77,13 @@ function LlmProviderSection({
   return (
     <AccountSection label="LLM provider">
       <SettingsGroup>
+        {/* Your own AI gateway leads: it is the gateway you set up. */}
+        {personalGateway ? (
+          <ModelGatewayCredentialSection
+            key={personalGateway.organizationId}
+            gateway={personalGateway}
+          />
+        ) : null}
         {/* Each org gateway is a provider row. Show the selected org first. */}
         {orderedOrgGateways.map((gateway) => (
           <ModelGatewayCredentialSection

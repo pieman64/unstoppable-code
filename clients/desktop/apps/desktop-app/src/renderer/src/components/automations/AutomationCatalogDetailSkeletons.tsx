@@ -40,7 +40,7 @@ export function SharedAutomationDetailSkeleton(): JSX.Element {
           <Heading level={3} variant="section" truncate>
             {SAMPLE_NAME}
           </Heading>
-          <p className="text-sm fg-secondary">{SAMPLE_DESCRIPTION}</p>
+          <p className="text-s fg-secondary">{SAMPLE_DESCRIPTION}</p>
         </div>
         <SettingsRowsSection title="Details">
           <SettingsRowsGroup>
@@ -88,7 +88,7 @@ export function CuratedAutomationDetailSkeleton({
             <p className="text-xs fg-secondary">Curated</p>
           </div>
         </div>
-        <p className="text-sm fg-secondary">{SAMPLE_DESCRIPTION}</p>
+        <p className="text-s fg-secondary">{SAMPLE_DESCRIPTION}</p>
         <SettingsRowsSection title="Details">
           <SettingsRowsGroup>
             <SettingsRowsRow

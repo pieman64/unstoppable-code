@@ -1,3 +1,4 @@
+import { Heading } from '@canopy/ui-shared/components';
 import {
   useEffect,
   useLayoutEffect,
@@ -647,9 +648,9 @@ export function ResourceDiagnosticsPopover({
       data-testid="resource-diagnostics-popover-content"
     >
       <div className="flex shrink-0 items-center gap-3">
-        <h3 className="min-w-0 flex-1 truncate text-s font-normal fg-primary">
+        <Heading level={3} variant="title" truncate className="min-w-0 flex-1">
           Resources
-        </h3>
+        </Heading>
         {snapshot && (
           <span
             className="flex gap-2 text-xs tabular-nums fg-tertiary"

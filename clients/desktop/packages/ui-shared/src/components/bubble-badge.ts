@@ -1,23 +1,24 @@
 /**
- * Hairline drawn *inside* a bubble's edge on the house line token. In dark
- * mode the bubble sits a couple of ramp steps above a near-black `bg-base`,
- * and the UI-Kit `shadow-sm` is a black shadow that vanishes there, so this
- * hairline is what actually separates the bubble from the transcript. It is
- * inset on purpose: an outer `ring` composites the 12.8% white over the base
+ * A bubble's edge: exactly one device pixel in both color modes.
+ * `shadow-bubble` owns the recipe, since the two modes need different ones. On
+ * a light page it is an outer `line-base` hairline with no blur, because the
+ * `shadow-sm` stack would add a half-pixel ring and soft layers beside it. In
+ * dark mode the bubble sits a couple of ramp steps above a near-black
+ * `bg-base`, where the black `shadow-sm` vanishes, so an inset `line-secondary`
+ * hairline separates it: an outer ring composites the 12.8% white over the base
  * and lands within a few levels of the bubble's own surface, while an inset
  * ring composites over the bubble and reads as a crisp lighter edge against
- * both. In light mode it is a barely-there `rgba(0,0,0,.069)` line on white.
+ * both.
  */
-const BUBBLE_SURFACE_HAIRLINE =
-  'shadow-sm inset-ring-[length:var(--border-hairline)] inset-ring-line-secondary';
+const BUBBLE_SURFACE_HAIRLINE = 'shadow-bubble';
 
 /**
  * The neutral surface shared by the sent user bubble and the queued bubble it
  * will become: `bg-quaternary` (same white as `bg-tertiary` in light, one
- * ramp step brighter in dark) under the elevation + hairline pair, with the
- * one inset every variant shares (`px-3 py-1.5`) so sent, watcher-fired, and
- * queued bubbles keep identical top and bottom padding. Consumers add only
- * text roles.
+ * ramp step brighter in dark) inside the bubble hairline, with the one inset
+ * every variant shares (`px-3 py-1.5`) so sent, watcher-fired, and queued
+ * bubbles keep identical top and bottom padding. Consumers add only text
+ * roles.
  */
 export const BUBBLE_SURFACE_CLASS = `rounded-xl bg-quaternary px-3 py-1.5 ${BUBBLE_SURFACE_HAIRLINE}`;
 

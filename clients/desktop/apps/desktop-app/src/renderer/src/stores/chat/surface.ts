@@ -9,10 +9,7 @@ import {
   PLAN_EXPLORE_CHAT_PROJECT_ID,
   type ChatTabPluginSelections,
 } from '@canopy/desktop-shared/types';
-import {
-  PIPELINE_EDITOR_REQUIRED_SKILL_NAME,
-  PIPELINE_EDITOR_REQUIRED_SKILL_REF,
-} from '@canopy/desktop-shared/lib/pipeline-editor-tools';
+import { withRequiredPipelineEditorSkill } from '@canopy/desktop-shared/lib/pipeline-editor-tools';
 import { canNavigateToWorktreeFromSidebarItems } from '@/lib/worktreeNavigation';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import {
@@ -20,6 +17,8 @@ import {
   useProjectsStore,
 } from '../projectsStore';
 import { useNavigationStore } from '../navigationStore';
+
+export { withRequiredPipelineEditorSkill } from '@canopy/desktop-shared/lib/pipeline-editor-tools';
 
 // ---------------------------------------------------------------------------
 // Sentinel chat-state single-writer policy
@@ -107,26 +106,6 @@ export function isPipelineEditorChatTarget(
     projectId === PIPELINE_EDITOR_PROJECT_ID &&
     worktreeId === PIPELINE_EDITOR_WORKTREE_ID
   );
-}
-
-export function withRequiredPipelineEditorSkill(
-  selections: ChatTabPluginSelections | undefined,
-): ChatTabPluginSelections {
-  const base: ChatTabPluginSelections = selections ?? {
-    collectionIds: [],
-    skillRefs: [],
-    pluginRefs: [],
-    mcpServerRefs: [],
-  };
-  return {
-    ...base,
-    skillRefs: [
-      ...(base.skillRefs ?? []).filter(
-        (ref) => ref.skillName !== PIPELINE_EDITOR_REQUIRED_SKILL_NAME,
-      ),
-      PIPELINE_EDITOR_REQUIRED_SKILL_REF,
-    ],
-  };
 }
 
 export function withRequiredPluginSelectionsForTarget(

@@ -398,8 +398,10 @@ export interface StartMcpOAuthLoginRequest {
  *
  * - `started`: the main process opened (or asked the renderer to open) the
  *   `authorizationUrl`; the renderer should reflect a pending state.
- * - `completed`: a valid token already existed (or the flow finished
- *   synchronously); no browser interaction is required.
+ * - `completed`: a valid token already existed, the flow finished
+ *   synchronously, or discovery found the server needs no sign-in; no browser
+ *   interaction is required. Without a `flowId` it never claims connection
+ *   health, so read the refreshed status.
  */
 export interface StartMcpOAuthLoginResponse {
   status: 'started' | 'completed';

@@ -58,12 +58,11 @@ async function writeStoredContext(
 /**
  * Returns a stable, anonymous, per-install identifier persisted to
  * `userData/feature-flags-context.json`. It is a random v4 UUID with no PII,
- * shared with the LaunchDarkly anonymous key so Datadog and LaunchDarkly
- * identities line up. Deleting the file rotates both identities.
+ * used as the LaunchDarkly anonymous key. Deleting the file rotates it.
  *
  * Kept free of the heavier `account-targeting` transitive chain (brand,
  * GitHub client, Canopy Cloud, Claude/Codex auth) so early-startup callers
- * (instrumentation, observability IPC) can reuse the key cheaply.
+ * (feature flags) can reuse the key cheaply.
  */
 async function resolveStableAnonymousKey(filePath: string): Promise<string> {
   try {
@@ -109,7 +108,7 @@ export async function getStableAnonymousKey(): Promise<string> {
   return pendingKey;
 }
 
-/** Independent product-analytics identity; never shared with Datadog or LD.
+/** Independent product-analytics identity; never shared with LaunchDarkly.
  * Main is the sole writer, including concurrent requests from app windows.
  * Deleting posthog-context.json rotates it on the next app launch. */
 export async function getStablePostHogAnonymousKey(): Promise<string> {

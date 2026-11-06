@@ -103,6 +103,13 @@ export interface CuratedMcpDetailProps<
    * others, so nothing on the page reads as belonging to both.
    */
   routes?: CuratedMcpDetailRoutes;
+  /** The installed item's Status, under the name and description. */
+  statusContent?: ReactNode;
+  /**
+   * The installed server's management card, which takes the tools in as one of
+   * its rows. Omitted, the tools keep their own section.
+   */
+  renderManagement?: (tools: ReactNode) => ReactNode;
 }
 
 export function CuratedMcpDetail<T extends McpDetailEntry>({
@@ -117,6 +124,8 @@ export function CuratedMcpDetail<T extends McpDetailEntry>({
   actions,
   connectionContent,
   routes,
+  statusContent,
+  renderManagement,
 }: CuratedMcpDetailProps<T>): JSX.Element {
   const providerOnly = curatedMcpProviderOnly(entry);
   // With no provider route on screen (the MCP tab's Browse dialog), say how
@@ -130,14 +139,26 @@ export function CuratedMcpDetail<T extends McpDetailEntry>({
   if (entry.privacyPolicyUrl)
     links.push({ href: entry.privacyPolicyUrl, label: 'Privacy policy' });
 
-  const tools = (
-    <CuratedMcpTools
+  const toolsBody = (
+    <McpToolsBody
       installed={installedServerId !== null}
       toolNames={toolNames}
       toolsLoading={toolsLoading}
       toolsError={toolsError}
-      framed={routes === undefined}
     />
+  );
+  const tools = renderManagement ? (
+    renderManagement(<div data-testid="mcp-browse-tools">{toolsBody}</div>)
+  ) : (
+    <div
+      className={routes === undefined ? 'border-t pt-3' : undefined}
+      data-testid="mcp-browse-tools"
+    >
+      <Heading level={4} variant="label" className="mb-2">
+        Tools
+      </Heading>
+      {toolsBody}
+    </div>
   );
 
   return (
@@ -191,7 +212,7 @@ export function CuratedMcpDetail<T extends McpDetailEntry>({
           ) : null)}
       </div>
 
-      <p className="text-sm fg-secondary">
+      <p className="text-s fg-secondary">
         {entry.longDescription ?? entry.shortDescription}
       </p>
       {links.length > 0 && (
@@ -209,6 +230,7 @@ export function CuratedMcpDetail<T extends McpDetailEntry>({
         </div>
       )}
 
+      {statusContent}
       {showProviderGuidance && <McpProviderOnlyGuidance entry={entry} />}
       {routes ? (
         <>
@@ -263,56 +285,45 @@ const SAMPLE_TOOL_NAMES: readonly string[] = [
   'add_comment',
 ];
 
-/**
- * Tools the installed server reports. Inside a route the section heading
- * already separates it, so only the single-route layout draws a divider.
- */
-function CuratedMcpTools({
+/** What the installed server's tools show, in a section or a card's row. */
+function McpToolsBody({
   installed,
   toolNames,
   toolsLoading,
   toolsError,
-  framed,
 }: {
   installed: boolean;
   toolNames: string[] | null;
   toolsLoading: boolean;
   toolsError: string;
-  framed: boolean;
 }): JSX.Element {
-  return (
-    <div
-      className={framed ? 'border-t pt-3' : undefined}
-      data-testid="mcp-browse-tools"
-    >
-      <Heading level={4} variant="label" className="mb-2">
-        Tools
-      </Heading>
-      {!installed ? (
-        <p className="text-xs fg-secondary">
-          Tools appear after you add this server.
-        </p>
-      ) : toolsLoading ? (
-        <DelayedLoadingPlaceholder slowNote="Still loading tools…">
-          <Skeleton
-            loading
-            label="Loading tools"
-            testId="mcp-browse-tools-loading"
-          >
-            <ToolChips toolNames={SAMPLE_TOOL_NAMES} />
-          </Skeleton>
-        </DelayedLoadingPlaceholder>
-      ) : toolsError ? (
-        <ErrorBanner
-          className=""
-          error={toolsError}
-          testId="mcp-browse-tools-error"
-        />
-      ) : toolNames === null || toolNames.length === 0 ? (
-        <EmptyStateRow title="No tools discovered yet" />
-      ) : (
-        <ToolChips toolNames={toolNames} />
-      )}
-    </div>
-  );
+  if (!installed)
+    return (
+      <p className="text-xs fg-secondary">
+        Tools appear after you add this server.
+      </p>
+    );
+  if (toolsLoading)
+    return (
+      <DelayedLoadingPlaceholder slowNote="Still loading tools…">
+        <Skeleton
+          loading
+          label="Loading tools"
+          testId="mcp-browse-tools-loading"
+        >
+          <ToolChips toolNames={SAMPLE_TOOL_NAMES} />
+        </Skeleton>
+      </DelayedLoadingPlaceholder>
+    );
+  if (toolsError)
+    return (
+      <ErrorBanner
+        className=""
+        error={toolsError}
+        testId="mcp-browse-tools-error"
+      />
+    );
+  if (toolNames === null || toolNames.length === 0)
+    return <EmptyStateRow title="No tools discovered yet" />;
+  return <ToolChips toolNames={toolNames} />;
 }

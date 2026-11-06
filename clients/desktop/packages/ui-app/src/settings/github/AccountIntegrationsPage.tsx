@@ -10,7 +10,7 @@ import { GitHubCloudSettings } from './GitHubCloudSettings';
  * driven by the single page-level connection controller, which also handles
  * a GitHub callback that landed on this page (`github_cloud=...`).
  *
- * The page's gate (the Cloud Git flag) stays with each host's loader: web
+ * The page's gate (the Cloud Git gate) stays with each host's loader: web
  * redirects to `/account`, `settings.pageData` answers `not_found`.
  */
 export function AccountIntegrationsPage({

@@ -8,9 +8,11 @@ import {
 import {
   HooksSectionBody,
   RunOutputModal,
+  describeRunOutcome,
   type HooksSectionHostModel,
   type HooksSectionEntry,
   type HooksSectionRun,
+  type RunOutcome,
   type RunOutputStatus,
 } from '@canopy/ui-app';
 import { ActivitySection, type CollapsedIconColor } from './ActivitySection';
@@ -65,17 +67,15 @@ function HookOutputModal({
   const isSuccess = run.status === 'success';
   const isStopped = run.status === 'stopped';
 
-  const statusLabel = isRunning
-    ? 'Running\u2026'
+  const outcome: RunOutcome = isRunning
+    ? { kind: 'running' }
     : isSuccess
-      ? 'Success'
-      : isStopped
-        ? 'Stopped'
-        : run.timedOut
-          ? 'Timed out'
-          : run.exitCode === null
-            ? 'Stopped'
-            : `Exit ${run.exitCode}`;
+      ? { kind: 'succeeded', durationMs: run.durationMs }
+      : run.timedOut
+        ? { kind: 'timed-out', durationMs: run.durationMs }
+        : isStopped || run.exitCode === null
+          ? { kind: 'stopped', durationMs: run.durationMs }
+          : { kind: 'failed', durationMs: run.durationMs };
 
   const status: RunOutputStatus = isRunning
     ? 'active'
@@ -88,11 +88,9 @@ function HookOutputModal({
   return (
     <RunOutputModal
       title={run.label}
-      subtitle={statusLabel}
       titleId="hook-output-modal-title"
-      statusLabel={statusLabel}
+      summary={describeRunOutcome(outcome)}
       status={status}
-      durationMs={run.durationMs}
       outputLines={run.outputLines}
       isRunning={isRunning}
       onClose={onClose}

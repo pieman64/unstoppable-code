@@ -6,7 +6,8 @@ import {
   type ReactNode,
 } from 'react';
 import { Skeleton as MeasuredSkeleton } from 'skullet/react';
-import { REDUCED_MOTION_QUERY } from './SkeletonBlock';
+
+const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
 
 /**
  * Spread onto an element inside a `Skeleton` to draw it as itself while the

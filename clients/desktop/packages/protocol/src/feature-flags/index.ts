@@ -37,6 +37,12 @@ import type { LabsExperimentAvailability } from '../experiments';
  * 4. Add the matching entries to the default maps below.
  */
 export const CLIENT_FEATURE_FLAGS = {
+  canopyAiGatewaySettingsEnabled: {
+    key: 'canopy-ai-gateway-settings-enabled',
+    launchDarklyDisabledDefaultValue: true,
+    launchDarklyEnabledUnavailableValue: false,
+    description: 'Personal and organization AI gateway setup.',
+  },
   canopyDesktopLabsEarlyAccess: {
     key: 'canopy-desktop-labs-early-access',
     launchDarklyDisabledDefaultValue: 'offered',
@@ -334,6 +340,16 @@ export const CLIENT_FEATURE_FLAGS = {
     description:
       'Controls whether desktop PR Split entry points are visible and usable.',
   },
+  canopyDesktopMemorySync: {
+    key: 'canopy-desktop-memory-sync',
+    // Off in both modes (cloud memory sync §28 item 2): the desktop engine
+    // also needs the account's memory-sync-v1 capability, and an evaluator
+    // outage must never start syncing personal memory.
+    launchDarklyDisabledDefaultValue: false,
+    launchDarklyEnabledUnavailableValue: false,
+    description:
+      'Controls the desktop cloud memory sync engine, which also requires the memory-sync-v1 account capability.',
+  },
   canopyDesktopCursorHarness: {
     key: 'canopy-desktop-cursor-harness',
     launchDarklyDisabledDefaultValue: true,
@@ -537,13 +553,6 @@ export const CLIENT_FEATURE_FLAGS = {
     description:
       'Cloud terminals on durable sandbox terminals through the web core (worker.terminal.*), surviving a page reload',
   },
-  canopyCloudGitEnabled: {
-    key: 'canopy-cloud-git-enabled',
-    launchDarklyDisabledDefaultValue: false,
-    launchDarklyEnabledUnavailableValue: false,
-    description:
-      'Connect GitHub for cloud: personal GitHub authorization and installation targets for cloud projects',
-  },
   canopyFreeAccessEnabled: {
     key: 'canopy-free-access-enabled',
     // CAN-3926. With LaunchDarkly not configured (local development), the
@@ -636,6 +645,7 @@ export type ClientFeatureFlagKey =
  * accidentally read an undeclared key.
  */
 export type ClientFeatureFlagValues = {
+  [CLIENT_FEATURE_FLAGS.canopyAiGatewaySettingsEnabled.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopLabsEarlyAccess
     .key]: LabsExperimentAvailability;
   [CLIENT_FEATURE_FLAGS.canopyDesktopLabsSidebar
@@ -693,6 +703,7 @@ export type ClientFeatureFlagValues = {
   [CLIENT_FEATURE_FLAGS.canopyPortalDestructiveActions.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDeviceRemoteControl.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopPrSplit.key]: boolean;
+  [CLIENT_FEATURE_FLAGS.canopyDesktopMemorySync.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarnessReleased.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarness.key]: boolean;
@@ -715,7 +726,6 @@ export type ClientFeatureFlagValues = {
   [CLIENT_FEATURE_FLAGS.canopySharedMcpAccountConnections.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopySharedSpaceNotificationSettings.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyCloudDurableTerminals.key]: boolean;
-  [CLIENT_FEATURE_FLAGS.canopyCloudGitEnabled.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyFreeAccessEnabled.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopAccountProxy.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopExternalAgentsMenu.key]: boolean;
@@ -821,6 +831,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS: ClientFeatureFl
     [CLIENT_FEATURE_FLAGS.canopyPostHogAutocaptureEnabled.key]:
       CLIENT_FEATURE_FLAGS.canopyPostHogAutocaptureEnabled
         .launchDarklyDisabledDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyAiGatewaySettingsEnabled.key]:
+      CLIENT_FEATURE_FLAGS.canopyAiGatewaySettingsEnabled
+        .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopySharedReleaseNotesEnabled.key]:
       CLIENT_FEATURE_FLAGS.canopySharedReleaseNotesEnabled
         .launchDarklyDisabledDefaultValue,
@@ -860,6 +873,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS: ClientFeatureFl
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopPrSplit.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopPrSplit
+        .launchDarklyDisabledDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopMemorySync.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopMemorySync
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness
@@ -925,9 +941,6 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS: ClientFeatureFl
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyCloudDurableTerminals.key]:
       CLIENT_FEATURE_FLAGS.canopyCloudDurableTerminals
-        .launchDarklyDisabledDefaultValue,
-    [CLIENT_FEATURE_FLAGS.canopyCloudGitEnabled.key]:
-      CLIENT_FEATURE_FLAGS.canopyCloudGitEnabled
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyFreeAccessEnabled.key]:
       CLIENT_FEATURE_FLAGS.canopyFreeAccessEnabled
@@ -1030,6 +1043,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS: Clie
     [CLIENT_FEATURE_FLAGS.canopyPostHogAutocaptureEnabled.key]:
       CLIENT_FEATURE_FLAGS.canopyPostHogAutocaptureEnabled
         .launchDarklyEnabledUnavailableValue,
+    [CLIENT_FEATURE_FLAGS.canopyAiGatewaySettingsEnabled.key]:
+      CLIENT_FEATURE_FLAGS.canopyAiGatewaySettingsEnabled
+        .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopySharedReleaseNotesEnabled.key]:
       CLIENT_FEATURE_FLAGS.canopySharedReleaseNotesEnabled
         .launchDarklyEnabledUnavailableValue,
@@ -1071,6 +1087,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS: Clie
         .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopPrSplit.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopPrSplit
+        .launchDarklyEnabledUnavailableValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopMemorySync.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopMemorySync
         .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness
@@ -1137,9 +1156,6 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS: Clie
         .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyCloudDurableTerminals.key]:
       CLIENT_FEATURE_FLAGS.canopyCloudDurableTerminals
-        .launchDarklyEnabledUnavailableValue,
-    [CLIENT_FEATURE_FLAGS.canopyCloudGitEnabled.key]:
-      CLIENT_FEATURE_FLAGS.canopyCloudGitEnabled
         .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyFreeAccessEnabled.key]:
       CLIENT_FEATURE_FLAGS.canopyFreeAccessEnabled

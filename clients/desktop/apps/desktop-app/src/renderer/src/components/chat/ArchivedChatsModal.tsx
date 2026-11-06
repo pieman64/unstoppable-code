@@ -42,7 +42,7 @@ export function ArchivedChatsModal({
       dataTestId="archived-chats-modal"
     >
       {summaries.length === 0 ? (
-        <p className="px-1 py-6 text-center text-sm fg-secondary">
+        <p className="px-1 py-6 text-center text-s fg-secondary">
           No archived chats.
         </p>
       ) : (

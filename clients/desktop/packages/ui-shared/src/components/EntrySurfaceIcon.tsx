@@ -9,23 +9,27 @@ import { Tooltip } from './Tooltip';
 
 /**
  * Where an entry runs, as a small icon after its name on Customize rows and
- * Browse cards. The tooltip names the surface and says why in one line. The
+ * Browse cards. The tooltip names the location; restrictions belong in details. The
  * icon sits inside the row's or card's link, so it takes no focus of its own;
  * its label joins that link's accessible name.
  */
 export function EntrySurfaceIcon({
   surface,
   testId,
+  label: labelOverride,
 }: {
   readonly surface: UnifiedEntrySurface;
   readonly testId: string;
+  /** Replaces the surface wording, for a row that names where it is saved. */
+  readonly label?: string;
 }): JSX.Element {
-  const label = UNIFIED_ENTRY_SURFACE_LABELS[surface];
+  const label = labelOverride ?? UNIFIED_ENTRY_SURFACE_LABELS[surface];
   const Icon = surface === 'desktop' ? DeviceBackendIcon : CloudBackendIcon;
   const tooltip =
-    surface === 'desktop'
-      ? "Desktop only: runs on your desktop, so cloud chats can't use it"
-      : `${label}: ${UNIFIED_ENTRY_SURFACE_HINTS[surface]}`;
+    labelOverride ??
+    (surface === 'desktop'
+      ? 'This device'
+      : `${label}: ${UNIFIED_ENTRY_SURFACE_HINTS[surface]}`);
   return (
     <Tooltip label={tooltip}>
       <span

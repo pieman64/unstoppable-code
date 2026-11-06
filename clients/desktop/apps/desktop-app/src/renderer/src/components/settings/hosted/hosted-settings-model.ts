@@ -25,7 +25,7 @@ import {
  * without hosted settings): the always-available Account pages and the
  * Organizations list, no flag-gated rows and no organization group.
  * Integrations is always listed on desktop: it carries this computer's
- * GitHub sign-in and Linear key whatever the server's Cloud Git flag says.
+ * GitHub sign-in and Linear key whatever the server's Cloud Git gate says.
  */
 export const SIGNED_OUT_SETTINGS_NAV_MODEL: SettingsNavModel = {
   account: {

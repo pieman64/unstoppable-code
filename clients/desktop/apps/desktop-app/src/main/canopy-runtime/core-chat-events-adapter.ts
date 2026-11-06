@@ -66,6 +66,8 @@ const PORTABLE_TAB_FIELDS = [
   'modelExplicitlyChosen',
   'providerType',
   'codexFastModeEnabled',
+  'modelConfig',
+  'interfaceMode',
   'unread',
   'hasOutstandingProposal',
   'latestRevisionNumber',

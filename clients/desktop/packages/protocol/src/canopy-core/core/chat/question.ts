@@ -22,7 +22,7 @@ export const CoreChatQuestionRespondParamsSchema = z.strictObject({
   _meta: CanopyQueryRequestMetadataSchema.optional(),
 });
 
-// Served by the web core only (CAN-4162); see CORE_APPROVAL_QUERY_DEFINITIONS.
+// Served by the web core for cloud chats (CAN-4162) and by the desktop core for desktop chats (CAN-4128).
 export const CORE_CHAT_QUESTION_INSTRUCTION_DEFINITIONS =
   defineCanopyInstructionRegistry('core', {
     'core.chat.question.respond': defineCanopyInstruction({

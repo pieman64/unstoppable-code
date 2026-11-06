@@ -1,3 +1,4 @@
+import { executionSecretFingerprints } from '../../execution-secrets';
 import { createHash, randomUUID } from 'node:crypto';
 
 import {
@@ -310,6 +311,9 @@ export class CorePipelineRuns {
         operation: WORKER_START,
         params,
         idempotencyKey: params.executionId,
+        ...(params.secrets?.length
+          ? { secrets: executionSecretFingerprints(params.secrets) }
+          : {}),
       });
     } catch (error) {
       await operations
@@ -631,6 +635,9 @@ export class CorePipelineRuns {
         operation: control.operation,
         params: control.params,
         idempotencyKey: control.params.requestId,
+        ...('secrets' in control.params && control.params.secrets?.length
+          ? { secrets: executionSecretFingerprints(control.params.secrets) }
+          : {}),
       });
       result = controlResult(runId, dispatched);
     } catch (error) {

@@ -1,4 +1,19 @@
 import type { BrowserWindow } from 'electron';
+import { z } from 'zod';
+import { isThinkingLevel } from '@canopy/protocol/thinking';
+import { isCodexSpeed } from '@canopy/protocol/automations';
+import {
+  InitiatedWorkQueuedHookOutcomeSchema,
+  type CanopyJsonValue,
+} from '@canopy/protocol/canopy-core';
+import { OperationCancelRefusedError } from '@canopy/core-runtime/node/operations';
+import type {
+  HookQueueHost,
+  HookQueueSavedEntry,
+} from '@canopy/core-runtime/node/initiated-work';
+import { isModelHarness } from '@canopy/desktop-shared/model-harnesses';
+import { isApprovalMode } from '@canopy/desktop-shared/lib/approval-engine';
+import { isChatInterfaceMode } from '@canopy/desktop-shared/node/preferences/field-normalizers';
 import {
   buildShareablePluginDisplay,
   getExecutionHarnessForModel,
@@ -75,7 +90,8 @@ import { buildSubmittedMessageText } from './chat-submitted-message';
 import { resolveWorktreeCwd } from './resolve-worktree';
 
 import { validateId } from './validation';
-import { getHookChatClaims } from './hook-initiated-work';
+import { getHookChatClaims, getHookQueue } from './hook-initiated-work';
+import { revalidateQueuedHookWork } from './hook-recovery';
 import { logMainProcessInfo, logMainProcessWarn } from './main-process-logging';
 import { registerHookChatPlaceholderReplayer } from './hook-chat-placeholders';
 
@@ -120,7 +136,7 @@ const startingHookChatIds = new Set<string>();
 const hookChatStartInProgressTargetKeys = new Set<string>();
 const QUEUED_PROMPT_PREVIEW_MAX_LENGTH = 400;
 
-interface PreparedHookChatLaunch {
+export interface PreparedHookChatLaunch {
   identity: HookChatLaunchIdentity;
   ids: HookChatIds;
   projectId: string;
@@ -183,11 +199,254 @@ interface QueuedHookChatEntry {
   latestModelUpdateSequence: number;
   pendingModelUpdateCount: number;
   startCompletion?: Promise<HookChatStartOutcome>;
+  operationId?: string;
+  admission: Promise<void>;
+  recovering: boolean;
+  recoveryOrder?: number;
+  revision: number;
+  pendingWriteCount: number;
+  writeChain: Promise<void>;
+  persistFailed: boolean;
+  cancelPending: boolean;
+  coreCancelPending?: boolean;
+  startTransitionFailed?: boolean;
 }
 
 const queuedHookChats: QueuedHookChatEntry[] = [];
-const cancelledHookChatIds = new Set<string>();
+const recoveringHookChats = new Map<
+  string,
+  {
+    targetKey: string;
+    chatId: string;
+    operationId: string;
+    recoveryOrder: number;
+    abort: AbortController;
+    cancelled: boolean;
+  }
+>();
+let nextRecoveryOrder = 0;
 const startingQueuedHookChats = new Map<string, QueuedHookChatEntry>();
+
+export type QueuedHookChatPayload = Omit<PreparedHookChatLaunch, 'getWindow'>;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+export function parseQueuedHookChatPayload(
+  value: unknown,
+): QueuedHookChatPayload | null {
+  if (
+    !isRecord(value) ||
+    !isRecord(value.identity) ||
+    typeof value.identity.operationId !== 'string' ||
+    typeof value.identity.actionIndex !== 'number' ||
+    !Number.isInteger(value.identity.actionIndex) ||
+    value.identity.actionIndex < 0
+  )
+    return null;
+  try {
+    const identity = {
+      operationId: value.identity.operationId,
+      actionIndex: value.identity.actionIndex,
+    };
+    const ids = hookChatIds(identity);
+    if (
+      !isRecord(value.ids) ||
+      Object.keys(value.ids).length !== Object.keys(ids).length ||
+      Object.entries(ids).some(
+        ([key, id]) => !isRecord(value.ids) || value.ids[key] !== id,
+      ) ||
+      value.chatId !== ids.chatId ||
+      value.userMessageId !== ids.userMessageId
+    )
+      return null;
+    validateId(value.projectId, 'projectId');
+    validateId(value.worktreeId, 'worktreeId');
+    if (
+      typeof value.prompt !== 'string' ||
+      typeof value.triggerName !== 'string' ||
+      typeof value.triggeredAt !== 'number' ||
+      !Number.isFinite(value.triggeredAt) ||
+      typeof value.model !== 'string'
+    )
+      return null;
+    const model = resolveKnownModel(value.model);
+    const providerType = value.providerType;
+    if (
+      providerType !== 'claude' &&
+      providerType !== 'codex' &&
+      providerType !== 'ollama' &&
+      providerType !== 'cursor' &&
+      providerType !== 'opencode' &&
+      providerType !== 'copilot'
+    )
+      return null;
+    if (
+      (model !== undefined &&
+        requireProviderForModel(model) !== providerType) ||
+      !isModelHarness(value.executionHarness) ||
+      !isRecord(value.modelConfig) ||
+      !isThinkingLevel(value.modelConfig.thinkingLevel) ||
+      !isCodexSpeed(value.modelConfig.speed) ||
+      typeof value.modelConfig.fastMode !== 'boolean' ||
+      !isThinkingLevel(value.thinkingLevel) ||
+      typeof value.planMode !== 'boolean' ||
+      !Array.isArray(value.missingPluginDisplays) ||
+      !value.missingPluginDisplays.every(
+        (item: unknown) => typeof item === 'string',
+      )
+    )
+      return null;
+    if (
+      value.retainedCodexSpeed !== undefined &&
+      !isCodexSpeed(value.retainedCodexSpeed)
+    )
+      return null;
+    if (value.approvalMode !== undefined && !isApprovalMode(value.approvalMode))
+      return null;
+    if (
+      value.interfaceMode !== undefined &&
+      !isChatInterfaceMode(value.interfaceMode)
+    )
+      return null;
+    if (
+      value.pluginSelections !== undefined &&
+      !isRecord(value.pluginSelections)
+    )
+      return null;
+    if (
+      value.deferredToolsAllowed !== undefined &&
+      typeof value.deferredToolsAllowed !== 'boolean'
+    )
+      return null;
+    if (
+      value.executionContext !== undefined &&
+      typeof value.executionContext !== 'string'
+    )
+      return null;
+    if (value.selectedRepoId !== undefined)
+      validateId(value.selectedRepoId, 'selectedRepoId');
+    if (
+      value.autoArchive !== undefined &&
+      typeof value.autoArchive !== 'boolean'
+    )
+      return null;
+    let fileReferences: FileReference[] | undefined;
+    if (value.fileReferences !== undefined) {
+      if (!Array.isArray(value.fileReferences)) return null;
+      fileReferences = [];
+      const files: unknown[] = value.fileReferences;
+      for (const file of files) {
+        if (
+          !isRecord(file) ||
+          typeof file.displayPath !== 'string' ||
+          typeof file.absolutePath !== 'string' ||
+          (file.repoName !== undefined && typeof file.repoName !== 'string') ||
+          (file.kind !== undefined && typeof file.kind !== 'string') ||
+          (file.textStart !== undefined &&
+            (typeof file.textStart !== 'number' ||
+              !Number.isFinite(file.textStart)))
+        )
+          return null;
+        fileReferences.push({
+          displayPath: file.displayPath,
+          absolutePath: file.absolutePath,
+          ...(file.repoName !== undefined ? { repoName: file.repoName } : {}),
+          ...(file.kind !== undefined ? { kind: file.kind } : {}),
+          ...(file.textStart !== undefined
+            ? { textStart: file.textStart }
+            : {}),
+        });
+      }
+    }
+    return {
+      identity,
+      ids,
+      projectId: value.projectId,
+      worktreeId: value.worktreeId,
+      prompt: value.prompt,
+      triggerName: value.triggerName,
+      triggeredAt: value.triggeredAt,
+      model: value.model,
+      providerType,
+      executionHarness: value.executionHarness,
+      modelConfig: {
+        thinkingLevel: value.modelConfig.thinkingLevel,
+        speed: value.modelConfig.speed,
+        fastMode: value.modelConfig.fastMode,
+      },
+      thinkingLevel: value.thinkingLevel,
+      planMode: value.planMode,
+      missingPluginDisplays: value.missingPluginDisplays,
+      chatId: ids.chatId,
+      userMessageId: ids.userMessageId,
+      ...(value.retainedCodexSpeed !== undefined
+        ? { retainedCodexSpeed: value.retainedCodexSpeed }
+        : {}),
+      ...(value.approvalMode !== undefined
+        ? { approvalMode: value.approvalMode }
+        : {}),
+      ...(value.interfaceMode !== undefined
+        ? { interfaceMode: value.interfaceMode }
+        : {}),
+      ...(value.pluginSelections !== undefined
+        ? {
+            pluginSelections: normalizePluginSelections(value.pluginSelections),
+          }
+        : {}),
+      ...(value.deferredToolsAllowed !== undefined
+        ? { deferredToolsAllowed: value.deferredToolsAllowed }
+        : {}),
+      ...(fileReferences !== undefined ? { fileReferences } : {}),
+      ...(value.executionContext !== undefined
+        ? { executionContext: value.executionContext }
+        : {}),
+      ...(value.selectedRepoId !== undefined
+        ? { selectedRepoId: value.selectedRepoId }
+        : {}),
+      ...(value.autoArchive !== undefined
+        ? { autoArchive: value.autoArchive }
+        : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function toQueuedHookChatPayload(
+  prepared: PreparedHookChatLaunch,
+): CanopyJsonValue {
+  const payload: QueuedHookChatPayload = {
+    identity: prepared.identity,
+    ids: prepared.ids,
+    projectId: prepared.projectId,
+    worktreeId: prepared.worktreeId,
+    prompt: prepared.prompt,
+    triggerName: prepared.triggerName,
+    triggeredAt: prepared.triggeredAt,
+    model: prepared.model,
+    providerType: prepared.providerType,
+    executionHarness: prepared.executionHarness,
+    modelConfig: prepared.modelConfig,
+    retainedCodexSpeed: prepared.retainedCodexSpeed,
+    thinkingLevel: prepared.thinkingLevel,
+    planMode: prepared.planMode,
+    approvalMode: prepared.approvalMode,
+    interfaceMode: prepared.interfaceMode,
+    pluginSelections: prepared.pluginSelections,
+    deferredToolsAllowed: prepared.deferredToolsAllowed,
+    missingPluginDisplays: prepared.missingPluginDisplays,
+    fileReferences: prepared.fileReferences,
+    executionContext: prepared.executionContext,
+    chatId: prepared.chatId,
+    userMessageId: prepared.userMessageId,
+    selectedRepoId: prepared.selectedRepoId,
+    autoArchive: prepared.autoArchive,
+  };
+  const serialized: unknown = JSON.parse(JSON.stringify(payload));
+  return z.json().parse(serialized);
+}
 
 function isQueuedHookChatCancelled(
   entry: QueuedHookChatEntry | undefined,
@@ -454,10 +713,15 @@ function isHookChatStartInProgressForTarget(
 
 function hasQueuedHookChatForTarget(prepared: PreparedHookChatLaunch): boolean {
   const targetKey = getHookChatTargetKey(prepared);
-  return queuedHookChats.some(
-    (entry) =>
-      entry.cancelled !== true &&
-      getHookChatTargetKey(entry.prepared) === targetKey,
+  return (
+    Array.from(recoveringHookChats.values()).some(
+      (entry) => entry.targetKey === targetKey,
+    ) ||
+    queuedHookChats.some(
+      (entry) =>
+        entry.cancelled !== true &&
+        getHookChatTargetKey(entry.prepared) === targetKey,
+    )
   );
 }
 
@@ -932,8 +1196,56 @@ function queuedPlaceholderEvent(
   };
 }
 
-function queuePreparedHookChat(prepared: PreparedHookChatLaunch): string {
+class HookQueueEntryExistsError extends Error {}
+
+async function queuePreparedHookChat(
+  prepared: PreparedHookChatLaunch,
+): Promise<string> {
   const queueId = prepared.ids.queueId;
+  const entry: QueuedHookChatEntry = {
+    queueId,
+    prepared,
+    cancelled: false,
+    startExposed: false,
+    latestModelUpdateSequence: 0,
+    pendingModelUpdateCount: 0,
+    admission: Promise.resolve(),
+    recovering: false,
+    revision: 1,
+    pendingWriteCount: 0,
+    writeChain: Promise.resolve(),
+    persistFailed: false,
+    cancelPending: false,
+  };
+  queuedHookChats.push(entry);
+  entry.admission = (async (): Promise<void> => {
+    const admitted = await getHookQueue().enqueue({
+      kind: 'chat',
+      queueId,
+      runOperationId: prepared.identity.operationId,
+      actionIndex: prepared.identity.actionIndex,
+      scope: {
+        workspaceId: prepared.projectId,
+        worktreeId: prepared.worktreeId,
+        chatId: prepared.chatId,
+      },
+      payload: toQueuedHookChatPayload(prepared),
+    });
+    if (admitted.status === 'existing') throw new HookQueueEntryExistsError();
+    entry.operationId = admitted.operationId;
+  })();
+  try {
+    await entry.admission;
+  } catch (error) {
+    removeQueuedHookChat(entry);
+    scheduleDrain();
+    if (error instanceof HookQueueEntryExistsError) return queueId;
+    throw error;
+  }
+  if (entry.cancelled) {
+    await finishQueue(entry, 'cancelled');
+    return queueId;
+  }
   const startedDelivered = sendToWindow(
     prepared.getWindow(),
     IPC_CHANNELS.chatHookTabStarted,
@@ -943,16 +1255,128 @@ function queuePreparedHookChat(prepared: PreparedHookChatLaunch): string {
     logMainProcessInfo(
       `[hook-chat] No window received hook chat ${prepared.chatId}; it is queued in the background.`,
     );
-  queuedHookChats.push({
-    queueId,
-    prepared,
-    cancelled: false,
-    startExposed: false,
-    latestModelUpdateSequence: 0,
-    pendingModelUpdateCount: 0,
-  });
   scheduleDrain();
   return queueId;
+}
+
+function removeQueuedHookChat(entry: QueuedHookChatEntry): void {
+  const index = queuedHookChats.indexOf(entry);
+  if (index >= 0) queuedHookChats.splice(index, 1);
+}
+
+function savedQueuedHookChat(
+  entry: QueuedHookChatEntry,
+  revision = entry.revision,
+): HookQueueSavedEntry {
+  return {
+    version: 1,
+    kind: 'chat',
+    queueId: entry.queueId,
+    runOperationId: entry.prepared.identity.operationId,
+    actionIndex: entry.prepared.identity.actionIndex,
+    revision,
+    savedAt: new Date().toISOString(),
+    payload: toQueuedHookChatPayload(entry.prepared),
+  };
+}
+
+function persistQueuedHookChat(entry: QueuedHookChatEntry): void {
+  entry.pendingWriteCount += 1;
+  entry.revision += 1;
+  const revision = entry.revision;
+  entry.writeChain = entry.writeChain
+    .then(async () => {
+      if (!entry.operationId) await entry.admission.catch(() => undefined);
+      await getHookQueue().saveEdit(savedQueuedHookChat(entry, revision));
+      entry.persistFailed = false;
+    })
+    .catch((error: unknown) => {
+      entry.persistFailed = true;
+      logMainProcessWarn(
+        '[hook-chat] Could not save a queued hook chat edit.',
+        error,
+      );
+    })
+    .finally(() => {
+      entry.pendingWriteCount -= 1;
+      scheduleDrain();
+    });
+}
+
+async function persistNow(entry: QueuedHookChatEntry): Promise<void> {
+  try {
+    await getHookQueue().saveEdit(savedQueuedHookChat(entry));
+    entry.persistFailed = false;
+  } catch (error) {
+    logMainProcessWarn(
+      '[hook-chat] Could not save a queued hook chat edit.',
+      error,
+    );
+  }
+}
+
+async function finishQueue(
+  entry: QueuedHookChatEntry,
+  outcome: unknown,
+): Promise<void> {
+  if (!entry.operationId) return;
+  try {
+    if (
+      outcome === 'started' ||
+      outcome === 'already_started' ||
+      outcome === 'removed'
+    )
+      await getHookQueue().finishStarted(entry.operationId, entry.queueId, {
+        kind: 'chat',
+        chatId: entry.prepared.chatId,
+        result: outcome,
+      });
+    else if (outcome === 'cancelled')
+      await getHookQueue().finishCancelled(entry.operationId, entry.queueId);
+    else
+      await getHookQueue().finishFailed(
+        entry.operationId,
+        entry.queueId,
+        'core.initiatedWork.hookQueue.startFailed',
+        'The queued hook chat could not start.',
+      );
+  } catch (error) {
+    logMainProcessWarn(
+      '[hook-chat] Could not record how a queued hook chat ended.',
+      error,
+    );
+    if (outcome === 'cancelled') throw error;
+  }
+}
+
+async function startQueuedHookChat(
+  entry: QueuedHookChatEntry,
+): Promise<HookChatStartOutcome> {
+  if (!entry.operationId) return 'cancelled';
+  if (entry.persistFailed) await persistNow(entry);
+  entry.startTransitionFailed = false;
+  try {
+    if ((await getHookQueue().markStarting(entry.operationId)) === 'ended')
+      return 'cancelled';
+  } catch (error) {
+    if (!entry.cancelled) {
+      entry.startTransitionFailed = true;
+      queuedHookChats.unshift(entry);
+    }
+    throw error;
+  }
+  let outcome: HookChatStartOutcome;
+  try {
+    outcome = await startPreparedHookChat(entry.prepared, {
+      activateTab: false,
+      queuedEntry: entry,
+    });
+  } catch (error) {
+    await finishQueue(entry, error);
+    throw error;
+  }
+  await finishQueue(entry, outcome);
+  return outcome;
 }
 
 function scheduleDrain(): void {
@@ -960,7 +1384,9 @@ function scheduleDrain(): void {
     queuedHookChats.shift();
   }
 
-  const blockedTargetKeys = new Set<string>();
+  const blockedTargetKeys = new Set(
+    Array.from(recoveringHookChats.values(), (entry) => entry.targetKey),
+  );
   let nextEntry: QueuedHookChatEntry | undefined;
   let nextEntryIndex = -1;
   for (let index = 0; index < queuedHookChats.length; index += 1) {
@@ -976,6 +1402,12 @@ function scheduleDrain(): void {
 
     if (
       hookChatStartInProgressTargetKeys.has(targetKey) ||
+      entry.operationId === undefined ||
+      entry.recovering ||
+      entry.cancelPending ||
+      entry.coreCancelPending ||
+      entry.startTransitionFailed ||
+      entry.pendingWriteCount > 0 ||
       entry.pendingModelUpdateCount > 0 ||
       hasActiveChatTurnsForWorktree(
         entry.prepared.projectId,
@@ -1001,10 +1433,7 @@ function scheduleDrain(): void {
     getHookChatTargetKey(nextEntry.prepared),
   );
   startingQueuedHookChats.set(nextEntry.queueId, nextEntry);
-  const start = startPreparedHookChat(nextEntry.prepared, {
-    activateTab: false,
-    queuedEntry: nextEntry,
-  });
+  const start = startQueuedHookChat(nextEntry);
   nextEntry.startCompletion = start;
   void start
     .catch((error: unknown) => {
@@ -1024,11 +1453,14 @@ function scheduleDrain(): void {
     });
 }
 
-subscribeChatSessionActivity(scheduleDrain);
+subscribeChatSessionActivity(() => {
+  for (const entry of queuedHookChats) entry.startTransitionFailed = false;
+  scheduleDrain();
+});
 
 function replayQueuedHookChatPlaceholders(window: BrowserWindow | null): void {
   for (const entry of queuedHookChats) {
-    if (entry.cancelled) continue;
+    if (entry.cancelled || entry.operationId === undefined) continue;
     const replayed = sendToWindow(
       window,
       IPC_CHANNELS.chatHookTabStarted,
@@ -1046,6 +1478,15 @@ export async function cancelQueuedHookChat(
     (entry) => entry.queueId === queueId,
   );
   if (entryIndex < 0) {
+    const recovering = recoveringHookChats.get(queueId);
+    if (recovering) {
+      recovering.cancelled = true;
+      recovering.abort.abort();
+      await getHookQueue().finishCancelled(recovering.operationId, queueId);
+      recoveringHookChats.delete(queueId);
+      scheduleDrain();
+      return { cancelled: true };
+    }
     const startingEntry = startingQueuedHookChats.get(queueId);
     if (!startingEntry || startingEntry.startExposed) {
       return { cancelled: false };
@@ -1066,6 +1507,8 @@ export async function cancelQueuedHookChat(
         chatId: startingEntry.prepared.chatId,
       });
     }
+    if (startingEntry.operationId)
+      await getHookQueue().finishCancelled(startingEntry.operationId, queueId);
     startingQueuedHookChats.delete(queueId);
     return { cancelled: true };
   }
@@ -1075,13 +1518,19 @@ export async function cancelQueuedHookChat(
     return { cancelled: false };
   }
 
-  entry.cancelled = true;
-  cancelledHookChatIds.add(entry.prepared.chatId);
-  if (cancelledHookChatIds.size > 1_000) {
-    const oldest = cancelledHookChatIds.values().next().value;
-    if (oldest !== undefined) cancelledHookChatIds.delete(oldest);
+  if (entry.cancelPending) return { cancelled: false };
+  entry.cancelPending = true;
+  try {
+    await entry.admission.catch(() => undefined);
+    if (entry.operationId)
+      await getHookQueue().finishCancelled(entry.operationId, entry.queueId);
+  } catch (error) {
+    entry.cancelPending = false;
+    scheduleDrain();
+    throw error;
   }
-  queuedHookChats.splice(entryIndex, 1);
+  entry.cancelled = true;
+  removeQueuedHookChat(entry);
   scheduleDrain();
   return { cancelled: true };
 }
@@ -1097,7 +1546,14 @@ export async function forceQueuedHookChat(
   }
 
   const entry = queuedHookChats[entryIndex];
-  if (!entry || entry.cancelled === true) {
+  if (
+    !entry ||
+    entry.cancelled === true ||
+    !entry.operationId ||
+    entry.recovering ||
+    entry.cancelPending ||
+    entry.coreCancelPending
+  ) {
     return { forced: false };
   }
 
@@ -1110,10 +1566,7 @@ export async function forceQueuedHookChat(
   hookChatStartInProgressTargetKeys.add(targetKey);
   startingQueuedHookChats.set(entry.queueId, entry);
   try {
-    const start = startPreparedHookChat(entry.prepared, {
-      activateTab: false,
-      queuedEntry: entry,
-    });
+    const start = startQueuedHookChat(entry);
     entry.startCompletion = start;
     await start;
     return { forced: entry.startExposed };
@@ -1138,6 +1591,7 @@ export function updateQueuedHookChatPlanMode(args: {
   }
 
   entry.prepared.planMode = args.enabled;
+  persistQueuedHookChat(entry);
 }
 
 export function updateQueuedHookChatApprovalMode(args: {
@@ -1152,6 +1606,7 @@ export function updateQueuedHookChatApprovalMode(args: {
   }
 
   entry.prepared.approvalMode = args.mode;
+  persistQueuedHookChat(entry);
 }
 
 export function updateQueuedHookChatThinkingLevel(args: {
@@ -1170,6 +1625,7 @@ export function updateQueuedHookChatThinkingLevel(args: {
     ...entry.prepared.modelConfig,
     thinkingLevel: args.level,
   };
+  persistQueuedHookChat(entry);
 }
 
 /**
@@ -1190,6 +1646,7 @@ export function updateQueuedHookChatInterfaceMode(args: {
 
   entry.prepared.interfaceMode =
     args.interfaceMode === 'canopy' ? undefined : args.interfaceMode;
+  persistQueuedHookChat(entry);
   return true;
 }
 
@@ -1215,6 +1672,7 @@ export function updateQueuedHookChatCodexFastMode(args: {
   if (entry.prepared.executionHarness !== 'codex') {
     // Non-Codex execution never requests a Codex speed; keep only the
     // retained request for a later switch back to Codex.
+    persistQueuedHookChat(entry);
     return;
   }
   entry.prepared.modelConfig = {
@@ -1222,6 +1680,7 @@ export function updateQueuedHookChatCodexFastMode(args: {
     speed,
     fastMode: codexSpeedFastMode(speed),
   };
+  persistQueuedHookChat(entry);
 }
 
 export async function updateQueuedHookChatModel(args: {
@@ -1292,6 +1751,7 @@ export async function updateQueuedHookChatModel(args: {
     if (nextExecutionHarness === 'codex') {
       currentEntry.prepared.retainedCodexSpeed = nextModelConfig.speed;
     }
+    persistQueuedHookChat(currentEntry);
   } finally {
     if (queuedEntry.pendingModelUpdateCount > 0) {
       queuedEntry.pendingModelUpdateCount -= 1;
@@ -1316,6 +1776,7 @@ export function updateQueuedHookChatPluginSelections(args: {
   if (typeof args.deferredToolsAllowed === 'boolean') {
     entry.prepared.deferredToolsAllowed = args.deferredToolsAllowed;
   }
+  persistQueuedHookChat(entry);
 }
 
 type LaunchHookChatArgs = {
@@ -1346,7 +1807,8 @@ function toLaunchResult(
 function inFlightHookChatLaunch(
   chatId: string,
 ): HookChatLaunchResult | undefined {
-  if (cancelledHookChatIds.has(chatId)) return { status: 'removed', chatId };
+  for (const [queueId, entry] of recoveringHookChats)
+    if (entry.chatId === chatId) return { status: 'queued', chatId, queueId };
   const queued = queuedHookChats.find(
     (entry) => !entry.cancelled && entry.prepared.chatId === chatId,
   );
@@ -1362,12 +1824,41 @@ function inFlightHookChatLaunch(
   return undefined;
 }
 
+async function recordedQueueLaunch(
+  identity: HookChatLaunchIdentity,
+  ids: HookChatIds,
+): Promise<HookChatLaunchResult | undefined> {
+  const recorded = await getHookQueue().lookup(
+    'chat',
+    ids.queueId,
+    identity.operationId,
+    identity.actionIndex,
+  );
+  if (recorded.status === 'none') return undefined;
+  if (recorded.status === 'waiting')
+    return { status: 'queued', chatId: ids.chatId, queueId: ids.queueId };
+  const outcome = InitiatedWorkQueuedHookOutcomeSchema.safeParse(
+    recorded.operation.outcome,
+  );
+  if (
+    recorded.operation.status === 'completed' &&
+    outcome.success &&
+    outcome.data.kind === 'chat' &&
+    (outcome.data.result === 'started' ||
+      outcome.data.result === 'already_started')
+  )
+    return { status: 'already_started', chatId: ids.chatId };
+  return { status: 'removed', chatId: ids.chatId };
+}
+
 async function launchHookChatWithScopeLease(
   args: LaunchHookChatArgs,
 ): Promise<HookChatLaunchResult> {
   const ids = hookChatIds(args.identity);
   const inFlight = inFlightHookChatLaunch(ids.chatId);
   if (inFlight) return inFlight;
+  const queued = await recordedQueueLaunch(args.identity, ids);
+  if (queued) return queued;
   const prepared = await prepareHookChatLaunch(args);
   const recorded = await getHookChatClaims().lookup({
     runOperationId: args.identity.operationId,
@@ -1375,6 +1866,8 @@ async function launchHookChatWithScopeLease(
     userMessageId: ids.userMessageId,
     scope: { workspaceId: args.projectId, worktreeId: args.worktreeId },
   });
+  const preparedQueued = await recordedQueueLaunch(args.identity, ids);
+  if (preparedQueued) return preparedQueued;
   const preparedInFlight = inFlightHookChatLaunch(ids.chatId);
   if (preparedInFlight) return preparedInFlight;
   if (recorded) return { status: 'already_started', chatId: ids.chatId };
@@ -1397,7 +1890,7 @@ async function launchHookChatWithScopeLease(
     return {
       status: 'queued',
       chatId: ids.chatId,
-      queueId: queuePreparedHookChat(prepared),
+      queueId: await queuePreparedHookChat(prepared),
     };
   hookChatStartInProgressTargetKeys.add(getHookChatTargetKey(prepared));
   startingHookChatIds.add(ids.chatId);
@@ -1413,11 +1906,199 @@ async function launchHookChatWithScopeLease(
   }
 }
 
+const pendingHookChatLaunches = new Map<
+  string,
+  Promise<HookChatLaunchResult>
+>();
+
 export async function launchHookChat(
   args: LaunchHookChatArgs,
 ): Promise<HookChatLaunchResult> {
-  return getChatStateService().runWithScopeActivity(
+  const { chatId } = hookChatIds(args.identity);
+  const pending = pendingHookChatLaunches.get(chatId);
+  if (pending) {
+    const inFlight = inFlightHookChatLaunch(chatId);
+    if (inFlight?.status === 'already_started') return inFlight;
+    const result = await pending;
+    return result.status === 'started'
+      ? { status: 'already_started', chatId }
+      : result;
+  }
+  const launch = getChatStateService().runWithScopeActivity(
     { projectId: args.projectId, worktreeId: args.worktreeId },
     () => launchHookChatWithScopeLease(args),
   );
+  pendingHookChatLaunches.set(chatId, launch);
+  try {
+    return await launch;
+  } finally {
+    pendingHookChatLaunches.delete(chatId);
+  }
+}
+
+let hookChatQueueHostRegistered = false;
+
+export function registerHookChatQueueHost(
+  getWindow: () => BrowserWindow | null,
+): void {
+  if (hookChatQueueHostRegistered) return;
+  hookChatQueueHostRegistered = true;
+  const host: HookQueueHost = {
+    reserve(ref): void {
+      const { workspaceId, worktreeId, chatId } = ref.operation.scope;
+      if (!workspaceId || !worktreeId || !chatId)
+        throw new Error('The queued hook chat names no worktree or chat.');
+      recoveringHookChats.set(ref.queueId, {
+        targetKey: `${workspaceId}/${worktreeId}`,
+        chatId,
+        operationId: ref.operationId,
+        recoveryOrder: nextRecoveryOrder++,
+        abort: new AbortController(),
+        cancelled: false,
+      });
+    },
+    release(ref): void {
+      recoveringHookChats.delete(ref.queueId);
+      scheduleDrain();
+    },
+    async resume(ref, saved, released) {
+      const reservation = recoveringHookChats.get(ref.queueId);
+      if (!reservation || reservation.cancelled)
+        return {
+          status: 'invalidated',
+          message: 'This queued hook chat was cancelled.',
+        };
+      const payload = parseQueuedHookChatPayload(saved.payload);
+      if (!payload)
+        return {
+          status: 'invalidated',
+          message:
+            "This queued hook work's saved details could not be read, so it was not run.",
+        };
+      const valid = await revalidateQueuedHookWork(
+        ref.operation,
+        saved.actionIndex,
+        'chat',
+        reservation.abort.signal,
+      );
+      if (valid.status === 'invalidated') return valid;
+      if (
+        reservation.cancelled ||
+        reservation.abort.signal.aborted ||
+        !recoveringHookChats.has(ref.queueId)
+      )
+        return {
+          status: 'invalidated',
+          message: 'This queued hook chat was cancelled.',
+        };
+      if (!resolveKnownModel(payload.model))
+        return {
+          status: 'model_unavailable',
+        };
+      const entry: QueuedHookChatEntry = {
+        queueId: ref.queueId,
+        prepared: { ...payload, getWindow },
+        operationId: ref.operationId,
+        admission: Promise.resolve(),
+        recovering: true,
+        recoveryOrder: reservation.recoveryOrder,
+        revision: saved.revision,
+        cancelled: false,
+        startExposed: false,
+        latestModelUpdateSequence: 0,
+        pendingModelUpdateCount: 0,
+        pendingWriteCount: 0,
+        writeChain: Promise.resolve(),
+        persistFailed: false,
+        cancelPending: false,
+      };
+      const index = queuedHookChats.findIndex(
+        (candidate) =>
+          candidate.recoveryOrder === undefined ||
+          candidate.recoveryOrder > reservation.recoveryOrder,
+      );
+      queuedHookChats.splice(
+        index < 0 ? queuedHookChats.length : index,
+        0,
+        entry,
+      );
+      recoveringHookChats.delete(ref.queueId);
+      void released.then(() => {
+        entry.recovering = false;
+        scheduleDrain();
+      });
+      replayQueuedHookChatPlaceholders(getWindow());
+      return { status: 'queued' };
+    },
+    async reconcile(_ref, saved) {
+      const payload = parseQueuedHookChatPayload(saved.payload);
+      if (!payload) return { status: 'lost' };
+      try {
+        const claim = await getHookChatClaims().lookup({
+          runOperationId: payload.identity.operationId,
+          chatId: payload.chatId,
+          userMessageId: payload.userMessageId,
+          scope: {
+            workspaceId: payload.projectId,
+            worktreeId: payload.worktreeId,
+          },
+        });
+        return claim
+          ? {
+              status: 'started',
+              outcome: {
+                kind: 'chat',
+                chatId: payload.chatId,
+                result: 'started',
+              },
+            }
+          : { status: 'not_started' };
+      } catch {
+        return { status: 'lost' };
+      }
+    },
+    cancelled(ref): void {
+      const waiting = queuedHookChats.find(
+        (entry) => entry.queueId === ref.queueId,
+      );
+      if (waiting) {
+        waiting.cancelled = true;
+        removeQueuedHookChat(waiting);
+      }
+      recoveringHookChats.delete(ref.queueId);
+      scheduleDrain();
+      const { workspaceId, worktreeId, chatId } = ref.operation.scope;
+      if (!workspaceId || !worktreeId || !chatId) return;
+      sendToWindow(getWindow(), IPC_CHANNELS.chatHookQueueRemoved, {
+        projectId: workspaceId,
+        worktreeId,
+        chatId,
+        queueId: ref.queueId,
+      });
+    },
+    async cancel(ref): Promise<void> {
+      const reservation = recoveringHookChats.get(ref.queueId);
+      if (reservation) {
+        reservation.cancelled = true;
+        reservation.abort.abort();
+        recoveringHookChats.delete(ref.queueId);
+        scheduleDrain();
+        return;
+      }
+      const waiting = queuedHookChats.find(
+        (entry) => entry.queueId === ref.queueId,
+      );
+      if (waiting) {
+        waiting.coreCancelPending = true;
+        return;
+      }
+      const starting = startingQueuedHookChats.get(ref.queueId);
+      if (starting?.startExposed)
+        throw new OperationCancelRefusedError(
+          'This hook chat already started; stop it from the chat.',
+        );
+      if (starting) await cancelQueuedHookChat(ref.queueId);
+    },
+  };
+  getHookQueue().registerHost('chat', host);
 }

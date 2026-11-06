@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { captureClientInstrumentationError } from '@canopy/desktop-instrumentation/client';
 import { reportRendererConsoleError } from '@/lib/renderer-error-logging';
 import { Button } from '@/components/shared/Button';
 import { DialogModal } from '@canopy/ui-shared/components';
@@ -37,6 +38,9 @@ export class LazyLoadErrorBoundary extends Component<
   }
 
   override componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
+    captureClientInstrumentationError(error, {
+      context: { boundary: 'lazy_load' },
+    });
     reportRendererConsoleError('Lazy component failed to load', {
       name: error.name,
       message: error.message,

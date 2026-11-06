@@ -3,79 +3,11 @@ import {
   resolveAgentModelDefinition,
   type ChatModel,
   type ChatTabPluginSelections,
-  type McpHttpAuthPreference,
 } from '@canopy/desktop-shared/types';
 import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { mergeChatPluginSelections } from '@canopy/desktop-shared/lib/chat-plugin-selections-merge';
 
-/**
- * Union two `ChatTabPluginSelections` value sets. Items from `incoming` that
- * are not already present in `base` are appended; nothing is removed.
- *
- * Used by the chat plugins modal when the user applies a `canopy.json`
- * recommendation: the response carries the workspace's freshly persisted
- * defaults, and the user expects the applied plugin to appear selected in
- * this chat without losing any chat-specific selections they had already
- * staged in the modal.
- *
- * MCP HTTP auth preferences are intentionally preserved from `base` only —
- * recommendations never touch these per-server overrides.
- */
-export function mergeChatPluginSelections(
-  base: ChatTabPluginSelections,
-  incoming: ChatTabPluginSelections,
-): ChatTabPluginSelections {
-  const normalizedBase = normalizePluginSelections(base);
-  const normalizedIncoming = normalizePluginSelections(incoming);
-  // Ids routinely contain the separator (`demo/market`), so escape each
-  // segment: `demo` + `market/x` must not collide with `demo/market` + `x`.
-  const join = (left: string, right: string): string =>
-    `${encodeURIComponent(left)}/${encodeURIComponent(right)}`;
-  const skillKey = (r: { sourceId: string; skillName: string }): string =>
-    join(r.sourceId, r.skillName);
-  const pluginKey = (r: {
-    marketplaceId: string;
-    pluginName: string;
-  }): string => join(r.marketplaceId, r.pluginName);
-  const mcpKey = (r: { serverId: string; configId: string }): string =>
-    join(r.serverId, r.configId);
-
-  const collectionIds = unionBy(
-    normalizedBase.collectionIds,
-    normalizedIncoming.collectionIds,
-    (id) => id,
-  );
-  const skillRefs = unionBy(
-    normalizedBase.skillRefs,
-    normalizedIncoming.skillRefs,
-    skillKey,
-  );
-  const pluginRefs = unionBy(
-    normalizedBase.pluginRefs,
-    normalizedIncoming.pluginRefs,
-    pluginKey,
-  );
-  const mcpServerRefs = unionBy(
-    normalizedBase.mcpServerRefs ?? [],
-    normalizedIncoming.mcpServerRefs ?? [],
-    mcpKey,
-  );
-
-  const mcpHttpAuthPreferences: McpHttpAuthPreference[] | undefined =
-    normalizedBase.mcpHttpAuthPreferences;
-
-  const merged: ChatTabPluginSelections = {
-    collectionIds,
-    skillRefs,
-    pluginRefs,
-  };
-  if (mcpServerRefs.length > 0) {
-    merged.mcpServerRefs = mcpServerRefs;
-  }
-  if (mcpHttpAuthPreferences && mcpHttpAuthPreferences.length > 0) {
-    merged.mcpHttpAuthPreferences = mcpHttpAuthPreferences;
-  }
-  return merged;
-}
+export { mergeChatPluginSelections } from '@canopy/desktop-shared/lib/chat-plugin-selections-merge';
 
 /**
  * Merge an Agent's configured selections into a chat tab's own persisted
@@ -181,16 +113,4 @@ function differenceKeys<T>(
 ): Set<string> {
   const excludedKeys = new Set(excluded.map(key));
   return new Set(values.map(key).filter((value) => !excludedKeys.has(value)));
-}
-
-function unionBy<T>(base: T[], incoming: T[], key: (item: T) => string): T[] {
-  const seen = new Set<string>(base.map(key));
-  const result = [...base];
-  for (const item of incoming) {
-    const k = key(item);
-    if (seen.has(k)) continue;
-    seen.add(k);
-    result.push(item);
-  }
-  return result;
 }

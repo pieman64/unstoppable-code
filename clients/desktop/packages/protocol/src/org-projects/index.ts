@@ -526,6 +526,23 @@ export interface ClaimOrgProjectInstanceResponse {
   eventsCursor?: string;
 }
 
+/**
+ * What a claim refused with `409 conflict` names as its cause, in the error
+ * body's `reason`. The code stays `conflict`, which shipped desktops branch
+ * on. A client that acts differently on these causes reads the reason and
+ * treats a conflict without a reason it knows as none of them.
+ */
+export const ORG_PROJECT_CLAIM_CONFLICT_REASONS = {
+  /** The account already has as many active setups as it may. */
+  instanceLimit: 'instance_limit',
+  /** Another checkout of the same device installation holds the project's setup. */
+  checkoutConflict: 'checkout_conflict',
+  /** The key's claim was released or replaced; a claim under a new key may succeed. */
+  claimInvalid: 'claim_invalid',
+} as const;
+export type OrgProjectClaimConflictReason =
+  (typeof ORG_PROJECT_CLAIM_CONFLICT_REASONS)[keyof typeof ORG_PROJECT_CLAIM_CONFLICT_REASONS];
+
 export interface CompleteOrgProjectInstanceRequest {
   expectedDefinitionRevision?: number;
   operationId: string;

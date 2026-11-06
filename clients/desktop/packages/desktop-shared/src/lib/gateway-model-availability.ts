@@ -25,10 +25,13 @@ export type OrgGatewayModelAliases = Readonly<
 >;
 
 let orgGatewayModelAliases: OrgGatewayModelAliases = {};
+let personalGatewayOrganizationId: string | null = null;
 
 export function initOrgGatewayModelAliases(
   aliases: OrgGatewayModelAliases,
+  personalOrganizationId?: string,
 ): void {
+  personalGatewayOrganizationId = normalizeUuid(personalOrganizationId);
   orgGatewayModelAliases = Object.fromEntries(
     Object.entries(aliases).map(([modelId, byOrganization]) => [
       modelId,
@@ -41,8 +44,11 @@ export function resolveOwnerScopedModelId(
   modelId: string,
   owner?: WorkOwner,
 ): string {
-  if (owner?.kind !== 'organization') return modelId;
-  const organizationId = normalizeUuid(owner.organizationId);
+  if (!owner) return modelId;
+  const organizationId =
+    owner.kind === 'personal'
+      ? personalGatewayOrganizationId
+      : normalizeUuid(owner.organizationId);
   return organizationId
     ? (orgGatewayModelAliases[modelId]?.[organizationId] ?? modelId)
     : modelId;

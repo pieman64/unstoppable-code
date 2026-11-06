@@ -187,6 +187,9 @@ export const CloudProjectRepoListSourceSchema = z.enum([
   'canopy_json',
   'cloud_manifest',
 ]);
+export type CloudProjectRepoListSource = z.output<
+  typeof CloudProjectRepoListSourceSchema
+>;
 
 /** `workspace.json` `cloudBinding`; under any other account the project is unbound. */
 export const CloudProjectBindingSchema = z
@@ -227,6 +230,93 @@ export const CloudProjectRepositorySchema = z.strictObject({
 export type CloudProjectRepository = z.output<
   typeof CloudProjectRepositorySchema
 >;
+
+function directoryCandidate(name: string): string {
+  const cleaned = name
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^[^A-Za-z0-9]+/, '')
+    .replace(/[. ]+$/, '')
+    .slice(0, 200);
+  if (cleaned.length === 0) return 'repository';
+  return isPortableFileName(cleaned) ? cleaned : `${cleaned}-repository`;
+}
+
+export interface CloudProjectDirectoryEntry {
+  /** The repository's stored directory name, null for a new repository. */
+  preferred: string | null;
+  /** The repository name a new directory name is derived from. */
+  fallback: string;
+  /** The repository's identity (its remote key), which orders ties. */
+  key?: string;
+}
+
+function usableDirectoryName(name: string | null): name is string {
+  return (
+    name !== null &&
+    DIRECTORY_NAME_PATTERN.test(name) &&
+    isPortableFileName(name)
+  );
+}
+
+function compareText(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * A portable, distinct checkout directory for each repository, returned in
+ * input order. Repositories with a usable stored name keep it first, so a new
+ * repository never takes an existing one's directory; the rest get a name
+ * derived from their fallback (the repository name), with a numeric suffix
+ * when it is taken. Ties go by name and then `key`, never by input position,
+ * so every device and the server derive the same names from the same
+ * repositories in any order.
+ */
+export function cloudProjectDirectoryNames(
+  entries: readonly CloudProjectDirectoryEntry[],
+): string[] {
+  const ordered = entries
+    .map((entry, index) => ({ entry, index }))
+    .sort(
+      (a, b) =>
+        compareText(a.entry.preferred ?? '', b.entry.preferred ?? '') ||
+        compareText(a.entry.fallback, b.entry.fallback) ||
+        compareText(a.entry.key ?? '', b.entry.key ?? '') ||
+        a.index - b.index,
+    );
+  const names: string[] = new Array<string>(entries.length);
+  const taken = new Set<string>();
+  const unnamed: typeof ordered = [];
+  for (const item of ordered) {
+    const { preferred } = item.entry;
+    if (
+      usableDirectoryName(preferred) &&
+      !taken.has(portableFileNameIdentity(preferred))
+    ) {
+      taken.add(portableFileNameIdentity(preferred));
+      names[item.index] = preferred;
+    } else unnamed.push(item);
+  }
+  unnamed.sort(
+    (a, b) =>
+      compareText(
+        directoryCandidate(a.entry.fallback),
+        directoryCandidate(b.entry.fallback),
+      ) ||
+      compareText(a.entry.key ?? '', b.entry.key ?? '') ||
+      compareText(a.entry.preferred ?? '', b.entry.preferred ?? '') ||
+      a.index - b.index,
+  );
+  for (const { entry, index } of unnamed) {
+    const base = directoryCandidate(entry.fallback);
+    let name = base;
+    for (let suffix = 2; taken.has(portableFileNameIdentity(name)); suffix++) {
+      name = `${base}-${suffix}`;
+    }
+    taken.add(portableFileNameIdentity(name));
+    names[index] = name;
+  }
+  return names;
+}
 
 function isUnique(values: readonly string[]): boolean {
   return new Set(values).size === values.length;

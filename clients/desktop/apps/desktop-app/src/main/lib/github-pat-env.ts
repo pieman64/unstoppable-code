@@ -82,6 +82,10 @@ function getGitHubPatSecretsForInjection(): Record<string, string> {
   }
 }
 
+export function readGitHubPatForExecution(): string | null {
+  return getGitHubPatSecretsForInjection().GH_TOKEN ?? null;
+}
+
 /**
  * Drop the in-memory PAT cache so the next `getEnhancedEnv()` source-path
  * call picks up a fresh decryption. Called by the save IPC handler after a

@@ -1,14 +1,9 @@
 import { connectPostHogSession } from './posthog-session';
 import {
-  getDatadogInstrumentationReadiness,
   getPostHogInstrumentationReadiness,
   getDesktopInstrumentationConfig,
 } from '../config';
-import {
-  redactRumEvent,
-  sanitizeDatadogInstrumentationContext,
-  sanitizeInstrumentationContext,
-} from '../privacy';
+import { sanitizeInstrumentationContext } from '../privacy';
 import {
   createPostHogOperationTracker,
   type DesktopOperationName,
@@ -24,7 +19,6 @@ import { buildPostHogSessionRecordingOptions } from './posthog-replay-options';
 import { POSTHOG_CLICK_INIT_OPTIONS } from './posthog-autocapture-options';
 import { createPostHogScreenTracker } from './posthog-screen-tracking';
 import { flushPostHogHeatmaps } from './posthog-heatmaps';
-import { buildDesktopInstrumentationUser } from '../user';
 import {
   createPostHogAccountTracker,
   type PostHogAccountTracker,
@@ -37,10 +31,7 @@ import {
 } from '../posthog-routes';
 import {
   APP_ERROR_POSTHOG_EVENT,
-  buildAppErrorDatadogContext,
-  buildAppErrorDatadogError,
   buildAppErrorPostHogProperties,
-  type AppErrorTelemetrySessions,
 } from '../app-error-telemetry';
 import {
   createAppErrorHandler,
@@ -49,10 +40,10 @@ import {
   type AppErrorReportOptions,
   type AppErrorSink,
 } from '@canopy/protocol/app-errors';
-import type * as DatadogBrowserRumModule from '@datadog/browser-rum';
 import type { PostHog } from 'posthog-js/dist/module.full.no-external';
 import type {
   DesktopInstrumentationClientInitOptions,
+  DesktopInstrumentationContext,
   PostHogRuntimeFlags,
   DesktopInstrumentationErrorOptions,
   DesktopInstrumentationFeatureFlagValue,
@@ -61,7 +52,6 @@ import type {
   DesktopInstrumentationOperationOptions,
 } from '../types';
 
-type DatadogBrowserRum = typeof DatadogBrowserRumModule;
 type FeatureFlagValue = Exclude<
   DesktopInstrumentationFeatureFlagValue,
   undefined
@@ -73,12 +63,10 @@ type AppErrorPostHogEvent = {
   properties: ReturnType<typeof buildAppErrorPostHogProperties>;
 };
 type AppErrorReporter = (event: AppErrorPostHogEvent) => void;
-
-const DATADOG_UNSUPPORTED_FEATURE_FLAG_KEY_CHARS =
-  /[.:+\-=><!(){}[\]^"“”~*?\\&|]/g;
-
-let initialized = false;
-let datadogRumModule: DatadogBrowserRum | null = null;
+type ExceptionReporter = (
+  error: unknown,
+  properties: DesktopInstrumentationContext | undefined,
+) => void;
 
 function safelyInvoke(callback: () => void): void {
   try {
@@ -88,91 +76,16 @@ function safelyInvoke(callback: () => void): void {
   }
 }
 
-async function loadDatadogRum(): Promise<DatadogBrowserRum> {
-  if (datadogRumModule) {
-    return datadogRumModule;
-  }
-  datadogRumModule = await import('@datadog/browser-rum');
-  return datadogRumModule;
-}
-
-export function normalizeDatadogFeatureFlagKey(key: string): string {
-  const normalized = key
-    .trim()
-    .replace(DATADOG_UNSUPPORTED_FEATURE_FLAG_KEY_CHARS, '_')
-    .replace(/_+/g, '_')
-    .replace(/^_+|_+$/g, '');
-  return normalized.length > 0 ? normalized : 'feature_flag';
-}
-
-async function initializeDatadogClient(
-  options: DesktopInstrumentationClientInitOptions,
-): Promise<DesktopInstrumentationInitResult> {
-  if (initialized) {
-    return { enabled: true, provider: 'datadog' };
-  }
-
-  const config = getDesktopInstrumentationConfig().datadog;
-  const readiness = getDatadogInstrumentationReadiness(config);
-  if (!readiness.enabled) {
-    return { enabled: false, provider: 'datadog', reason: readiness.reason };
-  }
-  const { clientToken, applicationId } = readiness.config;
-
-  try {
-    const { datadogRum } = await loadDatadogRum();
-    datadogRum.init({
-      applicationId,
-      clientToken,
-      site: config.site,
-      service: `${config.service}-renderer`,
-      env: config.env,
-      version: config.version,
-      variant: config.variant,
-      proxy: config.proxy,
-      sessionSampleRate: config.sessionSampleRate,
-      sessionReplaySampleRate: config.sessionReplaySampleRate,
-      telemetrySampleRate: config.telemetrySampleRate,
-      trackResources: config.trackResources,
-      trackLongTasks: config.trackLongTasks,
-      trackUserInteractions: config.trackUserInteractions,
-      enablePrivacyForActionName: config.enablePrivacyForActionName,
-      ...(config.allowedTracingUrls.length > 0
-        ? {
-            allowedTracingUrls: config.allowedTracingUrls.map((url) => ({
-              match: url,
-              propagatorTypes: ['tracecontext' as const],
-            })),
-            traceSampleRate: config.traceSampleRate,
-            traceContextInjection: 'sampled' as const,
-          }
-        : {}),
-      defaultPrivacyLevel: config.defaultPrivacyLevel,
-      trackingConsent: 'granted',
-      enableExperimentalFeatures: ['feature_operation_vital'],
-      beforeSend: redactRumEvent,
-    });
-    datadogRum.setViewName(options.surface);
-    datadogRum.setViewContextProperty('surface', options.surface);
-    initialized = true;
-    return { enabled: true, provider: 'datadog' };
-  } catch (error) {
-    return {
-      enabled: false,
-      provider: 'datadog',
-      reason: error instanceof Error ? error.message : String(error),
-    };
-  }
-}
-
 let disposePostHog: (() => void) | undefined;
 let reportPostHogFeatureFlagEvaluation: FeatureFlagReporter | undefined;
 let reportPostHogOperation: OperationReporter | undefined;
 let reportPostHogAppError: AppErrorReporter | undefined;
+let reportPostHogException: ExceptionReporter | undefined;
 let isPostHogOperationStartEligible: (() => boolean) | undefined;
-let posthogAppErrorSession: AppErrorTelemetrySessions['posthog'];
 /** Bounds operations that finish while the SDK is still initializing. */
 const MAX_PENDING_POSTHOG_OPERATIONS = 50;
+/** Bounds handled errors reported while the SDK is still initializing. */
+const MAX_PENDING_POSTHOG_EXCEPTIONS = 20;
 let posthogInitialization:
   | Promise<DesktopInstrumentationInitResult>
   | undefined;
@@ -253,7 +166,25 @@ async function initializePostHogClient(
   const reportAppError: AppErrorReporter = reportEvent;
   reportPostHogOperation = reportOperation;
   reportPostHogAppError = reportAppError;
-  let appErrorSession: AppErrorTelemetrySessions['posthog'];
+  const pendingExceptions: Array<{
+    error: unknown;
+    properties: DesktopInstrumentationContext | undefined;
+  }> = [];
+  // Handled errors only. SDK autocapture owns uncaught errors and rejections,
+  // which before_send drops until the capture flag is known.
+  const reportException: ExceptionReporter = (error, properties) => {
+    if (disposed) return;
+    if (!posthog || !controller) {
+      if (!waitingForFlags && flags?.captureEnabled !== true) return;
+      pendingExceptions.push({ error, properties });
+      if (pendingExceptions.length > MAX_PENDING_POSTHOG_EXCEPTIONS)
+        pendingExceptions.shift();
+      return;
+    }
+    if (!controller.allowsEvent('$exception')) return;
+    posthog.captureException(error, properties);
+  };
+  reportPostHogException = reportException;
   const disposeOnUnload = (): void => {
     disposeClientAppErrorHandler();
     dispose();
@@ -265,8 +196,6 @@ async function initializePostHogClient(
       window.removeEventListener('unload', disposeOnUnload);
       unloadInstalled = false;
     }
-    if (posthogAppErrorSession === appErrorSession)
-      posthogAppErrorSession = undefined;
     screenTracker?.dispose();
     if (reportPostHogFeatureFlagEvaluation === reportEvaluation)
       reportPostHogFeatureFlagEvaluation = undefined;
@@ -274,12 +203,15 @@ async function initializePostHogClient(
       reportPostHogOperation = undefined;
     if (reportPostHogAppError === reportAppError)
       reportPostHogAppError = undefined;
+    if (reportPostHogException === reportException)
+      reportPostHogException = undefined;
     if (isPostHogOperationStartEligible === eligibleStart)
       isPostHogOperationStartEligible = undefined;
     posthogOperations.discardAcquisitionStarts();
     pendingEvaluations.clear();
     reportedEvaluations.clear();
     pendingOperations.length = 0;
+    pendingExceptions.length = 0;
     account?.dispose();
     unsubscribe?.();
     session?.dispose();
@@ -301,6 +233,7 @@ async function initializePostHogClient(
         posthogOperations.discardAcquisitionStarts();
         pendingEvaluations.clear();
         pendingOperations.length = 0;
+        pendingExceptions.length = 0;
       }
       safelyInvoke(() => {
         controller?.update(next);
@@ -322,9 +255,10 @@ async function initializePostHogClient(
       posthogOperations.discardAcquisitionStarts();
       pendingEvaluations.clear();
       pendingOperations.length = 0;
+      pendingExceptions.length = 0;
     }
     // The host owns this provider-specific UUID. Neither the SDK's own random
-    // identity nor the Datadog/account identity may be used as a fallback.
+    // identity nor the account identity may be used as a fallback.
     const [module, anonymousId] = await Promise.all([
       import('posthog-js/dist/module.full.no-external'),
       options.getPostHogAnonymousId?.(),
@@ -360,7 +294,8 @@ async function initializePostHogClient(
         sessionID: session.sessionId,
       },
       opt_out_capturing_by_default: true,
-      capture_exceptions: false,
+      // Uncaught errors and unhandled rejections; console errors stay off.
+      capture_exceptions: true,
       capture_performance: false,
       enable_recording_console_log: false,
       disable_surveys: true,
@@ -435,21 +370,6 @@ async function initializePostHogClient(
       (listener) => activeSession.onAdopted(listener),
     );
     activeSession.start();
-    if (!disposed) {
-      const sdk = posthog;
-      const activeController = controller;
-      // A session link exists only while main authorizes capture on this SDK.
-      appErrorSession = {
-        getSessionId: (): unknown =>
-          activeSession.allowsCapture() &&
-          activeController.allowsEvent(APP_ERROR_POSTHOG_EVENT)
-            ? sdk.get_session_id()
-            : undefined,
-        isRecording: (): unknown => sdk.sessionRecordingStarted(),
-        getReplayUrl: (): unknown => sdk.get_session_replay_url(),
-      };
-      posthogAppErrorSession = appErrorSession;
-    }
     if (options.posthogRoutes) {
       const sdk = posthog;
       screenTracker = createPostHogScreenTracker({
@@ -478,6 +398,9 @@ async function initializePostHogClient(
     pendingEvaluations.clear();
     pendingOperations.splice(0).forEach((operation) => {
       safelyInvoke(() => reportOperation(operation));
+    });
+    pendingExceptions.splice(0).forEach(({ error, properties }) => {
+      safelyInvoke(() => reportException(error, properties));
     });
     return { enabled: true, provider: 'posthog' };
   } catch (error) {
@@ -530,31 +453,11 @@ export async function initializeDesktopInstrumentationClient(
     return result;
   };
   operationSurface = options.surface;
-  // Start both providers before awaiting either. Consumers may retain their
-  // existing Datadog-only mount gate through the provider-neutral callback.
-  return Promise.all([
-    initializeDatadogClient(options).then(report),
-    (posthogInitialization ??= initializePostHogClient(options)).then(report),
-  ]);
-}
-
-/**
- * Sets the stable, anonymous, per-install identifier on the renderer RUM SDK.
- * The browser SDK supports `setUser`, so this populates `@usr.id` (plus a
- * derived non-PII `@usr.name`, see `buildDesktopInstrumentationUser`) natively
- * on every renderer event. The main process sets the same identity via the
- * vendored `setUser()` patch on `@datadog/electron-sdk` (plus
- * `@context.anon_id` on operations for dashboard continuity).
- */
-export function setClientInstrumentationUser(id: string, email?: string): void {
-  if (!initialized || !datadogRumModule) {
-    return;
-  }
-  safelyInvoke(() => {
-    datadogRumModule?.datadogRum.setUser(
-      buildDesktopInstrumentationUser(id, email),
-    );
-  });
+  return [
+    await (posthogInitialization ??= initializePostHogClient(options)).then(
+      report,
+    ),
+  ];
 }
 
 export function startClientOperation(
@@ -568,15 +471,6 @@ export function startClientOperation(
       isPostHogOperationStartEligible?.() ?? false,
     ),
   );
-  if (!initialized || !datadogRumModule) {
-    return;
-  }
-  safelyInvoke(() => {
-    datadogRumModule?.datadogRum.startFeatureOperation(name, {
-      ...options,
-      context: sanitizeDatadogInstrumentationContext(options?.context),
-    });
-  });
 }
 
 export function succeedClientOperation(
@@ -584,15 +478,6 @@ export function succeedClientOperation(
   options?: DesktopInstrumentationOperationOptions,
 ): void {
   forwardPostHogOperation(name, { status: 'success' }, options);
-  if (!initialized || !datadogRumModule) {
-    return;
-  }
-  safelyInvoke(() => {
-    datadogRumModule?.datadogRum.succeedFeatureOperation(name, {
-      ...options,
-      context: sanitizeDatadogInstrumentationContext(options?.context),
-    });
-  });
 }
 
 export function failClientOperation(
@@ -601,30 +486,23 @@ export function failClientOperation(
   options?: DesktopInstrumentationOperationOptions,
 ): void {
   forwardPostHogOperation(name, { status: 'failure', failureReason }, options);
-  if (!initialized || !datadogRumModule) {
-    return;
-  }
-  safelyInvoke(() => {
-    datadogRumModule?.datadogRum.failFeatureOperation(name, failureReason, {
-      ...options,
-      context: sanitizeDatadogInstrumentationContext(options?.context),
-    });
-  });
 }
 
+/**
+ * Reports a handled error as a PostHog `$exception`. Uncaught errors and
+ * unhandled rejections reach PostHog through SDK autocapture; do not route
+ * them here as well, or each would be reported twice.
+ */
 export function captureClientInstrumentationError(
   error: unknown,
   options?: DesktopInstrumentationErrorOptions,
 ): void {
-  if (!initialized || !datadogRumModule) {
-    return;
-  }
-  safelyInvoke(() => {
-    datadogRumModule?.datadogRum.addError(
+  safelyInvoke(() =>
+    reportPostHogException?.(
       error,
-      sanitizeDatadogInstrumentationContext(options?.context),
-    );
-  });
+      sanitizeInstrumentationContext(options?.context),
+    ),
+  );
 }
 
 export function addClientFeatureFlagEvaluation(
@@ -632,44 +510,13 @@ export function addClientFeatureFlagEvaluation(
   value: DesktopInstrumentationFeatureFlagValue,
 ): void {
   if (value === undefined) return;
-  if (initialized && datadogRumModule) {
-    safelyInvoke(() => {
-      datadogRumModule?.datadogRum.addFeatureFlagEvaluation(
-        normalizeDatadogFeatureFlagKey(key),
-        value,
-      );
-    });
-  }
   safelyInvoke(() => reportPostHogFeatureFlagEvaluation?.(key, value));
 }
-
-/** Reads current SDK state at capture time; the builders tolerate failures. */
-const appErrorSessions: AppErrorTelemetrySessions = {
-  datadog: {
-    getSessionId: () =>
-      initialized
-        ? datadogRumModule?.datadogRum.getInternalContext()?.session_id
-        : undefined,
-  },
-  posthog: {
-    getSessionId: () => posthogAppErrorSession?.getSessionId(),
-    isRecording: () => posthogAppErrorSession?.isRecording(),
-    getReplayUrl: () => posthogAppErrorSession?.getReplayUrl(),
-  },
-};
-
-const captureAppErrorInDatadog: AppErrorSink = (record) => {
-  if (!initialized || !datadogRumModule) return;
-  datadogRumModule.datadogRum.addError(
-    buildAppErrorDatadogError(record),
-    buildAppErrorDatadogContext(record, appErrorSessions),
-  );
-};
 
 const captureAppErrorInPostHog: AppErrorSink = (record) => {
   reportPostHogAppError?.({
     event: APP_ERROR_POSTHOG_EVENT,
-    properties: buildAppErrorPostHogProperties(record, appErrorSessions),
+    properties: buildAppErrorPostHogProperties(record),
   });
 };
 
@@ -679,7 +526,7 @@ function createClientAppErrorHandler(appVersion: string): AppErrorHandler {
   return createAppErrorHandler({
     host: 'renderer',
     appVersion,
-    sinks: [captureAppErrorInDatadog, captureAppErrorInPostHog],
+    sinks: [captureAppErrorInPostHog],
   });
 }
 

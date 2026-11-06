@@ -5,8 +5,11 @@ import {
   DetailActionBar,
   DetailActionSlotsProvider,
   DetailHeader,
+  DetailMoreItemsContributionProvider,
+  DetailMoreItemsProvider,
   DetailMoreMenu,
   useDetailActionSlots,
+  useDetailMoreItemContributions,
   type DetailMoreMenuItem,
   Heading,
 } from '@canopy/ui-shared/components';
@@ -68,7 +71,35 @@ export function MarketplaceDetailPageShell({
   children,
 }: MarketplaceDetailPageShellProps): JSX.Element {
   const slots = useDetailActionSlots();
-  const hasActions = Boolean(headerActions || share || slots.declared > 0);
+  // Rows bodies offer to the ⋯ menu join a menu the body declares; with none,
+  // the shell draws the menu.
+  const contributedMore = useDetailMoreItemContributions();
+  const unclaimedMore =
+    slots.moreDeclared === 0 ? contributedMore.items : undefined;
+  const fallbackMore =
+    unclaimedMore && unclaimedMore.length > 0 ? (
+      <DetailMoreMenu
+        name={title}
+        items={unclaimedMore}
+        triggerTestId="plugins-entry-detail-more"
+        menuTestId="plugins-entry-detail-menu"
+        placement="bottom-right"
+      />
+    ) : undefined;
+  const hasActions = Boolean(
+    headerActions || share || fallbackMore || slots.declared > 0,
+  );
+  const body = (
+    <DetailActionSlotsProvider slots={slots}>
+      <DetailMoreItemsContributionProvider
+        contribute={contributedMore.contribute}
+      >
+        <DetailMoreItemsProvider items={contributedMore.items}>
+          {children}
+        </DetailMoreItemsProvider>
+      </DetailMoreItemsContributionProvider>
+    </DetailActionSlotsProvider>
+  );
   const sectionClassName =
     width === 'fluid'
       ? 'flex min-h-0 w-full flex-col pt-8'
@@ -99,7 +130,9 @@ export function MarketplaceDetailPageShell({
               <>
                 <DetailMoreMenu
                   name={title}
-                  items={moreItems}
+                  items={
+                    unclaimedMore ? [...moreItems, ...unclaimedMore] : moreItems
+                  }
                   triggerTestId="plugins-entry-detail-more"
                   menuTestId="plugins-entry-detail-menu"
                 />
@@ -114,9 +147,7 @@ export function MarketplaceDetailPageShell({
             }
           />
         </div>
-        <DetailActionSlotsProvider slots={slots}>
-          {children}
-        </DetailActionSlotsProvider>
+        {body}
       </section>
     );
   }
@@ -185,6 +216,7 @@ export function MarketplaceDetailPageShell({
           )}
           {hasActions && (
             <DetailActionBar
+              more={fallbackMore}
               secondary={headerActions}
               share={share}
               slots={slots}
@@ -192,9 +224,7 @@ export function MarketplaceDetailPageShell({
           )}
         </div>
       )}
-      <DetailActionSlotsProvider slots={slots}>
-        {children}
-      </DetailActionSlotsProvider>
+      {body}
     </section>
   );
 }

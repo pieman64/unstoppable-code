@@ -40,7 +40,10 @@ function accountRoutePath(route: AccountSettingsRoute): string {
     case 'profile':
     case 'notifications':
     case 'integrations':
+    case 'plugins':
+    case 'mcp':
     case 'security':
+    case 'ai-gateway':
     case 'labs':
     case 'appearance':
       return `/account/${route.page}`;

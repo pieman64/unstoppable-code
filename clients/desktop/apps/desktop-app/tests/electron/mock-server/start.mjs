@@ -21,6 +21,7 @@ import { handleLinearRequest } from './routes/linear.mjs';
 import { handleAuthUsageRequest } from './routes/authUsage.mjs';
 import { handleSharedContainersRequest } from './routes/shared-containers.mjs';
 import { handleSharedPlansRequest } from './routes/shared-plans.mjs';
+import { handleCloudProjectsRequest } from './routes/cloud-projects.mjs';
 import { handleHostedSettingsRequest } from './routes/hosted-settings.mjs';
 import { guardRequestHandler } from './request-guard.mjs';
 
@@ -159,6 +160,11 @@ async function handleRequest(request, response) {
   // `/__mock/shared-plans/*` control routes, so they run before the cloud
   // surface and the control plane's `/__mock/*` catch-all.
   if (await handleSharedPlansRequest(request, response, url)) {
+    return;
+  }
+  // Personal cloud project identity serves keys with a `cloudProjects` slice;
+  // other keys, and organization claims, fall through to the cloud surface.
+  if (await handleCloudProjectsRequest(request, response, url)) {
     return;
   }
   if (await handleCloudRequest(request, response, url)) {

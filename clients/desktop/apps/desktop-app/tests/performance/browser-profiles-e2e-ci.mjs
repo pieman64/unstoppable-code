@@ -66,6 +66,9 @@ const SETTINGS = Object.freeze({
   CANOPY_PERFORMANCE_SOURCEMAPS: '1',
   CANOPY_BRAND: 'canopy',
   CANOPY_RELEASE_FLAVOR: 'stable',
+  CANOPY_RENDERER_SOURCEMAPS: 'false',
+  // Current builds no longer read Datadog configuration; the pinned historical
+  // baseline still does, so these keep its Datadog RUM and hidden maps off.
   CANOPY_DATADOG_ENABLED: 'false',
   CANOPY_DATADOG_SOURCEMAPS: 'false',
   // Current builds never obfuscate; these keep the pinned historical baseline,

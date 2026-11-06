@@ -48,6 +48,7 @@ import {
   getRendererActiveWorkOwner,
   getRendererModelGatewayEnforced,
   getRendererModelGatewayRequirement,
+  getRendererModelGatewayIndex,
   getRendererModelPolicy,
   setRendererActiveWorkOwner,
   setRendererModelGatewayIndex,
@@ -366,16 +367,37 @@ function ownerForContext(
     : { kind: 'personal' };
 }
 
+function navigationOwner(
+  gatewayIndex: ModelGatewayIndex,
+): WorkOwner | undefined {
+  const context = getSidebarScopingContext();
+  if (context) return ownerForContext(context);
+  const workspace = useWorkspaceContextStore.getState();
+  // A known Personal context does not depend on the organization-projects rollout.
+  if (
+    gatewayIndex.personalOrganizationId &&
+    workspace.hydrated &&
+    workspace.state.context.kind === 'personal'
+  )
+    return { kind: 'personal' };
+  return undefined;
+}
+
 function organizationNameForOwner(
   owner: WorkOwner | undefined,
   gatewayIndex: ModelGatewayIndex,
 ): string | undefined {
-  if (owner?.kind !== 'organization') return undefined;
-  const organizationId = normalizeUuid(owner.organizationId);
+  if (!owner) return undefined;
+  const organizationId = normalizeUuid(
+    owner.kind === 'personal'
+      ? gatewayIndex.personalOrganizationId
+      : owner.organizationId,
+  );
   const fromAccount = organizationId
     ? gatewayIndex.byOrganization.get(organizationId)?.organizationName.trim()
     : undefined;
   if (fromAccount) return fromAccount;
+  if (owner.kind === 'personal') return undefined;
   return (
     findOrganizationName(
       useWorkspaceContextStore.getState().state.organizations,
@@ -415,11 +437,13 @@ function orgGatewayAliasesFromRoutes(
 function foreignOrgGatewayModelIds(
   routes: readonly GatewayRouteEntry[],
   owner: WorkOwner | undefined,
+  personalOrganizationId?: string,
 ): ReadonlySet<string> {
   const hidden = new Set<string>();
   if (!owner) return hidden;
-  const ownerOrganizationId =
-    owner.kind === 'organization' ? normalizeUuid(owner.organizationId) : null;
+  const ownerOrganizationId = normalizeUuid(
+    owner.kind === 'personal' ? personalOrganizationId : owner.organizationId,
+  );
   for (const route of routes) {
     if (route.origin !== 'org-gateway') continue;
     if (
@@ -464,8 +488,17 @@ function applySnapshot(
   const owner = getRendererActiveWorkOwner();
   const policy = getRendererModelPolicy();
   const routes = snapshot.gatewayRoutes ?? [];
-  const foreignGatewayIds = foreignOrgGatewayModelIds(routes, owner);
-  initOrgGatewayModelAliases(orgGatewayAliasesFromRoutes(routes));
+  const personalOrganizationId =
+    getRendererModelGatewayIndex().personalOrganizationId;
+  const foreignGatewayIds = foreignOrgGatewayModelIds(
+    routes,
+    owner,
+    personalOrganizationId,
+  );
+  initOrgGatewayModelAliases(
+    orgGatewayAliasesFromRoutes(routes),
+    personalOrganizationId,
+  );
   replaceModelFamilyMetadata([...snapshot.claude, ...snapshot.codex]);
   // Initialization order (settings + pickers depend on it):
   //   1. managed/gateway/Ollama catalogs and gateway routes,
@@ -599,8 +632,10 @@ export const useModelCatalogStore = create<ModelCatalogState>((set, get) => ({
     // returned `'ai-credits'` — so a credits-lane user's new chats shipped
     // without the billing seed the tool-schema profile and the banner read.
     setRendererModelPolicyIndex(policyIndex, true);
-    const owner = getRendererActiveWorkOwner();
+    const owner = navigationOwner(gatewayIndex);
+    setRendererActiveWorkOwner(owner);
     set({
+      activeOwner: owner,
       policyIndex,
       gatewayIndex,
       policy: getRendererModelPolicy(),
@@ -615,7 +650,7 @@ export const useModelCatalogStore = create<ModelCatalogState>((set, get) => ({
   },
 
   syncActiveOwner: (): void => {
-    const owner = ownerForContext(getSidebarScopingContext());
+    const owner = navigationOwner(get().gatewayIndex);
     const changed = setRendererActiveWorkOwner(owner);
     const activeOrganizationName = organizationNameForOwner(
       owner,

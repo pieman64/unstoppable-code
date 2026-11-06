@@ -34,6 +34,13 @@ async function loadWorkspaceWorktreeRepoEntries(
   const config = await readWorkspaceConfig(workspaceId).catch(
     (): WorkspaceConfigFile => emptyConfig,
   );
+  return enumerateWorkspaceWorktreeRepoEntries(worktreePath, config);
+}
+
+async function enumerateWorkspaceWorktreeRepoEntries(
+  worktreePath: string,
+  config: WorkspaceConfigFile,
+): Promise<WorkspaceRepoEntries> {
   const repoNameById = new Map(
     config.repos.map((repo) => [repo.id, repo.name]),
   );
@@ -65,6 +72,15 @@ export async function listWorkspaceWorktreeRepoEntries(
   worktreePath: string,
 ): Promise<WorktreeRepoEntry[]> {
   return (await loadWorkspaceWorktreeRepoEntries(workspaceId, worktreePath))
+    .entries;
+}
+
+/** Stats phase enumeration uses its own normalized local config, not effective repos. */
+export async function listWorkspaceWorktreeRepoEntriesFromConfig(
+  worktreePath: string,
+  config: WorkspaceConfigFile,
+): Promise<WorktreeRepoEntry[]> {
+  return (await enumerateWorkspaceWorktreeRepoEntries(worktreePath, config))
     .entries;
 }
 

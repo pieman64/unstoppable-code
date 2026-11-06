@@ -218,6 +218,35 @@ function proofMatches(expected: string, actual: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+/** Keeps an owner proof from ever matching an auth proof (CAN-5771). */
+export const CANOPY_OWNER_PROOF_LABEL = 'canopy-daemon-owner-v1';
+
+/**
+ * Base64url HMAC-SHA256, keyed by a daemon's owner secret, over this
+ * connection's server-issued id and the data root hash (CAN-5771). Valid on
+ * that one connection only.
+ */
+export function createCanopyOwnerProof(
+  secret: Uint8Array,
+  connectionId: string,
+  dataRootHash: string,
+): string {
+  return createHmac('sha256', secret)
+    .update(
+      `${CANOPY_OWNER_PROOF_LABEL}\n${connectionId}\n${dataRootHash}`,
+      'utf8',
+    )
+    .digest('base64url');
+}
+
+/** Timing-safe comparison of two proofs (the file's `proofMatches`). */
+export function canopyOwnerProofMatches(
+  expected: string,
+  actual: string,
+): boolean {
+  return proofMatches(expected, actual);
+}
+
 interface Waiter<T> {
   resolve(value: T): void;
   reject(error: CanopyTransportError): void;

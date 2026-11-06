@@ -20,6 +20,10 @@ import {
 import { BundleIcon, RepoIcon } from '../icons/AppIcons';
 import { formatDate } from '../lib/format-date';
 import {
+  DEFAULT_SELECTION_TABLE_COPY,
+  type SelectionTableCopy,
+} from '../lib/installed-item-status';
+import {
   ProviderSupportIcons,
   type ProviderSupportScope,
   type UnifiedProviderSupport,
@@ -140,6 +144,8 @@ export interface UnifiedTableProps {
   blockRowsFromReplay?: boolean;
   /** Rendered at the end of the filter row, such as a scope chip. */
   toolbarTrailing?: ReactNode;
+  /** What selecting means here; words only, never selection behavior. */
+  selectionCopy?: SelectionTableCopy;
 }
 
 function SourceOptionIcon({
@@ -375,6 +381,7 @@ interface RowViewProps {
   measureRef?: (element: HTMLTableRowElement | null) => void;
   virtualIndex?: number;
   rowCheckboxTestId?: string;
+  selectionCopy: SelectionTableCopy;
 }
 
 const UnifiedTableRowView = memo(function UnifiedTableRowView({
@@ -390,6 +397,7 @@ const UnifiedTableRowView = memo(function UnifiedTableRowView({
   measureRef,
   virtualIndex,
   rowCheckboxTestId,
+  selectionCopy,
 }: RowViewProps): JSX.Element {
   const toggleMode = row.toggleMode ?? 'normal';
   const locked = toggleMode === 'locked';
@@ -421,8 +429,8 @@ const UnifiedTableRowView = memo(function UnifiedTableRowView({
             data-row-key={row.key}
             aria-label={
               toggleMode === 'unsupported' && row.toggleReason
-                ? `Select ${row.name} (${row.toggleReason})`
-                : `Select ${row.name}`
+                ? `${selectionCopy.rowLabel(row.name)} (${row.toggleReason})`
+                : selectionCopy.rowLabel(row.name)
             }
           />
         )}
@@ -511,7 +519,9 @@ const UnifiedTableRowView = memo(function UnifiedTableRowView({
         )}
         {row.members && (
           <p className="mt-1 text-xs fg-secondary">
-            {row.toggleReason ?? (checked ? 'Selected' : 'Available to enable')}
+            {row.toggleReason ??
+              selectionCopy.rowStateText?.(checked) ??
+              (checked ? 'Selected' : 'Available to enable')}
           </p>
         )}
       </DataTableCell>
@@ -595,11 +605,15 @@ function kindFilterOptionsFor(
   return options;
 }
 
-function UnifiedTableHead(): JSX.Element {
+function UnifiedTableHead({
+  selectionLabel,
+}: {
+  selectionLabel: string;
+}): JSX.Element {
   return (
     <DataTableHead sticky>
       <DataTableHeaderCell width="2.5rem" labelHidden>
-        Selected
+        {selectionLabel}
       </DataTableHeaderCell>
       <DataTableHeaderCell width="40%">Name</DataTableHeaderCell>
       <DataTableHeaderCell width="30%">Source</DataTableHeaderCell>
@@ -667,7 +681,9 @@ function UnifiedTableSkeleton({
           layout="fixed"
           caption="Plugins, skills and MCP servers"
         >
-          <UnifiedTableHead />
+          <UnifiedTableHead
+            selectionLabel={DEFAULT_SELECTION_TABLE_COPY.headerLabel}
+          />
           <DataTableBody>
             {SAMPLE_ROWS.map((row) => (
               <UnifiedTableRowView
@@ -679,6 +695,7 @@ function UnifiedTableSkeleton({
                 providerIconScope={providerIconScope}
                 onToggle={noop}
                 onView={noop}
+                selectionCopy={DEFAULT_SELECTION_TABLE_COPY}
               />
             ))}
           </DataTableBody>
@@ -704,6 +721,7 @@ export function UnifiedTable({
   rowCheckboxTestId,
   blockRowsFromReplay = false,
   toolbarTrailing,
+  selectionCopy = DEFAULT_SELECTION_TABLE_COPY,
 }: UnifiedTableProps): JSX.Element {
   const [selectedFilter, setSelectedFilter] =
     useState<UnifiedTableSelectedFilter>(defaultSelectedFilter);
@@ -780,9 +798,12 @@ export function UnifiedTable({
     });
     return {
       count: total,
-      summary: parts.length === 0 ? undefined : `${parts.join(', ')} selected`,
+      summary:
+        parts.length === 0
+          ? undefined
+          : selectionCopy.countTooltip(parts.join(', ')),
     };
-  }, [rowKindByKey, selectedKeys]);
+  }, [rowKindByKey, selectedKeys, selectionCopy]);
   const selectionFilterOptions = useMemo(
     () => [
       {
@@ -798,7 +819,7 @@ export function UnifiedTable({
       },
       {
         value: 'yes' as const,
-        label: 'Selected',
+        label: selectionCopy.selectedFilterLabel,
         dataTestId: 'unified-table-filter-selected',
         tooltip: hideSelectionSummary ? undefined : selection.summary,
         trailing: hideSelectionSummary ? undefined : (
@@ -810,11 +831,11 @@ export function UnifiedTable({
       },
       {
         value: 'no' as const,
-        label: 'Not selected',
+        label: selectionCopy.unselectedFilterLabel,
         dataTestId: 'unified-table-filter-not-selected',
       },
     ],
-    [hideSelectionSummary, rows.length, selection],
+    [hideSelectionSummary, rows.length, selection, selectionCopy],
   );
 
   const sortedEntries = useMemo(() => {
@@ -959,7 +980,7 @@ export function UnifiedTable({
             layout="fixed"
             caption="Plugins, skills and MCP servers"
           >
-            <UnifiedTableHead />
+            <UnifiedTableHead selectionLabel={selectionCopy.headerLabel} />
             <DataTableBody replay={blockRowsFromReplay ? 'block' : undefined}>
               {paddingTop > 0 && (
                 <tr aria-hidden style={{ height: paddingTop }}>
@@ -1002,6 +1023,7 @@ export function UnifiedTable({
                       measureRef={virtualized ? measureRow : undefined}
                       virtualIndex={virtualIndex}
                       rowCheckboxTestId={rowCheckboxTestId}
+                      selectionCopy={selectionCopy}
                     />
                   );
                 },

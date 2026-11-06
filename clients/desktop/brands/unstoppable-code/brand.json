@@ -39,6 +39,12 @@
     }
   },
   "storage": {
+    "buildDataDirNames": {
+      "stable": ".unstoppable-code",
+      "internal": ".unstoppable-code-internal",
+      "rc": ".unstoppable-code-rc",
+      "dev": ".unstoppable-code-dev"
+    },
     "dataDirNames": {
       "prod": [".unstoppable-code", ".canopy"],
       "rc": [".unstoppable-code-rc", ".canopy-rc"],

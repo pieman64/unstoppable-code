@@ -1,5 +1,6 @@
 'use client';
 
+import { BusyLabel } from '../BusyLabel';
 import { useMemo, type JSX } from 'react';
 import type {
   LedgerActorLabel,
@@ -149,9 +150,10 @@ export function LedgerHistoryMore({
       size="compact"
       data-testid="ledger-entry-history-more"
       disabled={loading}
+      aria-busy={loading}
       onClick={onLoadMore}
     >
-      {loading ? 'Loading…' : 'Show more changes'}
+      <BusyLabel busy={loading}>Show more changes</BusyLabel>
     </Button>
   );
 }

@@ -1,7 +1,12 @@
 import { z } from 'zod';
 import { settingsRouteSchema } from '@canopy/protocol/settings';
 
-export const SETTINGS_ACTION_TYPES = ['settings.open'] as const;
+export const SETTINGS_ACTION_TYPES = [
+  'settings.open',
+  'settings.ai_gateway.get',
+  'settings.ai_gateway.connect',
+  'settings.ai_gateway.update',
+] as const;
 
 /**
  * `settings.open` names its destination with the shared `SettingsRoute`

@@ -87,6 +87,11 @@ export interface PortalModelPickerProps {
 
 const CLAUDE_SORT_ORDER = 100;
 const CODEX_SORT_ORDER = 200;
+/** An own gateway follows native Claude and Codex, before AI Credits. */
+const OWN_GATEWAY_SORT_ORDER = 250;
+/** Section for rows served by the user's or organization's own gateway. */
+const OWN_GATEWAY_VENDOR = 'org-gateway';
+const OWN_GATEWAY_LABEL = 'AI gateway';
 const ZAI_SORT_ORDER = 300;
 const OTHER_SORT_ORDER = 400;
 
@@ -264,6 +269,17 @@ export function PortalModelPicker({
           ? { ...identity, isDefault: true }
           : identity;
         const source = optionSource(option);
+        if (option.funding === 'org-gateway') {
+          // An own gateway is not AI Credits: its rows get their own section,
+          // never the brand's, even when a model shares a hosted vendor.
+          return {
+            ...option,
+            family: OWN_GATEWAY_VENDOR,
+            familyLabel: option.familyLabel ?? OWN_GATEWAY_LABEL,
+            vendor: OWN_GATEWAY_VENDOR,
+            sortOrder: OWN_GATEWAY_SORT_ORDER,
+          };
+        }
         if (source === 'ai-gateway') {
           // Preserve the projected vendor metadata so gateway rows land in the
           // same per-vendor sections desktop shows; the branded fallback vendor
@@ -297,7 +313,10 @@ export function PortalModelPicker({
    * lives here, not in `@canopy/ui-shared` (CAN-2701).
    */
   const vendorLabels = useMemo<Readonly<Record<string, string>>>(
-    () => ({ 'ai-gateway': brandDisplayName ?? 'AI Credits' }),
+    () => ({
+      'ai-gateway': brandDisplayName ?? 'AI Credits',
+      [OWN_GATEWAY_VENDOR]: OWN_GATEWAY_LABEL,
+    }),
     [brandDisplayName],
   );
   const selectedOption = useMemo(

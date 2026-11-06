@@ -115,6 +115,17 @@ function harnessChoiceFields(
     : {};
 }
 
+/**
+ * A row served by a user's or organization's own gateway says so, so no
+ * surface bills or labels it as hosted AI Credits. Hosted rows stay unset;
+ * their source already says where they run.
+ */
+function gatewayFundingField(id: string): Pick<ModelCatalogOption, 'funding'> {
+  return resolveGatewayModelEntry(id)?.origin === 'org-gateway'
+    ? { funding: 'org-gateway' }
+    : {};
+}
+
 function providerModelOption(
   id: string,
   input: BuildModelCatalogOptionInput,
@@ -158,6 +169,7 @@ function providerModelOption(
     source: source ?? input.provider,
     ...(effectiveHarness ? { harness: effectiveHarness } : {}),
     ...harnessChoiceFields(id),
+    ...gatewayFundingField(id),
     kind: 'model',
     available: true,
     ...(id === input.defaultModel ? { isDefault: true } : {}),
@@ -207,6 +219,7 @@ function agentModelOption(
     ...(source ? { source } : {}),
     ...(executionHarness ? { harness: executionHarness } : {}),
     ...harnessChoiceFields(routeId),
+    ...gatewayFundingField(routeId),
     kind: 'agent',
     available: entry.available,
     ...(id === input.defaultModel ? { isDefault: true } : {}),

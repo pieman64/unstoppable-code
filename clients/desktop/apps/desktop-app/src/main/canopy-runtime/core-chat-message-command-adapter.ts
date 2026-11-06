@@ -23,6 +23,7 @@ import {
 } from '@canopy/core-runtime';
 import type { DesktopDomainAdapter } from './desktop-runtime';
 import type { ChatCommandRoute } from './core-chat-command-adapter';
+import { ChatCommandKeyFingerprints } from './chat-command-key-fingerprints';
 
 const legacyRequest = new AsyncLocalStorage<{
   request: ChatCommandEnvelope;
@@ -278,6 +279,7 @@ type MessageHandlers = Pick<
 
 export function createCoreChatMessageAdapter(
   getPort: () => ChatStateCommandPort,
+  fingerprints = new ChatCommandKeyFingerprints(),
 ): DesktopDomainAdapter {
   const invoke = async <Name extends MessageInstructionName>(
     name: Name,
@@ -293,6 +295,27 @@ export function createCoreChatMessageAdapter(
         'Chat command id must match the idempotency key.',
       );
     }
+    const release = fingerprints.claim(
+      {
+        projectId: params.scope.workspaceId,
+        worktreeId: params.scope.worktreeId,
+      },
+      params.commandId,
+      name,
+      params,
+    );
+    try {
+      return await invokeClaimed(name, params, command);
+    } catch (error) {
+      release();
+      throw error;
+    }
+  };
+  const invokeClaimed = async <Name extends MessageInstructionName>(
+    name: Name,
+    params: CanopyInstructionParams<Name>,
+    command: ChatCommand,
+  ): Promise<CanopyInstructionResult<MessageInstructionName>> => {
     const capture = legacyRequest.getStore();
     const captured = capture?.request;
     let request: ChatCommandEnvelope = captured ?? {

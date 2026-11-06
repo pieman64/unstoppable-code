@@ -1,8 +1,11 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { rename, writeFile } from 'node:fs/promises';
 import {
   HookChatClaims,
+  HookQueue,
+  HookQueuePayloadStore,
   InitiatedWorkEngine,
 } from '@canopy/core-runtime/node/initiated-work';
 import { OperationService } from '@canopy/core-runtime/node/operations';
@@ -25,6 +28,7 @@ import { OperationLedger } from '@canopy/core-runtime/node/operations/ledger';
 export interface TestInitiatedWork {
   engine: InitiatedWorkEngine;
   hookChatClaims: HookChatClaims;
+  hookQueue: HookQueue;
   operations: OperationService;
 }
 
@@ -33,17 +37,30 @@ let current: (TestInitiatedWork & { dir: string }) | null = null;
 export function testInitiatedWork(): TestInitiatedWork {
   if (current) return current;
   const dir = mkdtempSync(join(tmpdir(), 'initiated-work-'));
+  current = { dir, ...createTestInitiatedWork(dir) };
+  return current;
+}
+
+export function createTestInitiatedWork(dir: string): TestInitiatedWork {
   const operations = new OperationService({
     openLedger: (): OperationLedger =>
       OperationLedger.open(join(dir, 'operation-ledger.sqlite')),
   });
-  current = {
-    dir,
+  return {
     operations,
     engine: new InitiatedWorkEngine({ operations }),
     hookChatClaims: new HookChatClaims({ operations }),
+    hookQueue: new HookQueue({
+      operations,
+      payloads: new HookQueuePayloadStore({
+        directory: (): string => join(dir, 'hook-queue'),
+        writeFileAtomically: (path, text): Promise<void> =>
+          writeFile(path, text),
+        quarantine: (path): Promise<void> =>
+          rename(path, `${path}.damaged-${Date.now()}`),
+      }),
+    }),
   };
-  return current;
 }
 
 /** Opens the ledger, so a suite's first run needs no extra turns. */

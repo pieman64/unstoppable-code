@@ -2604,6 +2604,8 @@ export async function cancelStandaloneChat(
     ...(userMessageId ? { turnUserMessageId: userMessageId } : {}),
     mutationId: `manual-cancellation:${request.chatId}:${randomUUID()}`,
   });
+  const { settleStoppedChatTurnRuns } = await import('../agent-runs/turn-runs');
+  settleStoppedChatTurnRuns(target, userMessageId);
   // A terminal/new turn may have replaced the Portal projection while native
   // Stop awaited its root receipt. The canonical event is ID-fenced above;
   // only close the Portal frame while the original presentation is still live.

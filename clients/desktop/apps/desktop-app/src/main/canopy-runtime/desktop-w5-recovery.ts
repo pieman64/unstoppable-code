@@ -10,8 +10,7 @@ import type {
 } from '@canopy/protocol/portal';
 import { listW5HostPeers } from '@canopy/desktop-shared/node/w5-host-cohort';
 import { getCanopyDataDir } from '@canopy/desktop-shared/canopy-paths';
-import { isW5DaemonFlipCompiled } from '../lib/w5-flip-gate';
-import { isW5RecoveryEntryEnabled } from '../lib/w5-recovery-gates';
+import { isW5RecoveryAvailable } from '../lib/w5-recovery-gates';
 import {
   readW5RecoveryResult,
   writeW5RecoveryRequest,
@@ -39,7 +38,7 @@ export function getDesktopW5RecoveryController(): W5RecoveryController {
   let lease: ElectronW5RecordPortLease | undefined;
   let lastResult: W5RecoveryStatus | null | undefined;
   controller = createW5RecoveryController({
-    enabled: () => isW5RecoveryEntryEnabled() && isW5DaemonFlipCompiled(),
+    enabled: isW5RecoveryAvailable,
     supported: () => hostPlatformOperatingSystem() !== 'win32',
     live: async (): Promise<readonly W5RecoveryEntry[]> => {
       if (lastResult === undefined)

@@ -1,3 +1,4 @@
+import type { CanopyAccountResponse } from '@canopy/protocol/canopy-server';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { normalizePersonalOrganizationId } from '@canopy/protocol/workspace-context';
 import { randomBytes } from 'node:crypto';
@@ -9,7 +10,10 @@ import type {
   CanopyOrgBillingState,
   CanopyOrgEnforcedSettings,
 } from '@canopy/protocol/canopy-server';
-import { normalizeOrgEnforcedSettingsWithStatus } from '@canopy/desktop-shared/lib/org-enforced-parsing';
+import {
+  normalizeOrgEnforcedSettingsWithStatus,
+  personalGatewayAccountFields,
+} from '@canopy/desktop-shared/lib/org-enforced-parsing';
 import {
   cloneOrgBillingStates,
   normalizeOrgBillingStates,
@@ -70,6 +74,8 @@ export interface CanopyCloudAccountEntry {
   account?: CanopyServerAccountInfo;
   /** External ID for resource authorization; excluded from the switcher. */
   personalOrganizationId?: string;
+  personalModelGateway?: CanopyAccountResponse['personalModelGateway'];
+  personalModelGatewayEnforcementUnavailable?: boolean;
   organizations?: CanopyOrganizationSummary[];
   teams?: CanopyTeamSummary[];
   enforcedSettings?: CanopyOrgEnforcedSettings[];
@@ -313,6 +319,10 @@ function normalizeStoredAccountEntry(
       ? { serverApiKeyId: serverApiKeyId.trim() }
       : {}),
     capabilities: normalizeStringArray(capabilities),
+    ...personalGatewayAccountFields(value),
+    ...(value.personalModelGatewayEnforcementUnavailable === true
+      ? { personalModelGatewayEnforcementUnavailable: true }
+      : {}),
     ...(normalizedPersonalOrganizationId
       ? { personalOrganizationId: normalizedPersonalOrganizationId }
       : {}),
@@ -378,6 +388,7 @@ function cloneEntry(
       ...team,
       organization: { ...team.organization },
     })),
+    ...personalGatewayAccountFields(entry),
     enforcedSettings: cloneEnforcedSettings(entry.enforcedSettings),
     orgBillingStates: cloneOrgBillingStates(entry.orgBillingStates),
   };
@@ -1183,6 +1194,10 @@ export function toPublicCanopyCloudAccountState(
       ...team,
       organization: { ...team.organization },
     })),
+    ...personalGatewayAccountFields(entry),
+    ...(entry?.personalModelGatewayEnforcementUnavailable
+      ? { personalModelGatewayEnforcementUnavailable: true }
+      : {}),
     enforcedSettings: cloneEnforcedSettings(entry?.enforcedSettings),
     ...(entry?.telemetryEnforcementUnavailable === true
       ? { telemetryEnforcementUnavailable: true }

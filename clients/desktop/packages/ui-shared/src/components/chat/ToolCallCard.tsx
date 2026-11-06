@@ -1,5 +1,7 @@
 import { TURN_OUTCOME_UNKNOWN_IMPACT } from './turn-outcome-label';
 import { useState, type JSX, type ReactNode } from 'react';
+import { z } from 'zod';
+import { MODEL_GATEWAY_MAX_MODELS } from '@canopy/protocol/canopy-server';
 import {
   readToolInterruption,
   type ToolInterruption,
@@ -54,6 +56,39 @@ export type ToolCallStatus =
   | 'error'
   | 'blocked'
   | 'interrupted';
+
+const gatewayConnectCall = z.object({
+  action: z.object({ type: z.literal('settings.ai_gateway.connect') }),
+});
+const gatewayConnectResult = z.object({
+  ok: z.literal(true),
+  result: z.object({
+    status: z.literal('connected'),
+    models: z.array(z.unknown()).max(MODEL_GATEWAY_MAX_MODELS),
+  }),
+});
+
+/** Count only a completed connection's actual result, never its proposed input. */
+function gatewayConnectionDetail(
+  input: string | undefined,
+  result: ToolCallResult | null | undefined,
+): string | undefined {
+  if (
+    !input?.includes('settings.ai_gateway.connect') ||
+    result?.kind !== 'text'
+  )
+    return undefined;
+  try {
+    const call: unknown = JSON.parse(input);
+    if (!gatewayConnectCall.safeParse(call).success) return undefined;
+    const output: unknown = JSON.parse(result.content);
+    const parsed = gatewayConnectResult.safeParse(output);
+    if (!parsed.success) return undefined;
+    return `settings.ai_gateway.connect · ${parsed.data.result.models.length} models`;
+  } catch {
+    return undefined;
+  }
+}
 
 /** Shown under an interrupted step; it never claims the call did or didn't run. */
 export const TOOL_INTERRUPTED_EXPLANATION =
@@ -321,6 +356,10 @@ export function ToolCallCard({
     icon ?? (toolFamily === 'canopy' && appIcon != null ? appIcon : <Icon />);
 
   const resolvedStatus = resolveToolCallStatus(status, result);
+  const gatewayDetail =
+    resolvedStatus === 'success'
+      ? gatewayConnectionDetail(input, result)
+      : undefined;
   const approvalWait = useToolApprovalWait();
   // Only a call still pending can wait; a question waits on its own form.
   const isWaiting =
@@ -391,7 +430,7 @@ export function ToolCallCard({
                   {TOOL_APPROVAL_WAITING_LABEL}
                 </span>
               ) : (
-                (interruptionDetail ?? undefined)
+                (interruptionDetail ?? gatewayDetail)
               )
             }
             running={isPending}
@@ -468,6 +507,9 @@ export function ToolCallCard({
           </span>
         </span>
         <span className="min-w-0 truncate">{label ?? toolName}</span>
+        {gatewayDetail ? (
+          <span className="fg-tertiary">{gatewayDetail}</span>
+        ) : null}
         {denial != null && (
           <span
             className="flex-shrink-0 fg-tertiary"

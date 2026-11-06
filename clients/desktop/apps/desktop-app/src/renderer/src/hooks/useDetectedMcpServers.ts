@@ -1,4 +1,8 @@
-import { mcpAuthConnectLabel, mcpAuthStatusLabel } from '@canopy/ui-shared/lib';
+import {
+  mcpAuthConnectLabel,
+  mcpAuthStatusLabel,
+  mcpRequirementUnknown,
+} from '@canopy/ui-shared/lib';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
 import type {
@@ -7,11 +11,17 @@ import type {
   McpServerAuthStatus,
 } from '@canopy/desktop-shared/types/mcp-servers';
 import { setMcpHttpAuthPreference } from '@canopy/desktop-shared/lib/mcp-http-auth';
-import { targetForDetectedServer } from './detectedMcpServerHelpers';
+import { extractIpcErrorMessage } from '@/lib/errors';
+import {
+  isNoAuthCompletion,
+  sameDetectedMcpTarget,
+  targetForDetectedServer,
+} from './detectedMcpServerHelpers';
 
 const DEFAULT_LOGIN_FAILED_MESSAGE = 'OAuth sign-in failed.';
 const OAUTH_LOGIN_TIMEOUT_MESSAGE =
   'OAuth sign-in timed out before completion.';
+const TARGET_UNAVAILABLE_MESSAGE = 'This MCP server is no longer available';
 const DEFAULT_PROXY_TOGGLE_FAILED_MESSAGE =
   'Could not update MCP proxy setting.';
 const OAUTH_POLL_INTERVAL_MS = 1_500;
@@ -33,6 +43,8 @@ export interface UseDetectedMcpServersOptions {
   /** Invalidates observation when the draft or captured chat changes. */
   ownerKey?: string;
   isCurrent?: () => Promise<boolean>;
+  /** A detail-owned flow is cancelled when that detail leaves the screen. */
+  cancelOnDispose?: boolean;
 }
 
 export interface UseDetectedMcpServersResult {
@@ -48,7 +60,11 @@ export interface UseDetectedMcpServersResult {
    */
   proxyUpdatingKey: string | null;
   refresh(this: void): Promise<void>;
-  connect(server: DetectedMcpServerInfo): Promise<void>;
+  /** True only after confirmed completion; failures retain the sign-in error. */
+  connect(
+    server: DetectedMcpServerInfo,
+    options?: { readonly signInRequired: boolean },
+  ): Promise<boolean>;
   /** Re-resolves eligibility using selections already accepted by the host writer. */
   connectOnDevice(
     key: string,
@@ -88,13 +104,17 @@ function findMatchingServer(
   response: ListDetectedMcpServersResponse,
   server: DetectedMcpServerInfo,
 ): DetectedMcpServerInfo | undefined {
-  return response.servers.find((entry) => entry.key === server.key);
+  return response.servers.find((entry) => sameDetectedMcpTarget(server, entry));
 }
 
 function isOAuthStillPending(
   server: DetectedMcpServerInfo | undefined,
   initialErrorRevision?: string,
+  startedUnknown = false,
 ): boolean {
+  // An unknown requirement only waits for an attempt that began there; any
+  // other attempt arriving in that state has lost its sign-in.
+  if (startedUnknown && server && mcpRequirementUnknown(server)) return true;
   if (
     server?.authStatus === 'error' &&
     initialErrorRevision !== undefined &&
@@ -126,6 +146,8 @@ export function getOAuthFailureMessage(
 interface LocalAttempt {
   readonly key: string;
   readonly owner: string;
+  /** The selections this attempt started under. */
+  readonly selectionKey: string | null;
   cancelled: boolean;
   cancelFlow: boolean;
   flowId?: string;
@@ -145,13 +167,17 @@ export function useDetectedMcpServers(
   ownerRef.current = options.ownerKey ?? 'default';
   const isCurrentRef = useRef(options.isCurrent);
   isCurrentRef.current = options.isCurrent;
+  const cancelOnDisposeRef = useRef(options.cancelOnDispose === true);
+  cancelOnDisposeRef.current = options.cancelOnDispose === true;
   const mounted = useRef(true);
   const validAttempt = useCallback(
     (attempt: LocalAttempt): boolean =>
       mounted.current &&
       !attempt.cancelled &&
       localAttempt.current === attempt &&
-      ownerRef.current === attempt.owner,
+      ownerRef.current === attempt.owner &&
+      (selectionsRef.current ? JSON.stringify(selectionsRef.current) : null) ===
+        attempt.selectionKey,
     [],
   );
   const stopAttempt = useCallback((cancelFlow: boolean): void => {
@@ -179,12 +205,12 @@ export function useDetectedMcpServers(
     mounted.current = true;
     return (): void => {
       mounted.current = false;
-      stopAttempt(false);
+      stopAttempt(cancelOnDisposeRef.current);
       requestSeqRef.current += 1;
     };
   }, [stopAttempt]);
   useEffect(() => {
-    stopAttempt(false);
+    stopAttempt(cancelOnDisposeRef.current);
     requestSeqRef.current += 1;
     setState({ ...EMPTY_STATE });
   }, [options.ownerKey, stopAttempt]);
@@ -271,10 +297,13 @@ export function useDetectedMcpServers(
     async (
       server: DetectedMcpServerInfo,
       attempt: LocalAttempt,
-    ): Promise<void> => {
+      finishedWithoutFlow: boolean,
+      signInRequired = false,
+    ): Promise<boolean> => {
       const startedAt = Date.now();
       const initialErrorRevision =
         server.authStatus === 'error' ? server.authErrorRevision : undefined;
+      const startedUnknown = mcpRequirementUnknown(server);
       while (
         validAttempt(attempt) &&
         Date.now() - startedAt < OAUTH_POLL_TIMEOUT_MS
@@ -286,31 +315,41 @@ export function useDetectedMcpServers(
             resolve();
           };
         });
-        if (!validAttempt(attempt)) return;
-        if (isCurrentRef.current && !(await isCurrentRef.current())) return;
-        if (!validAttempt(attempt)) return;
+        if (!validAttempt(attempt)) return false;
+        if (isCurrentRef.current && !(await isCurrentRef.current()))
+          return false;
+        if (!validAttempt(attempt)) return false;
         const response = await fetchInventory();
-        if (!validAttempt(attempt)) return;
+        if (!validAttempt(attempt)) return false;
         if (!response) {
           if (inventoryFailure.current !== null)
             throw new Error('Couldn’t refresh sign-in status. Try again.');
           continue;
         }
         const matchingServer = findMatchingServer(response, server);
-        if (!matchingServer)
-          throw new Error('This MCP server is no longer available');
+        if (!matchingServer) throw new Error(TARGET_UNAVAILABLE_MESSAGE);
         const failureMessage = getOAuthFailureMessage(
           matchingServer,
           initialErrorRevision,
         );
         if (failureMessage) throw new Error(failureMessage);
-        if (matchingServer.authStatus === 'connected') return;
-        if (!isOAuthStillPending(matchingServer, initialErrorRevision))
+        if (matchingServer.authStatus === 'connected') return true;
+        if (finishedWithoutFlow && isNoAuthCompletion(server, matchingServer))
+          return true;
+        if (
+          !isOAuthStillPending(
+            matchingServer,
+            initialErrorRevision,
+            startedUnknown,
+          ) &&
+          !(signInRequired && matchingServer.authStatus === 'not_configured')
+        )
           throw new Error(
             'Couldn’t confirm this MCP server’s sign-in. Try again.',
           );
       }
       if (validAttempt(attempt)) throw new Error(OAUTH_LOGIN_TIMEOUT_MESSAGE);
+      return false;
     },
     [fetchInventory, validAttempt],
   );
@@ -380,8 +419,16 @@ export function useDetectedMcpServers(
       !state.loading &&
       state.error === null &&
       !state.servers.some((server) => server.key === attempt.key)
-    )
+    ) {
       stopAttempt(false);
+      // Removing it from the selections is the user's own doing; vanishing
+      // from the same selections leaves the attempt unfinished, so say so.
+      if (state.selectionKey === attempt.selectionKey)
+        setState((previous) => ({
+          ...previous,
+          error: TARGET_UNAVAILABLE_MESSAGE,
+        }));
+    }
   }, [state, stopAttempt]);
 
   // Clearing the selections removes every server, but the empty inventory is
@@ -396,9 +443,25 @@ export function useDetectedMcpServers(
   }, [fetchInventory]);
 
   const connect = useCallback(
-    async (server: DetectedMcpServerInfo): Promise<void> => {
-      if (!server.canConnect || localAttempt.current !== null) {
-        return;
+    async (
+      server: DetectedMcpServerInfo,
+      options?: { readonly signInRequired: boolean },
+    ): Promise<boolean> => {
+      // A tools request can require auth even when initialize was open.
+      // Health may request sign-in without rewriting the cached requirement.
+      const signInRequired =
+        options?.signInRequired === true &&
+        server.enabled &&
+        server.type === 'http' &&
+        server.httpAuthHandler === 'canopy' &&
+        server.serverId !== undefined &&
+        server.configId !== undefined;
+      if (
+        !server.enabled ||
+        (!server.canConnect && !signInRequired) ||
+        localAttempt.current !== null
+      ) {
+        return false;
       }
       const standaloneRequest =
         server.serverId && server.configId
@@ -422,12 +485,15 @@ export function useDetectedMcpServers(
           : null;
       const request = standaloneRequest ?? pluginRequest;
       if (!request) {
-        return;
+        return false;
       }
 
       const attempt: LocalAttempt = {
         key: server.key,
         owner: ownerRef.current,
+        selectionKey: selectionsRef.current
+          ? JSON.stringify(selectionsRef.current)
+          : null,
         cancelled: false,
         cancelFlow: false,
       };
@@ -435,40 +501,59 @@ export function useDetectedMcpServers(
       setConnectingKey(server.key);
       setState((prev) => ({ ...prev, error: null }));
       try {
-        if (isCurrentRef.current && !(await isCurrentRef.current())) return;
-        if (!validAttempt(attempt)) return;
+        if (isCurrentRef.current && !(await isCurrentRef.current()))
+          return false;
+        if (!validAttempt(attempt)) return false;
         const response = await window.mcpServers.startOAuthLogin({
           ...request,
-          force: false,
+          force: signInRequired,
         });
         attempt.flowId = response.flowId;
         if (!validAttempt(attempt)) {
           if (attempt.cancelFlow && response.flowId)
             await window.mcpServers.cancelOAuthLogin(response.flowId);
-          return;
+          return false;
         }
         setSignInUrl(response.authorizationUrl);
         setAwaitingAuthorization(response.status === 'started');
+        // No flow ran, so the row either holds a valid token or needs no
+        // sign-in. Neither says the server is reachable.
+        const finishedWithoutFlow =
+          response.status === 'completed' && response.flowId === undefined;
         if (response.status === 'completed') {
           const inventory = await fetchInventory();
-          if (!validAttempt(attempt)) return;
+          if (!validAttempt(attempt)) return false;
           if (!inventory && inventoryFailure.current !== null)
             throw new Error('Couldn’t refresh sign-in status. Try again.');
-          if (
-            inventory &&
-            findMatchingServer(inventory, server)?.authStatus === 'connected'
-          )
-            return;
+          if (inventory) {
+            const current = findMatchingServer(inventory, server);
+            if (!current) throw new Error(TARGET_UNAVAILABLE_MESSAGE);
+            if (
+              current.authStatus === 'connected' ||
+              (finishedWithoutFlow && isNoAuthCompletion(server, current))
+            )
+              return true;
+          }
         }
         // A launch/completed acknowledgement is not proof of connection.
-        await pollUntilOAuthCompletes(server, attempt);
+        return await pollUntilOAuthCompletes(
+          server,
+          attempt,
+          finishedWithoutFlow,
+          signInRequired && response.status === 'started',
+        );
       } catch (err: unknown) {
+        if (attempt.flowId)
+          void window.mcpServers
+            .cancelOAuthLogin(attempt.flowId)
+            .catch(() => undefined);
         const message =
           err instanceof Error && err.message.length > 0
-            ? err.message
+            ? extractIpcErrorMessage(err)
             : DEFAULT_LOGIN_FAILED_MESSAGE;
         if (validAttempt(attempt))
           setState((prev) => ({ ...prev, error: message }));
+        return false;
       } finally {
         if (localAttempt.current === attempt) {
           localAttempt.current = null;

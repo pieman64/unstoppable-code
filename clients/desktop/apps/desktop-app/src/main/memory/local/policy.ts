@@ -10,7 +10,13 @@ import { resolveMemoryWorkspaceId } from './workspace-scope';
 export type LocalMemoryPolicy =
   | { kind: 'unscoped' }
   | { kind: 'blocked'; workspaceId: string }
-  | { kind: 'scoped'; workspaceId: string; privateMemory: boolean };
+  | {
+      kind: 'scoped';
+      workspaceId: string;
+      privateMemory: boolean;
+      /** The organization project the workspace belongs to, when it has one. */
+      owner?: { organizationId: string; projectId: string };
+    };
 
 /** Read at the operation boundary: a long-lived chat must see toggle changes. */
 export async function resolveLocalMemoryPolicy(options: {
@@ -57,10 +63,19 @@ export async function resolveLocalMemoryPolicy(options: {
       );
       return { kind: 'blocked', workspaceId };
     }
+    const owner = read.config.owner;
     return {
       kind: 'scoped',
       workspaceId,
       privateMemory: read.config.privateMemory === true,
+      ...(owner === undefined
+        ? {}
+        : {
+            owner: {
+              organizationId: owner.organizationId,
+              projectId: owner.projectId,
+            },
+          }),
     };
   } catch (error) {
     logMainProcessWarn(

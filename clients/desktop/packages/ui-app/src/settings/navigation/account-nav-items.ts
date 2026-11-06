@@ -7,9 +7,12 @@ import {
   Globe,
   Lock,
   Mail,
+  Network,
+  McpIcon,
   PluginsIcon,
   User,
 } from '@canopy/ui-shared/icons/AppIcons';
+import { CUSTOMIZE_LABEL } from '@canopy/protocol/ui-labels';
 import { AI_CREDITS_LABEL } from '@canopy/ui-shared';
 import {
   ACCOUNT_PUBLIC_PROFILE_PATH,
@@ -29,7 +32,10 @@ export type AccountNavKey =
   | 'notifications'
   | 'integrations'
   | 'externalAgents'
+  | 'plugins'
+  | 'mcp'
   | 'security'
+  | 'ai-gateway'
   | 'billing'
   | 'labs'
   | 'appearance';
@@ -62,6 +68,11 @@ export interface AccountNavItem {
  * Security: it is a connection to a third party that works on the user's
  * behalf, which reads as a continuation of what leaves the account outward,
  * ahead of the controls that protect the account itself.
+ *
+ * AI gateway sits directly above Billing: it is the other source of the
+ * models agents run on, beside the AI credits Billing sells.
+ * Plugins and MCP servers follow External agents: they say what agents load,
+ * and they are read-only views of what is managed in Customize.
  *
  * Labs comes last: it holds features still being tried, not settings of
  * the account itself.
@@ -115,12 +126,33 @@ export const ACCOUNT_NAV_ITEMS: readonly AccountNavItem[] = [
     icon: Bot,
   },
   {
+    key: 'plugins',
+    label: 'Plugins',
+    description: `What loads into every new chat. Manage it in ${CUSTOMIZE_LABEL}.`,
+    href: '/account/plugins',
+    icon: PluginsIcon,
+  },
+  {
+    key: 'mcp',
+    label: 'MCP servers',
+    description: `The MCP servers installed for your agents. Manage them in ${CUSTOMIZE_LABEL}.`,
+    href: '/account/mcp',
+    icon: McpIcon,
+  },
+  {
     key: 'security',
     label: 'Security',
     description:
       'Manage how you sign in, two-factor authentication and API keys.',
     href: '/account/security',
     icon: Lock,
+  },
+  {
+    key: 'ai-gateway',
+    label: 'AI gateway',
+    description: 'Use models from your own gateway.',
+    href: '/account/ai-gateway',
+    icon: Network,
   },
   {
     key: 'billing',
@@ -174,10 +206,13 @@ export function visibleAccountNavItems(
 ): readonly AccountNavItem[] {
   return ACCOUNT_NAV_ITEMS.filter((item) => {
     if (item.key === 'billing') return flags.billingEnabled;
+    if (item.key === 'ai-gateway') return flags.aiGatewayEnabled === true;
     if (item.key === 'digests') return flags.digestsEnabled;
     if (item.key === 'integrations') return flags.integrationsEnabled;
     if (item.key === 'externalAgents')
       return flags.externalAgentsEnabled === true;
+    if (item.key === 'plugins') return flags.pluginsEnabled === true;
+    if (item.key === 'mcp') return flags.mcpEnabled === true;
     if (item.key === 'labs') return flags.labsEnabled === true;
     if (item.key === 'appearance') return flags.appearanceEnabled === true;
     return true;

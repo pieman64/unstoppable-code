@@ -27,6 +27,10 @@ import type {
 import { DialogModal } from '@/components/shared';
 import { AutoArchiveSettingsControl } from '@canopy/ui-shared';
 import { Button, TextArea, TextInput } from '@canopy/ui-shared/components';
+import {
+  ORCHESTRATOR_PLUGINS_LABEL,
+  ORCHESTRATOR_PLUGINS_SELECTION_COPY,
+} from '@canopy/ui-shared/lib';
 import { ModelThinkingPreferenceRow } from '@/components/settings/ModelThinkingPreferenceRow';
 import { SettingsPluginPicker } from '@/components/settings/SettingsPluginPicker';
 import { saveAppAdvisorPreferencePatch } from '@/lib/appAdvisorPreferenceSave';
@@ -256,7 +260,8 @@ export function AppAdvisorSettingsModal({
                 }
               />
               <SettingsPluginPicker
-                label="Default plugins"
+                label={ORCHESTRATOR_PLUGINS_LABEL}
+                selectionCopy={ORCHESTRATOR_PLUGINS_SELECTION_COPY}
                 description={`Loaded when ${ORCHESTRATOR_LABEL} starts a new chat.`}
                 selections={prefs.appAdvisorPluginSelections}
                 onChange={(selections: ChatTabPluginSelections) =>
@@ -265,7 +270,7 @@ export function AppAdvisorSettingsModal({
               />
             </div>
           ) : (
-            <div className="py-8 text-center text-sm fg-secondary">
+            <div className="py-8 text-center text-s fg-secondary">
               {prefsError
                 ? 'Preferences are unavailable.'
                 : 'Loading preferences...'}
@@ -313,7 +318,7 @@ export function AppAdvisorSettingsModal({
                 <div className="mt-3 flex items-center gap-3">
                   <span
                     id="app-advisor-retention-days-label"
-                    className="text-sm fg-primary"
+                    className="text-s fg-primary"
                   >
                     Keep deleted chats for
                   </span>

@@ -1,5 +1,9 @@
 import path from 'node:path';
 
+/** Shared namespaces, never automatic PATH grants. Explicit task grants differ. */
+export const DARWIN_DELEGATION_SHARED_TEMPORARY_ROOTS: readonly string[] =
+  Object.freeze(['/private/tmp', '/tmp', '/private/var/tmp', '/var/tmp']);
+
 export interface DelegationCommandEnvironmentOptions {
   readonly platform?: NodeJS.Platform;
   /** Required on Windows: the host's absolute %SystemRoot%. */
@@ -169,8 +173,10 @@ export interface DelegationToolchainReadRootOptions {
  * `sbin` directory only its prefix's runtime directories. Nothing is granted
  * that is the filesystem root, the user's home directory or an ancestor of
  * it, that sits inside a private directory, or that contains or sits inside
- * an excluded root; a refused prefix leaves the directory itself granted. The runtime
- * directories are named, not observed: the caller grants each only where it
+ * an excluded root; a refused prefix leaves the directory itself granted.
+ * macOS shared-temporary prefixes get only named runtime siblings; an exact
+ * shared-namespace PATH entry grants nothing. The caller reports that conflict.
+ * Runtime directories are named, not observed: the caller grants each only where it
  * resolves to itself.
  */
 export function delegationToolchainReadRoots(
@@ -180,6 +186,8 @@ export function delegationToolchainReadRoots(
   const platform = options.platform ?? process.platform;
   const pathApi = platform === 'win32' ? path.win32 : path.posix;
   const home = pathApi.resolve(options.home);
+  const sharedTemporaryRoots =
+    platform === 'darwin' ? DARWIN_DELEGATION_SHARED_TEMPORARY_ROOTS : [];
   const excluded = (options.excludedRoots ?? [])
     .filter((root) => pathApi.isAbsolute(root))
     .map((root) => pathApi.resolve(root));
@@ -197,6 +205,7 @@ export function delegationToolchainReadRoots(
   for (const raw of entries) {
     if (!raw || !pathApi.isAbsolute(raw) || raw.includes('\0')) continue;
     const directory = pathApi.resolve(raw);
+    if (sharedTemporaryRoots.includes(directory)) continue;
     if (!grantable(directory)) continue;
     const name = pathApi.basename(directory).toLowerCase();
     if (
@@ -208,12 +217,19 @@ export function delegationToolchainReadRoots(
     if (name !== 'bin' && name !== 'sbin') continue;
     const prefix = pathApi.dirname(directory);
     if (!grantable(prefix)) continue;
-    if (!within(pathApi, home, prefix)) roots.push(prefix);
+    if (
+      !within(pathApi, home, prefix) &&
+      !sharedTemporaryRoots.includes(prefix)
+    )
+      roots.push(prefix);
     else
       roots.push(
-        ...HOME_PREFIX_RUNTIME_DIRECTORIES.map((name) =>
-          pathApi.join(prefix, name),
-        ).filter(grantable),
+        ...[
+          ...HOME_PREFIX_RUNTIME_DIRECTORIES,
+          ...(sharedTemporaryRoots.includes(prefix) ? ['share'] : []),
+        ]
+          .map((name) => pathApi.join(prefix, name))
+          .filter(grantable),
       );
   }
   if (platform === 'darwin')
@@ -223,7 +239,8 @@ export function delegationToolchainReadRoots(
 
 /**
  * The given read roots without those inside another of them, in their
- * original order. A nested root adds no access, and on macOS every Codex
+ * original order, retaining child grants across macOS shared-temporary denies.
+ * Otherwise a nested root adds no access, and on macOS every Codex
  * read root enlarges a sandbox profile that must stay within the argument
  * limit.
  */
@@ -238,9 +255,19 @@ export function delegationOutermostRoots(
       .filter((root) => pathApi.isAbsolute(root))
       .map((root) => pathApi.resolve(root)),
   );
+  const fences =
+    platform === 'darwin' ? DARWIN_DELEGATION_SHARED_TEMPORARY_ROOTS : [];
   return absolute.filter(
     (root) =>
-      !absolute.some((other) => other !== root && within(pathApi, other, root)),
+      !absolute.some(
+        (other) =>
+          other !== root &&
+          within(pathApi, other, root) &&
+          !fences.some(
+            (fence) =>
+              within(pathApi, other, fence) && within(pathApi, fence, root),
+          ),
+      ),
   );
 }
 

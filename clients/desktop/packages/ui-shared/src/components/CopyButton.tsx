@@ -12,7 +12,6 @@ const GLYPH_PX: Record<ButtonSize, number> = {
   sm: 14,
   md: 16,
   lg: 18,
-  control: 14,
   compact: 14,
   field: 14,
 };

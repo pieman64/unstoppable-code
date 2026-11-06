@@ -46,3 +46,21 @@ export {
   type HookChatClaimState,
   type HookChatClaimRequest,
 } from './hook-chat-claims';
+export {
+  HOOK_QUEUE_DOMAIN,
+  HookQueue,
+  type HookQueueEntryRef,
+  type HookQueueEnqueueRequest,
+  type HookQueueAdmission,
+  type HookQueueLookup,
+  type HookQueueResumption,
+  type HookQueueReconciliation,
+  type HookQueueHost,
+} from './hook-queue';
+export {
+  HookQueuePayloadStore,
+  type HookQueueKind,
+  type HookQueueSavedEntry,
+  type HookQueueRead,
+  type HookQueueFiles,
+} from './hook-queue-store';

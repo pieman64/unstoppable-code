@@ -1,14 +1,24 @@
 import { CoreHelperRuns } from '@canopy/core-runtime/node/agent/helpers';
 import {
-  createWorkerAgentHelperAdapter,
-  type WorkerAgentHelperAdapter,
-} from './worker-agent-helper-adapter';
+  CoreChatTurnRuns,
+  CoreSubagentRuns,
+} from '@canopy/core-runtime/node/agent/turns';
+import {
+  createWorkerAgentAdapter,
+  type WorkerAgentAdapter,
+} from './worker-agent-adapter';
+import { stopChatTurnExactly } from './chat-turn-stop';
+import {
+  CoreSummarySchedule,
+  type CoreSummaryScheduleHost,
+} from '@canopy/core-runtime/node/summary';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { basename, join, sep } from 'node:path';
 import {
   CANOPY_QUERY_DEFINITIONS,
   CANOPY_INSTRUCTION_DEFINITIONS,
   WORKER_AGENT_HELPER_INSTRUCTION_DEFINITIONS,
+  WORKER_AGENT_RUN_INSTRUCTION_DEFINITIONS,
   CANOPY_STREAM_DEFINITIONS,
   type CanopyStreamCursor,
   type CanopyInstructionDefinitionMap,
@@ -62,6 +72,7 @@ import {
   type CanopyStreamOptions,
 } from '@canopy/core-runtime';
 import type {
+  ChatCancelRequest,
   ChatStateCommandPort,
   ChatStateSnapshot,
   ChatStateChangedEvent,
@@ -85,6 +96,13 @@ import {
   createCoreChatTurnAdapter,
   type CoreChatTurnCancelHost,
 } from './core-chat-turn-adapter';
+import {
+  createCoreChatQuestionAdapter,
+  type CoreChatQuestionHost,
+} from './core-chat-question-adapter';
+import { respondToChatQuestion } from '../chat-questions/respond';
+import { getDesktopChatWaits } from '../chat-waits/desktop-chat-waits';
+import { installQuestionTurnWaits } from '../chat-questions/question-turn-waits';
 import type { TranscriptPage } from '@canopy/agent-transcript/transcript-storage';
 import { createCoreChatEventsAdapter } from './core-chat-events-adapter';
 import {
@@ -98,6 +116,12 @@ import { validateId } from '../lib/validation';
 import { logMainProcessError } from '../lib/main-process-logging';
 import { getChatStateCommandPort } from '../ipc/chat-state';
 import { createCoreChatCommandAdapter } from './core-chat-command-adapter';
+import { ChatCommandKeyFingerprints } from './chat-command-key-fingerprints';
+import {
+  createCoreChatLocateAdapter,
+  createDesktopChatLocateHost,
+  type CoreChatLocateHost,
+} from './core-chat-locate-adapter';
 import { getChatStateService } from '../services/chat-state-service';
 import { getChatTurnOwnership } from '../services/chat-turn-ownership';
 import { createCoreChatMessageAdapter } from './core-chat-message-command-adapter';
@@ -119,6 +143,8 @@ import { createCoreWorkspaceInstructionsAdapter } from './core-workspace-instruc
 import { createCoreWorkspaceItemsAdapter } from './core-workspace-items-adapter';
 import { createCoreInitiatedWorkSourceAdapter } from './core-initiated-work-source-adapter';
 import { createCoreExecutionAdapter } from './core-execution-adapter';
+import { createCoreTerminalSettingsAdapter } from './core-terminal-settings-adapter';
+import type { TerminalSettingsStore } from '@canopy/core-runtime/node/terminal';
 import { createCoreObservabilityAdapter } from './core-observability-adapter';
 import type { CoreHookSourceHost } from '@canopy/core-runtime/node/initiated-work/hook-sources';
 import type { HookAction } from '@canopy/desktop-shared/hooks';
@@ -197,9 +223,11 @@ import { LocalWorkerExecution } from '@canopy/core-runtime/node/operations';
 import { CoreScriptRuns } from '@canopy/core-runtime/node/script/execution';
 import {
   HookChatClaims,
+  HookQueue,
   InitiatedWorkEngine,
 } from '@canopy/core-runtime/node/initiated-work';
 import { logMainProcessWarn } from '../lib/main-process-logging';
+import { createHookQueuePayloadStore } from '../lib/hook-queue-store';
 import type { CostService } from '../cost-index/service';
 import type { ObservabilityReadModel } from '@canopy/core-runtime/observability';
 import {
@@ -233,6 +261,7 @@ import {
   type CoreChatReadServices,
 } from './core-chat-read-adapter';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from './desktop-runtime-identity';
+import { createDesktopSummaryScheduleHost } from './core-summary-schedule-host';
 import type {
   DaemonFilesRoute,
   DaemonFilesRouteRequest,
@@ -274,8 +303,12 @@ export interface CreateDesktopRuntimeOptions {
   workspaceReadSnapshotLimits?: CoreReadSnapshotLimits;
   chatServices?: CoreChatReadServices;
   chatCommandPort?: ChatStateCommandPort;
+  /** Work Entry lookup behind `core.chat.locate`; tests may inject one. */
+  chatLocateHost?: CoreChatLocateHost;
   /** Effects behind `core.chat.turn.cancel`; default to the desktop Stop. */
   turnCancelHost?: CoreChatTurnCancelHost;
+  /** Effects behind core.chat.question.respond; default to the chat store and the question wait lifecycle. */
+  questionHost?: CoreChatQuestionHost;
   adapters?: DesktopDomainAdapter[];
   /**
    * Handler logic for `core.ledger.*`. Defaults to the app's Ledger service,
@@ -284,6 +317,10 @@ export interface CreateDesktopRuntimeOptions {
   ledgerService?: LedgerService;
   /** Handler logic for `core.cost.*`; tests may inject an isolated service. */
   costService?: CostService;
+  /** Host facts and generation for the core summary schedule; tests inject one. */
+  summaryScheduleHost?: CoreSummaryScheduleHost;
+  /** Store behind `core.terminal.settings.*`; tests may inject one. */
+  terminalSettingsStore?: TerminalSettingsStore;
   /** Read model for `core.observability.*`; tests may inject isolated stores. */
   observabilityReadModel?: ObservabilityReadModel;
   /** Host port for `core.workspace.instructions.*`; defaults to the desktop files. */
@@ -301,7 +338,7 @@ export interface CreateDesktopRuntimeOptions {
   scriptDefinitionsHost?: CoreScriptDefinitionsHost;
   /** `worker.script.*` over this process's local worker (CAN-4143). */
   workerScriptAdapter?: WorkerScriptAdapter;
-  workerAgentHelperAdapter?: WorkerAgentHelperAdapter;
+  workerAgentAdapter?: WorkerAgentAdapter;
   /** Host port for the W5 `core.workspace.*` metadata commands (W7a). */
   workspaceMetadataHost?: CoreWorkspaceMetadataHost;
   /**
@@ -614,12 +651,20 @@ export interface DesktopCanopyDispatcher extends CanopyDispatcher<
   readonly scriptRuns: CoreScriptRuns;
   /** Helper model calls (CAN-4122): each a core.helper.run operation whose worker.agent.helper.run dispatch runs on the local worker. */
   readonly helperRuns: CoreHelperRuns;
+  /** Worktree summary generations (CAN-4114): each a core.summary.regenerate operation that survives restart. */
+  readonly summarySchedule: CoreSummarySchedule;
+  /** Chat turns (CAN-4115): each a core.chat.turn.run operation whose worker.agent.turn.run dispatch runs on the local worker. */
+  readonly chatTurnRuns: CoreChatTurnRuns;
+  /** Managed subagent runs (CAN-4115). */
+  readonly subagentRuns: CoreSubagentRuns;
   /**
    * Initiated work (CAN-4144): each hook firing is a `core.initiatedWork.run`
    * operation with its gates, target queue and cancellation.
    */
   readonly initiatedWork: InitiatedWorkEngine;
   readonly hookChatClaims: HookChatClaims;
+  /** Queued hook chats and pipelines (CAN-5081). */
+  readonly hookQueue: HookQueue;
   /**
    * Pipeline runs (CAN-4140): each run is a core operation whose start and
    * cancel are dispatched to the local worker.
@@ -817,6 +862,9 @@ export function createDesktopRuntime(
   const chatProjectionContext = new AsyncLocalStorage<{
     legacyResult?: ChatStateSnapshot;
   }>();
+  const chatLocateAdapter = createCoreChatLocateAdapter(
+    options.chatLocateHost ?? createDesktopChatLocateHost(),
+  );
   const chatStateAdapter = createCoreChatStateAdapter(
     options.getChatStatePort ?? ((): ChatStateCommandPort | null => null),
     {
@@ -1006,6 +1054,7 @@ export function createDesktopRuntime(
       'core.chat.transcript.blocks.page':
         chatAdapter['core.chat.transcript.blocks.page'],
       'core.chat.visual.read': chatAdapter['core.chat.visual.read'],
+      'core.chat.locate': chatLocateAdapter['core.chat.locate'],
       'worker.filesystem.roots.list': (params, context) => {
         const direct = (): Promise<WorkerFilesystemRootsListResult> =>
           translateAdapterCall(() =>
@@ -1089,9 +1138,14 @@ export function createDesktopRuntime(
     };
 
   const ledgerService = options.ledgerService ?? getDesktopLedgerService();
-  const commandAdapter = createCoreChatCommandAdapter(getChatStateCommandPort);
+  const chatCommandKeys = new ChatCommandKeyFingerprints();
+  const commandAdapter = createCoreChatCommandAdapter(
+    getChatStateCommandPort,
+    chatCommandKeys,
+  );
   const messageAdapter = createCoreChatMessageAdapter(
     () => options.chatCommandPort ?? getChatStateService(),
+    chatCommandKeys,
   );
   const ledgerAdapter: DesktopDomainAdapter = {
     queries: createCoreLedgerQueryHandlers(ledgerService),
@@ -1114,6 +1168,9 @@ export function createDesktopRuntime(
     options.hookSourceHost,
   );
   const executionAdapter = createCoreExecutionAdapter();
+  const terminalSettingsAdapter = createCoreTerminalSettingsAdapter(
+    options.terminalSettingsStore,
+  );
   const observabilityReadModel = options.observabilityReadModel;
   const observabilityAdapter = createCoreObservabilityAdapter(
     observabilityReadModel
@@ -1147,8 +1204,14 @@ export function createDesktopRuntime(
   );
   const workerScriptAdapter =
     options.workerScriptAdapter ?? createWorkerScriptAdapter();
-  const workerAgentHelperAdapter =
-    options.workerAgentHelperAdapter ?? createWorkerAgentHelperAdapter();
+  const chatTurnRunsRef: { current: CoreChatTurnRuns | null } = {
+    current: null,
+  };
+  const workerAgentAdapter =
+    options.workerAgentAdapter ??
+    createWorkerAgentAdapter({
+      sinkFor: (id) => chatTurnRunsRef.current?.sinkFor(id) ?? null,
+    });
   const workerScriptHandlers: DesktopDomainAdapter = {
     queries: workerScriptAdapter.queries,
     instructions: workerScriptAdapter.instructions,
@@ -1200,65 +1263,85 @@ export function createDesktopRuntime(
     queries: operationAdapter.queries,
     instructions: operationAdapter.instructions,
   };
+  const defaultChatScopesForChat = async (
+    chatId: string,
+  ): Promise<ChatCancelRequest[]> => {
+    const scopes = new Map(
+      getChatTurnOwnership()
+        .scopesForChat(chatId)
+        .map((scope) => [`${scope.projectId}/${scope.worktreeId}`, scope]),
+    );
+    try {
+      const { getChatSearchService } = await import('../chat-search/service');
+      // The index lists every live and archived chat by id, one query.
+      for (const row of getChatSearchService().getCatalog(
+        CHAT_SCOPE_LOOKUP_LIMIT,
+        [chatId],
+      ))
+        scopes.set(`${row.projectId}/${row.worktreeId}`, {
+          projectId: row.projectId,
+          worktreeId: row.worktreeId,
+          chatId,
+        });
+    } catch (error) {
+      // Without the index an untracked chat is unknown, not missing.
+      if (scopes.size === 0)
+        throw new CanopyOperationError(
+          {
+            kind: 'unavailable',
+            message: 'The chat lookup is unavailable.',
+            retry: { kind: 'same_request', delayMs: 1_000 },
+          },
+          error,
+        );
+      logMainProcessError('Chat search scope lookup failed', error);
+    }
+    return [...scopes.values()];
+  };
+  const defaultChatState = (
+    scope: ChatCancelRequest,
+  ): Promise<ChatStateSnapshot> =>
+    (options.chatCommandPort ?? getChatStateService()).getState(scope);
   const turnAdapter: DesktopDomainAdapter = {
     instructions: createCoreChatTurnAdapter(
       options.turnCancelHost ?? {
-        scopesForChat: async (chatId) => {
-          const scopes = new Map(
-            getChatTurnOwnership()
-              .scopesForChat(chatId)
-              .map((scope) => [
-                `${scope.projectId}/${scope.worktreeId}`,
-                scope,
-              ]),
-          );
-          try {
-            const { getChatSearchService } =
-              await import('../chat-search/service');
-            // The index lists every live and archived chat by id, one query.
-            for (const row of getChatSearchService().getCatalog(
-              CHAT_SCOPE_LOOKUP_LIMIT,
-              [chatId],
-            ))
-              scopes.set(`${row.projectId}/${row.worktreeId}`, {
-                projectId: row.projectId,
-                worktreeId: row.worktreeId,
-                chatId,
-              });
-          } catch (error) {
-            // Without the index an untracked chat is unknown, not missing.
-            if (scopes.size === 0)
-              throw new CanopyOperationError(
-                {
-                  kind: 'unavailable',
-                  message: 'The chat lookup is unavailable.',
-                  retry: { kind: 'same_request', delayMs: 1_000 },
-                },
-                error,
-              );
-            logMainProcessError('Chat search scope lookup failed', error);
-          }
-          return [...scopes.values()];
+        scopesForChat: defaultChatScopesForChat,
+        getState: defaultChatState,
+        stop: stopChatTurnExactly,
+      },
+    ),
+  };
+  const questionAdapter: DesktopDomainAdapter = {
+    instructions: createCoreChatQuestionAdapter(
+      options.questionHost ?? {
+        scopesForChat: defaultChatScopesForChat,
+        getState: defaultChatState,
+        liveScope: (questionId) => {
+          const live = getDesktopChatWaits().scopeOf(questionId);
+          return live
+            ? {
+                projectId: live.workspaceId,
+                worktreeId: live.worktreeId,
+                chatId: live.chatId,
+              }
+            : null;
         },
-        getState: (scope) =>
-          (options.chatCommandPort ?? getChatStateService()).getState(scope),
-        stop: async (request, userMessageId) => {
-          // Lazy: the chat IPC module's graph loads only on the first Stop.
-          const [{ stopChatForUser }, { getMainWindow }] = await Promise.all([
-            import('../ipc/chat'),
-            import('../lib/main-window-focus'),
-          ]);
-          return stopChatForUser(request, getMainWindow, userMessageId);
-        },
+        respond: (request) =>
+          respondToChatQuestion({
+            ...request,
+            port: options.chatCommandPort ?? getChatStateService(),
+          }),
       },
     ),
   };
   const adapters: DesktopDomainAdapter[] = [
     commandAdapter,
     turnAdapter,
+    questionAdapter,
     messageAdapter,
     ledgerAdapter,
     costAdapter,
+    terminalSettingsAdapter,
     workspaceInstructionsAdapter,
     workspaceItemsAdapter,
     initiatedWorkSourceAdapter,
@@ -1269,7 +1352,7 @@ export function createDesktopRuntime(
     sharedMultiRepoAdapter,
     scriptDefinitionsAdapter,
     workerScriptHandlers,
-    workerAgentHelperAdapter,
+    workerAgentAdapter,
     workerGitAdapter,
     workerGitSyncAdapter,
     integrationAdapter,
@@ -1321,6 +1404,7 @@ export function createDesktopRuntime(
   const instructionDefinitions: CanopyInstructionDefinitionMap = {
     ...CANOPY_INSTRUCTION_DEFINITIONS,
     ...WORKER_AGENT_HELPER_INSTRUCTION_DEFINITIONS,
+    ...WORKER_AGENT_RUN_INSTRUCTION_DEFINITIONS,
   };
   const workerInstructions: CanopyInstructionDefinitionMap = Object.fromEntries(
     Object.entries(instructionDefinitions).filter(
@@ -1352,6 +1436,19 @@ export function createDesktopRuntime(
     owned(name, entry.queries, entry.instructions, entry.streams);
   const shutdownTimeoutMs =
     options.shutdownTimeoutMs ?? CANOPY_DEFAULT_SHUTDOWN_TIMEOUT_MS;
+  // The vault SQLite connection is daemon-exclusive, including in-process hosts.
+  if (
+    [
+      CANOPY_QUERY_DEFINITIONS,
+      DESKTOP_INSTRUCTION_DEFINITIONS,
+      CANOPY_STREAM_DEFINITIONS,
+    ].some((definitions) =>
+      Object.keys(definitions).some((name) => name.startsWith('core.vault.')),
+    )
+  )
+    throw new Error(
+      'The in-process desktop runtime must not register core.vault.',
+    );
   const runtime = createCanopyRuntime({
     profile: 'core+worker',
     // Trusted-host placeholders until the daemon descriptor lands (C5).
@@ -1377,6 +1474,7 @@ export function createDesktopRuntime(
           'core.chat.content.read',
           'core.chat.transcript.blocks.page',
           'core.chat.visual.read',
+          'core.chat.locate',
         ],
       },
       owned(
@@ -1390,10 +1488,12 @@ export function createDesktopRuntime(
       owned('core.workspace', workspaceAdapter),
       owned('core.chat.events', chatEventsAdapter.handlers),
       ownedAdapter('core.chat.turn', turnAdapter),
+      ownedAdapter('core.chat.question', questionAdapter),
       ownedAdapter('core.chat.commands', commandAdapter),
       ownedAdapter('core.chat.messages', messageAdapter),
       ownedAdapter('core.ledger', ledgerAdapter),
       ownedAdapter('core.cost', costAdapter),
+      ownedAdapter('core.terminal.settings', terminalSettingsAdapter),
       ownedAdapter('core.workspace.instructions', workspaceInstructionsAdapter),
       ownedAdapter('core.workspace.item', workspaceItemsAdapter),
       ownedAdapter('core.initiatedWork.source', initiatedWorkSourceAdapter),
@@ -1412,7 +1512,7 @@ export function createDesktopRuntime(
       ownedAdapter('core.workspace.sharedMultiRepo', sharedMultiRepoAdapter),
       ownedAdapter('core.script.definition', scriptDefinitionsAdapter),
       ownedAdapter('worker.script', workerScriptHandlers),
-      ownedAdapter('worker.agent', workerAgentHelperAdapter),
+      ownedAdapter('worker.agent', workerAgentAdapter),
       owned('core.workspace.metadata', workspaceMetadataAdapter.instructions),
       owned('core.workspace.lifecycle', workspaceLifecycleAdapter.instructions),
       owned('core.workspace.guarded', workspaceGuardedAdapter.instructions),
@@ -1511,6 +1611,27 @@ export function createDesktopRuntime(
     operations: operationAdapter.service,
     localWorker,
   });
+  const summarySchedule = new CoreSummarySchedule({
+    operations: operationAdapter.service,
+    ownerId: LOCAL_DESKTOP_AUTHORITY_ID,
+  });
+  summarySchedule.registerHost(
+    options.summaryScheduleHost ?? createDesktopSummaryScheduleHost(),
+  );
+  const chatTurnRuns = new CoreChatTurnRuns({
+    operations: operationAdapter.service,
+    localWorker,
+    onError: (error, context): void =>
+      logMainProcessWarn(`[chat-turn-runs] ${context} failed`, error),
+  });
+  chatTurnRunsRef.current = chatTurnRuns;
+  installQuestionTurnWaits(getDesktopChatWaits());
+  const subagentRuns = new CoreSubagentRuns({
+    operations: operationAdapter.service,
+    localWorker,
+    onError: (error, context): void =>
+      logMainProcessWarn(`[subagent-runs] ${context} failed`, error),
+  });
   const initiatedWork = new InitiatedWorkEngine({
     operations: operationAdapter.service,
     // Hook runs a restart interrupted resume through the hook source
@@ -1522,6 +1643,13 @@ export function createDesktopRuntime(
   });
   const hookChatClaims = new HookChatClaims({
     operations: operationAdapter.service,
+  });
+  const hookQueue = new HookQueue({
+    operations: operationAdapter.service,
+    payloads: createHookQueuePayloadStore(),
+    onError: (error, context): void => {
+      logMainProcessWarn(`[hook-queue] ${context} failed`, error);
+    },
   });
   const pipelineRuns = new CorePipelineRuns({
     operations: operationAdapter.service,
@@ -2071,8 +2199,12 @@ export function createDesktopRuntime(
     localWorker,
     scriptRuns,
     helperRuns,
+    summarySchedule,
+    chatTurnRuns,
+    subagentRuns,
     initiatedWork,
     hookChatClaims,
+    hookQueue,
     pipelineRuns,
     pipelineHostRequests,
     queryWorkspaceListForLegacyIpc: refuseOnceShuttingDown(

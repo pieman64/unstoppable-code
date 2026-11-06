@@ -98,6 +98,7 @@ import {
 } from '../mcp/oauth-client';
 import {
   clearMcpOAuthToken,
+  getMcpOAuthAuthStatusForDefinition,
   getMcpOAuthTokenRevision,
   setMcpOAuthTokensChangedListener,
 } from '../mcp/oauth-token-store';
@@ -110,7 +111,13 @@ import { listDetectedMcpServersForSelections } from '../plugins/mcp-inventory';
 import {
   buildPluginHttpMcpServerForAuth,
   type PluginHttpMcpServerForAuth,
+  type PluginMcpAuthIdentity,
 } from '../plugins/plugin-mcp-auth';
+import {
+  pluginMcpOAuthProbeInputs,
+  standaloneMcpOAuthProbeInputs,
+} from '../mcp/oauth-probe-inputs';
+import { probeMcpHttpOAuthRequirement } from '../mcp/oauth-probe';
 import { loadMarketplaces } from '../plugins/plugin-service';
 import {
   readPluginMcpAuthEntries,
@@ -149,6 +156,7 @@ import {
 import {
   listMcpServerStatuses,
   clearMcpServerAuthHealthCache,
+  getMcpServerHealth,
   getMcpServerHealthGeneration,
   recordMcpServerHealth,
 } from '../mcp/connection-status';
@@ -485,7 +493,12 @@ function validatePluginOAuthTarget(target: StartMcpOAuthPluginTarget): void {
 
 async function resolvePluginOAuthTarget(
   target: StartMcpOAuthPluginTarget,
-): Promise<PluginHttpMcpServerForAuth> {
+): Promise<
+  PluginHttpMcpServerForAuth & {
+    identity: PluginMcpAuthIdentity;
+    rawValue: Record<string, unknown>;
+  }
+> {
   validatePluginOAuthTarget(target);
   const cacheResult = await loadMarketplaces();
   const marketplaces =
@@ -549,7 +562,32 @@ async function resolvePluginOAuthTarget(
   if (!pluginServer) {
     throw new Error('OAuth is only supported for HTTP MCP servers.');
   }
-  return pluginServer;
+  return {
+    ...pluginServer,
+    identity: entry.identity,
+    rawValue: entry.rawValue,
+  };
+}
+
+/**
+ * Whether Connect ends here: discovery positively found no sign-in. A stored
+ * token keeps inventory offering Reconnect, and a health check can see a 401
+ * past an open `initialize`, so either one keeps the real flow.
+ */
+async function connectNeedsNoSignIn(
+  probeInputs: { url: string; headers: Record<string, string> } | null,
+  definition: McpServerDefinitionData,
+  config: McpServerConfigData,
+): Promise<boolean> {
+  if (!probeInputs) return false;
+  const probe = await probeMcpHttpOAuthRequirement(
+    probeInputs.url,
+    probeInputs.headers,
+  );
+  if (probe.requirement !== 'none') return false;
+  if (getMcpServerHealth(definition.id)?.status === 'needs_auth') return false;
+  const auth = await getMcpOAuthAuthStatusForDefinition(definition, config);
+  return auth.hasStoredToken !== true;
 }
 
 /** Non-secret parts of an HTTP server URL: never a path, query, or credentials. */
@@ -2473,6 +2511,20 @@ export function registerMcpServerHandlers(
     async (_event, request: StartMcpOAuthLoginRequest) => {
       if (request.plugin) {
         const pluginServer = await resolvePluginOAuthTarget(request.plugin);
+        const probeInputs = pluginMcpOAuthProbeInputs(
+          pluginServer.identity,
+          pluginServer.rawValue,
+        );
+        if (
+          await connectNeedsNoSignIn(
+            probeInputs,
+            pluginServer.definition,
+            pluginServer.config,
+          )
+        ) {
+          await refreshProjectedPortalMcpServers();
+          return { status: 'completed' };
+        }
         const proxyPort = await ensureMcpProxyStartedForOAuth();
         const result = await startMcpOAuthFlow({
           definition: pluginServer.definition,
@@ -2517,6 +2569,11 @@ export function registerMcpServerHandlers(
         throw new Error('OAuth is only supported for HTTP MCP servers.');
       }
 
+      const probeInputs = standaloneMcpOAuthProbeInputs(definition, config);
+      if (await connectNeedsNoSignIn(probeInputs, definition, config)) {
+        await refreshProjectedPortalMcpServers();
+        return { status: 'completed' };
+      }
       const proxyPort = await ensureMcpProxyStartedForOAuth();
       const definitionForOAuth: McpServerDefinitionData = definition.oauth
         ? definition

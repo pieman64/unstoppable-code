@@ -80,6 +80,8 @@ function defaultConfig() {
     blockedModelIds: [],
     reviewedModelIds: [],
     enforceMemberModelGateway: false,
+    modelGatewayDisplayName: null,
+    modelGatewayRevision: 'mock-gateway-1',
     modelGatewayBaseUrl: null,
     modelGatewayModels: [],
     modelGatewayEnforced: false,
@@ -325,6 +327,7 @@ export function bootstrapPayload(state, organizationId) {
       image: state.profile.image,
     },
     account: {
+      aiGatewayEnabled: state.aiGatewayEnabled,
       billingEnabled: true,
       digestsEnabled: true,
       // `hostedSettings.integrationsEnabled: false` models a server with the
@@ -342,7 +345,13 @@ export function bootstrapPayload(state, organizationId) {
         isPersonal: entry.isPersonal,
       };
     }),
-    organization: org === undefined ? null : organizationBootstrap(org),
+    organization:
+      org === undefined
+        ? null
+        : {
+            ...organizationBootstrap(org),
+            aiGatewayEnabled: state.aiGatewayEnabled,
+          },
   };
 }
 
@@ -881,7 +890,10 @@ const ACCOUNT_PAGES = new Set([
   'digests',
   'notifications',
   'integrations',
+  'plugins',
+  'mcp',
   'security',
+  'ai-gateway',
   'billing',
   'labs',
   'appearance',
@@ -960,6 +972,8 @@ export const HOSTED_SETTINGS_PAGE_DATA_ROUTES = Object.freeze([
   { scope: 'account', page: 'digests', digestId: HOSTED_SETTINGS_DIGEST_ID },
   { scope: 'account', page: 'notifications' },
   { scope: 'account', page: 'integrations' },
+  { scope: 'account', page: 'plugins' },
+  { scope: 'account', page: 'mcp' },
   { scope: 'account', page: 'security' },
   { scope: 'account', page: 'billing' },
   { scope: 'account', page: 'billing', invoiceId: HOSTED_SETTINGS_INVOICE_ID },
@@ -1009,6 +1023,15 @@ function forbidden() {
 
 function accountPageData(state, kind, route) {
   switch (kind) {
+    case 'account.ai-gateway':
+      return state.aiGatewayEnabled
+        ? {
+            data: {
+              organizationId: HOSTED_SETTINGS_ORG_IDS.personal,
+              gateway: clone(state.personalGateway),
+            },
+          }
+        : notFound();
     case 'account.account':
       return {
         data: {
@@ -1051,6 +1074,10 @@ function accountPageData(state, kind, route) {
       return { data: {} };
     // Desktop opens Labs in its own section; the kind still loads like web's.
     case 'account.labs':
+      return { data: {} };
+    // Desktop opens these in its own sections; the kinds still load like web's.
+    case 'account.plugins':
+    case 'account.mcp':
       return { data: {} };
     // Desktop keeps Chat detail under Display; the kind still loads like web's.
     case 'account.appearance':
@@ -1120,7 +1147,17 @@ function organizationPageData(state, kind, route, feedItems) {
     case 'organization.groups':
     case 'organization.projects':
     case 'organization.settings':
-      return { data: teamPageData(state, org) };
+      if (
+        route.subtab === 'ai-gateway' &&
+        (!state.aiGatewayEnabled || !canEdit)
+      )
+        return notFound();
+      return {
+        data: {
+          ...teamPageData(state, org),
+          aiGatewayEnabled: state.aiGatewayEnabled,
+        },
+      };
     case 'organization.feedItem':
       if (!feedItems.some((item) => item.id === route.itemId))
         return notFound();

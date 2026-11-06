@@ -1658,12 +1658,6 @@ export function buildElectronEnv(
       delete env[key];
     }
   }
-  // Defense in depth — keep Datadog/RUM off regardless of the build shell.
-  for (const key of Object.keys(env)) {
-    if (key.startsWith('CANOPY_DATADOG_')) {
-      delete env[key];
-    }
-  }
   // Keep GitHub auth tests deterministic and avoid leaking the developer/CI
   // token source into tests that are asserting the no-env-override state.
   // Individual specs can still opt into the env-token path via `options.env`.

@@ -856,7 +856,7 @@ export function PipelineExecutionDetail({
       {!state && loadFailed && renderLoadFailed !== undefined ? (
         renderLoadFailed()
       ) : !state ? (
-        <div className="flex min-h-80 flex-1 items-center justify-center p-6 text-sm fg-secondary">
+        <div className="flex min-h-80 flex-1 items-center justify-center p-6 text-s fg-secondary">
           {loadFailed ? (
             'Failed to load execution details.'
           ) : (

@@ -1,3 +1,4 @@
+import { gatewayHostname } from '@canopy/protocol/model-gateway/discovery';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 import type { ModelGatewayModel } from '@canopy/protocol/canopy-server';
 import type { CanopyCloudAccountPublicState } from '../types';
@@ -6,6 +7,7 @@ import { normalizeUuid } from './workspace-owner';
 
 export interface OrganizationModelGateway {
   organizationName: string;
+  displayName?: string;
   baseUrl: string;
   enforced: boolean;
   promptCachePassthrough: boolean;
@@ -16,6 +18,9 @@ export interface OrganizationModelGateway {
 export interface ModelGatewayIndex {
   byOrganization: ReadonlyMap<string, OrganizationModelGateway>;
   accountUnavailable: boolean;
+  accountId?: string;
+  personalOrganizationId?: string;
+  personalUnavailable?: boolean;
 }
 
 export type ModelGatewayRequirement =
@@ -46,7 +51,12 @@ export function soleEnforcingOrganizationId(
 export function resolveModelGatewayIndex(
   account: Pick<
     CanopyCloudAccountPublicState,
-    'enforcedSettings' | 'modelGatewayEnforcementUnavailable'
+    | 'account'
+    | 'enforcedSettings'
+    | 'modelGatewayEnforcementUnavailable'
+    | 'personalOrganizationId'
+    | 'personalModelGateway'
+    | 'personalModelGatewayEnforcementUnavailable'
   > | null,
 ): ModelGatewayIndex {
   const byOrganization = new Map<string, OrganizationModelGateway>();
@@ -58,7 +68,8 @@ export function resolveModelGatewayIndex(
     );
     const previous = byOrganization.get(organizationId);
     byOrganization.set(organizationId, {
-      organizationName: setting.organizationName,
+      organizationName: gateway?.displayName ?? setting.organizationName,
+      displayName: gateway?.displayName,
       baseUrl: gateway?.baseUrl ?? previous?.baseUrl ?? '',
       enforced: gateway?.enforced ?? previous?.enforced ?? false,
       promptCachePassthrough:
@@ -71,7 +82,30 @@ export function resolveModelGatewayIndex(
         previous?.unavailable === true,
     });
   }
+  const personalOrganizationId =
+    normalizeUuid(account?.personalOrganizationId) ?? undefined;
+  const personalGateway = account?.personalModelGateway;
+  if (
+    personalGateway &&
+    personalOrganizationId &&
+    personalGateway.organizationId === personalOrganizationId
+  ) {
+    byOrganization.set(personalOrganizationId, {
+      organizationName:
+        personalGateway.displayName ?? gatewayHostname(personalGateway.baseUrl),
+      displayName: personalGateway.displayName,
+      baseUrl: personalGateway.baseUrl,
+      models: personalGateway.models,
+      enforced: personalGateway.enforced,
+      promptCachePassthrough: personalGateway.promptCachePassthrough,
+      unavailable: account?.personalModelGatewayEnforcementUnavailable === true,
+    });
+  }
   return {
+    accountId: account?.account?.id,
+    personalOrganizationId,
+    personalUnavailable:
+      account?.personalModelGatewayEnforcementUnavailable === true,
     byOrganization,
     accountUnavailable: account?.modelGatewayEnforcementUnavailable === true,
   };
@@ -81,7 +115,16 @@ export function gatewayRequirementForOwner(
   index: ModelGatewayIndex,
   owner?: WorkOwner,
 ): ModelGatewayRequirement {
-  if (owner?.kind === 'personal') return UNRESTRICTED;
+  if (owner?.kind === 'personal') {
+    if (index.personalUnavailable)
+      return { kind: 'blocked', reason: 'organization-unavailable' };
+    const gateway = index.personalOrganizationId
+      ? index.byOrganization.get(index.personalOrganizationId)
+      : undefined;
+    return gateway?.enforced && index.personalOrganizationId
+      ? { kind: 'enforced', organizationIds: [index.personalOrganizationId] }
+      : UNRESTRICTED;
+  }
   if (index.accountUnavailable) {
     return { kind: 'blocked', reason: 'account-unavailable' };
   }
@@ -100,6 +143,7 @@ export function gatewayRequirementForOwner(
   let unavailable = false;
   const enforcingOrganizationIds: string[] = [];
   index.byOrganization.forEach((gateway, organizationId) => {
+    if (organizationId === index.personalOrganizationId) return;
     if (gateway.unavailable) unavailable = true;
     if (gateway.enforced) enforcingOrganizationIds.push(organizationId);
   });
@@ -114,25 +158,27 @@ export function gatewayRequirementForOwner(
 export function isOrgGatewayRouteUsableByOwner(
   modelId: string | undefined,
   owner?: WorkOwner,
+  personalOrganizationId?: string,
 ): boolean {
   const routeOrganizationId = normalizeUuid(
     resolveOrgGatewayOrganizationId(modelId),
   );
   if (!routeOrganizationId) return true;
   if (!owner) return true;
-  return (
-    owner.kind === 'organization' &&
-    normalizeUuid(owner.organizationId) === routeOrganizationId
-  );
+  return owner.kind === 'personal'
+    ? normalizeUuid(personalOrganizationId) === routeOrganizationId
+    : normalizeUuid(owner.organizationId) === routeOrganizationId;
 }
 
 export function isModelExcludedByGatewayRequirement(
   modelId: string | undefined,
   requirement: ModelGatewayRequirement,
   owner?: WorkOwner,
+  personalOrganizationId?: string,
 ): boolean {
   if (!modelId || requirement.kind === 'blocked') return !!modelId;
-  if (!isOrgGatewayRouteUsableByOwner(modelId, owner)) return true;
+  if (!isOrgGatewayRouteUsableByOwner(modelId, owner, personalOrganizationId))
+    return true;
   if (requirement.kind === 'unrestricted') return false;
   const routeOrganizationId = normalizeUuid(
     resolveOrgGatewayOrganizationId(modelId),

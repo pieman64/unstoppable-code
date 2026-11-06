@@ -1,3 +1,4 @@
+import { normalizeModelGatewayBaseUrl } from '@canopy/protocol/canopy-server';
 import {
   MODEL_LIBRARY_PROTOCOL_HEADER,
   MODEL_LIBRARY_PROTOCOL_VERSION,
@@ -381,7 +382,7 @@ export async function buildBrokeredOrgGatewayClaudeEnv(
     !entry.organizationId ||
     !entry.baseUrl
   ) {
-    throw new Error('The organization gateway route is incomplete.');
+    throw new Error('The AI gateway route is incomplete.');
   }
   const organizationId = entry.organizationId;
   const route = await getCodexGatewayProxyService().registerRoute({
@@ -1058,7 +1059,7 @@ export interface ResolveAiCreditsRoutingOverrideOptions {
    * point for scheduled background work, and ECW-9091 removed the `off`-mode
    * short-circuit that used to make those calls no-ops for a user with no
    * native login. Without the opt-out, an automatic task can silently debit
-   * credits with no user action — for a guest on the 10-credits/day free drip,
+   * credits with no user action — for a guest whose only balance was a small free grant,
    * the worktree-summary scheduler could consume the whole allowance before the
    * first message is sent, so the new no-billing-source backstop then fires on
    * the chat the user actually cares about. A background task that fails is
@@ -1139,23 +1140,28 @@ export async function resolveOrgGatewayCredential(
     !entry.organizationId ||
     !entry.baseUrl
   ) {
-    throw new Error('The organization gateway route is incomplete.');
+    throw new Error('The AI gateway route is incomplete.');
   }
+  const account = await loadCanopyCloudAccount();
+  const ownerOrganizationId =
+    owner?.kind === 'personal'
+      ? account?.personalOrganizationId
+      : owner?.kind === 'organization'
+        ? owner.organizationId
+        : undefined;
   if (
-    owner?.kind !== 'organization' ||
-    owner.organizationId.toLowerCase() !== entry.organizationId.toLowerCase()
+    ownerOrganizationId?.toLowerCase() !== entry.organizationId.toLowerCase()
   ) {
-    throw new Error("This model belongs to another organization's gateway.");
+    throw new Error('This model belongs to another AI gateway.');
   }
   const credential = await loadModelGatewayCredential(entry.organizationId);
   if (
     !credential ||
-    credential.baseUrlAtSave !== entry.baseUrl ||
+    normalizeModelGatewayBaseUrl(credential.baseUrlAtSave) !==
+      normalizeModelGatewayBaseUrl(entry.baseUrl) ||
     credential.lastError
   ) {
-    throw new Error(
-      'Add a current organization gateway key in Accounts before sending.',
-    );
+    throw new Error('Add your AI gateway key in Providers before sending.');
   }
   return {
     baseUrl: entry.baseUrl,

@@ -33,7 +33,7 @@ const DESCRIPTION_PROSE_TONE_CLASS: Record<DescriptionMarkdownTone, string> = {
 
 const DESCRIPTION_PROSE_SIZE_CLASS: Record<DescriptionMarkdownSize, string> = {
   sm: 'prose-sm text-s',
-  base: 'prose-base text-base',
+  base: 'prose-base text-m',
 };
 
 /**

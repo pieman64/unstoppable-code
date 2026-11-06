@@ -1,6 +1,7 @@
 'use client';
 
 import {
+  useLayoutEffect,
   useRef,
   useState,
   type JSX,
@@ -48,6 +49,7 @@ import {
   type SidebarItemGroupKeyboardDragState,
 } from './sidebar-item-groups-model';
 import type { SidebarSortMode } from './sidebar-ordering';
+import { findSelectedPinHosts } from './sticky-selected-item';
 import {
   SIDEBAR_ROW_GAP_CLASS_NAMES,
   type SidebarListRowGap,
@@ -373,6 +375,142 @@ function DraggableGroupBlock(props: GroupBlockProps): JSX.Element {
   );
 }
 
+/** Opens a list's group editor from outside it, such as a pinned row copy. */
+export interface CodeSidebarItemGroupEditorHandle {
+  current:
+    | ((
+        groupId: string,
+        itemId: string,
+        pinSurface?: 'pin-top' | 'pin-bottom',
+      ) => void)
+    | null;
+}
+
+/** What a row's group menu reads; `onEdit` opens the list's one editor. */
+export interface CodeSidebarItemGroupMenuInput {
+  readonly blocks: readonly SidebarItemGroupBlock[];
+  readonly groups: readonly GroupData[];
+  readonly mode: SidebarSortMode;
+  readonly commands: CodeSidebarItemGroupCommands;
+  readonly unitLabel: SidebarItemGroupUnitLabel;
+  readonly canDragRow: (id: string) => boolean;
+  readonly isItemSelected?: (id: string) => boolean;
+  readonly selectionCount?: number;
+  readonly onError: (error: unknown) => void;
+  readonly onEdit: (groupId: string, itemId: string) => void;
+}
+
+/**
+ * A row's group entries. Exported so a pinned copy of the selected row offers
+ * the same entries as its flow row, built from the same render's blocks.
+ */
+export function codeSidebarItemGroupRowMenu(
+  {
+    blocks,
+    groups,
+    mode,
+    commands,
+    unitLabel,
+    canDragRow,
+    isItemSelected,
+    selectionCount,
+    onError,
+    onEdit: edit,
+  }: CodeSidebarItemGroupMenuInput,
+  block: SidebarItemGroupBlock,
+  id: string,
+): WorktreeMenuItem[] {
+  // Row menus list groups where the nav shows them; unrendered groups go last.
+  const navIndex = (id: string): number => {
+    const index = blocks.findIndex((block) => block.group?.id === id);
+    return index < 0 ? blocks.length : index;
+  };
+  const navGroups = [...groups].sort(
+    (left, right) => navIndex(left.id) - navIndex(right.id),
+  );
+  if (isItemSelected?.(id) === true && (selectionCount ?? 0) >= 2) {
+    // Every selected row in this list, movable or not.
+    const selectedUnits = blocks.flatMap((block) =>
+      block.units
+        .filter((unit) => isItemSelected(unit.rootId))
+        .map((unit) => ({ unit, block })),
+    );
+    // Groups belong to one project: a selection reaching past this list
+    // has no group every row can join, so it offers none.
+    if (selectedUnits.length !== selectionCount) return [];
+    // Pinned rows keep their own order and never join groups, and a row its
+    // host holds back from drag stays put, as for drag.
+    const movable = selectedUnits.filter(
+      ({ unit }) =>
+        unit.pinned !== true && unit.hidden !== true && canDragRow(unit.rootId),
+    );
+    const movableIds = movable.map(({ unit }) => unit.rootId);
+    const membershipOnly = mode !== 'manual';
+    // Rows already in the target stay where they are.
+    const moveAll = (groupId: string | null): void => {
+      const moving = movable
+        .filter(({ block }) => (block.group?.id ?? null) !== groupId)
+        .map(({ unit }) => unit.rootId);
+      for (const move of sidebarItemGroupMultiMoves(blocks, moving, {
+        groupId,
+        membershipOnly,
+      }))
+        commands.moveItem(move.itemId, move.drop);
+    };
+    return sidebarItemGroupBulkMenu({
+      groups: navGroups,
+      currentGroupIds: movable.map(({ block }) => block.group?.id),
+      onNewGroup: (): void => {
+        const [first, ...rest] = movableIds;
+        if (first === undefined) return;
+        void commands
+          .create(first)
+          .then((group): void => {
+            // The rest follow the first row into the new group, in order.
+            for (const move of sidebarItemGroupMultiMoves(blocks, rest, {
+              groupId: group.id,
+              ...(membershipOnly ? {} : { after: first }),
+              membershipOnly,
+            }))
+              commands.moveItem(move.itemId, move.drop);
+            // On a row in the new group: the right-clicked one may be pinned.
+            edit(group.id, first);
+          })
+          .catch(onError);
+      },
+      onMove: moveAll,
+      onRemove: (): void => moveAll(null),
+    });
+  }
+  return sidebarItemGroupRowMenu({
+    groups: navGroups,
+    currentGroupId: block.group?.id,
+    unitLabel,
+    eligible: block.units.find((unit) => unit.rootId === id)?.pinned !== true,
+    onNewGroup: (): void => {
+      void commands
+        .create(id)
+        .then((group): void => edit(group.id, id))
+        .catch(onError);
+    },
+    onMove: (groupId): void =>
+      commands.moveItem(id, {
+        groupId,
+        membershipOnly: mode !== 'manual',
+      }),
+    onEdit: (groupId): void => edit(groupId, id),
+    onToggle: (groupId): void => {
+      const group = groups.find((group) => group.id === groupId);
+      if (group) void commands.update(groupId, { collapsed: !group.collapsed });
+    },
+    onRemove: (): void =>
+      commands.moveItem(id, {
+        groupId: null,
+        membershipOnly: mode !== 'manual',
+      }),
+  });
+}
+
 export function CodeSidebarItemGroups({
   blocks: ownerBlocks,
   selectedItemId,
@@ -380,6 +518,7 @@ export function CodeSidebarItemGroups({
   onEditorChange,
   mode,
   commands,
+  editorHandle,
   renderRow,
   renderPreview,
   onCreate,
@@ -413,6 +552,8 @@ export function CodeSidebarItemGroups({
   groups: readonly GroupData[];
   mode: SidebarSortMode;
   commands?: CodeSidebarItemGroupCommands;
+  /** Receives this list's editor opener while it is mounted. */
+  editorHandle?: CodeSidebarItemGroupEditorHandle;
   renderRow: (
     id: string,
     menu: WorktreeMenuItem[],
@@ -691,115 +832,59 @@ export function CodeSidebarItemGroups({
       else commands?.moveGroup(active.id, next.drop);
     }
   };
+  // The pinned copy that opened the editor, if any: its flow row is inert
+  // while covered, so focus returns to the copy's menu button instead.
+  const editorPinSurface = useRef<'pin-top' | 'pin-bottom' | null>(null);
   const edit = (id: string, itemId: string): void => {
+    editorPinSurface.current = null;
     setEditorItemId(itemId);
     setEditorId(id);
   };
-  const editorGroup = groups.find((group) => group.id === editorId);
-  // Row menus list groups where the nav shows them; unrendered groups go last.
-  const navIndex = (id: string): number => {
-    const index = blocks.findIndex((block) => block.group?.id === id);
-    return index < 0 ? blocks.length : index;
-  };
-  const navGroups = [...groups].sort(
-    (left, right) => navIndex(left.id) - navIndex(right.id),
-  );
-  // Every selected row in this list, movable or not.
-  const selectedUnits =
-    isItemSelected === undefined
-      ? []
-      : blocks.flatMap((block) =>
-          block.units
-            .filter((unit) => isItemSelected(unit.rootId))
-            .map((unit) => ({ unit, block })),
-        );
-  const bulkMenuFor = (
-    groupCommands: CodeSidebarItemGroupCommands,
-  ): WorktreeMenuItem[] => {
-    // Groups belong to one project: a selection reaching past this list
-    // has no group every row can join, so it offers none.
-    if (selectedUnits.length !== selectionCount) return [];
-    // Pinned rows keep their own order and never join groups, and a row its
-    // host holds back from drag stays put, as for drag.
-    const movable = selectedUnits.filter(
-      ({ unit }) =>
-        unit.pinned !== true && unit.hidden !== true && canDragRow(unit.rootId),
-    );
-    const movableIds = movable.map(({ unit }) => unit.rootId);
-    const membershipOnly = mode !== 'manual';
-    // Rows already in the target stay where they are.
-    const moveAll = (groupId: string | null): void => {
-      const moving = movable
-        .filter(({ block }) => (block.group?.id ?? null) !== groupId)
-        .map(({ unit }) => unit.rootId);
-      for (const move of sidebarItemGroupMultiMoves(blocks, moving, {
-        groupId,
-        membershipOnly,
-      }))
-        groupCommands.moveItem(move.itemId, move.drop);
+  // `edit` only calls state setters, so one registration per handle holds.
+  useLayoutEffect(() => {
+    if (!editorHandle) return undefined;
+    editorHandle.current = (id, itemId, pinSurface): void => {
+      editorPinSurface.current = pinSurface ?? null;
+      setEditorItemId(itemId);
+      setEditorId(id);
     };
-    return sidebarItemGroupBulkMenu({
-      groups: navGroups,
-      currentGroupIds: movable.map(({ block }) => block.group?.id),
-      onNewGroup: (): void => {
-        const [first, ...rest] = movableIds;
-        if (first === undefined) return;
-        void groupCommands
-          .create(first)
-          .then((group): void => {
-            // The rest follow the first row into the new group, in order.
-            for (const move of sidebarItemGroupMultiMoves(blocks, rest, {
-              groupId: group.id,
-              ...(membershipOnly ? {} : { after: first }),
-              membershipOnly,
-            }))
-              groupCommands.moveItem(move.itemId, move.drop);
-            // On a row in the new group: the right-clicked one may be pinned.
-            edit(group.id, first);
-          })
-          .catch(onError);
-      },
-      onMove: moveAll,
-      onRemove: (): void => moveAll(null),
-    });
-  };
+    return (): void => {
+      editorHandle.current = null;
+    };
+  }, [editorHandle]);
+  // After every commit, so it wins over the flow row's ref callback.
+  useLayoutEffect(() => {
+    const surface = editorPinSurface.current;
+    if (editorId === null || surface === null) return;
+    const hosts = findSelectedPinHosts(rootRef.current);
+    const trigger = (
+      surface === 'pin-top' ? hosts?.topRow : hosts?.bottomRow
+    )?.querySelector<HTMLElement>('button[aria-haspopup="menu"]');
+    if (trigger) editorReturnFocusRef.current = trigger;
+  });
+  const editorGroup = groups.find((group) => group.id === editorId);
   const menuFor = (
     block: SidebarItemGroupBlock,
     id: string,
   ): WorktreeMenuItem[] =>
     commands === undefined
       ? []
-      : isItemSelected?.(id) === true && (selectionCount ?? 0) >= 2
-        ? bulkMenuFor(commands)
-        : sidebarItemGroupRowMenu({
-            groups: navGroups,
-            currentGroupId: block.group?.id,
+      : codeSidebarItemGroupRowMenu(
+          {
+            blocks,
+            groups,
+            mode,
+            commands,
             unitLabel,
-            eligible:
-              block.units.find((unit) => unit.rootId === id)?.pinned !== true,
-            onNewGroup: (): void => {
-              void commands
-                .create(id)
-                .then((group): void => edit(group.id, id))
-                .catch(onError);
-            },
-            onMove: (groupId): void =>
-              commands?.moveItem(id, {
-                groupId,
-                membershipOnly: mode !== 'manual',
-              }),
-            onEdit: (groupId): void => edit(groupId, id),
-            onToggle: (groupId): void => {
-              const group = groups.find((group) => group.id === groupId);
-              if (group)
-                void commands?.update(groupId, { collapsed: !group.collapsed });
-            },
-            onRemove: (): void =>
-              commands?.moveItem(id, {
-                groupId: null,
-                membershipOnly: mode !== 'manual',
-              }),
-          });
+            isItemSelected,
+            selectionCount,
+            canDragRow,
+            onError,
+            onEdit: edit,
+          },
+          block,
+          id,
+        );
   const renderUnit = (
     block: SidebarItemGroupBlock,
     unit: SidebarItemGroupBlock['units'][number],

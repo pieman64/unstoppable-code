@@ -3,6 +3,7 @@ export * from './daemon/publication';
 export * from './daemon/control-plane';
 export * from './daemon/leases';
 export * from './daemon/channels';
+export * from './daemon/owner-proof';
 export * from './filesystem/directory-reader';
 export * from './filesystem/entry-mutations';
 export * from './filesystem/entry-transfers';

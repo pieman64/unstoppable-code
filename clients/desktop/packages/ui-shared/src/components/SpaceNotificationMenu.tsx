@@ -2,12 +2,7 @@ import type { JSX, MouseEvent } from 'react';
 import { BellIcon, CheckIcon } from '../icons/AppIcons';
 import { LoadingSpinner } from './LoadingSpinner';
 import { LoadingIndicator } from './LoadingIndicatorStyle';
-import {
-  DropdownMenuDivider,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  DropdownMenuLabel,
-} from './DropdownMenu';
+import { DropdownMenuItem, DropdownMenuItemIcon } from './DropdownMenu';
 import { NestedMenuFlyout } from './NestedMenuFlyout';
 import { ErrorBanner } from './StatusBlocks';
 
@@ -154,23 +149,24 @@ export function SpaceNotificationMenuRowIcon({
 
 export interface SpaceNotificationMenuStatus {
   readonly tone: 'default' | 'failure';
-  readonly text: string;
+  /** Unset while `loading`: the shared loading copy stands in. */
+  readonly text?: string;
   /**
-   * The first read is still running. The line shows `text` under the `text`
-   * loading style, or a spinner in its place under `spinner`.
+   * The first read is still running. The line shows the loading copy under
+   * the `text` loading style, or a spinner under `spinner`.
    */
   readonly loading?: true;
 }
 
 /**
- * The one line under the heading: a first read, a failure, or why it is
+ * The status beside the choices: a first read, a failure, or why it is
  * read-only. A save in flight has none; its spinner sits in the row.
  */
 export function spaceNotificationMenuStatus(
   state: SpaceNotificationMenuState,
 ): SpaceNotificationMenuStatus | undefined {
   if (state.status === 'loading') {
-    return { tone: 'default', text: 'Loading…', loading: true };
+    return { tone: 'default', loading: true };
   }
   if (state.status === 'saving') return undefined;
   if (state.status === 'failed') {
@@ -201,90 +197,64 @@ export interface SpaceNotificationMenuItemsProps {
   readonly onSelect: (choice: SpaceNotificationMenuChoice) => void;
   /** Builds a test id from a suffix such as `-notify-mute`. */
   readonly testIdFor?: (suffix: string) => string | undefined;
-  readonly separatorBefore?: boolean;
-  /**
-   * `submenu` (early access) puts the choices in a "Notifications ›" flyout,
-   * one row among the menu's others, in place of a headed group.
-   */
-  readonly presentation?: 'group' | 'submenu';
 }
 
 /**
- * Notification choices for menus that render their own rows (the Work Entry
- * menu). The menu stays open on selection so the saved, pending, or failed
+ * The shared Notifications submenu for Work Entry menus. The menu stays
+ * open on selection so the saved, pending, or failed
  * outcome is visible where the choice was made.
  */
 export function SpaceNotificationMenuItems({
   state,
   onSelect,
   testIdFor,
-  separatorBefore = true,
-  presentation = 'group',
 }: SpaceNotificationMenuItemsProps): JSX.Element | null {
   if (spaceNotificationMenuUnavailable(state)) return null;
   const status = spaceNotificationMenuStatus(state);
-  const submenu = presentation === 'submenu';
   const group = (
-    <>
-      <div
-        role="group"
-        aria-label={SPACE_NOTIFICATION_MENU_HEADING}
-        aria-busy={state.status === 'loading' || state.status === 'saving'}
-        data-testid={testIdFor?.('-notify')}
-      >
-        {!submenu && (
-          <DropdownMenuLabel>
-            {SPACE_NOTIFICATION_MENU_HEADING}
-          </DropdownMenuLabel>
-        )}
-        {spaceNotificationMenuChoices(state).map((row) => (
-          <DropdownMenuItem
-            key={row.key}
-            role="menuitemradio"
-            aria-checked={row.checked}
-            aria-busy={row.pending ? true : undefined}
-            disabled={row.disabled}
-            title={row.description}
-            data-testid={testIdFor?.(`-${row.key}`)}
-            onClick={(event: MouseEvent<HTMLButtonElement>): void => {
-              event.stopPropagation();
-              if (row.selectable) onSelect(row.choice);
-            }}
-          >
-            <DropdownMenuItemIcon>
-              <SpaceNotificationMenuRowIcon row={row} />
-            </DropdownMenuItemIcon>
-            {row.label}
-          </DropdownMenuItem>
-        ))}
-        {status && (
-          <SpaceNotificationMenuStatusLine
-            status={status}
-            testId={testIdFor?.('-notify-status')}
-          />
-        )}
-      </div>
-    </>
+    <div
+      role="group"
+      aria-label={SPACE_NOTIFICATION_MENU_HEADING}
+      aria-busy={state.status === 'loading' || state.status === 'saving'}
+      data-testid={testIdFor?.('-notify')}
+    >
+      {spaceNotificationMenuChoices(state).map((row) => (
+        <DropdownMenuItem
+          key={row.key}
+          role="menuitemradio"
+          aria-checked={row.checked}
+          aria-busy={row.pending ? true : undefined}
+          disabled={row.disabled}
+          title={row.description}
+          data-testid={testIdFor?.(`-${row.key}`)}
+          onClick={(event: MouseEvent<HTMLButtonElement>): void => {
+            event.stopPropagation();
+            if (row.selectable) onSelect(row.choice);
+          }}
+        >
+          <DropdownMenuItemIcon>
+            <SpaceNotificationMenuRowIcon row={row} />
+          </DropdownMenuItemIcon>
+          {row.label}
+        </DropdownMenuItem>
+      ))}
+      {status && (
+        <SpaceNotificationMenuStatusLine
+          status={status}
+          testId={testIdFor?.('-notify-status')}
+        />
+      )}
+    </div>
   );
-  if (submenu) {
-    return (
-      <NestedMenuFlyout
-        label={SPACE_NOTIFICATION_MENU_HEADING}
-        leading={<BellIcon />}
-        triggerTestId={testIdFor?.('-notify-submenu') ?? 'notify-submenu'}
-        menuTestId={
-          testIdFor?.('-notify-submenu-menu') ?? 'notify-submenu-menu'
-        }
-      >
-        {group}
-      </NestedMenuFlyout>
-    );
-  }
   return (
-    <>
-      {separatorBefore && <DropdownMenuDivider />}
+    <NestedMenuFlyout
+      label={SPACE_NOTIFICATION_MENU_HEADING}
+      leading={<BellIcon />}
+      triggerTestId={testIdFor?.('-notify-submenu') ?? 'notify-submenu'}
+      menuTestId={testIdFor?.('-notify-submenu-menu') ?? 'notify-submenu-menu'}
+    >
       {group}
-    </>
+    </NestedMenuFlyout>
   );
 }
 
@@ -306,7 +276,7 @@ export function SpaceNotificationMenuStatusLine({
       data-testid={testId}
       className="px-2 py-1 text-xs font-normal fg-secondary"
     >
-      {status.loading ? <LoadingIndicator text={status.text} /> : status.text}
+      {status.loading ? <LoadingIndicator /> : status.text}
     </div>
   );
 }

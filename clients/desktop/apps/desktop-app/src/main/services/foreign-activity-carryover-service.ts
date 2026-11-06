@@ -784,7 +784,8 @@ export class ForeignActivityCarryoverService {
         );
         if (queued === undefined)
           throw new Error(FOREIGN_ACTIVITY_INACTIVE_ERROR);
-        cancelQueuedHookPipeline(queued.queueId);
+        if (!(await cancelQueuedHookPipeline(queued.queueId)))
+          throw new Error(FOREIGN_ACTIVITY_BUSY_ERROR);
       }
     } else if (target.source === 'script') {
       const { listTrackedShellScripts, stopTrackedShellScriptRun } =

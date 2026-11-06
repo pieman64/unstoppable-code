@@ -62,6 +62,36 @@ function archivedResult(
   };
 }
 
+/** A chat's summary as core.chat.turn.cancel and core.chat.question.respond return it; null when the chat is not open. */
+export function chatSummaryOf(
+  state: ChatStateSnapshot,
+  chatId: string,
+): TurnCancelResult | null {
+  const tab = state.tabsFile.tabs.find((item) => item.id === chatId);
+  if (!tab) return null;
+  const runtime = state.runtimeByChatId[chatId];
+  return {
+    chatId: tab.id,
+    workspaceId: state.projectId,
+    worktreeId: state.worktreeId,
+    title: chatDisplayLabel({
+      customTitle: tab.customTitle,
+      fallback: tab.title,
+    }),
+    // The state after this Stop: idle once settled, as for a turn
+    // already over; another turn may have started since.
+    state: listState(runtime?.status),
+    revision: state.revision,
+    ...(tab.providerType === undefined ? {} : { providerId: tab.providerType }),
+    ...(tab.model === undefined ? {} : { modelId: tab.model }),
+    createdAt: tab.createdAt,
+    updatedAt:
+      runtime?.lastActivityAt === undefined
+        ? tab.createdAt
+        : new Date(runtime.lastActivityAt).toISOString(),
+  };
+}
+
 /**
  * Exact-turn Stop (CAN-5485). A desktop turn is named by its user message id,
  * the id `core.chat.message.send` takes and the transcript's turn view returns.
@@ -125,30 +155,10 @@ export function createCoreChatTurnAdapter(
       const stopped = await host.stop(scope, params.turnId);
       // Read after the attempt either way, so the reply is never stale.
       state = await host.getState(scope);
-      const tab = state.tabsFile.tabs.find((item) => item.id === params.chatId);
-      if (!tab) throw notFound();
-      const runtime = state.runtimeByChatId[params.chatId];
+      const summary = chatSummaryOf(state, params.chatId);
+      if (!summary) throw notFound();
       return {
-        chatId: tab.id,
-        workspaceId: state.projectId,
-        worktreeId: state.worktreeId,
-        title: chatDisplayLabel({
-          customTitle: tab.customTitle,
-          fallback: tab.title,
-        }),
-        // The state after this Stop: idle once settled, as for a turn
-        // already over; another turn may have started since.
-        state: listState(runtime?.status),
-        revision: state.revision,
-        ...(tab.providerType === undefined
-          ? {}
-          : { providerId: tab.providerType }),
-        ...(tab.model === undefined ? {} : { modelId: tab.model }),
-        createdAt: tab.createdAt,
-        updatedAt:
-          runtime?.lastActivityAt === undefined
-            ? tab.createdAt
-            : new Date(runtime.lastActivityAt).toISOString(),
+        ...summary,
         ...(stopped?.resumableTurn
           ? { resumableTurn: stopped.resumableTurn }
           : {}),

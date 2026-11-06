@@ -300,7 +300,7 @@ function NeedsYouRow({
 
   const title = (
     <span
-      className={`min-w-0 truncate text-sm font-medium fg-primary ${titleClass}`}
+      className={`min-w-0 truncate text-s font-medium fg-primary ${titleClass}`}
     >
       {item.title}
     </span>

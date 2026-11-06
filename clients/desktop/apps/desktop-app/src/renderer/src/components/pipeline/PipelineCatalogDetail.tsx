@@ -143,7 +143,7 @@ export function PipelineCatalogDetail({
       </div>
 
       {pipeline.description && (
-        <p className="text-sm fg-secondary">{pipeline.description}</p>
+        <p className="text-s fg-secondary">{pipeline.description}</p>
       )}
 
       <div className="grid gap-4 border-t pt-4 sm:grid-cols-2">

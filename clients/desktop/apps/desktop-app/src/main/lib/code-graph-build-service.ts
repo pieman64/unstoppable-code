@@ -17,7 +17,6 @@ import {
   clearCodeGraphWorktreeFingerprintCache,
   readCodeGraphWorktreeCompletion,
 } from './code-graph-worktree-fingerprint';
-import { startCodeGraphGenerationTelemetry } from './code-graph-telemetry';
 import { recordCodeGraphGenerationReport } from './code-graph-generation-report';
 import {
   CODE_GRAPH_UNAVAILABLE_MESSAGE,
@@ -35,8 +34,8 @@ import { resolveWorktreeCodeGraphRepositories } from './worktree-repo-entries';
 
 // Worktree graph generation lives in `@canopy/code-graph/host`. This module
 // composes it for Electron main: desktop paths and availability, seeds from
-// the published base graphs, the desktop schedulers, and Datadog telemetry
-// with local build diagnostics.
+// the published base graphs, the desktop schedulers, and local build
+// diagnostics.
 
 export { worktreeQueuePriority } from '@canopy/code-graph/host/worktree-build-service';
 
@@ -105,21 +104,10 @@ const service = createCodeGraphWorktreeBuildService({
     at: (key) => codeGraphFirstRequestedAt(key),
   },
   // The same report the daemon returns with its answer (CAN-5627).
-  observe: ({ projectId, worktreeId, trigger }) => {
-    const telemetry = startCodeGraphGenerationTelemetry({
-      operationSeed: `${projectId}/${worktreeId}`,
-      scope: 'worktree',
-      trigger,
-    });
-    return createCodeGraphGenerationReporter(trigger, (report) =>
-      recordCodeGraphGenerationReport({
-        projectId,
-        worktreeId,
-        report,
-        telemetry,
-      }),
-    );
-  },
+  observe: ({ projectId, worktreeId, trigger }) =>
+    createCodeGraphGenerationReporter(trigger, (report) =>
+      recordCodeGraphGenerationReport({ projectId, worktreeId, report }),
+    ),
 });
 
 export function runWorktreeCodeGraphBuild(input: {

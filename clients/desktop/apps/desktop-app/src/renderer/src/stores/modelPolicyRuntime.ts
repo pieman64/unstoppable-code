@@ -93,7 +93,18 @@ function sameOwner(
  */
 function affordanceRequirement(
   requirement: ModelGatewayRequirement,
+  owner: WorkOwner | undefined,
 ): ModelGatewayRequirement {
+  if (
+    requirement.kind === 'blocked' &&
+    owner?.kind === 'personal' &&
+    currentGatewayIndex.personalOrganizationId
+  ) {
+    return {
+      kind: 'enforced',
+      organizationIds: [currentGatewayIndex.personalOrganizationId],
+    };
+  }
   return requirement.kind === 'blocked' ? UNRESTRICTED : requirement;
 }
 
@@ -104,6 +115,7 @@ function recomputeOwnerFacts(): void {
   );
   currentGatewayRequirement = affordanceRequirement(
     gatewayRequirementForOwner(currentGatewayIndex, currentActiveOwner),
+    currentActiveOwner,
   );
 }
 
@@ -222,6 +234,7 @@ export function getRendererModelGatewayRequirementForOwner(
 ): ModelGatewayRequirement {
   return affordanceRequirement(
     gatewayRequirementForOwner(currentGatewayIndex, owner),
+    owner,
   );
 }
 
@@ -241,6 +254,7 @@ export function isRendererModelExcludedByGateway(
     modelId,
     currentGatewayRequirement,
     currentActiveOwner,
+    currentGatewayIndex.personalOrganizationId,
   );
 }
 

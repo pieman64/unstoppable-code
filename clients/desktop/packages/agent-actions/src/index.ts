@@ -417,3 +417,10 @@ export type {
   AgentCapabilityPackagePort,
   AgentCapabilityPackageAnalysisResult,
 } from './port/capability-package-port';
+
+export type { AiGatewayAction } from './families/settings/ai-gateway';
+
+export {
+  aiGatewayActionSchema,
+  aiGatewayDispatchJsonSchema,
+} from './families/settings/ai-gateway';

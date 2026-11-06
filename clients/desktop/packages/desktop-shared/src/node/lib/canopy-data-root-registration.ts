@@ -13,3 +13,15 @@ export function registerCanopyDataRootResolver(resolver: () => string): void {
 export function registeredCanopyDataRootResolver(): (() => string) | undefined {
   return registered;
 }
+
+let secure: (() => string) | undefined;
+
+export function registerCanopySecureRootResolver(resolver: () => string): void {
+  secure = resolver;
+}
+
+export function registeredCanopySecureRootResolver():
+  | (() => string)
+  | undefined {
+  return secure;
+}

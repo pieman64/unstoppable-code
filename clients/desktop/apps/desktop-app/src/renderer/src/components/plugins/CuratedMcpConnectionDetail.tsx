@@ -126,6 +126,8 @@ type CuratedMcpConnectionDetailProps = McpConnectionSource & {
    * the catalog provides an app connection path.
    */
   providerConnections?: ReactNode;
+  /** The installed item's Status, under the server's name. */
+  statusContent?: ReactNode;
   /**
    * Host-owned primary, such as the shared Try it / Install CTA (CAN-4359).
    * When present it replaces the internal Add/Connect primary; the move to
@@ -231,6 +233,7 @@ export function CuratedMcpConnectionDetail(
     return (
       <ProviderOnlyConnectionDetail
         entry={props.entry}
+        statusContent={props.statusContent}
         foldedPlugin={props.foldedPlugin}
         installFoldedPluginRequest={props.installFoldedPluginRequest ?? 0}
         providerConnections={props.providerConnections}
@@ -248,12 +251,14 @@ export function CuratedMcpConnectionDetail(
  */
 function ProviderOnlyConnectionDetail({
   entry,
+  statusContent,
   foldedPlugin,
   installFoldedPluginRequest,
   providerConnections,
   renderPrimaryAction,
 }: {
   entry: CuratedMcpServerEntry;
+  statusContent: ReactNode;
   foldedPlugin: UnifiedEntryFoldedPlugin | undefined;
   installFoldedPluginRequest: number;
   providerConnections: ReactNode;
@@ -288,6 +293,7 @@ function ProviderOnlyConnectionDetail({
       <CuratedDetail
         entry={entry}
         installedServerId={null}
+        statusContent={statusContent}
         routes={{
           others: (
             <>
@@ -370,6 +376,7 @@ function AppMcpConnectionDetail({
   onServersChanged,
   onEditorOpenChange,
   onDeleted,
+  statusContent,
 }: CuratedMcpConnectionDetailProps): JSX.Element {
   // The cloud account never connects a desktop-only server (REG-3035), so an
   // account connection made before it was marked never backs this card: no
@@ -815,14 +822,8 @@ function AppMcpConnectionDetail({
       startingErrorRevision.current = fresh?.authErrorRevision;
       statusGeneration.current += 1;
       setStatus(undefined);
-      if (!current.definition.oauth && fresh?.authStatus === 'not_configured') {
-        await refresh();
-        return;
-      }
-      if (!current.definition.oauth && !fresh) {
-        await refresh();
-        return;
-      }
+      // Explicit Connect also discovers an unknown HTTP requirement. The
+      // handler ends no-auth discovery without claiming a healthy connection.
       await start({
         serverId: current.definition.id,
         configId: config.id,
@@ -1086,8 +1087,44 @@ function AppMcpConnectionDetail({
                 }
               : undefined
           }
+          statusContent={statusContent}
+          renderManagement={
+            server || accountConnection
+              ? (tools): ReactNode => (
+                  <div className="max-w-2xl">
+                    <DesktopMcpManagementSections
+                      key={accountConnection?.id ?? server?.definition.id}
+                      server={accountConnection ? null : server}
+                      status={status}
+                      connection={accountConnection}
+                      row={localServer}
+                      actions={accountActions}
+                      accountEnabled={accountConnectionsEnabled}
+                      busy={
+                        saving ||
+                        accountPending ||
+                        oauth.pending ||
+                        editorOpen ||
+                        moveEditorOpen
+                      }
+                      onChanged={async (): Promise<void> => {
+                        await onServersChanged();
+                        await refresh();
+                      }}
+                      onDeleted={onDeleted}
+                      onMoveToDevice={(connection): void => {
+                        setMoveConnection(connection);
+                        setMoveEditorOpen(true);
+                      }}
+                      onBusyChange={setManagementBusy}
+                      tools={tools}
+                    />
+                  </div>
+                )
+              : undefined
+          }
           connectionContent={
-            <div className="max-w-2xl space-y-5">
+            <div className="max-w-2xl">
               <PluginAccountConnection
                 headingLevel={providerConnections ? 4 : 3}
                 status={connection}
@@ -1184,34 +1221,6 @@ function AppMcpConnectionDetail({
                   />
                 )}
               </PluginAccountConnection>
-              {(server || accountConnection) && (
-                <DesktopMcpManagementSections
-                  key={accountConnection?.id ?? server?.definition.id}
-                  server={accountConnection ? null : server}
-                  status={status}
-                  connection={accountConnection}
-                  row={localServer}
-                  actions={accountActions}
-                  accountEnabled={accountConnectionsEnabled}
-                  busy={
-                    saving ||
-                    accountPending ||
-                    oauth.pending ||
-                    editorOpen ||
-                    moveEditorOpen
-                  }
-                  onChanged={async (): Promise<void> => {
-                    await onServersChanged();
-                    await refresh();
-                  }}
-                  onDeleted={onDeleted}
-                  onMoveToDevice={(connection): void => {
-                    setMoveConnection(connection);
-                    setMoveEditorOpen(true);
-                  }}
-                  onBusyChange={setManagementBusy}
-                />
-              )}
             </div>
           }
         />

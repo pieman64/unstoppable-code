@@ -74,15 +74,6 @@ import {
   retireCodeGraphBaseVariants,
   withCodeGraphBaseVariantLock,
 } from './code-graph-base-store';
-import {
-  codeGraphGenerationFailureReason,
-  completeCodeGraphGenerationTelemetry,
-  failCodeGraphGenerationTelemetry,
-  flushCodeGraphRefreshTelemetry,
-  startCodeGraphGenerationTelemetry,
-  type CodeGraphGenerationFailureReason,
-  type CodeGraphGenerationFailureStage,
-} from './code-graph-telemetry';
 
 export interface DesiredBaseRepository {
   repoId: string;
@@ -154,13 +145,6 @@ const MAINTENANCE_START_DELAY_MS = 10_000;
 
 function roundMs(value: number): number {
   return Math.round(Math.max(0, value) * 10) / 10;
-}
-
-function elapsedSince(timestamp: string): number | undefined {
-  const timestampMs = Date.parse(timestamp);
-  return Number.isFinite(timestampMs)
-    ? Math.max(0, Date.now() - timestampMs)
-    : undefined;
 }
 
 function snapshotRoot(fingerprint: string): string {
@@ -419,17 +403,7 @@ async function prepareWorkspaceCustomLanguages(
       );
     }
     return prepared;
-  } catch (error) {
-    const telemetry = startCodeGraphGenerationTelemetry({
-      operationSeed: `custom-languages:${workspace.workspaceId}`,
-      scope: 'base',
-      trigger: 'custom-language-snapshot',
-      repositoryCount: workspace.repositories.length,
-    });
-    failCodeGraphGenerationTelemetry(telemetry, {
-      stage: 'custom-language-snapshot',
-      reason: codeGraphGenerationFailureReason(error),
-    });
+  } catch {
     return null;
   } finally {
     if (
@@ -676,7 +650,6 @@ async function maintainBase(
   const enabledOwners = (): string[] =>
     availableOwnerWorkspaceIds(Array.from(activeOwners));
   trackActiveBaseKey(canonicalRepoRoot, runnerKey);
-  let deferredFailureStage: CodeGraphGenerationFailureStage = 'shadow-refresh';
   recordRealisticStartupPerformanceEvent(
     'startup:code-graph-base:repo-started',
     {
@@ -697,7 +670,6 @@ async function maintainBase(
       signal: shadowPreparationController.signal,
     },
     async (shadow) => {
-      deferredFailureStage = 'seed-preparation';
       if (
         stopped ||
         retiringRepoRoots.has(shadow.repoPath) ||
@@ -773,24 +745,6 @@ async function maintainBase(
         'startup:code-graph-base:worker-started',
         { mode },
       );
-      const telemetry = startCodeGraphGenerationTelemetry({
-        operationSeed: runnerKey,
-        scope: 'base',
-        trigger: 'shadow-maintenance',
-        repositoryCount: 1,
-        repositoryRole:
-          repository.repoId === WORKSPACE_ROOT_REPO_ID
-            ? 'workspace-root'
-            : 'child',
-        mode,
-        customLanguagesConfigured:
-          customLanguages.fingerprint !==
-          CODE_GRAPH_NO_CUSTOM_LANGUAGES_FINGERPRINT,
-        priorGenerationAgeMs:
-          published === null
-            ? undefined
-            : elapsedSince(published.manifest.publishedAt),
-      });
       const trigger =
         options?.summaryProjectionRepair === true
           ? 'summary-projection-repair'
@@ -803,7 +757,7 @@ async function maintainBase(
         outcome: 'success' | 'failure',
         extra: Partial<CodeGraphBuildDiagnosticDetail> = {},
       ): void => {
-        // Local diagnostic for this base build, beside the Datadog lifecycle.
+        // Local diagnostic for this base build.
         recordCodeGraphBuildDiagnostic({
           projectId: enabledOwners()[0] ?? ownerWorkspaceIds[0] ?? '',
           worktreeId: '',
@@ -835,11 +789,7 @@ async function maintainBase(
             seedCopyMs = performance.now() - copyStartedAt;
           }
         },
-      ).catch((error: unknown) => {
-        failCodeGraphGenerationTelemetry(telemetry, {
-          stage: 'seed-preparation',
-          reason: codeGraphGenerationFailureReason(error),
-        });
+      ).catch(() => {
         recordBaseBuild('failure', { failureStage: 'seed-preparation' });
         return null;
       });
@@ -850,8 +800,7 @@ async function maintainBase(
           message: 'Failed to prepare the published graph for updating.',
         };
       }
-      let failureStage: CodeGraphGenerationFailureStage = 'worker-build';
-      let failureReason: CodeGraphGenerationFailureReason | undefined;
+      let failureStage: 'worker-build' | 'publication' = 'worker-build';
       try {
         if (enabledOwners().length === 0) {
           throw new CodeGraphWorkerBuildError(
@@ -900,11 +849,9 @@ async function maintainBase(
           buildAttemptId = buildHandle.attemptId ?? undefined;
         }
         if (!response.ok) {
-          failureReason = 'worker-response';
           throw new Error(response.message);
         }
         if (response.baseFinalized !== true) {
-          failureReason = 'worker-response';
           throw new Error(
             'The code graph worker did not finalize the base for publication.',
           );
@@ -938,10 +885,6 @@ async function maintainBase(
             installMs = performance.now() - installStartedAt;
           }
         });
-        completeCodeGraphGenerationTelemetry(telemetry, {
-          result: response.result,
-          generationPublished: true,
-        });
         recordBaseBuild('success', {
           ...codeGraphBuildResultDetail(response.result),
           installMs: roundMs(installMs),
@@ -951,10 +894,6 @@ async function maintainBase(
         await rm(staging.stagingDir, { recursive: true, force: true }).catch(
           () => undefined,
         );
-        failCodeGraphGenerationTelemetry(telemetry, {
-          stage: failureStage,
-          reason: failureReason ?? codeGraphGenerationFailureReason(error),
-        });
         recordBaseBuild('failure', { failureStage });
         return {
           repoId: repository.repoId,
@@ -970,20 +909,6 @@ async function maintainBase(
       }
     },
   ).catch((error: unknown) => {
-    const telemetry = startCodeGraphGenerationTelemetry({
-      operationSeed: runnerKey,
-      scope: 'base',
-      trigger: 'shadow-maintenance',
-      repositoryCount: 1,
-      repositoryRole:
-        repository.repoId === WORKSPACE_ROOT_REPO_ID
-          ? 'workspace-root'
-          : 'child',
-    });
-    failCodeGraphGenerationTelemetry(telemetry, {
-      stage: deferredFailureStage,
-      reason: codeGraphGenerationFailureReason(error),
-    });
     return {
       repoId: repository.repoId,
       ok: false,
@@ -1512,9 +1437,6 @@ export async function shutdownCodeGraphBaseManager(): Promise<void> {
   activeShadowPreparationControllers.clear();
   activeBaseKeysByRepo.clear();
   retiringRepoRoots.clear();
-  // The app flushes the Datadog transport after code-graph teardown. Emit any
-  // partial aggregate window now so the final refresh decisions are included.
-  flushCodeGraphRefreshTelemetry();
   started = false;
 }
 

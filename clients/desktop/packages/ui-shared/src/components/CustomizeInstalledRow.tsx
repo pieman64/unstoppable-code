@@ -1,4 +1,6 @@
 import type { ComponentType, JSX, MouseEvent, ReactNode } from 'react';
+import type { UnifiedEntryPlacement } from '../lib/unified-plugin-entry';
+import { mcpPlacementLabel } from '../lib/mcp-row-health';
 import { formatDateOrEmpty } from '../lib/format-date';
 import { ClaudeLogo, CodexLogo } from '../icons';
 import { PersonIcon } from '../icons/AppIcons';
@@ -39,8 +41,9 @@ function compactMetadata(entry: UnifiedPluginEntry): {
       entry.installedFrom?.ownerName?.trim() ||
       entry.authorName?.trim();
   const catalog = entry.sourceLabel?.trim();
-  const source =
-    entry.builtIn === true || entry.origin === 'built-in'
+  const source = entry.installedVia
+    ? `Installed via ${entry.installedVia.name}`
+    : entry.builtIn === true || entry.origin === 'built-in'
       ? 'Built-in'
       : own
         ? 'You'
@@ -267,6 +270,12 @@ export interface CustomizeInstalledRowProps {
   readonly values?: ReactNode;
   /** Visible row actions such as Update. */
   readonly actions?: ReactNode;
+  /** Replaces the attention chip and connection badge on an MCP row. */
+  readonly health?: ReactNode;
+  /** An attention action kept outside the primary row control. */
+  readonly inlineAction?: ReactNode;
+  /** Where an MCP row is saved; replaces the surface icon. */
+  readonly placement?: UnifiedEntryPlacement;
   /**
    * Starts sign-in from the sign-in or attention chip. Omit when the row has
    * nothing to connect; the chip is then plain text.
@@ -343,6 +352,9 @@ export function CustomizeInstalledRow({
   status,
   values,
   actions,
+  health,
+  inlineAction,
+  placement,
   onConnect,
   connectName,
   dimmed = false,
@@ -350,6 +362,7 @@ export function CustomizeInstalledRow({
 }: CustomizeInstalledRowProps): JSX.Element {
   const domId = customizeRowDomId(sectionId, entry.id);
   const metadata = compactMetadata(entry);
+  const compactMcp = health !== undefined || entry.installedVia !== undefined;
   // Only real pending sign-ins are counted (`pendingSignIns`, set by the
   // entry projection); any other problem keeps `Needs attention`. A plugin
   // counts the sign-ins its bundled servers wait for. The host decides what
@@ -407,14 +420,34 @@ export function CustomizeInstalledRow({
               dataTestId={`customize-row-type-${entry.id}`}
             />
           )}
-          {entry.surface && (
+          {placement !== undefined && placement !== 'account' && (
+            <EntrySurfaceIcon
+              surface="desktop"
+              label={mcpPlacementLabel('desktop')}
+              testId={`customize-row-placement-${entry.id}`}
+            />
+          )}
+          {placement !== undefined && placement !== 'desktop' && (
+            <EntrySurfaceIcon
+              surface="cloud"
+              label={mcpPlacementLabel('account')}
+              testId={`customize-row-placement-cloud-${entry.id}`}
+            />
+          )}
+          {placement === undefined && entry.surface && (
             <EntrySurfaceIcon
               surface={entry.surface}
               testId={`plugins-surface-${entry.id}`}
             />
           )}
         </span>
-        <CompactMetadata entry={entry} metadata={metadata} />
+        {health !== undefined ? (
+          <span className="mt-0.5 flex h-4 min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap text-xs fg-tertiary">
+            {health}
+          </span>
+        ) : (
+          <CompactMetadata entry={entry} metadata={metadata} />
+        )}
       </span>
     </span>
   );
@@ -424,8 +457,8 @@ export function CustomizeInstalledRow({
     'data-marketplace-entry': 'true',
     'data-testid': primaryTestId ?? `customize-row-${entry.id}`,
     'data-selected': selected ? 'true' : 'false',
-    // Preserve the name floor; the trailing group wraps within the remaining space.
-    className: `focus-ring flex min-w-32 flex-1 items-center gap-3 rounded-xl px-4 py-2.5 text-left pointer-coarse:min-h-11 ${
+    // MCP names yield width to the controls rather than moving them below.
+    className: `focus-ring flex flex-1 items-center gap-3 rounded-xl py-2.5 text-left pointer-coarse:min-h-11 ${compactMcp ? 'min-w-0 pl-4 pr-0' : 'min-w-32 px-4'} ${
       selected ? 'bg-selected' : ''
     }`,
   };
@@ -445,7 +478,7 @@ export function CustomizeInstalledRow({
     <li
       data-testid={`customize-${sectionId}-row-${entry.id}`}
       data-dimmed={dimmed ? 'true' : undefined}
-      className="group/skill-row relative -ml-4 flex min-w-0 flex-wrap items-center gap-2 rounded-xl pr-4 transition-colors hover:bg-subtle"
+      className={`group/skill-row relative -ml-4 flex min-w-0 ${compactMcp ? 'flex-nowrap' : 'flex-wrap'} items-center gap-2 rounded-xl pr-4 transition-colors hover:bg-subtle`}
     >
       {href !== undefined ? (
         <a {...primaryProps} href={href} onClick={onLinkClick}>
@@ -462,8 +495,12 @@ export function CustomizeInstalledRow({
       >
         {metadata.tooltip}
       </span>
-      <div className="ml-auto flex min-w-min max-w-full flex-wrap items-center justify-end gap-2 empty:hidden">
-        {attentionLabel !== undefined &&
+      <div
+        data-testid={`customize-row-controls-${entry.id}`}
+        className={`ml-auto flex min-w-min max-w-full items-center justify-end empty:hidden ${compactMcp ? 'shrink-0 flex-nowrap gap-2' : 'flex-wrap gap-2'}`}
+      >
+        {health === undefined &&
+          attentionLabel !== undefined &&
           (onConnect ? (
             <Button
               variant="link"
@@ -487,7 +524,9 @@ export function CustomizeInstalledRow({
           never checked shows nothing rather than a "Not checked" chip. An
           attention marker already says a sign-in is missing, so Auth
           required is not repeated beside it. */}
-        {entry.connection &&
+        {inlineAction}
+        {health === undefined &&
+          entry.connection &&
           entry.connection.status !== 'unknown' &&
           !(
             attentionLabel !== undefined &&
@@ -503,7 +542,8 @@ export function CustomizeInstalledRow({
             />
           )}
         {values}
-        {status ?? <span className="w-36 shrink-0" aria-hidden />}
+        {status ??
+          (!compactMcp && <span className="w-36 shrink-0" aria-hidden />)}
         <span className="flex w-7 shrink-0 items-center justify-end pointer-coarse:w-11">
           {actions}
         </span>

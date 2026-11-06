@@ -46,7 +46,11 @@ let socketPath: string;
 let crashed: CanopyStartupProcessInspection;
 let descriptorOwner: PlatformProcessInspection;
 beforeEach(async () => {
-  dataRoot = await realpath(await mkdtemp(join(tmpdir(), 'c5d-')));
+  dataRoot = await realpath(
+    await mkdtemp(
+      join(process.platform === 'win32' ? tmpdir() : '/tmp', 'c5d-'),
+    ),
+  );
   await mkdir(join(dataRoot, 'runtime'), { mode: 0o700 });
   crashed = { kind: 'dead' };
   descriptorOwner = { state: 'absent' };

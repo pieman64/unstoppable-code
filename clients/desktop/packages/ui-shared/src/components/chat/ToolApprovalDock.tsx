@@ -30,6 +30,7 @@ import {
   type ToolApprovalCardHandle,
 } from './ToolApprovalCard';
 import { approvalAnnouncementText } from './approval-content-preview';
+import { SecretInputApprovalCard } from './SecretInputApprovalCard';
 
 /** The approval a dock displays, for hosts that report UI state. */
 export interface ToolApprovalDockDisplayed {
@@ -62,6 +63,15 @@ export interface ToolApprovalDockProps {
    * that owned focus is answered. The host declines when it is hidden.
    */
   focusComposer?: () => void;
+  /**
+   * Allows a secret-input approval with its secret, through the host's
+   * dedicated channel. Without it such an approval can only be denied.
+   */
+  onRespondSecretInput?: (
+    requestId: string,
+    bindingId: string,
+    secret: string,
+  ) => Promise<void>;
   /** Reports the displayed approval whenever it changes. */
   onDisplayedChange?: (displayed: ToolApprovalDockDisplayed | null) => void;
   /** Card capabilities; see `ToolApprovalCardProps`. */
@@ -216,6 +226,7 @@ export const ToolApprovalDock = memo(function ToolApprovalDock({
   chatKey,
   pending,
   onRespond,
+  onRespondSecretInput,
   canTakeFocus,
   focusComposer,
   onDisplayedChange,
@@ -406,17 +417,27 @@ export const ToolApprovalDock = memo(function ToolApprovalDock({
               </div>
             </div>
           )}
-          <ToolApprovalCard
-            key={current.requestId}
-            pending={current}
-            onRespond={onRespond}
-            focusHandleRef={cardHandleRef}
-            ruleScopes={ruleScopes}
-            denyReason={denyReason}
-            denyAndStop={denyAndStop}
-            reasonMaxLength={reasonMaxLength}
-            readOnlyHint={readOnlyHint}
-          />
+          {current.secretInput ? (
+            <SecretInputApprovalCard
+              key={current.requestId}
+              pending={{ ...current, secretInput: current.secretInput }}
+              onRespond={onRespond}
+              onRespondSecretInput={onRespondSecretInput}
+              focusHandleRef={cardHandleRef}
+            />
+          ) : (
+            <ToolApprovalCard
+              key={current.requestId}
+              pending={current}
+              onRespond={onRespond}
+              focusHandleRef={cardHandleRef}
+              ruleScopes={ruleScopes}
+              denyReason={denyReason}
+              denyAndStop={denyAndStop}
+              reasonMaxLength={reasonMaxLength}
+              readOnlyHint={readOnlyHint}
+            />
+          )}
         </div>
       )}
     </div>

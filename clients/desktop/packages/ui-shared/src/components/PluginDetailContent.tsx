@@ -35,7 +35,7 @@ import {
   PluginHarnessConnections,
   type PluginHarnessConnectionRow,
 } from './PluginHarnessConnections';
-import { ChevronDownIcon, ChevronLeftMediumIcon } from '../icons/AppIcons';
+import { ChevronLeftMediumIcon } from '../icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import { mcpEndpointKey } from '../lib/mcp-endpoint-key';
 import type { UnifiedEntryBundledServerRow } from '../lib/unified-plugin-entry';
@@ -456,27 +456,23 @@ function ComponentDescription({
   name: string;
   description?: string;
 }): JSX.Element {
+  const [open, setOpen] = useState(false);
   if (!description) return <span>—</span>;
   return (
-    <details className="group/description min-w-0">
-      <summary
-        aria-label={`Description for ${name}`}
-        className="focus-ring flex min-w-0 cursor-pointer list-none items-center gap-2 rounded [&::-webkit-details-marker]:hidden"
-      >
-        <span className="min-w-0 flex-1 truncate group-open/description:hidden">
-          {description}
-        </span>
-        <span className="hidden flex-1 group-open/description:inline">
-          Description
-        </span>
-        <ChevronDownIcon
-          size={14}
-          className="shrink-0 group-open/description:rotate-180"
-          aria-hidden="true"
-        />
-      </summary>
-      <p className="mt-2 whitespace-pre-wrap break-words">{description}</p>
-    </details>
+    <Disclosure
+      open={open}
+      onOpenChange={setOpen}
+      label={
+        <>
+          <span className="sr-only">Description for {name}</span>
+          <span aria-hidden="true" className="block truncate">
+            {open ? 'Description' : description}
+          </span>
+        </>
+      }
+    >
+      <p className="whitespace-pre-wrap break-words">{description}</p>
+    </Disclosure>
   );
 }
 

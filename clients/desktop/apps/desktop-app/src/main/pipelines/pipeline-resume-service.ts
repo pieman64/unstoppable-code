@@ -1,3 +1,5 @@
+import { buildPipelineSecretBindings } from '../execution-secrets/bindings';
+import type { RedeemedExecutionSecrets } from '@canopy/core-runtime/node/execution-secrets';
 import { authorizePipelineReplay } from './pipeline-replay-authorization';
 import { pipelineSpeedError } from './codex-speed';
 import { randomUUID } from 'node:crypto';
@@ -7,7 +9,6 @@ import type {
   WorkerPipelineExecutionResumeParams,
 } from '@canopy/protocol/canopy-core';
 import type { BrowserWindow } from 'electron';
-import { brandEnvName } from '@canopy/desktop-shared/brand/env';
 import {
   loadExecutionState,
   type ExecutionOptions,
@@ -15,7 +16,6 @@ import {
 } from '@canopy/desktop-shared/node/pipelines/executor';
 import type { PipelineScalar } from '@canopy/desktop-shared/types/pipeline';
 import { resolveEnvironmentForRuntime } from '@canopy/desktop-shared/lib/user-environment';
-import { resolveLinearToken } from '../lib/linear-auth';
 import { readPreferencesFile } from '../lib/preferences-store';
 import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { readEnvironmentConfig } from '../lib/user-environment-store';
@@ -37,7 +37,10 @@ import {
   controlPipelineThroughLocalWorker,
   followExecutionHandle,
 } from './pipeline-worker-dispatch';
-import { pipelineExecutorControls } from './pipeline-worker-host';
+import {
+  pipelineExecutorControls,
+  readStoredPipelineExecution,
+} from './pipeline-worker-host';
 
 export interface ResumePipelineExecutionFromMainRequest {
   executionId: string;
@@ -111,7 +114,6 @@ async function resolveStoredCwd(state: ExecutionState): Promise<string> {
 
 async function runtimeEnvironment(workspaceId?: string): Promise<{
   env: Record<string, string>;
-  secretEnv: Record<string, string>;
 }> {
   try {
     const { data } = await readEnvironmentConfig();
@@ -121,10 +123,9 @@ async function runtimeEnvironment(workspaceId?: string): Promise<{
     });
     return {
       env: resolved.publicApplied,
-      secretEnv: resolved.secretApplied,
     };
   } catch {
-    return { env: {}, secretEnv: {} };
+    return { env: {} };
   }
 }
 
@@ -190,30 +191,38 @@ export async function resumePipelineExecutionFromMain(
       ? { persistInitiationSource: true }
       : {}),
   };
+  const state = await readStoredPipelineExecution(request.executionId);
+  const secretBindings = await buildPipelineSecretBindings({
+    workspaceId: state?.project_id,
+  });
   const settled = await controlPipelineThroughLocalWorker(
     { operation: 'worker.pipeline.execution.resume', params },
-    async (control) => {
+    async (control, _signal, secrets) => {
       if (control.operation !== 'worker.pipeline.execution.resume')
         throw new Error('Unexpected workflow control.');
       const command = control.params;
-      const result = await resumeOnLocalWorker({
-        ...request,
-        statusReasonIds: command.statusReasonIds,
-        pauseResponses: command.pauseResponses?.map((response) => ({
-          ...(response.checkpointId !== undefined
-            ? { checkpoint_id: response.checkpointId }
-            : {}),
-          job_id: response.jobId,
-          step_id: response.stepId,
-          ...(response.answers ? { answers: response.answers } : {}),
-        })),
-        allowStaleNoop: command.allowStaleNoop,
-        initiationSource: command.initiationSource,
-        persistInitiationSource: command.persistInitiationSource,
-      });
+      const result = await resumeOnLocalWorker(
+        {
+          ...request,
+          statusReasonIds: command.statusReasonIds,
+          pauseResponses: command.pauseResponses?.map((response) => ({
+            ...(response.checkpointId !== undefined
+              ? { checkpoint_id: response.checkpointId }
+              : {}),
+            job_id: response.jobId,
+            step_id: response.stepId,
+            ...(response.answers ? { answers: response.answers } : {}),
+          })),
+          allowStaleNoop: command.allowStaleNoop,
+          initiationSource: command.initiationSource,
+          persistInitiationSource: command.persistInitiationSource,
+        },
+        secrets,
+      );
       return { outcome: RESUME_OUTCOMES[result.status], state: result.state };
     },
     request.initiationSource === 'automation' ? 'automation' : 'client',
+    secretBindings,
   );
   return { status: resumeStatusOf(settled.outcome), state: settled.state };
 }
@@ -239,6 +248,7 @@ function validateStatusReasonIds(statusReasonIds: string[] | undefined): void {
 /** The local worker's side of a resume: the entry point as it always ran. */
 async function resumeOnLocalWorker(
   request: ResumePipelineExecutionFromMainRequest,
+  secrets: RedeemedExecutionSecrets,
 ): Promise<ResumePipelineExecutionFromMainResult> {
   cancelPendingTransientRetryTimer(
     request.executionId,
@@ -423,7 +433,6 @@ async function resumeOnLocalWorker(
     reserveExecution(request.executionId);
     ownsExecutionReservation = true;
     const preferences = await readPreferencesFile();
-    const linearToken = await resolveLinearToken();
     const cwd = request.cwd ?? (await resolveStoredCwd(state));
     const baseBranchEnv = await buildPipelineBaseBranchEnv({
       cwd,
@@ -431,8 +440,6 @@ async function resumeOnLocalWorker(
       worktreeId: state.worktree_id,
     });
     const runtimeEnv = await runtimeEnvironment(state.project_id);
-    const secretEnv = { ...runtimeEnv.secretEnv };
-    if (linearToken) secretEnv[brandEnvName('LINEAR_API_KEY')] = linearToken;
     const authorization = await authorizePipelineReplay(state);
     const handle = await pipelineExecutorControls.resume(request.executionId, {
       ...authorization,
@@ -455,7 +462,7 @@ async function resumeOnLocalWorker(
         ...baseBranchEnv,
         ...(request.env ?? {}),
       },
-      secretEnv: Object.keys(secretEnv).length ? secretEnv : undefined,
+      secretEnv: Object.keys(secrets.env).length ? secrets.env : undefined,
       runtime,
       onEvent: request.onEvent,
       onStepOutput: request.onStepOutput,

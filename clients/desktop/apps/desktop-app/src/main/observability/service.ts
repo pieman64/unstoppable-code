@@ -342,7 +342,6 @@ const TRANSCRIPT_DELEGATION_MAX_BYTES = 4 * 1024 * 1024;
 const TRANSCRIPT_DELEGATION_STATUS_RESERVATION_BYTES = 256 * 1024;
 const CHAT_TURN_OPERATION_NAME = 'canopy.chat_turn';
 const AGENT_TASK_OPERATION_NAME = 'canopy.agent_task';
-const APP_DIAGNOSTIC_OPERATION_NAME = 'canopy.app_diagnostic';
 const CLAUDE_INTERACTIVE_USAGE_FRESHNESS_MS = 30_000;
 const CLAUDE_BACKGROUND_USAGE_FRESHNESS_MS = 180_000;
 const CLAUDE_USAGE_REFRESH_DEBOUNCE_MS = 30_000;
@@ -466,15 +465,28 @@ const REMOTE_APP_DIAGNOSTIC_KINDS = new Set<AppDiagnosticRecord['kind']>([
   'desktop_instrumentation_init_failed',
   'provider_auth_probe_failed',
   'cloud_oauth_login_failed',
+  'main_uncaught_exception',
+  'main_unhandled_rejection',
 ]);
 
-const REMOTE_APP_DIAGNOSTIC_OPERATION_KINDS = new Set<
-  AppDiagnosticRecord['kind']
->([
-  'resource_pressure_critical',
-  'cloud_oauth_callback_rejected',
-  'main_event_loop_stall',
+/** Kinds whose `error` holds a described main-process error (name and stack
+ * frames, no message), so the remote exception keeps its type and frames. */
+const MAIN_PROCESS_ERROR_KINDS = new Set<AppDiagnosticRecord['kind']>([
+  'main_uncaught_exception',
+  'main_unhandled_rejection',
 ]);
+
+function buildAppDiagnosticError(
+  event: AppDiagnosticRecord,
+  message: string,
+): Error {
+  const error = new Error(message);
+  if (!MAIN_PROCESS_ERROR_KINDS.has(event.kind) || !event.error) return error;
+  const [head = '', ...frames] = event.error.split('\n');
+  error.name = head.replace(/ \[[^\]]*\]$/, '') || 'Error';
+  error.stack = [`${error.name}: ${message}`, ...frames].join('\n');
+  return error;
+}
 
 const NON_ERROR_CLOUD_OAUTH_OUTCOMES = new Set<CloudOAuthDiagnosticOutcome>([
   'cancelled',
@@ -792,6 +804,20 @@ interface ClaudeUsageWindowPatch {
   resetsAt?: ClaudeUsageFieldPatch<string>;
 }
 
+/** The counts one crash-dump retention sweep pass records. */
+export interface AppDiagnosticCrashDumpSweepCounts {
+  /** Dump files the sweep found. */
+  listed: number;
+  /** Dumps discarded because the crash-dump filter attributed them elsewhere. */
+  discardedForeign: number;
+  /** Dumps deleted for exceeding the retention age or count. */
+  deletedByRetention: number;
+  /** Dumps left in place. */
+  kept: number;
+  /** Files the sweep could not inspect or delete. */
+  errors: number;
+}
+
 export interface AppDiagnosticRecord {
   version: 1;
   timestamp: string;
@@ -899,6 +925,17 @@ export interface AppDiagnosticRecord {
     | 'portal_channel_stalled'
     | 'portal_structural_sync_failed'
     | 'child_process_gone'
+    /**
+     * Report-only: one foreign crash-dump filter classification per record.
+     * The verdict and its reason, the location rule's shadow verdict, and the
+     * executable's base name only when either verdict discards. Never a path.
+     */
+    | 'crash_dump_filter_verdict'
+    /**
+     * One pass of the local crash-dump retention sweep. Counts only, never a
+     * path or file name.
+     */
+    | 'crash_dump_sweep'
     | 'telemetry_upload_failed'
     /**
      * The telemetry outbox gave up on a batch after a bounded run of
@@ -1083,6 +1120,17 @@ export interface AppDiagnosticRecord {
   reason?: string;
   exitCode?: number | null;
   processType?: string;
+  /** `child_process_gone` only: Electron's utility `serviceName`. */
+  serviceName?: string;
+  /** `child_process_gone` only: Electron's process `name`. */
+  processName?: string;
+  /** `crash_dump_filter_verdict` only. */
+  crashDumpVerdict?: 'process' | 'discard';
+  crashDumpVerdictReason?: string;
+  crashDumpLocationVerdict?: 'process' | 'discard';
+  crashDumpExecutableName?: string;
+  /** `crash_dump_sweep` only: non-negative counts for one sweep pass. */
+  crashDumpSweep?: AppDiagnosticCrashDumpSweepCounts;
   rendererSurface?: 'main_window' | 'app_advisor_window';
   error?: string;
   sourceId?: string;
@@ -1109,8 +1157,7 @@ export interface AppDiagnosticRecord {
   runningCodeGraphBuildCount?: number;
   queuedCodeGraphBuildCount?: number;
   /**
-   * `main_event_loop_stall` only, and local only: the Datadog operation's
-   * explicit field list does not forward these. Share of the window the main
+   * `main_event_loop_stall` only, and local only. Share of the window the main
    * thread was busy (0–1), and how it was measured: `main-thread-cpu` in
    * Electron's main process, where libuv's loop accounting is unavailable.
    */
@@ -1129,8 +1176,8 @@ export interface AppDiagnosticRecord {
   threadPoolProbePendingMs?: number;
   /**
    * Agent turns running at record time (`main_event_loop_stall`, local only).
-   * Kept apart from `activeChatTurnCount`, which the Datadog operation
-   * forwards, so the stall operation's remote context stays unchanged.
+   * Kept apart from `activeChatTurnCount`, which the resource diagnostics
+   * record from the chat-turn guard.
    */
   activeTurnCount?: number;
   /**
@@ -1582,8 +1629,8 @@ export interface SessionDiagnosticRecord {
     /**
      * One code-graph generation (a worktree build, or a workspace-shadow base
      * build with an empty `worktreeId`): its outcome and phase timings from
-     * the queue through publication. Local only; the Datadog generation
-     * operation is unchanged.
+     * the queue through publication. Local only; nothing is reported
+     * remotely.
      */
     | 'code_graph_build'
     /** Bounded local read-worker aggregate; not an app event or remote metric. */
@@ -2237,63 +2284,15 @@ function reportAppDiagnosticToDesktopInstrumentation(
   instrumentation: ObservabilityInstrumentationPort,
   event: AppDiagnosticRecord,
 ): void {
-  const isCloudOAuthSuccessStage =
-    event.kind === 'cloud_oauth_login_stage' &&
-    event.cloudOAuthStage === 'success';
+  // Expected sign-in outcomes (cancelled, replaced, timed out, or access
+  // denied at the provider) stay local; only real failures are errors.
   const isNonErrorCloudOAuthOutcome =
     event.kind === 'cloud_oauth_login_failed' &&
     ((event.cloudOAuthOutcome !== undefined &&
       NON_ERROR_CLOUD_OAUTH_OUTCOMES.has(event.cloudOAuthOutcome)) ||
       (event.cloudOAuthOutcome === 'provider_error' &&
         event.cloudOAuthProviderError === 'access_denied'));
-  if (
-    REMOTE_APP_DIAGNOSTIC_OPERATION_KINDS.has(event.kind) ||
-    isNonErrorCloudOAuthOutcome ||
-    isCloudOAuthSuccessStage
-  ) {
-    const operationKey = createDesktopInstrumentationOperationKey(
-      `app-diagnostic:${event.kind}:${event.timestamp}`,
-    );
-    const context = {
-      kind: event.kind,
-      severity: isCloudOAuthSuccessStage ? 'info' : 'warning',
-      reason: event.reason,
-      pressure_level: event.pressureLevel,
-      memory_rss_bytes: event.memoryRssBytes,
-      main_heap_used_bytes: event.mainHeapUsedBytes,
-      main_heap_total_bytes: event.mainHeapTotalBytes,
-      main_heap_limit_bytes: event.mainHeapLimitBytes,
-      main_rss_bytes: event.mainRssBytes,
-      main_external_bytes: event.mainExternalBytes,
-      main_array_buffer_bytes: event.mainArrayBufferBytes,
-      cpu_percent: event.cpuPercent,
-      process_count: event.processCount,
-      active_chat_turn_count: event.activeChatTurnCount,
-      active_pipeline_execution_count: event.activePipelineExecutionCount,
-      event_loop_window_ms: event.eventLoopWindowMs,
-      event_loop_delay_max_ms: event.eventLoopDelayMaxMs,
-      event_loop_delay_p99_ms: event.eventLoopDelayP99Ms,
-      event_loop_delay_p50_ms: event.eventLoopDelayP50Ms,
-      running_code_graph_build_count: event.runningCodeGraphBuildCount,
-      queued_code_graph_build_count: event.queuedCodeGraphBuildCount,
-      cloud_oauth_stage: event.cloudOAuthStage,
-      cloud_oauth_outcome: event.cloudOAuthOutcome,
-      cloud_oauth_failure_class: event.cloudOAuthFailureClass,
-      cloud_oauth_http_status: event.cloudOAuthHttpStatus,
-      cloud_oauth_provider_error: event.cloudOAuthProviderError,
-      cloud_oauth_duration_ms: event.cloudOAuthDurationMs,
-      cloud_oauth_correlation_id: event.cloudOAuthCorrelationId,
-      cloud_oauth_platform: event.cloudOAuthPlatform,
-      cloud_oauth_app_version: event.cloudOAuthAppVersion,
-    };
-    instrumentation.startOperation(APP_DIAGNOSTIC_OPERATION_NAME, {
-      operationKey,
-      context,
-    });
-    instrumentation.succeedOperation(APP_DIAGNOSTIC_OPERATION_NAME, {
-      operationKey,
-      context,
-    });
+  if (isNonErrorCloudOAuthOutcome) {
     return;
   }
 
@@ -2312,12 +2311,20 @@ function reportAppDiagnosticToDesktopInstrumentation(
     ? `${BRAND.displayName} renderer process gone: ${rendererCrashReason ?? 'unknown'}`
     : `${BRAND.displayName} desktop diagnostic: ${event.kind}`;
 
-  instrumentation.captureError(new Error(errorMessage), {
+  instrumentation.captureError(buildAppDiagnosticError(event, errorMessage), {
     context: {
+      // Synthetic diagnostics are all `Error`s whose stack is this reporting
+      // path, and main frames shift every build, so group them by kind.
+      // Main-process exceptions keep PostHog's frame-based grouping.
+      ...(!MAIN_PROCESS_ERROR_KINDS.has(event.kind) && {
+        $exception_fingerprint: `app-diagnostic:${event.kind}`,
+      }),
       kind: event.kind,
       reason: event.reason,
       exit_code: event.exitCode,
       process_type: event.processType,
+      service_name: event.serviceName,
+      process_name: event.processName,
       renderer_surface: event.rendererSurface,
       renderer_crash_reason: rendererCrashReason,
       renderer_crashed: rendererCrashed,
@@ -4489,8 +4496,9 @@ export class ObservabilityService {
   }
 
   recordAppDiagnostic(event: AppDiagnosticRecord): void {
-    // `app-events/` and its Datadog forwarding are global: no worktree or chat
-    // identifier may reach either, whatever the caller assembled.
+    // `app-events/` and the error reports forwarded to PostHog are global: no
+    // worktree or chat identifier may reach either, whatever the caller
+    // assembled.
     const sanitized = sanitizeAppDiagnosticRecord(event);
     reportAppDiagnosticToDesktopInstrumentation(
       this.host.instrumentation,
@@ -8633,51 +8641,7 @@ export class ObservabilityService {
       error: entry.error,
     };
     this.recordUsageMetricEvent(completedEvent);
-    this.scheduleLocalMemoryCitationTracking(entry, completedEvent);
     this.chatTurnUsageStartsByAuditEntryId.delete(entry.id);
-  }
-
-  private scheduleLocalMemoryCitationTracking(
-    entry: AgentAuditEntry,
-    completedEvent: ChatTurnUsageEvent,
-  ): void {
-    // Citation compliance is only measurable on turns that produced a final
-    // assistant reply with complete evidence: failed, cancelled, and
-    // interrupted turns (and truncated transcripts below) are skipped instead
-    // of being counted as definitive citation misses.
-    if (
-      !this.started ||
-      this.disposing ||
-      completedEvent.type !== 'chat_turn_completed' ||
-      completedEvent.status !== 'success' ||
-      (entry.eventType !== 'worktree_chat' &&
-        entry.eventType !== 'standalone_chat')
-    ) {
-      return;
-    }
-
-    const transcriptRequest = buildTranscriptRequest(entry);
-    void Promise.resolve()
-      .then(async (): Promise<void> => {
-        // Local memory defaults off, so check the cheap preference (the same
-        // read the tracker's own gate performs) before paying for the full
-        // transcript sidecar read on every successful turn.
-        if (!(await this.host.memoryCitations.isEnabled())) {
-          return;
-        }
-        const transcript = await this.loadTranscript(transcriptRequest);
-        if (transcript.type !== 'success' || transcript.truncation.truncated) {
-          return;
-        }
-        await this.host.memoryCitations.trackCompletedTurn({
-          auditEntryId: entry.id,
-          provider: entry.provider,
-          transcriptLines: transcript.lines,
-        });
-      })
-      .catch((): void => {
-        // Citation measurement must never affect chat-turn finalization.
-      });
   }
 
   private scheduleTerminalProviderUsageRefresh(entry: AgentAuditEntry): void {

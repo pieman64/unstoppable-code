@@ -17,6 +17,7 @@ import {
   BrowserWindow,
   WebContentsView,
   app,
+  crashReporter,
   dialog,
   ipcMain,
   nativeTheme,
@@ -33,6 +34,7 @@ import { join, resolve } from 'path';
 import { advertiseWindowsDefaultBrowserCapabilities } from './browser/windows-default-browser-capabilities';
 import { reportShareHandoffEvent } from './canopy-cloud/share-handoff-events';
 import { drainChatStateBeforeRuntimeShutdown } from './canopy-runtime/chat-state-shutdown';
+import { installCoreChatProjections } from './canopy-runtime/core-chat-projections';
 import { allowsRendererClipboardWrite } from './lib/renderer-clipboard-permission';
 import { deriveDesktopIpcCaller } from './canopy-runtime/desktop-ipc-caller';
 import {
@@ -179,9 +181,7 @@ import {
 import {
   createForeignCrashDumpFilter,
   flushDesktopInstrumentation,
-  initializeDesktopInstrumentationMain,
   initializePostHogMain,
-  setDesktopInstrumentationUser,
 } from '@canopy/desktop-instrumentation/electron/main';
 import { getPostHogEmailDomain } from '@canopy/desktop-instrumentation/posthog-account';
 import { getCanopyDataDir } from '@canopy/desktop-shared/canopy-paths';
@@ -363,10 +363,10 @@ import {
   setLedgerSyncProhibitionHandler,
   stopLedgerSync,
 } from './ledger/sync-host';
+import { setMemorySyncEnabled, stopMemorySync } from './memory/sync/host';
 import { refreshAgentModelsFromStore } from './lib/agent-models';
 import {
   getPostHogInstallLaunch,
-  getStableAnonymousKey,
   getStablePostHogAnonymousKey,
 } from './lib/anonymous-id';
 import { migrateAppAdvisorChatsToWorkEntries } from './lib/app-advisor-work-entry-migration';
@@ -404,11 +404,6 @@ import {
 import { readChatArchivesFile } from './lib/chat-archives';
 import { syncWorktreeChatBadgesFromWrite } from './lib/chat-badge-sync';
 import { startChatStorageActivityDiagnostics } from './lib/chat-storage-activity-diagnostics';
-import { createChatTabsAuxiliaryProjectionObserver } from './lib/chat-tabs-auxiliary-projection';
-import {
-  setChatTabsRequiredDurabilityObserver,
-  setChatTabsWriteObserver,
-} from './lib/chat-tabs';
 import {
   reconcileCodeGraphAvailability,
   setCodeGraphPreferences,
@@ -428,10 +423,6 @@ import { migrateDefaultCoworkWorkspaceName } from './lib/default-cowork-workspac
 import { startProviderAccountConnectTelemetry } from './lib/desktop-telemetry';
 import { getGitHubBroker } from './lib/github-broker';
 import { holdHooksForShutdown } from './lib/hook-runner';
-import {
-  disposeInstrumentationKeepalive,
-  startInstrumentationKeepalive,
-} from './lib/instrumentation-keepalive';
 import {
   recoverInterruptedWorkAtStartup,
   sweepInterruptedPipelinesAtStartup,
@@ -592,6 +583,8 @@ import {
   getObservabilityService,
   initializeObservabilityService,
 } from './observability';
+import { createCrashDumpClassificationRecorder } from './observability/crash-dump-filter-diagnostics';
+import { sweepCrashDumps } from './observability/crash-dump-sweep';
 import { getExecutionObservabilityIngest } from './observability/ingest';
 import {
   formatUnknownError,
@@ -652,6 +645,10 @@ import {
   stopPersonalCatalogSync,
 } from './services/personal-catalog-sync-host';
 import {
+  startCloudProjectBinding,
+  stopCloudProjectBinding,
+} from './cloud-projects/cloud-project-binding-host';
+import {
   disposeProductActivityReporter,
   initializeProductActivityReporter,
 } from './services/product-activity-reporter';
@@ -695,30 +692,16 @@ if (hasSingleInstanceLock) {
   initializeMainProcessLogging();
   installDesktopCodeGraphResources();
 
-  getChatStateService().subscribeChildSearchDirty((event): void => {
-    getChatSearchService().childSearchDirty(event);
-  });
-
-  setChatTabsRequiredDurabilityObserver(async (projectId, worktreeId) => {
+  installCoreChatProjections({
+    search: () => getChatSearchService(),
+    subscribeChildSearchDirty: (listener) =>
+      getChatStateService().subscribeChildSearchDirty(listener),
     // A canonical chat command holds the target reservation until this durable
     // watermark completes, so Auto Delete cannot enter between the journal
     // commit and its activity update.
-    await touchWorkspaceTargetAfterCommit(projectId, worktreeId);
-  });
-
-  setChatTabsWriteObserver(
-    createChatTabsAuxiliaryProjectionObserver({
-      // Partial persistence identifies exactly which tabs changed. Applying the
-      // same delta to search avoids rebuilding FTS for large, unchanged
-      // transcripts while keeping concurrent rename/close operations correct.
-      indexSearch: (projectId, worktreeId, data, delta, isCurrent) =>
-        getChatSearchService().projectLiveTabs(
-          projectId,
-          worktreeId,
-          data,
-          delta,
-          isCurrent,
-        ),
+    touchTargetAfterCommit: (projectId, worktreeId) =>
+      touchWorkspaceTargetAfterCommit(projectId, worktreeId),
+    steps: {
       // Keep the worktree's persisted chat badge summary current so sidebar
       // badges render at startup without hydrating full transcripts.
       syncBadges: syncWorktreeChatBadgesFromWrite,
@@ -738,8 +721,8 @@ if (hasSingleInstanceLock) {
         ),
       nudgeSummary: (projectId) =>
         nudgeCoworkWorkEntrySidebar(() => mainWindow, projectId),
-    }),
-  );
+    },
+  });
 
   // Observability's first initialization prunes audit days; install its reader first.
   registerCostRetentionGuard();
@@ -904,13 +887,10 @@ let disposeNativeAccountChangeTracking: (() => void) | null = null;
 let disposeProviderAccountConnectTelemetry: (() => void) | null = null;
 let aiGatewayModelCatalogService: AiGatewayModelCatalogService | null = null;
 let startupUnlocked = false;
-let desktopInstrumentationInitPromise: Promise<
-  Awaited<ReturnType<typeof initializeDesktopInstrumentationMain>>
-> | null = null;
-let desktopInstrumentationAnonId: string | null = null;
-let desktopInstrumentationAccountEmail: string | undefined;
-let desktopInstrumentationAccountRevision = 0;
-let disposeDesktopInstrumentationAccountSync: (() => void) | null = null;
+const recordCrashDumpClassification = createCrashDumpClassificationRecorder(
+  (diagnostic): void =>
+    getExecutionObservabilityIngest().recordAppDiagnostic(diagnostic),
+);
 
 const E2E_CHAT_EVENT_INGESTOR_KEY = '__CANOPY_E2E_INGEST_CHAT_EVENT__';
 const E2E_PENDING_QUESTION_UPSERTER_KEY =
@@ -1783,81 +1763,34 @@ function startDesktopInstrumentation(): void {
       });
     }
   });
+}
+
+/**
+ * Startup retention for the local Crashpad database (`uploadToServer: false`,
+ * so nothing else prunes it). Foreign dumps are deleted where the filter
+ * applies; on other hosts every dump is treated as Canopy's.
+ */
+async function runStartupCrashDumpSweep(): Promise<void> {
   const hostOs = hostOperatingSystem();
-  desktopInstrumentationInitPromise ??= initializeDesktopInstrumentationMain({
-    // Unsupported hosts keep the SDK's default of processing every dump.
-    crashDumpFilter: hostOs
-      ? createForeignCrashDumpFilter({
-          getCrashDumpsDir: () => app.getPath('crashDumps'),
-          getExePath: () => app.getPath('exe'),
-          platform: hostOs,
-        })
-      : undefined,
+  const counts = await sweepCrashDumps({
+    crashDumpsDir: app.getPath('crashDumps'),
+    ...(hostOs && {
+      classify: createForeignCrashDumpFilter({
+        getCrashDumpsDir: () => app.getPath('crashDumps'),
+        getExePath: () => app.getPath('exe'),
+        platform: hostOs,
+        onClassified: recordCrashDumpClassification,
+      }),
+    }),
   });
-  void desktopInstrumentationInitPromise
-    .then((result): void => {
-      if (!result.enabled && result.reason && result.reason !== 'disabled') {
-        getObservabilityService().recordAppDiagnostic({
-          version: 1,
-          timestamp: new Date().toISOString(),
-          kind: 'desktop_instrumentation_init_failed',
-          reason: result.reason,
-        });
-      }
-      if (result.enabled) {
-        // Keep the main-process RUM session continuously alive so neither
-        // main-process ops nor renderer events (which inherit the main session
-        // id) are silently discarded after the SDK's 15-min inactivity expiry.
-        startInstrumentationKeepalive({ powerMonitor });
-        disposeDesktopInstrumentationAccountSync ??=
-          subscribeCanopyCloudAccountChanges((account): void => {
-            desktopInstrumentationAccountRevision += 1;
-            desktopInstrumentationAccountEmail =
-              getInstrumentationAccountEmail(account);
-            if (desktopInstrumentationAnonId) {
-              setDesktopInstrumentationUser(
-                desktopInstrumentationAnonId,
-                desktopInstrumentationAccountEmail,
-              );
-            }
-          });
-        // Best-effort: attach the stable anonymous install id (`usr.id` on all
-        // RUM events plus `context.anon_id` on operations) and the connected
-        // non-guest cloud account's email (`usr.email`). Early events firing
-        // before this lands simply omit the identity.
-        const accountRevisionAtLoadStart =
-          desktopInstrumentationAccountRevision;
-        void Promise.all([
-          getStableAnonymousKey(),
-          loadCanopyCloudAccount().catch(() => null),
-        ])
-          .then(([key, account]): void => {
-            desktopInstrumentationAnonId = key;
-            if (
-              desktopInstrumentationAccountRevision ===
-              accountRevisionAtLoadStart
-            ) {
-              desktopInstrumentationAccountEmail =
-                getInstrumentationAccountEmail(account);
-            }
-            setDesktopInstrumentationUser(
-              key,
-              desktopInstrumentationAccountEmail,
-            );
-          })
-          .catch((): void => {
-            // Identity resolution is best-effort; never block telemetry.
-          });
-      }
-    })
-    .catch((error: unknown): void => {
-      getObservabilityService().recordAppDiagnostic({
-        version: 1,
-        timestamp: new Date().toISOString(),
-        kind: 'desktop_instrumentation_init_failed',
-        reason: error instanceof Error ? error.message : String(error),
-      });
-    });
+  // An empty, error-free sweep is the common launch; recording it adds noise.
+  if (counts.listed === 0 && counts.errors === 0) return;
+  getObservabilityService().recordAppDiagnostic({
+    version: 1,
+    timestamp: new Date().toISOString(),
+    kind: 'crash_dump_sweep',
+    crashDumpSweep: counts,
+  });
 }
 
 const W5_REFUSAL_FLUSH_TIMEOUT_MS = 1_000;
@@ -2038,8 +1971,12 @@ function unlockStartupWork(): void {
       }),
   );
   recordRealisticStartupPerformanceEvent('startup:updater:started');
-  cancelStartupBackgroundTasks =
-    scheduleDeferredStartupBackgroundTasks(getMainWindow);
+  cancelStartupBackgroundTasks = scheduleDeferredStartupBackgroundTasks(
+    getMainWindow,
+    {
+      runCrashDumpSweep: runStartupCrashDumpSweep,
+    },
+  );
   disposeOnboardingProfileSync ??= startOnboardingProfileSync();
   // Flush turn ratings queued while signed out (CAN-1521). Sign-in is the
   // trigger that makes rate-as-guest → sign in work.
@@ -2167,6 +2104,7 @@ async function cleanupRuntimeResources(
   stopMainEventLoopMonitor?.();
   stopMainEventLoopMonitor = null;
   stopPersonalCatalogSync();
+  stopCloudProjectBinding();
   stopResumeQueue();
   beginSplitTemporaryWorkspaceShutdown();
   cancelPendingW5FlipHandoff();
@@ -2515,6 +2453,7 @@ async function cleanupRuntimeResources(
       .catch(() => undefined);
     // Sync first, so a purge waiting at quit does not wait on the network.
     await stages.run('ledger-sync', () => stopLedgerSync());
+    await stages.run('memory-sync', () => stopMemorySync());
     await stages.run('ledger-lifecycle', () => drainLedgerLifecycle());
     await stages
       .run('ledger-storage', () => shutdownLedgerStorageHost())
@@ -2545,10 +2484,6 @@ async function cleanupRuntimeResources(
     await stages.bestEffort('memory-diagnostics', () =>
       getMemoryDiagnosticsService().dispose(),
     );
-    // Dispose before the flush so no keepalive fires mid-flush.
-    disposeInstrumentationKeepalive();
-    disposeDesktopInstrumentationAccountSync?.();
-    disposeDesktopInstrumentationAccountSync = null;
     await stages.bestEffort(
       'instrumentation-upload',
       flushDesktopInstrumentation,
@@ -2697,7 +2632,13 @@ if (hasSingleInstanceLock) {
     void (async (): Promise<void> => {
       try {
         await Promise.race([
-          cleanupRuntimeResources('fatal-exit').catch(() => undefined),
+          Promise.allSettled([
+            cleanupRuntimeResources('fatal-exit'),
+            // The error above is already queued for PostHog; start its flush
+            // now rather than after the earlier cleanup stages, so it can
+            // finish inside the exit deadline. Idempotent with the stage's.
+            flushDesktopInstrumentation(),
+          ]),
           new Promise<void>((resolve) => {
             setTimeout(resolve, 1000);
           }),
@@ -4887,19 +4828,49 @@ if (hasSingleInstanceLock) {
       app.setPath('userData', e2eUserDataDir);
     }
   }
+  // After the final `userData` (which `crashDumps` derives from) and before
+  // any renderer or utility process. Dumps stay local; feedback bundles can
+  // include them. The system crash handler stays on (the retired Datadog SDK
+  // turned it off) so macOS DiagnosticReports keeps its `.ips` files.
+  crashReporter.start({
+    submitURL: '',
+    uploadToServer: false,
+    compress: false,
+  });
 }
 
 void app.whenReady().then(async (): Promise<void> => {
   if (!hasSingleInstanceLock) return;
   recordDesktopInstanceEvent({ event: 'app-ready' });
-  if (!(await runRequestedW5Recovery(getCanopyDataDir()))) {
-    app.exit(1);
-    return;
+  let recoveryRefusal: { kind: 'refused'; message: string } | undefined;
+  try {
+    if (!(await runRequestedW5Recovery(getCanopyDataDir()))) {
+      app.exit(1);
+      return;
+    }
+  } catch (error) {
+    recoveryRefusal = {
+      kind: 'refused',
+      message:
+        error instanceof Error
+          ? error.message
+          : 'Deletion recovery evidence is unavailable.',
+    };
   }
   // TRANSITIONAL (CAN-3797): joins the W5 host cohort before any W5 I/O.
   // Remove when the W5 rows move to `daemon` and the legacy Electron writers
   // are deleted (CAN-3795 / CAN-3802).
-  const w5Host = await admitDesktopW5Host(getCanopyDataDir());
+  const w5Host =
+    recoveryRefusal ??
+    (await admitDesktopW5Host(getCanopyDataDir()).catch(
+      (error: unknown): { kind: 'refused'; message: string } => ({
+        kind: 'refused',
+        message:
+          error instanceof Error
+            ? error.message
+            : 'Deletion recovery evidence is unavailable.',
+      }),
+    ));
   if (w5Host.kind === 'refused') {
     exitForW5HostRefusal(w5Host.message);
     return;
@@ -5155,6 +5126,7 @@ void app.whenReady().then(async (): Promise<void> => {
   // The catalog follows the context service: it refreshes on every switch.
   await getOrgProjectCatalogService().initialize();
   startPersonalCatalogSync();
+  startCloudProjectBinding();
   // The shared session snapshot projects catalog placeholder rows, so catalog,
   // context, and flag changes must mark it stale like local mutations do.
   installOrgProjectSnapshotInvalidation();
@@ -5506,6 +5478,10 @@ void app.whenReady().then(async (): Promise<void> => {
     });
     setLedgerSyncEnabled(
       snapshot.values[CLIENT_FEATURE_FLAGS.canopyLedgerEnabled.key] === true,
+    );
+    setMemorySyncEnabled(
+      snapshot.values[CLIENT_FEATURE_FLAGS.canopyDesktopMemorySync.key] ===
+        true,
     );
   });
   // Before the IPC handlers, which read the service through its throwing
@@ -6736,6 +6712,12 @@ void app.whenReady().then(async (): Promise<void> => {
         }),
     },
   );
+  // Queued chats recovered at startup drain once core accepts turns and the
+  // chat dispatch hooks (Auto model routing among them) are installed
+  // (CAN-4112); no window is needed.
+  const { getChatQueueService: getStartupChatQueue } =
+    await import('./services/chat-queue-service');
+  getStartupChatQueue().releaseStartupDrainHold();
   // Git HEAD observation runs in main, independent of the renderer. Every
   // build, E2E included, enrolls at the first projects:load or the
   // first-paint fallback, so perf measures the production trigger (CAN-4899).
@@ -6885,6 +6867,13 @@ void app.whenReady().then(async (): Promise<void> => {
       CLIENT_FEATURE_FLAGS.canopyLedgerEnabled.key,
     ),
   );
+  // Cloud memory sync (CAN-5185): off by default; while on it waits out the
+  // launch quiet period before any request.
+  setMemorySyncEnabled(
+    getFeatureFlagService().isEnabled(
+      CLIENT_FEATURE_FLAGS.canopyDesktopMemorySync.key,
+    ),
+  );
   setLedgerPendingTitleScheduler(enqueueDesktopPendingTitle);
   startDesktopPendingTitleOrchestrator({
     isEnabled: (): boolean =>
@@ -6905,6 +6894,8 @@ void app.whenReady().then(async (): Promise<void> => {
       reason: details.reason,
       exitCode: details.exitCode,
       processType: details.type,
+      ...(details.serviceName ? { serviceName: details.serviceName } : {}),
+      ...(details.name ? { processName: details.name } : {}),
     });
   });
 });

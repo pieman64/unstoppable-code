@@ -164,7 +164,7 @@ export function StandaloneArchiveViewer({
               <span>Archived chat</span>
             </div>
             <div
-              className={`${POSTHOG_REPLAY_MASK_CLASS} mt-1 text-sm font-medium fg-primary`}
+              className={`${POSTHOG_REPLAY_MASK_CLASS} mt-1 text-s font-medium fg-primary`}
             >
               {archiveTitle}
             </div>
@@ -256,7 +256,7 @@ export function StandaloneArchiveViewer({
             <Markdown>{summary}</Markdown>
           </div>
         ) : (
-          <div className="py-8 text-center text-sm fg-secondary">
+          <div className="py-8 text-center text-s fg-secondary">
             {legacySummaryOnly
               ? 'No summary available for this archived chat.'
               : 'Archived chat is unavailable.'}

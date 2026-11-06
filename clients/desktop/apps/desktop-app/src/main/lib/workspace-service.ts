@@ -11,7 +11,12 @@ import {
   pendingWorkspaceCreationPaths,
   workspaceCreationPathOccupied,
   markWorkspaceCreationEffectsStarted,
+  type WorkspaceCreationReservationOptions,
 } from './w5-workspace-creation-commit';
+import { getW5IdentityStore } from './w5-commit-log-file-store';
+import { isW5CaptureWorkspaceId } from '../w5-commit-log/commit-log-worker-contract';
+import { runInW5CapturedView } from './w5-read-view';
+import { fingerprintW5File } from '@canopy/core-runtime/node/w5/commit-log/fingerprint';
 import {
   CompositionRecordRefusedError,
   createTemporaryCompositionRecords,
@@ -468,6 +473,7 @@ async function commitNewWorkspace<T extends SidebarItem>(
   local?: {
     effects?: (item: T) => Promise<void>;
     ownedPaths?: (item: T) => string[];
+    expectedWorkspaceRecords?: WorkspaceCreationReservationOptions['expectedWorkspaceRecords'];
   },
 ): Promise<T> {
   return serializeWorkspaceMutation(async () => {
@@ -484,6 +490,7 @@ async function commitNewWorkspace<T extends SidebarItem>(
           item.id,
           [getWorkspaceDir(item.id), ...(local.ownedPaths?.(item) ?? [])],
           publish,
+          { expectedWorkspaceRecords: local.expectedWorkspaceRecords },
         )
       : publish();
   });
@@ -1789,8 +1796,50 @@ export async function registerBoundMultiRepoWorkspace(input: {
       }
       if (await readWorkspaceIndexEntry(input.localWorkspaceId))
         throw new WorkspaceIdentityInUseError();
+      let expectedWorkspaceRecords: WorkspaceCreationReservationOptions['expectedWorkspaceRecords'];
       if (await pathExists(getWorkspaceDir(input.localWorkspaceId))) {
-        const orphan = await readWorkspaceConfig(input.localWorkspaceId);
+        const store = getW5IdentityStore();
+        const captured =
+          store && isW5CaptureWorkspaceId(input.localWorkspaceId)
+            ? await store.capture?.({
+                files: [
+                  { kind: 'manifest', workspaceId: input.localWorkspaceId },
+                  { kind: 'worktrees', workspaceId: input.localWorkspaceId },
+                ],
+                discoverWorkspaces: false,
+              })
+            : undefined;
+        if (
+          store &&
+          isW5CaptureWorkspaceId(input.localWorkspaceId) &&
+          !captured
+        )
+          throw new WorkspaceIdentityInUseError();
+        if (captured) {
+          const fingerprint = (
+            kind: 'manifest' | 'worktrees',
+          ): string | null => {
+            const image = captured.capture.files.find(
+              (file) => file.kind === kind,
+            );
+            if (!image || image.state === 'unreadable')
+              throw new WorkspaceIdentityInUseError();
+            return fingerprintW5File(
+              image.state === 'present'
+                ? Buffer.from(image.base64, 'base64').toString('utf8')
+                : null,
+            );
+          };
+          expectedWorkspaceRecords = {
+            manifest: fingerprint('manifest'),
+            worktrees: fingerprint('worktrees'),
+          };
+        }
+        const orphan = captured
+          ? await runInW5CapturedView(captured.capture, captured.root, () =>
+              readWorkspaceConfig(input.localWorkspaceId),
+            )
+          : await readWorkspaceConfig(input.localWorkspaceId);
         if (
           !orphan ||
           orphan.type !== 'multi-repo' ||
@@ -1821,6 +1870,7 @@ export async function registerBoundMultiRepoWorkspace(input: {
             owner,
           }),
         {
+          expectedWorkspaceRecords,
           effects: async () => {
             await mkdir(getWorkspaceDir(input.localWorkspaceId), {
               recursive: true,

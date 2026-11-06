@@ -1,3 +1,4 @@
+import { LoadingIndicator } from '../../../LoadingIndicatorStyle';
 import type { JSX, ReactNode } from 'react';
 import type {
   SubagentNode,
@@ -14,7 +15,6 @@ import {
   SUBAGENTS_LEVELS_MENU_LABEL,
   SUBAGENTS_NO_ROOTS_BODY,
   SUBAGENTS_NO_ROOTS_TITLE,
-  SUBAGENTS_ROOT_LOADING_DETAIL,
   SUBAGENTS_ROOT_PICKER_LABEL,
   SUBAGENTS_ROOT_SECTION_ACTIVE,
   SUBAGENTS_ROOT_SECTION_FINISHED,
@@ -75,11 +75,13 @@ function RootPickerOption({
   readonly selected: boolean;
   readonly onSelectRoot: (rootId: string) => void;
 }): JSX.Element {
-  const detail = root.loading
-    ? SUBAGENTS_ROOT_LOADING_DETAIL
-    : root.live > 0
-      ? subagentsRootLiveDetail(root.live, root.total)
-      : `${subagentsCountLabel(root.total)} · ${formatRelativeTime(root.lastActivityAt)}`;
+  const detail = root.loading ? (
+    <LoadingIndicator />
+  ) : root.live > 0 ? (
+    subagentsRootLiveDetail(root.live, root.total)
+  ) : (
+    `${subagentsCountLabel(root.total)} · ${formatRelativeTime(root.lastActivityAt)}`
+  );
   return (
     <PickerMenuOption
       role="menuitemradio"

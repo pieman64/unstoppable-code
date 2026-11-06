@@ -41,6 +41,13 @@ import { finished, pipeline } from 'node:stream/promises';
 import { app } from 'electron';
 import { BRAND } from '@canopy/brand/current';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
+import {
+  createForeignCrashDumpFilter,
+  hasWin32ShortNameComponent,
+  readMinidumpExecutablePath,
+  type CrashDumpClassification,
+} from '@canopy/desktop-instrumentation/electron/main';
 import { ZipFile } from 'yazl';
 import {
   COWORK_HOME_WORKTREE_ID,
@@ -98,11 +105,26 @@ import { isCoworkWorkspace } from '../lib/workspace-registry';
 import { validateId } from '../lib/validation';
 import { flushMainProcessLogging } from '../lib/main-process-logging';
 import type { MainLogFlushResult } from '../lib/async-main-log-sink';
+import { listCrashDumpFiles } from '../observability/crash-dump-sweep';
 
 export const MAX_FILE_BYTES = 25 * 1024 * 1024;
 const MAX_OUTPUT_FILENAME_ATTEMPTS = 100;
 const FEEDBACK_VERSION = 1;
 const MAIN_LOG_FEEDBACK_FLUSH_TIMEOUT_MS = 1000;
+const CRASH_DUMPS_ZIP_DIR = 'system-logs/crash-dumps';
+const CRASH_DUMP_FEEDBACK_MAX_COUNT = 5;
+const CRASH_DUMP_FEEDBACK_MAX_FILE_BYTES = 16 * 1024 * 1024;
+const CRASH_DUMP_FEEDBACK_MAX_TOTAL_BYTES = 48 * 1024 * 1024;
+// Filter reasons for a readable dump the node rule keeps. A bundle also
+// requires the executable to sit inside the app root (`locationVerdict`), so
+// only this app's own processes ship; the filter keeps dumps it cannot read,
+// qualify or place, and a bundle leaves the machine, so those stay out of it.
+// `short_name` is left out: the filter cannot compare a Windows 8.3 path with
+// the app root and reports every such path as in place, so `includeCrashDumps`
+// also rejects any executable at an 8.3 path.
+const CRASH_DUMP_BUNDLE_KEEP_REASONS: ReadonlySet<
+  CrashDumpClassification['reason']
+> = new Set(['not_node', 'app_bundle', 'inside_app_root']);
 const SENSITIVE_TOP_LEVEL_ZIP_PARTS: ReadonlySet<string> = new Set<string>([
   'secure',
   'repos',
@@ -246,8 +268,21 @@ interface FeedbackManifest {
       }
     >;
   };
+  /** Present only when the bundle holds crash dumps. */
+  crashDumps?: FeedbackCrashDumpsSummary;
   includedFiles: string[];
   skippedFiles: SkippedFile[];
+}
+
+interface FeedbackCrashDumpsSummary {
+  included: number;
+  sidecarPath: string;
+  /** Minidumps capture process memory, which can hold tokens or file contents. */
+  mayContainMemoryContents: true;
+}
+
+interface CollectedFeedbackFiles {
+  crashDumps: FeedbackCrashDumpsSummary | undefined;
 }
 
 interface NormalizedFeedbackRequest {
@@ -351,6 +386,10 @@ class FeedbackBundleBuilder {
 
   includedFiles(): string[] {
     return Array.from(this.included).sort();
+  }
+
+  isIncluded(zipPath: string): boolean {
+    return this.included.has(zipPath);
   }
 
   skippedFiles(): SkippedFile[] {
@@ -709,6 +748,9 @@ export type FeedbackBundleDestination = 'downloads' | 'temp';
 
 export interface PrepareFeedbackBundleOptions {
   destination?: FeedbackBundleDestination;
+  /** Defaults to true. Submit turns it off when dumps would push the bundle
+   * past the upload limit. */
+  includeCrashDumps?: boolean;
 }
 
 export async function prepareFeedbackBundle(
@@ -724,7 +766,11 @@ export async function prepareFeedbackBundle(
   let reservedOutput: ReservedFeedbackOutput | null = null;
 
   try {
-    await collectFeedbackFiles(builder, normalized);
+    const collected = await collectFeedbackFiles(
+      builder,
+      normalized,
+      options?.includeCrashDumps ?? true,
+    );
     const harnessSnapshot = getModelHarnessAssignmentSnapshot();
     builder.addManifest({
       version: FEEDBACK_VERSION,
@@ -735,6 +781,9 @@ export async function prepareFeedbackBundle(
       chatProjectIds: normalized.chatProjectIds,
       includeChatDetails: normalized.includeChatDetails,
       includePipelineExecutions: normalized.includePipelineExecutions,
+      ...(collected.crashDumps === undefined
+        ? {}
+        : { crashDumps: collected.crashDumps }),
       app: {
         version: app.getVersion(),
         runtimeMode: app.isPackaged ? 'prod' : 'dev',
@@ -1013,9 +1062,13 @@ function normalizeRequest(
 async function collectFeedbackFiles(
   builder: FeedbackBundleBuilder,
   request: NormalizedFeedbackRequest,
-): Promise<void> {
+  includeDumps: boolean,
+): Promise<CollectedFeedbackFiles> {
   await includeCoreDiagnostics(builder);
   await includeAppLogs(builder);
+  const crashDumps = includeDumps
+    ? await includeCrashDumps(builder)
+    : undefined;
   if (request.area === 'pipelines') {
     await includePipelineDiagnostics(builder);
   }
@@ -1043,6 +1096,7 @@ async function collectFeedbackFiles(
   if (request.area === 'chat' && request.includeChatDetails) {
     await includeStandaloneChatDetails(builder, request.chatProjectIds);
   }
+  return { crashDumps };
 }
 
 async function includeCoreDiagnostics(
@@ -1179,6 +1233,127 @@ async function includeMacDiagnosticReports(
       );
     }),
   );
+}
+
+interface CrashDumpCandidate {
+  filePath: string;
+  name: string;
+  stats: Stats;
+}
+
+/**
+ * Includes the newest local crash dumps on every platform. Crash dumps have no
+ * gate of their own, like the app log and the macOS DiagnosticReports beside
+ * them: the whole bundle is built only when the user explicitly exports
+ * diagnostics, or submits feedback with diagnostics included. Minidumps can
+ * hold process memory, so the sidecar and the manifest both say so. Only
+ * readable dumps whose executable is inside the app root are included, even
+ * before the startup sweep has run. Foreign, unreadable or otherwise unplaced
+ * dumps stay out, unlike the sweep, which keeps them. Where the foreign-dump
+ * filter does not apply, no dumps are included.
+ */
+async function includeCrashDumps(
+  builder: FeedbackBundleBuilder,
+): Promise<FeedbackCrashDumpsSummary | undefined> {
+  const hostOs = hostOperatingSystem();
+  if (!hostOs) return undefined;
+  const crashDumps = app.getPath('crashDumps');
+  const classifications: CrashDumpClassification[] = [];
+  // The executable path the filter read from each dump.
+  const executablePaths = new Map<string, string>();
+  const classify = createForeignCrashDumpFilter({
+    getCrashDumpsDir: () => crashDumps,
+    getExePath: () => app.getPath('exe'),
+    platform: hostOs,
+    readExecutablePath: async (filePath) => {
+      const result = await readMinidumpExecutablePath(filePath);
+      if (result.status === 'ok') {
+        executablePaths.set(filePath, result.executablePath);
+      }
+      return result;
+    },
+    onClassified: (classification) => {
+      classifications.push(classification);
+    },
+  });
+  const listing = await listCrashDumpFiles(crashDumps);
+  const candidates: CrashDumpCandidate[] = [];
+  for (const filePath of listing.filePaths) {
+    const result = await safeLstat(filePath);
+    if (result.status !== 'ok' || !result.stats.isFile()) continue;
+    candidates.push({
+      filePath,
+      name: relative(crashDumps, filePath).split(sep).join(posix.sep),
+      stats: result.stats,
+    });
+  }
+  candidates.sort(
+    (left, right) =>
+      right.stats.mtimeMs - left.stats.mtimeMs ||
+      left.name.localeCompare(right.name),
+  );
+
+  const included: { name: string; size_bytes: number; modified_at: string }[] =
+    [];
+  const skipped: { name: string; reason: 'too-large' | 'total-limit' }[] = [];
+  let totalBytes = 0;
+  for (const candidate of candidates) {
+    if (included.length >= CRASH_DUMP_FEEDBACK_MAX_COUNT) break;
+    // The filter calls `onClassified` exactly once per call, including when
+    // classification throws; a missing entry still fails closed below.
+    classifications.length = 0;
+    await classify(candidate.filePath);
+    const classification = classifications.pop();
+    if (
+      classification === undefined ||
+      classification.locationVerdict !== 'process' ||
+      !CRASH_DUMP_BUNDLE_KEEP_REASONS.has(classification.reason) ||
+      (hostOs === 'win32' &&
+        hasWin32ShortNameComponent(
+          executablePaths.get(candidate.filePath) ?? '',
+        ))
+    ) {
+      continue;
+    }
+    const size = candidate.stats.size;
+    if (size > CRASH_DUMP_FEEDBACK_MAX_FILE_BYTES) {
+      skipped.push({ name: candidate.name, reason: 'too-large' });
+      continue;
+    }
+    if (totalBytes + size > CRASH_DUMP_FEEDBACK_MAX_TOTAL_BYTES) {
+      skipped.push({ name: candidate.name, reason: 'total-limit' });
+      continue;
+    }
+    const zipPath = posix.join(CRASH_DUMPS_ZIP_DIR, candidate.name);
+    await builder.addFileIfSafe(candidate.filePath, zipPath, {
+      sourceRoot: crashDumps,
+    });
+    if (!builder.isIncluded(zipPath)) continue;
+    included.push({
+      name: candidate.name,
+      size_bytes: size,
+      modified_at: candidate.stats.mtime.toISOString(),
+    });
+    totalBytes += size;
+  }
+  if (included.length === 0) return undefined;
+
+  const sidecarPath = posix.join(CRASH_DUMPS_ZIP_DIR, 'crash-dumps.json');
+  builder.addGeneratedJson(sidecarPath, {
+    version: 1,
+    may_contain_memory_contents: true,
+    max_count: CRASH_DUMP_FEEDBACK_MAX_COUNT,
+    max_file_bytes: CRASH_DUMP_FEEDBACK_MAX_FILE_BYTES,
+    max_total_bytes: CRASH_DUMP_FEEDBACK_MAX_TOTAL_BYTES,
+    total_bytes: totalBytes,
+    dumps: included,
+    skipped,
+  });
+  return {
+    included: included.length,
+    sidecarPath,
+    mayContainMemoryContents: true,
+  };
 }
 
 function getFeedbackHomeDir(): string {

@@ -57,6 +57,7 @@ export interface W5BoundaryOperationBindings {
 
 export type W5RevisionReader = (
   resources: readonly W5Resource[],
+  forCommit?: boolean,
 ) => Promise<NonNullable<W5CommitRequest['expectedRevisions']>>;
 
 export type W5ExpectedRevisionCheck = (
@@ -80,7 +81,7 @@ export function createW5ExpectedRevisionCheck(
     expected?: number,
   ): Promise<void> {
     if (expected === undefined) return;
-    const [current] = await readRevisions([resource]);
+    const [current] = await readRevisions([resource], true);
     if (!current) throw new Error('W5 revision unavailable');
     if (current.revision !== expected)
       throw new W5RevisionConflictError(

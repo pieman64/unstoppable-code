@@ -131,7 +131,17 @@ export function PluginDetailView({
     [marketplace, plugin],
   );
   const needsInstall = pluginNeedsInstall(plugin);
-  const mcpServerHealth = usePluginMcpServerHealth(bundledServerRows);
+  const mcpConnectTarget = useMemo(
+    () =>
+      needsInstall
+        ? undefined
+        : { marketplaceId: marketplace.id, pluginName: plugin.name },
+    [marketplace.id, needsInstall, plugin.name],
+  );
+  const mcpServerHealth = usePluginMcpServerHealth(
+    bundledServerRows,
+    mcpConnectTarget,
+  );
   // List only the harnesses this build offers; the gates are its own flags.
   const cursorEnabled = useFeatureFlagsStore((state) =>
     state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.key),
@@ -359,8 +369,6 @@ export function PluginDetailView({
         statusContent={statusContent}
         sharedContent={sharedContent}
         // Where an installed plugin runs: every offered harness, signed in or not.
-        // Its MCP servers sign in from a chat's MCP Servers panel once a chat
-        // uses the plugin, not here.
         harnessRows={
           !needsInstall
             ? installedPluginHarnessRows(plugin, harnesses)

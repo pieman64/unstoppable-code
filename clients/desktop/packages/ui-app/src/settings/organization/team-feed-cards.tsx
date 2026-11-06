@@ -13,6 +13,7 @@ import {
   type ReactNode,
 } from 'react';
 import {
+  BusyLabel,
   Button,
   DelayedLoadingPlaceholder,
   ErrorBanner,
@@ -1019,7 +1020,7 @@ function WorktreeSummaryHistory({
               aria-label="Load more history"
               className="mt-3"
             >
-              {loadingMore ? 'Loading…' : 'Load more'}
+              <BusyLabel busy={loadingMore}>Load more</BusyLabel>
             </Button>
           )}
           {status === 'loaded' && loadMoreFailed && (

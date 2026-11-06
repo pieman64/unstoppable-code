@@ -1,3 +1,4 @@
+import { Heading } from '@canopy/ui-shared/components';
 import {
   useCallback,
   useEffect,
@@ -260,7 +261,9 @@ export function BrowserProfilePicker({
         <div className="flex flex-col gap-4">
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
-              <h3 className="text-s font-medium fg-primary">Browser profile</h3>
+              <Heading level={3} variant="title">
+                Browser profile
+              </Heading>
               {switchChangesProfile && (
                 <p className="mt-1 text-xs fg-secondary">
                   Replacing reloads this tab in the selected profile. Unsaved

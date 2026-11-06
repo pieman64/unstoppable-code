@@ -125,6 +125,23 @@ function frontMatterFields(
   return fields;
 }
 
+/**
+ * A note's front matter fields (top-level scalars and one level of nested
+ * blocks) and the text after its closing delimiter; null without front
+ * matter.
+ */
+export function readMemoryNoteFrontMatter(content: string): {
+  fields: Record<string, FrontMatterValue>;
+  rest: string;
+} | null {
+  const block = frontMatterBlock(content);
+  if (block === null) return null;
+  return {
+    fields: frontMatterFields(block.lines),
+    rest: content.slice(block.end),
+  };
+}
+
 /** The identity fields of a version 2 note; null for a note without an ID. */
 export function parseMemoryNoteIdentity(
   content: string,
@@ -176,6 +193,32 @@ export function withMemoryNoteId(content: string, noteId: string): string {
     content.slice(0, block.start),
     `---${eol}`,
     [idLine, ...kept].map((line) => `${line}${eol}`).join(''),
+    `---${eol}`,
+    content.slice(block.end),
+  ].join('');
+}
+
+/**
+ * The note with each given top-level scalar field set, replacing the line it
+ * had or adding one at the end of the front matter; the body is unchanged. A
+ * note without front matter is returned as it is.
+ */
+export function withMemoryNoteScalarFields(
+  content: string,
+  fields: Readonly<Record<string, string>>,
+): string {
+  const block = frontMatterBlock(content);
+  if (block === null) return content;
+  const names = Object.keys(fields);
+  const isReplaced = (line: string): boolean =>
+    names.some((name) => line.startsWith(`${name}:`));
+  const kept = block.lines.filter((line) => !isReplaced(line));
+  const added = names.map((name) => `${name}: ${JSON.stringify(fields[name])}`);
+  const { eol } = block;
+  return [
+    content.slice(0, block.start),
+    `---${eol}`,
+    [...kept, ...added].map((line) => `${line}${eol}`).join(''),
     `---${eol}`,
     content.slice(block.end),
   ].join('');

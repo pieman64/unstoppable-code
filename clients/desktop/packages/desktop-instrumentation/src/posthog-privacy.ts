@@ -252,6 +252,136 @@ function sanitizeProperties(
     : sanitized;
 }
 
+const MAX_EXCEPTION_LIST_ENTRIES = 5;
+const MAX_EXCEPTION_FRAMES = 50;
+const MAX_EXCEPTION_TEXT_LENGTH = 2_000;
+const EXCEPTION_TEXT_FRAME_KEYS = ['function', 'module'] as const;
+const EXCEPTION_PATH_FRAME_KEYS = ['filename', 'abs_path'] as const;
+// Copied verbatim after the generic pass: PostHog symbolicates by `chunk_id`,
+// which text redaction could mangle.
+const EXCEPTION_VERBATIM_FRAME_KEYS = [
+  'chunk_id',
+  'lineno',
+  'colno',
+  'in_app',
+  'platform',
+] as const;
+const EXCEPTION_MECHANISM_KEYS = ['type', 'handled', 'synthetic'] as const;
+
+function truncateExceptionText(value: string): string {
+  return value.length > MAX_EXCEPTION_TEXT_LENGTH
+    ? value.slice(0, MAX_EXCEPTION_TEXT_LENGTH)
+    : value;
+}
+
+function sanitizeExceptionPath(value: unknown): string | undefined {
+  return typeof value === 'string' ? redactUrl(value) : undefined;
+}
+
+function sanitizeExceptionFrame(
+  frame: unknown,
+): Record<string, unknown> | undefined {
+  if (!isRecord(frame)) return undefined;
+  const result: Record<string, unknown> = {};
+  for (const key of EXCEPTION_TEXT_FRAME_KEYS) {
+    const value = frame[key];
+    if (typeof value === 'string') result[key] = redactText(value);
+  }
+  for (const key of EXCEPTION_PATH_FRAME_KEYS) {
+    const value = sanitizeExceptionPath(frame[key]);
+    if (value !== undefined) result[key] = value;
+  }
+  for (const key of EXCEPTION_VERBATIM_FRAME_KEYS) {
+    const value = frame[key];
+    if (
+      typeof value === 'string' ||
+      typeof value === 'number' ||
+      typeof value === 'boolean'
+    )
+      result[key] = value;
+  }
+  return result;
+}
+
+function sanitizeExceptionEntry(
+  entry: unknown,
+): Record<string, unknown> | undefined {
+  if (!isRecord(entry)) return undefined;
+  const result: Record<string, unknown> = {};
+  if (typeof entry.type === 'string') result.type = redactText(entry.type);
+  if (typeof entry.value === 'string')
+    result.value = truncateExceptionText(redactText(entry.value));
+  if (isRecord(entry.mechanism)) {
+    const mechanism: Record<string, unknown> = {};
+    for (const key of EXCEPTION_MECHANISM_KEYS) {
+      const value = entry.mechanism[key];
+      if (typeof value === 'string' || typeof value === 'boolean')
+        mechanism[key] = value;
+    }
+    result.mechanism = mechanism;
+  }
+  if (isRecord(entry.stacktrace)) {
+    const frames = Array.isArray(entry.stacktrace.frames)
+      ? entry.stacktrace.frames
+      : [];
+    result.stacktrace = {
+      ...(typeof entry.stacktrace.type === 'string' && {
+        type: entry.stacktrace.type,
+      }),
+      // Keep the innermost frames; the SDK orders frames outermost first.
+      frames: frames
+        .slice(-MAX_EXCEPTION_FRAMES)
+        .map(sanitizeExceptionFrame)
+        .filter((frame) => frame !== undefined),
+    };
+  }
+  return result;
+}
+
+/** The SDK's `$exception` shape is an allowlist: unknown `$exception_*` keys
+ * and frame fields are dropped rather than passed through. `$exception_message`
+ * is redacted, not dropped by the `message` denylist entry. Runs before the
+ * generic pass, whose output is then overlaid with these fields. */
+function sanitizePostHogExceptionProperties(
+  properties: Record<string, unknown>,
+): Record<string, unknown> {
+  const exceptionProperties: Record<string, unknown> = {};
+  const list = properties.$exception_list;
+  if (Array.isArray(list)) {
+    exceptionProperties.$exception_list = list
+      .slice(0, MAX_EXCEPTION_LIST_ENTRIES)
+      .map(sanitizeExceptionEntry)
+      .filter((entry) => entry !== undefined);
+  }
+  const message = properties.$exception_message;
+  if (typeof message === 'string') {
+    exceptionProperties.$exception_message = truncateExceptionText(
+      redactText(message),
+    );
+  }
+  const level = properties.$exception_level;
+  if (typeof level === 'string') exceptionProperties.$exception_level = level;
+  const fingerprint = properties.$exception_fingerprint;
+  if (typeof fingerprint === 'string') {
+    exceptionProperties.$exception_fingerprint = redactText(fingerprint);
+  }
+  const source = sanitizeExceptionPath(properties.$exception_source);
+  if (source !== undefined) exceptionProperties.$exception_source = source;
+  for (const key of ['$exception_lineno', '$exception_colno'] as const) {
+    const value = properties[key];
+    if (typeof value === 'number') exceptionProperties[key] = value;
+  }
+  return exceptionProperties;
+}
+
+function withoutExceptionProperties(
+  properties: Record<string, unknown>,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(properties).filter(([key]) => !key.startsWith('$exception')),
+  );
+}
+
 interface SanitizePostHogEventOptions {
   preserveBrowserProjectToken?: boolean;
   /** Recorder payloads are already masked and may contain gzip latin1 bytes. */
@@ -287,8 +417,14 @@ export function sanitizePostHogEvent<
   const rendererRoute = eventRoute ?? optionRoute;
   const location = rendererRoute ?? fallbackLocation;
   const passthroughKeys = options.passthroughProperties ?? [];
+  const exceptionProperties =
+    'event' in event && event.event === '$exception' && event.properties
+      ? sanitizePostHogExceptionProperties(event.properties)
+      : undefined;
   let propertiesToSanitize: Record<string, unknown> | undefined =
-    event.properties;
+    exceptionProperties && event.properties
+      ? withoutExceptionProperties(event.properties)
+      : event.properties;
   if (propertiesToSanitize && passthroughKeys.length > 0) {
     propertiesToSanitize = { ...propertiesToSanitize };
     for (const key of passthroughKeys) {
@@ -311,6 +447,7 @@ export function sanitizePostHogEvent<
         sanitizedProperties[key] = event.properties[key];
       }
     }
+    Object.assign(sanitizedProperties, exceptionProperties);
   }
   const sanitizedEvent = {
     ...event,

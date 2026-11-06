@@ -16,6 +16,12 @@ export interface EntityEditModalFooterProps {
   onDelete: () => void;
   onClose: () => void;
   onSave: () => void;
+  /** Replaces **Save**, **Saving…** and **Cancel** on a task-specific form. */
+  saveLabel?: string;
+  savingLabel?: string;
+  cancelLabel?: string;
+  /** Visible action scope, outside the scrollable form and its disclosures. */
+  notice?: ReactNode;
 }
 
 interface EntityEditModalContentProps {
@@ -62,10 +68,15 @@ export function EntityEditModalFooter({
   onDelete,
   onClose,
   onSave,
+  saveLabel = 'Save',
+  savingLabel = 'Saving\u2026',
+  cancelLabel = 'Cancel',
+  notice,
 }: EntityEditModalFooterProps): JSX.Element {
   return (
-    <div className="flex items-center justify-between border-t px-6 py-3">
+    <div className="flex flex-wrap items-center justify-between gap-3 border-t px-6 py-3">
       <div>
+        {notice}
         {!isCreate && !confirmDelete && (
           <Button
             variant="ghost-destructive"
@@ -95,7 +106,7 @@ export function EntityEditModalFooter({
       </div>
       <div className="flex items-center gap-2">
         <Button size="compact" onClick={onClose}>
-          Cancel
+          {cancelLabel}
         </Button>
         <Button
           variant="primary"
@@ -103,7 +114,7 @@ export function EntityEditModalFooter({
           onClick={onSave}
           disabled={!canSave}
         >
-          {saving ? 'Saving\u2026' : 'Save'}
+          {saving ? savingLabel : saveLabel}
         </Button>
       </div>
     </div>

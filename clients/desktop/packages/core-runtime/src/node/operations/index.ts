@@ -29,7 +29,6 @@ export type {
 } from './ledger/ledger';
 export {
   LocalWorkerExecution,
-  fingerprintExecutionSecret,
   type LocalWorkerDispatchRequest,
   type LocalWorkerDispatchResult,
 } from './local-worker';

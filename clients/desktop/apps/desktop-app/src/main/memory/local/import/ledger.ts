@@ -23,6 +23,13 @@ export interface ImportStateStagedEntry {
   sourceTool?: MemoryImportSourceTool;
   /** The import's note ID; its content stays verbatim, without front matter. */
   noteId?: string;
+  /**
+   * When the note was deleted, tombstoned, superseded or withheld here. A
+   * retired entry no longer claims its staged path, so a later import may
+   * be staged there; it stays so that an unchanged source is not imported
+   * again.
+   */
+  retiredAt?: string;
 }
 
 export interface ImportStateSkipEntry {
@@ -69,8 +76,16 @@ function isImportStateStagedEntry(
     (value.sourceTool === undefined ||
       value.sourceTool === 'claude-code' ||
       value.sourceTool === 'codex') &&
-    (value.noteId === undefined || isMemoryUlid(value.noteId))
+    (value.noteId === undefined || isMemoryUlid(value.noteId)) &&
+    (value.retiredAt === undefined || isTimestamp(value.retiredAt))
   );
+}
+
+/** A staged import whose note is still live: it claims its staged path. */
+export function isLiveImportEntry(
+  entry: ImportStateEntry,
+): entry is ImportStateStagedEntry {
+  return 'stagedAs' in entry && entry.retiredAt === undefined;
 }
 
 function isImportStateSkipEntry(value: unknown): value is ImportStateSkipEntry {
@@ -198,10 +213,65 @@ export async function stampImportsConsolidated(
   const state = await readImportState(scopeDir);
   let changed = false;
   for (const [sourcePath, entry] of Object.entries(state.sources)) {
-    if (!('stagedAs' in entry) || !stagedSet.has(entry.stagedAs)) {
+    if (!isLiveImportEntry(entry) || !stagedSet.has(entry.stagedAs)) {
       continue;
     }
     state.sources[sourcePath] = { ...entry, consolidatedAt };
+    changed = true;
+  }
+  if (changed) {
+    await writeImportState(scopeDir, state);
+  }
+}
+
+/**
+ * Stamps the live entries of consumed import notes that are not stamped yet,
+ * by note ID: a replay of an archive cut short after its move completes the
+ * stamp, and a stamp never lands on another import staged under the path.
+ */
+export async function stampImportNotesConsolidated(
+  scopeDir: string,
+  noteIds: ReadonlySet<string>,
+  consolidatedAt: string,
+): Promise<void> {
+  if (noteIds.size === 0) return;
+  const state = await readImportState(scopeDir);
+  let changed = false;
+  for (const [sourcePath, entry] of Object.entries(state.sources)) {
+    if (
+      !isLiveImportEntry(entry) ||
+      entry.consolidatedAt !== undefined ||
+      entry.noteId === undefined ||
+      !noteIds.has(entry.noteId)
+    ) {
+      continue;
+    }
+    state.sources[sourcePath] = { ...entry, consolidatedAt };
+    changed = true;
+  }
+  if (changed) {
+    await writeImportState(scopeDir, state);
+  }
+}
+
+/** Retires the entries of import notes that were removed (see `retiredAt`). */
+export async function retireImportNotes(
+  scopeDir: string,
+  noteIds: ReadonlySet<string>,
+  retiredAt: string,
+): Promise<void> {
+  if (noteIds.size === 0) return;
+  const state = await readImportState(scopeDir);
+  let changed = false;
+  for (const [sourcePath, entry] of Object.entries(state.sources)) {
+    if (
+      !isLiveImportEntry(entry) ||
+      entry.noteId === undefined ||
+      !noteIds.has(entry.noteId)
+    ) {
+      continue;
+    }
+    state.sources[sourcePath] = { ...entry, retiredAt };
     changed = true;
   }
   if (changed) {

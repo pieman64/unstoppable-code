@@ -1,38 +1,12 @@
 import { isWatchDelegatesCompatibilityName } from '@canopy/desktop-shared/node/delegation/watch-delegates-tombstone';
 import {
-  SHOW_CAPABILITIES_DESCRIPTION,
-  showCapabilitiesJsonSchema,
-} from '../canopy-tools/show-capabilities';
-import {
-  CanopyCloudClientError,
-  resolveCanopyCloudCredentialContext,
-} from '../canopy-cloud/client';
-import {
-  registerAccountMcpRouteStatus,
-  removeAccountMcpRouteStatus,
-  setAccountMcpRouteReauthRequired,
-} from './account-route-status';
-import { logMainProcessError } from '../lib/main-process-logging';
-import {
-  WATCH_COMMAND_DESCRIPTION,
-  SCHEDULE_WAKEUP_DESCRIPTION,
-  watchCommandJsonSchema,
-  scheduleWakeupJsonSchema,
-} from '../canopy-tools/local-watcher-definitions';
-import {
   createServer,
-  request as httpRequest,
-  type IncomingHttpHeaders,
   type IncomingMessage,
-  type RequestOptions,
   type Server,
   type ServerResponse,
 } from 'node:http';
-import { request as httpsRequest } from 'node:https';
 import type { Socket } from 'node:net';
-import { randomBytes, timingSafeEqual, randomUUID } from 'node:crypto';
-import { createCopilotCapabilitySnapshot } from '@canopy/desktop-shared/node/copilot/capability-snapshot';
-import { readFile } from 'node:fs/promises';
+import { timingSafeEqual, randomUUID } from 'node:crypto';
 import { BRAND } from '@canopy/brand/current';
 import type { BrowserWindow } from 'electron';
 import {
@@ -52,29 +26,21 @@ import {
   ASK_USER_TIMEOUT_MS,
   CANOPY_INJECTED_TOOL_REGISTRY,
   CANOPY_INJECTED_TOOL_SURFACE_ALLOWLISTS,
-  getCanonicalCanopyToolKey,
   isCodeGraphInjectedToolKey,
   isLedgerInjectedToolKey,
   type CanopyInjectedToolKey,
   type CanopyInjectedToolSurface,
 } from '@canopy/desktop-shared/lib/canopy-injected-tools';
 import {
-  APP_ADVISOR_TOOL_ENTRIES,
   APP_ADVISOR_TOOL_REGISTRY,
   isAppAdvisorLedgerToolKey,
   type AppAdvisorToolKey,
 } from '@canopy/desktop-shared/lib/app-advisor-tools';
-import {
-  PIPELINE_EDITOR_TOOL_ENTRIES,
-  type PipelineEditorToolKey,
-} from '@canopy/desktop-shared/lib/pipeline-editor-tools';
+import type { PipelineEditorToolKey } from '@canopy/desktop-shared/lib/pipeline-editor-tools';
 import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/generated/serde_json/JsonValue';
 import type {
   McpProxyState,
   McpProxyStatus,
-  McpServerConfigData,
-  McpServerDefinitionData,
-  McpServerFile,
 } from '@canopy/desktop-shared/types/mcp-servers';
 import {
   DEFAULT_MCP_PROXY_PORT,
@@ -88,16 +54,24 @@ import {
   isClaudeWorkerToolExposed,
   type ClaudeWorkerMemoryToolExposure,
 } from '../integration/claude-worker-tool-exposure';
-import { clearAuthFailureToolNameCache } from '../lib/auth-failure-event';
-import { getMcpServerFilePath } from '../lib/paths';
-import { getValidMcpAccessToken, handleMcpOAuthCallback } from './oauth-client';
-import { writeMcpOAuthCallbackPage } from './oauth-callback-page';
-import { invalidateMcpOAuthAccessToken } from './oauth-token-store';
 import {
-  clearPendingAuthFailures,
-  recordPendingMcpAuthFailure,
-} from './pending-auth-failures';
-import { classifyMcpAuthFailure } from '@canopy/desktop-shared/agent-failures';
+  AgentMcpConnections,
+  type McpProxiedToolCallGate,
+  type McpProxyRouteRegistration,
+} from './agent-mcp-connections';
+import {
+  getHeaderValue,
+  getJsonRpcId,
+  isRecord,
+  jsonRpcError,
+  jsonRpcInternalError,
+  readRequestBody,
+  RequestBodyTooLargeError,
+  writeJson,
+  writePayloadTooLargeJsonRpc,
+} from './integration-http';
+import { handleMcpOAuthCallback } from './oauth-client';
+import { writeMcpOAuthCallbackPage } from './oauth-callback-page';
 import {
   executeCanopyInjectedTool,
   type CanopyInjectedToolContext,
@@ -110,83 +84,8 @@ import {
 } from '../canopy-tools/show-files-runtime';
 import { CODE_GRAPH_UNAVAILABLE_MESSAGE } from '../lib/code-graph-availability';
 import {
-  SET_AUTO_ARCHIVE_DESCRIPTION,
-  SET_BASE_BRANCH_DESCRIPTION,
-  START_FORKED_AGENT_DESCRIPTION,
-  START_BRANCHED_AGENT_DESCRIPTION,
-  startSplitAgentJsonSchema,
-  ASK_USER_QUESTION_DESCRIPTION,
-  BUILD_OR_UPDATE_CODE_GRAPH_DESCRIPTION,
-  COMPARE_CHANGE_IMPACT_DESCRIPTION,
-  DETECT_CHANGED_SYMBOLS_DESCRIPTION,
-  DELETE_WATCHERS_DESCRIPTION,
-  DISPATCH_ACTION_DESCRIPTION,
-  EXPLAIN_CODE_SYMBOL_DESCRIPTION,
-  GET_CODE_GRAPH_CONTEXT_DESCRIPTION,
-  GET_GIT_PREFERENCES_DESCRIPTION,
-  GET_FILE_COMMENTS_DESCRIPTION,
-  GET_REVIEW_COMMENTS_DESCRIPTION,
-  GET_IMPACT_RADIUS_DESCRIPTION,
-  GET_REVIEW_CONTEXT_DESCRIPTION,
-  GET_SCRIPT_OUTPUT_DESCRIPTION,
-  QUERY_CODE_GRAPH_DESCRIPTION,
-  READ_PIPELINE_YAML_DESCRIPTION,
-  SAVE_MEMORY_DESCRIPTION,
-  SEARCH_MEMORY_DESCRIPTION,
-  READ_MEMORY_DESCRIPTION,
-  SHOW_FILES_DESCRIPTION,
-  SHOW_VISUAL_DESCRIPTION,
-  RESPOND_TO_FILE_COMMENT_DESCRIPTION,
-  RESPOND_TO_REVIEW_COMMENT_DESCRIPTION,
-  REPORT_STRUCTURED_RESULT_DESCRIPTION,
-  SEARCH_ACTIONS_DESCRIPTION,
-  SEARCH_CODE_GRAPH_DESCRIPTION,
-  SEARCH_WATCHERS_DESCRIPTION,
-  SETUP_WATCHERS_DESCRIPTION,
-  WATCH_GITHUB_ITEMS_DESCRIPTION,
-  GET_GITHUB_PULL_REQUEST_STATUS_DESCRIPTION,
-  setAutoArchiveJsonSchema,
-  setBaseBranchJsonSchema,
-  askUserQuestionJsonSchema,
-  deleteWatchersJsonSchema,
-  buildOrUpdateCodeGraphJsonSchema,
-  compareChangeImpactJsonSchema,
-  coworkDispatchActionJsonSchema,
-  detectChangedSymbolsJsonSchema,
-  dispatchActionJsonSchema,
-  explainCodeSymbolJsonSchema,
-  getCodeGraphContextJsonSchema,
-  getGitPreferencesJsonSchema,
-  getFileCommentsJsonSchema,
-  getImpactRadiusJsonSchema,
-  getReviewContextJsonSchema,
   getReviewCommentsSchema,
-  getReviewCommentsJsonSchema,
-  getScriptOutputJsonSchema,
-  queryCodeGraphJsonSchema,
-  readPipelineYamlJsonSchema,
-  saveMemoryJsonSchema,
-  searchMemoryJsonSchema,
-  readMemoryJsonSchema,
-  showFilesJsonSchema,
-  showVisualJsonSchema,
-  previewVisualJsonSchema,
-  PREVIEW_VISUAL_DESCRIPTION,
-  respondToFileCommentJsonSchema,
-  respondToCommentJsonSchema,
   respondToCommentSchema,
-  searchActionsJsonSchema,
-  searchCodeGraphJsonSchema,
-  searchWatchersJsonSchema,
-  setupWatchersJsonSchema,
-  watchGitHubItemsJsonSchema,
-  getGitHubPullRequestStatusJsonSchema,
-  ADD_LEDGER_ENTRY_DESCRIPTION,
-  SEARCH_LEDGER_ENTRIES_DESCRIPTION,
-  UPDATE_LEDGER_ENTRY_DESCRIPTION,
-  addLedgerEntryJsonSchema,
-  searchLedgerEntriesJsonSchema,
-  updateLedgerEntryJsonSchema,
 } from '../canopy-tools/definitions';
 import { chatVisualsEligible } from '../lib/chat-visuals-feature-flag';
 import { VISUAL_PREVIEW_BUDGETS } from '../browser/visual-preview-types';
@@ -195,12 +94,6 @@ import {
   ledgerUnavailableResult,
   type LedgerToolsRuntime,
 } from '../canopy-tools/ledger-tools-runtime';
-import {
-  LOAD_DEFERRED_TOOLS_DESCRIPTION,
-  SEARCH_DEFERRED_TOOLS_DESCRIPTION,
-  loadDeferredToolsJsonSchema,
-  searchDeferredToolsJsonSchema,
-} from '../deferred-tools/definitions';
 import { deferredToolsReloadCoordinator } from '../deferred-tools/reload-coordinator';
 import {
   loadWorktreePipelineYaml,
@@ -218,7 +111,6 @@ import { isCoworkWorkspace } from '../lib/workspace-registry';
 import { sendToWindow } from '../lib/window-send';
 import type { AppAdvisorToolRuntime } from '../app-advisor/runtime';
 import {
-  APP_ADVISOR_START_FORKED_AGENT_DESCRIPTION,
   executeAppAdvisorTool,
   type AppAdvisorToolContext,
 } from '../app-advisor/tool-executor';
@@ -226,55 +118,27 @@ import type { PipelineEditorToolRuntime } from '../pipeline-editor/runtime';
 import { executePipelineEditorTool } from '../pipeline-editor/tool-executor';
 import { rejectRequest } from './pending-requests';
 import {
-  APP_ADVISOR_ADD_LEDGER_ENTRY_DESCRIPTION,
-  APP_ADVISOR_GET_SCRIPT_OUTPUT_DESCRIPTION,
-  APP_ADVISOR_GET_FILE_COMMENTS_DESCRIPTION,
-  APP_ADVISOR_READ_PIPELINE_YAML_DESCRIPTION,
-  APP_ADVISOR_RESPOND_TO_FILE_COMMENT_DESCRIPTION,
-  APP_ADVISOR_SEARCH_LEDGER_ENTRIES_DESCRIPTION,
-  APP_ADVISOR_SHOW_FILES_DESCRIPTION,
-  APP_ADVISOR_UPDATE_LEDGER_ENTRY_DESCRIPTION,
-  DISPATCH_ACTION_DESCRIPTION as APP_ADVISOR_DISPATCH_ACTION_DESCRIPTION,
-  GET_CURRENT_UI_STATE_DESCRIPTION,
-  GET_PIPELINE_DEBUG_CONTEXT_DESCRIPTION,
-  SEARCH_ACTIONS_DESCRIPTION as APP_ADVISOR_SEARCH_ACTIONS_DESCRIPTION,
-  SEARCH_WATCHERS_DESCRIPTION as APP_ADVISOR_SEARCH_WATCHERS_DESCRIPTION,
-  SETUP_WATCHERS_DESCRIPTION as APP_ADVISOR_SETUP_WATCHERS_DESCRIPTION,
-  WATCH_GITHUB_ITEMS_DESCRIPTION as APP_ADVISOR_WATCH_GITHUB_ITEMS_DESCRIPTION,
-  GET_GITHUB_PULL_REQUEST_STATUS_DESCRIPTION as APP_ADVISOR_GET_GITHUB_PULL_REQUEST_STATUS_DESCRIPTION,
-  appAdvisorGetScriptOutputJsonSchema,
-  appAdvisorGetFileCommentsJsonSchema,
-  appAdvisorReadPipelineYamlJsonSchema,
-  appAdvisorShowFilesJsonSchema,
-  appAdvisorRespondToFileCommentJsonSchema,
-  askUserQuestionJsonSchema as appAdvisorAskUserQuestionJsonSchema,
-  dispatchActionJsonSchema as appAdvisorDispatchActionJsonSchema,
-  getCurrentUiStateJsonSchema,
-  getPipelineDebugContextJsonSchema,
-  searchActionsJsonSchema as appAdvisorSearchActionsJsonSchema,
-  searchWatchersJsonSchema as appAdvisorSearchWatchersJsonSchema,
-  setupWatchersJsonSchema as appAdvisorSetupWatchersJsonSchema,
-  watchGitHubItemsJsonSchema as appAdvisorWatchGitHubItemsJsonSchema,
-} from '../app-advisor/definitions';
-import {
-  NAVIGATION_TO_LIST_DESCRIPTION,
-  PIPELINE_CREATE_DESCRIPTION,
-  PIPELINE_GET_ACTION_DEFINITION_DESCRIPTION,
-  PIPELINE_GET_CURRENT_DESCRIPTION,
-  PIPELINE_LIST_DESCRIPTION,
-  PIPELINE_OPEN_DESCRIPTION,
-  PIPELINE_SAVE_DESCRIPTION,
-  PIPELINE_SET_YAML_DESCRIPTION,
-  askUserQuestionJsonSchema as pipelineEditorAskUserQuestionJsonSchema,
-  emptyArgsJsonSchema as pipelineEditorEmptyArgsJsonSchema,
-  pipelineGetActionDefinitionJsonSchema,
-  pipelineOpenJsonSchema,
-  pipelineSetYamlJsonSchema,
-} from '../pipeline-editor/definitions';
+  getCanopyRouteTools,
+  getClaudeCanopyToolKey,
+  getClaudeCanopyToolSurface,
+  getClaudeTerminalAppAdvisorToolKey,
+  getClaudeTerminalPipelineEditorToolKey,
+  getClaudeToolUseId,
+  GET_REVIEW_COMMENTS_TOOL_NAME,
+  listCanopyRouteTools,
+  REPORT_STRUCTURED_RESULT_TOOL_NAME,
+  RESPOND_TO_COMMENT_TOOL_NAME,
+  toMcpToolResult,
+} from './canopy-route-tools';
+
+/**
+ * The desktop integration server (CAN-4125): loopback transport and lifecycle.
+ * Upstream agent connections live in agent-mcp-connections.ts; the Canopy tool
+ * router and the interface port follow in CAN-4125 PR2 and PR3.
+ */
 
 export const MCP_PROXY_HEALTH_SERVICE = 'desktop-integration-server';
 const MCP_PROXY_HEALTH_VERSION = 1;
-const MAX_REQUEST_BODY_BYTES = 2 * 1024 * 1024;
 
 export interface McpProxyBroadcastHandlers {
   status: (state: McpProxyState) => void;
@@ -287,47 +151,11 @@ interface CanopyMcpRequestContext {
   signal?: AbortSignal;
 }
 
-export interface McpProxyRoute {
-  routeId: string;
-  sessionId: string | null;
-  serverId: string;
-  configId: string;
-  displayName: string;
-  upstreamUrl: string;
-  headers: Record<string, string>;
-  oauthEnabled: boolean;
-  authSupplier?: 'oauth' | 'canopy-cloud';
-  reauthRequired?: boolean;
-  oauthRequired?: boolean;
-  oauthDefinition?: McpServerDefinitionData;
-  oauthConfig?: McpServerConfigData;
-  /** Delegated routes must never forward without their live parent gate. */
-  requireToolCallGate?: boolean;
-}
-
-export interface McpProxyRouteRegistration extends Omit<
+export type {
   McpProxyRoute,
-  'routeId' | 'reauthRequired'
-> {
-  routeKey?: string;
-}
-
-interface InternalMcpProxyRoute extends McpProxyRoute {
-  routeKey?: string;
-  parsedUpstream: URL;
-}
-
-/**
- * Execution-time gate a session installs for the proxied plugin and
- * standalone MCP routes it owns. Consulted for every `tools/call` before it
- * is forwarded upstream; `false` answers the call with a denial instead.
- */
-export type McpProxiedToolCallGate = (call: {
-  proxyUrl: string;
-  tool: string;
-  args: Record<string, unknown>;
-  requestId?: string;
-}) => Promise<boolean>;
+  McpProxyRouteRegistration,
+  McpProxiedToolCallGate,
+} from './agent-mcp-connections';
 
 export type ClaudeTerminalHookHandler = (
   body: ClaudeTerminalHookCallbackBody,
@@ -424,18 +252,7 @@ export interface CanopyWorktreeSessionRoute {
  */
 const CANOPY_MCP_SSE_KEEPALIVE_MS = 240_000;
 
-/**
- * Stable display name for the bespoke code-review reply tool (formerly shared
- * with the retired plan-chat takeover).
- */
-const RESPOND_TO_COMMENT_TOOL_NAME = 'RespondToComment';
-/**
- * Stable display name for the bespoke code-review read tool. Code-review
- * sessions reuse `RespondToComment` (with a review-specific description) for
- * the reply side.
- */
-const GET_REVIEW_COMMENTS_TOOL_NAME = 'GetReviewComments';
-export const REPORT_STRUCTURED_RESULT_TOOL_NAME = 'ReportStructuredResult';
+export { REPORT_STRUCTURED_RESULT_TOOL_NAME } from './canopy-route-tools';
 
 export interface McpProxyHealthCheck {
   ok: true;
@@ -446,511 +263,8 @@ export interface McpProxyHealthCheck {
   routeCount: number;
 }
 
-const SAFE_FORWARD_HEADERS = new Set([
-  'accept',
-  'content-type',
-  'mcp-session-id',
-  'mcp-protocol-version',
-  'last-event-id',
-]);
-
-const SAFE_RESPONSE_HEADERS = new Set([
-  'transfer-encoding',
-  'content-type',
-  'cache-control',
-  'mcp-session-id',
-  'mcp-protocol-version',
-  'last-event-id',
-  'www-authenticate',
-]);
-
-const CLAUDE_TERMINAL_TOOL_DEFINITIONS: Readonly<
-  Partial<
-    Record<
-      CanopyInjectedToolKey,
-      {
-        description: string;
-        inputSchema: JsonValue;
-      }
-    >
-  >
-> = {
-  watch_command: {
-    description: WATCH_COMMAND_DESCRIPTION,
-    inputSchema: watchCommandJsonSchema,
-  },
-  schedule_wakeup: {
-    description: SCHEDULE_WAKEUP_DESCRIPTION,
-    inputSchema: scheduleWakeupJsonSchema,
-  },
-  ask_user_question: {
-    description: ASK_USER_QUESTION_DESCRIPTION,
-    inputSchema: askUserQuestionJsonSchema,
-  },
-  get_script_output: {
-    description: GET_SCRIPT_OUTPUT_DESCRIPTION,
-    inputSchema: getScriptOutputJsonSchema,
-  },
-  get_git_preferences: {
-    description: GET_GIT_PREFERENCES_DESCRIPTION,
-    inputSchema: getGitPreferencesJsonSchema,
-  },
-  save_memory: {
-    description: SAVE_MEMORY_DESCRIPTION,
-    inputSchema: saveMemoryJsonSchema,
-  },
-  search_memory: {
-    description: SEARCH_MEMORY_DESCRIPTION,
-    inputSchema: searchMemoryJsonSchema,
-  },
-  read_memory: {
-    description: READ_MEMORY_DESCRIPTION,
-    inputSchema: readMemoryJsonSchema,
-  },
-  read_pipeline_yaml: {
-    description: READ_PIPELINE_YAML_DESCRIPTION,
-    inputSchema: readPipelineYamlJsonSchema,
-  },
-  show_capabilities: {
-    description: SHOW_CAPABILITIES_DESCRIPTION,
-    inputSchema: showCapabilitiesJsonSchema,
-  },
-  show_files: {
-    description: SHOW_FILES_DESCRIPTION,
-    inputSchema: showFilesJsonSchema,
-  },
-  show_visual: {
-    description: SHOW_VISUAL_DESCRIPTION,
-    inputSchema: showVisualJsonSchema,
-  },
-  preview_visual: {
-    description: PREVIEW_VISUAL_DESCRIPTION,
-    inputSchema: previewVisualJsonSchema,
-  },
-  get_file_comments: {
-    description: GET_FILE_COMMENTS_DESCRIPTION,
-    inputSchema: getFileCommentsJsonSchema,
-  },
-  respond_to_file_comment: {
-    description: RESPOND_TO_FILE_COMMENT_DESCRIPTION,
-    inputSchema: respondToFileCommentJsonSchema,
-  },
-  search_actions: {
-    description: SEARCH_ACTIONS_DESCRIPTION,
-    inputSchema: searchActionsJsonSchema,
-  },
-  dispatch_action: {
-    description: DISPATCH_ACTION_DESCRIPTION,
-    inputSchema: dispatchActionJsonSchema,
-  },
-  search_watchers: {
-    description: SEARCH_WATCHERS_DESCRIPTION,
-    inputSchema: searchWatchersJsonSchema,
-  },
-  setup_watchers: {
-    description: SETUP_WATCHERS_DESCRIPTION,
-    inputSchema: setupWatchersJsonSchema,
-  },
-  watch_github_items: {
-    description: WATCH_GITHUB_ITEMS_DESCRIPTION,
-    inputSchema: watchGitHubItemsJsonSchema,
-  },
-  get_github_pull_request_status: {
-    description: GET_GITHUB_PULL_REQUEST_STATUS_DESCRIPTION,
-    inputSchema: getGitHubPullRequestStatusJsonSchema,
-  },
-  delete_watchers: {
-    description: DELETE_WATCHERS_DESCRIPTION,
-    inputSchema: deleteWatchersJsonSchema,
-  },
-  set_auto_archive: {
-    description: SET_AUTO_ARCHIVE_DESCRIPTION,
-    inputSchema: setAutoArchiveJsonSchema,
-  },
-  start_forked_agent: {
-    description: START_FORKED_AGENT_DESCRIPTION,
-    inputSchema: startSplitAgentJsonSchema,
-  },
-  start_branched_agent: {
-    description: START_BRANCHED_AGENT_DESCRIPTION,
-    inputSchema: startSplitAgentJsonSchema,
-  },
-  set_base_branch: {
-    description: SET_BASE_BRANCH_DESCRIPTION,
-    inputSchema: setBaseBranchJsonSchema,
-  },
-  get_code_graph_context: {
-    description: GET_CODE_GRAPH_CONTEXT_DESCRIPTION,
-    inputSchema: getCodeGraphContextJsonSchema,
-  },
-  build_or_update_code_graph: {
-    description: BUILD_OR_UPDATE_CODE_GRAPH_DESCRIPTION,
-    inputSchema: buildOrUpdateCodeGraphJsonSchema,
-  },
-  query_code_graph: {
-    description: QUERY_CODE_GRAPH_DESCRIPTION,
-    inputSchema: queryCodeGraphJsonSchema,
-  },
-  search_code_graph: {
-    description: SEARCH_CODE_GRAPH_DESCRIPTION,
-    inputSchema: searchCodeGraphJsonSchema,
-  },
-  explain_code_symbol: {
-    description: EXPLAIN_CODE_SYMBOL_DESCRIPTION,
-    inputSchema: explainCodeSymbolJsonSchema,
-  },
-  get_impact_radius: {
-    description: GET_IMPACT_RADIUS_DESCRIPTION,
-    inputSchema: getImpactRadiusJsonSchema,
-  },
-  detect_changed_symbols: {
-    description: DETECT_CHANGED_SYMBOLS_DESCRIPTION,
-    inputSchema: detectChangedSymbolsJsonSchema,
-  },
-  compare_change_impact: {
-    description: COMPARE_CHANGE_IMPACT_DESCRIPTION,
-    inputSchema: compareChangeImpactJsonSchema,
-  },
-  get_review_context: {
-    description: GET_REVIEW_CONTEXT_DESCRIPTION,
-    inputSchema: getReviewContextJsonSchema,
-  },
-  search_deferred_tools: {
-    description: SEARCH_DEFERRED_TOOLS_DESCRIPTION,
-    inputSchema: searchDeferredToolsJsonSchema,
-  },
-  load_deferred_tools: {
-    description: LOAD_DEFERRED_TOOLS_DESCRIPTION,
-    inputSchema: loadDeferredToolsJsonSchema,
-  },
-  add_ledger_entry: {
-    description: ADD_LEDGER_ENTRY_DESCRIPTION,
-    inputSchema: addLedgerEntryJsonSchema,
-  },
-  search_ledger_entries: {
-    description: SEARCH_LEDGER_ENTRIES_DESCRIPTION,
-    inputSchema: searchLedgerEntriesJsonSchema,
-  },
-  update_ledger_entry: {
-    description: UPDATE_LEDGER_ENTRY_DESCRIPTION,
-    inputSchema: updateLedgerEntryJsonSchema,
-  },
-};
-
-function buildClaudeCanopyMcpTools(surface: CanopyInjectedToolSurface): Array<{
-  canonicalKey: CanopyInjectedToolKey;
-  name: string;
-  description: string;
-  inputSchema: JsonValue;
-}> {
-  return CANOPY_INJECTED_TOOL_SURFACE_ALLOWLISTS[surface].map((key) => {
-    const definition = CLAUDE_TERMINAL_TOOL_DEFINITIONS[key];
-    if (!definition) {
-      throw new Error(
-        `Missing Claude ${BRAND.displayName} MCP definition for ${key}`,
-      );
-    }
-    return {
-      canonicalKey: key,
-      name: CANOPY_INJECTED_TOOL_REGISTRY[key].displayName,
-      description: definition.description,
-      // Cowork chats cannot start chats in new worktrees.
-      inputSchema:
-        key === 'dispatch_action' && COWORK_TOOL_SURFACES.has(surface)
-          ? coworkDispatchActionJsonSchema
-          : definition.inputSchema,
-    };
-  });
-}
-
-const COWORK_TOOL_SURFACES: ReadonlySet<CanopyInjectedToolSurface> =
-  new Set<CanopyInjectedToolSurface>([
-    'native-sdk-standalone',
-    'cursor-acp-standalone',
-    'opencode-acp-standalone',
-    'copilot-sdk-standalone',
-  ]);
-
-const CLAUDE_TERMINAL_MCP_TOOLS = buildClaudeCanopyMcpTools(
-  'claude-code-terminal',
-);
-const CLAUDE_NATIVE_MCP_TOOLS = buildClaudeCanopyMcpTools('native-sdk');
-const CLAUDE_NATIVE_STANDALONE_MCP_TOOLS = buildClaudeCanopyMcpTools(
-  'native-sdk-standalone',
-);
-const CLAUDE_NATIVE_UI_MCP_TOOLS = buildClaudeCanopyMcpTools('native-sdk-ui');
-const CLAUDE_WORKER_MCP_TOOLS = buildClaudeCanopyMcpTools('claude-worker');
-const COPILOT_SDK_MCP_TOOLS = buildClaudeCanopyMcpTools('copilot-sdk');
-const OPENCODE_ACP_MCP_TOOLS = buildClaudeCanopyMcpTools('opencode-acp');
-const OPENCODE_ACP_STANDALONE_MCP_TOOLS = buildClaudeCanopyMcpTools(
-  'opencode-acp-standalone',
-);
-const COPILOT_STANDALONE_MCP_TOOLS = buildClaudeCanopyMcpTools(
-  'copilot-sdk-standalone',
-);
-const CURSOR_ACP_MCP_TOOLS = buildClaudeCanopyMcpTools('cursor-acp');
-const CURSOR_ACP_STANDALONE_MCP_TOOLS = buildClaudeCanopyMcpTools(
-  'cursor-acp-standalone',
-);
-
-const APP_ADVISOR_TERMINAL_TOOL_DEFINITIONS: Readonly<
-  Record<
-    AppAdvisorToolKey,
-    {
-      description: string;
-      inputSchema: JsonValue;
-    }
-  >
-> = {
-  watch_command: {
-    description: WATCH_COMMAND_DESCRIPTION,
-    inputSchema: watchCommandJsonSchema,
-  },
-  set_auto_archive: {
-    description: SET_AUTO_ARCHIVE_DESCRIPTION,
-    inputSchema: setAutoArchiveJsonSchema,
-  },
-  schedule_wakeup: {
-    description: SCHEDULE_WAKEUP_DESCRIPTION,
-    inputSchema: scheduleWakeupJsonSchema,
-  },
-  ask_user_question: {
-    description: ASK_USER_QUESTION_DESCRIPTION,
-    inputSchema: appAdvisorAskUserQuestionJsonSchema,
-  },
-  get_script_output: {
-    description: APP_ADVISOR_GET_SCRIPT_OUTPUT_DESCRIPTION,
-    inputSchema: appAdvisorGetScriptOutputJsonSchema,
-  },
-  show_capabilities: {
-    description: SHOW_CAPABILITIES_DESCRIPTION,
-    inputSchema: showCapabilitiesJsonSchema,
-  },
-  show_files: {
-    description: APP_ADVISOR_SHOW_FILES_DESCRIPTION,
-    inputSchema: appAdvisorShowFilesJsonSchema,
-  },
-  get_file_comments: {
-    description: APP_ADVISOR_GET_FILE_COMMENTS_DESCRIPTION,
-    inputSchema: appAdvisorGetFileCommentsJsonSchema,
-  },
-  respond_to_file_comment: {
-    description: APP_ADVISOR_RESPOND_TO_FILE_COMMENT_DESCRIPTION,
-    inputSchema: appAdvisorRespondToFileCommentJsonSchema,
-  },
-  read_pipeline_yaml: {
-    description: APP_ADVISOR_READ_PIPELINE_YAML_DESCRIPTION,
-    inputSchema: appAdvisorReadPipelineYamlJsonSchema,
-  },
-  search_actions: {
-    description: APP_ADVISOR_SEARCH_ACTIONS_DESCRIPTION,
-    inputSchema: appAdvisorSearchActionsJsonSchema,
-  },
-  get_current_ui_state: {
-    description: GET_CURRENT_UI_STATE_DESCRIPTION,
-    inputSchema: getCurrentUiStateJsonSchema,
-  },
-  dispatch_action: {
-    description: APP_ADVISOR_DISPATCH_ACTION_DESCRIPTION,
-    inputSchema: appAdvisorDispatchActionJsonSchema,
-  },
-  get_pipeline_debug_context: {
-    description: GET_PIPELINE_DEBUG_CONTEXT_DESCRIPTION,
-    inputSchema: getPipelineDebugContextJsonSchema,
-  },
-  search_watchers: {
-    description: APP_ADVISOR_SEARCH_WATCHERS_DESCRIPTION,
-    inputSchema: appAdvisorSearchWatchersJsonSchema,
-  },
-  setup_watchers: {
-    description: APP_ADVISOR_SETUP_WATCHERS_DESCRIPTION,
-    inputSchema: appAdvisorSetupWatchersJsonSchema,
-  },
-  watch_github_items: {
-    description: APP_ADVISOR_WATCH_GITHUB_ITEMS_DESCRIPTION,
-    inputSchema: appAdvisorWatchGitHubItemsJsonSchema,
-  },
-  get_github_pull_request_status: {
-    description: APP_ADVISOR_GET_GITHUB_PULL_REQUEST_STATUS_DESCRIPTION,
-    inputSchema: getGitHubPullRequestStatusJsonSchema,
-  },
-  start_forked_agent: {
-    description: APP_ADVISOR_START_FORKED_AGENT_DESCRIPTION,
-    inputSchema: startSplitAgentJsonSchema,
-  },
-  search_deferred_tools: {
-    description: SEARCH_DEFERRED_TOOLS_DESCRIPTION,
-    inputSchema: searchDeferredToolsJsonSchema,
-  },
-  load_deferred_tools: {
-    description: LOAD_DEFERRED_TOOLS_DESCRIPTION,
-    inputSchema: loadDeferredToolsJsonSchema,
-  },
-  // Listed only on a route whose session has Ledger tools.
-  add_ledger_entry: {
-    description: APP_ADVISOR_ADD_LEDGER_ENTRY_DESCRIPTION,
-    inputSchema: addLedgerEntryJsonSchema,
-  },
-  search_ledger_entries: {
-    description: APP_ADVISOR_SEARCH_LEDGER_ENTRIES_DESCRIPTION,
-    inputSchema: searchLedgerEntriesJsonSchema,
-  },
-  update_ledger_entry: {
-    description: APP_ADVISOR_UPDATE_LEDGER_ENTRY_DESCRIPTION,
-    inputSchema: updateLedgerEntryJsonSchema,
-  },
-};
-
-const APP_ADVISOR_TERMINAL_MCP_TOOLS = APP_ADVISOR_TOOL_ENTRIES.map((entry) => {
-  const definition = APP_ADVISOR_TERMINAL_TOOL_DEFINITIONS[entry.canonicalKey];
-  return {
-    canonicalKey: entry.canonicalKey,
-    name: entry.displayName,
-    description: definition.description,
-    inputSchema: definition.inputSchema,
-  };
-});
-const APP_ADVISOR_MAIN_MCP_TOOLS = APP_ADVISOR_TERMINAL_MCP_TOOLS.filter(
-  (tool) => tool.canonicalKey !== 'ask_user_question',
-);
-const APP_ADVISOR_UI_MCP_TOOLS = APP_ADVISOR_TERMINAL_MCP_TOOLS.filter(
-  (tool) => tool.canonicalKey === 'ask_user_question',
-);
-
-const PIPELINE_EDITOR_TERMINAL_TOOL_DEFINITIONS: Readonly<
-  Record<
-    PipelineEditorToolKey,
-    {
-      description: string;
-      inputSchema: JsonValue;
-    }
-  >
-> = {
-  ask_user_question: {
-    description: ASK_USER_QUESTION_DESCRIPTION,
-    inputSchema: pipelineEditorAskUserQuestionJsonSchema,
-  },
-  pipeline_list: {
-    description: PIPELINE_LIST_DESCRIPTION,
-    inputSchema: pipelineEditorEmptyArgsJsonSchema,
-  },
-  pipeline_open: {
-    description: PIPELINE_OPEN_DESCRIPTION,
-    inputSchema: pipelineOpenJsonSchema,
-  },
-  pipeline_create: {
-    description: PIPELINE_CREATE_DESCRIPTION,
-    inputSchema: pipelineEditorEmptyArgsJsonSchema,
-  },
-  pipeline_get_current: {
-    description: PIPELINE_GET_CURRENT_DESCRIPTION,
-    inputSchema: pipelineEditorEmptyArgsJsonSchema,
-  },
-  pipeline_set_yaml: {
-    description: PIPELINE_SET_YAML_DESCRIPTION,
-    inputSchema: pipelineSetYamlJsonSchema,
-  },
-  pipeline_save: {
-    description: PIPELINE_SAVE_DESCRIPTION,
-    inputSchema: pipelineEditorEmptyArgsJsonSchema,
-  },
-  pipeline_get_action_definition: {
-    description: PIPELINE_GET_ACTION_DEFINITION_DESCRIPTION,
-    inputSchema: pipelineGetActionDefinitionJsonSchema,
-  },
-  navigation_to_list: {
-    description: NAVIGATION_TO_LIST_DESCRIPTION,
-    inputSchema: pipelineEditorEmptyArgsJsonSchema,
-  },
-  search_deferred_tools: {
-    description: SEARCH_DEFERRED_TOOLS_DESCRIPTION,
-    inputSchema: searchDeferredToolsJsonSchema,
-  },
-  load_deferred_tools: {
-    description: LOAD_DEFERRED_TOOLS_DESCRIPTION,
-    inputSchema: loadDeferredToolsJsonSchema,
-  },
-};
-
-const PIPELINE_EDITOR_TERMINAL_MCP_TOOLS = PIPELINE_EDITOR_TOOL_ENTRIES.map(
-  (entry) => {
-    const definition =
-      PIPELINE_EDITOR_TERMINAL_TOOL_DEFINITIONS[entry.canonicalKey];
-    return {
-      canonicalKey: entry.canonicalKey,
-      name: entry.displayName,
-      description: definition.description,
-      inputSchema: definition.inputSchema,
-    };
-  },
-);
-const PIPELINE_EDITOR_MAIN_MCP_TOOLS =
-  PIPELINE_EDITOR_TERMINAL_MCP_TOOLS.filter(
-    (tool) => tool.canonicalKey !== 'ask_user_question',
-  );
-const PIPELINE_EDITOR_UI_MCP_TOOLS = PIPELINE_EDITOR_TERMINAL_MCP_TOOLS.filter(
-  (tool) => tool.canonicalKey === 'ask_user_question',
-);
-
-class RequestBodyTooLargeError extends Error {
-  constructor() {
-    super('Request body exceeds maximum size');
-    this.name = 'RequestBodyTooLargeError';
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/** The tool_use ID the bundled Claude CLI sends in a tools/call `_meta`. */
-function getClaudeToolUseId(meta: unknown): string | undefined {
-  const toolUseId = isRecord(meta) ? meta['claudecode/toolUseId'] : undefined;
-  return typeof toolUseId === 'string' && toolUseId.length > 0
-    ? toolUseId
-    : undefined;
-}
-
 function isMcpProxyStatus(value: unknown): value is McpProxyStatus {
   return value === 'stopped' || value === 'running' || value === 'error';
-}
-
-function isMcpServerFile(value: unknown): value is McpServerFile {
-  return (
-    isRecord(value) &&
-    value.version === 1 &&
-    isRecord(value.server) &&
-    isRecord(value.server.definition) &&
-    Array.isArray(value.server.configs)
-  );
-}
-
-function getHeaderValue(
-  headers: IncomingHttpHeaders,
-  name: string,
-): string | undefined {
-  const value = headers[name];
-  if (typeof value === 'string') {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    return value.join(', ');
-  }
-  return undefined;
-}
-
-async function readRequestBody(req: IncomingMessage): Promise<string> {
-  const chunks: Buffer[] = [];
-  let totalBytes = 0;
-  for await (const chunk of req as AsyncIterable<Buffer | string>) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    totalBytes += buffer.byteLength;
-    if (totalBytes > MAX_REQUEST_BODY_BYTES) {
-      throw new RequestBodyTooLargeError();
-    }
-    chunks.push(buffer);
-  }
-  return Buffer.concat(chunks).toString('utf8');
 }
 
 function getIntegrationToken(req: IncomingMessage): string | null {
@@ -1016,31 +330,6 @@ function assertLocalhostHostOrigin(
   return true;
 }
 
-function jsonRpcError(
-  id: unknown,
-  code: number,
-  message: string,
-): Record<string, unknown> {
-  return {
-    jsonrpc: '2.0',
-    id: id ?? null,
-    error: { code, message },
-  };
-}
-
-// Error text can carry paths and workspace ids, so it goes to the log, never to the model.
-function jsonRpcInternalError(
-  id: unknown,
-  error: unknown,
-): Record<string, unknown> {
-  logMainProcessError('Injected MCP tool call failed', error);
-  return jsonRpcError(id, -32603, 'Internal error');
-}
-
-function getJsonRpcId(payload: unknown): unknown {
-  return isRecord(payload) && 'id' in payload ? payload.id : null;
-}
-
 function getMcpProgressToken(payload: unknown): string | number | null {
   if (!isRecord(payload) || !isRecord(payload.params)) {
     return null;
@@ -1078,251 +367,6 @@ async function readJsonRpcIdFromRequest(
   } catch {
     return null;
   }
-}
-
-function toMcpToolResult(result: CanopyInjectedToolTextResult): {
-  content: Array<
-    | { type: 'text'; text: string }
-    | { type: 'image'; data: string; mimeType: string }
-  >;
-  isError?: boolean;
-} {
-  const imageMatch = result.imageDataUrl?.match(
-    /^data:([^;,]+);base64,([A-Za-z0-9+/=]+)$/,
-  );
-  const response = {
-    content: [
-      { type: 'text' as const, text: result.text },
-      ...(imageMatch
-        ? [
-            {
-              type: 'image' as const,
-              mimeType: imageMatch[1],
-              data: imageMatch[2],
-            },
-          ]
-        : []),
-    ],
-  };
-  return result.isError ? { ...response, isError: true } : response;
-}
-
-function getClaudeCanopyToolSurface(
-  route: CanopyWorktreeSessionRoute,
-): CanopyInjectedToolSurface {
-  return route.toolSurface ?? 'claude-code-terminal';
-}
-
-function getClaudeCanopyToolsForSurface(
-  surface: CanopyInjectedToolSurface,
-): typeof CLAUDE_TERMINAL_MCP_TOOLS {
-  switch (surface) {
-    case 'native-sdk':
-      return CLAUDE_NATIVE_MCP_TOOLS;
-    case 'native-sdk-standalone':
-      return CLAUDE_NATIVE_STANDALONE_MCP_TOOLS;
-    case 'native-sdk-ui':
-      return CLAUDE_NATIVE_UI_MCP_TOOLS;
-    case 'copilot-sdk':
-      return COPILOT_SDK_MCP_TOOLS;
-    case 'opencode-acp':
-      return OPENCODE_ACP_MCP_TOOLS;
-    case 'opencode-acp-standalone':
-      return OPENCODE_ACP_STANDALONE_MCP_TOOLS;
-    case 'copilot-sdk-standalone':
-      return COPILOT_STANDALONE_MCP_TOOLS;
-    case 'cursor-acp':
-      return CURSOR_ACP_MCP_TOOLS;
-    case 'cursor-acp-standalone':
-      return CURSOR_ACP_STANDALONE_MCP_TOOLS;
-    default:
-      return CLAUDE_TERMINAL_MCP_TOOLS;
-  }
-}
-
-/** One projection for advertised MCP schemas and persisted capability snapshots. */
-function getCanopyRouteTools(
-  route: CanopyWorktreeSessionRoute,
-  uiServer: boolean,
-): readonly { name: string; description: string; inputSchema: JsonValue }[] {
-  const effectiveSurface = uiServer
-    ? 'native-sdk-ui'
-    : getClaudeCanopyToolSurface(route);
-  // Cursor and Copilot omit deferred loaders when chat policy disables them.
-  // Claude and Codex retain the schemas and return guidance for disallowed calls.
-  const advertiseDeferredLoaders = !(
-    (route.providerType === 'cursor' || route.providerType === 'copilot') &&
-    route.deferredToolsAllowed === false
-  );
-  const baseTools =
-    route.assistantMode === 'app-advisor'
-      ? uiServer
-        ? APP_ADVISOR_UI_MCP_TOOLS
-        : APP_ADVISOR_MAIN_MCP_TOOLS.filter((tool) => {
-            const key = getClaudeTerminalAppAdvisorToolKey(tool.name);
-            // The Ledger tools only for a session that passed the Ledger
-            // exposure gate when it started.
-            if (
-              key !== null &&
-              isAppAdvisorLedgerToolKey(key) &&
-              route.ledgerTools === undefined
-            ) {
-              return false;
-            }
-            // Cursor cannot carry provider context into a fork, and a
-            // managed terminal runtime is built without the fork.
-            if (
-              key === 'start_forked_agent' &&
-              (route.providerType === 'cursor' ||
-                !route.appAdvisorRuntime?.startForkedAgent)
-            ) {
-              return false;
-            }
-            if (advertiseDeferredLoaders) return true;
-            return (
-              key !== 'search_deferred_tools' && key !== 'load_deferred_tools'
-            );
-          })
-      : route.assistantMode === 'pipeline-editor'
-        ? uiServer
-          ? PIPELINE_EDITOR_UI_MCP_TOOLS
-          : PIPELINE_EDITOR_MAIN_MCP_TOOLS
-        : getClaudeCanopyToolsForSurface(effectiveSurface);
-  const codeGraphToolsAdvertised = route.codeGraphToolsAdvertised !== false;
-  const ledgerToolsAdvertised = route.ledgerTools !== undefined;
-  const tools: Array<{
-    name: string;
-    description: string;
-    inputSchema: JsonValue;
-  }> = baseTools
-    .filter((tool) => {
-      if (
-        (tool.name === CANOPY_INJECTED_TOOL_REGISTRY.show_visual.displayName ||
-          tool.name ===
-            CANOPY_INJECTED_TOOL_REGISTRY.preview_visual.displayName) &&
-        !chatVisualsEligible({
-          providerType: route.providerType,
-          surface: effectiveSurface,
-          assistantMode: route.assistantMode,
-          key:
-            tool.name ===
-            CANOPY_INJECTED_TOOL_REGISTRY.preview_visual.displayName
-              ? 'preview_visual'
-              : 'show_visual',
-        })
-      )
-        return false;
-      const canonicalKey = getCanonicalCanopyToolKey(tool.name);
-      if (
-        route.providerType === 'opencode' &&
-        route.deferredToolsAllowed === false &&
-        (canonicalKey === 'search_deferred_tools' ||
-          canonicalKey === 'load_deferred_tools')
-      )
-        return false;
-      if (canonicalKey === null) {
-        return true;
-      }
-      if (
-        !advertiseDeferredLoaders &&
-        (canonicalKey === 'search_deferred_tools' ||
-          canonicalKey === 'load_deferred_tools')
-      ) {
-        return false;
-      }
-      if (
-        !codeGraphToolsAdvertised &&
-        isCodeGraphInjectedToolKey(canonicalKey)
-      ) {
-        return false;
-      }
-      // The Ledger tools are allowlisted on the native chat surfaces but
-      // advertised only to a session that passed the exposure gate.
-      return ledgerToolsAdvertised || !isLedgerInjectedToolKey(canonicalKey);
-    })
-    .map((tool) => ({
-      name: tool.name,
-      description: tool.description,
-      inputSchema: tool.inputSchema,
-    }));
-  if (
-    route.assistantMode !== 'app-advisor' &&
-    !uiServer &&
-    route.isCodeReview
-  ) {
-    if (route.respondToReviewComment) {
-      tools.push({
-        name: RESPOND_TO_COMMENT_TOOL_NAME,
-        description: RESPOND_TO_REVIEW_COMMENT_DESCRIPTION,
-        inputSchema: respondToCommentJsonSchema,
-      });
-    }
-    if (route.getReviewCommentThread) {
-      tools.push({
-        name: GET_REVIEW_COMMENTS_TOOL_NAME,
-        description: GET_REVIEW_COMMENTS_DESCRIPTION,
-        inputSchema: getReviewCommentsJsonSchema,
-      });
-    }
-  }
-  if (!uiServer && route.managedDelegation)
-    tools.push(...route.managedDelegation.tools);
-  return route.managedDelegation?.exclusive
-    ? uiServer
-      ? []
-      : route.managedDelegation.tools
-    : tools;
-}
-
-function getClaudeCanopyToolKey(
-  toolName: unknown,
-  surface: CanopyInjectedToolSurface,
-): CanopyInjectedToolKey | null {
-  const canonicalKey =
-    typeof toolName === 'string'
-      ? // MCP calls use the advertised short name. Resolve it within this
-        // route, not as a global transcript alias: ScheduleWakeup is also a
-        // distinct provider-native tool outside this authenticated surface.
-        (CANOPY_INJECTED_TOOL_SURFACE_ALLOWLISTS[surface].find(
-          (key) => CANOPY_INJECTED_TOOL_REGISTRY[key].displayName === toolName,
-        ) ?? getCanonicalCanopyToolKey(toolName))
-      : null;
-  if (!canonicalKey) {
-    return null;
-  }
-  return CANOPY_INJECTED_TOOL_SURFACE_ALLOWLISTS[surface].includes(canonicalKey)
-    ? canonicalKey
-    : null;
-}
-
-function getClaudeTerminalAppAdvisorToolKey(
-  toolName: unknown,
-): AppAdvisorToolKey | null {
-  if (typeof toolName !== 'string') {
-    return null;
-  }
-  const entry = APP_ADVISOR_TOOL_ENTRIES.find(
-    (candidate) =>
-      candidate.displayName === toolName ||
-      candidate.claudeToolName === toolName ||
-      candidate.codexToolName === toolName,
-  );
-  return entry?.canonicalKey ?? null;
-}
-
-function getClaudeTerminalPipelineEditorToolKey(
-  toolName: unknown,
-): PipelineEditorToolKey | null {
-  if (typeof toolName !== 'string') {
-    return null;
-  }
-  const entry = PIPELINE_EDITOR_TOOL_ENTRIES.find(
-    (candidate) =>
-      candidate.displayName === toolName ||
-      candidate.claudeToolName === toolName ||
-      candidate.codexToolName === toolName,
-  );
-  return entry?.canonicalKey ?? null;
 }
 
 function createClaudeCanopyToolRuntime(
@@ -1533,63 +577,6 @@ function createClaudeCanopyToolRuntime(
   };
 }
 
-function writeJson(
-  res: ServerResponse,
-  statusCode: number,
-  payload: Record<string, unknown>,
-): void {
-  res.writeHead(statusCode, {
-    'Content-Type': 'application/json',
-  });
-  res.end(JSON.stringify(payload));
-}
-
-function writePayloadTooLargeJsonRpc(res: ServerResponse): void {
-  writeJson(res, 413, jsonRpcError(null, -32013, 'Payload too large'));
-}
-
-function createProxyRouteId(): string {
-  return randomBytes(16).toString('base64url');
-}
-
-async function loadMcpDefinitionAndConfig(route: McpProxyRoute): Promise<{
-  definition: McpServerDefinitionData;
-  config: McpServerConfigData;
-} | null> {
-  if (route.oauthDefinition && route.oauthConfig) {
-    return {
-      definition: route.oauthDefinition,
-      config: route.oauthConfig,
-    };
-  }
-
-  try {
-    const parsed: unknown = JSON.parse(
-      await readFile(getMcpServerFilePath(route.serverId), 'utf8'),
-    );
-    if (!isMcpServerFile(parsed)) {
-      return null;
-    }
-
-    const config = parsed.server.configs.find(
-      (entry) =>
-        isRecord(entry) &&
-        typeof entry.id === 'string' &&
-        entry.id === route.configId,
-    );
-    if (!config) {
-      return null;
-    }
-
-    return {
-      definition: parsed.server.definition,
-      config,
-    };
-  } catch {
-    return null;
-  }
-}
-
 function buildPortInUseMessage(
   port: number,
   health: McpProxyHealthCheck | null,
@@ -1621,78 +608,15 @@ export function getDevMcpProxyPortOverride(): number | null {
   return null;
 }
 
-async function buildForwardHeaders(
-  req: IncomingMessage,
-  route: InternalMcpProxyRoute,
-  authorizationToken: string | null,
-): Promise<Record<string, string>> {
-  const headers: Record<string, string> = {
-    host: route.parsedUpstream.host,
-  };
-
-  for (const headerName of Array.from(SAFE_FORWARD_HEADERS.values())) {
-    const value = getHeaderValue(req.headers, headerName);
-    if (value) {
-      headers[headerName] = value;
-    }
-  }
-
-  for (const [name, value] of Object.entries(route.headers)) {
-    headers[name] = value;
-  }
-
-  if (route.authSupplier === 'canopy-cloud') {
-    const credentials = await resolveCanopyCloudCredentialContext();
-    if (!credentials.apiKey)
-      throw new CanopyCloudClientError(
-        'missing-api-key',
-        'Sign in to use account MCP connections.',
-      );
-    const base = new URL(credentials.baseUrl);
-    if (
-      route.parsedUpstream.origin !== base.origin ||
-      !route.parsedUpstream.pathname.startsWith(
-        `${base.pathname.replace(/\/$/, '')}/api/v1/mcp-proxy/`,
-      )
-    ) {
-      throw new Error(
-        'Account MCP route no longer belongs to the configured cloud.',
-      );
-    }
-    for (const name of Object.keys(headers))
-      if (name.toLowerCase() === 'authorization') delete headers[name];
-    headers.Authorization = `Bearer ${credentials.apiKey}`;
-  } else if (authorizationToken) {
-    headers.Authorization = `Bearer ${authorizationToken}`;
-  }
-
-  return headers;
-}
-
-function copyResponseHeaders(
-  upstream: IncomingMessage,
-): Record<string, string | string[]> {
-  const headers: Record<string, string | string[]> = {};
-  for (const name of Array.from(SAFE_RESPONSE_HEADERS.values())) {
-    const value = upstream.headers[name];
-    if (typeof value === 'string' || Array.isArray(value)) {
-      headers[name] = value;
-    }
-  }
-  return headers;
-}
-
 export class McpHttpProxyService {
   private server: Server | null = null;
   private startPromise: Promise<void> | null = null;
   private currentPort: number | null = null;
   private sockets = new Set<Socket>();
-  private routes = new Map<string, InternalMcpProxyRoute>();
-  private routesBySession = new Map<string, Set<string>>();
-  private readonly sessionToolCallGates = new Map<
-    string,
-    McpProxiedToolCallGate
-  >();
+  private readonly connections = new AgentMcpConnections({
+    proxyUrl: (routeId): string => this.getProxyUrl(routeId),
+    listening: (): boolean => this.currentPort !== null,
+  });
   private worktreeSessionRoutes = new Map<string, CanopyWorktreeSessionRoute>();
   private localWatcherRegistrationIds = new WeakMap<
     CanopyWorktreeSessionRoute,
@@ -1944,7 +868,7 @@ export class McpHttpProxyService {
         return;
       }
       if (this.server) {
-        if (this.routes.size > 0) {
+        if (this.connections.size > 0) {
           return;
         }
         await this.updatePort(resolvedPort);
@@ -1952,7 +876,7 @@ export class McpHttpProxyService {
       return;
     }
     if (this.server) {
-      if (this.routes.size > 0) {
+      if (this.connections.size > 0) {
         return;
       }
       await this.updatePort(resolvedPort);
@@ -2025,104 +949,23 @@ export class McpHttpProxyService {
   }
 
   registerRoute(route: McpProxyRouteRegistration): Promise<string> {
-    if (route.requireToolCallGate && route.sessionId === null) {
-      return Promise.reject(new Error('A gated MCP route requires a session.'));
-    }
-    const parsedUpstream = new URL(route.upstreamUrl);
-    if (
-      parsedUpstream.protocol !== 'http:' &&
-      parsedUpstream.protocol !== 'https:'
-    ) {
-      return Promise.reject(
-        new Error('MCP proxy only supports HTTP and HTTPS upstream URLs.'),
-      );
-    }
-
-    const routeId = createProxyRouteId();
-    const previousRoute = this.routes.get(routeId);
-    if (previousRoute) {
-      this.removeRouteFromSessionIndex(routeId, previousRoute.sessionId);
-    }
-    const fullRoute: InternalMcpProxyRoute = {
-      routeId,
-      sessionId: route.sessionId,
-      serverId: route.serverId,
-      configId: route.configId,
-      displayName: route.displayName,
-      upstreamUrl: route.upstreamUrl,
-      headers: route.headers,
-      oauthEnabled:
-        route.authSupplier === 'canopy-cloud' ? false : route.oauthEnabled,
-      authSupplier: route.authSupplier ?? 'oauth',
-      reauthRequired: false,
-      oauthRequired: route.oauthRequired,
-      oauthDefinition: route.oauthDefinition,
-      oauthConfig: route.oauthConfig,
-      ...(route.requireToolCallGate ? { requireToolCallGate: true } : {}),
-      ...(route.routeKey ? { routeKey: route.routeKey } : {}),
-      parsedUpstream,
-    };
-    this.routes.set(routeId, fullRoute);
-    if (fullRoute.authSupplier === 'canopy-cloud')
-      registerAccountMcpRouteStatus(
-        routeId,
-        route.serverId,
-        route.configId,
-        parsedUpstream.pathname.split('/').pop() ?? '',
-      );
-
-    if (route.sessionId !== null) {
-      const existing = this.routesBySession.get(route.sessionId) ?? new Set();
-      existing.add(routeId);
-      this.routesBySession.set(route.sessionId, existing);
-    }
-
-    return Promise.resolve(routeId);
+    return this.connections.register(route);
   }
 
   getRouteStatus(routeId: string): { reauthRequired: boolean } | undefined {
-    const route = this.routes.get(routeId);
-    return route
-      ? { reauthRequired: route.reauthRequired === true }
-      : undefined;
+    return this.connections.routeStatus(routeId);
   }
 
   registerMcpProxyRoute(route: McpProxyRouteRegistration): Promise<string> {
-    return this.registerRoute(route);
-  }
-
-  private removeRouteFromSessionIndex(
-    routeId: string,
-    sessionId: string | null,
-  ): void {
-    if (sessionId === null) {
-      return;
-    }
-
-    const sessionRoutes = this.routesBySession.get(sessionId);
-    if (!sessionRoutes) {
-      return;
-    }
-
-    sessionRoutes.delete(routeId);
-    if (sessionRoutes.size === 0) {
-      this.routesBySession.delete(sessionId);
-    }
+    return this.connections.register(route);
   }
 
   unregisterRoute(routeId: string): void {
-    const route = this.routes.get(routeId);
-    if (!route) {
-      return;
-    }
-
-    this.routes.delete(routeId);
-    removeAccountMcpRouteStatus(routeId);
-    this.removeRouteFromSessionIndex(routeId, route.sessionId);
+    this.connections.unregister(routeId);
   }
 
   unregisterMcpProxyRoute(routeId: string): void {
-    this.unregisterRoute(routeId);
+    this.connections.unregister(routeId);
   }
 
   /** Installs (or replaces) the session's proxied tool-call gate. */
@@ -2130,31 +973,15 @@ export class McpHttpProxyService {
     sessionId: string,
     gate: McpProxiedToolCallGate,
   ): void {
-    this.sessionToolCallGates.set(sessionId, gate);
+    this.connections.setSessionToolCallGate(sessionId, gate);
   }
 
   unregisterRoutesForSession(sessionId: string): void {
-    // Drop any auth failure this owner published but never claimed, and
-    // its tool-name correlation cache (CAN-1814), unconditionally — a
-    // session can end without routes still registered (e.g. already
-    // unregistered individually) while either process-global registry
-    // still holds an entry with no other eviction path.
-    clearPendingAuthFailures(sessionId);
-    clearAuthFailureToolNameCache(sessionId);
-    this.sessionToolCallGates.delete(sessionId);
-
-    const routeIds = this.routesBySession.get(sessionId);
-    if (!routeIds) {
-      return;
-    }
-
-    for (const routeId of Array.from(routeIds.values())) {
-      this.unregisterRoute(routeId);
-    }
+    this.connections.disconnectSession(sessionId);
   }
 
   unregisterMcpProxyRoutesForSession(sessionId: string): void {
-    this.unregisterRoutesForSession(sessionId);
+    this.connections.disconnectSession(sessionId);
   }
 
   getProxyUrl(routeId: string): string {
@@ -2169,85 +996,14 @@ export class McpHttpProxyService {
   getCodexCapabilityAuthorityIds(
     mcpServers: Record<string, unknown>,
   ): string[] {
-    if (this.currentPort === null) {
-      return [];
-    }
-    const authorityIds: string[] = [];
-    for (const [serverName, value] of Object.entries(mcpServers)) {
-      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-        continue;
-      }
-      const url: unknown = Reflect.get(value, 'url');
-      if (typeof url !== 'string') {
-        continue;
-      }
-      for (const [routeId, route] of Array.from(this.routes.entries())) {
-        if (route.routeKey && this.getProxyUrl(routeId) === url) {
-          authorityIds.push(`${serverName}:${route.routeKey}`);
-          break;
-        }
-      }
-    }
-    return authorityIds.sort();
+    return this.connections.codexCapabilityAuthorityIds(mcpServers);
   }
 
   /** Stable config identities without persisting credentials or ephemeral proxy addresses. */
   getMcpCapabilityDigests(
     mcpServers: Record<string, unknown>,
   ): Record<string, string> {
-    return Object.fromEntries(
-      Object.entries(mcpServers).map(([name, value]) => {
-        const config = isRecord(value) ? value : {};
-        const route =
-          this.currentPort !== null && typeof config.url === 'string'
-            ? Array.from(this.routes.entries()).find(
-                ([id]) => this.getProxyUrl(id) === config.url,
-              )?.[1]
-            : undefined;
-        // These fields are an allowlist, not a recursive hash of configuration.
-        // Arbitrary headers/env/args, OAuth records and URL path/query/userinfo
-        // can contain credentials. Even their hashes must never be persisted.
-        const endpoint = route?.upstreamUrl ?? config.url;
-        let origin: string | undefined;
-        if (typeof endpoint === 'string') {
-          try {
-            origin = new URL(endpoint).origin;
-          } catch {
-            /* Invalid URLs have no public origin. */
-          }
-        }
-        const headers = route?.headers ?? config.headers;
-        const manifest = {
-          type: typeof config.type === 'string' ? config.type : undefined,
-          command:
-            typeof config.command === 'string' ? config.command : undefined,
-          origin,
-          tools: Array.isArray(config.tools)
-            ? config.tools
-                .filter((tool): tool is string => typeof tool === 'string')
-                .sort()
-            : undefined,
-          headerNames: isRecord(headers)
-            ? Object.keys(headers)
-                .map((key) => key.toLowerCase())
-                .sort()
-            : [],
-          environmentNames: isRecord(config.env)
-            ? Object.keys(config.env).sort()
-            : [],
-          authority: route
-            ? {
-                serverId: route.serverId,
-                configId: route.configId,
-                oauthEnabled: route.oauthEnabled,
-                oauthRequired: route.oauthRequired,
-                authSupplier: route.authSupplier,
-              }
-            : undefined,
-        };
-        return [name, createCopilotCapabilitySnapshot(manifest).digest];
-      }),
-    );
+    return this.connections.capabilityDigests(mcpServers);
   }
 
   getCanopyCapabilityDefinitions(sessionKey: string): {
@@ -2267,15 +1023,7 @@ export class McpHttpProxyService {
     serverId: string,
     configId: string,
   ): { displayName: string } | undefined {
-    const routeIds = this.routesBySession.get(sessionId);
-    if (!routeIds) return undefined;
-    for (const routeId of Array.from(routeIds)) {
-      const route = this.routes.get(routeId);
-      if (route?.serverId === serverId && route.configId === configId) {
-        return { displayName: route.displayName };
-      }
-    }
-    return undefined;
+    return this.connections.sessionRoute(sessionId, serverId, configId);
   }
 
   getMcpProxyUrl(routeId: string): string {
@@ -2345,10 +1093,7 @@ export class McpHttpProxyService {
 
   async shutdown(): Promise<void> {
     await this.closeServer();
-    for (const routeId of Array.from(this.routes.keys()))
-      removeAccountMcpRouteStatus(routeId);
-    this.routes.clear();
-    this.routesBySession.clear();
+    this.connections.clear();
     this.worktreeSessionRoutes.clear();
     this.currentPort = null;
     this.markStatus('stopped');
@@ -2436,7 +1181,7 @@ export class McpHttpProxyService {
         version: MCP_PROXY_HEALTH_VERSION,
         port: this.currentPort,
         status: this.status,
-        routeCount: this.routes.size + this.worktreeSessionRoutes.size,
+        routeCount: this.connections.size + this.worktreeSessionRoutes.size,
       });
       return;
     }
@@ -2468,24 +1213,7 @@ export class McpHttpProxyService {
       return;
     }
 
-    const route = this.routes.get(routeId);
-    if (!route) {
-      res.writeHead(404);
-      res.end();
-      return;
-    }
-
-    if (
-      req.method !== 'GET' &&
-      req.method !== 'POST' &&
-      req.method !== 'DELETE'
-    ) {
-      res.writeHead(405, { Allow: 'GET, POST, DELETE' });
-      res.end();
-      return;
-    }
-
-    await this.forwardRequest(req, res, route);
+    await this.connections.serve(req, res, routeId);
   }
 
   private extractMcpProxyRouteId(pathname: string): string | null {
@@ -2890,44 +1618,10 @@ export class McpHttpProxyService {
       };
     }
     if (method === 'tools/list') {
-      if (
-        route.assistantMode !== 'app-advisor' &&
-        getClaudeCanopyToolSurface(route) === 'claude-worker'
-      ) {
-        return {
-          jsonrpc: '2.0',
-          id,
-          result: {
-            tools: [
-              ...(route.reportStructuredResultSchema
-                ? [
-                    {
-                      name: REPORT_STRUCTURED_RESULT_TOOL_NAME,
-                      description: REPORT_STRUCTURED_RESULT_DESCRIPTION,
-                      inputSchema:
-                        route.reportStructuredResultSchema as JsonValue,
-                    },
-                  ]
-                : []),
-              ...CLAUDE_WORKER_MCP_TOOLS.filter((tool) =>
-                isClaudeWorkerToolExposed(
-                  tool.canonicalKey,
-                  route.workerMemoryToolExposure ?? 'none',
-                  route.ledgerTools !== undefined,
-                ),
-              ).map((tool) => ({
-                name: tool.name,
-                description: tool.description,
-                inputSchema: tool.inputSchema,
-              })),
-            ],
-          },
-        };
-      }
       return {
         jsonrpc: '2.0',
         id,
-        result: { tools: getCanopyRouteTools(route, uiServer) },
+        result: { tools: listCanopyRouteTools(route, uiServer) },
       };
     }
     if (method === 'tools/call') {
@@ -3358,307 +2052,6 @@ export class McpHttpProxyService {
       }
     }
     return jsonRpcError(id, -32601, 'Method not found');
-  }
-
-  /**
-   * Answers a proxied `tools/call` the session's gate refuses; batches that
-   * include a tool call are refused outright rather than partially forwarded.
-   * Returns `'forward'` when the request should continue upstream unchanged.
-   */
-  private async answerGatedToolCall(
-    gate: McpProxiedToolCallGate,
-    route: InternalMcpProxyRoute,
-    body: string,
-    res: ServerResponse,
-  ): Promise<'answered' | 'forward'> {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(body);
-    } catch {
-      return 'forward';
-    }
-    const isToolCall = (value: unknown): value is Record<string, unknown> =>
-      isRecord(value) && value.method === 'tools/call';
-    if (Array.isArray(parsed)) {
-      if (!parsed.some(isToolCall)) return 'forward';
-      writeJson(res, 200, {
-        jsonrpc: '2.0',
-        error: {
-          code: -32600,
-          message: 'Batched tool calls are not accepted on this route.',
-        },
-        id: null,
-      });
-      return 'answered';
-    }
-    if (!isToolCall(parsed)) return 'forward';
-    const id =
-      typeof parsed.id === 'string' || typeof parsed.id === 'number'
-        ? parsed.id
-        : null;
-    const params = isRecord(parsed.params) ? parsed.params : {};
-    const tool = typeof params.name === 'string' ? params.name : null;
-    const args = isRecord(params.arguments) ? params.arguments : {};
-    let allowed = false;
-    if (tool !== null) {
-      try {
-        allowed = await gate({
-          proxyUrl: this.getProxyUrl(route.routeId),
-          tool,
-          args,
-          ...(id !== null ? { requestId: String(id) } : {}),
-        });
-      } catch (error) {
-        logMainProcessError('MCP proxied tool-call gate failed', error);
-      }
-    }
-    if (allowed) return 'forward';
-    writeJson(res, 200, {
-      jsonrpc: '2.0',
-      id,
-      result: {
-        content: [{ type: 'text', text: `${tool ?? 'Tool'} was denied.` }],
-        isError: true,
-      },
-    });
-    return 'answered';
-  }
-
-  private async forwardRequest(
-    req: IncomingMessage,
-    res: ServerResponse,
-    route: InternalMcpProxyRoute,
-  ): Promise<void> {
-    const selectedRouteActive = (gate?: McpProxiedToolCallGate): boolean =>
-      !route.requireToolCallGate ||
-      (this.routes.get(route.routeId) === route &&
-        route.sessionId !== null &&
-        (gate
-          ? this.sessionToolCallGates.get(route.sessionId) === gate
-          : this.sessionToolCallGates.has(route.sessionId)));
-    const selectedRouteUnavailable = (): void => {
-      writeJson(res, 200, {
-        jsonrpc: '2.0',
-        id: null,
-        error: { code: -32000, message: 'Selected MCP route is unavailable.' },
-      });
-    };
-    if (!selectedRouteActive()) {
-      selectedRouteUnavailable();
-      return;
-    }
-    let authorizationToken: string | null = null;
-    let loadedOAuth: {
-      definition: McpServerDefinitionData;
-      config: McpServerConfigData;
-    } | null = null;
-    if (route.authSupplier !== 'canopy-cloud' && route.oauthEnabled) {
-      loadedOAuth = await loadMcpDefinitionAndConfig(route);
-      if (loadedOAuth) {
-        try {
-          authorizationToken = await getValidMcpAccessToken(
-            loadedOAuth.definition,
-            loadedOAuth.config,
-          );
-        } catch {
-          res.setHeader('Retry-After', '30');
-          writeJson(res, 503, {
-            jsonrpc: '2.0',
-            error: {
-              code: -32002,
-              message:
-                'MCP authorization is temporarily unavailable. Try again shortly.',
-            },
-            id: null,
-          });
-          return;
-        }
-      }
-
-      if (!authorizationToken && route.oauthRequired !== false) {
-        writeJson(res, 401, {
-          jsonrpc: '2.0',
-          error: {
-            code: -32001,
-            message: 'MCP server authorization required',
-          },
-          id: null,
-        });
-        return;
-      }
-    }
-
-    // A session that owns this route may gate tool calls at execution time;
-    // its POST bodies are read here so the JSON-RPC method can be inspected.
-    const gate =
-      route.sessionId !== null
-        ? this.sessionToolCallGates.get(route.sessionId)
-        : undefined;
-    if (!selectedRouteActive(gate)) {
-      selectedRouteUnavailable();
-      return;
-    }
-    let bufferedBody: string | null = null;
-    if (gate && req.method === 'POST') {
-      try {
-        bufferedBody = await readRequestBody(req);
-      } catch (error) {
-        writeJson(res, error instanceof RequestBodyTooLargeError ? 413 : 400, {
-          jsonrpc: '2.0',
-          error: { code: -32600, message: 'Request body could not be read.' },
-          id: null,
-        });
-        return;
-      }
-      if (
-        (await this.answerGatedToolCall(gate, route, bufferedBody, res)) ===
-        'answered'
-      )
-        return;
-    }
-
-    if (!selectedRouteActive(gate)) {
-      selectedRouteUnavailable();
-      return;
-    }
-
-    let forwardHeaders: Record<string, string>;
-    try {
-      forwardHeaders = await buildForwardHeaders(
-        req,
-        route,
-        authorizationToken,
-      );
-    } catch (error: unknown) {
-      const signedOut =
-        error instanceof CanopyCloudClientError &&
-        error.code === 'missing-api-key';
-      if (signedOut) {
-        route.reauthRequired = true;
-        setAccountMcpRouteReauthRequired(route.routeId, true);
-      }
-      writeJson(res, signedOut ? 401 : 502, {
-        error: signedOut ? 'mcp_reauth_required' : 'account_route_unavailable',
-      });
-      return;
-    }
-    if (!selectedRouteActive(gate)) {
-      selectedRouteUnavailable();
-      return;
-    }
-
-    const upstreamPath = `${route.parsedUpstream.pathname}${route.parsedUpstream.search}`;
-    const options: RequestOptions = {
-      protocol: route.parsedUpstream.protocol,
-      hostname: route.parsedUpstream.hostname,
-      port: route.parsedUpstream.port,
-      method: req.method,
-      path: upstreamPath,
-      headers: forwardHeaders,
-    };
-    const requestFn =
-      route.parsedUpstream.protocol === 'https:' ? httpsRequest : httpRequest;
-
-    const upstreamReq = requestFn(options, (upstreamRes) => {
-      const upstreamStatusCode = upstreamRes.statusCode;
-      if (route.authSupplier === 'canopy-cloud') {
-        if (upstreamStatusCode === 401) {
-          // Observe a bounded copy while piping the original bytes and headers.
-          const chunks: Buffer[] = [];
-          let size = 0;
-          upstreamRes.on('data', (chunk: Buffer): void => {
-            size += chunk.length;
-            if (size <= MAX_REQUEST_BODY_BYTES) chunks.push(chunk);
-          });
-          upstreamRes.on('end', (): void => {
-            if (size > MAX_REQUEST_BODY_BYTES) return;
-            try {
-              const body: unknown = JSON.parse(
-                Buffer.concat(chunks).toString('utf8'),
-              );
-              if (isRecord(body) && body.error === 'mcp_reauth_required') {
-                route.reauthRequired = true;
-                setAccountMcpRouteReauthRequired(route.routeId, true);
-              }
-            } catch {
-              /* Non-JSON 401 responses are forwarded too. */
-            }
-          });
-        } else if (
-          upstreamStatusCode &&
-          upstreamStatusCode >= 200 &&
-          upstreamStatusCode < 300
-        ) {
-          route.reauthRequired = false;
-          setAccountMcpRouteReauthRequired(route.routeId, false);
-        }
-      }
-      let invalidation: Promise<void> | undefined;
-      if (
-        authorizationToken &&
-        loadedOAuth &&
-        (upstreamStatusCode === 401 || upstreamStatusCode === 403)
-      ) {
-        const diagnostic = `OAuth token was rejected by the upstream MCP server (HTTP ${String(
-          upstreamStatusCode,
-        )}).`;
-        if (upstreamStatusCode === 401) {
-          invalidation = invalidateMcpOAuthAccessToken(
-            loadedOAuth.definition.id,
-            loadedOAuth.config.id,
-            authorizationToken,
-            route.upstreamUrl,
-          ).catch((error: unknown) =>
-            logMainProcessError('MCP token invalidation failed', error),
-          );
-        }
-        // Publish for transcript attachment. A route with no owning session
-        // (for example a settings-surface health check) has no turn to
-        // attach to, so it is intentionally skipped here while still
-        // recording the error above.
-        if (route.sessionId) {
-          const failure = classifyMcpAuthFailure({
-            serverId: loadedOAuth.definition.id,
-            configId: loadedOAuth.config.id,
-            displayName: route.displayName,
-            statusCode: upstreamStatusCode,
-            diagnostic,
-          });
-          if (failure) {
-            recordPendingMcpAuthFailure(route.sessionId, failure);
-          }
-        }
-      }
-      const forwardResponse = (): void => {
-        if (res.destroyed) {
-          upstreamRes.destroy();
-          return;
-        }
-        res.writeHead(
-          upstreamRes.statusCode ?? 502,
-          upstreamRes.statusMessage,
-          copyResponseHeaders(upstreamRes),
-        );
-        upstreamRes.pipe(res);
-      };
-      // Persist the rejection before the caller can retry the failed request.
-      if (invalidation) void invalidation.then(forwardResponse);
-      else forwardResponse();
-    });
-
-    upstreamReq.on('error', (error: Error) => {
-      if (res.headersSent) {
-        res.destroy(error);
-        return;
-      }
-      writeJson(res, 502, {
-        error: 'MCP proxy upstream request failed',
-        message: error.message,
-      });
-    });
-
-    if (bufferedBody !== null) upstreamReq.end(bufferedBody);
-    else req.pipe(upstreamReq);
   }
 }
 

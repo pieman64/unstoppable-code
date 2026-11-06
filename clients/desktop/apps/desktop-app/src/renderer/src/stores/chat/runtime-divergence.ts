@@ -2,10 +2,6 @@ import {
   isTerminalBackedInterfaceMode,
   type ChatRuntimeState,
 } from '@canopy/desktop-shared/types';
-import {
-  startClientOperation,
-  succeedClientOperation,
-} from '@canopy/desktop-instrumentation/client';
 import { getEffectiveClaudeChatInterfaceMode } from '@/lib/claude-tui-chats';
 import { isReadOnlyAppAdvisorMirrorTarget } from './surface';
 import {
@@ -42,7 +38,8 @@ export interface RuntimeDivergenceRecord {
 export interface RuntimeDivergenceDeps {
   now: () => number;
   confirm: typeof confirmCanonicalTurn;
-  record: (event: RuntimeDivergenceRecord) => void;
+  /** Observes each repaired divergence; nothing records it by default. */
+  record?: (event: RuntimeDivergenceRecord) => void;
 }
 
 interface PendingStatusWrite {
@@ -88,7 +85,6 @@ const MAX_RETRY_DELAY_MS = 30_000;
 
 let deps: RuntimeDivergenceDeps | undefined;
 let activeUninstall: (() => void) | undefined;
-let operationCounter = 0;
 
 const pendingStatusWrites = new Map<string, PendingStatusWrite>();
 const trackedByKey = new Map<string, TrackedDivergence>();
@@ -106,20 +102,6 @@ function divergenceKey(target: {
 
 function now(): number {
   return deps?.now() ?? Date.now();
-}
-
-function defaultRecord(event: RuntimeDivergenceRecord): void {
-  operationCounter += 1;
-  const operationKey = `renderer_runtime_divergence:${operationCounter}`;
-  const context = {
-    kind: 'renderer_runtime_divergence',
-    writer: event.writer,
-    tabStatus: event.tabStatus,
-    runtimeStatus: event.runtimeStatus,
-    divergedMs: event.divergedMs,
-  };
-  startClientOperation('canopy.app_diagnostic', { operationKey, context });
-  succeedClientOperation('canopy.app_diagnostic', { operationKey, context });
 }
 
 function clearTracking(key: string): void {
@@ -549,7 +531,7 @@ async function checkTrackedDivergence(
 
   if (repaired) {
     try {
-      (deps?.record ?? defaultRecord)({
+      deps?.record?.({
         writer: tracked.writer,
         tabStatus: tracked.tabStatus,
         runtimeStatus: tracked.runtimeStatus,
@@ -728,7 +710,7 @@ export function installRuntimeDivergenceDetector(
   deps = {
     now: overrides.now ?? Date.now,
     confirm: overrides.confirm ?? confirmCanonicalTurn,
-    record: overrides.record ?? defaultRecord,
+    ...(overrides.record === undefined ? {} : { record: overrides.record }),
   };
   const api = chatStoreApi();
   const unsubscribe = api.subscribe(handleStoreChange);

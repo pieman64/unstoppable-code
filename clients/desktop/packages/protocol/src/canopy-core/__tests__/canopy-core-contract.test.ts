@@ -1,3 +1,9 @@
+import {
+  CORE_INTEGRATION_CREDENTIAL_INSTRUCTIONS,
+  CoreIntegrationCredentialSetParamsSchema,
+  CoreIntegrationCredentialClearParamsSchema,
+  CoreIntegrationCredentialResultSchema,
+} from '../core/integration/credential';
 import { z } from 'zod';
 
 import {
@@ -97,6 +103,7 @@ type _QueryNamesAreExact = Expect<
     | 'worker.codeGraph.languages.validate'
     | 'core.chat.snapshot.get'
     | 'core.chat.list'
+    | 'core.chat.locate'
     | 'core.workspace.list'
     | 'core.workspace.get'
     | 'core.workspace.sharedMultiRepo.prepare'
@@ -148,6 +155,7 @@ type _QueryNamesAreExact = Expect<
     | 'core.integration.resource.list'
     | 'core.pullRequest.get'
     | 'core.pullRequest.list'
+    | 'core.terminal.settings.get'
   >
 >;
 type _WorkerNamesAreExact = Expect<
@@ -179,6 +187,7 @@ type _CoreNamesAreExact = Expect<
     | 'core.chat.snapshot.get'
     | 'core.chat.send.receipt'
     | 'core.chat.list'
+    | 'core.chat.locate'
     | 'core.workspace.list'
     | 'core.workspace.get'
     | 'core.workspace.sharedMultiRepo.prepare'
@@ -221,6 +230,7 @@ type _CoreNamesAreExact = Expect<
     | 'core.integration.resource.list'
     | 'core.pullRequest.get'
     | 'core.pullRequest.list'
+    | 'core.terminal.settings.get'
     | 'core.workspace.instructions.get'
     | 'core.workspace.item.get'
     | 'core.workspace.item.list'
@@ -268,6 +278,7 @@ const typedHandlers: Pick<
   | 'worker.filesystem.link.resolve'
   | 'core.chat.snapshot.get'
   | 'core.chat.list'
+  | 'core.chat.locate'
   | 'core.chat.transcript.page'
   | 'core.chat.transcript.search'
   | 'core.chat.toolOutput.read'
@@ -285,6 +296,7 @@ const typedHandlers: Pick<
     queue: [],
   }),
   'core.chat.list': () => ({ items: [], nextCursor: null }),
+  'core.chat.locate': () => ({ worktreeId: null, archivedInWorktreeId: null }),
   'core.chat.transcript.page': () => ({
     messages: [],
     totalMessages: 0,
@@ -1338,6 +1350,7 @@ describe('universal Canopy query registry', () => {
       'core.chat.send.receipt',
       'core.chat.snapshot.get',
       'core.chat.list',
+      'core.chat.locate',
       'core.chat.transcript.page',
       'core.chat.transcript.search',
       'core.chat.toolOutput.read',
@@ -1388,6 +1401,7 @@ describe('universal Canopy query registry', () => {
       'core.integration.resource.list',
       'core.pullRequest.get',
       'core.pullRequest.list',
+      'core.terminal.settings.get',
     ]);
     expect(Object.keys(WORKER_QUERY_DEFINITIONS)).toEqual([
       'worker.filesystem.roots.list',
@@ -2106,6 +2120,7 @@ describe('common request and error contracts', () => {
       'core.annotation.thread.list',
       'core.chat.content.read',
       'core.chat.list',
+      'core.chat.locate',
       'core.chat.send.receipt',
       'core.chat.snapshot.get',
       'core.chat.toolOutput.read',
@@ -2141,6 +2156,7 @@ describe('common request and error contracts', () => {
       'core.pullRequest.list',
       'core.script.definition.get',
       'core.script.definition.list',
+      'core.terminal.settings.get',
       'core.workspace.get',
       'core.workspace.instructions.get',
       'core.workspace.item.get',
@@ -2171,6 +2187,8 @@ describe('common request and error contracts', () => {
       'core.chat.turn.cancel',
       'core.chat.update',
       'core.cost.index.refresh',
+      'core.integration.credential.clear',
+      'core.integration.credential.set',
       'core.integration.sourceRepository.star',
       'core.ledger.entry.add',
       'core.ledger.entry.update',
@@ -2186,6 +2204,7 @@ describe('common request and error contracts', () => {
       'core.pullRequest.update',
       'core.script.definition.delete',
       'core.script.definition.upsert',
+      'core.terminal.settings.update',
       'core.workspace.instructions.update',
       'core.workspace.item.import',
       'core.workspace.repoRules.apply',
@@ -2480,5 +2499,104 @@ describe('core.integration.sourceRepository.star', () => {
       definition.params.safeParse({ owner: 'someone', repo: 'elsewhere' })
         .success,
     ).toBe(false);
+  });
+});
+
+describe('integration credential write-only wire contract (CAN-5815)', () => {
+  it('bounds secrets and generation CAS, allows both credential kinds, and rejects authority injection', () => {
+    for (const credentialKind of ['github.pat', 'linear.apiToken']) {
+      expect(
+        CoreIntegrationCredentialSetParamsSchema.safeParse({
+          credentialKind,
+          secret: 'x',
+        }).success,
+      ).toBe(true);
+      expect(
+        CoreIntegrationCredentialSetParamsSchema.safeParse({
+          credentialKind,
+          secret: 'x'.repeat(16384),
+          expectedLegacyGeneration: 'a'.repeat(64),
+        }).success,
+      ).toBe(true);
+      for (const secret of ['', 'x'.repeat(16385), null])
+        expect(
+          CoreIntegrationCredentialSetParamsSchema.safeParse({
+            credentialKind,
+            secret,
+          }).success,
+        ).toBe(false);
+      expect(
+        CoreIntegrationCredentialSetParamsSchema.safeParse({
+          credentialKind,
+          secret: 'x',
+          source: { brandId: 'peer', build: 'stable' },
+        }).success,
+      ).toBe(false);
+      expect(
+        CoreIntegrationCredentialClearParamsSchema.safeParse({
+          credentialKind,
+          secret: 'x',
+        }).success,
+      ).toBe(false);
+    }
+    for (const expectedLegacyGeneration of [
+      '',
+      'A'.repeat(64),
+      'a'.repeat(63),
+      'a'.repeat(65),
+    ])
+      expect(
+        CoreIntegrationCredentialSetParamsSchema.safeParse({
+          credentialKind: 'github.pat',
+          secret: 'x',
+          expectedLegacyGeneration,
+        }).success,
+      ).toBe(false);
+    expect(
+      CoreIntegrationCredentialSetParamsSchema.shape.secret.meta(),
+    ).toMatchObject({ writeOnly: true });
+  });
+  it('returns only r1 presence, requires the grant, and retains keyed set and inherent clear', () => {
+    const set =
+      CORE_INTEGRATION_CREDENTIAL_INSTRUCTIONS[
+        'core.integration.credential.set'
+      ];
+    const clear =
+      CORE_INTEGRATION_CREDENTIAL_INSTRUCTIONS[
+        'core.integration.credential.clear'
+      ];
+    expect(set.idempotency).toBe('keyed');
+    expect(clear.idempotency).toBe('inherent');
+    for (const definition of [set, clear])
+      expect(definition.requiredGrants).toEqual(['core.integration.write']);
+    for (const configured of [true, false]) {
+      expect(
+        CoreIntegrationCredentialResultSchema.parse({
+          credentialKind: 'github.pat',
+          configured,
+        }),
+      ).toEqual({ credentialKind: 'github.pat', configured });
+      expect(
+        CoreIntegrationCredentialResultSchema.safeParse({
+          credentialKind: 'github.pat',
+          configured,
+          secret: 'x',
+        }).success,
+      ).toBe(false);
+    }
+    for (const [definition, suffix] of [
+      [set, 'writeFailed'],
+      [clear, 'removeFailed'],
+    ] as const) {
+      for (const code of ['storageUnavailable', suffix])
+        expect(
+          definition.error.safeParse({
+            kind: 'unavailable',
+            code: `core.integration.credential.${code}`,
+            message: 'redacted',
+            retry: { kind: 'never' },
+          }).success,
+        ).toBe(true);
+    }
   });
 });

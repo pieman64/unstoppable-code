@@ -22,8 +22,22 @@ import {
  *   for a card that floats over a busy or tinted background.
  * - `inset`: the page fill with a hairline edge, a well inside a group or
  *   card (a code sample, a nested preview).
+ * - `dashed`: a dashed line with no fill, for a drop zone or an empty
+ *   placeholder that is waiting for something.
  */
-export type SurfaceVariant = 'outline' | 'group' | 'card' | 'raised' | 'inset';
+export type SurfaceVariant =
+  | 'outline'
+  | 'group'
+  | 'card'
+  | 'raised'
+  | 'inset'
+  | 'dashed';
+
+/**
+ * The corner size. `small` gives every variant 8px corners, for a compact box
+ * such as one row of a file list; `default` is the variant's own corner.
+ */
+export type SurfaceSize = 'default' | 'small';
 
 /**
  * The inner padding, by role. `none` lets the content lay itself out (a
@@ -32,16 +46,16 @@ export type SurfaceVariant = 'outline' | 'group' | 'card' | 'raised' | 'inset';
 export type SurfacePadding = 'none' | 'tight' | 'compact' | 'default' | 'roomy';
 
 /**
- * Radius, fill, edge and shadow per variant: the one place a surface's look
- * changes. Radius nests: `inset` sits inside a `group` or `card` with the
- * smaller corner.
+ * Fill, edge and shadow per variant: the one place a surface's look changes.
+ * Corners are {@link SURFACE_RADIUS_CLASS}.
  */
 export const SURFACE_VARIANT_CLASS: Readonly<Record<SurfaceVariant, string>> = {
-  outline: `rounded-lg ${HAIRLINE_INSET_RING_CLASS} ring-line-base`,
-  group: `rounded-lg bg-secondary ${HAIRLINE_INSET_RING_CLASS} ring-line-base`,
-  card: `rounded-xl bg-card ${HAIRLINE_INSET_RING_CLASS} ring-line-base`,
-  raised: 'rounded-xl bg-card shadow-sm',
-  inset: `rounded-md bg-base ${HAIRLINE_INSET_RING_CLASS} ring-line-base`,
+  outline: `${HAIRLINE_INSET_RING_CLASS} ring-line-base`,
+  group: `bg-secondary ${HAIRLINE_INSET_RING_CLASS} ring-line-base`,
+  card: `bg-card ${HAIRLINE_INSET_RING_CLASS} ring-line-base`,
+  raised: 'bg-card shadow-sm',
+  inset: `bg-base ${HAIRLINE_INSET_RING_CLASS} ring-line-base`,
+  dashed: 'border border-dashed border-line-secondary',
 };
 
 /**
@@ -51,13 +65,24 @@ export const SURFACE_VARIANT_CLASS: Readonly<Record<SurfaceVariant, string>> = {
  */
 export const SURFACE_SELECTED_CLASS = `bg-accent-subtle ${HAIRLINE_INSET_RING_CLASS} ring-line-accent`;
 
-const SURFACE_RADIUS_CLASS: Readonly<Record<SurfaceVariant, string>> = {
+/**
+ * Corners per variant. Radius nests: `inset` sits inside a `group` or `card`
+ * with the smaller corner.
+ */
+export const SURFACE_RADIUS_CLASS: Readonly<Record<SurfaceVariant, string>> = {
   outline: 'rounded-lg',
   group: 'rounded-lg',
   card: 'rounded-xl',
   raised: 'rounded-xl',
   inset: 'rounded-md',
+  dashed: 'rounded-lg',
 };
+
+/** The corners of a {@link SurfaceSize} `small` box. */
+export const SURFACE_SMALL_RADIUS_CLASS = 'rounded-md';
+
+/** The hover of a clickable box: the fill darkens, as a list row's does. */
+export const SURFACE_INTERACTIVE_CLASS = 'hover:bg-subtle';
 
 export const SURFACE_PADDING_CLASS: Readonly<Record<SurfacePadding, string>> = {
   none: '',
@@ -77,6 +102,8 @@ export interface SurfaceProps extends SurfaceAttributes {
   readonly variant: SurfaceVariant;
   /** The element to render; `div` by default. */
   readonly as?: LayoutElement;
+  /** Corner size; see {@link SurfaceSize}. */
+  readonly size?: SurfaceSize;
   /** Inner padding by role; `none` by default. */
   readonly padding?: SurfacePadding;
   /**
@@ -87,6 +114,8 @@ export interface SurfaceProps extends SurfaceAttributes {
   readonly gap?: SpaceRole;
   /** The picked state; see {@link SURFACE_SELECTED_CLASS}. */
   readonly selected?: boolean;
+  /** A clickable box; see {@link SURFACE_INTERACTIVE_CLASS}. */
+  readonly interactive?: boolean;
   /**
    * Placement only (width, flex participation, position, overflow); never
    * the surface's radius, fill, edge, shadow or padding.
@@ -98,19 +127,29 @@ export interface SurfaceProps extends SurfaceAttributes {
 /** The class list a {@link Surface} renders, for tests and lab sheets. */
 export function surfaceClassName({
   variant,
+  size = 'default',
   padding = 'none',
   gap,
   selected = false,
+  interactive = false,
   className,
 }: Pick<
   SurfaceProps,
-  'variant' | 'padding' | 'gap' | 'selected' | 'className'
+  | 'variant'
+  | 'size'
+  | 'padding'
+  | 'gap'
+  | 'selected'
+  | 'interactive'
+  | 'className'
 >): string {
   return [
     gap ? `flex flex-col ${SPACE_ROLE_GAP_CLASS[gap]}` : '',
-    selected
-      ? `${SURFACE_RADIUS_CLASS[variant]} ${SURFACE_SELECTED_CLASS}`
-      : SURFACE_VARIANT_CLASS[variant],
+    size === 'small'
+      ? SURFACE_SMALL_RADIUS_CLASS
+      : SURFACE_RADIUS_CLASS[variant],
+    selected ? SURFACE_SELECTED_CLASS : SURFACE_VARIANT_CLASS[variant],
+    interactive ? SURFACE_INTERACTIVE_CLASS : '',
     SURFACE_PADDING_CLASS[padding],
     className ?? '',
   ]
@@ -126,9 +165,11 @@ export function surfaceClassName({
 export function Surface({
   as: Tag = 'div',
   variant,
+  size,
   padding,
   gap,
   selected,
+  interactive,
   className,
   children,
   ...rest
@@ -140,9 +181,11 @@ export function Surface({
       data-selected={selected ? '' : undefined}
       className={surfaceClassName({
         variant,
+        size,
         padding,
         gap,
         selected,
+        interactive,
         className,
       })}
     >

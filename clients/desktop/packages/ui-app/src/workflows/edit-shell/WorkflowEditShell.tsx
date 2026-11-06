@@ -438,13 +438,13 @@ export function WorkflowEditShell({
     plan.primary === 'duplicate'
       ? actionButton('duplicate', onDuplicate, 'primary')
       : actionButton('save', onSave, 'primary');
-  // A view toggle, not an action on the item: it keeps its label and says
-  // whether the drawer is showing through `aria-pressed`, while the drawer
-  // itself shows the state.
+  // A view toggle, not an action on the item: it keeps its label and holds
+  // its hover look while the drawer shows (`aria-pressed`).
   const assistantToggle = assistant ? (
     <Button
       variant="secondary"
       size="compact"
+      pressedHover
       aria-pressed={assistant.open}
       data-testid="workflow-edit-assistant"
       onClick={assistant.onToggle}

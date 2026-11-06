@@ -210,7 +210,7 @@ export function ProviderConnectorDetail({
         </div>
       </div>
 
-      <p className="text-sm leading-relaxed fg-secondary">
+      <p className="text-s leading-relaxed fg-secondary">
         Connect {displayName} with {mcpProviderAccountPhrase(providerLabels)}.{' '}
         {appName} never sees these credentials, and the tools become available
         in any chat on that provider.
@@ -239,7 +239,7 @@ function ProviderRow({
 
   return (
     <li className="flex items-center justify-between gap-3 px-3 py-2.5">
-      <span className="text-sm fg-primary">{label}</span>
+      <span className="text-s fg-primary">{label}</span>
       {entry.unavailable ? (
         // A provider Canopy could not read cannot honestly be offered as a
         // route — clicking through would send the user to link something that

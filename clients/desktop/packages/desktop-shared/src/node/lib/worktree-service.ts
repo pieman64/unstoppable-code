@@ -34,7 +34,10 @@ import {
 
 import { BrowserProfileRepository } from '../browser-profiles/repository';
 import { resolveBrowserTaskOwner } from '../browser-profiles/owners';
-import { prepareBrowserTaskRetirement } from '../browser-profiles/lifecycle';
+import {
+  DEFERRED_BROWSER_RETIREMENT_WARNING,
+  prepareBrowserTaskRetirement,
+} from '../browser-profiles/lifecycle';
 import { settleAll } from './detached-work';
 
 export type { WorktreeCliRepoEntry } from './worktree-cli-reads';
@@ -46,9 +49,6 @@ export {
   listWorktreeCliRows,
   listWorktreePipelineExecutions,
 } from './worktree-cli-reads';
-
-const DEFERRED_BROWSER_RETIREMENT_WARNING =
-  'Browser data for this worktree will be cleared the next time the app starts.';
 
 async function withBrowserTaskRetirement(
   workspaceId: string,

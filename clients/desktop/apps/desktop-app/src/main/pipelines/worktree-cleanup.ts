@@ -1,5 +1,6 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import { syncTreeDurably } from '@canopy/desktop-shared/node/lib/atomic-file';
 import {
   deleteExecutionState,
   listExecutionSummaries,
@@ -13,6 +14,21 @@ import type {
 } from '@canopy/desktop-shared/node/pipelines/executor/types';
 import type { ArchiveIoOperationRequest } from '../archive/archive-io-protocol';
 import { relocateExecutionStateArtifactPaths } from './execution-state-relocation';
+
+async function pathExists(target: string): Promise<boolean> {
+  try {
+    await fs.lstat(target);
+    return true;
+  } catch (error) {
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      Reflect.get(error, 'code') === 'ENOENT'
+    )
+      return false;
+    throw error;
+  }
+}
 
 interface CleanupResult {
   warnings: string[];
@@ -206,6 +222,8 @@ export async function cleanupWorktreePipelines(
                 throw error;
               });
           }
+          // The live artifacts are deleted next; the copy must survive power loss.
+          if (await pathExists(destination)) await syncTreeDurably(destination);
           await saveExecutionState(
             relocateExecutionStateArtifactPaths(
               state,

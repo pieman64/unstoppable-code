@@ -5,8 +5,6 @@ import {
 } from '@canopy/core-runtime/node/w5/commit-log-file-store';
 import {
   createW5RecordHostPort,
-  w5RecordTargetFor,
-  w5UnnameableRecordFor,
   type W5RecordPortTransport,
 } from '@canopy/core-runtime/node/w5/record-port';
 import type {
@@ -14,7 +12,6 @@ import type {
   CORE_WORKSPACE_RECORDS_INSTRUCTION_DEFINITIONS,
   CORE_WORKSPACE_RECORDS_QUERY_DEFINITIONS,
 } from '@canopy/protocol/canopy-core';
-import { W5CommitRefusedError } from '@canopy/desktop-shared/node/w5-commit-log/errors';
 import {
   admitStorageWrite,
   routeStorageAdmissionToAuthority,
@@ -22,7 +19,6 @@ import {
 import { logMainProcessWarn } from './main-process-logging';
 import { getWorkspacesRootDir } from './paths';
 import { __setDesktopW5FileStoreForTests } from './w5-commit-log-file-store';
-import { W5RecordUnservedError, type W5FileRead } from './w5-file-store';
 import {
   recordW5PortConflict,
   setW5PreEffectAttempts,
@@ -54,8 +50,6 @@ export type W5RecordPortClient = CanopyClient<
   typeof CORE_WORKSPACE_RECORDS_INSTRUCTION_DEFINITIONS,
   Record<never, never>
 >;
-
-const CAPTURE_OPERATION = 'core.workspaceRecords.capture';
 
 /** One record-port call: its operation, whether it is an instruction, and its run. */
 export type W5RecordRecoveryTarget =
@@ -192,68 +186,17 @@ export function createW5DaemonRecordStore(options: {
     onUnserved: ({ operation, reason }) =>
       recordW5RecordUnserved(operation, reason),
   });
-  // Fresh reads come from the authority's recovered position, never the local
-  // disk, which can show a half-applied multi-file commit. The two capture
-  // classes the port cannot serve stay unreadable (fail closed), named and
-  // counted here, where one file's read fails closed.
-  const readFile = async (filePath: string): Promise<W5FileRead> => {
-    recordW5Work('read.backend.capture');
-    const target = w5RecordTargetFor(root, filePath);
-    if (!target) {
-      const unnameable = w5UnnameableRecordFor(root, filePath);
-      if (unnameable) {
-        recordW5RecordUnserved(CAPTURE_OPERATION, 'unsupported-id');
-        return {
-          state: 'unreadable',
-          error: new W5RecordUnservedError('unsupported-id', unnameable.kind),
-        };
-      }
-      return {
-        state: 'unreadable',
-        error: new Error(
-          'This file is not a W5 record under the trusted root.',
-        ),
-      };
-    }
-    try {
-      const { files } = await port.capture({
-        files: [target],
-        discoverWorkspaces: false,
-      });
-      const [image] = files;
-      if (image?.state === 'present')
-        return {
-          state: 'present',
-          raw: Buffer.from(image.base64, 'base64').toString('utf8'),
-        };
-      if (image?.state === 'absent') return { state: 'absent' };
-      return { state: 'unreadable' };
-    } catch (error) {
-      if (
-        error instanceof W5CommitRefusedError &&
-        error.reason === 'invalid-state' &&
-        error.details.capture === 'limit-exceeded'
-      ) {
-        recordW5RecordUnserved(CAPTURE_OPERATION, 'limit-exceeded');
-        return {
-          state: 'unreadable',
-          error: new W5RecordUnservedError(
-            'limit-exceeded',
-            target.kind,
-            error,
-          ),
-        };
-      }
-      return {
-        state: 'unreadable',
-        ...(error instanceof Error ? { error } : {}),
-      };
-    }
-  };
   return createW5CommitLogFileStore({
     getHost: () => port,
     warn: (message, context) => logMainProcessWarn(message, context),
-    readFile,
+    readFile: (path) => {
+      recordW5Work('read.backend.capture');
+      return port.readFile(path);
+    },
+    readFileForCommit: (path) => {
+      recordW5Work('read.backend.capture');
+      return port.readFile(path, true);
+    },
     admit: (targets, operation) => admitW5Storage(targets, operation),
     admitWrite: (target, write) => admitStorageWrite(target, write),
     // The authority checks ownership as `daemon`.

@@ -1,44 +1,10 @@
 import type { BrandReleaseFlavor } from '@canopy/protocol/brand';
 import type {
-  DesktopInstrumentationPrivacyLevel,
   DesktopInstrumentationProvider,
   PostHogRuntimeFlags,
 } from './types';
 
 declare const __CANOPY_E2E__: boolean;
-
-export type DatadogSite =
-  | 'datadoghq.com'
-  | 'datadoghq.eu'
-  | 'us3.datadoghq.com'
-  | 'us5.datadoghq.com'
-  | 'ap1.datadoghq.com'
-  | 'ap2.datadoghq.com'
-  | 'ddog-gov.com';
-
-export interface DatadogInstrumentationConfig {
-  enabled: boolean;
-  clientToken?: string;
-  applicationId?: string;
-  site: DatadogSite;
-  service: string;
-  env?: string;
-  version?: string;
-  variant?: string;
-  proxy?: string;
-  sessionSampleRate: number;
-  sessionReplaySampleRate: number;
-  telemetrySampleRate: number;
-  trackResources: boolean;
-  trackLongTasks: boolean;
-  trackUserInteractions: boolean;
-  enablePrivacyForActionName: boolean;
-  allowedTracingUrls: string[];
-  traceSampleRate: number;
-  defaultPrivacyLevel: DesktopInstrumentationPrivacyLevel;
-  allowedWebViewHosts: string[];
-  sourcemapMinifiedPathPrefix: string;
-}
 
 export interface PostHogInstrumentationConfig {
   enabled: boolean;
@@ -53,20 +19,8 @@ export interface DesktopInstrumentationConfig {
   appVersion?: string;
   /** Bundled release flavor; omitted when the build sets no known flavor. */
   releaseChannel?: BrandReleaseFlavor;
-  datadog: DatadogInstrumentationConfig;
   posthog: PostHogInstrumentationConfig;
 }
-
-export type EnabledDatadogInstrumentationConfig =
-  DatadogInstrumentationConfig & {
-    enabled: true;
-    clientToken: string;
-    applicationId: string;
-  };
-
-export type DatadogInstrumentationReadiness =
-  | { enabled: true; config: EnabledDatadogInstrumentationConfig }
-  | { enabled: false; reason: string };
 
 export type EnabledPostHogInstrumentationConfig =
   PostHogInstrumentationConfig & {
@@ -78,25 +32,14 @@ export type PostHogInstrumentationReadiness =
   | { enabled: true; config: EnabledPostHogInstrumentationConfig }
   | { enabled: false; reason: string };
 
+/** Stable minified-path key for renderer assets in error stacks and uploaded
+ * source maps, independent of where the packaged app is installed. */
+export const RENDERER_SOURCEMAP_MINIFIED_PATH_PREFIX =
+  'https://canopy.local/renderer/assets';
+
 const DEFAULT_POSTHOG_HOST = 'https://us.i.posthog.com';
 const POSTHOG_E2E_PROJECT_KEY_PREFIX = 'phc_e2e_';
 const LOOPBACK_POSTHOG_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
-
-const VALID_DATADOG_SITES = new Set<string>([
-  'datadoghq.com',
-  'datadoghq.eu',
-  'us3.datadoghq.com',
-  'us5.datadoghq.com',
-  'ap1.datadoghq.com',
-  'ap2.datadoghq.com',
-  'ddog-gov.com',
-]);
-
-const VALID_PRIVACY_LEVELS = new Set<string>([
-  'mask',
-  'mask-user-input',
-  'allow',
-]);
 
 function readBuildBoolean(
   value: boolean | undefined,
@@ -127,12 +70,6 @@ function readBuildNumber(value: number | undefined, fallback: number): number {
     : fallback;
 }
 
-function readBuildStringArray(value: string[] | undefined): string[] {
-  return Array.isArray(value)
-    ? value.map((entry) => entry.trim()).filter((entry) => entry.length > 0)
-    : [];
-}
-
 function readLoopbackPostHogStubUrl(
   value: string | undefined,
 ): string | undefined {
@@ -154,42 +91,7 @@ function readLoopbackPostHogStubUrl(
   }
 }
 
-function readDatadogSite(value: string | undefined): DatadogSite {
-  const candidate = readBuildString(value);
-  return candidate && VALID_DATADOG_SITES.has(candidate)
-    ? (candidate as DatadogSite)
-    : 'datadoghq.com';
-}
-
-function readPrivacyLevel(
-  value: string | undefined,
-): DesktopInstrumentationPrivacyLevel {
-  const candidate = readBuildString(value);
-  return candidate && VALID_PRIVACY_LEVELS.has(candidate)
-    ? (candidate as DesktopInstrumentationPrivacyLevel)
-    : 'mask';
-}
-
-function getDatadogSessionSampleRate(
-  enabled: boolean,
-  env: string | undefined,
-): number {
-  // RUM sampling controls all session events, including handled errors.
-  if (enabled && env) return 100;
-  return typeof __CANOPY_DATADOG_SESSION_SAMPLE_RATE__ !== 'undefined'
-    ? readBuildNumber(__CANOPY_DATADOG_SESSION_SAMPLE_RATE__, 20)
-    : 20;
-}
-
 export function getDesktopInstrumentationConfig(): DesktopInstrumentationConfig {
-  const datadogEnabled =
-    typeof __CANOPY_DATADOG_ENABLED__ !== 'undefined'
-      ? readBuildBoolean(__CANOPY_DATADOG_ENABLED__, false)
-      : false;
-  const datadogEnv =
-    typeof __CANOPY_DATADOG_ENV__ !== 'undefined'
-      ? readBuildString(__CANOPY_DATADOG_ENV__)
-      : undefined;
   const posthogRequestedEnabled =
     typeof __CANOPY_POSTHOG_ENABLED__ !== 'undefined'
       ? readBuildBoolean(__CANOPY_POSTHOG_ENABLED__, false)
@@ -217,7 +119,7 @@ export function getDesktopInstrumentationConfig(): DesktopInstrumentationConfig 
       ));
 
   return {
-    providers: ['datadog', 'posthog'],
+    providers: ['posthog'],
     appVersion:
       typeof __CANOPY_APP_VERSION__ !== 'undefined'
         ? readBuildString(__CANOPY_APP_VERSION__)
@@ -226,90 +128,6 @@ export function getDesktopInstrumentationConfig(): DesktopInstrumentationConfig 
       typeof __CANOPY_RELEASE_FLAVOR__ !== 'undefined'
         ? readReleaseChannel(__CANOPY_RELEASE_FLAVOR__)
         : undefined,
-    datadog: {
-      enabled: datadogEnabled,
-      clientToken:
-        typeof __CANOPY_DATADOG_CLIENT_TOKEN__ !== 'undefined'
-          ? readBuildString(__CANOPY_DATADOG_CLIENT_TOKEN__)
-          : undefined,
-      applicationId:
-        typeof __CANOPY_DATADOG_APPLICATION_ID__ !== 'undefined'
-          ? readBuildString(__CANOPY_DATADOG_APPLICATION_ID__)
-          : undefined,
-      site:
-        typeof __CANOPY_DATADOG_SITE__ !== 'undefined'
-          ? readDatadogSite(__CANOPY_DATADOG_SITE__)
-          : 'datadoghq.com',
-      service:
-        (typeof __CANOPY_DATADOG_SERVICE__ !== 'undefined'
-          ? readBuildString(__CANOPY_DATADOG_SERVICE__)
-          : undefined) ?? 'canopy-desktop',
-      env: datadogEnv,
-      version:
-        typeof __CANOPY_DATADOG_VERSION__ !== 'undefined'
-          ? readBuildString(__CANOPY_DATADOG_VERSION__)
-          : undefined,
-      variant:
-        typeof __CANOPY_DATADOG_VARIANT__ !== 'undefined'
-          ? readBuildString(__CANOPY_DATADOG_VARIANT__)
-          : undefined,
-      proxy:
-        typeof __CANOPY_DATADOG_PROXY__ !== 'undefined'
-          ? readBuildString(__CANOPY_DATADOG_PROXY__)
-          : undefined,
-      sessionSampleRate: getDatadogSessionSampleRate(
-        datadogEnabled,
-        datadogEnv,
-      ),
-      sessionReplaySampleRate:
-        typeof __CANOPY_DATADOG_SESSION_REPLAY_SAMPLE_RATE__ !== 'undefined'
-          ? readBuildNumber(__CANOPY_DATADOG_SESSION_REPLAY_SAMPLE_RATE__, 0)
-          : 0,
-      telemetrySampleRate:
-        typeof __CANOPY_DATADOG_TELEMETRY_SAMPLE_RATE__ !== 'undefined'
-          ? readBuildNumber(__CANOPY_DATADOG_TELEMETRY_SAMPLE_RATE__, 20)
-          : 20,
-      trackResources:
-        typeof __CANOPY_DATADOG_TRACK_RESOURCES__ !== 'undefined'
-          ? readBuildBoolean(__CANOPY_DATADOG_TRACK_RESOURCES__, true)
-          : true,
-      trackLongTasks:
-        typeof __CANOPY_DATADOG_TRACK_LONG_TASKS__ !== 'undefined'
-          ? readBuildBoolean(__CANOPY_DATADOG_TRACK_LONG_TASKS__, true)
-          : true,
-      trackUserInteractions:
-        typeof __CANOPY_DATADOG_TRACK_USER_INTERACTIONS__ !== 'undefined'
-          ? readBuildBoolean(__CANOPY_DATADOG_TRACK_USER_INTERACTIONS__, false)
-          : false,
-      enablePrivacyForActionName:
-        typeof __CANOPY_DATADOG_ENABLE_PRIVACY_FOR_ACTION_NAME__ !== 'undefined'
-          ? readBuildBoolean(
-              __CANOPY_DATADOG_ENABLE_PRIVACY_FOR_ACTION_NAME__,
-              true,
-            )
-          : true,
-      allowedTracingUrls:
-        typeof __CANOPY_DATADOG_ALLOWED_TRACING_URLS__ !== 'undefined'
-          ? readBuildStringArray(__CANOPY_DATADOG_ALLOWED_TRACING_URLS__)
-          : [],
-      traceSampleRate:
-        typeof __CANOPY_DATADOG_TRACE_SAMPLE_RATE__ !== 'undefined'
-          ? readBuildNumber(__CANOPY_DATADOG_TRACE_SAMPLE_RATE__, 20)
-          : 20,
-      defaultPrivacyLevel:
-        typeof __CANOPY_DATADOG_DEFAULT_PRIVACY_LEVEL__ !== 'undefined'
-          ? readPrivacyLevel(__CANOPY_DATADOG_DEFAULT_PRIVACY_LEVEL__)
-          : 'mask',
-      allowedWebViewHosts:
-        typeof __CANOPY_DATADOG_ALLOWED_WEBVIEW_HOSTS__ !== 'undefined'
-          ? readBuildStringArray(__CANOPY_DATADOG_ALLOWED_WEBVIEW_HOSTS__)
-          : [],
-      sourcemapMinifiedPathPrefix:
-        (typeof __CANOPY_DATADOG_SOURCEMAP_MINIFIED_PATH_PREFIX__ !==
-        'undefined'
-          ? readBuildString(__CANOPY_DATADOG_SOURCEMAP_MINIFIED_PATH_PREFIX__)
-          : undefined) ?? 'https://canopy.local/renderer/assets',
-    },
     posthog: {
       enabled: posthogEnabled,
       projectKey: posthogProjectKey,
@@ -325,33 +143,6 @@ export function getDesktopInstrumentationConfig(): DesktopInstrumentationConfig 
           : 0,
     },
   };
-}
-
-export function getDatadogDisabledReason(
-  config: DatadogInstrumentationConfig,
-): string | undefined {
-  if (!config.enabled) {
-    return 'disabled';
-  }
-  if (!config.clientToken) {
-    return 'missing_client_token';
-  }
-  if (!config.applicationId) {
-    return 'missing_application_id';
-  }
-  return undefined;
-}
-
-export function getDatadogInstrumentationReadiness(
-  config: DatadogInstrumentationConfig,
-): DatadogInstrumentationReadiness {
-  const reason = getDatadogDisabledReason(config);
-  return reason
-    ? { enabled: false, reason }
-    : {
-        enabled: true,
-        config: config as EnabledDatadogInstrumentationConfig,
-      };
 }
 
 export function getPostHogDisabledReason(

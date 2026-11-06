@@ -49,6 +49,7 @@ export const settingsOrganizationBootstrapSchema = z.looseObject({
   visibleTabs: z.array(organizationNavTabSchema),
   disabledTabs: z.array(organizationNavTabSchema),
   billingNeedsAttention: z.boolean(),
+  aiGatewayEnabled: z.boolean().optional(),
   billingEnabled: z.boolean(),
   memoryEnabled: z.boolean(),
   digestsEnabled: z.boolean(),
@@ -84,6 +85,7 @@ export const settingsBootstrapSchema = z.looseObject({
     image: z.string().nullable().optional(),
   }),
   account: z.looseObject({
+    aiGatewayEnabled: z.boolean().optional(),
     billingEnabled: z.boolean(),
     digestsEnabled: z.boolean(),
     integrationsEnabled: z.boolean(),

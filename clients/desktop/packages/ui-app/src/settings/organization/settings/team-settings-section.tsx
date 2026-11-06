@@ -14,6 +14,8 @@ import {
 } from '../team-usage-settings-section';
 import { TeamModelPolicySection } from '../team-model-policy-section';
 import { TeamModelGatewaySection } from '../team-model-gateway-section';
+import { OrganizationAiGatewaySection } from '../../ai-gateway/OrganizationAiGatewaySection';
+import { TeamAiGatewayRequirementSection } from '../../ai-gateway/TeamAiGatewayRequirementSection';
 import { TeamMemorySettingsSection } from '../team-memory-settings-section';
 import { TeamSubscriptionPricingSection } from './team-subscription-pricing-section';
 import { useOrganizationSettingsSubtabSlots } from './organization-settings-subtab-slots';
@@ -55,11 +57,16 @@ interface TeamSettingsSectionProps {
    * while the org is lapsed.
    */
   externalAgentsEnabled?: boolean;
+  /**
+   * AI gateway setup is on: the gateway has its own page, and Policies keeps
+   * only the members requirement.
+   */
+  aiGatewayEnabled?: boolean;
 }
 
 /**
- * One organization Settings page (General, Policies, Integrations, Usage or
- * Billing). Each is its own settings rail row, deep-linkable as `?tab=`, so
+ * One organization Settings page (General, Policies, Integrations, Usage,
+ * AI gateway or Billing). Each is its own settings rail row, deep-linkable as `?tab=`, so
  * an admin lands on a short themed page instead of scrolling past unrelated
  * sections to reach the one they came for.
  */
@@ -73,6 +80,7 @@ export function TeamSettingsSection({
   lapsed,
   onDeleted,
   externalAgentsEnabled = false,
+  aiGatewayEnabled = false,
 }: TeamSettingsSectionProps): JSX.Element {
   const { renderExternalAgentsPolicy } = useOrganizationSettingsSubtabSlots();
 
@@ -172,10 +180,14 @@ export function TeamSettingsSection({
                  * availability before the data path matches how admins
                  * describe it.
                  */}
-                <TeamModelGatewaySection
-                  detail={detail}
-                  freeAccess={freeAccess}
-                />
+                {aiGatewayEnabled ? (
+                  <TeamAiGatewayRequirementSection detail={detail} />
+                ) : (
+                  <TeamModelGatewaySection
+                    detail={detail}
+                    freeAccess={freeAccess}
+                  />
+                )}
               </>
             )}
 
@@ -209,6 +221,8 @@ export function TeamSettingsSection({
             <TeamSubscriptionPricingSection detail={detail} />
           </>
         );
+      case 'ai-gateway':
+        return <OrganizationAiGatewaySection detail={detail} />;
       case 'integrations':
         return (
           <TeamGitHubConnectionSection

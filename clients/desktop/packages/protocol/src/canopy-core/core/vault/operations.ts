@@ -62,9 +62,9 @@ export const VaultEntryDeleteErrorSchema = vaultKeyedOperationErrorSchema([
   'core.vault.entry.idempotencyKeyReused',
 ]);
 
-// Inactive contracts: these registries are deliberately not composed into
-// CORE_*, CANOPY_* or CORE_TRANSPORT_*. The dispatcher requires a handler for
-// every definition it receives, and no vault handler exists yet (V1/V6).
+// Daemon-only contracts: never composed into CORE_*, CANOPY_* or transport
+// defaults (Electron must not open the exclusive vault). V6-a registers both
+// registries; instructions require a grant AND a designated family writer.
 // Every field stays a literal so the census reads it without evaluation.
 export const CORE_VAULT_QUERY_DEFINITIONS = defineCanopyQueryRegistry('core', {
   'core.vault.status.get': defineCanopyQuery({

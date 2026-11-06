@@ -42,6 +42,14 @@ export interface CanopyCloudAuthenticatedRequestInit extends CanopyCloudRequestI
   credentialContext?: CanopyCloudCredentialContext;
 }
 
+export interface CanopyCloudJsonRequestInit extends CanopyCloudAuthenticatedRequestInit {
+  /**
+   * Awaited before every attempt, retries included. A rejection stops the
+   * request before that attempt is sent and is thrown as it is.
+   */
+  beforeRequest?: () => Promise<void>;
+}
+
 export type CanopyCloudClientErrorCode =
   | 'cloud-not-configured'
   | 'missing-api-key'
@@ -557,9 +565,9 @@ async function withBoundedCloudReadRetry<T>(options: {
 
 export async function requestCanopyCloudJson<T>(
   pathname: string,
-  init?: CanopyCloudAuthenticatedRequestInit,
+  init?: CanopyCloudJsonRequestInit,
 ): Promise<T> {
-  const { credentialContext, ...requestInit } = init ?? {};
+  const { credentialContext, beforeRequest, ...requestInit } = init ?? {};
   const { baseUrl, apiKey } =
     credentialContext ?? (await resolveCloudCredentials());
   const url = buildCloudPath(baseUrl, pathname);
@@ -567,6 +575,7 @@ export async function requestCanopyCloudJson<T>(
   return withBoundedCloudReadRetry({
     init: requestInit,
     attempt: async (): Promise<T> => {
+      await beforeRequest?.();
       let handle: Awaited<ReturnType<typeof fetchCanopyCloud>> | null = null;
       try {
         handle = await fetchCanopyCloud(url, {

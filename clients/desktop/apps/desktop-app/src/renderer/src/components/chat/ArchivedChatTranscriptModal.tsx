@@ -407,11 +407,11 @@ export function ArchivedChatTranscriptModal({
             suppressAutoScroll={search.query.length > 0}
           />
         ) : loadFailed ? (
-          <p className="flex flex-1 items-center justify-center p-6 text-center text-sm fg-secondary">
+          <p className="flex flex-1 items-center justify-center p-6 text-center text-s fg-secondary">
             Could not load this archived chat.
           </p>
         ) : (
-          <div className="flex flex-1 items-center justify-center gap-2 p-6 text-sm fg-secondary">
+          <div className="flex flex-1 items-center justify-center gap-2 p-6 text-s fg-secondary">
             <LoadingSpinner />
             <span>Loading transcript…</span>
           </div>

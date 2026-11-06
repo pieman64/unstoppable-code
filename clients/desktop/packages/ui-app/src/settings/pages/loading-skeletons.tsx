@@ -11,7 +11,8 @@ import {
   DataTableRow,
   DelayedLoadingPlaceholder,
   DisplayAvatar,
-  SettingsChartSkeleton,
+  Fact,
+  FactList,
   SettingsRowsGroup,
   SettingsRowsRow,
   SettingsRowsSection,
@@ -50,7 +51,10 @@ export const HOSTED_SETTINGS_PAGE_SKELETONS: {
   'account.digest': 'cards',
   'account.notifications': 'form',
   'account.integrations': 'list',
+  'account.plugins': 'form',
+  'account.mcp': 'form',
   'account.security': 'form',
+  'account.ai-gateway': 'form',
   'account.billing': 'cards',
   'account.invoice': 'table',
   'account.labs': 'form',
@@ -215,6 +219,40 @@ function SettingsCardsSample(): JSX.Element {
   );
 }
 
+const SAMPLE_CHART_TILES: readonly (readonly [string, string])[] = [
+  ['Total runs', '1,280'],
+  ['Tokens used', '48.2k'],
+  ['Active people', '36'],
+  ['Total cost', '$126.40'],
+];
+
+/**
+ * A statistics section while it loads: the stat tiles are measured, and the
+ * chart below them keeps its height with nothing drawn, because a chart is
+ * drawn on a canvas and has nothing to measure.
+ */
+export function SettingsChartLoading(): JSX.Element {
+  return (
+    <Skeleton
+      loading
+      label="Loading statistics"
+      testId="settings-skeleton-chart-bars"
+      className="w-full"
+    >
+      <div className="flex flex-col gap-4">
+        <FactList layout="stacked" columns={4} valueSize="large" rowGap="3">
+          {SAMPLE_CHART_TILES.map(([label, value]) => (
+            <Fact key={label} label={label}>
+              {value}
+            </Fact>
+          ))}
+        </FactList>
+        <div className="h-48" />
+      </div>
+    </Skeleton>
+  );
+}
+
 interface ListSample {
   readonly name: string;
   readonly meta: string;
@@ -302,9 +340,8 @@ function skeletonBody(
         </Skeleton>
       );
     case 'chart':
-      return <SettingsChartSkeleton variant="bars" />;
+      return <SettingsChartLoading />;
     case 'graph':
-      return <SettingsChartSkeleton variant="graph" />;
     case 'spinner':
       return <CenteredLoadingSpinner />;
   }

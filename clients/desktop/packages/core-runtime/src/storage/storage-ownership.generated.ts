@@ -2,6 +2,19 @@
 import type { StorageOwnershipRow } from './writer-authority';
 export const STORAGE_OWNERSHIP = [
   {
+    "id": "daemon_github_credential_fence",
+    "transitionOwner": "daemon",
+    "currentWriters": [
+      "daemon"
+    ],
+    "schemaVersion": 1,
+    "backupPolicy": "none",
+    "workPackage": "W2",
+    "admittedWriters": [
+      "packages/core-runtime/src/node/vault/github-credential-fence-store.ts"
+    ]
+  },
+  {
     "id": "daemon_runtime_descriptor",
     "transitionOwner": "daemon",
     "currentWriters": [
@@ -30,6 +43,20 @@ export const STORAGE_OWNERSHIP = [
     "schemaVersion": 1,
     "backupPolicy": "none",
     "workPackage": "W2"
+  },
+  {
+    "id": "daemon_vault_store",
+    "transitionOwner": "daemon",
+    "currentWriters": [
+      "daemon"
+    ],
+    "schemaVersion": "none",
+    "backupPolicy": "none",
+    "workPackage": "W2",
+    "admittedWriters": [
+      "packages/core-runtime/src/node/vault/repository/store.ts",
+      "packages/core-runtime/src/node/vault/repository/store-database.ts"
+    ]
   },
   {
     "id": "operation_ledger",

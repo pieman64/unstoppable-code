@@ -221,14 +221,19 @@ const EXPLICIT_ENV = {
   CANOPY_SKIP_BINARY_STAGING_POSTINSTALL: 'true',
   CANOPY_CLOUD_BASE_URL: 'http://127.0.0.1:4011',
   CANOPY_E2E_BUILD: '0',
+  // Keep production initialization, opting in only to isolated test storage.
+  CANOPY_TEST_DATA_OVERRIDES: '1',
   CANOPY_BRAND: 'canopy',
   CANOPY_RELEASE_FLAVOR: 'stable',
+  CANOPY_RENDERER_SOURCEMAPS: 'false',
+  // Current builds no longer read Datadog configuration; the pinned historical
+  // baseline still does, so these keep its Datadog RUM and hidden maps off.
   CANOPY_DATADOG_ENABLED: 'false',
+  CANOPY_DATADOG_SOURCEMAPS: 'false',
   // Current builds never obfuscate; these keep the pinned historical baseline,
   // which still reads them, building a comparable unobfuscated renderer.
   CANOPY_RENDERER_OBFUSCATION: 'false',
   CANOPY_RENDERER_OBFUSCATE_VENDOR: 'false',
-  CANOPY_DATADOG_SOURCEMAPS: 'false',
   CANOPY_OLLAMA_ENABLED: 'true',
   CANOPY_DESKTOP_SHARED_SIDEBAR: 'false',
   CANOPY_DESKTOP_SIDEBAR_SHADOW: 'false',

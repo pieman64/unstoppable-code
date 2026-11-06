@@ -23,6 +23,11 @@ import { claudeNativeMemoryOptions } from '@canopy/desktop-shared/node/lib/nativ
 import { READ_ONLY_TOOLS } from '@canopy/desktop-shared/builtin-actions/agent-prompt/logic';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 import {
+  GENERATED_WORKTREE_LABEL_INSTRUCTIONS,
+  type GeneratedWorktreeLabelCandidate,
+  type GeneratedWorktreeLabelClarity,
+} from '@canopy/protocol/worktree-display-labels';
+import {
   AGENT_TRANSIENT_RETRY_CONTINUE_PROMPT,
   isTransientAgentRetryExhaustedError,
   readClaudeRetrySessionId,
@@ -57,6 +62,11 @@ import {
 
 export interface WorktreeSummaryResult {
   summary: WorktreeSummaryData | null;
+  /**
+   * The display label the model proposed, unvalidated. Null when none was
+   * requested or the response carried none.
+   */
+  displayLabel: GeneratedWorktreeLabelCandidate | null;
   usage: HelperUsage;
 }
 
@@ -91,6 +101,16 @@ export interface WorktreeSummaryGeneratorOptions {
   modelConfig?: AgentModelConfig;
   pluginRuntime?: HelperAgentPluginRuntime;
   /**
+   * The worktree's branch and linked pull request, as Markdown lines. They
+   * help name the work; omitted when nothing is known.
+   */
+  worktreeContext?: string;
+  /**
+   * Present when the worktree may take a generated display label: it has none,
+   * or `provisionalLabel` is the generated one later turns may replace.
+   */
+  displayLabelRequest?: { provisionalLabel?: string };
+  /**
    * True when the user explicitly asked for this summary (the Refresh button in
    * `SummarySection`), false for a scheduler-driven run.
    *
@@ -112,7 +132,15 @@ interface GeneratedWorktreeSummary {
   description: string;
   highlights: string[];
   repos?: WorktreeRepoSummary[];
+  displayLabel?: string;
+  displayLabelClarity?: GeneratedWorktreeLabelClarity;
 }
+
+const DISPLAY_LABEL_CLARITIES: readonly GeneratedWorktreeLabelClarity[] = [
+  'clear',
+  'provisional',
+  'unclear',
+];
 
 const SUMMARY_SCHEMA = {
   type: 'object',
@@ -139,6 +167,24 @@ const SUMMARY_SCHEMA = {
   },
   required: ['title', 'description', 'highlights'],
 };
+
+const SUMMARY_WITH_DISPLAY_LABEL_SCHEMA = {
+  ...SUMMARY_SCHEMA,
+  properties: {
+    ...SUMMARY_SCHEMA.properties,
+    displayLabel: { type: 'string' },
+    displayLabelClarity: { type: 'string', enum: DISPLAY_LABEL_CLARITIES },
+  },
+  required: [...SUMMARY_SCHEMA.required, 'displayLabel', 'displayLabelClarity'],
+};
+
+function summarySchemaFor(
+  options: WorktreeSummaryGeneratorOptions,
+): Record<string, unknown> {
+  return options.displayLabelRequest
+    ? SUMMARY_WITH_DISPLAY_LABEL_SCHEMA
+    : SUMMARY_SCHEMA;
+}
 
 export { isWorktreeSummaryData } from './worktree-summary-persistence';
 
@@ -215,7 +261,11 @@ export async function generateWorktreeSummary(
 
       const summary = hydrateGeneratedSummary(result.generated, options);
       if (isWorktreeSummaryData(summary)) {
-        return { summary, usage: accumulatedUsage };
+        return {
+          summary,
+          displayLabel: readDisplayLabelCandidate(result.generated, options),
+          usage: accumulatedUsage,
+        };
       }
     } catch (error) {
       accumulatedUsage = mergeHelperUsage(
@@ -229,7 +279,20 @@ export async function generateWorktreeSummary(
     }
   }
 
-  return { summary: null, usage: accumulatedUsage };
+  return { summary: null, displayLabel: null, usage: accumulatedUsage };
+}
+
+function readDisplayLabelCandidate(
+  generated: GeneratedWorktreeSummary,
+  options: WorktreeSummaryGeneratorOptions,
+): GeneratedWorktreeLabelCandidate | null {
+  if (!options.displayLabelRequest || !generated.displayLabelClarity) {
+    return null;
+  }
+  return {
+    label: generated.displayLabel ?? '',
+    clarity: generated.displayLabelClarity,
+  };
 }
 
 function seedWorktreeSummaryTranscript(
@@ -306,6 +369,9 @@ function buildSystemPrompt(options: WorktreeSummaryGeneratorOptions): string {
     'The description should be 1-3 sentences.',
     'The highlights array should contain 2-5 concrete bullets as plain strings.',
     repoInstruction,
+    ...(options.displayLabelRequest
+      ? [GENERATED_WORKTREE_LABEL_INSTRUCTIONS]
+      : []),
     // This summary is a plaintext search abstract that may be synced to the
     // Canopy server (CAN-402), so it must never leak sensitive data.
     'Never include secrets, credentials, API keys, access tokens, passwords, private keys, connection strings, or personal data such as email addresses or IP addresses. Describe that a credential or secret exists without reproducing its value.',
@@ -316,6 +382,19 @@ function buildUserMessage(options: WorktreeSummaryGeneratorOptions): string {
   const parts: string[] = [
     `Current user turn count: ${options.currentTurnCount}`,
     '',
+  ];
+  if (options.worktreeContext?.trim()) {
+    parts.push('## Worktree', options.worktreeContext.trim(), '');
+  }
+  const provisionalLabel = options.displayLabelRequest?.provisionalLabel;
+  if (provisionalLabel) {
+    parts.push(
+      '## Current display label',
+      `"${provisionalLabel}" was generated before the purpose was settled. Keep it or replace it.`,
+      '',
+    );
+  }
+  parts.push(
     '## Chat excerpts',
     options.chatExcerpts.trim() || '(no chat excerpts available)',
     '',
@@ -326,7 +405,7 @@ function buildUserMessage(options: WorktreeSummaryGeneratorOptions): string {
       (options.changeInputKind === 'folder-activity'
         ? '(no recent folder activity available)'
         : '(no git diff available)'),
-  ];
+  );
 
   if (!options.isFullRefresh && options.previousSummary) {
     parts.push(
@@ -415,7 +494,7 @@ async function runClaudeSummaryQuery(
         maxTurns: 10,
         systemPrompt,
         userMessage,
-        schema: SUMMARY_SCHEMA,
+        schema: summarySchemaFor(options),
         thinkingLevel: options.thinkingLevel,
         workspaceId: options.projectId,
         localMemoryEnabled: preferences?.localMemoryEnabled === true,
@@ -512,7 +591,7 @@ async function runClaudeSummaryQuery(
             ),
             outputFormat: {
               type: 'json_schema',
-              schema: SUMMARY_SCHEMA,
+              schema: summarySchemaFor(options),
             },
             ...(resumeSessionId ? { resume: resumeSessionId } : {}),
           },
@@ -632,7 +711,9 @@ async function runCodexSummaryQuery(
       userMessage,
       '',
       'Respond with ONLY a JSON object matching this shape:',
-      '{"title":"...","description":"...","highlights":["..."],"repos":[{"name":"...","description":"..."}]}',
+      options.displayLabelRequest
+        ? '{"title":"...","description":"...","highlights":["..."],"repos":[{"name":"...","description":"..."}],"displayLabel":"...","displayLabelClarity":"clear|provisional|unclear"}'
+        : '{"title":"...","description":"...","highlights":["..."],"repos":[{"name":"...","description":"..."}]}',
     ].join('\n');
     seedWorktreeSummaryTranscript(
       options.observabilityTaskKey,
@@ -647,7 +728,7 @@ async function runCodexSummaryQuery(
       systemPrompt,
       userMessage,
       combinedPrompt: submittedText,
-      schema: SUMMARY_SCHEMA,
+      schema: summarySchemaFor(options),
       thinkingLevel: options.thinkingLevel,
       modelConfig: options.modelConfig,
       workspaceId: options.projectId,
@@ -724,6 +805,10 @@ function sanitizeGeneratedSummary(
       .map((highlight) => highlight.trim())
       .filter((highlight) => highlight.length > 0),
   };
+  if (summary.displayLabelClarity) {
+    sanitized.displayLabelClarity = summary.displayLabelClarity;
+    sanitized.displayLabel = summary.displayLabel?.trim() ?? '';
+  }
 
   if (summary.repos) {
     const repos = summary.repos
@@ -762,8 +847,18 @@ function isGeneratedWorktreeSummary(
       (entry) => typeof entry === 'string' && entry.trim().length > 0,
     ) &&
     (repos === undefined ||
-      (Array.isArray(repos) && repos.every(isGeneratedRepoSummary)))
+      (Array.isArray(repos) && repos.every(isGeneratedRepoSummary))) &&
+    (value.displayLabel === undefined ||
+      typeof value.displayLabel === 'string') &&
+    (value.displayLabelClarity === undefined ||
+      isDisplayLabelClarity(value.displayLabelClarity))
   );
+}
+
+function isDisplayLabelClarity(
+  value: unknown,
+): value is GeneratedWorktreeLabelClarity {
+  return DISPLAY_LABEL_CLARITIES.some((clarity) => clarity === value);
 }
 
 function isGeneratedRepoSummary(value: unknown): value is WorktreeRepoSummary {

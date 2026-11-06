@@ -453,6 +453,28 @@ export function loadBrand(brandId, options = {}) {
       'storage.secureDataDirNames.internal must not match an ordinary data directory',
     );
   }
+  const buildDataDirNames = manifest.storage.buildDataDirNames ?? {
+    stable: manifest.storage.dataDirNames.prod[0],
+    internal: `${manifest.storage.dataDirNames.prod[0]}-internal`,
+    rc: rcDataDirNames[0],
+    dev: manifest.storage.dataDirNames.dev[0],
+  };
+  if (!isRecord(buildDataDirNames))
+    throw new Error('storage.buildDataDirNames is required');
+  for (const build of ['stable', 'internal', 'rc', 'dev']) {
+    assertDirectoryName(
+      buildDataDirNames[build],
+      `storage.buildDataDirNames.${build}`,
+    );
+  }
+  if (
+    new Set(Object.values(buildDataDirNames).map(directoryCollisionKey))
+      .size !== 4
+  ) {
+    throw new Error(
+      'storage.buildDataDirNames must be distinct for every build',
+    );
+  }
   assertArrayOfStrings(
     manifest.storage.configFileNames,
     'storage.configFileNames',
@@ -738,6 +760,12 @@ export function loadBrand(brandId, options = {}) {
     shortName: manifest.shortName ?? manifest.displayName,
     theme,
     storage: {
+      buildDataDirNames: Object.fromEntries(
+        Object.entries(buildDataDirNames).map(([build, name]) => [
+          build,
+          name.trim(),
+        ]),
+      ),
       dataDirNames: {
         prod: normalizeArray(
           manifest.storage.dataDirNames.prod,

@@ -52,11 +52,33 @@ export interface PersistedScriptRunFile {
    * started was interrupted by a restart.
    */
   instanceId?: string;
+  /** The process that started the run (CAN-5087). Earlier versions ignore it. */
+  writer?: ScriptRunWriter;
   /**
    * `lost`: a restart interrupted the run, so its outcome is unknown. Its
    * status reads `failed`, which earlier versions show without this field.
    */
   outcome?: 'lost';
+}
+
+/** The process that started a run: its PID and the start identity the host's process inspector reports. */
+export interface ScriptRunWriter {
+  readonly pid: number;
+  readonly startIdentity: string;
+}
+
+/** `unverifiable`: the inspector could not tell; the run is left as it is. */
+export type ScriptRunWriterState = 'running' | 'gone' | 'unverifiable';
+
+/**
+ * How a run-log store tells a run another live process writes from one a
+ * restart interrupted (CAN-5087). Electron main and the daemon both write
+ * `script_runs`.
+ */
+export interface ScriptRunWriterFence {
+  /** This process; `null` when its identity cannot be read. Called once per store. */
+  self(): Promise<ScriptRunWriter | null>;
+  inspect(writer: ScriptRunWriter): Promise<ScriptRunWriterState>;
 }
 
 export interface ScriptRunLogRef {
@@ -91,10 +113,25 @@ export interface ScriptRunLogStoreOptions {
   files: RunLogFiles;
   warn?: (message: string, details: Record<string, unknown>) => void;
   clock?: () => number;
+  writerFence?: ScriptRunWriterFence;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseScriptRunWriter(value: unknown): ScriptRunWriter | null {
+  if (
+    !isRecord(value) ||
+    typeof value.pid !== 'number' ||
+    !Number.isSafeInteger(value.pid) ||
+    value.pid <= 0 ||
+    typeof value.startIdentity !== 'string' ||
+    value.startIdentity.length === 0 ||
+    value.startIdentity.length > 512
+  )
+    return null;
+  return { pid: value.pid, startIdentity: value.startIdentity };
 }
 
 function isScriptInvocation(value: unknown): value is ScriptRunInvocation {
@@ -243,6 +280,7 @@ function parsePersistedScriptRunFile(
     (value.outcome !== undefined && value.outcome !== 'lost')
   )
     return null;
+  const writer = parseScriptRunWriter(value.writer);
   return {
     version: 1,
     runId: value.runId,
@@ -260,6 +298,7 @@ function parsePersistedScriptRunFile(
     ...(typeof value.instanceId === 'string'
       ? { instanceId: value.instanceId }
       : {}),
+    ...(writer ? { writer } : {}),
     ...(value.outcome === 'lost' ? { outcome: value.outcome } : {}),
   };
 }
@@ -319,6 +358,7 @@ export function toWorkerScriptExecution(
  */
 export class ScriptRunLogStore {
   private instance: string | undefined;
+  private selfWriter: Promise<ScriptRunWriter | null> | undefined;
   private readonly runLogs;
   private readonly clock: () => number;
 
@@ -420,6 +460,12 @@ export class ScriptRunLogStore {
   ): Promise<PersistedScriptRunFile> {
     if (meta.status !== 'running' || meta.instanceId === this.instanceId)
       return meta;
+    if (meta.writer !== undefined && this.options.writerFence !== undefined) {
+      const state = await this.options.writerFence
+        .inspect(meta.writer)
+        .catch((): ScriptRunWriterState => 'unverifiable');
+      if (state !== 'gone') return meta;
+    }
     const { metaPath } = this.paths(
       projectId,
       worktreeId,
@@ -466,6 +512,10 @@ export class ScriptRunLogStore {
     runId?: string;
   }): Promise<ScriptRunLogRef> {
     const runId = args.runId ?? randomUUID();
+    this.selfWriter ??=
+      this.options.writerFence?.self().catch(() => null) ??
+      Promise.resolve(null);
+    const writer = await this.selfWriter;
     const { dirPath, metaPath, logPath } = this.paths(
       args.projectId,
       args.worktreeId,
@@ -484,6 +534,7 @@ export class ScriptRunLogStore {
       timedOut: false,
       durationMs: 0,
       instanceId: this.instanceId,
+      ...(writer ? { writer } : {}),
     };
 
     await startRunLogFiles({

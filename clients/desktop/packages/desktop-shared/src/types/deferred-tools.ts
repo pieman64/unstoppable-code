@@ -245,6 +245,21 @@ export function buildDeferredToolsReloadContinuation(): string {
   return DEFERRED_TOOLS_RELOAD_CONTINUATION_TEMPLATE;
 }
 
+/**
+ * Shown when the deferred items could not be enabled at all (the original turn
+ * was interrupted but never resumed). Closes the original timer.
+ */
+export const DEFERRED_TOOLS_ENABLE_FAILURE_MESSAGE =
+  'Couldn’t enable the requested deferred items. The chat was not resumed.';
+
+/**
+ * Shown when the selections WERE persisted/enabled but the automatic resume
+ * failed. The enabled selections remain active; the user can type "Continue" to
+ * retry. Closes the original timer.
+ */
+export const DEFERRED_TOOLS_RESUME_FAILURE_MESSAGE =
+  'The requested items were enabled, but the chat could not resume automatically. Send “Continue” to retry.';
+
 // ---------------------------------------------------------------------------
 // Ref → selection bucket mapping (shared)
 // ---------------------------------------------------------------------------

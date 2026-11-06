@@ -1935,7 +1935,7 @@
    see `PanelTabEdgeHints`), then fades back in, so no tab shows through.
    Clicking it scrolls to the nearest of them. */
 .canopy-panel-tab-strip-wrap:has(
-  > .canopy-panel-tab-edge-count[data-side='start']
+  > .canopy-panel-tab-edge-anchor[data-side='start']
 ) {
   --canopy-scroll-fade-clear-start: var(
     --canopy-panel-tab-edge-count-start-width,
@@ -1944,7 +1944,7 @@
 }
 
 .canopy-panel-tab-strip-wrap:has(
-  > .canopy-panel-tab-edge-count[data-side='end']
+  > .canopy-panel-tab-edge-anchor[data-side='end']
 ) {
   --canopy-scroll-fade-clear-end: var(
     --canopy-panel-tab-edge-count-end-width,
@@ -1952,10 +1952,23 @@
   );
 }
 
-.canopy-panel-tab-edge-count {
+/* The anchor sits on the strip's edge and holds the hint and its tooltip. */
+.canopy-panel-tab-edge-anchor {
   position: absolute;
   top: 50%;
   z-index: 7; /* z-exception: above the strip's own edge fade */
+  transform: translateY(-50%);
+}
+
+.canopy-panel-tab-edge-anchor[data-side='start'] {
+  left: 2px;
+}
+
+.canopy-panel-tab-edge-anchor[data-side='end'] {
+  right: 2px;
+}
+
+.canopy-panel-tab-edge-count {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -1969,7 +1982,6 @@
   line-height: 18px;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
-  transform: translateY(-50%);
   cursor: default;
 }
 
@@ -1981,14 +1993,6 @@
   justify-content: center;
   width: 14px;
   transform: translateY(-0.4px);
-}
-
-.canopy-panel-tab-edge-count[data-side='start'] {
-  left: 2px;
-}
-
-.canopy-panel-tab-edge-count[data-side='end'] {
-  right: 2px;
 }
 
 .canopy-panel-tab-edge-count:hover {

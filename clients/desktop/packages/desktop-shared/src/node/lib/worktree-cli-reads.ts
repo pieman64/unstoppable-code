@@ -100,19 +100,25 @@ export async function runGit(
   cwd?: string,
   signal?: AbortSignal,
 ): Promise<string> {
-  const { stdout } = await execFileAsync(
-    getGitExecutableCommand(process.env),
-    args,
-    {
-      cwd,
-      signal,
-      maxBuffer: 1024 * 1024 * 8,
-      // Ignored off Windows; a platform read here would be a new
-      // platform-boundary site.
-      windowsHide: true,
-    },
+  const pending = execFileAsync(getGitExecutableCommand(process.env), args, {
+    cwd,
+    signal,
+    maxBuffer: 1024 * 1024 * 8,
+    // Ignored off Windows; a platform read here would be a new
+    // platform-boundary site.
+    windowsHide: true,
+  });
+  // execFile rejects on abort before the child closes. Recovery must wait for
+  // the actual Git child, not mistake promise rejection for process completion.
+  const closed = new Promise<void>((resolve) =>
+    pending.child.once('close', () => resolve()),
   );
-  return stdout.trim();
+  try {
+    const { stdout } = await pending;
+    return stdout.trim();
+  } finally {
+    await closed;
+  }
 }
 
 export function normalizeWorktree(value: unknown): WorktreeData | null {

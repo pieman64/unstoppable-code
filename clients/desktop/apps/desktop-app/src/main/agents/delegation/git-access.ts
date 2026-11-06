@@ -107,22 +107,20 @@ export async function delegationGitMetadata(
     const metadataRoots = [dotGit];
     if (selectedWorktreeMetadata) {
       metadataRoots.push(selectedWorktreeMetadata);
-      // Never grant the common directory itself from a linked checkout: doing
-      // so would also grant linked-worktree admin directories created after
-      // this snapshot. Grant the stable non-worktree Git namespaces instead.
+      // No common-root grant; ambient reads still need a native boundary.
       metadataRoots.push(
         ...LINKED_COMMON_METADATA_NAMES.map((name) => path.join(common, name)),
       );
     } else {
       metadataRoots.push(common);
     }
-    const privateMetadataRoots: string[] = [];
     const worktrees = path.join(common, 'worktrees');
-    // A primary checkout inherits its own `.git` tree through the workspace
-    // read grant, so deny the collection root itself. This also covers sibling
-    // admin directories created after delegated thread preparation. A linked
-    // checkout receives no common-root grant and needs no overlapping deny.
-    if (!selectedWorktreeMetadata) privateMetadataRoots.push(worktrees);
+    // Codex 0.164.0's bwrap masks the nested selected-admin read; macOS keeps it.
+    // Requalify nested grants before enabling this fence for linked Linux.
+    const privateMetadataRoots =
+      selectedWorktreeMetadata && hostOperatingSystem() === 'linux'
+        ? []
+        : [worktrees];
     let worktreesPresent = true;
     try {
       const worktreesStat = await lstat(worktrees);
@@ -150,6 +148,8 @@ export async function delegationGitMetadata(
       privateMetadataRoots,
     };
   } catch {
+    // Invalid metadata still yields no grants or collection deny; ambient
+    // shared-temp reads are not confined by this validation-failure path.
     return { metadataRoots: [], privateMetadataRoots: [] };
   }
 }

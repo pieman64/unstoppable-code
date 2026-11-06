@@ -40,7 +40,7 @@ import { isVaultId } from './vault-keys';
 /*
  * The vault's durable store (CAN-4500 unit B). Each write is one synchronous
  * SQLite transaction inside the call, so an intent is durable before the
- * caller's promise exists. Inert: nothing outside this folder imports it.
+ * caller's promise exists. The daemon vault composition owns its lifetime.
  */
 
 export const VAULT_STORE_FILE = 'vault.sqlite';

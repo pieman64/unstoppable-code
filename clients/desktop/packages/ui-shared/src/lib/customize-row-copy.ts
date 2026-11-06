@@ -37,6 +37,22 @@ export function isBundledSkill(
   );
 }
 
+/** A search result that links to the plugin bundling an unlisted MCP server. */
+export function isPluginServerResult(
+  entry: UnifiedPluginEntry,
+): entry is UnifiedPluginEntry & { bundledBy: UnifiedEntryPluginLink } {
+  return entry.pluginServerResult === true && entry.bundledBy !== undefined;
+}
+
+/** The plugin an MCP row or catalog card came with, when one did. */
+export function mcpEntryPluginLink(
+  entry: UnifiedPluginEntry,
+): UnifiedEntryPluginLink | undefined {
+  return entry.kind === 'app'
+    ? (entry.bundledBy ?? entry.installedVia)
+    : undefined;
+}
+
 /** Why a bundled skill's inherited status cannot be changed on its row. */
 export function bundledSkillStatusReason(pluginName: string): string {
   return `Set by the ${pluginName} plugin. Change it on the plugin.`;

@@ -13,6 +13,7 @@ import type {
 import type { OrgGatewayModelAliases } from './lib/gateway-model-availability';
 
 export interface OrgGatewayCatalogInput {
+  personal?: boolean;
   organizationId: string;
   organizationName: string;
   baseUrl: string;

@@ -12,6 +12,18 @@ async function getWindowViewportSize(window) {
 }
 
 test('launches the built Electron shell', async ({}, testInfo) => {
+  const { require: tsRequire } = await import('tsx/cjs/api');
+  const gates = tsRequire(
+    '../../src/main/lib/w5-recovery-gates.ts',
+    import.meta.url,
+  );
+  const { isW5DaemonFlipCompiled } = tsRequire(
+    '../../src/main/lib/w5-flip-gate.ts',
+    import.meta.url,
+  );
+  expect(gates.isW5RecoveryEntryEnabled()).toBe(true);
+  expect(isW5DaemonFlipCompiled()).toBe(false);
+  expect(gates.isW5RecoveryAvailable()).toBe(false);
   const { electronApp, userDataDir } = await launchCanopy();
   const secureDir = `${userDataDir}-secure`;
   mkdirSync(secureDir, { recursive: true });
@@ -98,7 +110,8 @@ test('launches the built Electron shell', async ({}, testInfo) => {
       });
     await expect(window.getByTestId('app-sidebar')).toBeVisible();
     // Exercise w5-recovery:status and w5-recovery:prepare through the real
-    // preload/main boundary. The registration-release gate must prevent intent.
+    // preload/main boundary. Exposure is compiled on after registration;
+    // actual legacy W5 ownership must still hide entry and prevent intent.
     const recovery = await window.evaluate(async () => ({
       status: await window.api.w5Recovery.getStatus(),
       prepared: await window.api.w5Recovery.prepare(),
@@ -112,6 +125,49 @@ test('launches the built Electron shell', async ({}, testInfo) => {
     expect(
       existsSync(path.join(userDataDir, 'runtime/w5-recovery-request.json')),
     ).toBe(false);
+    // Main startup has called startCloudProjectBinding. Signed out,
+    // cloud-projects:find-link and cloud-projects:link fail closed through
+    // the real preload/main boundary without a Cloud request, and an invalid
+    // workspace ID is refused before the binding reaches its transport.
+    await electronApp.evaluate(() => {
+      const original = globalThis.fetch;
+      const requests = [];
+      globalThis.fetch = (input, init) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (url.includes('/api/v1/projects')) requests.push(url);
+        return original(input, init);
+      };
+      globalThis.__cloudProjectRequests = requests;
+      globalThis.__restoreCloudProjectFetch = () => {
+        globalThis.fetch = original;
+      };
+    });
+    const cloudProjectRequests = () =>
+      electronApp.evaluate(() => globalThis.__cloudProjectRequests.length);
+    try {
+      const invalid = await window.evaluate(() =>
+        window.api.cloudProjects.findLink('../workspace').then(
+          () => 'resolved',
+          () => 'rejected',
+        ),
+      );
+      expect(invalid).toBe('rejected');
+      expect(await cloudProjectRequests()).toBe(0);
+      const signedOut = await window.evaluate(async () => ({
+        found: await window.api.cloudProjects.findLink('workspace-1'),
+        linked: await window.api.cloudProjects.link({
+          workspaceId: 'workspace-1',
+          target: { kind: 'new' },
+        }),
+      }));
+      expect(signedOut).toEqual({
+        found: { status: 'unavailable', reason: 'signed-out' },
+        linked: { ok: false, code: 'unavailable' },
+      });
+      expect(await cloudProjectRequests()).toBe(0);
+    } finally {
+      await electronApp.evaluate(() => globalThis.__restoreCloudProjectFetch());
+    }
     // A fresh launch (no lastActiveContext MRU, no legacy last-selected
     // worktree) lands on the standalone Home page — the chat-centric surface
     // that replaced the old welcome empty state.

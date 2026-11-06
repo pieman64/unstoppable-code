@@ -1,10 +1,10 @@
 'use client';
 
+import { SettingsChartLoading } from '../../pages/loading-skeletons';
 import { type JSX } from 'react';
 import {
   DelayedLoadingPlaceholder,
   ErrorBanner,
-  SettingsChartSkeleton,
   Heading,
 } from '@canopy/ui-shared/components';
 import type { OrganizationMember } from '@canopy/protocol/settings';
@@ -81,7 +81,7 @@ export function ProfileOverviewSection({
           {loading && !usage ? (
             <div data-testid="profile-overview-loading">
               <DelayedLoadingPlaceholder>
-                <SettingsChartSkeleton variant="bars" />
+                <SettingsChartLoading />
               </DelayedLoadingPlaceholder>
             </div>
           ) : error ? null : !usage ? (

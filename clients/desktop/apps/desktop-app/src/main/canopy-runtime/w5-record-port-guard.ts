@@ -61,6 +61,22 @@ function typedCode(error: unknown): string | undefined {
   return error instanceof CanopyClientError ? error.payload.code : undefined;
 }
 
+/** A live overload reply remains a refusal even if its session drops next. */
+function isLiveOverload(error: unknown): boolean {
+  if (!(error instanceof CanopyClientError)) return false;
+  const { kind, details } = error.payload;
+  // Unmarked overloads fail closed on session loss; revisit with client reply provenance.
+  const cause: unknown =
+    typeof details === 'object' && details !== null && !Array.isArray(details)
+      ? Object.getOwnPropertyDescriptor(details, 'w5HostUnavailable')?.value
+      : undefined;
+  return (
+    (kind === 'resource_exhausted' &&
+      (cause === 'queue-full' || cause === 'queued-wait')) ||
+    (kind === 'unavailable' && cause === 'queued-wait')
+  );
+}
+
 /** GB12's launch and pre-spawn refusals retain their handoff reasons. */
 function isHandoffRefusal(error: unknown): boolean {
   if (canopyDaemonRefusal(error) !== null) return true;
@@ -108,7 +124,8 @@ function sentCallFailure(
     owner.aborted ||
     !signal.aborted ||
     error instanceof W5AuthorityUnreachableError ||
-    typedCode(error) !== undefined
+    typedCode(error) !== undefined ||
+    isLiveOverload(error)
   )
     return error;
   // A query decided nothing; an instruction may have been decided.

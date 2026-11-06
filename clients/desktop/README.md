@@ -17,8 +17,11 @@ differs from the app you download:
 - **No installers:** the commands below compile and launch the app from this
   folder. Packaging installers isn't supported from this source yet.
 - **Hosted services:** the build is configured for the same sign-in, cloud,
-  and feature-flag services as the released app. Analytics stay off, and the
-  unpackaged app doesn't check for updates. To build without hosted services, set `CANOPY_CLOUD_BASE_URL` and `CANOPY_UPDATE_BASE_URL` to a
+  and feature-flag services as the released app. It sends the same PostHog
+  analytics events, without session replays, and the unpackaged app doesn't
+  check for updates. To turn analytics off, set `CANOPY_POSTHOG_ENABLED` to
+  `false` before `build:public`. To build without hosted services, set
+  `CANOPY_CLOUD_BASE_URL` and `CANOPY_UPDATE_BASE_URL` to a
   local address such as `http://127.0.0.1:1` and set
   `LAUNCHDARKLY_DESKTOP_CLIENT_SIDE_ID` to an empty value before
   `build:public`. Features that need an account or cloud services won't work

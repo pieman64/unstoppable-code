@@ -1,5 +1,5 @@
 import type {
-  PreferencesData,
+  TerminalSettings,
   TerminalPreset,
   TerminalShellProfile,
   TerminalShellProfileId,
@@ -21,25 +21,26 @@ import type {
 let cached: TerminalShellProfile[] | null = null;
 let inFlight: Promise<TerminalShellProfile[]> | null = null;
 let cachedPanelPreferences: TerminalPanelPreferences | null = null;
+let panelPreferencesSaveGeneration = 0;
 let panelPreferencesInFlight: Promise<TerminalPanelPreferences> | null = null;
 
 export interface TerminalPanelPreferences {
+  revision: number;
   disabledTerminalShellProfileIds: TerminalShellProfileId[];
   terminalPresets: TerminalPreset[];
 }
 
 const DEFAULT_PANEL_PREFERENCES: TerminalPanelPreferences = {
+  revision: 0,
   disabledTerminalShellProfileIds: [],
   terminalPresets: [],
 };
 
 function terminalPanelPreferencesFrom(
-  preferences: Pick<
-    PreferencesData,
-    'disabledTerminalShellProfileIds' | 'terminalPresets'
-  >,
+  preferences: TerminalSettings,
 ): TerminalPanelPreferences {
   return {
+    revision: preferences.revision,
     disabledTerminalShellProfileIds: [
       ...preferences.disabledTerminalShellProfileIds,
     ],
@@ -97,8 +98,9 @@ export function getCachedTerminalPanelPreferences(): TerminalPanelPreferences | 
 }
 
 export function setCachedTerminalPanelPreferences(
-  preferences: TerminalPanelPreferences,
+  preferences: TerminalSettings,
 ): void {
+  panelPreferencesSaveGeneration += 1;
   cachedPanelPreferences = terminalPanelPreferencesFrom(preferences);
 }
 
@@ -107,19 +109,31 @@ export function loadTerminalPanelPreferences(): Promise<TerminalPanelPreferences
     return Promise.resolve(cachedPanelPreferences);
   }
   if (panelPreferencesInFlight !== null) return panelPreferencesInFlight;
-  if (!window.api?.loadPreferences) {
+  if (!window.api?.terminal?.getSettings) {
     return Promise.resolve(DEFAULT_PANEL_PREFERENCES);
   }
 
-  panelPreferencesInFlight = window.api
-    .loadPreferences()
+  const saveGeneration = panelPreferencesSaveGeneration;
+  panelPreferencesInFlight = window.api.terminal
+    .getSettings()
     .then((preferences) => {
-      cachedPanelPreferences = terminalPanelPreferencesFrom(preferences);
-      return cachedPanelPreferences;
+      const next = terminalPanelPreferencesFrom(preferences);
+      if (saveGeneration === panelPreferencesSaveGeneration)
+        cachedPanelPreferences = next;
+      return next;
     })
     .catch(() => DEFAULT_PANEL_PREFERENCES)
     .finally(() => {
       panelPreferencesInFlight = null;
     });
   return panelPreferencesInFlight;
+}
+
+export async function fetchTerminalPanelPreferences(): Promise<TerminalPanelPreferences> {
+  const saveGeneration = panelPreferencesSaveGeneration;
+  const preferences = await window.api.terminal.getSettings();
+  const next = terminalPanelPreferencesFrom(preferences);
+  if (saveGeneration === panelPreferencesSaveGeneration)
+    cachedPanelPreferences = next;
+  return next;
 }

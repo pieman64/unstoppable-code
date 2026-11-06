@@ -1,3 +1,11 @@
+import { z } from 'zod';
+import { OperationCancelRefusedError } from '@canopy/core-runtime/node/operations';
+import type { HookQueueHost } from '@canopy/core-runtime/node/initiated-work';
+import { getHookQueue } from './hook-initiated-work';
+import { revalidateQueuedHookWork } from './hook-recovery';
+import { validateId } from './validation';
+import { logMainProcessWarn } from './main-process-logging';
+import { createElectronExecutionRuntime } from '../pipelines/execution-runtime';
 import type { ChildPipelineAuthorization } from '@canopy/desktop-shared/node/pipelines/executor/child-pipeline-resolver';
 import {
   backgroundExecutionDeniedMessage,
@@ -22,6 +30,8 @@ import {
 } from '@canopy/desktop-shared/hooks';
 import {
   DEFAULT_CODEX_SPEED,
+  isCodexSpeed,
+  type CodexSpeed,
   readCodexSpeedRecord,
   withCodexSpeed,
 } from '@canopy/desktop-shared/lib/codex-speed';
@@ -38,6 +48,7 @@ import {
 import { sendToWindow } from './window-send';
 import {
   createPipelineExecutionId,
+  loadExecutionState,
   getNormalizedTriggerInputDefs,
   resolvePipelineInputs,
   type ExecutePipelineRequestOptions,
@@ -57,6 +68,8 @@ import {
 import { readPreferencesFile } from './preferences-store';
 import {
   hasActivePipelineExecutions,
+  getActiveExecutionHandle,
+  isExecutionReservedBy,
   releaseExecutionReservation,
   reserveExecution,
   subscribeToActiveCountChange,
@@ -64,7 +77,8 @@ import {
 
 export type HookPipelineLaunchResult =
   | { status: 'started'; pipelineName: string; executionId: string }
-  | { status: 'queued'; pipelineName: string; queueId: string };
+  | { status: 'queued'; pipelineName: string; queueId: string }
+  | { status: 'ended'; pipelineName: string; queueId: string };
 
 interface ResolvedHookPipeline {
   pipeline: PipelineData;
@@ -75,8 +89,84 @@ interface ResolvedHookPipeline {
   pipelineName: string;
 }
 
+export interface QueuedHookPipelinePayload {
+  identity: { operationId: string; actionIndex: number };
+  projectId: string;
+  worktreeId: string;
+  cwd: string;
+  action: PipelineHookAction;
+  pipelineId: string;
+  pipelineName: string;
+  executionId: string;
+  inputs?: Record<string, string>;
+  codexSpeed: CodexSpeed;
+  triggerSource: PipelineTriggerSource;
+  enqueuedAt: string;
+}
+
+const queuedHookPipelinePayloadSchema = z.object({
+  identity: z.object({
+    operationId: z.string(),
+    actionIndex: z.number().int().nonnegative(),
+  }),
+  projectId: z.string(),
+  worktreeId: z.string(),
+  cwd: z.string(),
+  action: z.object({
+    type: z.literal('pipeline'),
+    source: z.enum(['bundled', 'curated', 'local', 'project']),
+    id: z.string(),
+    inputs: z.record(z.string(), z.string()).optional(),
+    executionContext: z.string().optional(),
+  }),
+  pipelineId: z.string(),
+  pipelineName: z.string(),
+  executionId: z.string(),
+  inputs: z.record(z.string(), z.string()).optional(),
+  codexSpeed: z.custom<CodexSpeed>(
+    (value) => isCodexSpeed(value) && value !== 'ultrafast',
+  ),
+  triggerSource: z.object({
+    kind: z.literal('hook'),
+    hook_key: z.string(),
+    hook_label: z.string(),
+    trigger_name: z.string(),
+    target: z.enum(['project', 'workspace-root', 'workspace-repo']),
+    action_index: z.number().int(),
+    triggered_at: z.string(),
+    repo_id: z.string().optional(),
+    repo_name: z.string().optional(),
+  }),
+  enqueuedAt: z.string(),
+});
+
+export function parseQueuedHookPipelinePayload(
+  value: unknown,
+): QueuedHookPipelinePayload | null {
+  const parsed = queuedHookPipelinePayloadSchema.safeParse(value);
+  if (!parsed.success) return null;
+  try {
+    validateId(parsed.data.identity.operationId, 'operationId');
+    validateId(parsed.data.projectId, 'projectId');
+    validateId(parsed.data.worktreeId, 'worktreeId');
+    return parsed.data;
+  } catch {
+    return null;
+  }
+}
+
 interface QueuedHookPipelineInvocation {
   queueId: string;
+  identity: QueuedHookPipelinePayload['identity'];
+  action: PipelineHookAction;
+  inputs?: Record<string, string>;
+  codexSpeed: CodexSpeed;
+  operationId?: string;
+  admission: Promise<void>;
+  recoveryOrder?: number;
+  recovering: boolean;
+  cancelPending: boolean;
+  starting: boolean;
   projectId: string;
   worktreeId: string;
   pipelineId: string;
@@ -93,6 +183,19 @@ interface QueuedHookPipelineInvocation {
 
 const queuedHookPipelines: QueuedHookPipelineInvocation[] = [];
 let drainChain = Promise.resolve();
+let admissionChain = Promise.resolve();
+let suppressActiveCountDrain = false;
+const recoveringHookPipelines = new Map<
+  string,
+  {
+    operationId: string;
+    recoveryOrder: number;
+    abort: AbortController;
+    cancelled: boolean;
+  }
+>();
+let nextRecoveryOrder = 0;
+let hookPipelineQueueHostRegistered = false;
 const CANOPY_TEMPLATE_TOKEN_PATTERN = /\{\{CANOPY_[A-Z0-9_]+\}\}/g;
 
 function isSafeProjectPipelineRelativePath(relativePath: string): boolean {
@@ -413,22 +516,86 @@ async function startReservedInvocation(
 }
 
 async function drainOnce(): Promise<void> {
-  if (hasActivePipelineExecutions()) {
-    return;
-  }
+  if (hasActivePipelineExecutions() || recoveringHookPipelines.size > 0) return;
 
   while (!hasActivePipelineExecutions()) {
-    const invocation = queuedHookPipelines.shift();
-    if (!invocation) {
-      return;
-    }
-
+    const invocation = queuedHookPipelines[0];
+    if (!invocation) return;
     if (invocation.cancelled) {
+      queuedHookPipelines.shift();
       continue;
     }
+    if (
+      !invocation.operationId ||
+      invocation.recovering ||
+      invocation.cancelPending
+    )
+      return;
 
     reserveExecution(invocation.options.executionId);
-    const started = await startReservedInvocation(invocation);
+    invocation.starting = true;
+    let marked: 'started' | 'ended';
+    try {
+      marked = await getHookQueue().markStarting(invocation.operationId);
+    } catch (error) {
+      invocation.starting = false;
+      suppressActiveCountDrain = true;
+      try {
+        releaseExecutionReservation(invocation.options.executionId);
+      } finally {
+        suppressActiveCountDrain = false;
+      }
+      logMainProcessWarn(
+        '[hook-pipeline] Could not record how a queued workflow ended.',
+        error,
+      );
+      return;
+    }
+    if (marked === 'ended') {
+      queuedHookPipelines.shift();
+      releaseExecutionReservation(invocation.options.executionId);
+      continue;
+    }
+    let started: Awaited<ReturnType<typeof startReservedInvocation>>;
+    try {
+      started = await startReservedInvocation(invocation);
+    } catch (error) {
+      releaseExecutionReservation(invocation.options.executionId);
+      logMainProcessWarn(
+        '[hook-pipeline] Could not start a queued workflow.',
+        error,
+      );
+      started = {
+        success: false,
+        error: 'The queued workflow could not start.',
+      };
+    }
+    queuedHookPipelines.shift();
+    try {
+      if (started.success) {
+        await getHookQueue().finishStarted(
+          invocation.operationId,
+          invocation.queueId,
+          {
+            kind: 'pipeline',
+            executionId: invocation.options.executionId,
+            result: 'started',
+          },
+        );
+      } else {
+        await getHookQueue().finishFailed(
+          invocation.operationId,
+          invocation.queueId,
+          'core.initiatedWork.hookQueue.startFailed',
+          'The queued workflow could not start.',
+        );
+      }
+    } catch (error) {
+      logMainProcessWarn(
+        '[hook-pipeline] Could not record how a queued workflow ended.',
+        error,
+      );
+    }
     if (started.success) {
       emitQueueEvent(invocation, {
         type: 'started',
@@ -436,7 +603,6 @@ async function drainOnce(): Promise<void> {
       });
       return;
     }
-
     emitQueueEvent(invocation, {
       type: 'failed',
       queueId: invocation.queueId,
@@ -451,7 +617,7 @@ function scheduleDrain(): void {
 }
 
 subscribeToActiveCountChange((count): void => {
-  if (count === 0) {
+  if (count === 0 && !suppressActiveCountDrain) {
     scheduleDrain();
   }
 });
@@ -492,39 +658,24 @@ async function resolveHookPipelineModelConfig(
   return withCodexSpeed(undefined, defaultSpeed);
 }
 
-export async function launchHookPipeline(args: {
-  action: PipelineHookAction;
+type HookPipelineOptions = ExecutePipelineRequestOptions & {
+  cwd: string;
+  executionId: string;
+};
+
+function buildHookPipelineOptions(args: {
   cwd: string;
   projectId: string;
   worktreeId: string;
-  env: Record<string, string | undefined>;
+  resolved: ResolvedHookPipeline;
   triggerSource: PipelineTriggerSource;
-  getWindow: () => BrowserWindow | null;
-}): Promise<HookPipelineLaunchResult> {
-  const modelConfig = await resolveHookPipelineModelConfig(args.action);
-  const resolved = await resolveHookPipeline({
-    action: args.action,
-    cwd: args.cwd,
-  });
-  const inputDefinitions = getDispatchInputDefinitions({
-    pipeline: resolved.pipeline.content,
-    label: resolved.pipelineName,
-  });
-  const inputs = interpolateAndNormalizeInputs({
-    inputs: args.action.inputs,
-    env: args.env,
-    definitions: inputDefinitions,
-  });
-  assertDispatchPipeline({
-    inputDefinitions,
-    inputs,
-  });
-
-  const executionId = createPipelineExecutionId();
-  const options: ExecutePipelineRequestOptions & {
-    cwd: string;
-    executionId: string;
-  } = {
+  action: PipelineHookAction;
+  modelConfig: AgentModelConfig;
+  executionId: string;
+  inputs?: Record<string, string>;
+}): HookPipelineOptions {
+  const { resolved } = args;
+  const options: HookPipelineOptions = {
     cwd: args.cwd,
     pipelineId: resolved.pipelineId,
     repoPath: resolved.repoPath,
@@ -544,11 +695,11 @@ export async function launchHookPipeline(args: {
     ...(args.action.executionContext === undefined
       ? {}
       : { executionContext: args.action.executionContext }),
-    modelConfig,
-    executionId,
+    modelConfig: args.modelConfig,
+    executionId: args.executionId,
   };
-  if (inputs !== undefined) {
-    options.inputs = inputs;
+  if (args.inputs !== undefined) {
+    options.inputs = args.inputs;
   }
   if (resolved.pipelinePreferenceLocator !== undefined) {
     options.pipelinePreferenceLocator = resolved.pipelinePreferenceLocator;
@@ -557,74 +708,45 @@ export async function launchHookPipeline(args: {
     options.pipelineFilePath = resolved.pipelineFilePath;
   }
 
-  if (
-    args.action.allowPipelineConcurrency !== true &&
-    (hasActivePipelineExecutions() || hasWaitingQueuedPipeline())
-  ) {
-    const invocation: QueuedHookPipelineInvocation = {
-      queueId: `queued-pipeline-${createPipelineExecutionId()}`,
-      projectId: args.projectId,
-      worktreeId: args.worktreeId,
-      pipelineId: resolved.pipelineId,
-      pipelineName: resolved.pipelineName,
-      pipeline: resolved.pipeline.content,
-      options,
-      triggerSource: args.triggerSource,
-      getWindow: args.getWindow,
-      enqueuedAt: new Date().toISOString(),
-      cancelled: false,
-      contextResources: resolved.pipelineFilePath
-        ? localPipelineContextResources(resolved.pipeline.content, {
-            cwd: options.cwd,
-            pipelineFileDir: path.dirname(resolved.pipelineFilePath),
-            pipelinePreferenceLocator: resolved.pipelinePreferenceLocator,
-          })
-        : pipelineContextResources(
-            resolved.pipeline.content,
-            resolved.pipeline.info.owner ??
-              (resolved.pipeline.info.source === 'bundled'
-                ? { type: 'system' }
-                : resolved.pipeline.info.source === 'user'
-                  ? { shareScope: 'private' }
-                  : undefined),
-            {
-              cwd: options.cwd,
-              repoPath: options.repoPath,
-              getProjectPipelinesDirCandidates,
-              pipelineId: resolved.pipeline.info.id,
-              pipelinePreferenceLocator: resolved.pipelinePreferenceLocator,
-            },
-            resolved.pipeline.info.remoteId ?? resolved.pipeline.info.id,
-          ),
-      executionContext: args.action.executionContext,
-    };
-    queuedHookPipelines.push(invocation);
-    emitQueueEvent(invocation, {
-      type: 'queued',
-      entry: toQueuedEntry(invocation),
-    });
-    return {
-      status: 'queued',
-      pipelineName: resolved.pipelineName,
-      queueId: invocation.queueId,
-    };
-  }
+  return options;
+}
 
-  const invocation: QueuedHookPipelineInvocation = {
-    queueId: `queued-pipeline-${createPipelineExecutionId()}`,
+function buildInvocation(args: {
+  queueId: string;
+  identity: QueuedHookPipelinePayload['identity'];
+  projectId: string;
+  worktreeId: string;
+  resolved: ResolvedHookPipeline;
+  options: HookPipelineOptions;
+  triggerSource: PipelineTriggerSource;
+  getWindow: () => BrowserWindow | null;
+  action: PipelineHookAction;
+}): QueuedHookPipelineInvocation {
+  const { resolved } = args;
+  return {
+    queueId: args.queueId,
     projectId: args.projectId,
     worktreeId: args.worktreeId,
     pipelineId: resolved.pipelineId,
     pipelineName: resolved.pipelineName,
     pipeline: resolved.pipeline.content,
-    options,
+    options: args.options,
     triggerSource: args.triggerSource,
     getWindow: args.getWindow,
     enqueuedAt: new Date().toISOString(),
     cancelled: false,
+    identity: args.identity,
+    action: args.action,
+    inputs: args.options.inputs,
+    codexSpeed:
+      readCodexSpeedRecord(args.options.modelConfig) ?? DEFAULT_CODEX_SPEED,
+    admission: Promise.resolve(),
+    recovering: false,
+    cancelPending: false,
+    starting: false,
     contextResources: resolved.pipelineFilePath
       ? localPipelineContextResources(resolved.pipeline.content, {
-          cwd: options.cwd,
+          cwd: args.options.cwd,
           pipelineFileDir: path.dirname(resolved.pipelineFilePath),
           pipelinePreferenceLocator: resolved.pipelinePreferenceLocator,
         })
@@ -637,8 +759,8 @@ export async function launchHookPipeline(args: {
                 ? { shareScope: 'private' }
                 : undefined),
           {
-            cwd: options.cwd,
-            repoPath: options.repoPath,
+            cwd: args.options.cwd,
+            repoPath: args.options.repoPath,
             getProjectPipelinesDirCandidates,
             pipelineId: resolved.pipeline.info.id,
             pipelinePreferenceLocator: resolved.pipelinePreferenceLocator,
@@ -647,12 +769,118 @@ export async function launchHookPipeline(args: {
         ),
     executionContext: args.action.executionContext,
   };
+}
+
+export async function launchHookPipeline(args: {
+  identity: { operationId: string; actionIndex: number };
+  action: PipelineHookAction;
+  cwd: string;
+  projectId: string;
+  worktreeId: string;
+  env: Record<string, string | undefined>;
+  triggerSource: PipelineTriggerSource;
+  getWindow: () => BrowserWindow | null;
+}): Promise<HookPipelineLaunchResult> {
+  const queueId = `queued-pipeline-${args.identity.operationId}-${args.identity.actionIndex}`;
+  validateId(queueId, 'queueId');
+  const existing = await getHookQueue().lookup(
+    'pipeline',
+    queueId,
+    args.identity.operationId,
+    args.identity.actionIndex,
+  );
+  if (existing.status !== 'none')
+    return {
+      status: existing.status === 'waiting' ? 'queued' : 'ended',
+      pipelineName: args.action.id,
+      queueId,
+    };
+  const modelConfig = await resolveHookPipelineModelConfig(args.action);
+  const resolved = await resolveHookPipeline({
+    action: args.action,
+    cwd: args.cwd,
+  });
+  const inputDefinitions = getDispatchInputDefinitions({
+    pipeline: resolved.pipeline.content,
+    label: resolved.pipelineName,
+  });
+  const inputs = interpolateAndNormalizeInputs({
+    inputs: args.action.inputs,
+    env: args.env,
+    definitions: inputDefinitions,
+  });
+  assertDispatchPipeline({ inputDefinitions, inputs });
+  const executionId = createPipelineExecutionId();
+  const options = buildHookPipelineOptions({
+    ...args,
+    resolved,
+    modelConfig,
+    executionId,
+    inputs,
+  });
+  const invocation = buildInvocation({ ...args, queueId, resolved, options });
+  if (
+    args.action.allowPipelineConcurrency !== true &&
+    (hasActivePipelineExecutions() ||
+      hasWaitingQueuedPipeline() ||
+      recoveringHookPipelines.size > 0)
+  ) {
+    queuedHookPipelines.push(invocation);
+    const payload: QueuedHookPipelinePayload = {
+      identity: args.identity,
+      projectId: args.projectId,
+      worktreeId: args.worktreeId,
+      cwd: args.cwd,
+      action: args.action,
+      pipelineId: resolved.pipelineId,
+      pipelineName: resolved.pipelineName,
+      executionId,
+      inputs,
+      codexSpeed: invocation.codexSpeed,
+      triggerSource: args.triggerSource,
+      enqueuedAt: invocation.enqueuedAt,
+    };
+    const serialized: unknown = JSON.parse(JSON.stringify(payload));
+    invocation.admission = admissionChain
+      .then(() =>
+        getHookQueue().enqueue({
+          kind: 'pipeline',
+          queueId,
+          runOperationId: args.identity.operationId,
+          actionIndex: args.identity.actionIndex,
+          scope: {
+            workspaceId: args.projectId,
+            worktreeId: args.worktreeId,
+            executionId,
+          },
+          payload: z.json().parse(serialized),
+        }),
+      )
+      .then((admitted): void => {
+        invocation.operationId =
+          admitted.status === 'queued'
+            ? admitted.operationId
+            : admitted.operation.operationId;
+      });
+    admissionChain = invocation.admission.catch((): void => {});
+    try {
+      await invocation.admission;
+    } catch (error) {
+      const index = queuedHookPipelines.indexOf(invocation);
+      if (index >= 0) queuedHookPipelines.splice(index, 1);
+      scheduleDrain();
+      throw error;
+    }
+    emitQueueEvent(invocation, {
+      type: 'queued',
+      entry: toQueuedEntry(invocation),
+    });
+    scheduleDrain();
+    return { status: 'queued', pipelineName: resolved.pipelineName, queueId };
+  }
   reserveExecution(executionId);
   const started = await startReservedInvocation(invocation);
-  if (!started.success) {
-    throw new Error(started.error);
-  }
-
+  if (!started.success) throw new Error(started.error);
   return {
     status: 'started',
     pipelineName: resolved.pipelineName,
@@ -660,25 +888,232 @@ export async function launchHookPipeline(args: {
   };
 }
 
-export function cancelQueuedHookPipeline(queueId: string): void {
-  const index = queuedHookPipelines.findIndex(
-    (entry) => entry.queueId === queueId,
+export async function cancelQueuedHookPipeline(
+  queueId: string,
+): Promise<boolean> {
+  const invocation = queuedHookPipelines.find(
+    (entry) => entry.queueId === queueId && !entry.cancelled,
   );
-  if (index < 0) {
-    return;
+  if (
+    !invocation ||
+    invocation.starting ||
+    isExecutionReservedBy(invocation.options.executionId, 'pipeline-start')
+  )
+    return false;
+  invocation.cancelPending = true;
+  try {
+    await invocation.admission;
+    if (!invocation.operationId)
+      throw new Error('The queued workflow was not recorded.');
+    await getHookQueue().finishCancelled(invocation.operationId, queueId);
+  } catch (error) {
+    invocation.cancelPending = false;
+    scheduleDrain();
+    throw error;
   }
-
-  const invocation = queuedHookPipelines[index];
-  if (!invocation || invocation.cancelled) {
-    return;
-  }
-
-  queuedHookPipelines.splice(index, 1);
+  const index = queuedHookPipelines.indexOf(invocation);
+  if (index >= 0) queuedHookPipelines.splice(index, 1);
   invocation.cancelled = true;
-  emitQueueEvent(invocation, {
-    type: 'cancelled',
-    queueId,
-  });
+  emitQueueEvent(invocation, { type: 'cancelled', queueId });
+  scheduleDrain();
+  return true;
+}
+
+async function hasPipelineExecutionState(
+  executionId: string,
+): Promise<boolean> {
+  return (
+    (await loadExecutionState(
+      executionId,
+      createElectronExecutionRuntime().executionsDir,
+    )) !== null
+  );
+}
+
+export function registerHookPipelineQueueHost(
+  getWindow: () => BrowserWindow | null,
+): void {
+  if (hookPipelineQueueHostRegistered) return;
+  hookPipelineQueueHostRegistered = true;
+  const host: HookQueueHost = {
+    reserve(ref): void {
+      recoveringHookPipelines.set(ref.queueId, {
+        operationId: ref.operationId,
+        recoveryOrder: nextRecoveryOrder++,
+        abort: new AbortController(),
+        cancelled: false,
+      });
+    },
+    release(ref): void {
+      recoveringHookPipelines.delete(ref.queueId);
+      scheduleDrain();
+    },
+    async resume(ref, saved, released) {
+      const reservation = recoveringHookPipelines.get(ref.queueId);
+      if (!reservation || reservation.cancelled)
+        return {
+          status: 'invalidated',
+          message: 'This queued workflow was cancelled.',
+        };
+      const payload = parseQueuedHookPipelinePayload(saved.payload);
+      if (!payload)
+        return {
+          status: 'invalidated',
+          message:
+            "This queued hook work's saved details could not be read, so it was not run.",
+        };
+      const valid = await revalidateQueuedHookWork(
+        ref.operation,
+        saved.actionIndex,
+        'pipeline',
+        reservation.abort.signal,
+      );
+      if (valid.status === 'invalidated') return valid;
+      if (
+        valid.action.type !== 'pipeline' ||
+        valid.action.source !== payload.action.source ||
+        valid.action.id !== payload.action.id
+      )
+        return {
+          status: 'invalidated',
+          message:
+            "This hook's action changed, so the queued work was not run.",
+        };
+      let resolved: ResolvedHookPipeline;
+      try {
+        resolved = await resolveHookPipeline({
+          action: payload.action,
+          cwd: payload.cwd,
+        });
+        if (resolved.pipelineId !== payload.pipelineId)
+          throw new Error('The workflow identity changed.');
+      } catch (error) {
+        logMainProcessWarn(
+          '[hook-pipeline] Could not load a queued workflow.',
+          error,
+        );
+        return {
+          status: 'invalidated',
+          message:
+            "This hook's workflow can no longer be loaded, so it was not run.",
+        };
+      }
+      try {
+        assertDispatchPipeline({
+          inputDefinitions: getDispatchInputDefinitions({
+            pipeline: resolved.pipeline.content,
+            label: resolved.pipelineName,
+          }),
+          inputs: payload.inputs,
+        });
+      } catch (error) {
+        logMainProcessWarn(
+          '[hook-pipeline] Could not validate queued workflow inputs.',
+          error,
+        );
+        return {
+          status: 'invalidated',
+          message: "This hook's workflow inputs changed, so it was not run.",
+        };
+      }
+      if (reservation.cancelled || reservation.abort.signal.aborted)
+        return {
+          status: 'invalidated',
+          message: 'This queued workflow was cancelled.',
+        };
+      const options = buildHookPipelineOptions({
+        ...payload,
+        resolved,
+        modelConfig: withCodexSpeed(undefined, payload.codexSpeed),
+      });
+      const invocation = buildInvocation({
+        ...payload,
+        queueId: ref.queueId,
+        resolved,
+        options,
+        getWindow,
+      });
+      invocation.operationId = ref.operationId;
+      invocation.recoveryOrder = reservation.recoveryOrder;
+      invocation.recovering = true;
+      invocation.enqueuedAt = payload.enqueuedAt;
+      const index = queuedHookPipelines.findIndex(
+        (entry) =>
+          entry.recoveryOrder === undefined ||
+          entry.recoveryOrder > reservation.recoveryOrder,
+      );
+      queuedHookPipelines.splice(
+        index < 0 ? queuedHookPipelines.length : index,
+        0,
+        invocation,
+      );
+      recoveringHookPipelines.delete(ref.queueId);
+      void released.then((): void => {
+        invocation.recovering = false;
+        scheduleDrain();
+      });
+      emitQueueEvent(invocation, {
+        type: 'queued',
+        entry: toQueuedEntry(invocation),
+      });
+      return { status: 'queued' };
+    },
+    async reconcile(_ref, saved) {
+      const payload = parseQueuedHookPipelinePayload(saved.payload);
+      if (!payload) return { status: 'lost' };
+      try {
+        if (await hasPipelineExecutionState(payload.executionId))
+          return {
+            status: 'started',
+            outcome: {
+              kind: 'pipeline',
+              executionId: payload.executionId,
+              result: 'started',
+            },
+          };
+      } catch (error) {
+        logMainProcessWarn(
+          '[hook-pipeline] Could not reconcile a queued workflow.',
+          error,
+        );
+      }
+      return { status: 'lost' };
+    },
+    cancel(ref): Promise<void> {
+      const reservation = recoveringHookPipelines.get(ref.queueId);
+      if (reservation) {
+        reservation.cancelled = true;
+        reservation.abort.abort();
+        recoveringHookPipelines.delete(ref.queueId);
+        scheduleDrain();
+        return Promise.resolve();
+      }
+      const index = queuedHookPipelines.findIndex(
+        (entry) => entry.queueId === ref.queueId,
+      );
+      const invocation = queuedHookPipelines[index];
+      const executionId =
+        invocation?.options.executionId ?? ref.operation.scope.executionId;
+      if (
+        ref.operation.status === 'running' ||
+        invocation?.starting ||
+        (executionId &&
+          (isExecutionReservedBy(executionId, 'pipeline-start') ||
+            getActiveExecutionHandle(executionId) !== undefined))
+      )
+        throw new OperationCancelRefusedError(
+          'This workflow already started; stop the run itself.',
+        );
+      if (invocation) {
+        queuedHookPipelines.splice(index, 1);
+        invocation.cancelled = true;
+        emitQueueEvent(invocation, { type: 'cancelled', queueId: ref.queueId });
+        scheduleDrain();
+      }
+      return Promise.resolve();
+    },
+  };
+  getHookQueue().registerHost('pipeline', host);
 }
 
 export function listQueuedHookPipelines(): ReturnType<typeof toQueuedEntry>[] {
@@ -694,6 +1129,9 @@ export const hookPipelineTestExports: {
   resetQueueForTests: (): void => {
     queuedHookPipelines.splice(0, queuedHookPipelines.length);
     drainChain = Promise.resolve();
+    admissionChain = Promise.resolve();
+    suppressActiveCountDrain = false;
+    recoveringHookPipelines.clear();
   },
   scheduleDrain,
 };

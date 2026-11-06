@@ -98,6 +98,35 @@ its own slice and ignores the rest. The control plane treats slices as opaque.
 }
 ```
 
+### Personal cloud project identity (CAN-5190)
+
+`routes/cloud-projects.mjs` serves the cloud project identity routes
+(`/api/v1/projects/personal`, `/personal/match`, `/:id/manifest`,
+`/:id/events`, `/:id/instances/claim`, `/instances/:id/complete` and
+`/instances/:id/repositories`) for keys whose scenario has a `cloudProjects`
+slice; other keys, and organization claims, fall through to `routes/cloud.mjs`.
+The account also needs `project-identity-v1`, for example through
+`cloud.extraCapabilities`. Creates, manifest updates, claims, completions and
+selections mutate the slice and record activity (`cloudProjectCreate`,
+`cloudProjectClaim:<projectId>`, `cloudProjectManifestUpdate:<projectId>`,
+...), so a spec reads the result from `GET /__mock/state/:key`. Matching
+compares remote keys only.
+
+```jsonc
+{
+  "cloud": { "extraCapabilities": ["project-identity-v1"] },
+  "cloudProjects": {
+    "projects": [
+      /* CloudProjectManifest objects */
+    ],
+    "instances": [],
+    "events": {
+      /* projectId → CloudProjectLifecycleEvent[] */
+    },
+  },
+}
+```
+
 ### Shared-container / billing knobs (CAN-2551)
 
 Two overrides exist specifically so a spec can reproduce a billing-lapsed

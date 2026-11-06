@@ -247,8 +247,14 @@ async function runStartupBackgroundTasks(
   );
 }
 
+export interface DeferredStartupLocalTasks {
+  /** Host-supplied, since it needs Electron's Crashpad paths. */
+  readonly runCrashDumpSweep?: () => Promise<void>;
+}
+
 export function scheduleDeferredStartupBackgroundTasks(
   getMainWindow: () => BrowserWindow | null,
+  localTasks: DeferredStartupLocalTasks = {},
 ): () => void {
   // Under the UI-automation/E2E build, suppress the deferred startup tasks:
   // they spawn the bundled claude/codex binaries to refresh plugin marketplaces
@@ -327,6 +333,7 @@ export function scheduleDeferredStartupBackgroundTasks(
       // Local work that launches no provider CLI, so it also runs on Windows.
       void reconcileLedgerScopes();
       reconcileManagedMarketplaceReceipts();
+      void localTasks.runCrashDumpSweep?.().catch(() => undefined);
       // On Windows, provider CLIs launched by the refreshes can spawn their
       // own visible shell grandchildren. Keep only those provider refreshes
       // user-initiated; the local memory import does not launch provider CLIs.

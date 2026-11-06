@@ -26,4 +26,5 @@ export {
   type ApprovalRuleScope,
   type ApprovalPromptDecision,
   type ApprovalPromptRequest,
+  type SecretInputApprovalPrompt,
 } from './canopy-core/approval-prompt';

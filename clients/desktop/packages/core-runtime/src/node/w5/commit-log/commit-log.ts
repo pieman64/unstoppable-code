@@ -1,3 +1,4 @@
+import { basename, dirname } from 'node:path';
 import type { W5FileConflict } from './apply';
 import {
   W5_CAPTURE_LIMITS,
@@ -506,6 +507,7 @@ export class W5CommitLog {
    * until the user resolves it.
    */
   reserve(input: {
+    workspaceIdentity?: string;
     reservationId: string;
     operation: string;
     receipt?: W5ReceiptKey & { fingerprint: string };
@@ -515,12 +517,26 @@ export class W5CommitLog {
       if (input.receipt) {
         this.refuseUnlessKeyIsFree(input.receipt, input.receipt.fingerprint);
       }
+      if (input.workspaceIdentity !== undefined) {
+        const rival = this.db
+          .prepare(
+            `SELECT reservation_id FROM w5_reservations WHERE lower(workspace_identity) = lower(?)
+             UNION ALL SELECT reservation_id FROM w5_legacy_workspace_claims
+             WHERE workspace_identity IS NULL OR lower(workspace_identity) = lower(?)`,
+          )
+          .get(input.workspaceIdentity, input.workspaceIdentity);
+        if (rival)
+          throw new W5CommitRefusedError(
+            'identity-conflict',
+            'This workspace identity is already reserved.',
+          );
+      }
       this.db
         .prepare(
           `INSERT INTO w5_reservations
              (reservation_id, operation, caller, idempotency_key, fingerprint,
-              state, diagnostics_json, reserved_at)
-           VALUES (?, ?, ?, ?, ?, 'reserved', ?, ?)`,
+              state, diagnostics_json, reserved_at, workspace_identity)
+           VALUES (?, ?, ?, ?, ?, 'reserved', ?, ?, ?)`,
         )
         .run(
           input.reservationId,
@@ -530,6 +546,7 @@ export class W5CommitLog {
           input.receipt?.fingerprint ?? null,
           JSON.stringify(input.diagnostics ?? null),
           new Date(this.clock()).toISOString(),
+          input.workspaceIdentity ?? null,
         );
     });
   }
@@ -737,6 +754,31 @@ export class W5CommitLog {
    * reservation awaiting recovery stays until the user resolves it.
    */
   private refuseUnlessReservationIsHeld(request: W5CommitRequest): void {
+    for (const file of request.files) {
+      if (basename(file.path) !== 'workspace.json') continue;
+      const identity = basename(dirname(file.path));
+      const claim = this.db
+        .prepare(
+          `SELECT reservation_id FROM w5_reservations
+             WHERE lower(workspace_identity) = lower(?) AND reservation_id != ?
+           UNION ALL SELECT reservation_id FROM w5_legacy_workspace_claims
+             WHERE ((workspace_identity IS NULL AND ? IS NULL) OR lower(workspace_identity) = lower(?))
+             AND reservation_id != ?`,
+        )
+        .get(
+          identity,
+          request.reservationId ?? '',
+          file.previousFingerprint,
+          identity,
+          request.reservationId ?? '',
+        );
+      if (claim)
+        throw new W5CommitRefusedError(
+          'identity-conflict',
+          'This workspace identity belongs to another creation.',
+          { workspaceIdentity: identity },
+        );
+    }
     if (request.reservationId === undefined) return;
     const reservation = this.db
       .prepare(

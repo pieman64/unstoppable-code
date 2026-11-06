@@ -18,6 +18,9 @@ import {
 const FEEDBACK_REPORTS_PATH = '/api/v1/feedback/reports';
 const FEEDBACK_ATTACHMENT_COMMIT_PATH =
   '/api/v1/feedback/reports/attachment-commit';
+// Matches `MAX_FEEDBACK_UPLOAD_BYTES` in apps/web/src/lib/uploads/gcs-config.ts:
+// the server issues no upload URL for a larger bundle.
+const FEEDBACK_UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
 
 /**
  * Wire contract for the `POST /api/v1/feedback/reports` request body. Kept in
@@ -79,10 +82,19 @@ export async function submitFeedback(
     // The sweep is deliberately best-effort even if a host adapter fails.
     await cleanupStaleTemporaryFeedbackBundles().catch(() => undefined);
     try {
-      const bundle = await prepareFeedbackBundle(
-        buildPrepareRequest(request, description),
-        { destination: 'temp' },
-      );
+      const prepareRequest = buildPrepareRequest(request, description);
+      let bundle = await prepareFeedbackBundle(prepareRequest, {
+        destination: 'temp',
+      });
+      if (bundle.sizeBytes > FEEDBACK_UPLOAD_MAX_BYTES) {
+        // Crash dumps are the bulk that can cross the server limit; without an
+        // upload URL the report would lose its logs too, so rebuild without them.
+        await discardTemporaryBundle(bundle.absolutePath);
+        bundle = await prepareFeedbackBundle(prepareRequest, {
+          destination: 'temp',
+          includeCrashDumps: false,
+        });
+      }
       bundlePath = bundle.absolutePath;
       bundleSizeBytes = bundle.sizeBytes;
     } catch (error) {
@@ -128,12 +140,16 @@ export async function submitFeedback(
     return { submitted: true };
   } finally {
     if (bundlePath !== undefined) {
-      try {
-        await rm(bundlePath, { force: true }).catch(() => undefined);
-      } finally {
-        releaseTemporaryFeedbackBundle(bundlePath);
-      }
+      await discardTemporaryBundle(bundlePath);
     }
+  }
+}
+
+async function discardTemporaryBundle(bundlePath: string): Promise<void> {
+  try {
+    await rm(bundlePath, { force: true }).catch(() => undefined);
+  } finally {
+    releaseTemporaryFeedbackBundle(bundlePath);
   }
 }
 

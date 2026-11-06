@@ -36,6 +36,7 @@ import {
 import { validateChatCommandRequest } from '../ipc/chat-state';
 import { listFileTreeRoots } from '../services/files-service';
 import type { DesktopCanopyDispatcher } from './desktop-runtime';
+import { ChatCommandKeyFingerprints } from './chat-command-key-fingerprints';
 import {
   CHAT_MESSAGE_COMMAND_ROUTES,
   withLegacyChatMessageCommand,
@@ -625,6 +626,7 @@ interface ChatLifecycleParams {
 
 export function createCoreChatCommandAdapter(
   getPort: () => ChatStateCommandPort | null,
+  fingerprints = new ChatCommandKeyFingerprints(),
 ): {
   instructions: {
     'core.chat.create': (
@@ -645,6 +647,7 @@ export function createCoreChatCommandAdapter(
   };
 } {
   const execute = async (
+    operation: CanopyInstructionName,
     params: ChatLifecycleParams,
   ): Promise<ReturnType<typeof CoreChatLifecycleResultSchema.parse>> => {
     if (params._meta.idempotencyKey !== params.commandId) {
@@ -652,6 +655,22 @@ export function createCoreChatCommandAdapter(
         'Chat command ID and idempotency key must match.',
       );
     }
+    const release = fingerprints.claim(
+      { projectId: params.projectId, worktreeId: params.worktreeId },
+      params.commandId,
+      operation,
+      params,
+    );
+    try {
+      return await executeClaimed(params);
+    } catch (error) {
+      release();
+      throw error;
+    }
+  };
+  const executeClaimed = async (
+    params: ChatLifecycleParams,
+  ): Promise<ReturnType<typeof CoreChatLifecycleResultSchema.parse>> => {
     const port = getPort();
     if (!port)
       throw canopyUnavailableError('Chat state is unavailable.', {
@@ -725,15 +744,15 @@ export function createCoreChatCommandAdapter(
   return {
     instructions: {
       'core.chat.create': (params: unknown) =>
-        execute(CoreChatCreateParamsSchema.parse(params)),
+        execute('core.chat.create', CoreChatCreateParamsSchema.parse(params)),
       'core.chat.update': (params: unknown) =>
-        execute(CoreChatUpdateParamsSchema.parse(params)),
+        execute('core.chat.update', CoreChatUpdateParamsSchema.parse(params)),
       'core.chat.archive': (params: unknown) =>
-        execute(CoreChatArchiveParamsSchema.parse(params)),
+        execute('core.chat.archive', CoreChatArchiveParamsSchema.parse(params)),
       'core.chat.delete': (params: unknown) =>
-        execute(CoreChatDeleteParamsSchema.parse(params)),
+        execute('core.chat.delete', CoreChatDeleteParamsSchema.parse(params)),
       'core.chat.fork': (params: unknown) =>
-        execute(CoreChatForkParamsSchema.parse(params)),
+        execute('core.chat.fork', CoreChatForkParamsSchema.parse(params)),
     },
   };
 }

@@ -422,6 +422,12 @@ export function useChatEventSubscriptions(): void {
   }, [handleScheduledTerminalPrompt]);
 
   useEffect(() => {
+    return window.api.chat.onHookQueueRemoved((event) => {
+      useChatStore.getState().handleHookQueueRemoved(event);
+    });
+  }, []);
+
+  useEffect(() => {
     const unsubscribe = window.api.chat.onHookTabStarted(
       (event: HookChatTabStartedEvent) => {
         handleHookTabStarted(event);

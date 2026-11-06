@@ -1,9 +1,5 @@
 import { Buffer } from 'node:buffer';
-import {
-  type BrowserWindow,
-  type WebContents,
-  systemPreferences,
-} from 'electron';
+import { type WebContents, systemPreferences } from 'electron';
 import {
   UNSUPPORTED_VOICE_DICTATION_MESSAGE,
   UNSUPPORTED_VOICE_DICTATION_RESPONSE,
@@ -22,7 +18,7 @@ import {
   type VoiceStartResponse,
   type VoiceStopRequest,
 } from '@canopy/desktop-shared/types';
-import { sendToWindow } from '../lib/window-send';
+import { sendToWebContents } from '../lib/web-contents-send';
 import { registerIpcHandler } from '../ipc/register';
 import { openExternalGuarded } from '../lib/open-external';
 import { getVoiceService } from './service';
@@ -109,9 +105,7 @@ async function waitForE2eVoiceAccessDelay(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 250));
 }
 
-export function registerVoiceHandlers(
-  getWindow: () => BrowserWindow | null,
-): void {
+export function registerVoiceHandlers(): void {
   const service = getVoiceService();
   const voiceSupportedPlatform = isVoiceDictationPlatform(process.platform);
   let e2eMicrophoneRequested = false;
@@ -120,9 +114,14 @@ export function registerVoiceHandlers(
   // navigates or goes away mid-take, nothing is left to stop it, and the
   // still-running helper would refuse every later start ("Voice session
   // already active") until the app restarts. So each take ends with its page.
-  const takeOwners = new Map<string, () => void>();
+  // Its events go only to that page, which may be App Advisor's own window
+  // rather than the main window, so dictated text never reaches another one.
+  const takeOwners = new Map<
+    string,
+    { readonly owner: WebContents; readonly release: () => void }
+  >();
   const releaseTakeOwner = (sessionId: string): void => {
-    takeOwners.get(sessionId)?.();
+    takeOwners.get(sessionId)?.release();
   };
   const endTakeWithPage = (owner: WebContents, sessionId: string): void => {
     const end = (): void => {
@@ -144,14 +143,17 @@ export function registerVoiceHandlers(
     owner.on('did-start-navigation', onNavigation);
     owner.once('render-process-gone', end);
     owner.once('destroyed', end);
-    takeOwners.set(sessionId, release);
+    takeOwners.set(sessionId, { owner, release });
   };
 
   service.onEvent((event: VoiceEventPayload) => {
+    const owner = takeOwners.get(event.sessionId)?.owner;
     if (event.type === 'stopped' || event.type === 'error') {
       releaseTakeOwner(event.sessionId);
     }
-    sendToWindow(getWindow(), IPC_CHANNELS.voiceEvent, event);
+    if (owner && !owner.isDestroyed() && !owner.isCrashed()) {
+      sendToWebContents(owner, IPC_CHANNELS.voiceEvent, event);
+    }
   });
 
   registerIpcHandler<[], VoiceIsSupportedResponse>(

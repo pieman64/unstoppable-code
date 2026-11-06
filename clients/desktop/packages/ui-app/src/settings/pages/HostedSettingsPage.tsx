@@ -106,6 +106,14 @@ function RenderHostedPage({
       const Page = HOSTED_SETTINGS_PAGES['account.notifications'];
       return <Page route={route} page={page} />;
     }
+    case 'account.plugins': {
+      const Page = HOSTED_SETTINGS_PAGES['account.plugins'];
+      return <Page route={route} page={page} />;
+    }
+    case 'account.mcp': {
+      const Page = HOSTED_SETTINGS_PAGES['account.mcp'];
+      return <Page route={route} page={page} />;
+    }
     case 'account.labs': {
       const Page = HOSTED_SETTINGS_PAGES['account.labs'];
       return <Page route={route} page={page} />;
@@ -120,6 +128,10 @@ function RenderHostedPage({
     }
     case 'account.security': {
       const Page = HOSTED_SETTINGS_PAGES['account.security'];
+      return <Page route={route} page={page} />;
+    }
+    case 'account.ai-gateway': {
+      const Page = HOSTED_SETTINGS_PAGES['account.ai-gateway'];
       return <Page route={route} page={page} />;
     }
     case 'account.billing': {

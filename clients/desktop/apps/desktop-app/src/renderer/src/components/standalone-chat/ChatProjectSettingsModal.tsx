@@ -834,9 +834,9 @@ export function ChatProjectSettingsModal({
 
         {activeTab === 'danger' && !isDefaultProject && (
           <div className="rounded-lg border border-line-destructive/30 p-4">
-            <h3 className="text-s font-medium fg-destructive">
+            <Heading level={3} variant="title" tone="destructive">
               {dangerTabCopy.title}
-            </h3>
+            </Heading>
             <p className="mt-1 text-xs fg-secondary">
               {dangerTabCopy.description}
             </p>

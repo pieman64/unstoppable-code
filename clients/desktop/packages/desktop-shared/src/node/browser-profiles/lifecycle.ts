@@ -10,6 +10,9 @@ import {
 } from './owners';
 import { errorCode } from './storage';
 
+export const DEFERRED_BROWSER_RETIREMENT_WARNING =
+  'Browser data for this worktree will be cleared the next time the app starts.';
+
 export async function uniquelyOwnedLegacyPartition(
   repository: BrowserProfileRepository,
   dataRoot: string,
@@ -36,6 +39,8 @@ export async function prepareBrowserTaskRetirement(
   repository: BrowserProfileRepository,
   dataRoot: string,
   owner: BrowserTaskOwner,
+  resolveLegacyPartition: () => Promise<string | undefined> = () =>
+    uniquelyOwnedLegacyPartition(repository, dataRoot, owner),
 ): Promise<string | null> {
   let slot = await repository.getTask(owner.scope);
   if (slot?.lifecycle === 'retired' && slot.ownerCreatedAt === owner.createdAt)
@@ -72,7 +77,7 @@ export async function prepareBrowserTaskRetirement(
   const id = randomUUID();
   const legacy = slot?.legacyOwnershipResolved
     ? undefined
-    : await uniquelyOwnedLegacyPartition(repository, dataRoot, owner);
+    : await resolveLegacyPartition();
   await repository.prepareRetirement(owner.scope, owner.createdAt, id, legacy);
   return id;
 }

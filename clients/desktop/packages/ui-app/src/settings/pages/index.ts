@@ -18,6 +18,7 @@ export {
   preloadSettingsPage,
   settingsPageLoaded,
 } from './preload-settings-page';
+export { SettingsChartLoading } from './loading-skeletons';
 export { useStalePage, type StalePageView } from './use-stale-page';
 export {
   OrganizationSettingsPlaceholder,

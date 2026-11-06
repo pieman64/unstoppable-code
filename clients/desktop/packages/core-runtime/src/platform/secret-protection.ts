@@ -7,6 +7,12 @@
 // Precondition (V2/V6 qualification, not a V0 test): key-slot protection
 // assumes an injection-closed, team-signed daemon. Any code that runs inside
 // the daemon can read every slot it can.
+// Linux qualification: one daemon per brand+build; only the default user
+// session bus (L-D4), never another session's bus or a selected address.
+// q-26(a): abort drains submitted mutations. Losing their transport returns
+// uncertain and latches unavailable until restart; a remote effect may still
+// land before that restart. Only the next daemon's read is authoritative then.
+// Duplicate Linux matches read as corrupt and are never automatically repaired.
 
 /**
  * Native backends. There is deliberately no plaintext, passphrase or file
@@ -60,7 +66,10 @@ export interface PlatformKeySlot {
  * the true outcome (`uncertain` when unknown). Status and reads may still
  * resolve a result the backend returned; a caller that aborted zeroes any
  * material it receives. Start no backend call after the signal aborts. Once
- * settled, a call has no further effect: a later abort changes nothing.
+ * settled, a call has no further slot effects (except the qualified Linux
+ * transport-loss rule above): a later abort changes nothing.
+ * The user may still answer an OS unlock prompt left open after an abort;
+ * that answer may change backend lock state, but not slots for that call.
  */
 export interface PlatformSecretProtectionCallOptions {
   readonly signal: AbortSignal;
@@ -68,8 +77,11 @@ export interface PlatformSecretProtectionCallOptions {
 
 /**
  * `never`: fail with `blocked` rather than show a Keychain, Secret Service or
- * consent prompt; a headless daemon must not hang on one. An abort dismisses
- * any prompt the call is showing; the call then settles by the abort rules.
+ * consent prompt; a headless daemon must not hang on one. An abort does not
+ * dismiss an OS unlock prompt the backend opened: the call settles at once by
+ * the abort rules (rejecting with `signal.reason` when nothing changed), while
+ * the prompt stays up for the user and its later outcome is ignored by that
+ * call. Submitted mutations retain their own settlement rules.
  */
 export interface PlatformKeySlotCallOptions extends PlatformSecretProtectionCallOptions {
   readonly interaction: 'never' | 'allowed';
@@ -110,7 +122,7 @@ export type PlatformKeySlotWriteResult =
   | { readonly kind: 'written' }
   /** The slot state did not match `mode`; nothing changed. */
   | { readonly kind: 'conflict' }
-  /** It may or may not have landed, but can no longer land: a read now is authoritative. */
+  /** May have landed; read now is authoritative except after Linux transport loss (above). */
   | { readonly kind: 'uncertain' }
   /** The backend refused the write; nothing changed. */
   | { readonly kind: 'failed' }
@@ -119,7 +131,7 @@ export type PlatformKeySlotWriteResult =
 export type PlatformKeySlotDeleteResult =
   | { readonly kind: 'deleted' }
   | { readonly kind: 'absent' }
-  /** It may or may not have landed, but can no longer land: a read now is authoritative. */
+  /** May have landed; read now is authoritative except after Linux transport loss (above). */
   | { readonly kind: 'uncertain' }
   | PlatformKeySlotBlocked;
 

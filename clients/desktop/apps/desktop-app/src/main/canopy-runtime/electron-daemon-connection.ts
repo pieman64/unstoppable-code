@@ -30,6 +30,8 @@ export type ElectronDaemonReachability =
     };
 
 export interface ElectronDaemonSession<C extends Connection> {
+  /** Session lifetime, independent of the clients replaced during lease recovery. */
+  readonly signal: AbortSignal;
   readonly client: C;
   readonly lease: Pick<CanopyClientLease<C>, 'state' | 'lease' | 'register'>;
   close(): Promise<void>;
@@ -403,6 +405,7 @@ export function createElectronDaemonConnectionService<C extends Connection>(
       if (lifetime.signal.aborted) throw stop();
       established = true;
       return {
+        signal: lifetime.signal,
         get client(): C {
           if (lifetime.signal.aborted) throw stop();
           try {

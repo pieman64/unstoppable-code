@@ -128,6 +128,13 @@ function canonical(value: unknown): unknown {
   throw new Error('W5 parameters must be JSON values');
 }
 
+/** Shared by the keyed owner and its qualified offline relocation projection. */
+export function fingerprintW5Parameters(parameters: unknown): string {
+  return createHash('sha256')
+    .update(JSON.stringify(canonical(parameters)))
+    .digest('hex');
+}
+
 /** No lock spans effects. SQLite reservation uniqueness closes concurrent admission. */
 export function createW5KeyedOperationRunner(
   bindings: W5KeyedOperationBindings,
@@ -141,9 +148,7 @@ export function createW5KeyedOperationRunner(
       caller: input.caller,
       operation: input.operation,
       idempotencyKey: input.idempotencyKey,
-      fingerprint: createHash('sha256')
-        .update(JSON.stringify(canonical(input.parameters)))
-        .digest('hex'),
+      fingerprint: fingerprintW5Parameters(input.parameters),
     };
     const store = bindings.getReceiptStore();
     const replay = (outcome: T): T => {

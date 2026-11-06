@@ -1,13 +1,13 @@
-import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { PassThrough, Writable } from 'node:stream';
-import { utilityProcess, type UtilityProcess } from 'electron';
 import type {
   SpawnOptions,
   SpawnedProcess,
 } from '@anthropic-ai/claude-agent-sdk';
+import type { ExecutionHostProcess } from '@canopy/desktop-shared/node/execution-host/port';
 import { killProcessGroupByPid } from '@canopy/desktop-shared/node/lib/process-kill';
+import { getExecutionHostPort } from '../execution-host/utility-process-host';
 import type {
   ClaudeProcessHostRequest,
   ClaudeProcessHostResponse,
@@ -63,13 +63,13 @@ export interface HostedClaudeProcessOwner {
 }
 
 interface WorkerExitState {
-  child: UtilityProcess;
+  child: ExecutionHostProcess;
   promise: Promise<void>;
   resolve: () => void;
 }
 
 interface TrackedClaudeProcess {
-  child: UtilityProcess;
+  child: ExecutionHostProcess;
   pid: number;
 }
 
@@ -77,7 +77,7 @@ interface StdoutCreditHold {
   proxy: ClaudeProcessProxy | null;
 }
 
-let worker: UtilityProcess | null = null;
+let worker: ExecutionHostProcess | null = null;
 let workerExitState: WorkerExitState | null = null;
 let shuttingDown = false;
 const active = new Map<string, ClaudeProcessProxy>();
@@ -101,7 +101,10 @@ function isResponse(value: unknown): value is ClaudeProcessHostResponse {
   );
 }
 
-function post(child: UtilityProcess, message: ClaudeProcessHostRequest): void {
+function post(
+  child: ExecutionHostProcess,
+  message: ClaudeProcessHostRequest,
+): void {
   child.postMessage(message);
 }
 
@@ -156,13 +159,13 @@ class ClaudeProcessProxy extends EventEmitter implements SpawnedProcess {
         bytes,
       });
     } catch {
-      // The utility host exit path owns proxy teardown.
+      // The host's exit path owns proxy teardown.
     }
   }
 
   constructor(
     readonly requestId: string,
-    readonly child: UtilityProcess,
+    readonly child: ExecutionHostProcess,
     private readonly executable: string,
     readonly owner: HostedClaudeProcessOwner | null = null,
   ) {
@@ -354,7 +357,7 @@ class ClaudeProcessProxy extends EventEmitter implements SpawnedProcess {
   }
 }
 
-function handleMessage(source: UtilityProcess, message: unknown): void {
+function handleMessage(source: ExecutionHostProcess, message: unknown): void {
   const payload = isResponse(message)
     ? message
     : isRecord(message) && 'data' in message
@@ -396,7 +399,7 @@ function handleMessage(source: UtilityProcess, message: unknown): void {
 }
 
 async function terminateTrackedProcessGroups(
-  child: UtilityProcess,
+  child: ExecutionHostProcess,
 ): Promise<void> {
   const tracked = Array.from(cleanupProcesses.entries()).filter(
     ([, process]) => process.child === child,
@@ -412,15 +415,14 @@ async function terminateTrackedProcessGroups(
   }
 }
 
-function ensureWorker(): UtilityProcess {
+function ensureWorker(): ExecutionHostProcess {
   if (shuttingDown) throw new Error('Claude process host is shutting down.');
   if (worker) return worker;
 
-  const child = utilityProcess.fork(
-    path.join(__dirname, WORKER_ENTRY_FILENAME),
-    [],
-    { serviceName: WORKER_SERVICE_NAME },
-  );
+  const child = getExecutionHostPort().launch({
+    entry: WORKER_ENTRY_FILENAME,
+    serviceName: WORKER_SERVICE_NAME,
+  });
   worker = child;
   let resolveExit = (): void => undefined;
   const exitPromise = new Promise<void>((resolve) => {
@@ -738,7 +740,10 @@ export async function shutdownClaudeProcessHost(): Promise<void> {
   if (timer) clearTimeout(timer);
   if (exited) return;
   try {
-    child.kill();
+    if (!child.kill())
+      child.once('spawn', () => {
+        child.kill();
+      });
   } catch {
     // Best-effort bounded shutdown during app teardown.
   }

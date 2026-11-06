@@ -11,6 +11,7 @@ import {
 } from 'react';
 import {
   BillingHistoryTable as SharedBillingHistoryTable,
+  BusyLabel,
   Button,
   CreditLedgerTable as SharedCreditLedgerTable,
   EmptyState,
@@ -936,11 +937,12 @@ function BillingHistoryCard({
               <Button
                 size="compact"
                 disabled={loadingMore}
+                aria-busy={loadingMore}
                 onClick={() => void loadPage(nextCursor)}
                 data-testid="team-billing-history-load-more"
                 className="mt-3"
               >
-                {loadingMore ? 'Loading…' : 'Load more'}
+                <BusyLabel busy={loadingMore}>Load more</BusyLabel>
               </Button>
             ) : null}
           </div>

@@ -1,3 +1,4 @@
+import type { ApprovalSecretInputRequest } from '@canopy/desktop-shared/types';
 import {
   CORE_SHARED_MULTI_REPO_QUERIES,
   CORE_SHARED_MULTI_REPO_INSTRUCTIONS,
@@ -68,7 +69,6 @@ import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import '@canopy/desktop-instrumentation/electron/preload';
 import { contextBridge, webFrame, webUtils } from 'electron';
 import { ipcRenderer, remoteWindowContext } from './ipc-router';
 import { createChatStateApi } from './api/chat-state-api';
@@ -3139,8 +3139,12 @@ const canopyApi: CanopyApi = {
     ipcRenderer.invoke(IPC_CHANNELS.settingsSaveLinearToken, token),
   validateLinearToken: (token) =>
     ipcRenderer.invoke(IPC_CHANNELS.settingsValidateLinearToken, token),
-  loadModelGatewayCredential: (organizationId) =>
-    ipcRenderer.invoke(IPC_CHANNELS.modelGatewayLoadCredential, organizationId),
+  loadModelGatewayCredential: (organizationId, expectedBaseUrl) =>
+    ipcRenderer.invoke(
+      IPC_CHANNELS.modelGatewayLoadCredential,
+      organizationId,
+      expectedBaseUrl,
+    ),
   saveModelGatewayCredential: (input) =>
     ipcRenderer.invoke(IPC_CHANNELS.modelGatewaySaveCredential, input),
   validateModelGatewayCredential: (input) =>
@@ -3630,6 +3634,31 @@ const canopyApi: CanopyApi = {
     },
     completePortalComposerCommand: (result) =>
       ipcRenderer.invoke(IPC_CHANNELS.chatPortalComposerCommandResult, result),
+    onHookQueueRemoved: (callback) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        data: unknown,
+      ): void => {
+        if (
+          !isRecord(data) ||
+          typeof data.projectId !== 'string' ||
+          typeof data.worktreeId !== 'string' ||
+          typeof data.chatId !== 'string' ||
+          typeof data.queueId !== 'string'
+        )
+          return;
+        callback({
+          projectId: data.projectId,
+          worktreeId: data.worktreeId,
+          chatId: data.chatId,
+          queueId: data.queueId,
+        });
+      };
+      ipcRenderer.on(IPC_CHANNELS.chatHookQueueRemoved, handler);
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.chatHookQueueRemoved, handler);
+      };
+    },
     onHookTabStarted: (callback) => {
       const handler = (
         _event: Electron.IpcRendererEvent,
@@ -3894,6 +3923,8 @@ const canopyApi: CanopyApi = {
     cancel: () => ipcRenderer.invoke(IPC_CHANNELS.cursorApprovalCheckCancel),
   },
   approvals: {
+    respondSecretInput: (req: ApprovalSecretInputRequest) =>
+      ipcRenderer.invoke(IPC_CHANNELS.approvalSecretInput, req),
     respond: (req: ApprovalRespondRequest) =>
       ipcRenderer.invoke(IPC_CHANNELS.approvalRespond, req),
     dismiss: (req: ApprovalDismissRequest) =>
@@ -4335,8 +4366,6 @@ const canopyApi: CanopyApi = {
         );
       };
     },
-    getAnonymousTelemetryId: () =>
-      ipcRenderer.invoke(IPC_CHANNELS.observabilityGetAnonymousTelemetryId),
     onUpdate: (callback) => {
       const handler = (
         _event: Electron.IpcRendererEvent,
@@ -4452,6 +4481,9 @@ const canopyApi: CanopyApi = {
   },
   terminal: {
     listProfiles: () => ipcRenderer.invoke(IPC_CHANNELS.terminalListProfiles),
+    getSettings: () => ipcRenderer.invoke(IPC_CHANNELS.terminalGetSettings),
+    updateSettings: (request) =>
+      ipcRenderer.invoke(IPC_CHANNELS.terminalUpdateSettings, request),
     spawn: (request) => ipcRenderer.invoke(IPC_CHANNELS.terminalSpawn, request),
     restore: (request) =>
       ipcRenderer.invoke(IPC_CHANNELS.terminalRestore, request),
@@ -5629,6 +5661,12 @@ const canopyApi: CanopyApi = {
   },
   accountOrganizationSettings:
     createAccountOrganizationSettingsApi(ipcRenderer),
+  cloudProjects: {
+    findLink: (workspaceId) =>
+      ipcRenderer.invoke(IPC_CHANNELS.cloudProjectsFindLink, workspaceId),
+    link: (request) =>
+      ipcRenderer.invoke(IPC_CHANNELS.cloudProjectsLink, request),
+  },
   orgProjects: {
     sharedMultiRepo: {
       prepare: async (params) =>

@@ -4,7 +4,9 @@ import {
   PIPELINE_EDITOR_WORKTREE_ID,
 } from '@canopy/desktop-shared/types';
 import { useChatStore } from '@/stores/chatStore';
+import { useNavigationStore } from '@/stores/navigationStore';
 import { consumePipelineAssistantNewChatRequest } from '@/lib/pipelineAssistantEvents';
+import { workflowEditKey } from '@/lib/workflows/edit-target';
 
 /**
  * Whether the Pipeline Assistant already holds a conversation: a chat tab with
@@ -35,16 +37,23 @@ const PIPELINE_EDITOR_TARGET = {
 } as const;
 
 /**
- * Picks the chat the loaded Pipeline Assistant opens on. A new workflow asks
- * for its own chat (CAN-4319), which only an edit view (`inEditView`) takes,
- * so its conversation starts empty with the starters: an untouched starter
- * tab is reused, and a tab holding a conversation, a draft or staged context
- * stays while the new chat opens beside it. Otherwise the assistant keeps
- * the chat it had, or gets one.
+ * Picks the chat the loaded Pipeline Assistant opens on. A new workflow, or an
+ * opened saved one, asks for its own chat (CAN-4319), which only an edit view
+ * (`inEditView`) takes, and only while the item it asked for is shown, so its
+ * conversation starts empty with the starters: an untouched starter tab is
+ * reused, and a tab holding a conversation, a draft or staged context stays
+ * while the new chat opens beside it. Otherwise the assistant keeps the chat
+ * it had, or gets one.
  */
 export function openPipelineAssistantChat(inEditView: boolean): void {
   const store = useChatStore.getState();
-  if (inEditView && consumePipelineAssistantNewChatRequest()) {
+  const shown = useNavigationStore.getState().workflowEdit;
+  if (
+    inEditView &&
+    consumePipelineAssistantNewChatRequest(
+      shown === undefined ? undefined : workflowEditKey(shown),
+    )
+  ) {
     store.createTab({ ...PIPELINE_EDITOR_TARGET, replaceActiveEmpty: true });
     return;
   }

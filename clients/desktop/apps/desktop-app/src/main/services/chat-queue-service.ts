@@ -594,6 +594,15 @@ export interface ChatQueueServiceDependencies {
   authorization?: ChatDispatchAuthorizationPort;
 }
 
+/**
+ * The chat turn execution seam (CAN-4110 D2). The queue starts an admitted
+ * turn by calling it; chat admission, receipts and idempotency all happen
+ * before this call. Its production value, `dispatchQueuedChatMessage`,
+ * stays; the turn below this seam runs on the local worker (CAN-4115), whose
+ * boundary sits at session creation.
+ */
+type ChatTurnExecutionSeam = ChatQueueServiceDependencies['dispatch'];
+
 /** The canonical ownership the queue reads and publishes its D owners into. */
 export type ChatQueueOwnershipPort = Pick<
   ChatTurnOwnershipSource,
@@ -1341,7 +1350,7 @@ const DEFAULT_DEPENDENCIES: ChatQueueServiceDependencies = {
       context.creditsEligible
     );
   },
-  dispatch: dispatchQueuedChatMessage,
+  dispatch: dispatchQueuedChatMessage satisfies ChatTurnExecutionSeam,
   beginTurnPreparation: beginChatTurnPreparation,
   cancel: defaultCancel,
   settleCancelledTurn: defaultSettleCancelledTurn,
@@ -1428,6 +1437,7 @@ export class ChatQueueService {
     readonly source: ChatQueueOwnershipPort;
     readonly dispose: () => void;
   };
+  private startupDrainHeld = false;
 
   public constructor(
     private readonly dependencies: ChatQueueServiceDependencies = DEFAULT_DEPENDENCIES,
@@ -3248,6 +3258,27 @@ export class ChatQueueService {
       for (const message of entry.queue) delete message.watcherDeliveryHeld;
       this.scheduleDrain(held.request, entry, 0);
     }
+  }
+
+  /**
+   * Hold every queue drain until the core accepts turns (CAN-4112). Startup
+   * recovery hydrates queued rows before the desktop runtime exists; edits,
+   * cancels, moves and locks still apply, only drains wait.
+   */
+  public holdDrainsForStartup(): void {
+    this.startupDrainHeld = true;
+  }
+
+  /** End the startup hold and drain every chat that has queued rows. Idempotent. */
+  public releaseStartupDrainHold(): void {
+    if (!this.startupDrainHeld) return;
+    this.startupDrainHeld = false;
+    this.reconcileSessionActivity();
+  }
+
+  /** Whether queue drains wait for startup to finish. */
+  public isStartupDrainHeld(): boolean {
+    return this.startupDrainHeld;
   }
 
   public async submit(
@@ -5367,6 +5398,7 @@ export class ChatQueueService {
     this.ownershipHydrations.clear();
     this.ownershipSubscription?.dispose();
     delete this.ownershipSubscription;
+    this.startupDrainHeld = false;
   }
 
   /** Whether this message is the chat's dispatching turn or a queued row. */
@@ -5548,6 +5580,8 @@ export class ChatQueueService {
     target: ChatQueueTarget,
     entry: ChatQueueEntry,
   ): Promise<void> {
+    // Startup recovery: drains wait for the core to accept (CAN-4112).
+    if (this.startupDrainHeld) return;
     if (entry.creditHold) {
       await this.refreshCreditHold(entry);
       if (

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { KeyedOutcomes } from '../keyed-outcomes';
 import { basename, join } from 'node:path';
 import type {
   CanopyErrorPayload,
@@ -20,7 +20,6 @@ import type {
   WorkerTerminalWriteParams,
   WorkerTerminalWriteResult,
 } from '@canopy/protocol/canopy-core';
-import { stableStringify } from '@canopy/protocol/plans';
 import { isSafePortableRelativePath } from '@canopy/protocol/safe-relative-path';
 import { CanopyOperationError } from '../../../runtime/errors';
 import type {
@@ -92,6 +91,7 @@ export interface WorkerTerminalHandlers {
 
 /** What the worker knows of a live terminal beyond its host's record. */
 interface Descriptor {
+  kind: 'interactive' | 'managed';
   scope: CanopyWorkspaceScope;
   cwdRootId: string;
   cwdRelativePath: string;
@@ -99,7 +99,6 @@ interface Descriptor {
   initialCommand: string | null;
 }
 
-const MAX_KEYED_OUTCOMES = 256;
 /**
  * Attachment pacing. Every hop of a stream holds at most 1,024 frames, and
  * the client's own consumption is not visible here, so output reaches the
@@ -197,49 +196,6 @@ function environmentOf(
   for (const [name, value] of Object.entries(env ?? {}))
     if (typeof value === 'string') environment[name] = value;
   return environment;
-}
-
-class KeyedOutcomes<T> {
-  private readonly outcomes = new Map<
-    string,
-    { fingerprint: string; outcome: Promise<T> }
-  >();
-
-  run(
-    context: CanopyHandlerContext,
-    params: unknown,
-    start: () => Promise<T>,
-  ): Promise<T> {
-    const key = context.metadata.idempotencyKey;
-    if (key === undefined) return start();
-    const id = `${context.caller.principalId}\0${context.caller.clientInstanceId}\0${key}`;
-    const fingerprint = createHash('sha256')
-      .update(stableStringify(params) ?? 'null')
-      .digest('hex');
-    const existing = this.outcomes.get(id);
-    if (existing) {
-      if (existing.fingerprint !== fingerprint)
-        return Promise.reject(
-          terminalError(
-            'conflict',
-            'This idempotency key was used with other parameters.',
-          ),
-        );
-      return existing.outcome;
-    }
-    const outcome = start();
-    this.outcomes.set(id, { fingerprint, outcome });
-    outcome.catch(() => {
-      // A failed attempt may be retried with the same key.
-      if (this.outcomes.get(id)?.outcome === outcome) this.outcomes.delete(id);
-    });
-    while (this.outcomes.size > MAX_KEYED_OUTCOMES) {
-      const oldest = this.outcomes.keys().next().value;
-      if (oldest === undefined) break;
-      this.outcomes.delete(oldest);
-    }
-    return outcome;
-  }
 }
 
 type RunningState = NonNullable<WorkerTerminalAttachItem['running']>;
@@ -414,8 +370,13 @@ export function createWorkerTerminalHandlers(
 ): WorkerTerminalHandlers {
   const { supervisor } = options;
   const descriptors = new Map<string, Descriptor>();
-  const creates = new KeyedOutcomes<WorkerTerminalCreateResult>();
-  const restores = new KeyedOutcomes<WorkerTerminalRestoreResult>();
+  const reusedKey = (): CanopyOperationError =>
+    terminalError(
+      'conflict',
+      'This idempotency key was used with other parameters.',
+    );
+  const creates = new KeyedOutcomes<WorkerTerminalCreateResult>(reusedKey);
+  const restores = new KeyedOutcomes<WorkerTerminalRestoreResult>(reusedKey);
   const offsets = new Map<string, number>();
   const recentExits = new Map<
     string,
@@ -473,6 +434,7 @@ export function createWorkerTerminalHandlers(
       pid: terminal.pid,
       createdAt: terminal.session.createdAt,
       shellBasename: terminal.session.shellBasename,
+      kind: descriptor.kind,
     };
   };
 
@@ -523,10 +485,20 @@ export function createWorkerTerminalHandlers(
       'worker.terminal.create': (params, context) =>
         creates.run(context, params, async () => {
           const { workspaceId, worktreeId } = worktreeOf(params.scope);
-          if (params.kind !== 'interactive')
+          if (params.kind !== 'interactive' && params.kind !== 'managed')
             throw terminalError(
               'capability_unavailable',
               'This worker opens interactive terminals only.',
+            );
+          if (
+            params.kind === 'managed' &&
+            ((params.profileId !== undefined && params.profileId !== null) ||
+              (params.initialCommand !== undefined &&
+                params.initialCommand !== null))
+          )
+            throw terminalError(
+              'invalid_argument',
+              'A managed command takes no profile or initial command.',
             );
           if (!params.shell)
             throw terminalError(
@@ -560,6 +532,7 @@ export function createWorkerTerminalHandlers(
             ),
           );
           descriptors.set(terminal.session.id, {
+            kind: params.kind,
             scope: params.scope,
             cwdRootId: params.cwdRootId,
             cwdRelativePath: params.cwdRelativePath,
@@ -627,6 +600,7 @@ export function createWorkerTerminalHandlers(
           // adopts the live terminal, and its snapshot changes nothing.
           if (recreated || !descriptors.has(terminalId)) {
             descriptors.set(terminalId, {
+              kind: 'interactive',
               scope,
               cwdRootId: snapshot.cwdRootId,
               cwdRelativePath: snapshot.cwdRelativePath,

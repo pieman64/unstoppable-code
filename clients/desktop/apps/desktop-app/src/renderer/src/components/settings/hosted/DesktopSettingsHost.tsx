@@ -64,6 +64,7 @@ import { selectOrganizationWhenListed } from '@/lib/selectOrganizationWhenListed
 import { useNavigationStore } from '@/stores/navigationStore';
 import { useWorkspaceContext } from '@/stores/workspaceContextStore';
 import { DesktopDataSharingOptIn } from '../DesktopDataSharingOptIn';
+import { DesktopAiGatewayConnectionKey } from './DesktopAiGatewayConnectionKey';
 import { createDesktopOrgProjectSetupSlot } from './desktopOrgProjectSetupSlot';
 import {
   DesktopSettingsHostContext,
@@ -678,7 +679,25 @@ function createDesktopSettingsHost(
     useTopUpFeePercent: useDesktopTopUpFeePercent,
     useWorkspaceContext: useDesktopSettingsWorkspaceContext,
     usePaymentHandoffAvailable: useDesktopPaymentHandoffAvailable,
+    // Gateway keys live in this computer's secure storage.
+    AiGatewayConnectionKey: DesktopAiGatewayConnectionKey,
   };
+}
+
+/**
+ * Settings host ports for one shared settings control shown outside the
+ * Settings overlay, such as first run's AI gateway setup. It has no settings
+ * store, so only controls that read the client and host ports belong here.
+ */
+export function useDesktopStandaloneSettingsHost(
+  client: AccountOrganizationSettingsClient,
+): SettingsUiHost {
+  const webOrigin = useConfiguredWebOrigin();
+  const storage = useMemo(createDesktopSettingsSelectionStorage, []);
+  return useMemo(
+    () => createDesktopSettingsHost(client, storage, webOrigin),
+    [client, storage, webOrigin],
+  );
 }
 
 // Opened from the Personal header's invite, never part of the first screen:

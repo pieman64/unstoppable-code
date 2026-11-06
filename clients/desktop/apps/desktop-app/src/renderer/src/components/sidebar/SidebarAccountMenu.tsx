@@ -200,7 +200,7 @@ export function SidebarAccountMenu({
   const { account, readError: accountReadError } = useCanopyCloudAccountState();
   const accountInfo = account?.account;
   // The signed-out row names the action, not the absence (docs/ux-writing.md).
-  const accountDisplayName = accountInfo?.name?.trim() || 'Sign in';
+  const accountDisplayName = accountInfo?.name?.trim() ?? '';
   // Treat either guest signal as guest (shared `isGuestAccount` applies the
   // defensive `credentialSource === 'guest' || authMode === 'guest'` OR):
   // legacy/normalized entries can carry `authMode: 'guest'` without
@@ -380,6 +380,7 @@ export function SidebarAccountMenu({
         // organization is named by the switcher at the top of the sidebar.
         identity={{
           name: accountDisplayName,
+          email: accountInfo?.email,
           image: accountInfo?.image ?? null,
           signedIn: accountInfo != null,
           signingIn,

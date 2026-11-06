@@ -82,7 +82,7 @@ const HOLDING: ToolApprovalWait = {
 function WaitReadout(): JSX.Element {
   const wait = useToolApprovalWait();
   return (
-    <ul className="flex w-full flex-col gap-1 text-sm">
+    <ul className="flex w-full flex-col gap-1 text-s">
       {SAMPLE_CALLS.map((call) => {
         const info = getToolDisplayInfo(call.toolName, call.input);
         return (
@@ -145,7 +145,7 @@ export function LiveToolActivitySpecimen(): JSX.Element {
           }
           wide
         >
-          <ul className="flex w-full flex-col gap-1 text-sm">
+          <ul className="flex w-full flex-col gap-1 text-s">
             {SAMPLE_CALLS.map((call) => {
               const live = liveToolCallActivity(call, wait);
               return (
@@ -199,7 +199,7 @@ export function ToolDisplaySpecimen(): JSX.Element {
             const info = getToolDisplayInfo(call.toolName, call.input);
             return (
               <SpecimenCell key={call.toolUseId} label={call.toolName}>
-                <span className="flex min-w-0 items-center gap-2 text-sm">
+                <span className="flex min-w-0 items-center gap-2 text-s">
                   <span className="fg-secondary">{info.icon}</span>
                   <span className="min-w-0 truncate">{info.label}</span>
                 </span>
@@ -211,7 +211,7 @@ export function ToolDisplaySpecimen(): JSX.Element {
       <SpecimenPanel title={`${MODULE_TAGS}: the family a call belongs to`}>
         {FAMILY_CASES.map(({ label, toolName, input, supplied }) => (
           <SpecimenCell key={label} label={label} wide>
-            <span className="text-sm">
+            <span className="text-s">
               {toolName} → {getToolDisplayFamily(toolName, input, supplied)}
             </span>
           </SpecimenCell>

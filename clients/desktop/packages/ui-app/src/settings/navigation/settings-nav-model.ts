@@ -73,6 +73,7 @@ const ORGANIZATION_ROW_ORDER: readonly (
   { subtab: 'policies' },
   { subtab: 'integrations' },
   { subtab: 'usage' },
+  { subtab: 'ai-gateway' },
   { subtab: 'billing' },
 ];
 

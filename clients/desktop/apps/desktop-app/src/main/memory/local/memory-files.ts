@@ -8,6 +8,7 @@ import {
   link,
   lstat,
   mkdir,
+  open,
   readdir,
   realpath,
   rename,
@@ -16,6 +17,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
+import { flushDirectory } from '@canopy/core-platform/directory-flush';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { isPathInside } from '@canopy/desktop-shared/node/lib/path-safety';
 
@@ -370,6 +372,46 @@ async function isSameFile(left: string, right: string): Promise<boolean> {
     lstat(right, { bigint: true }),
   ]);
   return a.isFile() && a.dev === b.dev && a.ino === b.ino;
+}
+
+/**
+ * {@link writeNewMemoryFile}, or with `replace` {@link writeMemoryFileAtomically},
+ * for a file that must survive a crash before the caller drops the only other
+ * copy of its content: the bytes and the name are flushed to disk before it
+ * resolves. A taken name rejects with EEXIST unless `replace` is set.
+ */
+export async function writeMemoryFileDurably(
+  scopeDir: string,
+  filePath: string,
+  content: string,
+  options: { replace: boolean; times?: MemoryFileTimes },
+): Promise<void> {
+  const directory = dirname(filePath);
+  await ensureOwnerOnlyMemoryDir(scopeDir, directory);
+  const temporaryPath = memoryWriteTempPath(directory);
+  try {
+    const handle = await open(temporaryPath, 'wx', MEMORY_FILE_MODE);
+    try {
+      await handle.writeFile(content, 'utf8');
+      if (options.times) {
+        await handle.utimes(options.times.atime, options.times.mtime);
+      }
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await assertMemoryPathContained(scopeDir, directory);
+    await assertMemoryScopeLockHeld();
+    if (options.replace) {
+      await rename(temporaryPath, filePath);
+    } else {
+      await publishWithoutReplacing(temporaryPath, filePath, true);
+    }
+  } catch (error) {
+    await unlink(temporaryPath).catch(() => undefined);
+    throw error;
+  }
+  await flushDirectory(directory);
 }
 
 /**

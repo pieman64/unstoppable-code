@@ -13,7 +13,7 @@ const MAX_PATH_LENGTH = 4096;
 const MAX_ITEMS = 1024;
 
 const ROLES = ['source', 'member'] as const;
-const STATUSES = ['started', 'completed'] as const;
+const STATUSES = ['planned', 'acquired', 'started', 'completed'] as const;
 const ACTIONS = ['clone', 'initialize', 'import'] as const;
 const PHASES = [
   'before-canonical-commit',

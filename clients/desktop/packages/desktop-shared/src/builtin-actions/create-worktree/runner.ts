@@ -1,3 +1,4 @@
+import { selectW5WritePath } from '../../node/w5-routed-writes/selector';
 import { setOutput } from '../_lib/output';
 import { runWithActionEnvironment } from '../_lib/action-env';
 import { getCanopyDataDir } from '../../canopy-paths';
@@ -96,6 +97,12 @@ export async function runCreateWorktreeAction(
       refuse(
         'needs_desktop',
         `create-worktree "${desktopOnly}" needs the desktop app.`,
+      );
+    }
+    if (selectW5WritePath() === 'routed') {
+      refuse(
+        'target_not_ready',
+        'create-worktree needs the CLI host adapter to save through the core daemon.',
       );
     }
     const { projectId: workspaceId, branch, baseBranch, repair } = parsed.value;

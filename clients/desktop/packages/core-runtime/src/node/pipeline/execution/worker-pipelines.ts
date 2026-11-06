@@ -1,4 +1,10 @@
 import {
+  NO_EXECUTION_SECRETS,
+  redeemExecutionSecrets,
+  type ExecutionSecretSource,
+  type RedeemedExecutionSecrets,
+} from '../../execution-secrets';
+import {
   WORKER_PIPELINE_OUTPUT_ITEM_MAX_LENGTH,
   WORKER_PIPELINE_TERMINAL_STATUSES,
   type CanopyInstructionHandler,
@@ -17,6 +23,8 @@ import {
   type WorkerPipelineRecoverySweepParams,
   type WorkerPipelineRecoverySweepResult,
   type WorkerPipelineMatrixVariantCancelParams,
+  type CanopyErrorPayload,
+  type CanopyHostExecution,
 } from '@canopy/protocol/canopy-core';
 
 import { CanopyOperationError } from '../../../runtime/errors';
@@ -31,6 +39,8 @@ export interface PipelineExecutionObserver {
     stream: 'stdout' | 'stderr';
     text: string;
   }): void;
+  /** The worker can no longer follow this execution, such as when its host process ended. */
+  onEnd?(error: CanopyErrorPayload): void;
 }
 
 /** One recovery control (CAN-4141), by the instruction that carries it. */
@@ -63,11 +73,14 @@ export interface PipelineExecutionWorker {
   /**
    * Run the launch core prepared for this execution, once. Throws
    * {@link pipelineLaunchUnavailableError} when there is none, so a client
-   * can never start a run core did not admit.
+   * can never start a run core did not admit. Only a worker that runs
+   * host-local launches reads `execution` (CAN-5086).
    */
   start(
     params: WorkerPipelineExecutionStartParams,
     signal: AbortSignal,
+    secrets: RedeemedExecutionSecrets,
+    execution?: CanopyHostExecution,
   ): Promise<WorkerPipelineExecution>;
   /**
    * Run the recovery control core prepared under `params.requestId`, once.
@@ -76,6 +89,7 @@ export interface PipelineExecutionWorker {
   control(
     request: PipelineControlRequest,
     signal: AbortSignal,
+    secrets: RedeemedExecutionSecrets,
   ): Promise<WorkerPipelineControlResult>;
   /**
    * Pause the executions among `params.executionIds` whose recorded owner
@@ -126,6 +140,44 @@ export function pipelineLaunchUnavailableError(): CanopyOperationError {
     kind: 'failed_precondition',
     code: 'worker.pipeline.launchUnavailable',
     message: 'Core has not prepared this workflow run.',
+    retry: { kind: 'never' },
+  });
+}
+
+export function pipelineLaunchRefusedError(): CanopyOperationError {
+  return new CanopyOperationError({
+    kind: 'invalid_argument',
+    code: 'worker.pipeline.launchRefused',
+    message: 'This workflow run cannot run in the background service.',
+    retry: { kind: 'never' },
+  });
+}
+
+export function pipelineModelStepsUnsupportedError(): CanopyOperationError {
+  return new CanopyOperationError({
+    kind: 'capability_unavailable',
+    code: 'worker.pipeline.modelStepsUnsupported',
+    message:
+      'This workflow has steps that call a model, so it runs in the app.',
+    retry: { kind: 'never' },
+  });
+}
+
+export function pipelineHostUnavailableError(): CanopyOperationError {
+  return new CanopyOperationError({
+    kind: 'unavailable',
+    code: 'worker.pipeline.hostUnavailable',
+    message: 'The background workflow service could not start.',
+    retry: { kind: 'never' },
+  });
+}
+
+export function pipelineHostLostError(): CanopyOperationError {
+  return new CanopyOperationError({
+    kind: 'unavailable',
+    code: 'worker.pipeline.hostLost',
+    message:
+      'The background workflow service stopped while this run was in progress.',
     retry: { kind: 'never' },
   });
 }
@@ -269,7 +321,11 @@ export interface WorkerPipelineHandlers {
 /** `worker.pipeline.execution.*` over one worker host (CAN-4140). */
 export function createWorkerPipelineHandlers(
   worker: PipelineExecutionWorker,
-  options: { budget?: PipelineOutputBudget; now?: () => number } = {},
+  options: {
+    secrets: ExecutionSecretSource;
+    budget?: PipelineOutputBudget;
+    now?: () => number;
+  },
 ): WorkerPipelineHandlers {
   const budget = options.budget ?? DEFAULT_PIPELINE_OUTPUT_BUDGET;
   const now = options.now ?? Date.now;
@@ -286,29 +342,70 @@ export function createWorkerPipelineHandlers(
     instructions: {
       'worker.pipeline.execution.start': async (
         params,
-        { signal },
+        { signal, execution },
       ): Promise<WorkerPipelineExecutionResult> => ({
-        execution: await worker.start(params, signal),
+        execution: await worker.start(
+          params,
+          signal,
+          await redeemExecutionSecrets(
+            options.secrets,
+            {
+              operation: 'worker.pipeline.execution.start',
+              key: params.executionId,
+            },
+            params.secrets,
+            signal,
+          ),
+          execution,
+        ),
       }),
-      'worker.pipeline.execution.resume': (params, { signal }) =>
+      'worker.pipeline.execution.resume': async (params, { signal }) =>
         worker.control(
           { operation: 'worker.pipeline.execution.resume', params },
           signal,
+          await redeemExecutionSecrets(
+            options.secrets,
+            {
+              operation: 'worker.pipeline.execution.resume',
+              key: params.requestId,
+            },
+            params.secrets,
+            signal,
+          ),
         ),
-      'worker.pipeline.execution.retry': (params, { signal }) =>
+      'worker.pipeline.execution.retry': async (params, { signal }) =>
         worker.control(
           { operation: 'worker.pipeline.execution.retry', params },
           signal,
+          await redeemExecutionSecrets(
+            options.secrets,
+            {
+              operation: 'worker.pipeline.execution.retry',
+              key: params.requestId,
+            },
+            params.secrets,
+            signal,
+          ),
         ),
-      'worker.pipeline.matrixJob.retry': (params, { signal }) =>
+      'worker.pipeline.matrixJob.retry': async (params, { signal }) =>
         worker.control(
           { operation: 'worker.pipeline.matrixJob.retry', params },
           signal,
+          await redeemExecutionSecrets(
+            options.secrets,
+            {
+              operation: 'worker.pipeline.matrixJob.retry',
+              key: params.requestId,
+            },
+            params.secrets,
+            signal,
+          ),
         ),
       'worker.pipeline.matrixVariant.cancel': (params, { signal }) =>
         worker.control(
           { operation: 'worker.pipeline.matrixVariant.cancel', params },
           signal,
+          NO_EXECUTION_SECRETS,
         ),
       'worker.pipeline.recovery.sweep': (params) => worker.sweep(params),
       'worker.pipeline.recovery.checkpoint': (params) =>
@@ -451,6 +548,13 @@ export function createWorkerPipelineHandlers(
                 : text,
               truncated,
             });
+          },
+          onEnd: (error) => {
+            if (ended) return;
+            ended = true;
+            cancelRetry();
+            stop?.();
+            sink.end('error', error);
           },
         });
         if (stop === null) {

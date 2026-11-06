@@ -165,8 +165,13 @@ export const HOSTED_SETTINGS_PAGE_REPLAY_PRIVACY = Object.freeze({
   'account/digests': 'blocked',
   'account/notifications': 'reviewed',
   'account/integrations': 'reviewed',
+  // Installed names and counts, like Customize and the local sections.
+  'account/plugins': 'reviewed',
+  'account/mcp': 'reviewed',
   // API keys and backup codes carry their own blocks.
   'account/security': 'reviewed',
+  // Gateway name, URL and key suffix carry their own masks.
+  'account/ai-gateway': 'reviewed',
   'account/billing': 'reviewed',
   // Experiment names and switches, like the local Labs section.
   'account/labs': 'reviewed',

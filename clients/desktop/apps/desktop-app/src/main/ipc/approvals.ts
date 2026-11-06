@@ -1,3 +1,5 @@
+import { z } from 'zod';
+import { resolveApprovalSecretInput } from '../approvals/pending-approvals';
 import {
   IPC_CHANNELS,
   type ApprovalDismissRequest,
@@ -81,7 +83,27 @@ function requireWorkspaceId(workspaceId: string | undefined): string {
   return workspaceId;
 }
 
+const secretInputRequestSchema = z.strictObject({
+  requestId: z.uuid(),
+  bindingId: z.uuid(),
+  projectId: z.string().min(1).max(256),
+  worktreeId: z.string().min(1).max(256),
+  chatId: z.string().min(1).max(256),
+  secret: z.string().trim().max(16384),
+});
+
 export function registerApprovalHandlers(): void {
+  registerIpcHandler(
+    IPC_CHANNELS.approvalSecretInput,
+    (event, value: unknown): boolean => {
+      const request = secretInputRequestSchema.safeParse(value);
+      // Use the actual local sender; remote-control mirrors may not supply secrets.
+      return (
+        request.success &&
+        resolveApprovalSecretInput(request.data, event.sender)
+      );
+    },
+  );
   registerIpcHandler<[ApprovalRespondRequest], boolean>(
     IPC_CHANNELS.approvalRespond,
     (event, req) => {

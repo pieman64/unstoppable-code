@@ -60,6 +60,7 @@ import { useWorkflowsViewStore } from './workflowsViewStore';
 import { useWorkspaceContextStore } from './workspaceContextStore';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import type { InstalledSharedSkillTarget } from '@/lib/sharedSkillImport';
+import { requestPipelineAssistantNewChat } from '@/lib/pipelineAssistantEvents';
 import {
   createSidebarSectionRootRegistry,
   returnSidebarSectionToRoot,
@@ -1080,6 +1081,44 @@ function withWorkflowEditClearing(
   };
 }
 
+/**
+ * Opens the Workflows edit shell on `requested`: the shared body of
+ * {@link NavigationState.openWorkflowEdit} and
+ * {@link NavigationState.openPipelineEdit}. `onOpened` runs only when the
+ * shell moves to another item, right after it does, with the item it shows:
+ * never for the item already shown, nor when the guard keeps the person where
+ * they are.
+ */
+function openWorkflowEditTarget(
+  set: (update: NavigationUpdate) => void,
+  get: () => NavigationState,
+  requested: WorkflowEditTarget,
+  onOpened?: (opened: WorkflowEditTarget) => void,
+): void {
+  const target = withWorkflowDraftKey(requested);
+  const state = get();
+  const current = state.workflowEdit;
+  if (
+    state.activePage === 'workflows-library' &&
+    current !== undefined &&
+    isSameWorkflowEditItem(current, target)
+  ) {
+    // The same item: only the section moves, and the guard is not asked.
+    if (target.section !== undefined && target.section !== current.section) {
+      set({ workflowEdit: { ...current, section: target.section } });
+    }
+    return;
+  }
+  runGuardedNavigation('workflows-library', (): void => {
+    set({
+      activePage: 'workflows-library',
+      workflowEdit: target,
+      pendingAutomationReveal: undefined,
+    });
+    onOpened?.(target);
+  });
+}
+
 function isAgentNavigation(
   intent: PluginsNavigationIntent | undefined,
 ): boolean {
@@ -1284,6 +1323,15 @@ export const useNavigationStore = create<NavigationState>(
       // Desktop keeps Labs in its own section, over main's Labs snapshot.
       if (route.scope === 'account' && route.page === 'labs') {
         get().openSettings('experiments', { scrollTo: options?.scrollTo });
+        return;
+      }
+      // Desktop keeps Plugins and MCP servers in its own sections, beside its
+      // device settings.
+      if (
+        route.scope === 'account' &&
+        (route.page === 'plugins' || route.page === 'mcp')
+      ) {
+        get().openSettings(route.page, { scrollTo: options?.scrollTo });
         return;
       }
       // Desktop sets chat detail on this computer, under Display.
@@ -1503,30 +1551,7 @@ export const useNavigationStore = create<NavigationState>(
       set({ pendingWorkerHighlight: undefined });
     },
     openWorkflowEdit: (requested): void => {
-      const target = withWorkflowDraftKey(requested);
-      const state = get();
-      const current = state.workflowEdit;
-      if (
-        state.activePage === 'workflows-library' &&
-        current !== undefined &&
-        isSameWorkflowEditItem(current, target)
-      ) {
-        // The same item: only the section moves, and the guard is not asked.
-        if (
-          target.section !== undefined &&
-          target.section !== current.section
-        ) {
-          set({ workflowEdit: { ...current, section: target.section } });
-        }
-        return;
-      }
-      runGuardedNavigation('workflows-library', (): void => {
-        set({
-          activePage: 'workflows-library',
-          workflowEdit: target,
-          pendingAutomationReveal: undefined,
-        });
-      });
+      openWorkflowEditTarget(set, get, requested);
     },
     closeWorkflowEdit: (): void => {
       const current = get().workflowEdit;
@@ -1541,6 +1566,10 @@ export const useNavigationStore = create<NavigationState>(
           if (shown === undefined || workflowEditKey(shown) !== key) return;
           switch (back.kind) {
             case 'edit':
+              // Back keeps the assistant's current chat on purpose: its
+              // chats are one pool, not one per workflow, so the chat the
+              // earlier item had is still a tab beside it rather than
+              // brought back.
               set({
                 activePage: 'workflows-library',
                 workflowEdit: withWorkflowDraftKey(back.target),
@@ -1577,14 +1606,29 @@ export const useNavigationStore = create<NavigationState>(
       set({ workflowEdit: { ...current, section } });
     },
     openPipelineEdit: (link, options): void => {
-      get().openWorkflowEdit({
-        ...link,
-        kind: 'pipeline',
-        ...(options?.section !== undefined ? { section: options.section } : {}),
-        ...(options?.returnTo !== undefined
-          ? { returnTo: options.returnTo }
-          : {}),
-      });
+      // A workflow opened this way gets a new, empty assistant chat, as a new
+      // workflow does (CAN-4319); the conversation it had stays in its tab.
+      // That covers every link, including the `pipeline.open_editor` action
+      // an agent in another chat runs. The assistant's own tools open
+      // workflows through `openWorkflowEdit`, so the chat that asked keeps
+      // showing. The request names the opened item, so one its edit view
+      // never takes cannot move a later item's chat.
+      openWorkflowEditTarget(
+        set,
+        get,
+        {
+          ...link,
+          kind: 'pipeline',
+          ...(options?.section !== undefined
+            ? { section: options.section }
+            : {}),
+          ...(options?.returnTo !== undefined
+            ? { returnTo: options.returnTo }
+            : {}),
+        },
+        (opened): void =>
+          requestPipelineAssistantNewChat(workflowEditKey(opened)),
+      );
     },
     openCuratedPipelinePreview: (key): void => {
       // Curated starters live in Marketplace, which shows the preview.

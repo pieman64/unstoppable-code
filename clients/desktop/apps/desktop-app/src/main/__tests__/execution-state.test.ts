@@ -394,14 +394,15 @@ describe('execution-state', () => {
       },
     );
 
-    it('preserves the non-fsync durability policy', async () => {
+    it('syncs the snapshot before installing it (CAN-5736)', async () => {
       const open = fsPromises.open;
-      const sync = jest.fn().mockRejectedValue(new Error('unexpected fsync'));
+      const sync = jest.fn(() => Promise.resolve());
       const openSpy = jest
         .spyOn(fsPromises, 'open')
         .mockImplementation(async (...args) => {
           const handle = await open(...args);
-          jest.spyOn(handle, 'sync').mockImplementation(sync);
+          if (/\.execution-1\.json\..+\.tmp$/.test(String(args[0])))
+            jest.spyOn(handle, 'sync').mockImplementation(sync);
           return handle;
         });
 
@@ -412,12 +413,7 @@ describe('execution-state', () => {
           /\.execution-1\.json\..+\.tmp$/.test(String(filePath)),
         ),
       ).toHaveLength(1);
-      expect(openSpy).toHaveBeenCalledWith(
-        expect.stringMatching(/\.execution-1\.json\..+\.tmp$/),
-        'wx',
-        undefined,
-      );
-      expect(sync).not.toHaveBeenCalled();
+      expect(sync).toHaveBeenCalledTimes(1);
       expect(listStateDirectory(tempDir)).toEqual([targetName]);
     });
 

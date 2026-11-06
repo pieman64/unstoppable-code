@@ -668,7 +668,7 @@ export function deriveWorktreeMenuItems(
 }
 
 /**
- * Early access: moves the notification choices out of the menu's own rows and
+ * Moves the notification choices out of the menu's own rows and
  * into one "Notifications ›" submenu, in the place the group held. The choices
  * keep their checks, pending spinner and status line; the submenu's label
  * replaces the group heading.

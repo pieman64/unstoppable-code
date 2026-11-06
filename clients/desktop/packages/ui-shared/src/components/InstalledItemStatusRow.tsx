@@ -18,7 +18,11 @@ import { MoreHorizontalIcon, TrashIcon } from '../icons/AppIcons';
 import { Button } from './Button';
 import { Skeleton } from './Skeleton';
 import { DetailPageActions } from './DetailActionBar';
-import { DetailMoreMenuRows, useDetailMoreItems } from './DetailMoreMenu';
+import {
+  DetailMoreMenuRows,
+  focusMenuTrigger,
+  useDetailMoreItems,
+} from './DetailMoreMenu';
 import { DropdownMenuItem } from './DropdownMenu';
 import { FLOATING_MENU_GAP, FloatingMenu } from './FloatingMenu';
 import {
@@ -239,7 +243,10 @@ function InstalledItemMoreMenu({
                 destructive: true,
               },
             ]}
-            onClose={(): void => setOpen(false)}
+            onClose={(): void => {
+              setOpen(false);
+              focusMenuTrigger(anchorRef.current);
+            }}
           />
         ) : (
           <DropdownMenuItem

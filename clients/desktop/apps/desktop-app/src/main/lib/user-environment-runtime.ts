@@ -245,7 +245,10 @@ function getUserEnvironmentForInjection(
 ): Record<string, string> {
   const config = getEnvironmentConfigForInjection();
   const request = context ?? { runtime: 'canopy' };
-  return resolveEnvironmentForRuntime(config, request).applied;
+  const resolved = resolveEnvironmentForRuntime(config, request);
+  return request.values === 'public'
+    ? resolved.publicApplied
+    : resolved.applied;
 }
 
 export interface CodexRuntimeEnvironmentProfile {

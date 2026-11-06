@@ -15,6 +15,8 @@ import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 export interface SidebarAccountIdentity {
   /** Visible account name; the fallback label when signed out. */
   readonly name: string;
+  /** Fallback identity for people who have not set a display name. */
+  readonly email?: string | null;
   /** Remote avatar. Only http(s) is rendered; anything else falls back. */
   readonly image?: string | null;
   /** Whether a principal is present (drives avatar vs person icon). */
@@ -148,6 +150,9 @@ export function SidebarAccountRow({
   menuInstantInteractions = false,
   testIds,
 }: SidebarAccountRowProps): JSX.Element {
+  const displayName = identity.signedIn
+    ? identity.name.trim() || identity.email?.trim() || 'Account'
+    : identity.name.trim() || signedOutLabel;
   // Literal placement, so the design-system lint can read the menu's width.
   const menuWidthClassName = menuWidth === 'compact' ? 'w-56' : 'w-64';
   const [open, setOpen] = useState(false);
@@ -176,7 +181,7 @@ export function SidebarAccountRow({
   // A person's name and avatar are private. An `aria-label` would carry a person's name as a recorded attribute, so
   // the trigger takes its name from a hidden label that is blocked for people.
   const accessibleLabel = identity.signedIn
-    ? [identity.name, subtitleLabel, attention?.label]
+    ? [displayName, subtitleLabel, attention?.label]
         .filter((part): part is string => !!part)
         .join(', ')
     : null;
@@ -211,10 +216,10 @@ export function SidebarAccountRow({
                 // The mask cuts the attention dot's halo out of the avatar.
                 <span className={`flex ${attentionMask}`}>
                   <DisplayAvatar
-                    name={identity.name}
+                    name={displayName}
                     image={showAvatar ? identity.image : null}
                     size="xs"
-                    alt={showAvatar ? identity.name : ''}
+                    alt={showAvatar ? displayName : ''}
                     testId={
                       showAvatar
                         ? (testIds?.avatar ?? 'sidebar-account-avatar')
@@ -244,9 +249,9 @@ export function SidebarAccountRow({
               <span
                 className={`${REPLAY_BLOCK_CLASS} min-w-0 truncate text-s font-normal leading-snug${identityTone === 'inherit' ? '' : ` ${IDENTITY_TONE_CLASS_NAMES[identityTone]}`}`}
                 data-testid={testIds?.identity ?? 'sidebar-account-identity'}
-                title={identity.name}
+                title={displayName}
               >
-                {identity.signingIn ? 'Signing in…' : identity.name}
+                {identity.signingIn ? 'Signing in…' : displayName}
               </span>
               {subtitle}
             </span>

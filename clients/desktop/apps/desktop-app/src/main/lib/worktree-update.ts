@@ -274,14 +274,35 @@ function applyWorktreeMetadataPatch(
 
   if (patch.label !== undefined) {
     const label = patch.label?.trim() ?? '';
+    const hadLabel = next.label !== undefined;
     if (!label) {
-      if (next.label !== undefined) {
+      if (hadLabel) {
         delete next.label;
         changed = true;
       }
     } else if (next.label !== label) {
       next.label = label;
       changed = true;
+    }
+    // Every caller of this patch is a person or an explicit agent action, so
+    // automatic naming stops for this row. A label with no source is manual;
+    // a cleared one records that choice. Clearing a row that never had a
+    // label leaves it eligible.
+    if (label) {
+      if (next.labelSource !== undefined || next.labelProvisional) {
+        delete next.labelSource;
+        delete next.labelProvisional;
+        changed = true;
+      }
+    } else if (hadLabel || next.labelSource === 'generated') {
+      if (next.labelSource !== 'manual') {
+        next.labelSource = 'manual';
+        changed = true;
+      }
+      if (next.labelProvisional) {
+        delete next.labelProvisional;
+        changed = true;
+      }
     }
   }
   if (patch.hidden === true && next.hidden !== true) {

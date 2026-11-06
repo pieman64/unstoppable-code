@@ -25,8 +25,14 @@ export const LOCAL_MEMORY_WATCH_RETRY_MAX_MS = 30_000;
 
 interface ScopeWatch {
   scope: LocalMemoryScopeRequest;
+  /** The folder the scope resolved to when last watched; it can move. */
   scopeDir: string;
   watchers: Map<string, FSWatcher>;
+  /**
+   * Handles of folders the scope moved away from, kept open rather than
+   * closed (see `watchDirectory`) and reused if it moves back.
+   */
+  dormant: Map<string, { watcher: FSWatcher; recursive: boolean }>;
   /** Open explorer count per renderer, keyed by `webContents.id`. */
   subscribers: Map<number, number>;
   /** Pending re-attach after a watcher error, with its current backoff. */
@@ -108,6 +114,13 @@ function watchDirectory(
   recursive: boolean,
 ): void {
   if (entry.watchers.has(directory)) return;
+  const dormant = entry.dormant.get(directory);
+  if (dormant?.recursive === recursive) {
+    entry.dormant.delete(directory);
+    entry.watchers.set(directory, dormant.watcher);
+    clearWatchRetry(entry);
+    return;
+  }
   let watcher: FSWatcher;
   try {
     watcher = watch(directory, { persistent: false, recursive }, (): void => {
@@ -140,6 +153,8 @@ function watchDirectory(
   watcher.on('error', (error: unknown): void => {
     if (entry.watchers.get(directory) !== watcher) {
       retiredWatchers.delete(watcher);
+      if (entry.dormant.get(directory)?.watcher === watcher)
+        entry.dormant.delete(directory);
       return;
     }
     logMainProcessWarn('Local memory watcher stopped', {
@@ -202,6 +217,11 @@ function reconcileWatchers(entry: ScopeWatch): void {
   for (const directory of Array.from(entry.watchers.keys())) {
     if (!existsSync(directory)) retireWatcher(entry, directory);
   }
+  for (const [directory, { watcher }] of Array.from(entry.dormant)) {
+    if (existsSync(directory)) continue;
+    entry.dormant.delete(directory);
+    retiredWatchers.add(watcher);
+  }
   const parent = dirname(entry.scopeDir);
   if (existsSync(entry.scopeDir)) {
     watchDirectory(entry, entry.scopeDir, true);
@@ -210,10 +230,50 @@ function reconcileWatchers(entry: ScopeWatch): void {
   if (parent !== entry.scopeDir) watchDirectory(entry, parent, false);
 }
 
+/**
+ * Points a scope's watch at the folder it resolves to now (an account
+ * replica registered or removed). The old handles stay open but dormant.
+ */
+function moveWatch(entry: ScopeWatch, scopeDir: string): void {
+  for (const [directory, watcher] of Array.from(entry.watchers)) {
+    const recursive = directory === entry.scopeDir;
+    const replaced = entry.dormant.get(directory);
+    if (replaced !== undefined) retiredWatchers.add(replaced.watcher);
+    entry.dormant.set(directory, { watcher, recursive });
+  }
+  entry.watchers.clear();
+  clearWatchRetry(entry);
+  entry.scopeDir = scopeDir;
+  reconcileWatchers(entry);
+}
+
+/**
+ * Moves every scope watch whose scope now resolves to another folder, as
+ * `dirFor` answers, and tells renderers those scopes changed.
+ */
+export function retargetLocalMemoryWatches(
+  dirFor: (scope: LocalMemoryScopeRequest) => string,
+): void {
+  for (const entry of Array.from(watches.values())) {
+    const scopeDir = resolve(dirFor(entry.scope));
+    if (scopeDir === entry.scopeDir) continue;
+    moveWatch(entry, scopeDir);
+    broadcastLocalMemoryChanged(entry.scope);
+  }
+}
+
 function releaseEntry(key: string, entry: ScopeWatch): void {
   clearWatchRetry(entry);
   for (const directory of Array.from(entry.watchers.keys()))
     closeWatcher(entry, directory);
+  for (const { watcher } of entry.dormant.values()) {
+    try {
+      watcher.close();
+    } catch {
+      // Already stopped by the runtime after an error.
+    }
+  }
+  entry.dormant.clear();
   if (watches.get(key) === entry) watches.delete(key);
 }
 
@@ -229,10 +289,13 @@ export function watchLocalMemoryScope(
       scope,
       scopeDir: resolve(scopeDir),
       watchers: new Map(),
+      dormant: new Map(),
       subscribers: new Map(),
       retry: null,
     };
     watches.set(key, entry);
+  } else if (resolve(scopeDir) !== entry.scopeDir) {
+    moveWatch(entry, resolve(scopeDir));
   }
   entry.subscribers.set(sender.id, (entry.subscribers.get(sender.id) ?? 0) + 1);
   if (!destroyHooks.has(sender.id)) {

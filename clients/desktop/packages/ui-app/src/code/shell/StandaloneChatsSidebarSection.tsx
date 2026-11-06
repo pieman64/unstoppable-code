@@ -656,7 +656,6 @@ export function StandaloneChatsSidebarSection({
         multiSelect={workEntryMultiSelect}
         selectionListId={selectionListId}
         notifications={workEntryNotifications}
-        notificationsSubmenu={compactDisclosure}
         selectedStandaloneChatId={selectedStandaloneChatId}
         onSelectChat={onSelectChat}
         touchTargets={touchTargets}
@@ -1065,7 +1064,6 @@ export function StandaloneChatsSidebarSection({
                 touchTargets={touchTargets}
                 testIds={testIds}
                 notifications={workEntryNotifications}
-                notificationsSubmenu={compactDisclosure}
                 showActivityAge={showActivityAge}
                 statusPlacement={rowStatusPlacement}
               />
@@ -1176,8 +1174,6 @@ interface ChatsSectionWorkEntryRowProps {
   /** The list the section reports this row under: its workspace. */
   readonly selectionListId?: string;
   readonly notifications: WorkEntryNotificationHandlers | undefined;
-  /** Early access: the notification choices sit in a "Notifications ›" submenu. */
-  readonly notificationsSubmenu: boolean;
   readonly showActivityAge: boolean;
   readonly statusPlacement: 'trailing' | 'leading';
 }
@@ -1191,13 +1187,11 @@ function WorkEntryNotificationMenuItems({
   workspaceLocalId,
   workEntryId,
   notifications,
-  submenu,
 }: {
   readonly menu: WorkEntryRowMenuContext;
   readonly workspaceLocalId: string;
   readonly workEntryId: string;
   readonly notifications: WorkEntryNotificationHandlers;
-  readonly submenu: boolean;
 }): JSX.Element | null {
   // Hosts rebuild their handlers whenever their store changes, and the
   // refresh changes the store, so the refresh keys off the row alone and
@@ -1213,7 +1207,6 @@ function WorkEntryNotificationMenuItems({
     <WorkEntryRowMenuItems
       menu={menu}
       notifications={state}
-      notificationsPresentation={submenu ? 'submenu' : 'group'}
       onNotificationChoice={(choice): void =>
         notifications.onSelect(workspaceLocalId, workEntryId, choice)
       }
@@ -1241,7 +1234,6 @@ function ChatsSectionWorkEntryRow({
   multiSelect: multiSelectProp,
   selectionListId,
   notifications,
-  notificationsSubmenu,
   showActivityAge,
   statusPlacement,
 }: ChatsSectionWorkEntryRowProps): JSX.Element {
@@ -1370,7 +1362,6 @@ function ChatsSectionWorkEntryRow({
                       workspaceLocalId={workspaceLocalId}
                       workEntryId={row.workEntryId}
                       notifications={notifications}
-                      submenu={notificationsSubmenu}
                     />
                   )}
                   {selectionItems.length > 0 && (

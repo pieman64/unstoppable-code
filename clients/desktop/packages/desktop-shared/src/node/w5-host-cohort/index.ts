@@ -594,6 +594,40 @@ export async function listW5HostPeers(options: {
   return peers;
 }
 
+/** Read-only offline preflight: reuse the maintenance record and liveness policy. */
+export async function inspectW5MaintenanceOwner(options: {
+  readonly dataRoot: string;
+  readonly inspect: W5ProcessInspector;
+  readonly secureFiles: Pick<PlatformSecureFileServices, 'permissions'>;
+}): Promise<boolean> {
+  const runtime = join(options.dataRoot, 'runtime');
+  try {
+    const stat = await lstat(runtime);
+    if (
+      !stat.isDirectory() ||
+      stat.isSymbolicLink() ||
+      (await realpath(runtime)) !== runtime
+    )
+      throw new W5HostCohortRefusedError('cohort-ambiguous');
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return false;
+    throw error;
+  }
+  if (
+    (
+      await options.secureFiles.permissions({
+        path: runtime,
+        kind: 'directory',
+        mode: 'owner-only',
+        action: 'verify',
+      })
+    ).state !== 'private'
+  )
+    throw new W5HostCohortRefusedError('cohort-ambiguous');
+  const state = await maintenanceLiveness(runtime, options.inspect);
+  return state.kind === 'present' && state.liveness !== 'departed';
+}
+
 /** Only claim holders write the record, so a departed one may be replaced. */
 async function publishMaintenanceRecord(
   runtime: string,

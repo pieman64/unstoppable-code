@@ -1,3 +1,9 @@
+import {
+  aiGatewayActionSchema,
+  AI_GATEWAY_ACTION_TYPES,
+  aiGatewayActionCatalog,
+  aiGatewayDispatchJsonSchema,
+} from './ai-gateway';
 import { z } from 'zod';
 import {
   SCRIPT_PREFERENCES_ACTION_TYPES,
@@ -77,14 +83,21 @@ export function createSettingsActionFamily<H>(options: {
     types: [...SETTINGS_ACTION_TYPES, ...SCRIPT_PREFERENCES_ACTION_TYPES],
     actionSchema: z.union([
       settingsActionSchema,
+      aiGatewayActionSchema,
       scriptPreferencesActionSchema,
     ]),
     supportedTypes: () => [
-      ...SETTINGS_ACTION_TYPES,
+      'settings.open',
+      ...(options.port.aiGateway && options.port.aiGatewayEnabled?.()
+        ? AI_GATEWAY_ACTION_TYPES
+        : []),
       ...(options.scriptPreferences ? SCRIPT_PREFERENCES_ACTION_TYPES : []),
     ],
     catalog: () => [
       ...settingsActionCatalog(),
+      ...(options.port.aiGateway && options.port.aiGatewayEnabled?.()
+        ? aiGatewayActionCatalog
+        : []),
       ...(options.scriptPreferences ? scriptPreferencesActionCatalog : []),
     ],
     dispatchJsonSchema: options.scriptPreferences
@@ -100,6 +113,31 @@ export function createSettingsActionFamily<H>(options: {
         }
       : settingsDispatchJsonSchema,
     dispatch: async (action, call): Promise<AgentActionDispatchOutput> => {
+      if (
+        action.type === 'settings.ai_gateway.get' ||
+        action.type === 'settings.ai_gateway.connect' ||
+        action.type === 'settings.ai_gateway.update'
+      ) {
+        if (!options.port.aiGateway || !options.port.aiGatewayEnabled?.())
+          return agentActionError(
+            call,
+            'unsupported_action',
+            'AI gateway setup is unavailable here.',
+          );
+        try {
+          return agentActionResult(
+            call,
+            action.type,
+            await options.port.aiGateway(action, call),
+          );
+        } catch {
+          return agentActionError(
+            call,
+            'execution_failed',
+            'AI gateway operation failed. Read current settings before retrying.',
+          );
+        }
+      }
       if (action.type !== 'settings.open') {
         if (!options.scriptPreferences)
           return agentActionError(
@@ -155,14 +193,14 @@ export function settingsActionCatalog(): readonly AgentActionCatalogEntry[] {
       type: 'settings.open',
       category: 'settings',
       summary:
-        "Open account settings, the organization list, or one organization's settings page for the user.",
+        "Open Settings pages for the user, including Plugins settings, MCP servers settings, account settings, the organization list, or one organization's settings page. AI gateway setup is available through settings.ai_gateway actions on desktop.",
       fields: [
         {
           name: 'destination',
           type: 'object',
           required: true,
           description:
-            'Settings route. scope "account" with page; scope "organizations"; or scope "organization" with organizationId and page. Detail ids are valid only on their page.',
+            'Settings route. For Settings Plugins use {scope: "account", page: "plugins"}; for Settings MCP servers use {scope: "account", page: "mcp"}. Other account pages use scope "account" with page; scope "organizations" opens the list; scope "organization" requires organizationId and page. Detail ids are valid only on their page.',
         },
       ],
       example: {
@@ -170,6 +208,14 @@ export function settingsActionCatalog(): readonly AgentActionCatalogEntry[] {
         destination: { scope: 'account', page: 'security' },
       },
       additionalExamples: [
+        {
+          type: 'settings.open',
+          destination: { scope: 'account', page: 'plugins' },
+        },
+        {
+          type: 'settings.open',
+          destination: { scope: 'account', page: 'mcp' },
+        },
         {
           type: 'settings.open',
           destination: {
@@ -184,13 +230,14 @@ export function settingsActionCatalog(): readonly AgentActionCatalogEntry[] {
         'settings',
         'account',
         'organization',
-        'profile',
-        'billing',
+        ...ACCOUNT_SETTINGS_PAGES,
+        'mcp servers',
+        'page',
         'members',
-        'security',
         'open',
       ],
       notes: [
+        'Use settings.open for a request to open Settings Plugins or Settings MCP servers. plugins.open_management opens Customize, a different destination for managing installed items.',
         "Organization destinations must name one of the signed-in account's current organizations; others are refused with invalid_target.",
         'Destinations are routes, never URLs. Opening settings changes only what the user sees.',
       ],
@@ -211,12 +258,12 @@ const SETTINGS_PAGES: readonly string[] = Array.from(
   ]),
 );
 
-export const settingsDispatchJsonSchema: AgentActionFamilyJsonSchema = {
+const settingsOpenDispatchJsonSchema: AgentActionFamilyJsonSchema = {
   properties: {
     destination: {
       type: 'object',
       description:
-        'Settings destination for settings.open. Account pages: account, profile, digests, notifications, integrations, security, billing, labs, appearance. Organization pages: feed (the Timeline), statistics, digests, members, groups, projects, memory, settings.',
+        'Settings destination for settings.open. Account pages: account, profile, digests, notifications, integrations, plugins, mcp, security, ai-gateway, billing, labs, appearance. Organization pages: feed (the Timeline), statistics, digests, members, groups, projects, memory, settings (subtab ai-gateway for the AI gateway).',
       properties: {
         scope: {
           type: 'string',
@@ -244,5 +291,17 @@ export const settingsDispatchJsonSchema: AgentActionFamilyJsonSchema = {
       },
       then: { required: ['destination'] },
     },
+  ],
+};
+
+/** Shared by the live family and static provider tool projections. */
+export const settingsDispatchJsonSchema: AgentActionFamilyJsonSchema = {
+  properties: {
+    ...settingsOpenDispatchJsonSchema.properties,
+    ...aiGatewayDispatchJsonSchema.properties,
+  },
+  allOf: [
+    ...(settingsOpenDispatchJsonSchema.allOf ?? []),
+    ...(aiGatewayDispatchJsonSchema.allOf ?? []),
   ],
 };

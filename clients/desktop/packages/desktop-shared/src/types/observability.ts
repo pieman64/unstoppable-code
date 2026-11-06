@@ -296,7 +296,6 @@ export interface ObservabilityApi {
   ): Promise<void>;
   /** One-way: record this renderer's diagnostic summary on this device. */
   recordRendererSummary(summary: RendererDiagnosticsSummary): void;
-  getAnonymousTelemetryId(): Promise<string>;
   getPostHogAnonymousId(): Promise<string>;
   /** Normalized domain only; null for signed-out, guest, or unavailable accounts. */
   getPostHogEmailDomain(): Promise<string | null>;

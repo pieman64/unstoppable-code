@@ -1485,10 +1485,8 @@ function prepareLoadedUi(userDataDir, config) {
   return { seed };
 }
 
-function prepareFileExplorer(userDataDir, config) {
-  const seed = seedWorkspace(userDataDir);
-  const worktreePath = seed.workspaces[0]?.worktreePath;
-  if (!worktreePath) throw new Error('File explorer fixture has no worktree');
+/** The deterministic large tree `file-explorer` and `menu-surfaces` read. */
+function seedExplorerPerformanceTree(worktreePath, config) {
   const treeRoot = path.join(worktreePath, 'explorer-performance');
   mkdirSync(treeRoot, { recursive: true });
   for (
@@ -1513,6 +1511,13 @@ function prepareFileExplorer(userDataDir, config) {
       );
     }
   }
+}
+
+function prepareFileExplorer(userDataDir, config) {
+  const seed = seedWorkspace(userDataDir);
+  const worktreePath = seed.workspaces[0]?.worktreePath;
+  if (!worktreePath) throw new Error('File explorer fixture has no worktree');
+  seedExplorerPerformanceTree(worktreePath, config);
   mkdirSync(path.join(worktreePath, 'explorer-mutation-zone'));
   seedWorktreeChat({
     userDataDir,
@@ -2405,6 +2410,283 @@ async function runPluginPicker({ page, app, config, tasks, fixture }) {
     persistedChatBytes: statSync(
       resolvePluginPickerChatIndex(fixture.chatFilePath),
     ).size,
+  };
+}
+
+/**
+ * `menu-surfaces`: every hand-keyed menu family on one launch, against the
+ * `plugin-picker` catalog and the `file-explorer` tree, so a menu migration
+ * has a baseline for the surfaces no other scenario reaches: the palettes, the
+ * `/` and `@` typeaheads, the plus menu and the Home branch picker. Each task
+ * ends at the next paint; a keystroke task ends when its character is painted,
+ * and the `_results` tasks end when the ranked row is painted, because the
+ * file palette defers its ranking.
+ */
+function prepareMenuSurfaces(userDataDir, config) {
+  const seed = seedWorkspace(userDataDir);
+  const worktreePath = seed.workspaces[0]?.worktreePath;
+  if (!worktreePath) throw new Error('Menu surfaces fixture has no worktree');
+  seedExplorerPerformanceTree(worktreePath, config);
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    providerType: 'claude',
+    tabs: [
+      {
+        id: 'menu-surfaces-chat',
+        title: 'Menu Surfaces Performance',
+        // A seeded chat has no session to discover commands from.
+        discovery: {
+          slashCommands: Array.from(
+            { length: config.pluginPickerSkills },
+            (_, index) => ({
+              name: `perf-skill-${String(index).padStart(4, '0')}`,
+              description: 'A seeded command for the slash menu',
+            }),
+          ),
+          mcpServers: [],
+          discoveredAt: PERFORMANCE_PLUGIN_CACHE_TIMESTAMP,
+          providerType: 'claude',
+        },
+      },
+    ],
+  });
+  const plugins = seedPluginPickerPlugins(
+    userDataDir,
+    config.pluginPickerPlugins,
+  );
+  const skills = seedPluginPickerSkills(userDataDir, config.pluginPickerSkills);
+  const mcpServers = seedPluginPickerMcpServers(
+    userDataDir,
+    config.pluginPickerMcpServers,
+  );
+  return {
+    catalogItems: plugins.length + skills.length + mcpServers.length,
+    files:
+      config.fileExplorerDirectories * config.fileExplorerFilesPerDirectory,
+  };
+}
+
+const paletteShortcut = (key) =>
+  `${process.platform === 'darwin' ? 'Meta' : 'Control'}+${key}`;
+
+async function runMenuSurfaces({ page, app, config, tasks, fixture }) {
+  await openMainPage(page);
+  await app.selectWorktree(WORKTREE_BRANCH, NO_ACTIVITY_RAIL);
+  await expect(visibleChatPanel(page)).toBeVisible({ timeout: 30_000 });
+  const composer = visibleChatPanel(page)
+    .locator('[data-chat-composer-root]')
+    .getByRole('textbox')
+    .first();
+  const iterations = config.menuSurfacesIterations;
+  const task = (kind, operation, metadata = {}) =>
+    recordResponsiveTask(
+      tasks,
+      kind,
+      operation,
+      metadata,
+      config.responsivenessBudgetMs,
+    );
+
+  /** One task per character, each ending when `echoed` holds and it paints. */
+  async function typeKeystrokes(kind, text, echoed) {
+    await setRendererTypingProbe(page, true);
+    try {
+      for (let index = 0; index < text.length; index += 1) {
+        await task(kind, async () => {
+          await page.keyboard.type(text[index]);
+          await echoed(text.slice(0, index + 1));
+          await nextPaint(page);
+        });
+      }
+    } finally {
+      await setRendererTypingProbe(page, false);
+    }
+  }
+
+  async function pressArrows(kind, count) {
+    for (let index = 0; index < count; index += 1) {
+      await task(kind, async () => {
+        await page.keyboard.press('ArrowDown');
+        await nextPaint(page);
+      });
+    }
+  }
+
+  async function closeWithEscape(locator) {
+    await expect(async () => {
+      await page.keyboard.press('Escape');
+      await expect(locator).toBeHidden({ timeout: 500 });
+    }).toPass({ timeout: 10_000 });
+    await nextPaint(page);
+  }
+
+  async function clearComposerMenuDraft(marker) {
+    await clearComposerDraft(composer, marker);
+  }
+
+  // Model picker: open, harness tab switch, search keystroke.
+  const modelTrigger = page
+    .locator('[data-testid="chat-model-picker"]:visible')
+    .first();
+  const modelMenu = page.getByTestId('chat-model-menu');
+  const modelTabs = modelMenu.locator(
+    '[data-testid^="chat-model-harness-tab-"]',
+  );
+  const modelSearch = modelMenu.getByTestId('chat-model-search');
+  for (let iteration = 0; iteration < iterations; iteration += 1) {
+    await task('menu_model_picker_open', async () => {
+      await modelTrigger.click();
+      await expect(modelMenu).toBeVisible({ timeout: 30_000 });
+      await nextPaint(page);
+    });
+    await task('menu_model_picker_tab_switch', async () => {
+      await modelTabs.nth((iteration + 1) % 2).click();
+      await expect(modelTabs.nth((iteration + 1) % 2)).toHaveAttribute(
+        'aria-checked',
+        'true',
+      );
+      await nextPaint(page);
+    });
+    await modelSearch.click();
+    await typeKeystrokes('menu_model_picker_keystroke', 'gpt', (text) =>
+      expect(modelSearch).toHaveValue(text),
+    );
+    await closeWithEscape(modelMenu);
+  }
+
+  // Command palette: open, keystroke over the seeded catalog, arrow keys.
+  const palette = page.getByTestId('command-palette');
+  const paletteInput = page.getByTestId('command-palette-input');
+  for (let iteration = 0; iteration < iterations; iteration += 1) {
+    await task('menu_command_palette_open', async () => {
+      await page.keyboard.press(paletteShortcut('K'));
+      await expect(palette).toBeVisible({ timeout: 30_000 });
+      await nextPaint(page);
+    });
+    await typeKeystrokes(
+      'menu_command_palette_keystroke',
+      'perf-plugin',
+      (text) => expect(paletteInput).toHaveValue(text),
+    );
+    await pressArrows('menu_command_palette_arrow', 5);
+    await closeWithEscape(palette);
+  }
+
+  // File palette: open, keystroke, ranked results, arrow keys.
+  const filePalette = page.getByTestId('file-search-palette-input');
+  const fileResults = page.getByTestId('file-search-palette-result');
+  for (let iteration = 0; iteration < iterations; iteration += 1) {
+    await task('menu_file_palette_open', async () => {
+      await page.keyboard.press(paletteShortcut('P'));
+      await expect(filePalette).toBeVisible({ timeout: 30_000 });
+      await expect(fileResults.first())
+        .toBeVisible({ timeout: 30_000 })
+        .catch(async (cause) => {
+          const shown = await page
+            .getByTestId('file-search-palette')
+            .innerText()
+            .catch(() => 'the palette closed');
+          throw new Error(`The file palette listed no files: ${shown}`, {
+            cause,
+          });
+        });
+      await nextPaint(page);
+    });
+    // The last character changes the first result from file-0000.ts to
+    // file-0007.ts, so the result task waits for deferred ranking to commit.
+    const query = 'file-0007';
+    await typeKeystrokes(
+      'menu_file_palette_keystroke',
+      query.slice(0, -1),
+      (text) => expect(filePalette).toHaveValue(text),
+    );
+    await expect(fileResults.first()).toHaveAttribute(
+      'data-path',
+      /file-0000\.ts$/,
+      { timeout: 30_000 },
+    );
+    await task('menu_file_palette_results', async () => {
+      await page.keyboard.type(query.at(-1));
+      await expect(fileResults.first()).toHaveAttribute(
+        'data-path',
+        /file-0007\.ts$/,
+        { timeout: 30_000 },
+      );
+      await nextPaint(page);
+    });
+    await pressArrows('menu_file_palette_arrow', 5);
+    await closeWithEscape(filePalette);
+  }
+
+  // `/` and `@`: both open the composer's menu in a chat; only the web
+  // composer has a separate slash menu. Open, then keystroke with it open.
+  for (const { name, trigger, text } of [
+    { name: 'slash', trigger: '/', text: 'perf-s' },
+    { name: 'mention', trigger: '@', text: 'file-00' },
+  ]) {
+    const menu = page.getByTestId('chat-input-plus-menu');
+    for (let iteration = 0; iteration < iterations; iteration += 1) {
+      await composer.click();
+      await task(`menu_${name}_open`, async () => {
+        await page.keyboard.type(trigger);
+        await expect(menu).toBeVisible({ timeout: 30_000 });
+        await nextPaint(page);
+      });
+      await typeKeystrokes(`menu_${name}_keystroke`, text, async (typed) => {
+        await expect(composer).toContainText(`${trigger}${typed}`);
+        await expect(menu).toBeVisible();
+      });
+      await closeWithEscape(menu);
+      await clearComposerMenuDraft(trigger);
+    }
+  }
+
+  // Plus menu: open over the plugin catalog, which renders unwindowed.
+  const plusItem = page.getByTestId('chat-plugins-button');
+  for (let iteration = 0; iteration < iterations; iteration += 1) {
+    await task(
+      'menu_plus_open',
+      async () => {
+        await page.getByTestId('chat-input-plus-button').click();
+        await expect(plusItem).toBeVisible({ timeout: 30_000 });
+        await nextPaint(page);
+      },
+      { catalogItems: fixture.catalogItems },
+    );
+    await closeWithEscape(plusItem);
+  }
+
+  // Home branch picker: open, tab switch, search keystroke.
+  await app.openHomeForProject(WORKSPACE_ID);
+  const branchMenu = page.getByTestId('home-branch-picker-menu');
+  const branchSearch = page.getByTestId('home-branch-picker-search');
+  for (let iteration = 0; iteration < iterations; iteration += 1) {
+    await task('menu_home_branch_open', async () => {
+      await page.getByTestId('home-branch-picker-button').click();
+      await expect(branchMenu).toBeVisible({ timeout: 30_000 });
+      await nextPaint(page);
+    });
+    await task('menu_home_branch_tab_switch', async () => {
+      await page.getByTestId('home-branch-picker-tab-branches').click();
+      await expect(branchSearch).toHaveAttribute(
+        'placeholder',
+        'Search branches…',
+      );
+      await nextPaint(page);
+    });
+    await branchSearch.click();
+    await typeKeystrokes('menu_home_branch_keystroke', 'main', (text) =>
+      expect(branchSearch).toHaveValue(text),
+    );
+    await closeWithEscape(branchMenu);
+  }
+
+  return {
+    iterations,
+    catalogItems: fixture.catalogItems,
+    files: fixture.files,
   };
 }
 
@@ -20361,6 +20643,10 @@ const SCENARIOS = {
     prepare: preparePluginPicker,
     run: runPluginPicker,
   },
+  'menu-surfaces': {
+    prepare: prepareMenuSurfaces,
+    run: runMenuSurfaces,
+  },
   'file-explorer': {
     prepare: prepareFileExplorer,
     run: runFileExplorer,
@@ -20964,6 +21250,7 @@ async function runPerformanceScenarioAttempt(
         page,
         electronApp,
         sampleIntervalMs: config.sampleIntervalMs,
+        resourceBoundarySamples: name === 'w5-store-reload',
         workCounters: collection.appCounters,
         estimateIpcBytes: collection.ipcBytes,
         frameBudgets: collection.frameBudgets,

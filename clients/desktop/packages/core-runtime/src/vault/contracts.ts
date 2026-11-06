@@ -13,8 +13,8 @@ export type {
   VaultSecretRef,
 } from '@canopy/protocol/canopy-core';
 
-// V0: inactive repository contract. V1 supplies durability/reconciliation;
-// V6 supplies trusted composition. This is not a grant or migration API.
+// V0 repository contract. V1 supplies durability/reconciliation;
+// V6 supplies trusted daemon composition. This is not a grant or migration API.
 export type VaultBlockReason =
   | 'locked'
   | 'denied'

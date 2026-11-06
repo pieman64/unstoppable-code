@@ -1,5 +1,4 @@
 import { brandEnvCandidates } from '@canopy/desktop-shared/brand/env';
-import type { UserEnvironmentEntry } from '@canopy/desktop-shared/types';
 import { getLoginShellPath } from '../pipelines/config-paths';
 import { isBlockedManagedEnvName } from '@canopy/core-runtime/node/terminal';
 
@@ -41,6 +40,15 @@ function isForbiddenDeclaredName(name: string): boolean {
   );
 }
 
+export function isAllowedSharedContainerRunEnvName(name: string): boolean {
+  return (
+    /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) &&
+    !isBlockedManagedEnvName(name) &&
+    !isForbiddenDeclaredName(name) &&
+    name.toUpperCase() !== 'PATH'
+  );
+}
+
 /**
  * Builds the deliberately narrow environment for publisher-authored code.
  * Keeping HOME makes this an accidental-secret reduction, not a sandbox: the
@@ -48,22 +56,15 @@ function isForbiddenDeclaredName(name: string): boolean {
  */
 export function buildSharedContainerRunEnv(
   _containerId: string,
-  declaredValues: readonly UserEnvironmentEntry[],
+  values: Readonly<Record<string, string>>,
 ): NodeJS.ProcessEnv {
   const result: NodeJS.ProcessEnv = { PATH: getLoginShellPath() };
   for (const name of BASE_ENV_NAMES) {
     const value = process.env[name];
     if (value !== undefined) result[name] = value;
   }
-  for (const entry of declaredValues) {
-    if (
-      /^[A-Za-z_][A-Za-z0-9_]*$/.test(entry.key) &&
-      !isBlockedManagedEnvName(entry.key) &&
-      !isForbiddenDeclaredName(entry.key) &&
-      entry.key.toUpperCase() !== 'PATH'
-    ) {
-      result[entry.key] = entry.value;
-    }
+  for (const [name, value] of Object.entries(values)) {
+    if (isAllowedSharedContainerRunEnvName(name)) result[name] = value;
   }
   return result;
 }

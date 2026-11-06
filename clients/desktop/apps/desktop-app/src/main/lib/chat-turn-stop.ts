@@ -208,6 +208,8 @@ async function runStopSequence(
       : {}),
     mutationId: `manual-cancellation:${request.chatId}:${randomUUID()}`,
   });
+  const { settleStoppedChatTurnRuns } = await import('../agent-runs/turn-runs');
+  settleStoppedChatTurnRuns(request, settledUserMessageId);
   // Stop's abort fallback ends the turn with no provider terminal, so the
   // worktree turn's end capture never runs (turn-state phase 43e). A chat
   // with no turn baseline, such as a Cowork chat, has no diff to capture.

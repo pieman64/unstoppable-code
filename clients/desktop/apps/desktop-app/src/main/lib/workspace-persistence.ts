@@ -34,6 +34,11 @@ import { isThinkingLevel } from '@canopy/desktop-shared/types';
 import { normalizeHookInputMap } from '@canopy/desktop-shared/hooks';
 import { normalizeWorkspacePlanDetection } from '@canopy/protocol/plan-detection';
 import {
+  CloudProjectBindingSchema,
+  type CloudProjectBinding,
+} from '@canopy/protocol/memory-sync';
+import type { WorkspaceCloudBindingCompare } from './worktree-record-decisions';
+import {
   isChatTabPluginSelections,
   normalizePluginSelections,
 } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
@@ -53,7 +58,11 @@ import {
   type WorkspaceManifestRepositoryKey,
 } from '@canopy/core-runtime/node/w5/workspace-metadata/manifest-keys';
 import { notifyPortalStructureChanged } from '../portal/portal-event-bus';
-import { getWorkspaceConfigPath, getWorkspaceWorktreesFilePath } from './paths';
+import {
+  getWorkspaceConfigPath,
+  getWorkspaceWorktreesFilePath,
+  getWorktreeDiscoveryFilePath,
+} from './paths';
 import { normalizeLegacyScriptFields } from './script-config';
 import { schedulePortalStructuralSync } from '../portal/portal-structural-sync';
 import { publishWorktreeListWrite } from './worktree-lifecycle-signals';
@@ -209,6 +218,8 @@ const WORKTREE_ROW_FIELDS: Record<keyof WorktreeData, true> = {
   branchPromptSent: true,
   status: true,
   label: true,
+  labelSource: true,
+  labelProvisional: true,
   seenPipelineExecutionIds: true,
   trackedBaseBranch: true,
   trackedRepoBaseBranches: true,
@@ -230,6 +241,7 @@ const WORKTREE_ROW_FIELDS: Record<keyof WorktreeData, true> = {
 const worktreeListRepository = createWorktreeListRepository({
   store: desktopW5FileStore,
   filePath: (workspaceId) => getWorkspaceWorktreesFilePath(workspaceId),
+  discoveryFilePath: getWorktreeDiscoveryFilePath,
   storage: WORKTREE_LIST_STORAGE,
   knownRowFields: new Set(Object.keys(WORKTREE_ROW_FIELDS)),
   async localReplicaContext(workspaceId) {
@@ -739,6 +751,7 @@ async function normalizeWorkspaceConfig(
           personalCatalogIdSchema.safeParse(parsed.personalCatalogId).success
             ? parsed.personalCatalogId
             : undefined,
+        cloudBinding: readCloudBinding(manifest.document),
         type,
         repoPath:
           typeof parsed.repoPath === 'string' ? parsed.repoPath : undefined,
@@ -1117,6 +1130,75 @@ export async function updateWorkspaceOwnership(
     outcome.value = 'written';
   });
   if (outcome.value === 'written') notifyPortalStructureChanged();
+  return outcome.value;
+}
+
+/**
+ * `cloudBinding` (CAN-5190) is deliberately not a known manifest key: every
+ * config writer, of this version or any other, keeps it exactly as stored, and
+ * only {@link updateWorkspaceCloudBinding} changes it. A value this version
+ * cannot parse reads as unbound and is still kept.
+ */
+function readCloudBinding(
+  document: Readonly<Record<string, unknown>>,
+): CloudProjectBinding | undefined {
+  const parsed = CloudProjectBindingSchema.safeParse(document.cloudBinding);
+  return parsed.success ? parsed.data : undefined;
+}
+
+/**
+ * The single writer of a workspace's `cloudBinding` (CAN-5190). `decide` sees
+ * the authoritative manifest inside the per-workspace write queue and returns
+ * the replacement binding (`undefined` removes it), or `null` to leave the
+ * file alone. Only that key changes: the rest of the stored document is
+ * written back as read. A missing manifest is never created.
+ */
+export async function updateWorkspaceCloudBinding(
+  workspaceId: string,
+  decide: WorkspaceCloudBindingCompare,
+): Promise<WorkspaceOwnershipUpdate> {
+  const outcome: { value: WorkspaceOwnershipUpdate } = {
+    value: 'unreadable',
+  };
+  await serializeWorkspaceConfig(workspaceId, async (): Promise<void> => {
+    const { detail, manifest } = await readWorkspaceConfigState(workspaceId);
+    if (manifest.authority === 'absent') {
+      outcome.value = 'absent';
+      return;
+    }
+    if (
+      manifest.authority !== 'ok' ||
+      detail.authority !== 'ok' ||
+      detail.ownerMalformed
+    )
+      return;
+    const next = decide({
+      type: detail.config.type,
+      owner: detail.config.owner,
+      personalCatalogId: detail.config.personalCatalogId,
+      temporary: detail.config.temporary === true,
+      cloudBinding: detail.config.cloudBinding,
+    });
+    if (next === null) {
+      outcome.value = 'declined';
+      return;
+    }
+    const document = Object.fromEntries(
+      Object.entries(manifest.document).filter(
+        ([key]) => key !== 'cloudBinding',
+      ),
+    );
+    if (next.cloudBinding !== undefined)
+      document.cloudBinding = CloudProjectBindingSchema.parse(
+        next.cloudBinding,
+      );
+    await workspaceManifestRepository.replaceDocument(
+      workspaceId,
+      document,
+      manifest,
+    );
+    outcome.value = 'written';
+  });
   return outcome.value;
 }
 
@@ -1696,6 +1778,8 @@ function preserveMainOwnedWorktreeMetadata(
       // deliberate clears authoritative, just like pinning and tracked bases.
       hidden: current.hidden,
       label: current.label,
+      labelSource: current.labelSource,
+      labelProvisional: current.labelProvisional,
       branchGroupingOverride: current.branchGroupingOverride,
       ...(current.chatBadges !== undefined
         ? { chatBadges: current.chatBadges }

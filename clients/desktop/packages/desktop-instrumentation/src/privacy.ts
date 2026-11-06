@@ -1,10 +1,7 @@
 import { redactSecrets } from '@canopy/desktop-shared/lib/redaction';
 import { RENDERER_SCHEME_ORIGIN } from '@canopy/desktop-shared/lib/renderer-scheme';
 import type { DesktopInstrumentationContext } from './types';
-import { getDesktopInstrumentationConfig } from './config';
-
-export const DEFAULT_DATADOG_RENDERER_SOURCEMAP_MINIFIED_PATH_PREFIX =
-  'https://canopy.local/renderer/assets';
+import { RENDERER_SOURCEMAP_MINIFIED_PATH_PREFIX } from './config';
 
 const HOME_PATH_PATTERNS: RegExp[] = [
   /\/Users\/[^/\s)]+/g,
@@ -29,8 +26,7 @@ const RENDERER_ASSET_SCHEME_URL_PATTERN = new RegExp(
   'g',
 );
 
-const SOURCEMAP_MINIFIED_PATH_PREFIX =
-  getDesktopInstrumentationConfig().datadog.sourcemapMinifiedPathPrefix;
+const SOURCEMAP_MINIFIED_PATH_PREFIX = RENDERER_SOURCEMAP_MINIFIED_PATH_PREFIX;
 
 export function normalizeRendererAssetReferences(value: string): string {
   const toSourcemapPath = (_match: string, assetName: string): string =>
@@ -72,81 +68,6 @@ export function redactText(value: string): string {
   );
 }
 
-function getMutableRecord(
-  value: Record<string, unknown>,
-  key: string,
-): Record<string, unknown> | undefined {
-  const candidate = value[key];
-  return typeof candidate === 'object' && candidate !== null
-    ? (candidate as Record<string, unknown>)
-    : undefined;
-}
-
-function redactRecordText(record: Record<string, unknown>, key: string): void {
-  const value = record[key];
-  if (typeof value === 'string') {
-    record[key] = redactText(value);
-  }
-}
-
-function redactRecordUrl(record: Record<string, unknown>, key: string): void {
-  const value = record[key];
-  if (typeof value === 'string') {
-    record[key] = redactUrl(value);
-  }
-}
-
-export function redactRumEvent(event: unknown): boolean {
-  if (typeof event !== 'object' || event === null) {
-    return true;
-  }
-
-  const record = event as Record<string, unknown>;
-  const view = getMutableRecord(record, 'view');
-  if (view) {
-    redactRecordUrl(view, 'url');
-    redactRecordUrl(view, 'referrer');
-  }
-
-  const resource = getMutableRecord(record, 'resource');
-  if (resource) {
-    redactRecordUrl(resource, 'url');
-  }
-
-  const error = getMutableRecord(record, 'error');
-  if (error) {
-    redactRecordText(error, 'message');
-    redactRecordText(error, 'stack');
-    const errorResource = getMutableRecord(error, 'resource');
-    if (errorResource) {
-      redactRecordUrl(errorResource, 'url');
-    }
-  }
-
-  const longTask = getMutableRecord(record, 'long_task');
-  const longTaskScripts = longTask?.['scripts'];
-  if (Array.isArray(longTaskScripts)) {
-    for (const script of longTaskScripts) {
-      if (typeof script === 'object' && script !== null) {
-        redactRecordUrl(script as Record<string, unknown>, 'source_url');
-      }
-    }
-  } else if (typeof longTaskScripts === 'object' && longTaskScripts !== null) {
-    redactRecordUrl(longTaskScripts as Record<string, unknown>, 'source_url');
-  }
-
-  const action = getMutableRecord(record, 'action');
-  if (action) {
-    redactRecordText(action, 'target');
-    const actionTarget = getMutableRecord(action, 'target');
-    if (actionTarget) {
-      redactRecordText(actionTarget, 'name');
-    }
-  }
-
-  return true;
-}
-
 export function sanitizeInstrumentationContext(
   context: DesktopInstrumentationContext | undefined,
 ): DesktopInstrumentationContext | undefined {
@@ -173,11 +94,12 @@ function normalizeInstrumentationPropertyName(key: string): string {
 }
 
 /**
- * Datadog contexts must never contain PostHog's person or session identity.
- * Keep this provider-specific so PostHog's own outbound adapter can stamp its
- * canonical `distinct_id` and `$session_id` after generic redaction.
+ * Contexts leaving through a non-PostHog sink (the Node host's record sink)
+ * must never contain PostHog's person or session identity. PostHog's own
+ * outbound adapter uses the generic sanitizer so it can stamp its canonical
+ * `distinct_id` and `$session_id` after redaction.
  */
-export function sanitizeDatadogInstrumentationContext(
+export function sanitizeExternalInstrumentationContext(
   context: DesktopInstrumentationContext | undefined,
 ): DesktopInstrumentationContext | undefined {
   const sanitized = sanitizeInstrumentationContext(context);

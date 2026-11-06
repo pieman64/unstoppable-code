@@ -4,6 +4,7 @@ import { type JSX, type ReactNode } from 'react';
 import {
   mcpAuthConnectLabel,
   mcpAuthStatusBadgeClass,
+  mcpRequirementUnknown,
   mcpRowSecondaryText,
   mcpSignInStatusLabel,
   type McpCardAuthStatus,
@@ -148,11 +149,14 @@ export function McpServersSectionBody({
             server.authStatus,
             server.canRefresh,
           );
+          const requirementUnknown = mcpRequirementUnknown(server);
           const connectLabel =
-            authConnectLabel === undefined
-              ? undefined
-              : (server.connectActionLabel ??
-                (server.authStatus === 'error' ? authConnectLabel : 'Sign in'));
+            authConnectLabel !== undefined
+              ? (server.connectActionLabel ??
+                (server.authStatus === 'error' ? authConnectLabel : 'Sign in'))
+              : requirementUnknown
+                ? (server.connectLabel ?? 'Connect')
+                : undefined;
           const isConnecting =
             server.connecting === true || connectingKey === server.key;
           const isDisconnecting =
@@ -312,7 +316,9 @@ export function McpServersSectionBody({
                         {server.waitingForSignIn
                           ? MCP_SIGN_IN_WAITING_LABEL
                           : isConnecting
-                            ? 'Opening sign-in…'
+                            ? requirementUnknown
+                              ? 'Connecting…'
+                              : 'Opening sign-in…'
                             : connectLabel}
                       </Button>
                     )}

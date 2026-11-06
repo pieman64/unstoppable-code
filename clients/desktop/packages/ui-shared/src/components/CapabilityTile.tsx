@@ -219,7 +219,7 @@ function TileBody({
           <span
             className={`flex min-w-0 items-baseline gap-1${padForAccessory ? ' pr-7' : ''}`}
           >
-            <span className="min-w-0 wrap-anywhere text-pretty text-sm font-medium fg-primary">
+            <span className="min-w-0 wrap-anywhere text-pretty text-s font-medium fg-primary">
               {model.name}
             </span>
             {model.external ? (

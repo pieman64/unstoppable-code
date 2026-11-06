@@ -116,6 +116,7 @@ import { registerFeedbackHandlers } from './feedback';
 import { registerTurnFeedbackHandlers } from './turn-feedback';
 import { registerOrgMemoryHandlers } from './org-memory';
 import { registerResourceMonitorHandlers } from './resource-monitor';
+import { registerTerminalSettingsHandlers } from './terminal-settings';
 import { registerMemoryDiagnosticsHandlers } from './memory-diagnostics';
 import { registerRecommendedPluginHandlers } from './recommended-plugins';
 import { registerInvocableInventoryHandlers } from './invocable-inventory';
@@ -142,6 +143,7 @@ import { registerUsageLimitedChatsHandlers } from './usage-limited-chats';
 import { registerWorkspaceContextHandlers } from './workspace-context';
 import { registerSharedMultiRepoHandlers } from './org-shared-multi-repo';
 import { registerOrgProjectsHandlers } from './org-projects';
+import { registerCloudProjectsHandlers } from './cloud-projects';
 import { registerAccountOrganizationSettingsHandlers } from './account-organization-settings';
 import { registerGlobalFocusShortcutHandlers } from './global-focus-shortcut';
 import { registerLaunchAtLoginHandlers } from './launch-at-login';
@@ -379,7 +381,7 @@ export function registerAllIpcHandlers(
     registerOllamaHandlers(getMainWindow);
   }
   registerOsNotificationHandlers(getMainWindow);
-  registerVoiceHandlers(getMainWindow);
+  registerVoiceHandlers();
   registerTerminalHandlers(accessors);
   registerPanelLayoutHandlers(panelLayoutModePersistenceStore);
   setBrowserService(
@@ -421,6 +423,11 @@ export function registerAllIpcHandlers(
     canopyRuntime.dispatcher,
     canopyRuntime.resolveCaller,
   );
+
+  registerTerminalSettingsHandlers(
+    canopyRuntime.dispatcher,
+    canopyRuntime.resolveCaller,
+  );
   registerMemoryDiagnosticsHandlers();
   registerSlowActionHandlers(getMainWindow);
   registerWorkerHandlers(accessors);
@@ -437,6 +444,7 @@ export function registerAllIpcHandlers(
   registerManagedDelegationHandlers();
   registerNativeSubagentHandlers();
   registerOrgProjectsHandlers();
+  registerCloudProjectsHandlers();
   registerSharedMultiRepoHandlers(canopyRuntime);
   const closeAccountOrganizationSettings =
     registerAccountOrganizationSettingsHandlers();

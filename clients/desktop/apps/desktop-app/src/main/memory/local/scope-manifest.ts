@@ -157,6 +157,32 @@ export async function prepareMemoryScopeForWrite(
 }
 
 /**
+ * Gives a new account replica its version 2 manifest, bound to its account
+ * and cloud scope. A replica starts empty, so there is nothing to backfill.
+ * Keeps a manifest that is already there. Callers hold the scope lock.
+ */
+export async function createReplicaManifest(
+  scopeDir: string,
+  binding: NonNullable<MemoryManifestFile['binding']>,
+): Promise<void> {
+  await ensureOwnerOnlyDir(scopeDir);
+  const state = await readManifestState(scopeDir);
+  if (state.kind !== 'legacy' || Object.keys(state.raw).length > 0) return;
+  const now = new Date().toISOString();
+  const manifest: MemoryManifestFile = {
+    version: 2,
+    incarnation: randomUUID(),
+    revision: 0,
+    minWriterFormat: MEMORY_LOCAL_FORMAT_VERSION,
+    createdAt: now,
+    backfilledAt: now,
+    binding,
+    migratedTo: [],
+  };
+  await writeManifest(scopeDir, manifest);
+}
+
+/**
  * The scope's document revision as an opaque token: equal tokens mean no
  * document write happened in between, in any process.
  */

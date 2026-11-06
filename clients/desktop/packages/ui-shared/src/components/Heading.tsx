@@ -14,15 +14,46 @@ export type HeadingLevel = 1 | 2 | 3 | 4 | 5 | 6;
  * - `label`: a small group heading inside a panel, card or list at 13/18 in
  *   the secondary ink.
  *
- * All four use the 450 weight; size and ink carry the hierarchy.
+ * - `display`: a hero title at 24/32, 30/36 from the `sm` breakpoint, for the
+ *   one greeting on a landing screen.
+ * - `sidebar`: a sidebar section's name at 14/20 in the quaternary ink.
+ *
+ * `page` to `label` use the 450 weight; size and ink carry the hierarchy.
  */
-export type HeadingVariant = 'page' | 'section' | 'title' | 'label';
+export type HeadingVariant =
+  | 'page'
+  | 'section'
+  | 'title'
+  | 'label'
+  | 'display'
+  | 'sidebar';
+
+/** The ink of a heading that announces a result or a risk, or a quiet one. */
+export type HeadingTone = 'destructive' | 'warning' | 'success' | 'muted';
 
 const VARIANT_CLASS: Readonly<Record<HeadingVariant, string>> = {
-  page: 'text-xl font-medium fg-primary',
-  section: 'text-m font-medium fg-primary',
-  title: 'text-s font-medium fg-primary',
-  label: 'text-xs font-medium fg-secondary',
+  page: 'text-xl font-medium',
+  section: 'text-m font-medium',
+  title: 'text-s font-medium',
+  label: 'text-xs font-medium',
+  display: 'text-2xl font-semibold sm:text-3xl',
+  sidebar: 'text-s font-normal',
+};
+
+const VARIANT_INK_CLASS: Readonly<Record<HeadingVariant, string>> = {
+  page: 'fg-primary',
+  section: 'fg-primary',
+  title: 'fg-primary',
+  label: 'fg-secondary',
+  display: 'fg-primary',
+  sidebar: 'fg-quaternary',
+};
+
+const TONE_CLASS: Readonly<Record<HeadingTone, string>> = {
+  destructive: 'fg-destructive',
+  warning: 'fg-warning',
+  success: 'fg-success-strong',
+  muted: 'fg-tertiary',
 };
 
 /**
@@ -35,6 +66,8 @@ const WRAP_CLASS: Readonly<Record<HeadingVariant, string>> = {
   section: 'text-pretty',
   title: 'text-pretty',
   label: 'text-pretty',
+  display: 'text-balance',
+  sidebar: '',
 };
 
 export interface HeadingProps extends Omit<
@@ -47,6 +80,8 @@ export interface HeadingProps extends Omit<
    */
   readonly level: HeadingLevel;
   readonly variant: HeadingVariant;
+  /** Status ink in place of the variant's; see {@link HeadingTone}. */
+  readonly tone?: HeadingTone;
   /** Keep the heading on one line and end it with an ellipsis. */
   readonly truncate?: boolean;
   readonly ref?: Ref<HTMLHeadingElement>;
@@ -62,6 +97,7 @@ export interface HeadingProps extends Omit<
 export function Heading({
   level,
   variant,
+  tone,
   truncate = false,
   ref,
   className,
@@ -71,6 +107,7 @@ export function Heading({
   const Element = `h${level}` as const;
   const classes = [
     VARIANT_CLASS[variant],
+    tone ? TONE_CLASS[tone] : VARIANT_INK_CLASS[variant],
     truncate ? 'truncate' : WRAP_CLASS[variant],
     // A heading that takes focus (a step's title on open) shows no ring,
     // like `PageHeader`'s: focus only moves the reading position.

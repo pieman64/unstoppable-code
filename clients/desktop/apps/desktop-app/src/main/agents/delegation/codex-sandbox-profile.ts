@@ -1,4 +1,6 @@
 import { delegationCommandPrivatePaths } from './native-policy';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
+import { DARWIN_DELEGATION_SHARED_TEMPORARY_ROOTS } from '@canopy/desktop-shared/node/delegation/command-environment';
 
 /** The shell's profile while it may not write the task's grants. */
 export const CODEX_DELEGATION_READ_ONLY_PROFILE = 'delegated_read_only';
@@ -19,6 +21,7 @@ type CodexDelegationSandboxProfile = {
 };
 
 interface CodexDelegationSandboxOptions {
+  readonly platform?: NodeJS.Platform;
   readonly cwd: string;
   /** Validated absolute write grants; they appear only in the write profile. */
   readonly writePaths?: readonly string[];
@@ -44,6 +47,7 @@ const CWD_PRIVATE_NAMES = [
 function readOnlyFilesystem(
   options: CodexDelegationSandboxOptions,
 ): Record<string, FilesystemAccess> {
+  const platform = options.platform ?? hostOperatingSystem();
   const gitRoots = options.gitRoots ?? [];
   const entries = (
     paths: readonly string[] | undefined,
@@ -51,6 +55,14 @@ function readOnlyFilesystem(
   ): [string, FilesystemAccess][] =>
     (paths ?? []).map((entry) => [entry, access]);
   return {
+    // Literal ancestors also cover future files. Explicit task roots below
+    // (or equal to) them retain their established authorization semantics.
+    ...Object.fromEntries(
+      entries(
+        platform === 'darwin' ? DARWIN_DELEGATION_SHARED_TEMPORARY_ROOTS : [],
+        'deny',
+      ),
+    ),
     ...Object.fromEntries(
       entries(delegationCommandPrivatePaths(options.cwd, gitRoots), 'deny'),
     ),
@@ -63,7 +75,16 @@ function readOnlyFilesystem(
     // Bash can. No deny globs sit beneath them: on macOS the sandbox profile
     // grows with deny patterns times read roots, and past the argument limit
     // the delegate cannot start.
-    ...Object.fromEntries(entries(options.toolchainReadRoots, 'read')),
+    ...Object.fromEntries(
+      entries(
+        options.toolchainReadRoots?.filter(
+          (root) =>
+            platform !== 'darwin' ||
+            !DARWIN_DELEGATION_SHARED_TEMPORARY_ROOTS.includes(root),
+        ),
+        'read',
+      ),
+    ),
     ...Object.fromEntries(
       entries(
         CWD_PRIVATE_NAMES.map((name) => `${options.cwd}/${name}`),
@@ -87,9 +108,8 @@ function readOnlyFilesystem(
         'deny',
       ),
     ),
-    // A wildcard deny under the common metadata root also shadows the
-    // selected worktree on the pinned runtime. Deny each validated sibling
-    // admin directory exactly instead.
+    // Literal collection roots from the resolver: a `worktrees/*` wildcard
+    // does not enforce the macOS sibling boundary.
     ...Object.fromEntries(entries(options.gitPrivateRoots, 'deny')),
     ...(options.temporaryDirectory
       ? { [options.temporaryDirectory]: 'write' }

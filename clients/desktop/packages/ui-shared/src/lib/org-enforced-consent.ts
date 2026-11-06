@@ -65,7 +65,7 @@ function noScopes(): TelemetryScopeFlags {
  * enforce nothing produce no item.
  *
  * Returns up to three items: what joining REQUIRES the member to share, which
- * model gateway their agent traffic is routed through, and what joining BLOCKS
+ * AI gateway their agent traffic is routed through, and what joining BLOCKS
  * them from sharing. The blocked item is not cosmetic — a prohibition is
  * global, so it also silences that scope for the member's own private cloud
  * account and for every other org they belong to. Telling them only what gets
@@ -170,7 +170,7 @@ export function describeEnforcedPolicies(
   if (gatewayBaseUrls.length > 0) {
     items.push({
       policyKind: 'model-gateway',
-      title: 'Model gateway',
+      title: 'AI gateway',
       details: [
         ...gatewayBaseUrls,
         gatewayIsExclusive

@@ -1,8 +1,11 @@
 import { readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import yaml from 'js-yaml';
 import { STORAGE_OWNERSHIP } from '@canopy/core-runtime/storage';
-import { admittedStorageRowForPath } from '../admitted-storage-paths';
+import {
+  admittedStorageRowForPath,
+  isAdmittedStorageCandidate,
+} from '../admitted-storage-paths';
 
 // Reads the planning census, so the desktop public export excludes this suite.
 const MANIFEST = resolve(
@@ -10,6 +13,7 @@ const MANIFEST = resolve(
   '../../../../../../docs/planning/2026-07-31-desktop-core-daemon/artifacts/storage-ownership.yaml',
 );
 const ROOT = resolve('/data/canopy');
+const SECURE = resolve('/secure/canopy');
 
 interface ManifestRow {
   id: string;
@@ -54,13 +58,60 @@ it('classifies every manifest pattern of each admitted row, and only those rows'
     expect(patterns.length).toBeGreaterThan(0);
     for (const pattern of patterns) {
       const path = join(
-        ROOT,
+        pattern.startsWith('<secure>/') ? SECURE : ROOT,
         ...pattern
-          .replace(/^<data>\//, '')
+          .replace(/^<(?:data|secure)>\//, '')
           .replaceAll('{}', 'id-1')
           .split('/'),
       );
-      expect(admittedStorageRowForPath(path, ROOT)).toBe(row.id);
+      const dottedPath = `${dirname(path)}${sep}.${sep}${basename(path)}`;
+      for (const spelling of [path, dottedPath]) {
+        expect(isAdmittedStorageCandidate(spelling)).toBe(true);
+        expect(admittedStorageRowForPath(spelling, ROOT, SECURE)).toBe(row.id);
+        expect(admittedStorageRowForPath(spelling, null)).toBe(row.id);
+        expect(
+          admittedStorageRowForPath(
+            spelling,
+            join(ROOT, 'other'),
+            join(SECURE, 'other'),
+          ),
+        ).toBeUndefined();
+      }
+      expect(
+        admittedStorageRowForPath(
+          join(dirname(path), 'unowned', basename(path)),
+          ROOT,
+          SECURE,
+        ),
+      ).toBeUndefined();
+      if (pattern.startsWith('<secure>/')) {
+        expect(isAdmittedStorageCandidate(`${path}.unowned`)).toBe(false);
+        expect(
+          admittedStorageRowForPath(`${path}.unowned`, ROOT, SECURE),
+        ).toBeUndefined();
+      }
     }
+  }
+});
+
+it('does not admit secure files under the data root or an unrelated secure root', () => {
+  for (const tail of [
+    'github-pat-fence.json',
+    'vault',
+    'vault/vault.sqlite',
+    'vault/vault.sqlite-wal',
+    'vault/vault.sqlite-shm',
+  ]) {
+    expect(
+      admittedStorageRowForPath(join(ROOT, tail), ROOT, SECURE),
+    ).toBeUndefined();
+    expect(admittedStorageRowForPath(join(SECURE, tail), ROOT)).toBeUndefined();
+    expect(
+      admittedStorageRowForPath(
+        join(SECURE, tail),
+        ROOT,
+        join(SECURE, 'other'),
+      ),
+    ).toBeUndefined();
   }
 });

@@ -23,27 +23,47 @@ export function consumePipelineAssistantOpenRequest(): boolean {
 export const PIPELINE_ASSISTANT_NEW_CHAT_EVENT =
   'canopy:pipelines-new-assistant-chat';
 
-let pendingNewChatRequest = false;
+/**
+ * The pending new-chat request: the `workflowEditKey` of the item it was made
+ * for, or `null` for whichever item opens next (a new draft, whose key is not
+ * known when it asks).
+ */
+let pendingNewChatRequest: { readonly itemKey: string | null } | null = null;
 
 /**
  * Asks the Pipeline Assistant to start a new chat, for a new workflow
- * (CAN-4319). Ask before the workflow opens: the edit view's assistant
- * takes it as soon as its chats have loaded, before its composer can be typed
- * in, so nothing typed lands in a chat it then replaces. A mounted, loaded
- * edit view handles the event; one that mounts later takes the pending
- * request. Withdraw it with {@link consumePipelineAssistantNewChatRequest}
- * when the workflow does not open.
+ * (CAN-4319) or an opened saved one. Ask before the edit view's assistant
+ * picks its chat: it takes the request as soon as its chats have loaded,
+ * before its composer can be typed in, so nothing typed lands in a chat it
+ * then replaces. A mounted, loaded edit view handles the event; one that
+ * mounts later takes the pending request. Withdraw it with
+ * {@link consumePipelineAssistantNewChatRequest} when the workflow does not
+ * open. A request for `itemKey` applies only while that item is shown, so one
+ * left behind (its edit view failed to load or closed first) never moves a
+ * later item's chat.
  */
-export function requestPipelineAssistantNewChat(): void {
-  pendingNewChatRequest = true;
+export function requestPipelineAssistantNewChat(
+  itemKey: string | null = null,
+): void {
+  pendingNewChatRequest = { itemKey };
   window.dispatchEvent(new CustomEvent(PIPELINE_ASSISTANT_NEW_CHAT_EVENT));
 }
 
-/** Takes the pending new-chat request, if any. */
-export function consumePipelineAssistantNewChatRequest(): boolean {
+/**
+ * Takes the pending new-chat request, if any. With `shownItemKey`, a request
+ * made for another item is dropped and answers false.
+ */
+export function consumePipelineAssistantNewChatRequest(
+  shownItemKey?: string,
+): boolean {
   const pending = pendingNewChatRequest;
-  pendingNewChatRequest = false;
-  return pending;
+  pendingNewChatRequest = null;
+  if (pending === null) return false;
+  return (
+    pending.itemKey === null ||
+    shownItemKey === undefined ||
+    pending.itemKey === shownItemKey
+  );
 }
 
 /**

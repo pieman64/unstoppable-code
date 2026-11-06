@@ -1,7 +1,10 @@
 'use client';
 import type { JSX } from 'react';
 import type { W5RecoveryStatus } from '@canopy/protocol/portal';
-import { w5RecoveryGuidance } from '../lib/w5-recovery-copy';
+import {
+  w5RecoveryGuidance,
+  W5_RECOVERY_QUIT_ALL_GUIDANCE,
+} from '../lib/w5-recovery-copy';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import { Notice, NoticeButton } from './Notice';
 
@@ -56,6 +59,11 @@ export function W5RecoveryNotice({
             ? 'The selected recovery decisions finished.'
             : w5RecoveryGuidance(status.reason)}
       </p>
+      {!complete &&
+        status.state !== 'refused' &&
+        status.reason !== 'platform-unsupported' && (
+          <p>{W5_RECOVERY_QUIT_ALL_GUIDANCE}</p>
+        )}
       {!canRecover && !restart && !complete && (
         <p>
           Recover on this computer: open the app on the computer that holds

@@ -1,7 +1,12 @@
+import {
+  consumeW5Metadata,
+  prepareW5Metadata,
+} from './w5-metadata-preparation';
 import { execFile } from 'node:child_process';
 import { lstat, readFile, stat } from 'node:fs/promises';
 import type {
   WorktreeData,
+  WorkspaceConfigFile,
   WorktreeHealthCheckResponse,
   WorktreeHealthIssue,
 } from '@canopy/desktop-shared/types';
@@ -17,7 +22,10 @@ import {
   readWorkspaceConfig,
 } from './workspace-persistence';
 import { recordWorktreeHealth } from './worktree-repair';
-import { listWorkspaceWorktreeRepoEntries } from './worktree-repo-entries';
+import {
+  listWorkspaceWorktreeRepoEntries,
+  listWorkspaceWorktreeRepoEntriesFromConfig,
+} from './worktree-repo-entries';
 
 const GIT_HEALTH_TIMEOUT_MS = 5000;
 
@@ -123,6 +131,57 @@ export async function validateWorktreeHealth(
       resolveWorktreeCwd(projectId, worktreeId),
     ),
   );
+}
+
+/** Opt-in stats phase: short decodes, enumeration outside bindings, included IDs lazy. */
+export async function validateWorktreeHealthForStats(
+  projectId: string,
+  worktreeId: string,
+): Promise<WorktreeHealthIssue | null> {
+  const metadata = await prepareW5Metadata({
+    kind: 'targeted',
+    workspaceId: projectId,
+  });
+  if (metadata.status === 'fallback')
+    return validateWorktreeHealth(projectId, worktreeId);
+  const worktreePath = resolveWorktreeCwd(projectId, worktreeId);
+  const sources = desktopWorktreeHealthSources(
+    projectId,
+    worktreeId,
+    worktreePath,
+  );
+  const readConfig = async (): Promise<WorkspaceConfigFile> =>
+    (await consumeW5Metadata(metadata.manifest(projectId))).config;
+  try {
+    return await inspectWorktreeHealth({
+      ...sources,
+      readWorkspace: async () => {
+        const config = await readConfig();
+        return {
+          type: config.type,
+          repos: config.repos,
+          hasSourceRepository: Boolean(config.sourceRepoPath),
+        };
+      },
+      listRepositoryEntries: async () => {
+        const config = await readConfig().catch(
+          (): WorkspaceConfigFile => ({
+            version: 1,
+            type: 'multi-repo',
+            repos: [],
+          }),
+        );
+        return listWorkspaceWorktreeRepoEntriesFromConfig(worktreePath, config);
+      },
+      readIncludedRepoIds: async () =>
+        (await consumeW5Metadata(metadata.worktrees(projectId))).worktrees.find(
+          (row) => row.id === worktreeId,
+        )?.includedRepoIds,
+    });
+  } finally {
+    await metadata.join();
+    metadata.close();
+  }
 }
 
 /**

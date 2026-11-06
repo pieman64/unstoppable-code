@@ -6,6 +6,7 @@ import {
   FeedIcon,
   FileText,
   FolderGit2,
+  Network,
   PluginsIcon,
   Settings,
   Shield,
@@ -164,6 +165,12 @@ export const ORGANIZATION_SETTINGS_SUBTAB_ITEMS: readonly OrganizationSettingsSu
       description:
         'Who can see statistics, and what your AI provider plans cost.',
       icon: BarChart3,
+    },
+    {
+      key: 'ai-gateway',
+      label: 'AI gateway',
+      description: 'Give members models from your gateway.',
+      icon: Network,
     },
     {
       key: 'billing',

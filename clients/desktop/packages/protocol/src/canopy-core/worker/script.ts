@@ -1,4 +1,8 @@
 import { z } from 'zod';
+import {
+  ExecutionSecretBindingsSchema,
+  WORKER_EXECUTION_SECRET_ERROR_CODES,
+} from './execution-secrets';
 
 import {
   CORE_SCRIPT_LIFECYCLE_ROLES,
@@ -31,6 +35,7 @@ export const WORKER_SCRIPT_ERROR_CODES = [
   'worker.script.contextUnavailable',
   'worker.script.executionInProgress',
   'worker.script.idempotencyKeyReused',
+  ...WORKER_EXECUTION_SECRET_ERROR_CODES,
 ] as const;
 
 export type WorkerScriptErrorCode = (typeof WORKER_SCRIPT_ERROR_CODES)[number];
@@ -143,6 +148,7 @@ export const WorkerScriptExecuteParamsSchema = z
         invocation: z.enum(WORKER_SCRIPT_INVOCATIONS),
       })
       .optional(),
+    secrets: ExecutionSecretBindingsSchema.optional(),
   })
   .superRefine((params, context) => {
     const scoped =

@@ -2,6 +2,7 @@ import { useMemo, type JSX, type ReactNode } from 'react';
 import {
   UnifiedTable as SharedUnifiedTable,
   type ProviderSupportScope,
+  type SelectionTableCopy,
   type UnifiedTableSelectedFilter,
   type UnifiedTableRow as SharedUnifiedTableRow,
 } from '@canopy/ui-shared';
@@ -26,6 +27,7 @@ export interface UnifiedTableProps {
   hideSelectionSummary?: boolean;
   providerIconScope?: ProviderSupportScope;
   toolbarTrailing?: ReactNode;
+  selectionCopy?: SelectionTableCopy;
 }
 
 function renderMcpLogo(row: SharedUnifiedTableRow): JSX.Element {
@@ -59,6 +61,7 @@ export function UnifiedTable({
   hideSelectionSummary,
   providerIconScope,
   toolbarTrailing,
+  selectionCopy,
 }: UnifiedTableProps): JSX.Element {
   const rowsByKey = useMemo(
     () => new Map(rows.map((row) => [row.key, row])),
@@ -82,6 +85,7 @@ export function UnifiedTable({
       renderMcpLogo={renderMcpLogo}
       renderAppLogo={renderAppLogo}
       toolbarTrailing={toolbarTrailing}
+      selectionCopy={selectionCopy}
       // Session replay records the rows as a same-size placeholder: opening a
       // picker inserts the whole list at once, which the recorder would
       // otherwise serialize and mask in one long task.

@@ -7,8 +7,10 @@
  */
 export type ComposerDensity = 'comfortable' | 'cozy' | 'compact' | 'minimal';
 
+// Touch screens get 16px text: iOS Safari zooms the page into a focused
+// editor set smaller than 16px.
 const EDITABLE_TEXT_CLASS_NAME =
-  'whitespace-pre-wrap break-words bg-transparent text-s leading-5 fg-primary outline-none';
+  'whitespace-pre-wrap break-words bg-transparent text-s pointer-coarse:text-m leading-5 fg-primary outline-none';
 
 export const COMPOSER_DENSITY_CLASS_NAMES: Record<
   ComposerDensity,

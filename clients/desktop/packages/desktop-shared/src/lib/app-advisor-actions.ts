@@ -1685,9 +1685,10 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
         'sharing',
       ],
       notes: [
-        'Review the disclosure in Settings → Privacy (Settings → Public profile when hosted account settings are on) before enabling: project IDs, scrubbed names, kinds, repository layout and coordinates, local location, and device registration metadata are sent. Names and repository details can be sensitive. Only the owner can see the list; files and chats stay on the device.',
+        'Review the disclosure in Settings → Privacy (Settings → Public profile when hosted account settings are on) before enabling: project IDs, scrubbed names, kinds, repository layout and coordinates, repository folder names and list IDs, which repositories this device has, local location, and device registration metadata are sent. Names and repository details can be sensitive. Only the owner can see the list; files and chats stay on the device.',
         "Use navigation.open_settings with section privacy to review enrollment; with hosted account settings on, use settings.open with { scope: 'account', page: 'profile' } instead. Read settings.personalCatalog for current state.",
         'Enable only when the user asks to enroll. Disabling stops updates and discards queued metadata; remove the saved list in web Public profile settings. After removal, explicitly turning enrollment off and on restores the list.',
+        "While enrolled, a single-repository Personal project joins its cloud project on its own, so the user's other computers know it as the same project. A multi-repository or remote-less one joins only when the user picks Link to cloud… in its project header menu and chooses the cloud project; the choice is theirs, so point them to it rather than acting.",
       ],
     },
     {
@@ -3163,6 +3164,9 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
         ),
       ],
       example: { type: 'plugins.open_management', section: 'installed' },
+      notes: [
+        'For a request to open the Settings Plugins or Settings MCP servers page, discover settings.open in category settings and pass destination {scope: "account", page: "plugins"} or {scope: "account", page: "mcp"}. This action opens Customize for management.',
+      ],
       keywords: [
         'plugins',
         'your plugins',

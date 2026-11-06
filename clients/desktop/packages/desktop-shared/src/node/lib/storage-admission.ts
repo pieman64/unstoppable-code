@@ -53,6 +53,47 @@ export function routeStorageAdmissionToAuthority(
   };
 }
 
+/** Invocation-owned routing; revocation also fences inherited async work. */
+export interface StorageAuthorityAdmission {
+  run<T>(operation: () => Promise<T>): Promise<T>;
+  close(): void;
+}
+
+interface AuthorityScope {
+  readonly namespaces: ReadonlySet<GuardedStorageNamespace>;
+  readonly releaseAdmissions: Set<() => void>;
+  active: boolean;
+}
+const authorities = new AsyncLocalStorage<AuthorityScope>();
+
+export function createStorageAuthorityAdmission(
+  namespaces: readonly GuardedStorageNamespace[],
+): StorageAuthorityAdmission {
+  const scope: AuthorityScope = {
+    namespaces: new Set(namespaces),
+    releaseAdmissions: new Set(),
+    active: true,
+  };
+  return {
+    run: (operation) => {
+      if (!scope.active)
+        return Promise.reject(new Error('Authority admission retired'));
+      return authorities.run(scope, operation);
+    },
+    close: () => {
+      scope.active = false;
+      for (const release of scope.releaseAdmissions) release();
+    },
+  };
+}
+
+function authorityRouted(namespace: GuardedStorageNamespace): boolean {
+  const scope = authorities.getStore();
+  if (!scope?.namespaces.has(namespace)) return false;
+  if (!scope.active) throw new Error('Authority admission retired');
+  return true;
+}
+
 const keyOf = (target: StorageAdmissionTarget): string =>
   `${target.writer}:${target.namespace}`;
 
@@ -105,6 +146,7 @@ export function admitStorageWrite<T>(
   target: StorageAdmissionTarget,
   write: () => Promise<T>,
 ): Promise<T> {
+  authorityRouted(target.namespace);
   const missing = unadmitted([target]);
   if (missing.length === 0) return write();
   reportUnadmitted(missing);
@@ -123,6 +165,7 @@ export async function withStorageAdmission<T>(
   targets: readonly StorageAdmissionTarget[],
   operation: () => Promise<T>,
 ): Promise<T> {
+  for (const target of targets) authorityRouted(target.namespace);
   const missing = unadmitted(targets);
   const parent = scopes.getStore();
   if (missing.length > 0 && inAdmittedOperation()) reportUnadmitted(missing);
@@ -131,6 +174,9 @@ export async function withStorageAdmission<T>(
   while (Array.from(unheld).some((namespace) => changing.has(namespace))) {
     await nextRelease();
   }
+  // Retirement may have happened while waiting for an ownership change.
+  for (const target of targets) authorityRouted(target.namespace);
+  const authority = authorities.getStore();
   const namespaces = Array.from(new Set(targets.map((t) => t.namespace)));
   for (const namespace of namespaces) {
     holds.set(namespace, (holds.get(namespace) ?? 0) + 1);
@@ -141,20 +187,32 @@ export async function withStorageAdmission<T>(
     parent,
     active: true,
   };
-  try {
-    for (const { namespace, writer } of missing) {
-      if (!routed.has(namespace))
-        assertStorageWriteAllowed(namespace, writer, STORAGE_OWNERSHIP);
-    }
-    return await scopes.run(scope, operation);
-  } finally {
+  // Routed callbacks cannot write locally. Once their transport is retired,
+  // a stuck Git child must not pin the process-wide ownership-change barrier.
+  const release = (): void => {
+    if (!scope.active) return;
     scope.active = false;
+    authority?.releaseAdmissions.delete(release);
     for (const namespace of namespaces) {
       const remaining = (holds.get(namespace) ?? 1) - 1;
       if (remaining > 0) holds.set(namespace, remaining);
       else holds.delete(namespace);
     }
     wake();
+  };
+  if (
+    authority &&
+    namespaces.every((namespace) => authority.namespaces.has(namespace))
+  )
+    authority.releaseAdmissions.add(release);
+  try {
+    for (const { namespace, writer } of missing) {
+      if (!authorityRouted(namespace) && !routed.has(namespace))
+        assertStorageWriteAllowed(namespace, writer, STORAGE_OWNERSHIP);
+    }
+    return await scopes.run(scope, operation);
+  } finally {
+    release();
   }
 }
 
@@ -180,7 +238,7 @@ export function inheritStorageAdmission<T>(
 
 /** Runs `run` outside every admission, so its writes admit themselves. */
 export function outsideStorageAdmission<T>(run: () => T): T {
-  return scopes.exit(run);
+  return authorities.exit(() => scopes.exit(run));
 }
 
 /**

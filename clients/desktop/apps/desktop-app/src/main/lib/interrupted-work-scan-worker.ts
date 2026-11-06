@@ -65,7 +65,11 @@ export async function scanInterruptedWork(
                 record(runtime) &&
                 (interruptedStatuses.has(String(runtime.status)) ||
                   (Array.isArray(runtime.queuedMessageIds) &&
-                    runtime.queuedMessageIds.length > 0)),
+                    runtime.queuedMessageIds.length > 0) ||
+                  // An accepted send left `admitting` (or `dispatching`) has
+                  // no queued id and may leave the runtime idle (CAN-4112).
+                  (Array.isArray(runtime.queuedMessages) &&
+                    runtime.queuedMessages.length > 0)),
             ) ||
             index.tabs.some(
               (tab) =>

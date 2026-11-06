@@ -1,8 +1,5 @@
 import { totalmem } from 'node:os';
-import {
-  flushCodeGraphQueryTelemetry,
-  flushCodeGraphReadDiagnostics,
-} from '../lib/code-graph-telemetry';
+import { flushCodeGraphReadDiagnostics } from '../lib/code-graph-telemetry';
 import { codeGraphReadRecorders } from './read-recorders';
 import { getExecutionHostPort } from '../execution-host/utility-process-host';
 import { codeGraphHostBudget } from '@canopy/code-graph/host/budgets';
@@ -14,7 +11,7 @@ import type { CodeGraphWorkerReadResponse } from '@canopy/code-graph/host/read-p
 
 // The read host protocol lives with the host in `@canopy/code-graph/host`,
 // and the read scheduler beside it. This module composes the scheduler for
-// Electron main: utility-process read hosts and the desktop telemetry.
+// Electron main: utility-process read hosts and the local read diagnostics.
 
 export type {
   CodeGraphReadCall,
@@ -48,10 +45,7 @@ const scheduler = createCodeGraphReadScheduler({
       }),
     }),
   ...codeGraphReadRecorders,
-  flushTelemetry: () => {
-    flushCodeGraphQueryTelemetry();
-    flushCodeGraphReadDiagnostics();
-  },
+  flushTelemetry: flushCodeGraphReadDiagnostics,
 });
 
 export function runCodeGraphWorkerRead(

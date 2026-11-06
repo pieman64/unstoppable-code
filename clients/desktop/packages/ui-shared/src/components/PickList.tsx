@@ -1,5 +1,6 @@
 'use client';
 
+import { Skeleton } from './Skeleton';
 import {
   useEffect,
   useId,
@@ -16,7 +17,7 @@ import {
   PickerMenuOptionLabel,
   PickerMenuSearchHeader,
   PickerMenuSearchInput,
-  PickerMenuSkeleton,
+  PickerMenuSampleOptions,
   PickerMenuState,
 } from './PickerMenu';
 
@@ -223,7 +224,9 @@ export function PickList<T>({
         aria-busy={loading || undefined}
       >
         {loading ? (
-          <PickerMenuSkeleton label={loadingLabel} rows={4} leading={false} />
+          <Skeleton loading label={loadingLabel}>
+            <PickerMenuSampleOptions rows={4} leading={false} />
+          </Skeleton>
         ) : visible.length === 0 ? (
           <PickerMenuState role="status">{emptyLabel}</PickerMenuState>
         ) : (

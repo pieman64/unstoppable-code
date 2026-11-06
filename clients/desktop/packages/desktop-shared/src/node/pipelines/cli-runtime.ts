@@ -22,6 +22,7 @@ import type {
   CursorPromptRunnerRequest,
   CursorPromptRunnerResult,
   ExecutionRuntime,
+  PipelineHostActions,
   ResolvePipelineTargetRequest,
   ResolvePipelineTargetResult,
 } from './executor/types';
@@ -93,6 +94,8 @@ import { isGatewayOnlyModel } from '../../lib/gateway-model-availability';
 import { buildCodexCompatibleOllamaConfig } from '../ollama';
 
 export interface CliRuntimeArgs {
+  /** Execution-only host injection; construction acquires no resources. */
+  pipelineHostActions?: PipelineHostActions;
   /** Trusted host owns the live Copilot rollout, verified installation and selected account.
    * Standalone CLI has no rollout authority and fails closed when this is absent. */
   copilotHost?: CopilotPromptHost;
@@ -957,6 +960,7 @@ export function createCliExecutionRuntime(
   const tempRootDir = path.join(executionsDir, '.tmp');
 
   return {
+    pipelineHostActions: args.pipelineHostActions,
     bundledActionsDir,
     executionsDir,
     getProjectActionsDir,

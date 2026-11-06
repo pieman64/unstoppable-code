@@ -4,6 +4,7 @@ import {
   type HookAction,
   type HookOverrides,
 } from '@canopy/desktop-shared/hooks';
+import { canGenerateWorktreeLabel } from '@canopy/protocol/worktree-display-labels';
 import type {
   CoworkSidebarItem,
   CoworkWorkspaceSettings,
@@ -74,6 +75,7 @@ import type {
   WorktreeChatBadgesDecision,
   WorktreeDecisionContext,
   WorktreeDiscoveryDecision,
+  WorktreeGeneratedLabelDecision,
   WorktreeGitRowDecision,
   WorktreeHealthDecision,
   WorktreeIncarnation,
@@ -129,6 +131,8 @@ export function applyWorktreeRowDecisionTo(
     case 'discovery.environment':
     case 'discovery.branch-prompt':
       return applyDiscovery(current, decision);
+    case 'label.generated':
+      return applyGeneratedLabel(current, decision);
     case 'recovery.promote-pending':
     case 'recovery.complete-source-root-repair':
     case 'recovery.expose-create-reservation':
@@ -156,6 +160,33 @@ export function applyWorktreeListDecisionTo(
     case 'git.merged-base-retarget':
       return planMergedBaseRetarget(current, decision).worktrees;
   }
+}
+
+// ---------------------------------------------------------------------------
+// generated label
+// ---------------------------------------------------------------------------
+
+/** The row with the generated label, or the same row when it must keep its own. */
+function applyGeneratedLabel(
+  worktree: WorktreeData,
+  decision: WorktreeGeneratedLabelDecision,
+): WorktreeData {
+  if (!canGenerateWorktreeLabel(worktree)) return worktree;
+  if (
+    worktree.labelSource === 'generated' &&
+    worktree.label === decision.label &&
+    (worktree.labelProvisional === true) === decision.provisional
+  ) {
+    return worktree;
+  }
+  const next: WorktreeData = {
+    ...worktree,
+    label: decision.label,
+    labelSource: 'generated',
+  };
+  if (decision.provisional) next.labelProvisional = true;
+  else delete next.labelProvisional;
+  return next;
 }
 
 // ---------------------------------------------------------------------------
@@ -760,6 +791,8 @@ export function buildDestinationWorktree(params: {
     branchPromptSent: params.sourceWorktree.branchPromptSent,
     status: params.sourceWorktree.status,
     label: params.sourceWorktree.label,
+    labelSource: params.sourceWorktree.labelSource,
+    labelProvisional: params.sourceWorktree.labelProvisional,
     pausedHookKeys: params.sourceWorktree.pausedHookKeys,
     seenPipelineExecutionIds:
       seenPipelineExecutionIds.length > 0

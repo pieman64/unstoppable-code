@@ -62,6 +62,11 @@ let interruptedPipelineIds: string[] = [];
  * themselves. Each item is retryable.
  */
 export async function recoverInterruptedWorkAtStartup(): Promise<void> {
+  // Recovered queued chats wait for the core to accept turns (CAN-4112);
+  // index.ts releases the hold once the desktop runtime is installed.
+  const { getChatQueueService } =
+    await import('../services/chat-queue-service');
+  getChatQueueService().holdDrainsForStartup();
   const reconciled = reconcileStoredPipelineIndex();
   if (!reconciled.ok)
     logMainProcessWarn(

@@ -2387,9 +2387,8 @@ posix('one admitted control stream', () => {
   });
 });
 
-// The vault definitions are inactive contracts; this test-only kernel serves
-// them over a real socket so their `_meta` and error rules hold where a
-// framed host splits `_meta` off and a client validates the error it gets.
+// A write-granted test kernel serves vault contracts over a real socket,
+// exercising `_meta` splitting and client error validation on the framed path.
 posix('vault contracts over the framed control plane', () => {
   const PUT = 'core.vault.entry.put';
   const DELETE = 'core.vault.entry.delete';
@@ -2425,16 +2424,6 @@ posix('vault contracts over the framed control plane', () => {
     expiresAt: null,
   };
   const remove = { ref, expectedRevision: 2 };
-  const vaultOperations = [
-    ...Object.entries(CORE_VAULT_QUERY_DEFINITIONS),
-    ...Object.entries(CORE_VAULT_INSTRUCTION_DEFINITIONS),
-  ].map(([name, definition]) => ({
-    name,
-    kind: definition.kind,
-    version: definition.version,
-    placement: definition.placement,
-    requiredGrants: [...definition.requiredGrants],
-  }));
   const vaultErrorSchemas = [
     ...Object.values(CORE_VAULT_QUERY_DEFINITIONS),
     ...Object.values(CORE_VAULT_INSTRUCTION_DEFINITIONS),
@@ -2496,25 +2485,6 @@ posix('vault contracts over the framed control plane', () => {
             ...input.runtimeHandlers,
             queries: {
               ...input.runtimeHandlers.queries,
-              // Test host policy: the runtime profile installs no inactive
-              // vault operation, so this manifest advertises them itself.
-              'core.runtime.manifest.get': async (params, context) => {
-                const manifest = await input.runtimeHandlers.queries[
-                  'core.runtime.manifest.get'
-                ](params, context);
-                return {
-                  ...manifest,
-                  operations: [
-                    ...manifest.operations,
-                    ...vaultOperations.map((operation) => ({
-                      ...operation,
-                      available: operation.requiredGrants.every((grant) =>
-                        context.caller.grants.includes(grant),
-                      ),
-                    })),
-                  ],
-                };
-              },
               'core.vault.status.get': () => ({
                 protection: { state: 'unknown', backend: null },
                 observedAt: null,

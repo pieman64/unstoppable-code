@@ -52,6 +52,9 @@ export const ToolApprovalDock = memo(function ToolApprovalDock({
     }),
   );
   const respondToApproval = useChatStore((s) => s.respondToApproval);
+  const respondToSecretApproval = useChatStore(
+    (s) => s.respondToSecretApproval,
+  );
   const [displayed, setDisplayed] = useState<ToolApprovalDockDisplayed | null>(
     null,
   );
@@ -77,6 +80,7 @@ export const ToolApprovalDock = memo(function ToolApprovalDock({
       chatKey={`${projectId}\u0000${worktreeId}\u0000${chatId}`}
       pending={pending}
       onRespond={respondToApproval}
+      onRespondSecretInput={respondToSecretApproval}
       canTakeFocus={canTakeFocus}
       focusComposer={focusComposer}
       onDisplayedChange={setDisplayed}

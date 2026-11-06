@@ -2264,9 +2264,9 @@ export function WorkspaceSettingsModal({
             {healthData?.referenceRepoStatus &&
               healthData.referenceRepoStatus.warnings.length > 0 && (
                 <div className="rounded-lg border border-line-attention bg-warning/5 p-4">
-                  <h3 className="text-s font-medium fg-warning">
+                  <Heading level={3} variant="title" tone="warning">
                     Reference repo status
-                  </h3>
+                  </Heading>
                   {healthData.referenceRepoStatus.warnings.map((w) => (
                     <p key={w.code} className="mt-1 text-xs fg-warning/80">
                       {w.message}
@@ -2397,7 +2397,7 @@ export function WorkspaceSettingsModal({
                 <div className="mt-3 flex items-center gap-3">
                   <span
                     id="workspace-settings-retention-days-label"
-                    className="text-sm fg-primary"
+                    className="text-s fg-primary"
                   >
                     Keep deleted worktrees for
                   </span>

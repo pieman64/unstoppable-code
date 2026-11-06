@@ -59,7 +59,7 @@ export function homeModelFailureMessage(
     case 'org-policy':
       return `${model} is blocked by your organization’s model policy. Choose another model.`;
     case 'org-gateway':
-      return `${model} isn’t on your organization’s model gateway. Choose another model.`;
+      return `${model} isn’t on your organization’s AI gateway. Choose another model.`;
     case 'unknown-model':
     case 'model-rejected':
       return `${model} couldn’t be used to start this chat. Choose another model.`;

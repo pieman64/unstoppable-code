@@ -7,6 +7,9 @@ import {
   IN_PROCESS_LEASE_TERMS,
   IN_PROCESS_WORKER_TARGET,
   WorkerAgentHelperRunResultSchema,
+  WorkerAgentSignInRunResultSchema,
+  WorkerAgentSubagentRunResultSchema,
+  WorkerAgentTurnRunResultSchema,
   safeParseCanopySchema,
   type CanopyErrorKind,
   type CanopyErrorPayload,
@@ -31,6 +34,37 @@ import type { WorkerExecutorReceipt } from '../../runtime/worker-executor-receip
 import { OperationLedgerRefusedError } from './ledger/errors';
 import type { OperationAcceptResult, OperationLedger } from './ledger/ledger';
 import type { OperationService } from './service';
+
+/** Completed worker results that report cancellation settle the child cancelled. */
+const CANCELLED_RESULT_SCHEMAS: Readonly<
+  Record<
+    string,
+    {
+      safeParse(value: unknown): {
+        success: boolean;
+        data?: { status: string };
+      };
+    }
+  >
+> = {
+  'worker.agent.helper.run': WorkerAgentHelperRunResultSchema,
+  'worker.agent.turn.run': WorkerAgentTurnRunResultSchema,
+  'worker.agent.subagent.run': WorkerAgentSubagentRunResultSchema,
+  'worker.agent.signIn.run': WorkerAgentSignInRunResultSchema,
+};
+
+function reportsCancelled(operation: string, value: unknown): boolean {
+  if (
+    !Object.prototype.hasOwnProperty.call(CANCELLED_RESULT_SCHEMAS, operation)
+  )
+    return false;
+  const result = CANCELLED_RESULT_SCHEMAS[operation]?.safeParse(value);
+  return result?.success === true && result.data?.status === 'cancelled';
+}
+
+function keepsCancelledResult(kind: string): boolean {
+  return Object.prototype.hasOwnProperty.call(CANCELLED_RESULT_SCHEMAS, kind);
+}
 
 export interface LocalWorkerDispatchRequest {
   /** The accepted operation this work belongs to; it must be unfinished. */
@@ -77,14 +111,6 @@ const NOT_STARTED: CanopyErrorPayload = {
     'The local worker never received this work. Another attempt needs a new idempotency key.',
   retry: { kind: 'never' },
 };
-
-/** A secret's fingerprint for a dispatch record; the value is never stored. */
-export function fingerprintExecutionSecret(value: string): string {
-  return `sha256:${createHash('sha256')
-    .update('canopy.execution-secret.v1\0')
-    .update(value)
-    .digest('hex')}`;
-}
 
 function digest(value: unknown): string {
   return `sha256:${createHash('sha256')
@@ -438,13 +464,10 @@ export class LocalWorkerExecution {
     value?: unknown,
   ): Promise<LocalWorkerDispatchResult> {
     if (
-      delegation.operation.name === 'worker.agent.helper.run' &&
-      settlement.status === 'completed'
-    ) {
-      const result = WorkerAgentHelperRunResultSchema.safeParse(value);
-      if (result.success && result.data.status === 'cancelled')
-        settlement = { ...settlement, status: 'cancelled' };
-    }
+      settlement.status === 'completed' &&
+      reportsCancelled(delegation.operation.name, value)
+    )
+      settlement = { ...settlement, status: 'cancelled' };
     const settled = await this.settle(
       delegation.delegationId,
       settlement,
@@ -474,7 +497,7 @@ export class LocalWorkerExecution {
       delegation,
       result:
         operation.status === 'completed' ||
-        (operation.kind === 'worker.agent.helper.run' &&
+        (keepsCancelledResult(operation.kind) &&
           operation.status === 'cancelled')
           ? value
           : undefined,
@@ -500,7 +523,7 @@ export class LocalWorkerExecution {
       delegation,
       result:
         operation.status === 'completed' ||
-        (operation.kind === 'worker.agent.helper.run' &&
+        (keepsCancelledResult(operation.kind) &&
           operation.status === 'cancelled')
           ? operation.outcome
           : undefined,

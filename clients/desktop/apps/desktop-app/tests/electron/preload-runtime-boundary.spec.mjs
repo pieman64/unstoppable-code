@@ -83,6 +83,35 @@ test('desktop preload avoids renderer vm and still exposes the IPC bridge', asyn
     await expect
       .poll(() => window.evaluate(() => typeof window.api))
       .toBe('object');
+    // The model-gateway:load-credential wire contract keeps both call forms.
+    // Existing callers omit the endpoint; configured, disabled gateways qualify
+    // it so their staged key can be read without reusing another destination's.
+    const credentials = await window.evaluate(async () => {
+      const { api } = window;
+      const organizationId = '11111111-1111-4111-8111-111111111111';
+      return Promise.all([
+        api.loadModelGatewayCredential(organizationId),
+        api.loadModelGatewayCredential(
+          organizationId,
+          'https://gateway.example.test',
+        ),
+      ]);
+    });
+    expect(credentials).toHaveLength(2);
+    for (const credential of credentials) {
+      expect(credential).toMatchObject({
+        apiKey: '',
+        organizationId: '11111111-1111-4111-8111-111111111111',
+      });
+    }
+    await expect(
+      window.evaluate(() =>
+        window.api.loadModelGatewayCredential(
+          '11111111-1111-4111-8111-111111111111',
+          'https://user:password@gateway.example.test',
+        ),
+      ),
+    ).rejects.toThrow('Invalid AI gateway endpoint.');
     expect(
       rendererWarnings.filter((message) =>
         message.includes(UNSUPPORTED_VM_WARNING),

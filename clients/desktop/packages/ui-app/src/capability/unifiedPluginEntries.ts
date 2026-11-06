@@ -18,7 +18,11 @@ import type {
   McpServerIndexEntry,
   McpServerStatusEntry,
 } from '@canopy/protocol/mcp-servers';
-import { resolveMcpConnectionBadge } from '@canopy/ui-shared/lib/mcp-card-display';
+import {
+  mcpAuthConnectLabel,
+  resolveMcpConnectionBadge,
+} from '@canopy/ui-shared/lib/mcp-card-display';
+import { mcpAggregateConnection } from '@canopy/ui-shared/lib/mcp-row-health';
 import type { CuratedPluginEntry } from '@canopy/protocol/plugin-catalog';
 import type { PluginProviderSupport } from '@canopy/protocol/plugins/catalog';
 import {
@@ -54,7 +58,6 @@ import {
   type UnifiedLocalAgentInput,
 } from '@canopy/protocol/unified-entry';
 import {
-  isBundledSkill,
   marketplaceBrowseNameKey,
   marketplaceTitleCase,
   officialProductLogoKey,
@@ -65,6 +68,7 @@ import {
   type UnifiedEntryFoldedConnector,
   type UnifiedEntryFoldedPlugin,
   type UnifiedEntryAlternative,
+  type UnifiedEntryBundledServer,
   type UnifiedEntryBundledServerRow,
   type UnifiedEntryInstalledFrom,
   type UnifiedEntryPluginLink,
@@ -221,8 +225,12 @@ export interface UnifiedMcpStatusInput {
   connectionStatus: McpServerStatusEntry['connectionStatus'];
   reachability: McpServerStatusEntry['reachability'];
   handler?: McpServerStatusEntry['handler'];
+  lastCheckedAt?: McpServerStatusEntry['lastCheckedAt'];
   configs: ReadonlyArray<
-    Pick<McpServerStatusEntry['configs'][number], 'configId' | 'authStatus'>
+    Pick<
+      McpServerStatusEntry['configs'][number],
+      'configId' | 'authStatus' | 'canRefresh'
+    >
   >;
 }
 
@@ -703,9 +711,42 @@ function mcpEntryConnection(
     own,
     server.accountConnection?.status,
   );
-  return badge.isProvider
-    ? { status: badge.status, provider: true }
-    : { status: badge.status };
+  const lastCheckedAt = own?.lastCheckedAt;
+  const ownConfigs =
+    own?.configs.filter(
+      (config) => configId === undefined || config.configId === configId,
+    ) ?? [];
+  const labels = ownConfigs.map((config) =>
+    mcpAuthConnectLabel(config.authStatus, config.canRefresh),
+  );
+  const signIn = labels.includes('Reconnect')
+    ? 'reconnect'
+    : labels.includes('Connect')
+      ? 'connect'
+      : undefined;
+  // Status carries no probe result, so a device HTTP server this desktop signs
+  // in to reads as unknown until a check says otherwise; never as `No auth`.
+  // It also reports a disabled config as not_configured, which asks nothing.
+  const requirementUnknown =
+    badge.status === 'unknown' &&
+    server.type === 'http' &&
+    !isAccountServer(server) &&
+    !badge.isProvider &&
+    (own?.handler ?? server.authHandler ?? 'canopy') === 'canopy' &&
+    ownConfigs.length > 0 &&
+    ownConfigs.every((config) => config.authStatus === 'not_configured') &&
+    server.configs.some(
+      (config) =>
+        config.enabled && ownConfigs.some((own) => own.configId === config.id),
+    );
+  return {
+    status: badge.status,
+    ...(badge.isProvider ? { provider: true } : {}),
+    ...(lastCheckedAt !== undefined ? { lastCheckedAt } : {}),
+    ...(signIn !== undefined ? { signIn } : {}),
+    ...(requirementUnknown ? { requirementUnknown } : {}),
+    ...(!mcpServerEnabled(server) ? { disabled: true } : {}),
+  };
 }
 
 function mcpAppComponents(): UnifiedPluginEntry['components'] {
@@ -844,6 +885,14 @@ function isAccountServer(server: McpServerIndexEntry): boolean {
   return server.scope === 'account' || server.accountConnection !== undefined;
 }
 
+function mcpServerEnabled(server: McpServerIndexEntry): boolean {
+  return (
+    server.accountConnection?.enabled !== false &&
+    ((server.configs?.length ?? 0) === 0 ||
+      server.configs.some((config) => config.enabled))
+  );
+}
+
 function serverConnection(
   server: McpServerIndexEntry,
   state: UnifiedEntryState,
@@ -949,6 +998,29 @@ function buildCuratedMcpEntry(
             accountConfigId(onlyServer),
           ),
         );
+  const aggregateConnection =
+    servers.length > 1
+      ? mcpAggregateConnection(
+          servers
+            .filter((server) => !desktopOnly || !isAccountServer(server))
+            .map((server) => ({
+              enabled: mcpServerEnabled(server),
+              connection: mcpEntryConnection(
+                server,
+                findMcpStatus(server.id, mcpStatuses, accountConfigId(server)),
+              ),
+            })),
+        )
+      : undefined;
+  const bindings = new Set(connections.map((connection) => connection.binding));
+  const placement =
+    bindings.has('account') && bindings.has('device')
+      ? 'both'
+      : bindings.has('account')
+        ? 'account'
+        : bindings.has('device')
+          ? 'desktop'
+          : undefined;
   return {
     id: `mcp-catalog:${entry.key}`,
     kind: 'app',
@@ -967,6 +1039,13 @@ function buildCuratedMcpEntry(
     state,
     ...(surface ? { surface } : {}),
     ...(connection ? { connection } : {}),
+    ...(aggregateConnection ? { aggregateConnection } : {}),
+    ...(placement ? { placement } : {}),
+    mcpTargetCount:
+      servers.reduce(
+        (count, server) => count + (server.configs?.length ?? 0),
+        0,
+      ) + (connector?.connectedProviders.length ?? 0),
     ...(pendingSignIns > 0 ? { pendingSignIns } : {}),
     recommended: false,
     catalogSortOrder: entry.sortOrder,
@@ -1019,6 +1098,15 @@ function buildLocalMcpEntry(
         ? 'cloud'
         : 'desktop',
     connection,
+    mcpTargetCount: server.configs?.length ?? 0,
+    ...(connection.provider === true
+      ? {}
+      : {
+          placement:
+            server.scope === 'account' || server.accountConnection
+              ? ('account' as const)
+              : ('desktop' as const),
+        }),
     ...(pendingSignIns > 0 ? { pendingSignIns } : {}),
     recommended: false,
     ref: {
@@ -2709,6 +2797,85 @@ export function bundledServerStandsBehindPlugin(
 }
 
 /**
+ * Records on every plugin, installed or not, the MCP servers it bundles and
+ * the row or card already representing each one, so search can reach a server
+ * through its plugin. A command server is never matched to a row: the index
+ * carries no executable, so a shared name does not show it is the same server.
+ */
+function withBundledServers(
+  entries: readonly UnifiedPluginEntry[],
+  facts: ProvenanceFacts,
+): UnifiedPluginEntry[] {
+  const representing = new Map<string, string>();
+  const represent = (
+    endpoint: string | null,
+    name: string,
+    id: string,
+  ): void => {
+    if (endpoint === null) return;
+    const key = endpointClaimKey(endpoint, name);
+    if (!representing.has(key)) representing.set(key, id);
+  };
+  const cards = new Set<string>();
+  for (const entry of entries) {
+    if (entry.ref.type === 'curated-mcp') {
+      cards.add(entry.id);
+      const catalog = facts.curatedMcp.get(entry.ref.key);
+      if (catalog)
+        represent(
+          mcpEndpointKey({ type: 'http', url: catalog.url }),
+          catalog.name,
+          entry.id,
+        );
+    } else if (entry.ref.type === 'local-mcp') {
+      const server = facts.mcpServers.get(entry.ref.serverId);
+      if (server && server.type !== 'command')
+        represent(mcpEndpointKey(server), server.name, entry.id);
+    }
+  }
+  const bundledServersOf = (
+    entry: UnifiedPluginEntry,
+  ): UnifiedEntryBundledServer[] => {
+    if (entry.ref.type === 'marketplace-plugin') {
+      return (facts.bundledServers.get(entry.id) ?? []).map((server) => {
+        const endpoint = mcpEndpointKey(server);
+        const entryId =
+          endpoint === null || server.type === 'command'
+            ? undefined
+            : representing.get(endpointClaimKey(endpoint, server.name));
+        return {
+          key: server.name,
+          name: server.name,
+          ...(endpoint !== null ? { endpoint } : {}),
+          ...(entryId !== undefined ? { entryId } : {}),
+        };
+      });
+    }
+    if (entry.ref.type !== 'curated-plugin') return [];
+    return (facts.curatedPlugins.get(entry.ref.key)?.mcpServers ?? []).map(
+      (key) => {
+        const catalog = facts.curatedMcp.get(key);
+        const endpoint = catalog
+          ? mcpEndpointKey({ type: 'http', url: catalog.url })
+          : null;
+        const entryId = `mcp-catalog:${key}`;
+        return {
+          key,
+          name: catalog?.name ?? key,
+          ...(endpoint !== null ? { endpoint } : {}),
+          ...(cards.has(entryId) ? { entryId } : {}),
+        };
+      },
+    );
+  };
+  return entries.map((entry) => {
+    if (entry.kind !== 'plugin') return entry;
+    const bundledServers = bundledServersOf(entry);
+    return bundledServers.length > 0 ? { ...entry, bundledServers } : entry;
+  });
+}
+
+/**
  * Attribute MCP rows and catalog cards to the installed plugin that bundles
  * their endpoint (CAN-3653). An installed server row the plugin brought gets
  * `bundledBy`, so sections hide it behind its plugin; an uninstalled catalog
@@ -2768,7 +2935,7 @@ function attachPluginProvenance(
       }
     }
   }
-  if (claims.size === 0) return [...entries];
+  if (claims.size === 0) return withBundledServers(entries, facts);
 
   const claimOf = (
     key: string,
@@ -2865,17 +3032,19 @@ function attachPluginProvenance(
     }
     return { ...entry, bundledBy: claimed.owner };
   });
-  if (hiddenRows.size === 0) return tagged;
-  return tagged.map((entry) => {
-    const rows = hiddenRows.get(entry.id);
-    if (!rows) return entry;
-    const pending = pendingSignIns.get(entry.id) ?? 0;
-    return {
-      ...entry,
-      bundledServerRows: rows,
-      ...(pending > 0 ? { pendingSignIns: pending } : {}),
-    };
-  });
+  return withBundledServers(
+    tagged.map((entry) => {
+      const rows = hiddenRows.get(entry.id);
+      if (!rows) return entry;
+      const pending = pendingSignIns.get(entry.id) ?? 0;
+      return {
+        ...entry,
+        bundledServerRows: rows,
+        ...(pending > 0 ? { pendingSignIns: pending } : {}),
+      };
+    }),
+    facts,
+  );
 }
 
 /**
@@ -3291,8 +3460,12 @@ function matchScore(
       entry.sharedWith?.name,
       entry.availabilityLabel,
       entry.authorName,
-      // A bundled skill is found by its plugin's name (CAN-4844).
-      isBundledSkill(entry) ? entry.bundledBy.name : undefined,
+      // A bundled skill or server is found by its plugin's name (CAN-4844).
+      entry.bundledBy?.name,
+      entry.installedVia?.name,
+      entry.integration?.plugin?.name,
+      // A plugin is found by the servers it bundles.
+      ...(entry.bundledServers?.map((server) => server.name) ?? []),
       // The source label names provider and owner, not the catalog (CAN-3653).
       entry.ref.type === 'marketplace-plugin'
         ? entry.ref.marketplaceId

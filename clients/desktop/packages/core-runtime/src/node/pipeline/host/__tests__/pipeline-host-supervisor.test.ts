@@ -1,0 +1,492 @@
+// CAN-5086: the supervisor that runs host-local pipeline launches in a
+// pipeline host. A fake host records requests and lets each test answer.
+import { EventEmitter } from 'node:events';
+import {
+  WORKER_PIPELINE_INSTRUCTION_DEFINITIONS,
+  type CanopyErrorPayload,
+  type CanopyHostExecution,
+  type WorkerPipelineExecution,
+  type WorkerPipelineExecutionEventsItem,
+  type WorkerPipelineExecutionStartParams,
+} from '@canopy/protocol/canopy-core';
+import { createCanopyDispatcher } from '../../../../runtime/dispatcher';
+import {
+  NO_EXECUTION_SECRETS,
+  refusingExecutionSecretSource,
+} from '../../../execution-secrets';
+import { createWorkerPipelineHandlers } from '../../execution';
+import type { CanopyHandlerContext } from '../../../../runtime/types';
+import {
+  PipelineHostSupervisor,
+  type PipelineHostLaunch,
+  type PipelineHostMessage,
+  type PipelineHostProcess,
+  type PipelineHostRequest,
+  type PipelineHostRequestMessage,
+} from '..';
+
+class FakeHost extends EventEmitter implements PipelineHostProcess {
+  readonly requests: PipelineHostRequestMessage[] = [];
+
+  postMessage(message: PipelineHostRequestMessage): void {
+    this.requests.push(message);
+    if (message.request.op === 'configure') this.reply(message.id, null);
+  }
+
+  kill(): boolean {
+    return true;
+  }
+
+  ops(): Array<PipelineHostRequest['op']> {
+    return this.requests.map((message) => message.request.op);
+  }
+
+  last(op: PipelineHostRequest['op']): PipelineHostRequestMessage {
+    const found = [...this.requests]
+      .reverse()
+      .find((message) => message.request.op === op);
+    if (!found) throw new Error(`No ${op} request.`);
+    return found;
+  }
+
+  reply(id: number, value: unknown): void {
+    this.send({ kind: 'response', id, ok: true, value });
+  }
+
+  send(message: PipelineHostMessage): void {
+    queueMicrotask(() => this.emit('message', message));
+  }
+
+  exit(code: number): void {
+    this.emit('exit', code);
+  }
+}
+
+const params: WorkerPipelineExecutionStartParams = {
+  executionId: 'run',
+  pipelineId: 'pipeline',
+  definitionSource: 'inline',
+  runScope: 'worktree',
+  workspaceId: 'workspace',
+  worktreeId: 'worktree',
+  owner: 'personal',
+  initiationSource: 'user',
+};
+const execution: CanopyHostExecution = {
+  childEnvironment: { PATH: '/usr/bin' },
+  pipelineLaunch: {
+    pipeline: { name: 'p', on: 'dispatch', jobs: {} },
+    cwd: '/work/tree',
+    bundledActionsDir: '/app/actions',
+    env: {},
+    secretEnv: {},
+  },
+};
+function projection(
+  status: WorkerPipelineExecution['status'],
+): WorkerPipelineExecution {
+  return {
+    executionId: 'run',
+    pipelineId: 'pipeline',
+    name: 'p',
+    status,
+    runScope: 'worktree',
+    definitionSource: 'inline',
+    owner: 'personal',
+    workspaceId: 'workspace',
+    worktreeId: 'worktree',
+    parentExecutionId: null,
+    startedAt: '2026-11-05T00:00:00.000Z',
+    completedAt: null,
+    pendingPauseCount: 0,
+    error: null,
+  };
+}
+
+async function settle(): Promise<void> {
+  for (let index = 0; index < 5; index += 1)
+    await new Promise((resolve) => setImmediate(resolve));
+}
+
+function harness(overrides: { launch?: () => PipelineHostProcess } = {}): {
+  hosts: FakeHost[];
+  supervisor: PipelineHostSupervisor;
+  launch: jest.Mock<PipelineHostProcess, []>;
+  holds: string[];
+  releases: jest.Mock<void, [string]>;
+  killed: number[];
+} {
+  const hosts: FakeHost[] = [];
+  const holds: string[] = [];
+  const releases = jest.fn<void, [string]>();
+  const killed: number[] = [];
+  const launch = jest.fn<PipelineHostProcess, []>(
+    overrides.launch ??
+      ((): PipelineHostProcess => {
+        const host = new FakeHost();
+        hosts.push(host);
+        return host;
+      }),
+  );
+  const resolved: PipelineHostLaunch = {
+    params,
+    launch: execution.pipelineLaunch ?? {
+      pipeline: {},
+      cwd: '/',
+      bundledActionsDir: '/',
+      env: {},
+      secretEnv: {},
+    },
+    processEnvironment: execution.childEnvironment,
+  };
+  const supervisor = new PipelineHostSupervisor({
+    launch,
+    configure: { dataRoot: '/data' },
+    resolveLaunch: (): Promise<PipelineHostLaunch> => Promise.resolve(resolved),
+    holdExecution: (id): (() => void) => {
+      holds.push(id);
+      return (): void => releases(id);
+    },
+    killProcessGroup: (group): void => {
+      killed.push(group);
+    },
+    idleStopMs: 60_000,
+  });
+  return { hosts, supervisor, launch, holds, releases, killed };
+}
+
+async function started(
+  h: ReturnType<typeof harness>,
+  signal: AbortSignal = new AbortController().signal,
+): Promise<{ host: FakeHost; result: Promise<WorkerPipelineExecution> }> {
+  const result = h.supervisor.start(
+    params,
+    signal,
+    NO_EXECUTION_SECRETS,
+    execution,
+  );
+  await settle();
+  const host = h.hosts[h.hosts.length - 1];
+  return { host, result };
+}
+
+describe('PipelineHostSupervisor', () => {
+  it('refuses a start without a pipeline launch before starting a host', async () => {
+    const h = harness();
+    await expect(
+      h.supervisor.start(
+        params,
+        new AbortController().signal,
+        NO_EXECUTION_SECRETS,
+        { childEnvironment: {} },
+      ),
+    ).rejects.toMatchObject({
+      payload: { code: 'worker.pipeline.launchUnavailable' },
+    });
+    expect(h.launch).not.toHaveBeenCalled();
+  });
+
+  it('answers hostUnavailable when the host cannot start, and sends nothing', async () => {
+    const posted: unknown[] = [];
+    const h = harness({
+      launch: () => {
+        posted.push('launch');
+        throw new Error('spawn failed');
+      },
+    });
+    await expect(
+      h.supervisor.start(
+        params,
+        new AbortController().signal,
+        NO_EXECUTION_SECRETS,
+        execution,
+      ),
+    ).rejects.toMatchObject({
+      payload: { code: 'worker.pipeline.hostUnavailable' },
+    });
+    expect(h.hosts).toHaveLength(0);
+  });
+
+  it('joins a resent start for an execution its host is running', async () => {
+    const h = harness();
+    const { host, result } = await started(h);
+    host.reply(host.last('start').id, projection('running'));
+    await expect(result).resolves.toMatchObject({ status: 'running' });
+
+    const resent = h.supervisor.start(
+      params,
+      new AbortController().signal,
+      NO_EXECUTION_SECRETS,
+      execution,
+    );
+    await settle();
+    host.reply(host.last('get').id, projection('running'));
+    await expect(resent).resolves.toMatchObject({ executionId: 'run' });
+    expect(host.ops().filter((op) => op === 'start')).toHaveLength(1);
+    expect(host.ops().filter((op) => op === 'get')).toHaveLength(1);
+  });
+
+  it('does not cancel a started run when the start’s signal aborts', async () => {
+    const h = harness();
+    const controller = new AbortController();
+    const { host, result } = await started(h, controller.signal);
+    controller.abort();
+    host.reply(host.last('start').id, projection('running'));
+    await expect(result).resolves.toMatchObject({ status: 'running' });
+    expect(host.ops()).not.toContain('cancel');
+  });
+
+  it('holds the daemon up from start until the execution pauses or ends', async () => {
+    const h = harness();
+    const { host, result } = await started(h);
+    host.reply(host.last('start').id, projection('running'));
+    await result;
+    expect(h.holds).toEqual(['run']);
+    host.send({
+      kind: 'execution',
+      executionId: 'run',
+      event: 'execution.updated',
+      execution: projection('running'),
+    });
+    await settle();
+    expect(h.releases).not.toHaveBeenCalled();
+    host.send({
+      kind: 'execution',
+      executionId: 'run',
+      event: 'execution.paused',
+      execution: projection('paused'),
+    });
+    await settle();
+    expect(h.releases).toHaveBeenCalledTimes(1);
+  });
+
+  it('a lost host kills its step process groups and ends its streams with hostLost', async () => {
+    const h = harness();
+    const { host, result } = await started(h);
+    host.reply(host.last('start').id, projection('running'));
+    await result;
+
+    const handlers = createWorkerPipelineHandlers(h.supervisor, {
+      secrets: refusingExecutionSecretSource,
+    });
+    const items: WorkerPipelineExecutionEventsItem[] = [];
+    const ends: Array<{ outcome: string; error?: CanopyErrorPayload }> = [];
+    const context: CanopyHandlerContext = {
+      requestId: 'events',
+      caller: {
+        principalId: 'client',
+        clientInstanceId: 'client',
+        authorityId: 'authority',
+        interfaceKind: 'daemon',
+        grants: ['worker.pipeline.read'],
+      },
+      metadata: {},
+      signal: new AbortController().signal,
+    };
+    const opened = handlers.streams['worker.pipeline.execution.events'](
+      { executionId: 'run' },
+      context,
+      {
+        emit: (item) => {
+          items.push(item);
+          return { daemonEpoch: 'e', sequence: items.length };
+        },
+        end: (outcome, error) => {
+          ends.push({ outcome, error });
+        },
+      },
+    );
+    await settle();
+    host.reply(host.last('get').id, projection('running'));
+    await settle();
+    host.reply(host.last('get').id, projection('running'));
+    await opened;
+
+    host.send({
+      kind: 'process',
+      state: 'started',
+      id: 'step-1',
+      processGroupId: 4242,
+    });
+    await settle();
+    host.exit(1);
+    await settle();
+
+    expect(h.killed).toEqual([4242]);
+    expect(ends).toHaveLength(1);
+    expect(ends[0].outcome).toBe('error');
+    expect(ends[0].error?.code).toBe('worker.pipeline.hostLost');
+    expect(h.releases).toHaveBeenCalledWith('run');
+
+    const later = h.supervisor.get('run');
+    await settle();
+    expect(h.hosts).toHaveLength(2);
+    h.hosts[1].reply(h.hosts[1].last('get').id, null);
+    await expect(later).resolves.toBeNull();
+  });
+
+  // Review fix: a run that settles in the same tick as its start response.
+  it('takes no hold for a run that settled before its start returned', async () => {
+    const h = harness();
+    const { host, result } = await started(h);
+    host.emit('message', {
+      kind: 'response',
+      id: host.last('start').id,
+      ok: true,
+      value: projection('running'),
+    });
+    host.emit('message', {
+      kind: 'execution',
+      executionId: 'run',
+      event: 'execution.paused',
+      execution: projection('paused'),
+    });
+    await result;
+    await settle();
+    expect(h.holds.length).toBe(h.releases.mock.calls.length);
+  });
+
+  // Review fix: a host killed at stop takes its step process groups with it.
+  it('kills step process groups when stop has to kill the host', async () => {
+    const h = harness();
+    const { host, result } = await started(h);
+    host.reply(host.last('start').id, projection('running'));
+    await result;
+    host.send({
+      kind: 'process',
+      state: 'started',
+      id: 'step-1',
+      processGroupId: 4343,
+    });
+    await settle();
+    host.kill = (): boolean => {
+      host.exit(137);
+      return true;
+    };
+    const stopped = h.supervisor.stop();
+    await settle();
+    host.send({
+      kind: 'response',
+      id: host.last('checkpoint').id,
+      ok: false,
+      error: { code: 'checkpoint_failed', message: 'stuck' },
+    });
+    await stopped;
+    expect(h.killed).toEqual([4343]);
+  }, 15_000);
+
+  // Review fix: a second client can follow a run whose start is still pending.
+  it('an events stream opened during a pending start follows the run', async () => {
+    const h = harness();
+    const { host, result } = await started(h);
+    const handlers = createWorkerPipelineHandlers(h.supervisor, {
+      secrets: refusingExecutionSecretSource,
+    });
+    const items: WorkerPipelineExecutionEventsItem[] = [];
+    const ends: string[] = [];
+    const opened = handlers.streams['worker.pipeline.execution.events'](
+      { executionId: 'run' },
+      {
+        requestId: 'events',
+        caller: {
+          principalId: 'client',
+          clientInstanceId: 'second',
+          authorityId: 'authority',
+          interfaceKind: 'daemon',
+          grants: ['worker.pipeline.read'],
+        },
+        metadata: {},
+        signal: new AbortController().signal,
+      },
+      {
+        emit: (item) => {
+          items.push(item);
+          return { daemonEpoch: 'e', sequence: items.length };
+        },
+        end: (outcome) => {
+          ends.push(outcome);
+        },
+      },
+    );
+    await settle();
+    host.reply(host.last('get').id, projection('running'));
+    await settle();
+    host.reply(host.last('get').id, projection('running'));
+    await opened;
+    expect(ends).toEqual([]);
+
+    host.reply(host.last('start').id, projection('running'));
+    await result;
+    host.send({
+      kind: 'output',
+      executionId: 'run',
+      jobId: 'j',
+      stepId: 's',
+      stream: 'stdout',
+      text: 'hello',
+    });
+    host.send({
+      kind: 'execution',
+      executionId: 'run',
+      event: 'execution.completed',
+      execution: projection('success'),
+    });
+    await settle();
+    expect(items.map((item) => item.kind)).toEqual([
+      'execution',
+      'output',
+      'execution',
+    ]);
+    expect(ends).toEqual(['completed']);
+  });
+
+  // Coordinator ruling: a host lost during a start answers hostLost.
+  it('a start whose host exits before answering fails with hostLost', async () => {
+    const h = harness();
+    const handlers = createWorkerPipelineHandlers(h.supervisor, {
+      secrets: refusingExecutionSecretSource,
+    });
+    const dispatcher = createCanopyDispatcher({
+      profile: 'worker',
+      definitions: {
+        queries: {},
+        instructions: {
+          'worker.pipeline.execution.start':
+            WORKER_PIPELINE_INSTRUCTION_DEFINITIONS[
+              'worker.pipeline.execution.start'
+            ],
+        },
+        streams: {},
+      },
+      handlers: {
+        queries: {},
+        instructions: {
+          'worker.pipeline.execution.start':
+            handlers.instructions['worker.pipeline.execution.start'],
+        },
+        streams: {},
+      },
+    });
+    const started = dispatcher.instruction(
+      'worker.pipeline.execution.start',
+      params,
+      {
+        caller: {
+          principalId: 'core',
+          clientInstanceId: 'core',
+          authorityId: 'authority',
+          interfaceKind: 'daemon',
+          grants: ['worker.pipeline.write'],
+        },
+        metadata: { idempotencyKey: 'run' },
+        execution,
+      },
+    );
+    await settle();
+    h.hosts[0].exit(1);
+    await expect(started).rejects.toMatchObject({
+      payload: { code: 'worker.pipeline.hostLost' },
+    });
+    await dispatcher.shutdown();
+  });
+});

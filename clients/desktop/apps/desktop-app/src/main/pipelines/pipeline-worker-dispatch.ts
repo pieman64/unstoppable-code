@@ -1,8 +1,11 @@
+import type { ExecutionSecretGrantHandle } from '@canopy/core-runtime/node/execution-secrets';
+import { getDesktopExecutionSecrets } from '../execution-secrets/owner';
 import { randomUUID } from 'node:crypto';
 import type { PipelineControlRequest } from '@canopy/core-runtime/node/pipeline';
 import {
   WORKER_PIPELINE_INITIATION_SOURCES,
   WORKER_PIPELINE_SWEEP_MAX,
+  type ExecutionSecretBinding,
   type OperationOrigin,
   type OperationOwner,
   type WorkerPipelineExecutionStartParams,
@@ -82,9 +85,17 @@ export function followExecutionHandle(handle: ExecutionHandle): void {
  */
 export async function startPipelineThroughLocalWorker(
   pipeline: Pipeline,
-  options: ExecutionOptions & { executionId: string; executionContext: string },
+  options: ExecutionOptions & {
+    executionId: string;
+    executionContext: string;
+    secretBindings: readonly ExecutionSecretBinding[];
+  },
 ): Promise<ExecutionHandle> {
-  const { executionId, executionContext } = options;
+  const { executionId, executionContext, secretBindings } = options;
+  const grant = getDesktopExecutionSecrets().stage(
+    { operation: 'worker.pipeline.execution.start', key: executionId },
+    secretBindings,
+  );
   const staged = stagePipelineLaunch(executionId, { pipeline, options });
   let result: Awaited<
     ReturnType<
@@ -96,6 +107,7 @@ export async function startPipelineThroughLocalWorker(
     result = await getDesktopCanopyRuntime().pipelineRuns.start({
       params: {
         executionId,
+        ...(secretBindings.length ? { secrets: [...secretBindings] } : {}),
         pipelineId: options.pipelineId,
         definitionSource: definitionSourceOf(options.pipelinePreferenceLocator),
         runScope:
@@ -111,6 +123,7 @@ export async function startPipelineThroughLocalWorker(
     });
   } finally {
     capture = staged.take();
+    grant.revoke();
   }
   if (result.status === 'completed' && capture.handle) return capture.handle;
   if (capture.error instanceof Error) throw capture.error;
@@ -193,12 +206,26 @@ export async function drainPipelineThroughLocalWorker(
 export async function controlPipelineThroughLocalWorker(
   control: PipelineControlRequest,
   launch: PipelineControlLaunch,
-  origin: 'client' | 'automation' = 'client',
+  origin: 'client' | 'automation',
+  secretBindings: readonly ExecutionSecretBinding[],
 ): Promise<PipelineControlSettlement> {
   const { executionId, requestId } = control.params;
   const stored = await readStoredPipelineExecution(executionId).catch(
     () => null,
   );
+  let grant: ExecutionSecretGrantHandle | undefined;
+  if (
+    control.operation === 'worker.pipeline.execution.resume' ||
+    control.operation === 'worker.pipeline.execution.retry' ||
+    control.operation === 'worker.pipeline.matrixJob.retry'
+  ) {
+    if (secretBindings.length) control.params.secrets = [...secretBindings];
+    grant = getDesktopExecutionSecrets().stage(
+      { operation: control.operation, key: requestId },
+      secretBindings,
+    );
+  } else if (secretBindings.length)
+    throw new Error('This control takes no secrets.');
   const staged = stagePipelineControl(requestId, launch);
   let result: Awaited<
     ReturnType<
@@ -217,6 +244,7 @@ export async function controlPipelineThroughLocalWorker(
     });
   } finally {
     capture = staged.take();
+    grant?.revoke();
   }
   if (result.status === 'completed') {
     if (capture.settlement) return capture.settlement;

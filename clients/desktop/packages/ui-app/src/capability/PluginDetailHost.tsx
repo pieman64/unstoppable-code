@@ -21,9 +21,12 @@ import {
   Fact,
   FactList,
   LoadingSpinner,
+  McpSignInPendingActions,
+  McpSignInPendingStatus,
   PluginDetailContent,
   PluginDetailSectionHeading,
   RefreshSpinner,
+  StatusLabel,
   ToggleSwitch,
   type PluginDetailContentPlugin,
   type PluginHarnessConnectionRow,
@@ -40,11 +43,18 @@ import {
   useDetailMoreItemContributions,
   ExecutionActionButton,
   MarketplaceShareButton,
+  McpRowHealth,
   Skeleton,
   useDetailActionSlots,
   type DetailMoreMenuItem,
 } from '@canopy/ui-shared/components';
 import type { MarketplaceShareAction } from '@canopy/ui-shared/lib';
+import type { HostAction } from '@canopy/ui-shared/lib/host-action';
+import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
+import {
+  McpConnectActionButton,
+  type McpConnectActionPhase,
+} from './McpConnectActionButton';
 import { PluginAlternatives } from './PluginAlternatives';
 import {
   McpServerHealthSection,
@@ -63,10 +73,34 @@ export type PluginDetailMcpHealthTarget = Pick<
   | 'onTested'
 >;
 
+/** A bundled server's Connect, or why this host cannot offer it. */
+export interface PluginDetailMcpConnection {
+  readonly label: string;
+  readonly kind: 'connect' | 'reconnect';
+  readonly action: HostAction<() => void>;
+  readonly phase?: McpConnectActionPhase;
+  /** Another server on this page is connecting. */
+  readonly disabled?: boolean;
+  /** The sign-in page while one waits in the browser. */
+  readonly authorizationUrl?: string;
+  readonly onCancel?: () => void;
+  readonly error?: string | null;
+}
+
 export type PluginDetailMcpServerHealth =
-  | { readonly kind: 'target'; readonly target: PluginDetailMcpHealthTarget }
+  | {
+      readonly kind: 'target';
+      readonly target: PluginDetailMcpHealthTarget;
+      readonly connection?: PluginDetailMcpConnection;
+    }
   | { readonly kind: 'loading' }
-  | { readonly kind: 'unavailable'; readonly reason: string };
+  | {
+      readonly kind: 'unavailable';
+      readonly reason: string;
+      /** Signed in: shows the reason with the green connected dot. */
+      readonly connected?: boolean;
+      readonly connection?: PluginDetailMcpConnection;
+    };
 
 /** Host port for the plugin detail's MCP servers rows (CAN-4842). */
 export interface PluginDetailMcpHealth {
@@ -810,6 +844,67 @@ const SAMPLE_MCP_HEALTH: PluginDetailMcpHealthTarget = {
   configs: [],
 };
 
+function PluginMcpConnectionControls({
+  connection,
+  serverName,
+}: {
+  connection: PluginDetailMcpConnection;
+  serverName: string;
+}): JSX.Element {
+  const { action, authorizationUrl, onCancel, phase = 'idle' } = connection;
+  return (
+    <div
+      data-testid={`plugin-detail-mcp-connection-${serverName}`}
+      className="flex flex-col items-start gap-1.5"
+    >
+      {!action.available ? (
+        <span className="text-xs fg-tertiary">{action.reason}</span>
+      ) : authorizationUrl !== undefined ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <McpSignInPendingStatus serviceName={serverName} />
+          <McpSignInPendingActions
+            serviceName={serverName}
+            variant="compact"
+            authorizationUrl={authorizationUrl}
+            onCancel={onCancel}
+            dataTestId={`plugin-detail-mcp-sign-in-${serverName}`}
+          />
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-2">
+          <McpConnectActionButton
+            action={connection.kind}
+            label={connection.label}
+            phase={phase}
+            size="compact"
+            variant="secondary"
+            disabled={connection.disabled === true}
+            onClick={action.run}
+            data-testid={`plugin-detail-mcp-connect-${serverName}`}
+          />
+          {phase !== 'idle' && onCancel !== undefined && (
+            <Button
+              type="button"
+              size="compact"
+              variant="ghost"
+              aria-label={`Cancel ${serverName} sign-in`}
+              data-testid={`plugin-detail-mcp-connect-cancel-${serverName}`}
+              onClick={onCancel}
+            >
+              Cancel
+            </Button>
+          )}
+        </div>
+      )}
+      {connection.error && (
+        <StatusLabel size="2xs">
+          <span className={REPLAY_BLOCK_CLASS}>{connection.error}</span>
+        </StatusLabel>
+      )}
+    </div>
+  );
+}
+
 /** One MCP server row's Status cell; `undefined` reads "Not configured yet". */
 function renderMcpServerHealth(
   health: PluginDetailMcpHealth,
@@ -820,12 +915,20 @@ function renderMcpServerHealth(
   switch (resolved.kind) {
     case 'target':
       return (
-        <McpServerHealthSection
-          presentation="inline"
-          label={`Health for ${server.name}`}
-          {...resolved.target}
-          formatTimestamp={health.formatTimestamp}
-        />
+        <div className="flex flex-col gap-1.5">
+          <McpServerHealthSection
+            presentation="inline"
+            label={`Health for ${server.name}`}
+            {...resolved.target}
+            formatTimestamp={health.formatTimestamp}
+          />
+          {resolved.connection && (
+            <PluginMcpConnectionControls
+              connection={resolved.connection}
+              serverName={server.name}
+            />
+          )}
+        </div>
       );
     case 'loading':
       return (
@@ -839,12 +942,31 @@ function renderMcpServerHealth(
       );
     case 'unavailable':
       return (
-        <span
-          data-testid="plugin-detail-mcp-status-unavailable"
-          className="text-xs fg-tertiary"
-        >
-          {resolved.reason}
-        </span>
+        <div className="flex flex-col gap-1.5">
+          {resolved.connected ? (
+            <McpRowHealth
+              model={{
+                text: resolved.reason,
+                tone: 'positive',
+                action: null,
+              }}
+              testId="plugin-detail-mcp-status-connected"
+            />
+          ) : (
+            <span
+              data-testid="plugin-detail-mcp-status-unavailable"
+              className="text-xs fg-tertiary"
+            >
+              {resolved.reason}
+            </span>
+          )}
+          {resolved.connection && (
+            <PluginMcpConnectionControls
+              connection={resolved.connection}
+              serverName={server.name}
+            />
+          )}
+        </div>
       );
   }
 }

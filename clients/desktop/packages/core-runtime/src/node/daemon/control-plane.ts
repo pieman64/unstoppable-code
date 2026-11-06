@@ -56,6 +56,7 @@ import {
   type CanopyLeaseRegistry,
   type CanopyObligationRegistry,
 } from './leases';
+import type { CanopyOwnerProofVerifier } from './owner-proof';
 import { createCanopyLeaseRegistrations } from './registrations';
 import {
   CANOPY_DEFAULT_MAX_CHANNELS_PER_LEASE,
@@ -84,6 +85,8 @@ const DEFAULT_MAX_ACTIVE_REQUESTS = 128;
 export interface CanopyControlConnectionIdentity {
   readonly connectionId: string;
   readonly lease: CanopyClientLeaseView | null;
+  /** The connection proved the daemon's owner secret at initialize (CAN-5771). */
+  readonly owner: boolean;
 }
 
 export type CanopyControlPlaneConnectionOptions = Omit<
@@ -111,6 +114,8 @@ export interface CanopyDaemonControlPlaneOptions {
   readonly callerFor: (
     connection: CanopyControlConnectionIdentity,
   ) => CanopyCallerDescriptor;
+  /** Admits owner connections; without it every owner proof is refused (CAN-5771). */
+  readonly ownerProof?: CanopyOwnerProofVerifier;
   readonly buildVersion: string;
   readonly leases?: CanopyLeaseOptions;
   /** Negotiates lease-bound opaque byte channels; no kinds are enabled by default. */
@@ -187,6 +192,7 @@ type CanopyControlServingOptions = Pick<
   | 'dispatcher'
   | 'operations'
   | 'callerFor'
+  | 'ownerProof'
   | 'buildVersion'
   | 'leases'
   | 'channels'
@@ -330,6 +336,11 @@ const LEASE_REQUIRED: CanopyErrorPayload = {
   message: 'This operation requires a live client lease on this connection.',
   retry: { kind: 'never' },
 };
+const OWNER_REFUSED: CanopyErrorPayload = {
+  kind: 'unauthenticated',
+  message: 'The owner proof was refused.',
+  retry: { kind: 'never' },
+};
 // Each fenced call's retry is its operation's (`sameKeyFencedOperations`).
 const LEASE_FENCED: Readonly<
   Record<CanopyLeaseEnd | 'moved', Omit<CanopyErrorPayload, 'retry'>>
@@ -397,6 +408,16 @@ function selectProtocolVersion(
   return common.length ? Math.max(...common) : null;
 }
 
+/** `client.ownerProof` as sent, of any type; undefined when absent (CAN-5771). */
+function ownerProofOf(params: Record<string, unknown>): unknown {
+  const client = params.client;
+  if (typeof client !== 'object' || client === null || Array.isArray(client))
+    return undefined;
+  return Object.prototype.hasOwnProperty.call(client, 'ownerProof')
+    ? Reflect.get(client, 'ownerProof')
+    : undefined;
+}
+
 /** Serves one authenticated connection until it closes. */
 function serveControlConnection(
   connection: CanopyFramedConnection,
@@ -433,9 +454,11 @@ function serveControlConnection(
   let advertised: ReadonlySet<string> = new Set();
   let clientCapabilities: ReadonlySet<string> = new Set();
   let advertisedChannelKinds: ReadonlySet<string> = new Set();
+  let owner = false;
   const identity = (): CanopyControlConnectionIdentity => ({
     connectionId: connection.connectionId,
     lease: leases.lease(connection.connectionId),
+    owner,
   });
   let initialization: 'none' | 'pending' | 'done' = 'none';
   let ownedLeaseId: string | null = null;
@@ -832,6 +855,21 @@ function serveControlConnection(
           message: `Unknown method ${method}.`,
         },
       });
+    if (method === INITIALIZE && initialization === 'none') {
+      const claimed = ownerProofOf(request.params);
+      if (claimed !== undefined) {
+        if (
+          typeof claimed !== 'string' ||
+          options.ownerProof?.verify(connection.connectionId, claimed) !== true
+        ) {
+          initialization = 'pending';
+          await fail(id, new CanopyOperationError(OWNER_REFUSED));
+          connection.close(OWNER_REFUSED);
+          return;
+        }
+        owner = true;
+      }
+    }
     try {
       const caller = options.callerFor(identity());
       if (method === INITIALIZE) {

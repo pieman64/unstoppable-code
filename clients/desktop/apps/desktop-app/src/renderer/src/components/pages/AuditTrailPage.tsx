@@ -991,7 +991,7 @@ export function AuditTrailPage(): JSX.Element {
                 list scrolls: a busy load-more keeps its verb. */}
             {loadingHistory && visibleHistoryEntries.length > 0 && (
               <div className="flex justify-center py-4 text-s fg-secondary">
-                <LoadingIndicator text="Loading…" />
+                <LoadingIndicator />
               </div>
             )}
 

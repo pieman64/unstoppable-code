@@ -3,7 +3,10 @@ import type {
   STORAGE_OWNERSHIP,
   StorageWriterPrincipal,
 } from '@canopy/core-runtime/storage';
-import { registeredCanopyDataRootResolver } from './canopy-data-root-registration';
+import {
+  registeredCanopyDataRootResolver,
+  registeredCanopySecureRootResolver,
+} from './canopy-data-root-registration';
 
 type OwnershipRow = (typeof STORAGE_OWNERSHIP)[number];
 
@@ -36,6 +39,8 @@ const PIPELINE_PREFERENCES_DAMAGED =
   /^pipeline-plugin-preferences\.json\.damaged-.+$/;
 const PIPELINE_DEFINITION_FILE =
   /^(?:index\.json|index\.json\.damaged-\d+|[a-z0-9_-]+\.yaml|\.project-share-links\.json)$/;
+const VAULT_DATABASE_FILE = /^vault\.sqlite(?:-wal|-shm)?$/;
+const GITHUB_CREDENTIAL_FENCE_FILE = 'github-pat-fence.json';
 const APPROVALS_FILE = 'approvals.json';
 const APPROVALS_ROOTS = ['workspaces', 'app-workspaces'];
 
@@ -57,27 +62,52 @@ function dataRootFile(name: string): AdmittedStorageNamespace | undefined {
 
 /** Whether `targetPath` has a curated row's file name; no data root needed. */
 export function isAdmittedStorageCandidate(targetPath: string): boolean {
-  const name = basename(targetPath).toLowerCase();
+  const target = resolve(targetPath);
+  const name = basename(target).toLowerCase();
   return (
     dataRootFile(name) !== undefined ||
     name === APPROVALS_FILE ||
+    name === GITHUB_CREDENTIAL_FENCE_FILE ||
+    name === 'vault' ||
+    (basename(dirname(target)).toLowerCase() === 'vault' &&
+      VAULT_DATABASE_FILE.test(name)) ||
     name === 'pipelines' ||
-    (basename(dirname(targetPath)).toLowerCase() === 'pipelines' &&
+    (basename(dirname(target)).toLowerCase() === 'pipelines' &&
       PIPELINE_DEFINITION_FILE.test(name))
   );
 }
 
 /**
- * The curated row `targetPath` belongs to under `dataRoot`, or undefined.
+ * The curated row `targetPath` belongs to under the data or secure root.
  * A `null` root matches the rows' shapes under any folder. A path that
  * reaches the row through a symbolic link is not seen.
  */
 export function admittedStorageRowForPath(
   targetPath: string,
   dataRoot: string | null,
+  secureDataRoot?: string | null,
 ): AdmittedStorageNamespace | undefined {
-  const name = basename(targetPath).toLowerCase();
-  const parent = fold(dirname(targetPath));
+  const target = resolve(targetPath);
+  const name = basename(target).toLowerCase();
+  const parent = fold(dirname(target));
+  const secureRoot =
+    secureDataRoot === undefined && dataRoot === null ? null : secureDataRoot;
+  if (
+    secureRoot !== undefined &&
+    name === GITHUB_CREDENTIAL_FENCE_FILE &&
+    (secureRoot === null || parent === fold(secureRoot))
+  )
+    return 'daemon_github_credential_fence';
+  if (
+    secureRoot !== undefined &&
+    ((name === 'vault' &&
+      (secureRoot === null || parent === fold(secureRoot))) ||
+      (VAULT_DATABASE_FILE.test(name) &&
+        (secureRoot === null
+          ? basename(parent) === 'vault'
+          : parent === fold(resolve(secureRoot, 'vault')))))
+  )
+    return 'daemon_vault_store';
   if (
     (name === 'pipelines' &&
       (dataRoot === null || parent === fold(dataRoot))) ||
@@ -105,7 +135,11 @@ export function admittedStorageRowForPath(
 
 // Loaded on the first candidate write: many suites mock canopy-paths with
 // factories that cannot run while atomic-file loads.
-let dataRootResolver: Promise<() => string> | undefined;
+interface StorageRoots {
+  readonly dataRoot: () => string;
+  readonly secureRoot?: () => string;
+}
+let dataRootResolver: Promise<StorageRoots> | undefined;
 
 function isModuleNotFound(error: unknown): boolean {
   return (
@@ -115,30 +149,40 @@ function isModuleNotFound(error: unknown): boolean {
   );
 }
 
-async function loadDataRootResolver(): Promise<() => string> {
+async function loadDataRootResolver(): Promise<StorageRoots> {
   try {
     const paths = await import('../../canopy-paths');
-    return paths.getCanopyDataDir;
+    return {
+      dataRoot: paths.getCanopyDataDir,
+      secureRoot: paths.getCanopySecureDataDir,
+    };
   } catch (error) {
     const registered = registeredCanopyDataRootResolver();
     if (registered === undefined || !isModuleNotFound(error)) throw error;
-    return registered;
+    return {
+      dataRoot: registered,
+      secureRoot: registeredCanopySecureRootResolver(),
+    };
   }
 }
 
-/** {@link admittedStorageRowForPath} under the resolved Canopy data root. */
+/** {@link admittedStorageRowForPath} under the resolved Canopy storage roots. */
 export async function admittedStorageRowForWrite(
   targetPath: string,
 ): Promise<AdmittedStorageNamespace | undefined> {
   if (!isAdmittedStorageCandidate(targetPath)) return undefined;
   const loading = (dataRootResolver ??= loadDataRootResolver());
-  let resolveDataRoot: () => string;
+  let roots: StorageRoots;
   try {
-    resolveDataRoot = await loading;
+    roots = await loading;
   } catch (error) {
     // Refuses this write; a later one retries once canopy-paths registers.
     if (dataRootResolver === loading) dataRootResolver = undefined;
     throw error;
   }
-  return admittedStorageRowForPath(targetPath, resolveDataRoot());
+  return admittedStorageRowForPath(
+    targetPath,
+    roots.dataRoot(),
+    roots.secureRoot?.(),
+  );
 }

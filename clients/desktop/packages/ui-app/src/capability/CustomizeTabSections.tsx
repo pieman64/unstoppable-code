@@ -1,5 +1,7 @@
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import type { InstalledItemStatus } from '@canopy/protocol/installed-items';
+import { MARKETPLACE_SHARE_BLOCKED_REASONS } from '@canopy/protocol/sharing';
+import { MCP_MANAGEMENT_REASONS } from '@canopy/ui-shared/lib/mcp-card-display';
 import {
   type ComponentType,
   type JSX,
@@ -23,6 +25,9 @@ import {
   InstalledItemStatusPicker,
   Button,
   InstalledItemStatusUnavailable,
+  McpRowHealth,
+  McpSignInPendingActions,
+  McpSignInPendingStatus,
   Notice,
   NoticeButton,
   PluginsDiscoveryList,
@@ -36,6 +41,11 @@ import {
 } from '@canopy/ui-shared/components';
 import { DownloadIcon } from '@canopy/ui-shared/icons';
 import { displayVersion } from '@canopy/ui-shared/lib/display-version';
+import type { HostAction } from '@canopy/ui-shared/lib/host-action';
+import {
+  mcpHasMultipleTargets,
+  mcpRowHealthModel,
+} from '@canopy/ui-shared/lib/mcp-row-health';
 import {
   CUSTOM_SKILL_EDIT_UNAVAILABLE_REASON,
   INSTALLED_ITEM_STATUS_DESCRIPTION_LINE,
@@ -44,7 +54,9 @@ import {
   bundledSkillStatusReason,
   installedItemTargetKey,
   isBundledSkill,
+  isPluginServerResult,
   installedStatusFilterEmptyText,
+  mcpEntryPluginLink,
   pipelineFiltersActive,
   removalBusyLabel,
   removalConfirmTitle,
@@ -92,6 +104,40 @@ export interface CustomizeInstalledUnavailableCopy {
   /** The host's existing pairing or sign-in control, when one applies. */
   readonly action?: ReactNode;
 }
+
+/**
+ * What an installed MCP row can do on this host. Each action resolves one
+ * concrete target, or says why it cannot; a card with several connections
+ * goes through its details instead of picking one here.
+ */
+export interface CustomizeMcpRowActions {
+  readonly test: (entry: UnifiedPluginEntry) => HostAction<() => Promise<void>>;
+  readonly connect: (
+    entry: UnifiedPluginEntry,
+  ) => HostAction<() => void | Promise<void>>;
+  /** Only the exact target currently signing in; other rows remain gated. */
+  readonly pending?: (
+    entry: UnifiedPluginEntry,
+  ) =>
+    | { readonly authorizationUrl?: string; readonly onCancel: () => void }
+    | undefined;
+  readonly edit: (entry: UnifiedPluginEntry) => HostAction<() => void>;
+  readonly formatTimestamp?: (iso: string) => string;
+  /** A failed action or the status refresh after it. */
+  readonly onError?: (message: string) => void;
+}
+
+/** What an installed MCP row shows, and what its menu says about Connect. */
+interface McpRowPresentation {
+  readonly connectLabel: string;
+  readonly connectReason?: string;
+  readonly node: ReactNode;
+  readonly inlineAction?: ReactNode;
+  readonly connectRun?: () => void;
+  readonly cancelSignIn?: () => void;
+}
+
+const MCP_ROW_ACTION_FAILED = "Couldn't finish that. Try again.";
 
 export interface CustomizeTabSectionsProps {
   readonly tab: MarketplaceCatalogTabId;
@@ -175,6 +221,8 @@ export interface CustomizeTabSectionsProps {
    * (CAN-4845). Omitted, workflow rows show no controls of their own.
    */
   readonly workflowActions?: CustomizeWorkflowActions;
+  /** Health, one inline action and the full menu on installed MCP rows. */
+  readonly mcpRowActions?: CustomizeMcpRowActions;
 
   /** Creation-oriented state for a genuinely empty, unfiltered tab. */
   readonly emptyState?: ReactNode;
@@ -317,6 +365,7 @@ export function CustomizeTabSections(
     renderStatus,
     renderSharedActions,
     workflowActions,
+    mcpRowActions,
     emptyState,
     emptyMessage = 'Nothing here yet.',
     searchEmptyMessage = 'Nothing matches your search.',
@@ -671,6 +720,55 @@ export function CustomizeTabSections(
     [entries],
   );
 
+  // One pending action per row, shared by its inline button and its menu.
+  const mcpRowInFlight = useRef(new Set<string>());
+  const [mcpRowBusyIds, setMcpRowBusyIds] = useState<ReadonlySet<string>>(
+    new Set(),
+  );
+  const runMcpRowAction = useCallback(
+    async (
+      entry: UnifiedPluginEntry,
+      action: () => void | Promise<void>,
+    ): Promise<void> => {
+      if (mcpRowInFlight.current.has(entry.id)) return;
+      mcpRowInFlight.current.add(entry.id);
+      setMcpRowBusyIds(new Set(mcpRowInFlight.current));
+      try {
+        await action();
+      } catch (error) {
+        mcpRowActions?.onError?.(
+          error instanceof Error && error.message !== ''
+            ? error.message
+            : MCP_ROW_ACTION_FAILED,
+        );
+      } finally {
+        mcpRowInFlight.current.delete(entry.id);
+        setMcpRowBusyIds(new Set(mcpRowInFlight.current));
+      }
+    },
+    [mcpRowActions],
+  );
+
+  /** The plugin entry an MCP row came with, when the catalog still lists it. */
+  const providerPluginOf = useCallback(
+    function providerPluginOf(
+      entry: UnifiedPluginEntry,
+    ): UnifiedPluginEntry | undefined {
+      const link = mcpEntryPluginLink(entry);
+      return link && entries.find((candidate) => candidate.id === link.entryId);
+    },
+    [entries],
+  );
+
+  /** Opens a plugin in place when the host can, or selects its real entry. */
+  const openPlugin = useCallback(
+    function openPlugin(plugin: UnifiedPluginEntry): void {
+      if (onOpenEntryId) onOpenEntryId(plugin.id);
+      else onSelectEntry(plugin);
+    },
+    [onOpenEntryId, onSelectEntry],
+  );
+
   const removalMenuItem = useCallback(
     function removalMenuItem(
       entry: UnifiedPluginEntry,
@@ -703,8 +801,23 @@ export function CustomizeTabSections(
       entry: UnifiedPluginEntry,
       sectionId: CustomizeSectionId,
       connect: (() => void) | undefined,
+      mcpRow?: {
+        readonly connectLabel?: string;
+        readonly connectReason?: string;
+        readonly connectRun?: () => void;
+        readonly cancelSignIn?: () => void;
+      },
     ): CustomizeRowMenuItem[] {
       const items: CustomizeRowMenuItem[] = [];
+      const provider = providerPluginOf(entry);
+      const openProvider: CustomizeRowMenuItem | undefined = provider && {
+        id: 'open-plugin',
+        label: `Open the ${provider.name} plugin`,
+        onSelect: () => openPlugin(provider),
+      };
+      // A search result has nothing of its own to open, share or remove.
+      if (isPluginServerResult(entry))
+        return openProvider ? [openProvider] : [];
       if (connect)
         items.push({
           id: 'connect',
@@ -716,6 +829,54 @@ export function CustomizeTabSections(
         label: 'Open details',
         onSelect: () => onSelectEntry(entry),
       });
+      if (mcpRow && mcpRowActions) {
+        const test = mcpRowActions.test(entry);
+        const edit = mcpRowActions.edit(entry);
+        const busy =
+          mcpRowBusyIds.has(entry.id) ||
+          mcpRowActions.pending?.(entry) !== undefined;
+        items.push(
+          {
+            id: 'test',
+            label: 'Test connection',
+            disabled: !test.available || busy,
+            disabledReason: test.available ? undefined : test.reason,
+            onSelect: () => {
+              if (test.available) void runMcpRowAction(entry, test.run);
+            },
+          },
+          {
+            id: 'edit',
+            label: 'Edit configuration…',
+            disabled: !edit.available || busy,
+            disabledReason: edit.available ? undefined : edit.reason,
+            onSelect: () => {
+              if (edit.available) edit.run();
+            },
+          },
+        );
+        if (mcpRow.cancelSignIn !== undefined)
+          items.push({
+            id: 'cancel-sign-in',
+            label: 'Cancel sign-in',
+            onSelect: mcpRow.cancelSignIn,
+          });
+        if (mcpRow.connectRun !== undefined)
+          items.push({
+            id: 'connect',
+            label: mcpRow.connectLabel ?? 'Connect',
+            disabled: busy,
+            onSelect: mcpRow.connectRun,
+          });
+        else if (mcpRow.connectReason !== undefined)
+          items.push({
+            id: 'connect',
+            label: mcpRow.connectLabel ?? 'Connect',
+            disabled: true,
+            disabledReason: mcpRow.connectReason,
+            onSelect: () => undefined,
+          });
+      }
       if (onOpenEntryId)
         for (const requirement of entry.requirements ?? []) {
           items.push({
@@ -724,13 +885,7 @@ export function CustomizeTabSections(
             onSelect: () => onOpenEntryId(requirement.entryId),
           });
         }
-      const bundledBy = entry.bundledBy;
-      if (bundledBy && onOpenEntryId)
-        items.push({
-          id: 'open-plugin',
-          label: `Open the ${bundledBy.name} plugin`,
-          onSelect: () => onOpenEntryId(bundledBy.entryId),
-        });
+      if (openProvider) items.push(openProvider);
       const workflow =
         workflowActions && entry.workflow ? workflowActions : undefined;
       const localCollection = entry.ref.type === 'local-collection';
@@ -825,6 +980,17 @@ export function CustomizeTabSections(
           disabledReason: share.status === 'blocked' ? share.reason : undefined,
           onSelect: () => onShareEntry(entry),
         });
+      else if (mcpRow)
+        items.push({
+          id: 'share',
+          label: 'Share…',
+          disabled: true,
+          disabledReason:
+            share?.status === 'blocked'
+              ? share.reason
+              : MARKETPLACE_SHARE_BLOCKED_REASONS.standaloneMcp,
+          onSelect: () => undefined,
+        });
       if (
         sectionId === 'installed' &&
         entry.kind === 'skill' &&
@@ -856,11 +1022,34 @@ export function CustomizeTabSections(
           ? removalMenuItem(entry)
           : null;
       if (removalItem) items.push(removalItem);
+      else if (mcpRow) {
+        const state = entryStatus?.states[entry.id];
+        const chooseTarget = mcpHasMultipleTargets(entry);
+        items.push({
+          id: 'remove',
+          label: 'Remove…',
+          destructive: true,
+          disabled: !chooseTarget,
+          disabledReason: chooseTarget
+            ? undefined
+            : state?.kind === 'read-only'
+              ? state.reason
+              : MCP_MANAGEMENT_REASONS.noTarget,
+          onSelect: () => {
+            if (chooseTarget) onSelectEntry(entry);
+          },
+        });
+      }
       return items;
     },
     [
       onSelectEntry,
       onOpenEntryId,
+      providerPluginOf,
+      openPlugin,
+      mcpRowActions,
+      mcpRowBusyIds,
+      runMcpRowAction,
       workflowActions,
       onEditCollection,
       updateIds,
@@ -877,6 +1066,7 @@ export function CustomizeTabSections(
       canEditCustomSkill,
       onEditEntry,
       removalMenuItem,
+      entryStatus?.states,
     ],
   );
 
@@ -1016,12 +1206,131 @@ export function CustomizeTabSections(
           : undefined;
       const statusState =
         entryStatus?.states[entry.installedEntryId ?? entry.id];
+      // Dimming follows the live status, its plugin's for a bundled skill.
+      const dimmingState = entryStatus?.states[statusEntryIdOf(entry)];
+      // Real installed servers only: a server behind its plugin keeps the
+      // plugin's flow, and a provider-managed one keeps its own wording.
+      const mcpConnection =
+        mcpRowActions &&
+        section.id === 'installed' &&
+        entry.kind === 'app' &&
+        entry.bundledBy === undefined
+          ? (entry.connection ?? entry.aggregateConnection)
+          : undefined;
+      const mcpHealth =
+        mcpRowActions && mcpConnection && mcpConnection.provider !== true
+          ? ((): McpRowPresentation => {
+              const test = mcpRowActions.test(entry);
+              const connectAction = mcpRowActions.connect(entry);
+              const pending = mcpRowActions.pending?.(entry);
+              const model = mcpRowHealthModel(mcpConnection, {
+                disabled:
+                  entry.aggregateConnection === undefined &&
+                  dimmingState?.kind === 'ready' &&
+                  dimmingState.item.status === 'disabled',
+                canTest: test.available,
+              });
+              const busy = mcpRowBusyIds.has(entry.id) || pending !== undefined;
+              const severalConnections = mcpHasMultipleTargets(entry);
+              const signsIn =
+                model.action === 'connect' || model.action === 'reconnect';
+              const connectLabel =
+                model.action === 'reconnect' ? 'Reconnect' : 'Connect';
+              // Reserve inline actions for attention; routine tests live in
+              // the menu so narrow grid rows keep their normal height.
+              const attention = signsIn && model.tone === 'attention';
+              const inline =
+                !attention && pending === undefined
+                  ? undefined
+                  : severalConnections
+                    ? {
+                        label: 'Open details',
+                        busyLabel: 'Open details',
+                        accessibleName: `Open details for ${entry.name}`,
+                        busy: false,
+                        onClick: (): void => onSelectEntry(entry),
+                      }
+                    : connectAction.available || pending !== undefined
+                      ? {
+                          label: connectLabel,
+                          busyLabel: 'Connecting…',
+                          accessibleName: `${connectLabel} ${entry.name}`,
+                          busy,
+                          onClick: (): void => {
+                            if (connectAction.available)
+                              void runMcpRowAction(entry, connectAction.run);
+                          },
+                        }
+                      : undefined;
+              const checkedLabel =
+                model.checkedAt !== undefined && mcpRowActions.formatTimestamp
+                  ? `Checked ${mcpRowActions.formatTimestamp(model.checkedAt)}`
+                  : undefined;
+              return {
+                connectLabel,
+                cancelSignIn: pending?.onCancel,
+                connectRun:
+                  signsIn && inline === undefined && connectAction.available
+                    ? (): void => {
+                        if (severalConnections) onSelectEntry(entry);
+                        else void runMcpRowAction(entry, connectAction.run);
+                      }
+                    : undefined,
+                connectReason:
+                  signsIn && !severalConnections && !connectAction.available
+                    ? connectAction.reason
+                    : undefined,
+                node: pending?.authorizationUrl ? (
+                  <McpSignInPendingStatus
+                    serviceName={entry.name}
+                    dataTestId={`customize-row-health-${entry.id}`}
+                  />
+                ) : (
+                  <McpRowHealth
+                    model={
+                      busy
+                        ? { ...model, text: 'Checking…', tone: 'neutral' }
+                        : model
+                    }
+                    testId={`customize-row-health-${entry.id}`}
+                    checkedLabel={checkedLabel}
+                  />
+                ),
+                inlineAction: pending?.authorizationUrl ? (
+                  <McpSignInPendingActions
+                    variant="compact"
+                    serviceName={entry.name}
+                    authorizationUrl={pending.authorizationUrl}
+                    onCancel={pending.onCancel}
+                    dataTestId={`customize-row-sign-in-${entry.id}`}
+                  />
+                ) : (
+                  inline && (
+                    <Button
+                      type="button"
+                      size="compact"
+                      variant="secondary"
+                      disabled={inline.busy}
+                      aria-label={inline.accessibleName}
+                      aria-busy={inline.busy}
+                      data-testid={`customize-row-health-${entry.id}-action`}
+                      onClick={inline.onClick}
+                    >
+                      {inline.busy ? inline.busyLabel : inline.label}
+                    </Button>
+                  )
+                ),
+              };
+            })()
+          : undefined;
       // A row with a connection badge already shows its one status; a
       // read-only Unavailable beside "Connected" would contradict it. The
       // section's unavailable notice explains the missing desktop (CAN-4261).
       // A never-checked connection shows no badge, so it keeps the status.
       const showsConnectionBadge =
-        entry.connection !== undefined && entry.connection.status !== 'unknown';
+        mcpHealth !== undefined ||
+        (entry.connection !== undefined &&
+          entry.connection.status !== 'unknown');
       const showStatusControl =
         statusState !== undefined &&
         !(statusState.kind === 'read-only' && showsConnectionBadge);
@@ -1039,8 +1348,11 @@ export function CustomizeTabSections(
           updateIds.has(candidate.id),
       );
       const updateReason = updateDisabledReason?.(entry);
-      // Dimming follows the live status, its plugin's for a bundled skill.
-      const dimmingState = entryStatus?.states[statusEntryIdOf(entry)];
+      // An MCP row a plugin provides opens that plugin, where it connects.
+      const providerPlugin = providerPluginOf(entry);
+      const missingProvider =
+        mcpEntryPluginLink(entry) !== undefined && providerPlugin === undefined;
+      const mcpMenu = mcpConnection ? (mcpHealth ?? {}) : undefined;
       const row = (unshareItem?: CustomizeRowMenuItem): ReactNode => (
         <CustomizeInstalledRow
           entry={entry}
@@ -1055,17 +1367,32 @@ export function CustomizeTabSections(
           }
           selected={entry.id === selectedEntryId}
           showEntryType={section.showEntryTypes}
-          onSelect={onSelectEntry}
-          href={hrefForEntry?.(entry)}
+          onSelect={(selected) =>
+            providerPlugin
+              ? openPlugin(providerPlugin)
+              : missingProvider
+                ? undefined
+                : onSelectEntry(selected)
+          }
+          href={
+            missingProvider
+              ? undefined
+              : hrefForEntry?.(providerPlugin ?? entry)
+          }
           menuItems={[
-            ...menuItems(entry, section.id, connect),
+            ...menuItems(
+              entry,
+              section.id,
+              mcpHealth ? undefined : connect,
+              mcpMenu,
+            ),
             ...(unshareItem ? [unshareItem] : []),
           ]}
           status={
             isBundledSkill(entry) ? (
               <span
                 data-testid="customize-row-status-slot"
-                className="flex w-36 shrink-0 justify-end"
+                className="flex min-w-28 shrink-0 justify-start"
               >
                 {dimmingState?.kind === 'ready' &&
                 dimmingState.item.status !== null ? (
@@ -1092,6 +1419,24 @@ export function CustomizeTabSections(
                   />
                 )}
               </span>
+            ) : section.id === 'browse' && entry.installedVia ? (
+              // Keep Open plugin short; Installed via <plugin> is in the subtitle.
+              <span className="flex shrink-0 justify-end">
+                <Button
+                  size="compact"
+                  type="button"
+                  variant="secondary"
+                  className="max-w-full"
+                  data-testid={`plugins-entry-installed-via-${entry.id}`}
+                  aria-label={`Open plugin ${entry.installedVia.name}`}
+                  disabled={providerPlugin === undefined}
+                  onClick={() => {
+                    if (providerPlugin) openPlugin(providerPlugin);
+                  }}
+                >
+                  Open plugin
+                </Button>
+              </span>
             ) : section.id === 'browse' && !installed && onAddEntry ? (
               <span className="flex w-36 shrink-0 justify-end">
                 <Button
@@ -1110,7 +1455,7 @@ export function CustomizeTabSections(
               (entryStatus && showStatusControl ? (
                 <span
                   data-testid="customize-row-status-slot"
-                  className="flex w-36 shrink-0 justify-end"
+                  className="flex min-w-28 shrink-0 justify-start"
                 >
                   <InstalledItemStatusControl
                     itemName={entry.name}
@@ -1125,6 +1470,9 @@ export function CustomizeTabSections(
             )
           }
           McpServerLogoComponent={McpServerLogoComponent}
+          health={mcpHealth?.node}
+          inlineAction={mcpHealth?.inlineAction}
+          placement={mcpHealth ? entry.placement : undefined}
           onConnect={connect}
           connectName={signIn?.name}
           // Dimming follows the live status, not the filter snapshot.
@@ -1161,6 +1509,11 @@ export function CustomizeTabSections(
       updateDisabledReason,
       selectedEntryId,
       onSelectEntry,
+      providerPluginOf,
+      openPlugin,
+      mcpRowActions,
+      mcpRowBusyIds,
+      runMcpRowAction,
       hrefForEntry,
       menuItems,
       onAddEntry,
@@ -1187,6 +1540,7 @@ export function CustomizeTabSections(
               className="mt-3 text-xs fg-tertiary"
             >
               {INSTALLED_ITEM_STATUS_DESCRIPTION_LINE}
+              {tab === 'app' && section.footnote ? ` ${section.footnote}` : ''}
             </p>
           )}
         {state === 'ready' &&
@@ -1229,6 +1583,7 @@ export function CustomizeTabSections(
         )}
         {section.footnote &&
           tab !== 'collection' &&
+          (tab !== 'app' || installedStatusInventory === 'unavailable') &&
           state === 'ready' &&
           section.entries.length > 0 && (
             <p

@@ -13,7 +13,7 @@ const config = {
   ],
   // Golden tests live in __tests__/ (see scripts/golden-suites.mjs). Local TDD
   // tests live in gitignored __scratch__/ directories and are never committed.
-  testPathIgnorePatterns: ["<rootDir>/apps/desktop-app/src/main/lib/__tests__/w5-recovery-daemon.test.ts","<rootDir>/apps/desktop-app/src/main/lib/__tests__/fixtures/w5-recovery-daemon-child.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/fixtures/electron-w5-record-port-daemon.ts","<rootDir>/packages/desktop-shared/src/node/lib/__tests__/admitted-storage-paths-manifest.test.ts","<rootDir>/packages/protocol/src/__tests__/ui-labels-mobile-mirror.test.ts","<rootDir>/apps/desktop-app/src/main/w5-commit-log/__tests__/commit-log-host-construction.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/daemon-files-route.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/daemon-files-route-connection.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/daemon-files-route-remote.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/electron-daemon-caller-lifetime.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/electron-w5-record-port.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/electron-w5-record-port-stopped.test.ts","<rootDir>/apps/desktop-app/src/main/__tests__/pipeline-harness/invariants.test.ts","<rootDir>/apps/desktop-app/src/main/__tests__/provider-turn-contract-fixtures.pipeline.test.ts","<rootDir>/apps/desktop-app/src/main/__tests__/provider-turn-launch-profile.pipeline.test.ts","<rootDir>/packages/protocol/src/__tests__/core-workspace-metadata-contracts.test.ts"],
+  testPathIgnorePatterns: ["<rootDir>/apps/desktop-app/src/main/lib/__tests__/w5-recovery-daemon.test.ts","<rootDir>/apps/desktop-app/src/main/lib/__tests__/fixtures/w5-recovery-daemon-child.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/fixtures/electron-w5-record-port-daemon.ts","<rootDir>/packages/desktop-shared/src/node/lib/__tests__/admitted-storage-paths-manifest.test.ts","<rootDir>/packages/protocol/src/__tests__/ui-labels-mobile-mirror.test.ts","<rootDir>/apps/desktop-app/src/main/w5-commit-log/__tests__/commit-log-host-construction.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/daemon-files-route.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/daemon-files-route-connection.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/daemon-files-route-remote.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/electron-daemon-caller-lifetime.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/electron-w5-record-port.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/electron-w5-record-port-stopped.test.ts","<rootDir>/apps/desktop-app/src/main/canopy-runtime/__tests__/daemon-status-host-change.qualification.test.ts","<rootDir>/apps/desktop-app/src/main/__tests__/pipeline-harness/invariants.test.ts","<rootDir>/apps/desktop-app/src/main/__tests__/provider-turn-contract-fixtures.pipeline.test.ts","<rootDir>/apps/desktop-app/src/main/__tests__/provider-turn-launch-profile.pipeline.test.ts","<rootDir>/packages/protocol/src/__tests__/core-workspace-metadata-contracts.test.ts"],
   testMatch: [
     '**/__tests__/**/*.test.ts',
     '**/__tests__/**/*.test.tsx',
@@ -125,24 +125,6 @@ const config = {
     __CANOPY_INTERNAL_RELEASE_INDICATOR__: '',
     __CANOPY_UPDATE_BASE_URL__: 'https://releases.unstoppable.ai',
     __CANOPY_APP_VERSION__: '0.0.0-test',
-    __CANOPY_DATADOG_ENABLED__: false,
-    __CANOPY_DATADOG_CLIENT_TOKEN__: '',
-    __CANOPY_DATADOG_APPLICATION_ID__: '',
-    __CANOPY_DATADOG_SITE__: 'datadoghq.com',
-    __CANOPY_DATADOG_SERVICE__: 'canopy-desktop',
-    __CANOPY_DATADOG_ENV__: 'test',
-    __CANOPY_DATADOG_VERSION__: '0.0.0-test',
-    __CANOPY_DATADOG_PROXY__: '',
-    __CANOPY_DATADOG_SESSION_SAMPLE_RATE__: 0,
-    __CANOPY_DATADOG_SESSION_REPLAY_SAMPLE_RATE__: 0,
-    __CANOPY_DATADOG_TELEMETRY_SAMPLE_RATE__: 0,
-    __CANOPY_DATADOG_TRACK_RESOURCES__: false,
-    __CANOPY_DATADOG_TRACK_LONG_TASKS__: false,
-    __CANOPY_DATADOG_TRACK_USER_INTERACTIONS__: false,
-    __CANOPY_DATADOG_DEFAULT_PRIVACY_LEVEL__: 'mask',
-    __CANOPY_DATADOG_ALLOWED_WEBVIEW_HOSTS__: [],
-    __CANOPY_DATADOG_SOURCEMAP_MINIFIED_PATH_PREFIX__:
-      'https://canopy.local/renderer/assets',
     __CANOPY_POSTHOG_ENABLED__: false,
     __CANOPY_POSTHOG_PROJECT_KEY__: '',
     __CANOPY_POSTHOG_HOST__: 'https://us.i.posthog.com',

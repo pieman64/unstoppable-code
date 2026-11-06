@@ -7,6 +7,7 @@ export {
 } from './connect';
 export {
   CANOPY_DAEMON_CLAIM_HANDOFF_ENV,
+  CANOPY_DAEMON_OWNER_HANDOFF,
   createCanopyDaemonHostLaunch,
   type CanopyDaemonHostLaunch,
   type CanopyDaemonHostLaunchOptions,
@@ -15,6 +16,10 @@ export {
   type CanopyDaemonMigrationLaunch,
   type CanopyOwnedDaemonChildren,
 } from './daemon-host';
+export {
+  createDaemonOwnerCredential,
+  type DaemonOwnerCredential,
+} from './daemon-owner';
 export {
   CANOPY_DAEMON_W5_HOST_CHECK,
   classifyCanopyDaemonCapability,

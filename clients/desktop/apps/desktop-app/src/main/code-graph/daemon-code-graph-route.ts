@@ -3,6 +3,10 @@ import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import type { PlatformOperatingSystem } from '@canopy/core-runtime';
 import type { CodeGraphBuildState } from '@canopy/code-graph/types/code-graph-tools';
 import {
+  CODE_REVIEW_CHAT_PROJECT_ID,
+  PLAN_EXPLORE_CHAT_PROJECT_ID,
+} from '@canopy/desktop-shared/types';
+import {
   WORKER_CODE_GRAPH_GRANTS,
   type CanopyCallerDescriptor,
   type WorkerCodeGraphBuildParams,
@@ -22,6 +26,7 @@ import {
 import type { ElectronDaemonClient } from '../canopy-runtime/electron-daemon-host';
 import { getElectronDaemonHealth } from '../canopy-runtime/electron-daemon-health';
 import { logMainProcessWarn } from '../lib/main-process-logging';
+import { isCodeGraphAvailableForWorkspace } from '../lib/code-graph-availability';
 import { recordCodeGraphGenerationReport } from '../lib/code-graph-generation-report';
 import { codeGraphReadRecorders } from './read-recorders';
 import {
@@ -34,9 +39,11 @@ import { CanopyClientError } from '@canopy/core-client';
 /**
  * Routing of renderer code-graph builds and reads to the daemon's graph
  * hosts (CAN-5089), by default on eligible hosts (CAN-5719).
- * Only the code-graph IPC handlers pass a route context, so agent tools,
- * hooks, the automatic scheduler, Portal and the remote-control bridge keep
- * Electron main's own graph hosts. The route is chosen once per request,
+ * Only the code-graph IPC handlers pass a route context, and Electron main's
+ * agent build tool and automatic scheduler open one through
+ * `selectDaemonCodeGraphForMain` (CAN-5625); Portal, the remote-control
+ * bridge, performance scheduling and workspace base graphs keep Electron
+ * main's own graph hosts. The route is chosen once per request,
  * before any daemon contact. Both hosts read and write the same graph files
  * under one writer lease (CAN-5084), including in-process fallback.
  */
@@ -96,6 +103,25 @@ export function selectDaemonCodeGraph(
     context,
     daemonLatched: getElectronDaemonHealth().isLatched(),
   });
+}
+
+/**
+ * Whether a build Electron main starts on its own, for the agent build tool
+ * or the automatic scheduler, goes to the daemon (CAN-5625). Reads only
+ * local state. A build the Code Graph flag or the workspace preference
+ * refuses stays in process, where it gets the in-process refusal. Plan-explore
+ * and code-review chats build under a placeholder workspace that borrows a
+ * worktree through Electron main's registries, which the daemon cannot
+ * resolve, so they stay in process too.
+ */
+export function selectDaemonCodeGraphForMain(workspaceId: string): boolean {
+  return (
+    isDaemonCodeGraphPlatformEligible(hostPlatform()) &&
+    !getElectronDaemonHealth().isLatched() &&
+    workspaceId !== PLAN_EXPLORE_CHAT_PROJECT_ID &&
+    workspaceId !== CODE_REVIEW_CHAT_PROJECT_ID &&
+    isCodeGraphAvailableForWorkspace(workspaceId)
+  );
 }
 
 /**

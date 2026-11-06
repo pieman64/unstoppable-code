@@ -157,7 +157,6 @@ export function subagentsCountLabel(count: number): string {
 }
 
 /** Root picker row detail while its count is still loading. */
-export const SUBAGENTS_ROOT_LOADING_DETAIL = 'Loading…';
 
 /** Accessible name of the status filter. */
 export const SUBAGENTS_FILTER_GROUP_LABEL = 'Show subagents';

@@ -19,6 +19,10 @@ import {
   ErrorBanner,
   ToggleSwitch,
 } from '@canopy/ui-shared/components';
+import {
+  ORCHESTRATOR_PLUGINS_LABEL,
+  ORCHESTRATOR_PLUGINS_SELECTION_COPY,
+} from '@canopy/ui-shared/lib';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { ModelThinkingPreferenceRow } from './ModelThinkingPreferenceRow';
 import { SettingsPluginPicker } from './SettingsPluginPicker';
@@ -211,7 +215,8 @@ export function AppAdvisorTab(): JSX.Element {
           />
 
           <SettingsPluginPicker
-            label="Default plugins"
+            label={ORCHESTRATOR_PLUGINS_LABEL}
+            selectionCopy={ORCHESTRATOR_PLUGINS_SELECTION_COPY}
             description={`Loaded when ${ORCHESTRATOR_LABEL} starts a new chat.`}
             selections={prefs.appAdvisorPluginSelections}
             onChange={(selections: ChatTabPluginSelections) =>

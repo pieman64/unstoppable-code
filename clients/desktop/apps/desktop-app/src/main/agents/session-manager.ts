@@ -3539,7 +3539,10 @@ export async function invalidateProviderAuthSessions(
 export async function invalidateSessionsForOrganizations(
   organizationIds: readonly string[] | 'all-org-owned',
   reason: string,
-  options: { activeTurnPolicy?: 'interrupt' | 'preserve' } = {},
+  options: {
+    activeTurnPolicy?: 'interrupt' | 'preserve';
+    personalOrganizationIds?: readonly string[];
+  } = {},
 ): Promise<void> {
   const normalizedOrganizationIds =
     organizationIds === 'all-org-owned'
@@ -3557,7 +3560,16 @@ export async function invalidateSessionsForOrganizations(
         ? await peekSessionWorkOwner({ projectId, worktreeId, chatId })
         : undefined,
     );
+    const personalAffected =
+      owner?.kind === 'personal' &&
+      (options.personalOrganizationIds?.some(
+        (id) =>
+          normalizedOrganizationIds === 'all-org-owned' ||
+          normalizedOrganizationIds.has(id.toLowerCase()),
+      ) ??
+        false);
     const affected =
+      personalAffected ||
       owner === undefined ||
       (owner.kind === 'organization' &&
         (normalizedOrganizationIds === 'all-org-owned' ||

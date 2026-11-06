@@ -6,6 +6,10 @@ import {
 } from '@canopy/ui-shared/components/settings/SettingsCard';
 
 import { useEffect, useRef, useState, type JSX } from 'react';
+import {
+  AddGatewayModelForm,
+  GatewayModelList,
+} from '../ai-gateway/gateway-model-list';
 import { Lock } from '@canopy/ui-shared/icons/AppIcons';
 import {
   Button,
@@ -14,9 +18,6 @@ import {
   Notice,
   Skeleton,
   Tooltip,
-  SettingsSelect,
-  ChoiceList,
-  ChoiceListRow,
   FormField,
   SettingsRowsRow,
   TextInput,
@@ -25,10 +26,7 @@ import {
 } from '@canopy/ui-shared/components';
 import { organizationBillingPath } from '@canopy/protocol/billing';
 import {
-  AI_GATEWAY_THINKING_LEVELS,
-  MODEL_GATEWAY_MAX_ID_LENGTH,
   MODEL_GATEWAY_MAX_MODELS,
-  type AiGatewayThinkingLevel,
   type ModelGatewayModel,
 } from '@canopy/protocol';
 import type {
@@ -54,12 +52,6 @@ import {
 } from './team-api';
 import type { SettingsFailure } from '../errors';
 
-/** Levels an admin can tick for a model, in the canonical ascending order. */
-const SELECTABLE_THINKING_LEVELS: readonly AiGatewayThinkingLevel[] =
-  AI_GATEWAY_THINKING_LEVELS.filter((level) => level !== 'low');
-
-const DEFAULT_CONTEXT_WINDOW = 200_000;
-
 interface TeamModelGatewaySectionProps {
   detail: OrganizationDetail;
   /**
@@ -72,7 +64,7 @@ interface TeamModelGatewaySectionProps {
 
 /**
  * Owner/admin home for Bring Your Own Gateway: the org points its members'
- * agent traffic at a model gateway it runs, and declares which models that
+ * agent traffic at a AI gateway it runs, and declares which models that
  * gateway serves.
  *
  * Three things make this card different from the model-policy card beside it:
@@ -249,7 +241,7 @@ function ModelGatewayCard({
     } catch (err) {
       setError(
         errorCopy.actionFailure(err, {
-          action: 'update your model gateway',
+          action: 'update your AI gateway',
           known: [ORGANIZATION_LAPSED_ERROR],
         }),
       );
@@ -313,7 +305,7 @@ function ModelGatewayCard({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <Heading level={2} variant="section">
-              Model gateway
+              AI gateway
             </Heading>
             <p className={SETTINGS_CARD_SUBTITLE_CLASS}>
               Specify a custom AI gateway available to your members
@@ -429,7 +421,7 @@ function ModelGatewayCard({
                 icon={<Lock size={14} />}
                 data-testid="model-gateway-relax-only-note"
               >
-                Your plan no longer includes a model gateway, but yours is still
+                Your plan no longer includes a AI gateway, but yours is still
                 routing your members. You can
                 {gateway.enforced
                   ? ' turn it off or stop making it the only route.'
@@ -600,8 +592,8 @@ function ModelGatewayCard({
           <Tooltip
             label={
               <span className="block max-w-64 whitespace-normal">
-                Your plan doesn&apos;t include a model gateway, so members use
-                the models your plan already covers.
+                Your plan doesn&apos;t include a AI gateway, so members use the
+                models your plan already covers.
               </span>
             }
             link={{ href: billingHref, text: upgradeText, external: false }}
@@ -634,7 +626,7 @@ function ModelGatewayCard({
             dataTestId="model-gateway-disable-dialog"
             errorMessage={error?.copy}
             errorDetails={error?.details}
-            title="Turn off your model gateway?"
+            title="Turn off your AI gateway?"
             confirmLabel="Turn it off"
             busyLabel="Saving…"
             busy={saving}
@@ -667,13 +659,6 @@ function ModelGatewayCard({
   );
 }
 
-interface GatewayModelListProps {
-  models: readonly ModelGatewayModel[];
-  busy: boolean;
-  canRemove: boolean;
-  onRemove: (id: string) => void;
-}
-
 const noop = (): void => undefined;
 
 /** The route switches, as the loaded card's first panel shows them. */
@@ -696,7 +681,7 @@ function ModelGatewaySkeleton(): JSX.Element {
   return (
     <Skeleton
       loading
-      label="Loading model gateway"
+      label="Loading AI gateway"
       testId="settings-skeleton-form"
       className="w-full"
     >
@@ -721,279 +706,5 @@ function ModelGatewaySkeleton(): JSX.Element {
         ))}
       </div>
     </Skeleton>
-  );
-}
-
-function GatewayModelList({
-  models,
-  busy,
-  canRemove,
-  onRemove,
-}: GatewayModelListProps): JSX.Element {
-  return (
-    <ul className="divide-y border-t" data-testid="model-gateway-model-list">
-      {models.map((model) => (
-        <li
-          key={model.id}
-          className="flex items-start justify-between gap-4 px-4 py-3"
-          data-testid={`model-gateway-row-${model.id}`}
-        >
-          <div className="min-w-0">
-            <p className="truncate text-s font-medium fg-primary">
-              {model.label}
-            </p>
-            <p className="mt-0.5 truncate text-xs font-mono fg-secondary">
-              {model.gatewayId}
-            </p>
-            <p className="mt-1 text-xs fg-secondary/80">
-              {[
-                model.harness === 'claude' ? 'Claude harness' : 'Codex harness',
-                `${model.contextWindow.toLocaleString()} tokens`,
-                ...(model.supportedThinkingLevels.length > 0
-                  ? [model.supportedThinkingLevels.join(', ')]
-                  : []),
-              ].join(' · ')}
-            </p>
-          </div>
-          <Button
-            type="button"
-            variant="secondary"
-            size="compact"
-            disabled={busy || !canRemove}
-            data-testid={`model-gateway-remove-${model.id}`}
-            onClick={() => onRemove(model.id)}
-          >
-            Remove
-          </Button>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-interface AddGatewayModelFormProps {
-  busy: boolean;
-  existing: readonly ModelGatewayModel[];
-  organizationId: string;
-  onAdd: (model: ModelGatewayModel) => void;
-  onCancel: () => void;
-}
-
-/**
- * The authoring form for one row.
- *
- * `id` is derived from the organization and label rather than asked for: it is
- * an internal selection key, and the organization namespace keeps an ordinary
- * label from colliding with a shipped model id in the merged desktop catalog.
- */
-function AddGatewayModelForm({
-  busy,
-  existing,
-  organizationId,
-  onAdd,
-  onCancel,
-}: AddGatewayModelFormProps): JSX.Element {
-  const [label, setLabel] = useState('');
-  const [gatewayId, setGatewayId] = useState('');
-  const [harness, setHarness] = useState<ModelGatewayModel['harness']>('codex');
-  const [contextWindow, setContextWindow] = useState(
-    String(DEFAULT_CONTEXT_WINDOW),
-  );
-  const [thinking, setThinking] = useState<ReadonlySet<AiGatewayThinkingLevel>>(
-    new Set(),
-  );
-  const [flatSchema, setFlatSchema] = useState(false);
-
-  const trimmedLabel = label.trim();
-  const trimmedGatewayId = gatewayId.trim();
-  const parsedContext = Number.parseInt(contextWindow, 10);
-  const slug = trimmedLabel
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-  const modelId = `${organizationId}-${slug}`.slice(
-    0,
-    MODEL_GATEWAY_MAX_ID_LENGTH,
-  );
-  const duplicateLabel = existing.some(
-    (model) => model.label.toLowerCase() === trimmedLabel.toLowerCase(),
-  );
-  const duplicateId = existing.some((model) => model.id === modelId);
-  const valid =
-    trimmedLabel.length > 0 &&
-    trimmedGatewayId.length > 0 &&
-    slug.length > 0 &&
-    Number.isInteger(parsedContext) &&
-    parsedContext > 0 &&
-    !duplicateLabel &&
-    !duplicateId;
-
-  const submit = (): void => {
-    if (!valid) return;
-    onAdd({
-      id: modelId,
-      gatewayId: trimmedGatewayId,
-      label: trimmedLabel,
-      harness,
-      contextWindow: parsedContext,
-      // Emitted in canonical ascending order regardless of click order —
-      // desktop rejects a set that is not ascending.
-      supportedThinkingLevels: SELECTABLE_THINKING_LEVELS.filter((level) =>
-        thinking.has(level),
-      ),
-      toolSchemaProfile: flatSchema ? 'flat' : 'standard',
-    });
-    setLabel('');
-    setGatewayId('');
-    setThinking(new Set());
-  };
-
-  return (
-    <div
-      className="border-t bg-subtle/45 p-4"
-      data-testid="model-gateway-add-model"
-    >
-      <p className="text-s font-medium fg-primary">Add a model</p>
-      <p className="mt-1 text-xs fg-secondary">
-        Use a name your members will recognize. Names have to be unique, because
-        that&apos;s all the composer shows.
-      </p>
-
-      <div className="mt-3 grid gap-3 sm:grid-cols-2">
-        <FormField label="Name">
-          {(control) => (
-            <TextInput
-              {...control}
-              density="settings"
-              type="text"
-              value={label}
-              disabled={busy}
-              placeholder="Acme Qwen3 Coder"
-              data-testid="model-gateway-add-label"
-              onChange={(event) => setLabel(event.target.value)}
-            />
-          )}
-        </FormField>
-        <FormField label="Gateway model ID">
-          {(control) => (
-            <TextInput
-              {...control}
-              density="settings"
-              mono
-              type="text"
-              value={gatewayId}
-              disabled={busy}
-              placeholder="vertex/qwen3-coder"
-              data-testid="model-gateway-add-gateway-id"
-              onChange={(event) => setGatewayId(event.target.value)}
-            />
-          )}
-        </FormField>
-        <FormField label="Harness">
-          {(control) => (
-            <SettingsSelect
-              {...control}
-              value={harness}
-              disabled={busy}
-              data-testid="model-gateway-add-harness"
-              onValueChange={(value) =>
-                setHarness(value === 'claude' ? 'claude' : 'codex')
-              }
-              width="fill"
-              options={[
-                { value: 'codex', label: 'Codex' },
-                { value: 'claude', label: 'Claude' },
-              ]}
-            />
-          )}
-        </FormField>
-        <FormField label="Context window">
-          {(control) => (
-            <TextInput
-              {...control}
-              density="settings"
-              type="number"
-              min={1}
-              value={contextWindow}
-              disabled={busy}
-              data-testid="model-gateway-add-context-window"
-              onChange={(event) => setContextWindow(event.target.value)}
-            />
-          )}
-        </FormField>
-      </div>
-
-      <div className="mt-4 flex flex-col gap-1.5">
-        <p className="text-xs font-medium fg-primary">Thinking levels</p>
-        <ChoiceList aria-label="Thinking levels">
-          {SELECTABLE_THINKING_LEVELS.map((level) => (
-            <ChoiceListRow
-              key={level}
-              selected={thinking.has(level)}
-              disabled={busy}
-              data-testid={`model-gateway-add-thinking-${level}`}
-              onClick={() =>
-                setThinking((prev) => {
-                  const next = new Set(prev);
-                  if (next.has(level)) {
-                    next.delete(level);
-                  } else {
-                    next.add(level);
-                  }
-                  return next;
-                })
-              }
-            >
-              {level}
-            </ChoiceListRow>
-          ))}
-        </ChoiceList>
-      </div>
-
-      <ChoiceList aria-label="Tool schemas" className="mt-4">
-        <ChoiceListRow
-          selected={flatSchema}
-          disabled={busy}
-          data-testid="model-gateway-add-flat-schema"
-          onClick={() => setFlatSchema((prev) => !prev)}
-        >
-          Send simplified tool schemas. Try this if the model errors on tool
-          calls.
-        </ChoiceListRow>
-      </ChoiceList>
-
-      {duplicateLabel && trimmedLabel.length > 0 ? (
-        <p
-          className="mt-3 text-xs fg-destructive"
-          data-testid="model-gateway-add-duplicate"
-        >
-          You already have a model with this name. Pick another so members can
-          tell them apart.
-        </p>
-      ) : null}
-
-      <div className="mt-4 flex items-center justify-end gap-2">
-        <Button
-          type="button"
-          variant="secondary"
-          size="compact"
-          disabled={busy}
-          data-testid="model-gateway-add-cancel"
-          onClick={onCancel}
-        >
-          Cancel
-        </Button>
-        <Button
-          type="button"
-          variant="secondary"
-          size="compact"
-          disabled={busy || !valid}
-          data-testid="model-gateway-add-submit"
-          onClick={submit}
-        >
-          Add model
-        </Button>
-      </div>
-    </div>
   );
 }

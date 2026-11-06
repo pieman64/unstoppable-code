@@ -1,6 +1,7 @@
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
+  isLiveImportEntry,
   readImportState,
   type ImportState,
   type ImportStateStagedEntry,
@@ -103,7 +104,7 @@ export async function listPendingSources(
     { originalPath: string; entry: ImportStateStagedEntry }
   >();
   for (const [originalPath, entry] of Object.entries(ledger.sources)) {
-    if ('stagedAs' in entry) {
+    if (isLiveImportEntry(entry)) {
       sourcesByStagedPath.set(entry.stagedAs, { originalPath, entry });
     }
   }

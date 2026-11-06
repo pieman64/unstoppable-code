@@ -53,6 +53,8 @@ the engine.
 
 Hook chat ids now come from the launch's identity (run operation and action index), so the expected ids changed from `chat-hook-1000-N` to `chat-hook-op-K-0` by launch order. The only behavior change is the no-renderer case: a queued hook chat no longer refuses without a window; it queues and starts once activity clears.
 
+Since CAN-5081 queued hook chats are committed to the operation ledger before their placeholder is sent; the golden fakes the hook queue, so traces are unchanged.
+
 ## Changing a golden
 
 Change an expectation only for an intended behavior change, and name it in

@@ -18,6 +18,7 @@ export function OrganizationSettingsPage({
       {...teamPagePropsFromData(page.data)}
       activeTab="settings"
       externalAgentsEnabled={page.data.externalAgentsEnabled}
+      aiGatewayEnabled={page.data.aiGatewayEnabled}
     />
   );
 }

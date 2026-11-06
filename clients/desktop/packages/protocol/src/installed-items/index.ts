@@ -348,6 +348,26 @@ export function installedItemTargetForEntry(
   };
 }
 
+/** Count server aggregates, not their individual configurations or selections. */
+export function summarizeInstalledMcpServers(snapshot: InstalledItemSnapshot): {
+  installed: number;
+  active: number;
+} {
+  const installed = new Set<string>();
+  const active = new Set<string>();
+  for (const item of snapshot.items) {
+    const ref = item.target;
+    let key: string;
+    if (ref.kind === 'mcp-server') key = `device:${ref.serverId}`;
+    else if (ref.kind === 'account-mcp')
+      key = `account:${item.selectionRef?.serverId ?? ref.connectionId}`;
+    else continue;
+    installed.add(key);
+    if (item.status === 'active') active.add(key);
+  }
+  return { installed: installed.size, active: active.size };
+}
+
 export function countActiveInstalledItems(snapshot: InstalledItemSnapshot): {
   plugins: number;
   skills: number;

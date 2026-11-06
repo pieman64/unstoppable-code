@@ -281,7 +281,7 @@ export function createW5CommitEventSource(
         observe(
           host.markReservationRecoveryRequired(reservationId, diagnostics),
         ),
-      revision: (resource) => observe(host.revision(resource)),
+      revision: (...args) => observe(host.revision(...args)),
       capture: (request) => observe(host.capture(request)),
     };
   };

@@ -1,0 +1,123 @@
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { createServer, type AddressInfo } from 'node:net';
+import { join } from 'node:path';
+
+jest.mock('../../lib/chat-visuals-feature-flag', () => ({
+  chatVisualsEligible: ({ providerType }: { providerType?: string }): boolean =>
+    providerType === 'claude',
+}));
+
+import { McpHttpProxyService } from '../http-proxy-service';
+import { listCanopyRouteTools } from '../canopy-route-tools';
+import { canopyRouteFixtures } from './helpers/canopy-route-fixtures';
+
+type ListedTools = Record<string, { main: unknown; ui: unknown }>;
+
+function sortKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortKeys);
+  if (value !== null && typeof value === 'object')
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([key, entry]) => [key, sortKeys(entry)]),
+    );
+  return value;
+}
+
+/** Each listed tool as its name and the SHA-256 of its canonical name, description and schema. */
+function digests(tools: unknown): unknown {
+  return Array.isArray(tools)
+    ? tools.map((tool: unknown) => [
+        typeof tool === 'object' && tool !== null && 'name' in tool
+          ? tool.name
+          : null,
+        createHash('sha256')
+          .update(JSON.stringify(sortKeys(tool)))
+          .digest('hex'),
+      ])
+    : tools;
+}
+
+async function freePort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address: AddressInfo | string | null = server.address();
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return typeof address === 'object' && address ? address.port : 0;
+}
+
+async function listOverHttp(url: string, token: string): Promise<unknown> {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      accept: 'application/json, text/event-stream',
+      authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+  });
+  const body: unknown = await response.json();
+  return typeof body === 'object' && body !== null && 'result' in body
+    ? (body.result as { tools: unknown }).tools
+    : body;
+}
+
+describe('Canopy route tools (CAN-4125)', () => {
+  const golden: unknown = JSON.parse(
+    readFileSync(
+      join(__dirname, '__golden__', 'canopy-route-tools.golden.json'),
+      'utf8',
+    ),
+  );
+  let listed: ListedTools;
+
+  beforeAll(async () => {
+    const service = new McpHttpProxyService();
+    await service.ensureStarted(await freePort());
+    listed = {};
+    try {
+      for (const route of canopyRouteFixtures()) {
+        await service.registerCanopyWorktreeSessionRoute(route);
+        listed[route.sessionKey.slice(2)] = {
+          main: await listOverHttp(
+            service.getCanopyWorktreeMcpUrl(route.sessionKey),
+            route.authToken,
+          ),
+          ui: await listOverHttp(
+            service.getCanopyWorktreeUiMcpUrl(route.sessionKey),
+            route.authToken,
+          ),
+        };
+      }
+    } finally {
+      await service.shutdown();
+    }
+  }, 120_000);
+
+  it('every session route lists exactly the golden tools', () => {
+    expect(
+      Object.fromEntries(
+        Object.keys(listed)
+          .sort()
+          .map((name) => [
+            name,
+            {
+              main: digests(listed[name]?.main),
+              ui: digests(listed[name]?.ui),
+            },
+          ]),
+      ),
+    ).toEqual(golden);
+  });
+
+  it("the listing function is the session server's listing", () => {
+    for (const route of canopyRouteFixtures()) {
+      const http = listed[route.sessionKey.slice(2)];
+      expect({
+        main: listCanopyRouteTools(route, false),
+        ui: listCanopyRouteTools(route, true),
+      }).toEqual(http);
+    }
+  });
+});

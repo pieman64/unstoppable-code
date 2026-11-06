@@ -1,4 +1,13 @@
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
@@ -11,7 +20,12 @@ import {
   DEFAULT_MOCK_BASE_URL,
 } from './seeders/index.mjs';
 import { withBundledBinaryOverridesScrubbed } from './seeders/bundledBinaryOverrides.mjs';
+import {
+  createConfinementInference,
+  seedDelegationConfinementModel,
+} from './seeders/delegationConfinement.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import { readDelegationStreamRows } from './readChatStorage.mjs';
 
 // ---------------------------------------------------------------------------
 // Live-turn TOOL LOOP — bundled Claude SDK → mock LLM → in-app MCP tool.
@@ -189,6 +203,307 @@ test.describe('chat tool-call live turn', () => {
       expect(readFileSync(reportPath, 'utf8')).toBe('# Tool output report\n');
     } finally {
       await closeCanopy(electronApp, userDataDir);
+    }
+  });
+
+  test('managed Codex delegates preserve selected Git reads but cannot read sibling metadata in either profile', async ({}, testInfo) => {
+    test.skip(
+      process.platform !== 'darwin',
+      'Linked-checkout sibling fence is macOS-only; enable on Linux once requalified. Windows has no OS sandbox.',
+    );
+    test.setTimeout(60_000);
+    const userDataDir = realpathSync(
+      mkdtempSync(path.join(os.tmpdir(), 'canopy-confinement-')),
+    );
+    const git = (cwd, ...args) =>
+      execFileSync('git', args, {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }).trim();
+    const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
+    const workspaceRoot = path.join(userDataDir, 'workspaces', WORKSPACE_ID);
+    const runsDir = path.join(
+      workspaceRoot,
+      'worktree-data',
+      WORKTREE_ID,
+      'delegation',
+      'runs',
+    );
+    const runs = () =>
+      existsSync(runsDir)
+        ? readdirSync(runsDir)
+            .filter((name) => name.endsWith('.json'))
+            .map((name) =>
+              JSON.parse(readFileSync(path.join(runsDir, name), 'utf8')),
+            )
+        : [];
+    let electronApp;
+    let fixture;
+    let receipt;
+    let commonRoot;
+    try {
+      // Per-user temp masks this escape: the common .git must be in shared temp.
+      commonRoot = realpathSync(mkdtempSync('/private/tmp/canopy-git-'));
+      const seeded = seedDemoWorkspaces({
+        userDataDir,
+        apps: ['ts-pnpm-vite'],
+        fixturesDir: path.join(commonRoot, 'fixtures'),
+      });
+      const cwd = realpathSync(seeded.workspaces[0].worktreePath);
+      const common = git(
+        cwd,
+        'rev-parse',
+        '--path-format=absolute',
+        '--git-common-dir',
+      );
+      const selected = git(cwd, 'rev-parse', '--absolute-git-dir');
+      expect(common.startsWith(`${commonRoot}/`)).toBe(true);
+      expect(common.startsWith('/private/tmp/')).toBe(true);
+      expect(cwd.startsWith(`${commonRoot}/`)).toBe(false);
+      expect(selected.startsWith(`${common}/worktrees/`)).toBe(true);
+      git(cwd, 'config', 'extensions.worktreeConfig', 'true');
+      git(cwd, 'config', 'delegation.common', 'COMMON_CONFIG_READABLE');
+      git(
+        cwd,
+        'config',
+        '--worktree',
+        'delegation.canary',
+        'SELECTED_CONFIG_READABLE',
+      );
+      git(
+        cwd,
+        '-c',
+        'commit.gpgsign=false',
+        'commit',
+        '--allow-empty',
+        '-m',
+        'HISTORY_READABLE',
+      );
+
+      const addSibling = (name, canary) => {
+        const sibling = path.join(commonRoot, name);
+        const file = path.join(common, 'worktrees', name, 'config.worktree');
+        expect(existsSync(path.dirname(file))).toBe(false);
+        git(cwd, 'worktree', 'add', '--detach', sibling);
+        git(sibling, 'config', '--worktree', 'delegation.canary', canary);
+        expect(readFileSync(file, 'utf8')).toContain(canary);
+        expect(realpathSync(file.replace('/private/tmp/', '/tmp/'))).toBe(file);
+      };
+      addSibling('existing', 'EXISTING_PRIVATE_CANARY');
+      const cases = ['delegated_read_only', 'delegated_write'].map(
+        (profile) => {
+          const lateName = `late-${profile}`;
+          const sourceFile = `delegation-${profile}.txt`;
+          const command = [
+            'git log -1 --format=%s',
+            'git config --get delegation.common',
+            'git config --worktree --get delegation.canary',
+            ...['existing', lateName].flatMap((name) => {
+              const file = path.join(
+                common,
+                'worktrees',
+                name,
+                'config.worktree',
+              );
+              return [file, file.replace('/private/tmp/', '/tmp/')].map(
+                (spelling, index) =>
+                  `if value=$(LC_ALL=C cat ${quote(spelling)} 2>&1); then printf '%s\\n' "SIBLING_EXPOSED_${name}_${index}:$value"; else case "$value" in *'Permission denied'*|*'Operation not permitted'*) echo SIBLING_DENIED_${name}_${index};; *) printf '%s\\n' "SIBLING_PROBE_FAILED_${name}_${index}:$value";; esac; fi`,
+              );
+            }),
+            `if (printf 'confined write\\n' > ${quote(sourceFile)}) 2>/dev/null; then echo SOURCE_WRITE_ALLOWED; else echo SOURCE_WRITE_DENIED; fi`,
+          ].join('\n');
+          return {
+            profile,
+            lateName,
+            sourceFile,
+            command,
+            marker: `Canopy-CNATIVECHILD-${profile}`,
+            finding: `Inspected checkout with ${profile}`,
+          };
+        },
+      );
+      fixture = await createConfinementInference({
+        cases,
+        // Each profile gets a sibling created after its own thread preparation.
+        onFirstChildRequest: (entry) =>
+          addSibling(entry.lateName, 'LATE_PRIVATE_CANARY'),
+      });
+      seedWorkspaceApprovals({
+        userDataDir,
+        workspaceId: WORKSPACE_ID,
+        defaultMode: 'full-access',
+      });
+      writeFileSync(
+        path.join(userDataDir, 'preferences.json'),
+        JSON.stringify({
+          version: 1,
+          preferences: {
+            managedDelegationMode: 'explicit-only',
+            onboardingCompleted: ['v1'],
+            defaultChatInterfaceMode: 'canopy',
+            defaultWorktreeProvider: 'claude',
+            defaultChatProvider: 'claude',
+            codexMultiAgentWorktreeChatsEnabled: false,
+          },
+        }),
+      );
+      seedWorktreeChat({
+        userDataDir,
+        workspaceId: WORKSPACE_ID,
+        worktreeId: WORKTREE_ID,
+        tabs: [
+          {
+            id: 'confinement-parent',
+            title: 'Chat',
+            providerType: 'claude',
+            executionHarness: 'claude',
+            model: 'claude-sonnet-4-6',
+            approvalMode: 'full-access',
+          },
+        ],
+      });
+      ({ electronApp } = await withBundledBinaryOverridesScrubbed(async () => {
+        seedDelegationConfinementModel(userDataDir);
+        return launchCanopy({
+          userDataDir,
+          env: { CANOPY_MOCK_LLM_BASE_URL: fixture.url },
+        });
+      }));
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell();
+      await app.openMainPage();
+      await app.selectWorktree(WORKTREE_BRANCH);
+      await window
+        .getByRole('textbox')
+        .first()
+        .fill(`[${fixture.marker}] Delegate both checkout inspections.`);
+      await window.getByRole('button', { name: 'Send message' }).click();
+      await expect
+        .poll(
+          () => runs().filter((run) => run.state.status === 'completed').length,
+          { timeout: 35_000 },
+        )
+        .toBe(2);
+
+      const completed = runs();
+      receipt = cases.map((entry) => {
+        const run = completed.find(
+          (candidate) => candidate.state.finalText === entry.finding,
+        );
+        const rows =
+          run?.version === 3
+            ? readDelegationStreamRows(workspaceRoot, WORKTREE_ID, {
+                chatId: run.parent.chatId,
+                delegationId: run.state.delegationId,
+                runGeneration: run.state.runGeneration,
+              })
+            : [];
+        const blocks =
+          run?.version === 3
+            ? rows.flatMap((row) => row.blocks)
+            : (run?.state.transcript ?? []);
+        return {
+          entry,
+          run,
+          rows,
+          blocks,
+          observation: fixture.observations.get(entry.profile),
+        };
+      });
+      expect(fixture.errors).toEqual([]);
+      expect(completed).toHaveLength(2);
+      for (const { entry, run, rows, blocks, observation } of receipt) {
+        expect(run).toBeTruthy();
+        expect(run.route.harnessId).toBe('codex');
+        expect(run.route.runtimeKind).toBe('codex-app-server');
+        expect(run.state.nativeSessionId).toBeTruthy();
+        expect(observation.firstRequestAt).toBeGreaterThanOrEqual(
+          run.state.startedAt,
+        );
+        const probeOccurredAt =
+          run.version === 3
+            ? rows.find((row) =>
+                row.blocks.some(
+                  (block) =>
+                    block.type === 'tool_use' &&
+                    block.toolName === 'command' &&
+                    block.input.includes(entry.sourceFile),
+                ),
+              )?.timestamp
+            : blocks.find((block) => block.type === 'tool')?.occurredAt;
+        expect(probeOccurredAt).toBeGreaterThanOrEqual(
+          observation.lateCreatedAt,
+        );
+        const durableOutput = blocks
+          .filter(
+            (block) => block.type === 'tool' || block.type === 'tool_result',
+          )
+          .map((block) => block.output ?? '')
+          .join('\n');
+        for (const [source, output] of [
+          ['child', observation.results.join('\n')],
+          ['durable', durableOutput],
+        ]) {
+          // Report both profiles even when the first one exposes metadata.
+          const observed = expect.soft(output, `${entry.profile}: ${source}`);
+          for (const token of [
+            'HISTORY_READABLE',
+            'COMMON_CONFIG_READABLE',
+            'SELECTED_CONFIG_READABLE',
+          ])
+            observed.toContain(token);
+          for (const name of ['existing', entry.lateName]) {
+            for (const spelling of [0, 1])
+              observed.toContain(`SIBLING_DENIED_${name}_${spelling}`);
+          }
+          observed.not.toMatch(
+            /SIBLING_EXPOSED|SIBLING_PROBE_FAILED|EXISTING_PRIVATE_CANARY|LATE_PRIVATE_CANARY/,
+          );
+          observed.toContain(
+            entry.profile === 'delegated_write'
+              ? 'SOURCE_WRITE_ALLOWED'
+              : 'SOURCE_WRITE_DENIED',
+          );
+        }
+        const file = path.join(cwd, entry.sourceFile);
+        if (entry.profile === 'delegated_write')
+          expect(readFileSync(file, 'utf8')).toBe('confined write\n');
+        else expect(existsSync(file)).toBe(false);
+      }
+      await expect(window.getByTestId('panel-content-chat')).toContainText(
+        'Finished both confined inspections',
+      );
+    } finally {
+      // Seal evidence before closeCanopy removes durable child streams.
+      try {
+        await testInfo.attach('native-confinement.json', {
+          body: JSON.stringify(
+            {
+              receipt,
+              runs: runs(),
+              observations: fixture ? [...fixture.observations] : [],
+              errors: fixture?.errors,
+            },
+            null,
+            2,
+          ),
+          contentType: 'application/json',
+        });
+      } finally {
+        try {
+          if (electronApp) await closeCanopy(electronApp, userDataDir);
+        } finally {
+          try {
+            await fixture?.close();
+          } finally {
+            if (commonRoot)
+              rmSync(commonRoot, { recursive: true, force: true });
+            rmSync(userDataDir, { recursive: true, force: true });
+          }
+        }
+      }
     }
   });
 });

@@ -1,4 +1,4 @@
-import { readFile, readdir, realpath, stat } from 'node:fs/promises';
+import { lstat, readFile, readdir, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { MemorySource, SearchHit } from '@canopy/desktop-shared/types';
 import {
@@ -22,8 +22,14 @@ import {
   memoryNoteIdAt,
   withMemoryNoteId,
 } from './note-identity';
+import {
+  LocalMemoryReplicaUnavailableError,
+  localMemoryReplicaHooks,
+  type LocalMemoryNoteOrigin,
+} from './replica-hooks';
 import { LocalMemoryScopeLockLostError } from './scope-lock';
 import { LocalMemoryScopeReadOnlyError } from './scope-manifest';
+import type { ResolvedLocalMemoryScope } from './scope-resolver';
 
 const DEFAULT_RECENT_MAX_NOTES = 5;
 const DEFAULT_RECENT_MAX_CHARS_PER_NOTE = 1_000;
@@ -289,24 +295,83 @@ export async function readMemoryFile(
 
 const MAX_NOTE_NAME_ATTEMPTS = 100;
 
-/** Writes a new note create-only and whole, under the next free name. */
+/**
+ * Writes a new note create-only and whole, under the next free name. A
+ * `synced` note is queued first; when its replica stopped syncing meanwhile,
+ * queuing it rejects and nothing is written.
+ */
 async function writeNewInboxNote(
   scopeDir: string,
   filename: string,
   content: string,
+  noteId: string,
+  synced: boolean,
 ): Promise<string> {
   const inboxDir = join(scopeDir, 'inbox');
   const stem = filename.slice(0, -'.md'.length);
   for (let attempt = 1; attempt <= MAX_NOTE_NAME_ATTEMPTS; attempt += 1) {
     const name = attempt === 1 ? filename : `${stem}-${attempt}.md`;
+    const fileKey = `inbox/${name}`;
+    // A synced note is queued under its final name before it is written.
+    if (synced && (await isNameTaken(join(inboxDir, name)))) continue;
+    if (synced) {
+      const hooks = localMemoryReplicaHooks();
+      if (hooks === null) throw new LocalMemoryReplicaUnavailableError();
+      await hooks.queueNoteChange(scopeDir, { kind: 'put', fileKey, content });
+    }
     try {
       await writeNewMemoryFile(scopeDir, join(inboxDir, name), content);
-      return `inbox/${name}`;
+      return fileKey;
     } catch (error) {
+      if (synced) {
+        await localMemoryReplicaHooks()?.dropNoteChange(scopeDir, noteId);
+      }
       if (!isNodeError(error, 'EEXIST')) throw error;
     }
   }
   return '';
+}
+
+async function isNameTaken(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error) {
+    if (isNodeError(error, 'ENOENT')) return false;
+    throw error;
+  }
+}
+
+/** A synced note's device and origin, after the front matter it has. */
+function withReplicaNoteFields(
+  content: string,
+  fields: Readonly<Record<string, string>>,
+  origin: LocalMemoryNoteOrigin | undefined,
+): string {
+  const lines = [
+    ...Object.entries(fields).map(
+      ([name, value]) => `${name}: ${yamlString(value)}`,
+    ),
+    ...(origin?.projectId === undefined && origin?.organizationId === undefined
+      ? []
+      : [
+          'origin:',
+          ...(origin.projectId === undefined
+            ? []
+            : [`  projectId: ${yamlString(origin.projectId)}`]),
+          ...(origin.organizationId === undefined
+            ? []
+            : [`  organizationId: ${yamlString(origin.organizationId)}`]),
+        ]),
+  ];
+  return content.replace('\n---\n', `\n${lines.join('\n')}\n---\n`);
+}
+
+export interface InboxNoteInput {
+  text: string;
+  source: MemorySource;
+  /** Where the note was saved; recorded only in a synced replica. */
+  origin?: LocalMemoryNoteOrigin;
 }
 
 /**
@@ -316,9 +381,53 @@ async function writeNewInboxNote(
  * another process took over before the note was written with
  * `LocalMemoryScopeLockLostError`.
  */
-export async function appendInboxNote(
+export function appendInboxNote(
   scopeDir: string,
-  note: { text: string; source: MemorySource },
+  note: InboxNoteInput,
+): Promise<string> {
+  const target: InboxNoteTarget = {
+    dir: scopeDir,
+    location: 'device-local',
+    signedInAccountId: null,
+  };
+  return saveInboxNote(() => target, note);
+}
+
+/** Where a save writes, and the signed-in account it was resolved for. */
+export type InboxNoteTarget = Pick<
+  ResolvedLocalMemoryScope,
+  'dir' | 'location' | 'signedInAccountId'
+>;
+
+/**
+ * Whether a save may follow its scope from `from` to `to`: only from a
+ * device-local folder into the replica of the account it was saved for,
+ * which that account's first registration moves it to.
+ */
+function followsScopeMove(from: InboxNoteTarget, to: InboxNoteTarget): boolean {
+  return (
+    from.location === 'device-local' &&
+    to.location === 'account-replica' &&
+    from.signedInAccountId !== null &&
+    to.signedInAccountId === from.signedInAccountId
+  );
+}
+
+/** Folder moves a save follows before it gives up. */
+const MAX_SCOPE_MOVES = 2;
+
+/**
+ * {@link appendInboxNote} into the folder `resolveTarget()` names once that
+ * folder's write lock is held. A save is bound to the folder and signed-in
+ * account it started with: when the scope has moved meanwhile, it follows
+ * only from the device-local folder into that same account's replica (the
+ * account's first registration). Any other move, such as a switch to
+ * another account, drops the note and resolves '', so a note never reaches
+ * another account's replica or outbox.
+ */
+export async function saveInboxNote(
+  resolveTarget: () => InboxNoteTarget,
+  note: InboxNoteInput,
 ): Promise<string> {
   // Normalize BEFORE redacting: normalization strips NUL and other control
   // bytes, so redacting first would let an obfuscated key like
@@ -349,8 +458,9 @@ export async function appendInboxNote(
       ? [`  sessionId: ${yamlString(redactedSource.sessionId)}`]
       : []),
   ];
-  // The ID goes in after redaction, which must never rewrite it.
-  const fileContent = withMemoryNoteId(
+  // The ID and the sync fields go in after redaction, which must never
+  // rewrite them.
+  const redactedContent = withMemoryNoteId(
     redactMemoryContent(
       [
         '---',
@@ -366,24 +476,59 @@ export async function appendInboxNote(
     ),
     noteId,
   );
-  try {
-    return await withMemoryWriteLock(scopeDir, async () => {
-      await ensureOwnerOnlyMemoryDir(scopeDir, join(scopeDir, 'inbox'));
-      return writeNewInboxNote(
-        scopeDir,
-        memoryNoteFileName(createdMs, redactedText, noteId),
-        fileContent,
+  let target = resolveTarget();
+  for (let move = 0; move < MAX_SCOPE_MOVES; move += 1) {
+    const { dir } = target;
+    const replicaFields = localMemoryReplicaHooks()?.noteFields(dir) ?? null;
+    const fileContent =
+      replicaFields === null
+        ? redactedContent
+        : withReplicaNoteFields(redactedContent, replicaFields, note.origin);
+    try {
+      const outcome = await withMemoryWriteLock(
+        dir,
+        async (): Promise<
+          { moved: InboxNoteTarget } | { moved: null; fileKey: string }
+        > => {
+          const current = resolveTarget();
+          if (current.dir !== dir) return { moved: current };
+          await ensureOwnerOnlyMemoryDir(dir, join(dir, 'inbox'));
+          const fileKey = await writeNewInboxNote(
+            dir,
+            memoryNoteFileName(createdMs, redactedText, noteId),
+            fileContent,
+            noteId,
+            replicaFields !== null,
+          );
+          return { moved: null, fileKey };
+        },
       );
-    });
-  } catch (error) {
-    if (
-      error instanceof LocalMemoryScopeReadOnlyError ||
-      error instanceof LocalMemoryScopeLockLostError
-    ) {
-      throw error;
+      if (outcome.moved !== null) {
+        if (!followsScopeMove(target, outcome.moved)) {
+          process.emitWarning(
+            'A memory note was not saved: its scope moved while the save waited',
+            { code: 'LOCAL_MEMORY_SAVE_SCOPE_MOVED' },
+          );
+          return '';
+        }
+        target = outcome.moved;
+        continue;
+      }
+      if (outcome.fileKey && replicaFields !== null) {
+        localMemoryReplicaHooks()?.noteChanged(dir);
+      }
+      return outcome.fileKey;
+    } catch (error) {
+      if (
+        error instanceof LocalMemoryScopeReadOnlyError ||
+        error instanceof LocalMemoryScopeLockLostError
+      ) {
+        throw error;
+      }
+      return '';
     }
-    return '';
   }
+  return '';
 }
 
 export interface RecentInboxNote {

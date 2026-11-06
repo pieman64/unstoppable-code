@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import { executionSecretFingerprints } from '../../execution-secrets';
 
 import {
   WorkerScriptExecuteResultSchema,
   type CanopyErrorPayload,
-  type DelegationSecretFingerprint,
   type OperationFailure,
   type OperationOrigin,
   type OperationOwner,
@@ -48,8 +48,6 @@ export interface CoreScriptRunRequest {
   /** What started the run: a client, a hook, an automation or the system. */
   origin: OperationOrigin;
   owner: OperationOwner;
-  /** Fingerprints of the secrets the run's environment holds. */
-  secrets?: readonly DelegationSecretFingerprint[];
 }
 
 export interface CoreScriptRunOptions {
@@ -225,12 +223,13 @@ export class CoreScriptRuns {
     if (signal?.aborted) onAbort();
     else signal?.addEventListener('abort', onAbort, { once: true });
     try {
+      const secrets = executionSecretFingerprints(params.secrets);
       const dispatched = await localWorker.dispatch({
         parentOperationId: parent.operationId,
         operation: WORKER_SCRIPT_EXECUTE,
         params,
         idempotencyKey: executionId,
-        ...(request.secrets ? { secrets: request.secrets } : {}),
+        ...(secrets.length ? { secrets } : {}),
       });
       return await this.finish(parent, executionId, dispatched.operation, {
         result: dispatched.result,

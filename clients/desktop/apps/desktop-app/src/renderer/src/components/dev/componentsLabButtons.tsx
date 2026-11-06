@@ -9,6 +9,7 @@ import {
   ChevronRightIcon,
   CloseIcon,
   FolderIcon,
+  MagnifyingGlassIcon,
   PlusIcon,
   RefreshIcon,
   SettingsIcon,
@@ -107,6 +108,19 @@ export function ButtonsSpecimen(): JSX.Element {
           </SpecimenCell>
           <SpecimenCell label="With shortcut">
             <Button shortcut="⌘P">Open file</Button>
+          </SpecimenCell>
+          <SpecimenCell label="ghost toggle: off, then aria-pressed">
+            <Button
+              variant="ghost"
+              iconOnly
+              aria-label="Search"
+              aria-pressed={false}
+            >
+              <MagnifyingGlassIcon />
+            </Button>
+            <Button variant="ghost" iconOnly aria-label="Search" aria-pressed>
+              <MagnifyingGlassIcon />
+            </Button>
           </SpecimenCell>
           <SpecimenCell label="Destructive with icon">
             <Button variant="destructive" size="compact">

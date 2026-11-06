@@ -105,7 +105,18 @@ export interface UnifiedEntryPublicShare {
 export interface UnifiedEntryConnectionStatus {
   status: 'connected' | 'auth_required' | 'unreachable' | 'unknown';
   provider?: boolean;
+  /** When this health was last checked, as the status cache reports it. */
+  lastCheckedAt?: string;
+  /** What sign-in would do here; absent when there is nothing to sign in to. */
+  signIn?: 'connect' | 'reconnect';
+  /** Nothing has established whether this server asks for sign-in. */
+  requirementUnknown?: boolean;
+  /** Every binding behind this health is turned off. */
+  disabled?: boolean;
 }
+
+/** Where an MCP entry's connections are bound, as actual bindings show. */
+export type UnifiedEntryPlacement = 'account' | 'desktop' | 'both';
 
 /** A plugin another entry points at, by entry id and display name. */
 export interface UnifiedEntryPluginLink {
@@ -126,6 +137,18 @@ export interface UnifiedEntryBundledServerRow {
   readonly entryId: string;
   /** The installed row's MCP server id. */
   readonly serverId: string;
+}
+
+/** An MCP server a plugin bundles, listed or not. Never rendered as an endpoint. */
+export interface UnifiedEntryBundledServer {
+  /** The server's key inside its plugin: its manifest name or catalog key. */
+  readonly key: string;
+  /** The display name: the catalog's for a curated server. */
+  readonly name: string;
+  /** The server's `mcpEndpointKey`, a host at most; absent when unknown. */
+  readonly endpoint?: string;
+  /** The row or catalog card that already represents this server. */
+  readonly entryId?: string;
 }
 
 /** The same app published by another catalog, linked from a plugin page. */
@@ -284,6 +307,12 @@ export interface UnifiedPluginEntry {
   surface?: UnifiedEntrySurface;
   /** Cached connection health of an installed MCP entry; absent elsewhere. */
   connection?: UnifiedEntryConnectionStatus;
+  /** A card with several connections: their worst health, for its row only. */
+  aggregateConnection?: UnifiedEntryConnectionStatus;
+  /** Absent for a provider-managed entry, which runs in neither place. */
+  placement?: UnifiedEntryPlacement;
+  /** Number of concrete configuration/binding targets behind an MCP row. */
+  mcpTargetCount?: number;
   recommended: boolean;
   /** Stable catalog order used only as a browse-ranking fallback. */
   catalogSortOrder?: number;
@@ -302,5 +331,13 @@ export interface UnifiedPluginEntry {
   alsoAvailableFrom?: readonly UnifiedEntryAlternative[];
   /** Set on an installed plugin: the installed MCP rows hidden behind it. */
   bundledServerRows?: readonly UnifiedEntryBundledServerRow[];
+  /** Set on a plugin, installed or not: every MCP server it bundles. */
+  bundledServers?: readonly UnifiedEntryBundledServer[];
+  /**
+   * Set on an MCP search result that stands for a bundled server no row or
+   * card represents. `bundledBy` names its plugin; it has no installation,
+   * health, sharing or install action of its own.
+   */
+  pluginServerResult?: true;
   ref: UnifiedEntryRef;
 }

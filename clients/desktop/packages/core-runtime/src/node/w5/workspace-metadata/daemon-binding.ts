@@ -240,8 +240,8 @@ export function createW5DaemonMetadataBinding(
   const runKeyed = createW5KeyedOperationRunner({
     getReceiptStore: () => store,
   });
-  const checkExpectedRevision = createW5ExpectedRevisionCheck((resources) =>
-    store.readRevisions(resources),
+  const checkExpectedRevision = createW5ExpectedRevisionCheck((...args) =>
+    store.readRevisions(...args),
   );
   const commandStorage = {
     index: storage.workspaceIndex,

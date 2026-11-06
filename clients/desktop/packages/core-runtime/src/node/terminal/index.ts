@@ -5,4 +5,5 @@ export * from './ports';
 export * from './replay';
 export * from './running-detector';
 export * from './shells';
+export * from './settings';
 export * from './remote';

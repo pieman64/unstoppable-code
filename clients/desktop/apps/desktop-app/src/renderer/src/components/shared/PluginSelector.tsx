@@ -18,6 +18,7 @@ import {
   withUnavailableRows,
 } from '@canopy/ui-app/capability';
 import { UNIFIED_ENTRY_SURFACE_LABELS } from '@canopy/ui-shared';
+import type { SelectionTableCopy } from '@canopy/ui-shared/lib';
 import { type JSX, useCallback, useEffect, useMemo, useState } from 'react';
 import { useCollectionList } from '@/hooks/useCollectionList';
 import {
@@ -79,6 +80,8 @@ const PROVIDER_SCOPE_LABELS: Record<PluginSelectorProviderScope, string> = {
 interface PluginSelectorProps {
   selections: ChatTabPluginSelections;
   onChange: (selections: ChatTabPluginSelections) => void;
+  /** What selecting means in this picker; words only. */
+  selectionCopy?: SelectionTableCopy;
   /**
    * Scope hint controlling which plugin rows are selectable. Defaults to
    * `'mixed'` (every plugin enabled). `undefined` is treated identically to
@@ -232,6 +235,7 @@ export function PluginSelector({
   inheritedDefaults,
   unavailable = NO_UNAVAILABLE,
   inset = true,
+  selectionCopy,
 }: PluginSelectorProps): JSX.Element {
   const effectiveScope: PluginSelectorProviderScope = providerScope ?? 'mixed';
   const inheritedLayerByKey = useMemo(
@@ -823,6 +827,7 @@ export function PluginSelector({
           showCollectionKind={true}
           loading={loading}
           providerIconScope={providerIconScope}
+          selectionCopy={selectionCopy}
           toolbarTrailing={
             <span
               data-testid="plugin-selector-scope"

@@ -313,6 +313,20 @@ export function validateGlobalUniqueness(brands, errors) {
       .replace(/[. ]+$/u, '')
       .normalize('NFC')
       .toLowerCase();
+  const buildRoots = new Map();
+  for (const brand of brands) {
+    for (const [build, name] of Object.entries(
+      brand.storage.buildDataDirNames,
+    )) {
+      const key = directoryCollisionKey(name);
+      const previous = buildRoots.get(key);
+      if (previous)
+        errors.push(
+          `${brand.id}: build data root ${build} collides with ${previous}`,
+        );
+      buildRoots.set(key, `${brand.id}/${build}`);
+    }
+  }
   for (const owner of brands) {
     for (const devDir of owner.storage.dataDirNames.dev) {
       const devDirKey = directoryCollisionKey(devDir);

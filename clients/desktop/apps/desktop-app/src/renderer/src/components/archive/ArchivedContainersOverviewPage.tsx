@@ -372,7 +372,7 @@ export function ArchivedContainersOverviewPage({
           </HeaderActionButton>
           <div className="flex min-w-0 flex-col">
             <span
-              className="text-sm font-medium fg-primary"
+              className="text-s font-medium fg-primary"
               data-testid="archived-overview-title"
             >
               Archived and deleted

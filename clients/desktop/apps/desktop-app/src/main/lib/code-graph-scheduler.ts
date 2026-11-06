@@ -32,10 +32,6 @@ import {
 } from './code-graph-worktree-fingerprint';
 import { readAllSidebarItems } from './sidebar-items';
 import {
-  recordCodeGraphRefreshTelemetry,
-  type CodeGraphRefreshSource,
-} from './code-graph-telemetry';
-import {
   clearCodeGraphFirstRequest,
   noteCodeGraphFirstRequest,
 } from './code-graph-build-diagnostics';
@@ -49,13 +45,22 @@ import {
  */
 export type CodeGraphBuildReason = 'worktree-created' | 'refresh';
 
+/** The bounded signal that asked for a build, recorded with its run. */
+export type CodeGraphRefreshSource =
+  | 'worktree-created'
+  | 'turn-diff'
+  | 'diff-stats'
+  | 'edit-during-build'
+  | 'availability-reconcile'
+  | 'unspecified';
+
 export interface ScheduleCodeGraphBuildOptions {
   projectId: string;
   worktreeId: string;
   reason: CodeGraphBuildReason;
   /** Debounce window in ms. Creation defaults to 5s; refresh defaults to 20s. */
   debounceMs?: number;
-  /** Bounded origin used only for aggregate refresh-decision telemetry. */
+  /** Bounded origin recorded with the scheduled build's initiated-work run. */
   source?: CodeGraphRefreshSource;
 }
 
@@ -172,7 +177,6 @@ export function scheduleCodeGraphBuild(
     (options.reason === 'worktree-created'
       ? 'worktree-created'
       : 'unspecified');
-  recordCodeGraphRefreshTelemetry({ source, outcome: 'requested' });
   const debounceMs =
     options.debounceMs ??
     (options.reason === 'refresh'
@@ -191,17 +195,9 @@ export function scheduleCodeGraphBuild(
       (options.reason === 'worktree-created' &&
         existingTimer.deadline <= deadline)
     ) {
-      recordCodeGraphRefreshTelemetry({
-        source,
-        outcome: 'timer-coalesced',
-      });
       return;
     }
     clearTimeout(existingTimer.timer);
-    recordCodeGraphRefreshTelemetry({
-      source,
-      outcome: 'timer-coalesced',
-    });
   }
   const firstRequestedAt = Math.min(
     existingTimer?.requestedAt ?? requestedAt,
@@ -245,6 +241,7 @@ export async function runCodeGraphPerformanceBuild(options: {
     'refresh',
     'unspecified',
     Date.now(),
+    'in-process',
   );
   return true;
 }
@@ -397,8 +394,8 @@ export async function reconcileCodeGraphSchedulerAvailability(): Promise<void> {
 
 /**
  * Runs (or coalesces into) a single build for a worktree. Never throws — a
- * failure at any stage is recorded by the centralized build service's Datadog
- * operation and swallowed here so the caller's fire-and-forget
+ * failure at any stage is recorded by the build's local diagnostic and
+ * swallowed here so the caller's fire-and-forget
  * `void runCodeGraphBuild(...)` can never produce an unhandled rejection.
  */
 async function runCodeGraphBuild(
@@ -407,6 +404,7 @@ async function runCodeGraphBuild(
   reason: CodeGraphBuildReason,
   source: CodeGraphRefreshSource,
   requestedAt: number,
+  placement: 'default' | 'in-process' = 'default',
 ): Promise<void> {
   const key = buildKey(projectId, worktreeId);
   const cancellationVersion = cancellationVersions.get(key) ?? 0;
@@ -421,10 +419,6 @@ async function runCodeGraphBuild(
         pendingRefire.get(key)?.requestedAt ?? requestedAt,
         requestedAt,
       ),
-    });
-    recordCodeGraphRefreshTelemetry({
-      source,
-      outcome: 'inflight-coalesced',
     });
     return;
   }
@@ -477,14 +471,7 @@ async function runCodeGraphBuild(
         // Any read-worker failure leaves freshness unknown; in particular,
         // busy admission is not an absent/incomplete graph. Do not start a
         // build or seed fallback. A later scheduler trigger can retry after
-        // the lane has capacity. Keep the existing bounded refresh outcome.
-        recordCodeGraphRefreshTelemetry({
-          source,
-          outcome: 'fingerprint-error',
-          fingerprintDurationMs: Date.now() - fingerprintStartedAtMs,
-          metadataReadDurationMs: persistedFingerprint.durationMs,
-          metadataCacheHit: false,
-        });
+        // the lane has capacity.
         return;
       }
       if (
@@ -493,13 +480,6 @@ async function runCodeGraphBuild(
       ) {
         // A newer app version wrote this graph. Its build worker would refuse
         // the schema, and rebuilding over it would discard that version's data.
-        recordCodeGraphRefreshTelemetry({
-          source,
-          outcome: 'fingerprint-error',
-          fingerprintDurationMs: Date.now() - fingerprintStartedAtMs,
-          metadataReadDurationMs: persistedFingerprint.durationMs,
-          metadataCacheHit: persistedFingerprint.cacheHit,
-        });
         return;
       }
       observedFingerprintMs = Date.now() - fingerprintStartedAtMs;
@@ -511,39 +491,24 @@ async function runCodeGraphBuild(
       const derivedLeftPending =
         persistedFingerprint.derivedPending === true &&
         !isCodeGraphBuildPending(key);
-      const outcome =
+      if (
         observedFingerprint === persistedFingerprint.fingerprint &&
         persistedFingerprint.schemaVersion === CODE_GRAPH_SCHEMA_VERSION &&
         persistedFingerprint.extractorVersion ===
           CODE_GRAPH_EXTRACTOR_VERSION &&
         !derivedLeftPending
-          ? 'fingerprint-unchanged'
-          : 'fingerprint-changed';
-      recordCodeGraphRefreshTelemetry({
-        source,
-        outcome,
-        fingerprintDurationMs: Date.now() - fingerprintStartedAtMs,
-        metadataReadDurationMs: persistedFingerprint.durationMs,
-        metadataCacheHit: persistedFingerprint.cacheHit,
-      });
-      if (outcome === 'fingerprint-unchanged') {
+      ) {
         return;
       }
     } catch {
-      recordCodeGraphRefreshTelemetry({
-        source,
-        outcome: 'fingerprint-error',
-        fingerprintDurationMs: Date.now() - fingerprintStartedAtMs,
-      });
       return;
     }
 
     // The build is core initiated work that dispatches
     // `worker.codeGraph.build` (CAN-5617); the run records whether it was
-    // skipped, ran or failed. The centralized build service still owns the
-    // privacy-bounded `canopy.code_graph_generation` Datadog lifecycle.
-    // Code-graph builds are background maintenance, not agent turns, so
-    // they deliberately do not enter the local agent Audit Trail.
+    // skipped, ran or failed. Code-graph builds are background maintenance,
+    // not agent turns, so they deliberately do not enter the local agent
+    // Audit Trail.
     await startScheduledCodeGraphBuild({
       projectId,
       worktreeId,
@@ -555,13 +520,15 @@ async function runCodeGraphBuild(
       canceled: () =>
         cancellationVersion !== (cancellationVersions.get(key) ?? 0) ||
         canceled.has(key),
-      onStarted: () => {
-        recordCodeGraphRefreshTelemetry({ source, outcome: 'build-started' });
-      },
+      // Performance runs keep every scheduler build in Electron main's
+      // hosts, whatever triggered it, as the harness measures them (CAN-5719).
+      placement: isCodeGraphPerformanceSchedulerEnabled()
+        ? 'in-process'
+        : placement,
     });
   } catch {
-    // Best-effort: telemetry is emitted before the build service rethrows, and
-    // a scheduled code-graph build must never produce an unhandled rejection.
+    // Best-effort: a scheduled code-graph build must never produce an
+    // unhandled rejection.
   } finally {
     inFlight.delete(key);
     const wasCanceled = canceled.has(key);

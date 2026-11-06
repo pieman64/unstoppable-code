@@ -32,7 +32,7 @@ export type ButtonVariant =
  */
 export type ButtonLinkVariant = 'link';
 
-export type ButtonSize = 'sm' | 'md' | 'lg' | 'control' | 'compact' | 'field';
+export type ButtonSize = 'sm' | 'md' | 'lg' | 'compact' | 'field';
 
 interface BusyButtonAppearanceProps {
   /**
@@ -50,7 +50,6 @@ interface CapsuleButtonBaseProps
    * Visible control height, at or below the 36px app maximum. `sm`, `md`
    * and `lg` are the 14px-label pill. `compact` is the 28px capsule with a
    * 13px label: Settings, dialog, section-header and dense-panel actions.
-   * `control` (the 28px rounded rectangle) is deprecated: use `compact`.
    * `field` is the 28px field rectangle (10px `rounded-row` corners) for a
    * dropdown trigger only
    * (`SettingsSelect`): fields and dropdowns are rectangles, actions are
@@ -98,6 +97,8 @@ type CapsuleButtonProps = CapsuleButtonBaseProps &
     | {
         /** Render a circular icon-only button. */
         iconOnly: true;
+        /** Nest a sidebar control's corners inside its 32px row. */
+        iconShape?: 'default' | 'nested';
         /** Accessible name required for icon-only controls. */
         'aria-label': string;
         /** An icon-only control names its shortcut in its tooltip instead. */
@@ -105,6 +106,7 @@ type CapsuleButtonProps = CapsuleButtonBaseProps &
       }
     | {
         iconOnly?: false;
+        iconShape?: undefined;
         /**
          * The keys that perform this action (`formatShortcut(id)`: `⌘P`,
          * `Ctrl P`), drawn inside the button after its label as one filled
@@ -125,6 +127,7 @@ interface LinkButtonProps
   variant: ButtonLinkVariant;
   size?: undefined;
   iconOnly?: false;
+  iconShape?: undefined;
   shortcut?: undefined;
   fillRow?: undefined;
   groupHover?: undefined;
@@ -172,7 +175,7 @@ export const DROPDOWN_INVALID_CLASS =
 // `hover:` and `active:`, so each disabled class below outranks the hover or
 // press class for the same property. Loader-equipped busy buttons can opt
 // into retaining their variant paint; disabled semantics still block presses.
-const BASE_CLASS_NAME = `focus-ring inline-flex max-h-9 shrink-0 select-none items-center justify-center gap-1.5 font-medium transition-[opacity,transform,scale] ${BUTTON_PRESS_CLASS} before:absolute before:inset-x-0 before:content-[''] disabled:scale-100 disabled:cursor-not-allowed disabled:not-data-[busy-appearance=preserved]:shadow-none aria-disabled:scale-100 aria-disabled:cursor-not-allowed aria-disabled:not-data-[busy-appearance=preserved]:opacity-60`;
+const BASE_CLASS_NAME = `focus-ring inline-flex max-h-9 [-webkit-tap-highlight-color:transparent] shrink-0 select-none items-center justify-center gap-1.5 font-medium transition-[opacity,transform,scale] ${BUTTON_PRESS_CLASS} before:absolute before:inset-x-0 before:content-[''] disabled:scale-100 disabled:cursor-not-allowed disabled:not-data-[busy-appearance=preserved]:shadow-none aria-disabled:scale-100 aria-disabled:cursor-not-allowed aria-disabled:not-data-[busy-appearance=preserved]:opacity-60`;
 
 // Disabled, the label takes the disabled ink; `quietWhenDisabled` keeps the
 // variant's ink at 80% instead.
@@ -195,7 +198,9 @@ const VARIANT_CLASS_NAMES: Record<ButtonVariant, string> = {
   // header `Open in` split control; only the ink is added here.
   secondary: `${SECONDARY_SURFACE_CLASS} ${SECONDARY_SURFACE_OPEN_CLASS} fg-primary ${DISABLED_FILL_CLASS_NAME} disabled:[background-image:none] aria-busy:data-[busy-appearance=preserved]:[background-image:none]`,
   outline: `border bg-base fg-primary hover:bg-secondary active:bg-muted ${DISABLED_FILL_CLASS_NAME} aria-busy:data-[busy-appearance=preserved]:bg-base`,
-  ghost: `bg-transparent fg-secondary hover:bg-secondary hover:fg-primary ${DISABLED_NO_FILL_CLASS_NAME} aria-busy:data-[busy-appearance=preserved]:fg-secondary`,
+  // Pressed (a toggle, `aria-pressed`) takes a stronger overlay than hover,
+  // so a click shows, and it holds while hovered.
+  ghost: `bg-transparent fg-secondary hover:bg-secondary hover:fg-primary not-disabled:aria-pressed:bg-muted not-disabled:aria-pressed:fg-primary ${DISABLED_NO_FILL_CLASS_NAME} aria-busy:data-[busy-appearance=preserved]:fg-secondary`,
   // Ghost for a control on a raised or hovered surface (a card's row): the
   // translucent hover layers over whatever is beneath, where `ghost`'s
   // opaque fill would punch a hole in it.
@@ -226,16 +231,34 @@ const VARIANT_CLASS_NAMES: Record<ButtonVariant, string> = {
 const LINK_CLASS_NAME =
   'focus-ring rounded font-medium fg-accent hover:underline disabled:cursor-not-allowed disabled:no-underline disabled:not-data-[busy-appearance=preserved]:fg-disabled aria-disabled:cursor-not-allowed aria-disabled:not-data-[busy-appearance=preserved]:opacity-60';
 
-// Shape and label size belong to the size, so the pill and the control
+// Shape and label size belong to the size, so the pill and the field
 // rectangle never carry each other's radius or type.
 const SIZE_CLASS_NAMES: Record<ButtonSize, string> = {
-  sm: 'h-7 rounded-full text-s',
-  md: 'h-8 rounded-full text-s',
-  lg: 'h-9 rounded-full text-s',
-  control: 'h-7 rounded-md text-xs',
-  compact: 'h-7 rounded-full text-xs',
-  field: `h-7 rounded-row text-xs ${DROPDOWN_INVALID_CLASS}`,
+  sm: 'h-7 text-s',
+  md: 'h-8 text-s',
+  lg: 'h-9 text-s',
+  compact: 'h-7 text-xs',
+  field: `h-7 text-xs ${DROPDOWN_INVALID_CLASS}`,
 };
+
+const SIZE_RADIUS_CLASS_NAMES: Record<ButtonSize, string> = {
+  sm: 'rounded-full',
+  md: 'rounded-full',
+  lg: 'rounded-full',
+  compact: 'rounded-full',
+  field: 'rounded-row',
+};
+
+/**
+ * Sidebar row corners nest: the 28px control's 2px inset from a 32px row
+ * subtracts 2px from the row radius. A control that fills the row keeps its
+ * radius. Shared with the rail's native section/destructive tones.
+ */
+export function nestedIconButtonRadiusClassName(size: ButtonSize): string {
+  return size === 'md' || size === 'lg'
+    ? 'rounded-row'
+    : 'rounded-[max(0px,calc(var(--radius-row)-2px))]';
+}
 
 // On a coarse pointer the `before:` hit area grows to 44px: up and down for
 // every button, and sideways too for an icon-only one. `touchArea="contained"`
@@ -244,7 +267,6 @@ const COARSE_HIT_Y_CLASS_NAMES: Record<ButtonSize, string> = {
   sm: 'pointer-coarse:before:-inset-y-2',
   md: 'pointer-coarse:before:-inset-y-1.5',
   lg: 'pointer-coarse:before:-inset-y-1',
-  control: 'pointer-coarse:before:-inset-y-2',
   compact: 'pointer-coarse:before:-inset-y-2',
   field: 'pointer-coarse:before:-inset-y-2',
 };
@@ -253,7 +275,6 @@ const COARSE_HIT_X_CLASS_NAMES: Record<ButtonSize, string> = {
   sm: 'pointer-coarse:before:-inset-x-2',
   md: 'pointer-coarse:before:-inset-x-1.5',
   lg: 'pointer-coarse:before:-inset-x-1',
-  control: 'pointer-coarse:before:-inset-x-2',
   compact: 'pointer-coarse:before:-inset-x-2',
   field: 'pointer-coarse:before:-inset-x-2',
 };
@@ -262,7 +283,6 @@ const LABEL_SIZE_CLASS_NAMES: Record<ButtonSize, string> = {
   sm: 'px-2.5',
   md: 'px-3',
   lg: 'px-4',
-  control: 'px-2.5',
   compact: 'px-3',
   field: 'px-2.5',
 };
@@ -274,7 +294,6 @@ const SHORTCUT_END_PADDING_CLASS_NAMES: Record<ButtonSize, string> = {
   sm: 'pr-1.25',
   md: 'pr-1.75',
   lg: 'pr-2.25',
-  control: 'pr-1.25',
   compact: 'pr-1.25',
   field: 'pr-1.25',
 };
@@ -283,7 +302,6 @@ const ICON_ONLY_SIZE_CLASS_NAMES: Record<ButtonSize, string> = {
   sm: 'w-7 px-0',
   md: 'w-8 px-0',
   lg: 'w-9 px-0',
-  control: 'w-7 px-0',
   compact: 'w-7 px-0',
   field: 'w-7 px-0',
 };
@@ -302,10 +320,10 @@ const FILL_ROW_STYLE: CSSProperties = {
 const FILL_ROW_HOVER_CLASS_NAMES: Record<ButtonVariant, string> = {
   primary:
     'group-hover/checklist:bg-[color-mix(in_srgb,var(--bg-accent),#000_12%)]',
-  secondary: SECONDARY_SURFACE_HOVER_CLASS.replace(
-    'hover:',
-    'group-hover/checklist:',
-  ),
+  // Written out in full: Tailwind generates only the classes it finds in
+  // source, so a class built by string replacement never gets a rule.
+  secondary:
+    'group-hover/checklist:[background-image:linear-gradient(var(--bg-subtle),var(--bg-subtle))]',
   outline: 'group-hover/checklist:bg-secondary',
   ghost: 'group-hover/checklist:bg-secondary group-hover/checklist:fg-primary',
   'ghost-overlay':
@@ -397,6 +415,7 @@ export function buttonClassName({
   variant = 'secondary',
   size = 'md',
   iconOnly = false,
+  iconShape = 'default',
   groupHover = false,
   pressedHover = false,
   quietWhenDisabled = false,
@@ -406,6 +425,7 @@ export function buttonClassName({
   variant?: ButtonVariant | ButtonLinkVariant;
   size?: ButtonSize;
   iconOnly?: boolean;
+  iconShape?: 'default' | 'nested';
   groupHover?: boolean;
   pressedHover?: boolean;
   quietWhenDisabled?: boolean;
@@ -414,6 +434,10 @@ export function buttonClassName({
 } = {}): string {
   if (variant === 'link') return `${LINK_CLASS_NAME} ${className}`;
   const position = positionsItself(className) ? '' : 'relative ';
+  const radiusClassName =
+    iconOnly && iconShape === 'nested'
+      ? nestedIconButtonRadiusClassName(size)
+      : SIZE_RADIUS_CLASS_NAMES[size];
   const states = [
     quietWhenDisabled ? QUIET_DISABLED_INK_CLASS_NAME : DISABLED_INK_CLASS_NAME,
     groupHover ? GROUP_HOVER_CLASS_NAMES[variant] : '',
@@ -423,7 +447,7 @@ export function buttonClassName({
   ]
     .filter(Boolean)
     .join(' ');
-  return `${position}${BASE_CLASS_NAME} ${states} ${VARIANT_CLASS_NAMES[variant]} ${SIZE_CLASS_NAMES[size]} ${iconOnly ? ICON_ONLY_SIZE_CLASS_NAMES[size] : LABEL_SIZE_CLASS_NAMES[size]} ${className}`;
+  return `${position}${BASE_CLASS_NAME} ${states} ${VARIANT_CLASS_NAMES[variant]} ${SIZE_CLASS_NAMES[size]} ${radiusClassName} ${iconOnly ? ICON_ONLY_SIZE_CLASS_NAMES[size] : LABEL_SIZE_CLASS_NAMES[size]} ${className}`;
 }
 
 /**
@@ -438,6 +462,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
       variant = 'secondary',
       size = 'md',
       iconOnly = false,
+      iconShape = 'default',
       fillRow = false,
       groupHover = false,
       pressedHover = false,
@@ -468,6 +493,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
           variant,
           size,
           iconOnly,
+          iconShape,
           groupHover,
           pressedHover,
           quietWhenDisabled,

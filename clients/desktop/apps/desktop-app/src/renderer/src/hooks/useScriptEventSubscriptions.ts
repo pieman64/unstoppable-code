@@ -1,5 +1,7 @@
 import { useEffect, useMemo } from 'react';
 import { createScriptDevServerAutoOpener } from '@/lib/scriptDevServerAutoOpen';
+import { summarizeScriptFailure } from '@/lib/scriptFailureSummary';
+import { openScriptFailureOutput } from '@/stores/scriptFailureOutputStore';
 import { isBrowserOpenTargetAvailable } from '@/lib/remote-control/in-app-browser-availability';
 import { useScriptsStore } from '@/stores/scriptsStore';
 import { useGitHubStore } from '@/stores/githubStore';
@@ -42,6 +44,17 @@ export function shouldToastAfterScriptCompleteFailure(
     !event.result.success &&
     (event.result.timedOut || event.result.exitCode !== null)
   );
+}
+
+/** The failure toast's message: the script, then the output line that says why. */
+export function buildScriptFailureToastMessage(
+  event: ScriptCompleteEvent,
+  outputLines: readonly string[],
+): string {
+  const label = event.script.label;
+  if (event.result.timedOut) return `${label} timed out`;
+  const reason = summarizeScriptFailure(outputLines);
+  return reason === null ? `${label} failed` : `${label} failed: ${reason}`;
 }
 
 export function useScriptEventSubscriptions(): void {
@@ -148,19 +161,45 @@ export function useScriptEventSubscriptions(): void {
           if (isTearingDown) {
             return;
           }
-          const prefix = event.script.label;
-          const reason = event.result.timedOut
-            ? `${prefix} timed out`
-            : `${prefix} failed — exit ${event.result.exitCode ?? 'unknown'}`;
+          // The store keeps the output's tail, where errors print; the event's
+          // output keeps its head. The store has no lines for a worktree whose
+          // Activity panel never loaded.
+          const storedLines =
+            useScriptsStore.getState().runs[worktreeKey]?.[
+              event.script.scriptKey
+            ]?.outputLines ?? [];
+          const outputLines =
+            storedLines.length > 0
+              ? storedLines
+              : event.result.output.split(/\r?\n/);
           const project = useProjectsStore
             .getState()
             .projects.find((p) => p.id === event.projectId);
-          useGitHubStore.getState().addToast(reason, 'error', undefined, {
-            category: 'Script',
-            workspaceName: project?.name,
-            projectId: event.projectId,
-            worktreeId: event.worktreeId,
-          });
+          useGitHubStore
+            .getState()
+            .addToast(
+              buildScriptFailureToastMessage(event, outputLines),
+              'error',
+              undefined,
+              {
+                category: 'Script',
+                workspaceName: project?.name,
+                projectId: event.projectId,
+                worktreeId: event.worktreeId,
+                action: {
+                  label: 'View output',
+                  onClick: (): void =>
+                    openScriptFailureOutput({
+                      label: event.script.label,
+                      status: 'failed',
+                      outputLines,
+                      exitCode: event.result.exitCode,
+                      timedOut: event.result.timedOut,
+                      durationMs: event.result.durationMs,
+                    }),
+                },
+              },
+            );
         }
       },
     );

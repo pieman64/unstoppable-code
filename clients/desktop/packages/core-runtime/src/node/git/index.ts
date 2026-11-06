@@ -18,3 +18,4 @@ export * from './worker-git-sync-writes';
 export * from './worker-git-remote-get';
 export * from './worker-git-worktree-health';
 export * from './worktree-health';
+export * from './github-credential-lease';

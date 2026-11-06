@@ -1,3 +1,4 @@
+import type { RedeemedExecutionSecrets } from '@canopy/core-runtime/node/execution-secrets';
 import {
   PipelineDrainTimeoutError,
   pipelineCheckpointFailedError,
@@ -46,8 +47,8 @@ import {
  * over the existing Electron execution runtime. Core's start path resolves,
  * authorizes and admits a run, stages its launch here, then dispatches the
  * start through the local worker. The launch keeps what the executor needs
- * that is not portable yet (environment, secrets, packages, observers); the
- * daemon route replaces it (CAN-5086).
+ * that is not portable yet (public environment, packages, observers); secrets
+ * are redeemed bindings. The daemon route replaces the staged launch (CAN-5086).
  */
 
 /** What core prepared for one execution: the admitted snapshot and options. */
@@ -65,12 +66,13 @@ export interface PipelineControlSettlement {
 /**
  * What core prepared for one recovery control (CAN-4141): the host side of
  * the existing entry point, which still holds what isn't portable yet (the
- * environment, secrets, working folder and observers). It acts on the
+ * public environment, working folder and observers). It acts on the
  * command it is given, which is the dispatched one.
  */
 export type PipelineControlLaunch = (
   control: PipelineControlRequest,
   signal: AbortSignal,
+  secrets: RedeemedExecutionSecrets,
 ) => Promise<PipelineControlSettlement>;
 
 /** Host-side results of a dispatched request, for the legacy callers. */
@@ -654,7 +656,9 @@ async function cancelExecution(executionId: string): Promise<ExecutionState> {
 }
 
 export const desktopPipelineWorker: PipelineExecutionWorker = {
-  async start(params, signal) {
+  async start(params, signal, secrets, _execution) {
+    // Host-local launches are a daemon worker's; this worker runs only the launch core staged (CAN-5086).
+    void _execution;
     const launch = launches.get(params.executionId);
     if (!launch) throw pipelineLaunchUnavailableError();
     launches.delete(params.executionId);
@@ -664,7 +668,10 @@ export const desktopPipelineWorker: PipelineExecutionWorker = {
     try {
       handle = await executePipeline(
         launch.pipeline,
-        withFanOut(launch.options),
+        withFanOut({
+          ...launch.options,
+          secretEnv: Object.keys(secrets.env).length ? secrets.env : undefined,
+        }),
       );
     } catch (error) {
       capture.error = error;
@@ -689,7 +696,7 @@ export const desktopPipelineWorker: PipelineExecutionWorker = {
     }
     return projectPipelineExecution(state);
   },
-  async control(request, signal) {
+  async control(request, signal, secrets) {
     const { requestId, executionId } = request.params;
     const prepared = controlLaunches.get(requestId);
     if (!prepared) throw pipelineLaunchUnavailableError();
@@ -702,7 +709,7 @@ export const desktopPipelineWorker: PipelineExecutionWorker = {
     }
     let settlement: PipelineControlSettlement;
     try {
-      settlement = await prepared(request, signal);
+      settlement = await prepared(request, signal, secrets);
     } catch (error) {
       capture.error = error;
       if (

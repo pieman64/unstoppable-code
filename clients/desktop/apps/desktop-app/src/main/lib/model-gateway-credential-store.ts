@@ -1,3 +1,4 @@
+import { normalizeModelGatewayBaseUrl } from '@canopy/protocol/canopy-server';
 import type { SecureStorageFailure } from '@canopy/desktop-shared/types/secure-storage';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rm } from 'node:fs/promises';
@@ -235,6 +236,7 @@ function credentialKey(accountId: string, organizationId: string): string {
 
 async function resolveCredentialOwner(
   organizationId: string,
+  baseUrl?: string,
 ): Promise<{ accountId: string; key: string } | null> {
   const read = await readCanopyCloudAccountWithStatus();
   if (read.status !== 'ok') {
@@ -247,18 +249,33 @@ async function resolveCredentialOwner(
   }
   const account = read.entry;
   const accountId = account?.account?.id.trim();
-  const organizationIsCurrent = account?.enforcedSettings?.some(
-    (org) =>
-      org.organizationId === organizationId &&
-      org.policies.some((policy) => policy.kind === 'model-gateway'),
+  const setupOrganization = account?.organizations?.find(
+    (org) => org.id === organizationId,
   );
+  const setupAuthorized =
+    account?.personalOrganizationId === organizationId ||
+    setupOrganization?.role === 'OWNER' ||
+    setupOrganization?.role === 'ADMIN';
+  const organizationIsCurrent =
+    setupAuthorized ||
+    account?.enforcedSettings?.some(
+      (org) =>
+        org.organizationId === organizationId &&
+        org.policies.some(
+          (policy) =>
+            policy.kind === 'model-gateway' &&
+            (baseUrl === undefined ||
+              normalizeModelGatewayBaseUrl(policy.baseUrl) ===
+                normalizeModelGatewayBaseUrl(baseUrl)),
+        ),
+    );
   return accountId && organizationIsCurrent
     ? { accountId, key: credentialKey(accountId, organizationId) }
     : null;
 }
 
 function queueMutation(
-  mutation: (file: StoredGatewayCredentialFile) => void,
+  mutation: (file: StoredGatewayCredentialFile) => void | Promise<void>,
   options: { requiresWrite?: boolean; replaceOwnerlessLegacy?: boolean } = {},
 ): Promise<void> {
   const { requiresWrite = false, replaceOwnerlessLegacy = false } = options;
@@ -280,7 +297,7 @@ function queueMutation(
       );
       file = { version: 2, records: {} };
     }
-    mutation(file);
+    await mutation(file);
     await writeStore(file, requiresWrite);
   });
   mutationQueue = next.catch(() => undefined);
@@ -289,12 +306,49 @@ function queueMutation(
 
 export async function loadModelGatewayCredential(
   organizationId: string,
+  expectedBaseUrl?: string,
 ): Promise<ModelGatewayCredentialRecord | null> {
   const storage = availableStorage();
-  const owner = await resolveCredentialOwner(organizationId);
+  const owner = await resolveCredentialOwner(organizationId, expectedBaseUrl);
   if (!owner) return null;
-  const stored = (await readStore()).records[owner.key];
+  const account = await readCanopyCloudAccountWithStatus();
+  const entry = account.status === 'ok' ? account.entry : null;
+  const configuredBaseUrl =
+    entry?.personalOrganizationId === organizationId
+      ? entry.personalModelGateway?.baseUrl
+      : entry?.enforcedSettings
+          ?.find((org) => org.organizationId === organizationId)
+          ?.policies.find((policy) => policy.kind === 'model-gateway')?.baseUrl;
+  const endpoint = normalizeModelGatewayBaseUrl(
+    expectedBaseUrl ?? configuredBaseUrl,
+  );
+  const records = (await readStore()).records;
+  const staged = endpoint
+    ? records[JSON.stringify([owner.accountId, organizationId, endpoint])]
+    : undefined;
+  const active = records[owner.key];
+  const activeMatches =
+    endpoint !== null &&
+    normalizeModelGatewayBaseUrl(active?.baseUrlAtSave) === endpoint;
+  // A legacy client can repair the active slot after this client staged a key.
+  // Prefer the newest matching record rather than permanently shadowing it.
+  const stored =
+    staged &&
+    (!activeMatches ||
+      Date.parse(staged.updatedAt) > Date.parse(active.updatedAt))
+      ? staged
+      : active;
+  if (
+    endpoint &&
+    normalizeModelGatewayBaseUrl(stored?.baseUrlAtSave) !== endpoint
+  )
+    return null;
   if (!stored) return null;
+  const currentOwner = await resolveCredentialOwner(
+    organizationId,
+    expectedBaseUrl,
+  );
+  if (currentOwner?.accountId !== owner.accountId) return null;
   return decrypt(storage, stored);
 }
 
@@ -306,28 +360,78 @@ export async function saveModelGatewayCredential(input: {
   /** A successful validation, independent of routing rejection state. */
   validated?: boolean;
   lastError?: string;
+  expectedAccountId?: string;
+  signal?: AbortSignal;
 }): Promise<void> {
+  input.signal?.throwIfAborted();
   const storage = availableStorage();
   const apiKey = input.apiKey.trim();
   if (apiKey) storage.assertCanWrite();
-  const owner = await resolveCredentialOwner(input.organizationId);
-  if (!owner) {
+  const owner = await resolveCredentialOwner(
+    input.organizationId,
+    input.baseUrlAtSave,
+  );
+  if (
+    !owner ||
+    (input.expectedAccountId !== undefined &&
+      owner.accountId !== input.expectedAccountId)
+  ) {
     throw new Error(
       'Cannot save a model gateway credential outside the current account policy.',
     );
   }
   await queueMutation(
-    (file) => {
+    async (file) => {
+      const current = await resolveCredentialOwner(
+        input.organizationId,
+        input.baseUrlAtSave,
+      );
+      if (!current || current.accountId !== owner.accountId)
+        throw new Error('Gateway account or authorization changed');
+      input.signal?.throwIfAborted();
+      const baseUrl = normalizeModelGatewayBaseUrl(input.baseUrlAtSave);
+      if (apiKey && !baseUrl) throw new Error('Invalid gateway endpoint');
+      const endpointKey = JSON.stringify([
+        owner.accountId,
+        input.organizationId,
+        baseUrl,
+      ]);
+      const existing = file.records[owner.key];
+      // Keep the active endpoint intact until the matching hosted config saves.
+      const key =
+        existing &&
+        normalizeModelGatewayBaseUrl(existing.baseUrlAtSave) !== baseUrl
+          ? endpointKey
+          : owner.key;
       if (!apiKey) {
-        delete file.records[owner.key];
+        Object.entries(file.records).forEach(([key, record]) => {
+          if (
+            record.accountId === owner.accountId &&
+            record.organizationId === input.organizationId
+          )
+            delete file.records[key];
+        });
         return;
       }
-      file.records[owner.key] = {
+      input.signal?.throwIfAborted();
+      const previousTimes = Object.values(file.records)
+        .filter(
+          (record) =>
+            record.accountId === owner.accountId &&
+            record.organizationId === input.organizationId,
+        )
+        .map((record) => Date.parse(record.updatedAt))
+        .filter(Number.isFinite);
+      const updatedAt = new Date(
+        Math.max(Date.now(), ...previousTimes.map((time) => time + 1)),
+      ).toISOString();
+      if (key === owner.key) delete file.records[endpointKey];
+      file.records[key] = {
         accountId: owner.accountId,
         organizationId: input.organizationId,
         encryptedApiKeyBase64: storage.encrypt(apiKey).toString('base64'),
-        baseUrlAtSave: input.baseUrlAtSave,
-        updatedAt: new Date().toISOString(),
+        baseUrlAtSave: baseUrl ?? input.baseUrlAtSave,
+        updatedAt,
         lastValidatedAt: input.lastValidatedAt,
         validated: input.validated,
         lastError: input.lastError,
@@ -352,7 +456,14 @@ export async function markModelGatewayCredentialRejected(
     return false;
   let updated = false;
   await queueMutation((file) => {
-    const record = file.records[owner.key];
+    const record = expectedUpdatedAt
+      ? Object.values(file.records).find(
+          (record) =>
+            record.accountId === owner.accountId &&
+            record.organizationId === organizationId &&
+            record.updatedAt === expectedUpdatedAt,
+        )
+      : file.records[owner.key];
     if (!record) return;
     if (expectedUpdatedAt && record.updatedAt !== expectedUpdatedAt) return;
     record.lastError = lastError;
@@ -369,4 +480,14 @@ export function isModelGatewayCredentialStorageAvailable(): boolean {
 
 export function resetModelGatewayCredentialStoreForTests(): void {
   mutationQueue = Promise.resolve();
+}
+
+/** Checks cached authorization before any local discovery or secure mutation. */
+export async function authorizeModelGatewayCredential(
+  organizationId: string,
+  baseUrl: string,
+): Promise<{ accountId: string }> {
+  const owner = await resolveCredentialOwner(organizationId, baseUrl);
+  if (!owner) throw new Error('AI gateway authorization is unavailable');
+  return { accountId: owner.accountId };
 }

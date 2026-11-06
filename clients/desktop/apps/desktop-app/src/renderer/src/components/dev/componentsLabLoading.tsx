@@ -1,3 +1,5 @@
+import { SettingsChartLoading } from '@canopy/ui-app/settings/pages';
+import { Heading } from '@canopy/ui-shared/components';
 import { useState, type JSX } from 'react';
 import {
   BusyLabel,
@@ -8,12 +10,9 @@ import {
   LoadingButton,
   LoadingIndicatorStyleProvider,
   LoadingSpinner,
-  SettingsChartSkeleton,
-  SettingsFormSkeleton,
-  SettingsListSkeleton,
+  PickerMenuSampleOptions,
   Skeleton,
   SKELETON_KEEP,
-  SkeletonBlock,
   SlowLoadNote,
   type SpinnerTone,
 } from '@canopy/ui-shared/components';
@@ -35,9 +34,9 @@ const SPINNER_TONES: readonly SpinnerTone[] = [
 function SampleAgentCard(): JSX.Element {
   return (
     <div className="flex w-full flex-col gap-3 rounded-lg border p-4">
-      <h3 {...SKELETON_KEEP} className="text-s font-medium fg-primary">
+      <Heading level={3} variant="title" {...SKELETON_KEEP}>
         Connected agents
-      </h3>
+      </Heading>
       {['Release notes writer', 'Support triage'].map((name) => (
         <div key={name} className="flex items-center gap-3">
           <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-accent-subtle text-xs fg-accent">
@@ -59,27 +58,7 @@ export function LoadingSpecimen(): JSX.Element {
   const [replay, setReplay] = useState(0);
   return (
     <div className="flex flex-col gap-6">
-      <SpecimenPanel title="Skeletons: the content's own geometry, only values pulse">
-        <SpecimenGrid min={140}>
-          {(
-            ['circle', 'square', 'toggle', 'dot', 'badge', 'control'] as const
-          ).map((shape) => (
-            <SpecimenCell key={shape} label={shape}>
-              <SkeletonBlock shape={shape} />
-            </SpecimenCell>
-          ))}
-        </SpecimenGrid>
-        <SpecimenGrid min={200}>
-          {(['meta', 'label', 'text', 'title', 'value'] as const).map(
-            (height) => (
-              <SpecimenCell key={height} label={`bar, ${height}`}>
-                <div className="w-full">
-                  <SkeletonBlock height={height} width="2/3" />
-                </div>
-              </SpecimenCell>
-            ),
-          )}
-        </SpecimenGrid>
+      <SpecimenPanel title="Inline text: a bar on the text's own line">
         <SpecimenCell
           label="InlineTextSkeleton (active), inside a sentence"
           wide
@@ -104,24 +83,22 @@ export function LoadingSpecimen(): JSX.Element {
           </SpecimenCell>
         </SpecimenGrid>
       </SpecimenPanel>
-      <SpecimenPanel title="Settings skeletons">
+      <SpecimenPanel title="Skeleton around shared sample content">
         <SpecimenGrid min={260}>
-          <SpecimenCell label="SettingsListSkeleton">
-            <div className="w-full">
-              <SettingsListSkeleton rows={3} />
-            </div>
+          <SpecimenCell label="PickerMenuSampleOptions, leading icon rail">
+            <Skeleton loading className="w-full">
+              <PickerMenuSampleOptions rows={3} />
+            </Skeleton>
           </SpecimenCell>
-          <SpecimenCell label="SettingsFormSkeleton">
-            <div className="w-full">
-              <SettingsFormSkeleton rows={3} />
-            </div>
-          </SpecimenCell>
-          <SpecimenCell label="SettingsChartSkeleton">
-            <div className="w-full">
-              <SettingsChartSkeleton />
-            </div>
+          <SpecimenCell label="PickerMenuSampleOptions, no rail">
+            <Skeleton loading className="w-full">
+              <PickerMenuSampleOptions rows={3} leading={false} />
+            </Skeleton>
           </SpecimenCell>
         </SpecimenGrid>
+        <SpecimenCell label="SettingsChartLoading" wide>
+          <SettingsChartLoading />
+        </SpecimenCell>
       </SpecimenPanel>
       <SpecimenPanel title="Busy controls: the spinner lives in the control whose work runs">
         <SpecimenGrid min={200}>

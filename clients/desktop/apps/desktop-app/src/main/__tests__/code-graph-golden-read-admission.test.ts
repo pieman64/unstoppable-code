@@ -46,8 +46,6 @@ jest.mock('electron', () => ({
 jest.mock('../lib/code-graph-telemetry', () => ({
   recordCodeGraphReadDiagnostic: (): void => undefined,
   flushCodeGraphReadDiagnostics: (): void => undefined,
-  recordCodeGraphQueryTelemetry: (): void => undefined,
-  flushCodeGraphQueryTelemetry: (): void => undefined,
 }));
 
 const BASE_IDENTITY = {

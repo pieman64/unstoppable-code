@@ -48,6 +48,8 @@ export {
   type PipelineObservabilityFeed,
 } from './pipeline-feed';
 export type {
+  AgentObservabilityHostTypes,
+  AgentObservabilityIngest,
   ExecutionObservabilityIngest,
   ObservabilityAccountProvider,
   ObservabilityBillingAccountKind,

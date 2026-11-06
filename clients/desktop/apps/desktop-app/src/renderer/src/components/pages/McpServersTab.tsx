@@ -57,8 +57,14 @@ import {
 } from '../mcp/AccountMcpControls';
 import { useAccountMcpActions } from '../../hooks/useAccountMcpActions';
 import {
+  CUSTOM_MCP_URL_EXAMPLE,
+  CustomMcpAdvanced,
+  CustomMcpServerFields,
+  CustomMcpServerPlacement,
   curatedMcpAddTarget,
   customAccountMcpPromotable,
+  customMcpAdvancedHint,
+  prefilledCustomMcpName,
   findAccountMcpRow,
   type CreatedCustomItem,
 } from '@canopy/ui-app/capability';
@@ -70,7 +76,12 @@ import { type JSX, useEffect, useId, useRef, useState } from 'react';
 import { useMcpServerList } from '../../hooks/useMcpServerList';
 import { McpServerLogo } from '../shared/McpServerLogo';
 import { useCuratedMcpServers } from '../../hooks/useCuratedMcpServers';
+import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { useMcpServerStatuses } from '../../hooks/useMcpServerStatuses';
+import {
+  useCustomMcpCreateFlow,
+  type CustomMcpCreateTarget,
+} from '../../hooks/useCustomMcpCreateFlow';
 import { formatDate } from '../../lib/format';
 import { EntityEditModalContent } from './EntityEditModalFooter';
 import { BackDetailOverlayShell } from './BackDetailOverlayShell';
@@ -94,6 +105,8 @@ import {
   DataTableHeaderCell,
   DataTableRow,
   DelayedLoadingPlaceholder,
+  McpSignInPendingActions,
+  McpSignInPendingStatus,
 } from '@canopy/ui-shared/components';
 import { brandText } from '@/lib/brand';
 import { useEarlyAccessTitle } from '@/lib/earlyAccessTitles';
@@ -156,6 +169,7 @@ import {
   accountMcpEndpointEntry,
   accountMcpUnavailableMessage,
   mcpAlreadyConnectedMessage,
+  mcpNoSignInNeededMessage,
   type AccountMcpConnectStep,
   type AccountMcpCredentialTarget,
 } from '../mcp/accountMcpConnectSteps';
@@ -476,6 +490,47 @@ function McpScopeControl({
   );
 }
 
+/**
+ * What a Connect that opened no browser means: a saved token, or a server that
+ * needs no sign-in. Only the first is connected; a failed read rejects.
+ */
+async function completedConnectMessage(
+  serverId: string,
+  configId: string | undefined,
+  serverName: string,
+): Promise<string> {
+  const entries = await window.mcpServers.listStatus();
+  const configs =
+    entries.find((entry) => entry.serverId === serverId)?.configs ?? [];
+  const config = configId
+    ? configs.find((candidate) => candidate.configId === configId)
+    : configs[0];
+  if (!config) throw new Error('This MCP server is no longer available');
+  if (config.authStatus === 'connected')
+    return mcpAlreadyConnectedMessage(serverName);
+  const inventory = await window.mcpServers.listDetected({
+    selections: {
+      collectionIds: [],
+      skillRefs: [],
+      pluginRefs: [],
+      mcpServerRefs: [{ serverId, configId: config.configId }],
+    },
+  });
+  const current = inventory.servers.find(
+    (server) =>
+      server.serverId === serverId && server.configId === config.configId,
+  );
+  if (
+    current?.enabled &&
+    current.type === 'http' &&
+    current.httpAuthHandler === 'canopy' &&
+    current.authStatus === 'not_configured' &&
+    !current.canConnect
+  )
+    return mcpNoSignInNeededMessage(serverName);
+  throw new Error('Couldn’t confirm this MCP server’s sign-in. Try again.');
+}
+
 function ignoreAccountRefresh(): Promise<void> {
   return Promise.resolve();
 }
@@ -612,7 +667,7 @@ function ConfigEditor({
           }
           aria-label={`Enable ${config.name || 'config'}`}
         />
-        <span className="flex-1 text-sm fg-primary truncate">
+        <span className="flex-1 text-s fg-primary truncate">
           {config.name || 'Untitled config'}
         </span>
         <Button
@@ -924,6 +979,11 @@ export function McpServerDialog({
   >(null);
   const pendingMoveToCloud = useRef<(() => Promise<void>) | null>(null);
   const isCustomHttp = serverType === 'http' && !curatedMeta?.key;
+  // A hand-entered server on this device or account; never a catalog add,
+  // an edit, or account setup, which keep their own layouts.
+  const customCreate = isCreate && !initialCurated && mode === 'device';
+  const [nameTouched, setNameTouched] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const accountHeaders = cloudMcpHeaders(headers, configs);
   const hasAccountHeaders = Object.keys(accountHeaders).length > 0;
   const headersCloudProblem = cloudHeadersProblem(accountHeaders);
@@ -995,6 +1055,7 @@ export function McpServerDialog({
   );
 
   const accessTokenRef = useRef<HTMLInputElement>(null);
+  const createdReported = useRef(false);
 
   // Stable refs for callbacks
   const onCloseRef = useRef(onClose);
@@ -1003,6 +1064,26 @@ export function McpServerDialog({
   onSavedRef.current = onSaved;
   const onCreatedRef = useRef(onCreated);
   onCreatedRef.current = onCreated;
+  const createFlow = useCustomMcpCreateFlow(
+    async (target: CustomMcpCreateTarget): Promise<void> => {
+      reportCreatedDeviceServer(target.saved);
+      // The server works; only the list behind the dialog would be stale.
+      await onSavedRef.current().catch((): void => undefined);
+      onCloseRef.current();
+    },
+    () => onSavedRef.current(),
+  );
+  useEffect((): void => {
+    if (customCreate && (error !== '' || createFlow.error !== ''))
+      setAdvancedOpen(true);
+  }, [customCreate, error, createFlow.error]);
+  const savedCreateId = createFlow.savedServerId;
+  // A saved device server stays one: retrying never creates a cloud copy.
+  useEffect((): void => {
+    if (savedCreateId === null) return;
+    setScope('device');
+    setScopeTouched(true);
+  }, [savedCreateId]);
   const accountConnectionRef = useRef(accountConnection);
   accountConnectionRef.current = accountConnection;
   const accountConnectionKey = accountConnection?.id;
@@ -1301,6 +1382,7 @@ export function McpServerDialog({
       const validation = validateOAuthForm(oauthForm);
       if (validation.error) {
         setError(validation.error);
+        setAdvancedOpen(true);
         return;
       }
       oauthToPersist = validation.oauth ?? undefined;
@@ -1334,7 +1416,9 @@ export function McpServerDialog({
     }
     const buildServerData = (
       boundConnectionId: string | undefined,
-      deviceId = loadedServer?.definition.id ?? '',
+      deviceId = loadedServer?.definition.id ??
+        createFlow.savedServerIdRef.current ??
+        '',
     ): SaveMcpServerRequest => {
       const now = new Date().toISOString();
       const moveConfigs =
@@ -1396,6 +1480,7 @@ export function McpServerDialog({
     };
     if (inCloud && cloudBlockedReason) {
       setError(cloudBlockedReason);
+      setAdvancedOpen(true);
       return;
     }
     if (inCloud && curatedToPersist?.key) {
@@ -1446,6 +1531,19 @@ export function McpServerDialog({
       setConfirmMoveToDevice(true);
       return;
     }
+    // Only a server this desktop signs in to can be checked before closing;
+    // a command or provider-handled server closes as soon as it is saved.
+    if (
+      customCreate &&
+      serverType === 'http' &&
+      effectiveAuthHandler === 'canopy'
+    ) {
+      await createFlow.run(
+        (savedId): SaveMcpServerRequest =>
+          buildServerData(undefined, savedId ?? ''),
+      );
+      return;
+    }
     await runEntityEditOperation(
       async (): Promise<void> => {
         reportCreatedDeviceServer(
@@ -1463,7 +1561,8 @@ export function McpServerDialog({
 
   // A device save in create mode added this server; an edit reports nothing.
   const reportCreatedDeviceServer = (saved: McpServerFileView): void => {
-    if (serverId !== null || cloudConnection) return;
+    if (serverId !== null || cloudConnection || createdReported.current) return;
+    createdReported.current = true;
     const { id, curated: savedCurated } = saved.server.definition;
     onCreatedRef.current?.({
       kind: 'mcp-server',
@@ -1763,8 +1862,11 @@ export function McpServerDialog({
       });
       setConnectMessage(
         result.status === 'completed'
-          ? // A valid token already existed, so no browser opened.
-            mcpAlreadyConnectedMessage(name.trim() || 'This server')
+          ? await completedConnectMessage(
+              serverId,
+              selectedConfigId || undefined,
+              name.trim() || 'This server',
+            )
           : 'Switch to your browser to finish signing in, then re-check the status.',
       );
     } catch (err) {
@@ -1867,6 +1969,7 @@ export function McpServerDialog({
   const canSave =
     name.trim().length > 0 &&
     !saving &&
+    !createFlow.busy &&
     (serverType !== 'http' ||
       effectiveScope === 'cloud' ||
       Boolean(deviceHandler) ||
@@ -1903,16 +2006,44 @@ export function McpServerDialog({
       : cloudConnection && serverId
         ? mcpDeleteImpact('device-retaining-cloud')
         : undefined;
-  const footerProps = createEntityEditModalFooterProps(
-    isCreate,
-    saving,
-    canSave,
-    confirmDelete,
-    setConfirmDelete,
-    () => void handleDelete(),
-    onClose,
-    () => void handleSave(),
-  );
+  // Leaving after a save keeps that server, so the list behind has to catch up.
+  // Nothing here says it connected.
+  const closeDialog = (): void => {
+    createFlow.cancel();
+    if (createFlow.savedServerIdRef.current !== null) {
+      void onSavedRef.current().catch((): void => undefined);
+    }
+    onClose();
+  };
+  const createFailed = customCreate && createFlow.phase === 'failed';
+  const footerProps = {
+    ...createEntityEditModalFooterProps(
+      isCreate,
+      saving || createFlow.busy,
+      canSave,
+      confirmDelete,
+      setConfirmDelete,
+      () => void handleDelete(),
+      closeDialog,
+      () => void handleSave(),
+    ),
+    ...(customCreate
+      ? {
+          saveLabel: createFailed ? 'Try again' : 'Add server',
+          savingLabel: 'Adding\u2026',
+          cancelLabel: createFailed ? 'Close' : 'Cancel',
+          notice: (
+            <CustomMcpServerPlacement
+              placement={effectiveScope === 'cloud' ? 'account' : 'desktop'}
+              hasHeaders={hasAccountHeaders}
+              hasToken={Boolean(
+                cloudToken.trim() || defaultConfigAuthToken(configs),
+              )}
+            />
+          ),
+        }
+      : {}),
+  };
   const accountSetup = mode === 'account' && initialCurated !== undefined;
   useCurrentUiStateReporter(
     'mcp.serverEditor',
@@ -2028,7 +2159,7 @@ export function McpServerDialog({
       >
         <div className="flex flex-col gap-4" data-testid="mcp-account-setup">
           {requiresOAuthClient && !clientSetup && (
-            <p className="text-sm fg-secondary">
+            <p className="text-s fg-secondary">
               {mcpConnectErrorMessage('client_credentials_required')}
             </p>
           )}
@@ -2089,7 +2220,7 @@ export function McpServerDialog({
               ),
             )
           ) : (
-            <p className="text-sm fg-secondary">{unsupportedMessage}</p>
+            <p className="text-s fg-secondary">{unsupportedMessage}</p>
           )}
           <ErrorBanner error={error} />
           <div className="flex justify-end gap-2">
@@ -2110,12 +2241,640 @@ export function McpServerDialog({
     );
   }
 
+  const serverTypeField = !cloudOnly && (
+    <div className="text-s">
+      <span className="mb-1.5 block fg-secondary">Server type</span>
+      <SegmentedControl<'command' | 'http'>
+        label="Server type"
+        value={serverType}
+        width="content"
+        shape="capsule"
+        options={[
+          {
+            value: 'command',
+            label: 'Command',
+            leading: <AppCatalogTerminalIcon width="14" height="14" />,
+          },
+          {
+            value: 'http',
+            label: 'HTTP',
+            leading: <AppCatalogGlobeIcon width="14" height="14" />,
+          },
+        ]}
+        onChange={setServerType}
+      />
+    </div>
+  );
+  const descriptionField = !cloudOnlyInCloud && (
+    <DialogFormField
+      label="Description (optional)"
+      htmlFor={`${fieldId}-description`}
+    >
+      <TextInput
+        id={`${fieldId}-description`}
+        value={description}
+        onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+          setDescription(e.target.value)
+        }
+        placeholder="Optional description"
+      />
+    </DialogFormField>
+  );
+  const commandScopeField = serverType === 'command' &&
+    accountConnectionsEnabled && (
+      <div className="flex flex-col gap-1.5 text-s">
+        <span className="fg-secondary">Scope</span>
+        <McpScopeControl value="device" cloudDisabled onChange={changeScope} />
+        <p
+          className="text-xs fg-secondary"
+          data-testid="mcp-cloud-local-reason"
+        >
+          Desktop only. Command servers run on this device.
+        </p>
+      </div>
+    );
+  const httpAdvancedFields = (
+    <>
+      {scopeAvailable && (
+        <div className="flex flex-col gap-1.5 text-s">
+          <span className="fg-secondary">Scope</span>
+          <McpScopeControl
+            value={effectiveScope}
+            cloudDisabled={
+              cloudChoiceDisabled ||
+              curatedCloudReason !== undefined ||
+              savedCreateId !== null
+            }
+            onChange={changeScope}
+          />
+          <span className="text-xs fg-secondary">
+            {effectiveScope === 'cloud'
+              ? 'Stored in your cloud account. Cloud chats and every signed-in desktop can use it.'
+              : 'Runs on this device. Its credentials stay here.'}
+          </span>
+        </div>
+      )}
+
+      {effectiveScope === 'device' && (
+        <DialogFormField
+          label="Auth handling"
+          htmlFor={`${fieldId}-auth-handler`}
+          description={
+            deviceHandler === 'provider'
+              ? 'The agent provider receives this server directly and handles auth.'
+              : deviceHandler === 'canopy'
+                ? `${brandText.appName} routes this server through its local proxy and owns auth.`
+                : `Inherit the global default for how this server's auth is handled.`
+          }
+        >
+          <Select
+            id={`${fieldId}-auth-handler`}
+            options={[
+              ...(globalAuthHandler !== 'account'
+                ? [
+                    {
+                      value: '',
+                      label: 'Use default',
+                      disabled: curatedRequiresProvider,
+                    },
+                  ]
+                : []),
+              {
+                value: 'canopy',
+                label: `${brandText.appName} proxy`,
+                disabled: curatedRequiresProvider,
+              },
+              { value: 'provider', label: 'Agent provider' },
+            ]}
+            value={deviceHandler}
+            onValueChange={(value): void => {
+              if (isAuthHandlerChoice(value)) setAuthHandler(value);
+            }}
+            data-testid="mcp-server-auth-handler"
+            disabled={curatedRequiresProvider}
+          />
+        </DialogFormField>
+      )}
+
+      {effectiveScope === 'cloud' && curatedMeta?.key && (
+        <div className="text-s" data-testid="mcp-account-binding">
+          {accountConnectionsLoading ? (
+            <DelayedLoadingPlaceholder slowNote="Still loading account connections…">
+              <McpAccountBindingSkeleton />
+            </DelayedLoadingPlaceholder>
+          ) : accountConnectionsError ? (
+            <ErrorBanner error={accountConnectionsError} />
+          ) : (
+            <p className="fg-secondary" data-testid="mcp-account-match">
+              {matchedAccountConnection
+                ? `Account connection: ${matchedAccountConnection.displayName}`
+                : 'Connect this catalog server in your cloud account before saving.'}
+            </p>
+          )}
+          {!accountConnectionsLoading && !matchedAccountConnection && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={(): void =>
+                setAccountConnectionsRetry((retry): number => retry + 1)
+              }
+            >
+              Try again
+            </Button>
+          )}
+        </div>
+      )}
+
+      {effectiveScope === 'cloud' && isCustomHttp && (
+        <div
+          className="flex flex-col gap-3 text-s"
+          data-testid="mcp-cloud-placement"
+        >
+          {!customCreate && (willCreateAccountConnection || movingToCloud) && (
+            <div className="flex flex-col gap-1">
+              <p className="fg-primary">
+                {movingToCloud
+                  ? 'Will move to your cloud account'
+                  : 'Will be added to your cloud account'}
+              </p>
+              {movingToCloud && (
+                <p
+                  className="text-xs fg-secondary"
+                  data-testid="mcp-cloud-move-carries"
+                >
+                  Its URL, headers, and access token move to your cloud account.
+                  OAuth sign-ins don't move, so sign in again after you save if
+                  it uses OAuth.
+                </p>
+              )}
+            </div>
+          )}
+          {hasAccountHeaders && (
+            <p
+              className="text-xs fg-secondary"
+              data-testid="mcp-cloud-headers-consent"
+            >
+              Its headers are stored in your cloud account too.
+            </p>
+          )}
+          <DialogFormField
+            label="Access token"
+            htmlFor={`${fieldId}-cloud-token`}
+            description={
+              !editsCloudConnection
+                ? 'Optional. The token is stored in your cloud account.'
+                : cloudConnection?.authMode === 'BEARER'
+                  ? 'Leave it empty to keep the stored token.'
+                  : 'Optional. Connects with this token instead of signing in.'
+            }
+          >
+            <TextInput
+              id={`${fieldId}-cloud-token`}
+              ref={accessTokenRef}
+              type="password"
+              autoComplete="off"
+              value={cloudToken}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>): void =>
+                setCloudToken(e.target.value)
+              }
+              placeholder={
+                savedCloudToken !== undefined
+                  ? 'Saved. Type to replace'
+                  : editsCloudConnection &&
+                      cloudConnection?.authMode === 'BEARER'
+                    ? 'Stored'
+                    : 'Optional'
+              }
+              data-testid="mcp-cloud-access-token"
+            />
+          </DialogFormField>
+          {savedCloudToken !== undefined && !cloudToken && (
+            <Button
+              variant="ghost"
+              size="compact"
+              className="self-start"
+              onClick={(): void => setSavedCloudToken(undefined)}
+              data-testid="mcp-cloud-drop-saved-token"
+            >
+              Don't move token
+            </Button>
+          )}
+          {cloudUrlWarning && (
+            <Notice
+              role="none"
+              intent="attention"
+              data-testid="mcp-cloud-url-warning"
+            >
+              Changing the URL signs you out. Sign in again after you save.
+            </Notice>
+          )}
+        </div>
+      )}
+
+      {movingToDevice && cloudOwned && (
+        <div
+          className="flex flex-col gap-3 text-s"
+          data-testid="mcp-device-placement"
+        >
+          <p className="fg-primary">Will move to this device</p>
+          <DialogFormField
+            label="Access token"
+            htmlFor={`${fieldId}-device-token`}
+            description="Optional. Stored on this device. Or turn on OAuth below and connect after you save."
+          >
+            <TextInput
+              id={`${fieldId}-device-token`}
+              type="password"
+              autoComplete="off"
+              value={cloudToken}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>): void =>
+                setCloudToken(e.target.value)
+              }
+              placeholder="Optional"
+              data-testid="mcp-device-access-token"
+            />
+          </DialogFormField>
+        </div>
+      )}
+
+      {(effectiveScope === 'device'
+        ? (cloudLocalReason ?? curatedCloudReason)
+        : cloudBlockedReason) && (
+        <div className="flex items-center justify-between gap-2">
+          <p
+            className="text-xs fg-secondary"
+            data-testid="mcp-cloud-local-reason"
+          >
+            {effectiveScope === 'device'
+              ? (cloudLocalReason ?? curatedCloudReason)
+              : cloudBlockedReason}
+          </p>
+          {curatedCloudRetry && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={(): void =>
+                setAccountConnectionsRetry((retry): number => retry + 1)
+              }
+            >
+              Try again
+            </Button>
+          )}
+        </div>
+      )}
+
+      <div className="text-s">
+        <span className="mb-1.5 block fg-secondary">Headers</span>
+        {storedHeadersNote && effectiveScope === 'cloud' && (
+          <div
+            className="mb-2 flex items-center justify-between gap-2 text-xs fg-secondary"
+            data-testid="mcp-cloud-stored-headers"
+          >
+            <span>
+              {clearStoredHeaders
+                ? 'Stored headers are removed when you save.'
+                : 'Custom headers are stored in your cloud account. Add headers here to replace them.'}
+            </span>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={(): void =>
+                setClearStoredHeaders((current): boolean => !current)
+              }
+            >
+              {clearStoredHeaders
+                ? 'Keep stored headers'
+                : 'Remove stored headers'}
+            </Button>
+          </div>
+        )}
+        {headersLeftInCloud && (
+          <Notice
+            role="none"
+            intent="attention"
+            className="mb-2"
+            data-testid="mcp-cloud-stored-headers"
+          >
+            {storedHeadersKnown
+              ? "Its stored headers can't be copied to this device. Enter them again here to keep them."
+              : "It may have stored headers, which can't be copied to this device. Enter them again here to keep them."}
+          </Notice>
+        )}
+        <KeyValueEditor
+          entries={headers}
+          onChange={setHeaders}
+          keyPlaceholder="Header-Name"
+          valuePlaceholder="header-value"
+        />
+      </div>
+
+      {curatedRequiresProvider && (
+        <div
+          className="rounded-lg border bg-secondary/30 px-3 py-2 text-s fg-secondary"
+          data-testid="mcp-curated-provider-auth"
+        >
+          This catalog entry requires a confidential OAuth client. The agent
+          provider will handle authentication so the client secret is never
+          stored in the local server definition.
+        </div>
+      )}
+
+      {/* OAuth section (HTTP only, for locally managed public clients) */}
+      {!curatedRequiresProvider && !cloudOnlyInCloud && (
+        <div className="space-y-3 rounded-lg border bg-secondary/20 p-3">
+          <ChoiceField
+            checked={oauthForm.enabled}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>): void =>
+              setOauthForm({
+                ...oauthForm,
+                enabled: e.target.checked,
+              })
+            }
+            label={<span className="font-medium">Use OAuth</span>}
+            description={`${brandText.appName} discovers OAuth settings from the HTTP MCP server, uses a local loopback callback, and stores tokens in secure local storage.`}
+            data-testid="mcp-server-use-oauth"
+          />
+
+          {oauthForm.enabled && (
+            <div className="space-y-3 border-t pt-3">
+              {oauthForm.enabled && hasAnyAuthTokenConfigured(configs) && (
+                <Notice
+                  role="none"
+                  intent="attention"
+                  title="OAuth covers proxied sessions"
+                  data-testid="mcp-server-oauth-token-warning"
+                >
+                  The static token is kept only for non-OAuth use.
+                </Notice>
+              )}
+
+              <div className="rounded-md border bg-base/50 px-3 py-2 text-xs fg-secondary">
+                PKCE and the loopback redirect are managed by{' '}
+                {brandText.appName}.
+              </div>
+
+              <Button
+                size="compact"
+                onClick={(): void =>
+                  setOauthForm({
+                    ...oauthForm,
+                    advancedOpen: !oauthForm.advancedOpen,
+                  })
+                }
+                className="self-start"
+              >
+                {oauthForm.advancedOpen
+                  ? 'Hide advanced OAuth overrides'
+                  : 'Show advanced OAuth overrides'}
+              </Button>
+
+              {oauthForm.advancedOpen && (
+                <div className="space-y-3 rounded-md border bg-base/40 p-3">
+                  <p className="text-xs fg-secondary">
+                    Fill these only when OAuth discovery or dynamic registration
+                    is unavailable for this MCP server.
+                  </p>
+
+                  <DialogFormField
+                    label={
+                      curatedEntry?.requiredConfigFields?.some(
+                        (field) => field.kind === 'oauth-client-id',
+                      )
+                        ? 'Client ID'
+                        : 'Client ID (optional)'
+                    }
+                    htmlFor={`${fieldId}-oauth-client-id`}
+                  >
+                    <TextInput
+                      id={`${fieldId}-oauth-client-id`}
+                      value={oauthForm.clientId}
+                      onChange={(
+                        e: React.ChangeEvent<HTMLInputElement>,
+                      ): void =>
+                        setOauthForm({
+                          ...oauthForm,
+                          clientId: e.target.value,
+                        })
+                      }
+                      placeholder="optional client id"
+                    />
+                  </DialogFormField>
+
+                  <div className="text-xs">
+                    <p className="fg-secondary">
+                      Standalone saved client secrets are not supported.
+                    </p>
+                    <p className="mt-1 text-2xs fg-secondary">
+                      {brandText.appName} stores standalone MCP server
+                      definitions on disk, so this editor only supports
+                      public-client OAuth metadata plus PKCE.
+                    </p>
+                  </div>
+
+                  <DialogFormField
+                    label="Callback port (optional)"
+                    htmlFor={`${fieldId}-oauth-callback-port`}
+                    description={
+                      <>
+                        Uses a dedicated loopback listener instead of the shared
+                        MCP proxy port. Register{' '}
+                        {/* The shape depends on who owns the OAuth
+                                  client. A catalog entry pins a port because
+                                  the vendor registered the redirect; anything
+                                  typed here is the user's own client, and
+                                  Canopy keeps its own shape for it. Stating
+                                  one unconditionally sent half the users to
+                                  register a URI Canopy would never send. */}
+                        <code>
+                          {oauthForm.vendorRegisteredRedirect === true
+                            ? 'http://localhost:<port>/callback'
+                            : 'http://127.0.0.1:<port>/oauth/callback'}
+                        </code>{' '}
+                        with the OAuth provider.
+                      </>
+                    }
+                  >
+                    <TextInput
+                      id={`${fieldId}-oauth-callback-port`}
+                      type="number"
+                      min={1}
+                      max={65_535}
+                      step={1}
+                      inputMode="numeric"
+                      value={oauthForm.callbackPort ?? ''}
+                      onChange={(
+                        e: React.ChangeEvent<HTMLInputElement>,
+                      ): void => {
+                        setOauthForm({
+                          ...oauthForm,
+                          callbackPort: optionalNumberInputValue(
+                            e.currentTarget.valueAsNumber,
+                          ),
+                        });
+                      }}
+                      placeholder="e.g. 3118"
+                      data-testid="mcp-server-oauth-callback-port"
+                    />
+                  </DialogFormField>
+
+                  <DialogFormField
+                    label="Authorization URL (optional)"
+                    htmlFor={`${fieldId}-oauth-authorizationUrl`}
+                  >
+                    <TextInput
+                      id={`${fieldId}-oauth-authorizationUrl`}
+                      value={oauthForm.authorizationUrl}
+                      onChange={(
+                        e: React.ChangeEvent<HTMLInputElement>,
+                      ): void =>
+                        setOauthForm({
+                          ...oauthForm,
+                          authorizationUrl: e.target.value,
+                        })
+                      }
+                      placeholder="optional authorization endpoint"
+                    />
+                  </DialogFormField>
+
+                  <DialogFormField
+                    label="Token URL (optional)"
+                    htmlFor={`${fieldId}-oauth-tokenUrl`}
+                  >
+                    <TextInput
+                      id={`${fieldId}-oauth-tokenUrl`}
+                      value={oauthForm.tokenUrl}
+                      onChange={(
+                        e: React.ChangeEvent<HTMLInputElement>,
+                      ): void =>
+                        setOauthForm({
+                          ...oauthForm,
+                          tokenUrl: e.target.value,
+                        })
+                      }
+                      placeholder="optional token endpoint"
+                    />
+                  </DialogFormField>
+
+                  <DialogFormField
+                    label="Scopes (optional)"
+                    htmlFor={`${fieldId}-oauth-scopes`}
+                  >
+                    <TextInput
+                      id={`${fieldId}-oauth-scopes`}
+                      value={oauthForm.scopes}
+                      onChange={(
+                        e: React.ChangeEvent<HTMLInputElement>,
+                      ): void =>
+                        setOauthForm({
+                          ...oauthForm,
+                          scopes: e.target.value,
+                        })
+                      }
+                      placeholder="optional scopes"
+                    />
+                  </DialogFormField>
+
+                  <DialogFormField
+                    label="Audience (optional)"
+                    htmlFor={`${fieldId}-oauth-audience`}
+                  >
+                    <TextInput
+                      id={`${fieldId}-oauth-audience`}
+                      value={oauthForm.audience}
+                      onChange={(
+                        e: React.ChangeEvent<HTMLInputElement>,
+                      ): void =>
+                        setOauthForm({
+                          ...oauthForm,
+                          audience: e.target.value,
+                        })
+                      }
+                      placeholder="optional audience"
+                    />
+                  </DialogFormField>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </>
+  );
+  const configurationsField = !cloudOnlyInCloud && (
+    <div className="border-t pt-4">
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-s font-medium fg-primary">Configurations</span>
+        <Button
+          size="compact"
+          onClick={handleAddConfig}
+          data-testid="mcp-server-add-config"
+        >
+          Add
+        </Button>
+      </div>
+
+      {configs.length === 0 && (
+        <p className="text-xs fg-secondary py-3 text-center">
+          No configurations. Add one to define environment-specific settings.
+        </p>
+      )}
+
+      <div className="space-y-2">
+        {configs.map((config, index) => (
+          <ConfigEditor
+            key={config.id || `new-${index}`}
+            config={config}
+            initialExpanded={expandedNewIds.has(config.id)}
+            onChange={(updated: McpServerConfigView) =>
+              handleUpdateConfig(index, updated)
+            }
+            onDelete={() => handleDeleteConfig(index)}
+          />
+        ))}
+      </div>
+    </div>
+  );
+  const commandFields = serverType === 'command' && (
+    <>
+      <DialogFormField label="Command" htmlFor={`${fieldId}-command`}>
+        <TextInput
+          id={`${fieldId}-command`}
+          value={command}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+            setCommand(e.target.value)
+          }
+          placeholder="npx"
+        />
+      </DialogFormField>
+      <DialogFormField
+        label="Arguments"
+        htmlFor={`${fieldId}-args`}
+        description="Space-separated arguments"
+      >
+        <TextInput
+          id={`${fieldId}-args`}
+          value={args}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+            setArgs(e.target.value)
+          }
+          placeholder="-y @modelcontextprotocol/server-postgres"
+        />
+      </DialogFormField>
+    </>
+  );
+
   return (
     <>
       <DialogModal
         inset="flush"
-        onClose={onClose}
-        title={isCreate ? 'New MCP server' : 'Edit MCP server'}
+        onClose={closeDialog}
+        title={
+          customCreate
+            ? 'Add custom MCP server'
+            : isCreate
+              ? 'New MCP server'
+              : 'Edit MCP server'
+        }
         titleId="mcp-server-dialog-title"
         maxWidth="3xl"
         headerBorder={false}
@@ -2275,108 +3034,78 @@ export function McpServerDialog({
             </div>
           )}
 
-          {/* Server type selector */}
-          {!cloudOnly && (
-            <div className="text-sm">
-              <span className="mb-1.5 block fg-secondary">Server type</span>
-              <SegmentedControl<'command' | 'http'>
-                label="Server type"
-                value={serverType}
-                width="content"
-                shape="capsule"
-                options={[
-                  {
-                    value: 'command',
-                    label: 'Command',
-                    leading: <AppCatalogTerminalIcon width="14" height="14" />,
-                  },
-                  {
-                    value: 'http',
-                    label: 'HTTP',
-                    leading: <AppCatalogGlobeIcon width="14" height="14" />,
-                  },
-                ]}
-                onChange={setServerType}
-              />
-            </div>
-          )}
+          {!customCreate && serverTypeField}
 
-          {/* Name */}
-          <DialogFormField label="Name" htmlFor={`${fieldId}-name`}>
-            <TextInput
-              id={`${fieldId}-name`}
-              value={name}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                setName(e.target.value)
-              }
-              placeholder="My MCP server"
-              maxLength={CLOUD_DISPLAY_NAME_MAX}
-              autoFocus
-            />
-          </DialogFormField>
-
-          {/* Description */}
-          {!cloudOnlyInCloud && (
-            <DialogFormField
-              label="Description (optional)"
-              htmlFor={`${fieldId}-description`}
-            >
-              <TextInput
-                id={`${fieldId}-description`}
-                value={description}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                  setDescription(e.target.value)
-                }
-                placeholder="Optional description"
-              />
-            </DialogFormField>
-          )}
-
-          {/* Command fields */}
-          {serverType === 'command' && (
-            <>
-              <DialogFormField label="Command" htmlFor={`${fieldId}-command`}>
-                <TextInput
-                  id={`${fieldId}-command`}
-                  value={command}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                    setCommand(e.target.value)
+          {/* Name, the host's own fields, and the URL */}
+          <CustomMcpServerFields
+            name={{
+              id: `${fieldId}-name`,
+              label: 'Name',
+              value: name,
+              onChange: (value: string): void => {
+                setName(value);
+                setNameTouched(true);
+              },
+              inputProps: {
+                placeholder: 'My MCP server',
+                maxLength: CLOUD_DISPLAY_NAME_MAX,
+                autoFocus: true,
+              },
+            }}
+            between={
+              <>
+                {!customCreate && descriptionField}
+                {commandFields}
+                {!customCreate && commandScopeField}
+              </>
+            }
+            url={
+              serverType === 'http' &&
+              !(initialCurated?.urlOptions?.length && isCreate)
+                ? {
+                    id: `${fieldId}-url`,
+                    label: customCreate
+                      ? 'Server URL'
+                      : cloudOnly && effectiveScope === 'cloud'
+                        ? 'URL (optional)'
+                        : 'URL',
+                    value: url,
+                    onChange: setUrl,
+                    testId: 'mcp-server-url',
+                    hint: cloudOnly ? (
+                      <span data-testid="mcp-server-url-hint">
+                        {effectiveScope === 'device'
+                          ? 'Enter the full URL to run it on this device.'
+                          : cloudConnection?.upstreamHost
+                            ? `Leave it empty to keep ${cloudConnection.upstreamHost}.`
+                            : 'Leave it empty to keep the current address.'}
+                      </span>
+                    ) : undefined,
+                    inputProps: {
+                      ...(customCreate
+                        ? {
+                            onBlur: (): void => {
+                              if (!customCreate) return;
+                              const prefilled = prefilledCustomMcpName(
+                                name,
+                                nameTouched,
+                                url,
+                                CLOUD_DISPLAY_NAME_MAX,
+                              );
+                              if (prefilled !== null) setName(prefilled);
+                            },
+                          }
+                        : {}),
+                      placeholder: customCreate
+                        ? CUSTOM_MCP_URL_EXAMPLE
+                        : cloudOnly && cloudConnection?.upstreamHost
+                          ? `https://${cloudConnection.upstreamHost}/…`
+                          : 'https://mcp.example.com/sse',
+                    },
                   }
-                  placeholder="npx"
-                />
-              </DialogFormField>
-              <DialogFormField
-                label="Arguments"
-                htmlFor={`${fieldId}-args`}
-                description="Space-separated arguments"
-              >
-                <TextInput
-                  id={`${fieldId}-args`}
-                  value={args}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                    setArgs(e.target.value)
-                  }
-                  placeholder="-y @modelcontextprotocol/server-postgres"
-                />
-              </DialogFormField>
-              {accountConnectionsEnabled && (
-                <div className="flex flex-col gap-1.5 text-sm">
-                  <span className="fg-secondary">Scope</span>
-                  <McpScopeControl
-                    value="device"
-                    cloudDisabled
-                    onChange={changeScope}
-                  />
-                  <p
-                    className="text-xs fg-secondary"
-                    data-testid="mcp-cloud-local-reason"
-                  >
-                    Desktop only. Command servers run on this device.
-                  </p>
-                </div>
-              )}
-            </>
-          )}
+                : undefined
+            }
+          />
 
           {/* HTTP fields */}
           {serverType === 'http' && (
@@ -2399,586 +3128,91 @@ export function McpServerDialog({
                     data-testid="mcp-curated-url-option"
                   />
                 </DialogFormField>
-              ) : (
-                <DialogFormField
-                  label={
-                    cloudOnly && effectiveScope === 'cloud'
-                      ? 'URL (optional)'
-                      : 'URL'
-                  }
-                  htmlFor={`${fieldId}-url`}
-                  description={
-                    cloudOnly ? (
-                      <span data-testid="mcp-server-url-hint">
-                        {effectiveScope === 'device'
-                          ? 'Enter the full URL to run it on this device.'
-                          : cloudConnection?.upstreamHost
-                            ? `Leave it empty to keep ${cloudConnection.upstreamHost}.`
-                            : 'Leave it empty to keep the current address.'}
-                      </span>
-                    ) : undefined
-                  }
-                >
-                  <TextInput
-                    id={`${fieldId}-url`}
-                    value={url}
-                    onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                      setUrl(e.target.value)
-                    }
-                    placeholder={
-                      cloudOnly && cloudConnection?.upstreamHost
-                        ? `https://${cloudConnection.upstreamHost}/…`
-                        : 'https://mcp.example.com/sse'
-                    }
-                    data-testid="mcp-server-url"
-                  />
-                </DialogFormField>
-              )}
+              ) : null}
 
-              {scopeAvailable && (
-                <div className="flex flex-col gap-1.5 text-sm">
-                  <span className="fg-secondary">Scope</span>
-                  <McpScopeControl
-                    value={effectiveScope}
-                    cloudDisabled={
-                      cloudChoiceDisabled || curatedCloudReason !== undefined
-                    }
-                    onChange={changeScope}
-                  />
-                  <span className="text-xs fg-secondary">
-                    {effectiveScope === 'cloud'
-                      ? 'Stored in your cloud account. Cloud chats and every signed-in desktop can use it.'
-                      : 'Runs on this device. Its credentials stay here.'}
-                  </span>
-                </div>
-              )}
-
-              {effectiveScope === 'device' && (
-                <DialogFormField
-                  label="Auth handling"
-                  htmlFor={`${fieldId}-auth-handler`}
-                  description={
-                    deviceHandler === 'provider'
-                      ? 'The agent provider receives this server directly and handles auth.'
-                      : deviceHandler === 'canopy'
-                        ? `${brandText.appName} routes this server through its local proxy and owns auth.`
-                        : `Inherit the global default for how this server's auth is handled.`
-                  }
-                >
-                  <Select
-                    id={`${fieldId}-auth-handler`}
-                    options={[
-                      ...(globalAuthHandler !== 'account'
-                        ? [
-                            {
-                              value: '',
-                              label: 'Use default',
-                              disabled: curatedRequiresProvider,
-                            },
-                          ]
-                        : []),
-                      {
-                        value: 'canopy',
-                        label: `${brandText.appName} proxy`,
-                        disabled: curatedRequiresProvider,
-                      },
-                      { value: 'provider', label: 'Agent provider' },
-                    ]}
-                    value={deviceHandler}
-                    onValueChange={(value): void => {
-                      if (isAuthHandlerChoice(value)) setAuthHandler(value);
-                    }}
-                    data-testid="mcp-server-auth-handler"
-                    disabled={curatedRequiresProvider}
-                  />
-                </DialogFormField>
-              )}
-
-              {effectiveScope === 'cloud' && curatedMeta?.key && (
-                <div className="text-sm" data-testid="mcp-account-binding">
-                  {accountConnectionsLoading ? (
-                    <DelayedLoadingPlaceholder slowNote="Still loading account connections…">
-                      <McpAccountBindingSkeleton />
-                    </DelayedLoadingPlaceholder>
-                  ) : accountConnectionsError ? (
-                    <ErrorBanner error={accountConnectionsError} />
-                  ) : (
-                    <p className="fg-secondary" data-testid="mcp-account-match">
-                      {matchedAccountConnection
-                        ? `Account connection: ${matchedAccountConnection.displayName}`
-                        : 'Connect this catalog server in your cloud account before saving.'}
-                    </p>
-                  )}
-                  {!accountConnectionsLoading && !matchedAccountConnection && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={(): void =>
-                        setAccountConnectionsRetry((retry): number => retry + 1)
-                      }
-                    >
-                      Try again
-                    </Button>
-                  )}
-                </div>
-              )}
-
-              {effectiveScope === 'cloud' && isCustomHttp && (
-                <div
-                  className="flex flex-col gap-3 text-sm"
-                  data-testid="mcp-cloud-placement"
-                >
-                  {(willCreateAccountConnection || movingToCloud) && (
-                    <div className="flex flex-col gap-1">
-                      <p className="fg-primary">
-                        {movingToCloud
-                          ? 'Will move to your cloud account'
-                          : 'Will be added to your cloud account'}
-                      </p>
-                      {movingToCloud && (
-                        <p
-                          className="text-xs fg-secondary"
-                          data-testid="mcp-cloud-move-carries"
-                        >
-                          Its URL, headers, and access token move to your cloud
-                          account. OAuth sign-ins don't move, so sign in again
-                          after you save if it uses OAuth.
-                        </p>
-                      )}
-                      {hasAccountHeaders && (
-                        <p
-                          className="text-xs fg-secondary"
-                          data-testid="mcp-cloud-headers-consent"
-                        >
-                          Its headers are stored in your cloud account too.
-                        </p>
-                      )}
-                    </div>
-                  )}
-                  <DialogFormField
-                    label="Access token"
-                    htmlFor={`${fieldId}-cloud-token`}
-                    description={
-                      !editsCloudConnection
-                        ? 'Optional. The token is stored in your cloud account.'
-                        : cloudConnection?.authMode === 'BEARER'
-                          ? 'Leave it empty to keep the stored token.'
-                          : 'Optional. Connects with this token instead of signing in.'
-                    }
-                  >
-                    <TextInput
-                      id={`${fieldId}-cloud-token`}
-                      ref={accessTokenRef}
-                      type="password"
-                      autoComplete="off"
-                      value={cloudToken}
-                      onChange={(
-                        e: React.ChangeEvent<HTMLInputElement>,
-                      ): void => setCloudToken(e.target.value)}
-                      placeholder={
-                        savedCloudToken !== undefined
-                          ? 'Saved. Type to replace'
-                          : editsCloudConnection &&
-                              cloudConnection?.authMode === 'BEARER'
-                            ? 'Stored'
-                            : 'Optional'
-                      }
-                      data-testid="mcp-cloud-access-token"
-                    />
-                  </DialogFormField>
-                  {savedCloudToken !== undefined && !cloudToken && (
-                    <Button
-                      variant="ghost"
-                      size="compact"
-                      className="self-start"
-                      onClick={(): void => setSavedCloudToken(undefined)}
-                      data-testid="mcp-cloud-drop-saved-token"
-                    >
-                      Don't move token
-                    </Button>
-                  )}
-                  {cloudUrlWarning && (
-                    <Notice
-                      role="none"
-                      intent="attention"
-                      data-testid="mcp-cloud-url-warning"
-                    >
-                      Changing the URL signs you out. Sign in again after you
-                      save.
-                    </Notice>
-                  )}
-                </div>
-              )}
-
-              {movingToDevice && cloudOwned && (
-                <div
-                  className="flex flex-col gap-3 text-sm"
-                  data-testid="mcp-device-placement"
-                >
-                  <p className="fg-primary">Will move to this device</p>
-                  <DialogFormField
-                    label="Access token"
-                    htmlFor={`${fieldId}-device-token`}
-                    description="Optional. Stored on this device. Or turn on OAuth below and connect after you save."
-                  >
-                    <TextInput
-                      id={`${fieldId}-device-token`}
-                      type="password"
-                      autoComplete="off"
-                      value={cloudToken}
-                      onChange={(
-                        e: React.ChangeEvent<HTMLInputElement>,
-                      ): void => setCloudToken(e.target.value)}
-                      placeholder="Optional"
-                      data-testid="mcp-device-access-token"
-                    />
-                  </DialogFormField>
-                </div>
-              )}
-
-              {(effectiveScope === 'device'
-                ? (cloudLocalReason ?? curatedCloudReason)
-                : cloudBlockedReason) && (
-                <div className="flex items-center justify-between gap-2">
-                  <p
-                    className="text-xs fg-secondary"
-                    data-testid="mcp-cloud-local-reason"
-                  >
-                    {effectiveScope === 'device'
-                      ? (cloudLocalReason ?? curatedCloudReason)
-                      : cloudBlockedReason}
-                  </p>
-                  {curatedCloudRetry && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={(): void =>
-                        setAccountConnectionsRetry((retry): number => retry + 1)
-                      }
-                    >
-                      Try again
-                    </Button>
-                  )}
-                </div>
-              )}
-
-              <div className="text-sm">
-                <span className="mb-1.5 block fg-secondary">Headers</span>
-                {storedHeadersNote && effectiveScope === 'cloud' && (
-                  <div
-                    className="mb-2 flex items-center justify-between gap-2 text-xs fg-secondary"
-                    data-testid="mcp-cloud-stored-headers"
-                  >
-                    <span>
-                      {clearStoredHeaders
-                        ? 'Stored headers are removed when you save.'
-                        : 'Custom headers are stored in your cloud account. Add headers here to replace them.'}
-                    </span>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={(): void =>
-                        setClearStoredHeaders((current): boolean => !current)
-                      }
-                    >
-                      {clearStoredHeaders
-                        ? 'Keep stored headers'
-                        : 'Remove stored headers'}
-                    </Button>
-                  </div>
-                )}
-                {headersLeftInCloud && (
-                  <Notice
-                    role="none"
-                    intent="attention"
-                    className="mb-2"
-                    data-testid="mcp-cloud-stored-headers"
-                  >
-                    {storedHeadersKnown
-                      ? "Its stored headers can't be copied to this device. Enter them again here to keep them."
-                      : "It may have stored headers, which can't be copied to this device. Enter them again here to keep them."}
-                  </Notice>
-                )}
-                <KeyValueEditor
-                  entries={headers}
-                  onChange={setHeaders}
-                  keyPlaceholder="Header-Name"
-                  valuePlaceholder="header-value"
-                />
-              </div>
-
-              {curatedRequiresProvider && (
-                <div
-                  className="rounded-lg border bg-secondary/30 px-3 py-2 text-sm fg-secondary"
-                  data-testid="mcp-curated-provider-auth"
-                >
-                  This catalog entry requires a confidential OAuth client. The
-                  agent provider will handle authentication so the client secret
-                  is never stored in the local server definition.
-                </div>
-              )}
-
-              {/* OAuth section (HTTP only, for locally managed public clients) */}
-              {!curatedRequiresProvider && !cloudOnlyInCloud && (
-                <div className="space-y-3 rounded-lg border bg-secondary/20 p-3">
-                  <ChoiceField
-                    checked={oauthForm.enabled}
-                    onChange={(e: React.ChangeEvent<HTMLInputElement>): void =>
-                      setOauthForm({
-                        ...oauthForm,
-                        enabled: e.target.checked,
-                      })
-                    }
-                    label={<span className="font-medium">Use OAuth</span>}
-                    description={`${brandText.appName} discovers OAuth settings from the HTTP MCP server, uses a local loopback callback, and stores tokens in secure local storage.`}
-                    data-testid="mcp-server-use-oauth"
-                  />
-
-                  {oauthForm.enabled && (
-                    <div className="space-y-3 border-t pt-3">
-                      {oauthForm.enabled &&
-                        hasAnyAuthTokenConfigured(configs) && (
-                          <Notice
-                            role="none"
-                            intent="attention"
-                            title="OAuth covers proxied sessions"
-                            data-testid="mcp-server-oauth-token-warning"
-                          >
-                            The static token is kept only for non-OAuth use.
-                          </Notice>
-                        )}
-
-                      <div className="rounded-md border bg-base/50 px-3 py-2 text-xs fg-secondary">
-                        PKCE and the loopback redirect are managed by{' '}
-                        {brandText.appName}.
-                      </div>
-
-                      <Button
-                        size="compact"
-                        onClick={(): void =>
-                          setOauthForm({
-                            ...oauthForm,
-                            advancedOpen: !oauthForm.advancedOpen,
-                          })
-                        }
-                        className="self-start"
-                      >
-                        {oauthForm.advancedOpen
-                          ? 'Hide advanced OAuth overrides'
-                          : 'Show advanced OAuth overrides'}
-                      </Button>
-
-                      {oauthForm.advancedOpen && (
-                        <div className="space-y-3 rounded-md border bg-base/40 p-3">
-                          <p className="text-xs fg-secondary">
-                            Fill these only when OAuth discovery or dynamic
-                            registration is unavailable for this MCP server.
-                          </p>
-
-                          <DialogFormField
-                            label={
-                              curatedEntry?.requiredConfigFields?.some(
-                                (field) => field.kind === 'oauth-client-id',
-                              )
-                                ? 'Client ID'
-                                : 'Client ID (optional)'
-                            }
-                            htmlFor={`${fieldId}-oauth-client-id`}
-                          >
-                            <TextInput
-                              id={`${fieldId}-oauth-client-id`}
-                              value={oauthForm.clientId}
-                              onChange={(
-                                e: React.ChangeEvent<HTMLInputElement>,
-                              ): void =>
-                                setOauthForm({
-                                  ...oauthForm,
-                                  clientId: e.target.value,
-                                })
-                              }
-                              placeholder="optional client id"
-                            />
-                          </DialogFormField>
-
-                          <div className="text-xs">
-                            <p className="fg-secondary">
-                              Standalone saved client secrets are not supported.
-                            </p>
-                            <p className="mt-1 text-2xs fg-secondary">
-                              {brandText.appName} stores standalone MCP server
-                              definitions on disk, so this editor only supports
-                              public-client OAuth metadata plus PKCE.
-                            </p>
-                          </div>
-
-                          <DialogFormField
-                            label="Callback port (optional)"
-                            htmlFor={`${fieldId}-oauth-callback-port`}
-                            description={
-                              <>
-                                Uses a dedicated loopback listener instead of
-                                the shared MCP proxy port. Register{' '}
-                                {/* The shape depends on who owns the OAuth
-                                  client. A catalog entry pins a port because
-                                  the vendor registered the redirect; anything
-                                  typed here is the user's own client, and
-                                  Canopy keeps its own shape for it. Stating
-                                  one unconditionally sent half the users to
-                                  register a URI Canopy would never send. */}
-                                <code>
-                                  {oauthForm.vendorRegisteredRedirect === true
-                                    ? 'http://localhost:<port>/callback'
-                                    : 'http://127.0.0.1:<port>/oauth/callback'}
-                                </code>{' '}
-                                with the OAuth provider.
-                              </>
-                            }
-                          >
-                            <TextInput
-                              id={`${fieldId}-oauth-callback-port`}
-                              type="number"
-                              min={1}
-                              max={65_535}
-                              step={1}
-                              inputMode="numeric"
-                              value={oauthForm.callbackPort ?? ''}
-                              onChange={(
-                                e: React.ChangeEvent<HTMLInputElement>,
-                              ): void => {
-                                setOauthForm({
-                                  ...oauthForm,
-                                  callbackPort: optionalNumberInputValue(
-                                    e.currentTarget.valueAsNumber,
-                                  ),
-                                });
-                              }}
-                              placeholder="e.g. 3118"
-                              data-testid="mcp-server-oauth-callback-port"
-                            />
-                          </DialogFormField>
-
-                          <DialogFormField
-                            label="Authorization URL (optional)"
-                            htmlFor={`${fieldId}-oauth-authorizationUrl`}
-                          >
-                            <TextInput
-                              id={`${fieldId}-oauth-authorizationUrl`}
-                              value={oauthForm.authorizationUrl}
-                              onChange={(
-                                e: React.ChangeEvent<HTMLInputElement>,
-                              ): void =>
-                                setOauthForm({
-                                  ...oauthForm,
-                                  authorizationUrl: e.target.value,
-                                })
-                              }
-                              placeholder="optional authorization endpoint"
-                            />
-                          </DialogFormField>
-
-                          <DialogFormField
-                            label="Token URL (optional)"
-                            htmlFor={`${fieldId}-oauth-tokenUrl`}
-                          >
-                            <TextInput
-                              id={`${fieldId}-oauth-tokenUrl`}
-                              value={oauthForm.tokenUrl}
-                              onChange={(
-                                e: React.ChangeEvent<HTMLInputElement>,
-                              ): void =>
-                                setOauthForm({
-                                  ...oauthForm,
-                                  tokenUrl: e.target.value,
-                                })
-                              }
-                              placeholder="optional token endpoint"
-                            />
-                          </DialogFormField>
-
-                          <DialogFormField
-                            label="Scopes (optional)"
-                            htmlFor={`${fieldId}-oauth-scopes`}
-                          >
-                            <TextInput
-                              id={`${fieldId}-oauth-scopes`}
-                              value={oauthForm.scopes}
-                              onChange={(
-                                e: React.ChangeEvent<HTMLInputElement>,
-                              ): void =>
-                                setOauthForm({
-                                  ...oauthForm,
-                                  scopes: e.target.value,
-                                })
-                              }
-                              placeholder="optional scopes"
-                            />
-                          </DialogFormField>
-
-                          <DialogFormField
-                            label="Audience (optional)"
-                            htmlFor={`${fieldId}-oauth-audience`}
-                          >
-                            <TextInput
-                              id={`${fieldId}-oauth-audience`}
-                              value={oauthForm.audience}
-                              onChange={(
-                                e: React.ChangeEvent<HTMLInputElement>,
-                              ): void =>
-                                setOauthForm({
-                                  ...oauthForm,
-                                  audience: e.target.value,
-                                })
-                              }
-                              placeholder="optional audience"
-                            />
-                          </DialogFormField>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
+              {!customCreate && httpAdvancedFields}
             </>
           )}
 
-          {/* Configurations section */}
-          {!cloudOnlyInCloud && (
-            <div className="border-t pt-4">
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-sm font-medium fg-primary">
-                  Configurations
-                </span>
-                <Button
-                  size="compact"
-                  onClick={handleAddConfig}
-                  data-testid="mcp-server-add-config"
+          {customCreate && (
+            <>
+              {(createFlow.phase === 'saving' ||
+                createFlow.phase === 'testing') && (
+                <p
+                  role="status"
+                  className="text-xs fg-secondary"
+                  data-testid="mcp-server-create-checking"
                 >
-                  Add
-                </Button>
-              </div>
-
-              {configs.length === 0 && (
-                <p className="text-xs fg-secondary py-3 text-center">
-                  No configurations. Add one to define environment-specific
-                  settings.
+                  {createFlow.phase === 'saving'
+                    ? 'Adding the server\u2026'
+                    : 'Checking the connection\u2026'}
                 </p>
               )}
-
-              <div className="space-y-2">
-                {configs.map((config, index) => (
-                  <ConfigEditor
-                    key={config.id || `new-${index}`}
-                    config={config}
-                    initialExpanded={expandedNewIds.has(config.id)}
-                    onChange={(updated: McpServerConfigView) =>
-                      handleUpdateConfig(index, updated)
-                    }
-                    onDelete={() => handleDeleteConfig(index)}
-                  />
-                ))}
-              </div>
-            </div>
+              {createFlow.phase === 'signing-in' && (
+                <div
+                  className="flex flex-wrap items-center justify-between gap-2"
+                  data-testid="mcp-server-create-sign-in"
+                >
+                  <McpSignInPendingStatus serviceName={name.trim()} />
+                  {createFlow.authorizationUrl !== null && (
+                    <McpSignInPendingActions
+                      serviceName={name.trim()}
+                      variant="compact"
+                      authorizationUrl={createFlow.authorizationUrl}
+                      onCancel={createFlow.cancel}
+                      dataTestId="mcp-server-create-sign-in"
+                    />
+                  )}
+                </div>
+              )}
+              {createFlow.error !== '' && (
+                <Notice
+                  intent="destructive"
+                  title={
+                    createFlow.savedServerId === null
+                      ? "Couldn't add the server"
+                      : "Couldn't connect"
+                  }
+                  data-testid="mcp-server-create-error"
+                >
+                  <span className={REPLAY_BLOCK_CLASS}>{createFlow.error}</span>
+                  {createFlow.savedServerId !== null && (
+                    <>
+                      {' '}
+                      The server is saved, so you can try again or close this.
+                    </>
+                  )}
+                </Notice>
+              )}
+              <CustomMcpAdvanced
+                open={advancedOpen}
+                onOpenChange={setAdvancedOpen}
+                hint={customMcpAdvancedHint([
+                  serverType === 'command' && 'Command',
+                  description.trim() !== '' && 'Description',
+                  scopeTouched &&
+                    (effectiveScope === 'cloud'
+                      ? 'Cloud account'
+                      : 'This device'),
+                  authHandler !== '' && 'Auth handling',
+                  Object.keys(headers).length === 1 && '1 header',
+                  Object.keys(headers).length > 1 &&
+                    `${Object.keys(headers).length} headers`,
+                  oauthForm.enabled && 'OAuth',
+                  configs.length > 1 && `${configs.length} configurations`,
+                ])}
+                dataTestId="mcp-server-advanced"
+              >
+                {serverTypeField}
+                {descriptionField}
+                {commandScopeField}
+                {serverType === 'http' && httpAdvancedFields}
+                {configurationsField}
+              </CustomMcpAdvanced>
+            </>
           )}
+
+          {!customCreate && configurationsField}
         </EntityEditModalContent>
       </DialogModal>
       {confirmMoveToDevice && (
@@ -3122,7 +3356,7 @@ export function McpServerDetailOverlay({
     >
       {loading && (
         <div className="flex items-center justify-center py-12">
-          <p className="text-sm fg-secondary">Loading&hellip;</p>
+          <p className="text-s fg-secondary">Loading&hellip;</p>
         </div>
       )}
 
@@ -3140,7 +3374,7 @@ export function McpServerDetailOverlay({
           />
           {/* Description */}
           {def.description && (
-            <p className="text-sm fg-secondary mb-4">{def.description}</p>
+            <p className="text-s fg-secondary mb-4">{def.description}</p>
           )}
 
           {/* Connection details */}
@@ -3895,8 +4129,9 @@ export function McpServersTab({
         };
         window.addEventListener('focus', handleFocus);
       } else {
-        // A valid token already existed, so no browser opened.
-        setConnectNotice(mcpAlreadyConnectedMessage(server.name));
+        setConnectNotice(
+          await completedConnectMessage(server.id, configId, server.name),
+        );
       }
     } catch (error: unknown) {
       setConnectError(error instanceof Error ? error.message : String(error));

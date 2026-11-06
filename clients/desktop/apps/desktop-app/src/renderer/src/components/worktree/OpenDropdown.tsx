@@ -113,7 +113,7 @@ export function OpenDropdown({
           shell sits on the wrapper and the hover overlay on each segment so
           only the hovered half lights up. */}
       <div
-        className={`electron-no-drag inline-flex h-7 shrink-0 items-stretch overflow-hidden rounded-md ${SECONDARY_SURFACE_SHELL_CLASS}`}
+        className={`electron-no-drag inline-flex h-7 shrink-0 items-stretch overflow-hidden rounded-full ${SECONDARY_SURFACE_SHELL_CLASS}`}
       >
         {splitApp && splitApp.icon && (
           <>

@@ -388,6 +388,13 @@ const ReservationListResultSchema = z
   );
 
 const ReserveParamsSchema = z.strictObject({
+  workspaceIdentity: CoreWorkspaceRecordsWorkspaceIdSchema.optional(),
+  expectedWorkspaceRecords: z
+    .strictObject({
+      manifest: FINGERPRINT,
+      worktrees: FINGERPRINT,
+    })
+    .optional(),
   reservationId: RESERVATION_ID,
   operation: OPERATION,
   receipt: ReceiptSchema.optional(),
@@ -412,6 +419,7 @@ const NO_RESULT = z.strictObject({});
 
 /** Each operation-specific code with the one kind it is always sent with. */
 export const CORE_WORKSPACE_RECORDS_ERROR_KINDS = {
+  'core.workspaceRecords.identityConflict': 'conflict',
   /** A target changed since the caller's read; nothing was decided. */
   'core.workspaceRecords.fingerprintConflict': 'conflict',
   /** An expected revision moved; nothing was decided. */
@@ -440,6 +448,7 @@ export type CoreWorkspaceRecordsErrorCode =
   keyof typeof CORE_WORKSPACE_RECORDS_ERROR_KINDS;
 
 const CODE = z.enum([
+  'core.workspaceRecords.identityConflict',
   'core.workspaceRecords.fingerprintConflict',
   'core.workspaceRecords.revisionConflict',
   'core.workspaceRecords.recoveryRequired',
@@ -458,7 +467,27 @@ const readError = CanopyErrorPayloadSchema.extend({
   code: CODE.optional(),
   retry: CanopyQueryRetryDirectiveSchema,
 });
-const writeError = CanopyErrorPayloadSchema.extend({ code: CODE.optional() });
+const writeError = CanopyErrorPayloadSchema.extend({
+  code: CODE.optional(),
+}).refine(
+  (error): boolean => {
+    if (
+      error.code !== 'core.workspaceRecords.identityConflict' ||
+      typeof error.details !== 'object' ||
+      error.details === null ||
+      Array.isArray(error.details) ||
+      !('workspaceIdentity' in error.details)
+    )
+      return true;
+    return CoreWorkspaceRecordsWorkspaceIdSchema.safeParse(
+      error.details.workspaceIdentity,
+    ).success;
+  },
+  {
+    message: 'Expected a path-free workspace identity',
+    path: ['details', 'workspaceIdentity'],
+  },
+);
 
 export const CORE_WORKSPACE_RECORDS_QUERY_DEFINITIONS =
   defineCanopyQueryRegistry('core', {

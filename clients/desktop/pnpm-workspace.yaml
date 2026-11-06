@@ -29,6 +29,7 @@ allowBuilds:
   '@datadog/native-metrics': false
   '@datadog/pprof': false
   '@firebase/util': false
+  '@posthog/cli': false
   '@prisma/engines': false
   '@swc/core': false
   argon2: false
@@ -45,7 +46,6 @@ allowBuilds:
   tree-sitter-cli: false
   unrs-resolver: false
 patchedDependencies:
-  '@datadog/electron-sdk@0.2.0': patches/@datadog__electron-sdk@0.2.0.patch
   builder-util-runtime@9.5.1: patches/builder-util-runtime@9.5.1.patch
   electron-vite@5.0.0: patches/electron-vite@5.0.0.patch
   playwright-core@1.64.1: patches/playwright-core@1.64.1.patch

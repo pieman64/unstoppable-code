@@ -1,11 +1,13 @@
 import { lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isErrnoException } from './type-guards';
+import { admitDesktopDeletionPresence } from './w5-host-admission';
 
-/** Ordinary startup pays one lstat; SQLite and native recovery UI stay cold. */
+/** Presence precedes recovery; ordinary startup keeps the native recovery UI cold. */
 export async function runRequestedW5Recovery(
   dataRoot: string,
 ): Promise<boolean> {
+  await admitDesktopDeletionPresence(dataRoot);
   try {
     await lstat(join(dataRoot, 'runtime/w5-recovery-request.json'));
   } catch (error) {

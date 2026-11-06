@@ -59,6 +59,7 @@ interface AddOrgProjectCatalogProps {
   /** The dialog's read of this catalog; the list loads nothing itself. */
   session: OrgCatalogSession;
   onClose: () => void;
+  onAddActivityChange: (delta: 1 | -1) => void;
   /**
    * A project to add once, as its Add would, as soon as the catalog lists it
    * and Add is available: the create-time nudge's "Add to <organization>"
@@ -74,6 +75,7 @@ export function AddOrgProjectCatalog({
   organization,
   session,
   onClose,
+  onAddActivityChange,
   initialAddProjectId,
   initialDestination,
 }: AddOrgProjectCatalogProps): JSX.Element {
@@ -191,6 +193,7 @@ export function AddOrgProjectCatalog({
     requestedDestination: string | null,
   ): Promise<void> => {
     setError('');
+    onAddActivityChange(1);
     const outcome = await addOrgProjectToComputer(orgProjectsStore, {
       context,
       project,
@@ -198,7 +201,7 @@ export function AddOrgProjectCatalog({
       onPending: (busy): void => setPending(busy ? project.id : null),
       onBeforeSetup: onClose,
       offerGitHubConnect: true,
-    });
+    }).finally((): void => onAddActivityChange(-1));
     if (outcome.kind === 'listing-failed') setError('Failed to add project');
     // Found linked by the fresh check: its row re-renders without Add.
     else if (outcome.kind === 'linked')

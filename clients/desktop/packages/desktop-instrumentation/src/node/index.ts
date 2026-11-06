@@ -4,7 +4,7 @@
 // owns no telemetry transport: records go to the host's sink, or nowhere.
 // Portable telemetry policy, buffering and drain belong to CAN-4179.
 import type { DesktopOperationName } from '../operations';
-import { redactText, sanitizeDatadogInstrumentationContext } from '../privacy';
+import { redactText, sanitizeExternalInstrumentationContext } from '../privacy';
 import type {
   DesktopInstrumentationContext,
   DesktopInstrumentationErrorOptions,
@@ -60,7 +60,7 @@ export interface NodeInstrumentation {
 function operationFields(
   options: DesktopInstrumentationOperationOptions | undefined,
 ): { operationKey?: string; context?: DesktopInstrumentationContext } {
-  const context = sanitizeDatadogInstrumentationContext(options?.context);
+  const context = sanitizeExternalInstrumentationContext(options?.context);
   return {
     ...(options?.operationKey === undefined
       ? {}
@@ -106,7 +106,7 @@ export function createNodeInstrumentation(
     },
     captureError: (error, errorOptions): void => {
       emit(() => {
-        const context = sanitizeDatadogInstrumentationContext(
+        const context = sanitizeExternalInstrumentationContext(
           errorOptions?.context,
         );
         return {

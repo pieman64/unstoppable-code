@@ -1,4 +1,5 @@
 import { BRAND } from '@canopy/brand/current';
+import { createHash } from 'node:crypto';
 import {
   MCP_ACCEPT_HEADER,
   readMcpJsonRpcMessage,
@@ -17,23 +18,7 @@ export interface McpHttpOAuthProbeResult {
 }
 
 const MAX_PROBE_CACHE_ENTRIES = 256;
-const REDACTED_CACHE_HEADER_VALUE = '[redacted]';
-const SENSITIVE_CACHE_HEADER_NAMES = new Set([
-  'api-key',
-  'authorization',
-  'cookie',
-  'proxy-authorization',
-  'set-cookie',
-  'x-api-key',
-]);
-
 const oauthProbeCache = new Map<string, McpHttpOAuthProbeResult>();
-
-function normalizeHeaderValue(name: string, value: string): string {
-  return SENSITIVE_CACHE_HEADER_NAMES.has(name)
-    ? REDACTED_CACHE_HEADER_VALUE
-    : value;
-}
 
 function buildOAuthProbeCacheKey(
   mcpUrl: string,
@@ -42,18 +27,21 @@ function buildOAuthProbeCacheKey(
   const normalizedHeaders: Record<string, string> = {};
   for (const [name, value] of Object.entries(headers)) {
     const normalizedName = name.toLowerCase();
-    normalizedHeaders[normalizedName] = normalizeHeaderValue(
-      normalizedName,
-      value,
-    );
+    normalizedHeaders[normalizedName] = value;
   }
 
-  return JSON.stringify({
-    mcpUrl,
-    headers: Object.entries(normalizedHeaders).sort(([left], [right]) =>
-      left.localeCompare(right),
-    ),
-  });
+  // Bind discovery to every credential/header value without retaining secrets
+  // or credential-bearing endpoints in cache keys.
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        mcpUrl,
+        headers: Object.entries(normalizedHeaders).sort(([left], [right]) =>
+          left.localeCompare(right),
+        ),
+      }),
+    )
+    .digest('hex');
 }
 
 function setProbeCacheEntry(

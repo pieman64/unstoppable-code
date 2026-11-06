@@ -15,7 +15,18 @@ import {
   McpConnectionStatusBadge,
   SettingsSelect,
 } from '@canopy/ui-shared';
-import { ErrorBanner, Notice, Heading } from '@canopy/ui-shared/components';
+import {
+  DetailMoreMenu,
+  DetailPageActions,
+  ErrorBanner,
+  Heading,
+  Notice,
+  SettingsRowsGroup,
+  SettingsRowsRow,
+  useContributeDetailMoreItems,
+  type DetailMoreMenuItem,
+} from '@canopy/ui-shared/components';
+import { TrashIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
   mcpAuthStatusBadgeClass,
   mcpAuthStatusLabel,
@@ -125,9 +136,10 @@ export interface McpServerHealthSectionProps {
   /**
    * `section` (default) is the MCP server page's titled Health section;
    * `inline` drops the heading and fits one table row: health on the left,
-   * Test connection on the right (the plugin detail's MCP servers rows).
+   * Test connection on the right (the plugin detail's MCP servers rows);
+   * `row` is the Health row of {@link McpServerManagementCard}.
    */
-  readonly presentation?: 'section' | 'inline';
+  readonly presentation?: 'section' | 'inline' | 'row';
   /** The inline group's accessible name; defaults to "Health". */
   readonly label?: string;
 }
@@ -271,63 +283,100 @@ function McpServerHealthSectionForTarget({
         : 'No recorded check'}
     </p>
   );
-  const authList = authRows.length > 0 && (
-    <ul className="space-y-1">
-      {authRows.map((config) => (
-        <li
-          key={config.configId}
-          data-testid={`mcp-health-auth-${config.configId}`}
-          className="flex items-center gap-2 text-xs fg-secondary"
-        >
-          <span className="min-w-0 truncate">{config.name}</span>
-          <span
-            className={mcpAuthStatusBadgeClass(
-              config.authStatus,
-              config.canRefresh,
-            )}
+  const authListOf = (rows: typeof authRows): ReactNode =>
+    rows.length > 0 && (
+      <ul className="space-y-1">
+        {rows.map((config) => (
+          <li
+            key={config.configId}
+            data-testid={`mcp-health-auth-${config.configId}`}
+            className="flex items-center gap-2 text-xs fg-secondary"
           >
-            {mcpAuthStatusLabel(config.authStatus, config.canRefresh)}
-          </span>
-        </li>
-      ))}
-    </ul>
+            <span className="min-w-0 truncate">{config.name}</span>
+            <span
+              className={mcpAuthStatusBadgeClass(
+                config.authStatus,
+                config.canRefresh,
+              )}
+            >
+              {mcpAuthStatusLabel(config.authStatus, config.canRefresh)}
+            </span>
+          </li>
+        ))}
+      </ul>
+    );
+  const testButtons = (
+    <div className="flex flex-wrap items-center gap-2">
+      {testable.length > 1 && (
+        <SettingsSelect
+          aria-label="Configuration to test"
+          data-testid="mcp-health-config-select"
+          width="fit"
+          value={effectiveConfigId ?? null}
+          disabled={pending}
+          onValueChange={setSelectedConfigId}
+          options={testable.map((config) => ({
+            value: config.id,
+            label: config.name,
+          }))}
+        />
+      )}
+      <Button
+        variant="secondary"
+        size="compact"
+        data-testid="mcp-health-test"
+        disabled={testReason !== undefined || pending || busy}
+        aria-describedby={testReason !== undefined ? reasonId : undefined}
+        onClick={(): void => {
+          void handleTest();
+        }}
+      >
+        {pending ? 'Testing…' : 'Test connection'}
+      </Button>
+    </div>
   );
-  const testControls = (
+  const testFeedback = (
     <>
-      <div className="flex flex-wrap items-center gap-2">
-        {testable.length > 1 && (
-          <SettingsSelect
-            aria-label="Configuration to test"
-            data-testid="mcp-health-config-select"
-            width="fit"
-            value={effectiveConfigId ?? null}
-            disabled={pending}
-            onValueChange={setSelectedConfigId}
-            options={testable.map((config) => ({
-              value: config.id,
-              label: config.name,
-            }))}
-          />
-        )}
-        <Button
-          variant="secondary"
-          size="compact"
-          data-testid="mcp-health-test"
-          disabled={testReason !== undefined || pending || busy}
-          aria-describedby={testReason !== undefined ? reasonId : undefined}
-          onClick={(): void => {
-            void handleTest();
-          }}
-        >
-          {pending ? 'Testing…' : 'Test connection'}
-        </Button>
-      </div>
       {testReason !== undefined && (
         <UnavailableReason id={reasonId} testId="mcp-health-test-reason">
           {testReason}
         </UnavailableReason>
       )}
       {shownResult !== null && <TestResultPanel outcome={shownResult} />}
+    </>
+  );
+
+  if (presentation === 'row') {
+    // One configuration's "Connected" under a Connected badge repeats it; any
+    // other status adds what the badge does not say, so that line stays.
+    const onlyRow =
+      configs.length === 1 && authRows.length === 1 ? authRows[0] : undefined;
+    const repeatsBadge =
+      onlyRow?.authStatus === 'connected' && badge.status === 'connected';
+    return (
+      <section data-testid="mcp-health-section" aria-label={label}>
+        <SettingsRowsRow
+          label={
+            <div className="flex flex-wrap items-center gap-2">
+              Health
+              {badgeNode}
+            </div>
+          }
+          description={lastCheckedNode}
+          control={testConnection !== undefined ? testButtons : undefined}
+        >
+          {!repeatsBadge && authListOf(authRows)}
+          {testConnection !== undefined && testFeedback}
+        </SettingsRowsRow>
+      </section>
+    );
+  }
+
+  const authList = authListOf(authRows);
+  const testControls = (
+    <>
+      {testButtons}
+      {testFeedback}
     </>
   );
 
@@ -463,12 +512,12 @@ interface ActionRowSpec {
   readonly label: string;
   readonly pendingLabel: string;
   readonly action: McpAction<() => void | Promise<void>>;
-  readonly destructive?: boolean;
 }
 
 /**
- * Placement, account, move and Delete actions for one MCP server. Actions the
- * server does not support are omitted; supported-but-unavailable actions stay
+ * The Placement row of {@link McpServerManagementCard}: account and move
+ * actions on the row, and Delete in the page's ⋯ More menu. Actions the server
+ * does not support are omitted; supported-but-unavailable actions stay
  * visible, disabled, with their reason.
  */
 export function McpServerManagementActions(
@@ -593,97 +642,171 @@ function McpServerManagementActionsForTarget({
       pendingLabel: 'Moving…',
       action: moveToDevice,
     });
-  if (deleteServer)
-    rows.push({
-      id: 'delete',
-      label: 'Delete',
-      pendingLabel: 'Deleting…',
-      action: deleteServer,
-      destructive: true,
-    });
+
+  // Controls blocked for the same reason share one line, read by each of them.
+  const reasonIds = new Map<string, string>();
+  const reasonLines = rows.flatMap((row) => {
+    if (row.action.available || reasonIds.has(row.action.reason)) return [];
+    const id = `${idPrefix}-${row.id}-reason`;
+    reasonIds.set(row.action.reason, id);
+    return [
+      <UnavailableReason
+        key={id}
+        id={id}
+        testId={`mcp-management-${row.id}-reason`}
+      >
+        {row.action.reason}
+      </UnavailableReason>,
+    ];
+  });
+
+  const openDeleteConfirmation = (): void => {
+    // Recheck at selection: an open menu can outlive the state it drew.
+    if (
+      deleteRef.current?.available !== true ||
+      pendingRef.current !== null ||
+      busy
+    )
+      return;
+    setDeleteError(null);
+    setConfirmingDelete(true);
+  };
+  const deleteItems: readonly DetailMoreMenuItem[] = deleteServer
+    ? [
+        {
+          id: `${idPrefix}-delete`,
+          label: pending === 'delete' ? 'Deleting…' : 'Delete…',
+          icon: <TrashIcon />,
+          testId: 'mcp-management-delete',
+          onSelect: openDeleteConfirmation,
+          disabled: !deleteServer.available || pending !== null || busy,
+          ...(deleteServer.available ? {} : { reason: deleteServer.reason }),
+          destructive: true,
+        },
+      ]
+    : [];
+  const deleteInHostMenu = useContributeDetailMoreItems(
+    `mcp-management-${idPrefix}`,
+    deleteItems,
+  );
 
   return (
-    <section
-      data-testid="mcp-management-section"
-      aria-labelledby={`${idPrefix}-heading`}
-      className="space-y-3"
-    >
-      <div className="flex flex-wrap items-center gap-2">
-        <Heading level={3} variant="title" id={`${idPrefix}-heading`}>
-          Placement
-        </Heading>
-        <span
-          data-testid="mcp-management-placement"
-          data-placement={placement}
-          className={badgeClassName('neutral')}
-        >
-          {mcpPlacementLabel(placement)}
-        </span>
-      </div>
-      {rows.length > 0 && (
-        <ul className="space-y-2">
-          {rows.map((row) => {
-            const reasonId = `${idPrefix}-${row.id}-reason`;
-            const reason = row.action.available ? undefined : row.action.reason;
-            return (
-              <li key={row.id} className="space-y-1">
-                <Button
-                  variant={row.destructive ? 'destructive' : 'secondary'}
-                  size="compact"
-                  data-testid={`mcp-management-${row.id}`}
-                  disabled={reason !== undefined || pending !== null || busy}
-                  aria-describedby={reason !== undefined ? reasonId : undefined}
-                  onClick={(): void => {
-                    if (!row.action.available) return;
-                    if (row.id === 'delete') {
-                      setDeleteError(null);
-                      setConfirmingDelete(true);
-                      return;
-                    }
-                    void runAction(row.id, row.action.run);
-                  }}
-                >
-                  {pending === row.id ? row.pendingLabel : row.label}
-                </Button>
-                {reason !== undefined && (
-                  <UnavailableReason
-                    id={reasonId}
-                    testId={`mcp-management-${row.id}-reason`}
+    <section data-testid="mcp-management-section" aria-label="Placement">
+      <SettingsRowsRow
+        label={
+          <div className="flex flex-wrap items-center gap-2">
+            Placement
+            <span
+              data-testid="mcp-management-placement"
+              data-placement={placement}
+              className={badgeClassName('neutral')}
+            >
+              {mcpPlacementLabel(placement)}
+            </span>
+          </div>
+        }
+        control={
+          rows.length > 0 ? (
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {rows.map((row) => {
+                const reasonId = row.action.available
+                  ? undefined
+                  : reasonIds.get(row.action.reason);
+                return (
+                  <Button
+                    key={row.id}
+                    variant="secondary"
+                    size="compact"
+                    data-testid={`mcp-management-${row.id}`}
+                    disabled={!row.action.available || pending !== null || busy}
+                    aria-describedby={reasonId}
+                    onClick={(): void => {
+                      if (!row.action.available) return;
+                      void runAction(row.id, row.action.run);
+                    }}
                   >
-                    {reason}
-                  </UnavailableReason>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-      )}
-      <ErrorBanner className="" error={error} testId="mcp-management-error" />
-      {confirmingDelete && (
-        <ConfirmDialog
-          title={`Delete ${serverName}?`}
-          message={mcpDeleteScopeDescription(
-            serverName,
-            deleteScope ?? placement,
-          )}
-          confirmLabel="Delete"
-          busyLabel="Deleting…"
-          busy={pending === 'delete'}
-          errorMessage={deleteError}
-          destructive
-          dataTestId="mcp-management-delete-dialog"
-          confirmTestId="mcp-management-delete-confirm"
-          cancelTestId="mcp-management-delete-cancel"
-          onConfirm={(): void => {
-            void confirmDelete();
-          }}
-          onCancel={(): void => {
-            if (pendingRef.current === 'delete') return;
-            setConfirmingDelete(false);
-            setDeleteError(null);
-          }}
-        />
-      )}
+                    {pending === row.id ? row.pendingLabel : row.label}
+                  </Button>
+                );
+              })}
+            </div>
+          ) : undefined
+        }
+      >
+        {reasonLines}
+        <ErrorBanner className="" error={error} testId="mcp-management-error" />
+        {!deleteInHostMenu && deleteItems.length > 0 && (
+          <DetailPageActions
+            more={
+              <DetailMoreMenu
+                name={serverName}
+                items={deleteItems}
+                triggerTestId="mcp-management-more"
+                menuTestId="mcp-management-menu"
+                placement="bottom-right"
+              />
+            }
+          />
+        )}
+        {confirmingDelete && (
+          <ConfirmDialog
+            title={`Delete ${serverName}?`}
+            message={mcpDeleteScopeDescription(
+              serverName,
+              deleteScope ?? placement,
+            )}
+            confirmLabel="Delete"
+            busyLabel="Deleting…"
+            busy={pending === 'delete'}
+            errorMessage={deleteError}
+            destructive
+            dataTestId="mcp-management-delete-dialog"
+            confirmTestId="mcp-management-delete-confirm"
+            cancelTestId="mcp-management-delete-cancel"
+            onConfirm={(): void => {
+              void confirmDelete();
+            }}
+            onCancel={(): void => {
+              if (pendingRef.current === 'delete') return;
+              setConfirmingDelete(false);
+              setDeleteError(null);
+            }}
+          />
+        )}
+      </SettingsRowsRow>
     </section>
+  );
+}
+
+export interface McpServerManagementCardProps {
+  /** Each section's host wiring, unchanged; the card owns the presentation. */
+  readonly health: Omit<McpServerHealthSectionProps, 'presentation' | 'label'>;
+  readonly management: McpServerManagementActionsProps;
+  /** The server's tools; a host with no tools read omits the row. */
+  readonly tools?: ReactNode;
+}
+
+/**
+ * Health, Placement and Tools for one MCP server, as rows of one box. The MCP
+ * server page on desktop and web both mount it.
+ */
+export function McpServerManagementCard({
+  health,
+  management,
+  tools,
+}: McpServerManagementCardProps): JSX.Element {
+  return (
+    <SettingsRowsGroup
+      dataTestId="mcp-management-card"
+      ariaLabel="Server management"
+    >
+      <McpServerHealthSection {...health} presentation="row" />
+      <McpServerManagementActions {...management} />
+      {tools !== undefined && tools !== null && (
+        <SettingsRowsRow label="Tools" dataTestId="mcp-management-tools">
+          {tools}
+        </SettingsRowsRow>
+      )}
+    </SettingsRowsGroup>
   );
 }

@@ -185,6 +185,10 @@ function conflict(failure: unknown): boolean {
   return /conflict|changed|revision/i.test(errorText(failure));
 }
 
+function tooLargeToSync(failure: unknown): boolean {
+  return /too large to sync/i.test(errorText(failure));
+}
+
 const noop = (): void => undefined;
 
 /** A day's memories: its label, then one row per memory. */
@@ -663,9 +667,11 @@ export function MemoryPanel({
         return;
       }
       setSaveError(
-        conflict(failure)
-          ? "Couldn't save because this memory changed. Your draft is kept; cancel and try again."
-          : "Couldn't save this memory. Your draft is kept; try again.",
+        tooLargeToSync(failure)
+          ? "Couldn't save this memory because it's too large to sync. Your draft is kept; shorten it and try again."
+          : conflict(failure)
+            ? "Couldn't save because this memory changed. Your draft is kept; cancel and try again."
+            : "Couldn't save this memory. Your draft is kept; try again.",
       );
     } finally {
       if (active.current) setSaving(false);

@@ -32,6 +32,18 @@ import {
   excerptFromProbeHead,
   titleFromProbeHead,
 } from '@canopy/memory-consolidation/memory-summary';
+import {
+  memoryNoteId,
+  memoryNoteIdAt,
+  withMemoryNoteId,
+  withMemoryNoteScalarFields,
+} from './note-identity';
+import {
+  LocalMemoryReplicaUnavailableError,
+  localMemoryReplicaHooks,
+  type LocalMemoryNoteChange,
+} from './replica-hooks';
+import type { ResolvedLocalMemoryScope } from './scope-resolver';
 
 const MAX_FILE_BYTES = 512 * 1024;
 const MAX_FILES = 2_000;
@@ -256,10 +268,48 @@ export async function readLocalMemoryDocument(
   };
 }
 
+/**
+ * Where an explorer write goes: the folder, and the account whose synced
+ * replica it was resolved as (null for device-local memory). A bare folder
+ * is bound to the replica it is when the write starts.
+ */
+export type LocalMemoryWriteTarget = Pick<
+  ResolvedLocalMemoryScope,
+  'dir' | 'accountId'
+>;
+
+function writeTarget(
+  target: string | LocalMemoryWriteTarget,
+): LocalMemoryWriteTarget {
+  return typeof target === 'string'
+    ? {
+        dir: target,
+        accountId: localMemoryReplicaHooks()?.replicaAccountId(target) ?? null,
+      }
+    : target;
+}
+
+/**
+ * Rejects a write into a synced replica that stopped syncing for its account
+ * after the write resolved it (a sign-out or sync turned off while it waited
+ * for the lock): written now, the change would stay on this device without
+ * its outbox operation.
+ */
+function assertReplicaStillSyncing(target: LocalMemoryWriteTarget): void {
+  if (
+    target.accountId !== null &&
+    localMemoryReplicaHooks()?.replicaAccountId(target.dir) !== target.accountId
+  ) {
+    throw new LocalMemoryReplicaUnavailableError();
+  }
+}
+
 export function mutateLocalMemoryItem(
-  scopeDir: string,
+  scope: string | LocalMemoryWriteTarget,
   request: { fileKey: string; itemId: string; revision: string; text?: string },
 ): Promise<LocalMemoryDocument> {
+  const target = writeTarget(scope);
+  const scopeDir = target.dir;
   return withMemoryWriteLock(scopeDir, async () => {
     const path = await safePath(scopeDir, request.fileKey);
     const content = await readBounded(path);
@@ -297,27 +347,68 @@ export function mutateLocalMemoryItem(
       if (content.includes('\r\n'))
         replacement = replacement.replace(/\n/g, '\r\n');
     }
-    const result = content.slice(0, start) + replacement + content.slice(end);
-    if (Buffer.byteLength(result, 'utf8') > MAX_FILE_BYTES)
+    const edited = content.slice(0, start) + replacement + content.slice(end);
+    if (Buffer.byteLength(edited, 'utf8') > MAX_FILE_BYTES)
       throw new Error('This memory file is too large to save.');
+    const { result, change } = syncedNoteEdit(
+      target,
+      request.fileKey,
+      content,
+      edited,
+    );
     const updatedDocument = await parseMemoryDocumentInWorker(
       request.fileKey,
       result,
     );
-    await replaceAtRevision(scopeDir, request, path, result);
+    await replaceAtRevision(target, request, path, result, change);
+    notifyNoteChanged(scopeDir, request.fileKey);
     return { ...updatedDocument, markdown: bodyMarkdown(result) };
   });
 }
 
+/**
+ * The front matter a note edited in a synced replica takes on, or null for a
+ * document or a device-local scope.
+ */
+function syncedNoteFields(
+  scopeDir: string,
+  fileKey: string,
+): Readonly<Record<string, string>> | null {
+  if (!fileKey.startsWith('inbox/')) return null;
+  return localMemoryReplicaHooks()?.noteFields(scopeDir) ?? null;
+}
+
+/**
+ * A synced note never changes once written (design §10.3): its edit becomes
+ * a new note, under a new ID, that supersedes it.
+ */
+function asReplacementNote(
+  previous: string,
+  next: string,
+  fields: Readonly<Record<string, string>>,
+): string {
+  const previousId = memoryNoteId(previous);
+  return withMemoryNoteScalarFields(
+    withMemoryNoteId(next, memoryNoteIdAt(Date.now())),
+    previousId === null ? fields : { ...fields, supersedes: previousId },
+  );
+}
+
 /** Writes `result` over the file, only while it still has the read revision. */
 async function replaceAtRevision(
-  scopeDir: string,
+  target: LocalMemoryWriteTarget,
   request: { fileKey: string; revision: string },
   path: string,
   result: string,
+  change?: LocalMemoryNoteChange,
 ): Promise<void> {
+  const scopeDir = target.dir;
   const temporaryPath = `${path}.${randomUUID()}.tmp`;
   try {
+    // An edit cut short is finished first, so this one never builds on it.
+    if (change !== undefined) {
+      await localMemoryReplicaHooks()?.settleNoteChanges(scopeDir);
+    }
     await mkdir(dirname(temporaryPath), { recursive: true, mode: 0o700 });
     await writeFile(temporaryPath, result, {
       encoding: 'utf8',
@@ -329,11 +420,52 @@ async function replaceAtRevision(
       revision(await readBounded(path)) !== request.revision
     )
       throw new Error(CHANGED_SINCE_OPENED);
+    assertReplicaStillSyncing(target);
+    // Queued first: a synced note's edit sync cannot carry is refused
+    // before anything changes.
+    if (change !== undefined) {
+      const hooks = localMemoryReplicaHooks();
+      if (hooks === null) throw new LocalMemoryReplicaUnavailableError();
+      await hooks.queueNoteChange(scopeDir, change);
+    }
     await recordMemoryEdit(scopeDir);
     await assertMemoryScopeLockHeld();
+    if (change === undefined) assertReplicaStillSyncing(target);
     await rename(temporaryPath, path);
   } finally {
     await unlink(temporaryPath).catch(() => undefined);
+  }
+}
+
+/**
+ * A note edit in a synced replica: its replacement and the change to queue.
+ * Decided once the lock is held, so it rejects when the replica the write
+ * resolved stopped syncing while it waited.
+ */
+function syncedNoteEdit(
+  target: LocalMemoryWriteTarget,
+  fileKey: string,
+  previous: string,
+  next: string,
+): { result: string; change?: LocalMemoryNoteChange } {
+  assertReplicaStillSyncing(target);
+  const fields = syncedNoteFields(target.dir, fileKey);
+  if (fields === null) return { result: next };
+  const result = asReplacementNote(previous, next, fields);
+  return {
+    result,
+    change: {
+      kind: 'replace',
+      fileKey,
+      previousContent: previous,
+      content: result,
+    },
+  };
+}
+
+function notifyNoteChanged(scopeDir: string, fileKey: string): void {
+  if (syncedNoteFields(scopeDir, fileKey) !== null) {
+    localMemoryReplicaHooks()?.noteChanged(scopeDir);
   }
 }
 
@@ -348,9 +480,11 @@ function deletableFileKey(fileKey: string): void {
  * becomes the level-1 heading that starts the body.
  */
 export async function updateLocalMemoryFile(
-  scopeDir: string,
+  scope: string | LocalMemoryWriteTarget,
   request: { fileKey: string; revision: string; title?: string; body: string },
 ): Promise<LocalMemoryDocument> {
+  const target = writeTarget(scope);
+  const scopeDir = target.dir;
   return withMemoryWriteLock(scopeDir, async () => {
     const path = await safePath(scopeDir, request.fileKey);
     const content = await readBounded(path);
@@ -390,30 +524,59 @@ export async function updateLocalMemoryFile(
     if (Buffer.byteLength(markdown, 'utf8') > MAX_FILE_BYTES)
       throw new Error('This memory file is too large to save.');
     const bom = content.startsWith('\uFEFF') && !frontMatter ? '\uFEFF' : '';
-    const result = `${bom}${markdown}`;
+    const { result, change } = syncedNoteEdit(
+      target,
+      request.fileKey,
+      content,
+      `${bom}${markdown}`,
+    );
     const updatedDocument = await parseMemoryDocumentInWorker(
       request.fileKey,
       result,
     );
-    await replaceAtRevision(scopeDir, request, path, result);
+    await replaceAtRevision(target, request, path, result, change);
+    notifyNoteChanged(scopeDir, request.fileKey);
     return { ...updatedDocument, markdown: bodyMarkdown(result) };
   });
 }
 
-/** Deletes a topic or inbox note, only while it still has the read revision. */
+/**
+ * Deletes a topic or inbox note, only while it still has the read revision.
+ * A synced note's delete is queued first (a note never sent is recorded as
+ * deleted here), so when removing the file fails, or the app quits before,
+ * the next push finishes it.
+ */
 export async function deleteLocalMemoryFile(
-  scopeDir: string,
+  scope: string | LocalMemoryWriteTarget,
   request: { fileKey: string; revision: string },
 ): Promise<void> {
   deletableFileKey(request.fileKey);
+  const target = writeTarget(scope);
+  const scopeDir = target.dir;
   return withMemoryWriteLock(scopeDir, async () => {
     const path = await safePath(scopeDir, request.fileKey);
-    if (revision(await readBounded(path)) !== request.revision)
+    const synced = syncedNoteFields(scopeDir, request.fileKey) !== null;
+    if (synced) await localMemoryReplicaHooks()?.settleNoteChanges(scopeDir);
+    const content = await readBounded(path);
+    if (revision(content) !== request.revision)
       throw new Error(
         'Memory changed since you opened it. Refresh before deleting.',
       );
+    assertReplicaStillSyncing(target);
+    if (synced) {
+      await localMemoryReplicaHooks()?.queueNoteChange(scopeDir, {
+        kind: 'tombstone',
+        fileKey: request.fileKey,
+        content,
+      });
+    }
     await recordMemoryEdit(scopeDir);
-    await assertMemoryScopeLockHeld();
-    await unlink(path);
+    try {
+      await assertMemoryScopeLockHeld();
+      if (!synced) assertReplicaStillSyncing(target);
+      await unlink(path);
+    } finally {
+      notifyNoteChanged(scopeDir, request.fileKey);
+    }
   });
 }

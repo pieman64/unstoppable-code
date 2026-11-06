@@ -1,5 +1,6 @@
 'use client';
 
+import { Heading } from '@canopy/ui-shared/components';
 import { DEFAULT_ARCHIVE_RETENTION_DAYS } from '@canopy/protocol/archive-retention';
 import { useSidebarHeaderRest } from '@canopy/ui-shared/lib';
 import {
@@ -3067,7 +3068,7 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
       rowBulk.context.bulkSelection.count >= 2 &&
       rowBulk.callbacks.onBulkRemovalRequested !== undefined;
     const organizingItems =
-      itemGroupMenuItems && !rowCommandsDisabled && !pinnedSurface
+      itemGroupMenuItems && !rowCommandsDisabled
         ? bulkMenu
           ? withSelectionGroupItems(menu.items, itemGroupMenuItems)
           : [
@@ -3108,14 +3109,14 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
             worktree.localId,
           ),
         );
-    // Early access (compact rows): the rare rows fold into "More", and the
-    // notification choices into "Notifications".
+    // Notifications use one submenu in every sidebar style. Compact rows
+    // additionally fold their rarer actions into More.
+    const notificationMenuItems =
+      foldWorktreeNotificationsIntoSubmenu(allMenuItems);
     const menuItems =
       props.compactWorktreeHoverActions === true
-        ? foldWorktreeMenuIntoMore(
-            foldWorktreeNotificationsIntoSubmenu(allMenuItems),
-          )
-        : allMenuItems;
+        ? foldWorktreeMenuIntoMore(notificationMenuItems)
+        : notificationMenuItems;
     // Compact hover: Pin and Archive, copied from this row's own menu items
     // so a withheld or unavailable action stays out of the hover too.
     const pinItem = menuItems.find(
@@ -4324,12 +4325,17 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
           aria-labelledby="portal-shared-with-me-heading"
           className="pb-3"
         >
-          <h2
-            id="portal-shared-with-me-heading"
-            className={`flex items-center px-2 text-s font-normal fg-quaternary ${touch ? 'min-h-11' : 'h-8'}`}
+          <div
+            className={`flex items-center px-2 ${touch ? 'min-h-11' : 'h-8'}`}
           >
-            {SHARED_WITH_YOU_SECTION_LABEL}
-          </h2>
+            <Heading
+              level={2}
+              variant="sidebar"
+              id="portal-shared-with-me-heading"
+            >
+              {SHARED_WITH_YOU_SECTION_LABEL}
+            </Heading>
+          </div>
           <div className="space-y-1">
             {renderWorkspaceList(
               sharedSections,

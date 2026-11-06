@@ -993,6 +993,9 @@ export async function createCanopyClient(
       ...(connection.maxMessageBytes !== undefined && {
         maxMessageBytes: connection.maxMessageBytes,
       }),
+      ...(options.ownerProof && {
+        ownerProof: options.ownerProof(connection.connectionId),
+      }),
     });
     session.accepted = await session.request(INITIALIZE, params, {
       signal,

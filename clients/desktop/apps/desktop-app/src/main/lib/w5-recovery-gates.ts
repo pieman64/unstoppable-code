@@ -1,13 +1,16 @@
-/**
- * CAN-4498 owns exposure: enable only after a registration release has shipped,
- * in a later release that asks users to quit every app and CLI process.
- * No runtime override: skipping releases cannot prove old clients absent.
- */
+import { isW5DaemonFlipCompiled } from './w5-flip-gate';
+
+/** CAN-5760: ship after v1.17.0 registration, with quit-all/version-skip guidance. */
 export function isW5RecoveryEntryEnabled(): boolean {
-  return false;
+  return true;
 }
 
-/** W14 must prove pre-#5615 operation names cannot hide two-decision keys. */
+/** Both running entry and retained cold intent require compiled W5 ownership. */
+export function isW5RecoveryAvailable(): boolean {
+  return isW5RecoveryEntryEnabled() && isW5DaemonFlipCompiled();
+}
+
+/** q-20: retain the gate until W14 qualifies historical keys, including pre-#5615. */
 export function isW5ReservationReleaseQualified(): boolean {
   return false;
 }

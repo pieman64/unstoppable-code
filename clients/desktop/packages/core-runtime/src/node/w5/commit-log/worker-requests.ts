@@ -1,7 +1,9 @@
 import { basename } from 'node:path';
+import { readWorkspaceIndex } from '../../workspace/read-formats';
 import { captureW5Files } from './capture';
 import {
   isW5CaptureRequest,
+  isW5CaptureWorkspaceId,
   type W5ConfinedFileReaderSource,
 } from './capture-contract';
 import { workspaceCreationDiagnosticsSchema } from './reservation-diagnostics';
@@ -26,6 +28,7 @@ import {
   W5ProcessFileLockTimeoutError,
 } from './errors';
 import { isRecord } from './is-record';
+import { fingerprintW5File } from './fingerprint';
 import type {
   W5CommitLogRequest,
   W5CommitLogWorkerData,
@@ -230,6 +233,99 @@ export class W5CommitLogRequestHandler {
               first.operation !== first.receipt.operation))
         )
           throw malformed();
+        const { reservationId, operation, receipt } = first;
+        const workspaceIdentity = first.workspaceIdentity;
+        const expectedRecords = first.expectedWorkspaceRecords;
+        if (
+          expectedRecords !== undefined &&
+          (workspaceIdentity === undefined ||
+            !isRecord(expectedRecords) ||
+            ![expectedRecords.manifest, expectedRecords.worktrees].every(
+              (value) =>
+                value === null ||
+                (typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)),
+            ) ||
+            Object.keys(expectedRecords).some(
+              (key) => key !== 'manifest' && key !== 'worktrees',
+            ))
+        )
+          throw malformed();
+        if (workspaceIdentity !== undefined) {
+          if (!isW5CaptureWorkspaceId(workspaceIdentity)) throw malformed();
+          await this.lockPending([], async () => {
+            await this.finishPendingCommits();
+            const captured = await captureW5Files(
+              this.log,
+              this.data.root,
+              {
+                files: [
+                  { kind: 'index' },
+                  { kind: 'manifest', workspaceId: workspaceIdentity },
+                  { kind: 'worktrees', workspaceId: workspaceIdentity },
+                ],
+                discoverWorkspaces: false,
+              },
+              this.platform,
+              this.confined,
+              this.data.captureRoot,
+            );
+            const image = captured.files.find((file) => file.kind === 'index');
+            const index = readWorkspaceIndex(
+              image?.state === 'present'
+                ? {
+                    state: 'present',
+                    raw: Buffer.from(image.base64, 'base64').toString('utf8'),
+                  }
+                : {
+                    state: image?.state === 'absent' ? 'absent' : 'unreadable',
+                  },
+              () => undefined,
+            );
+            if (index.authority !== 'ok' && index.authority !== 'absent')
+              throw new W5CommitRefusedError(
+                'invalid-state',
+                'The workspace index cannot prove identity availability.',
+              );
+            if (captured.files.some((file) => file.state === 'unreadable'))
+              throw new W5CommitRefusedError(
+                'invalid-state',
+                'The workspace records cannot prove identity availability.',
+              );
+            if (
+              index.entries.some(
+                (entry) =>
+                  entry.id.toLowerCase() === workspaceIdentity.toLowerCase(),
+              ) ||
+              captured.files.some((file) => {
+                if (file.kind !== 'manifest' && file.kind !== 'worktrees')
+                  return false;
+                const expected = isRecord(expectedRecords)
+                  ? expectedRecords[file.kind]
+                  : null;
+                return (
+                  file.state === 'unreadable' ||
+                  fingerprintW5File(
+                    file.state === 'present'
+                      ? Buffer.from(file.base64, 'base64').toString('utf8')
+                      : null,
+                  ) !== expected
+                );
+              })
+            )
+              throw new W5CommitRefusedError(
+                'identity-conflict',
+                'This workspace identity is already occupied.',
+              );
+            this.log.reserve({
+              reservationId,
+              operation,
+              receipt,
+              diagnostics: first.diagnostics ?? null,
+              workspaceIdentity,
+            });
+          });
+          return null;
+        }
         this.log.reserve({
           reservationId: first.reservationId,
           operation: first.operation,

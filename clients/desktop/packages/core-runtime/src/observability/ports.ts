@@ -2,6 +2,7 @@ import type {
   AgentAuditEntry,
   AgentAuditProvider,
   AgentAuditStatus,
+  AgentTranscriptInjectedPrompt,
   UsageMetricEvent,
 } from '@canopy/protocol/observability';
 import type { OpenAiPricingResponseV1 } from '@canopy/protocol/openai-pricing';
@@ -9,8 +10,7 @@ import type { OpenAiPricingResponseV1 } from '@canopy/protocol/openai-pricing';
 /** The instrumentation operations observability reports. */
 export type ObservabilityOperationName =
   | 'canopy.chat_turn'
-  | 'canopy.agent_task'
-  | 'canopy.app_diagnostic';
+  | 'canopy.agent_task';
 
 export type ObservabilityOperationFailureReason =
   | 'error'
@@ -181,4 +181,77 @@ export interface ExecutionObservabilityIngest<
   recordUsageMetricEvent(event: UsageMetricEvent): void;
   /** App diagnostics, such as process exits and wake locks; never audit. */
   recordAppDiagnostic(record: TAppDiagnostic): void;
+}
+
+/**
+ * Desktop-bound parameter types of the agent producer contract. A host binds
+ * the parameters whose shapes it owns; a worker outside Electron main binds
+ * its own (CAN-5096).
+ */
+export interface AgentObservabilityHostTypes {
+  /** What `startChatTurn` takes. */
+  turnStart: unknown;
+  /** What `observeSteeringInput` takes. */
+  steeringInput: unknown;
+  /** What `seedTranscript` takes. */
+  transcriptSeed: unknown;
+  /** What `recordCreatedPullRequest` takes. */
+  createdPullRequest: unknown;
+  /** What `recordSessionDiagnostic` takes. */
+  sessionDiagnostic: unknown;
+}
+
+/**
+ * What chat turns, managed subagents, helper calls and their transcripts
+ * write through (CAN-5096). Like `ExecutionObservabilityIngest`, producers
+ * start, update and finalize records by key and never read observability
+ * state. A chat turn's key is `chat:${projectId}/${worktreeId}/${chatId}`.
+ */
+export interface AgentObservabilityIngest<
+  T extends AgentObservabilityHostTypes = AgentObservabilityHostTypes,
+> {
+  startChatTurn(options: T['turnStart']): void;
+  observeChatEvent(
+    projectId: string,
+    worktreeId: string,
+    chatId: string,
+    data: unknown,
+  ): void;
+  completeChatTurn(
+    projectId: string,
+    worktreeId: string,
+    chatId: string,
+    status: AgentAuditStatus,
+    error?: string,
+    options?: { setupFailure?: boolean },
+  ): void;
+  pauseChatTurn(projectId: string, worktreeId: string, chatId: string): void;
+  resumeChatTurn(projectId: string, worktreeId: string, chatId: string): void;
+  recordInjectedPromptForOpenChatTurn(
+    projectId: string,
+    worktreeId: string,
+    chatId: string,
+    prompt: AgentTranscriptInjectedPrompt,
+  ): void;
+  observeSteeringInput(options: T['steeringInput']): void;
+  /** `sessionKey` is `${projectId}/${worktreeId}/${chatId}`. */
+  setChatTurnServedModel(sessionKey: string, model: string): void;
+  setChatTurnAccountProxyRouted(sessionKey: string, routed: boolean): void;
+  beginClaudeQuery(
+    queryId: string,
+    startedFrom?: { sessionId: string; fork: boolean },
+  ): void;
+  endClaudeQuery(queryId: string): void;
+  seedTranscript(key: string, seed: T['transcriptSeed']): void;
+  appendTranscriptRecord(key: string, payload: unknown): void;
+  appendFinalizedChatTranscriptRecord(
+    projectId: string,
+    worktreeId: string,
+    chatId: string,
+    payload: unknown,
+  ): Promise<void>;
+  markObservedTaskAccountProxyRouted(key: string): void;
+  recordCreatedPullRequest(options: T['createdPullRequest']): void;
+  /** Session diagnostics; never audit. */
+  recordSessionDiagnostic(record: T['sessionDiagnostic']): void;
 }

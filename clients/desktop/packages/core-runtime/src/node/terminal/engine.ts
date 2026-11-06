@@ -327,7 +327,8 @@ function isAbsolutePath(value: string): boolean {
   return path.isAbsolute(value);
 }
 
-function prependPathEntries(
+/** Prepends managed PATH entries, as the engine does for a managed command (CAN-5097 reuses it for daemon placement). */
+export function prependPathEntries(
   env: Record<string, string | undefined>,
   entries: string[] | undefined,
 ): Record<string, string | undefined> {

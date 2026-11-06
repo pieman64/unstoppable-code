@@ -18,6 +18,10 @@ import {
   SecurityAuditSummary,
 } from '@canopy/ui-shared/components';
 import { isGitHubTreeUrl } from '@canopy/ui-shared/lib/github-tree-url';
+import {
+  INSTALLED_ITEM_STATUS_COPY,
+  type PluginPickerSelectionCopy,
+} from '@canopy/ui-shared/lib/installed-item-status';
 import { parseSecurityAudit } from '@canopy/ui-shared/lib/security-audit';
 import {
   ChatComposerToolbarChip,
@@ -171,6 +175,8 @@ export interface PortalPluginsPickerProps {
     next: PortalChatTabPluginSelections,
     previous: PortalChatTabPluginSelections,
   ) => void;
+  /** What selecting means in this picker; words only. */
+  selectionCopy?: PluginPickerSelectionCopy;
 }
 
 interface PickerDraft {
@@ -623,10 +629,10 @@ function projectPickerTable(
     }
     row.badges = [
       ...(row.badges ?? []),
-      { label: 'Disabled', tone: 'neutral' },
+      { label: INSTALLED_ITEM_STATUS_COPY.disabled.label, tone: 'neutral' },
     ];
     row.toggleMode = 'unsupported';
-    row.toggleReason = 'Installed, but turned off';
+    row.toggleReason = INSTALLED_ITEM_STATUS_COPY.disabled.description;
   }
 
   for (const row of rows) {
@@ -720,6 +726,7 @@ const PortalPluginsPickerContent = memo(function PortalPluginsPickerContent({
   hideTrigger = false,
   returnFocusRef,
   canRestoreFocus,
+  selectionCopy,
 }: PortalPluginsPickerProps): JSX.Element {
   const refreshCatalog =
     accountMcp?.onCatalogRefresh ?? addMarketplace?.onCatalogRefresh ?? onOpen;
@@ -1080,9 +1087,12 @@ const PortalPluginsPickerContent = memo(function PortalPluginsPickerContent({
           trapFocus={hideTrigger}
           restoreFocusRef={returnFocusRef}
           restoreFocusWhen={canRestoreFocus}
-          title="Plugins"
+          title={selectionCopy?.title ?? 'Plugins'}
           titleId="portal-plugins-dialog-title"
-          subtitle={`${String(selectedCount)} selected`}
+          subtitle={
+            selectionCopy?.countText(selectedCount) ??
+            `${String(selectedCount)} selected`
+          }
           maxWidth="5xl"
           dataTestId="portal-plugins-modal"
           topRightActions={
@@ -1125,6 +1135,7 @@ const PortalPluginsPickerContent = memo(function PortalPluginsPickerContent({
                   : 'mixed'
               }
               rowCheckboxTestId="portal-plugins-row-checkbox"
+              selectionCopy={selectionCopy}
             />
             {marketplaceAdded && (
               <Notice

@@ -58,6 +58,7 @@ export function createW5DegradedStore(
     readRevisions: refuse,
     // Query views read live for it (`handoff-degraded`).
     capture: refuse,
+    captureForPreparation: refuse,
   };
 }
 
@@ -97,7 +98,13 @@ export function createW5HandoffStore(
     releaseReservation: (id) => use((s) => s.releaseReservation(id)),
     markReservationRecoveryRequired: (id, diagnostics) =>
       use((s) => s.markReservationRecoveryRequired(id, diagnostics)),
-    readRevisions: (resources) => use((s) => s.readRevisions(resources)),
+    readRevisions: (...args) => use((s) => s.readRevisions(...args)),
+    captureForPreparation: (request) =>
+      use((s) =>
+        s.captureForPreparation
+          ? s.captureForPreparation(request)
+          : Promise.resolve({ status: 'unsupported' }),
+      ),
     capture: (request) =>
       use((s) =>
         s.capture

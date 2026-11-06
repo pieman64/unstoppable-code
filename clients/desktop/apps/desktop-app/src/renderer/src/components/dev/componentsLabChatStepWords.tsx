@@ -127,7 +127,7 @@ export function StepWordsSpecimen(): JSX.Element {
       <SpecimenPanel title={`${MODULE_TAG}: counted and plain summaries`}>
         {RUNS.map(({ label, counts }) => (
           <SpecimenCell key={label} label={label} wide>
-            <div className="flex w-full flex-col gap-1 text-sm">
+            <div className="flex w-full flex-col gap-1 text-s">
               <span>
                 <span className="fg-tertiary">Counted: </span>
                 {describeStepCounts(counts) || '(empty)'}
@@ -145,7 +145,7 @@ export function StepWordsSpecimen(): JSX.Element {
           const kind = stepKindOfToolCall({ toolName, family, input });
           return (
             <SpecimenCell key={label} label={label} wide>
-              <span className="flex items-center gap-2 text-sm">
+              <span className="flex items-center gap-2 text-s">
                 <span className="fg-secondary">{stepKindIcon(kind)}</span>
                 {toolName} → {kind}
               </span>

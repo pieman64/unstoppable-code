@@ -29,6 +29,7 @@ import {
   TURN_FILE_ROW_CLASS_NAME,
   formatTurnFilesHeading,
   TurnFilesSummaryView,
+  type TurnChangedFileRows,
   useCleanChatLook,
   useToolApprovalWait,
 } from '@canopy/ui-shared/components';
@@ -162,20 +163,25 @@ function SingleDiffFile({
   );
 }
 
-function FileCard({
+const FileCard = memo(function FileCard({
   file,
-  onClick,
-  onMouseEnter,
-  onMouseMove,
+  onOpen,
+  onHover,
+  onMove,
   onMouseLeave,
 }: {
   file: ChangedFileInfo;
-  onClick: () => void;
-  onMouseEnter: (e: React.MouseEvent<HTMLButtonElement>) => void;
-  onMouseMove: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  onOpen: (file: ChangedFileInfo) => void;
+  onHover: (file: ChangedFileInfo, el: HTMLElement, clientX: number) => void;
+  onMove: (el: HTMLElement, clientX: number) => void;
   onMouseLeave: () => void;
 }): JSX.Element {
   const baseName = getBaseName(file.path);
+  const onClick = (): void => onOpen(file);
+  const onMouseEnter = (event: React.MouseEvent<HTMLButtonElement>): void =>
+    onHover(file, event.currentTarget, event.clientX);
+  const onMouseMove = (event: React.MouseEvent<HTMLButtonElement>): void =>
+    onMove(event.currentTarget, event.clientX);
   // Clean chat look: one row per file in the changes card, the folder in a
   // lighter ink (cut first when the row is short) before the file name, and
   // the line counts at the far edge. The hover sits inside the list's 4px
@@ -237,7 +243,7 @@ function FileCard({
       )}
     </button>
   );
-}
+});
 
 const HOVER_CLOSE_DELAY = 150;
 
@@ -412,9 +418,10 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
     hoverTimerRef.current = setTimeout(closePopover, HOVER_CLOSE_DELAY);
   }, [closePopover]);
 
-  const handleOpenModalFromPopover = useCallback((): void => {
-    const file = hoveredFileRef.current;
-    if (file && selectedWorktree && turnDiff) {
+  const openDiffFile = useCallback(
+    (file: ChangedFileInfo): void => {
+      if (!selectedWorktree) return;
+      closePopover();
       void openFileInDiff(
         selectedWorktree,
         file,
@@ -422,9 +429,9 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
         { chatTabId: originChatTabId },
         turnDiff,
       );
-      closePopover();
-    }
-  }, [closePopover, selectedWorktree, originChatTabId, turnDiff]);
+    },
+    [closePopover, selectedWorktree, originChatTabId, turnDiff],
+  );
 
   const handleEditFromPopover = useCallback((): void => {
     const file = hoveredFileRef.current;
@@ -447,6 +454,44 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
     })();
   }, [closePopover, openFileTab, originChatTabId, selectedWorktree]);
 
+  const handleOpenModalFromPopover = useCallback((): void => {
+    const file = hoveredFileRef.current;
+    if (file && turnDiff) openDiffFile(file);
+  }, [openDiffFile, turnDiff]);
+
+  // Clean chat look: a turn that changed exactly one file is the header alone.
+  const oneFileHeader = clean && diffCount === 1 && extraCount === 0;
+  const showFiles = !oneFileHeader && isExpanded;
+  // Rows render by index so the shared list mounts only those in view: a turn
+  // can touch thousands of files.
+  const changedFileRows = useMemo((): TurnChangedFileRows | undefined => {
+    const diffFiles = turnDiff?.files;
+    if (!showFiles || !diffFiles) return undefined;
+    return {
+      count: diffFiles.length,
+      renderRow: (index) => {
+        const file = diffFiles[index];
+        return file ? (
+          <FileCard
+            key={`${file.repoId ?? ''}:${file.path}`}
+            file={file}
+            onOpen={openDiffFile}
+            onHover={handleCardMouseEnter}
+            onMove={updatePreviewSide}
+            onMouseLeave={handleCardMouseLeave}
+          />
+        ) : null;
+      },
+    };
+  }, [
+    showFiles,
+    turnDiff,
+    openDiffFile,
+    handleCardMouseEnter,
+    updatePreviewSide,
+    handleCardMouseLeave,
+  ]);
+
   if (totalCount === 0) return null;
 
   const diffLabel = diffCount === 1 ? 'file changed' : 'files changed';
@@ -459,8 +504,7 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
   // turn that changed exactly one file is the header alone, named for that
   // file: a row repeating it would add nothing. A created file git does not
   // list takes the same header slot, preserving its preview and reveal actions.
-  const singleFile =
-    clean && diffCount === 1 && extraCount === 0 ? firstFile : undefined;
+  const singleFile = oneFileHeader ? firstFile : undefined;
   const cleanTitle = singleFile
     ? getBaseName(singleFile.path)
     : turnDiff && diffCount > 0
@@ -469,15 +513,7 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
         }`
       : extraHeading;
   const openChanges = (): void => {
-    if (!selectedWorktree || !turnDiff || !firstFile) return;
-    closePopover();
-    void openFileInDiff(
-      selectedWorktree,
-      firstFile,
-      'combined',
-      { chatTabId: originChatTabId },
-      turnDiff,
-    );
+    if (turnDiff && firstFile) openDiffFile(firstFile);
   };
   const outputFiles = fileTarget
     ? [
@@ -517,7 +553,6 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
       onOpen={openChanges}
     />
   ) : undefined;
-  const showFiles = !singleContent && isExpanded;
 
   return (
     <>
@@ -582,39 +617,7 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
             <span className="font-medium fg-primary">{extraHeading}</span>
           )
         }
-        changedFiles={
-          showFiles
-            ? turnDiff?.files.map((file) => (
-                <FileCard
-                  key={`${file.repoId ?? ''}:${file.path}`}
-                  file={file}
-                  onClick={(): void => {
-                    if (selectedWorktree) {
-                      closePopover();
-                      void openFileInDiff(
-                        selectedWorktree,
-                        file,
-                        'combined',
-                        { chatTabId: originChatTabId },
-                        turnDiff,
-                      );
-                    }
-                  }}
-                  onMouseEnter={(event): void =>
-                    handleCardMouseEnter(
-                      file,
-                      event.currentTarget,
-                      event.clientX,
-                    )
-                  }
-                  onMouseMove={(event): void =>
-                    updatePreviewSide(event.currentTarget, event.clientX)
-                  }
-                  onMouseLeave={handleCardMouseLeave}
-                />
-              ))
-            : undefined
-        }
+        changedFiles={changedFileRows}
       >
         {outputFiles}
       </TurnFilesSummaryView>

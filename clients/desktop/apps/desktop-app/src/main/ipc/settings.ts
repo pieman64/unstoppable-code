@@ -1,3 +1,5 @@
+import { saveGitHubPat } from '../lib/github-pat-save';
+import { probeModelGateway } from '../services/model-gateway-probe';
 import { createHash } from 'node:crypto';
 import {
   observeProviderConnection,
@@ -62,7 +64,10 @@ import {
   type ProviderCarryoverSummary,
 } from '@canopy/desktop-shared/types/provider-carryover';
 import { validateId } from '../lib/validation';
-import { normalizeOrgEnforcedSettingsWithStatus } from '@canopy/desktop-shared/lib/org-enforced-parsing';
+import {
+  normalizeOrgEnforcedSettingsWithStatus,
+  personalGatewayAccountFields,
+} from '@canopy/desktop-shared/lib/org-enforced-parsing';
 import { normalizeOrgBillingStates } from '@canopy/desktop-shared/lib/org-billing-state-parsing';
 import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
 import type { CanopyGuestConsent } from '@canopy/desktop-shared/constants/consent';
@@ -154,8 +159,6 @@ import {
   type LinearIssueSearchResult,
 } from '../lib/linear-api';
 import {
-  getGitHubPatFilePath,
-  getLegacyGitHubPatFilePath,
   getLegacyLinearTokenFilePath,
   getLinearTokenFilePath,
 } from '../lib/paths';
@@ -167,7 +170,6 @@ import {
   starSourceRepository,
 } from '../canopy-runtime/github-integration-dispatch';
 import { getFeatureFlagService } from '../feature-flags';
-import { getMockLlmOrigin } from '../lib/e2e-mock-control-plane';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import {
   DEFAULT_DIGEST_PREFERENCES,
@@ -193,6 +195,7 @@ import {
   getSecureStorageFailure,
 } from '../lib/secure-storage-policy';
 import {
+  authorizeModelGatewayCredential,
   GatewayCredentialStorageUnavailableError,
   isModelGatewayCredentialStorageAvailable,
   loadModelGatewayCredential,
@@ -219,6 +222,8 @@ type DesktopCanopyServerStatus = CanopyServerStatus & {
   memorySearchOrganizationExternalIds?: string[];
   organizationsRefreshed?: boolean;
   personalOrganizationId?: string | null;
+  personalModelGateway?: CanopyAccountResponse['personalModelGateway'];
+  personalModelGatewayEnforcementUnavailable?: boolean;
 };
 
 function memorySearchOrganizationsField(payload: {
@@ -481,6 +486,7 @@ async function probeCanopyCloud(
       ),
       organizations,
       organizationsRefreshed: authoritativeOrganizations !== null,
+      ...personalGatewayAccountFields(payload),
       teams: normalizeCanopyTeams(payload.teams),
       enforcedSettings: normalizedEnforcement.settings,
       ...(normalizedEnforcement.telemetryEnforcementUnavailable === true
@@ -649,6 +655,8 @@ async function reprobeAndApplyAccountSnapshot(
     ...entry,
   };
   delete entryWithoutMemoryOrganizations.personalOrganizationId;
+  delete entryWithoutMemoryOrganizations.personalModelGateway;
+  delete entryWithoutMemoryOrganizations.personalModelGatewayEnforcementUnavailable;
   delete entryWithoutMemoryOrganizations.memorySearchOrganizationExternalId;
   delete entryWithoutMemoryOrganizations.memorySearchOrganizationExternalIds;
   const nextAccount: CanopyCloudAccountEntry = {
@@ -668,6 +676,10 @@ async function reprobeAndApplyAccountSnapshot(
       : {}),
     ...(status.personalOrganizationId
       ? { personalOrganizationId: status.personalOrganizationId }
+      : {}),
+    ...personalGatewayAccountFields(status),
+    ...(status.personalModelGatewayEnforcementUnavailable
+      ? { personalModelGatewayEnforcementUnavailable: true }
       : {}),
     account: status.account,
     organizations: status.organizations,
@@ -1459,32 +1471,6 @@ async function loadGitHubPat(): Promise<string | CredentialReadFailure> {
   return credentialReadResult(await readStoredPatWithStatus());
 }
 
-async function saveGitHubPat(token: string): Promise<void> {
-  const filePath = getGitHubPatFilePath();
-
-  if (!token) {
-    await rm(getLegacyGitHubPatFilePath(), { force: true }).catch(
-      (error: unknown) => {
-        if (!isMissingFileError(error)) throw error;
-      },
-    );
-    try {
-      await rm(filePath);
-    } catch (error) {
-      if (!isMissingFileError(error)) throw error;
-    }
-    return;
-  }
-
-  const encrypted = getSecretStoragePolicy().encrypt(token);
-  await mkdir(dirname(filePath), { recursive: true });
-  getSecretStoragePolicy().assertCanWrite();
-  await writeFileAtomically(filePath, encrypted, { mode: 0o600 });
-  await rm(getLegacyGitHubPatFilePath(), { force: true }).catch(
-    () => undefined,
-  );
-}
-
 async function loadLinearToken(): Promise<string | CredentialReadFailure> {
   const result = await readStoredLinearTokenWithStatus();
   if (result.status === 'ok' && !result.value) return resolveLinearToken();
@@ -1531,60 +1517,22 @@ interface ModelGatewayCredentialProbe extends ModelGatewayCredentialValidation {
 async function probeModelGatewayCredential(
   input: ModelGatewayCredentialInput,
 ): Promise<ModelGatewayCredentialProbe> {
-  const apiKey = input.apiKey.trim();
-  if (!apiKey) {
-    return { valid: false, error: 'Enter a gateway API key.', rejected: true };
-  }
-  let baseUrl: URL;
-  try {
-    baseUrl = new URL(input.baseUrl);
-  } catch {
-    return {
-      valid: false,
-      error: 'The gateway URL is invalid.',
-      rejected: false,
-    };
-  }
-  if (baseUrl.protocol !== 'https:') {
-    return {
-      valid: false,
-      error: 'The gateway URL must use HTTPS.',
-      rejected: false,
-    };
-  }
-  const normalizedBaseUrl = normalizeModelGatewayBaseUrl(input.baseUrl);
-  if (!normalizedBaseUrl) {
-    return {
-      valid: false,
-      error: 'The gateway URL is invalid.',
-      rejected: false,
-    };
-  }
-  try {
-    const requestBaseUrl = getMockLlmOrigin() ?? normalizedBaseUrl;
-    const response = await fetch(
-      `${requestBaseUrl.replace(/\/+$/, '')}/v1/models`,
-      {
-        method: 'GET',
-        headers: { authorization: `Bearer ${apiKey}` },
-        signal: AbortSignal.timeout(10_000),
-      },
-    );
-    if (!response.ok) {
-      return {
-        valid: false,
-        error: `Gateway validation failed with HTTP ${String(response.status)}.`,
-        rejected: response.status === 401 || response.status === 403,
-      };
-    }
-    return { valid: true, error: null, rejected: false };
-  } catch {
-    return {
-      valid: false,
-      error: 'Unable to reach the model gateway.',
-      rejected: false,
-    };
-  }
+  await authorizeModelGatewayCredential(input.organizationId, input.baseUrl);
+  const result = await probeModelGateway(input);
+  return {
+    valid: result.status === 'connected',
+    rejected: result.status === 'unauthorized',
+    error:
+      result.status === 'connected'
+        ? null
+        : result.status === 'invalid_url'
+          ? 'The gateway URL is invalid.'
+          : result.status === 'key_required'
+            ? 'Enter a gateway API key.'
+            : result.status === 'unauthorized'
+              ? 'The gateway rejected this API key.'
+              : 'Unable to reach the AI gateway.',
+  };
 }
 
 async function validateModelGatewayCredential(
@@ -1612,7 +1560,7 @@ function advanceGatewayCredentialSaveGeneration(scope: string | null): void {
     );
 }
 
-function enqueueModelGatewayCredentialSave<T>(
+export function enqueueModelGatewayCredentialSave<T>(
   organizationId: string,
   operation: () => Promise<T>,
 ): Promise<T> {
@@ -1678,9 +1626,24 @@ async function observeGatewayConnection(
   });
 }
 
-async function saveModelGatewayCredentialInOrder(
+export async function saveModelGatewayCredentialInOrder(
   input: ModelGatewayCredentialInput,
+  options: {
+    signal?: AbortSignal;
+    beforeSave?: () => Promise<void>;
+    expectedAccountId?: string;
+  } = {},
 ): Promise<ModelGatewayCredentialValidation> {
+  options.signal?.throwIfAborted();
+  const authorized = await authorizeModelGatewayCredential(
+    input.organizationId,
+    input.baseUrl,
+  );
+  if (
+    options.expectedAccountId !== undefined &&
+    authorized.accountId !== options.expectedAccountId
+  )
+    throw new Error('Gateway account changed');
   const scope = await readGatewayConnectionScope(input.organizationId);
   const readGeneration = gatewayCredentialSaveGeneration(scope);
   let previous: Awaited<ReturnType<typeof loadModelGatewayCredential>> = null;
@@ -1709,6 +1672,7 @@ async function saveModelGatewayCredentialInOrder(
     await saveModelGatewayCredential({
       organizationId: input.organizationId,
       apiKey: '',
+      expectedAccountId: authorized.accountId,
       baseUrlAtSave: normalizedInput.baseUrl,
     });
     advanceGatewayCredentialSaveGeneration(scope);
@@ -1723,9 +1687,16 @@ async function saveModelGatewayCredentialInOrder(
     return { valid: false, error: null };
   }
   const probe = await probeModelGatewayCredential(normalizedInput);
+  options.signal?.throwIfAborted();
+  // A failed replacement never destroys a working key or changes its endpoint.
+  if (!probe.valid) return { valid: false, error: probe.error };
+  await options.beforeSave?.();
+  options.signal?.throwIfAborted();
   await saveModelGatewayCredential({
     organizationId: input.organizationId,
     apiKey: input.apiKey,
+    expectedAccountId: authorized.accountId,
+    signal: options.signal,
     baseUrlAtSave: normalizedInput.baseUrl,
     lastValidatedAt: new Date().toISOString(),
     // A temporary outage cannot invalidate a prior success for the same key.
@@ -1765,10 +1736,14 @@ async function bestEffortInvalidateModelGatewayAuthSessions(): Promise<void> {
   try {
     const { invalidateProviderAuthSessions } =
       await import('../agents/session-manager');
-    await invalidateProviderAuthSessions(
-      'claude',
-      'model-gateway-credential-changed',
-      { activeTurnPolicy: 'preserve' },
+    await Promise.all(
+      (['claude', 'codex'] as const).map((provider) =>
+        invalidateProviderAuthSessions(
+          provider,
+          'model-gateway-credential-changed',
+          { activeTurnPolicy: 'preserve' },
+        ),
+      ),
     );
   } catch (error) {
     process.stderr.write(
@@ -2026,13 +2001,23 @@ export function registerSettingsHandlers(runtime: {
     async (
       _event,
       organizationId: string,
+      expectedBaseUrl?: string,
     ): Promise<ModelGatewayCredentialState> => {
+      if (
+        expectedBaseUrl !== undefined &&
+        !normalizeModelGatewayBaseUrl(expectedBaseUrl)
+      ) {
+        throw new Error('Invalid AI gateway endpoint.');
+      }
       const scope = await readGatewayConnectionScope(organizationId);
       const readGeneration = gatewayCredentialSaveGeneration(scope);
       let record: Awaited<ReturnType<typeof loadModelGatewayCredential>> = null;
       let secureStorageFailure: SecureStorageFailure | null = null;
       try {
-        record = await loadModelGatewayCredential(organizationId);
+        record = await loadModelGatewayCredential(
+          organizationId,
+          expectedBaseUrl,
+        );
         await observeGatewayConnection(
           organizationId,
           scope,
@@ -2407,6 +2392,10 @@ export function registerSettingsHandlers(runtime: {
           : {}),
         ...(status.personalOrganizationId
           ? { personalOrganizationId: status.personalOrganizationId }
+          : {}),
+        ...personalGatewayAccountFields(status),
+        ...(status.personalModelGatewayEnforcementUnavailable
+          ? { personalModelGatewayEnforcementUnavailable: true }
           : {}),
         account: status.account,
         organizations: status.organizations,

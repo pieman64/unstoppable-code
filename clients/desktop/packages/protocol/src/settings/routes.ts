@@ -16,7 +16,10 @@ export const ACCOUNT_SETTINGS_PAGES = [
   'digests',
   'notifications',
   'integrations',
+  'plugins',
+  'mcp',
   'security',
+  'ai-gateway',
   'billing',
   'labs',
   'appearance',
@@ -31,6 +34,7 @@ export const ORGANIZATION_SETTINGS_SUBTABS = [
   'policies',
   'integrations',
   'usage',
+  'ai-gateway',
   'billing',
 ] as const;
 
@@ -171,7 +175,10 @@ function parseAccountSegments(rest: string[]): SettingsRoute | null {
     case 'profile':
     case 'notifications':
     case 'integrations':
+    case 'plugins':
+    case 'mcp':
     case 'security':
+    case 'ai-gateway':
     case 'labs':
     case 'appearance':
       return detail === undefined ? { scope: 'account', page: section } : null;

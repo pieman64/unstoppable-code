@@ -27,7 +27,7 @@ import {
   TrashIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import {
-  loadTerminalPanelPreferences,
+  fetchTerminalPanelPreferences,
   loadTerminalShellProfiles,
   setCachedTerminalPanelPreferences,
 } from '@/lib/terminalShellProfiles';
@@ -87,7 +87,7 @@ function presetIconPreview(preset: TerminalPreset): JSX.Element {
     );
   }
   if (preset.icon?.kind === 'character') {
-    return <span className="text-base leading-none">{preset.icon.value}</span>;
+    return <span className="text-m leading-none">{preset.icon.value}</span>;
   }
   return <TerminalBorderedIcon size="xl" />;
 }
@@ -183,6 +183,8 @@ export function TerminalTab(): JSX.Element {
   const [draft, setDraft] = useState<TerminalPreset | null>(null);
   const [saving, setSaving] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [revision, setRevision] = useState<number | null>(null);
+  const [loadError, setLoadError] = useState(false);
   // A failure shows in the section whose change failed.
   const [error, setError] = useState<{
     readonly section: 'shells' | 'presets';
@@ -191,16 +193,20 @@ export function TerminalTab(): JSX.Element {
 
   useEffect(() => {
     let canceled = false;
-    void Promise.all([
-      loadTerminalShellProfiles(),
-      loadTerminalPanelPreferences(),
-    ]).then(([nextProfiles, preferences]) => {
-      if (canceled) return;
-      setProfiles(nextProfiles);
-      setDisabledShells(preferences.disabledTerminalShellProfileIds);
-      setPresets(preferences.terminalPresets);
-      setLoaded(true);
+    const profilesLoad = loadTerminalShellProfiles().then((nextProfiles) => {
+      if (!canceled) setProfiles(nextProfiles);
     });
+    void Promise.all([profilesLoad, fetchTerminalPanelPreferences()])
+      .then(([, preferences]) => {
+        if (canceled) return;
+        setDisabledShells(preferences.disabledTerminalShellProfileIds);
+        setPresets(preferences.terminalPresets);
+        setRevision(preferences.revision);
+        setLoaded(true);
+      })
+      .catch(() => {
+        if (!canceled) setLoadError(true);
+      });
     return (): void => {
       canceled = true;
     };
@@ -222,16 +228,31 @@ export function TerminalTab(): JSX.Element {
     nextPresets: TerminalPreset[],
     section: 'shells' | 'presets' = 'presets',
   ): Promise<boolean> => {
+    if (revision === null) return false;
     setSaving(true);
     setError(null);
     try {
-      const saved = await window.api.savePreferences({
+      const result = await window.api.terminal.updateSettings({
+        expectedRevision: revision,
         disabledTerminalShellProfileIds: nextDisabledShells,
         terminalPresets: nextPresets,
+        idempotencyKey: crypto.randomUUID(),
       });
-      setDisabledShells(saved.disabledTerminalShellProfileIds);
-      setPresets(saved.terminalPresets);
-      setCachedTerminalPanelPreferences(saved);
+      const saved = result.ok
+        ? result.settings
+        : result.error.code === 'conflict'
+          ? result.error.settings
+          : null;
+      if (saved) {
+        setDisabledShells(saved.disabledTerminalShellProfileIds);
+        setPresets(saved.terminalPresets);
+        setRevision(saved.revision);
+        setCachedTerminalPanelPreferences(saved);
+      }
+      if (!result.ok) {
+        setError({ section, message: result.error.message });
+        return false;
+      }
       return true;
     } catch {
       setError({
@@ -370,6 +391,11 @@ export function TerminalTab(): JSX.Element {
         description="Show or hide shells detected on this computer."
         dataTestId="terminal-settings-shells"
       >
+        {loadError ? (
+          <Notice intent="destructive">
+            Could not load Terminal settings.
+          </Notice>
+        ) : null}
         {error?.section === 'shells' ? (
           <Notice intent="destructive">{error.message}</Notice>
         ) : null}
@@ -426,7 +452,7 @@ export function TerminalTab(): JSX.Element {
                 variant="secondary"
                 data-testid="terminal-preset-add"
                 onClick={startAddPreset}
-                disabled={draft !== null || saving}
+                disabled={!loaded || draft !== null || saving}
               >
                 <PlusIcon size="sm" />
                 Add preset
@@ -460,6 +486,7 @@ export function TerminalTab(): JSX.Element {
               <Button
                 size="compact"
                 variant="secondary"
+                disabled={!loaded || saving}
                 onClick={() =>
                   setDraft({
                     ...preset,
@@ -477,7 +504,7 @@ export function TerminalTab(): JSX.Element {
                 checked={preset.enabled}
                 label={`${preset.name} preset`}
                 dataTestId={`terminal-preset-toggle-${preset.id}`}
-                disabled={saving}
+                disabled={!loaded || saving}
                 onChange={(enabled) => {
                   const next = presets.map((entry) =>
                     entry.id === preset.id ? { ...entry, enabled } : entry,
@@ -491,7 +518,7 @@ export function TerminalTab(): JSX.Element {
                 variant="secondary"
                 iconOnly
                 aria-label={`Remove ${preset.name}`}
-                disabled={saving}
+                disabled={!loaded || saving}
                 onClick={() => {
                   const next = presets.filter(
                     (entry) => entry.id !== preset.id,
@@ -650,7 +677,12 @@ export function TerminalTab(): JSX.Element {
                 size="compact"
                 variant="primary"
                 onClick={handleSavePreset}
-                disabled={saving || !draft.name.trim() || !draft.command.trim()}
+                disabled={
+                  !loaded ||
+                  saving ||
+                  !draft.name.trim() ||
+                  !draft.command.trim()
+                }
               >
                 Save preset
               </Button>

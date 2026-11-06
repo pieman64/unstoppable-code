@@ -98,7 +98,7 @@ export function CuratedPipelineCatalog(
           <Heading level={2} variant="section">
             Workflow templates
           </Heading>
-          <p className="mt-1 text-sm fg-secondary">
+          <p className="mt-1 text-s fg-secondary">
             Ready-made workflows you can add and customize.
           </p>
         </div>
@@ -111,7 +111,7 @@ export function CuratedPipelineCatalog(
         </Button>
       </div>
       {props.stale && (
-        <p role="status" className="text-sm fg-secondary">
+        <p role="status" className="text-s fg-secondary">
           {curatedPipelineStaleMessage(props.cloudDisplayName)}
         </p>
       )}
@@ -126,7 +126,7 @@ export function CuratedPipelineCatalog(
             <LaunchAvailabilityControl {...props.launchAvailability} />
           )}
           {props.detailLoading && (
-            <p role="status" className="text-sm fg-secondary">
+            <p role="status" className="text-s fg-secondary">
               Loading workflow preview…
             </p>
           )}
@@ -137,7 +137,7 @@ export function CuratedPipelineCatalog(
                 <Heading level={3} variant="section" className="break-words">
                   {detail.name}
                 </Heading>
-                <p className="break-words text-sm fg-secondary">
+                <p className="break-words text-s fg-secondary">
                   {detail.shortDescription}
                 </p>
                 <p className="break-words text-xs fg-secondary">
@@ -148,11 +148,11 @@ export function CuratedPipelineCatalog(
                   {detail.scopes.join(', ')} · {detail.triggerTypes.join(', ')}
                 </p>
                 {detail.authorName && (
-                  <p className="text-sm fg-secondary">By {detail.authorName}</p>
+                  <p className="text-s fg-secondary">By {detail.authorName}</p>
                 )}
                 {detail.docsUrl && /^https?:\/\//.test(detail.docsUrl) && (
                   <a
-                    className="text-sm fg-accent underline"
+                    className="text-s fg-accent underline"
                     href={detail.docsUrl}
                     target="_blank"
                     rel="noreferrer"
@@ -183,7 +183,7 @@ export function CuratedPipelineCatalog(
                   {detail.package.resources.length > 0 && (
                     <ul className="space-y-2">
                       {detail.package.resources.map((resource) => (
-                        <li key={resource.id} className="text-sm fg-primary">
+                        <li key={resource.id} className="text-s fg-primary">
                           {resource.displayName}
                           <span className="ml-1 text-xs fg-secondary">
                             {pipelinePackageKindLabel(resource.kind)}
@@ -228,13 +228,13 @@ export function CuratedPipelineCatalog(
                   {detail.rawPipeline}
                 </pre>
               </Disclosure>
-              <p className="text-sm fg-secondary">
+              <p className="text-s fg-secondary">
                 Adds an editable copy to your workflows. Review its commands and
                 required tools before running. Future catalog changes do not
                 replace your copy.
               </p>
               {props.importDisabledReason && (
-                <p className="text-sm fg-secondary">
+                <p className="text-s fg-secondary">
                   {props.importDisabledReason}
                 </p>
               )}
@@ -242,7 +242,7 @@ export function CuratedPipelineCatalog(
               {importedPipelineId ? (
                 <div
                   role="status"
-                  className="flex flex-wrap items-center gap-3 text-sm fg-success"
+                  className="flex flex-wrap items-center gap-3 text-s fg-success"
                 >
                   Added to your workflows.
                   {props.onOpenImported && (
@@ -311,12 +311,12 @@ export function CuratedPipelineCatalog(
             />
           </div>
           {props.loading && (
-            <p role="status" className="text-sm fg-secondary">
+            <p role="status" className="text-s fg-secondary">
               Loading workflow templates…
             </p>
           )}
           {!props.loading && !props.error && props.rows.length === 0 && (
-            <p className="text-sm fg-secondary">
+            <p className="text-s fg-secondary">
               No workflow templates match these filters.
             </p>
           )}
@@ -330,7 +330,7 @@ export function CuratedPipelineCatalog(
                   <Heading level={3} variant="title" className="break-words">
                     {row.name}
                   </Heading>
-                  <p className="mt-1 break-words text-sm fg-secondary">
+                  <p className="mt-1 break-words text-s fg-secondary">
                     {row.shortDescription}
                   </p>
                   <p className="mt-2 break-words text-xs fg-secondary">
@@ -378,7 +378,7 @@ function LaunchAvailabilityControl({
       className="flex flex-wrap items-center justify-between gap-3"
       data-testid="curated-pipeline-availability"
     >
-      <p className="text-sm fg-secondary">
+      <p className="text-s fg-secondary">
         {enabled
           ? 'Enabled. It appears when you run a workflow.'
           : 'Disabled. It is hidden when you run a workflow.'}

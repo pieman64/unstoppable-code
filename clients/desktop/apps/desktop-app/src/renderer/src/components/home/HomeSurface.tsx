@@ -1,3 +1,4 @@
+import { Heading } from '@canopy/ui-shared/components';
 import { getPlanModeHintStore } from '@/lib/planModeHint';
 import { getGitHubStarPromptStore } from '@/lib/githubStarPrompt';
 import { ComposerTipArbiterProvider, Chip } from '@canopy/ui-shared/components';
@@ -1313,12 +1314,16 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
         rhythm="spacious"
         above={
           <>
-            <h1
-              data-testid="home-heading"
-              className={`min-w-0 text-balance text-center text-3xl font-semibold fg-primary ${homeHeadingComposerGap()}`}
-            >
-              {heading}
-            </h1>
+            <div className={homeHeadingComposerGap()}>
+              <Heading
+                level={1}
+                variant="display"
+                data-testid="home-heading"
+                className="min-w-0 text-center"
+              >
+                {heading}
+              </Heading>
+            </div>
             {/* An organization with no active plan has nothing to send to:
                   the explanation and its action sit above the (disabled)
                   composer, not inside it. */}

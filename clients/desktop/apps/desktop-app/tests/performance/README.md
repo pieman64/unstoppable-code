@@ -26,6 +26,7 @@ pnpm run perf:desktop --profile baseline --scenarios cowork-default-50,cowork-de
 pnpm run perf:desktop --profile baseline --scenarios loaded-ui,math-transcripts
 pnpm run perf:desktop --profile baseline --scenarios chat-search-indexing
 pnpm run perf:desktop --profile baseline --scenarios plugin-picker
+pnpm run perf:desktop --profile baseline --scenarios menu-surfaces
 pnpm run perf:desktop --profile baseline --scenarios browser-panels
 pnpm run perf:desktop --profile baseline --scenarios inner-panels-collapse
 pnpm run perf:desktop --profile smoke --scenarios plan-open

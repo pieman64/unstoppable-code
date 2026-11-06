@@ -549,7 +549,6 @@ export type CodeGraphReadObservation = CodeGraphReadTelemetry & {
 export interface CodeGraphReadSchedulerHost {
   /** Launches one read host with its entry and memory budget; throws when it can't. */
   launchReadHost(): CodeGraphReadHostProcess;
-  recordQueryTelemetry(input: CodeGraphReadTelemetry): void;
   recordReadDiagnostic(
     input: CodeGraphReadTelemetry & {
       key: string;
@@ -653,7 +652,6 @@ export function createCodeGraphReadScheduler(
       executionDurationMs:
         record.startedAt === null ? 0 : completedAt - record.startedAt,
     };
-    host.recordQueryTelemetry({ kind: record.kind, outcome, ...timings });
     try {
       host.recordReadDiagnostic({
         key:

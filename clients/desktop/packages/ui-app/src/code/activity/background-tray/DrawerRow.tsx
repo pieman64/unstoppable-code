@@ -184,7 +184,7 @@ export function DrawerRow({
     <Tooltip label={navigation.label}>
       <Button
         variant="ghost-overlay"
-        size={modal ? 'control' : 'compact'}
+        size="compact"
         iconOnly
         aria-label={navigation.label}
         data-testid="background-tray-row-open"

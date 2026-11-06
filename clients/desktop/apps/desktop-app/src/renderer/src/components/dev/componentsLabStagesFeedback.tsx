@@ -13,7 +13,7 @@ import {
   Notice,
   NoticeButton,
   SearchField,
-  SkeletonBlock,
+  Skeleton,
   TextArea,
   ToastStack,
   Tooltip,
@@ -418,10 +418,9 @@ export function LoadingStage(): JSX.Element {
                     <ChatIcon />
                   </span>
                   <div className="flex-1">
-                    <SkeletonBlock
-                      height="text"
-                      width={index % 2 === 0 ? '2/3' : '1/2'}
-                    />
+                    <Skeleton loading>
+                      <span className="text-s">{title}</span>
+                    </Skeleton>
                   </div>
                 </div>
                 <div data-on={s.loaded > index ? true : undefined}>

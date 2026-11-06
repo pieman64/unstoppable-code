@@ -1,3 +1,4 @@
+import { daemonCredentialRoute } from './daemon-credential-route';
 import { app } from 'electron';
 import { CanopyClientError, toCanopyClientError } from '@canopy/core-client';
 import {
@@ -162,6 +163,7 @@ export function getElectronDaemonConnections(): ElectronDaemonConnectionService<
       return client;
     },
     onSession: (session, caller) => {
+      daemonCredentialRoute.observe(session);
       observeWorkspaceCommits(session, caller.clientInstanceId);
       // The resource monitor follows the daemon's status (CAN-5690).
       if (!stopped) getDaemonExecutionStatus().observe(session);

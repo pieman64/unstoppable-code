@@ -362,7 +362,7 @@ function PrPreview({
         <span className="rounded bg-fg-primary/[0.08] px-1.5 py-0.5 font-mono text-2xs fg-primary">
           #{pr.number}
         </span>
-        <span className="min-w-0 flex-1 truncate text-sm font-medium fg-primary">
+        <span className="min-w-0 flex-1 truncate text-s font-medium fg-primary">
           {pr.title}
         </span>
       </div>
@@ -727,7 +727,7 @@ export function CreateTaskModal({
                       data-testid="create-from-branch-selected"
                       className="flex items-center gap-2 rounded-lg border bg-base p-3"
                     >
-                      <span className="min-w-0 flex-1 truncate font-mono text-sm fg-primary">
+                      <span className="min-w-0 flex-1 truncate font-mono text-s fg-primary">
                         {selectedBranch}
                       </span>
                       <Button

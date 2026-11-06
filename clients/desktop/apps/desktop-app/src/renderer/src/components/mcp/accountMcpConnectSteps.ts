@@ -161,6 +161,11 @@ export function mcpAlreadyConnectedMessage(serverName: string): string {
   return `${serverName} is already connected.`;
 }
 
+/** A finished Connect on a server without sign-in; never claims it connected. */
+export function mcpNoSignInNeededMessage(serverName: string): string {
+  return `${serverName} doesn't need sign-in.`;
+}
+
 /** How to answer `client_credentials_required`. */
 export type AccountMcpClientPromptStep<C extends AccountMcpStepConnection> =
   | { kind: 'error'; message: string }

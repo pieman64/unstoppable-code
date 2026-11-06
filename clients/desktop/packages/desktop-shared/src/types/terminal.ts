@@ -75,6 +75,12 @@ export {
  */
 export interface TerminalApi {
   listProfiles(): Promise<TerminalShellProfile[]>;
+  /** Terminal settings through `core.terminal.settings.get` (CAN-4148). */
+  getSettings(): Promise<TerminalSettings>;
+  /** Compare-and-swap through `core.terminal.settings.update` (CAN-4148). */
+  updateSettings(
+    request: UpdateTerminalSettingsRequest,
+  ): Promise<UpdateTerminalSettingsResponse>;
   spawn(request: TerminalSpawnRequest): Promise<TerminalSession>;
   restore(request: TerminalRestoreRequest): Promise<TerminalSession>;
   attach(request: TerminalAttachRequest): Promise<TerminalAttachResponse>;
@@ -94,6 +100,29 @@ export interface TerminalApi {
     listener: (event: TerminalRunningChangedEvent) => void,
   ): () => void;
 }
+
+/** Terminal settings with image icons as data URLs, as windows show them. */
+export interface TerminalSettings {
+  revision: number;
+  disabledTerminalShellProfileIds: TerminalShellProfileId[];
+  terminalPresets: TerminalPreset[];
+}
+
+export interface UpdateTerminalSettingsRequest {
+  expectedRevision: number;
+  disabledTerminalShellProfileIds: TerminalShellProfileId[];
+  terminalPresets: TerminalPreset[];
+  /** One per save attempt; a retry of the same attempt reuses it. */
+  idempotencyKey: string;
+}
+
+export type UpdateTerminalSettingsResponse =
+  | { ok: true; settings: TerminalSettings }
+  | {
+      ok: false;
+      error: { code: 'conflict'; message: string; settings: TerminalSettings };
+    }
+  | { ok: false; error: { code: 'invalid'; message: string } };
 
 // ---------------------------------------------------------------------------
 // Preferences contribution

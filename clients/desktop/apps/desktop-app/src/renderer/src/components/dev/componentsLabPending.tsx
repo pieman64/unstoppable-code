@@ -1,3 +1,4 @@
+import { Heading } from '@canopy/ui-shared/components';
 import type { JSX } from 'react';
 import {
   Badge,
@@ -34,9 +35,9 @@ function PendingCard({
       <div data-pending={item.id} className="flex flex-col gap-3">
         <div className="flex flex-col gap-0.5">
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-s font-medium fg-primary">
+            <Heading level={3} variant="title">
               {rank}. {item.name}
-            </h3>
+            </Heading>
             <Badge tone={STATUS_BADGE[item.status].tone}>
               {STATUS_BADGE[item.status].label}
             </Badge>
@@ -69,17 +70,17 @@ export function PendingSpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-8">
       <section className="flex flex-col gap-3">
-        <h3 className="text-xs font-medium fg-secondary">
+        <Heading level={3} variant="label">
           Families with no ratchet yet, in priority order
-        </h3>
+        </Heading>
         {PENDING_UNIFICATIONS.map((item, index) => (
           <PendingCard key={item.id} item={item} rank={index + 1} />
         ))}
       </section>
       <section className="flex flex-col gap-3">
-        <h3 className="text-xs font-medium fg-secondary">
+        <Heading level={3} variant="label">
           Ratcheted families still migrating: what each baseline still allows
-        </h3>
+        </Heading>
         <SpecimenPanel>
           <div className="max-w-160">
             <ValueRows dataTestId="components-lab-ratchet-backlog">

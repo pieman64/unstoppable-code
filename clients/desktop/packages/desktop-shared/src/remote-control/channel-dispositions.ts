@@ -514,6 +514,7 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     chatSessionImported: 'tunnel',
     chatUpdatePlugins: 'tunnel',
     chatHookTabStarted: 'tunnel',
+    chatHookQueueRemoved: 'tunnel',
     chatTabDescriptionUpdated: 'tunnel',
     chatCancelQueuedHookChat: 'tunnel',
     chatForceQueuedHookChat: 'tunnel',
@@ -542,6 +543,7 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     approvalRequest: 'tunnel',
     approvalCancelled: 'tunnel',
     approvalAutoResolved: 'tunnel',
+    approvalSecretInput: 'blocked',
     approvalRespond: 'tunnel',
     approvalDismiss: 'tunnel',
     approvalPendingRequests: 'tunnel',
@@ -736,8 +738,6 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     observabilityReportPostHogSessionRotation: 'local',
     // renderer PostHog/diagnostics identity of this window
     observabilityPostHogSessionUpdate: 'local',
-    // renderer PostHog/diagnostics identity of this window
-    observabilityGetAnonymousTelemetryId: 'local',
     observabilityEvent: 'tunnel',
     githubCreatePr: 'tunnel',
     githubRequestRefresh: 'tunnel',
@@ -902,6 +902,8 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     terminalSaveWorktreeState: 'tunnel',
     terminalList: 'tunnel',
     terminalListProfiles: 'tunnel',
+    terminalGetSettings: 'tunnel',
+    terminalUpdateSettings: 'tunnel',
     panelLayoutLoad: 'tunnel',
     panelLayoutSave: 'tunnel',
     panelLayoutDelete: 'tunnel',
@@ -1095,6 +1097,10 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     orgProjectsSetupProgress: 'tunnel',
     orgProjectsConvertWorkspace: 'tunnel',
     orgProjectsMoveWorkspace: 'tunnel',
+    // Linking a workspace to its cloud project (CAN-5190) stays on the
+    // computer whose checkout it is, until a controlled link is designed.
+    cloudProjectsFindLink: 'blocked',
+    cloudProjectsLink: 'blocked',
     orgProjectsMoveBackToPersonal: 'tunnel',
     orgProjectsOwnershipChanged: 'tunnel',
     orgProjectsList: 'tunnel',

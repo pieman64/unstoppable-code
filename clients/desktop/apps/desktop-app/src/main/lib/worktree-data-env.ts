@@ -7,11 +7,22 @@ export function buildWorktreeDataEnv(
   projectId: string,
   worktreeId: string,
   env?: NodeJS.ProcessEnv,
-  options?: { runtime?: EnvironmentRuntime },
+  options?: {
+    runtime?: EnvironmentRuntime;
+    secretEnv?: Readonly<Record<string, string>>;
+  },
 ): NodeJS.ProcessEnv {
   const runtime = options?.runtime ?? 'canopy';
   const nextEnv: NodeJS.ProcessEnv = {
-    ...getEnhancedEnv({ environment: { runtime, workspaceId: projectId } }),
+    ...getEnhancedEnv(
+      options?.secretEnv !== undefined
+        ? {
+            environment: { runtime, workspaceId: projectId, values: 'public' },
+            includeCanopySecrets: false,
+          }
+        : { environment: { runtime, workspaceId: projectId } },
+    ),
+    ...options?.secretEnv,
     ...env,
     CONDUCTOR_WORKSPACE_NAME: worktreeId,
   };

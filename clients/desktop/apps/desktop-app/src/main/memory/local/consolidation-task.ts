@@ -53,7 +53,9 @@ import {
   finalizeObservedHelperTask,
   startObservedHelperTask,
 } from '../../lib/helper-observed-task';
+import { LOCAL_MEMORY_SYNCED_CONSOLIDATION_MESSAGE } from '@canopy/protocol/local-memory';
 import { runLocalMemoryStructuredHelper } from './structured-helper';
+import { isSyncedMemoryReplica } from './replica-hooks';
 import {
   assertMemoryPathContained,
   assertMemoryScopeLockHeld,
@@ -1068,6 +1070,14 @@ async function writableEditRevision(scopeDir: string): Promise<string | null> {
 export async function runLocalMemoryConsolidation(
   options: RunConsolidationOptions,
 ): Promise<RunConsolidationResult> {
+  // A synced replica changes its documents only through cloud commits; its
+  // consolidation runs under the scope's lease (CAN-5186), never here.
+  if (await isSyncedMemoryReplica(options.scopeDir)) {
+    return {
+      status: 'cancelled',
+      reason: LOCAL_MEMORY_SYNCED_CONSOLIDATION_MESSAGE,
+    };
+  }
   const editRevision = await writableEditRevision(options.scopeDir);
   if (editRevision === null) {
     return { status: 'failed', reason: LOCAL_MEMORY_READ_ONLY_MESSAGE };

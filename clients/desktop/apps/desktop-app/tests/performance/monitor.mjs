@@ -1703,6 +1703,7 @@ export async function startPerformanceMonitor({
   sampleIntervalMs,
   probeTimeoutMs = 5_000,
   nativeTreeRootPid,
+  resourceBoundarySamples = false,
   workCounters = false,
   estimateIpcBytes = false,
   frameBudgets = false,
@@ -1781,45 +1782,50 @@ export async function startPerformanceMonitor({
     }
   }
 
+  async function sampleResources() {
+    const sampleStartedAt = nodePerformance.now();
+    const [result, nativeTreeResult] = await Promise.all([
+      readAppMetrics(electronApp, probeTimeoutMs),
+      nativeTreeRootPid && process.platform !== 'win32'
+        ? readPosixProcessTree(nativeTreeRootPid).then(
+            (processes) => ({ processes }),
+            (error) => ({ error: String(error), processes: [] }),
+          )
+        : Promise.resolve(null),
+    ]);
+    if (nativeTreeResult) {
+      raw.nativeTreeSamples.push({
+        atMs: sampleStartedAt - startedAt,
+        ...nativeTreeResult,
+      });
+    }
+    if (result?.timeout) {
+      raw.resourceSamples.push({
+        atMs: sampleStartedAt - startedAt,
+        processes: [],
+        error: 'timeout',
+        retries: result.retries,
+      });
+    } else if (result?.error) {
+      raw.resourceSamples.push({
+        atMs: sampleStartedAt - startedAt,
+        processes: [],
+        error: String(result.error),
+        retries: result.retries,
+      });
+    } else {
+      raw.resourceSamples.push({
+        atMs: sampleStartedAt - startedAt,
+        processes: normalizeAppMetrics(result.value),
+        retries: result.retries,
+      });
+    }
+  }
+
   const resourceLoop = (async () => {
     while (!stopped) {
       const sampleStartedAt = nodePerformance.now();
-      const [result, nativeTreeResult] = await Promise.all([
-        readAppMetrics(electronApp, probeTimeoutMs),
-        nativeTreeRootPid && process.platform !== 'win32'
-          ? readPosixProcessTree(nativeTreeRootPid).then(
-              (processes) => ({ processes }),
-              (error) => ({ error: String(error), processes: [] }),
-            )
-          : Promise.resolve(null),
-      ]);
-      if (nativeTreeResult) {
-        raw.nativeTreeSamples.push({
-          atMs: sampleStartedAt - startedAt,
-          ...nativeTreeResult,
-        });
-      }
-      if (result?.timeout) {
-        raw.resourceSamples.push({
-          atMs: sampleStartedAt - startedAt,
-          processes: [],
-          error: 'timeout',
-          retries: result.retries,
-        });
-      } else if (result?.error) {
-        raw.resourceSamples.push({
-          atMs: sampleStartedAt - startedAt,
-          processes: [],
-          error: String(result.error),
-          retries: result.retries,
-        });
-      } else {
-        raw.resourceSamples.push({
-          atMs: sampleStartedAt - startedAt,
-          processes: normalizeAppMetrics(result.value),
-          retries: result.retries,
-        });
-      }
+      await sampleResources();
       await waitForNextSample(sampleStartedAt);
     }
   })();
@@ -1830,6 +1836,12 @@ export async function startPerformanceMonitor({
       if (stopped) return { raw, summary: buildSummary(raw) };
       stopped = true;
       samplingAbortController.abort();
+      if (resourceBoundarySamples) {
+        // Short reload windows can finish before the periodic sample. Take a
+        // real closing sample, serialized with the opening one, before cleanup.
+        await resourceLoop;
+        await sampleResources();
+      }
       // Close the work window (the final Chromium, main, and React samples)
       // at the stop boundary, read and stop the renderer collector right after
       // it, and only then detach the counters session, so cleanup never lands

@@ -105,6 +105,8 @@ export function createSettingsWriteFollowUps(
 ): SettingsWriteFollowUpResolver {
   return (name, validatedInput): SettingsWriteFollowUp | null => {
     switch (name) {
+      case 'account.settings.ai-gateway.update':
+      case 'organization.settings.policies.update':
       case 'organization.create':
       case 'organization.delete':
       case 'organization.leave':

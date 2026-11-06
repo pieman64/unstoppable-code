@@ -1,7 +1,5 @@
-import { CUSTOMIZE_LABEL } from '@canopy/protocol/ui-labels';
-import { useNavigationStore } from '@/stores/navigationStore';
-import { marketplaceManagementDestination } from '@canopy/ui-shared/lib';
 import { McpServersTab } from '../pages/McpServersTab';
+import { DesktopMcpSettingsSection } from './hosted/DesktopMcpSettingsSection';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useEarlyAccessTitle } from '@/lib/earlyAccessTitles';
@@ -310,28 +308,7 @@ export function McpTab(): JSX.Element {
           Loading
         </span>
       )}
-      <SettingsSection title="Installed MCP servers">
-        <SettingsGroup>
-          <SettingsRow
-            label="Manage MCP servers"
-            control={
-              <Button
-                size="compact"
-                variant="secondary"
-                data-testid="settings-mcp-manage"
-                onClick={(): void => {
-                  const navigation = useNavigationStore.getState();
-                  navigation.closeSettings();
-                  navigation.openPluginsNavigation({
-                    kind: 'marketplace-browse',
-                    ...marketplaceManagementDestination('mcp'),
-                  });
-                }}
-              >{`Open ${CUSTOMIZE_LABEL}`}</Button>
-            }
-          />
-        </SettingsGroup>
-      </SettingsSection>
+      <DesktopMcpSettingsSection />
       {accountConnectionsEnabled && (
         <SettingsSection
           title="Account connections"

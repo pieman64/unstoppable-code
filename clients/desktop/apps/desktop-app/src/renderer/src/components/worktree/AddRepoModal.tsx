@@ -27,6 +27,11 @@ import {
 import { CHAT_LABEL } from '@canopy/protocol';
 import { RepositoryCloneError } from '@canopy/ui-shared/components';
 import {
+  trackAddProjectDialogCancel,
+  trackAddProjectDialogOpen,
+  trackAddProjectMethodClick,
+} from '../../lib/addProjectTelemetry';
+import {
   normalizeRepositoryCloneUrl,
   repositoryCloneErrorMessage,
   REPOSITORY_CLONE_FAILURE_MESSAGE,
@@ -482,6 +487,7 @@ export function AddRepoModal(props: AddRepoModalProps): JSX.Element | null {
   // A handoff never outlives the dialog that started it.
   useEffect((): void => {
     if (!props.isOpen) dropAddWorkspaceHandoff();
+    else trackAddProjectDialogOpen();
   }, [props.isOpen]);
   return props.isOpen ? (
     <AddRepoModalContext {...props} />
@@ -551,6 +557,9 @@ function AddRepoModalDraft({
 }): JSX.Element | null {
   const alive = useRef(false);
   const submitting = useRef(false);
+  const preAddPending = useRef(false);
+  const catalogAddsInFlight = useRef(0);
+  const projectCreated = useRef(false);
   useEffect((): (() => void) => {
     alive.current = true;
     return (): void => {
@@ -588,6 +597,7 @@ function AddRepoModalDraft({
     return captureSubmission();
   };
   const endSubmission = (): void => {
+    preAddPending.current = false;
     if (!alive.current) return;
     submitting.current = false;
     setIsSubmitting(false);
@@ -1445,6 +1455,7 @@ function AddRepoModalDraft({
     options: CompleteWorkspaceOptions,
     onOpened?: () => void,
   ): Promise<void> => {
+    if (workspaceId !== null) projectCreated.current = true;
     if (workspaceId !== null && privateMemorySelected) {
       try {
         await saveWorkspacePrivateMemory(workspaceId, true);
@@ -1677,6 +1688,7 @@ function AddRepoModalDraft({
     submission: Submission,
     origin: OrgFolderOrigin = { source: 'existing' },
   ): Promise<void> => {
+    preAddPending.current = true;
     setOrgError(null);
     setOrgFolder(folder);
     setOrgFolderOrigin(origin);
@@ -1684,6 +1696,7 @@ function AddRepoModalDraft({
       // Without the Code capability a folder is attached as Cowork without
       // being checked, as before CAN-3534.
       setOrgFolderCheck(null);
+      preAddPending.current = false;
       await runOrgCreate(
         orgFolderRequest(
           folder,
@@ -1711,6 +1724,7 @@ function AddRepoModalDraft({
     setOrgFolderCheck({ status: 'checked', inspection });
     if (inspection.kind === 'refused' || orgFolderNeedsConfirmation(inspection))
       return;
+    preAddPending.current = false;
     await runOrgCreate(
       orgFolderRequest(
         folder,
@@ -1804,6 +1818,7 @@ function AddRepoModalDraft({
   ): Promise<void> => {
     const submission = beginSubmission();
     if (!submission) return;
+    preAddPending.current = true;
     // A new pick, even a cancelled one, invalidates the previous notice.
     conflictRequest.current += 1;
     const request = conflictRequest.current;
@@ -1856,6 +1871,7 @@ function AddRepoModalDraft({
         });
         return;
       }
+      preAddPending.current = false;
       await addExistingFolder(selected, submission);
     } catch (cause) {
       if (live()) {
@@ -1966,6 +1982,8 @@ function AddRepoModalDraft({
     if (orgConflict === null) return;
     const submission = beginSubmission();
     if (!submission) return;
+    // Refreshing the conflict only validates access; no project add has begun.
+    preAddPending.current = true;
     try {
       await resolveConflict(orgConflict.conflict, submission, true);
     } finally {
@@ -2076,7 +2094,22 @@ function AddRepoModalDraft({
     }
   };
 
+  const selectMode = (next: AddWorkspaceMode): void => {
+    if (next !== mode) trackAddProjectMethodClick(next);
+    setMode(next);
+  };
+
   const dismiss = (): void => {
+    // Closing before an add begins is cancellation, including during validation.
+    // A running add or an already created project is not abandoned.
+    if (
+      (!submitting.current || preAddPending.current) &&
+      catalogAddsInFlight.current === 0 &&
+      !projectCreated.current &&
+      privateMemoryPending === null &&
+      orgResume === null
+    )
+      trackAddProjectDialogCancel(mode);
     dismissed.current = true;
     onClose();
   };
@@ -2246,6 +2279,7 @@ function AddRepoModalDraft({
       });
       return;
     }
+    preAddPending.current = false;
     await performCloneRemote(normalizedUrl, normalizedDestination, submission);
   };
 
@@ -2271,6 +2305,7 @@ function AddRepoModalDraft({
     }
     const submission = beginSubmission();
     if (!submission) return;
+    preAddPending.current = true;
     setOrgOwnerNudge(null);
     try {
       const owner = await findRepositoryOwner({ remoteUrl: normalizedUrl });
@@ -2306,6 +2341,7 @@ function AddRepoModalDraft({
     const submission = beginSubmission();
     if (!submission) return;
     setOrgOwnerNudge(null);
+    if (nudge.pending.kind === 'remote') preAddPending.current = true;
     try {
       if (nudge.pending.kind === 'existing')
         await addExistingFolder(nudge.pending.folder, submission);
@@ -2598,6 +2634,7 @@ function AddRepoModalDraft({
             ? await createChatProjectFromBlueprint(selectedBlueprint, name)
             : null;
         const project = seeded ? seeded.project : await createChatProject(name);
+        projectCreated.current = true;
         if (!isCurrent(submission)) return;
         await loadProjects({ silent: true });
         const unresolvedRefCount = seeded ? seeded.unresolvedRefs.length : 0;
@@ -2804,7 +2841,7 @@ function AddRepoModalDraft({
             <ProjectChoiceCard
               testId="add-workspace-mode-catalog"
               selected={mode === 'catalog'}
-              onSelect={() => setMode('catalog')}
+              onSelect={() => selectMode('catalog')}
               icon={<BuildingIcon className="h-4 w-4 shrink-0" />}
               title={orgCatalogOption.label}
               description={orgCatalogOption.scopedSummary}
@@ -2819,7 +2856,7 @@ function AddRepoModalDraft({
                       key={choice}
                       testId="add-workspace-mode-remote"
                       selected={mode === 'remote'}
-                      onSelect={() => setMode('remote')}
+                      onSelect={() => selectMode('remote')}
                       icon={<GitHubIcon className="shrink-0" />}
                       title="Clone repository"
                       description="GitHub or a URL"
@@ -2833,7 +2870,7 @@ function AddRepoModalDraft({
                       key={choice}
                       testId="add-workspace-mode-existing"
                       selected={mode === 'existing'}
-                      onSelect={() => setMode('existing')}
+                      onSelect={() => selectMode('existing')}
                       icon={<FolderIcon className="shrink-0" />}
                       title={
                         navigationMode === 'work'
@@ -2855,7 +2892,7 @@ function AddRepoModalDraft({
                       key={choice}
                       testId="add-workspace-mode-create"
                       selected={mode === 'create'}
-                      onSelect={() => setMode('create')}
+                      onSelect={() => selectMode('create')}
                       icon={<FolderPlusIcon className="shrink-0" />}
                       title="Create new"
                       description="Start fresh"
@@ -2872,6 +2909,9 @@ function AddRepoModalDraft({
             organization={organization}
             session={orgCatalogSession}
             onClose={onClose}
+            onAddActivityChange={(delta): void => {
+              catalogAddsInFlight.current += delta;
+            }}
             {...(catalogHandoff === null
               ? {}
               : {

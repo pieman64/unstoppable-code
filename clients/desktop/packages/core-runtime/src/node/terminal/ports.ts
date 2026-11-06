@@ -168,7 +168,7 @@ export interface TerminalCreateRequest extends TerminalWorktreeScope {
    * A host directory to start in instead of the worktree checkout, already
    * resolved and contained by the trusted in-process caller. Not a wire
    * field: the `worker.terminal.create` projection carries `cwdRootId` and
-   * `cwdRelativePath` instead (CAN-4148).
+   * `cwdRelativePath` instead (CAN-5092 when terminal state leaves Electron main).
    */
   cwd?: string;
   profileId?: TerminalShellProfileId;

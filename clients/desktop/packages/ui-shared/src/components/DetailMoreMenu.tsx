@@ -113,11 +113,22 @@ export function DetailMoreMenu({
       >
         <DetailMoreMenuRows
           items={items}
-          onClose={(): void => setOpen(false)}
+          onClose={(): void => {
+            setOpen(false);
+            focusMenuTrigger(anchorRef.current);
+          }}
         />
       </FloatingMenu>
     </>
   );
+}
+
+/**
+ * Puts focus on a closing menu's trigger before its row runs, so a dialog the
+ * row opens returns focus there rather than to the row that is going away.
+ */
+export function focusMenuTrigger(anchor: HTMLElement | null): void {
+  anchor?.querySelector('button')?.focus({ preventScroll: true });
 }
 
 /**
@@ -172,13 +183,21 @@ export function DetailMoreMenuRows({
 }
 
 const NO_ITEMS: readonly DetailMoreMenuItem[] = [];
-const DetailMoreItemsContext =
-  createContext<readonly DetailMoreMenuItem[]>(NO_ITEMS);
+
+interface DetailMoreItemsValue {
+  readonly items: readonly DetailMoreMenuItem[];
+  /** The body menu that lists the rows; the first mounted one. */
+  readonly recipient: string | null;
+  readonly claim: (menuId: string) => () => void;
+}
+
+const DetailMoreItemsContext = createContext<DetailMoreItemsValue | null>(null);
 
 /**
  * Rows a detail host adds to the ⋯ More menu its body declares (a plugin's
  * Update beside the Status row's Uninstall), so the bar keeps one menu and at
- * most three visible actions.
+ * most three visible actions. A body can declare several menus (one per
+ * configuration of an account server); the rows join only one of them.
  */
 export function DetailMoreItemsProvider({
   items,
@@ -187,8 +206,18 @@ export function DetailMoreItemsProvider({
   readonly items: readonly DetailMoreMenuItem[];
   readonly children: ReactNode;
 }): JSX.Element {
+  const [claimants, setClaimants] = useState<readonly string[]>([]);
+  const claim = useCallback((menuId: string): (() => void) => {
+    setClaimants((current) => [...current, menuId]);
+    return (): void =>
+      setClaimants((current) => current.filter((id) => id !== menuId));
+  }, []);
+  const value = useMemo(
+    () => ({ items, recipient: claimants[0] ?? null, claim }),
+    [claim, claimants, items],
+  );
   return (
-    <DetailMoreItemsContext.Provider value={items}>
+    <DetailMoreItemsContext.Provider value={value}>
       {children}
     </DetailMoreItemsContext.Provider>
   );
@@ -196,7 +225,11 @@ export function DetailMoreItemsProvider({
 
 /** The host rows a body's own ⋯ More menu lists above its own. */
 export function useDetailMoreItems(): readonly DetailMoreMenuItem[] {
-  return useContext(DetailMoreItemsContext);
+  const menuId = useId();
+  const host = useContext(DetailMoreItemsContext);
+  const claim = host?.claim;
+  useLayoutEffect(() => claim?.(menuId), [claim, menuId]);
+  return host?.recipient === menuId ? host.items : NO_ITEMS;
 }
 
 type ContributeDetailMoreItems = (

@@ -8,6 +8,7 @@ import { BRAND } from '@canopy/brand/current';
 import {
   CODE_GRAPH_RUNTIME_ROOTS,
   DAEMON_EXECUTION_HOST_ENTRIES,
+  DAEMON_SECRET_PROTECTION_MEMBERS,
 } from '@canopy/core-platform/execution-host/daemon-payload';
 import { daemonName } from '@canopy/protocol/brand';
 import type {
@@ -17,7 +18,11 @@ import type {
 
 const TOOLS = ['claude', 'codex', 'codex-code-mode-host', 'gh', 'rg', 'rtk'];
 const DAEMON = daemonName(BRAND);
-const DAEMON_FILES = [`${DAEMON}.identity.json`, 'w5-commit-log-worker.js'];
+const DAEMON_FILES = [
+  `${DAEMON}.identity.json`,
+  'w5-commit-log-worker.js',
+  ...DAEMON_SECRET_PROTECTION_MEMBERS,
+];
 // The daemon's execution host entries beside it, and the graph runtime its
 // code-graph hosts share with the CLI: the release's own lists (CAN-5672).
 const DAEMON_HOSTS = 'execution-hosts';

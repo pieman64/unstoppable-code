@@ -4,6 +4,7 @@
  * provider-facing Claude MCP / Codex dynamic-tool contract.
  */
 import { BRAND } from '@canopy/brand/current';
+import type { ChatTabPluginSelections } from '../types';
 
 export type PipelineEditorToolKey =
   | 'ask_user_question'
@@ -33,6 +34,26 @@ export const PIPELINE_EDITOR_REQUIRED_SKILL_REF = {
   sourceId: 'builtin:app',
   skillName: PIPELINE_EDITOR_REQUIRED_SKILL_NAME,
 } as const;
+
+export function withRequiredPipelineEditorSkill(
+  selections: ChatTabPluginSelections | undefined,
+): ChatTabPluginSelections {
+  const base: ChatTabPluginSelections = selections ?? {
+    collectionIds: [],
+    skillRefs: [],
+    pluginRefs: [],
+    mcpServerRefs: [],
+  };
+  return {
+    ...base,
+    skillRefs: [
+      ...(base.skillRefs ?? []).filter(
+        (ref) => ref.skillName !== PIPELINE_EDITOR_REQUIRED_SKILL_NAME,
+      ),
+      PIPELINE_EDITOR_REQUIRED_SKILL_REF,
+    ],
+  };
+}
 
 const CLAUDE_NAMESPACE_PREFIX = `mcp__${BRAND.tools.namespace}_pipeline_editor__`;
 const CODEX_NAMESPACE_PREFIX = `${BRAND.tools.namespace}_pipeline_editor_`;

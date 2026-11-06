@@ -52,13 +52,12 @@ const SLOW_ACTION_LABELS: Record<string, string> = {
   [IPC_CHANNELS.aiGatewayModelCatalogRetry]: 'Loading models',
 };
 
-const IPC_ACTION_OPERATION_NAME = 'canopy.ipc_action';
-
 const SLOW_ACTION_IGNORED_CHANNELS = new Set<string>([
   // Even a decision count would disclose that a private relationship exists.
   IPC_CHANNELS.orgProjectLinksList,
   IPC_CHANNELS.orgProjectLinksDecide,
   IPC_CHANNELS.scriptRun,
+  IPC_CHANNELS.approvalSecretInput,
   IPC_CHANNELS.slowActionSnapshot,
   IPC_CHANNELS.slowActionClear,
 ]);
@@ -100,7 +99,6 @@ export function registerIpcHandler<Args extends unknown[], Result>(
       kind: 'ipc',
       label: labelForIpcChannel(channel),
       context: { channel },
-      telemetryOperationName: IPC_ACTION_OPERATION_NAME,
     });
   });
 }

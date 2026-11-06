@@ -34,6 +34,7 @@ export function settingsNavModelFromBootstrap(
         );
   return {
     account: {
+      aiGatewayEnabled: bootstrap.account.aiGatewayEnabled,
       billingEnabled: bootstrap.account.billingEnabled,
       digestsEnabled: bootstrap.account.digestsEnabled,
       integrationsEnabled: bootstrap.account.integrationsEnabled,
@@ -80,6 +81,7 @@ export function organizationSettingsSubtabsFromBootstrap(
 ): OrganizationSettingsSubtab[] {
   if (organization.isPersonal) return [];
   return visibleOrganizationSettingsSubtabs({
+    aiGatewayEnabled: organization.aiGatewayEnabled,
     viewerRole: organization.viewerRole,
     lapsed: organization.lapse !== null,
     billingEnabled: organization.billingEnabled,

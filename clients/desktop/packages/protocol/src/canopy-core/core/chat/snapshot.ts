@@ -20,6 +20,64 @@ export const CoreChatSnapshotGetParamsSchema = z.strictObject({
   chatId: id.optional(),
 });
 
+/** One TODO item of a chat's current turn (CAN-4110). */
+export const CoreChatTodoItemSchema = z.strictObject({
+  id,
+  content: z.string(),
+  status: z.enum(['pending', 'in_progress', 'completed']),
+});
+export type CoreChatTodoItem = z.output<typeof CoreChatTodoItemSchema>;
+
+/** A chat's committed model, thinking, plan, speed, approval and interface settings (CAN-4110). */
+export const CoreChatTabSettingsSchema = z.object({
+  model: z.string().nullable(),
+  providerId: z.string().nullable(),
+  executionHarness: z.string().nullable(),
+  modelSelectionMode: z.enum(['auto', 'manual']),
+  thinkingLevel: z.string().nullable(),
+  speed: z.string().nullable(),
+  planMode: z.boolean(),
+  approvalMode: z.enum(['ask', 'auto', 'full-access']).nullable(),
+  interfaceMode: z.enum(['canopy', 'claude-code', 'auto']).nullable(),
+  customTitle: z.string().nullable(),
+});
+export type CoreChatTabSettings = z.output<typeof CoreChatTabSettingsSchema>;
+
+const usageCount = z.number().int().min(0);
+
+/** A chat's committed context and token usage as the chat shows it (CAN-4114). */
+export const CoreChatTabUsageSchema = z.object({
+  contextTokens: usageCount,
+  contextWindow: usageCount,
+  maxOutputTokens: usageCount,
+  inputTokens: usageCount,
+  outputTokens: usageCount,
+  cacheReadInputTokens: usageCount,
+  cacheCreationInputTokens: usageCount,
+  totalCostUsd: z.number().min(0),
+  numTurns: usageCount,
+  model: z.string().max(256),
+});
+export type CoreChatTabUsage = z.output<typeof CoreChatTabUsageSchema>;
+
+/** The provider usage limit a chat last hit, without provider text (CAN-4114). */
+export const CoreChatUsageLimitSchema = z.object({
+  provider: z.enum(['claude', 'codex']),
+  detectedAt: usageCount,
+  resetsAt: usageCount.optional(),
+  dismissed: z.boolean(),
+});
+export type CoreChatUsageLimit = z.output<typeof CoreChatUsageLimitSchema>;
+
+/** A hosted AI Credits request that found no billing source (CAN-4114). */
+export const CoreChatNoBillingSourceSchema = z.object({
+  provider: z.enum(['claude', 'codex']),
+  detectedAt: usageCount,
+});
+export type CoreChatNoBillingSource = z.output<
+  typeof CoreChatNoBillingSourceSchema
+>;
+
 export const CoreChatTabSummarySchema = z.object({
   trackedPlanImplementation:
     TrackedPlanImplementationSchema.nullable().optional(),
@@ -30,6 +88,12 @@ export const CoreChatTabSummarySchema = z.object({
   unread: z.boolean().optional(),
   providerId: z.string().nullable().optional(),
   modelId: z.string().nullable().optional(),
+  settings: CoreChatTabSettingsSchema.optional(),
+  todos: z.array(CoreChatTodoItemSchema).optional(),
+  taskTodos: z.array(CoreChatTodoItemSchema).optional(),
+  usage: CoreChatTabUsageSchema.optional(),
+  usageLimit: CoreChatUsageLimitSchema.optional(),
+  noBillingSource: CoreChatNoBillingSourceSchema.optional(),
 });
 
 export const CoreChatArchiveSummarySchema = z.object({

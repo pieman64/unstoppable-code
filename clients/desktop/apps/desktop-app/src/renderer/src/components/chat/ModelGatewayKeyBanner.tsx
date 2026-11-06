@@ -5,6 +5,7 @@ import {
   findGatewayForOrganization,
   selectGatewayForOwner,
   useOrgModelGateways,
+  usePersonalModelGateway,
 } from '@/hooks/useOrgModelGateway';
 import { useModelCatalogStore } from '@/stores/modelCatalogStore';
 import {
@@ -45,8 +46,12 @@ export function ModelGatewayKeyBanner({
   selectedGatewayOrganizationId?: string;
 }): JSX.Element | null {
   const gateways = useOrgModelGateways();
+  const personal = usePersonalModelGateway();
   const activeOwner = useModelCatalogStore((state) => state.activeOwner);
   const gateway = useMemo(() => {
+    if (selectedGatewayOrganizationId === personal?.organizationId)
+      return personal;
+    if (activeOwner?.kind === 'personal') return personal;
     if (!gateways) return null;
     if (selectedGatewayOrganizationId) {
       return findGatewayForOrganization(
@@ -60,7 +65,7 @@ export function ModelGatewayKeyBanner({
     return (
       gateways.find((candidate) => candidate.enforced) ?? gateways[0] ?? null
     );
-  }, [gateways, activeOwner, selectedGatewayOrganizationId]);
+  }, [gateways, personal, activeOwner, selectedGatewayOrganizationId]);
   const openSettings = useNavigationStore((state) => state.openSettings);
   const [keyState, setKeyState] = useState<KeyState>({ status: 'loading' });
 
@@ -135,11 +140,17 @@ export function ModelGatewayKeyBanner({
       : keyState.status === 'stale-endpoint'
         ? 'Gateway endpoint changed'
         : 'Gateway key rejected';
-  const message =
-    keyState.status === 'missing'
-      ? `${gateway.organizationName} routes your agents through its own model gateway, so add your gateway key to send this.`
+  const personalGateway = gateway.organizationId === personal?.organizationId;
+  const message = personalGateway
+    ? keyState.status === 'missing'
+      ? 'Add your AI gateway key in Providers to send this.'
       : keyState.status === 'stale-endpoint'
-        ? `${gateway.organizationName} moved its model gateway, so add a key for the new one to send this.`
+        ? 'Add a key for your new AI gateway endpoint in Providers.'
+        : "Your AI gateway didn't accept this key. Save a current key in Providers."
+    : keyState.status === 'missing'
+      ? `${gateway.organizationName} routes your agents through its own AI gateway, so add your gateway key to send this.`
+      : keyState.status === 'stale-endpoint'
+        ? `${gateway.organizationName} moved its AI gateway, so add a key for the new one to send this.`
         : `${gateway.organizationName} didn't accept your gateway key, so paste a current one or ask your admin for a new key.`;
 
   return (

@@ -1,3 +1,8 @@
+import {
+  redeemExecutionSecrets,
+  type ExecutionSecretSource,
+  type RedeemedExecutionSecrets,
+} from '../../execution-secrets';
 import type {
   CanopyInstructionHandler,
   CanopyQueryHandler,
@@ -39,6 +44,7 @@ import {
   toWorkerScriptExecution,
   type ScriptRunLogPaths,
   type ScriptRunLogRef,
+  type ScriptRunWriterFence,
 } from './script-run-log';
 
 /** Where a run executes and the environment it gets, on this worker. */
@@ -54,10 +60,12 @@ export interface ScriptExecutionPlace {
  */
 export interface ScriptExecutionWorkerHost
   extends ScriptProcessHost, Pick<ScriptTerminalHost, 'revealTerminal'> {
+  readonly secrets: ExecutionSecretSource;
   readonly authorityId: string;
   readonly targetId?: string;
   readonly logPaths: ScriptRunLogPaths;
   readonly logFiles: RunLogFiles;
+  readonly writerFence?: ScriptRunWriterFence;
   /**
    * The checkout and environment a context names. Throws
    * {@link scriptContextUnavailableError} when it does not exist here.
@@ -65,6 +73,7 @@ export interface ScriptExecutionWorkerHost
   resolvePlace(
     scope: WorkerScriptExecuteParams['scope'],
     context: WorkerScriptContext,
+    secrets: RedeemedExecutionSecrets,
   ): Promise<ScriptExecutionPlace>;
   /**
    * This worker's `worker.terminal` port, for runs that need a terminal
@@ -176,6 +185,7 @@ export class ScriptExecutionWorker {
       paths: host.logPaths,
       files: host.logFiles,
       ...(host.warn ? { warn: host.warn.bind(host) } : {}),
+      ...(host.writerFence ? { writerFence: host.writerFence } : {}),
     });
   }
 
@@ -303,7 +313,13 @@ export class ScriptExecutionWorker {
     signal: AbortSignal,
   ): Promise<WorkerScriptExecuteResult> {
     const { executionId, scope, record } = params;
-    const place = await this.host.resolvePlace(scope, params.context);
+    const secrets = await redeemExecutionSecrets(
+      this.host.secrets,
+      { operation: 'worker.script.execute', key: executionId },
+      params.secrets,
+      signal,
+    );
+    const place = await this.host.resolvePlace(scope, params.context, secrets);
     const projectId = scope.workspaceId;
     const worktreeId = scope.worktreeId;
     const logged =

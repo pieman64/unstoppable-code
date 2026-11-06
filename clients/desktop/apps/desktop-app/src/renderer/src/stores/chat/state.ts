@@ -29,6 +29,7 @@ import type {
   FileReference,
   FileTabViewMode,
   HookChatTabStartedEvent,
+  HookChatQueueRemovedEvent,
   McpAskUserEvent,
   McpQuestionAnswer,
   ChatCommand,
@@ -976,6 +977,7 @@ export interface ChatQueueSlice {
 export interface ChatEventsSlice {
   handleChatQueueUpdated: (event: ChatQueueUpdatedEvent) => void;
   handleChatEvent: (event: ChatEvent) => void;
+  handleHookQueueRemoved: (event: HookChatQueueRemovedEvent) => void;
   handleHookTabStarted: (event: HookChatTabStartedEvent) => void;
   handleSessionImported: (event: ChatSessionImportedEvent) => void;
   /** Update a chat tab's haiku-generated description. */
@@ -1107,6 +1109,15 @@ export interface ChatApprovalsSlice {
   respondToApproval: (
     requestId: string,
     decision: ApprovalPromptDecision,
+  ) => Promise<void>;
+  /**
+   * Allow a secret-input approval. The secret goes straight to main's
+   * dedicated channel and is never kept in the store.
+   */
+  respondToSecretApproval: (
+    requestId: string,
+    bindingId: string,
+    secret: string,
   ) => Promise<void>;
   /** Deny once. */
   dismissApproval: (requestId: string) => Promise<void>;

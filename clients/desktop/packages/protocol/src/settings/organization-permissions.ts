@@ -126,6 +126,7 @@ export function assertNotLastOwner(params: {
 
 /** What decides which organization Settings pages a viewer gets. */
 export interface OrganizationSettingsSubtabAccess {
+  readonly aiGatewayEnabled?: boolean;
   readonly viewerRole: OrganizationRole;
   /** The organization lost its `teams` capability (CAN-2311). */
   readonly lapsed: boolean;
@@ -148,7 +149,7 @@ export interface OrganizationSettingsSubtabAccess {
 
 /**
  * The organization Settings pages (General, Policies, Integrations, Usage,
- * Billing) the viewer can open, in rail order. Each page shows only when at
+ * AI gateway, Billing) the viewer can open, in rail order. Each page shows only when at
  * least one of its sections renders for this viewer, so neither the settings
  * rail nor the page offers an empty page. The page and the rail share this
  * one rule; the server stays the enforcement boundary.
@@ -177,6 +178,17 @@ export function visibleOrganizationSettingsSubtabs(
     access.canViewUsageStats
   )
     visible.push('usage');
+  if (healthy && canAccessAiGatewaySettings(access)) visible.push('ai-gateway');
   if (access.billingEnabled && canEdit) visible.push('billing');
   return visible;
+}
+
+/** Owners and admins manage the AI gateway page while setup is on. */
+export function canAccessAiGatewaySettings(
+  access: Pick<
+    OrganizationSettingsSubtabAccess,
+    'aiGatewayEnabled' | 'viewerRole'
+  >,
+): boolean {
+  return access.aiGatewayEnabled === true && canEditOrg(access.viewerRole);
 }

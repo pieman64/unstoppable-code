@@ -28,6 +28,7 @@ export * from './runtime/worker-executor-receipts';
 export type * from './platform/platform-services';
 export type * from './platform/startup-claim';
 export type * from './platform/secret-protection';
+export type { BrandReleaseFlavor } from '@canopy/protocol/brand';
 export * from './platform/trash-error';
 export * from './power/wake-lock-policy';
 export * from './execution';

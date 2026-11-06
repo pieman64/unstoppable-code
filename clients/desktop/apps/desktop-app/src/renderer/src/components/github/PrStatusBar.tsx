@@ -117,7 +117,8 @@ import {
   PickerMenuOptionTrailing,
   PickerMenuSearchHeader,
   PickerMenuSearchInput,
-  PickerMenuSkeleton,
+  PickerMenuSampleOptions,
+  Skeleton,
   PickerMenuState,
 } from '@canopy/ui-shared';
 import {
@@ -635,7 +636,9 @@ function BaseBranchDropdownPortal({
         aria-label="Base branch options"
       >
         {loading ? (
-          <PickerMenuSkeleton rows={4} label="Loading branches" />
+          <Skeleton loading label="Loading branches">
+            <PickerMenuSampleOptions rows={4} />
+          </Skeleton>
         ) : filtered.length === 0 ? (
           <PickerMenuState>No branches found</PickerMenuState>
         ) : (

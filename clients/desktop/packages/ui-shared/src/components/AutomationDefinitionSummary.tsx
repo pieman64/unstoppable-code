@@ -284,7 +284,7 @@ export function AutomationDefinitionSummary({
         <Heading level={2} variant="title">
           What it does
         </Heading>
-        <div className="mt-2 rounded-xl border bg-card p-4 text-sm">
+        <div className="mt-2 rounded-xl border bg-card p-4 text-s">
           <p className="font-medium">{actionLabel(action)}</p>
           <div className="mt-1">
             <AutomationTargetRequirementLine
@@ -306,7 +306,7 @@ export function AutomationDefinitionSummary({
             </p>
           )}
           {prompt !== null && (
-            <pre className="mt-3 whitespace-pre-wrap break-words font-sans text-sm">
+            <pre className="mt-3 whitespace-pre-wrap break-words font-sans text-s">
               {prompt || 'No prompt text.'}
             </pre>
           )}
@@ -318,7 +318,7 @@ export function AutomationDefinitionSummary({
           <Heading level={2} variant="title">
             What it needs
           </Heading>
-          <div className="mt-2 space-y-3 rounded-xl border bg-card p-4 text-sm">
+          <div className="mt-2 space-y-3 rounded-xl border bg-card p-4 text-s">
             {plugins.length > 0 && (
               <div>
                 <p className="text-xs font-medium fg-secondary">Plugins</p>

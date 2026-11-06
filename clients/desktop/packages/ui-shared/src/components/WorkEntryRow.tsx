@@ -1252,8 +1252,6 @@ export interface WorkEntryRowMenuItemsProps {
   notifications?: SpaceNotificationMenuState;
   /** Saves a notification choice; `null` clears the override. Keeps the menu open. */
   onNotificationChoice?: (choice: SpaceNotificationMenuChoice) => void;
-  /** `submenu` (early access) folds the choices into "Notifications ›". */
-  notificationsPresentation?: 'group' | 'submenu';
   /** Shows Archive. */
   onArchive?: () => void;
   /** Hover explanation for Archive. */
@@ -1294,7 +1292,6 @@ export function WorkEntryRowMenuItems({
   onShare,
   notifications,
   onNotificationChoice,
-  notificationsPresentation = 'group',
   onArchive,
   archiveTitle,
   onDelete,
@@ -1370,8 +1367,6 @@ export function WorkEntryRowMenuItems({
           state={notifications}
           onSelect={onNotificationChoice}
           testIdFor={menu.testIdFor}
-          presentation={notificationsPresentation}
-          separatorBefore={hasActionRows}
         />
       )}
       {beforeRemoval}

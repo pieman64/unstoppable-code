@@ -57,6 +57,10 @@ import type {
   PluginInfo,
 } from '@canopy/desktop-shared/types/plugins';
 import { probeMcpHttpOAuthRequirement } from '../mcp/oauth-probe';
+import {
+  pluginMcpOAuthProbeInputs,
+  standaloneMcpOAuthProbeInputs,
+} from '../mcp/oauth-probe-inputs';
 import { getMcpOAuthAuthStatusForDefinition } from '../mcp/oauth-token-store';
 import { readPreferencesFile } from '../lib/preferences-store';
 import { loadMarketplaces } from './plugin-service';
@@ -313,14 +317,6 @@ async function buildStandaloneEntry(
     };
   }
 
-  const headers: Record<string, string> = {
-    ...(definition.headers ?? {}),
-    ...config.extraHeaders,
-  };
-  if (config.authToken) {
-    headers.Authorization = `Bearer ${config.authToken}`;
-  }
-
   if (definition.type === 'http' && config.authToken) {
     return {
       ...withHandler,
@@ -329,18 +325,18 @@ async function buildStandaloneEntry(
     };
   }
 
-  const httpUrl =
-    definition.type === 'http' && typeof definition.url === 'string'
-      ? definition.url
-      : undefined;
-  const probe =
-    httpUrl && !definition.oauth
-      ? await probeMcpHttpOAuthRequirementForInventory(httpUrl, headers, {
+  const probeInputs = standaloneMcpOAuthProbeInputs(definition, config);
+  const probe = probeInputs
+    ? await probeMcpHttpOAuthRequirementForInventory(
+        probeInputs.url,
+        probeInputs.headers,
+        {
           source: ref.source,
           serverId: definition.id,
           configId: config.id,
-        })
-      : null;
+        },
+      )
+    : null;
   const auth = await getMcpOAuthAuthStatusForDefinition(definition, config);
   const requiresOAuth =
     definition.oauth ||
@@ -369,6 +365,9 @@ async function buildStandaloneEntry(
   return {
     ...withHandler,
     authStatusLabel: probe?.requirement === 'none' ? 'No auth' : 'Not checked',
+    ...(probeInputs && config.enabled && probe?.requirement !== 'none'
+      ? { canConnect: true, connectLabel: 'Connect' as const }
+      : {}),
   };
 }
 
@@ -613,19 +612,19 @@ async function buildPluginEntry(
     rawValue,
     oauthLike,
   );
-  const probe =
-    !authManaged && !oauthLike && authProbeServer && httpUrl
-      ? await probeMcpHttpOAuthRequirementForInventory(
-          httpUrl,
-          authProbeServer.headers,
-          {
-            source: 'plugin',
-            marketplaceId,
-            pluginName: plugin.name,
-            serverName,
-          },
-        )
-      : null;
+  const probeInputs = pluginMcpOAuthProbeInputs(identity, rawValue);
+  const probe = probeInputs
+    ? await probeMcpHttpOAuthRequirementForInventory(
+        probeInputs.url,
+        probeInputs.headers,
+        {
+          source: 'plugin',
+          marketplaceId,
+          pluginName: plugin.name,
+          serverName,
+        },
+      )
+    : null;
   const auth =
     authProbeServer && (!authManaged || oauthLike)
       ? await getMcpOAuthAuthStatusForDefinition(
@@ -678,6 +677,9 @@ async function buildPluginEntry(
   return {
     ...withHandler,
     authStatusLabel: probe?.requirement === 'none' ? 'No auth' : 'Not checked',
+    ...(probeInputs && probe?.requirement !== 'none'
+      ? { canConnect: true, connectLabel: 'Connect' as const }
+      : {}),
   };
 }
 

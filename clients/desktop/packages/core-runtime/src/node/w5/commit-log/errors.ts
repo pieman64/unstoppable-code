@@ -21,6 +21,7 @@ export class W5CommitLogError extends Error {
  * and receipts unchanged.
  */
 export type W5CommitRefusal =
+  | 'identity-conflict'
   /** A checked revision moved since the caller read it. */
   | 'revision-conflict'
   /** The idempotency key was already used with different parameters. */

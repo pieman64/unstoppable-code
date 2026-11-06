@@ -26,6 +26,11 @@ import {
   CoreChatSnapshotGetResultSchema,
 } from './snapshot';
 import {
+  CoreChatLocateErrorSchema,
+  CoreChatLocateParamsSchema,
+  CoreChatLocateResultSchema,
+} from './locate';
+import {
   CoreChatArchiveParamsSchema,
   CoreChatCreateParamsSchema,
   CoreChatDeleteParamsSchema,
@@ -158,6 +163,17 @@ export const CORE_CHAT_QUERY_DEFINITIONS = defineCanopyQueryRegistry('core', {
     params: CoreChatListParamsSchema,
     result: CoreChatListResultSchema,
     error: CoreChatListErrorSchema,
+  }),
+  'core.chat.locate': defineCanopyQuery({
+    plane: 'core',
+    domain: 'chat',
+    version: 1,
+    placement: 'core-only',
+    idempotency: 'inherent',
+    requiredGrants: ['core.chat.read'],
+    params: CoreChatLocateParamsSchema,
+    result: CoreChatLocateResultSchema,
+    error: CoreChatLocateErrorSchema,
   }),
   'core.chat.transcript.page': defineCanopyQuery({
     plane: 'core',

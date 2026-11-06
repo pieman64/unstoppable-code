@@ -332,7 +332,9 @@ function PluginsDiscoverySectionView({
       {section.title !== '' &&
         (nested ? (
           <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-            <h3 className="text-s font-medium">{headingContent}</h3>
+            <Heading level={3} variant="title">
+              {headingContent}
+            </Heading>
             {section.headerActions}
           </div>
         ) : section.headerActions ? (

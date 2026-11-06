@@ -33,3 +33,12 @@ export const CODE_GRAPH_RUNTIME_ROOTS = Object.freeze([
   'resources/code-graph',
   ...CODE_GRAPH_RUNTIME_MODULES.map((name) => `node_modules/${name}`),
 ]);
+
+/** Inert vault payload beside every daemon; delivery does not enable a key slot. */
+export const DAEMON_SECRET_PROTECTION_FILE = 'core-secret-protection.node';
+export const DAEMON_SECRET_PROTECTION_RECEIPT =
+  'core-secret-protection.node.payload.json';
+export const DAEMON_SECRET_PROTECTION_MEMBERS = Object.freeze([
+  DAEMON_SECRET_PROTECTION_FILE,
+  DAEMON_SECRET_PROTECTION_RECEIPT,
+]);

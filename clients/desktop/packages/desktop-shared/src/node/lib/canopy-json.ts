@@ -273,7 +273,7 @@ function getConfigFileLabel(context: string): string {
   return parsed || BRAND.storage.configFileNames[0] || 'project config file';
 }
 
-function parseCanopyJson(raw: string, context: string): CanopyJsonFile {
+export function parseCanopyJson(raw: string, context: string): CanopyJsonFile {
   try {
     const parsed: unknown = JSON.parse(raw);
     return validateCanopyJson(parsed, context);

@@ -18,6 +18,13 @@ import { getW5IdentityStore } from './w5-commit-log-file-store';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { W5CommitOptions } from './w5-commit-log-file-store';
 import { commitW5BoundaryStep } from './w5-composition-operation';
+import { isW5CaptureWorkspaceId } from '../w5-commit-log/commit-log-worker-contract';
+import type { W5ReservationInput } from '@canopy/core-runtime/node/w5/commit-log-file-store';
+
+export interface WorkspaceCreationReservationOptions {
+  releaseBeforeEffects?: boolean;
+  expectedWorkspaceRecords?: W5ReservationInput['expectedWorkspaceRecords'];
+}
 
 interface CreationCommitContext {
   options: W5CommitOptions;
@@ -169,7 +176,7 @@ export interface WorkspaceCreationReservation {
 export async function reserveWorkspaceCreation(
   workspaceId: string,
   ownedPaths: string[],
-  options?: { releaseBeforeEffects: boolean },
+  options?: WorkspaceCreationReservationOptions,
 ): Promise<WorkspaceCreationReservation> {
   validateId(workspaceId, 'workspaceId');
   const store = getW5IdentityStore();
@@ -188,6 +195,11 @@ export async function reserveWorkspaceCreation(
     phase: 'before-canonical-commit',
   };
   await store.reserve({
+    // Legacy desktop IDs have a wider vocabulary than daemon capture selectors.
+    ...(isW5CaptureWorkspaceId(workspaceId) && {
+      workspaceIdentity: workspaceId,
+      expectedWorkspaceRecords: options?.expectedWorkspaceRecords,
+    }),
     reservationId,
     operation: parent?.active
       ? parent.options.operation
@@ -248,7 +260,7 @@ export async function withLocalWorkspaceCreation<T>(
   workspaceId: string,
   ownedPaths: string[],
   work: () => Promise<T>,
-  options?: { releaseBeforeEffects: boolean },
+  options?: WorkspaceCreationReservationOptions,
 ): Promise<T> {
   const reservation = await reserveWorkspaceCreation(
     workspaceId,

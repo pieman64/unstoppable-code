@@ -97,14 +97,7 @@ import { isModelBlockedByStoredPolicy } from '../../lib/model-policy-state';
 import { resolveHelperInvocation } from '../../ollama/helper-invocation';
 import { resolveCodexRuntimeEnvironmentProfile } from '../../lib/user-environment-runtime';
 import { getLoginShellPath } from '@canopy/desktop-shared/pipelines/config-paths';
-import {
-  delegationOutermostRoots,
-  delegationToolchainReadRoots,
-} from '@canopy/desktop-shared/node/delegation/command-environment';
-import {
-  getCanopyDataDir,
-  getCanopySecureDataDir,
-} from '@canopy/desktop-shared/canopy-paths';
+import { delegatedCodexCommandEnvironment } from './codex-command-environment';
 import {
   isProviderNativelyAuthenticatedForRouting,
   peekProviderAccountIdentity,
@@ -2241,78 +2234,4 @@ export class DelegationRouteRuntime {
       authGeneration: this.options.authGeneration,
     });
   }
-}
-
-/**
- * The native shell environment a delegated Codex command receives beyond the
- * validated Git executable: the captured login-shell PATH, read access to the
- * toolchains on it (at their resolved locations only, so a symlinked PATH
- * entry cannot alias a private directory, nothing inside the app's data
- * directories, and inside the home directory only PATH directories and their
- * runtime directories rather than the folder a tool manager keeps
- * credentials in), and a private writable TMPDIR removed when the run ends.
- */
-async function delegatedCodexCommandEnvironment(
-  commandPath: string,
-  context: LocalDelegationContext,
-): Promise<NonNullable<CodexDelegationPreparation['commandEnvironment']>> {
-  const created = await fs.mkdtemp(
-    path.join(os.tmpdir(), 'delegated-runtime-'),
-  );
-  context.retain(() => fs.rm(created, { recursive: true, force: true }));
-  // The sandbox compares canonical paths; macOS temp directories sit behind
-  // the /var -> /private/var link.
-  const temporaryDirectory = await fs.realpath(created);
-  // The sandbox resolves paths, so grants are derived only from resolved PATH
-  // entries; an entry that does not resolve grants nothing. PATH itself keeps
-  // every entry as captured, for executable lookup.
-  const entries = commandPath
-    .split(path.delimiter)
-    .filter((entry) => path.isAbsolute(entry));
-  const resolved = (
-    await Promise.all(
-      entries.map((entry) =>
-        fs.realpath(entry).catch((): undefined => undefined),
-      ),
-    )
-  ).filter((entry): entry is string => entry !== undefined);
-  const home = await fs
-    .realpath(os.homedir())
-    .catch((): string => os.homedir());
-  // The app's data directories stay out of reach at their real locations too.
-  const dataDirectories = [getCanopyDataDir(), getCanopySecureDataDir()];
-  const excludedRoots = [
-    ...dataDirectories,
-    ...(await Promise.all(
-      dataDirectories.map((directory) =>
-        fs.realpath(directory).catch((): string => directory),
-      ),
-    )),
-  ];
-  const candidates = delegationToolchainReadRoots(resolved, {
-    home,
-    excludedRoots,
-  });
-  // Runtime directories beside a toolchain inside home are named, not
-  // observed: grant each only where it resolves to itself, so a linked `lib`
-  // cannot alias a private directory and a missing one grants nothing.
-  const granted = (
-    await Promise.all(
-      candidates.map(async (root) => {
-        const relative = path.relative(home, root);
-        const insideHome =
-          relative !== '' &&
-          !relative.startsWith('..') &&
-          !path.isAbsolute(relative);
-        if (!insideHome) return root;
-        const real = await fs.realpath(root).catch((): undefined => undefined);
-        return real === root ? root : undefined;
-      }),
-    )
-  ).filter((root): root is string => root !== undefined);
-  return {
-    commandPath,
-    toolchainReadRoots: delegationOutermostRoots(granted),
-    temporaryDirectory,
-  };
 }

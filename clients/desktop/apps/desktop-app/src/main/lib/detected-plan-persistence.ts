@@ -1,3 +1,4 @@
+import { isUtf8 } from 'node:buffer';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type {
@@ -6,7 +7,7 @@ import type {
   DetectedPlansFile,
 } from '@canopy/desktop-shared/types';
 import { resolveDetectedPlansFilePath } from './resolve-worktree';
-import { isRecord } from './type-guards';
+import { isErrnoException, isRecord } from './type-guards';
 
 /**
  * Per-file write queue that serializes read-modify-write operations on the same
@@ -66,25 +67,33 @@ function isDetectedPlansFile(value: unknown): value is DetectedPlansFile {
   );
 }
 
-async function readDetectedPlansFile(
+function parseDetectedPlansFile(raw: string): DetectedPlansFile {
+  const parsed: unknown = JSON.parse(raw);
+  if (!isDetectedPlansFile(parsed)) {
+    throw new Error('Invalid or unsupported detected-plan state');
+  }
+  return parsed;
+}
+
+async function readDetectedPlansFileForMutation(
   projectId: string,
   worktreeId: string,
 ): Promise<DetectedPlansFile> {
+  const filePath = resolveDetectedPlansFilePath(projectId, worktreeId);
+  let raw: Buffer;
   try {
-    const filePath = resolveDetectedPlansFilePath(projectId, worktreeId);
-    const raw = await readFile(filePath, 'utf8');
-    const parsed: unknown = JSON.parse(raw);
-    if (isDetectedPlansFile(parsed)) {
-      return parsed;
+    raw = await readFile(filePath);
+  } catch (error) {
+    if (isErrnoException(error) && error.code === 'ENOENT') {
+      return { version: 1, entries: [] };
     }
-  } catch {
-    // Use empty state when missing or invalid.
+    throw error;
   }
 
-  return {
-    version: 1,
-    entries: [],
-  };
+  if (!isUtf8(raw)) {
+    throw new Error('Invalid UTF-8 detected-plan state');
+  }
+  return parseDetectedPlansFile(raw.toString('utf8'));
 }
 
 async function writeDetectedPlansFile(
@@ -106,8 +115,17 @@ export async function readDetectedPlans(
   projectId: string,
   worktreeId: string,
 ): Promise<DetectedPlanEntry[]> {
-  const file = await readDetectedPlansFile(projectId, worktreeId);
-  return file.entries;
+  try {
+    const raw = await readFile(
+      resolveDetectedPlansFilePath(projectId, worktreeId),
+      'utf8',
+    );
+    const file = parseDetectedPlansFile(raw);
+    return file.entries;
+  } catch {
+    // Display fallback must never become the basis for a mutation.
+    return [];
+  }
 }
 
 /**
@@ -121,7 +139,7 @@ export async function appendDetectedPlans(
 ): Promise<DetectedPlanEntry[]> {
   const filePath = resolveDetectedPlansFilePath(projectId, worktreeId);
   return withFileLock(filePath, async () => {
-    const file = await readDetectedPlansFile(projectId, worktreeId);
+    const file = await readDetectedPlansFileForMutation(projectId, worktreeId);
 
     const existingKeys = new Set(
       file.entries.map((e) => `${e.sourceRepoId}::${e.sourceFilePath}`),
@@ -154,7 +172,7 @@ export async function updateDetectedPlan(
 ): Promise<DetectedPlanEntry[]> {
   const filePath = resolveDetectedPlansFilePath(projectId, worktreeId);
   return withFileLock(filePath, async () => {
-    const file = await readDetectedPlansFile(projectId, worktreeId);
+    const file = await readDetectedPlansFileForMutation(projectId, worktreeId);
 
     const next: DetectedPlansFile = {
       version: 1,
@@ -192,7 +210,7 @@ export async function markBannerSeenForChat(
 ): Promise<DetectedPlanEntry[]> {
   const filePath = resolveDetectedPlansFilePath(projectId, worktreeId);
   return withFileLock(filePath, async () => {
-    const file = await readDetectedPlansFile(projectId, worktreeId);
+    const file = await readDetectedPlansFileForMutation(projectId, worktreeId);
 
     const next: DetectedPlansFile = {
       version: 1,
@@ -221,5 +239,8 @@ export async function deleteDetectedPlansForWorktree(
   worktreeId: string,
 ): Promise<void> {
   const filePath = resolveDetectedPlansFilePath(projectId, worktreeId);
-  await rm(filePath, { force: true });
+  await withFileLock(filePath, async () => {
+    await readDetectedPlansFileForMutation(projectId, worktreeId);
+    await rm(filePath, { force: true });
+  });
 }

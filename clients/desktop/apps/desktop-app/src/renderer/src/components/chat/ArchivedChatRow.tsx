@@ -87,7 +87,7 @@ export function ArchivedChatRow({
           onOpen();
         }
       }}
-      className="group flex w-full cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-left text-sm fg-secondary transition-colors hover:bg-fg-primary/[0.04] focus:outline-none focus-visible:ring-1 focus-visible:ring-line-focus"
+      className="group flex w-full cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-left text-s fg-secondary transition-colors hover:bg-fg-primary/[0.04] focus:outline-none focus-visible:ring-1 focus-visible:ring-line-focus"
     >
       <span
         data-unread={summary.unread ? 'true' : undefined}

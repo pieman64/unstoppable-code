@@ -23,15 +23,12 @@ import { replaceModelFamilyMetadata } from '@canopy/desktop-shared/model-config'
 import {
   initializeDesktopInstrumentationClient,
   disposePostHogInstrumentationClient,
-  setClientInstrumentationUser,
 } from '@canopy/desktop-instrumentation/client';
 import {
   CLIENT_FEATURE_FLAGS,
   type FeatureFlagSnapshot,
 } from '@canopy/protocol/feature-flags';
-import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import { createPostHogRouteSource } from '@/lib/instrumentation/posthog-route-source';
-import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
 import { useModelCatalogStore } from '@/stores/modelCatalogStore';
 import { isChatTabInScopingContext } from '@/lib/contextScope';
 import { brand } from '@/lib/brand';
@@ -113,11 +110,12 @@ export function startRenderer(
 
   import.meta.hot?.dispose(disposeChatEnrichmentModes);
   import.meta.hot?.dispose(disposeMarkdownMathPreference);
+  // Instrumentation never gates the first mount.
+  initializeInstrumentation(surface);
   void Promise.all([
-    initializeInstrumentationBeforeRender(surface).catch(() => false),
     initializeChatEnrichmentModes(),
     initializeMarkdownMathPreference(),
-  ]).then(([instrumentationEnabled]) => {
+  ]).then(() => {
     const root = createRoot(rootElement);
     import.meta.hot?.dispose(() => root.unmount());
     root.render(
@@ -151,14 +149,8 @@ export function startRenderer(
         </CanopyClientProvider>
       </RootErrorBoundary>,
     );
-
-    if (instrumentationEnabled) {
-      setRendererInstrumentationUserBestEffort();
-    }
   });
 }
-
-let disposeRendererInstrumentationAccountSync: (() => void) | null = null;
 
 function hydrateModelRegistries(): void {
   // Hydrate model registries from preload-injected data before
@@ -220,8 +212,6 @@ function installRendererRuntime(): void {
     uninstallRendererErrorLogging();
     disposeClaudeTerminalSubscriptions();
     disposeTerminalActivitySubscriptions();
-    disposeRendererInstrumentationAccountSync?.();
-    disposeRendererInstrumentationAccountSync = null;
     disposePostHogInstrumentationClient();
   });
 }
@@ -243,91 +233,53 @@ function postHogFlagsFromSnapshot(snapshot: FeatureFlagSnapshot): {
   };
 }
 
-function initializeInstrumentationBeforeRender(
-  surface: RendererSurface,
-): Promise<boolean> {
-  return new Promise((resolve) => {
-    void initializeDesktopInstrumentationClient({
-      surface,
-      posthogFlags: {
-        getSnapshot: async () =>
-          postHogFlagsFromSnapshot(await window.api.featureFlags.getSnapshot()),
-        onSnapshotChanged: (listener) =>
-          window.api.featureFlags.onSnapshotChanged((snapshot) =>
-            listener(postHogFlagsFromSnapshot(snapshot)),
-          ),
-      },
-      getPostHogAnonymousId: () =>
-        window.api.observability.getPostHogAnonymousId(),
-      posthogAccount: {
-        getSnapshot: () => window.api.observability.getPostHogEmailDomain(),
-        onSnapshotChanged: (listener) =>
-          window.api.observability.onPostHogEmailDomainUpdate(listener),
-      },
-      // Both windows share this startup, so branch on the entry's
-      // surface: the App Advisor window gets a fixed
-      // `app://app-advisor` source, the main window the live projection.
-      // Construction is synchronous and touches no store, so it cannot delay
-      // first paint. SDK initialization owns subscribing and disposing this
-      // source — with instrumentation disabled it is never subscribed, so no
-      // ongoing tracking is installed.
-      // Keep the route projection out of capture-disabled production bundles.
-      // Besides avoiding subscriptions, the build-time branch lets Rollup
-      // remove the projection's store graph entirely when PostHog is off.
-      posthogRoutes: __CANOPY_POSTHOG_ENABLED__
-        ? createPostHogRouteSource(surface)
-        : undefined,
-      posthogSession: {
-        get: () => window.api.observability.getPostHogSession(),
-        report: (proposal) =>
-          window.api.observability.reportPostHogSessionRotation(proposal),
-        subscribe: (callback) =>
-          window.api.observability.onPostHogSessionUpdate(callback),
-      },
-      onProviderInitialized: (result) => {
-        // Preserve the existing mount barrier; PostHog never extends it.
-        if (result.provider === 'datadog') resolve(result.enabled);
-        if (!result.enabled && result.reason && result.reason !== 'disabled') {
-          void window.api.observability
-            .recordDesktopInstrumentationInitFailure({
-              surface,
-              reason: `${result.provider}: ${result.reason}`,
-            })
-            .catch(() => undefined);
-        }
-      },
-    }).catch(() => resolve(false));
-  });
-}
-
-function setRendererInstrumentationUserBestEffort(): void {
-  void window.api.observability
-    .getAnonymousTelemetryId()
-    .then((anonymousId) => {
-      const syncAccountEmail = (): void => {
-        void window.api
-          .loadCanopyCloudAccount()
-          .then((account) => {
-            setClientInstrumentationUser(
-              anonymousId,
-              isGuestAccount(account) ? undefined : account?.account?.email,
-            );
+function initializeInstrumentation(surface: RendererSurface): void {
+  void initializeDesktopInstrumentationClient({
+    surface,
+    posthogFlags: {
+      getSnapshot: async () =>
+        postHogFlagsFromSnapshot(await window.api.featureFlags.getSnapshot()),
+      onSnapshotChanged: (listener) =>
+        window.api.featureFlags.onSnapshotChanged((snapshot) =>
+          listener(postHogFlagsFromSnapshot(snapshot)),
+        ),
+    },
+    getPostHogAnonymousId: () =>
+      window.api.observability.getPostHogAnonymousId(),
+    posthogAccount: {
+      getSnapshot: () => window.api.observability.getPostHogEmailDomain(),
+      onSnapshotChanged: (listener) =>
+        window.api.observability.onPostHogEmailDomainUpdate(listener),
+    },
+    // Both windows share this startup, so branch on the entry's
+    // surface: the App Advisor window gets a fixed
+    // `app://app-advisor` source, the main window the live projection.
+    // Construction is synchronous and touches no store, so it cannot delay
+    // first paint. SDK initialization owns subscribing and disposing this
+    // source — with instrumentation disabled it is never subscribed, so no
+    // ongoing tracking is installed.
+    // Keep the route projection out of capture-disabled production bundles.
+    // Besides avoiding subscriptions, the build-time branch lets Rollup
+    // remove the projection's store graph entirely when PostHog is off.
+    posthogRoutes: __CANOPY_POSTHOG_ENABLED__
+      ? createPostHogRouteSource(surface)
+      : undefined,
+    posthogSession: {
+      get: () => window.api.observability.getPostHogSession(),
+      report: (proposal) =>
+        window.api.observability.reportPostHogSessionRotation(proposal),
+      subscribe: (callback) =>
+        window.api.observability.onPostHogSessionUpdate(callback),
+    },
+    onProviderInitialized: (result) => {
+      if (!result.enabled && result.reason && result.reason !== 'disabled') {
+        void window.api.observability
+          .recordDesktopInstrumentationInitFailure({
+            surface,
+            reason: `${result.provider}: ${result.reason}`,
           })
-          .catch(() => {
-            setClientInstrumentationUser(anonymousId);
-          });
-      };
-      window.addEventListener(
-        CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT,
-        syncAccountEmail,
-      );
-      disposeRendererInstrumentationAccountSync = (): void => {
-        window.removeEventListener(
-          CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT,
-          syncAccountEmail,
-        );
-      };
-      syncAccountEmail();
-    })
-    .catch(() => undefined);
+          .catch(() => undefined);
+      }
+    },
+  }).catch(() => undefined);
 }

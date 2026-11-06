@@ -1,3 +1,4 @@
+import type { CanopyRetryDirective } from '@canopy/protocol/canopy-core';
 import { mkdir, readFile, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { W5Resource } from './commit-log';
@@ -59,6 +60,24 @@ export class W5RecordUnservedError extends Error {
       Object.defineProperty(this, 'cause', {
         value: cause,
         writable: true,
+        configurable: true,
+      });
+  }
+}
+
+/** A live authority refused an unsent call; not an edit conflict or authority loss. */
+export class W5RecordOverloadedError extends Error {
+  declare readonly cause?: unknown;
+  constructor(
+    readonly kind: 'resource_exhausted' | 'unavailable',
+    readonly retry: CanopyRetryDirective,
+    cause?: unknown,
+  ) {
+    super('Project records are busy. Try again shortly.');
+    this.name = 'W5RecordOverloadedError';
+    if (cause !== undefined)
+      Object.defineProperty(this, 'cause', {
+        value: cause,
         configurable: true,
       });
   }
@@ -167,12 +186,14 @@ export function w5UnreadableMessage(
 
 /**
  * The named reason a record read was unreadable, carried as `unserved` so
- * refusals use its message: a class the record port can't serve (CAN-5531)
- * or an authority it couldn't reach (CAN-5542). A read-only surface takes
- * its copy from {@link w5UnreadableMessage} with `'read'`, never `message`.
+ * refusals use its message: a class the record port can't serve (CAN-5531),
+ * an authority it couldn't reach (CAN-5542), or a live overload (CAN-5577).
+ * A read-only surface takes its copy from {@link w5UnreadableMessage} with
+ * `'read'`, never `message`.
  */
 export type W5NamedUnreadableError =
   | W5RecordUnservedError
+  | W5RecordOverloadedError
   | W5AuthorityUnreachableError;
 
 /** `error` when it names why its read was unreadable. */
@@ -180,6 +201,7 @@ export function w5NamedUnreadable(
   error: unknown,
 ): W5NamedUnreadableError | undefined {
   return error instanceof W5RecordUnservedError ||
+    error instanceof W5RecordOverloadedError ||
     error instanceof W5AuthorityUnreachableError
     ? error
     : undefined;

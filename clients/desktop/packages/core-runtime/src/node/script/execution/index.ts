@@ -44,6 +44,9 @@ export {
   type ScriptRunLogPaths,
   type ScriptRunLogRef,
   type ScriptRunLogSnapshotResult,
+  type ScriptRunWriter,
+  type ScriptRunWriterFence,
+  type ScriptRunWriterState,
 } from './script-run-log';
 export {
   buildScriptShellCommand,
@@ -66,3 +69,4 @@ export {
   type ScriptExecutionWorkerHost,
   type WorkerScriptHandlers,
 } from './worker-scripts';
+export { scriptRunFileStem } from '../run-log-stem';

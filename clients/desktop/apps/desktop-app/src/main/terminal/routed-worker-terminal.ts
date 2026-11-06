@@ -80,7 +80,7 @@ export class RoutedWorkerTerminal implements WorkerTerminalPort {
   }
 
   public attach(request: TerminalAttachmentRequest): TerminalAttachment {
-    // No in-process client opens attachments to daemon terminals yet (CAN-4148).
+    // No in-process client opens attachments to daemon terminals; windows read replay and the event sink (CAN-4148 D13). CAN-5092 ends main's mirror.
     if (this.inDaemon(request.terminalId))
       throw new Error(`Terminal not found: ${request.terminalId}`);
     return this.engine.attach(request);

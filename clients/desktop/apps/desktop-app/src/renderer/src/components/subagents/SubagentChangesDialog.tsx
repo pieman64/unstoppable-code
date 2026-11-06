@@ -43,7 +43,7 @@ function ChangedFiles({
   return (
     <div className="flex min-h-0 flex-col gap-3 px-6 py-4">
       {changes.files.length === 0 ? (
-        <p className="text-sm fg-secondary">
+        <p className="text-s fg-secondary">
           {DELEGATED_AGENT_NO_CHANGES_LABEL}
         </p>
       ) : (
@@ -137,7 +137,7 @@ export function SubagentChangesDialog({
       dataTestId="subagent-changes-dialog"
     >
       {state.status === 'loading' ? (
-        <p className="px-6 py-4 text-sm fg-secondary" role="status">
+        <p className="px-6 py-4 text-s fg-secondary" role="status">
           {DELEGATED_AGENT_LOADING_CHANGES_LABEL}
         </p>
       ) : state.status === 'failed' ? (

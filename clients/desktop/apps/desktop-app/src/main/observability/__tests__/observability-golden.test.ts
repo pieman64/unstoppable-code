@@ -113,12 +113,6 @@ jest.mock('../../account-proxy/service', () => ({
   publishAccountProxyStatus: (): Promise<void> => Promise.resolve(),
   onAccountProxyInventoryChanged: (): (() => void) => (): void => undefined,
 }));
-jest.mock('../../memory/local/citation-tracking', () => ({
-  isLocalMemoryCitationTrackingEnabled: (): Promise<boolean> =>
-    Promise.resolve(false),
-  trackCompletedTurnLocalMemoryCitations: (): Promise<void> =>
-    Promise.resolve(),
-}));
 jest.mock('../../openai-pricing/pricing-client', () => ({
   getOpenAiPricingForCostingSync: (): OpenAiPricingCacheState => mockPricing,
   getOpenAiPricingForCosting: (): Promise<OpenAiPricingCacheState> =>

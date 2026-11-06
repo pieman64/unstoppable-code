@@ -1,3 +1,4 @@
+import { Heading } from '@canopy/ui-shared/components';
 import type { JSX } from 'react';
 import type { SharedContainerPublicationState } from '@canopy/desktop-shared/types';
 import type {
@@ -107,9 +108,9 @@ export function PeopleWithAccessSection({
         />
       )}
       <div className="flex min-w-0 items-center justify-between gap-3">
-        <h3 className="text-s font-medium fg-primary">
+        <Heading level={3} variant="title">
           {PEOPLE_WITH_ACCESS_LABEL}
-        </h3>
+        </Heading>
         {recipients.containerId && (
           <SharePublishStatus
             publicationState={publicationState}

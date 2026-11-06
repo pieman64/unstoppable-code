@@ -1,6 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { ErrorBanner, Heading } from '@canopy/ui-shared/components';
 import { brandText } from '@/lib/brand';
+import { captureClientInstrumentationError } from '@canopy/desktop-instrumentation/client';
 import { reportRendererConsoleError } from '@/lib/renderer-error-logging';
 import { Button } from '@/components/shared/Button';
 
@@ -26,6 +27,9 @@ export class RootErrorBoundary extends Component<
   }
 
   override componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
+    captureClientInstrumentationError(error, {
+      context: { boundary: 'root' },
+    });
     reportRendererConsoleError(
       'Top-level renderer error boundary caught an error',
       {

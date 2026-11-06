@@ -101,6 +101,7 @@ import {
   DelayedLoadingPlaceholder,
 } from '@canopy/ui-shared/components';
 import { ToastContainer } from './components/shared/ToastContainer';
+import { ScriptFailureOutputModal } from './components/activity/ScriptFailureOutputModal';
 import { OverlayLayerSlot } from './components/overlay-layer/OverlayLayerSlot';
 import { installAboveBrowserMirror } from './components/above-browser/aboveBrowserMirror';
 import {
@@ -2395,6 +2396,7 @@ function App(): JSX.Element {
         >
           <ToastContainer placement={inAppNotificationPlacement} />
         </OverlayLayerSlot>
+        <ScriptFailureOutputModal />
       </div>
       {/*
         Persistent titlebar corner: the ONE sidebar toggle, at constant window

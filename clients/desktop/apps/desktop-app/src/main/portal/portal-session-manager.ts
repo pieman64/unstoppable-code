@@ -1950,7 +1950,7 @@ async function handleInactiveSessionResponse(): Promise<
 /**
  * Minimal structural subset of Electron's `powerMonitor`, so this module keeps
  * no direct `electron` runtime import and stays unit-testable with an injected
- * stub. Mirrors the pattern in `lib/instrumentation-keepalive.ts`.
+ * stub.
  */
 export interface PortalPowerMonitor {
   on(event: 'resume', listener: () => void): void;

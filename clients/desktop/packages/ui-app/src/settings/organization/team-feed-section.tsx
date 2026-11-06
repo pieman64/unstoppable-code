@@ -579,6 +579,7 @@ export function TeamFeedSection({
             <Button
               variant="secondary"
               size="compact"
+              pressedHover
               onClick={toggleLive}
               data-testid="team-feed-live-toggle"
               aria-pressed={live}

@@ -66,12 +66,13 @@ function createDefaultDirectoryReadPreferences(): DirectoryReadPreferences {
 }
 
 /**
- * Mirrors desktop `normalizeParsedPreferencesFile`: the envelope decides the
- * selected file; fields inside it only normalize, never fall through.
+ * The `preferences` record of a desktop preferences file, or null when the
+ * envelope is unusable (not JSON, not version 1, no `preferences` record).
+ * Fields inside are not checked; each reader normalizes its own.
  */
-function selectPreferencesEnvelope(
+export function readDesktopPreferencesRecord(
   raw: string,
-): DirectoryReadPreferences | null {
+): Record<string, unknown> | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -85,7 +86,21 @@ function selectPreferencesEnvelope(
   ) {
     return null;
   }
-  const { fileIndexing, gitExecutablePath } = parsed.preferences;
+  return parsed.preferences;
+}
+
+/**
+ * Mirrors desktop `normalizeParsedPreferencesFile`: the envelope decides the
+ * selected file; fields inside it only normalize, never fall through.
+ */
+function selectPreferencesEnvelope(
+  raw: string,
+): DirectoryReadPreferences | null {
+  const preferences = readDesktopPreferencesRecord(raw);
+  if (!preferences) {
+    return null;
+  }
+  const { fileIndexing, gitExecutablePath } = preferences;
   return {
     fileIndexing: normalizeFileIndexingPreferences(fileIndexing),
     gitExecutablePath:

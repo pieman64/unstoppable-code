@@ -144,7 +144,7 @@ export function runScriptProcess(
     const chunks: Buffer[] = [];
     let totalBytes = 0;
 
-    let lineBuf = '';
+    const lineBuffers = { stdout: '', stderr: '' };
     let pendingLines: string[] = [];
     let flushTimer: NodeJS.Timeout | undefined;
 
@@ -160,9 +160,11 @@ export function runScriptProcess(
     };
 
     const flushBufferedOutput = (): void => {
-      if (options.onChunk && lineBuf.length > 0) {
-        pendingLines.push(lineBuf);
-        lineBuf = '';
+      for (const stream of ['stdout', 'stderr'] as const) {
+        if (options.onChunk && lineBuffers[stream].length > 0) {
+          pendingLines.push(lineBuffers[stream]);
+          lineBuffers[stream] = '';
+        }
       }
       flushPendingLines();
     };
@@ -242,13 +244,16 @@ export function runScriptProcess(
       totalBytes += slice.length;
     };
 
-    const emitLines = (chunk: Buffer): void => {
+    const emitLines = (chunk: Buffer, stream: 'stdout' | 'stderr'): void => {
       if (!options.onChunk) return;
-      lineBuf += chunk.toString('utf8');
-      const parts = lineBuf.split(/\r?\n/);
+      // A partial line belongs to its pipe; interleaved stderr must never
+      // complete an unfinished stdout line (or the reverse).
+      const parts = (lineBuffers[stream] + chunk.toString('utf8')).split(
+        /\r?\n/,
+      );
       // The last element is the incomplete line (or empty string if the
       // chunk ended with a recognized newline).
-      lineBuf = parts.pop() ?? '';
+      lineBuffers[stream] = parts.pop() ?? '';
       if (parts.length === 0) return;
 
       pendingLines.push(...parts);
@@ -276,7 +281,7 @@ export function runScriptProcess(
       (chunk: Buffer): void => {
         collectChunk(chunk);
         options.onData?.(chunk, stream);
-        emitLines(chunk);
+        emitLines(chunk, stream);
       };
 
     let aborted = false;

@@ -1,4 +1,8 @@
 import type { BrowserWindow } from 'electron';
+import type {
+  SummaryGenerationResult,
+  SummaryMode,
+} from '@canopy/core-runtime/node/summary';
 import { randomUUID } from 'node:crypto';
 import { readdir, stat } from 'node:fs/promises';
 import { join, relative } from 'node:path';
@@ -48,16 +52,15 @@ import { readPreferencesFile } from '../lib/preferences-store';
 import { getObservabilityService } from '../observability';
 import type { HelperUsage } from '../agents/utils';
 import { sendToAllWindows } from './window-send';
+import { logMainProcessWarn } from './main-process-logging';
+import { getActiveDesktopRuntimeIfAccepting } from '../canopy-runtime/desktop-runtime';
 import { withResolvedHelperPlugins } from './helper-plugin-resolution';
-import { isE2eBuild } from './e2e-gate';
 import { buildStandaloneChatLinkTarget } from './standalone-link-target';
 import {
   BACKGROUND_HELPER_PRIORITIES,
   enqueueBackgroundHelperTask,
 } from './background-helper-queue';
-import { hasActiveChatTurnsForWorktree } from '../agents/session-manager';
 import {
-  DESKTOP_SUMMARY_PUBLICATION_HOST,
   isSummaryScopePublishable,
   reportAbortedSummaryWrite,
   reportDroppedSummarySnapshots,
@@ -66,20 +69,25 @@ import {
   reportStrippedSummaryProvenance,
 } from '../ledger/summary-publication';
 import { publishPendingSummarySnapshots } from '../ledger/summary-reconciliation';
+import type { WorktreeSummaryResult } from './worktree-summary-generator';
+import {
+  applyGeneratedDisplayLabel,
+  readWorktreeDisplayLabelContext,
+} from './worktree-display-label';
 
-const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
-/** With the Ledger on: when the scope's current wait for generation began. */
-const firstDeferredAt = new Map<string, number>();
-const inFlight = new Set<string>();
-const pendingRefreshMode = new Map<string, 'incremental' | 'full'>();
-const canceled = new Set<string>();
-const cancellationEpochs = new Map<string, number>();
+const NO_WINDOW = (): BrowserWindow | null => null;
 
 export function isWorktreeSummaryGenerating(
   projectId: string,
   worktreeId: string,
 ): boolean {
-  return inFlight.has(summaryKey(projectId, worktreeId));
+  const runtime = getActiveDesktopRuntimeIfAccepting();
+  return (
+    runtime?.summarySchedule.isRunning({
+      workspaceId: projectId,
+      worktreeId,
+    }) ?? false
+  );
 }
 
 /**
@@ -93,16 +101,6 @@ export function isWorktreeSummaryGenerating(
 const WORKTREE_SUMMARY_MODEL_POLICY_REFUSAL =
   'Summary generation was skipped: this model is blocked by your organization policy.';
 
-const DEBOUNCE_MS = 30_000;
-/**
- * With the Ledger on, automatic generation waits for a quiet period in the
- * scope instead of `DEBOUNCE_MS`: no running turn and no newly completed one
- * (LD05). Each completed turn restarts it, and a turn running when it ends
- * defers generation.
- */
-export const LEDGER_SUMMARY_QUIET_MS = 5 * 60_000;
-/** The longest a scope waits, from its first deferred request (LD05). */
-export const LEDGER_SUMMARY_MAX_WAIT_MS = 30 * 60_000;
 const FULL_REFRESH_TURN_THRESHOLD = 10;
 const INCREMENTAL_DIFF_MAX_CHARS = 30_000;
 const FULL_DIFF_MAX_CHARS = 50_000;
@@ -121,69 +119,21 @@ export function scheduleSummaryGeneration(
   worktreeId: string,
   getWindow: () => BrowserWindow | null,
 ): void {
-  // Under the UI-automation/E2E build, never auto-schedule worktree-summary
-  // generation: it fires a debounced background LLM helper turn (30s after chat
-  // activity) that would mutate the summary panel mid-test. Build-gated, so
-  // production is unaffected.
-  if (isE2eBuild()) {
+  void getWindow;
+  const runtime = getActiveDesktopRuntimeIfAccepting();
+  if (!runtime) {
+    logMainProcessWarn(
+      '[summary-schedule] The desktop core is not accepting requests; the summary was not scheduled.',
+    );
     return;
   }
-  const key = summaryKey(projectId, worktreeId);
-  const existingTimer = debounceTimers.get(key);
-  if (existingTimer) {
-    clearTimeout(existingTimer);
-  }
-
-  canceled.delete(key);
-  if (DESKTOP_SUMMARY_PUBLICATION_HOST.isEnabled()) {
-    if (!firstDeferredAt.has(key)) firstDeferredAt.set(key, Date.now());
-    armLedgerCadence(projectId, worktreeId, getWindow, LEDGER_SUMMARY_QUIET_MS);
-    return;
-  }
-  firstDeferredAt.delete(key);
-  const timer = setTimeout(() => {
-    debounceTimers.delete(key);
-    void runSummaryGeneration(projectId, worktreeId, 'incremental', getWindow);
-  }, DEBOUNCE_MS);
-  debounceTimers.set(key, timer);
-}
-
-/**
- * Waits `delayMs`, cut short by the scope's maximum wait, then generates
- * unless a turn is running: that defers generation until its completion
- * restarts the quiet period, or until the maximum wait runs out.
- */
-function armLedgerCadence(
-  projectId: string,
-  worktreeId: string,
-  getWindow: () => BrowserWindow | null,
-  delayMs: number,
-): void {
-  const key = summaryKey(projectId, worktreeId);
-  const deadline =
-    (firstDeferredAt.get(key) ?? Date.now()) + LEDGER_SUMMARY_MAX_WAIT_MS;
-  const timer = setTimeout(
-    () => {
-      debounceTimers.delete(key);
-      const remainingMs = deadline - Date.now();
-      if (
-        remainingMs > 0 &&
-        hasActiveChatTurnsForWorktree(projectId, worktreeId)
-      ) {
-        armLedgerCadence(projectId, worktreeId, getWindow, remainingMs);
-        return;
-      }
-      firstDeferredAt.delete(key);
-      void runSummaryGeneration(
-        projectId,
-        worktreeId,
-        'incremental',
-        getWindow,
-      );
-    },
-    Math.max(0, Math.min(delayMs, deadline - Date.now())),
+  const scheduled = runtime.summarySchedule.schedule({
+    workspaceId: projectId,
+    worktreeId,
+  });
+  void scheduled.catch((error: unknown) =>
+    logMainProcessWarn('[summary-schedule] schedule failed', error),
   );
-  debounceTimers.set(key, timer);
 }
 
 export function triggerManualRefresh(
@@ -191,67 +141,64 @@ export function triggerManualRefresh(
   worktreeId: string,
   getWindow: () => BrowserWindow | null,
 ): void {
-  const key = summaryKey(projectId, worktreeId);
-  const existingTimer = debounceTimers.get(key);
-  if (existingTimer) {
-    clearTimeout(existingTimer);
-    debounceTimers.delete(key);
+  void getWindow;
+  const runtime = getActiveDesktopRuntimeIfAccepting();
+  if (!runtime) {
+    logMainProcessWarn(
+      '[summary-schedule] The desktop core is not accepting requests; the summary was not scheduled.',
+    );
+    return;
   }
-  firstDeferredAt.delete(key);
-
-  canceled.delete(key);
-  void runSummaryGeneration(projectId, worktreeId, 'full', getWindow);
+  void runtime.summarySchedule
+    .refresh(
+      { workspaceId: projectId, worktreeId },
+      {
+        kind: 'client',
+        sourceId: 'local-desktop-user',
+        context: { mode: 'full' },
+      },
+    )
+    .catch((error: unknown) =>
+      logMainProcessWarn('[summary-schedule] refresh failed', error),
+    );
 }
 
 export function cancelScheduledGeneration(
   projectId: string,
   worktreeId: string,
 ): void {
-  const key = summaryKey(projectId, worktreeId);
-  const existingTimer = debounceTimers.get(key);
-  if (existingTimer) {
-    clearTimeout(existingTimer);
-    debounceTimers.delete(key);
-  }
-  firstDeferredAt.delete(key);
-  pendingRefreshMode.delete(key);
-  canceled.add(key);
-  if (inFlight.has(key)) {
-    cancellationEpochs.set(key, (cancellationEpochs.get(key) ?? 0) + 1);
-  }
+  const runtime = getActiveDesktopRuntimeIfAccepting();
+  void runtime?.summarySchedule
+    .cancel({ workspaceId: projectId, worktreeId })
+    .catch((error: unknown) =>
+      logMainProcessWarn('[summary-schedule] cancel failed', error),
+    );
 }
 
-async function runSummaryGeneration(
+/**
+ * One worktree summary generation (CAN-4114). The core summary schedule owns
+ * when it runs; this body is the pre-CAN-4114 runSummaryGeneration moved
+ * verbatim apart from the substitutions in the CAN-4114 spec.
+ */
+export async function generateDesktopWorktreeSummary(
   projectId: string,
   worktreeId: string,
-  requestedMode: 'incremental' | 'full',
-  getWindow: () => BrowserWindow | null,
-): Promise<void> {
-  const key = summaryKey(projectId, worktreeId);
-
-  if (inFlight.has(key)) {
-    pendingRefreshMode.set(
-      key,
-      upgradeRefreshMode(pendingRefreshMode.get(key), requestedMode),
-    );
-    return;
-  }
-
-  inFlight.add(key);
-  const cancellationEpoch = cancellationEpochs.get(key) ?? 0;
+  mode: SummaryMode,
+  signal: AbortSignal,
+): Promise<SummaryGenerationResult> {
   let emittedGenerating = false;
   let lastKnownSummary: WorktreeSummaryData | null = null;
 
   try {
     const preferences = await readPreferencesFile();
     if (!preferences.worktreeSummaryEnabled) {
-      return;
+      return { result: 'skipped' };
     }
 
     const chatTabs = await readChatTabsFile(projectId, worktreeId);
     const currentTurnCount = countUserTurns(chatTabs);
     if (currentTurnCount === 0) {
-      return;
+      return { result: 'skipped' };
     }
 
     // Skips the model call for a summary the write would discard.
@@ -261,13 +208,13 @@ async function runSummaryGeneration(
     );
     if (abortReason !== null) {
       reportAbortedSummaryWrite({ projectId, worktreeId }, abortReason);
-      return;
+      return { result: 'skipped' };
     }
 
     const previousSummary = await readWorktreeSummary(projectId, worktreeId);
     lastKnownSummary = previousSummary;
     const isFullRefresh =
-      requestedMode === 'full' ||
+      mode === 'full' ||
       previousSummary === null ||
       currentTurnCount - previousSummary.lastFullRefreshTurnCount >
         FULL_REFRESH_TURN_THRESHOLD;
@@ -280,7 +227,7 @@ async function runSummaryGeneration(
       previousSummary?.turnCountAtGeneration ?? 0,
     );
 
-    emitGenerating(projectId, worktreeId, true, getWindow);
+    emitGenerating(projectId, worktreeId, true, NO_WINDOW);
     if (previousSummary) {
       emitWorktreeSummaryPortalDelta(
         projectId,
@@ -300,6 +247,11 @@ async function runSummaryGeneration(
       worktreeId,
       cwd,
       diffLimit,
+    );
+
+    const displayLabelContext = await readWorktreeDisplayLabelContext(
+      projectId,
+      worktreeId,
     );
 
     const { generateWorktreeSummary } =
@@ -420,7 +372,7 @@ async function runSummaryGeneration(
         'failure',
         WORKTREE_SUMMARY_MODEL_POLICY_REFUSAL,
       );
-      return;
+      return { result: 'skipped' };
     }
 
     // Captured before the provider is invoked (LD06), so a model or setting
@@ -438,15 +390,13 @@ async function runSummaryGeneration(
     };
 
     let nextSummary: WorktreeSummaryData | null = null;
+    let displayLabel: WorktreeSummaryResult['displayLabel'] = null;
     let summaryUsage: HelperUsage = {};
     try {
       const result = await enqueueBackgroundHelperTask({
         priority: BACKGROUND_HELPER_PRIORITIES.worktreeSummary,
         task: () => {
-          if (
-            canceled.has(key) ||
-            (cancellationEpochs.get(key) ?? 0) !== cancellationEpoch
-          ) {
+          if (signal.aborted) {
             return Promise.resolve(null);
           }
           startObservation();
@@ -472,7 +422,7 @@ async function runSummaryGeneration(
                 // The ENTRY mode, not `isFullRefresh` — an automatic run gets
                 // promoted to a full refresh on turn thresholds, so only the
                 // requested mode says whether a user asked for this.
-                userInitiated: requestedMode === 'full',
+                userInitiated: mode === 'full',
                 previousSummary,
                 chatExcerpts,
                 gitDiff: summaryInput.gitDiff,
@@ -482,14 +432,21 @@ async function runSummaryGeneration(
                 repoDiffs: summaryInput.repoDiffs,
                 observabilityTaskKey: taskKey,
                 pluginRuntime,
+                ...(displayLabelContext.worktreeContext
+                  ? { worktreeContext: displayLabelContext.worktreeContext }
+                  : {}),
+                ...(displayLabelContext.request
+                  ? { displayLabelRequest: displayLabelContext.request }
+                  : {}),
               }),
           );
         },
       });
       if (result === null) {
-        return;
+        return { result: 'cancelled' };
       }
       nextSummary = result.summary;
+      displayLabel = result.displayLabel;
       summaryUsage = result.usage;
     } catch (error) {
       observability.finalizeObservedTask(
@@ -497,7 +454,7 @@ async function runSummaryGeneration(
         'failure',
         error instanceof Error ? error.message : String(error),
       );
-      return;
+      throw error;
     }
     observability.finalizeObservedTask(
       taskKey,
@@ -506,9 +463,23 @@ async function runSummaryGeneration(
       summaryUsage,
     );
 
-    if (!nextSummary || canceled.has(key)) {
-      return;
-    }
+    if (signal.aborted) return { result: 'cancelled' };
+    if (!nextSummary) return { result: 'skipped' };
+
+    // The label is the sidebar's name for the work; a failed write leaves the
+    // row as it was and must not cost the summary.
+    await applyGeneratedDisplayLabel({
+      projectId,
+      worktreeId,
+      candidate: displayLabel,
+      evidence: [
+        displayLabelContext.worktreeContext ?? '',
+        chatExcerpts,
+        summaryInput.gitDiff,
+        ...(summaryInput.repoDiffs ?? []).map((repo) => repo.diff),
+      ].join('\n'),
+      observabilityTaskKey: taskKey,
+    }).catch(() => undefined);
 
     const written = await writeWorktreeSummarySnapshot(
       projectId,
@@ -517,24 +488,26 @@ async function runSummaryGeneration(
       provenance,
     );
     if (written === null) {
-      return;
+      return { result: 'skipped' };
     }
     if (written.kind === 'aborted') {
       reportAbortedSummaryWrite({ projectId, worktreeId }, written.reason);
-      return;
+      return { result: 'skipped' };
     }
     // The snapshot is in the journal now, so it publishes even if the run was
     // cancelled meanwhile, as startup reconciliation would publish it.
     publishWrittenSnapshot(projectId, worktreeId, written);
-    if (canceled.has(key)) {
-      return;
-    }
+    if (signal.aborted) return { result: 'cancelled' };
 
     lastKnownSummary = nextSummary;
-    emitUpdated(projectId, worktreeId, nextSummary, getWindow);
+    emitUpdated(projectId, worktreeId, nextSummary, NO_WINDOW);
+    return {
+      result: written.isNewSnapshot ? 'written' : 'unchanged',
+      sourceRevision: `turns:${written.snapshot.summary.turnCountAtGeneration}`,
+    };
   } finally {
     if (emittedGenerating) {
-      emitGenerating(projectId, worktreeId, false, getWindow);
+      emitGenerating(projectId, worktreeId, false, NO_WINDOW);
       try {
         lastKnownSummary =
           (await readWorktreeSummary(projectId, worktreeId)) ??
@@ -551,20 +524,6 @@ async function runSummaryGeneration(
           false,
         );
       }
-    }
-
-    inFlight.delete(key);
-
-    const wasCanceled = canceled.has(key);
-    canceled.delete(key);
-
-    const queuedMode = pendingRefreshMode.get(key);
-    if (queuedMode && !wasCanceled) {
-      pendingRefreshMode.delete(key);
-      void runSummaryGeneration(projectId, worktreeId, queuedMode, getWindow);
-    } else {
-      pendingRefreshMode.delete(key);
-      cancellationEpochs.delete(key);
     }
   }
 }
@@ -1034,18 +993,4 @@ function publishWrittenSnapshot(
   }
   reportInvalidSummarySnapshots(scope, written.droppedInvalidSnapshotCount);
   if (written.replacedCorruptFile) reportReplacedSummaryFile(scope);
-}
-
-function summaryKey(projectId: string, worktreeId: string): string {
-  return `${projectId}/${worktreeId}`;
-}
-
-function upgradeRefreshMode(
-  existing: 'incremental' | 'full' | undefined,
-  next: 'incremental' | 'full',
-): 'incremental' | 'full' {
-  if (existing === 'full' || next === 'full') {
-    return 'full';
-  }
-  return 'incremental';
 }

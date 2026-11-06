@@ -69,7 +69,9 @@ export const FIELD_INVALID_CLASS =
 const FIELD_INVALID_WITHIN_CLASS =
   'has-[input[aria-invalid=true]]:shadow-field-invalid has-[input[aria-invalid=true]:focus]:shadow-field-invalid-focus';
 
-const FIELD_SURFACE_CLASS = `w-full bg-transparent text-s fg-primary text-wrap placeholder:text-pretty placeholder:fg-tertiary outline-none ${FIELD_EDGE_CLASS} focus-visible:shadow-field-focus ${FIELD_INVALID_CLASS} disabled:cursor-not-allowed disabled:bg-disabled disabled:fg-disabled`;
+// Touch screens get 16px text: iOS Safari zooms the page into a focused
+// field set smaller than 16px.
+const FIELD_SURFACE_CLASS = `w-full bg-transparent text-s pointer-coarse:text-m fg-primary text-wrap placeholder:text-pretty placeholder:fg-tertiary outline-none ${FIELD_EDGE_CLASS} focus-visible:shadow-field-focus ${FIELD_INVALID_CLASS} disabled:cursor-not-allowed disabled:bg-disabled disabled:fg-disabled`;
 
 const FIELD_CLASS = `min-h-9 rounded-lg px-3 py-2 pointer-coarse:min-h-11 ${FIELD_SURFACE_CLASS}`;
 
@@ -99,9 +101,9 @@ const TEXT_INPUT_CLASS: Record<TextInputDensity, string> = {
  * input has focus.
  */
 const ADORNED_BOX_CLASS: Record<TextInputDensity, string> = {
-  default: `min-h-9 rounded-lg px-3 pointer-coarse:min-h-11 text-s`,
-  compact: `h-7 rounded-row px-2.5 pointer-coarse:h-9 text-xs`,
-  settings: `h-7 rounded-row px-2.5 pointer-coarse:h-9 text-xs whitespace-nowrap`,
+  default: `min-h-9 rounded-lg px-3 pointer-coarse:min-h-11 text-s pointer-coarse:text-m`,
+  compact: `h-7 rounded-row px-2.5 pointer-coarse:h-9 text-xs pointer-coarse:text-m`,
+  settings: `h-7 rounded-row px-2.5 pointer-coarse:h-9 text-xs pointer-coarse:text-m whitespace-nowrap`,
 };
 
 const ADORNED_SHELL_CLASS = `flex w-full min-w-0 items-baseline gap-1.5 bg-transparent fg-primary ${FIELD_EDGE_CLASS} ${FIELD_FOCUS_WITHIN_CLASS} ${FIELD_INVALID_WITHIN_CLASS} has-[input:disabled]:cursor-not-allowed has-[input:disabled]:bg-disabled has-[input:disabled]:fg-disabled`;
@@ -303,7 +305,7 @@ export interface TextAreaProps extends TextareaHTMLAttributes<HTMLTextAreaElemen
 
 /** The composer prompt's text row: the composer's text, no field edge. */
 const COMPOSER_TEXT_AREA_CLASS =
-  'block w-full resize-none bg-transparent text-s fg-primary outline-none field-sizing-content placeholder:fg-tertiary disabled:cursor-not-allowed';
+  'block w-full resize-none bg-transparent text-s pointer-coarse:text-m fg-primary outline-none field-sizing-content placeholder:fg-tertiary disabled:cursor-not-allowed';
 
 /**
  * Multi-line field. Keeps native vertical resizing; `field-resize-grip`

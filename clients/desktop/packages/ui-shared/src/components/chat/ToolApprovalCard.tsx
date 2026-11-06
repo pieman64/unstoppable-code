@@ -770,7 +770,7 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
       className="rounded-lg border border-line-attention/30 bg-warning/[0.06] px-4 py-3"
     >
       <div className="flex items-center gap-1.5">
-        <div id={titleId} className="text-sm font-medium fg-primary">
+        <div id={titleId} className="text-s font-medium fg-primary">
           {pending.title}
         </div>
         {pending.subagentId && (

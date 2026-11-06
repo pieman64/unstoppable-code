@@ -192,6 +192,31 @@ export type InitiatedWorkHookChatOutcome = z.output<
   typeof InitiatedWorkHookChatOutcomeSchema
 >;
 
+/** A receipted hook queue entry whose details are saved beside the ledger. */
+export const CORE_INITIATED_WORK_QUEUED_HOOK_CHAT_KIND =
+  'core.initiatedWork.queuedHookChat';
+export const CORE_INITIATED_WORK_QUEUED_HOOK_PIPELINE_KIND =
+  'core.initiatedWork.queuedHookPipeline';
+
+export const InitiatedWorkQueuedHookOutcomeSchema = z.discriminatedUnion(
+  'kind',
+  [
+    z.strictObject({
+      kind: z.literal('chat'),
+      chatId: id,
+      result: z.enum(['started', 'already_started', 'removed']),
+    }),
+    z.strictObject({
+      kind: z.literal('pipeline'),
+      executionId: id,
+      result: z.literal('started'),
+    }),
+  ],
+);
+export type InitiatedWorkQueuedHookOutcome = z.output<
+  typeof InitiatedWorkQueuedHookOutcomeSchema
+>;
+
 export const CORE_INITIATED_WORK_RUN_ERROR_CODES = [
   'core.initiatedWork.gate.dedup',
   'core.initiatedWork.gate.pause',
@@ -206,6 +231,8 @@ export const CORE_INITIATED_WORK_RUN_ERROR_CODES = [
   'core.initiatedWork.run.failed',
   'core.initiatedWork.run.invalidated',
   'core.initiatedWork.hookChat.failed',
+  'core.initiatedWork.hookQueue.invalidated',
+  'core.initiatedWork.hookQueue.startFailed',
 ] as const;
 export type CoreInitiatedWorkRunErrorCode =
   (typeof CORE_INITIATED_WORK_RUN_ERROR_CODES)[number];

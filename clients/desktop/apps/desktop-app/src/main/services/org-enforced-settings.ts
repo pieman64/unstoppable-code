@@ -66,6 +66,8 @@ const modelGatewayApplier: OrgEnforcedPolicyApplier = {
   kind: 'model-gateway',
   async apply(account): Promise<boolean> {
     const result = setCurrentModelGatewayAccount(account);
+    if (result.changed || result.catalogChanged)
+      broadcastModelRegistryUpdated();
     if (result.changed) {
       // The org's models are merged into MAIN's model registry only. The
       // `preferencesChanged` broadcast below makes the renderer re-read the
@@ -73,7 +75,6 @@ const modelGatewayApplier: OrgEnforcedPolicyApplier = {
       // registry — so without this push the org's rows (and the
       // `origin: 'org-gateway'` routes the picker groups and the composer
       // banner key on) never reach the renderer in a running session.
-      broadcastModelRegistryUpdated();
       // A provider process captures its endpoint and Claude bearer token when
       // the session is created. Retire sessions created under the old policy;
       // preserve in-flight work, but force recreation at the next turn.
@@ -84,7 +85,10 @@ const modelGatewayApplier: OrgEnforcedPolicyApplier = {
           ? 'all-org-owned'
           : result.changedOrganizationIds,
         'model-gateway-policy-changed',
-        { activeTurnPolicy: 'preserve' },
+        {
+          activeTurnPolicy: 'preserve',
+          personalOrganizationIds: result.personalOrganizationIds,
+        },
       );
     }
     return result.changed;

@@ -5,7 +5,11 @@ import {
   type ReactNode,
 } from 'react';
 import type { AppIcon } from '../icons/AppIcons';
-import { Button, type ButtonVariant } from './Button';
+import {
+  Button,
+  nestedIconButtonRadiusClassName,
+  type ButtonVariant,
+} from './Button';
 import { Tooltip } from './Tooltip';
 
 /**
@@ -32,8 +36,8 @@ export interface RailIconButtonProps extends Omit<
   iconSize?: number;
   iconClassName?: string;
   /**
-   * `compact` is the 28px `sm` icon-only `Button`; `row` the 32px `md` one,
-   * the canonical sidebar item height.
+   * `compact` is the 28px `sm` icon-only `Button`, nested 2px inside a 32px
+   * sidebar row; `row` is the 32px `md` one, with the row's own radius.
    */
   size?: RailIconButtonSize;
   /** Reveal the control only when its `group/sidebar-item` header is hovered. */
@@ -76,15 +80,15 @@ const BUTTON_TONE_VARIANTS: Record<
 
 /**
  * The two tones no `Button` variant draws stay a native button with the
- * same 28px/32px circle: `section` rests in the section header's quaternary
+ * same nested 28px/32px shape: `section` rests in the section header's quaternary
  * ink, and `destructive` rests in tertiary ink and turns destructive only
  * under the pointer (`ghost-destructive` is destructive at rest).
  */
 type NativeTone = 'section' | 'destructive';
 
 const NATIVE_SIZE_CLASS_NAMES: Record<RailIconButtonSize, string> = {
-  compact: 'h-7 w-7 rounded-full',
-  row: 'h-8 w-8 rounded-full',
+  compact: `h-7 w-7 ${nestedIconButtonRadiusClassName('sm')}`,
+  row: `h-8 w-8 ${nestedIconButtonRadiusClassName('md')}`,
 };
 
 const NATIVE_TONE_CLASS_NAMES: Record<NativeTone, string> = {
@@ -157,6 +161,7 @@ export const RailIconButton = forwardRef<
       variant={BUTTON_TONE_VARIANTS[tone]}
       size={size === 'row' ? 'md' : 'sm'}
       iconOnly
+      iconShape="nested"
       aria-label={ariaLabel ?? ''}
       // Without a 44px slot to hold it, the Button's coarse-pointer hit area
       // would reach over the controls beside it (header clusters 2px apart,

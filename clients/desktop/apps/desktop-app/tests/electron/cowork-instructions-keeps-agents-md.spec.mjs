@@ -7,6 +7,7 @@
 // itself has its own coverage; these fixtures seed an attached folder.
 import { expect, test } from '@playwright/test';
 import {
+  existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -18,6 +19,10 @@ import {
 import os from 'node:os';
 import path from 'node:path';
 import { CanopyAppDriver } from './canopyApp.mjs';
+import {
+  createGitFailureFixture,
+  GIT_FAILURE_CASES,
+} from './gitFailureFixture.js';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import { seedCoworkWorkspace } from './seeders/index.mjs';
 
@@ -53,21 +58,8 @@ async function withInstructionsTab(files, body, { managed = false } = {}) {
     await app.waitForShell({ timeout: 30_000 });
     await app.openChatPage();
 
-    const openInstructions = async () => {
-      const rowTestId = `sidebar-cowork-project-${WORKSPACE_ID}`;
-      await window.getByTestId(`${rowTestId}-header`).hover();
-      await window.getByTestId(`${rowTestId}-settings`).click();
-      const dialog = window
-        .locator('[role="dialog"]')
-        .filter({ has: window.locator('#chat-project-settings-title') });
-      await expect(dialog).toBeVisible();
-      await dialog
-        .getByRole('tab', { name: 'Instructions', exact: true })
-        .click();
-      const editor = dialog.getByTestId('chat-project-instructions-editor');
-      await expect(editor).toBeEnabled();
-      return { dialog, editor };
-    };
+    const openInstructions = () =>
+      openProjectInstructions(window, WORKSPACE_ID);
 
     await body({ window, folder, openInstructions });
   } finally {
@@ -78,6 +70,20 @@ async function withInstructionsTab(files, body, { managed = false } = {}) {
       rmSync(folder, { recursive: true, force: true });
     }
   }
+}
+
+async function openProjectInstructions(window, workspaceId) {
+  const rowTestId = `sidebar-cowork-project-${workspaceId}`;
+  await window.getByTestId(`${rowTestId}-header`).hover();
+  await window.getByTestId(`${rowTestId}-settings`).click();
+  const dialog = window
+    .locator('[role="dialog"]')
+    .filter({ has: window.locator('#chat-project-settings-title') });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('tab', { name: 'Instructions', exact: true }).click();
+  const editor = dialog.getByTestId('chat-project-instructions-editor');
+  await expect(editor).toBeEnabled();
+  return { dialog, editor };
 }
 
 async function appendAndSave(dialog, editor, addition) {
@@ -250,3 +256,107 @@ test('retains edits on a real revision conflict and reloads only on request', as
     },
   );
 });
+
+// CAN-3233: first-use Cowork creation is a file scaffold, not a Git seed.
+// Drive Add project through the built app; do not mock IPC or preseed a Cowork
+// workspace. Authentication controls below are deliberately offline fixtures,
+// not evidence of remote-auth error presentation or the retired seed policy.
+for (const scenario of GIT_FAILURE_CASES) {
+  test(`creates first Cowork project with ${scenario} and preserves user Git policy`, async () => {
+    test.skip(
+      process.platform === 'win32',
+      'POSIX Git policy fixtures require shell hooks and ssh-keygen',
+    );
+    const root = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-cowork-git-policy-'),
+    );
+    const userDataDir = path.join(root, 'app');
+    const fixture = createGitFailureFixture(
+      path.join(root, 'policy'),
+      scenario,
+    );
+    let electronApp;
+    try {
+      expect(
+        existsSync(path.join(userDataDir, 'workspaces', 'index.json')),
+      ).toBe(false);
+      ({ electronApp } = await launchCanopy({ userDataDir, env: fixture.env }));
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell({ timeout: 30_000 });
+      // Launch may detect Git as a tool. Snapshot after shell readiness so the
+      // assertion below isolates project creation instead of startup probing.
+      const beforeCreationTrace = fixture.readTrace();
+      expect(fixture.readInvocations()).toEqual([]);
+
+      await window.getByTestId('sidebar-section-code-toggle').hover();
+      await window.getByTestId('sidebar-section-code-add').click();
+      const createDialog = window.getByTestId('add-workspace-modal');
+      await expect(createDialog).toBeVisible();
+      await window.getByTestId('add-workspace-mode-create').click();
+      await window.getByTestId('add-workspace-type-cowork').click();
+      const workspaceId = `git-policy-${scenario}`;
+      await window.getByTestId('add-workspace-name-input').fill(workspaceId);
+      const deadline = Date.now() + 15_000;
+      await window.getByTestId('add-workspace-create-submit').click();
+      await expect(createDialog).toBeHidden({
+        timeout: Math.max(1, deadline - Date.now()),
+      });
+      await expect(
+        window.getByTestId(`sidebar-cowork-project-${workspaceId}-header`),
+      ).toBeVisible({ timeout: Math.max(1, deadline - Date.now()) });
+      expect(Date.now()).toBeLessThan(deadline);
+      // Background Git executable validation can finish after shell readiness.
+      // It is unrelated to this folder; no seed commit may run during creation.
+      const creationTrace = fixture
+        .readTrace()
+        .slice(beforeCreationTrace.length);
+      expect(creationTrace).not.toMatch(/(?:^|\s)commit(?:-tree)?(?:\s|$)/);
+
+      const folder = path.join(userDataDir, 'workspaces', workspaceId, 'home');
+      expect(existsSync(path.join(folder, '.git'))).toBe(false);
+      expect(read(folder, 'AGENTS.md')).toBe(read(folder, 'CLAUDE.md'));
+      const { dialog, editor } = await openProjectInstructions(
+        window,
+        workspaceId,
+      );
+      const original = await editor.inputValue();
+      expect(original.length).toBeGreaterThan(0);
+      await appendAndSave(dialog, editor, '\n- Keep my Git policy.\n');
+      expect(read(folder, 'CLAUDE.md')).toBe(
+        `${original}\n- Keep my Git policy.\n`,
+      );
+      expect(fixture.readInvocations()).toEqual([]);
+      expect(existsSync(path.join(folder, '.git'))).toBe(false);
+      fixture.assertPolicyUnchanged();
+
+      // Only now initialize Git in this SAME home and attempt an ordinary user
+      // commit without -c overrides. Both hooks and the GPG program really run;
+      // hanging hooks are killed with their descendants after 1.5s. Missing
+      // identity and real public-key-only SSH signing fail. Remote SSH and
+      // credential prompting controls use local helpers and loopback HTTP only.
+      await fixture.runControl(folder);
+      fixture.assertPolicyUnchanged();
+      const reopened = await openProjectInstructions(window, workspaceId);
+      await expect(reopened.editor).toHaveValue(
+        `${original}\n- Keep my Git policy.\n`,
+      );
+      await appendAndSave(
+        reopened.dialog,
+        reopened.editor,
+        '- Still usable.\n',
+      );
+      expect(read(folder, 'CLAUDE.md')).toContain('- Still usable.');
+    } finally {
+      try {
+        if (electronApp) await closeCanopy(electronApp, userDataDir);
+      } finally {
+        try {
+          fixture.assertPolicyUnchanged();
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
+      }
+    }
+  });
+}

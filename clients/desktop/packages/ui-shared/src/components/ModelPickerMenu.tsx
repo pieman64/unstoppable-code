@@ -67,9 +67,9 @@ import {
   PickerMenuOptionLabel,
   PickerMenuOptionLeading,
   PickerMenuSearchInput,
-  PickerMenuSkeletonRow,
+  PickerMenuSampleOption,
   type PickerMenuOptionTrailingSlots,
-  type PickerMenuSkeletonLabelWidth,
+  type PickerMenuSampleLabelWidth,
 } from './PickerMenu';
 import { Button } from './Button';
 import { RichHoverCard, RichHoverTooltip } from './RichHoverTooltip';
@@ -239,7 +239,7 @@ const SEARCH_ENTRY_ROW_SELECTOR =
 /** Label bar widths for the three hosted-model placeholder rows. */
 const GATEWAY_PLACEHOLDER_WIDTHS = [
   28, 22, 34,
-] as const satisfies readonly PickerMenuSkeletonLabelWidth[];
+] as const satisfies readonly PickerMenuSampleLabelWidth[];
 
 /** Ink of the single list's `$` marker for AI Credits-only rows. */
 const EXTRA_CHARGE_TEXT_CLASS = 'fg-destructive';
@@ -608,10 +608,7 @@ function ModelRowDetail({
   if (option.funding)
     rows.push({
       label: 'Billing',
-      value:
-        option.funding === 'org-gateway'
-          ? 'Organization gateway'
-          : 'AI Credits',
+      value: option.funding === 'org-gateway' ? 'AI gateway' : 'AI Credits',
     });
   else if (usesAiCredits)
     // CAN-5213: a credits route says so even when the row's tag gives way to
@@ -2130,7 +2127,7 @@ export function ModelPickerMenu({
       {catalogStatus.status === 'loading' ? (
         <Skeleton loading label="Loading more models">
           {GATEWAY_PLACEHOLDER_WIDTHS.map((width) => (
-            <PickerMenuSkeletonRow key={width} labelWidth={width} />
+            <PickerMenuSampleOption key={width} labelWidth={width} />
           ))}
         </Skeleton>
       ) : (
@@ -2426,8 +2423,11 @@ export function ModelPickerMenu({
       billingHarness,
     );
     const preference = billing?.getPreference(option.id, billingHarness);
+    // The chosen runtime's funding, else the row's: an own-gateway row is
+    // never AI Credits, whatever its source.
+    const funding = selectedChoice?.funding ?? option.funding;
     credits =
-      selectedChoice?.funding === 'org-gateway'
+      funding === 'org-gateway'
         ? false
         : credits ||
           preference?.payment === 'credits' ||
@@ -2485,7 +2485,7 @@ export function ModelPickerMenu({
           harnessTabs?.leadingFavorites && option.id !== autoModeOption?.id
         }
         usesAiCredits={
-          selectedChoice?.funding !== 'org-gateway' &&
+          funding !== 'org-gateway' &&
           !managedAccount &&
           (credits ||
             presentation.source === 'ai-gateway' ||
@@ -3693,7 +3693,8 @@ function ModelPickerOption({
   pickerChrome = false,
   highlightSelection = false,
   leadingFavorite = false,
-  usesAiCredits = option.source === 'ai-gateway',
+  usesAiCredits = option.source === 'ai-gateway' &&
+    option.funding !== 'org-gateway',
   extraChargeMarker = false,
   billingPreference,
   billingFallback = true,
@@ -4043,14 +4044,6 @@ function ModelPickerOption({
                 className="mt-0.5 shrink-0 fg-tertiary"
                 data-testid={`${testIdPrefix}-option-auto-action-icon`}
               />
-            ) : null}
-            {option.funding === 'org-gateway' && !isAutoMode ? (
-              <span
-                className="shrink-0 text-2xs fg-secondary"
-                data-testid={`${testIdPrefix}-row-org-gateway-${option.id}`}
-              >
-                Org gateway
-              </span>
             ) : null}
             {showsCreditsTag ? (
               <span

@@ -1,3 +1,4 @@
+import type { ApprovalSecretInputRequest } from '@canopy/desktop-shared/types';
 import type {
   ApprovalPromptDecision,
   ApprovalRequestEvent,
@@ -37,6 +38,7 @@ interface PendingApproval {
    * `onSessionDestroyed` reflects that the callback is about detachment in
    * general, not that every detaching path uses it.
    */
+  onSecret?: (secret: string) => void;
   onDetached?: () => void;
   onOwnerDestroyed?: () => void;
 }
@@ -115,6 +117,7 @@ export function resolveApproval(
   ) {
     return false;
   }
+  if (entry.event.secretInput && decision.behavior === 'allow') return false;
   pending.delete(requestId);
   removeOwnerDestroyedListener(entry);
   entry.resolve(decision);
@@ -148,6 +151,7 @@ export function resolveApprovalFromMain(
   if (!entry || entry.sessionKey !== sessionKey) {
     return false;
   }
+  if (entry.event.secretInput && decision.behavior === 'allow') return false;
   pending.delete(requestId);
   removeOwnerDestroyedListener(entry);
   entry.resolve(decision);
@@ -198,4 +202,38 @@ export function rejectAllApprovalsForSession(
       entry.reject(new Error(reason));
     }
   }
+}
+
+/** One-use callback stays only in the pending map, separate from replayable prompt data. */
+export function registerApprovalSecretConsumer(
+  requestId: string,
+  consumer: (secret: string) => void,
+): boolean {
+  const entry = pending.get(requestId);
+  if (!entry?.event.secretInput || entry.onSecret) return false;
+  entry.onSecret = consumer;
+  return true;
+}
+export function resolveApprovalSecretInput(
+  request: ApprovalSecretInputRequest,
+  sender: object,
+): boolean {
+  const entry = pending.get(request.requestId);
+  if (
+    !entry?.onSecret ||
+    !entry.event.secretInput ||
+    entry.ownerWebContents !== sender ||
+    entry.event.secretInput.bindingId !== request.bindingId ||
+    entry.identity.projectId !== request.projectId ||
+    entry.identity.worktreeId !== request.worktreeId ||
+    entry.identity.chatId !== request.chatId
+  )
+    return false;
+  pending.delete(request.requestId);
+  removeOwnerDestroyedListener(entry);
+  const consume = entry.onSecret;
+  entry.onSecret = undefined;
+  entry.resolve({ behavior: 'allow', scope: 'once' });
+  consume(request.secret);
+  return true;
 }

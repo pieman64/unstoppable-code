@@ -36,6 +36,7 @@ import {
 import {
   createSerialQueue,
   W5AuthorityUnreachableError,
+  W5RecordOverloadedError,
   w5ReadUnreachable,
   type W5FileReplacement,
   type W5FileRead,
@@ -60,6 +61,13 @@ export class W5RevisionConflictError extends Error {
 }
 
 export interface W5ReservationInput {
+  /** Exclusive workspace creation claim; worktree reservations omit it. */
+  workspaceIdentity?: string;
+  /** Validated orphan records may be reclaimed only while both images match. */
+  expectedWorkspaceRecords?: {
+    manifest: string | null;
+    worktrees: string | null;
+  };
   reservationId: string;
   operation: string;
   receipt?: NonNullable<W5CommitRequest['receipt']>;
@@ -93,8 +101,10 @@ export interface W5CommitLogHostPort {
     reservationId: string,
     diagnostics: W5ReservationFailureDiagnostics,
   ): Promise<void>;
-  revision(resource: W5Resource): Promise<number>;
+  /** forCommit bypasses host-side ordinary read batching, when present. */
+  revision(resource: W5Resource, forCommit?: boolean): Promise<number>;
   capture(request: W5CaptureRequest): Promise<W5CaptureResult>;
+  captureForPreparation?(request: W5CaptureRequest): Promise<W5CaptureResult>;
 }
 
 /** The host's late admission of one checked write its operation did not admit. */
@@ -112,8 +122,10 @@ export interface W5CommitLogFileStoreBindings {
    */
   getHost: () => W5CommitLogHostPort | Promise<W5CommitLogHostPort>;
   warn: (message: string, context: Record<string, unknown>) => void;
-  /** Reads files directly, outside the commit log. */
+  /** Fresh file images from the host-selected disk or record-port reader. */
   readFile: (filePath: string) => Promise<W5FileRead>;
+  /** Fresh reads that bypass pending record-port batches for writes. */
+  readFileForCommit?: (filePath: string) => Promise<W5FileRead>;
   /** Admits every target a scope staged before its decision. */
   admit: W5StorageAdmission;
   /** Admits an unscoped replace its operation did not admit. */
@@ -143,7 +155,14 @@ export interface W5CommitLogFileStore extends W5FileStore {
   ): Promise<void>;
   readRevisions(
     resources: readonly W5Resource[],
+    forCommit?: boolean,
   ): Promise<NonNullable<W5CommitRequest['expectedRevisions']>>;
+  captureForPreparation?(
+    request: W5CaptureRequest,
+  ): Promise<
+    | { status: 'captured'; capture: W5CaptureResult; root: string }
+    | { status: 'unsupported' }
+  >;
   /** One serialized capture after launch recovery, with the root it is under. */
   capture?(
     request: W5CaptureRequest,
@@ -199,6 +218,11 @@ export async function preflightW5Files(
     // A read that never reached the authority shows no conflict (CAN-5542).
     const unreachable = w5ReadUnreachable(current);
     if (unreachable) throw unreachable;
+    if (
+      current.state === 'unreadable' &&
+      current.error instanceof W5RecordOverloadedError
+    )
+      throw current.error;
     if (
       current.state === 'unreadable' ||
       fingerprintW5File(current.state === 'present' ? current.raw : null) !==
@@ -281,9 +305,15 @@ export function createW5CommitLogFileStore(
     if (error instanceof W5AuthorityUnreachableError && ready === attempt)
       ready = undefined;
   };
-  const readThroughHost = async (filePath: string): Promise<W5FileRead> => {
+  const readThroughHost = async (
+    filePath: string,
+    forCommit = false,
+  ): Promise<W5FileRead> => {
     const attempt = ready;
-    const read = await readFile(filePath);
+    const readSource = forCommit
+      ? (bindings.readFileForCommit ?? readFile)
+      : readFile;
+    const read = await readSource(filePath);
     forgetRecoveryIfUnreachable(attempt, w5ReadUnreachable(read));
     return read;
   };
@@ -325,7 +355,7 @@ export function createW5CommitLogFileStore(
         previousFingerprint: fingerprintW5File(previousRaw),
       }));
       const decide = async (): Promise<void> => {
-        await preflightW5Files(readThroughHost, changes);
+        await preflightW5Files((path) => readThroughHost(path, true), changes);
         let outcome: W5CommitOutcome;
         try {
           options.beforeDecision?.();
@@ -396,7 +426,12 @@ export function createW5CommitLogFileStore(
       if (scope.observed.has(path) || scope.files.has(path)) continue;
       const read = await store.read(path);
       if (read.state === 'unreadable')
-        throw w5ReadUnreachable(read) ?? new W5FileWriteRefusedError(path);
+        throw (
+          w5ReadUnreachable(read) ??
+          (read.error instanceof W5RecordOverloadedError
+            ? read.error
+            : new W5FileWriteRefusedError(path))
+        );
       const raw = read.state === 'present' ? read.raw : null;
       if (!scope.observed.has(path))
         scope.observed.set(path, { path, contents: raw, previousRaw: raw });
@@ -502,14 +537,26 @@ export function createW5CommitLogFileStore(
       onHost((host) =>
         host.markReservationRecoveryRequired(reservationId, diagnostics),
       ),
-    readRevisions: (resources) =>
+    readRevisions: (resources, forCommit = false) =>
       onHost((host) =>
         Promise.all(
           resources.map(async (resource) => ({
             resource,
-            revision: await host.revision(resource),
+            revision: await (forCommit
+              ? host.revision(resource, true)
+              : host.revision(resource)),
           })),
         ),
+      ),
+    captureForPreparation: (request) =>
+      onHost(async (host) =>
+        host.captureForPreparation
+          ? {
+              status: 'captured',
+              capture: await host.captureForPreparation(request),
+              root: host.root,
+            }
+          : { status: 'unsupported' },
       ),
     capture: (request) =>
       onHost(async (host) => ({
@@ -533,7 +580,7 @@ export function createW5CommitLogFileStore(
           ...(error instanceof Error ? { error } : {}),
         };
       }
-      return readThroughHost(filePath);
+      return readThroughHost(filePath, Boolean(scope));
     },
     replace: stageFile,
     remove: (filePath, storage, removal) =>

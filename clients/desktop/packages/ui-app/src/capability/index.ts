@@ -2,6 +2,8 @@ export * from './accountMcpRows';
 export * from './ResourceContext';
 export * from './curatedMcpAdd';
 export * from './mcpConnectionCopy';
+export * from './CustomMcpServerFields';
+export * from './customMcpServerForm';
 export * from './McpConnectActionButton';
 export * from './CapabilityGate';
 export * from './providerConnectorRows';

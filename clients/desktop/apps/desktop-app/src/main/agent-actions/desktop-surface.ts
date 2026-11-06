@@ -127,7 +127,9 @@ export async function desktopAgentActionCall(
     typeof action === 'object' &&
     action !== null &&
     'type' in action &&
-    (action.type === 'experiments.set_enabled' ||
+    ((typeof action.type === 'string' &&
+      action.type.startsWith('settings.ai_gateway.')) ||
+      action.type === 'experiments.set_enabled' ||
       action.type === 'pipeline.run' ||
       (typeof action.type === 'string' &&
         action.type.startsWith('installed_items.')));

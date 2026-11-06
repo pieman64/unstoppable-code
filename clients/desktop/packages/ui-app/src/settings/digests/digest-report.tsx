@@ -248,7 +248,7 @@ export function DigestReport({
               {contributors.rows.map((contributor) => (
                 <li
                   key={contributor.key}
-                  className="flex items-center justify-between gap-4 py-2 text-sm"
+                  className="flex items-center justify-between gap-4 py-2 text-s"
                   data-testid="digest-contributor-row"
                 >
                   <span

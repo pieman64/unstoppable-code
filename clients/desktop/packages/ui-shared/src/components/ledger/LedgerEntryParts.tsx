@@ -31,6 +31,7 @@ import {
   REPLAY_MASK_CLASS,
 } from '../../lib/replay-privacy';
 import { Button } from '../Button';
+import { Heading } from '../Heading';
 import { Tooltip } from '../Tooltip';
 import { WorkPath } from '../WorkPath';
 import { LedgerActorGlyph } from './LedgerActorAvatar';
@@ -331,15 +332,18 @@ export function LedgerEntryTitle({
   density,
   compact = false,
 }: LedgerEntryTitleProps): JSX.Element {
-  // Deliberately deviates from DESIGN.md's 400/450 weight hierarchy (Typography): Ledger entry titles use font-bold (500) so they read heavier than their content.
   // Entry text is agent-written from conversations: replay records a box.
-  const titleClassName = compact
-    ? `${REPLAY_BLOCK_CLASS} min-w-0 flex-1 truncate whitespace-nowrap font-bold fg-primary ${density === 'page' ? 'text-m' : 'text-s'}`
-    : `${REPLAY_BLOCK_CLASS} min-w-0 break-words font-bold fg-primary ${density === 'page' ? 'text-m' : 'text-s'}`;
+  // The block sits on the text, because a heading's classes must be static.
   return (
-    <h3 data-testid="ledger-entry-row-title" className={titleClassName}>
-      {title}
-    </h3>
+    <Heading
+      level={3}
+      variant={density === 'page' ? 'section' : 'title'}
+      truncate={compact}
+      data-testid="ledger-entry-row-title"
+      className={compact ? 'min-w-0 flex-1' : 'min-w-0 break-words'}
+    >
+      <span className={REPLAY_BLOCK_CLASS}>{title}</span>
+    </Heading>
   );
 }
 

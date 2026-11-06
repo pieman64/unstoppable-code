@@ -48,6 +48,90 @@ export const INSTALLED_ITEM_STATUS_COPY: Record<
   disabled: { label: 'Disabled', description: 'Installed, but turned off' },
 };
 
+/** The plugins a default-plugin picker adds to new chats (CAN-4858). */
+export const ACTIVE_PLUGINS_LABEL = 'Active plugins';
+
+export function activePluginsCountText(count: number): string {
+  return count === 0 ? 'No active plugins' : `${String(count)} active`;
+}
+
+/** `3 MCP servers installed, 1 active.`, or the empty line. */
+export function installedMcpServersSummaryText({
+  installed,
+  active,
+}: {
+  readonly installed: number;
+  readonly active: number;
+}): string {
+  if (installed === 0) return 'No MCP servers installed yet.';
+  const noun = installed === 1 ? 'MCP server' : 'MCP servers';
+  return `${String(installed)} ${noun} installed, ${String(active)} active.`;
+}
+
+/** The words around a selection table's checkboxes. */
+export interface SelectionTableCopy {
+  /** The checkbox column's accessible header. */
+  readonly headerLabel: string;
+  /** A row checkbox's accessible name. */
+  readonly rowLabel: (name: string) => string;
+  /** The tooltip on the selected filter, from `3 plugins, 1 skill`. */
+  readonly countTooltip: (summary: string) => string;
+  readonly selectedFilterLabel: string;
+  readonly unselectedFilterLabel: string;
+  /** A row's state line; omit for the default Selected / Available wording. */
+  readonly rowStateText?: (selected: boolean) => string;
+}
+
+export const DEFAULT_SELECTION_TABLE_COPY: SelectionTableCopy = {
+  headerLabel: 'Selected',
+  rowLabel: (name) => `Select ${name}`,
+  countTooltip: (summary) => `${summary} selected`,
+  selectedFilterLabel: 'Selected',
+  unselectedFilterLabel: 'Not selected',
+};
+
+/** A plugin picker's words, including its title and count. */
+export interface PluginPickerSelectionCopy extends SelectionTableCopy {
+  readonly title: string;
+  readonly countText: (count: number) => string;
+}
+
+/**
+ * Default-plugin pickers: a checked row is added to new chats. An unchecked
+ * row is only "Not active": a cloud project has no Available status, and
+ * nothing here promises on-demand loading.
+ */
+export const ACTIVE_PLUGINS_SELECTION_COPY: PluginPickerSelectionCopy = {
+  title: ACTIVE_PLUGINS_LABEL,
+  countText: activePluginsCountText,
+  headerLabel: INSTALLED_ITEM_STATUS_COPY.active.label,
+  rowLabel: (name) => `Make ${name} active`,
+  countTooltip: (summary) => `${summary} active`,
+  selectedFilterLabel: INSTALLED_ITEM_STATUS_COPY.active.label,
+  unselectedFilterLabel: 'Not active',
+};
+
+export const ORCHESTRATOR_PLUGINS_LABEL = 'Orchestrator plugins';
+
+export function orchestratorPluginsCountText(count: number): string {
+  return count === 0 ? 'None added' : `${count} added`;
+}
+
+/**
+ * Orchestrator's picker: its own list, separate from Active in Customize,
+ * because Orchestrator chats don't load globally active plugins.
+ */
+export const ORCHESTRATOR_PLUGINS_SELECTION_COPY: PluginPickerSelectionCopy = {
+  title: ORCHESTRATOR_PLUGINS_LABEL,
+  countText: orchestratorPluginsCountText,
+  headerLabel: 'Added',
+  rowLabel: (name) => `Add ${name}`,
+  countTooltip: (summary) => `${summary} added`,
+  selectedFilterLabel: 'Added',
+  unselectedFilterLabel: 'Not added',
+  rowStateText: (selected) => (selected ? 'Added' : 'Not added'),
+};
+
 /**
  * Status description for a known item kind (CAN-5271). Available says how
  * that kind is reached: a standalone skill by its own name, collections and

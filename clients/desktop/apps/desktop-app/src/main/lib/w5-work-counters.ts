@@ -77,10 +77,24 @@ export function countingW5HostPort(
       host.releaseReservation(reservationId),
     markReservationRecoveryRequired: (reservationId, diagnostics) =>
       host.markReservationRecoveryRequired(reservationId, diagnostics),
-    revision(resource) {
+    revision(resource, forCommit) {
       recordW5Work('host.revision');
-      return host.revision(resource);
+      return forCommit
+        ? host.revision(resource, true)
+        : host.revision(resource);
     },
+    ...(host.captureForPreparation
+      ? {
+          captureForPreparation: (
+            request: Parameters<
+              NonNullable<W5CommitLogHostPort['captureForPreparation']>
+            >[0],
+          ) =>
+            host.captureForPreparation
+              ? host.captureForPreparation(request)
+              : Promise.reject(new Error('Preparation capability was removed')),
+        }
+      : {}),
     async capture(request) {
       recordW5Work('host.capture');
       const result = await timed('host.capture', () => host.capture(request));

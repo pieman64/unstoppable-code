@@ -39,6 +39,7 @@ import type {
   W5CommitRequest,
   W5ReceiptLookup,
 } from '../commit-log/commit-log';
+import { W5CommitLogHostError } from '../commit-log-host';
 import { W5CommitLogError, W5CommitRefusedError } from '../commit-log/errors';
 import { isRecord } from '../commit-log/is-record';
 import { workspaceCreationDiagnosticsSchema } from '../commit-log/reservation-diagnostics';
@@ -125,6 +126,8 @@ export interface W5RecordAuthority {
 }
 
 const MESSAGES: Readonly<Record<CoreWorkspaceRecordsErrorCode, string>> = {
+  'core.workspaceRecords.identityConflict':
+    'This workspace identity is already reserved or occupied.',
   'core.workspaceRecords.fingerprintConflict':
     'This was changed since it was read. Reload and try again.',
   'core.workspaceRecords.revisionConflict':
@@ -267,6 +270,13 @@ function refusalWireError(
         NEVER,
         error,
       );
+    case 'identity-conflict':
+      return wireError(
+        'core.workspaceRecords.identityConflict',
+        jsonField(details, 'workspaceIdentity'),
+        NEVER,
+        error,
+      );
     case 'unknown-reservation':
       return wireError(
         'core.workspaceRecords.unknownReservation',
@@ -314,6 +324,22 @@ export function toW5RecordWireError(
       NEVER,
       error,
       error.message,
+    );
+  }
+  if (
+    error instanceof W5CommitLogHostError &&
+    error.reason === 'unavailable' &&
+    error.unavailableCause
+  ) {
+    const full = error.unavailableCause === 'queue-full';
+    return new CanopyOperationError(
+      {
+        kind: full ? 'resource_exhausted' : 'unavailable',
+        message: 'The W5 record port is busy.',
+        retry: full ? { kind: 'same_request', delayMs: 10 } : { kind: 'never' },
+        details: { w5HostUnavailable: error.unavailableCause },
+      },
+      error,
     );
   }
   if (error instanceof W5FileWriteRefusedError) {
@@ -650,6 +676,12 @@ export function createW5RecordAuthority(
       keyedWrite(() =>
         host.reserve({
           reservationId: params.reservationId,
+          ...(params.workspaceIdentity !== undefined && {
+            workspaceIdentity: params.workspaceIdentity,
+          }),
+          ...(params.expectedWorkspaceRecords !== undefined && {
+            expectedWorkspaceRecords: params.expectedWorkspaceRecords,
+          }),
           operation: params.operation,
           ...(params.receipt && {
             receipt: receiptForCaller(params.receipt, caller),

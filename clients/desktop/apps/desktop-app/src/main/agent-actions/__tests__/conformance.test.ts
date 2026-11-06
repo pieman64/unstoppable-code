@@ -1,3 +1,16 @@
+import {
+  createPendingApproval,
+  registerApprovalSecretConsumer,
+  resolveApprovalSecretInput,
+  resolveApproval,
+  resolveApprovalFromMain,
+  pendingApprovalRequests,
+} from '../../approvals/pending-approvals';
+import { personalGatewayAccountFields } from '@canopy/desktop-shared/lib/org-enforced-parsing';
+import {
+  resolveModelGatewayIndex,
+  gatewayRequirementForOwner,
+} from '@canopy/desktop-shared/lib/org-model-gateway';
 import { createDesktopTranscriptReadPort } from '../desktop-transcript-read-port';
 // Runs the shared agent action conformance suite against the desktop host:
 // the real desktop surface, environment port, and dispatcher, over in-memory
@@ -1078,5 +1091,113 @@ describe('desktop agent action host watchers', () => {
       retried.result.watchers[0].watcherId,
     ]);
     expect(mockWatcherState.watchers).toEqual([]);
+  });
+});
+
+// These boundary contracts are part of the desktop settings action host: a replayable
+// approval must never acquire a secret, and Personal policy must never govern team work.
+describe('AI gateway desktop action boundaries', () => {
+  const organizationId = '11111111-1111-4111-8111-111111111111';
+  it('approval:secret-input is consumed once by its bound renderer, outside generic decisions and replay', async () => {
+    const identity = {
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+    };
+    const sender = {};
+    const requestId = '22222222-2222-4222-8222-222222222222';
+    const bindingId = '33333333-3333-4333-8333-333333333333';
+    const pending = createPendingApproval(
+      requestId,
+      'gateway-session',
+      sender,
+      identity,
+      {
+        ...identity,
+        requestId,
+        provider: 'claude',
+        title: 'Connect AI gateway gateway.example?',
+        details: { kind: 'tool', toolName: 'settings.ai_gateway.connect' },
+        secretInput: { kind: 'secret-input', bindingId, label: 'API key' },
+      },
+    );
+    const consume = jest.fn<void, [string]>();
+    expect(registerApprovalSecretConsumer(requestId, consume)).toBe(true);
+    const request = {
+      ...identity,
+      requestId,
+      bindingId,
+      secret: 'secret-input-test-key',
+    };
+    expect(JSON.stringify(pendingApprovalRequests(sender))).not.toContain(
+      request.secret,
+    );
+    expect(
+      resolveApproval(
+        requestId,
+        { behavior: 'allow', scope: 'once' },
+        sender,
+        identity,
+      ),
+    ).toBe(false);
+    expect(
+      resolveApprovalFromMain(requestId, 'gateway-session', {
+        behavior: 'allow',
+        scope: 'once',
+      }),
+    ).toBe(false);
+    expect(resolveApprovalSecretInput(request, {})).toBe(false);
+    expect(
+      resolveApprovalSecretInput({ ...request, bindingId: requestId }, sender),
+    ).toBe(false);
+    expect(resolveApprovalSecretInput(request, sender)).toBe(true);
+    await expect(pending).resolves.toEqual({
+      behavior: 'allow',
+      scope: 'once',
+    });
+    expect(consume).toHaveBeenCalledWith(request.secret);
+    expect(resolveApprovalSecretInput(request, sender)).toBe(false);
+    expect(pendingApprovalRequests(sender)).toEqual([]);
+  });
+  it('settings:save-canopy-cloud-api-key retains separate Personal policy without adding it to team enforcement', () => {
+    const fields = personalGatewayAccountFields({
+      personalOrganizationId: organizationId,
+      personalModelGateway: {
+        organizationId,
+        kind: 'model-gateway',
+        baseUrl: 'https://gateway.example/v1',
+        models: [],
+        enforced: true,
+        promptCachePassthrough: true,
+        displayName: 'My gateway',
+      },
+    });
+    const index = resolveModelGatewayIndex({
+      personalOrganizationId: organizationId,
+      ...fields,
+    });
+    expect(gatewayRequirementForOwner(index, { kind: 'personal' })).toEqual({
+      kind: 'enforced',
+      organizationIds: [organizationId],
+    });
+    expect(gatewayRequirementForOwner(index)).toEqual({ kind: 'unrestricted' });
+    expect(
+      gatewayRequirementForOwner(index, {
+        kind: 'organization',
+        organizationId: '44444444-4444-4444-8444-444444444444',
+      }),
+    ).toEqual({ kind: 'unrestricted' });
+    expect(
+      personalGatewayAccountFields({
+        personalOrganizationId: organizationId,
+        personalModelGateway: {
+          organizationId,
+          kind: 'model-gateway',
+          baseUrl: 'http://unsafe',
+          enforced: true,
+        },
+      }),
+    ).toEqual({ personalModelGatewayEnforcementUnavailable: true });
+    expect(personalGatewayAccountFields({})).toEqual({});
   });
 });

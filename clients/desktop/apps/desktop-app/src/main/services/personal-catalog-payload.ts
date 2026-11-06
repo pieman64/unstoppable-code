@@ -58,15 +58,7 @@ export function buildPersonalCatalogPayload(
   }
   return {
     personalCatalogId: source.personalCatalogId,
-    name:
-      // Scrub paths before generic home-directory redaction can split them.
-      // Spaces, quotes, <, > and | are valid POSIX path characters; consume
-      // through the end of the line, favoring privacy over ambiguous prose.
-      redactSecrets(
-        source.name.replace(/(?:[A-Za-z]:[\\/]|\\\\|\/)[^\r\n]*/g, '[path]'),
-      )
-        .slice(0, 256)
-        .trim() || 'Untitled project',
+    name: scrubProjectName(source.name),
     kind: source.type === 'cowork' ? 'COWORK' : 'CODE',
     topology: source.type === 'multi-repo' ? 'MULTI_REPO' : 'SINGLE_REPO',
     location: 'LOCAL',
@@ -78,11 +70,25 @@ export function buildPersonalCatalogPayload(
 }
 
 /**
+ * A project name safe to send to the Cloud: paths removed before generic
+ * home-directory redaction can split them (spaces, quotes, <, > and | are
+ * valid POSIX path characters, so a path runs to the end of the line,
+ * favoring privacy over ambiguous prose), then secrets redacted.
+ */
+export function scrubProjectName(name: string): string {
+  return (
+    redactSecrets(name.replace(/(?:[A-Za-z]:[\\/]|\\\\|\/)[^\r\n]*/g, '[path]'))
+      .slice(0, 256)
+      .trim() || 'Untitled project'
+  );
+}
+
+/**
  * Workspace ids are slugs of user-chosen names with no upper bound, while the
  * registration contract caps `localWorkspaceId` at 128 characters. A longer id
  * maps to a stable, collision-resistant derivation instead of being dropped.
  */
-function boundedLocalWorkspaceId(id: string): string | null {
+export function boundedLocalWorkspaceId(id: string): string | null {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(id)) return null;
   if (id.length <= 128) return id;
   return `${id.slice(0, 63)}-${createHash('sha256').update(id).digest('hex')}`;

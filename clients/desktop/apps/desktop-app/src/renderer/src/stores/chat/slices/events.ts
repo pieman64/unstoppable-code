@@ -14,6 +14,7 @@ import {
 } from '../surface';
 import {
   ensureHydratedAndReplayPendingEvents,
+  discardPendingHookPlaceholder,
   hydratedKeys,
   queuePendingHydrationEvent,
   recordWorktreeChatTouch,
@@ -1985,15 +1986,10 @@ export const createEventsSlice: StateCreator<
           },
         };
       }
-      // When a real (non-queued) hook session starts, preserve any user
-      // follow-up messages that were typed into the placeholder while it was
-      // waiting. The hook's own queued bubble (identified by
-      // `queuedHookQueueId`) is dropped — it has already been "consumed" by
-      // this start event — but plain user entries flow into the started
-      // session and will be flushed by the terminal-event handler after the
-      // first turn finishes.
+      // Keep user follow-ups on repeated placeholder delivery and on start.
+      // Replace the hook bubble on replay; consume it when the chat starts.
       const preservedLocalQueuedMessages =
-        !isQueuedPlaceholder && existingTab?.queuedHookPlaceholder === true
+        existingTab?.queuedHookPlaceholder === true
           ? existingTab.queuedMessages.filter(
               (message) =>
                 message.queuedHookQueueId === undefined &&
@@ -2007,6 +2003,7 @@ export const createEventsSlice: StateCreator<
               reason: queuedMessage.reason,
               queuedHookQueueId: queuedMessage.queueId,
             },
+            ...preservedLocalQueuedMessages,
           ]
         : preservedLocalQueuedMessages;
       const preservedQueuedMessages = preserveHostQueueMirror(
@@ -2101,6 +2098,37 @@ export const createEventsSlice: StateCreator<
       queuePendingHydrationEvent(wtKey, { kind: 'hook-started', event });
       ensureHydratedAndReplayPendingEvents(event.projectId, event.worktreeId);
     }
+  },
+
+  handleHookQueueRemoved: (event): void => {
+    const key = `${event.projectId}/${event.worktreeId}`;
+    discardPendingHookPlaceholder(key, event.queueId);
+    set((state) => {
+      const wc = state.worktreeChats[key];
+      const tab = wc?.tabs.find((candidate) => candidate.id === event.chatId);
+      if (
+        !wc ||
+        tab?.queuedHookPlaceholder !== true ||
+        !tab.queuedMessages.some(
+          (message) => message.queuedHookQueueId === event.queueId,
+        )
+      )
+        return state;
+      const tabs = wc.tabs.filter((candidate) => candidate.id !== event.chatId);
+      return {
+        worktreeChats: {
+          ...state.worktreeChats,
+          [key]: {
+            ...wc,
+            tabs,
+            activeTabId:
+              wc.activeTabId === event.chatId
+                ? (tabs[tabs.length - 1]?.id ?? '')
+                : wc.activeTabId,
+          },
+        },
+      };
+    });
   },
 
   handleSessionImported: (event): void => {

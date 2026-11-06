@@ -8,6 +8,7 @@ import {
   useState,
   type JSX,
   type MouseEvent,
+  type PointerEvent,
   type ReactNode,
   type Ref,
 } from 'react';
@@ -161,22 +162,28 @@ export function NestedMenuFlyout({
     };
   }, [cancelPendingClose, open]);
 
-  const scheduleClose = useCallback((): void => {
-    cancelPendingClose();
-    const view = triggerRef.current?.ownerDocument.defaultView;
-    if (!view) return;
-    closeTimerRef.current = view.setTimeout(() => {
-      closeTimerRef.current = null;
-      const doc = triggerRef.current?.ownerDocument;
-      const active = doc?.activeElement ?? null;
-      const flyoutHeldFocus =
-        active !== null &&
-        active !== doc?.body &&
-        active.closest('[data-floating-menu-nested="true"]') !== null;
-      setOpen(false);
-      if (flyoutHeldFocus || active === doc?.body) triggerRef.current?.focus();
-    }, HOVER_CLOSE_DELAY_MS);
-  }, [cancelPendingClose]);
+  const scheduleClose = useCallback(
+    (event: PointerEvent<HTMLElement>): void => {
+      cancelPendingClose();
+      // Touch emits pointerleave after a tap; keep the choice's outcome visible.
+      if (event.pointerType === 'touch') return;
+      const view = triggerRef.current?.ownerDocument.defaultView;
+      if (!view) return;
+      closeTimerRef.current = view.setTimeout(() => {
+        closeTimerRef.current = null;
+        const doc = triggerRef.current?.ownerDocument;
+        const active = doc?.activeElement ?? null;
+        const flyoutHeldFocus =
+          active !== null &&
+          active !== doc?.body &&
+          active.closest('[data-floating-menu-nested="true"]') !== null;
+        setOpen(false);
+        if (flyoutHeldFocus || active === doc?.body)
+          triggerRef.current?.focus();
+      }, HOVER_CLOSE_DELAY_MS);
+    },
+    [cancelPendingClose],
+  );
 
   useEffect((): (() => void) => cancelPendingClose, [cancelPendingClose]);
 

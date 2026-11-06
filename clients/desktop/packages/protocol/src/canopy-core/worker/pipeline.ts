@@ -1,4 +1,8 @@
 import { z } from 'zod';
+import {
+  ExecutionSecretBindingsSchema,
+  WORKER_EXECUTION_SECRET_ERROR_CODES,
+} from './execution-secrets';
 
 import { CanopyQueryRequestMetadataSchema } from '../common';
 import {
@@ -121,6 +125,7 @@ export const WorkerPipelineExecutionStartParamsSchema = z.strictObject({
   /** The owner core resolved and authorized the run for. */
   owner: PipelineRunOwnerSchema,
   initiationSource: z.enum(WORKER_PIPELINE_INITIATION_SOURCES),
+  secrets: ExecutionSecretBindingsSchema.optional(),
 });
 
 export const WorkerPipelineExecutionResultSchema = z.strictObject({
@@ -193,6 +198,11 @@ export const WorkerPipelineExecutionErrorSchema =
         'worker.pipeline.executionNotFound',
         'worker.pipeline.launchUnavailable',
         'worker.pipeline.startFailed',
+        'worker.pipeline.launchRefused',
+        'worker.pipeline.modelStepsUnsupported',
+        'worker.pipeline.hostUnavailable',
+        'worker.pipeline.hostLost',
+        ...WORKER_EXECUTION_SECRET_ERROR_CODES,
       ])
       .optional(),
     retry: CanopyKeyedRetryDirectiveSchema,
@@ -204,6 +214,7 @@ export const WorkerPipelineExecutionCancelErrorSchema =
       .enum([
         'worker.pipeline.executionNotFound',
         'worker.pipeline.drainTimedOut',
+        'worker.pipeline.hostUnavailable',
       ])
       .optional(),
     retry: CanopyKeyedRetryDirectiveSchema,
@@ -211,7 +222,13 @@ export const WorkerPipelineExecutionCancelErrorSchema =
 
 export const WorkerPipelineExecutionQueryErrorSchema =
   CanopyErrorPayloadSchema.extend({
-    code: z.enum(['worker.pipeline.executionNotFound']).optional(),
+    code: z
+      .enum([
+        'worker.pipeline.executionNotFound',
+        'worker.pipeline.hostUnavailable',
+        'worker.pipeline.hostLost',
+      ])
+      .optional(),
     retry: CanopyQueryRetryDirectiveSchema,
   });
 
@@ -286,6 +303,7 @@ export const WorkerPipelineExecutionResumeParamsSchema = z.strictObject({
   initiationSource: z.enum(WORKER_PIPELINE_CONTROL_SOURCES),
   /** Attribute the rest of the run to `initiationSource`. */
   persistInitiationSource: z.boolean().optional(),
+  secrets: ExecutionSecretBindingsSchema.optional(),
 });
 
 export const WORKER_PIPELINE_RETRY_MODES = [
@@ -303,6 +321,7 @@ export const WorkerPipelineExecutionRetryParamsSchema = z.strictObject({
   mode: z.enum(WORKER_PIPELINE_RETRY_MODES),
   newExecutionId: id.optional(),
   initiationSource: z.enum(WORKER_PIPELINE_CONTROL_SOURCES).optional(),
+  secrets: ExecutionSecretBindingsSchema.optional(),
 });
 
 export const WORKER_PIPELINE_MATRIX_RETRY_MODES = [
@@ -318,6 +337,7 @@ export const WorkerPipelineMatrixJobRetryParamsSchema = z.strictObject({
   jobId: id,
   mode: z.enum(WORKER_PIPELINE_MATRIX_RETRY_MODES),
   variantJobIds: z.array(id).min(1).max(1024).optional(),
+  secrets: ExecutionSecretBindingsSchema.optional(),
 });
 
 export const WorkerPipelineMatrixVariantCancelParamsSchema = z.strictObject({
@@ -351,6 +371,7 @@ export const WorkerPipelineControlErrorSchema = CanopyErrorPayloadSchema.extend(
         'worker.pipeline.executionNotFound',
         'worker.pipeline.launchUnavailable',
         'worker.pipeline.controlFailed',
+        ...WORKER_EXECUTION_SECRET_ERROR_CODES,
       ])
       .optional(),
     retry: CanopyKeyedRetryDirectiveSchema,

@@ -16,17 +16,18 @@ import {
   type ExplorerRankedFact,
 } from '@canopy/protocol/settings/organization-memory';
 import {
+  BusyLabel,
   Button,
+  buttonClassName,
   DelayedLoadingPlaceholder,
   EmptyState,
   ErrorBanner,
-  SegmentedControl,
-  Sheet,
-  buttonClassName,
   SearchField,
+  SegmentedControl,
   SettingsSelect,
-  TextInput,
   type SettingsSelectOption,
+  Sheet,
+  TextInput,
 } from '@canopy/ui-shared/components';
 import { SettingsLink, useSettingsClient } from '../host';
 import { fetchMemoryFact, fetchMemoryFacts } from './api';
@@ -459,9 +460,10 @@ export function FactCorpusView({
             <Button
               size="compact"
               disabled={loading}
+              aria-busy={loading}
               onClick={() => void loadMore()}
             >
-              {loading ? 'Loading…' : 'Load more'}
+              <BusyLabel busy={loading}>Load more</BusyLabel>
             </Button>
           )}
           <Sheet

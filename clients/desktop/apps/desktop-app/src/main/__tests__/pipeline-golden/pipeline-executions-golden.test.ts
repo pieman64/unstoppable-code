@@ -25,7 +25,6 @@ import {
   type DesktopCanopyDispatcher,
 } from '../../canopy-runtime/desktop-runtime';
 import { setDesktopCanopyRuntime } from '../../canopy-runtime/desktop-runtime-access';
-import { getActiveExecutionHandle } from '../../pipelines/pipeline-execution-registry';
 import {
   dispatchAgentAction,
   forkGoldenUtilityProcess,
@@ -274,6 +273,13 @@ async function waitForExecution(
     executionId,
     statuses,
   );
+  // The shutdown golden resets modules to simulate a relaunch. Resolve the
+  // current registry so later tests still await the live handle's cleanup
+  // before retrying an execution whose terminal state is already persisted.
+  // Handles started before the reset stay in the old registry and are not
+  // awaited; only the shutdown checkpoint's paused execution is left there.
+  const { getActiveExecutionHandle } =
+    await import('../../pipelines/pipeline-execution-registry');
   await getActiveExecutionHandle(executionId)
     ?.waitForCompletion()
     .catch(() => undefined);
@@ -903,8 +909,8 @@ describe('agent actions', () => {
   });
 });
 
-// Last: the shutdown checkpoint leaves the execution registry shutting down,
-// so it refuses every later start.
+// The shutdown checkpoint closes admission. The simulated relaunch below
+// gives the remaining goldens fresh main-process modules for later starts.
 describe('desktop shutdown', () => {
   it('checkpoints running work at shutdown and resumes it', async () => {
     const running = await start('ipc-shutdown', () =>
@@ -1098,7 +1104,9 @@ describe('core run records', () => {
       flaky.executionId,
       async () => (await runRecord(flaky.executionId)) === 'failed',
     );
-    await invokeIpc(PIPELINE_CHANNELS.RETRY_EXECUTION, flaky.executionId);
+    await expect(
+      invokeIpc(PIPELINE_CHANNELS.RETRY_EXECUTION, flaky.executionId),
+    ).resolves.toMatchObject({ success: true });
     await settled(flaky.executionId);
     await waitFor(
       flaky.executionId,
@@ -1108,6 +1116,7 @@ describe('core run records', () => {
     const rerun = await start('record-rerun', () =>
       invokeIpc(PIPELINE_CHANNELS.RERUN_EXECUTION, flaky.executionId),
     );
+    expect(rerun.result).toMatchObject({ success: true });
     await settled(rerun.executionId);
     await waitFor(
       rerun.executionId,
@@ -1270,4 +1279,153 @@ describe('curated and shared runs', () => {
       missing: await shared('shared-missing', 'shared-missing'),
     }).toMatchSnapshot();
   });
+});
+
+it('refuses queued workflow IPC cancellation while startup authorization is pending', async () => {
+  const queue = await import('../../lib/hook-pipeline');
+  const registry = await import('../../pipelines/pipeline-execution-registry');
+  const authorization =
+    await import('../../services/background-execution-context');
+  let releaseAuthorization: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    releaseAuthorization = resolve;
+  });
+  let enteredAuthorization: () => void = () => {};
+  const entered = new Promise<void>((resolve) => {
+    enteredAuthorization = resolve;
+  });
+  const authorize = jest
+    .spyOn(authorization, 'authorizeBackgroundExecution')
+    .mockImplementation(async () => {
+      enteredAuthorization();
+      await held;
+      return { allow: true };
+    });
+  const blocker = 'queued-hook-ipc-authorization-blocker';
+  registry.reserveExecution(blocker);
+  let executionId: string | undefined;
+  try {
+    const submitted = await runtime.initiatedWork.submit({
+      origin: { kind: 'hook', sourceId: 'project:pr:create' },
+      owner: { kind: 'principal', id: 'local' },
+      scope: {
+        workspaceId: GOLDEN_WORKSPACE_ID,
+        worktreeId: GOLDEN_WORKTREE_ID,
+      },
+      targetKey: 'queued-hook-ipc-authorization',
+      gates: [],
+      execute: async (control) => ({
+        value: await queue.launchHookPipeline({
+          identity: { operationId: control.operationId, actionIndex: 0 },
+          action: {
+            type: 'pipeline',
+            source: 'local',
+            id: pipelineIds.success ?? '',
+          },
+          cwd: world.worktreePath,
+          projectId: GOLDEN_WORKSPACE_ID,
+          worktreeId: GOLDEN_WORKTREE_ID,
+          env: {},
+          triggerSource: {
+            kind: 'hook',
+            hook_key: 'project:pr:create',
+            hook_label: 'Review',
+            trigger_name: 'pr:create',
+            target: 'project',
+            action_index: 0,
+            triggered_at: '2026-11-05T00:00:00Z',
+          },
+          getWindow: () => null,
+        }),
+        result: { status: 'succeeded', exitCode: 0, durationMs: 0 },
+      }),
+    });
+    if (submitted.disposition !== 'ran' || submitted.value.status !== 'queued')
+      throw new Error('Hook workflow was not queued');
+    const { queueId } = submitted.value;
+    executionId = queue
+      .listQueuedHookPipelines()
+      .find((entry) => entry.queueId === queueId)?.executionId;
+    if (!executionId) throw new Error('Queued execution id missing');
+    registry.releaseExecutionReservation(blocker);
+    await entered;
+    expect(registry.isExecutionReservedBy(executionId, 'pipeline-start')).toBe(
+      true,
+    );
+    const response = await invokeIpc(
+      PIPELINE_CHANNELS.CANCEL_QUEUED_EXECUTION,
+      queueId,
+    );
+    releaseAuthorization();
+    await waitForExecution(executionsDir, executionId, ['success']);
+    expect(response).toEqual({
+      success: false,
+      error: 'Error: This workflow already started; stop the run itself.',
+    });
+    expect(
+      await invokeIpc(PIPELINE_CHANNELS.CANCEL_QUEUED_EXECUTION, queueId),
+    ).toEqual({ success: true });
+  } finally {
+    releaseAuthorization();
+    registry.releaseExecutionReservation(blocker);
+    authorize.mockRestore();
+  }
+});
+
+it('refuses a queued workflow IPC cancellation during startup and keeps absent cancellation idempotent', async () => {
+  const queue = await import('../../lib/hook-pipeline');
+  const registry = await import('../../pipelines/pipeline-execution-registry');
+  const executionId = 'queued-hook-ipc-start';
+  const queueId = 'queued-pipeline-ipc-start';
+  const queued: ReturnType<typeof queue.listQueuedHookPipelines>[number] = {
+    queueId,
+    executionId,
+    projectId: GOLDEN_WORKSPACE_ID,
+    worktreeId: GOLDEN_WORKTREE_ID,
+    pipelineId: pipelineIds.success ?? 'success',
+    pipelineName: 'Queued workflow',
+    reason: 'pipeline-concurrency',
+    reasonLabel: 'Waiting for active pipeline runs to finish',
+    enqueuedAt: '2026-11-05T00:00:00Z',
+    trigger_source: {
+      kind: 'hook',
+      hook_key: 'project:pr:create',
+      hook_label: 'Review',
+      trigger_name: 'pr:create',
+      target: 'project',
+      action_index: 0,
+      triggered_at: '2026-11-05T00:00:00Z',
+    },
+  };
+  const list = jest
+    .spyOn(queue, 'listQueuedHookPipelines')
+    .mockReturnValue([queued]);
+  const cancel = jest
+    .spyOn(queue, 'cancelQueuedHookPipeline')
+    .mockResolvedValue(false);
+  registry.reserveExecution(executionId);
+  try {
+    expect(registry.isExecutionReservedBy(executionId, 'pipeline-start')).toBe(
+      true,
+    );
+    expect(
+      await invokeIpc(PIPELINE_CHANNELS.CANCEL_QUEUED_EXECUTION, queueId),
+    ).toEqual({
+      success: false,
+      error: 'Error: This workflow already started; stop the run itself.',
+    });
+    list.mockReturnValue([]);
+    expect(
+      await invokeIpc(PIPELINE_CHANNELS.CANCEL_QUEUED_EXECUTION, queueId),
+    ).toEqual({ success: true });
+    list.mockReturnValue([queued]);
+    cancel.mockResolvedValue(true);
+    expect(
+      await invokeIpc(PIPELINE_CHANNELS.CANCEL_QUEUED_EXECUTION, queueId),
+    ).toEqual({ success: true });
+  } finally {
+    registry.releaseExecutionReservation(executionId);
+    list.mockRestore();
+    cancel.mockRestore();
+  }
 });

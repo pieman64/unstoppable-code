@@ -11,6 +11,7 @@ import {
   ArchivedChatsCard,
   AutomationPipelineTargetFields,
   BackgroundServiceNotice,
+  UnifiedTable,
   DropdownMenuSurface,
   type ActionMenuItem,
   type AppAdvisorProjectAgentAccessValue,
@@ -25,7 +26,10 @@ import {
   PinIcon,
   TrashIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
-import type { ActiveInstalledItemCounts } from '@canopy/ui-shared/lib';
+import {
+  ORCHESTRATOR_PLUGINS_SELECTION_COPY,
+  type ActiveInstalledItemCounts,
+} from '@canopy/ui-shared/lib';
 import {
   SpecimenCell,
   SpecimenGrid,
@@ -202,7 +206,55 @@ function ActiveItemsSheet(): JSX.Element {
             testId="lab-active-items-error"
           />
         </SpecimenCell>
+        <SpecimenCell label="Unavailable">
+          <ActiveItemsSummary
+            state={{
+              kind: 'unsupported',
+              reason: 'Connect your desktop to view installed items.',
+            }}
+            onManage={(): void => undefined}
+            testId="lab-active-items-unavailable"
+          />
+        </SpecimenCell>
       </SpecimenGrid>
+    </SpecimenPanel>
+  );
+}
+
+/** The picker describes additions to this context, never global activation. */
+function OrchestratorPluginsSheet(): JSX.Element {
+  const [selected, setSelected] = useState<Set<string>>(new Set(['review']));
+  return (
+    <SpecimenPanel title={ORCHESTRATOR_PLUGINS_SELECTION_COPY.title}>
+      <p className="text-s fg-secondary">
+        {ORCHESTRATOR_PLUGINS_SELECTION_COPY.countText(selected.size)}
+      </p>
+      <UnifiedTable
+        rows={['review', 'writing'].map((key) => ({
+          kind: 'collection',
+          key,
+          name: key,
+          description: '',
+          source: 'Local',
+          sourceSubtitle: '',
+          sourceIcon: 'none',
+          lastUpdated: '2026-11-05T00:00:00.000Z',
+          members: [],
+        }))}
+        sourceOptions={[]}
+        showCollectionKind
+        onView={noop}
+        selectedKeys={selected}
+        onToggle={(key) =>
+          setSelected((previous) => {
+            const next = new Set(previous);
+            if (next.has(key)) next.delete(key);
+            else next.add(key);
+            return next;
+          })
+        }
+        selectionCopy={ORCHESTRATOR_PLUGINS_SELECTION_COPY}
+      />
     </SpecimenPanel>
   );
 }
@@ -755,6 +807,7 @@ export function SharedASpecimen(): JSX.Element {
     <div className="flex flex-col gap-8">
       <ActionMenuSheet />
       <ActiveItemsSheet />
+      <OrchestratorPluginsSheet />
       <AgentStateSheet />
       <AiCreditsSheet />
       <AccessSheet />

@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { constants, lstat, open, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { CanopyClientError } from '../errors';
+import type { DaemonOwnerCredential } from './daemon-owner';
 import type { CanopyRuntimeDescriptorSource } from './daemon-ports';
 import { canopyConnectError } from './endpoint';
 import type {
@@ -64,6 +65,8 @@ export interface CanopyDaemonHostLaunchOptions {
   readonly ownedChildren?: CanopyOwnedDaemonChildren;
   /** Electron main's private launcher adapter; absent for CLI and every generic host. */
   readonly migration?: CanopyDaemonMigrationLaunch;
+  /** Electron main only (CAN-5771): every spawn hands the daemon a fresh owner secret on stdin. */
+  readonly ownerCredential?: DaemonOwnerCredential;
   /** Every spawn from this launch opens the W5 host; see the launcher's `w5Host`. */
   readonly w5Host?: boolean;
   /** Shared by every attach-or-start on this launch, so each spawn runs it. */
@@ -95,6 +98,8 @@ export type CanopyDaemonHostLaunch = Omit<
 
 /** Value-free marker: the claim handle follows on stdin, never in argv or env. */
 export const CANOPY_DAEMON_CLAIM_HANDOFF_ENV = 'CANOPY_DAEMON_CLAIM_HANDOFF';
+/** The handoff marker whose stdin payload also carries an owner secret (CAN-5771). */
+export const CANOPY_DAEMON_OWNER_HANDOFF = 'stdin-owner-v1';
 const MAX_HANDOFF_BYTES = 4096;
 const MAX_FILE_BYTES = 64 * 1024;
 const FORCED_STOP_MS = 2_000;
@@ -253,9 +258,17 @@ export function createCanopyDaemonHostLaunch(
             dataRootHash: createHash('sha256').update(dataRoot).digest('hex'),
           }
         : undefined;
+      const ownerCredential = migrationAuth
+        ? undefined
+        : options.ownerCredential;
       const handoff = migrationAuth
         ? JSON.stringify({ claim: claimHandle ?? null, auth: migrationAuth })
-        : claimHandle && JSON.stringify(claimHandle);
+        : ownerCredential
+          ? JSON.stringify({
+              claim: claimHandle ?? null,
+              owner: { secret: ownerCredential.rotate() },
+            })
+          : claimHandle && JSON.stringify(claimHandle);
       if (handoff && Buffer.byteLength(handoff) > MAX_HANDOFF_BYTES)
         throw failure('Core startup claim handoff is too large.');
       const env = {
@@ -264,7 +277,9 @@ export function createCanopyDaemonHostLaunch(
           ? {
               [CANOPY_DAEMON_CLAIM_HANDOFF_ENV]: migrationAuth
                 ? 'stdin-migration-v1'
-                : 'stdin-v1',
+                : ownerCredential
+                  ? CANOPY_DAEMON_OWNER_HANDOFF
+                  : 'stdin-v1',
             }
           : {}),
       };
@@ -299,6 +314,7 @@ export function createCanopyDaemonHostLaunch(
             )
           : failure('Core executable could not be started.');
       });
+      ownerCredential?.recordSpawn({ pid: child.pid });
       const daemon: CanopySpawnedDaemon = {
         pid: child.pid,
         exited: child.exited,

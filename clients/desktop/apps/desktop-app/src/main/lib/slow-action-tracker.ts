@@ -4,20 +4,9 @@ import type {
   SlowActionRecord,
   SlowActionSnapshot,
 } from '@canopy/desktop-shared/types';
-import {
-  createDesktopInstrumentationOperationKey,
-  type DesktopInstrumentationContext,
-  type DesktopOperationName,
-} from '@canopy/desktop-instrumentation';
-import {
-  failDesktopOperation,
-  startDesktopOperation,
-  succeedDesktopOperation,
-} from '@canopy/desktop-instrumentation/electron/main';
 
 const DEFAULT_SLOW_ACTION_THRESHOLD_MS = 15_000;
 const MAX_SLOW_ACTION_RECORDS = 256;
-const SLOW_ACTION_OPERATION_NAME = 'canopy.slow_action';
 
 export interface TrackSlowActionOptions {
   id?: string;
@@ -25,7 +14,6 @@ export interface TrackSlowActionOptions {
   label: string;
   thresholdMs?: number;
   context?: SlowActionRecord['context'];
-  telemetryOperationName: DesktopOperationName;
 }
 
 type SlowActionListener = (event: SlowActionEvent) => void;
@@ -53,62 +41,6 @@ function emitSlowActionEvent(event: SlowActionEvent): void {
       console.error('[slow-action-tracker] listener failed:', error);
     }
   }
-}
-
-function buildTelemetryContext(
-  record: SlowActionRecord,
-  status: 'started' | 'threshold_exceeded' | 'success' | 'failure',
-  durationMs?: number,
-): DesktopInstrumentationContext {
-  return {
-    kind: record.kind,
-    channel: record.context?.channel,
-    has_project_context: Boolean(
-      record.context?.projectId || record.context?.worktreeId,
-    ),
-    has_chat_context: Boolean(record.context?.chatId),
-    has_pipeline_execution: Boolean(record.context?.pipelineExecutionId),
-    has_terminal: Boolean(record.context?.terminalId),
-    threshold_ms: record.thresholdMs,
-    duration_ms: durationMs,
-    exceeded_slow_threshold:
-      status === 'threshold_exceeded'
-        ? true
-        : durationMs !== undefined
-          ? durationMs >= record.thresholdMs
-          : undefined,
-    status,
-  };
-}
-
-function safelyEmitTelemetry(callback: () => void): void {
-  try {
-    callback();
-  } catch {
-    // Telemetry must never affect the work it observes.
-  }
-}
-
-function emitSlowThresholdTelemetry(record: SlowActionRecord): void {
-  safelyEmitTelemetry(() => {
-    const durationMs = Math.max(0, Date.now() - record.startedAtMs);
-    const operationKey = createDesktopInstrumentationOperationKey(
-      `slow-action-threshold:${record.id}:${record.startedAtMs}`,
-    );
-    const context = buildTelemetryContext(
-      record,
-      'threshold_exceeded',
-      durationMs,
-    );
-    startDesktopOperation(SLOW_ACTION_OPERATION_NAME, {
-      operationKey,
-      context,
-    });
-    succeedDesktopOperation(SLOW_ACTION_OPERATION_NAME, {
-      operationKey,
-      context,
-    });
-  });
 }
 
 function trimVisibleRecords(): void {
@@ -174,15 +106,10 @@ export async function trackSlowAction<T>(
     thresholdMs,
     ...(options.context ? { context: options.context } : {}),
   };
-  const telemetryOperationKey = createDesktopInstrumentationOperationKey(
-    `tracked-action:${record.kind}:${record.id}`,
-  );
-
   const pending: PendingSlowAction = {
     record,
     timeout: setTimeout(() => {
       visibleRecords.set(id, record);
-      emitSlowThresholdTelemetry(record);
       trimVisibleRecords();
       if (visibleRecords.has(id)) {
         emitSlowActionEvent({ type: 'added', record });
@@ -191,32 +118,9 @@ export async function trackSlowAction<T>(
   };
 
   pendingActions.set(id, pending);
-  safelyEmitTelemetry(() => {
-    startDesktopOperation(options.telemetryOperationName, {
-      operationKey: telemetryOperationKey,
-      context: buildTelemetryContext(record, 'started'),
-    });
-  });
 
   try {
-    const result = await promise;
-    const durationMs = Math.max(0, Date.now() - startedAtMs);
-    safelyEmitTelemetry(() => {
-      succeedDesktopOperation(options.telemetryOperationName, {
-        operationKey: telemetryOperationKey,
-        context: buildTelemetryContext(record, 'success', durationMs),
-      });
-    });
-    return result;
-  } catch (error) {
-    const durationMs = Math.max(0, Date.now() - startedAtMs);
-    safelyEmitTelemetry(() => {
-      failDesktopOperation(options.telemetryOperationName, 'error', {
-        operationKey: telemetryOperationKey,
-        context: buildTelemetryContext(record, 'failure', durationMs),
-      });
-    });
-    throw error;
+    return await promise;
   } finally {
     clearTimeout(pending.timeout);
     pendingActions.delete(id);

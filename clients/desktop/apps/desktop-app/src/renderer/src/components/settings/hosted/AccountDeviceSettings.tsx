@@ -257,7 +257,8 @@ export interface AccountDeviceSettingsProps {
 /**
  * This computer's settings for a hosted account page, or `null` for pages
  * without device content (Digests, Security, Billing and their detail
- * routes, and Labs, which desktop shows in its own section).
+ * routes, and Labs, Plugins and MCP servers, which desktop shows in its own
+ * sections).
  */
 export function AccountDeviceSettings({
   page,
@@ -273,7 +274,10 @@ export function AccountDeviceSettings({
       return <IntegrationsPageDeviceSettings />;
     case 'digests':
     case 'security':
+    case 'ai-gateway':
     case 'billing':
+    case 'plugins':
+    case 'mcp':
     case 'labs':
     case 'appearance':
       return null;

@@ -1,22 +1,13 @@
-import { type JSX, useCallback, useEffect, useMemo, useState } from 'react';
+import { type JSX, useCallback, useEffect, useState } from 'react';
 import type { PreferencesData } from '@canopy/desktop-shared/types';
-import { marketplaceManagementDestination } from '@canopy/ui-shared/lib';
-import { countActiveInstalledItems } from '@canopy/protocol/installed-items';
 import { useChatStore } from '@/stores/chatStore';
-import { useNavigationStore } from '@/stores/navigationStore';
-import { useDesktopInstalledItemStatuses } from '@/hooks/useDesktopInstalledItemStatuses';
 import {
   DEFERRED_TOOLS_ROW_DESCRIPTORS,
   buildDeferredToolsPreferencePatch,
   type DeferredToolsPreferenceField,
 } from './pluginsTabHelpers';
-import {
-  ActiveItemsSummary,
-  type ActiveItemsSummaryState,
-  ErrorState,
-  Notice,
-  ToggleSwitch,
-} from '@canopy/ui-shared/components';
+import { ErrorState, Notice, ToggleSwitch } from '@canopy/ui-shared/components';
+import { DesktopPluginsSettingsSection } from './hosted/DesktopPluginsSettingsSection';
 import { SkillSuggestionsSettingsSection } from './SkillSuggestionsSettingsSection';
 import {
   SettingsGroup,
@@ -68,42 +59,6 @@ export function DeferredToolsSettings({
             />
           );
         })}
-      </SettingsGroup>
-    </SettingsSection>
-  );
-}
-
-/**
- * What loads into every new chat (CAN-4255). Replaces the Default plugins
- * picker: status is managed per item in Customize, which this opens filtered
- * to Active items.
- */
-export function ActiveItemsSettings(): JSX.Element {
-  const { state } = useDesktopInstalledItemStatuses();
-  const summary = useMemo((): ActiveItemsSummaryState => {
-    if (state.kind === 'ready')
-      return {
-        kind: 'ready',
-        counts: countActiveInstalledItems(state.snapshot),
-      };
-    if (state.kind === 'loading') return { kind: 'loading' };
-    return {
-      kind: 'error',
-      message: state.kind === 'error' ? state.message : state.reason,
-    };
-  }, [state]);
-  const openActive = useCallback((): void => {
-    const navigation = useNavigationStore.getState();
-    navigation.closeSettings();
-    navigation.openPluginsNavigation({
-      kind: 'marketplace-browse',
-      ...marketplaceManagementDestination('installed', 'active'),
-    });
-  }, []);
-  return (
-    <SettingsSection title="Active items" dataTestId="settings-plugins-active">
-      <SettingsGroup>
-        <ActiveItemsSummary state={summary} onManage={openActive} />
       </SettingsGroup>
     </SettingsSection>
   );
@@ -186,7 +141,7 @@ export function PluginsTab(): JSX.Element {
 
   return (
     <SettingsPage title="Plugins" dataTestId="settings-tab-plugins">
-      <ActiveItemsSettings />
+      <DesktopPluginsSettingsSection />
 
       <DeferredToolsSettings
         preferences={preferences}

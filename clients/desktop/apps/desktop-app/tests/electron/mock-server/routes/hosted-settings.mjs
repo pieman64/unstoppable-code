@@ -48,6 +48,8 @@
 //     incomingInvitations: [...],  // { id, organization, role, invitedByName, createdAt, expiresAt }
 //     organizations: [...],        // defaultHostedSettingsOrganizations() shape
 //     brandDisplayName: 'Canopy',
+//     cloudGatewayKeys: { '<organizationId>': 'none' | 'saved' | ... },
+//                                  // cloud chat key statuses; absent: 404
 //     operationErrors: { '<operation>': { status, body? } },
 //     operationDelaysMs: { '<operation>': ms },
 //     feed: {
@@ -299,6 +301,10 @@ function initialState(config, scenario) {
   );
   return {
     incomingInvitations,
+    aiGatewayEnabled: config.aiGatewayEnabled === true,
+    personalGateway: clone(config.personalGateway ?? null),
+    cloudGatewayKeys: clone(config.cloudGatewayKeys ?? null),
+    gatewayRevision: 0,
     viewer,
     viewerIdReported:
       config.bootstrap === 'viewer-mismatch'
@@ -642,12 +648,135 @@ function lastOwner(ctx) {
   });
 }
 
+const CLOUD_GATEWAY_KEY_PATH =
+  /^\/api\/v1\/settings\/ai-gateway\/organization\/([^/]+)\/cloud-key$/;
+
 /**
  * The `SETTINGS_OPERATIONS` entries this mock serves, keyed by the request
  * each entry builds. Names match the table so the request log and
  * `operationErrors` speak the same vocabulary as the desktop.
  */
 const OPERATION_ROUTES = [
+  {
+    operation: 'account.settings.ai-gateway.read',
+    method: 'GET',
+    path: /^\/api\/v1\/settings\/ai-gateway$/,
+    handle(ctx) {
+      if (!ctx.state.aiGatewayEnabled)
+        return respond(ctx, 404, { error: 'Not found' });
+      respond(ctx, 200, { gateway: clone(ctx.state.personalGateway) });
+    },
+  },
+  {
+    operation: 'ai-gateway.authorize',
+    method: 'POST',
+    path: /^\/api\/v1\/settings\/ai-gateway\/authorize$/,
+    handle(ctx) {
+      if (!ctx.state.aiGatewayEnabled)
+        return respond(ctx, 404, { error: 'Not found' });
+      const scope = ctx.body?.scope;
+      if (scope?.kind === 'personal') {
+        const id = getScenario(ctx.key).cloud?.personalOrganizationId;
+        return scope.expectedOrganizationId === id
+          ? respond(ctx, 200, { organizationId: id })
+          : respond(ctx, 409, {
+              code: 'stale_scope',
+              error: 'Reload settings',
+            });
+      }
+      const org = ctx.state.organizations[scope?.organizationId];
+      if (!org || org.isPersonal || !canEditOrganization(org.viewerRole))
+        return respond(ctx, 403, { error: 'Forbidden' });
+      respond(ctx, 200, { organizationId: org.id });
+    },
+  },
+  {
+    operation: 'account.settings.ai-gateway.update',
+    method: 'PATCH',
+    path: /^\/api\/v1\/settings\/ai-gateway$/,
+    handle(ctx) {
+      if (!ctx.state.aiGatewayEnabled)
+        return respond(ctx, 404, { error: 'Not found' });
+      const cloud = getScenario(ctx.key).cloud;
+      const { expectedOrganizationId, expectedRevision, ...patch } =
+        ctx.body ?? {};
+      if (expectedOrganizationId !== cloud?.personalOrganizationId)
+        return respond(ctx, 409, {
+          code: 'stale_scope',
+          error: 'Reload settings',
+        });
+      if (
+        expectedRevision !== (ctx.state.personalGateway?.revision ?? 'absent')
+      )
+        return respond(ctx, 409, {
+          code: 'stale_revision',
+          error: 'Reload settings',
+        });
+      const gateway = {
+        organizationId: expectedOrganizationId,
+        displayName: null,
+        baseUrl: null,
+        models: [],
+        enabled: false,
+        onlyThisGateway: false,
+        promptCachePassthrough: true,
+        ...ctx.state.personalGateway,
+        ...patch,
+      };
+      if (gateway.enabled && (!gateway.baseUrl || gateway.models.length === 0))
+        return respond(ctx, 400, { error: 'Add a URL and model' });
+      gateway.revision = `gateway-${++ctx.state.gatewayRevision}`;
+      ctx.state.personalGateway = gateway;
+      if (gateway.enabled)
+        cloud.personalModelGateway = {
+          organizationId: gateway.organizationId,
+          kind: 'model-gateway',
+          baseUrl: gateway.baseUrl,
+          models: gateway.models,
+          enforced: gateway.onlyThisGateway,
+          promptCachePassthrough: gateway.promptCachePassthrough,
+          ...(gateway.displayName ? { displayName: gateway.displayName } : {}),
+        };
+      else delete cloud.personalModelGateway;
+      respond(ctx, 200, { gateway: clone(gateway) });
+    },
+  },
+  {
+    operation: 'organization.settings.ai-gateway.cloud-key.read',
+    method: 'GET',
+    path: CLOUD_GATEWAY_KEY_PATH,
+    handle(ctx, match) {
+      const keys = ctx.state.cloudGatewayKeys;
+      if (!keys) return respond(ctx, 404, { error: 'Not found' });
+      const id = decodeURIComponent(match[1]);
+      respond(ctx, 200, { status: keys[id] ?? 'none' });
+    },
+  },
+  {
+    operation: 'organization.settings.ai-gateway.cloud-key.save',
+    method: 'PUT',
+    path: CLOUD_GATEWAY_KEY_PATH,
+    handle(ctx, match) {
+      const keys = ctx.state.cloudGatewayKeys;
+      if (!keys) return respond(ctx, 404, { error: 'Not found' });
+      const id = decodeURIComponent(match[1]);
+      keys[id] = 'saved';
+      respond(ctx, 200, { status: keys[id] });
+    },
+  },
+  {
+    operation: 'organization.settings.ai-gateway.cloud-key.remove',
+    method: 'DELETE',
+    path: CLOUD_GATEWAY_KEY_PATH,
+    handle(ctx, match) {
+      const keys = ctx.state.cloudGatewayKeys;
+      if (!keys) return respond(ctx, 404, { error: 'Not found' });
+      const id = decodeURIComponent(match[1]);
+      keys[id] = 'none';
+      respond(ctx, 200, { status: keys[id] });
+    },
+  },
+
   /* Hosted settings reads ------------------------------------------------ */
   {
     operation: 'settings.bootstrap',

@@ -1,5 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import type { ParentPort } from 'electron';
+import {
+  connectExecutionHostChannel,
+  type ConnectedExecutionHostChannel,
+  type ExecutionHostChannel,
+} from '@canopy/desktop-shared/node/execution-host/channel';
 import { killProcessGroupByPid } from '@canopy/desktop-shared/node/lib/process-kill';
 import { killChildProcessGroup } from '../lib/process-kill';
 import type {
@@ -33,14 +37,19 @@ function isRequest(value: unknown): value is ClaudeProcessHostRequest {
   return typeof value.requestId === 'string';
 }
 
+export interface ClaudeProcessHostHandle {
+  /** The host's shutdown: SIGKILL every tracked CLI group, report shutdown-complete, exit. Idempotent. */
+  shutdown(): Promise<void>;
+}
+
 export function startClaudeProcessHost(
-  parentPort: ParentPort,
+  channel: ExecutionHostChannel,
   exitProcess: (code: number) => void = (code) => process.exit(code),
-): void {
+): ClaudeProcessHostHandle {
   const active = new Map<string, HostedClaudeProcess>();
   let shuttingDown = false;
   const post = (response: ClaudeProcessHostResponse): void => {
-    parentPort.postMessage(response);
+    channel.postMessage(response);
   };
 
   const clearSigkillEscalation = (state: HostedClaudeProcess): void => {
@@ -272,7 +281,7 @@ export function startClaudeProcessHost(
     exitProcess(0);
   };
 
-  parentPort.on('message', (event: unknown): void => {
+  channel.on('message', (event: unknown): void => {
     const payload = isRecord(event) && 'data' in event ? event.data : event;
     if (!isRequest(payload)) return;
     if (payload.type === 'spawn') {
@@ -311,7 +320,21 @@ export function startClaudeProcessHost(
       void shutdown();
     }
   });
+  return { shutdown };
 }
 
-const workerParentPort: ParentPort | undefined = process.parentPort;
-if (workerParentPort) startClaudeProcessHost(workerParentPort);
+/** Serves the host over a launched channel; a lost launcher shuts it down (CAN-4116). */
+export function serveClaudeProcessHost(
+  channel: ConnectedExecutionHostChannel,
+): ClaudeProcessHostHandle {
+  const host = startClaudeProcessHost(channel, (code) => channel.exit(code));
+  // A launcher that can no longer be reached leaves no one to stop the
+  // CLIs, which run in their own process groups.
+  channel.onDisconnect(() => {
+    void host.shutdown();
+  });
+  return host;
+}
+
+const channel = connectExecutionHostChannel();
+if (channel) serveClaudeProcessHost(channel);

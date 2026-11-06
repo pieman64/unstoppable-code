@@ -575,25 +575,25 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
       },
       {
         id: 'gateway-key-missing',
-        title: 'Model gateway: key missing',
+        title: 'AI gateway: key missing',
         intent: 'attention',
         heading: 'Gateway key needed',
         message:
-          'Acme routes your agents through its own model gateway, so add your gateway key to send this.',
+          'Acme routes your agents through its own AI gateway, so add your gateway key to send this.',
         actions: [{ label: 'Add your gateway key', variant: 'primary' }],
       },
       {
         id: 'gateway-key-stale',
-        title: 'Model gateway: endpoint moved',
+        title: 'AI gateway: endpoint moved',
         intent: 'attention',
         heading: 'Gateway endpoint changed',
         message:
-          'Acme moved its model gateway, so add a key for the new one to send this.',
+          'Acme moved its AI gateway, so add a key for the new one to send this.',
         actions: [{ label: 'Add your gateway key', variant: 'primary' }],
       },
       {
         id: 'gateway-key-rejected',
-        title: 'Model gateway: key rejected',
+        title: 'AI gateway: key rejected',
         intent: 'attention',
         heading: 'Gateway key rejected',
         message:

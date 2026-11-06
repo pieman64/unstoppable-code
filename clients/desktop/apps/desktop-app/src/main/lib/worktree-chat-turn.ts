@@ -146,6 +146,11 @@ import {
   isTerminalChatEventData,
   readCodexRootThreadId,
 } from './chat-turn-audit';
+import {
+  beginChatTurnRun,
+  chatTurnOutcomeOf,
+  type ChatTurnRunHandle,
+} from '../agent-runs/turn-runs';
 import { recordChatEventDropped } from './chat-event-drop-diagnostics';
 import {
   SessionEventCommitPipeline,
@@ -2026,6 +2031,9 @@ async function dispatchHeldWorktreeChatTurn<
   });
   let resourceGuard: ResourceGuardReservation | undefined;
   let releaseSessionTurnPreparation: (() => void) | undefined;
+  let activeTurnRun: ChatTurnRunHandle | undefined;
+  let activeTurnAccepted = false;
+  let dispatchFailure: { error: unknown } | undefined;
   const preparation = beginChatTurnPreparation(options);
   // Resolve the active plan captured with this message beside memory
   // preparation; it is prepended only when the turn is composed. A hidden
@@ -2524,6 +2532,7 @@ async function dispatchHeldWorktreeChatTurn<
         // Settle before scheduling terminal follow-up work so callbacks already
         // queued behind this event cannot append output to the completed turn.
         turnSettled = true;
+        activeTurnRun?.settle(chatTurnOutcomeOf(eventData));
         // The root turn ended (success, error, or cancellation): the sync
         // service may now apply plan-file edits it made.
         closePlanTurn();
@@ -3236,6 +3245,23 @@ async function dispatchHeldWorktreeChatTurn<
       await eventCommit;
       await derivedCommits;
     };
+    // One worker execution per dispatched turn (CAN-4115). Begun before the
+    // last preparation check, so a Stop meanwhile abandons it unaccepted.
+    activeTurnRun = await beginChatTurnRun({
+      scope: {
+        workspaceId: options.projectId,
+        worktreeId: options.worktreeId,
+        chatId: options.chatId,
+      },
+      turnId: executionUserMessageId,
+      eventNamespace: options.hiddenDeferredContinuation
+        ? `${sequenceNamespace}:${options.hiddenContinuationKind ?? 'deferred_tools_reload'}`
+        : sequenceNamespace,
+      providerId: preparedSession.effectiveProviderType,
+      model: preparedSession.selectedModel ?? null,
+      initiationSource: options.initiationSource,
+    });
+    const turnRun = activeTurnRun;
     // The last read before the session exists: what the chat holds now, not
     // what the send carried when it was committed or queued (CAN-4469).
     const turnApprovalAuthority =
@@ -3252,111 +3278,123 @@ async function dispatchHeldWorktreeChatTurn<
     const pendingRouteOwner = options.authorization;
     const sessionBeforeDispatch = getLiveRoutedSession(options);
     const session = await turnDispatchTiming.measure('session_create', () =>
-      getOrCreateRoutedSession(
-        {
-          ...buildSessionOptions(),
-          approvalMode: turnApprovalAuthority.approvalMode,
-          sessionApprovalRules: turnApprovalAuthority.sessionApprovalRules,
-        },
-        handleSessionEvent,
-        options.getWindow,
-        {
-          turnUserMessageId: executionUserMessageId,
-          // An admitted dispatch is a pending destination, so a wake already
-          // running keeps its output. Codex activates it on its own start;
-          // other providers at the send.
-          ...(pendingRouteOwner
-            ? {
-                dispatchOwner: pendingRouteOwner.dispatchOwner,
-                operationEpoch: pendingRouteOwner.operationEpoch,
-              }
-            : {}),
-          acceptTurnRoot: async (turnUserMessageId) => {
-            // Arbitrate in provider-event order. A preceding terminal event may
-            // still be waiting for its durable commit; deciding before it lands
-            // would reject an ordinary pickup against the turn it just ended.
-            await sessionEventCommitTail;
-            if (commitPipeline.pending) await commitPipeline.drained();
-            await terminalQueueReleaseTail;
-            const acceptance = (
-              await getChatQueueServiceForTurnLifecycle()
-            ).acceptTurnRevival(
-              {
-                projectId: options.projectId,
-                worktreeId: options.worktreeId,
-                chatId: options.chatId,
-              },
-              turnUserMessageId,
-            );
-            // The queue gate now waits on this root; the pickup's commit
-            // decides whether this closure comes to own its turn.
-            if (acceptance.accepted)
-              unownedTurnRootUserMessageId = turnUserMessageId;
-            return acceptance;
+      turnRun.execute(() =>
+        getOrCreateRoutedSession(
+          {
+            ...buildSessionOptions(),
+            approvalMode: turnApprovalAuthority.approvalMode,
+            sessionApprovalRules: turnApprovalAuthority.sessionApprovalRules,
           },
-          drainEventsBeforeRemoval: drainSessionEvents,
-          onRemoved: (): void => {
-            void drainSessionEvents().then(() => {
-              // The session is gone, so an unowned root's terminal never arrives.
-              releaseUnownedTurnRoot('cancelled');
-              if (
-                (turnSettled &&
-                  (!resumesStoppedTurn || resumedTransportSettled)) ||
-                isCoworkChat
-              ) {
-                return;
-              }
-              if (deferredToolsReloadCoordinator.hasActiveReload(options)) {
-                // A tool reload keeps the logical turn alive, so its plan-file
-                // lease is held until the reload settles. After a hand-off the
-                // continuation's lease has already superseded this one and the
-                // release is a no-op; a reload that fails, is cancelled or
-                // rejected, or times out starts no continuation, and this
-                // release is the only thing that ends the lease.
-                deferredToolsReloadCoordinator.whenActiveReloadSettles(
-                  options,
-                  closePlanTurn,
-                );
-                return;
-              }
-              // If no queued provider event settled this turn, release its queue
-              // gate even when account teardown had no terminal event to deliver.
-              turnSettled = true;
-              closePlanTurn();
-              if (resumesStoppedTurn) {
-                getStoppedTurnResumeService().settleTerminalOwnership(
-                  {
-                    projectId: options.projectId,
-                    worktreeId: options.worktreeId,
-                    chatId: options.chatId,
-                  },
-                  executionUserMessageId,
-                );
-              }
-              if (
-                activeTurnUserMessageIds.get(sessionKey) ===
-                executionUserMessageId
-              ) {
-                activeTurnUserMessageIds.delete(sessionKey);
-              }
-              void getChatQueueServiceForTurnLifecycle().then((queue) => {
-                // Session teardown can finish after the resumed dispatch has
-                // reserved this same user-message anchor. The resume coordinator
-                // distinguishes that ownership even though the queue id cannot.
-                if (resumeOwnsTerminalSettlement()) return;
-                queue.onTurnTerminal(
-                  {
-                    projectId: options.projectId,
-                    worktreeId: options.worktreeId,
-                    chatId: options.chatId,
-                  },
-                  'cancelled',
-                  executionUserMessageId,
-                );
+          turnRun.observe(handleSessionEvent),
+          options.getWindow,
+          {
+            turnUserMessageId: executionUserMessageId,
+            // An admitted dispatch is a pending destination, so a wake already
+            // running keeps its output. Codex activates it on its own start;
+            // other providers at the send.
+            ...(pendingRouteOwner
+              ? {
+                  dispatchOwner: pendingRouteOwner.dispatchOwner,
+                  operationEpoch: pendingRouteOwner.operationEpoch,
+                }
+              : {}),
+            acceptTurnRoot: async (turnUserMessageId) => {
+              // Arbitrate in provider-event order. A preceding terminal event may
+              // still be waiting for its durable commit; deciding before it lands
+              // would reject an ordinary pickup against the turn it just ended.
+              await sessionEventCommitTail;
+              if (commitPipeline.pending) await commitPipeline.drained();
+              await terminalQueueReleaseTail;
+              const acceptance = (
+                await getChatQueueServiceForTurnLifecycle()
+              ).acceptTurnRevival(
+                {
+                  projectId: options.projectId,
+                  worktreeId: options.worktreeId,
+                  chatId: options.chatId,
+                },
+                turnUserMessageId,
+              );
+              // The queue gate now waits on this root; the pickup's commit
+              // decides whether this closure comes to own its turn.
+              if (acceptance.accepted)
+                unownedTurnRootUserMessageId = turnUserMessageId;
+              return acceptance;
+            },
+            drainEventsBeforeRemoval: drainSessionEvents,
+            onRemoved: (): void => {
+              void drainSessionEvents().then(() => {
+                // The session is gone, so an unowned root's terminal never arrives.
+                releaseUnownedTurnRoot('cancelled');
+                // Before acceptance the dispatch settles the run itself, at
+                // disposal at send or on exit.
+                if (isCoworkChat && !turnSettled && activeTurnAccepted)
+                  activeTurnRun?.settle(
+                    deferredToolsReloadCoordinator.hasActiveReload(options)
+                      ? 'completed'
+                      : 'cancelled',
+                  );
+                if (
+                  (turnSettled &&
+                    (!resumesStoppedTurn || resumedTransportSettled)) ||
+                  isCoworkChat
+                ) {
+                  return;
+                }
+                if (deferredToolsReloadCoordinator.hasActiveReload(options)) {
+                  // A tool reload keeps the logical turn alive, so its plan-file
+                  // lease is held until the reload settles. After a hand-off the
+                  // continuation's lease has already superseded this one and the
+                  // release is a no-op; a reload that fails, is cancelled or
+                  // rejected, or times out starts no continuation, and this
+                  // release is the only thing that ends the lease.
+                  deferredToolsReloadCoordinator.whenActiveReloadSettles(
+                    options,
+                    closePlanTurn,
+                  );
+                  if (activeTurnAccepted) activeTurnRun?.settle('completed'); // The reload continues this turn as a new run.
+                  return;
+                }
+                // If no queued provider event settled this turn, release its queue
+                // gate even when account teardown had no terminal event to deliver.
+                turnSettled = true;
+                if (activeTurnAccepted) activeTurnRun?.settle('cancelled');
+                closePlanTurn();
+                if (resumesStoppedTurn) {
+                  getStoppedTurnResumeService().settleTerminalOwnership(
+                    {
+                      projectId: options.projectId,
+                      worktreeId: options.worktreeId,
+                      chatId: options.chatId,
+                    },
+                    executionUserMessageId,
+                  );
+                }
+                if (
+                  activeTurnUserMessageIds.get(sessionKey) ===
+                  executionUserMessageId
+                ) {
+                  activeTurnUserMessageIds.delete(sessionKey);
+                }
+                void getChatQueueServiceForTurnLifecycle().then((queue) => {
+                  // Session teardown can finish after the resumed dispatch has
+                  // reserved this same user-message anchor. The resume coordinator
+                  // distinguishes that ownership even though the queue id cannot.
+                  if (resumeOwnsTerminalSettlement()) return;
+                  queue.onTurnTerminal(
+                    {
+                      projectId: options.projectId,
+                      worktreeId: options.worktreeId,
+                      chatId: options.chatId,
+                    },
+                    'cancelled',
+                    executionUserMessageId,
+                  );
+                });
               });
-            });
+            },
           },
-        },
+        ),
       ),
     );
     // A wake needs an earlier turn on this session. A Claude session this
@@ -3763,6 +3801,7 @@ async function dispatchHeldWorktreeChatTurn<
       // No await between this fence and queue acceptance. Parent Stop after
       // acceptance must not cancel an independent child's lifetime.
       options.admissionSignal?.throwIfAborted();
+      turnRun.signal.throwIfAborted();
       // A Claude start carries no binding receipt (its prompt binds at its
       // result), so its destination activates here, after the last check.
       if (pendingRouteOwner && runtimeProviderType !== 'codex')
@@ -3773,23 +3812,25 @@ async function dispatchHeldWorktreeChatTurn<
         );
       reservePromptBindingSlot(options, options.userMessageId);
       turnDispatchTiming.measureSync('enqueue', () =>
-        session.sendMessage(submittedText, {
-          userMessageId: options.userMessageId,
-          ...(effectiveExecutionHarness === 'opencode' &&
-          !options.hiddenDeferredContinuation &&
-          options.attachmentPaths?.length
-            ? {
-                attachments: {
-                  baseDir: attachmentBaseDir,
-                  paths: [...options.attachmentPaths],
-                },
-              }
-            : {}),
-          ...(options.countsTowardSkillUsage === true &&
-          !options.hiddenDeferredContinuation
-            ? { countsTowardSkillUsage: true }
-            : {}),
-        }),
+        turnRun.executeSync(() =>
+          session.sendMessage(submittedText, {
+            userMessageId: options.userMessageId,
+            ...(effectiveExecutionHarness === 'opencode' &&
+            !options.hiddenDeferredContinuation &&
+            options.attachmentPaths?.length
+              ? {
+                  attachments: {
+                    baseDir: attachmentBaseDir,
+                    paths: [...options.attachmentPaths],
+                  },
+                }
+              : {}),
+            ...(options.countsTowardSkillUsage === true &&
+            !options.hiddenDeferredContinuation
+              ? { countsTowardSkillUsage: true }
+              : {}),
+          }),
+        ),
       );
       const enqueuedSlowDiagnostic = turnDispatchTiming.markEnqueued();
       if (enqueuedSlowDiagnostic)
@@ -3831,6 +3872,8 @@ async function dispatchHeldWorktreeChatTurn<
     ) {
       for (const id of handoffsAtSend) browserHandoffs.release(id);
     }
+    turnRun.accepted();
+    activeTurnAccepted = true;
     options.onTurnAccepted?.();
     // `sendMessage` enqueues without inspecting session state, so a session
     // destroyed between dispatch and send still accepts the composed turn into
@@ -3839,6 +3882,7 @@ async function dispatchHeldWorktreeChatTurn<
     const sessionDisposedAtSend = session.isDisposed?.() === true;
     if (sessionDisposedAtSend) {
       closePlanTurn();
+      turnRun.settle('cancelled');
     }
     if (memory && memory.facts.length > 0) {
       // A turn sent into a disposed session is a drop, not a delivery — and a
@@ -3903,7 +3947,11 @@ async function dispatchHeldWorktreeChatTurn<
         memoryUsedEvent,
       );
     }
+  } catch (error) {
+    dispatchFailure = { error };
+    throw error;
   } finally {
+    activeTurnRun?.abandon(dispatchFailure?.error);
     releaseSessionTurnPreparation?.();
     preparation.finish();
     resourceGuard?.release();

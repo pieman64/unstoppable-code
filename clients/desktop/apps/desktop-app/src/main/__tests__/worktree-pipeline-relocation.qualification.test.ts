@@ -88,3 +88,81 @@ it('installs the archived copy durably before deleting the live execution', asyn
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
+
+it.each([false, true])(
+  'syncs the copied artifacts before deleting the live ones (sync fails: %s)',
+  async (syncFails) => {
+    const dir = await fs.mkdtemp(join(tmpdir(), 'execution-artifacts-'));
+    try {
+      const archive = join(dir, 'archive');
+      const runtime: ExecutionRuntime = {
+        isModelBlockedByOrgPolicy: (): Promise<boolean> =>
+          Promise.resolve(false),
+        isOrgModelPolicyActive: (): Promise<boolean> => Promise.resolve(false),
+        executionsDir: dir,
+        tempRootDir: dir,
+        bundledActionsDir: dir,
+        getProjectActionsDir: (repoPath: string): string => repoPath,
+        getProjectPipelinesDir: (repoPath: string): string => repoPath,
+      };
+      const state = createInitialState(
+        normalizePipeline({
+          name: 'Artifact relocation',
+          on: 'dispatch',
+          jobs: { main: { steps: [{ id: 'work', run: 'echo ok' }] } },
+        }),
+        {
+          cwd: dir,
+          pipelineId: 'relocation',
+          projectId: 'workspace-1',
+          worktreeId: 'worktree-1',
+          runtime,
+        },
+        'relocation',
+      );
+      state.status = 'success';
+      state.jobs.main.status = 'success';
+      state.jobs.main.steps.work.status = 'success';
+      await saveExecutionState(state, dir);
+      const liveLog = join(dir, 'relocation', 'logs', 'work.log');
+      const copiedLog = join(archive, 'relocation', 'logs', 'work.log');
+      await fs.mkdir(join(dir, 'relocation', 'logs'), { recursive: true });
+      await fs.writeFile(liveLog, 'step output');
+      const synced: string[] = [];
+      const open = fs.open;
+      jest.spyOn(fs, 'open').mockImplementation(async (...args) => {
+        const handle = await open(...args);
+        if (String(args[0]) === copiedLog) {
+          jest.spyOn(handle, 'sync').mockImplementation(() => {
+            if (syncFails) return Promise.reject(new Error('sync failed'));
+            synced.push(copiedLog);
+            return Promise.resolve();
+          });
+        }
+        return handle;
+      });
+
+      const result = await cleanupWorktreePipelines(
+        'workspace-1',
+        'worktree-1',
+        runtime,
+        { relocateArtifactsTo: archive },
+      );
+
+      if (syncFails) {
+        expect(result.failedRelocationIds).toEqual(['relocation']);
+        expect(await fs.readFile(liveLog, 'utf8')).toBe('step output');
+      } else {
+        expect(result.relocatedCount).toBe(1);
+        expect(synced).toEqual([copiedLog]);
+        expect(await fs.readFile(copiedLog, 'utf8')).toBe('step output');
+        await expect(fs.access(liveLog)).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+      }
+    } finally {
+      jest.restoreAllMocks();
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  },
+);

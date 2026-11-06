@@ -1,3 +1,7 @@
+import {
+  desktopAiGatewayEnabled,
+  executeDesktopAiGateway,
+} from './desktop-ai-gateway';
 import type {
   AgentActionCall,
   AgentSettingsOpenResult,
@@ -107,11 +111,15 @@ export function createDesktopSettingsPort(
 }
 
 export const desktopSettingsPort: AgentSettingsPort<CanopyInjectedToolRuntime> =
-  createDesktopSettingsPort({
-    readAccount: readDesktopSettingsAccount,
-    hostedSettingsEnabled: isHostedSettingsEnabled,
-    getWindow: (call) =>
-      call.host.worktreeActionRuntime?.getWindow() ??
-      call.host.settingsWindow?.() ??
-      null,
-  });
+  {
+    ...createDesktopSettingsPort({
+      readAccount: readDesktopSettingsAccount,
+      hostedSettingsEnabled: isHostedSettingsEnabled,
+      getWindow: (call) =>
+        call.host.worktreeActionRuntime?.getWindow() ??
+        call.host.settingsWindow?.() ??
+        null,
+    }),
+    aiGatewayEnabled: desktopAiGatewayEnabled,
+    aiGateway: executeDesktopAiGateway,
+  };

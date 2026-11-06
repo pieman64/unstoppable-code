@@ -6,6 +6,7 @@ import {
   MemoryCommitIdSchema,
   MemoryDeviceIdSchema,
   MemoryDocumentPathSchema,
+  MemoryNoteFileKeySchema,
   MemoryNoteIdSchema,
   MemoryOrganizationIdSchema,
   MemoryProjectIdSchema,
@@ -34,6 +35,9 @@ export const MEMORY_SYNC_OUTBOX_FILENAME = 'sync-outbox.json';
 export const MEMORY_SYNC_PRIVATE_DIRNAME = '.sync';
 export const MEMORY_LOCK_DIRNAME = '.lock';
 export const MEMORY_LOCK_OWNER_FILENAME = 'owner.json';
+
+/** The longest note file the Memory panel saves (512 KiB). */
+const MEMORY_LOCAL_NOTE_FILE_MAX_CHARS = 512 * 1024;
 
 export function memoryReplicaPathSegments(
   accountId: string,
@@ -115,6 +119,35 @@ export const MemorySyncStateFileSchema = z.looseObject({
     }),
   ),
   localOnlyNoteIds: z.array(MemoryNoteIdSchema),
+  /**
+   * Notes the last snapshot did not hold that stayed only because the outbox
+   * held them, as of the replica cursor `cursor`; dropped once the cursor
+   * moves without them (an earlier build pulled). A push that answers a
+   * note's operation as replayed or renamed records `replayed`: the server
+   * may have held the note before the snapshot, which then found it no
+   * longer pending. A page that names the note drops its entry. Once the
+   * outbox no longer holds the note and a page reaches `replayed.cursor`,
+   * the note goes as the snapshot would have moved it aside, while its file
+   * still holds that body; other bytes stay as a local-only note. Absent
+   * when no note is kept so, and in a state an earlier build wrote.
+   */
+  snapshotKept: z
+    .looseObject({
+      cursor: MemoryChangeCursorSchema,
+      notes: z.array(
+        z.looseObject({
+          noteId: MemoryNoteIdSchema,
+          replayed: z
+            .looseObject({
+              contentHash: MemorySha256Schema,
+              /** The push's cursor, at or after the note's storing. */
+              cursor: MemoryChangeCursorSchema.nullable(),
+            })
+            .optional(),
+        }),
+      ),
+    })
+    .optional(),
   pendingCommit: z
     .looseObject({
       commitId: MemoryCommitIdSchema,
@@ -152,15 +185,69 @@ export type MemorySyncStateFile = z.output<typeof MemorySyncStateFileSchema>;
 export const MemorySyncOutboxFileSchema = z.looseObject({
   version: z.literal(1),
   binding: MemoryReplicaBindingSchema,
+  /** The next operation's `seq`; absent before operations had identities. */
+  nextSeq: z.int().min(1).optional(),
   ops: z
     .array(
       z.looseObject({
+        /**
+         * The operation's identity in this outbox, never reused. A push's
+         * answer settles only the operations it carried. Absent in an outbox
+         * an earlier build wrote.
+         */
+        seq: z.int().min(1).optional(),
         queuedAt: MemoryTimestampSchema,
         attempts: z.int().min(0),
+        /**
+         * Set before the operation is first sent: the server may hold it
+         * from then on, so a later edit or delete never cancels it.
+         */
+        sent: z.boolean().optional(),
         op: MemoryNoteOpSchema,
       }),
     )
     .max(MEMORY_SYNC_LIMITS.pendingNotesPerScopeMax),
+  /**
+   * Notes deleted or edited on this device whose file is not settled yet,
+   * each recorded before the file changes, in the outbox write that queues
+   * its change. Settling finishes the change only while the file still holds
+   * the bytes the change saw: a delete removes it, an edit writes its
+   * replacement over it. Then the local-only marks are fixed and the entry
+   * goes, so a change cut short by a failure or a crash is finished later.
+   * Absent in an outbox an earlier build wrote.
+   */
+  localDeletes: z
+    .array(
+      z.looseObject({
+        noteId: MemoryNoteIdSchema,
+        fileKey: MemoryNoteFileKeySchema,
+        /**
+         * The file's bytes when the change was made. A file holding other
+         * bytes by then stays, as a local-only note. Absent in an entry an
+         * earlier build wrote, which removes any file holding the note.
+         */
+        contentHash: MemorySha256Schema.optional(),
+        /**
+         * The note an edit wrote in this one's place. An entry with one is
+         * an edit and never removes its file.
+         */
+        replacedBy: MemoryNoteIdSchema.optional(),
+        /**
+         * The edit's replacement as written over the file, so an edit cut
+         * short is finished from the entry alone. Without it the file and
+         * the entry stay. Absent in an entry an earlier build wrote.
+         */
+        replacement: z
+          .looseObject({
+            contentHash: MemorySha256Schema,
+            content: z.string().max(MEMORY_LOCAL_NOTE_FILE_MAX_CHARS),
+            /** The replacement stays on this device only. */
+            localOnly: z.boolean().optional(),
+          })
+          .optional(),
+      }),
+    )
+    .optional(),
   usage: z.record(
     z.string().min(1).max(256),
     z.looseObject({

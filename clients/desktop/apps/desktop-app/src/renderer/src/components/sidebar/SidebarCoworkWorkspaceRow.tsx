@@ -802,9 +802,6 @@ function SidebarWorkEntryRowContent({
               workspaceId={workspaceId}
               entryId={entry.id}
               menu={menu}
-              // Early access folds the choices into "Notifications ›", as the
-              // worktree menu and the portal's Chats rows do.
-              notificationsPresentation={earlyAccess ? 'submenu' : 'group'}
               afterPin={
                 groupMenu && !isPinnedCopy ? (
                   <WorktreeActionMenuItems
@@ -854,7 +851,6 @@ function SidebarWorkEntryRowContent({
       groupMenu,
       isPinnedCopy,
       workspaceId,
-      earlyAccess,
       entryPinned,
       onSetPinned,
       entry.id,

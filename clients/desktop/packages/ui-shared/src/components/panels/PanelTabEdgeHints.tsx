@@ -11,6 +11,7 @@ import {
 } from 'react';
 import { prefersReducedMotion } from '../../lib/reduced-motion';
 import { ThinkingSpinner } from '../ThinkingSpinner';
+import { Tooltip } from '../Tooltip';
 
 /**
  * How far in from a strip edge a tab must sit to clear the "N running" hint
@@ -244,7 +245,7 @@ function EdgeHint({
   const ref = useRef<HTMLButtonElement>(null);
   useLayoutEffect(() => {
     const hint = ref.current;
-    const wrap = hint?.parentElement;
+    const wrap = hint?.closest<HTMLElement>('.canopy-panel-tab-strip-wrap');
     if (!hint || !wrap) return undefined;
     const property = `--canopy-panel-tab-edge-count-${side}-width`;
     const publish = (): void => {
@@ -270,27 +271,30 @@ function EdgeHint({
     side === 'start' ? 'to the left' : 'to the right',
   );
   return (
-    <button
-      ref={ref}
-      type="button"
-      className="canopy-panel-tab-edge-count"
-      data-side={side}
-      data-size={size}
-      aria-label={label}
-      title={label}
-      tabIndex={-1}
-      data-testid={`${testIdPrefix}-${side}`}
-      onClick={onReveal}
-    >
-      <span className="canopy-panel-tab-edge-count-icon">
-        {/* Deliberate deviation from DESIGN.md "run states use the intent
-          roles": the accent, like the fill tabs' own running spinner and the
-          sidebar's running worktree spinner it counts, so the hint matches
-          the tabs. Moving all three to the info intent is separate work. */}
-        <ThinkingSpinner sizePx={10} tone="accent" />
-      </span>
-      <span>{size === 'full' ? `${count} running` : count}</span>
-    </button>
+    <span className="canopy-panel-tab-edge-anchor" data-side={side}>
+      <Tooltip label={label}>
+        <button
+          ref={ref}
+          type="button"
+          className="canopy-panel-tab-edge-count"
+          data-side={side}
+          data-size={size}
+          aria-label={label}
+          tabIndex={-1}
+          data-testid={`${testIdPrefix}-${side}`}
+          onClick={onReveal}
+        >
+          <span className="canopy-panel-tab-edge-count-icon">
+            {/* Deliberate deviation from DESIGN.md "run states use the intent
+              roles": the accent, like the fill tabs' own running spinner and the
+              sidebar's running worktree spinner it counts, so the hint matches
+              the tabs. Moving all three to the info intent is separate work. */}
+            <ThinkingSpinner sizePx={10} tone="accent" />
+          </span>
+          <span>{size === 'full' ? `${count} running` : count}</span>
+        </button>
+      </Tooltip>
+    </span>
   );
 }
 

@@ -70,7 +70,7 @@ export const AgentActivitySection = memo(function AgentActivitySection({
           aria-label={`${expanded ? 'Collapse' : 'Expand'} agent activity`}
         >
           {expanded ? <ChevronDownIcon /> : <ChevronRightIcon />}
-          <span className="text-sm font-medium fg-primary">Agent activity</span>
+          <span className="text-s font-medium fg-primary">Agent activity</span>
           <span className="text-xs fg-secondary">
             {itemCount} {itemCount === 1 ? 'item' : 'items'}
           </span>

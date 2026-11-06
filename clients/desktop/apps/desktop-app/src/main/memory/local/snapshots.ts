@@ -99,7 +99,10 @@ function isSnapshotTopicFilename(value: unknown): value is string {
 
 function isSnapshotReason(value: unknown): value is LocalMemorySnapshotReason {
   return (
-    value === 'consolidation' || value === 'rebuild' || value === 'restore'
+    value === 'consolidation' ||
+    value === 'rebuild' ||
+    value === 'restore' ||
+    value === 'sync'
   );
 }
 

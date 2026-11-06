@@ -2,7 +2,9 @@
 
 import {
   CodeSidebarItemGroups,
+  codeSidebarItemGroupRowMenu,
   type CodeSidebarItemGroupCommands,
+  type CodeSidebarItemGroupEditorHandle,
 } from './sidebar/CodeSidebarItemGroups';
 import {
   buildSidebarItemGroupBlocks,
@@ -56,7 +58,7 @@ import type {
 } from '@canopy/app-core';
 import {
   AgentStateGlyph,
-  HiddenItemsDisclosureRow,
+  HiddenItemsRow,
   LoadingSpinner,
   openWorktreeActionsMenuAt,
   PIPELINE_POPOVER_HIDE_DELAY_MS,
@@ -1319,6 +1321,11 @@ export function WorkspacesSidebarSections({
     [state.chatSummaries],
   );
   const pendingGroupByWorkspaceRef = useRef(new Map<string, string>());
+  // Per workspace: opens its group list's editor from the selected row's
+  // pinned copy, whose menu is built here rather than by the list.
+  const itemGroupEditorsRef = useRef(
+    new Map<string, CodeSidebarItemGroupEditorHandle>(),
+  );
   const [collapsedOverrides, setCollapsedOverrides] = useState<
     Record<string, boolean>
   >({});
@@ -2144,7 +2151,7 @@ export function WorkspacesSidebarSections({
           canSortWorktree(worktree) &&
           !rowHidden,
         worktreeRemoval: rowCapabilities.worktreeRemoval,
-        itemGroupMenuItems: pinnedSurface ? undefined : itemGroupMenuItems,
+        itemGroupMenuItems,
         ...(pinnedSurface ? { pinnedSurface } : {}),
         // The menu's group/ungroup action reads the true structure, so a
         // pinned child (painted flat) still offers "Unstack from base".
@@ -2438,9 +2445,11 @@ export function WorkspacesSidebarSections({
         data-testid="sidebar-worktree-creating-placeholder"
       >
         <span className={SIDEBAR_ROW_LEADING_SLOT_CLASSNAME} aria-hidden="true">
-          <span
-            className="inline-block h-3 w-3 animate-pulse rounded-full bg-fg-primary/10"
-            data-testid="sidebar-worktree-creating-icon-skeleton"
+          <LoadingSpinner
+            tone="secondary"
+            sizePx={12}
+            decorative
+            dataTestId="sidebar-worktree-creating-icon-skeleton"
           />
         </span>
         <span className="min-w-0 truncate">Creating {childUnitLabel}…</span>
@@ -2552,6 +2561,57 @@ export function WorkspacesSidebarSections({
         <AgentStateGlyph state="background" backgroundTasks={backgroundTasks} />
       ) : null;
     };
+    const itemGroupUnitLabel =
+      workspace.type === 'cowork'
+        ? { singular: 'task', plural: 'tasks' }
+        : { singular: 'worktree', plural: 'worktrees' };
+    const canDragItemRow = (id: string): boolean => {
+      const row = rows.visible.find((row) => row.localId === id);
+      return row !== undefined && canSortWorktree(row);
+    };
+    const isItemRowSelected =
+      worktreeMultiSelect?.selection.active === true
+        ? (id: string): boolean =>
+            worktreeMultiSelect.selection.isSelected(
+              worktreeRowKey(workspace.localId, id),
+            )
+        : undefined;
+    const onItemGroupError = (error: unknown): void =>
+      onCreationError?.(workspace.localId, error);
+    let itemGroupEditor = itemGroupEditorsRef.current.get(workspace.localId);
+    if (!itemGroupEditor) {
+      itemGroupEditor = { current: null };
+      itemGroupEditorsRef.current.set(workspace.localId, itemGroupEditor);
+    }
+    const editorHandle = itemGroupEditor;
+    // The selected row's group entries for one pinned copy, from the same
+    // blocks as the flow row's, so moving it from a sticky copy re-seats the
+    // pin with the row. Stack children take none, as in flow.
+    const selectedItemMenu = (
+      surface: 'pin-top' | 'pin-bottom',
+    ): WorktreeMenuItem[] | undefined =>
+      itemGroupCommands &&
+      selectedItemBlock &&
+      selectedItemId !== undefined &&
+      selectedItemBlock.units.some((unit) => unit.rootId === selectedItemId)
+        ? codeSidebarItemGroupRowMenu(
+            {
+              blocks: itemBlocks,
+              groups: workspace.itemGroups ?? [],
+              mode: itemSortMode,
+              commands: itemGroupCommands,
+              unitLabel: itemGroupUnitLabel,
+              canDragRow: canDragItemRow,
+              isItemSelected: isItemRowSelected,
+              selectionCount: worktreeMultiSelect?.selection.count,
+              onError: onItemGroupError,
+              onEdit: (groupId, itemId): void =>
+                editorHandle.current?.(groupId, itemId, surface),
+            },
+            selectedItemBlock,
+            selectedItemId,
+          )
+        : undefined;
     const visibleList = itemGroupsEnabled ? (
       <CodeSidebarItemGroups
         blocks={itemBlocks}
@@ -2560,25 +2620,12 @@ export function WorkspacesSidebarSections({
         mode={itemSortMode}
         rowGap={worktreeRowGap}
         itemGap={worktreeRowGap}
-        unitLabel={
-          workspace.type === 'cowork'
-            ? { singular: 'task', plural: 'tasks' }
-            : { singular: 'worktree', plural: 'worktrees' }
-        }
+        unitLabel={itemGroupUnitLabel}
         commands={itemGroupCommands}
-        canDragRow={(id): boolean => {
-          const row = rows.visible.find((row) => row.localId === id);
-          return row !== undefined && canSortWorktree(row);
-        }}
+        editorHandle={editorHandle}
+        canDragRow={canDragItemRow}
         selectionCount={worktreeMultiSelect?.selection.count}
-        isItemSelected={
-          worktreeMultiSelect?.selection.active === true
-            ? (id): boolean =>
-                worktreeMultiSelect.selection.isSelected(
-                  worktreeRowKey(workspace.localId, id),
-                )
-            : undefined
-        }
+        isItemSelected={isItemRowSelected}
         renderStatus={renderGroupStatus}
         pendingGroupId={pendingGroupByWorkspace.get(workspace.localId) ?? null}
         placeholder={creatingPlaceholder}
@@ -2587,7 +2634,7 @@ export function WorkspacesSidebarSections({
           createWorktree(workspace.localId, groupId);
         }}
         canCreate={canCreateWorktree}
-        onError={(error): void => onCreationError?.(workspace.localId, error)}
+        onError={onItemGroupError}
         onReorderChild={
           onReorderGroupedChild
             ? (activeId, overId): void =>
@@ -2993,6 +3040,7 @@ export function WorkspacesSidebarSections({
                         false,
                         undefined,
                         surface,
+                        selectedItemMenu(surface),
                       )}
                     </div>
                   )
@@ -3101,7 +3149,7 @@ export function WorkspacesSidebarSections({
                     className="mt-0.5 min-w-0"
                     data-testid={testIds?.hiddenWorktreesSection}
                   >
-                    <HiddenItemsDisclosureRow
+                    <HiddenItemsRow
                       label={`Hidden ${WORKTREE_UNIT_LABEL_PLURAL}`}
                       count={rows.hidden.length}
                       expanded={
@@ -3312,7 +3360,7 @@ export function WorkspacesSidebarSections({
       {additionalRows}
       {partitions.hidden.length > 0 && (
         <div className="pt-1">
-          <HiddenItemsDisclosureRow
+          <HiddenItemsRow
             label="Hidden projects"
             count={partitions.hidden.length}
             expanded={hiddenWorkspacesExpanded}

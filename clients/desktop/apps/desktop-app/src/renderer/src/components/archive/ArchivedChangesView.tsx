@@ -410,7 +410,7 @@ export function ArchivedChangesView({
       {changes === null || changes.status === 'loading' ? (
         <div
           data-testid="archived-changes-loading"
-          className="flex min-h-30 flex-1 items-center justify-center gap-3 text-sm fg-secondary"
+          className="flex min-h-30 flex-1 items-center justify-center gap-3 text-s fg-secondary"
         >
           <LoadingSpinner tone="secondary" />
           Loading changed files…
@@ -418,7 +418,7 @@ export function ArchivedChangesView({
       ) : changes.status === 'error' ? (
         <div
           data-testid="archived-changes-list-error"
-          className="flex min-h-30 flex-1 flex-col items-center justify-center gap-2 text-sm fg-secondary"
+          className="flex min-h-30 flex-1 flex-col items-center justify-center gap-2 text-s fg-secondary"
         >
           Changed files couldn’t be loaded for this archive.
           <Button
@@ -432,7 +432,7 @@ export function ArchivedChangesView({
       ) : changes.files.length === 0 ? (
         <div
           data-testid="archived-changes-empty"
-          className="flex min-h-30 flex-1 items-center justify-center text-sm fg-secondary"
+          className="flex min-h-30 flex-1 items-center justify-center text-s fg-secondary"
         >
           No changed files were captured with this archive.
         </div>
@@ -458,7 +458,7 @@ export function ArchivedChangesView({
             className="flex min-h-0 flex-1 flex-col"
           >
             {selected === null ? (
-              <div className="flex flex-1 items-center justify-center text-sm fg-secondary">
+              <div className="flex flex-1 items-center justify-center text-s fg-secondary">
                 Select a file to view its archived diff.
               </div>
             ) : selectedDiff === undefined ||
@@ -474,7 +474,7 @@ export function ArchivedChangesView({
             ) : selectedDiff.status === 'error' ? (
               <div
                 data-testid="archived-changes-diff-error"
-                className="flex flex-1 flex-col items-center justify-center gap-2 text-sm fg-secondary"
+                className="flex flex-1 flex-col items-center justify-center gap-2 text-s fg-secondary"
               >
                 This archived diff couldn’t be loaded.
                 <Button

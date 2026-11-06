@@ -114,7 +114,12 @@ export interface LocalMemoryRebuildResponse {
   status: LocalMemoryConsolidationStatus;
 }
 
-export type LocalMemorySnapshotReason = 'consolidation' | 'rebuild' | 'restore';
+/** `sync`: taken before a synced replica applies a pulled revision. */
+export type LocalMemorySnapshotReason =
+  | 'consolidation'
+  | 'rebuild'
+  | 'restore'
+  | 'sync';
 
 export interface LocalMemorySnapshotSummary {
   id: string;

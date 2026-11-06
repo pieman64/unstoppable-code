@@ -4,6 +4,8 @@ import {
   mkdir,
   mkdtemp,
   realpath,
+  cp,
+  readFile,
   rm,
   symlink,
   writeFile,
@@ -15,6 +17,7 @@ import { pathToFileURL } from 'node:url';
 import {
   deriveLocalAuthorityIdentity,
   hostLocalAuthorityObservation,
+  observeLocalAuthorityRelocation,
   type LocalAuthorityObservation,
 } from '../local-authority';
 import {
@@ -47,6 +50,72 @@ posix('trusted local authority identity', () => {
     root = await realpath(await mkdtemp(join(tmpdir(), 'authority-')));
   });
   afterEach(() => rm(root, { recursive: true, force: true }));
+
+  it('qualifies one principal and exact old/new roots without globally accepting old authority', async () => {
+    const sourceRoot = join(root, 'old');
+    const destinationRoot = join(root, 'new');
+    await mkdir(sourceRoot);
+    const getuid = jest.fn(() => 501);
+    const observation = { platform: 'darwin', getuid };
+    const transition = await observeLocalAuthorityRelocation(
+      {
+        brandId: 'canopy',
+        installationId: 'installation-1',
+        sourceRoot,
+        destinationRoot,
+      },
+      observation,
+    );
+    expect(getuid).toHaveBeenCalledTimes(1);
+    expect(transition.from).toEqual({
+      authorityId: expectedAuthority('canopy', sourceRoot, ['posix-uid', 501]),
+      canonicalDataRoot: sourceRoot,
+    });
+    expect(transition.to).toEqual({
+      authorityId: expectedAuthority('canopy', destinationRoot, [
+        'posix-uid',
+        501,
+      ]),
+      canonicalDataRoot: destinationRoot,
+    });
+    await writeFile(join(sourceRoot, 'preserved'), 'source bytes');
+    await cp(sourceRoot, destinationRoot, {
+      recursive: true,
+      verbatimSymlinks: true,
+    });
+    expect(await readFile(join(sourceRoot, 'preserved'), 'utf8')).toBe(
+      'source bytes',
+    );
+    await expect(
+      observeLocalAuthorityRelocation(
+        {
+          brandId: 'canopy',
+          installationId: 'installation',
+          sourceRoot,
+          destinationRoot,
+        },
+        observation,
+      ),
+    ).rejects.toMatchObject({ code: 'invalid_root' });
+    expect(
+      await deriveLocalAuthorityIdentity(
+        { brandId: 'canopy', dataRoot: destinationRoot },
+        observation,
+      ),
+    ).toEqual(transition.to);
+    expect(transition.from.authorityId).not.toBe(transition.to.authorityId);
+    await expect(
+      observeLocalAuthorityRelocation(
+        {
+          brandId: 'canopy',
+          installationId: 'other',
+          sourceRoot: destinationRoot,
+          destinationRoot,
+        },
+        observation,
+      ),
+    ).rejects.toThrow();
+  });
 
   it('pins the versioned tuple and varies every authority input', async () => {
     const input = { brandId: 'canopy', dataRoot: root };

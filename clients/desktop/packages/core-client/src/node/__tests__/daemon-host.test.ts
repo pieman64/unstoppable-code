@@ -193,6 +193,10 @@ describe('daemon host', () => {
     const plain = host();
     expect(plain.daemon).toEqual({ executable: node });
     expect(plain).not.toHaveProperty('beforeSpawn');
+    expect(host({ w5Host: false }).daemon).toEqual({ executable: node });
+    // A trusted spawn request changes neither root binding nor discovery ports.
+    expect(launch.dataRootHash).toBe(plain.dataRootHash);
+    expect(launch.dataRoot).toBe(plain.dataRoot);
   });
 
   it('prepares the runtime before reading, and reports only absence as null', async () => {

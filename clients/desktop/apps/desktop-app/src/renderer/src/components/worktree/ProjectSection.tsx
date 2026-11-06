@@ -64,7 +64,7 @@ import { useArchivedContainersStore } from '@/stores/archivedContainersStore';
 import { useLabsExperimentEnabled } from '@/stores/labsExperimentsStore';
 import { useTerminalActivityStore } from '@/stores/terminalActivityStore';
 import {
-  HiddenItemsDisclosureRow,
+  HiddenItemsRow,
   SidebarFadePresence,
   WorktreeRow,
   type WorktreeRowDepthBadge,
@@ -1143,7 +1143,7 @@ export function ProjectSection({
               </DndContext>
               {hiddenWorktrees.length > 0 && (
                 <div className="mt-1" data-testid="hidden-worktrees-section">
-                  <HiddenItemsDisclosureRow
+                  <HiddenItemsRow
                     label={`Hidden ${WORKTREE_UNIT_LABEL_PLURAL}`}
                     count={hiddenWorktrees.length}
                     expanded={hiddenExpanded}

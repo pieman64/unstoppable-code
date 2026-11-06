@@ -15,15 +15,6 @@ import {
   type ResourceProcessKind,
   type ResourceProcessSnapshot,
 } from '@canopy/desktop-shared/types';
-import {
-  createDesktopInstrumentationOperationKey,
-  type DesktopInstrumentationContext,
-} from '@canopy/desktop-instrumentation';
-import {
-  failDesktopOperation,
-  startDesktopOperation,
-  succeedDesktopOperation,
-} from '@canopy/desktop-instrumentation/electron/main';
 import { getObservabilityService } from '../observability';
 import { getDaemonExecutionStatus } from '../canopy-runtime/daemon-execution-status';
 import { mergeDaemonExecutionStatus } from './daemon-status';
@@ -40,8 +31,8 @@ import { sendToWebContents } from '../lib/web-contents-send';
  * The desktop projection of core execution accounting (CAN-4135). Core
  * `ExecutionAccounting` owns admission, leases, registrations, the process
  * table and pressure; this service adds what stays desktop or Phase 5's:
- * chat-turn admission, Codex pool status and idle suspension, managed
- * process telemetry, pressure diagnostics, the sampling cadence that follows
+ * chat-turn admission, Codex pool status and idle suspension, pressure
+ * diagnostics, the sampling cadence that follows
  * window focus, and the renderer broadcast. Every client reads the same
  * accounting through `core.execution.*` (CAN-5080): this projection follows
  * core's sample events, whoever sampled, and `resource-monitor:get-snapshot`
@@ -85,7 +76,6 @@ const CLAUDE_IDLE_RELEASE_ATTEMPT_MIN_INTERVAL_MS =
 const MAX_BROADCAST_SILENCE_MS = 30_000;
 /** RSS quantization for the material-change signature (32 MiB buckets). */
 const RSS_SIGNATURE_BUCKET_BYTES = 32 * 1024 * 1024;
-const MANAGED_PROCESS_OPERATION_NAME = 'canopy.managed_process';
 
 interface ResourceMonitorWindow {
   isDestroyed(): boolean;
@@ -122,8 +112,6 @@ export interface ResourceProcessRegistration {
   metadata?: ResourceMetadata;
 }
 
-type ResourceRegistrationType = 'process' | 'work_item';
-
 interface ChatTurnConcurrencySnapshot {
   activeTurns: number;
   pendingMessages: number;
@@ -140,52 +128,8 @@ interface DesktopOverlay {
   codexPools: ResourceMonitorSnapshot['guards']['codexPools'];
 }
 
-interface ActiveManagedProcessOperation {
-  operationKey: string;
-  registrationType: ResourceRegistrationType;
-  registeredAtMs: number;
-  initialRegistration: ResourceProcessRegistration;
+interface ActiveRegistration {
   handle: ExecutionRegistrationHandle<ResourceMetadata>;
-}
-
-function buildManagedProcessTelemetryContext(
-  registration: ResourceProcessRegistration,
-  registrationType: ResourceRegistrationType,
-  status: 'started' | 'completed' | 'abandoned',
-  durationMs?: number,
-): DesktopInstrumentationContext {
-  const metadata = registration.metadata;
-  const pipelineMeta = metadata?.type === 'pipeline' ? metadata.pipeline : null;
-  const codexMeta = metadata?.type === 'codex-pool' ? metadata.codexPool : null;
-  return {
-    registration_type: registrationType,
-    kind: registration.kind,
-    group_id: registration.groupId,
-    metadata_type: metadata?.type,
-    has_pid: typeof registration.pid === 'number',
-    has_process_group_id: typeof registration.processGroupId === 'number',
-    has_pipeline_id: pipelineMeta
-      ? Boolean(pipelineMeta.pipelineId)
-      : undefined,
-    has_pipeline_job: pipelineMeta ? Boolean(pipelineMeta.jobId) : undefined,
-    has_pipeline_step: pipelineMeta ? Boolean(pipelineMeta.stepId) : undefined,
-    pipeline_attempt: pipelineMeta?.attempt,
-    pipeline_iteration: pipelineMeta?.iteration,
-    codex_pool_pooled: codexMeta?.pooled,
-    codex_pool_client_count: codexMeta?.clientCount,
-    codex_pool_active_turn_count: codexMeta?.activeTurnCount,
-    codex_pool_initialized: codexMeta?.initialized,
-    duration_ms: durationMs,
-    status,
-  };
-}
-
-function safelyEmitManagedProcessTelemetry(callback: () => void): void {
-  try {
-    callback();
-  } catch {
-    // Telemetry must never affect resource tracking.
-  }
 }
 
 function isCodexPoolResourceSnapshotSummary(
@@ -276,10 +220,7 @@ function readMaxConcurrentChatTurns(): number | null {
 export class ResourceMonitorService {
   private readonly accounting: DesktopExecutionAccounting =
     getExecutionAccounting();
-  private readonly activeOperations = new Map<
-    string,
-    ActiveManagedProcessOperation
-  >();
+  private readonly activeRegistrations = new Map<string, ActiveRegistration>();
   private timer: NodeJS.Timeout | null = null;
   private getWindow: (() => ResourceMonitorWindow | null) | null = null;
   private sampling = false;
@@ -393,24 +334,7 @@ export class ResourceMonitorService {
     this.getWindow = null;
     this.lastBroadcastSignature = null;
     this.lastBroadcastAtMs = 0;
-    this.activeOperations.forEach(
-      (operation: ActiveManagedProcessOperation, id: string) => {
-        const current = this.currentRegistration(id, operation);
-        const durationMs = Math.max(0, Date.now() - operation.registeredAtMs);
-        safelyEmitManagedProcessTelemetry(() => {
-          failDesktopOperation(MANAGED_PROCESS_OPERATION_NAME, 'abandoned', {
-            operationKey: operation.operationKey,
-            context: buildManagedProcessTelemetryContext(
-              current,
-              operation.registrationType,
-              'abandoned',
-              durationMs,
-            ),
-          });
-        });
-      },
-    );
-    this.activeOperations.clear();
+    this.activeRegistrations.clear();
     this.pendingChatTurnStartCount = 0;
     resetExecutionAccountingSamples();
   }
@@ -435,13 +359,13 @@ export class ResourceMonitorService {
   registerProcess(
     registration: ResourceProcessRegistration,
   ): ResourceRegistrationHandle {
-    return this.register(registration, 'process');
+    return this.register(registration);
   }
 
   registerWorkItem(
     registration: ResourceProcessRegistration,
   ): ResourceRegistrationHandle {
-    return this.register(registration, 'work_item');
+    return this.register(registration);
   }
 
   async assertCanStartChatTurn(): Promise<void> {
@@ -611,73 +535,31 @@ export class ResourceMonitorService {
     };
   }
 
-  private currentRegistration(
-    id: string,
-    operation: ActiveManagedProcessOperation,
-  ): ResourceProcessRegistration {
-    return this.accounting.getRegistration(id) ?? operation.initialRegistration;
-  }
-
   private register(
     registration: ResourceProcessRegistration,
-    registrationType: ResourceRegistrationType,
   ): ResourceRegistrationHandle {
-    const registeredAtMs = Date.now();
-    const operationKey = createDesktopInstrumentationOperationKey(
-      `managed-process:${registration.id}:${registeredAtMs}`,
-    );
     const initialRegistration = {
       ...registration,
       // Default startedAt to registration time so snapshot consumers always see
-      // a value, matching the telemetry duration anchor.
-      startedAt:
-        registration.startedAt ?? new Date(registeredAtMs).toISOString(),
+      // a value.
+      startedAt: registration.startedAt ?? new Date().toISOString(),
     };
     const handle = this.accounting.register(initialRegistration);
-    this.activeOperations.set(registration.id, {
-      operationKey,
-      registrationType,
-      registeredAtMs,
-      initialRegistration,
-      handle,
-    });
-    safelyEmitManagedProcessTelemetry(() => {
-      startDesktopOperation(MANAGED_PROCESS_OPERATION_NAME, {
-        operationKey,
-        context: buildManagedProcessTelemetryContext(
-          initialRegistration,
-          registrationType,
-          'started',
-        ),
-      });
-    });
+    this.activeRegistrations.set(registration.id, { handle });
     return {
       update: (update): void => {
-        if (!this.activeOperations.has(registration.id)) {
+        if (!this.activeRegistrations.has(registration.id)) {
           return;
         }
         handle.update(update);
       },
       unregister: (): void => {
-        const operation = this.activeOperations.get(registration.id);
-        if (!operation) {
+        const active = this.activeRegistrations.get(registration.id);
+        if (!active) {
           return;
         }
-        const current = this.currentRegistration(registration.id, operation);
-        const durationMs = Math.max(0, Date.now() - operation.registeredAtMs);
-        safelyEmitManagedProcessTelemetry(() => {
-          succeedDesktopOperation(MANAGED_PROCESS_OPERATION_NAME, {
-            operationKey: operation.operationKey,
-            context: buildManagedProcessTelemetryContext(
-              current,
-              operation.registrationType,
-              'completed',
-              durationMs,
-            ),
-          });
-        });
-        this.activeOperations.delete(registration.id);
-        operation.handle.unregister();
+        this.activeRegistrations.delete(registration.id);
+        active.handle.unregister();
       },
     };
   }

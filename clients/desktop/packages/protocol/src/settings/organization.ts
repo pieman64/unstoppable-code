@@ -361,6 +361,8 @@ export interface OrganizationConfigDetail {
   blockedModelIds: string[];
   reviewedModelIds: string[];
   enforceMemberModelGateway: boolean;
+  modelGatewayDisplayName?: string | null;
+  modelGatewayRevision?: string;
   modelGatewayBaseUrl: string | null;
   modelGatewayModels: ModelGatewayModel[];
   modelGatewayEnforced: boolean;
@@ -397,6 +399,8 @@ export interface UpdateOrganizationConfigRequest {
   blockedModelIds?: string[];
   reviewedModelIds?: string[];
   enforceMemberModelGateway?: boolean;
+  modelGatewayDisplayName?: string | null;
+  expectedModelGatewayRevision?: string;
   modelGatewayBaseUrl?: string | null;
   modelGatewayModels?: ModelGatewayModel[];
   modelGatewayEnforced?: boolean;
@@ -614,6 +618,8 @@ export const organizationConfigDetailShape = z.looseObject({
   blockedModelIds: z.array(z.string()),
   reviewedModelIds: z.array(z.string()),
   enforceMemberModelGateway: z.boolean(),
+  modelGatewayDisplayName: z.string().nullable().optional(),
+  modelGatewayRevision: z.string().optional(),
   modelGatewayBaseUrl: z.string().nullable(),
   modelGatewayModels: z.array(modelGatewayModelShape),
   modelGatewayEnforced: z.boolean(),

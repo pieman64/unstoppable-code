@@ -3,6 +3,7 @@ import {
   Button,
   TurnFileChipView,
   TurnFilesSummaryView,
+  turnChangedFileRowsFrom,
   type TurnFileChipViewProps,
 } from '@canopy/ui-shared/components';
 import {
@@ -157,7 +158,7 @@ function FilesSummary({
   readonly detail?: ReactNode;
   readonly actions?: ReactNode;
   readonly singleFile?: ReactNode;
-  readonly changedFiles?: ReactNode;
+  readonly changedFiles?: readonly ReactNode[];
   readonly children?: ReactNode;
 }): JSX.Element {
   const [expanded, setExpanded] = useState(initiallyExpanded);
@@ -170,7 +171,7 @@ function FilesSummary({
         detail={detail}
         actions={actions}
         singleFile={singleFile}
-        changedFiles={changedFiles}
+        changedFiles={changedFiles && turnChangedFileRowsFrom(changedFiles)}
       >
         {children}
       </TurnFilesSummaryView>

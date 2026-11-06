@@ -11,6 +11,8 @@ import {
 
 export interface McpServerReadDetailProps {
   statusSection?: ReactNode;
+  /** The management card, beneath Status. */
+  managementSection?: ReactNode;
   /** Credential-free portal projection. Raw MCP definitions are forbidden. */
   server: PortalMcpServerDetail;
   /** Host-owned label for app-managed HTTP auth. */
@@ -51,6 +53,7 @@ export function McpServerReadDetail({
   onToggleConfig,
   configToggleFeedback,
   statusSection,
+  managementSection,
 }: McpServerReadDetailProps): JSX.Element {
   const endpoint = server.type === 'http' ? server.url : server.command;
   return (
@@ -64,7 +67,7 @@ export function McpServerReadDetail({
             {server.name}
           </Heading>
           {server.description && (
-            <p className="mt-1 text-sm fg-secondary">{server.description}</p>
+            <p className="mt-1 text-s fg-secondary">{server.description}</p>
           )}
           <p className="mt-1 text-xs fg-secondary">
             {server.type === 'http' ? 'HTTP' : 'Command (stdio)'}
@@ -83,6 +86,8 @@ export function McpServerReadDetail({
         )}
       </div>
 
+      {statusSection}
+      {managementSection}
       <FactList rowGap="2" labelTone="secondary">
         <Fact label="Transport">
           {server.type === 'http' ? 'HTTP' : 'Command (stdio)'}
@@ -213,7 +218,6 @@ export function McpServerReadDetail({
         </section>
       )}
 
-      {statusSection}
       <section aria-labelledby="mcp-server-configs-heading">
         <Heading
           level={4}
@@ -236,7 +240,7 @@ export function McpServerReadDetail({
                   data-testid="mcp-server-read-config"
                 >
                   <div className="min-w-0">
-                    <p className="text-sm font-medium fg-primary">
+                    <p className="text-s font-medium fg-primary">
                       {config.name}
                     </p>
                     {config.description && (

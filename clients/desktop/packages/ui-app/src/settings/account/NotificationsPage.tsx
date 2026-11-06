@@ -32,7 +32,7 @@ export function NotificationsPage(): JSX.Element {
       {unsubscribed && (
         <p
           role="status"
-          className="rounded-lg border border-line-accent bg-accent px-4 py-3 text-sm fg-primary"
+          className="rounded-lg border border-line-accent bg-accent px-4 py-3 text-s fg-primary"
           data-testid="digest-unsubscribed-notice"
         >
           You have been unsubscribed. You can turn work digests back on below at
@@ -42,7 +42,7 @@ export function NotificationsPage(): JSX.Element {
       {installUpdatesNotice && (
         <p
           role="status"
-          className="rounded-lg border border-line-accent bg-accent px-4 py-3 text-sm fg-primary"
+          className="rounded-lg border border-line-accent bg-accent px-4 py-3 text-s fg-primary"
           data-testid="install-updates-unsubscribed-notice"
         >
           {installUpdatesNotice}

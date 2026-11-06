@@ -22,7 +22,10 @@ import { PipelineAssistantTabStrip } from './PipelineAssistantTabStrip';
 import type { PipelineAssistantContext } from './pipelineAssistantSuggestions';
 import { PIPELINE_EDITOR_CHAT_KEY } from './pipelineAssistantDraft';
 import { openPipelineAssistantChat } from './pipelineAssistantConversation';
-import { PIPELINE_ASSISTANT_NEW_CHAT_EVENT } from '@/lib/pipelineAssistantEvents';
+import {
+  PIPELINE_ASSISTANT_NEW_CHAT_EVENT,
+  consumePipelineAssistantNewChatRequest,
+} from '@/lib/pipelineAssistantEvents';
 
 const PIPELINE_EDITOR_TARGET = {
   projectId: PIPELINE_EDITOR_PROJECT_ID,
@@ -94,9 +97,9 @@ export function PipelineChatPanel({
   );
 
   // Hydrate persisted tabs for the sentinel target, then pick the composer's
-  // chat: a new one when a new workflow asked for it (CAN-4319), else the one
-  // it had. `loadTabsForTarget` short-circuits once the slice is hydrated, so
-  // re-mounting the drawer is cheap and idempotent.
+  // chat: a new one when a new or opened workflow asked for it (CAN-4319),
+  // else the one it had. `loadTabsForTarget` short-circuits once the slice
+  // is hydrated, so re-mounting the drawer is cheap and idempotent.
   const loadedRef = useRef(false);
   // Placement remounts the panel, so this stays what it mounted with.
   const editViewRef = useRef(placement === 'start');
@@ -123,7 +126,9 @@ export function PipelineChatPanel({
             pluginSelections ? { pluginSelections } : undefined,
           );
       } catch {
-        // Show whatever chat there is rather than none.
+        // Show whatever chat there is rather than none, and drop a new-chat
+        // request this edit view can no longer take.
+        if (editViewRef.current) consumePipelineAssistantNewChatRequest();
         if (!cancelled) setChatPicked(true);
         return;
       }
@@ -132,7 +137,7 @@ export function PipelineChatPanel({
       openPipelineAssistantChat(editViewRef.current);
       setChatPicked(true);
     })();
-    // A new workflow opened while the loaded edit view stays mounted.
+    // A workflow opened while the loaded edit view stays mounted.
     const handleNewChat = (): void => {
       if (loadedRef.current && editViewRef.current) {
         openPipelineAssistantChat(true);

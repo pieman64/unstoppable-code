@@ -36,9 +36,10 @@ export function checkW5ExpectedRevision(
   resource: W5Resource,
   expected?: number,
 ): Promise<void> {
-  return createW5ExpectedRevisionCheck((resources) =>
-    readW5Revisions(resources),
-  )(resource, expected);
+  return createW5ExpectedRevisionCheck((...args) => readW5Revisions(...args))(
+    resource,
+    expected,
+  );
 }
 
 /**

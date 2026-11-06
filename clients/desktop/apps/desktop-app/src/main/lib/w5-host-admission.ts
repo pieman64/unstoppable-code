@@ -1,5 +1,6 @@
 import { lstat, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { acquireW5DesktopDeleteGate } from '@canopy/core-platform/w5-process-file-lock';
 import {
   registerW5Host,
   W5HostCohortRefusedError,
@@ -12,7 +13,8 @@ import {
  * process death; there is no release path. Remove when the W5 rows move to
  * `daemon` and the legacy Electron writers are deleted (CAN-3795 / CAN-3802).
  *
- * Only `maintenance-held` stops the app. A registration failure that also
+ * Deletion presence must succeed before cohort registration. Within the
+ * cohort, only `maintenance-held` stops the app. A registration failure that also
  * stops maintenance on that root (a linked or non-private runtime folder, no
  * hard links; see w5-maintenance.ts) admits writers unregistered, like the
  * legacy writers. Any other failure refuses writers until a retry registers.
@@ -30,7 +32,7 @@ type MaintenanceBlocked = 'runtime-not-private' | 'no-hard-links';
 type DesktopW5HostAdmission =
   | { readonly kind: 'admitted' }
   | { readonly kind: 'unregistered'; readonly reason: MaintenanceBlocked }
-  /** Maintenance holds the data folder, or may: the app does not start. */
+  /** Deletion presence or maintenance admission refuses: the app does not start. */
   | {
       readonly kind: 'refused';
       readonly message: string;
@@ -40,6 +42,29 @@ type DesktopW5HostAdmission =
   | { readonly kind: 'failed'; readonly error: W5HostCohortRefusedError };
 
 let startup: Promise<DesktopW5HostAdmission> | undefined;
+// Never close on renderer reload or cohort failure: presence ends at process death.
+const deletionPresence = new Map<string, Promise<{ close(): void }>>();
+
+/** Lifetime presence also protects roots shared with a differently selected CLI. */
+export async function admitDesktopDeletionPresence(
+  dataRoot: string,
+): Promise<void> {
+  const root = await realpath(dataRoot).catch((error: unknown) => {
+    if (property(error, 'code') !== 'ENOENT') throw error;
+    return resolve(dataRoot);
+  });
+  let admission = deletionPresence.get(root);
+  if (!admission) {
+    admission = acquireW5DesktopDeleteGate(root, 'desktop');
+    deletionPresence.set(root, admission);
+  }
+  try {
+    await admission;
+  } catch (error) {
+    if (deletionPresence.get(root) === admission) deletionPresence.delete(root);
+    throw error;
+  }
+}
 
 function property(value: unknown, key: string): unknown {
   return typeof value === 'object' && value !== null
@@ -105,6 +130,16 @@ export async function registerDesktopW5Root(
   dataRoot: string,
   seams: DesktopW5HostSeams = {},
 ): Promise<DesktopW5HostAdmission> {
+  try {
+    await admitDesktopDeletionPresence(dataRoot);
+  } catch (error) {
+    const refusal = new W5HostCohortRefusedError('runtime-unavailable', error);
+    return {
+      kind: 'refused',
+      message: error instanceof Error ? error.message : refusal.message,
+      error: refusal,
+    };
+  }
   try {
     await registerW5Host({ dataRoot, hostKind: 'electron', ...seams });
     return { kind: 'admitted' };

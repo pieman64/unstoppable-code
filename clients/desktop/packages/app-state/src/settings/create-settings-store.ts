@@ -213,6 +213,9 @@ function organizationDetailOf(
     case 'account.digest':
     case 'account.notifications':
     case 'account.integrations':
+    case 'account.ai-gateway':
+    case 'account.plugins':
+    case 'account.mcp':
     case 'account.security':
     case 'account.billing':
     case 'account.invoice':

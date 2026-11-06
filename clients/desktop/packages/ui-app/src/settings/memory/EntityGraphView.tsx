@@ -14,19 +14,19 @@ import {
 } from 'react';
 import {
   Button,
+  CenteredLoadingSpinner,
+  CopyDetailsButton,
   DelayedLoadingPlaceholder,
   EmptyState,
   ErrorBanner,
   ErrorState,
+  Heading,
   Notice,
   SearchEmptyState,
-  SettingsChartSkeleton,
   SearchField,
   SettingsSelect,
-  TextInput,
   type SettingsSelectOption,
-  CopyDetailsButton,
-  Heading,
+  TextInput,
 } from '@canopy/ui-shared/components';
 import { RefreshCw } from '@canopy/ui-shared/icons/AppIcons';
 import type {
@@ -95,14 +95,14 @@ const EntityForceGraph = lazy(() =>
 );
 
 /**
- * Holds the canvas while its chunk loads: the graph silhouette, inset so its
- * frame sits inside the graph section's border.
+ * Holds the canvas while its chunk loads. A spinner, not a skeleton: the graph
+ * is drawn on a canvas, so there is nothing to measure.
  */
 function GraphLoading(): JSX.Element {
   return (
     <div className="flex h-full p-3">
       <DelayedLoadingPlaceholder>
-        <SettingsChartSkeleton variant="graph" />
+        <CenteredLoadingSpinner />
       </DelayedLoadingPlaceholder>
     </div>
   );
@@ -424,7 +424,7 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
       {graph === null && graphLoading && retriedGraphError === null ? (
         <div className={`flex ${GRAPH_AREA_HEIGHT}`}>
           <DelayedLoadingPlaceholder>
-            <SettingsChartSkeleton variant="graph" />
+            <CenteredLoadingSpinner />
           </DelayedLoadingPlaceholder>
         </div>
       ) : graph === null ? (

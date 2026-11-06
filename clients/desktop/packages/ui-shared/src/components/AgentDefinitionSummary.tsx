@@ -1,5 +1,6 @@
 import type { JSX } from 'react';
 import { describeAgentBaseModel } from '@canopy/protocol/agents';
+import { Fact, FactList } from './FactList';
 import { Heading } from './Heading';
 
 export interface AgentDefinitionSummaryPlugin {
@@ -33,19 +34,26 @@ export function AgentDefinitionSummary({
   return (
     <div className="space-y-6" data-testid="agent-definition-summary">
       {baseModel !== undefined && (
-        <dl className="rounded-xl border bg-card p-4 text-sm sm:p-5">
-          <dt className="text-xs font-medium fg-secondary">Base model</dt>
-          <dd className="mt-1 break-words">
-            {describeAgentBaseModel(baseModel)}
-          </dd>
-        </dl>
+        <div className="rounded-xl border bg-card p-4 text-s sm:p-5">
+          <FactList layout="stacked" size="inherit">
+            <Fact
+              label={
+                <span className="text-xs font-medium fg-secondary">
+                  Base model
+                </span>
+              }
+            >
+              {describeAgentBaseModel(baseModel)}
+            </Fact>
+          </FactList>
+        </div>
       )}
 
       <section>
         <Heading level={2} variant="title">
           Instructions
         </Heading>
-        <pre className="mt-2 whitespace-pre-wrap break-words rounded-xl border bg-card p-4 font-sans text-sm">
+        <pre className="mt-2 whitespace-pre-wrap break-words rounded-xl border bg-card p-4 font-sans text-s">
           {instructions || 'No additional instructions.'}
         </pre>
       </section>
@@ -55,13 +63,13 @@ export function AgentDefinitionSummary({
           {pluginsLabel}
         </Heading>
         {plugins.length === 0 ? (
-          <p className="mt-2 text-sm fg-secondary">{pluginsEmptyLabel}</p>
+          <p className="mt-2 text-s fg-secondary">{pluginsEmptyLabel}</p>
         ) : (
           <ul className="mt-2 space-y-2">
             {plugins.map((plugin) => (
               <li
                 key={plugin.key}
-                className="rounded-lg border bg-card px-4 py-3 text-sm"
+                className="rounded-lg border bg-card px-4 py-3 text-s"
               >
                 {plugin.label}
               </li>

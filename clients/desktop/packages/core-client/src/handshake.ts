@@ -36,6 +36,8 @@ export interface CanopyInitializeParamsInput {
   readonly clientCapabilities: readonly string[];
   /** Largest reply this client reassembles from message parts, if any. */
   readonly maxMessageBytes?: number;
+  /** `client.ownerProof` for a daemon owner session (CAN-5771). */
+  readonly ownerProof?: string;
 }
 
 export interface CanopyAcceptedInitialize {
@@ -70,6 +72,9 @@ export function buildCanopyInitializeParams(
       capabilities: [...options.clientCapabilities],
       ...(options.maxMessageBytes !== undefined && {
         maxMessageBytes: options.maxMessageBytes,
+      }),
+      ...(options.ownerProof !== undefined && {
+        ownerProof: options.ownerProof,
       }),
     },
   });

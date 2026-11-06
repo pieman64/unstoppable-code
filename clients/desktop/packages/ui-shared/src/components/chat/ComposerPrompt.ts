@@ -53,6 +53,14 @@ export const COMPOSER_PROMPT_TEXT_ROW_WITH_GLYPH_CLASS =
 export const COMPOSER_PROMPT_HEADER_CLASS = 'flex gap-2 pt-1 pr-1 pb-1 pl-3';
 
 /**
+ * The title row led by a circle in the numbers' column, such as Back: the
+ * circle sits where the numbers do, and the title starts where the answers'
+ * labels do (the rows' 12px gap).
+ */
+export const COMPOSER_PROMPT_HEADER_WITH_GLYPH_CLASS =
+  'flex gap-3 pt-1 pr-1 pb-1 pl-1';
+
+/**
  * The editor's scroll container in the text row: one 20px line centred on
  * the 32px row, growing to a few lines before it scrolls.
  */

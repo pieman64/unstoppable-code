@@ -39,7 +39,7 @@ export function ArchivedExecutionRow({
         <Badge {...pipelineStatusBadge(summary.status)} muted>
           {capitalizeFirstLetter(summary.status)}
         </Badge>
-        <span className="min-w-0 truncate text-sm fg-primary/85">
+        <span className="min-w-0 truncate text-s fg-primary/85">
           {summary.pipeline_name}
         </span>
         <span className="ml-auto shrink-0 text-2xs fg-secondary">

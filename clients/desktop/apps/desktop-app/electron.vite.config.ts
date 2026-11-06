@@ -1,3 +1,4 @@
+import { buildIdentityDefines } from '../../packages/protocol/src/brand';
 import {
   E2E_BUILD_UNITS,
   findE2eBuildInputViolations,
@@ -24,7 +25,6 @@ import {
   rendererStartupBoundaryPlugin,
 } from './src/main/build/renderer-chunks';
 import { rendererOutputPlugins } from './src/main/build/renderer-minification';
-import { getDesktopTelemetryBuildIdentity } from './src/main/build/desktop-telemetry-build-identity';
 import {
   compileRendererReactWorkHook,
   rendererReactWorkHookPlugin,
@@ -397,81 +397,12 @@ function createDependencyVersionDefines(mode: string): Record<string, string> {
   };
 }
 
-function createDesktopInstrumentationDefines(
-  mode: string,
-): Record<string, string> {
-  const telemetryIdentity = getDesktopTelemetryBuildIdentity({
-    mode,
-    releaseFlavor: readEnvString('CANOPY_RELEASE_FLAVOR', 'stable'),
-    brandId: brandRuntime.id,
-  });
+function createDesktopInstrumentationDefines(): Record<string, string> {
   return {
-    // Release workflows always set CANOPY_VERSION, unlike the Datadog-only
-    // CANOPY_DATADOG_VERSION, and electron-builder packages the same value.
+    // Release workflows always set CANOPY_VERSION, and electron-builder
+    // packages the same value.
     __CANOPY_APP_VERSION__: JSON.stringify(
       readEnvString('CANOPY_VERSION', pkg.version ?? ''),
-    ),
-    __CANOPY_DATADOG_ENABLED__: JSON.stringify(
-      readEnvBoolean('CANOPY_DATADOG_ENABLED', false),
-    ),
-    __CANOPY_DATADOG_CLIENT_TOKEN__: JSON.stringify(
-      readEnvString('CANOPY_DATADOG_CLIENT_TOKEN'),
-    ),
-    __CANOPY_DATADOG_APPLICATION_ID__: JSON.stringify(
-      readEnvString('CANOPY_DATADOG_APPLICATION_ID'),
-    ),
-    __CANOPY_DATADOG_SITE__: JSON.stringify(
-      readEnvString('CANOPY_DATADOG_SITE', 'datadoghq.com'),
-    ),
-    __CANOPY_DATADOG_SERVICE__: JSON.stringify(
-      readEnvString('CANOPY_DATADOG_SERVICE', 'canopy-desktop'),
-    ),
-    __CANOPY_DATADOG_ENV__: JSON.stringify(telemetryIdentity.env),
-    __CANOPY_DATADOG_VERSION__: JSON.stringify(
-      readEnvString('CANOPY_DATADOG_VERSION', pkg.version ?? ''),
-    ),
-    __CANOPY_DATADOG_VARIANT__: JSON.stringify(telemetryIdentity.variant),
-    __CANOPY_DATADOG_PROXY__: JSON.stringify(
-      readEnvString('CANOPY_DATADOG_PROXY'),
-    ),
-    __CANOPY_DATADOG_SESSION_SAMPLE_RATE__: JSON.stringify(
-      readEnvNumber('CANOPY_DATADOG_SESSION_SAMPLE_RATE', 20),
-    ),
-    __CANOPY_DATADOG_SESSION_REPLAY_SAMPLE_RATE__: JSON.stringify(
-      readEnvNumber('CANOPY_DATADOG_SESSION_REPLAY_SAMPLE_RATE', 0),
-    ),
-    __CANOPY_DATADOG_TELEMETRY_SAMPLE_RATE__: JSON.stringify(
-      readEnvNumber('CANOPY_DATADOG_TELEMETRY_SAMPLE_RATE', 20),
-    ),
-    __CANOPY_DATADOG_TRACK_RESOURCES__: JSON.stringify(
-      readEnvBoolean('CANOPY_DATADOG_TRACK_RESOURCES', true),
-    ),
-    __CANOPY_DATADOG_TRACK_LONG_TASKS__: JSON.stringify(
-      readEnvBoolean('CANOPY_DATADOG_TRACK_LONG_TASKS', true),
-    ),
-    __CANOPY_DATADOG_TRACK_USER_INTERACTIONS__: JSON.stringify(
-      readEnvBoolean('CANOPY_DATADOG_TRACK_USER_INTERACTIONS', false),
-    ),
-    __CANOPY_DATADOG_ENABLE_PRIVACY_FOR_ACTION_NAME__: JSON.stringify(
-      readEnvBoolean('CANOPY_DATADOG_ENABLE_PRIVACY_FOR_ACTION_NAME', true),
-    ),
-    __CANOPY_DATADOG_ALLOWED_TRACING_URLS__: JSON.stringify(
-      readEnvCsv('CANOPY_DATADOG_ALLOWED_TRACING_URLS'),
-    ),
-    __CANOPY_DATADOG_TRACE_SAMPLE_RATE__: JSON.stringify(
-      readEnvNumber('CANOPY_DATADOG_TRACE_SAMPLE_RATE', 20),
-    ),
-    __CANOPY_DATADOG_DEFAULT_PRIVACY_LEVEL__: JSON.stringify(
-      readEnvString('CANOPY_DATADOG_DEFAULT_PRIVACY_LEVEL', 'mask'),
-    ),
-    __CANOPY_DATADOG_ALLOWED_WEBVIEW_HOSTS__: JSON.stringify(
-      readEnvCsv('CANOPY_DATADOG_ALLOWED_WEBVIEW_HOSTS'),
-    ),
-    __CANOPY_DATADOG_SOURCEMAP_MINIFIED_PATH_PREFIX__: JSON.stringify(
-      readEnvString(
-        'CANOPY_DATADOG_SOURCEMAP_MINIFIED_PATH_PREFIX',
-        'https://canopy.local/renderer/assets',
-      ),
     ),
     __CANOPY_POSTHOG_ENABLED__: JSON.stringify(
       readEnvBoolean('CANOPY_POSTHOG_ENABLED', false),
@@ -537,8 +468,11 @@ const desktopE2eDefines = {
   __CANOPY_POSTHOG_STUB_URL__: e2eDefineUrl('CANOPY_POSTHOG_STUB_URL'),
 };
 
-const datadogSourceMapsEnabled = readEnvBoolean(
-  'CANOPY_DATADOG_SOURCEMAPS',
+// Release builds set CANOPY_RENDERER_SOURCEMAPS to emit hidden renderer maps
+// for the PostHog sourcemap upload; scripts/clean-renderer-sourcemaps.mjs
+// removes them before packaging.
+const rendererSourceMapsEnabled = readEnvBoolean(
+  'CANOPY_RENDERER_SOURCEMAPS',
   false,
 );
 
@@ -1004,9 +938,15 @@ export default defineConfig(({ mode }) => {
     false,
   );
   const commonDefines = {
+    __CANOPY_COMPILED_RUNTIME__: 'true',
     ...createDependencyVersionDefines(mode),
     ...brandDefines,
-    ...createDesktopInstrumentationDefines(mode),
+    ...buildIdentityDefines(
+      brandRuntime.id,
+      process.env.CANOPY_RELEASE_FLAVOR ?? 'dev',
+      isE2eBuild || process.env.CANOPY_TEST_DATA_OVERRIDES === '1',
+    ),
+    ...createDesktopInstrumentationDefines(),
     ...desktopFeatureFlagDefines,
     ...desktopE2eDefines,
     __CANOPY_OLLAMA_ENABLED__: JSON.stringify(ollamaEnabled),
@@ -1187,7 +1127,7 @@ export default defineConfig(({ mode }) => {
       },
       build: {
         ...outDirFor('renderer'),
-        sourcemap: datadogSourceMapsEnabled
+        sourcemap: rendererSourceMapsEnabled
           ? 'hidden'
           : performanceSourceMapsEnabled,
         rollupOptions: {

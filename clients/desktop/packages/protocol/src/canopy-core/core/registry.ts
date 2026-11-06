@@ -1,3 +1,4 @@
+import { CORE_INTEGRATION_CREDENTIAL_INSTRUCTIONS } from './integration/credential';
 import {
   defineCanopyInstructionRegistry,
   defineCanopyQueryRegistry,
@@ -76,6 +77,11 @@ import {
   CORE_PULL_REQUEST_QUERY_DEFINITIONS,
 } from './pullRequest/operations';
 
+import {
+  CORE_TERMINAL_SETTINGS_QUERIES,
+  CORE_TERMINAL_SETTINGS_INSTRUCTIONS,
+} from './terminal/settings';
+
 export const CORE_QUERY_DEFINITIONS = defineCanopyQueryRegistry('core', {
   ...CORE_CHAT_QUERY_DEFINITIONS,
   ...CORE_WORKSPACE_QUERIES,
@@ -95,10 +101,12 @@ export const CORE_QUERY_DEFINITIONS = defineCanopyQueryRegistry('core', {
   ...CORE_OBSERVABILITY_QUERIES,
   ...CORE_INTEGRATION_QUERIES,
   ...CORE_PULL_REQUEST_QUERY_DEFINITIONS,
+  ...CORE_TERMINAL_SETTINGS_QUERIES,
 });
 export const CORE_INSTRUCTION_DEFINITIONS = defineCanopyInstructionRegistry(
   'core',
   {
+    ...CORE_INTEGRATION_CREDENTIAL_INSTRUCTIONS,
     ...CORE_CHAT_INSTRUCTION_DEFINITIONS,
     ...CORE_CHAT_MESSAGE_INSTRUCTION_DEFINITIONS,
     ...LEDGER_INSTRUCTION_DEFINITIONS,
@@ -113,6 +121,7 @@ export const CORE_INSTRUCTION_DEFINITIONS = defineCanopyInstructionRegistry(
     ...OPERATION_INSTRUCTION_DEFINITIONS,
     ...CORE_PULL_REQUEST_INSTRUCTION_DEFINITIONS,
     ...CORE_INTEGRATION_INSTRUCTIONS,
+    ...CORE_TERMINAL_SETTINGS_INSTRUCTIONS,
   },
 );
 export const CORE_STREAM_DEFINITIONS = defineCanopyStreamRegistry('core', {

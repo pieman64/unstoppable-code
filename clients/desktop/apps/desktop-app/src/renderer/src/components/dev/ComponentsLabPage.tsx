@@ -1,3 +1,4 @@
+import { Heading } from '@canopy/ui-shared/components';
 import { useEffect, useState, type JSX } from 'react';
 import {
   Button,
@@ -71,7 +72,9 @@ function Caption({
 }): JSX.Element {
   return (
     <div className="flex flex-col gap-1">
-      <h2 className="text-m font-medium fg-primary">{entry.name}</h2>
+      <Heading level={2} variant="section">
+        {entry.name}
+      </Heading>
       <p className="text-s fg-secondary">{entry.note}</p>
       <p className="flex flex-wrap gap-x-3 text-xs fg-tertiary">
         <code>{entry.source}</code>
@@ -158,7 +161,11 @@ export function ComponentsLabPage(): JSX.Element {
         aria-label="Components"
         className="sticky top-0 flex h-screen w-60 shrink-0 flex-col gap-4 overflow-y-auto border-r px-2 py-4"
       >
-        <h1 className="px-2 text-s font-medium">Components</h1>
+        <div className="px-2">
+          <Heading level={1} variant="title">
+            Components
+          </Heading>
+        </div>
         <ListRow
           selected={selected === OVERVIEW}
           aria-current={selected === OVERVIEW ? 'page' : undefined}
@@ -175,9 +182,11 @@ export function ComponentsLabPage(): JSX.Element {
         </ListRow>
         {COMPONENTS_LAB_GROUPS.map((group) => (
           <div key={group} className="flex flex-col gap-0.5">
-            <h2 className="px-2 pb-1 text-xs font-medium fg-tertiary">
-              {group}
-            </h2>
+            <div className="px-2 pb-1">
+              <Heading level={2} variant="label">
+                {group}
+              </Heading>
+            </div>
             {COMPONENTS_LAB_ENTRIES.filter(
               (entry) => entry.group === group,
             ).map((entry) => (

@@ -15,6 +15,7 @@
 
 import { useCallback, useEffect, useMemo, useState, type JSX } from 'react';
 import {
+  BusyLabel,
   Button,
   ErrorBanner,
   InvoicesTable,
@@ -132,10 +133,11 @@ export function InvoicesSection({
           size="compact"
           onClick={() => void handleLoadMore()}
           disabled={loadingMore}
+          aria-busy={loadingMore}
           data-testid={`${testId}-load-more`}
           className="mt-3"
         >
-          {loadingMore ? 'Loading…' : 'Load more'}
+          <BusyLabel busy={loadingMore}>Load more</BusyLabel>
         </Button>
       )}
     </div>

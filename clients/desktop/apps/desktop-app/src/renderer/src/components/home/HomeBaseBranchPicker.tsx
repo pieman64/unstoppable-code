@@ -20,7 +20,8 @@ import {
   PickerMenuOptionTrailing,
   PickerMenuSearchHeader,
   PickerMenuSearchInput,
-  PickerMenuSkeleton,
+  PickerMenuSampleOptions,
+  Skeleton,
   PickerMenuState,
   PickerMenuTab,
   PickerMenuTabList,
@@ -79,10 +80,13 @@ const TAB_LOADING_LABELS: Record<BasePickerTab, string> = {
 /** Early access draws skeleton rows; otherwise develop's loading text. */
 function PullRequestsLoading({ skeleton }: { skeleton: boolean }): JSX.Element {
   return skeleton ? (
-    <PickerMenuSkeleton
+    <Skeleton
+      loading
       label={TAB_LOADING_LABELS.prs}
-      data-testid="home-base-branch-picker-skeleton"
-    />
+      testId="home-base-branch-picker-skeleton"
+    >
+      <PickerMenuSampleOptions />
+    </Skeleton>
   ) : (
     <PickerMenuState>Loading pull requests…</PickerMenuState>
   );
@@ -475,10 +479,13 @@ export function HomeBaseBranchPicker(): JSX.Element | null {
           data-testid="home-base-branch-picker-list"
         >
           {!rowsReady && (
-            <PickerMenuSkeleton
+            <Skeleton
+              loading
               label={TAB_LOADING_LABELS[activeTab]}
-              data-testid="home-base-branch-picker-skeleton"
-            />
+              testId="home-base-branch-picker-skeleton"
+            >
+              <PickerMenuSampleOptions />
+            </Skeleton>
           )}
 
           {rowsReady &&

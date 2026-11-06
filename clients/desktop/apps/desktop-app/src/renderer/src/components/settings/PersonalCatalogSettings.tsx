@@ -11,7 +11,7 @@ const HEADING = 'Personal projects on the web';
 const TOGGLE_ID = 'personal-catalog-toggle';
 const TITLE = 'Show my Personal projects on the web';
 const DISCLOSURE =
-  'Project ID, scrubbed name, kind, repository layout, local location, repository host, repository owner, repository name, device ID, installation generation, local project ID, and a request to restore the list when you turn sharing on again.';
+  'Project ID, scrubbed name, kind, repository layout, local location, repository host, repository owner, repository name, repository folder names and list IDs, which repositories this device has, device ID, installation generation, local project ID, and a request to restore the list when you turn sharing on again.';
 const NOTICES = {
   collision:
     'This device was registered again after a copied project list was detected.',

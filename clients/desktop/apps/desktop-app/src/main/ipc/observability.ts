@@ -35,10 +35,7 @@ import {
 } from '@canopy/desktop-shared/types';
 import { getObservabilityService } from '../observability';
 import { getExecutionObservabilityIngest } from '../observability/ingest';
-import {
-  getStableAnonymousKey,
-  getStablePostHogAnonymousKey,
-} from '../lib/anonymous-id';
+import { getStablePostHogAnonymousKey } from '../lib/anonymous-id';
 import { isUsageInitiationSource } from '@canopy/desktop-shared/lib/turn-utils';
 import { validateId, validateOptionalRepoId } from '../lib/validation';
 import { sendToAllWindows, sendToWindow } from '../lib/window-send';
@@ -429,10 +426,5 @@ export function registerObservabilityHandlers(
       }
       return current;
     },
-  );
-
-  registerIpcHandler(
-    IPC_CHANNELS.observabilityGetAnonymousTelemetryId,
-    (): Promise<string> => getStableAnonymousKey(),
   );
 }

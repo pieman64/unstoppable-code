@@ -26,6 +26,7 @@ import {
   flushDirectory,
   flushDirectorySync,
 } from '@canopy/core-platform/directory-flush';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { ensureW5HostMembership } from '../w5-host-cohort';
 import { randomUUID } from 'node:crypto';
 import {
@@ -37,7 +38,15 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { link, mkdir, open, stat, unlink } from 'node:fs/promises';
+import {
+  link,
+  lstat,
+  mkdir,
+  open,
+  readdir,
+  stat,
+  unlink,
+} from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 
 export { renameWithRetry };
@@ -72,6 +81,37 @@ export type AtomicFileStorage = NonNullable<AtomicFileWriteOptions['storage']>;
  */
 export async function syncDirectory(directoryPath: string): Promise<void> {
   await flushDirectory(directoryPath);
+}
+
+/**
+ * Sync every regular file under `root`, then flush each folder from the
+ * deepest up and finally `root`'s parent, so a copied tree survives power loss
+ * before its source is removed. Links are not followed. Rejects on the first
+ * failure; a caller keeps its source then.
+ */
+export async function syncTreeDurably(root: string): Promise<void> {
+  const flushTree = async (target: string): Promise<void> => {
+    const info = await lstat(target);
+    if (info.isDirectory()) {
+      for (const name of await readdir(target)) {
+        await flushTree(join(target, name));
+      }
+      await flushDirectory(target);
+    } else if (info.isFile()) {
+      // Windows flushes only through a handle opened for writing.
+      const handle = await open(
+        target,
+        hostOperatingSystem() === 'win32' ? 'r+' : 'r',
+      );
+      try {
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+    }
+  };
+  await flushTree(root);
+  await flushDirectory(dirname(resolve(root)));
 }
 
 /** Folders this process confirmed durable (`ensureFolderChainDurable`). */

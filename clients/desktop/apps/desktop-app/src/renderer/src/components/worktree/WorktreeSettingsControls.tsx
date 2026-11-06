@@ -1,3 +1,4 @@
+import { Heading } from '@canopy/ui-shared/components';
 import {
   Button,
   RichHoverTooltip,
@@ -481,7 +482,9 @@ export function SettingsDirectoryCard({
   return (
     <div className="rounded-lg border p-4">
       <div className="flex items-center justify-between gap-2">
-        <h3 className="text-s font-medium fg-primary">Directory</h3>
+        <Heading level={3} variant="title">
+          Directory
+        </Heading>
         <CopyButton
           value={dirPath}
           ariaLabel="Copy directory path"
@@ -518,7 +521,9 @@ export function AlwaysShowWorkspaceCard({
     <div className="rounded-lg border p-4">
       <div className="flex items-center justify-between">
         <div>
-          <h3 className="text-s font-medium fg-primary">Always show project</h3>
+          <Heading level={3} variant="title">
+            Always show project
+          </Heading>
           <p className="mt-1 text-xs fg-secondary">
             Keep the project in the worktree panel even when there are no{' '}
             {workspaceKind === 'cowork' ? 'work entries' : 'active worktrees'}

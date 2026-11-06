@@ -201,7 +201,7 @@ export function AutomationCatalogDetail({
 
       {/* The entry description quotes the automation's prompt: blocked. */}
       <p
-        className={`${POSTHOG_REPLAY_BLOCK_CLASS} text-sm fg-secondary`}
+        className={`${POSTHOG_REPLAY_BLOCK_CLASS} text-s fg-secondary`}
         data-testid="automation-catalog-summary"
       >
         {summary}
@@ -595,7 +595,7 @@ export function CuratedAutomationMarketplaceDetail({
       )}
 
       {detail.shortDescription && (
-        <p className="text-sm fg-secondary">{detail.shortDescription}</p>
+        <p className="text-s fg-secondary">{detail.shortDescription}</p>
       )}
 
       <SettingsRowsSection title="Details">

@@ -2,6 +2,7 @@ import type {
   WorktreeDiscovery,
   WorktreeHealthIssue,
 } from '@canopy/desktop-shared/types';
+import { normalizeGeneratedWorktreeLabel } from '@canopy/protocol/worktree-display-labels';
 import { IdentifierValidationError, validateId } from './validation';
 import { applyWorktreeRowDecision } from './worktree-record-decision-port';
 import type {
@@ -131,6 +132,38 @@ function discoveryDecision(
   throw new WorktreeRecordRefusedError(
     'invalid-request',
     'Unknown worktree discovery record',
+  );
+}
+
+// ---------------------------------------------------------------------------
+// internal.worktree.label.record
+// ---------------------------------------------------------------------------
+
+export interface WorktreeGeneratedLabelRecord extends WorktreeRowTarget {
+  /** Accepted by `evaluateGeneratedWorktreeLabel`. */
+  label: string;
+  provisional: boolean;
+}
+
+/**
+ * `internal.worktree.label.record`: stores a generated display label. It is
+ * `unchanged` when the row has a manual label, a label from before label
+ * provenance, or a settled generated one. It never renames a Git branch.
+ */
+export async function recordGeneratedWorktreeLabel(
+  record: WorktreeGeneratedLabelRecord,
+): Promise<WorktreeRecordOutcome> {
+  admitTarget(record);
+  const label = normalizeGeneratedWorktreeLabel(record.label);
+  if (label === null || label !== record.label) {
+    throw new WorktreeRecordRefusedError(
+      'invalid-request',
+      'Generated worktree labels must be normalized',
+    );
+  }
+  return applyWorktreeRowDecision(
+    { workspaceId: record.workspaceId, worktreeId: record.worktreeId },
+    { kind: 'label.generated', label, provisional: record.provisional },
   );
 }
 

@@ -1,5 +1,6 @@
 'use client';
 
+import { SettingsChartLoading } from '../../pages/loading-skeletons';
 import { useGlidingNumber } from './use-gliding-number';
 
 import {
@@ -24,7 +25,6 @@ import {
   ErrorState,
   ProgressBar,
   Notice,
-  SettingsChartSkeleton,
   ThinkingSpinner,
   CopyDetailsButton,
   Heading,
@@ -274,7 +274,7 @@ export function RoutingBacktestCard({
       {loading && lookup === null ? (
         <div data-testid="routing-backtest-loading">
           <DelayedLoadingPlaceholder>
-            <SettingsChartSkeleton variant="bars" />
+            <SettingsChartLoading />
           </DelayedLoadingPlaceholder>
         </div>
       ) : errorMessage ? (

@@ -22,9 +22,11 @@ import {
 import {
   applyAdoptedWorkspaceRelease,
   applyPersonalCatalogIdDecision,
+  applyWorkspaceCloudBindingDecision,
   applyWorkspaceOwnerDecision,
   applyWorkspaceOwnershipDecision,
 } from './workspace-ownership-decision-port';
+import type { WorkspaceCloudBindingCompare } from './worktree-record-decisions';
 
 // `internal.workspace.ownership.record` (CAN-3799 D9, CAN-3819): the host
 // records a workspace's ownership metadata from trusted inputs (an
@@ -128,8 +130,11 @@ export async function refreshOrganizationOwner(
 
 export interface PersonalCatalogIdRecord {
   workspaceId: string;
-  /** The personal workspace catalog sync enrolling a workspace. */
-  source: 'personal_catalog_sync';
+  /**
+   * The personal workspace catalog sync enrolling a workspace, or the cloud
+   * project binding using the id as the project's creation key (CAN-5190).
+   */
+  source: 'personal_catalog_sync' | 'cloud_project_binding';
   /** Asked inside the write queue; enrollment stops when it says no. */
   allowed: () => Promise<boolean>;
 }
@@ -149,6 +154,25 @@ export function recordPersonalCatalogId(
     { kind: 'ownership.personal-catalog-id' },
     record.allowed,
   );
+}
+
+export interface WorkspaceCloudBindingRecord {
+  workspaceId: string;
+  /** The cloud project binding (CAN-5190): its reconcile, link and lifecycle. */
+  source: 'cloud_project_binding';
+  update: WorkspaceCloudBindingCompare;
+}
+
+/**
+ * Records a workspace's cloud project identity (CAN-5190): the caller's
+ * decision and the write use one read inside the manifest write queue, and
+ * only `cloudBinding` changes. A missing workspace is `absent`; an unreadable
+ * manifest or owner is `unreadable` and left as it is.
+ */
+export function recordWorkspaceCloudBinding(
+  record: WorkspaceCloudBindingRecord,
+): Promise<WorkspaceOwnershipUpdate> {
+  return applyWorkspaceCloudBindingDecision(record.workspaceId, record.update);
 }
 
 export interface OrganizationHookBindingsRecord {

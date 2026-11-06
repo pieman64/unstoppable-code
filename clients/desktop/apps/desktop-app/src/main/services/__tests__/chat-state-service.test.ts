@@ -4177,6 +4177,145 @@ describe('chat state service', () => {
     }
   });
 
+  it('keeps fork provenance, attachments and settings through core.chat.fork (CAN-4113)', async () => {
+    const routedPaths = {
+      tabs: join(tempDir, 'routed-lifecycle', 'chats.json'),
+      archives: join(tempDir, 'routed-lifecycle', 'archives.json'),
+      journal: join(tempDir, 'routed-lifecycle', 'journal.jsonl'),
+    };
+    const routedFixture = serviceWithRepository({}, routedPaths);
+    const routed = routedFixture.target;
+    setChatStateCommandPort(routed);
+    try {
+      const dispatcher = createDesktopRuntime();
+      await expect(
+        routed.command(
+          envelope('create-source', {
+            type: 'chat.create_tab',
+            tabId: 'source',
+          }),
+        ),
+      ).resolves.toMatchObject({ outcome: 'applied' });
+      const settings = {
+        model: 'gpt-6-sol',
+        providerType: 'codex' as const,
+        executionHarness: 'codex' as const,
+        modelConfig: {
+          thinkingLevel: 'high' as const,
+          speed: 'fast' as const,
+          fastMode: true,
+        },
+        planMode: true,
+        approvalMode: 'auto' as const,
+        pluginSelections: {
+          collectionIds: ['collection-1'],
+          skillRefs: [],
+          pluginRefs: [],
+        },
+        selectedRepoId: 'repo-1',
+      };
+      const sourceRow = {
+        id: 'source-row',
+        revision: 1,
+        createdAt: 1,
+        state: 'picked-up' as const,
+        text: 'See the screenshot',
+        payload: {
+          ...SCOPE,
+          chatId: 'source',
+          userMessageId: 'source-row',
+          text: 'See the screenshot',
+          attachmentPaths: ['/attachments/a.png'],
+        },
+        settingsKey: 'settings',
+        attempts: [],
+      };
+      await routedFixture.repository.transact(
+        SCOPE,
+        [
+          {
+            type: 'message.upserted',
+            chatId: 'source',
+            message: {
+              id: 'm1',
+              role: 'user',
+              timestamp: 1,
+              blocks: [{ type: 'text', text: 'See the screenshot' }],
+            },
+          },
+          {
+            type: 'message.upserted',
+            chatId: 'source',
+            message: {
+              id: 'm2',
+              role: 'assistant',
+              timestamp: 2,
+              blocks: [{ type: 'text', text: 'Looks good' }],
+            },
+          },
+          {
+            type: 'tab.metadata_patched',
+            tabId: 'source',
+            patch: {
+              ...settings,
+              customTitle: 'Mine',
+              inputDelivery: { version: 1, epoch: 0, rows: [sourceRow] },
+            },
+          },
+        ],
+        { source: 'provider' },
+      );
+
+      const params = {
+        ...SCOPE,
+        commandId: 'fork-1',
+        action: {
+          type: 'chat.fork_tab' as const,
+          sourceTabId: 'source',
+          targetTabId: 'fork',
+          atMessageId: 'm2',
+        },
+        _meta: { idempotencyKey: 'fork-1' },
+      };
+      await expect(
+        dispatcher.instruction('core.chat.fork', params, {
+          caller: {
+            principalId: 'local-desktop-user',
+            clientInstanceId: 'chat-fork-provenance',
+            authorityId: 'local-desktop',
+            interfaceKind: 'desktop',
+            grants: ['core.chat.write'],
+          },
+          metadata: params._meta,
+        }),
+      ).resolves.toMatchObject({ outcome: 'applied' });
+
+      const tabs = (await routed.getState(SCOPE)).tabsFile.tabs;
+      const source = tabs.find((tab) => tab.id === 'source');
+      const fork = tabs.find((tab) => tab.id === 'fork');
+      expect(fork?.forkedFrom).toEqual({
+        ...SCOPE,
+        chatId: 'source',
+        atMessageId: 'm2',
+      });
+      for (const key of Object.keys(settings) as (keyof typeof settings)[]) {
+        expect(fork?.[key]).toEqual(source?.[key]);
+        expect(fork?.[key]).toEqual(settings[key]);
+      }
+      expect(fork?.customTitle).toBeUndefined();
+      const forkRows = fork?.inputDelivery?.rows ?? [];
+      expect(forkRows).toHaveLength(1);
+      expect(forkRows[0]?.payload.attachmentPaths).toEqual([
+        '/attachments/a.png',
+      ]);
+      expect(forkRows[0]?.id).not.toBe(sourceRow.id);
+      expect(source?.customTitle).toBe('Mine');
+      expect(source?.inputDelivery?.rows).toEqual([sourceRow]);
+    } finally {
+      setChatStateCommandPort(null);
+    }
+  });
+
   it('compares migrated model selections using the canonical registry identity', () => {
     initModelAliases({ 'claude-sonnet-4-6': 'claude-sonnet-5' });
     const tab = {

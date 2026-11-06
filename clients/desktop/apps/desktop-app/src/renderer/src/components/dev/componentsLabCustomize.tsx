@@ -2,10 +2,18 @@ import type { JSX } from 'react';
 import {
   Button,
   CustomizeBreadcrumbs,
+  CustomizeInstalledRow,
+  InstalledItemStatusPicker,
   CustomizeInstalledUnavailable,
   CustomizeRowMenu,
+  McpRowHealth,
   type CustomizeBreadcrumbItem,
 } from '@canopy/ui-shared/components';
+import { mcpRowHealthModel } from '@canopy/ui-shared/lib/mcp-row-health';
+import type {
+  UnifiedEntryPlacement,
+  UnifiedPluginEntry,
+} from '@canopy/ui-shared/lib/unified-plugin-entry';
 import {
   SpecimenCell,
   SpecimenGrid,
@@ -24,7 +32,7 @@ const TRAIL: readonly CustomizeBreadcrumbItem[] = [
 ];
 
 /**
- * The Customize page parts that are not rows: the location trail, the
+ * The Customize page parts and compact MCP rows: the location trail, the
  * capability-gated Installed state and a row's secondary-action menu.
  * Hover and press are real pointer states here, not forced ones; point at a
  * crumb or open a menu to see them.
@@ -32,6 +40,139 @@ const TRAIL: readonly CustomizeBreadcrumbItem[] = [
 export function CustomizePartsSpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
+      <SpecimenPanel title="Compact MCP rows">
+        <SpecimenGrid min={320}>
+          {(
+            ['desktop', 'account', 'both'] satisfies UnifiedEntryPlacement[]
+          ).flatMap((placement) =>
+            [320, 420].map((width) => {
+              const entry: UnifiedPluginEntry = {
+                id: `lab-mcp-${placement}-${width}`,
+                kind: 'app',
+                origin: 'installed-standalone',
+                name: 'An MCP server with a long name that truncates before its controls',
+                description: '',
+                categories: [],
+                typeLabel: 'MCP server',
+                components: {
+                  skills: 0,
+                  mcpServers: 1,
+                  commands: 0,
+                  agents: 0,
+                },
+                providerSupport: { claude: true, codex: true },
+                state: 'installed',
+                recommended: false,
+                ref: {
+                  type: 'local-mcp',
+                  serverId: 'lab-mcp',
+                  configId: 'default',
+                },
+                placement,
+              };
+              const checking = placement === 'both';
+              const model = mcpRowHealthModel({ status: 'connected' });
+              return (
+                <SpecimenCell
+                  key={entry.id}
+                  label={`${placement}, ${width}px; hover health for check time`}
+                  wide
+                >
+                  <div className="max-w-full" style={{ width }}>
+                    <CustomizeInstalledRow
+                      entry={entry}
+                      sectionId="installed"
+                      onSelect={noop}
+                      placement={placement}
+                      health={
+                        <McpRowHealth
+                          model={
+                            checking
+                              ? { ...model, text: 'Checking…', tone: 'neutral' }
+                              : model
+                          }
+                          checkedLabel="Checked 7m ago"
+                          testId={`lab-row-health-${entry.id}`}
+                        />
+                      }
+                      status={
+                        <span className="flex min-w-28 shrink-0 justify-start">
+                          <InstalledItemStatusPicker
+                            itemName={entry.name}
+                            status="active"
+                            onChange={noop}
+                          />
+                        </span>
+                      }
+                      menuItems={[
+                        {
+                          id: 'test',
+                          label: 'Test connection',
+                          onSelect: noop,
+                          disabled: checking,
+                        },
+                      ]}
+                    />
+                  </div>
+                </SpecimenCell>
+              );
+            }),
+          )}
+        </SpecimenGrid>
+      </SpecimenPanel>
+      <SpecimenPanel title="McpRowHealth">
+        <SpecimenGrid min={240}>
+          <SpecimenCell label="Plugin MCP: signed in, no connection check yet">
+            <McpRowHealth
+              model={{ text: 'Connected', tone: 'positive', action: null }}
+              testId="lab-plugin-mcp-signed-in"
+            />
+          </SpecimenCell>
+          {[
+            mcpRowHealthModel({ status: 'connected' }),
+            mcpRowHealthModel({ status: 'auth_required' }),
+            mcpRowHealthModel({ status: 'unknown', signIn: 'reconnect' }),
+            mcpRowHealthModel({ status: 'unreachable' }),
+            mcpRowHealthModel({ status: 'unknown' }),
+            mcpRowHealthModel({ status: 'unknown', disabled: true }),
+          ].map((model) => (
+            <SpecimenCell key={model.text} label={model.text}>
+              <McpRowHealth model={model} testId={`lab-health-${model.text}`} />
+            </SpecimenCell>
+          ))}
+          {[false, true].map((busy) => (
+            <SpecimenCell
+              key={String(busy)}
+              label={busy ? 'Sign-in in progress' : 'Sign-in needed'}
+              wide
+            >
+              <div className="flex min-w-0 items-center gap-2">
+                <McpRowHealth
+                  model={
+                    busy
+                      ? {
+                          ...mcpRowHealthModel({ status: 'auth_required' }),
+                          text: 'Checking…',
+                          tone: 'neutral',
+                        }
+                      : mcpRowHealthModel({ status: 'auth_required' })
+                  }
+                  testId={`lab-health-test-${busy}`}
+                  checkedLabel="Checked just now"
+                />
+                <Button
+                  size="compact"
+                  variant="secondary"
+                  disabled={busy}
+                  onClick={noop}
+                >
+                  {busy ? 'Connecting…' : 'Connect'}
+                </Button>
+              </div>
+            </SpecimenCell>
+          ))}
+        </SpecimenGrid>
+      </SpecimenPanel>
       <SpecimenPanel title="CustomizeBreadcrumbs">
         <SpecimenCell label="Navigable trail ending at the current page" wide>
           <CustomizeBreadcrumbs items={TRAIL} />

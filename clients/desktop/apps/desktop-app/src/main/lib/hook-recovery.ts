@@ -8,7 +8,9 @@ import type { OperationRecovery } from '@canopy/core-runtime/node/operations';
 import type {
   HookRunRequest,
   HookRunResponse,
+  HookDescriptor,
 } from '@canopy/desktop-shared/types';
+import type { HookAction } from '@canopy/desktop-shared/hooks';
 import {
   InitiatedWorkHookOriginContextSchema,
   type InitiatedWorkHookOriginContext,
@@ -26,6 +28,7 @@ import {
   getHookFiring,
   getHookFiringIfAvailable,
   getHookInitiatedWork,
+  getHookQueue,
 } from './hook-initiated-work';
 import { findHookRunForOperation } from './hook-log-store';
 import { hookClientPresence } from './hook-client-presence';
@@ -104,7 +107,7 @@ const WORKTREE_READ_RETRY_MAX_MS = 60_000;
  * worktree is gone. A failed or partial read is retried with backoff while
  * the run keeps its place on its target; a cancellation stops the wait.
  */
-async function readWorktreesAuthoritatively(
+export async function readWorktreesAuthoritatively(
   workspaceId: string,
   signal: AbortSignal,
 ): Promise<readonly { id: string }[]> {
@@ -123,6 +126,84 @@ async function readWorktreesAuthoritatively(
     signal.throwIfAborted();
     delay = Math.min(delay * 2, WORKTREE_READ_RETRY_MAX_MS);
   }
+}
+
+export type QueuedHookRevalidation =
+  | { status: 'valid'; hook: HookDescriptor; action: HookAction; cwd: string }
+  | { status: 'invalidated'; message: string };
+
+export async function revalidateQueuedHookWork(
+  operation: OperationRecord,
+  actionIndex: number,
+  actionType: 'chat' | 'pipeline',
+  signal: AbortSignal,
+): Promise<QueuedHookRevalidation> {
+  const location = locate(operation);
+  const { workspaceId, worktreeId, context } = location;
+  const worktrees = await readWorktreesAuthoritatively(workspaceId, signal);
+  if (!worktrees.some((worktree) => worktree.id === worktreeId))
+    return {
+      status: 'invalidated',
+      message: 'This worktree no longer exists.',
+    };
+  let resolved: Awaited<ReturnType<typeof resolveHookForRun>>;
+  try {
+    resolved = await resolveHookForRun(runRequest(location));
+  } catch {
+    return {
+      status: 'invalidated',
+      message: "This hook's repository is no longer in the project.",
+    };
+  }
+  const { hook } = resolved;
+  if (!hook || hook.hookKey !== operation.origin.sourceId)
+    return {
+      status: 'invalidated',
+      message: 'This hook is no longer configured.',
+    };
+  const action = hook.actions[actionIndex];
+  if (!action || action.type !== actionType)
+    return {
+      status: 'invalidated',
+      message: "This hook's action changed, so the queued work was not run.",
+    };
+  if (context.pullRequest) {
+    const trackedRepo = {
+      projectId: workspaceId,
+      worktreeId,
+      repoStorageKey: resolved.repoStorageKey,
+    };
+    await settlePrTrackingState(trackedRepo, (subject) =>
+      getHookInitiatedWork().sourceHead(PR_ADVANCE_SOURCE, subject),
+    );
+    const snapshotRef = await readCurrentPrTrackingSnapshot(trackedRepo);
+    if (!snapshotRef.snapshot)
+      return {
+        status: 'invalidated',
+        message: 'This pull request is no longer tracked.',
+      };
+    if (
+      context.pullRequest.number !== snapshotRef.snapshot.pr.number ||
+      context.pullRequest.repository.toLowerCase() !==
+        snapshotRef.snapshot.repository.fullName.toLowerCase()
+    )
+      return {
+        status: 'invalidated',
+        message:
+          'This worktree now tracks another pull request than the one this hook fired for.',
+      };
+  }
+  for (const gate of await getHookFiring().recoveredGates(
+    operation,
+    hook.actions,
+  )) {
+    const verdict = gate.check();
+    if (verdict.decision === 'skipped')
+      return { status: 'invalidated', message: verdict.message };
+    if (verdict.decision === 'refused')
+      return { status: 'invalidated', message: verdict.failure.message };
+  }
+  return { status: 'valid', hook, action, cwd: resolved.cwd };
 }
 
 async function resume(
@@ -289,6 +370,9 @@ export function startHookRecovery(host: {
     'hook',
     createHookResumer(host.getWindow, host.events),
   );
+  void startHookQueueRecovery(host).catch((error: unknown) =>
+    logMainProcessWarn('[hooks] could not recover queued hook work', error),
+  );
   if (!host.ledgerExists()) return;
   void engine.whenRecovered().catch((error: unknown) => {
     logMainProcessWarn(
@@ -296,4 +380,17 @@ export function startHookRecovery(host: {
       error,
     );
   });
+}
+
+async function startHookQueueRecovery(host: {
+  getWindow: () => BrowserWindow | null;
+  ledgerExists: () => boolean;
+}): Promise<void> {
+  const { registerHookChatQueueHost } = await import('./hook-chat');
+  registerHookChatQueueHost(host.getWindow);
+  const { registerHookPipelineQueueHost } = await import('./hook-pipeline');
+  registerHookPipelineQueueHost(host.getWindow);
+  if (!host.ledgerExists()) return;
+  await getHookInitiatedWork().whenRecovered();
+  await getHookQueue().sweep();
 }

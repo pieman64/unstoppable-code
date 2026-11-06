@@ -136,12 +136,16 @@ export function FloatingChatWindow({
             />
           </div>
         ) : (
-          <h2
+          <Heading
+            level={2}
+            variant="sidebar"
+            tone="muted"
+            truncate
             data-testid={`${dataTestId}-title`}
-            className="min-w-0 flex-1 truncate text-s font-normal fg-tertiary"
+            className="min-w-0 flex-1"
           >
             {title}
-          </h2>
+          </Heading>
         )}
         {onNewChat && (
           <TitlebarIconButton
@@ -331,7 +335,7 @@ function FloatingChatTitleMenu({
   };
   return (
     <>
-      <h2 className="flex min-w-0 text-s font-normal">
+      <Heading level={2} variant="sidebar" className="flex min-w-0">
         {/* `-ml-1.5` pulls the button's hover surface out to the left; its
             8px left padding keeps the text clear of that surface's edge. */}
         <button
@@ -346,7 +350,7 @@ function FloatingChatTitleMenu({
           <span className="min-w-0 truncate">{title}</span>
           <PickerTriggerChevron open={open} />
         </button>
-      </h2>
+      </Heading>
       <FloatingMenu
         open={open}
         onOpenChange={setOpen}

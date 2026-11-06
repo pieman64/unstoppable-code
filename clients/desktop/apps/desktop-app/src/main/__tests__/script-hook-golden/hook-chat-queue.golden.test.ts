@@ -147,8 +147,39 @@ const mockClaims = {
     return Promise.resolve();
   },
 };
+const mockCancelledQueueIds = new Set<string>();
+const mockAcceptedQueueIds = new Set<string>();
+const mockQueue = {
+  lookup: (_kind: string, queueId: string): Promise<unknown> =>
+    Promise.resolve(
+      mockCancelledQueueIds.has(queueId)
+        ? { status: 'ended', operation: { status: 'cancelled' } }
+        : { status: 'none' },
+    ),
+  enqueue: ({ queueId }: { queueId: string }): Promise<unknown> => {
+    if (mockAcceptedQueueIds.has(queueId))
+      return Promise.resolve({
+        status: 'existing',
+        operation: { status: 'queued' },
+      });
+    mockAcceptedQueueIds.add(queueId);
+    return Promise.resolve({ status: 'queued', operationId: `q-${queueId}` });
+  },
+  saveEdit: (): Promise<void> => Promise.resolve(),
+  markStarting: (): Promise<string> => Promise.resolve('started'),
+  finishStarted: (): Promise<void> => Promise.resolve(),
+  finishCancelled: (_operationId: string, queueId: string): Promise<void> => {
+    mockCancelledQueueIds.add(queueId);
+    return Promise.resolve();
+  },
+  finishFailed: (): Promise<void> => Promise.resolve(),
+};
 jest.mock('../../lib/hook-initiated-work', () => ({
   getHookChatClaims: (): unknown => mockClaims,
+  getHookQueue: (): unknown => mockQueue,
+}));
+jest.mock('../../lib/hook-recovery', () => ({
+  revalidateQueuedHookWork: jest.fn(),
 }));
 let mockOperationSequence = 0;
 jest.mock('../../services/active-chat-input', () => ({
@@ -280,6 +311,8 @@ beforeEach(() => {
   jest.spyOn(Date, 'now').mockReturnValue(1000);
   mockOperationSequence = 0;
   mockClaimStates.clear();
+  mockCancelledQueueIds.clear();
+  mockAcceptedQueueIds.clear();
   mockClaimOutcomes.length = 0;
   mockRemovedChatIds.clear();
   mockDeliveredWindows.length = 0;

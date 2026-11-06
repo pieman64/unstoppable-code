@@ -24,11 +24,12 @@ import {
 } from '@canopy/ui-shared/lib';
 import {
   BillingHistoryTable as SharedBillingHistoryTable,
+  BusyLabel,
   Button,
   buttonClassName,
   CreditLedgerTable as SharedCreditLedgerTable,
-  ErrorBanner,
   EmptyStateRow,
+  ErrorBanner,
   Heading,
 } from '@canopy/ui-shared/components';
 import {
@@ -936,9 +937,10 @@ function BillingTransactions({
           size="compact"
           onClick={() => void handleLoadMore()}
           disabled={loadingMore}
+          aria-busy={loadingMore}
           className="mt-3"
         >
-          {loadingMore ? 'Loading…' : 'Load more'}
+          <BusyLabel busy={loadingMore}>Load more</BusyLabel>
         </Button>
       )}
     </div>

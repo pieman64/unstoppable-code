@@ -366,8 +366,8 @@ export function createMainWindowPostHogRouteSource(): PostHogRouteSource {
  * main-window projection.
  *
  * Construction is synchronous, touches no store, awaits nothing, and performs
- * no disk or IPC read, so it cannot delay first paint or extend the Datadog
- * mount barrier.
+ * no disk or IPC read, so it cannot delay first paint or the renderer
+ * mount.
  */
 export function createPostHogRouteSource(
   surface: PostHogRouteSurface,

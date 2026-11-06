@@ -16,7 +16,7 @@ import {
 } from '@/stores/claudeTerminalStore';
 import { useCancelRunningChatShortcut } from './useCancelRunningChatShortcut';
 import type { ClaudeTerminalLaunchRequest } from '@canopy/desktop-shared/types';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, LoadingSpinner } from '@canopy/ui-shared/components';
 
 const COPY_STARTING = 'Starting Claude Code…';
 const COPY_LAUNCH_FAILED =
@@ -313,10 +313,7 @@ export function ClaudeCodeTerminalExperience({
           className="absolute inset-0 z-10 flex items-center justify-center bg-base"
         >
           <div className="flex items-center gap-2 text-s fg-secondary">
-            <span
-              aria-hidden="true"
-              className="inline-block h-3 w-3 animate-pulse rounded-full bg-fg-primary/20"
-            />
+            <LoadingSpinner tone="secondary" sizePx={12} decorative />
             <span>{COPY_STARTING}</span>
           </div>
         </div>
@@ -347,10 +344,7 @@ function StatusMessage({
     >
       <div className="flex items-center gap-2 text-s fg-secondary">
         {spinner ? (
-          <span
-            aria-hidden="true"
-            className="inline-block h-3 w-3 animate-pulse rounded-full bg-fg-primary/20"
-          />
+          <LoadingSpinner tone="secondary" sizePx={12} decorative />
         ) : null}
         <span>{message}</span>
       </div>

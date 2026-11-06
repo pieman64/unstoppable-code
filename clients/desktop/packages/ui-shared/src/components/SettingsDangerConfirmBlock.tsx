@@ -1,3 +1,4 @@
+import { Heading } from './Heading';
 import type { JSX, ReactNode } from 'react';
 import { Button } from './Button';
 
@@ -108,12 +109,16 @@ export function SettingsDangerConfirmBlock({
     variant === 'destructive'
       ? 'border-line-destructive/30'
       : 'border-line-attention/30';
-  const titleColorClass =
-    variant === 'destructive' ? 'fg-destructive' : 'fg-primary';
 
   return (
     <div className={`rounded-lg border ${cardBorderClass} p-3`}>
-      <h3 className={`text-s font-medium ${titleColorClass}`}>{title}</h3>
+      <Heading
+        level={3}
+        variant="title"
+        tone={variant === 'destructive' ? 'destructive' : undefined}
+      >
+        {title}
+      </Heading>
       {description && (
         <p className="mt-1 text-xs fg-secondary">{description}</p>
       )}

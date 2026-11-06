@@ -1,6 +1,10 @@
 import { createHash } from 'node:crypto';
-import { realpath, stat } from 'node:fs/promises';
-import { isAbsolute } from 'node:path';
+import { lstat, realpath, stat } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import {
+  relocationTransition,
+  type RelocationTransition,
+} from '@canopy/core-runtime/node/relocation';
 import { isFullyQualified } from './paths';
 
 export class LocalAuthorityIdentityError extends Error {
@@ -100,8 +104,16 @@ export async function deriveLocalAuthorityIdentity(
     !/^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*$/.test(input.brandId)
   )
     throw new LocalAuthorityIdentityError('invalid_brand');
-  const principal = await observePrincipal(observation);
+  return deriveAuthorityForPrincipal(
+    input,
+    await observePrincipal(observation),
+  );
+}
 
+async function deriveAuthorityForPrincipal(
+  input: { readonly brandId: string; readonly dataRoot: string },
+  principal: Principal,
+): Promise<LocalAuthorityIdentity> {
   // Root rules follow the filesystem that resolves the root: on Windows,
   // drive or UNC only, never drive-relative, rooted-only or a device namespace.
   const qualified = (path: string): boolean =>
@@ -121,16 +133,76 @@ export async function deriveLocalAuthorityIdentity(
   } catch {
     throw new LocalAuthorityIdentityError('invalid_root');
   }
+  return authorityIdentity(input.brandId, canonicalDataRoot, principal);
+}
+
+function authorityIdentity(
+  brandId: string,
+  canonicalDataRoot: string,
+  principal: Principal,
+): LocalAuthorityIdentity {
   const authorityId = createHash('sha256')
     .update(
       JSON.stringify([
         'canopy.local-authority',
         1,
-        input.brandId,
+        brandId,
         canonicalDataRoot,
         principal,
       ]),
     )
     .digest('hex');
   return { authorityId, canonicalDataRoot };
+}
+
+/** Trusted cold host only: project the absent destination using its real parent. */
+export async function observeLocalAuthorityRelocation(
+  input: {
+    brandId: string;
+    installationId: string;
+    sourceRoot: string;
+    destinationRoot: string;
+  },
+  observation: LocalAuthorityObservation = hostLocalAuthorityObservation(),
+): Promise<RelocationTransition> {
+  if (!/^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*$/.test(input.brandId))
+    throw new LocalAuthorityIdentityError('invalid_brand');
+  const principal = await observePrincipal(observation);
+  const from = await deriveAuthorityForPrincipal(
+    { brandId: input.brandId, dataRoot: input.sourceRoot },
+    principal,
+  );
+  if (
+    !(process.platform === 'win32'
+      ? isFullyQualified('win32', input.destinationRoot)
+      : isAbsolute(input.destinationRoot) &&
+        !input.destinationRoot.includes('\0')) ||
+    input.destinationRoot !== resolve(input.destinationRoot)
+  )
+    throw new LocalAuthorityIdentityError('invalid_root');
+  const destination = join(
+    await realpath(dirname(input.destinationRoot)),
+    basename(input.destinationRoot),
+  );
+  const exists = await lstat(destination).then(
+    () => true,
+    (error: unknown) => {
+      if (
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        error.code === 'ENOENT'
+      )
+        return false;
+      throw error;
+    },
+  );
+  if (exists) throw new LocalAuthorityIdentityError('invalid_root');
+  return relocationTransition({
+    version: 1,
+    installationId: input.installationId,
+    brandId: input.brandId,
+    from,
+    to: authorityIdentity(input.brandId, destination, principal),
+  });
 }

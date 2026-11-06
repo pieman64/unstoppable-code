@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
 import { chmod, lstat, mkdir, realpath } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
-import type { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay } from 'node:timers/promises';
 import { hostOperatingSystem } from './host-platform';
+import { flushDirectory } from './directory-flush';
 import type { W5ProcessFileLock } from '@canopy/core-runtime/node/w5/commit-log/apply';
 /** Shared with legacy cohort admission; no brand, app or host-registration imports. */
 export async function ensureW5PrivateRuntimeDirectory(
@@ -45,6 +46,14 @@ function code(error: unknown): unknown {
     : undefined;
 }
 
+function sqliteBusy(error: unknown): boolean {
+  const errcode: unknown =
+    typeof error === 'object' && error !== null
+      ? Reflect.get(error, 'errcode')
+      : undefined;
+  return errcode === 5 || errcode === 6;
+}
+
 /** Resolve existing parents too, so a not-yet-created file has one identity. */
 async function canonical(path: string): Promise<string> {
   try {
@@ -74,7 +83,6 @@ export async function withW5ProcessFileLocks<T>(
   work: () => Promise<T>,
 ): Promise<T> {
   if (!paths.length) return work();
-  const { DatabaseSync } = await import('node:sqlite');
   const timeout = options.timeoutMs ?? 5_000;
   if (!Number.isFinite(timeout) || timeout < 0)
     throw new Error('Invalid W5 lock timeout');
@@ -114,11 +122,7 @@ export async function withW5ProcessFileLocks<T>(
           db.exec('BEGIN EXCLUSIVE');
           break;
         } catch (error) {
-          const errcode: unknown =
-            typeof error === 'object' && error !== null
-              ? Reflect.get(error, 'errcode')
-              : undefined;
-          if (errcode !== 5 && errcode !== 6) throw error;
+          if (!sqliteBusy(error)) throw error;
           const remaining = deadline - performance.now();
           if (remaining <= 0) throw new W5ProcessFileLockTimeoutError(path);
           await delay(Math.min(25, remaining));
@@ -148,4 +152,125 @@ export function worktreeListProcessLock(dataRoot: string): W5ProcessFileLock {
     }
     return withW5ProcessFileLocks(applicable, { dataRoot: root }, work);
   };
+}
+
+export class W5DesktopDeleteAdmissionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'W5DesktopDeleteAdmissionError';
+  }
+}
+
+/**
+ * W6h3's chosen admission mechanism, not an A20 policy approval. Rollback
+ * journal SHARED readers are desktop presence; EXCLUSIVE is one whole delete.
+ * Never use WAL, rename this inode, or infer safety from a released lock:
+ * the commit log's durable reservation bridges process death and live children.
+ */
+export interface W5DesktopDeleteGate {
+  close(): void;
+  protectReservation(id: string): void;
+  completeReservation(id: string): void;
+}
+
+export async function acquireW5DesktopDeleteGate(
+  dataRoot: string,
+  kind: 'desktop' | 'delete',
+): Promise<W5DesktopDeleteGate> {
+  const root = await canonical(resolve(dataRoot));
+  const directory = join(root, 'runtime', 'locks');
+  await ensureW5PrivateRuntimeDirectory(join(root, 'runtime'));
+  await ensureW5PrivateRuntimeDirectory(directory);
+  const path = join(directory, 'desktop-delete.sqlite');
+  const stat = await lstat(path).catch((error: unknown) => {
+    if (code(error) !== 'ENOENT') throw error;
+    return undefined;
+  });
+  if (stat && (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1))
+    throw new W5DesktopDeleteAdmissionError(
+      'Desktop presence cannot be verified. Nothing was deleted.',
+    );
+  const db = new DatabaseSync(path);
+  try {
+    if (hostOperatingSystem() !== 'win32') await chmod(path, 0o600);
+    db.exec('PRAGMA busy_timeout = 0');
+    const mode = db.prepare('PRAGMA journal_mode').get();
+    if (mode?.journal_mode !== 'delete')
+      throw new Error('Unsafe admission journal mode');
+    db.exec('PRAGMA synchronous = FULL');
+    if (db.prepare('PRAGMA user_version').get()?.user_version === 0) {
+      // Opening can leave an empty file after interruption. Only initialize
+      // virgin evidence, rechecked under exclusion from other first openers.
+      try {
+        db.exec('BEGIN EXCLUSIVE');
+      } catch (error) {
+        // A rival may have initialized and joined shared desktop presence
+        // since our version read. Recheck instead of requiring exclusion.
+        if (
+          !sqliteBusy(error) ||
+          db.prepare('PRAGMA user_version').get()?.user_version !== 1
+        )
+          throw error;
+      }
+      if (db.isTransaction) {
+        if (
+          db.prepare('PRAGMA user_version').get()?.user_version === 0 &&
+          !db.prepare('SELECT name FROM sqlite_master LIMIT 1').get()
+        ) {
+          db.exec(
+            'CREATE TABLE deletion_hold (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), reservation_id TEXT NOT NULL) STRICT; PRAGMA user_version = 1; COMMIT',
+          );
+          for (const parent of [
+            directory,
+            dirname(directory),
+            root,
+            dirname(root),
+          ])
+            await flushDirectory(parent);
+        } else db.exec('ROLLBACK');
+      }
+    }
+    if (db.prepare('PRAGMA user_version').get()?.user_version !== 1)
+      throw new W5DesktopDeleteAdmissionError(
+        'Desktop admission evidence is incomplete or from another version. Keep the data folder unchanged for manual recovery.',
+      );
+    if (kind === 'delete') db.exec('PRAGMA locking_mode = EXCLUSIVE');
+    db.exec(kind === 'delete' ? 'BEGIN EXCLUSIVE' : 'BEGIN');
+    // Unlike the exclusively held canonical log, this latch is readable at
+    // startup after owner death. It references the log, never replaces it.
+    if (db.prepare('SELECT reservation_id FROM deletion_hold').get())
+      throw new W5DesktopDeleteAdmissionError(
+        'An interrupted CLI deletion needs manual recovery. Keep the existing files, commit log and idempotency key. Do not rerun deletion or start the desktop until recovery is complete.',
+      );
+    const change = (id: string, finish: boolean): void => {
+      if (kind !== 'delete' || !id)
+        throw new Error('Invalid deletion admission');
+      // EXCLUSIVE locking mode retains exclusion across these durable commits.
+      if (!db.isTransaction) db.exec('BEGIN EXCLUSIVE');
+      if (finish) {
+        const result = db
+          .prepare(
+            'DELETE FROM deletion_hold WHERE singleton = 1 AND reservation_id = ?',
+          )
+          .run(id);
+        if (result.changes !== 1)
+          throw new Error('Deletion admission identity changed');
+      } else db.prepare('INSERT INTO deletion_hold VALUES (1, ?)').run(id);
+      db.exec('COMMIT');
+    };
+    return {
+      close: () => db.close(),
+      protectReservation: (id) => change(id, false),
+      completeReservation: (id) => change(id, true),
+    };
+  } catch (error) {
+    db.close();
+    if (sqliteBusy(error))
+      throw new W5DesktopDeleteAdmissionError(
+        kind === 'delete'
+          ? 'A desktop app or another worktree operation is using this data folder. Delete the worktree in the desktop app, or quit it and try again. Nothing was deleted.'
+          : 'A CLI worktree deletion is using this data folder. Wait for it to finish before starting the app.',
+      );
+    throw error;
+  }
 }

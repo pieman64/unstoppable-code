@@ -1,3 +1,4 @@
+import { getDesktopExecutionSecrets } from '../execution-secrets/owner';
 import {
   createWorkerPipelineHandlers,
   createWorkerPipelineHostRequestHandlers,
@@ -37,7 +38,9 @@ export function createWorkerPipelineAdapter(
   const handlers = (): Promise<WorkerPipelineHandlers> =>
     (loading ??= load().then((loadedWorker) => {
       worker = loadedWorker;
-      return createWorkerPipelineHandlers(loadedWorker);
+      return createWorkerPipelineHandlers(loadedWorker, {
+        secrets: getDesktopExecutionSecrets(),
+      });
     }));
   return {
     queries: {

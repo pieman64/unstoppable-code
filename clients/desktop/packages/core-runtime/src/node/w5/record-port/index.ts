@@ -8,6 +8,7 @@ export {
   createW5RecordHostPort,
   type W5RecordConflictKind,
   type W5RecordHostPortOptions,
+  type W5RecordHostPort,
 } from './host-port';
 export {
   w5RecordTargetFor,

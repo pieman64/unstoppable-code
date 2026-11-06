@@ -3,6 +3,7 @@ import type { SettingsOrganizationRole } from './bootstrap';
 import type { OrganizationSettingsSubtab } from './routes';
 
 export interface AccountSettingsNavFlags {
+  aiGatewayEnabled?: boolean;
   billingEnabled: boolean;
   digestsEnabled: boolean;
   integrationsEnabled: boolean;
@@ -11,6 +12,10 @@ export interface AccountSettingsNavFlags {
    * hosted page, not a shared settings route, so absent hides its item.
    */
   externalAgentsEnabled?: boolean;
+  /** Web only: Customize is available; desktop keeps its local Plugins tab. */
+  pluginsEnabled?: boolean;
+  /** Web only: Customize is available; desktop keeps its local MCP tab. */
+  mcpEnabled?: boolean;
   /**
    * Account Labs lists at least one experiment for this user. Web only:
    * desktop keeps Labs in its own Settings, so absent hides the item.

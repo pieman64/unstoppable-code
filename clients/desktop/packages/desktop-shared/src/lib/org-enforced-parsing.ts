@@ -1,3 +1,5 @@
+import type { CanopyAccountResponse } from '@canopy/protocol/canopy-server';
+import { normalizePersonalOrganizationId } from '@canopy/protocol/workspace-context';
 // ---------------------------------------------------------------------------
 // Tolerant org-enforced settings parsing.
 //
@@ -23,6 +25,7 @@ import type {
   TelemetryEnforcedScopeMap,
 } from '@canopy/protocol/canopy-server';
 import {
+  MODEL_GATEWAY_MAX_DISPLAY_NAME_LENGTH,
   MODEL_GATEWAY_MAX_ID_LENGTH,
   MODEL_GATEWAY_MAX_LABEL_LENGTH,
   MODEL_GATEWAY_MAX_MODELS,
@@ -187,6 +190,11 @@ export function normalizeOrgEnforcedPolicy(
     }
     return {
       kind: 'model-gateway',
+      ...(typeof value.displayName === 'string' &&
+      value.displayName.trim().length > 0 &&
+      value.displayName.trim().length <= MODEL_GATEWAY_MAX_DISPLAY_NAME_LENGTH
+        ? { displayName: value.displayName.trim() }
+        : {}),
       baseUrl,
       models,
       enforced: value.enforced,
@@ -341,5 +349,31 @@ export function normalizeOrgEnforcedSettingsWithStatus(value: unknown): {
       settings.some(
         (entry) => entry.modelGatewayEnforcementUnavailable === true,
       ),
+  };
+}
+
+/** Personal is never included in organization consent or the enforcing union. */
+export function personalGatewayAccountFields(value: unknown): {
+  personalModelGateway?: CanopyAccountResponse['personalModelGateway'];
+  personalModelGatewayEnforcementUnavailable?: true;
+} {
+  if (!isRecord(value) || value.personalModelGateway === undefined) return {};
+  const raw = value.personalModelGateway;
+  if (!isRecord(raw))
+    return { personalModelGatewayEnforcementUnavailable: true };
+  const policy = normalizeOrgEnforcedPolicy(raw);
+  if (
+    policy?.kind !== 'model-gateway' ||
+    typeof raw.organizationId !== 'string' ||
+    normalizePersonalOrganizationId(raw.organizationId) === null ||
+    normalizePersonalOrganizationId(raw.organizationId) !==
+      normalizePersonalOrganizationId(value.personalOrganizationId)
+  ) {
+    return raw.enforced === false
+      ? {}
+      : { personalModelGatewayEnforcementUnavailable: true };
+  }
+  return {
+    personalModelGateway: { ...policy, organizationId: raw.organizationId },
   };
 }

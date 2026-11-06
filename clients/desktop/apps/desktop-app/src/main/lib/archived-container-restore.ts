@@ -37,6 +37,7 @@ import {
   rm,
 } from 'node:fs/promises';
 import { installRestoredExecutionState } from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
+import { syncTreeDurably } from '@canopy/desktop-shared/node/lib/atomic-file';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import {
   resolvePersistedChatExecutionHarness,
@@ -1269,6 +1270,8 @@ async function restoreExecutions(args: {
           sourceArtifacts,
           join(liveDir, executionId),
         );
+        // The archived copy is removed next; the live copy must survive power loss.
+        await syncTreeDurably(join(liveDir, executionId));
       }
       await settleAll([
         rm(sourceState, { force: true }),

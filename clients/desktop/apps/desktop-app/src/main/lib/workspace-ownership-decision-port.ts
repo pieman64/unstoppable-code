@@ -2,6 +2,7 @@ import { getWorkspaceIndexRepository } from './sidebar-items';
 import {
   ensureOrganizationSourceHookBindings,
   ensurePersonalCatalogId,
+  updateWorkspaceCloudBinding,
   updateWorkspaceConfig,
   updateWorkspaceOwnership,
 } from './workspace-persistence';
@@ -25,6 +26,7 @@ import type {
   OrganizationPrivateMemoryDecision,
   OrganizationPrivateMemoryStatus,
   PersonalCatalogIdDecision,
+  WorkspaceCloudBindingCompare,
   WorkspaceOwnerCompare,
   WorkspaceOwnershipDecision,
   WorkspaceOwnershipDecisionOutcome,
@@ -84,6 +86,17 @@ export function applyPersonalCatalogIdDecision(
   allowed: () => Promise<boolean>,
 ): Promise<string | undefined> {
   return ensurePersonalCatalogId(workspaceId, allowed);
+}
+
+/**
+ * Applies a cloud project binding decision (CAN-5190) through its single
+ * writer, which changes only `cloudBinding` and never creates a manifest.
+ */
+export function applyWorkspaceCloudBindingDecision(
+  workspaceId: string,
+  compare: WorkspaceCloudBindingCompare,
+): Promise<WorkspaceOwnershipRecordStatus> {
+  return updateWorkspaceCloudBinding(workspaceId, compare);
 }
 
 /** Applies one ownership decision in the workspace's manifest queue. */

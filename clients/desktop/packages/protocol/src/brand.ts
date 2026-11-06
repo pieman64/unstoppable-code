@@ -40,6 +40,50 @@ export type BrandReleaseFlavor = 'internal' | 'rc' | 'stable';
 
 const BRAND_RELEASE_FLAVORS = ['internal', 'rc', 'stable'] as const;
 
+export type ProductBuild = BrandReleaseFlavor | 'dev';
+
+export interface BrandBuildIdentity {
+  readonly brandId: string;
+  readonly build: ProductBuild;
+}
+
+/** Build-tool input only; never pass the running process's environment. */
+export function productBuild(value: unknown): ProductBuild {
+  if (
+    value === 'stable' ||
+    value === 'internal' ||
+    value === 'rc' ||
+    value === 'dev'
+  ) {
+    return value;
+  }
+  throw new Error('Invalid compiled product build.');
+}
+
+export function brandBuildIdentity(
+  brandId: string,
+  build: unknown,
+): BrandBuildIdentity {
+  if (!/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(brandId)) {
+    throw new Error('Invalid compiled brand identity.');
+  }
+  return Object.freeze({ brandId, build: productBuild(build) });
+}
+
+/** Shared by desktop, CLI and daemon bundlers. Not a runtime environment API. */
+export function buildIdentityDefines(
+  brandId: string,
+  build: unknown,
+  testBuild: boolean,
+): Record<string, string> {
+  return {
+    __CANOPY_BUILD_IDENTITY__: JSON.stringify(
+      brandBuildIdentity(brandId, build),
+    ),
+    __CANOPY_TEST_DATA_OVERRIDES__: JSON.stringify(testBuild),
+  };
+}
+
 export const BRAND_THEME_TOKEN_NAMES = [
   'bgBase',
   'bgCard',
@@ -301,6 +345,8 @@ export interface BrandCore {
   theme: BrandThemeDefinition;
 
   storage: {
+    /** Final per-build roots; inactive until CAN-5786. Omitted packs use legacy primaries. */
+    buildDataDirNames?: Readonly<Record<ProductBuild, string>>;
     dataDirNames: {
       /** Production candidates, primary first. e.g. [".canopy"]. */
       prod: string[];

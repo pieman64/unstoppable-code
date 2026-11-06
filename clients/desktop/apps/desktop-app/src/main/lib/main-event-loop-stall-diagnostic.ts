@@ -16,8 +16,8 @@ export interface MainEventLoopStallContext {
  * chat-storage commits landed, and how many agent turns were running. Samplers
  * that produced nothing are omitted rather than reported as zeros.
  *
- * Everything here stays local: the Datadog operation forwards an explicit
- * field list that none of the new fields join.
+ * Everything here stays local: app diagnostics of this kind are never
+ * reported remotely.
  */
 export function buildMainEventLoopStallDiagnostic(
   stall: MainEventLoopStall,

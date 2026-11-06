@@ -29,6 +29,9 @@ import {
 import {
   CREDENTIAL_PROVIDER_ID,
   LAST_AUTH_SOURCE_ERROR,
+  PASSWORD_COMPROMISED_CODE,
+  PASSWORD_COMPROMISED_ERROR,
+  PASSWORD_MIN_LENGTH,
   SOCIAL_PROVIDER_IDS,
   SSO_SERVER_PROVIDER_ID,
   UD_PROVIDER_ID,
@@ -50,6 +53,18 @@ import {
 
 const SECURITY_ERROR_SCOPE = 'settings.account.security';
 const PASSWORD_SAVED = 'Password saved.';
+/** Password failures with their own copy on both set and change. */
+const PASSWORD_KNOWN_ERRORS = [
+  { serverCode: PASSWORD_COMPROMISED_CODE, copy: PASSWORD_COMPROMISED_ERROR },
+  {
+    serverCode: 'PASSWORD_TOO_SHORT',
+    copy: `Use at least ${PASSWORD_MIN_LENGTH} characters.`,
+  },
+  {
+    serverCode: 'INVALID_PASSWORD',
+    copy: "That current password isn't right.",
+  },
+] as const;
 
 /** Failures of removing a sign-in method that have their own copy. */
 const REMOVE_AUTH_SOURCE_KNOWN_ERRORS: readonly KnownSettingsError[] = [
@@ -460,7 +475,12 @@ export function PasswordSection({
       close();
       onChanged();
     } catch (err: unknown) {
-      setError(errorCopy.actionFailure(err, { action: 'save the password' }));
+      setError(
+        errorCopy.actionFailure(err, {
+          action: 'save the password',
+          known: PASSWORD_KNOWN_ERRORS,
+        }),
+      );
       setSubmitting(false);
     } finally {
       setSubmitting(false);

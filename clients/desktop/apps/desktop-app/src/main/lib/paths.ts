@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { join } from 'path';
+import { scriptRunFileStem } from '@canopy/core-runtime/node/script/run-log-stem';
 import {
   getCanopyDataDir,
   getCanopySecureDataDir,
@@ -194,6 +195,11 @@ export function getW5CommitLogPath(): string {
  */
 export function getOperationLedgerPath(): string {
   return join(getDataDir(), 'operations', 'operation-ledger.sqlite');
+}
+
+/** Saved queued hook details beside the operation ledger (CAN-5081). */
+export function getHookQueueDir(): string {
+  return join(getDataDir(), 'initiated-work', 'hook-queue');
 }
 
 /** The flip launch's record of its one W5 backup (CAN-5543). */
@@ -824,6 +830,18 @@ export function getWorktreePanelLayoutFilePath(
   return join(getWorktreeDataDir(workspaceId, worktreeId), 'panel-layout.json');
 }
 
+/**
+ * The worktree's last provider discovery (slash commands, MCP servers), kept
+ * out of `worktrees.json`. Like the panel layout it lives in
+ * `worktree-data/{worktreeId}/`, so archive and delete remove it.
+ */
+export function getWorktreeDiscoveryFilePath(
+  workspaceId: string,
+  worktreeId: string,
+): string {
+  return join(getWorktreeDataDir(workspaceId, worktreeId), 'discovery.json');
+}
+
 /** Separate versioned layout-mode preference for one code/Cowork entity. */
 export function getWorktreePanelLayoutModeFilePath(
   workspaceId: string,
@@ -905,16 +923,7 @@ export function resolveScriptRunDir(
 }
 
 export function buildScriptRunFileStem(scriptKey: string): string {
-  const prefix = scriptKey
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 64);
-  const digest = createHash('sha256')
-    .update(scriptKey)
-    .digest('hex')
-    .slice(0, 12);
-  return `${prefix || 'script'}__${digest}`;
+  return scriptRunFileStem(scriptKey);
 }
 
 // ---------------------------------------------------------------------------
@@ -1533,6 +1542,15 @@ export function getUserMemoryDir(): string {
 /** Workspace-scoped local memory store shared by worktree and cowork chats. */
 export function getWorkspaceMemoryDir(workspaceId: string): string {
   return join(getWorkspaceDir(workspaceId), 'memory');
+}
+
+/**
+ * Account replicas of synced memory scopes, one folder per account
+ * (`memory-replicas/<accountId>/`), written only by the memory sync engine
+ * and the local memory store through the scope resolver.
+ */
+export function getMemoryReplicasRootDir(): string {
+  return join(getDataDir(), 'memory-replicas');
 }
 
 /** Local, sensitive reports and automatic dumps from memory diagnostics. */

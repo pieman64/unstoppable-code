@@ -1,3 +1,4 @@
+import type { AiGatewayConnectionResult } from '@canopy/protocol/model-gateway/discovery';
 import type { AccountOrganizationSettingsClient } from '@canopy/app-core/settings';
 import type {
   CreateOrgProjectsRequest,
@@ -673,6 +674,50 @@ export async function updateModelGatewayConfig(
       modelGatewayEnforced: input.modelGatewayEnforced,
       modelGatewayPromptCachePassthrough:
         input.modelGatewayPromptCachePassthrough,
+    }),
+  );
+}
+
+/**
+ * Patch the organization's AI gateway. Only the fields present change; the
+ * revision rejects a model list edited somewhere else since it was read.
+ */
+export async function updateAiGatewayConfig(
+  client: AccountOrganizationSettingsClient,
+  orgId: string,
+  input: {
+    expectedModelGatewayRevision?: string;
+    modelGatewayDisplayName?: string | null;
+    modelGatewayBaseUrl?: string | null;
+    modelGatewayModels?: readonly ModelGatewayModel[];
+    enforceMemberModelGateway?: boolean;
+    modelGatewayEnforced?: boolean;
+  },
+): Promise<OrganizationConfigDetail> {
+  const { modelGatewayModels, ...fields } = input;
+  return settle(() =>
+    client.write('organization.settings.policies.update', {
+      organizationId: orgId,
+      ...fields,
+      ...(modelGatewayModels === undefined
+        ? {}
+        : {
+            modelGatewayModels: modelGatewayModels.map(modelGatewayModelInput),
+          }),
+    }),
+  );
+}
+
+/** Probe the organization's AI gateway and list the models it serves. */
+export async function connectOrganizationAiGateway(
+  client: AccountOrganizationSettingsClient,
+  orgId: string,
+  input: { baseUrl: string; apiKey?: string },
+): Promise<AiGatewayConnectionResult> {
+  return settle(() =>
+    client.write('organization.settings.ai-gateway.connect', {
+      ...input,
+      organizationId: orgId,
     }),
   );
 }

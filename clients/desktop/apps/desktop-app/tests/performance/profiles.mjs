@@ -46,6 +46,7 @@ const WORKLOAD_PROFILES = Object.freeze({
     fileExplorerDirectories: 24,
     fileExplorerFilesPerDirectory: 80,
     fileExplorerMutationBurst: 40,
+    menuSurfacesIterations: 3,
     frameSmoothnessIterations: 3,
     frameSmoothnessSidebarEntries: 40,
     startupSettleMs: 8_000,
@@ -215,6 +216,7 @@ const WORKLOAD_PROFILES = Object.freeze({
     fileExplorerDirectories: 80,
     fileExplorerFilesPerDirectory: 120,
     fileExplorerMutationBurst: 200,
+    menuSurfacesIterations: 20,
     frameSmoothnessIterations: 6,
     frameSmoothnessSidebarEntries: 80,
     startupSettleMs: 15_000,
@@ -384,6 +386,7 @@ const WORKLOAD_PROFILES = Object.freeze({
     fileExplorerDirectories: 160,
     fileExplorerFilesPerDirectory: 160,
     fileExplorerMutationBurst: 500,
+    menuSurfacesIterations: 30,
     frameSmoothnessIterations: 10,
     frameSmoothnessSidebarEntries: 160,
     startupSettleMs: 30_000,
@@ -609,6 +612,7 @@ export const SCENARIO_SCOPED_CONFIG_KEYS = Object.freeze({
   claudeGraphOrientationFixtureFiles: Object.freeze([
     'claude-graph-orientation',
   ]),
+  menuSurfacesIterations: Object.freeze(['menu-surfaces']),
   frameSmoothnessIterations: Object.freeze(['frame-smoothness']),
   frameSmoothnessSidebarEntries: Object.freeze(['frame-smoothness']),
   ledgerScopeEntries: Object.freeze(['ledger-panel', 'ledger-feed-overview']),
@@ -650,6 +654,7 @@ export const SCENARIO_SCOPED_CONFIG_KEYS = Object.freeze({
  */
 export const SCENARIO_SCOPED_OPTIONS = Object.freeze({
   '--browser-actions-iterations': 'browserActionIterations',
+  '--menu-surfaces-iterations': 'menuSurfacesIterations',
   '--browser-agent-actions-iterations': 'browserAgentActionsIterations',
   '--multi-chat-streaming-ms': 'multiChatStreamingMs',
   '--code-graph-queued-refreshes': 'codeGraphQueuedRefreshes',
@@ -678,6 +683,7 @@ export const OPT_IN_SCENARIO_NAMES = Object.freeze([
   'claude-graph-orientation',
   'linear-reference-transcripts',
   'frame-smoothness',
+  'menu-surfaces',
   'cost-index-first-build',
   'skill-suggestions-backfill',
   'lab-transcript-onscreen',
@@ -748,6 +754,7 @@ export const SCENARIO_NAMES = Object.freeze([
   'frame-smoothness',
   'chat-search-indexing',
   'plugin-picker',
+  'menu-surfaces',
   'file-explorer',
   'browser-panels',
   'browser-actions',
@@ -969,6 +976,7 @@ export function parsePerformanceArgs(argv) {
       option === '--plugin-picker-skills' ||
       option === '--plugin-picker-mcp-servers' ||
       option === '--browser-actions-iterations' ||
+      option === '--menu-surfaces-iterations' ||
       option === '--browser-agent-actions-iterations' ||
       option === '--code-graph-worktrees' ||
       option === '--code-graph-files' ||
@@ -1034,6 +1042,9 @@ export function parsePerformanceArgs(argv) {
       }
       if (option === '--plugin-picker-mcp-servers') {
         options.overrides.pluginPickerMcpServers = value;
+      }
+      if (option === '--menu-surfaces-iterations') {
+        options.overrides.menuSurfacesIterations = value;
       }
       if (option === '--browser-actions-iterations') {
         options.overrides.browserActionIterations = value;
@@ -1301,7 +1312,7 @@ export function performanceUsage() {
 
 Options:
   --profile <smoke|baseline|stress|counters> Workload size (default baseline); counters runs the smoke-sized work-counter ratchet
-  --scenarios <csv>                  sidebar-reorder,startup-settle,startup-realistic,power-user-idle,power-user-active,loaded-ui,pipeline-history,large-transcripts,stress-transcript,transcript-streaming-tail,transcript-streaming-history,transcript-active-turn,transcript-active-turn-stop,transcript-active-turn-tools,transcript-retention-cycle,math-transcripts,linear-reference-transcripts,frame-smoothness,chat-search-indexing,plugin-picker,file-explorer,browser-panels,browser-actions,browser-agent-actions,inner-panels-collapse,plan-open,chats,mixed-provider-agent-concurrency,managed-delegation-concurrency,delegation-restart-cycles,multi-chat-streaming,multi-chat-streaming-sequential,background-streaming,chat-switch-catch-up,pipelines,scripts,worktrees,worktree-concurrency,large-transcript-concurrency,code-graph-concurrency,code-graph-background-concurrency,code-graph-new-worktree,code-graph-small-edit,claude-graph-orientation,ledger-panel,ledger-feed-overview,ledger-disabled-idle,cost-index-first-build,skill-suggestions-backfill,lab-transcript-onscreen,lab-transcript-offscreen,lab-transcript-checkpoint,many-chat-residency,many-worktree-file-index,scope-residency,code-review-registry-cleanup,code-review-registry-cleanup-trace,w5-store-startup,w5-store-reload,w5-store-writes
+  --scenarios <csv>                  sidebar-reorder,startup-settle,startup-realistic,power-user-idle,power-user-active,loaded-ui,pipeline-history,large-transcripts,stress-transcript,transcript-streaming-tail,transcript-streaming-history,transcript-active-turn,transcript-active-turn-stop,transcript-active-turn-tools,transcript-retention-cycle,math-transcripts,linear-reference-transcripts,frame-smoothness,chat-search-indexing,plugin-picker,menu-surfaces,file-explorer,browser-panels,browser-actions,browser-agent-actions,inner-panels-collapse,plan-open,chats,mixed-provider-agent-concurrency,managed-delegation-concurrency,delegation-restart-cycles,multi-chat-streaming,multi-chat-streaming-sequential,background-streaming,chat-switch-catch-up,pipelines,scripts,worktrees,worktree-concurrency,large-transcript-concurrency,code-graph-concurrency,code-graph-background-concurrency,code-graph-new-worktree,code-graph-small-edit,claude-graph-orientation,ledger-panel,ledger-feed-overview,ledger-disabled-idle,cost-index-first-build,skill-suggestions-backfill,lab-transcript-onscreen,lab-transcript-offscreen,lab-transcript-checkpoint,many-chat-residency,many-worktree-file-index,scope-residency,code-review-registry-cleanup,code-review-registry-cleanup-trace,w5-store-startup,w5-store-reload,w5-store-writes
   --output <path>                    JSON result path
   --label <text>                     Human-readable run label
   --repeat <n>                       Run every scenario n times, each a fresh launch, and keep every sample (default 1)
@@ -1322,6 +1333,7 @@ Options:
   --plugin-picker-plugins <count>    Override marketplace plugin rows
   --plugin-picker-skills <count>     Override installed skill rows
   --plugin-picker-mcp-servers <n>    Override enabled standalone MCP rows
+  --menu-surfaces-iterations <n>     Override menu-surfaces passes over each surface (baseline 20)
   --browser-actions-iterations <n>   Override measured browser action cycles (baseline 50; 3 warmups excluded)
   --browser-agent-actions-iterations <n> Override measured browser page-model builds per group (baseline 30; 3 warmups excluded)
   --code-graph-worktrees <count>     Override concurrent Code Graph build requests (minimum 3)

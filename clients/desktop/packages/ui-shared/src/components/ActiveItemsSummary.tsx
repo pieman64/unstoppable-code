@@ -14,11 +14,8 @@ import { StatusLabel } from './StatusLabel';
  * configurations, and other kinds count unique installed items.
  */
 
-/**
- * The action that opens Customize, worded as on the MCP servers page so both
- * Settings pages name it the same way.
- */
-export const OPEN_CUSTOMIZE_LABEL = `Open ${CUSTOMIZE_LABEL}`;
+/** The action that opens Customize, on both read-only Settings pages. */
+export const MANAGE_IN_CUSTOMIZE_LABEL = `Manage in ${CUSTOMIZE_LABEL}`;
 
 export const ACTIVE_ITEMS_SUMMARY_DESCRIPTION =
   'Active items are added to every new chat. Any project or chat can turn one off from its plugin picker.';
@@ -48,6 +45,7 @@ export function activeItemsSummaryText(
 export type ActiveItemsSummaryState =
   | { readonly kind: 'loading' }
   | { readonly kind: 'error'; readonly message: string }
+  | { readonly kind: 'unsupported'; readonly reason: string }
   | { readonly kind: 'ready'; readonly counts: ActiveInstalledItemCounts };
 
 export interface ActiveItemsSummaryProps {
@@ -97,6 +95,8 @@ export function ActiveItemsSummary({
     );
   } else if (state.kind === 'error') {
     line = <StatusLabel>{state.message}</StatusLabel>;
+  } else if (state.kind === 'unsupported') {
+    line = <span className="fg-tertiary">{state.reason}</span>;
   } else {
     line = <ActiveItemsLine counts={state.counts} />;
   }
@@ -112,7 +112,7 @@ export function ActiveItemsSummary({
           data-testid={`${testId}-manage`}
           onClick={onManage}
         >
-          {OPEN_CUSTOMIZE_LABEL}
+          {MANAGE_IN_CUSTOMIZE_LABEL}
         </Button>
       }
     />

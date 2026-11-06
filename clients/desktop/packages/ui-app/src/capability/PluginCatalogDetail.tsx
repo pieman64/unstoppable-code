@@ -104,7 +104,7 @@ export function PluginCatalogDetail({
       {(entry.description || (alternatives?.length ?? 0) > 0) && (
         <div>
           {entry.description && (
-            <p className="text-sm fg-secondary">{entry.description}</p>
+            <p className="text-s fg-secondary">{entry.description}</p>
           )}
           <PluginAlternatives
             alternatives={alternatives}

@@ -22,6 +22,7 @@ import {
 } from '../portal/portal-session-manager';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 import { setPortalAppAdvisorSurfaces } from '../portal/app-advisor-portal-surfaces';
+import { setDesktopChatWaitPresence } from '../chat-waits/desktop-chat-waits';
 import { registerIpcHandler } from './register';
 
 /**
@@ -46,6 +47,13 @@ export function registerCanopyPortalHandlers(
 ): void {
   setCanopyPortalWindowAccessor(accessors.getMainWindow);
   setCanopyPortalChatDispatcher(dispatcher);
+  setDesktopChatWaitPresence({
+    getMainWindow: accessors.getMainWindow,
+    portalAttached: (): boolean => {
+      const portal = getCanopyPortalState();
+      return portal.status === 'active' && portal.connectionStatus === 'active';
+    },
+  });
   setPortalAppAdvisorSurfaces({
     getMainWindow: accessors.getMainWindow,
     getAppAdvisorWindow: accessors.getAppAdvisorWindow,

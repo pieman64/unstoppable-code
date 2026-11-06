@@ -9,15 +9,10 @@ import type {
 import { isPostHogSessionState } from '../posthog-session';
 import { sanitizePostHogEvent } from '../posthog-privacy';
 import {
-  getDatadogInstrumentationReadiness,
   getDesktopInstrumentationConfig,
   getPostHogInstrumentationReadiness,
 } from '../config';
-import {
-  sanitizeDatadogInstrumentationContext,
-  sanitizeInstrumentationContext,
-} from '../privacy';
-import { buildDesktopInstrumentationUser } from '../user';
+import { sanitizeInstrumentationContext } from '../privacy';
 import {
   createPostHogAccountTracker,
   type PostHogAccountSource,
@@ -35,7 +30,6 @@ import {
   type DesktopOperationOutcome,
   type PostHogOperationEvent,
 } from '../operations';
-import type * as DatadogElectronSdkModule from '@datadog/electron-sdk';
 import type {
   DesktopInstrumentationContext,
   DesktopInstrumentationErrorOptions,
@@ -43,32 +37,12 @@ import type {
   DesktopInstrumentationInitResult,
   DesktopInstrumentationOperationOptions,
 } from '../types';
-export { createForeignCrashDumpFilter } from './crash-dumps/foreign-dump-filter';
-
-type DatadogElectronSdk = typeof DatadogElectronSdkModule;
-type DatadogElectronSdkPatchedExports = {
-  notifyActivity?: () => void;
-  setUser?: (user: ReturnType<typeof buildDesktopInstrumentationUser>) => void;
-};
-
-let initialized = false;
-let initializationStarted = false;
-let warnedMissingFlushTransport = false;
-let warnedMissingNotifyActivity = false;
-let warnedMissingSetUser = false;
-let datadogSdk: (DatadogElectronSdk & DatadogElectronSdkPatchedExports) | null =
-  null;
-let anonId: string | undefined;
-let userEmail: string | undefined;
-
-function isDatadogElectronSdk(value: unknown): value is DatadogElectronSdk {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    'init' in value &&
-    typeof value.init === 'function'
-  );
-}
+export {
+  createForeignCrashDumpFilter,
+  hasWin32ShortNameComponent,
+} from './crash-dumps/foreign-dump-filter';
+export type { CrashDumpClassification } from './crash-dumps/foreign-dump-filter';
+export { readMinidumpExecutablePath } from './crash-dumps/minidump';
 
 function safelyInvoke(callback: () => void): void {
   try {
@@ -76,186 +50,6 @@ function safelyInvoke(callback: () => void): void {
   } catch {
     // Instrumentation must never affect the app path.
   }
-}
-
-/**
- * Records the stable, anonymous, per-install identifier and attaches it to all
- * main-process telemetry. The id lands in two places:
- *
- * - `@usr.id` (plus a derived non-PII `@usr.name` and optional cloud-account
- *   `@usr.email`, see `buildDesktopInstrumentationUser`), via the vendored
- *   `setUser()` patch on the alpha `@datadog/electron-sdk` (which exposes no
- *   user API upstream). This makes Datadog attribute sessions/vitals to a
- *   "user" natively, matching the renderer SDK's `datadogRum.setUser` — same
- *   identity, same path.
- * - `@context.anon_id` on every operation, kept for continuity with existing
- *   facets/dashboards that query the custom attribute.
- *
- * Degrades gracefully (one-time warn, no throw) when `node_modules` is
- * un-patched and `setUser` is absent — `@context.anon_id` still applies.
- */
-export function setDesktopInstrumentationUser(
-  id: string,
-  email?: string,
-): void {
-  anonId = id;
-  userEmail = email?.trim() || undefined;
-  applyUserToSdk();
-}
-
-function applyUserToSdk(): void {
-  if (!initialized || !datadogSdk || anonId === undefined) {
-    return;
-  }
-  const sdk = datadogSdk;
-  // Local capture: the closure below outlives the narrowing of the mutable
-  // module-level `anonId`.
-  const id = anonId;
-  safelyInvoke(() => {
-    const setUser = sdk.setUser;
-    if (typeof setUser !== 'function') {
-      if (!warnedMissingSetUser) {
-        warnedMissingSetUser = true;
-        // eslint-disable-next-line no-console
-        console.warn(
-          'Datadog Electron SDK user API (setUser) is unavailable; RUM events will carry anon_id only as a context attribute, not as usr.id.',
-        );
-      }
-      return;
-    }
-    setUser.call(sdk, buildDesktopInstrumentationUser(id, userEmail));
-  });
-}
-
-function contextWithAnonId(
-  context: DesktopInstrumentationContext | undefined,
-): DesktopInstrumentationContext | undefined {
-  if (anonId === undefined) {
-    return context;
-  }
-  return { ...context, anon_id: anonId };
-}
-
-function loadDatadogSdk(): DatadogElectronSdk {
-  if (datadogSdk) {
-    return datadogSdk;
-  }
-  datadogSdk = loadRequiredNodeModule<DatadogElectronSdk>({
-    moduleId: '@datadog/electron-sdk',
-    requireFrom: __filename,
-    validate: isDatadogElectronSdk,
-  });
-  return datadogSdk;
-}
-
-async function flushDatadogTransport(sdk: DatadogElectronSdk): Promise<void> {
-  const flushTransport: unknown = sdk._flushTransport;
-  if (typeof flushTransport !== 'function') {
-    if (!warnedMissingFlushTransport) {
-      warnedMissingFlushTransport = true;
-      // eslint-disable-next-line no-console
-      console.warn(
-        'Datadog Electron SDK transport flush API is unavailable; shutdown telemetry flush skipped.',
-      );
-    }
-    return;
-  }
-  await flushTransport.call(sdk);
-}
-
-export async function initializeDesktopInstrumentationMain(options?: {
-  crashDumpFilter?: (filePath: string) => Promise<'process' | 'discard'>;
-}): Promise<DesktopInstrumentationInitResult> {
-  if (initialized) {
-    return { enabled: true, provider: 'datadog' };
-  }
-  if (initializationStarted) {
-    return { enabled: false, provider: 'datadog', reason: 'initializing' };
-  }
-
-  const config = getDesktopInstrumentationConfig().datadog;
-  const readiness = getDatadogInstrumentationReadiness(config);
-  if (!readiness.enabled) {
-    return { enabled: false, provider: 'datadog', reason: readiness.reason };
-  }
-  const { clientToken, applicationId } = readiness.config;
-
-  initializationStarted = true;
-  try {
-    const sdk = loadDatadogSdk();
-    const didInitialize = await sdk.init({
-      clientToken,
-      applicationId,
-      site: config.site,
-      service: config.service,
-      env: config.env,
-      version: config.version,
-      variant: config.variant,
-      proxy: config.proxy,
-      telemetrySampleRate: config.telemetrySampleRate,
-      defaultPrivacyLevel: config.defaultPrivacyLevel,
-      allowedWebViewHosts: config.allowedWebViewHosts,
-      ...(options?.crashDumpFilter
-        ? { crashDumpFilter: options.crashDumpFilter }
-        : {}),
-    });
-
-    initialized = didInitialize;
-    if (didInitialize) {
-      // Covers the race where the anon id arrived before init completed.
-      applyUserToSdk();
-    }
-    return didInitialize
-      ? { enabled: true, provider: 'datadog' }
-      : { enabled: false, provider: 'datadog', reason: 'init_returned_false' };
-  } catch (error) {
-    return {
-      enabled: false,
-      provider: 'datadog',
-      reason: error instanceof Error ? error.message : String(error),
-    };
-  } finally {
-    initializationStarted = false;
-  }
-}
-
-/**
- * Renews the main-process Datadog RUM session so subsequently emitted
- * operations are not silently discarded.
- *
- * The bundled alpha `@datadog/electron-sdk` expires a session after 15 min of
- * inactivity (or a 4 hr hard cap) and only renews it on renderer `click`
- * activity, which Canopy disables (`trackUserInteractions: false`). Once
- * expired, every main-process operation is dropped at assembly because the
- * RUM session/view hooks return `DISCARDED`. The vendored `notifyActivity()`
- * patch reaches the SDK's internal `sessionManager.updateActivity()`, which
- * registers a fresh session id **synchronously** before its first `await` —
- * so renewing immediately before emitting an op guarantees the op lands in a
- * live session.
- *
- * Degrades gracefully (one-time warn, no throw) when `node_modules` is
- * un-patched and `notifyActivity` is absent — mirroring the
- * `warnedMissingFlushTransport` precedent.
- */
-export function keepDesktopInstrumentationSessionAlive(): void {
-  if (!initialized || !datadogSdk) {
-    return;
-  }
-  const sdk = datadogSdk;
-  safelyInvoke(() => {
-    const notifyActivity = sdk.notifyActivity;
-    if (typeof notifyActivity !== 'function') {
-      if (!warnedMissingNotifyActivity) {
-        warnedMissingNotifyActivity = true;
-        // eslint-disable-next-line no-console
-        console.warn(
-          'Datadog Electron SDK session keepalive API (notifyActivity) is unavailable; RUM sessions may expire and silently drop telemetry.',
-        );
-      }
-      return;
-    }
-    notifyActivity.call(sdk);
-  });
 }
 
 const posthogOperations = createPostHogOperationTracker({
@@ -304,18 +98,6 @@ export function startDesktopOperation(
       isDesktopPostHogOperationCaptureEnabled(),
     ),
   );
-  if (!initialized || !datadogSdk) {
-    return;
-  }
-  safelyInvoke(() => {
-    keepDesktopInstrumentationSessionAlive();
-    datadogSdk?.startOperation(name, {
-      ...options,
-      context: sanitizeDatadogInstrumentationContext(
-        contextWithAnonId(options?.context),
-      ),
-    });
-  });
 }
 
 export function succeedDesktopOperation(
@@ -323,18 +105,6 @@ export function succeedDesktopOperation(
   options?: DesktopInstrumentationOperationOptions,
 ): void {
   forwardPostHogOperation(name, { status: 'success' }, options);
-  if (!initialized || !datadogSdk) {
-    return;
-  }
-  safelyInvoke(() => {
-    keepDesktopInstrumentationSessionAlive();
-    datadogSdk?.succeedOperation(name, {
-      ...options,
-      context: sanitizeDatadogInstrumentationContext(
-        contextWithAnonId(options?.context),
-      ),
-    });
-  });
 }
 
 export function failDesktopOperation(
@@ -343,50 +113,19 @@ export function failDesktopOperation(
   options?: DesktopInstrumentationOperationOptions,
 ): void {
   forwardPostHogOperation(name, { status: 'failure', failureReason }, options);
-  if (!initialized || !datadogSdk) {
-    return;
-  }
-  safelyInvoke(() => {
-    keepDesktopInstrumentationSessionAlive();
-    datadogSdk?.failOperation(name, failureReason, {
-      ...options,
-      context: sanitizeDatadogInstrumentationContext(
-        contextWithAnonId(options?.context),
-      ),
-    });
-  });
 }
 
+/** Main-process errors reach PostHog `$exception` through the observability
+ * port. Gated by the same capture flag and epoch as operations. */
 export function captureDesktopInstrumentationError(
   error: unknown,
   options?: DesktopInstrumentationErrorOptions,
 ): void {
-  if (!initialized || !datadogSdk) {
-    return;
-  }
-  safelyInvoke(() => {
-    keepDesktopInstrumentationSessionAlive();
-    datadogSdk?.addError(error, {
-      context: sanitizeDatadogInstrumentationContext(
-        contextWithAnonId(options?.context),
-      ),
-    });
-  });
+  safelyInvoke(() => captureDesktopPostHogException(error, options?.context));
 }
 
 export async function flushDesktopInstrumentation(): Promise<void> {
-  await Promise.allSettled([flushDesktopPostHog(), flushDesktopDatadog()]);
-}
-
-async function flushDesktopDatadog(): Promise<void> {
-  if (!initialized || !datadogSdk) {
-    return;
-  }
-  try {
-    await flushDatadogTransport(datadogSdk);
-  } catch {
-    // Best-effort shutdown flush.
-  }
+  await flushDesktopPostHog();
 }
 
 let posthog: PostHog | undefined;
@@ -405,6 +144,19 @@ const POSTHOG_OPERATION_EPOCH_KEY = '__canopy_operation_epoch';
 const MAX_PENDING_POSTHOG_OPERATIONS = 100;
 const pendingPostHogOperations: PostHogOperationEvent[] = [];
 const POSTHOG_INITIALIZATION_SHUTDOWN_TIMEOUT_MS = 5_000;
+/** Unlike operations, exceptions buffer before the first flag snapshot. */
+let posthogCaptureFlagKnown = false;
+interface PendingPostHogException {
+  error: unknown;
+  context: DesktopInstrumentationContext | undefined;
+}
+const MAX_PENDING_POSTHOG_EXCEPTIONS = 20;
+const pendingPostHogExceptions: PendingPostHogException[] = [];
+/** Per-process cap, so a crash loop (a `child_process_gone` storm, for
+ * example) cannot flood PostHog. Drops past it are only counted locally. */
+const MAX_POSTHOG_EXCEPTIONS_PER_PROCESS = 100;
+let posthogExceptionsSent = 0;
+let posthogExceptionsDroppedOverCap = 0;
 
 /** The SDK retries the same batch body, so filter it on every network attempt. */
 async function sendPostHogRequest(
@@ -441,7 +193,8 @@ async function sendPostHogRequest(
         return [];
       if (
         !isDesktopPostHogOperationEvent(message.event) &&
-        message.event !== '$set'
+        message.event !== '$set' &&
+        message.event !== '$exception'
       )
         return [message];
       if (
@@ -475,19 +228,22 @@ async function sendPostHogRequest(
 }
 
 /**
- * Applies the LaunchDarkly PostHog capture flag to forwarded operations.
- * Closed until the host supplies its first flag snapshot.
+ * Applies the LaunchDarkly PostHog capture flag to forwarded operations and
+ * exceptions. Closed until the host supplies its first flag snapshot.
  */
 export function setDesktopPostHogOperationCaptureEnabled(
   enabled: boolean,
 ): void {
+  posthogCaptureFlagKnown = true;
   posthogOperationCaptureEnabled = enabled;
   if (!enabled) {
     posthogOperations.discardAcquisitionStarts();
     posthogOperationEpoch += 1;
     pendingPostHogOperations.length = 0;
+    pendingPostHogExceptions.length = 0;
   } else {
     publishPostHogAccount();
+    drainPendingPostHogExceptions();
   }
 }
 
@@ -582,6 +338,9 @@ export function initializePostHogMain(
         return result;
       } finally {
         pendingPostHogOperations.length = 0;
+        // Exceptions still waiting on the first flag snapshot stay buffered.
+        if (posthogInitializationUnavailable)
+          pendingPostHogExceptions.length = 0;
       }
     })());
 }
@@ -640,6 +399,8 @@ async function initializePostHogMainClient(
       disableCompression: true,
       fetch: sendPostHogRequest,
       requestTimeout: 5_000,
+      // Main's own `uncaughtException` handler reports and flushes before it
+      // exits; SDK autocapture would install a listener that cannot flush.
       enableExceptionAutocapture: false,
       before_send: (event): typeof event | null => {
         try {
@@ -683,6 +444,7 @@ async function initializePostHogMainClient(
       for (const operation of pendingPostHogOperations) {
         captureDesktopPostHogOperation(operation);
       }
+      drainPendingPostHogExceptions();
     }
     return { enabled: true, provider: 'posthog' };
   } catch (error) {
@@ -755,7 +517,72 @@ export function captureDesktopPostHogEvent(
   });
 }
 
+/** Buffers while the SDK, anonymous id or first flag snapshot is pending;
+ * drops when capture is off. The epoch lets `sendPostHogRequest` discard
+ * an exception captured before a later off/on toggle. */
+function captureDesktopPostHogException(
+  error: unknown,
+  context: DesktopInstrumentationContext | undefined,
+): void {
+  if (
+    posthogShutdownRequested ||
+    posthogShutdown ||
+    posthogInitializationUnavailable ||
+    (posthogCaptureFlagKnown && !posthogOperationCaptureEnabled)
+  )
+    return;
+  if (!posthog || !posthogAnonymousId || !posthogOperationCaptureEnabled) {
+    if (pendingPostHogExceptions.length >= MAX_PENDING_POSTHOG_EXCEPTIONS) {
+      pendingPostHogExceptions.shift();
+    }
+    pendingPostHogExceptions.push({ error, context });
+    return;
+  }
+  sendDesktopPostHogException(error, context);
+}
+
+function drainPendingPostHogExceptions(): void {
+  if (!posthog || !posthogAnonymousId || !posthogOperationCaptureEnabled)
+    return;
+  for (const { error, context } of pendingPostHogExceptions.splice(0)) {
+    sendDesktopPostHogException(error, context);
+  }
+}
+
+function sendDesktopPostHogException(
+  error: unknown,
+  context: DesktopInstrumentationContext | undefined,
+): void {
+  if (posthogExceptionsSent >= MAX_POSTHOG_EXCEPTIONS_PER_PROCESS) {
+    posthogExceptionsDroppedOverCap += 1;
+    return;
+  }
+  posthogExceptionsSent += 1;
+  const distinctId = posthogAnonymousId;
+  const domain = posthogAccount?.domain;
+  safelyInvoke(() => {
+    // `before_send` runs `sanitizePostHogEvent`, which also sanitizes the
+    // SDK-built `$exception_*` properties.
+    posthog?.captureException(error, distinctId, {
+      ...sanitizeInstrumentationContext(context),
+      ...posthogPlatformProperties,
+      $session_id: getDesktopPostHogSession().sessionId,
+      $process_person_profile: domain !== undefined,
+      $is_identified: false,
+      ...(domain !== undefined && { email_domain: domain }),
+      [POSTHOG_OPERATION_EPOCH_KEY]: posthogOperationEpoch,
+    });
+  });
+}
+
 async function flushDesktopPostHog(): Promise<void> {
+  // The fatal path flushes twice; warn only on the first.
+  if (!posthogShutdownRequested && posthogExceptionsDroppedOverCap > 0) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `PostHog exception cap reached; ${posthogExceptionsDroppedOverCap} main-process exceptions were not sent.`,
+    );
+  }
   posthogShutdownRequested = true;
   posthogAccount?.dispose();
   await waitForPostHogInitializationDuringShutdown();

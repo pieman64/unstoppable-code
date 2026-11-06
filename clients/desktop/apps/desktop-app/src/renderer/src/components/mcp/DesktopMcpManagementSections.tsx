@@ -5,7 +5,14 @@ import {
   MCP_MANAGEMENT_REASONS,
   resolveMcpConnectionBadge,
 } from '@canopy/ui-shared/lib/mcp-card-display';
-import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type JSX,
+  type ReactNode,
+} from 'react';
 import type {
   AccountMcpConnection,
   McpServerDataView,
@@ -13,8 +20,7 @@ import type {
   McpServerStatusEntry,
 } from '@canopy/desktop-shared/types/mcp-servers';
 import {
-  McpServerHealthSection,
-  McpServerManagementActions,
+  McpServerManagementCard,
   type McpAction,
   type McpTestConnectionOutcome,
 } from '@canopy/ui-app/capability';
@@ -53,6 +59,7 @@ export function DesktopMcpManagementSections({
   onDeleted,
   onMoveToDevice,
   onBusyChange,
+  tools,
 }: {
   server: McpServerDataView | null;
   status?: McpServerStatusEntry;
@@ -65,6 +72,7 @@ export function DesktopMcpManagementSections({
   onDeleted?: () => void;
   onMoveToDevice: (connection: AccountMcpConnection) => void;
   onBusyChange: (busy: boolean) => void;
+  tools?: ReactNode;
 }): JSX.Element {
   const [linkedConnection, setLinkedConnection] =
     useState<AccountMcpConnection>();
@@ -266,61 +274,60 @@ export function DesktopMcpManagementSections({
     if (open) deleteAccount.current = loadSignedInAccountId();
   }, []);
   return (
-    <div className="space-y-5" data-testid="mcp-browse-detail-management">
-      <McpServerHealthSection
-        targetKey={targetKey}
-        status={status}
-        accountConnectionStatus={connection?.status}
-        configs={
-          server?.configs ??
-          (connection
-            ? [{ id: connection.configId, name: connection.displayName }]
-            : [])
-        }
-        testConnection={
-          server && !provider
-            ? {
-                available: true,
-                run: (configId): Promise<McpTestConnectionOutcome> =>
-                  withIpcErrorMessage(() =>
-                    window.mcpServers.testConnection(
-                      server.definition.id,
-                      configId,
+    <div
+      className="flex flex-col gap-5"
+      data-testid="mcp-browse-detail-management"
+    >
+      <McpServerManagementCard
+        health={{
+          targetKey: targetKey,
+          status: status,
+          accountConnectionStatus: connection?.status,
+          configs:
+            server?.configs ??
+            (connection
+              ? [{ id: connection.configId, name: connection.displayName }]
+              : []),
+          testConnection:
+            server && !provider
+              ? {
+                  available: true,
+                  run: (configId): Promise<McpTestConnectionOutcome> =>
+                    withIpcErrorMessage(() =>
+                      window.mcpServers.testConnection(
+                        server.definition.id,
+                        configId,
+                      ),
                     ),
-                  ),
-              }
-            : {
-                available: false,
-                reason: provider
-                  ? MCP_MANAGEMENT_REASONS.provider
-                  : MCP_MANAGEMENT_REASONS.cloudTest,
-              }
-        }
-        busy={
-          busy ||
-          operating ||
-          managing ||
-          promotion !== null ||
-          credential !== null
-        }
-        onPendingChange={setTesting}
-        onTested={(): void => {
-          void refresh();
+                }
+              : {
+                  available: false,
+                  reason: provider
+                    ? MCP_MANAGEMENT_REASONS.provider
+                    : MCP_MANAGEMENT_REASONS.cloudTest,
+                },
+          busy:
+            busy ||
+            operating ||
+            managing ||
+            promotion !== null ||
+            credential !== null,
+          onPendingChange: setTesting,
+          onTested: (): void => {
+            void refresh();
+          },
         }}
-      />
-      <McpServerManagementActions
-        targetKey={targetKey}
-        serverName={server?.definition.name ?? connection?.displayName ?? ''}
-        placement={provider ? 'provider' : cloud ? 'cloud' : 'device'}
-        deleteScope={
-          cloud && server
-            ? deleteConnection
-              ? 'device-and-cloud'
-              : 'device-retaining-cloud'
-            : undefined
-        }
-        account={
-          accountAction
+        management={{
+          targetKey: targetKey,
+          serverName: server?.definition.name ?? connection?.displayName ?? '',
+          placement: provider ? 'provider' : cloud ? 'cloud' : 'device',
+          deleteScope:
+            cloud && server
+              ? deleteConnection
+                ? 'device-and-cloud'
+                : 'device-retaining-cloud'
+              : undefined,
+          account: accountAction
             ? {
                 label:
                   connection?.status === 'CONNECTED'
@@ -330,40 +337,36 @@ export function DesktopMcpManagementSections({
                       : 'Connect cloud account',
                 action: accountAction,
               }
-            : undefined
-        }
-        moveToCloud={
-          custom &&
-          server &&
-          !cloud &&
-          !provider &&
-          isCloudReadyUrl(server.definition.url ?? '')
-            ? promotionReason
-              ? { available: false, reason: promotionReason }
-              : {
-                  available: true,
-                  run: (): Promise<void> => {
-                    if (accountId) setPromotion({ accountId });
-                    return Promise.resolve();
-                  },
-                }
-            : undefined
-        }
-        moveToDevice={
-          custom && cloud
-            ? cloudReason
-              ? { available: false, reason: cloudReason }
-              : {
-                  available: true,
-                  run: (): Promise<void> => {
-                    if (connection) onMoveToDevice(connection);
-                    return Promise.resolve();
-                  },
-                }
-            : undefined
-        }
-        deleteServer={
-          provider
+            : undefined,
+          moveToCloud:
+            custom &&
+            server &&
+            !cloud &&
+            !provider &&
+            isCloudReadyUrl(server.definition.url ?? '')
+              ? promotionReason
+                ? { available: false, reason: promotionReason }
+                : {
+                    available: true,
+                    run: (): Promise<void> => {
+                      if (accountId) setPromotion({ accountId });
+                      return Promise.resolve();
+                    },
+                  }
+              : undefined,
+          moveToDevice:
+            custom && cloud
+              ? cloudReason
+                ? { available: false, reason: cloudReason }
+                : {
+                    available: true,
+                    run: (): Promise<void> => {
+                      if (connection) onMoveToDevice(connection);
+                      return Promise.resolve();
+                    },
+                  }
+              : undefined,
+          deleteServer: provider
             ? undefined
             : deleteConnection && cloudReason
               ? { available: false, reason: cloudReason }
@@ -391,21 +394,21 @@ export function DesktopMcpManagementSections({
                         throw error;
                       }
                     }),
-                }
-        }
-        onDeleted={(): void => {
-          onDeleted?.();
-          void refresh();
+                },
+          onDeleted: (): void => {
+            onDeleted?.();
+            void refresh();
+          },
+          busy:
+            busy ||
+            operating ||
+            testing ||
+            promotion !== null ||
+            credential !== null,
+          onPendingChange: setManaging,
+          onConfirmationChange: captureDeleteAccount,
         }}
-        busy={
-          busy ||
-          operating ||
-          testing ||
-          promotion !== null ||
-          credential !== null
-        }
-        onPendingChange={setManaging}
-        onConfirmationChange={captureDeleteAccount}
+        tools={tools}
       />
       <ErrorBanner error={refreshError} className="" blockMessageFromReplay />
       {promotion && server && (

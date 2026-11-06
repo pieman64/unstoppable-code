@@ -1,3 +1,4 @@
+import type { RedeemedExecutionSecrets } from '@canopy/core-runtime/node/execution-secrets';
 import { lstat, mkdir } from 'node:fs/promises';
 import { setBrandEnv } from '@canopy/desktop-shared/brand/env';
 import { SHARED_CONTAINER_VIEWER_PROJECT_ID } from '@canopy/desktop-shared/types';
@@ -10,7 +11,6 @@ import {
   type ScriptExecutionPlace,
 } from '@canopy/core-runtime/node/script/execution';
 import { getEnhancedEnv } from '../pipelines/config-paths';
-import { readSharedContainerRunEnvironment } from '../shared-containers/run-env-store';
 import {
   getAppAdvisorHomeDir,
   getSharedContainerRunRepoDir,
@@ -35,17 +35,26 @@ function validIds(...ids: string[]): boolean {
  * The desktop's projection of a `worker.script.execute` scope and context
  * onto its trusted checkouts and environments (CAN-4143). Scripts run with
  * the worktree data environment; a shared-container run gets exactly the
- * declared variables its recipient assigned, read here so their values never
- * cross the worker boundary.
+ * declared variables its recipient assigned, supplied by the redeemed launch.
  */
 export async function resolveScriptExecutionPlace(
   scope: WorkerScriptExecuteParams['scope'],
   context: WorkerScriptContext,
+  secrets: RedeemedExecutionSecrets,
 ): Promise<ScriptExecutionPlace> {
   if (context.kind === 'automation-home') {
     const cwd = getAppAdvisorHomeDir();
     await mkdir(cwd, { recursive: true });
-    return { cwd, env: getEnhancedEnv() };
+    return {
+      cwd,
+      env: {
+        ...getEnhancedEnv({
+          environment: { runtime: 'canopy', values: 'public' },
+          includeCanopySecrets: false,
+        }),
+        ...secrets.env,
+      },
+    };
   }
   const { workspaceId, worktreeId } = scope;
   if (
@@ -60,6 +69,7 @@ export async function resolveScriptExecutionPlace(
         cwd: getWorktreeDir(workspaceId, worktreeId),
         env: buildWorktreeDataEnv(workspaceId, worktreeId, undefined, {
           runtime: 'canopy',
+          secretEnv: secrets.env,
         }),
       };
     case 'workspace-root':
@@ -67,6 +77,7 @@ export async function resolveScriptExecutionPlace(
         cwd: getWorkspaceWorktreeRootRepoDir(workspaceId, worktreeId),
         env: buildWorktreeDataEnv(workspaceId, worktreeId, undefined, {
           runtime: 'canopy',
+          secretEnv: secrets.env,
         }),
       };
     case 'workspace-repo': {
@@ -81,6 +92,7 @@ export async function resolveScriptExecutionPlace(
         ),
         env: buildWorktreeDataEnv(workspaceId, worktreeId, childRepoEnv, {
           runtime: 'canopy',
+          secretEnv: secrets.env,
         }),
       };
     }
@@ -99,12 +111,13 @@ export async function resolveScriptExecutionPlace(
       if (!cwdInfo || !cwdInfo.isDirectory() || cwdInfo.isSymbolicLink())
         throw scriptContextUnavailableError();
       const declared = new Set(context.environmentKeys);
-      const values = await readSharedContainerRunEnvironment(worktreeId);
       return {
         cwd,
         env: buildSharedContainerRunEnv(
           worktreeId,
-          values.filter((entry) => declared.has(entry.key)),
+          Object.fromEntries(
+            Object.entries(secrets.env).filter(([key]) => declared.has(key)),
+          ),
         ),
       };
     }

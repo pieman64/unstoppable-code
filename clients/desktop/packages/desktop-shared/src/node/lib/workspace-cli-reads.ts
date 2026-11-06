@@ -1,3 +1,4 @@
+import { isActivitySectionId } from '../../constants/activity';
 import type { W5FileStore } from '@canopy/core-runtime/node/w5/file-store';
 import { readFile } from 'node:fs/promises';
 import * as path from 'node:path';
@@ -96,30 +97,16 @@ function normalizeIndexEntry(value: unknown): WorkspaceIndexEntry | null {
   };
 }
 
-function isActivitySectionId(value: unknown): value is ActivitySectionId {
-  return (
-    value === 'summary' ||
-    value === 'changed-files' ||
-    value === 'pull-request' ||
-    value === 'background-processes' ||
-    value === 'pipeline-runs' ||
-    value === 'cost' ||
-    value === 'plans' ||
-    value === 'scripts' ||
-    value === 'hooks' ||
-    value === 'mcp-servers' ||
-    value === 'todo' ||
-    value === 'memory'
-  );
-}
-
 function normalizeActivitySectionOrder(
   value: unknown,
 ): ActivitySectionId[] | undefined {
   if (!Array.isArray(value)) {
     return undefined;
   }
-  const normalized = value.filter(isActivitySectionId);
+  const normalized = value.filter(
+    (id): id is ActivitySectionId =>
+      typeof id === 'string' && isActivitySectionId(id),
+  );
   return normalized.length > 0 ? normalized : undefined;
 }
 

@@ -1,3 +1,9 @@
+import {
+  consumeW5Metadata,
+  prepareW5Metadata,
+  readPreparedW5Worktrees,
+  type PreparedW5Metadata,
+} from './w5-metadata-preparation';
 import { isW5ProjectionOnlyView } from './w5-fallback-read';
 import { afterW5Commit } from './w5-commit-scope';
 import { isAbsolute } from 'node:path';
@@ -255,6 +261,12 @@ function weakerAuthority(
   return AUTHORITY_RANK[right] > AUTHORITY_RANK[left] ? right : left;
 }
 
+export function readWorkspaceIndexStoredDetailed(): ReturnType<
+  typeof workspaceIndexRepository.readStored
+> {
+  return workspaceIndexRepository.readStored();
+}
+
 async function readWorkspaceIndex(): Promise<WorkspaceIndexEntry[]> {
   return (await workspaceIndexRepository.read()).entries;
 }
@@ -455,13 +467,20 @@ function toMultiRepoWorkspaceConfig(
 async function readCoworkWorkspace(
   entry: WorkspaceIndexEntry,
   collector?: ManifestAuthorityCollector,
+  metadata?: PreparedW5Metadata,
 ): Promise<CoworkSidebarItem> {
   const [configRead, archivedContainerCount, workEntrySummary] =
     await settleAll([
-      readWorkspaceConfigDetailed(entry.id),
+      metadata
+        ? consumeW5Metadata(metadata.manifest(entry.id))
+        : readWorkspaceConfigDetailed(entry.id),
       readArchivedContainerCount(entry.id),
       readWorkEntrySidebarSummary(entry.id),
     ]);
+  if (metadata) {
+    await metadata.join();
+    metadata.close();
+  }
   collector?.record(entry.id, {
     file: 'manifest',
     authority: configRead.authority,
@@ -533,12 +552,21 @@ function toCoworkWorkspaceConfig(item: CoworkSidebarItem): WorkspaceConfigFile {
 async function readSingleRepoWorkspace(
   entry: WorkspaceIndexEntry,
   collector?: ManifestAuthorityCollector,
+  metadata?: PreparedW5Metadata,
 ): Promise<SingleRepoSidebarItem | null> {
   const [configRead, worktreesRead, archivedContainerCount] = await settleAll([
-    readWorkspaceConfigDetailed(entry.id),
-    readWorkspaceWorktreesDetailed(entry.id, collector?.readOptions),
+    metadata
+      ? consumeW5Metadata(metadata.manifest(entry.id))
+      : readWorkspaceConfigDetailed(entry.id),
+    metadata
+      ? readPreparedW5Worktrees(metadata, entry.id)
+      : readWorkspaceWorktreesDetailed(entry.id, collector?.readOptions),
     readArchivedContainerCount(entry.id),
   ]);
+  if (metadata) {
+    await metadata.join();
+    metadata.close();
+  }
   recordWorkspaceReads(collector, entry.id, configRead, worktreesRead);
   assertWorkspaceConfigReadable(configRead.authority);
   const config = configRead.config;
@@ -623,12 +651,21 @@ async function readSingleRepoWorkspace(
 async function readMultiRepoWorkspace(
   entry: WorkspaceIndexEntry,
   collector?: ManifestAuthorityCollector,
+  metadata?: PreparedW5Metadata,
 ): Promise<MultiRepoSidebarItem> {
   const [worktreesRead, configRead, archivedContainerCount] = await settleAll([
-    readWorkspaceWorktreesDetailed(entry.id, collector?.readOptions),
-    readWorkspaceConfigDetailed(entry.id),
+    metadata
+      ? readPreparedW5Worktrees(metadata, entry.id)
+      : readWorkspaceWorktreesDetailed(entry.id, collector?.readOptions),
+    metadata
+      ? consumeW5Metadata(metadata.manifest(entry.id))
+      : readWorkspaceConfigDetailed(entry.id),
     readArchivedContainerCount(entry.id),
   ]);
+  if (metadata) {
+    await metadata.join();
+    metadata.close();
+  }
   recordWorkspaceReads(collector, entry.id, configRead, worktreesRead);
   assertWorkspaceConfigReadable(configRead.authority);
   const worktrees = worktreesRead.worktrees;
@@ -914,6 +951,18 @@ export async function readAllSidebarItems(options?: {
   return (await readAllSidebarItemsSnapshot(options)).file;
 }
 
+/** Telemetry alone opts into discovery; ordinary sidebar/snapshot callers stay unchanged. */
+export async function readSidebarItemsForTelemetry(): Promise<SidebarItemsFile> {
+  const metadata = await prepareW5Metadata({ kind: 'discovery' });
+  if (metadata.status === 'fallback') return readAllSidebarItems();
+  try {
+    return (await readAllSidebarItemsSnapshot(undefined, metadata)).file;
+  } finally {
+    await metadata.join();
+    metadata.close();
+  }
+}
+
 /** A registry refresh read the index or a manifest without authority. */
 export class WorkspaceRegistriesDegradedError extends Error {
   constructor(
@@ -993,15 +1042,20 @@ export interface SidebarItemsSnapshot {
  * `partial`. It registers workspace types, external paths and known ids
  * from the reads that can decide them, keeping the rest as registered.
  */
-export async function readAllSidebarItemsSnapshot(options?: {
-  persistRemovalCleanup?: false;
-}): Promise<SidebarItemsSnapshot> {
+export async function readAllSidebarItemsSnapshot(
+  options?: {
+    persistRemovalCleanup?: false;
+  },
+  metadata?: PreparedW5Metadata,
+): Promise<SidebarItemsSnapshot> {
   const {
     entries: index,
     authority: indexAuthority,
     storedFields: indexStoredFields,
     unserved: indexUnserved,
-  } = await workspaceIndexRepository.readStored();
+  } = metadata
+    ? await consumeW5Metadata(metadata.index)
+    : await workspaceIndexRepository.readStored();
   let authority: WorkspaceIndexAuthority = indexAuthority;
   const workspaceReads = new Map<string, SidebarWorkspaceReads>();
   const manifestStoredFields = new Map<string, StoredWorkspaceManifestFields>();
@@ -1032,18 +1086,18 @@ export async function readAllSidebarItemsSnapshot(options?: {
       try {
         if (entry.type === 'single-repo') {
           return {
-            item: await readSingleRepoWorkspace(entry, collector),
+            item: await readSingleRepoWorkspace(entry, collector, metadata),
           };
         }
 
         if (entry.type === 'cowork') {
           return {
-            item: await readCoworkWorkspace(entry, collector),
+            item: await readCoworkWorkspace(entry, collector, metadata),
           };
         }
 
         return {
-          item: await readMultiRepoWorkspace(entry, collector),
+          item: await readMultiRepoWorkspace(entry, collector, metadata),
         };
       } catch (error) {
         if (error instanceof InvalidCanopyJsonError) {

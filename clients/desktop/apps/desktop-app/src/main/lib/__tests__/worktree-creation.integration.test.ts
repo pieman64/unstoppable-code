@@ -1,3 +1,13 @@
+import type * as IdentityTestHost from '@canopy/desktop-shared/node/w5-routed-writes/__tests__/fixtures/w5-test-commit-log-host';
+import type { W5CommitLogHost } from '@canopy/core-runtime/node/w5/commit-log-host';
+import type { W5CommitLogFileStore } from '../w5-commit-log-file-store';
+jest.mock('node:worker_threads', () =>
+  jest
+    .requireActual<
+      typeof IdentityTestHost
+    >('@canopy/desktop-shared/node/w5-routed-writes/__tests__/fixtures/w5-test-commit-log-host')
+    .createTsxWorkerThreads(),
+);
 // CAN-3810: round trips through the worktree creation boundary with real Git
 // and the real workspace persistence on a temporary data dir. Each create is
 // read back from `worktrees.json`: the persisted row, projected to the typed
@@ -841,4 +851,176 @@ describe('worktree creation boundary round trips (real git and fs)', () => {
       ).rejects.toThrow('Project missing not found');
     });
   });
+});
+
+const describeIdentityHost =
+  process.platform === 'win32' ? describe.skip : describe;
+describeIdentityHost(
+  'CAN-5757 desktop workspace identity reservation compatibility',
+  () => {
+    it(
+      'supplies an exclusive claim while worktree reservations naming that workspace remain valid',
+      async () => {
+        const desktopStore = await import('../w5-commit-log-file-store');
+        const { reserveWorkspaceCreation } =
+          await import('../w5-workspace-creation-commit');
+        const { startW5TestCommitLogHost } =
+          await import('@canopy/desktop-shared/node/w5-routed-writes/__tests__/fixtures/w5-test-commit-log-host');
+        const dir = await mkdtemp(path.join(os.tmpdir(), 'desktop-identity-'));
+        const root = path.join(dir, 'workspaces');
+        const host = startW5TestCommitLogHost({
+          root,
+          logDirectory: path.join(dir, 'w5'),
+        });
+        const store = desktopStore.createW5CommitLogFileStore(() => host);
+        const identity = jest
+          .spyOn(desktopStore, 'getW5IdentityStore')
+          .mockReturnValue(store);
+        try {
+          const reservation = await reserveWorkspaceCreation('project', []);
+          await expect(
+            store.reserve({
+              reservationId: 'rival',
+              operation: 'core.workspace.create',
+              workspaceIdentity: 'project',
+            }),
+          ).rejects.toMatchObject({ reason: 'identity-conflict' });
+          await expect(
+            store.reserve({
+              reservationId: 'worktree',
+              operation: 'core.worktree.create',
+              diagnostics: { workspaceId: 'project' },
+            }),
+          ).resolves.toBeUndefined();
+          await reservation.run(() => Promise.resolve());
+          await reservation.releaseRemoved();
+          await expect(
+            store.reserve({
+              reservationId: 'after-release',
+              operation: 'core.workspace.create',
+              workspaceIdentity: 'project',
+            }),
+          ).resolves.toBeUndefined();
+        } finally {
+          identity.mockRestore();
+          await host.shutdown();
+          await rm(dir, { recursive: true, force: true });
+        }
+      },
+      TEST_TIMEOUT_MS,
+    );
+  },
+);
+describeIdentityHost('desktop creation claim qualification', () => {
+  let dir: string;
+  let originalDataDir: string | undefined;
+  let host: W5CommitLogHost;
+  let store: W5CommitLogFileStore;
+  beforeEach(async () => {
+    const desktopStore = await import('../w5-commit-log-file-store');
+    const { startW5TestCommitLogHost } =
+      await import('@canopy/desktop-shared/node/w5-routed-writes/__tests__/fixtures/w5-test-commit-log-host');
+    dir = await mkdtemp(path.join(os.tmpdir(), 'desktop-qualification-'));
+    originalDataDir = process.env.CANOPY_DATA_DIR;
+    process.env.CANOPY_DATA_DIR = dir;
+    host = startW5TestCommitLogHost({
+      root: path.dirname(getWorkspaceIndexFilePath()),
+      logDirectory: path.join(dir, 'w5'),
+    });
+    store = desktopStore.createW5CommitLogFileStore(() => host);
+    desktopStore.__setDesktopW5FileStoreForTests(store);
+  });
+  afterEach(async () => {
+    const desktopStore = await import('../w5-commit-log-file-store');
+    desktopStore.__setDesktopW5FileStoreForTests(undefined);
+    if (originalDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
+    else process.env.CANOPY_DATA_DIR = originalDataDir;
+    await host.shutdown();
+    await rm(dir, { recursive: true, force: true });
+  });
+  it.each(['con', 'a'.repeat(128), 'a'.repeat(129)])(
+    'creates desktop workspace %s through the commit log',
+    async (name) => {
+      const { createAndPersistNewMultiRepoWorkspace } =
+        await import('../workspace-service');
+      const result = await createAndPersistNewMultiRepoWorkspace(name);
+      expect(result.id).toBe(name);
+      const index: unknown = JSON.parse(
+        await readFile(getWorkspaceIndexFilePath(), 'utf8'),
+      );
+      expect(index).toHaveProperty(
+        'workspaces',
+        expect.arrayContaining([expect.objectContaining({ id: name })]),
+      );
+      expect(
+        JSON.parse(await readFile(getWorkspaceConfigPath(name), 'utf8')),
+      ).toMatchObject({ type: 'multi-repo' });
+      expect(await store.readReservations()).toEqual([]);
+    },
+    TEST_TIMEOUT_MS,
+  );
+  it(
+    'reclaims an owned orphan manifest with an existing worktree list',
+    async () => {
+      const { registerBoundMultiRepoWorkspace } =
+        await import('../workspace-service');
+      const owner = {
+        type: 'organization' as const,
+        organizationId: '11111111-1111-4111-8111-111111111111',
+        projectId: '22222222-2222-4222-8222-222222222222',
+        instanceId: '33333333-3333-4333-8333-333333333333',
+        bindingGeneration: 1,
+      };
+      const source = path.join(dir, 'source');
+      await mkdir(source, { recursive: true });
+      await writeJson(getWorkspaceConfigPath('owned'), {
+        version: 1,
+        type: 'multi-repo',
+        repos: [],
+        sourceRepoPath: source,
+        owner,
+        unknown: { retained: true },
+      });
+      await writeJson(getWorkspaceWorktreesFilePath('owned'), {
+        version: 1,
+        worktrees: [],
+        unknown: 'retained',
+      });
+      const result = await registerBoundMultiRepoWorkspace({
+        path: source,
+        localWorkspaceId: 'owned',
+        owner: { ...owner, bindingGeneration: 2 },
+        name: 'Owned',
+        repositories: [
+          {
+            repository: {
+              provider: 'github',
+              host: 'github.com',
+              owner: 'example',
+              name: 'repo',
+              providerRepoId: null,
+              defaultBranch: 'main',
+              verification: 'VERIFIED',
+            },
+            relativePath: 'repos/repo',
+            validated: true,
+          },
+        ],
+      });
+      expect(result.owner?.bindingGeneration).toBe(2);
+      expect(
+        JSON.parse(await readFile(getWorkspaceConfigPath('owned'), 'utf8')),
+      ).toMatchObject({
+        owner: { bindingGeneration: 2 },
+        unknown: { retained: true },
+      });
+      expect(
+        JSON.parse(
+          await readFile(getWorkspaceWorktreesFilePath('owned'), 'utf8'),
+        ),
+      ).toMatchObject({ unknown: 'retained' });
+      expect(await store.readReservations()).toEqual([]);
+    },
+    TEST_TIMEOUT_MS,
+  );
 });

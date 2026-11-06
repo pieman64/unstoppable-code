@@ -1,6 +1,7 @@
 import {
   HookFiring,
   type HookChatClaims,
+  type HookQueue,
   type HookFiringHost,
   type HookProjectOwner,
   type InitiatedWorkEngine,
@@ -83,6 +84,10 @@ export function getHookInitiatedWork(): InitiatedWorkEngine {
 
 export function getHookChatClaims(): HookChatClaims {
   return getActiveDesktopRuntime().hookChatClaims;
+}
+
+export function getHookQueue(): HookQueue {
+  return getActiveDesktopRuntime().hookQueue;
 }
 
 /** The hook source, or null before the desktop runtime accepts work. */

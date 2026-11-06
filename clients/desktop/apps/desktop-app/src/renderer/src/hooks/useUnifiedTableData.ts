@@ -37,6 +37,7 @@ import {
 import { brandText } from '@/lib/brand';
 import type { InstalledItemRef } from '@canopy/protocol/installed-items';
 import { installedSelectionIsDisabled } from '@canopy/ui-shared';
+import { INSTALLED_ITEM_STATUS_COPY } from '@canopy/ui-shared/lib';
 import { useDesktopInstalledItemStatuses } from './useDesktopInstalledItemStatuses';
 
 // The rule lives with the shared plugin-ref helpers so the main process can
@@ -898,10 +899,14 @@ export function useUnifiedTableData(
                         ...row,
                         installedItemDisabled: true,
                         toggleMode: 'unsupported',
-                        toggleReason: 'Installed, but turned off',
+                        toggleReason:
+                          INSTALLED_ITEM_STATUS_COPY.disabled.description,
                         badges: [
                           ...(row.badges ?? []),
-                          { label: 'Disabled', tone: 'neutral' },
+                          {
+                            label: INSTALLED_ITEM_STATUS_COPY.disabled.label,
+                            tone: 'neutral',
+                          },
                         ],
                       },
                     ]

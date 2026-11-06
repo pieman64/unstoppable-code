@@ -658,7 +658,10 @@ export async function spawnTerminalForRenderer(
       ).filter((entry) => declared.has(entry.key));
       return spawnTerminalWithEnvironment(
         request,
-        buildSharedContainerRunEnv(request.worktreeId, values),
+        buildSharedContainerRunEnv(
+          request.worktreeId,
+          Object.fromEntries(values.map((entry) => [entry.key, entry.value])),
+        ),
       );
     },
   );
@@ -742,7 +745,10 @@ export async function restoreTerminalForRenderer(
         terminalId: request.terminalId,
         cols: request.cols,
         rows: request.rows,
-        environment: buildSharedContainerRunEnv(session.worktreeId, values),
+        environment: buildSharedContainerRunEnv(
+          session.worktreeId,
+          Object.fromEntries(values.map((entry) => [entry.key, entry.value])),
+        ),
       });
     },
   );

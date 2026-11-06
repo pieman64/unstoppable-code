@@ -20,6 +20,7 @@ const VARIANTS: readonly { variant: SurfaceVariant; use: string }[] = [
   { variant: 'card', use: 'a standalone item' },
   { variant: 'raised', use: 'floats over a busy background' },
   { variant: 'inset', use: 'a well inside a group or card' },
+  { variant: 'dashed', use: 'a drop zone or empty placeholder' },
 ];
 
 const PADDINGS: readonly { padding: SurfacePadding; px: number }[] = [
@@ -80,6 +81,40 @@ export function SurfacesSpecimen(): JSX.Element {
           ))}
         </SpecimenGrid>
       </SpecimenPanel>
+      <SpecimenPanel title="Small: 8px corners on a compact box">
+        <SpecimenGrid min={180}>
+          {VARIANTS.map(({ variant }) => (
+            <SpecimenCell key={variant} label={variant}>
+              <Surface
+                variant={variant}
+                size="small"
+                padding="tight"
+                className="w-full"
+              >
+                <span className="text-xs fg-primary">src/main/index.ts</span>
+              </Surface>
+            </SpecimenCell>
+          ))}
+        </SpecimenGrid>
+      </SpecimenPanel>
+
+      <SpecimenPanel title="Interactive: the fill darkens on hover">
+        <SpecimenGrid min={180}>
+          {VARIANTS.map(({ variant }) => (
+            <SpecimenCell key={variant} label={variant}>
+              <Surface
+                variant={variant}
+                interactive
+                padding="compact"
+                className="w-full"
+              >
+                <Sample title="Open template" />
+              </Surface>
+            </SpecimenCell>
+          ))}
+        </SpecimenGrid>
+      </SpecimenPanel>
+
       <SpecimenPanel title="Padding roles">
         <SpecimenGrid min={160}>
           {PADDINGS.map(({ padding, px }) => (

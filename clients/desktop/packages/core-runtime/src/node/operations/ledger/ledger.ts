@@ -41,6 +41,14 @@ import { KEYED_RECEIPT_RETRY_WINDOW_MS } from '../../../kernel/keyed-receipt';
 import { openOperationLedgerDatabase } from './database';
 import { OperationLedgerError, OperationLedgerRefusedError } from './errors';
 
+/** Worker instructions whose cancelled child keeps the result it reported. */
+const CANCELLED_OUTCOME_KINDS: ReadonlySet<string> = new Set([
+  'worker.agent.helper.run',
+  'worker.agent.signIn.run',
+  'worker.agent.subagent.run',
+  'worker.agent.turn.run',
+]);
+
 export const OPERATION_LEDGER_COMPACTION_BATCH_SIZE = 100;
 export const OPERATION_LEDGER_COMPACTION_INTERVAL = 100;
 export const OPERATION_LEDGER_EVENTS_PAGE_MAX = 500;
@@ -530,7 +538,7 @@ export class OperationLedger {
           status: terminal.status,
           outcome:
             terminal.status === 'completed' ||
-            (current.kind === 'worker.agent.helper.run' &&
+            (CANCELLED_OUTCOME_KINDS.has(current.kind) &&
               terminal.status === 'cancelled')
               ? (terminal.outcome ?? null)
               : null,

@@ -62,6 +62,8 @@ export interface McpConnectActionButtonProps {
   readonly action: McpConnectAction;
   readonly phase?: McpConnectActionPhase;
   readonly serviceName?: string;
+  /** Replaces the idle label, e.g. **Connect** where sign-in is not known. */
+  readonly label?: string;
   readonly size?: ButtonSize;
   /** `secondary` when a host primary, such as Try it, owns the accent. */
   readonly variant?: 'primary' | 'secondary';
@@ -75,6 +77,7 @@ export function McpConnectActionButton({
   action,
   phase = 'idle',
   serviceName,
+  label,
   size,
   variant = 'primary',
   disabled = false,
@@ -89,7 +92,9 @@ export function McpConnectActionButton({
       onClick={onClick}
       data-testid={testId}
     >
-      {mcpConnectActionButtonLabel(action, phase, serviceName)}
+      {phase === 'idle' && label !== undefined
+        ? label
+        : mcpConnectActionButtonLabel(action, phase, serviceName)}
     </Button>
   );
 }

@@ -1,8 +1,11 @@
+import type { SecretInputApprovalPrompt } from '@canopy/protocol/approvals';
+import type { CanopyAccountResponse } from '@canopy/protocol/canopy-server';
 import type { W5RecoveryApi } from '@canopy/protocol/portal';
 import type {
   FileImageSaveSupport,
   FileSaveOptions,
 } from '@canopy/protocol/file-image-save';
+import type { CloudProjectBinding } from '@canopy/protocol/memory-sync';
 import type {
   SharedMultiRepoCreateCommand,
   PrepareSharedMultiRepoParams,
@@ -890,6 +893,8 @@ export type {
 } from './types/deferred-tools';
 export {
   DEFERRED_TOOLS_RELOAD_CONTINUATION_TEMPLATE,
+  DEFERRED_TOOLS_ENABLE_FAILURE_MESSAGE,
+  DEFERRED_TOOLS_RESUME_FAILURE_MESSAGE,
   DEFERRED_RESOURCE_KIND_TO_SELECTION_BUCKET,
   buildDeferredToolsReloadContinuation,
   isTerminalDeferredToolsReloadLifecycle,
@@ -1590,6 +1595,62 @@ export interface AccountOrganizationSettingsEventMessage {
   event: SettingsEvent;
 }
 
+/** A cloud project a local workspace may link to (CAN-5190). */
+export interface CloudProjectLinkCandidate {
+  projectId: string;
+  name: string;
+  matchedRepositories: number;
+  totalRepositories: number;
+}
+
+/**
+ * What the Link to cloud project dialog offers for one workspace: the project
+ * it is already linked to, or the Personal projects it matches with the one
+ * the server would bind preselected.
+ */
+export type CloudProjectLinkOptions =
+  | { status: 'linked'; projectId: string; name: string }
+  | {
+      status: 'choose';
+      candidates: CloudProjectLinkCandidate[];
+      suggestedProjectId: string | null;
+    }
+  | {
+      status: 'unavailable';
+      reason:
+        | 'signed-out'
+        | 'not-supported'
+        | 'sharing-off'
+        | 'not-personal'
+        | 'workspace-unreadable'
+        | 'offline';
+    };
+
+export interface CloudProjectLinkRequest {
+  workspaceId: string;
+  target: { kind: 'existing'; projectId: string } | { kind: 'new' };
+}
+
+export type CloudProjectLinkErrorCode =
+  | 'unavailable'
+  | 'not-personal'
+  | 'workspace-unreadable'
+  | 'project-unavailable'
+  | 'too-many-setups'
+  | 'busy'
+  | 'offline'
+  | 'link-failed';
+
+export type CloudProjectLinkResult =
+  | { ok: true; projectId: string }
+  | { ok: false; code: CloudProjectLinkErrorCode };
+
+/** Linking a local workspace to its cloud project identity (CAN-5190). */
+export interface CloudProjectsApi {
+  findLink(workspaceId: string): Promise<CloudProjectLinkOptions>;
+  link(request: CloudProjectLinkRequest): Promise<CloudProjectLinkResult>;
+}
+
 export interface OrgProjectsApi {
   sharedMultiRepo: {
     prepare(
@@ -2285,6 +2346,8 @@ export interface CanopyCloudAccountPublicState {
   account?: CanopyServerAccountInfo;
   /** Current personal org external ID, separate from visible teams. */
   personalOrganizationId?: string;
+  personalModelGateway?: CanopyAccountResponse['personalModelGateway'];
+  personalModelGatewayEnforcementUnavailable?: boolean;
   organizations?: CanopyOrganizationSummary[];
   teams?: CanopyTeamSummary[];
   /**
@@ -3277,6 +3340,8 @@ export interface WorktreeCreationIdentity {
   checkouts: { repositoryPath: string; checkoutPath: string }[];
 }
 
+export type WorktreeLabelSource = 'generated' | 'manual';
+
 export interface WorktreeData {
   creation?: WorktreeCreationIdentity;
   /** Authority-owned local replicas; absent input is a legacy never-recorded row. */
@@ -3318,6 +3383,17 @@ export interface WorktreeData {
    * display name is restored as the fallback. Does not rename the git branch.
    */
   label?: string;
+  /**
+   * Who chose `label`. `generated`: the worktree summary helper named it from
+   * the conversation and may rename it while `labelProvisional` is set. A
+   * label with no source was set by a person or an explicit agent action (or
+   * saved before provenance existed) and is never renamed automatically.
+   * `manual` with no label records that a person cleared the label, so the
+   * branch name stays the display name.
+   */
+  labelSource?: WorktreeLabelSource;
+  /** Set only with a generated label the conversation has not yet settled. */
+  labelProvisional?: true;
   /** Execution ids whose current paused/terminal pipeline state has been acknowledged in the UI. */
   seenPipelineExecutionIds?: string[];
   /** The user-configured base branch for this worktree (e.g. "main"). */
@@ -3987,6 +4063,13 @@ export interface WorkspaceConfigFile {
   privateMemory?: boolean;
   privateMemoryManagedBy?: 'organization';
   personalCatalogId?: string;
+  /**
+   * The workspace's cloud project identity (CAN-5190): one record for
+   * Personal and organization projects, valid only under its account. Main
+   * owns it: only the cloud project binding writes it, and every other config
+   * write keeps what is on disk.
+   */
+  cloudBinding?: CloudProjectBinding;
   version: 1;
   type: WorkspaceType;
   /** Organization ownership; absent means Personal. */
@@ -14858,6 +14941,9 @@ export interface ChatApi {
   updatePlugins(
     req: ChatUpdatePluginsRequest,
   ): Promise<ChatUpdatePluginsResponse>;
+  onHookQueueRemoved(
+    cb: (event: HookChatQueueRemovedEvent) => void,
+  ): () => void;
   onHookTabStarted(cb: (event: HookChatTabStartedEvent) => void): () => void;
   onTabDescriptionUpdated(
     cb: (event: ChatTabDescriptionUpdatedEvent) => void,
@@ -14925,7 +15011,18 @@ export {
   type ApprovalRequestDetails,
 } from '@canopy/protocol/approvals';
 
+/** This value is never part of ApprovalPromptDecision or any persisted event. */
+export interface ApprovalSecretInputRequest {
+  requestId: string;
+  projectId: string;
+  worktreeId: string;
+  chatId: string;
+  bindingId: string;
+  secret: string;
+}
+
 export interface ApprovalRequestEvent {
+  secretInput?: SecretInputApprovalPrompt;
   /** Omitted by older chat hosts. Non-chat requests have their own UI owner. */
   surface?: 'chat' | 'non-chat';
   requestId: string;
@@ -15070,6 +15167,7 @@ export interface PersistedPendingApproval {
 
 export interface ApprovalsApi {
   respond(req: ApprovalRespondRequest): Promise<boolean>;
+  respondSecretInput(req: ApprovalSecretInputRequest): Promise<boolean>;
   dismiss(req: ApprovalDismissRequest): Promise<boolean>;
   pendingRequests(): Promise<ApprovalRequestEvent[]>;
   setMode(req: ApprovalModeSetRequest): Promise<void>;
@@ -17747,6 +17845,13 @@ export interface HookChatQueuedMessage {
   text: string;
   reason: string;
   hookInfo?: { triggerName: string; timestamp: number };
+}
+
+export interface HookChatQueueRemovedEvent {
+  projectId: string;
+  worktreeId: string;
+  chatId: string;
+  queueId: string;
 }
 
 export interface HookChatTabStartedEvent {
@@ -21511,6 +21616,7 @@ export interface CanopyApi {
   validateLinearToken: (token: string) => Promise<LinearStatus>;
   loadModelGatewayCredential: (
     organizationId: string,
+    expectedBaseUrl?: string,
   ) => Promise<ModelGatewayCredentialState>;
   saveModelGatewayCredential: (
     input: ModelGatewayCredentialInput,
@@ -22000,6 +22106,8 @@ export interface CanopyApi {
   referencePreview: ReferencePreviewApi;
   /** Organization project catalog per context (CAN-2955). */
   orgProjects: OrgProjectsApi;
+  /** Cloud project identity of local workspaces (CAN-5190). */
+  cloudProjects: CloudProjectsApi;
   /** Personal organization promotion and project bring-along (CAN-3706). */
   personalOrganizationUpgrade: PersonalOrganizationUpgradeApi;
   /** Hosted account and organization settings through the main bridge. */
@@ -28821,6 +28929,7 @@ export const IPC_CHANNELS = {
   chatSessionImported: 'chat:session-imported',
   chatUpdatePlugins: 'chat:update-plugins',
   chatHookTabStarted: 'chat:hook-tab-started',
+  chatHookQueueRemoved: 'chat:hook-queue-removed',
   chatTabDescriptionUpdated: 'chat:tab-description-updated',
   chatCancelQueuedHookChat: 'chat:cancel-queued-hook-chat',
   chatForceQueuedHookChat: 'chat:force-queued-hook-chat',
@@ -28857,6 +28966,7 @@ export const IPC_CHANNELS = {
   // "the prompt is gone AND the tool was denied"; this one means the prompt
   // is gone because it was *approved* without a click (CAN-3083).
   approvalAutoResolved: 'approval:auto-resolved',
+  approvalSecretInput: 'approval:secret-input', // local renderer → main only; never tunneled
   approvalRespond: 'approval:respond', // renderer → main invoke
   approvalDismiss: 'approval:dismiss', // renderer → main invoke (deny once, no message)
   approvalPendingRequests: 'approval:pending-requests', // renderer → main invoke
@@ -29025,8 +29135,6 @@ export const IPC_CHANNELS = {
   observabilityReportPostHogSessionRotation:
     'observability:report-posthog-session-rotation',
   observabilityPostHogSessionUpdate: 'observability:posthog-session-update',
-  observabilityGetAnonymousTelemetryId:
-    'observability:get-anonymous-telemetry-id',
   observabilityEvent: 'observability:event',
   githubCreatePr: 'github:create-pr',
   githubRequestRefresh: 'github:request-refresh',
@@ -29185,6 +29293,8 @@ export const IPC_CHANNELS = {
   terminalSaveWorktreeState: 'terminal:save-worktree-state',
   terminalList: 'terminal:list',
   terminalListProfiles: 'terminal:list-profiles',
+  terminalGetSettings: 'terminal:get-settings',
+  terminalUpdateSettings: 'terminal:update-settings',
   // Per-worktree VS Code-style panel grid layout persistence (Phase 5).
   // Request channels (renderer → main `invoke`); see `./types/panel-layout`.
   panelLayoutLoad: 'panel-layout:load',
@@ -29369,6 +29479,8 @@ export const IPC_CHANNELS = {
   orgProjectsSetupProgress: 'org-projects:setup-progress',
   orgProjectsConvertWorkspace: 'org-projects:convert-workspace',
   orgProjectsMoveWorkspace: 'org-projects:move-workspace',
+  cloudProjectsFindLink: 'cloud-projects:find-link',
+  cloudProjectsLink: 'cloud-projects:link',
   orgProjectsMoveBackToPersonal: 'org-projects:move-back-to-personal',
   orgProjectsOwnershipChanged: 'org-projects:ownership-changed',
   orgProjectsList: 'org-projects:list',
@@ -29898,6 +30010,9 @@ export type {
   PersistedTerminalEntry,
   PersistedWorktreeTerminalStateFile,
   TerminalApi,
+  TerminalSettings,
+  UpdateTerminalSettingsRequest,
+  UpdateTerminalSettingsResponse,
   TerminalAttachRequest,
   TerminalAttachResponse,
   TerminalDrawerPreferences,

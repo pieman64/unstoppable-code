@@ -94,11 +94,13 @@ export function AgentSentSpecimen(): JSX.Element {
                 />
               </SpecimenCell>
               <SpecimenCell label="Inline">
-                <AgentSentTitle
-                  agentSent={AGENT_SENT}
-                  receivingContext={RECEIVING}
-                  layout="inline"
-                />
+                <span className="text-xs">
+                  <AgentSentTitle
+                    agentSent={AGENT_SENT}
+                    receivingContext={RECEIVING}
+                    layout="inline"
+                  />
+                </span>
               </SpecimenCell>
               <SpecimenCell label="Steering">
                 <AgentSentTitle
@@ -114,7 +116,9 @@ export function AgentSentSpecimen(): JSX.Element {
       <SpecimenPanel title="LifetimeLimitNoticeDisplay">
         {LIMIT_STATES.map(({ label, props }) => (
           <SpecimenCell key={label} label={label} wide>
-            <LifetimeLimitNoticeDisplay {...props} />
+            <div className="w-full">
+              <LifetimeLimitNoticeDisplay {...props} />
+            </div>
           </SpecimenCell>
         ))}
       </SpecimenPanel>

@@ -55,12 +55,12 @@ function SkillSuggestionRow({
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
           {/* Title and summary are drafted from the user's own requests. */}
-          <div className="text-sm font-medium fg-primary">
+          <div className="text-s font-medium fg-primary">
             <span id={titleId} className={REPLAY_MASK_CLASS}>
               {suggestion.title}
             </span>
           </div>
-          <div className={`mt-0.5 text-sm fg-secondary ${REPLAY_BLOCK_CLASS}`}>
+          <div className={`mt-0.5 text-s fg-secondary ${REPLAY_BLOCK_CLASS}`}>
             {suggestion.summary}
           </div>
           <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs fg-tertiary">
@@ -167,7 +167,7 @@ export function SkillSuggestionsList({
     <CapabilityGate when={(c) => c.skillSuggestions === true}>
       {suggestions.length === 0 ? (
         <p
-          className="py-6 text-center text-sm fg-secondary"
+          className="py-6 text-center text-s fg-secondary"
           data-testid="skill-suggestions-empty"
         >
           {SKILL_SUGGESTION_COPY.empty}

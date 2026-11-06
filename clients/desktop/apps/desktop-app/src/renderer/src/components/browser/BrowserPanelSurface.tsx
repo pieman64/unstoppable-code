@@ -192,7 +192,7 @@ export function BrowserPanelSurface({
         data-testid="browser-panel-loading"
         role="status"
         aria-label="Opening Browser…"
-        className="flex h-full flex-col items-center justify-center gap-2 text-sm fg-secondary"
+        className="flex h-full flex-col items-center justify-center gap-2 text-s fg-secondary"
       >
         <LoadingSpinner />
         <span>Opening Browser…</span>
@@ -205,7 +205,7 @@ export function BrowserPanelSurface({
     content = (
       <div
         data-testid="browser-panel-stale"
-        className="flex h-full items-center justify-center text-sm fg-secondary"
+        className="flex h-full items-center justify-center text-s fg-secondary"
       >
         Browser session is no longer available.
       </div>

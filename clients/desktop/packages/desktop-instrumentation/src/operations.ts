@@ -20,14 +20,6 @@ interface ProductOperationPolicy {
   readonly renamedContextKeys?: Readonly<Record<string, string>>;
 }
 
-/** Performance and diagnostic operations stay Datadog-only. */
-interface ExcludedOperationPolicy {
-  readonly kind: 'excluded';
-  readonly reason: 'performance' | 'diagnostic';
-}
-
-type DesktopOperationPolicy = ProductOperationPolicy | ExcludedOperationPolicy;
-
 const PIPELINE_DEFINITION_CHANGES: ReadonlySet<unknown> = new Set([
   'create',
   'update',
@@ -87,9 +79,9 @@ const STANDALONE_CONTEXT_KEYS = [
 
 /**
  * Every custom operation the desktop app records. Operation APIs accept only
- * these names, so a new operation cannot compile until it is classified as a
- * product operation (Datadog and PostHog) or an excluded one (Datadog only).
- * Handled errors never reach PostHog and are not operations.
+ * these names, so a new operation cannot compile until it declares the
+ * PostHog event and context keys it reports.
+ * Errors are not operations; they go through error capture.
  */
 export const DESKTOP_OPERATIONS = {
   'canopy.first_run_import_view': {
@@ -259,6 +251,21 @@ export const DESKTOP_OPERATIONS = {
     posthogEvent: 'sharing:dialog_open',
     contextKeys: ['resource_kind', 'source'],
   },
+  'canopy.add_project_dialog': {
+    kind: 'product',
+    posthogEvent: 'workspace:add_project_dialog_open',
+    contextKeys: [],
+  },
+  'canopy.add_project_method': {
+    kind: 'product',
+    posthogEvent: 'workspace:add_project_method_click',
+    contextKeys: ['project_method'],
+  },
+  'canopy.add_project_dialog_cancel': {
+    kind: 'product',
+    posthogEvent: 'workspace:add_project_dialog_cancel',
+    contextKeys: ['project_method'],
+  },
   'canopy.chat_turn': {
     kind: 'product',
     posthogEvent: 'chat:turn_end',
@@ -421,31 +428,13 @@ export const DESKTOP_OPERATIONS = {
     // Counts and outcomes only; never prompts, titles or skill names.
     contextKeys: ['action', 'occurrence_count', 'outcome', 'candidate_count'],
   },
-  'canopy.slow_action': { kind: 'excluded', reason: 'performance' },
-  'canopy.ipc_action': { kind: 'excluded', reason: 'performance' },
-  'canopy.managed_process': { kind: 'excluded', reason: 'performance' },
-  'canopy.code_graph_generation': { kind: 'excluded', reason: 'performance' },
-  'canopy.code_graph_refresh_metrics': {
-    kind: 'excluded',
-    reason: 'performance',
-  },
-  'canopy.code_graph_query_metrics': {
-    kind: 'excluded',
-    reason: 'performance',
-  },
-  'canopy.app_diagnostic': { kind: 'excluded', reason: 'diagnostic' },
-  'canopy.local_memory_citation_compliance': {
-    kind: 'excluded',
-    reason: 'diagnostic',
-  },
-} as const satisfies Record<string, DesktopOperationPolicy>;
+} as const satisfies Record<string, ProductOperationPolicy>;
 
 export type DesktopOperationName = keyof typeof DESKTOP_OPERATIONS;
 
 const postHogOperationEvents = new Set<string>();
 for (const policy of Object.values(DESKTOP_OPERATIONS)) {
-  if (policy.kind === 'product')
-    postHogOperationEvents.add(policy.posthogEvent);
+  postHogOperationEvents.add(policy.posthogEvent);
 }
 
 export function isDesktopPostHogOperationEvent(event: string): boolean {
@@ -485,13 +474,6 @@ const ACQUISITION_LIFECYCLES: ReadonlySet<string> = new Set([
   'canopy.project_import',
   'canopy.remote_pairing',
 ]);
-
-function getProductOperationPolicy(
-  name: DesktopOperationName,
-): ProductOperationPolicy | undefined {
-  const policy: DesktopOperationPolicy = DESKTOP_OPERATIONS[name];
-  return policy.kind === 'product' ? policy : undefined;
-}
 
 function projectContextKeys(
   context: DesktopInstrumentationContext,
@@ -535,8 +517,8 @@ export interface PostHogOperationTrackerOptions {
 }
 
 /**
- * Turns Datadog start/finish pairs into one PostHog event per finished
- * product operation. Excluded operations are never tracked or emitted.
+ * Turns operation start/finish pairs into one PostHog event per finished
+ * product operation.
  */
 export function createPostHogOperationTracker({
   appVersion,
@@ -551,12 +533,8 @@ export function createPostHogOperationTracker({
   return {
     start: (name, options, captureEligible = true): void => {
       if (ACQUISITION_LIFECYCLES.has(name) && !captureEligible) return;
-      const policy = getProductOperationPolicy(name);
-      if (
-        !policy ||
-        (policy.includes && !policy.includes(options?.context ?? {}))
-      )
-        return;
+      const policy: ProductOperationPolicy = DESKTOP_OPERATIONS[name];
+      if (policy.includes && !policy.includes(options?.context ?? {})) return;
       const key = keyOf(name, options);
       // Re-insert so the map stays ordered oldest-first for eviction.
       startedAt.delete(key);
@@ -578,8 +556,7 @@ export function createPostHogOperationTracker({
       surface,
       options,
     ): PostHogOperationEvent | undefined => {
-      const policy = getProductOperationPolicy(name);
-      if (!policy) return undefined;
+      const policy: ProductOperationPolicy = DESKTOP_OPERATIONS[name];
       const key = keyOf(name, options);
       const started = startedAt.get(key);
       startedAt.delete(key);

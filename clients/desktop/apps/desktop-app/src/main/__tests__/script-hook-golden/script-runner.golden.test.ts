@@ -332,7 +332,9 @@ describe('CAN-5062 golden: runner outcomes', () => {
       output: 'line one\nline two\r\npartial',
       timedOut: false,
     });
-    expect(chunks).toEqual([['line one', 'line two', 'partial']]);
+    // Raw output retains arrival order; line observers must not join the
+    // unfinished stdout tail to a line arriving on the independent stderr pipe.
+    expect(chunks).toEqual([['line one', 'two', 'line ', 'partial']]);
   });
 
   it('spawns attached on Windows', async () => {

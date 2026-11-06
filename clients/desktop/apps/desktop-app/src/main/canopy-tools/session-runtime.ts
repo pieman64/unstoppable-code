@@ -29,6 +29,7 @@ import { getAttentionTracker } from '../services/attention-tracker';
 import {
   clearAskUserRequestCancellation,
   createPendingRequest,
+  isPendingRequestOpen,
   rejectRequest,
 } from '../mcp/pending-requests';
 import {
@@ -220,6 +221,16 @@ export async function saveLocalMemory(
           ? { sessionId: options.sessionId }
           : {}),
       },
+      // Where the note was saved (design §10.4): a synced replica records
+      // it, so an organization that keeps its work off the cloud can.
+      ...(policy.kind === 'scoped' && policy.owner !== undefined
+        ? {
+            origin: {
+              organizationId: policy.owner.organizationId.toLowerCase(),
+              projectId: policy.owner.projectId.toLowerCase(),
+            },
+          }
+        : {}),
     });
   } catch (error) {
     if (error instanceof LocalMemoryScopeReadOnlyError) return error.message;
@@ -390,19 +401,23 @@ export async function requestAnswersFromRenderer(options: {
     await consumeAndExpire();
   };
 
-  const pendingAnswers = createPendingRequest(
-    requestId,
-    options.sessionKey,
-    options.askUserTimeoutMs !== undefined && options.askUserTimeoutMs > 0
+  const pendingAnswers = createPendingRequest(requestId, options.sessionKey, {
+    scope: {
+      projectId: options.projectId,
+      worktreeId: options.worktreeId,
+      chatId: options.chatId,
+    },
+    ...(options.askUserTimeoutMs !== undefined && options.askUserTimeoutMs > 0
       ? {
           timeoutMs: options.askUserTimeoutMs,
           onTimeout: (): void => {
             void consumeAndExpire().catch(() => undefined);
           },
         }
-      : undefined,
-  );
+      : {}),
+  });
   void pendingAnswers.catch(() => undefined);
+  if (!isPendingRequestOpen(requestId)) throw new Error('ask_user_no_client');
   const abortPendingRequest = (): void => {
     if (cancelled) return;
     if (!rejectRequest(requestId, 'ask_user_cancelled')) return;

@@ -50,6 +50,8 @@ import {
   type ExperimentAction,
   EXPERIMENT_ACTION_TYPES,
   settingsActionSchema,
+  aiGatewayActionSchema,
+  type AiGatewayAction,
   settingsDispatchJsonSchema,
   type SettingsAction,
   SETTINGS_ACTION_TYPES,
@@ -2724,6 +2726,7 @@ const appAdvisorDispatchPayloadSchema: z.ZodType<
   | InstalledItemAction
   | ExperimentAction
   | SettingsAction
+  | AiGatewayAction
   | AppAdvisorPipelineRunAction
 > = z.union([
   appAdvisorActionSchema,
@@ -2731,6 +2734,7 @@ const appAdvisorDispatchPayloadSchema: z.ZodType<
   installedItemActionSchema,
   experimentActionSchema,
   settingsActionSchema,
+  aiGatewayActionSchema,
   appAdvisorPipelineRunActionSchema,
 ]);
 

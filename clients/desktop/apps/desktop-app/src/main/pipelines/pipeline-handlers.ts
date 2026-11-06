@@ -1,3 +1,5 @@
+import { buildPipelineSecretBindings } from '../execution-secrets/bindings';
+import type { RedeemedExecutionSecrets } from '@canopy/core-runtime/node/execution-secrets';
 import type { ShareFailure } from '@canopy/protocol/sharing';
 import { runClassifiedShare } from '../sharing/share-operation-result';
 import { isDeepStrictEqual } from 'node:util';
@@ -49,7 +51,6 @@ import {
   CANOPY_CLOUD_DISPLAY_NAME,
   CANOPY_CLOUD_SERVER_ID,
 } from '@canopy/desktop-shared/constants/canopy-cloud';
-import { brandEnvName } from '@canopy/desktop-shared/brand/env';
 import {
   CanopyCloudClientError,
   isTransientCanopyCloudFailure,
@@ -175,7 +176,6 @@ import {
   getProjectPipelineId,
   loadProjectPipelineFromDisk,
 } from './project-pipeline-discovery';
-import { resolveLinearToken } from '../lib/linear-auth';
 import { readPreferencesFile } from '../lib/preferences-store';
 import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { validateId } from '../lib/validation';
@@ -264,6 +264,7 @@ import {
   type PipelineControlSettlement,
   type PipelineExecutionFanOut,
   pipelineExecutorControls,
+  readStoredPipelineExecution,
 } from './pipeline-worker-host';
 import type { PipelineControlRequest } from '@canopy/core-runtime/node/pipeline';
 import {
@@ -344,22 +345,8 @@ function getEffectivePipelinesMode(
   return getEffectiveClaudeWorkerModePreferences(preferences).pipelinesMode;
 }
 
-function buildPipelineSecretEnv(args: {
-  linearToken: string | null | undefined;
-  userSecretEnv?: Record<string, string>;
-}): Record<string, string> | undefined {
-  const secretEnv: Record<string, string> = {
-    ...(args.userSecretEnv ?? {}),
-  };
-  if (args.linearToken) {
-    secretEnv[brandEnvName('LINEAR_API_KEY')] = args.linearToken;
-  }
-  return Object.keys(secretEnv).length > 0 ? secretEnv : undefined;
-}
-
 async function resolvePipelineRuntimeEnv(workspaceId?: string): Promise<{
   env: Record<string, string>;
-  secretEnv: Record<string, string>;
 }> {
   try {
     const { data } = await readEnvironmentConfig();
@@ -369,10 +356,9 @@ async function resolvePipelineRuntimeEnv(workspaceId?: string): Promise<{
     });
     return {
       env: resolved.publicApplied,
-      secretEnv: resolved.secretApplied,
     };
   } catch {
-    return { env: {}, secretEnv: {} };
+    return { env: {} };
   }
 }
 
@@ -2405,16 +2391,24 @@ type ReplayResult =
  */
 async function replayThroughLocalWorker(
   control: PipelineControlRequest,
-  replay: () => Promise<ReplayResult>,
+  replay: (secrets: RedeemedExecutionSecrets) => Promise<ReplayResult>,
 ): Promise<ReplayResult> {
   try {
+    const stored = await readStoredPipelineExecution(
+      control.params.executionId,
+    );
+    const secretBindings = await buildPipelineSecretBindings({
+      workspaceId: stored?.project_id,
+    });
     const { state } = await controlPipelineThroughLocalWorker(
       control,
-      async () => {
-        const result = await replay();
+      async (_control, _signal, secrets) => {
+        const result = await replay(secrets);
         if (!result.success) throw new Error(result.error);
         return { outcome: 'started', state: result.data };
       },
+      'client',
+      secretBindings,
     );
     return { success: true, data: state };
   } catch (error) {
@@ -2440,12 +2434,13 @@ export async function retryPipelineExecutionFromMain(
         mode: 'failed_only',
       },
     },
-    () => retryOnLocalWorker(args),
+    (secrets) => retryOnLocalWorker(args, secrets),
   );
 }
 
 async function retryOnLocalWorker(
   args: RetryPipelineExecutionArgs,
+  secrets: RedeemedExecutionSecrets,
 ): Promise<ReplayResult> {
   const { executionId, getWindow } = args;
   let releaseResourceGuard: (() => void) | null = null;
@@ -2481,7 +2476,6 @@ async function retryOnLocalWorker(
         );
       }
       const preferences = await readPreferencesFile();
-      const linearToken = await resolveLinearToken();
       const cwd = await resolveStoredExecutionCwd(state);
       const baseBranchEnv = await buildReplayBaseBranchEnv(cwd, state);
       const pipelineRuntimeEnv = await resolvePipelineRuntimeEnv(
@@ -2503,10 +2497,7 @@ async function retryOnLocalWorker(
         ...(args.portalCommandId
           ? { portalCommandId: args.portalCommandId }
           : {}),
-        secretEnv: buildPipelineSecretEnv({
-          linearToken,
-          userSecretEnv: pipelineRuntimeEnv.secretEnv,
-        }),
+        secretEnv: Object.keys(secrets.env).length ? secrets.env : undefined,
         runtime,
         onEvent: args.onEvent,
         onStepOutput: args.onStepOutput,
@@ -2544,6 +2535,10 @@ export async function retryMatrixJobFromMain(args: {
   for (const variantJobId of request.variantJobIds ?? []) {
     validatePipelineRuntimeIdentifier(variantJobId, 'variantJobId');
   }
+  const stored = await readStoredPipelineExecution(request.executionId);
+  const secretBindings = await buildPipelineSecretBindings({
+    workspaceId: stored?.project_id,
+  });
   const { state } = await controlPipelineThroughLocalWorker(
     {
       operation: 'worker.pipeline.matrixJob.retry',
@@ -2557,18 +2552,23 @@ export async function retryMatrixJobFromMain(args: {
           : {}),
       },
     },
-    async () => ({
+    async (_control, _signal, secrets) => ({
       outcome: 'started',
-      state: await retryMatrixJobOnLocalWorker(args),
+      state: await retryMatrixJobOnLocalWorker(args, secrets),
     }),
+    'client',
+    secretBindings,
   );
   return state;
 }
 
-async function retryMatrixJobOnLocalWorker(args: {
-  request: RetryMatrixJobRequest;
-  getWindow: () => BrowserWindow | null;
-}): Promise<ExecutionState> {
+async function retryMatrixJobOnLocalWorker(
+  args: {
+    request: RetryMatrixJobRequest;
+    getWindow: () => BrowserWindow | null;
+  },
+  secrets: RedeemedExecutionSecrets,
+): Promise<ExecutionState> {
   const { request, getWindow } = args;
   const retryKey = `${request.executionId}\0${request.jobId}`;
   if (
@@ -2607,7 +2607,6 @@ async function retryMatrixJobOnLocalWorker(args: {
       }
       prepareMatrixJobRetryState(structuredClone(state), request);
       const preferences = await readPreferencesFile();
-      const linearToken = await resolveLinearToken();
       const cwd = await resolveStoredExecutionCwd(state);
       const baseBranchEnv = await buildReplayBaseBranchEnv(cwd, state);
       const pipelineRuntimeEnv = await resolvePipelineRuntimeEnv(
@@ -2626,10 +2625,7 @@ async function retryMatrixJobOnLocalWorker(args: {
           ...baseBranchEnv,
         },
         repoPath: state.repo_path,
-        secretEnv: buildPipelineSecretEnv({
-          linearToken,
-          userSecretEnv: pipelineRuntimeEnv.secretEnv,
-        }),
+        secretEnv: Object.keys(secrets.env).length ? secrets.env : undefined,
         runtime,
       });
       trackExecutionWithAdvisor(handle, runtime, getWindow, () => {
@@ -2674,6 +2670,8 @@ export async function cancelMatrixVariantFromMain(args: {
       storedRun = settled.stored;
       return settled;
     },
+    'client',
+    [],
   );
   if (!storedRun || outcome !== 'updated' || cancelled.status !== 'pending')
     return cancelled;
@@ -3507,7 +3505,6 @@ async function startPipelineExecutionFromMainInternal(args: {
     }
 
     const preferences = await readPreferencesFile();
-    const linearToken = await resolveLinearToken();
     const baseBranchEnv = await buildPipelineBaseBranchEnv({
       cwd: executionOptions.cwd,
       projectId: executionOptions.projectId,
@@ -3577,9 +3574,8 @@ async function startPipelineExecutionFromMainInternal(args: {
         ...baseBranchEnv,
         ...(executionOptions.env ?? {}),
       },
-      secretEnv: buildPipelineSecretEnv({
-        linearToken,
-        userSecretEnv: pipelineRuntimeEnv.secretEnv,
+      secretBindings: await buildPipelineSecretBindings({
+        workspaceId: executionOptions.projectId,
       }),
       runtime,
       onEvent: args.onEvent,
@@ -3661,12 +3657,13 @@ export async function rerunPipelineExecutionFromMain(
           : {}),
       },
     },
-    () => rerunOnLocalWorker({ ...args, rerunExecutionId }),
+    (secrets) => rerunOnLocalWorker({ ...args, rerunExecutionId }, secrets),
   );
 }
 
 async function rerunOnLocalWorker(
   args: RerunPipelineExecutionArgs,
+  secrets: RedeemedExecutionSecrets,
 ): Promise<ReplayResult> {
   const { executionId, getWindow } = args;
 
@@ -3702,7 +3699,6 @@ async function rerunOnLocalWorker(
         );
       }
       const preferences = await readPreferencesFile();
-      const linearToken = await resolveLinearToken();
       const cwd = await resolveStoredExecutionCwd(state);
       const baseBranchEnv = await buildReplayBaseBranchEnv(cwd, state);
       const pipelineRuntimeEnv = await resolvePipelineRuntimeEnv(
@@ -3726,10 +3722,7 @@ async function rerunOnLocalWorker(
         repoPath: state.repo_path,
         initiationSource: args.initiationSource,
         executionId: rerunExecutionId,
-        secretEnv: buildPipelineSecretEnv({
-          linearToken,
-          userSecretEnv: pipelineRuntimeEnv.secretEnv,
-        }),
+        secretEnv: Object.keys(secrets.env).length ? secrets.env : undefined,
         runtime,
         onEvent: args.onEvent,
         onStepOutput: args.onStepOutput,
@@ -3872,9 +3865,16 @@ export function registerExecutionHandlers(
     async (_event, queueId: string) => {
       try {
         validateId(queueId, 'queueId');
-        const { cancelQueuedHookPipeline } =
+        const { cancelQueuedHookPipeline, listQueuedHookPipelines } =
           await import('../lib/hook-pipeline');
-        cancelQueuedHookPipeline(queueId);
+        const queued = listQueuedHookPipelines().some(
+          (entry): boolean => entry.queueId === queueId,
+        );
+        const cancelled = await cancelQueuedHookPipeline(queueId);
+        if (!cancelled && queued)
+          throw new Error(
+            'This workflow already started; stop the run itself.',
+          );
         return { success: true };
       } catch (error) {
         return { success: false, error: String(error) };

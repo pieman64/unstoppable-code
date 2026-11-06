@@ -48,7 +48,7 @@ export const SuggestionRow = forwardRef<HTMLButtonElement, SuggestionRowProps>(
       <button
         ref={ref}
         type={type}
-        className={`focus-ring flex w-full items-center gap-2 rounded-full px-2 py-2 text-left text-sm ${
+        className={`focus-ring flex w-full items-center gap-2 rounded-full px-2 py-2 text-left text-s ${
           tone === 'muted' ? 'fg-tertiary' : 'fg-secondary'
         } transition-colors disabled:pointer-events-none disabled:fg-disabled ${
           trailingControl === false

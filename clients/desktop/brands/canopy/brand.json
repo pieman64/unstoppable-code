@@ -39,6 +39,12 @@
     }
   },
   "storage": {
+    "buildDataDirNames": {
+      "stable": ".canopy",
+      "internal": ".canopy-internal",
+      "rc": ".canopy-rc",
+      "dev": ".canopy-dev"
+    },
     "dataDirNames": {
       "prod": [".canopy", ".unstoppable-code"],
       "rc": [".canopy-rc", ".unstoppable-code-rc"],

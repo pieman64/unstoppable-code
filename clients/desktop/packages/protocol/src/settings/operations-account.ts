@@ -1,3 +1,9 @@
+import {
+  personalAiGatewayConfigSchema,
+  personalAiGatewayUpdateSchema,
+  aiGatewayConnectSchema,
+} from '../model-gateway';
+import { aiGatewayConnectionResultSchema } from '../model-gateway/discovery';
 import { z } from 'zod';
 import type { DigestPreferences } from '../digests/index';
 import {
@@ -270,6 +276,35 @@ const artifactPublishableItemSchema = z.looseObject({
 });
 
 export const ACCOUNT_SETTINGS_OPERATIONS = {
+  'account.settings.ai-gateway.read': defineSettingsRead({
+    transport: 'backend',
+    input: settingsEmptyInputSchema,
+    result: z.looseObject({
+      gateway: personalAiGatewayConfigSchema.nullable(),
+    }),
+    request: () => ({ method: 'GET', path: '/api/v1/settings/ai-gateway' }),
+  }),
+  'account.settings.ai-gateway.update': defineSettingsWrite({
+    maxInputBytes: 512 * 1024,
+    transport: 'backend',
+    input: personalAiGatewayUpdateSchema,
+    result: z.looseObject({ gateway: personalAiGatewayConfigSchema }),
+    request: (input) => ({
+      method: 'PATCH',
+      path: '/api/v1/settings/ai-gateway',
+      body: input,
+    }),
+  }),
+  'account.settings.ai-gateway.connect': defineSettingsWrite({
+    transport: 'backend',
+    input: aiGatewayConnectSchema.extend({ expectedOrganizationId: z.uuid() }),
+    result: aiGatewayConnectionResultSchema,
+    request: (input) => ({
+      method: 'POST',
+      path: '/api/v1/settings/ai-gateway/connect',
+      body: input,
+    }),
+  }),
   /* ------------------------------------------------------------------------ */
   /* Account tab: identity and avatar                                         */
   /* ------------------------------------------------------------------------ */

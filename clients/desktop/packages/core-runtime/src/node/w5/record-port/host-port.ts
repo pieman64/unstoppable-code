@@ -42,7 +42,16 @@ import {
   w5ResourceKey,
   type W5CommitLogHostPort,
 } from '../commit-log-file-store';
-import type { W5RecordUnservedReason } from '../file-store';
+import {
+  W5RecordOverloadedError,
+  type W5FileRead,
+  type W5RecordUnservedReason,
+} from '../file-store';
+import {
+  createW5RecordBatchingReader,
+  isW5CaptureLimitRefusal,
+  retryW5RecordCapture,
+} from './batching-reader';
 import {
   w5RecordPathFor,
   w5RecordTargetFor,
@@ -175,14 +184,6 @@ function isLogCode(value: unknown): value is W5CommitLogErrorCode {
   return LOG_CODES.some((code) => code === value);
 }
 
-function isCaptureLimitRefusal(error: unknown): boolean {
-  return (
-    error instanceof W5CommitRefusedError &&
-    error.reason === 'invalid-state' &&
-    error.details.capture === 'limit-exceeded'
-  );
-}
-
 const UNNAMEABLE_WORKSPACE =
   'The daemon record port cannot name this workspace.';
 
@@ -214,9 +215,13 @@ function revisionSelector(resource: W5Resource): W5CaptureFile {
   }
 }
 
+export interface W5RecordHostPort extends W5CommitLogHostPort {
+  readFile(path: string, forCommit?: boolean): Promise<W5FileRead>;
+}
+
 export function createW5RecordHostPort(
   options: W5RecordHostPortOptions,
-): W5CommitLogHostPort {
+): W5RecordHostPort {
   const { root, transport } = options;
   const meter = (operation: string, kind: W5RecordConflictKind): void =>
     options.onConflict?.({ operation, kind });
@@ -239,6 +244,12 @@ export function createW5RecordHostPort(
     request?: { operation: string; firstPath: string },
   ): unknown {
     const payload = typedPayload(error);
+    if (
+      payload?.kind === 'resource_exhausted' ||
+      (payload?.kind === 'unavailable' &&
+        detail(payload, 'w5HostUnavailable') === 'queued-wait')
+    )
+      return new W5RecordOverloadedError(payload.kind, payload.retry, error);
     if (!payload?.code) return error;
     const operation = request?.operation ?? CAPTURE_OPERATION;
     const firstPath = request?.firstPath ?? root;
@@ -285,6 +296,12 @@ export function createW5RecordHostPort(
           'in-progress',
           payload.message,
           details(payload, ['reservationId']),
+        );
+      case 'core.workspaceRecords.identityConflict':
+        return new W5CommitRefusedError(
+          'identity-conflict',
+          payload.message,
+          details(payload, ['workspaceIdentity']),
         );
       case 'core.workspaceRecords.unknownReservation':
         return new W5CommitRefusedError(
@@ -342,6 +359,15 @@ export function createW5RecordHostPort(
       throw canopyInternalError('The W5 record port returned a bad capture.');
     return freezeW5Capture(result);
   }
+
+  const reader = createW5RecordBatchingReader({
+    root,
+    capture: (files) =>
+      retryW5RecordCapture(() => capture({ files, discoverWorkspaces: false })),
+    capturePreparation: (request) =>
+      retryW5RecordCapture(() => capture(request)),
+    onUnserved: (reason) => unserved(CAPTURE_OPERATION, reason),
+  });
 
   async function commit(request: W5CommitRequest): Promise<W5CommitOutcome> {
     // A revision this port could not read back is never advanced.
@@ -494,18 +520,22 @@ export function createW5RecordHostPort(
     },
     commit,
     capture,
-    async revision(resource) {
+    ...(reader.captureForPreparation
+      ? { captureForPreparation: reader.captureForPreparation.bind(reader) }
+      : {}),
+    readFile: (path, forCommit) => reader.readFile(path, forCommit),
+    async revision(resource, forCommit = false) {
       assertNameable(resource, CAPTURE_OPERATION);
       let result: W5CaptureResult;
       try {
-        result = await capture({
-          files: [revisionSelector(resource)],
-          discoverWorkspaces: false,
-        });
+        result = await reader.captureFile(
+          revisionSelector(resource),
+          forCommit,
+        );
       } catch (error) {
         // Only here and in a host's one-file read does the class fail closed;
         // an over-limit query capture reads its files one at a time instead.
-        if (isCaptureLimitRefusal(error))
+        if (isW5CaptureLimitRefusal(error))
           unserved(CAPTURE_OPERATION, 'limit-exceeded');
         throw error;
       }
@@ -520,6 +550,12 @@ export function createW5RecordHostPort(
       await keyed(() =>
         transport.reserve({
           reservationId: input.reservationId,
+          ...(input.workspaceIdentity !== undefined && {
+            workspaceIdentity: input.workspaceIdentity,
+          }),
+          ...(input.expectedWorkspaceRecords !== undefined && {
+            expectedWorkspaceRecords: input.expectedWorkspaceRecords,
+          }),
           operation: input.operation,
           ...(input.receipt && { receipt: { ...input.receipt } }),
           ...(diagnostics !== undefined && { diagnostics }),

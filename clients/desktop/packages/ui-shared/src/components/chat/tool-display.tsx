@@ -1916,6 +1916,9 @@ function renderDispatchActionLabel(
   actionType: string,
   action: ParsedInput,
 ): ReactNode {
+  if (actionType === 'settings.ai_gateway.connect') return 'Connect AI gateway';
+  if (actionType === 'settings.ai_gateway.update') return 'Update AI gateway';
+  if (actionType === 'settings.ai_gateway.get') return 'Read AI gateway';
   if (actionType === 'capability_package.analyze')
     return 'Check share dependencies';
   const environmentLabel = renderEnvironmentActionLabel(actionType, action);

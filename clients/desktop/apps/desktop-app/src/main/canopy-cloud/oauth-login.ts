@@ -1,3 +1,4 @@
+import type { CanopyAccountResponse } from '@canopy/protocol/canopy-server';
 import { normalizePersonalOrganizationId } from '@canopy/protocol/workspace-context';
 import { createHash, randomBytes } from 'node:crypto';
 import { normalizeMemorySearchOrganizationExternalIds } from '@canopy/desktop-shared/lib/org-memory';
@@ -15,7 +16,10 @@ import type {
   CanopyOrgEnforcedSettings,
   CanopyServerAccountInfo,
 } from '@canopy/protocol/canopy-server';
-import { normalizeOrgEnforcedSettingsWithStatus } from '@canopy/desktop-shared/lib/org-enforced-parsing';
+import {
+  normalizeOrgEnforcedSettingsWithStatus,
+  personalGatewayAccountFields,
+} from '@canopy/desktop-shared/lib/org-enforced-parsing';
 import { normalizeOrgBillingStates } from '@canopy/desktop-shared/lib/org-billing-state-parsing';
 import type {
   CanopyOrganizationSummary,
@@ -69,6 +73,8 @@ interface DesktopOAuthTokenResponse {
   /** Normalized eligible memory orgs (CAN-3457); empty when none. */
   memorySearchOrganizationExternalIds: string[];
   personalOrganizationId?: string;
+  personalModelGateway?: CanopyAccountResponse['personalModelGateway'];
+  personalModelGatewayEnforcementUnavailable?: boolean;
   organizations: CanopyOrganizationSummary[];
   teams: CanopyTeamSummary[];
   enforcedSettings: CanopyOrgEnforcedSettings[];
@@ -280,6 +286,10 @@ async function persistCompletedLogin(
       : {}),
     organizations: tokenResponse.organizations,
     teams: tokenResponse.teams,
+    ...personalGatewayAccountFields(tokenResponse),
+    ...(tokenResponse.personalModelGatewayEnforcementUnavailable
+      ? { personalModelGatewayEnforcementUnavailable: true }
+      : {}),
     enforcedSettings: tokenResponse.enforcedSettings,
     telemetryEnforcementUnavailable:
       tokenResponse.telemetryEnforcementUnavailable === true,
@@ -311,6 +321,10 @@ async function persistCompletedLogin(
       ),
       organizations: tokenResponse.organizations,
       teams: tokenResponse.teams,
+      ...personalGatewayAccountFields(tokenResponse),
+      ...(tokenResponse.personalModelGatewayEnforcementUnavailable
+        ? { personalModelGatewayEnforcementUnavailable: true }
+        : {}),
       enforcedSettings: tokenResponse.enforcedSettings,
       ...(tokenResponse.modelGatewayEnforcementUnavailable
         ? { modelGatewayEnforcementUnavailable: true }
@@ -512,6 +526,7 @@ function parseDesktopOAuthTokenResponse(
       ),
     organizations,
     teams: parseArray(value.teams, parseTeam),
+    ...personalGatewayAccountFields(value),
     enforcedSettings: normalizedEnforcement.settings,
     ...(normalizedEnforcement.telemetryEnforcementUnavailable === true
       ? { telemetryEnforcementUnavailable: true }

@@ -70,6 +70,14 @@ export function mcpAuthConnectLabel(
   return undefined;
 }
 
+/** Unknown auth requirement, rather than missing credentials or connection health. */
+export function mcpRequirementUnknown(server: {
+  readonly authStatus: McpCardAuthStatus;
+  readonly canConnect: boolean;
+}): boolean {
+  return server.authStatus === 'not_configured' && server.canConnect === true;
+}
+
 /**
  * The size and shape every action on a server row shares (Sign in,
  * Disconnect, Reopen), so the actions read as one set whatever the row's

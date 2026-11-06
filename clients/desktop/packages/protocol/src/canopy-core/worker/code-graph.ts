@@ -2,10 +2,14 @@ import { z } from 'zod';
 
 import { CanopyQueryRequestMetadataSchema } from '../common';
 import {
+  CanopyStreamCursorSchema,
+  CanopyStreamEndSchema,
   defineCanopyInstruction,
   defineCanopyInstructionRegistry,
   defineCanopyQuery,
   defineCanopyQueryRegistry,
+  defineCanopyStream,
+  defineCanopyStreamRegistry,
 } from '../definitions';
 import {
   CanopyErrorPayloadSchema,
@@ -594,3 +598,47 @@ export const WORKER_CODE_GRAPH_INSTRUCTION_DEFINITIONS =
       requiredGrants: [WORKER_CODE_GRAPH_GRANTS.write],
     }),
   });
+
+/*
+ * `worker.codeGraph.buildQueue.events` (CAN-5628): the build queue after
+ * each change, and the current queue when the stream opens. Each item is
+ * the whole queue, so a reopened stream starts from the current queue and
+ * nothing is replayed; a cursor only continues numbering.
+ */
+export const WorkerCodeGraphBuildQueueEventsParamsSchema = z.strictObject({
+  cursor: CanopyStreamCursorSchema.nullable().optional(),
+});
+export const WorkerCodeGraphBuildQueueEventsOpenResultSchema = z.strictObject({
+  subscriptionId: id,
+  acceptedCursor: CanopyStreamCursorSchema.nullable(),
+});
+export const WorkerCodeGraphBuildQueueEventsItemSchema = z.strictObject({
+  queue: WorkerCodeGraphBuildQueueSchema,
+});
+export const WorkerCodeGraphBuildQueueEventsEndSchema =
+  CanopyStreamEndSchema.extend({
+    error: WorkerCodeGraphBuildQueueQueryErrorSchema.nullable(),
+  });
+export type WorkerCodeGraphBuildQueueEventsItem = z.output<
+  typeof WorkerCodeGraphBuildQueueEventsItemSchema
+>;
+
+/** Composed only where served: the core daemon (CAN-5628). */
+export const WORKER_CODE_GRAPH_STREAM_DEFINITIONS = defineCanopyStreamRegistry(
+  'worker',
+  {
+    'worker.codeGraph.buildQueue.events': defineCanopyStream({
+      plane: 'worker',
+      domain: 'codeGraph',
+      version: 1,
+      placement: 'target-selectable',
+      idempotency: 'inherent',
+      requiredGrants: [WORKER_CODE_GRAPH_GRANTS.read],
+      params: WorkerCodeGraphBuildQueueEventsParamsSchema,
+      openResult: WorkerCodeGraphBuildQueueEventsOpenResultSchema,
+      item: WorkerCodeGraphBuildQueueEventsItemSchema,
+      end: WorkerCodeGraphBuildQueueEventsEndSchema,
+      error: WorkerCodeGraphBuildQueueQueryErrorSchema,
+    }),
+  },
+);

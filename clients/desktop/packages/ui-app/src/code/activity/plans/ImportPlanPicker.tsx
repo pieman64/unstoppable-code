@@ -11,15 +11,15 @@ import { derivePlanTitle } from '@canopy/protocol/plans';
 import {
   Badge,
   Button,
-  DialogModal,
-  ErrorState,
   DelayedLoadingPlaceholder,
+  DialogModal,
+  Disclosure,
+  ErrorState,
   HighlightedSegments,
   SearchField,
   Skeleton,
   splitMatchSegments,
 } from '@canopy/ui-shared/components';
-import { ChevronRightMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { formatShortcut } from '@canopy/ui-shared/lib/shortcuts';
 import {
   REPLAY_BLOCK_CLASS,
@@ -670,48 +670,42 @@ export function ImportPlanPicker({
               </div>
             )}
             {hiddenSuggestions.length > 0 && (
-              <details
-                data-testid="import-plan-dismissed-section"
-                className="group border-t"
-              >
-                <summary className="flex cursor-pointer list-none items-center gap-2 px-6 py-2 text-xs fg-secondary hover:fg-primary">
-                  <ChevronRightMediumIcon
-                    width="12"
-                    height="12"
-                    className="shrink-0 transition-transform group-open:rotate-90"
-                  />
-                  {hiddenSuggestions.length} hidden
-                </summary>
-                <ul className="divide-y">
-                  {hiddenSuggestions.map((suggestion) => (
-                    <li
-                      key={suggestion.id}
-                      className="flex items-center justify-between gap-3 px-6 py-2"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-s font-medium fg-primary">
-                          {baseName(suggestion.sourceFilePath)}
-                        </div>
-                        <div className="mt-0.5 truncate text-xs fg-secondary">
-                          {suggestion.sourceFilePath}
-                        </div>
-                      </div>
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        size="compact"
-                        data-testid={`import-plan-detected-import-${suggestion.id}`}
-                        disabled={importing}
-                        onClick={(): void =>
-                          runPrimary({ kind: 'suggestion', suggestion })
-                        }
+              <div className="border-t px-6 py-2">
+                <Disclosure
+                  dataTestId="import-plan-dismissed-section"
+                  label={`${hiddenSuggestions.length} hidden`}
+                >
+                  <ul className="divide-y">
+                    {hiddenSuggestions.map((suggestion) => (
+                      <li
+                        key={suggestion.id}
+                        className="flex items-center justify-between gap-3 py-2"
                       >
-                        {suggestion.trackedPlanId ? 'Open plan' : 'Import'}
-                      </Button>
-                    </li>
-                  ))}
-                </ul>
-              </details>
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-s font-medium fg-primary">
+                            {baseName(suggestion.sourceFilePath)}
+                          </div>
+                          <div className="mt-0.5 truncate text-xs fg-secondary">
+                            {suggestion.sourceFilePath}
+                          </div>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="compact"
+                          data-testid={`import-plan-detected-import-${suggestion.id}`}
+                          disabled={importing}
+                          onClick={(): void =>
+                            runPrimary({ kind: 'suggestion', suggestion })
+                          }
+                        >
+                          {suggestion.trackedPlanId ? 'Open plan' : 'Import'}
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                </Disclosure>
+              </div>
             )}
           </div>
 

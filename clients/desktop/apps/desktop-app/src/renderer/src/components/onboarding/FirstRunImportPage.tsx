@@ -28,6 +28,7 @@ import {
   POSTHOG_REPLAY_MASK_CLASS,
 } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { FirstRunAccountRowHost } from '@/components/onboarding/FirstRunAccountRowHost';
+import { FirstRunProviderGroup } from '@/components/onboarding/FirstRunProviderGroup';
 import { ProviderAuthPanel } from '@/components/auth/ProviderAuthPanel';
 import {
   bulkSelection,
@@ -824,7 +825,7 @@ export function FirstRunImportPage({
         <SettingsSection
           description={agentConnectionsIntro({ appName: brandText.appName })}
         >
-          <SettingsGroup>
+          <FirstRunProviderGroup>
             <ProviderAuthPanel
               provider="claude"
               layout="row"
@@ -838,7 +839,7 @@ export function FirstRunImportPage({
               signedOutDescription={PROVIDER_ROW_DESCRIPTIONS.codex}
             />
             <FirstRunAccountRowHost />
-          </SettingsGroup>
+          </FirstRunProviderGroup>
         </SettingsSection>
 
         <ProjectsSection

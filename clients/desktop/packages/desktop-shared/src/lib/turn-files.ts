@@ -38,14 +38,13 @@ export function collectTurnFiles(
   return collectTranscriptTurnFiles(messages, retained, collectionOptions);
 }
 
-function sameRelativePath(
-  changedPath: string,
-  file: TurnFileLocation,
-): boolean {
-  const normalized = changedPath.replace(/\\/g, '/');
-  return /^(?:[a-z]:\/|\/\/)/i.test(file.absolutePath)
-    ? normalized.toLowerCase() === file.relativePath.toLowerCase()
-    : normalized === file.relativePath;
+/** Windows paths compare case-insensitively. */
+function foldsCase(file: TurnFileLocation): boolean {
+  return /^(?:[a-z]:\/|\/\/)/i.test(file.absolutePath);
+}
+
+function changedPathKey(repoId: string, path: string): string {
+  return `${repoId}\0${path}`;
 }
 
 export interface TurnFileRoot {
@@ -96,12 +95,21 @@ export function turnFilesOutsideDiff<T extends TurnFileLocation>(
   primaryRepoId?: string,
 ): T[] {
   if (!turnDiff?.files.length) return [...files];
-  return files.filter(
-    (file) =>
-      !turnDiff.files.some(
-        (changed) =>
-          (changed.repoId ?? primaryRepoId) === file.repoId &&
-          sameRelativePath(changed.path, file),
-      ),
+  // Index the diff once: it can list thousands of paths.
+  const exact = new Set<string>();
+  const folded = new Set<string>();
+  for (const changed of turnDiff.files) {
+    const repoId = changed.repoId ?? primaryRepoId;
+    if (repoId === undefined) continue;
+    const path = changed.path.replace(/\\/g, '/');
+    exact.add(changedPathKey(repoId, path));
+    folded.add(changedPathKey(repoId, path.toLowerCase()));
+  }
+  return files.filter((file) =>
+    foldsCase(file)
+      ? !folded.has(
+          changedPathKey(file.repoId, file.relativePath.toLowerCase()),
+        )
+      : !exact.has(changedPathKey(file.repoId, file.relativePath)),
   );
 }

@@ -48,21 +48,24 @@ const UI_APP = 'packages/ui-app/src';
 export const PENDING_UNIFICATIONS: readonly PendingUnification[] = [
   {
     id: 'menus',
-    status: 'waiting',
+    status: 'in-progress',
     name: 'Menus, listboxes and pickers',
     count:
-      'own menu, listbox or option roles in about 47 files outside ui-shared · about 25 domain pickers inside it',
-    shared: ['FloatingMenu', 'PickList (3 files)', 'Popover (3 files)'],
+      '32 sites to change · 40 ratcheted occurrences in 27 files, see Menus below',
+    shared: [
+      'FloatingMenu (84 files)',
+      'PickList (3 files)',
+      'Popover (7 files)',
+    ],
     copies: [
       `${UI_APP}/code/composer/CommandsPopup.tsx`,
       `${UI_APP}/code/composer/PortalDirectoryPicker.tsx`,
       `${UI_APP}/sharing/InviteTeammateDialog.tsx`,
-      `${DESKTOP}/watchers/WatcherRecipientPicker.tsx`,
       `${DESKTOP}/shared/invite-teammate/LinkSharingSection.tsx`,
     ],
     planned:
-      'FloatingMenu, PickList and Popover everywhere, then a menu ratchet',
-    note: 'Highest risk: the model picker, the command palette and the composer pickers. Measure performance first.',
+      'PickList for the 8 search pickers and 2 palettes, shared parts for / and @, and the small menus onto FloatingMenu',
+    note: 'Highest risk: the palettes and the composer typeaheads, which no golden reaches. The model picker keeps its search and rail as a recorded exception.',
   },
   {
     id: 'list-rows',
@@ -187,7 +190,7 @@ export const RATCHET_BACKLOG: readonly RatchetBacklog[] = [
     family: 'Surfaces',
     remaining: 2962,
     breakdown:
-      '1026 radius, 987 background, 876 edge, 73 shadow on raw elements, across 596 files; Surface and Divider replace them',
+      '1026 radius, 987 background, 876 edge, 73 shadow on raw elements, across 596 files',
     baseline: 'docs/design/legacy-surfaces.baseline.json',
   },
   {
@@ -204,10 +207,16 @@ export const RATCHET_BACKLOG: readonly RatchetBacklog[] = [
   },
   {
     family: 'Overlays',
-    remaining: 55,
-    breakdown:
-      '11 backdrops, 14 body portals, 7 role="dialog", 23 absolute menus',
+    remaining: 9,
+    breakdown: '1 backdrop, 3 body portals, 5 absolute menus',
     baseline: 'docs/design/legacy-overlays.baseline.json',
+  },
+  {
+    family: 'Menus',
+    remaining: 40,
+    breakdown:
+      '21 raw roles, 4 ListRow options, 6 bare surfaces, 9 hand-wired searches',
+    baseline: 'docs/design/legacy-menus.baseline.json',
   },
   {
     family: 'Disclosures',

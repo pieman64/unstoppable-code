@@ -1,7 +1,14 @@
+import {
+  consumeW5Metadata,
+  prepareW5Metadata,
+  readPreparedW5Worktrees,
+  type PreparedW5Metadata,
+} from './w5-metadata-preparation';
 import { basename } from 'node:path';
 import {
   WORKSPACE_ROOT_REPO_ID,
   type WorktreeData,
+  type WorkspaceConfigFile,
 } from '@canopy/desktop-shared/types';
 import {
   doesLocalBranchExist,
@@ -13,7 +20,10 @@ import {
 } from './git';
 import { resolveFreshDefaultBranch } from './git-default-branch';
 import { resolveWorktreeCwd } from './resolve-worktree';
-import { listWorkspaceWorktreeRepoEntries } from './worktree-repo-entries';
+import {
+  listWorkspaceWorktreeRepoEntries,
+  listWorkspaceWorktreeRepoEntriesFromConfig,
+} from './worktree-repo-entries';
 import {
   readWorkspaceConfig,
   readWorkspaceWorktrees,
@@ -30,6 +40,7 @@ interface WorktreeBaseBranchState {
   trackedBaseBranch: string | null;
   trackedRepoBaseBranches: Record<string, string>;
   hasWorkspaceRootRepo: boolean;
+  localConfig: WorkspaceConfigFile;
 }
 
 function normalizeBranchName(
@@ -59,14 +70,24 @@ function normalizeTrackedRepoBaseBranches(
 async function readTrackedBaseBranchState(
   projectId: string,
   worktreeId: string,
+  metadata?: PreparedW5Metadata,
 ): Promise<WorktreeBaseBranchState> {
   const [config, worktrees] = await Promise.all([
-    readWorkspaceConfig(projectId),
-    readWorkspaceWorktrees(projectId),
+    metadata
+      ? consumeW5Metadata(metadata.manifest(projectId)).then(
+          ({ config }) => config,
+        )
+      : readWorkspaceConfig(projectId),
+    metadata
+      ? readPreparedW5Worktrees(metadata, projectId).then(
+          ({ worktrees }) => worktrees,
+        )
+      : readWorkspaceWorktrees(projectId),
   ]);
   const worktree = worktrees.find((candidate) => candidate.id === worktreeId);
 
   return {
+    localConfig: config,
     isMultiRepo: config.type === 'multi-repo',
     trackedBaseBranch: normalizeBranchName(worktree?.trackedBaseBranch),
     trackedRepoBaseBranches: normalizeTrackedRepoBaseBranches(
@@ -185,6 +206,13 @@ export async function resolveEffectiveBaseBranchForRepo(params: {
     params.projectId,
     params.worktreeId,
   );
+  return resolveEffectiveBaseBranchWithState(params, state);
+}
+
+async function resolveEffectiveBaseBranchWithState(
+  params: Parameters<typeof resolveEffectiveBaseBranchForRepo>[0],
+  state: WorktreeBaseBranchState,
+): Promise<EffectiveRepoBaseBranch> {
   const branch = await resolveConfiguredBaseBranch(params, state);
   if (!branch) {
     return { branch: null, existsLocally: false, existsInRemote: false };
@@ -229,6 +257,14 @@ export async function resolveEffectiveBaseBranchesForWorktree(params: {
     params.worktreeId,
   );
 
+  return resolveEffectiveBaseBranchesWithState(params, state, false);
+}
+
+async function resolveEffectiveBaseBranchesWithState(
+  params: Parameters<typeof resolveEffectiveBaseBranchesForWorktree>[0],
+  state: WorktreeBaseBranchState,
+  usePhaseConfig: boolean,
+): Promise<Record<string, EffectiveRepoBaseBranch>> {
   if (!state.isMultiRepo) {
     const repoId = await getSingleRepoId(params.cwd);
     return {
@@ -241,10 +277,12 @@ export async function resolveEffectiveBaseBranchesForWorktree(params: {
     };
   }
 
-  const repoEntries = await listWorkspaceWorktreeRepoEntries(
-    params.projectId,
-    params.cwd,
-  );
+  const repoEntries = usePhaseConfig
+    ? await listWorkspaceWorktreeRepoEntriesFromConfig(
+        params.cwd,
+        state.localConfig,
+      )
+    : await listWorkspaceWorktreeRepoEntries(params.projectId, params.cwd);
   const effectiveEntries = await Promise.all(
     repoEntries.map(async (entry) => {
       const branch = await resolveConfiguredBaseBranch(
@@ -277,4 +315,46 @@ export async function resolveEffectiveBaseBranchesForWorktree(params: {
   }
 
   return effectiveByRepo;
+}
+
+async function readStatsBaseBranchState(
+  projectId: string,
+  worktreeId: string,
+): Promise<WorktreeBaseBranchState | undefined> {
+  const metadata = await prepareW5Metadata({
+    kind: 'targeted',
+    workspaceId: projectId,
+  });
+  if (metadata.status === 'fallback') return undefined;
+  try {
+    return await readTrackedBaseBranchState(projectId, worktreeId, metadata);
+  } finally {
+    await metadata.join();
+    metadata.close();
+  }
+}
+
+/** Fresh post-effect phase, selected only by stats. */
+export async function resolveEffectiveBaseBranchesForStats(
+  params: Parameters<typeof resolveEffectiveBaseBranchesForWorktree>[0],
+): Promise<Record<string, EffectiveRepoBaseBranch>> {
+  const state = await readStatsBaseBranchState(
+    params.projectId,
+    params.worktreeId,
+  );
+  return state
+    ? resolveEffectiveBaseBranchesWithState(params, state, true)
+    : resolveEffectiveBaseBranchesForWorktree(params);
+}
+
+export async function resolveEffectiveBaseBranchForStats(
+  params: Parameters<typeof resolveEffectiveBaseBranchForRepo>[0],
+): Promise<EffectiveRepoBaseBranch> {
+  const state = await readStatsBaseBranchState(
+    params.projectId,
+    params.worktreeId,
+  );
+  return state
+    ? resolveEffectiveBaseBranchWithState(params, state)
+    : resolveEffectiveBaseBranchForRepo(params);
 }

@@ -1,3 +1,4 @@
+import { personalAiGatewayConfigSchema } from '../model-gateway';
 import { z } from 'zod';
 import type { SettingsRoute } from './routes';
 import type { PublicProfileSettings } from './account';
@@ -31,7 +32,10 @@ export const ACCOUNT_PAGE_DATA_KINDS = [
   'account.digest',
   'account.notifications',
   'account.integrations',
+  'account.plugins',
+  'account.mcp',
   'account.security',
+  'account.ai-gateway',
   'account.billing',
   'account.invoice',
   'account.labs',
@@ -177,6 +181,17 @@ export const accountLabsPageDataSchema = z.looseObject({
   data: z.looseObject({}),
 });
 
+/** Installed status is loaded through the host's installed-item snapshot port. */
+export const accountPluginsPageDataSchema = z.looseObject({
+  kind: z.literal('account.plugins'),
+  data: z.looseObject({}),
+});
+
+export const accountMcpPageDataSchema = z.looseObject({
+  kind: z.literal('account.mcp'),
+  data: z.looseObject({}),
+});
+
 /**
  * `/account/appearance`. The page loads the saved chat detail level
  * client-side through `account.appearance.read`.
@@ -266,6 +281,17 @@ export const accountInvoicePageDataSchema = z.looseObject({
   }),
 });
 
+export const accountAiGatewayPageDataSchema = z.looseObject({
+  kind: z.literal('account.ai-gateway'),
+  data: z.looseObject({
+    organizationId: z.uuid(),
+    gateway: personalAiGatewayConfigSchema.nullable(),
+  }),
+});
+export type AccountAiGatewayPageData = z.infer<
+  typeof accountAiGatewayPageDataSchema
+>;
+
 export const accountPageDataSchema = z.discriminatedUnion('kind', [
   accountAccountPageDataSchema,
   accountProfilePageDataSchema,
@@ -273,7 +299,10 @@ export const accountPageDataSchema = z.discriminatedUnion('kind', [
   accountDigestPageDataSchema,
   accountNotificationsPageDataSchema,
   accountIntegrationsPageDataSchema,
+  accountPluginsPageDataSchema,
+  accountMcpPageDataSchema,
   accountSecurityPageDataSchema,
+  accountAiGatewayPageDataSchema,
   accountBillingPageDataSchema,
   accountInvoicePageDataSchema,
   accountLabsPageDataSchema,
@@ -296,6 +325,10 @@ export type AccountNotificationsPageData = z.infer<
 export type AccountIntegrationsPageData = z.infer<
   typeof accountIntegrationsPageDataSchema
 >;
+export type AccountPluginsPageData = z.infer<
+  typeof accountPluginsPageDataSchema
+>;
+export type AccountMcpPageData = z.infer<typeof accountMcpPageDataSchema>;
 export type AccountSecurityPageData = z.infer<
   typeof accountSecurityPageDataSchema
 >;
@@ -333,8 +366,14 @@ export function accountPageDataKindForRoute(
       return 'account.notifications';
     case 'integrations':
       return 'account.integrations';
+    case 'plugins':
+      return 'account.plugins';
+    case 'mcp':
+      return 'account.mcp';
     case 'security':
       return 'account.security';
+    case 'ai-gateway':
+      return 'account.ai-gateway';
     case 'billing':
       return route.invoiceId === undefined
         ? 'account.billing'

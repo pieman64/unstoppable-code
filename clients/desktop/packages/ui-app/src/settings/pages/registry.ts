@@ -51,6 +51,16 @@ export const HOSTED_SETTINGS_PAGES: HostedSettingsPageRegistry = {
       default: m.NotificationsPage,
     })),
   ),
+  'account.plugins': lazy(() =>
+    import('../customize/PluginsPage').then((m) => ({
+      default: m.PluginsPage,
+    })),
+  ),
+  'account.mcp': lazy(() =>
+    import('../customize/McpPage').then((m) => ({
+      default: m.McpPage,
+    })),
+  ),
   'account.labs': lazy(() =>
     import('../labs/LabsPage').then((m) => ({
       default: m.LabsPage,
@@ -69,6 +79,11 @@ export const HOSTED_SETTINGS_PAGES: HostedSettingsPageRegistry = {
   'account.security': lazy(() =>
     import('../account/SecurityPage').then((m) => ({
       default: m.SecurityPage,
+    })),
+  ),
+  'account.ai-gateway': lazy(() =>
+    import('../ai-gateway/AccountAiGatewayPage').then((m) => ({
+      default: m.AccountAiGatewayPage,
     })),
   ),
   'account.billing': lazy(() =>

@@ -164,6 +164,7 @@ export interface ModelPolicyEnforcedPolicy {
 
 /** Hard wire bounds for org gateway configuration carried on account probes. */
 export const MODEL_GATEWAY_MAX_MODELS = 100;
+export const MODEL_GATEWAY_MAX_DISPLAY_NAME_LENGTH = 64;
 export const MODEL_GATEWAY_MAX_ID_LENGTH = 256;
 export const MODEL_GATEWAY_MAX_LABEL_LENGTH = 256;
 export const MODEL_GATEWAY_MAX_BASE_URL_LENGTH = 2048;
@@ -182,6 +183,7 @@ export interface ModelGatewayModel {
 
 export interface ModelGatewayEnforcedPolicy {
   kind: 'model-gateway';
+  displayName?: string;
   /** HTTPS origin/base path without a trailing slash. */
   baseUrl: string;
   models: ModelGatewayModel[];
@@ -273,6 +275,9 @@ export interface CanopyOrgBillingState {
 export interface CanopyAccountResponse {
   /** External ID of the personal organization, excluded from visible teams. */
   personalOrganizationId?: string;
+  personalModelGateway?: {
+    organizationId: string;
+  } & ModelGatewayEnforcedPolicy;
   account: CanopyServerAccountInfo;
   capabilities: readonly string[];
   organizations: CanopyOrganizationSummary[];

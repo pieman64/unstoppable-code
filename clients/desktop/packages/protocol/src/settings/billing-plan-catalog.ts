@@ -87,8 +87,9 @@ export interface BillingPlanSeed<K extends string = BillingPlanKey> {
  * + 20260719000000_add_credit_price_and_reprice + 20260720000000_enable_daily_drip
  * + 20260728000000_add_enterprise_tier_and_uniform_credit_price
  * + 20260902000000_raise_daily_drip_cap_to_25
- * + 20261020000000_lower_daily_drip_cap_to_10 UPDATEs — keep this mirror in sync
- * with that end state.
+ * + 20261020000000_lower_daily_drip_cap_to_10
+ * + 20261104180000_zero_daily_drip_cap UPDATEs — keep this mirror in sync with
+ * that end state.
  *
  * Economics (the two conversions are now split apart):
  *   - `creditPriceUsd` is the per-tier SALE price (dollars paid → credits
@@ -103,19 +104,19 @@ export interface BillingPlanSeed<K extends string = BillingPlanKey> {
  *     price: 0 / 100 credits (= $20, covering the $19 Pro tier) / 150 credits per
  *     seat (= $30, covering the $29 Business seat) / 250 credits per seat (= $50,
  *     covering the $49 Enterprise seat).
- *   - `dailyDripCapCredits` = {@link DEFAULT_DAILY_DRIP_CAP_CREDITS} for all
- *     plans: every opted-in user (including guests) tops
- *     up to that many free AI credits each Pacific day; paid tiers get the drip
- *     on top of their monthly allotment. The drip is off by default. Business is per-seat at $29/seat and
- *     Enterprise is per-seat at $49/seat (mirroring the Business capabilities
- *     plus a display-only $100k annual-commitment bullet). Changing the daily
- *     amount means updating both the constant and the
- *     `billing_plans.daily_drip_cap_credits` value on every native and legacy
- *     plan row, via a data migration (see
- *     `20260902000000_raise_daily_drip_cap_to_25` and
- *     `20261020000000_lower_daily_drip_cap_to_10`): desktop copy reads the
- *     constant, while the actual drip grant, balance, and web pricing read the
- *     row.
+ *   - `dailyDripCapCredits` = {@link DEFAULT_DAILY_DRIP_CAP_CREDITS} (0) for all
+ *     native and legacy plans: free AI credits are retired (CAN-4763), so no
+ *     user, guest, or external read is granted a daily drip. Business is
+ *     per-seat at $29/seat and Enterprise is per-seat at $49/seat (mirroring
+ *     the Business capabilities plus a display-only $100k annual-commitment
+ *     bullet). Changing the daily amount means updating both the constant and
+ *     the `billing_plans.daily_drip_cap_credits` value on every native and
+ *     legacy plan row, via a data migration (see
+ *     `20260902000000_raise_daily_drip_cap_to_25`,
+ *     `20261020000000_lower_daily_drip_cap_to_10` and
+ *     `20261104180000_zero_daily_drip_cap`): the desktop main placeholder reads
+ *     the constant, while the actual drip grant, balance, and web pricing read
+ *     the row.
  * This mirror is native-only (`free` / `individual` / `business` /
  * `enterprise`). The hidden legacy tiers (G10, CAN-1544) live in
  * {@link LEGACY_BILLING_PLAN_SEED} and are seeded by the

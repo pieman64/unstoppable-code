@@ -24,6 +24,7 @@ import {
   type LocalMemorySourceFile,
 } from './discovery';
 import {
+  isLiveImportEntry,
   readImportState,
   writeImportState,
   type ImportSkipReason,
@@ -284,7 +285,9 @@ async function stageAndRecordImport(options: {
     originalName: source.originalName,
     fileHash,
     content: options.content,
-    ...(previous ? { previousStagedAs: previous.stagedAs } : {}),
+    ...(previous && isLiveImportEntry(previous)
+      ? { previousStagedAs: previous.stagedAs }
+      : {}),
   });
   const entry = options.entry(stagedAs);
   ledger.sources[source.sourcePath] = entry;
@@ -414,7 +417,7 @@ async function runLocalMemoryImport(
       return;
     }
     const previous = state.sources[sourcePath];
-    if (previous && 'stagedAs' in previous) {
+    if (previous && isLiveImportEntry(previous)) {
       await withMemoryWriteLock(scopeDir, async () => {
         try {
           const stagedPath = join(scopeDir, previous.stagedAs);
@@ -498,6 +501,7 @@ async function runLocalMemoryImport(
       }
       const stagedPath = join(scopeDir, existingEntry.stagedAs);
       if (
+        isLiveImportEntry(existingEntry) &&
         existingEntry.consolidatedAt === undefined &&
         !countedStagedPaths.has(stagedPath)
       ) {

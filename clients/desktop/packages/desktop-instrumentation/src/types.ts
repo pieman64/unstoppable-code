@@ -2,7 +2,7 @@ import type { PostHogSessionBridge } from './client/posthog-session';
 import type { PostHogRoute } from './posthog-routes';
 import type { PostHogAccountSource } from './posthog-account';
 
-export type DesktopInstrumentationProvider = 'datadog' | 'posthog';
+export type DesktopInstrumentationProvider = 'posthog';
 
 export type DesktopInstrumentationSurface = 'main' | 'app-advisor';
 
@@ -10,11 +10,6 @@ export type DesktopInstrumentationFailureReason =
   | 'error'
   | 'abandoned'
   | 'other';
-
-export type DesktopInstrumentationPrivacyLevel =
-  | 'mask'
-  | 'mask-user-input'
-  | 'allow';
 
 export type DesktopInstrumentationContextValue =
   | string

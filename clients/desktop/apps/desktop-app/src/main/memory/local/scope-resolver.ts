@@ -13,6 +13,11 @@ export interface ResolvedLocalMemoryScope {
   location: 'device-local' | 'account-replica';
   /** The account whose replica holds the scope; null for a device-local one. */
   accountId: string | null;
+  /**
+   * The signed-in account the scope was resolved for, also when it has no
+   * replica of the scope yet; null when signed out, a guest, or sync is off.
+   */
+  signedInAccountId: string | null;
 }
 
 /**
@@ -39,19 +44,24 @@ export function setLocalMemoryReplicaLocator(
   replicaLocator = locator;
 }
 
-function deviceLocalDir(scope: LocalMemoryScopeRequest): string {
+/**
+ * The scope's device-local folder, whether or not a replica holds the scope:
+ * the first enable of a scope reads it (design §16.4, §17).
+ */
+export function deviceLocalMemoryScopeDir(
+  scope: LocalMemoryScopeRequest,
+): string {
   return scope.scope === 'user'
     ? getUserMemoryDir()
     : getWorkspaceMemoryDir(scope.workspaceId);
 }
 
-function accountReplica(
+function accountReplicaDir(
+  accountId: string | null,
   scope: LocalMemoryScopeRequest,
-): { accountId: string; dir: string } | null {
-  const accountId = replicaLocator?.signedInAccountId() ?? null;
+): string | null {
   if (accountId === null) return null;
-  const dir = replicaLocator?.replicaDir(accountId, scope) ?? null;
-  return dir ? { accountId, dir } : null;
+  return replicaLocator?.replicaDir(accountId, scope) || null;
 }
 
 /**
@@ -62,23 +72,29 @@ function accountReplica(
 export function resolveLocalMemoryScope(
   scope: LocalMemoryScopeRequest,
 ): ResolvedLocalMemoryScope {
-  const replica = accountReplica(scope);
-  return replica
+  const signedInAccountId = replicaLocator?.signedInAccountId() ?? null;
+  const replicaDir = accountReplicaDir(signedInAccountId, scope);
+  return replicaDir !== null
     ? {
         scope,
-        dir: replica.dir,
+        dir: replicaDir,
         location: 'account-replica',
-        accountId: replica.accountId,
+        accountId: signedInAccountId,
+        signedInAccountId,
       }
     : {
         scope,
-        dir: deviceLocalDir(scope),
+        dir: deviceLocalMemoryScopeDir(scope),
         location: 'device-local',
         accountId: null,
+        signedInAccountId,
       };
 }
 
 /** The folder {@link resolveLocalMemoryScope} picks for the scope. */
 export function localMemoryScopeDir(scope: LocalMemoryScopeRequest): string {
-  return accountReplica(scope)?.dir ?? deviceLocalDir(scope);
+  return (
+    accountReplicaDir(replicaLocator?.signedInAccountId() ?? null, scope) ??
+    deviceLocalMemoryScopeDir(scope)
+  );
 }

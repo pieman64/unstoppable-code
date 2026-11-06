@@ -182,7 +182,12 @@ import {
   resolveSendModelPin,
 } from '../agents/agent-default-model';
 import { forkCodexThreadByIdViaOneShot } from '../codex/fork-thread';
-import { resolveRequest, rejectRequest } from '../mcp/pending-requests';
+import {
+  answerChatQuestionFromRenderer,
+  respondToLiveChatQuestion,
+  trackSettledChatQuestions,
+} from '../chat-questions/respond';
+import { getDesktopChatWaits } from '../chat-waits/desktop-chat-waits';
 import { normalizeAccountMcpSelections } from '../mcp/account-catalog';
 import { getChatStateService } from '../services/chat-state-service';
 import {
@@ -784,6 +789,424 @@ async function commitCanonicalTabSettings(
       `Canonical settings patch was ${result.outcome}: ${result.reason ?? 'unknown reason'}`,
     );
   }
+}
+
+/**
+ * Persist a chat's plugin selections and restart or recreate its provider
+ * session so the next turn runs with them. Shared by the plugin picker IPC
+ * and the deferred-tools reload host (CAN-4127).
+ */
+export async function applyChatPluginSelectionsUpdate(
+  req: ChatUpdatePluginsRequest,
+): Promise<ChatUpdatePluginsResponse> {
+  const { projectId, worktreeId, chatId } = req;
+  assertWritableScope(projectId);
+  validateId(projectId, 'projectId');
+  validateId(worktreeId, 'worktreeId');
+  validateId(chatId, 'chatId');
+  const normalizedTombstones =
+    req.disabledGlobalPluginSelections !== undefined
+      ? normalizePluginSelectionTombstones(req.disabledGlobalPluginSelections)
+      : undefined;
+  let committedSessionId: string | undefined;
+  const deferredReloadActive = deferredToolsReloadCoordinator.hasActiveReload({
+    projectId,
+    worktreeId,
+    chatId,
+  });
+  const activeInfoAtUpdateStart = getActiveSessionInfos(
+    projectId,
+    worktreeId,
+  ).find((info) => info.chatId === chatId);
+  let recreateAfterActiveCodexTurn =
+    activeInfoAtUpdateStart?.executionHarness === 'codex' &&
+    activeInfoAtUpdateStart.turnActive &&
+    !deferredReloadActive;
+  recreateAfterActiveCodexTurn =
+    recreateAfterActiveCodexTurn ||
+    chatHasNativeBackgroundWork(projectId, worktreeId, chatId);
+  if (
+    activeInfoAtUpdateStart?.executionHarness === 'codex' &&
+    (activeInfoAtUpdateStart.pendingMessageCount ?? 0) > 0
+  ) {
+    throw new Error(
+      'Wait for queued Codex messages to finish before updating tools',
+    );
+  }
+  if (req.materializeCodexThread) {
+    await withCodexCapabilityTransitionLock(
+      `${projectId}/${worktreeId}/${chatId}`,
+      async () => {
+        const tabsFile = await readChatTabsFile(projectId, worktreeId);
+        const tabIndex = tabsFile.tabs.findIndex((tab) => tab.id === chatId);
+        const persistedTab = tabsFile.tabs[tabIndex];
+        if (!persistedTab) {
+          throw new Error('Chat tab was not found while updating tools');
+        }
+        const activeSession = getSession(projectId, worktreeId, chatId);
+        // The owner session receives the provider thread id before the
+        // renderer's debounced tab write necessarily reaches disk. Use that
+        // owner-bound id as the fallback for both direct saves and deferred
+        // reloads so a just-completed Codex turn cannot be mistaken for a
+        // concurrent chat replacement.
+        const activeProviderThreadId = activeSession?.getProviderSessionId
+          ? activeSession.getProviderSessionId()
+          : undefined;
+        const sourceThreadId =
+          persistedTab.sdkSessionId ?? activeProviderThreadId;
+        const persistedHarness =
+          persistedTab.executionHarness ??
+          inferLegacyExecutionHarness({
+            model: persistedTab.model,
+            providerType: persistedTab.providerType,
+            hasStarted:
+              (persistedTab.transcript?.messageCount ??
+                persistedTab.transcript?.committedMessageCount ??
+                persistedTab.messages.length) > 0 || Boolean(sourceThreadId),
+          });
+        if (
+          (req.expectedCurrentThreadId !== undefined &&
+            sourceThreadId !== req.expectedCurrentThreadId) ||
+          persistedHarness !== 'codex'
+        ) {
+          throw new Error('Chat changed while tools were being updated');
+        }
+        const activeInfo = getActiveSessionInfos(projectId, worktreeId).find(
+          (info) => info.chatId === chatId,
+        );
+        const capabilityProfile = getActiveSessionCapabilityProfile(
+          projectId,
+          worktreeId,
+          chatId,
+        );
+        if ((activeInfo?.pendingMessageCount ?? 0) > 0) {
+          throw new Error(
+            'Wait for queued Codex messages to finish before updating tools',
+          );
+        }
+        const hasNativeBackgroundWork = chatHasNativeBackgroundWork(
+          projectId,
+          worktreeId,
+          chatId,
+        );
+        recreateAfterActiveCodexTurn =
+          recreateAfterActiveCodexTurn ||
+          (Boolean(activeInfo?.turnActive) && !deferredReloadActive) ||
+          hasNativeBackgroundWork;
+        if (recreateAfterActiveCodexTurn) {
+          // Keep the in-flight turn on its original immutable capability
+          // snapshot. The renderer persists the new selections immediately;
+          // the next send recreates the session and materializes the finished
+          // thread history with those selections.
+          return;
+        }
+        if (sourceThreadId) {
+          // Mirror `resolveProviderType` in the session manager: the model
+          // decides the execution backend whenever it resolves in the
+          // catalog, and the persisted `providerType` is only the fallback
+          // for a model the catalog does not know (an Ollama model whose
+          // server has not been detected this launch). Trusting the persisted
+          // field outright is a second source of truth: on drift the
+          // transition would resolve the `native` family and skip the Ollama
+          // loopback config while still handing a raw `ollama-*` model id to
+          // a canonical Codex app-server.
+          const persistedModelSource = persistedTab.model
+            ? getModelSource(persistedTab.model)
+            : undefined;
+          const transitionProviderType: CodexReasoningProviderType | undefined =
+            persistedModelSource === 'ollama' ||
+            (persistedModelSource === undefined &&
+              persistedTab.providerType === 'ollama')
+              ? 'ollama'
+              : undefined;
+          const preferences = await readPreferencesFile().catch(() => null);
+          const approvalMode = await resolvePersistedApprovalMode(
+            projectId,
+            worktreeId,
+            persistedTab.approvalMode,
+          );
+          const routedState = getSessionAiCreditsRoutedState(
+            projectId,
+            worktreeId,
+            chatId,
+          );
+          const transition = await materializeCodexCapabilityTransition({
+            projectId,
+            worktreeId,
+            chatId,
+            sourceThreadId,
+            pluginSelections: req.pluginSelections,
+            approvalMode,
+            ...(req.disabledGlobalPluginSelections !== undefined
+              ? {
+                  disabledGlobalPluginSelections:
+                    req.disabledGlobalPluginSelections,
+                }
+              : {}),
+            ...(req.selectedRepoId
+              ? { selectedRepoId: req.selectedRepoId }
+              : persistedTab.selectedRepoId
+                ? { selectedRepoId: persistedTab.selectedRepoId }
+                : {}),
+            ...(persistedTab.model ? { model: persistedTab.model } : {}),
+            // Ollama threads are their own reasoning route family; without
+            // this they would resolve to `native` and could resume under a
+            // native OpenAI model, replaying provider-private reasoning.
+            ...(transitionProviderType
+              ? { providerType: transitionProviderType }
+              : {}),
+            // Tri-state: forward the routing decision only when a live
+            // session actually reports one. Sending `false` for an idle chat
+            // would tell the transition that a gateway-routed chat is
+            // native, stripping its cached reasoning and mis-stamping the
+            // replacement lease.
+            ...(routedState !== undefined
+              ? { aiCreditsRouted: routedState }
+              : {}),
+            maxConcurrentSubagents: preferences?.codexMaxConcurrentSubagents,
+            multiAgentEnabled:
+              preferences?.codexMultiAgentStandaloneChatsEnabled,
+            localMemoryEnabled: preferences?.localMemoryEnabled === true,
+            ...(capabilityProfile
+              ? {
+                  assistantMode: capabilityProfile.assistantMode,
+                  codeGraphToolsAdvertised:
+                    capabilityProfile.codeGraphToolsAdvertised,
+                }
+              : {}),
+          });
+          try {
+            const nextSessionId = transition.handle.threadId;
+            const latestActiveInfoBeforeCommit = getActiveSessionInfos(
+              projectId,
+              worktreeId,
+            ).find((info) => info.chatId === chatId);
+            if ((latestActiveInfoBeforeCommit?.pendingMessageCount ?? 0) > 0) {
+              throw new Error(
+                'Wait for queued Codex messages to finish before updating tools',
+              );
+            }
+            // Materialization awaits provider work while chat events can
+            // advance the repository revision. Commit only the intended
+            // fields against the latest tab; a stale full snapshot would
+            // silently lose this metadata update during reconciliation.
+            const { updated } =
+              await getChatStateService().updateCompatibilityTab(
+                { projectId, worktreeId },
+                chatId,
+                (currentTab) => {
+                  if (
+                    (currentTab.sdkSessionId !== persistedTab.sdkSessionId &&
+                      currentTab.sdkSessionId !== sourceThreadId) ||
+                    currentTab.model !== persistedTab.model ||
+                    currentTab.providerType !== persistedTab.providerType
+                  ) {
+                    throw new Error(
+                      'Chat changed while tools were being updated',
+                    );
+                  }
+                  const nextTab: PersistedChatTab = {
+                    ...currentTab,
+                    sdkSessionId: nextSessionId,
+                    pluginSelections: req.pluginSelections,
+                    ...(typeof req.deferredToolsAllowed === 'boolean'
+                      ? { deferredToolsAllowed: req.deferredToolsAllowed }
+                      : {}),
+                  };
+                  if (req.disabledGlobalPluginSelections !== undefined) {
+                    if (normalizedTombstones) {
+                      nextTab.disabledGlobalPluginSelections =
+                        normalizedTombstones;
+                    } else {
+                      delete nextTab.disabledGlobalPluginSelections;
+                    }
+                  }
+                  return nextTab;
+                },
+                undefined,
+                { metadataOnly: true },
+              );
+            if (!updated) {
+              throw new Error(
+                'Chat tab was removed while tools were being updated',
+              );
+            }
+            committedSessionId = nextSessionId;
+            await transition.handle.unsubscribe();
+          } catch (error) {
+            await transition.handle.delete().catch(() => {});
+            throw error;
+          } finally {
+            await transition.releaseRoutes();
+          }
+        }
+      },
+    );
+  }
+  if (!committedSessionId) {
+    const latestActiveInfoBeforeRuntimeUpdate = getActiveSessionInfos(
+      projectId,
+      worktreeId,
+    ).find((info) => info.chatId === chatId);
+    if (
+      latestActiveInfoBeforeRuntimeUpdate?.executionHarness === 'codex' &&
+      (latestActiveInfoBeforeRuntimeUpdate.pendingMessageCount ?? 0) > 0
+    ) {
+      throw new Error(
+        'Wait for queued Codex messages to finish before updating tools',
+      );
+    }
+  }
+  if (committedSessionId === undefined) {
+    await withCodexCapabilityTransitionLock(
+      `${projectId}/${worktreeId}/${chatId}`,
+      async () => {
+        const canonicalTabs = await getChatStateService().getCompatibilityTabs({
+          projectId,
+          worktreeId,
+        });
+        const canonicalTab = canonicalTabs.tabs.find(
+          (tab) => tab.id === chatId,
+        );
+        if (
+          !canonicalTab &&
+          !hasQueuedHookChat({ projectId, worktreeId, chatId })
+        ) {
+          throw new Error('Chat tab was not found while updating tools');
+        }
+        if (!canonicalTab) {
+          return;
+        }
+        const activeSession = getSession(projectId, worktreeId, chatId);
+        const currentThreadId =
+          activeSession?.getProviderSessionId?.() ?? canonicalTab.sdkSessionId;
+        if (
+          req.expectedCurrentThreadId !== undefined &&
+          currentThreadId !== req.expectedCurrentThreadId
+        ) {
+          throw new Error('Chat changed while tools were being updated');
+        }
+        // Deferred reload can arrive before the renderer observes the
+        // provider's init event. Capture continuity before teardown clears
+        // the old session, so the resume cannot silently start fresh.
+        if (deferredReloadActive && currentThreadId) {
+          committedSessionId = currentThreadId;
+        }
+        await commitCanonicalTabSettings(
+          projectId,
+          worktreeId,
+          chatId,
+          {
+            pluginSelections: req.pluginSelections,
+            ...(typeof req.deferredToolsAllowed === 'boolean'
+              ? { deferredToolsAllowed: req.deferredToolsAllowed }
+              : {}),
+            ...(req.disabledGlobalPluginSelections !== undefined
+              ? {
+                  disabledGlobalPluginSelections: normalizedTombstones ?? {},
+                }
+              : {}),
+          },
+          {
+            requireExisting: true,
+          },
+        );
+      },
+    );
+  }
+  getChatQueueService().updateQueuedPluginSelections(
+    { projectId, worktreeId, chatId },
+    req.pluginSelections,
+    req.deferredToolsAllowed,
+  );
+  updateQueuedHookChatPluginSelections({
+    projectId,
+    worktreeId,
+    chatId,
+    pluginSelections: req.pluginSelections,
+    deferredToolsAllowed: req.deferredToolsAllowed,
+  });
+  getClaudeTerminalSessionService().updateDeferredToolsContext(
+    projectId,
+    worktreeId,
+    chatId,
+    {
+      pluginSelections: req.pluginSelections,
+      deferredToolsAllowed: req.deferredToolsAllowed,
+    },
+  );
+  const terminalState = getClaudeTerminalSessionService().getState(
+    projectId,
+    worktreeId,
+    chatId,
+  );
+  if (terminalState?.sessionKey) {
+    getDesktopIntegrationServer().updateCanopyWorktreeSessionPluginSelections(
+      terminalState.sessionKey,
+      req.pluginSelections,
+    );
+  }
+  if (typeof req.deferredToolsAllowed === 'boolean') {
+    if (terminalState?.sessionKey) {
+      getDesktopIntegrationServer().updateCanopyWorktreeSessionDeferredToolsAllowed(
+        terminalState.sessionKey,
+        req.deferredToolsAllowed,
+      );
+    }
+  }
+  const session = getSession(projectId, worktreeId, chatId);
+  if (session) {
+    const latestActiveInfo = getActiveSessionInfos(projectId, worktreeId).find(
+      (info) => info.chatId === chatId,
+    );
+    const hasNativeBackgroundWork = chatHasNativeBackgroundWork(
+      projectId,
+      worktreeId,
+      chatId,
+    );
+    recreateAfterActiveCodexTurn =
+      recreateAfterActiveCodexTurn ||
+      (latestActiveInfo?.executionHarness === 'codex' &&
+        latestActiveInfo.turnActive &&
+        !deferredReloadActive) ||
+      hasNativeBackgroundWork;
+    if (recreateAfterActiveCodexTurn) {
+      markSessionForNextTurnRecreation(
+        projectId,
+        worktreeId,
+        chatId,
+        'plugins',
+      );
+    } else {
+      // Destroy the idle session so the next sendMessage creates a new one
+      // with the updated plugin selections. Claude resumes via sdkSessionId.
+      // Direct Codex saves already committed a start/inject replacement;
+      // deferred Codex reloads reconstruct on the next send.
+      await destroySession(projectId, worktreeId, chatId, {
+        suppressObservabilityInterrupt: deferredReloadActive,
+        retainDelegations: true,
+      });
+    }
+  }
+  getChatQueueService().refreshRestartHold({ projectId, worktreeId, chatId });
+
+  // The desired plugin snapshot was persisted above under the transition
+  // lock; the renderer still mirrors the response into its local tab state.
+  return {
+    pluginSelections: req.pluginSelections,
+    // Echo the normalized replacement (empty object = cleared) — the
+    // renderer stores and later re-persists this value, so it must match
+    // what was actually written, not the raw request payload.
+    ...(req.disabledGlobalPluginSelections !== undefined
+      ? {
+          disabledGlobalPluginSelections: normalizedTombstones ?? {},
+        }
+      : {}),
+    ...(typeof req.deferredToolsAllowed === 'boolean'
+      ? { deferredToolsAllowed: req.deferredToolsAllowed }
+      : {}),
+    ...(committedSessionId ? { sdkSessionId: committedSessionId } : {}),
+  };
 }
 
 /**
@@ -3655,31 +4078,20 @@ export function registerChatHandlers(
     },
   );
 
+  trackSettledChatQuestions();
   registerIpcHandler<[McpAnswerUserRequest], McpAnswerUserResponse>(
     IPC_CHANNELS.mcpAnswerUser,
-    async (_event, req) => {
-      const accepted = await getChatStateService().answerPendingQuestion(
-        req.requestId,
-        req.answers,
-      );
-      return {
-        accepted: accepted || resolveRequest(req.requestId, req.answers),
-      };
-    },
+    (_event, req) => answerChatQuestionFromRenderer(req.requestId, req.answers),
   );
 
   registerIpcHandler<[McpDismissUserRequest], void>(
     IPC_CHANNELS.mcpDismissUser,
     async (_event, req) => {
-      if (
-        !(await getChatStateService().answerPendingQuestion(
-          req.requestId,
-          [],
-          true,
-        ))
-      ) {
-        rejectRequest(req.requestId, 'cancelled');
-      }
+      const outcome = await respondToLiveChatQuestion(req.requestId, {
+        kind: 'dismiss',
+      });
+      if (outcome.status !== 'applied' && outcome.status !== 'already_settled')
+        getDesktopChatWaits().cancel(req.requestId, { reason: 'cancelled' });
     },
   );
 
@@ -4219,425 +4631,9 @@ export function registerChatHandlers(
   registerIpcHandler<
     [ChatUpdatePluginsRequest],
     Promise<ChatUpdatePluginsResponse>
-  >(IPC_CHANNELS.chatUpdatePlugins, async (_event, req) => {
-    const { projectId, worktreeId, chatId } = req;
-    assertWritableScope(projectId);
-    validateId(projectId, 'projectId');
-    validateId(worktreeId, 'worktreeId');
-    validateId(chatId, 'chatId');
-    const normalizedTombstones =
-      req.disabledGlobalPluginSelections !== undefined
-        ? normalizePluginSelectionTombstones(req.disabledGlobalPluginSelections)
-        : undefined;
-    let committedSessionId: string | undefined;
-    const deferredReloadActive = deferredToolsReloadCoordinator.hasActiveReload(
-      {
-        projectId,
-        worktreeId,
-        chatId,
-      },
-    );
-    const activeInfoAtUpdateStart = getActiveSessionInfos(
-      projectId,
-      worktreeId,
-    ).find((info) => info.chatId === chatId);
-    let recreateAfterActiveCodexTurn =
-      activeInfoAtUpdateStart?.executionHarness === 'codex' &&
-      activeInfoAtUpdateStart.turnActive &&
-      !deferredReloadActive;
-    recreateAfterActiveCodexTurn =
-      recreateAfterActiveCodexTurn ||
-      chatHasNativeBackgroundWork(projectId, worktreeId, chatId);
-    if (
-      activeInfoAtUpdateStart?.executionHarness === 'codex' &&
-      (activeInfoAtUpdateStart.pendingMessageCount ?? 0) > 0
-    ) {
-      throw new Error(
-        'Wait for queued Codex messages to finish before updating tools',
-      );
-    }
-    if (req.materializeCodexThread) {
-      await withCodexCapabilityTransitionLock(
-        `${projectId}/${worktreeId}/${chatId}`,
-        async () => {
-          const tabsFile = await readChatTabsFile(projectId, worktreeId);
-          const tabIndex = tabsFile.tabs.findIndex((tab) => tab.id === chatId);
-          const persistedTab = tabsFile.tabs[tabIndex];
-          if (!persistedTab) {
-            throw new Error('Chat tab was not found while updating tools');
-          }
-          const activeSession = getSession(projectId, worktreeId, chatId);
-          // The owner session receives the provider thread id before the
-          // renderer's debounced tab write necessarily reaches disk. Use that
-          // owner-bound id as the fallback for both direct saves and deferred
-          // reloads so a just-completed Codex turn cannot be mistaken for a
-          // concurrent chat replacement.
-          const activeProviderThreadId = activeSession?.getProviderSessionId
-            ? activeSession.getProviderSessionId()
-            : undefined;
-          const sourceThreadId =
-            persistedTab.sdkSessionId ?? activeProviderThreadId;
-          const persistedHarness =
-            persistedTab.executionHarness ??
-            inferLegacyExecutionHarness({
-              model: persistedTab.model,
-              providerType: persistedTab.providerType,
-              hasStarted:
-                (persistedTab.transcript?.messageCount ??
-                  persistedTab.transcript?.committedMessageCount ??
-                  persistedTab.messages.length) > 0 || Boolean(sourceThreadId),
-            });
-          if (
-            (req.expectedCurrentThreadId !== undefined &&
-              sourceThreadId !== req.expectedCurrentThreadId) ||
-            persistedHarness !== 'codex'
-          ) {
-            throw new Error('Chat changed while tools were being updated');
-          }
-          const activeInfo = getActiveSessionInfos(projectId, worktreeId).find(
-            (info) => info.chatId === chatId,
-          );
-          const capabilityProfile = getActiveSessionCapabilityProfile(
-            projectId,
-            worktreeId,
-            chatId,
-          );
-          if ((activeInfo?.pendingMessageCount ?? 0) > 0) {
-            throw new Error(
-              'Wait for queued Codex messages to finish before updating tools',
-            );
-          }
-          const hasNativeBackgroundWork = chatHasNativeBackgroundWork(
-            projectId,
-            worktreeId,
-            chatId,
-          );
-          recreateAfterActiveCodexTurn =
-            recreateAfterActiveCodexTurn ||
-            (Boolean(activeInfo?.turnActive) && !deferredReloadActive) ||
-            hasNativeBackgroundWork;
-          if (recreateAfterActiveCodexTurn) {
-            // Keep the in-flight turn on its original immutable capability
-            // snapshot. The renderer persists the new selections immediately;
-            // the next send recreates the session and materializes the finished
-            // thread history with those selections.
-            return;
-          }
-          if (sourceThreadId) {
-            // Mirror `resolveProviderType` in the session manager: the model
-            // decides the execution backend whenever it resolves in the
-            // catalog, and the persisted `providerType` is only the fallback
-            // for a model the catalog does not know (an Ollama model whose
-            // server has not been detected this launch). Trusting the persisted
-            // field outright is a second source of truth: on drift the
-            // transition would resolve the `native` family and skip the Ollama
-            // loopback config while still handing a raw `ollama-*` model id to
-            // a canonical Codex app-server.
-            const persistedModelSource = persistedTab.model
-              ? getModelSource(persistedTab.model)
-              : undefined;
-            const transitionProviderType:
-              | CodexReasoningProviderType
-              | undefined =
-              persistedModelSource === 'ollama' ||
-              (persistedModelSource === undefined &&
-                persistedTab.providerType === 'ollama')
-                ? 'ollama'
-                : undefined;
-            const preferences = await readPreferencesFile().catch(() => null);
-            const approvalMode = await resolvePersistedApprovalMode(
-              projectId,
-              worktreeId,
-              persistedTab.approvalMode,
-            );
-            const routedState = getSessionAiCreditsRoutedState(
-              projectId,
-              worktreeId,
-              chatId,
-            );
-            const transition = await materializeCodexCapabilityTransition({
-              projectId,
-              worktreeId,
-              chatId,
-              sourceThreadId,
-              pluginSelections: req.pluginSelections,
-              approvalMode,
-              ...(req.disabledGlobalPluginSelections !== undefined
-                ? {
-                    disabledGlobalPluginSelections:
-                      req.disabledGlobalPluginSelections,
-                  }
-                : {}),
-              ...(req.selectedRepoId
-                ? { selectedRepoId: req.selectedRepoId }
-                : persistedTab.selectedRepoId
-                  ? { selectedRepoId: persistedTab.selectedRepoId }
-                  : {}),
-              ...(persistedTab.model ? { model: persistedTab.model } : {}),
-              // Ollama threads are their own reasoning route family; without
-              // this they would resolve to `native` and could resume under a
-              // native OpenAI model, replaying provider-private reasoning.
-              ...(transitionProviderType
-                ? { providerType: transitionProviderType }
-                : {}),
-              // Tri-state: forward the routing decision only when a live
-              // session actually reports one. Sending `false` for an idle chat
-              // would tell the transition that a gateway-routed chat is
-              // native, stripping its cached reasoning and mis-stamping the
-              // replacement lease.
-              ...(routedState !== undefined
-                ? { aiCreditsRouted: routedState }
-                : {}),
-              maxConcurrentSubagents: preferences?.codexMaxConcurrentSubagents,
-              multiAgentEnabled:
-                preferences?.codexMultiAgentStandaloneChatsEnabled,
-              localMemoryEnabled: preferences?.localMemoryEnabled === true,
-              ...(capabilityProfile
-                ? {
-                    assistantMode: capabilityProfile.assistantMode,
-                    codeGraphToolsAdvertised:
-                      capabilityProfile.codeGraphToolsAdvertised,
-                  }
-                : {}),
-            });
-            try {
-              const nextSessionId = transition.handle.threadId;
-              const latestActiveInfoBeforeCommit = getActiveSessionInfos(
-                projectId,
-                worktreeId,
-              ).find((info) => info.chatId === chatId);
-              if (
-                (latestActiveInfoBeforeCommit?.pendingMessageCount ?? 0) > 0
-              ) {
-                throw new Error(
-                  'Wait for queued Codex messages to finish before updating tools',
-                );
-              }
-              // Materialization awaits provider work while chat events can
-              // advance the repository revision. Commit only the intended
-              // fields against the latest tab; a stale full snapshot would
-              // silently lose this metadata update during reconciliation.
-              const { updated } =
-                await getChatStateService().updateCompatibilityTab(
-                  { projectId, worktreeId },
-                  chatId,
-                  (currentTab) => {
-                    if (
-                      (currentTab.sdkSessionId !== persistedTab.sdkSessionId &&
-                        currentTab.sdkSessionId !== sourceThreadId) ||
-                      currentTab.model !== persistedTab.model ||
-                      currentTab.providerType !== persistedTab.providerType
-                    ) {
-                      throw new Error(
-                        'Chat changed while tools were being updated',
-                      );
-                    }
-                    const nextTab: PersistedChatTab = {
-                      ...currentTab,
-                      sdkSessionId: nextSessionId,
-                      pluginSelections: req.pluginSelections,
-                      ...(typeof req.deferredToolsAllowed === 'boolean'
-                        ? { deferredToolsAllowed: req.deferredToolsAllowed }
-                        : {}),
-                    };
-                    if (req.disabledGlobalPluginSelections !== undefined) {
-                      if (normalizedTombstones) {
-                        nextTab.disabledGlobalPluginSelections =
-                          normalizedTombstones;
-                      } else {
-                        delete nextTab.disabledGlobalPluginSelections;
-                      }
-                    }
-                    return nextTab;
-                  },
-                  undefined,
-                  { metadataOnly: true },
-                );
-              if (!updated) {
-                throw new Error(
-                  'Chat tab was removed while tools were being updated',
-                );
-              }
-              committedSessionId = nextSessionId;
-              await transition.handle.unsubscribe();
-            } catch (error) {
-              await transition.handle.delete().catch(() => {});
-              throw error;
-            } finally {
-              await transition.releaseRoutes();
-            }
-          }
-        },
-      );
-    }
-    if (!committedSessionId) {
-      const latestActiveInfoBeforeRuntimeUpdate = getActiveSessionInfos(
-        projectId,
-        worktreeId,
-      ).find((info) => info.chatId === chatId);
-      if (
-        latestActiveInfoBeforeRuntimeUpdate?.executionHarness === 'codex' &&
-        (latestActiveInfoBeforeRuntimeUpdate.pendingMessageCount ?? 0) > 0
-      ) {
-        throw new Error(
-          'Wait for queued Codex messages to finish before updating tools',
-        );
-      }
-    }
-    if (committedSessionId === undefined) {
-      await withCodexCapabilityTransitionLock(
-        `${projectId}/${worktreeId}/${chatId}`,
-        async () => {
-          const canonicalTabs =
-            await getChatStateService().getCompatibilityTabs({
-              projectId,
-              worktreeId,
-            });
-          const canonicalTab = canonicalTabs.tabs.find(
-            (tab) => tab.id === chatId,
-          );
-          if (
-            !canonicalTab &&
-            !hasQueuedHookChat({ projectId, worktreeId, chatId })
-          ) {
-            throw new Error('Chat tab was not found while updating tools');
-          }
-          if (!canonicalTab) {
-            return;
-          }
-          const activeSession = getSession(projectId, worktreeId, chatId);
-          const currentThreadId =
-            activeSession?.getProviderSessionId?.() ??
-            canonicalTab.sdkSessionId;
-          if (
-            req.expectedCurrentThreadId !== undefined &&
-            currentThreadId !== req.expectedCurrentThreadId
-          ) {
-            throw new Error('Chat changed while tools were being updated');
-          }
-          // Deferred reload can arrive before the renderer observes the
-          // provider's init event. Capture continuity before teardown clears
-          // the old session, so the resume cannot silently start fresh.
-          if (deferredReloadActive && currentThreadId) {
-            committedSessionId = currentThreadId;
-          }
-          await commitCanonicalTabSettings(
-            projectId,
-            worktreeId,
-            chatId,
-            {
-              pluginSelections: req.pluginSelections,
-              ...(typeof req.deferredToolsAllowed === 'boolean'
-                ? { deferredToolsAllowed: req.deferredToolsAllowed }
-                : {}),
-              ...(req.disabledGlobalPluginSelections !== undefined
-                ? {
-                    disabledGlobalPluginSelections: normalizedTombstones ?? {},
-                  }
-                : {}),
-            },
-            {
-              requireExisting: true,
-            },
-          );
-        },
-      );
-    }
-    getChatQueueService().updateQueuedPluginSelections(
-      { projectId, worktreeId, chatId },
-      req.pluginSelections,
-      req.deferredToolsAllowed,
-    );
-    updateQueuedHookChatPluginSelections({
-      projectId,
-      worktreeId,
-      chatId,
-      pluginSelections: req.pluginSelections,
-      deferredToolsAllowed: req.deferredToolsAllowed,
-    });
-    getClaudeTerminalSessionService().updateDeferredToolsContext(
-      projectId,
-      worktreeId,
-      chatId,
-      {
-        pluginSelections: req.pluginSelections,
-        deferredToolsAllowed: req.deferredToolsAllowed,
-      },
-    );
-    const terminalState = getClaudeTerminalSessionService().getState(
-      projectId,
-      worktreeId,
-      chatId,
-    );
-    if (terminalState?.sessionKey) {
-      getDesktopIntegrationServer().updateCanopyWorktreeSessionPluginSelections(
-        terminalState.sessionKey,
-        req.pluginSelections,
-      );
-    }
-    if (typeof req.deferredToolsAllowed === 'boolean') {
-      if (terminalState?.sessionKey) {
-        getDesktopIntegrationServer().updateCanopyWorktreeSessionDeferredToolsAllowed(
-          terminalState.sessionKey,
-          req.deferredToolsAllowed,
-        );
-      }
-    }
-    const session = getSession(projectId, worktreeId, chatId);
-    if (session) {
-      const latestActiveInfo = getActiveSessionInfos(
-        projectId,
-        worktreeId,
-      ).find((info) => info.chatId === chatId);
-      const hasNativeBackgroundWork = chatHasNativeBackgroundWork(
-        projectId,
-        worktreeId,
-        chatId,
-      );
-      recreateAfterActiveCodexTurn =
-        recreateAfterActiveCodexTurn ||
-        (latestActiveInfo?.executionHarness === 'codex' &&
-          latestActiveInfo.turnActive &&
-          !deferredReloadActive) ||
-        hasNativeBackgroundWork;
-      if (recreateAfterActiveCodexTurn) {
-        markSessionForNextTurnRecreation(
-          projectId,
-          worktreeId,
-          chatId,
-          'plugins',
-        );
-      } else {
-        // Destroy the idle session so the next sendMessage creates a new one
-        // with the updated plugin selections. Claude resumes via sdkSessionId.
-        // Direct Codex saves already committed a start/inject replacement;
-        // deferred Codex reloads reconstruct on the next send.
-        await destroySession(projectId, worktreeId, chatId, {
-          suppressObservabilityInterrupt: deferredReloadActive,
-          retainDelegations: true,
-        });
-      }
-    }
-    getChatQueueService().refreshRestartHold({ projectId, worktreeId, chatId });
-
-    // The desired plugin snapshot was persisted above under the transition
-    // lock; the renderer still mirrors the response into its local tab state.
-    return {
-      pluginSelections: req.pluginSelections,
-      // Echo the normalized replacement (empty object = cleared) — the
-      // renderer stores and later re-persists this value, so it must match
-      // what was actually written, not the raw request payload.
-      ...(req.disabledGlobalPluginSelections !== undefined
-        ? {
-            disabledGlobalPluginSelections: normalizedTombstones ?? {},
-          }
-        : {}),
-      ...(typeof req.deferredToolsAllowed === 'boolean'
-        ? { deferredToolsAllowed: req.deferredToolsAllowed }
-        : {}),
-      ...(committedSessionId ? { sdkSessionId: committedSessionId } : {}),
-    };
-  });
+  >(IPC_CHANNELS.chatUpdatePlugins, (_event, req) =>
+    applyChatPluginSelectionsUpdate(req),
+  );
 
   registerIpcHandler<
     [DeferredToolsReloadBeginRequest],

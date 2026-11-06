@@ -17,7 +17,10 @@
       "chat.content.read",
       "chat.transcript.blocks.page",
       "experiments.set_enabled",
-      "settings.open"
+      "settings.open",
+      "settings.ai_gateway.get",
+      "settings.ai_gateway.connect",
+      "settings.ai_gateway.update"
     ],
     "chatCreatePlacements": ["current", "new_worktree"],
     "watcherTriggers": ["worktree_chat_completion"],
@@ -239,7 +242,7 @@
               "enabled": { "type": "boolean" },
               "destination": {
                 "type": "object",
-                "description": "Settings destination for settings.open. Account pages: account, profile, digests, notifications, integrations, security, billing, labs, appearance. Organization pages: feed (the Timeline), statistics, digests, members, groups, projects, memory, settings.",
+                "description": "Settings destination for settings.open. Account pages: account, profile, digests, notifications, integrations, plugins, mcp, security, ai-gateway, billing, labs, appearance. Organization pages: feed (the Timeline), statistics, digests, members, groups, projects, memory, settings (subtab ai-gateway for the AI gateway).",
                 "properties": {
                   "scope": {
                     "type": "string",
@@ -258,7 +261,10 @@
                       "digests",
                       "notifications",
                       "integrations",
+                      "plugins",
+                      "mcp",
                       "security",
+                      "ai-gateway",
                       "billing",
                       "labs",
                       "appearance",
@@ -278,6 +284,7 @@
                       "policies",
                       "integrations",
                       "usage",
+                      "ai-gateway",
                       "billing"
                     ]
                   },
@@ -312,6 +319,90 @@
                   }
                 },
                 "required": ["scope"],
+                "additionalProperties": false
+              },
+              "scope": {
+                "type": "object",
+                "properties": {
+                  "kind": { "enum": ["personal", "organization"] },
+                  "organizationId": { "type": "string" },
+                  "expectedOrganizationId": { "type": "string" }
+                },
+                "required": ["kind"],
+                "additionalProperties": false
+              },
+              "baseUrl": { "type": "string" },
+              "expectedRevision": { "type": "string" },
+              "discoveryId": { "type": "string" },
+              "patch": {
+                "type": "object",
+                "properties": {
+                  "displayName": {
+                    "type": ["string", "null"],
+                    "maxLength": 64
+                  },
+                  "baseUrl": { "type": ["string", "null"] },
+                  "models": {
+                    "type": "array",
+                    "maxItems": 100,
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256
+                        },
+                        "gatewayId": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256
+                        },
+                        "label": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256
+                        },
+                        "harness": { "enum": ["claude", "codex"] },
+                        "contextWindow": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 9007199254740991
+                        },
+                        "supportedThinkingLevels": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "items": {
+                            "enum": [
+                              "off",
+                              "low",
+                              "medium",
+                              "high",
+                              "xhigh",
+                              "max",
+                              "ultra"
+                            ]
+                          }
+                        },
+                        "toolSchemaProfile": { "enum": ["standard", "flat"] }
+                      },
+                      "required": [
+                        "id",
+                        "gatewayId",
+                        "label",
+                        "harness",
+                        "contextWindow",
+                        "supportedThinkingLevels",
+                        "toolSchemaProfile"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "enabled": { "type": "boolean" },
+                  "onlyThisGateway": { "type": "boolean" },
+                  "promptCachePassthrough": { "type": "boolean" },
+                  "addDiscovered": { "const": true }
+                },
                 "additionalProperties": false
               }
             },
@@ -599,6 +690,33 @@
                   "required": ["type"]
                 },
                 "then": { "required": ["destination"] }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "type": { "const": "settings.ai_gateway.get" }
+                  },
+                  "required": ["type"]
+                },
+                "then": { "required": ["scope"] }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "type": { "const": "settings.ai_gateway.connect" }
+                  },
+                  "required": ["type"]
+                },
+                "then": { "required": ["scope", "baseUrl"] }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "type": { "const": "settings.ai_gateway.update" }
+                  },
+                  "required": ["type"]
+                },
+                "then": { "required": ["scope", "expectedRevision", "patch"] }
               }
             ],
             "additionalProperties": true

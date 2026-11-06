@@ -1,3 +1,4 @@
+import { Heading } from '@canopy/ui-shared/components';
 import { Button } from '@canopy/ui-shared/components';
 import { useEffect, useMemo, type JSX } from 'react';
 import { useShallow } from 'zustand/react/shallow';
@@ -268,9 +269,9 @@ export function SplitWorkflowView({
         >
           <div className="mx-auto w-full min-w-0 max-w-5xl space-y-4">
             <div className="space-y-1">
-              <h2 className="text-m font-semibold fg-success-strong">
+              <Heading level={2} variant="section" tone="success">
                 Split complete
-              </h2>
+              </Heading>
               <p className="text-xs fg-secondary">
                 The PR was split into an integration PR and its child PRs. The
                 worktree now tracks the integration branch

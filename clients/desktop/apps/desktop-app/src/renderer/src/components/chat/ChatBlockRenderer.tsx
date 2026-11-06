@@ -323,7 +323,7 @@ const ChatImageBlock = memo(function ChatImageBlock({
     return (
       <div
         data-testid="chat-generated-image-unavailable"
-        className="rounded-lg bg-fg-primary/[0.04] px-4 py-3 text-sm fg-secondary"
+        className="rounded-lg bg-fg-primary/[0.04] px-4 py-3 text-s fg-secondary"
       >
         Image unavailable
       </div>
@@ -1293,7 +1293,7 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
         return (
           <pre
             data-testid="chat-verbatim-text"
-            className="max-w-none whitespace-pre-wrap break-words rounded-md bg-fg-primary/[0.06] px-3 py-2 text-sm fg-primary/80"
+            className="max-w-none whitespace-pre-wrap break-words rounded-md bg-fg-primary/[0.06] px-3 py-2 text-s fg-primary/80"
           >
             {block.text}
           </pre>

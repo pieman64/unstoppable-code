@@ -1,5 +1,6 @@
 'use client';
 
+import { Heading } from '@canopy/ui-shared/components';
 import {
   memo,
   useCallback,
@@ -242,12 +243,11 @@ function SidebarActivitySection({
       data-testid={`sidebar-activity-section-${name}`}
       className="pb-3"
     >
-      <h2
-        id={headingId}
-        className="flex h-8 items-center px-2 text-s font-normal fg-quaternary"
-      >
-        {label}
-      </h2>
+      <div className="flex h-8 items-center px-2">
+        <Heading level={2} variant="sidebar" id={headingId}>
+          {label}
+        </Heading>
+      </div>
       <ul className="space-y-px">{children}</ul>
       {footer}
     </section>

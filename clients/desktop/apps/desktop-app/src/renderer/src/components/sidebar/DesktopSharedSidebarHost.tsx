@@ -112,6 +112,7 @@ import {
   AssignmentAddIcon,
   BuildingIcon,
   DownloadIcon,
+  LinkIcon,
   SettingsIcon,
   ShareIcon,
   SplitIcon,
@@ -169,6 +170,12 @@ import {
 } from '@/stores/moveToOrganizationModalStore';
 import { useCanopyOrgProjectsEnabled } from '@/hooks/useCanopyOrgProjectsEnabled';
 import { DesktopMoveToOrganizationDialog } from './DesktopMoveToOrganizationDialog';
+import { DesktopLinkCloudProjectDialog } from './DesktopLinkCloudProjectDialog';
+import {
+  canLinkCloudProject,
+  openLinkCloudProjectModal,
+} from '@/stores/linkCloudProjectModalStore';
+import { useCanopyProjectIdentityAvailable } from '@/hooks/useCanopyCloudConnected';
 import { openNewCoworkTaskFromSidebar } from '@/lib/openNewCoworkTaskFromSidebar';
 import { SidebarCoworkWorkspaceRow } from './SidebarCoworkWorkspaceRow';
 import { StickyWorkspaceControls } from './SidebarWorkspacesSection';
@@ -897,6 +904,8 @@ export function DesktopSharedSidebarHost({
     useShallow((state) => state.state),
   );
   const orgProjectsEnabled = useCanopyOrgProjectsEnabled();
+  // Link to cloud project (CAN-5190) needs the account's project identity.
+  const projectIdentityAvailable = useCanopyProjectIdentityAvailable();
   // Move to organization is offered from Personal only, and only once the
   // member belongs to an organization; `canMoveToOrganization` adds the
   // per-project checks.
@@ -2473,6 +2482,21 @@ export function DesktopSharedSidebarHost({
                     <span className="truncate">Move to org…</span>
                   </DropdownMenuItem>
                 ) : null}
+                {projectIdentityAvailable === true &&
+                canLinkCloudProject(project.id) ? (
+                  <DropdownMenuItem
+                    data-testid="workspace-link-cloud-project-menu-item"
+                    onClick={(): void => {
+                      close();
+                      void openLinkCloudProjectModal(project.id);
+                    }}
+                  >
+                    <DropdownMenuItemIcon>
+                      <LinkIcon size="xl" />
+                    </DropdownMenuItemIcon>
+                    <span className="truncate">Link to cloud…</span>
+                  </DropdownMenuItem>
+                ) : null}
               </ActionMenuRowStyle>
               <SidebarSortMenuItems
                 mode={project.itemSortMode}
@@ -2774,6 +2798,7 @@ export function DesktopSharedSidebarHost({
         />
       )}
       <DesktopMoveToOrganizationDialog />
+      <DesktopLinkCloudProjectDialog />
       {removalConfirm && removalConfirmInputs && (
         <WorktreeRemovalConfirmDialog
           target={removalConfirm.target}

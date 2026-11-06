@@ -8,7 +8,7 @@ import {
 import { addClientFeatureFlagEvaluation } from '@canopy/desktop-instrumentation/client';
 import { reportRendererConsoleError } from '../lib/renderer-error-logging';
 
-function reportSnapshotToRum(snapshot: FeatureFlagSnapshot): void {
+function reportSnapshotToInstrumentation(snapshot: FeatureFlagSnapshot): void {
   for (const [key, value] of Object.entries(snapshot.values)) {
     if (
       typeof value === 'boolean' ||
@@ -71,7 +71,7 @@ export const useFeatureFlagsStore = create<FeatureFlagsStoreState>(
       }
     },
     setSnapshot: (snapshot): void => {
-      reportSnapshotToRum(snapshot);
+      reportSnapshotToInstrumentation(snapshot);
       set({ snapshot });
     },
     isEnabled: (key): boolean => {

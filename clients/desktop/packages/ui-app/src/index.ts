@@ -370,6 +370,8 @@ export {
 } from './code/activity/scripts/ScriptsSectionBody';
 export {
   RunOutputModal,
+  describeRunOutcome,
+  type RunOutcome,
   type RunOutputModalProps,
   type RunOutputStatus,
 } from './code/activity/scripts/RunOutputModal';
@@ -949,6 +951,17 @@ export {
   type MoveProjectToOrganizationError,
   type MoveProjectToOrganizationOption,
 } from './org-projects/MoveProjectToOrganizationDialog';
+export {
+  LinkCloudProjectDialog,
+  linkCloudProjectErrorMessage,
+  linkCloudProjectUnavailableMessage,
+  type LinkCloudProjectCandidate,
+  type LinkCloudProjectDialogProps,
+  type LinkCloudProjectErrorCode,
+  type LinkCloudProjectState,
+  type LinkCloudProjectTarget,
+  type LinkCloudProjectUnavailableReason,
+} from './cloud-projects/LinkCloudProjectDialog';
 export {
   OrgRepositoryOwnerNotice,
   orgRepositoryOwnerNoticeCopy,

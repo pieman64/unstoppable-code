@@ -148,7 +148,7 @@ export const VAULT_ERROR_SPECS = {
     retry: NEVER,
     message: 'The caller is not the writer for this entry family.',
     meaning:
-      'Reserved: the family of the entry has a designated writer and the caller is not it. No V0 code emits it.',
+      'The caller is not the designated writer for the entry family, or no writer is installed. V6-a refuses managed-family writes with this code.',
     required: ['reason'],
     optional: [],
     reasons: ['managed_family'],

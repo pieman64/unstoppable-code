@@ -1,4 +1,10 @@
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
+import {
+  consumeW5Metadata,
+  prepareW5Metadata,
+  readPreparedW5Worktrees,
+  type PreparedW5Metadata,
+} from './w5-metadata-preparation';
 import { WorktreeArchiveRefusedError } from './worktree-archive-refusal';
 import {
   withDestructiveLifecycle,
@@ -200,7 +206,8 @@ import {
 } from './hook-resolver';
 import {
   resolveEffectiveBaseBranchForRepo,
-  resolveEffectiveBaseBranchesForWorktree,
+  resolveEffectiveBaseBranchForStats,
+  resolveEffectiveBaseBranchesForStats,
   resolveRepoDefaultBranch,
 } from './worktree-base-branches';
 import { listWorkspaceWorktreeRepoEntries } from './worktree-repo-entries';
@@ -221,7 +228,7 @@ import { readPreferencesFile } from './preferences-store';
 import { panelLayoutModePersistenceStore } from '../panels/layout-mode-persistence';
 import { logMainProcessWarn } from './main-process-logging';
 import { mapWithConcurrency } from './concurrency';
-import { validateWorktreeHealth } from './worktree-health';
+import { validateWorktreeHealthForStats } from './worktree-health';
 import { recordWorktreeHealth } from './worktree-repair';
 import {
   consumeWorktreeSetupCancellation,
@@ -826,7 +833,7 @@ async function resolveWorktreeStatsInputIdentity(
   workspaceId: string,
   worktreeId: string,
 ): Promise<string> {
-  const workspace = await getWorkspaceById(workspaceId);
+  const workspace = await getStatsWorkspaceById(workspaceId);
   const worktree = workspace.worktrees.find((entry) => entry.id === worktreeId);
   return JSON.stringify({
     workspaceType: workspace.type,
@@ -2689,9 +2696,14 @@ async function resolveWorkspaceWorktreeEffective(
 async function getWorkspaceById(
   workspaceId: string,
   readOnly = false,
+  metadata?: PreparedW5Metadata,
 ): Promise<SingleRepoSidebarItem | MultiRepoSidebarItem> {
   validateId(workspaceId, 'workspaceId');
-  const indexEntry = await readWorkspaceIndexEntry(workspaceId);
+  const indexEntry = metadata
+    ? (await consumeW5Metadata(metadata.index)).entries.find(
+        (entry) => entry.id === workspaceId,
+      )
+    : await readWorkspaceIndexEntry(workspaceId);
   if (!indexEntry) {
     throw new Error(`Project ${workspaceId} not found`);
   }
@@ -2701,10 +2713,18 @@ async function getWorkspaceById(
     );
   }
   const [effectiveConfig, worktrees] = await settleAll([
-    readEffectiveWorkspaceConfig(workspaceId),
-    readOnly
-      ? readWorkspaceWorktrees(workspaceId, { persistRemovalCleanup: false })
-      : readWorkspaceWorktrees(workspaceId),
+    metadata
+      ? consumeW5Metadata(metadata.manifest(workspaceId)).then(({ config }) =>
+          readEffectiveWorkspaceConfig(workspaceId, config),
+        )
+      : readEffectiveWorkspaceConfig(workspaceId),
+    metadata
+      ? readPreparedW5Worktrees(metadata, workspaceId).then(
+          ({ worktrees }) => worktrees,
+        )
+      : readOnly
+        ? readWorkspaceWorktrees(workspaceId, { persistRemovalCleanup: false })
+        : readWorkspaceWorktrees(workspaceId),
   ]);
 
   if (indexEntry.type === 'single-repo') {
@@ -2762,6 +2782,20 @@ async function getWorkspaceById(
         }
       : {}),
   };
+}
+
+async function getStatsWorkspaceById(
+  workspaceId: string,
+): Promise<SingleRepoSidebarItem | MultiRepoSidebarItem> {
+  validateId(workspaceId, 'workspaceId');
+  const metadata = await prepareW5Metadata({ kind: 'targeted', workspaceId });
+  if (metadata.status === 'fallback') return getWorkspaceById(workspaceId);
+  try {
+    return await getWorkspaceById(workspaceId, false, metadata);
+  } finally {
+    await metadata.join();
+    metadata.close();
+  }
 }
 
 function repoLabelFromPath(repoPath: string | undefined): string {
@@ -7347,7 +7381,7 @@ export async function aggregateMultiRepoDiffStats(
         ),
     );
   }
-  const effectiveBaseBranches = await resolveEffectiveBaseBranchesForWorktree({
+  const effectiveBaseBranches = await resolveEffectiveBaseBranchesForStats({
     projectId,
     worktreeId,
     cwd: worktreePath,
@@ -7490,7 +7524,7 @@ async function computeWorktreeStats(
   },
   diagnostics?: { diffStatsElapsedMs?: number },
 ): Promise<DiffStatsBatchResponseItem> {
-  const workspace = await getWorkspaceById(workspaceId);
+  const workspace = await getStatsWorkspaceById(workspaceId);
   const worktree = workspace.worktrees.find((entry) => entry.id === worktreeId);
 
   // A deferred creation reservation is persisted and selectable before its
@@ -7505,7 +7539,10 @@ async function computeWorktreeStats(
     };
   }
 
-  const healthIssue = await validateWorktreeHealth(workspaceId, worktreeId);
+  const healthIssue = await validateWorktreeHealthForStats(
+    workspaceId,
+    worktreeId,
+  );
 
   if (healthIssue || worktree?.healthIssue) {
     await recordWorktreeHealth({
@@ -7575,7 +7612,7 @@ async function computeWorktreeStats(
       ttlMs: AUTOMATIC_FETCH_TTL_MS,
     });
   }
-  const effectiveBaseBranch = await resolveEffectiveBaseBranchForRepo({
+  const effectiveBaseBranch = await resolveEffectiveBaseBranchForStats({
     projectId: workspaceId,
     worktreeId,
     repoPath: worktreePath,
@@ -7768,7 +7805,8 @@ async function computeAndCacheWorktreeStats(
  * calls retain exact local/remote isolation and single-flight behavior.
  * `stale-ok` serves a recent completed result across renderer, portal, and
  * session consumers; after the fresh window it returns bounded stale data and
- * starts one local revalidation. `cache-only` never launches Git.
+ * starts one local revalidation. `cache-only` retains identity assembly and
+ * conditional cleanup, but starts no stats computation, health check or fetch.
  */
 export function getWorktreeStats(
   workspaceId: string,

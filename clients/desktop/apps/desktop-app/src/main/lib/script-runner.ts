@@ -1,3 +1,4 @@
+import { getDesktopExecutionSecrets } from '../execution-secrets/owner';
 import { spawn } from 'node:child_process';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import {
@@ -25,6 +26,7 @@ import { logMainProcessWarn } from './main-process-logging';
 import { buildScriptRunFileStem, resolveScriptRunDir } from './paths';
 import { drainOwnedProcess, killChildProcessGroup } from './process-kill';
 import { resolveWindowsGitBash } from './windows-git-bash';
+import { desktopScriptRunWriterFence } from './script-run-writer-fence';
 import { getResourceMonitorService } from '../resource-monitor';
 import {
   getExecutionAccounting,
@@ -40,6 +42,7 @@ import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-id
  * `@canopy/core-runtime/node/script/execution`.
  */
 const desktopScriptHost: ScriptExecutionWorkerHost = {
+  secrets: getDesktopExecutionSecrets(),
   authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
   targetId: CANOPY_IN_PROCESS_WORKER_TARGET_ID,
   platform: () => hostPlatformOperatingSystem(),
@@ -119,16 +122,18 @@ const desktopScriptHost: ScriptExecutionWorkerHost = {
     writeFileAtomically: (path, text) =>
       writeFileAtomically(path, text, { encoding: 'utf8' }),
   },
+  writerFence: desktopScriptRunWriterFence,
   // Manual runs reveal their terminal, as before the move (CAN-5062).
   revealTerminal: (tracking) =>
     tracking.invocation?.startsWith('manual') === true,
   // Keep the PTY backend off the import path of hooks and ordinary runs.
   terminals: async () =>
     (await import('../terminal/worker-terminal')).workerTerminal,
-  resolvePlace: async (scope, context) =>
+  resolvePlace: async (scope, context, secrets) =>
     (await import('./script-execution-place')).resolveScriptExecutionPlace(
       scope,
       context,
+      secrets,
     ),
   warn: (message, details) => logMainProcessWarn(message, details),
 };

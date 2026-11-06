@@ -3,6 +3,9 @@ import type { W5RecoveryReason } from '@canopy/protocol/portal';
 const SUPPORT =
   'Keep the data folder intact and contact support with the recovery diagnosis. Do not edit the workspace records or remove recovery files.';
 
+export const W5_RECOVERY_QUIT_ALL_GUIDANCE =
+  'Quit every other app and command-line process using this data folder, including older installations, even if you skipped updates. Then restart the app on the computer that holds these records for recovery.';
+
 /** Shared by the running notice and native pre-admission recovery dialogs. */
 export function w5RecoveryGuidance(reason?: W5RecoveryReason): string {
   switch (reason) {
@@ -37,7 +40,7 @@ export function w5RecoveryGuidance(reason?: W5RecoveryReason): string {
     case 'unsaved-changes':
       return 'Save or discard your unsaved edits before starting recovery.';
     case 'exposure-gated':
-      return `Recovery is not enabled in this release. ${SUPPORT}`;
+      return `Recovery is not available for workspace records in this build. ${SUPPORT}`;
     case 'invalid-request':
       return 'The recovery request expired or could not be read. No recovery decisions ran. Start recovery again from the app.';
     case 'cancelled':

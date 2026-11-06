@@ -114,6 +114,7 @@ export class W5CommitLogHostError extends Error {
   constructor(
     readonly reason: W5CommitLogHostFailure,
     message: string,
+    readonly unavailableCause?: 'queue-full' | 'queued-wait',
   ) {
     super(message);
     this.name = 'W5CommitLogHostError';
@@ -399,6 +400,11 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
   }
 
   async reserve(input: {
+    workspaceIdentity?: string;
+    expectedWorkspaceRecords?: {
+      manifest: string | null;
+      worktrees: string | null;
+    };
     reservationId: string;
     operation: string;
     receipt?: NonNullable<W5CommitRequest['receipt']>;
@@ -522,7 +528,13 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
       return Promise.reject(unavailable('The W5 commit log is shut down'));
     }
     if (this.queue.length >= this.maxQueuedCalls) {
-      return Promise.reject(unavailable('The W5 commit log is busy'));
+      return Promise.reject(
+        new W5CommitLogHostError(
+          'unavailable',
+          'The W5 commit log is busy',
+          'queue-full',
+        ),
+      );
     }
     this.nextRequestId += 1;
     const request: W5CommitLogRequest = {
@@ -569,8 +581,10 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
     this.queue.splice(index, 1);
     this.clearQueuedTimer(call);
     call.reject(
-      unavailable(
+      new W5CommitLogHostError(
+        'unavailable',
         `The W5 commit log ${call.request.method} exceeded its queued wait; the call was not sent`,
+        'queued-wait',
       ),
     );
   }

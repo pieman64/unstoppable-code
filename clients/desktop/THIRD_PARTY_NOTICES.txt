@@ -722,22 +722,6 @@ License: Apache-2.0
 Version: 11.1.2
 License: Apache-2.0
 
-@datadog/browser-core
-Version: 7.1.0
-License: Apache-2.0
-
-@datadog/browser-rum-core
-Version: 7.1.0
-License: Apache-2.0
-
-@datadog/browser-rum
-Version: 7.1.0
-License: Apache-2.0
-
-@datadog/electron-sdk
-Version: 0.2.0
-License: Not declared by the package.
-
 @dnd-kit/accessibility
 Version: 3.1.1
 License: MIT

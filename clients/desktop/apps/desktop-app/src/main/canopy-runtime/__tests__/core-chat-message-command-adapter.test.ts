@@ -279,11 +279,14 @@ describe('chat message command adapter', () => {
           expect.objectContaining({ caller }),
         );
         await dispatchTrustedChatCommand(
-          request({
-            type: 'chat.cancel_queued_message',
-            chatId: 'chat-1',
-            queuedMessageId: 'queue-1',
-          }),
+          {
+            ...request({
+              type: 'chat.cancel_queued_message',
+              chatId: 'chat-1',
+              queuedMessageId: 'queue-1',
+            }),
+            commandId: 'command-2',
+          },
           baseOptions,
         );
         expect(command.mock.calls[2]).toHaveLength(1);
@@ -382,11 +385,14 @@ describe('chat message command adapter', () => {
     try {
       await expect(
         dispatchTrustedChatCommand(
-          request({
-            type: 'chat.cancel_queued_message',
-            chatId: 'chat-1',
-            queuedMessageId: 'queue-1',
-          }),
+          {
+            ...request({
+              type: 'chat.cancel_queued_message',
+              chatId: 'chat-1',
+              queuedMessageId: 'queue-1',
+            }),
+            commandId: 'command-2',
+          },
           options,
         ),
       ).resolves.toEqual(receipt);

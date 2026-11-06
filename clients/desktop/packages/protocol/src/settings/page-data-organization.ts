@@ -120,6 +120,11 @@ export interface OrganizationTeamPageData {
    * for this viewer. Absent elsewhere, which hides the External agents card.
    */
   externalAgentsEnabled?: boolean;
+  /**
+   * Settings only: AI gateway setup is on for this viewer. Absent elsewhere,
+   * which hides the AI gateway page and keeps the legacy Policies card.
+   */
+  aiGatewayEnabled?: boolean;
 }
 
 /** A feed permalink: the feed tab anchored on one item. */
@@ -255,6 +260,7 @@ const teamPageDataFields = {
   lapsed: organizationLapsedInfoSchema.nullable(),
   mobileBrowser: z.boolean(),
   externalAgentsEnabled: z.boolean().optional(),
+  aiGatewayEnabled: z.boolean().optional(),
 };
 
 const teamPageDataShape = z.looseObject(teamPageDataFields);

@@ -210,7 +210,10 @@ export const AGENT_PORT_COMPOSITIONS = {
   },
   listModels: {
     composes: [],
-    planned: ['worker.agent.provider.list'],
+    // worker.agent.provider.list (CAN-4121) is registered but not yet
+    // equivalent: this projects the owner-scoped cloud model catalog, and no
+    // interface principal holds worker.agent.read until CAN-4095.
+    planned: [],
   },
   forkChat: {
     composes: ['core.chat.fork', 'core.chat.message.send'],

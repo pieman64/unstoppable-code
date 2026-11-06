@@ -4,9 +4,10 @@ import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { W5CommitLogError } from './errors';
+import { workspaceCreationDiagnosticsSchema } from './reservation-diagnostics';
 
 /** The schema this build writes; a newer database is never opened. */
-export const W5_COMMIT_LOG_SCHEMA_VERSION = 3;
+export const W5_COMMIT_LOG_SCHEMA_VERSION = 4;
 
 const SCHEMA_V2 = [
   `CREATE TABLE w5_meta (
@@ -305,7 +306,7 @@ function migrateV2(db: DatabaseSync): void {
 function migrate(db: DatabaseSync, migratedAt: string): void {
   const version = readSchemaVersion(db);
   if (version === W5_COMMIT_LOG_SCHEMA_VERSION) return;
-  if (version !== null && version !== 1 && version !== 2) {
+  if (version !== null && version !== 1 && version !== 2 && version !== 3) {
     throw new W5CommitLogError(
       'UNSUPPORTED_SCHEMA',
       `The W5 commit log has schema ${String(version)}; this build reads ${String(W5_COMMIT_LOG_SCHEMA_VERSION)}.`,
@@ -316,7 +317,52 @@ function migrate(db: DatabaseSync, migratedAt: string): void {
     if (version === 1) migrateV1(db, migratedAt);
     else if (version === null)
       for (const statement of SCHEMA_V2) db.exec(statement);
-    migrateV2(db);
+    if (version !== 3) migrateV2(db);
+    db.exec('ALTER TABLE w5_reservations ADD COLUMN workspace_identity TEXT');
+    db.exec(
+      'CREATE UNIQUE INDEX w5_workspace_identity ON w5_reservations(lower(workspace_identity)) WHERE workspace_identity IS NOT NULL',
+    );
+    // Legacy duplicates/unknown claims must stay recoverable, not prevent opening the log.
+    db.exec(`CREATE TABLE w5_legacy_workspace_claims (
+      reservation_id TEXT PRIMARY KEY REFERENCES w5_reservations(reservation_id) ON DELETE CASCADE,
+      workspace_identity TEXT
+    ) STRICT`);
+    const legacy = db.prepare(`INSERT INTO w5_legacy_workspace_claims
+      (reservation_id, workspace_identity) VALUES (?, ?)`);
+    for (const row of db
+      .prepare(
+        `SELECT reservation_id, operation, diagnostics_json
+      FROM w5_reservations`,
+      )
+      .all()) {
+      // Historical schema 1–3 creators, not the mutable live operation registry.
+      // Other operations cannot leave an unknown workspace creation claim.
+      if (
+        ![
+          'core.workspace.create',
+          'core.workspace.import',
+          'core.workspace.composition.combine',
+          'core.workspace.composition.promote',
+          'core.workspace.composition.split',
+          'core.sharedContainer.fork',
+        ].includes(String(row.operation))
+      )
+        continue;
+      let diagnostics: unknown;
+      try {
+        diagnostics =
+          typeof row.diagnostics_json === 'string'
+            ? JSON.parse(row.diagnostics_json)
+            : null;
+      } catch {
+        diagnostics = null;
+      }
+      const parsed = workspaceCreationDiagnosticsSchema.safeParse(diagnostics);
+      legacy.run(
+        row.reservation_id,
+        parsed.success ? parsed.data.workspaceId : null,
+      );
+    }
     db.prepare(
       `INSERT INTO w5_meta (key, value) VALUES ('schema_version', ?)
        ON CONFLICT (key) DO UPDATE SET value = excluded.value`,

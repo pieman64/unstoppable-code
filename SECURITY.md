@@ -26,3 +26,6 @@ This repository holds the desktop and mobile client source only. For a problem
 with a hosted service, like your account, billing, or the website,
 [contact support](https://unstoppable.ai/support/troubleshooting/contact-support)
 instead.
+
+To see which hosted services the apps use and what data reaches them, read
+[What runs on our servers](HOSTED-SERVICES.md).

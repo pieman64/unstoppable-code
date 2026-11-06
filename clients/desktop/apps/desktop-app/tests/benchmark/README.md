@@ -24,10 +24,11 @@ grades the resulting `MEMORY.md`/topics store, and only then sends probes
 through production injection. The normal background scheduler remains
 compiled out of E2E builds, and production builds expose neither the manual
 IPC handler nor its preload method. Injected precision@K and citation
-compliance (from the
-`canopy.local_memory_citation_compliance` operation) are likewise deferred
-past this work (plan decision D20): the scorecard covers the CAN-2720
-metric set, and neither deferred dimension is measured or gated.
+compliance are likewise deferred past this work (plan decision D20): the
+scorecard covers the CAN-2720 metric set, and neither deferred dimension is
+measured or gated. The app no longer tracks citation compliance; its
+`canopy.local_memory_citation_compliance` operation and local citation
+tracking were removed.
 
 ## Run
 

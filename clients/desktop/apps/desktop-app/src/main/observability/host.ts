@@ -36,10 +36,6 @@ import {
 } from '../lib/e2e-mock-control-plane';
 import { readPreferencesFile } from '../lib/preferences-store';
 import {
-  isLocalMemoryCitationTrackingEnabled,
-  trackCompletedTurnLocalMemoryCitations,
-} from '../memory/local/citation-tracking';
-import {
   onOpenCodeAccountsChanged,
   peekOpenCodeAccounts,
 } from '../opencode/account-information';
@@ -78,10 +74,6 @@ export interface DesktopObservabilityHost extends ObservabilityHostServices {
     onResponse: typeof onAccountProxyResponse;
     sessionUsage: typeof getAccountProxySessionUsage;
     loadUsagePorts(): Promise<typeof AccountProxyUsagePorts>;
-  };
-  memoryCitations: {
-    isEnabled: typeof isLocalMemoryCitationTrackingEnabled;
-    trackCompletedTurn: typeof trackCompletedTurnLocalMemoryCitations;
   };
   e2e: {
     mockLlmOrigin: typeof getMockLlmOrigin;
@@ -144,11 +136,6 @@ export function createDesktopObservabilityHost(): DesktopObservabilityHost {
       onResponse: (...args) => onAccountProxyResponse(...args),
       sessionUsage: (...args) => getAccountProxySessionUsage(...args),
       loadUsagePorts: () => import('../account-proxy/service'),
-    },
-    memoryCitations: {
-      isEnabled: () => isLocalMemoryCitationTrackingEnabled(),
-      trackCompletedTurn: (...args) =>
-        trackCompletedTurnLocalMemoryCitations(...args),
     },
     e2e: {
       mockLlmOrigin: () => getMockLlmOrigin(),

@@ -125,6 +125,16 @@ export interface SettingsLogger {
   error(message: string, meta?: Record<string, unknown>): void;
 }
 
+/** What a host's stored AI gateway key row shows. */
+export interface AiGatewayConnectionKeyProps {
+  readonly label?: string;
+  readonly onReadinessChange?: (ready: boolean) => void;
+  readonly organizationId: string;
+  readonly baseUrl: string;
+  /** Bumped after a key is saved, so the host reads the stored key again. */
+  readonly revision: number;
+}
+
 export interface SettingsUiHost {
   /** Fixed-table hosted settings data access. */
   readonly client: AccountOrganizationSettingsClient;
@@ -164,6 +174,13 @@ export interface SettingsUiHost {
    * inline checkout return `false`. `null` while the host is still checking.
    */
   usePaymentHandoffAvailable(): boolean | null;
+  /**
+   * The stored key for an AI gateway on this device, such as `sk-…last4`
+   * with its state. Only a host that keeps gateway keys in secure storage
+   * supplies it. Without it, Connect sends a key for that request only and
+   * the configured gateway asks for the key in the desktop app.
+   */
+  readonly AiGatewayConnectionKey?: ComponentType<AiGatewayConnectionKeyProps>;
 }
 
 const SettingsHostContext = createContext<SettingsUiHost | null>(null);
@@ -237,6 +254,13 @@ export function useSettingsWorkspaceContext(): SettingsWorkspaceContext {
 
 export function useSettingsPaymentHandoffAvailable(): boolean | null {
   return useSettingsHost().usePaymentHandoffAvailable();
+}
+
+/** The host's stored-key row for AI gateways, when it keeps keys. */
+export function useSettingsAiGatewayConnectionKey():
+  | ComponentType<AiGatewayConnectionKeyProps>
+  | undefined {
+  return useSettingsHost().AiGatewayConnectionKey;
 }
 
 export function useSettingsPrivacy(): SettingsReplayPrivacy {

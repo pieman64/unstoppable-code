@@ -3,7 +3,11 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { stableStringify } from '@canopy/protocol/plans';
-import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
+import {
+  CORE_CHAT_QUESTION_INSTRUCTION_DEFINITIONS,
+  type CanopyCallerDescriptor,
+} from '@canopy/protocol/canopy-core';
+import { DESKTOP_INSTRUCTION_DEFINITIONS } from '../desktop-instruction-definitions';
 import {
   createCoreOperationAdapter,
   type CoreOperationAdapter,
@@ -16,7 +20,7 @@ import {
   runHelperThroughWorker,
   HelperWorkerUnavailableError,
 } from '../../helper-runs/helper-runs';
-import { createWorkerAgentHelperAdapter } from '../worker-agent-helper-adapter';
+import { createWorkerAgentAdapter } from '../worker-agent-adapter';
 import { desktopHelperWorker } from '../../helper-runs/helper-worker-host';
 import { currentHelperWorkerContext } from '../../helper-runs/helper-worker-context';
 
@@ -200,10 +204,13 @@ it('settles as cancelled without launching when aborted during adapter loading',
   runtime = createDesktopRuntime({
     operationAdapter: operations,
     shutdownTimeoutMs: 25,
-    workerAgentHelperAdapter: createWorkerAgentHelperAdapter(async () => {
-      started();
-      await loading;
-      return desktopHelperWorker;
+    workerAgentAdapter: createWorkerAgentAdapter({
+      loadHelpers: async () => {
+        started();
+        await loading;
+        return desktopHelperWorker;
+      },
+      sinkFor: () => null,
     }),
   });
   const launch = jest.fn(() => Promise.resolve('unused'));
@@ -248,4 +255,83 @@ it('settles as cancelled without launching when aborted during adapter loading',
   } finally {
     release();
   }
+});
+
+it('the runtime serves worker.agent.turn.run and worker.agent.subagent.run beside helper runs', async () => {
+  expect(runtime.chatTurnRuns.sinkFor('unknown')).toBeNull();
+  const { operation: parent } = await operations.service.admit({
+    kind: 'core.chat.turn.run',
+    status: 'running',
+    origin: { kind: 'client', sourceId: 'test' },
+    owner: { kind: 'system', id: 'test' },
+    scope: { workspaceId: 'ws', worktreeId: 'wt', chatId: 'chat' },
+  });
+  const scope = { workspaceId: 'ws', worktreeId: 'wt', chatId: 'chat' };
+  const dispatches = [
+    {
+      operation: 'worker.agent.helper.run',
+      params: {
+        helperRunId: 'unknown',
+        kind: 'chat_summary',
+        scope: {},
+        model: 'model',
+      },
+      code: 'worker.agent.helperLaunchUnavailable',
+    },
+    {
+      operation: 'worker.agent.turn.run',
+      params: {
+        turnRunId: 'unknown',
+        scope,
+        turnId: 'message',
+        eventNamespace: 'initial',
+        providerId: 'claude',
+        model: null,
+        materializationId: null,
+      },
+      code: 'worker.agent.runLaunchUnavailable',
+    },
+    {
+      operation: 'worker.agent.subagent.run',
+      params: {
+        subagentRunId: 'unknown',
+        delegationId: 'delegation',
+        runGeneration: 1,
+        harnessId: 'local-delegation-claude-v1',
+        scope,
+      },
+      code: 'worker.agent.runLaunchUnavailable',
+    },
+  ];
+  for (const { operation, params, code } of dispatches) {
+    const dispatched = await runtime.localWorker.dispatch({
+      parentOperationId: parent.operationId,
+      operation,
+      params,
+      idempotencyKey: operation,
+    });
+    expect(dispatched.operation).toMatchObject({
+      status: 'failed',
+      error: { code },
+    });
+  }
+});
+
+it('the desktop dispatcher serves core.chat.question.respond', async () => {
+  expect(DESKTOP_INSTRUCTION_DEFINITIONS['core.chat.question.respond']).toBe(
+    CORE_CHAT_QUESTION_INSTRUCTION_DEFINITIONS['core.chat.question.respond'],
+  );
+  // A malformed call reaches the owner's handler, past grant checks.
+  await expect(
+    runtime.instruction(
+      'core.chat.question.respond',
+      { chatId: 'chat-1', questionId: 'question-1' },
+      { caller: { ...caller, grants: ['core.chat.write'] } },
+    ),
+  ).rejects.toMatchObject({
+    payload: {
+      kind: 'invalid_argument',
+      message: 'Send answers keyed by question ID, or dismissed: true.',
+    },
+  });
 });

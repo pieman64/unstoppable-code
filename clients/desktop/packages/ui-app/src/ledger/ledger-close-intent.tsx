@@ -59,7 +59,7 @@ export function LedgerCloseIntentPrompt({
       data-testid={testId}
       className="flex flex-col gap-2 rounded-md border border-line-base bg-subtle/40 p-3"
     >
-      <p className="text-sm fg-primary">
+      <p className="text-s fg-primary">
         {ledgerCloseIntentCopy(openCount, kind, openCountIsLowerBound)}
       </p>
       <div className="flex flex-wrap items-center gap-2">

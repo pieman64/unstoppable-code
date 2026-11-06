@@ -1,91 +1,106 @@
 import type { McpQuestionAnswer } from '@canopy/desktop-shared/types';
+import type { ChatWaitSettlement } from '@canopy/core-runtime/node/agent/waits';
+import { getDesktopChatWaits } from '../chat-waits/desktop-chat-waits';
 
-interface PendingRequest {
-  resolve: (answers: McpQuestionAnswer[]) => void;
-  reject: (reason: Error) => void;
-  sessionKey: string;
-  timer?: ReturnType<typeof setTimeout>;
+export interface PendingQuestionScope {
+  projectId: string;
+  worktreeId: string;
+  chatId: string;
 }
 
-const pending = new Map<string, PendingRequest>();
-const cancelledAskUserRequests = new Set<string>();
+function questionWaitError(
+  settlement: Exclude<ChatWaitSettlement<unknown>, { status: 'answered' }>,
+): string {
+  switch (settlement.status) {
+    case 'expired':
+      return 'ask_user_timeout';
+    case 'failed':
+      return settlement.reason === 'no_client'
+        ? 'ask_user_no_client'
+        : settlement.reason;
+    case 'cancelled':
+      return settlement.reason;
+  }
+}
+
+function answersOrThrow(
+  settlement: ChatWaitSettlement<McpQuestionAnswer[]>,
+): McpQuestionAnswer[] {
+  if (settlement.status === 'answered') return settlement.value;
+  throw new Error(questionWaitError(settlement));
+}
 
 /** True while a question for this session waits on the user. */
 export function hasPendingRequestForSession(sessionKey: string): boolean {
-  return Array.from(pending.values()).some(
-    (entry) => entry.sessionKey === sessionKey,
-  );
+  return getDesktopChatWaits().hasOpenForSession(sessionKey, 'question');
 }
 
 export function createPendingRequest(
   requestId: string,
   sessionKey: string,
-  options?: { timeoutMs?: number; onTimeout?: () => void },
+  options?: {
+    scope?: PendingQuestionScope;
+    timeoutMs?: number;
+    onTimeout?: () => void;
+  },
 ): Promise<McpQuestionAnswer[]> {
-  return new Promise<McpQuestionAnswer[]>((resolve, reject) => {
-    const entry: PendingRequest = { resolve, reject, sessionKey };
-    if (options?.timeoutMs !== undefined && options.timeoutMs > 0) {
-      entry.timer = setTimeout(() => {
-        pending.delete(requestId);
-        options.onTimeout?.();
-        reject(new Error('ask_user_timeout'));
-      }, options.timeoutMs);
-    }
-    pending.set(requestId, entry);
+  const wait = getDesktopChatWaits().open<McpQuestionAnswer[]>({
+    waitId: requestId,
+    kind: 'question',
+    ...(options?.scope
+      ? {
+          scope: {
+            workspaceId: options.scope.projectId,
+            worktreeId: options.scope.worktreeId,
+            chatId: options.scope.chatId,
+          },
+        }
+      : {}),
+    sessionKey,
+    ...(options?.timeoutMs !== undefined
+      ? { timeoutMs: options.timeoutMs }
+      : {}),
+    ...(options?.onTimeout ? { onExpired: options.onTimeout } : {}),
   });
+  return wait.settled.then(answersOrThrow);
 }
 
-function clearEntryTimer(entry: PendingRequest): void {
-  if (entry.timer !== undefined) {
-    clearTimeout(entry.timer);
-  }
+/** False once the request settled, including at open in the lifecycle's fail mode. */
+export function isPendingRequestOpen(requestId: string): boolean {
+  return getDesktopChatWaits().isOpen(requestId);
 }
 
 export function resolveRequest(
   requestId: string,
   answers: McpQuestionAnswer[],
 ): boolean {
-  const entry = pending.get(requestId);
-  if (!entry) return false;
-  pending.delete(requestId);
-  clearEntryTimer(entry);
-  entry.resolve(answers);
-  return true;
+  return getDesktopChatWaits().answer(requestId, answers);
 }
 
 export function rejectRequest(requestId: string, reason: string): boolean {
-  const entry = pending.get(requestId);
-  if (!entry) return false;
-  if (reason === 'ask_user_cancelled') cancelledAskUserRequests.add(requestId);
-  pending.delete(requestId);
-  clearEntryTimer(entry);
-  entry.reject(new Error(reason));
-  return true;
+  const lifecycle = getDesktopChatWaits();
+  return reason === 'ask_user_persistence_failed'
+    ? lifecycle.fail(requestId, reason)
+    : lifecycle.cancel(requestId, {
+        reason,
+        refuseLateAnswers: reason === 'ask_user_cancelled',
+      });
 }
 
 export function isAskUserRequestCancelled(requestId: string): boolean {
-  return cancelledAskUserRequests.has(requestId);
+  return getDesktopChatWaits().refusesLateAnswers(requestId);
 }
 
 export function clearAskUserRequestCancellation(requestId: string): void {
-  cancelledAskUserRequests.delete(requestId);
+  getDesktopChatWaits().forgetLateAnswerRefusal(requestId);
 }
 
 export function hasPendingRequestsForSession(sessionKey: string): boolean {
-  for (const entry of Array.from(pending.values())) {
-    if (entry.sessionKey === sessionKey) return true;
-  }
-  return false;
+  return getDesktopChatWaits().hasOpenForSession(sessionKey, 'question');
 }
 
 export function rejectAllForSession(sessionKey: string): void {
-  const ids = Array.from(pending.keys());
-  for (const id of ids) {
-    const entry = pending.get(id);
-    if (entry && entry.sessionKey === sessionKey) {
-      pending.delete(id);
-      clearEntryTimer(entry);
-      entry.reject(new Error('session_destroyed'));
-    }
-  }
+  getDesktopChatWaits().cancelSession(sessionKey, 'question', {
+    reason: 'session_destroyed',
+  });
 }

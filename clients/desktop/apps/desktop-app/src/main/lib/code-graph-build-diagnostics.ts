@@ -8,8 +8,7 @@ import type {
  * Local diagnostics for code-graph generation: one `code_graph_build` session
  * event per worktree or base build, carrying the worker's phase timings and
  * the phases main ran around it. They belong in `session-events/` because
- * they name a workspace and worktree. The Datadog generation operation is a
- * separate, unchanged, privacy-bounded summary.
+ * they name a workspace and worktree.
  *
  * This module also remembers when each worktree first asked for a graph it
  * does not have yet, so the build that completes that first graph can report

@@ -34,6 +34,7 @@ import {
   TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
   TERMINAL_WORKTREE_CLEANUP_SIGNAL,
   type TerminalAttachResponse,
+  type TerminalKind,
   type TerminalSession,
 } from '@canopy/protocol/terminal';
 
@@ -103,8 +104,18 @@ export interface RemoteTerminalLaunch {
   readonly initialCommand?: string;
 }
 
+/** The managed-session fields a client mirror carries for a managed command (CAN-5097). */
+export interface RemoteManagedTerminal {
+  readonly kind: Exclude<TerminalKind, 'shell'>;
+  readonly title: string;
+  readonly focusOnSpawn?: boolean;
+  readonly chatId?: string;
+  readonly sessionKey?: string;
+}
+
 export interface RemoteTerminalCreate extends RemoteTerminalLaunch {
   readonly profileId?: WorkerTerminalCreateParams['profileId'];
+  readonly managed?: RemoteManagedTerminal;
 }
 
 export interface RemoteTerminalRecreate extends RemoteTerminalLaunch {
@@ -378,6 +389,12 @@ export class RemoteTerminals {
   private async createOnce(
     request: RemoteTerminalCreate,
   ): Promise<TerminalSession> {
+    const { managed } = request;
+    if (
+      managed &&
+      (request.profileId !== undefined || request.initialCommand !== undefined)
+    )
+      throw new Error('A managed command takes no profile or initial command.');
     const created = await this.options.transport.create({
       scope: request.scope,
       cwdRootId: request.cwdRootId,
@@ -387,7 +404,7 @@ export class RemoteTerminals {
       env: environmentParams(request.environment),
       cols: request.cols,
       rows: request.rows,
-      kind: 'interactive',
+      kind: managed ? 'managed' : 'interactive',
       _meta: { idempotencyKey: this.options.createIdempotencyKey() },
       ...(request.profileId !== undefined && { profileId: request.profileId }),
       ...(request.initialCommand !== undefined && {
@@ -404,6 +421,17 @@ export class RemoteTerminals {
       createdAt: this.now(),
       ...(request.initialCommand !== undefined && {
         initialCommand: request.initialCommand,
+      }),
+      ...(managed && {
+        kind: managed.kind,
+        ...(managed.focusOnSpawn !== undefined && {
+          focusOnSpawn: managed.focusOnSpawn,
+        }),
+        title: managed.title,
+        ...(managed.chatId !== undefined && { chatId: managed.chatId }),
+        ...(managed.sessionKey !== undefined && {
+          sessionKey: managed.sessionKey,
+        }),
       }),
     };
     await this.adopt(session, request.scope, {

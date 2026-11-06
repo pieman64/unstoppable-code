@@ -94,7 +94,14 @@ export interface ApprovalPromptDecision {
 }
 
 /** The part of a pending approval request its prompt renders. */
+export interface SecretInputApprovalPrompt {
+  kind: 'secret-input';
+  bindingId: string;
+  label: 'API key';
+}
+
 export interface ApprovalPromptRequest {
+  secretInput?: SecretInputApprovalPrompt;
   requestId: string;
   /** Provider-supplied or derived title for the approval card. */
   title: string;

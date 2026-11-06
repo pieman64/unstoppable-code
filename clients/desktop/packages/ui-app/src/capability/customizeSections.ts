@@ -5,6 +5,7 @@ import {
   DEFAULT_PIPELINE_FILTERS,
   entryHasInstalledStatus,
   isBundledSkill,
+  isPluginServerResult,
   marketplaceEntryInTab,
   pipelineFiltersActive,
   type MarketplaceCatalogTabId,
@@ -166,13 +167,22 @@ function installedStatusState(
 ): InstalledEntryStatusState | undefined {
   return (
     states?.[statusEntryIdOf(entry)] ??
-    (isBundledSkill(entry) ? undefined : states?.[entry.id])
+    (followsItsPlugin(entry) ? undefined : states?.[entry.id])
   );
 }
 
-/** A bundled skill reads its plugin status; shares read their exact install. */
+function followsItsPlugin(
+  entry: UnifiedPluginEntry,
+): entry is UnifiedPluginEntry & { bundledBy: { entryId: string } } {
+  return isBundledSkill(entry) || isPluginServerResult(entry);
+}
+
+/**
+ * A bundled skill or a server's search result reads its plugin status; shares
+ * read their exact install.
+ */
 export function statusEntryIdOf(entry: UnifiedPluginEntry): string {
-  return isBundledSkill(entry)
+  return followsItsPlugin(entry)
     ? entry.bundledBy.entryId
     : installedStatusEntryId(entry);
 }
@@ -199,7 +209,7 @@ export function installedStatusMatches(
   // installed plugin with an unread status does.
   return (
     state !== undefined ||
-    isBundledSkill(entry) ||
+    followsItsPlugin(entry) ||
     entryHasInstalledStatus(entry)
   );
 }
@@ -248,6 +258,62 @@ function unique(entries: readonly UnifiedPluginEntry[]): UnifiedPluginEntry[] {
   return [...new Map(entries.map((entry) => [entry.id, entry])).values()];
 }
 
+/**
+ * MCP search results for the servers plugins bundle that no row or card
+ * represents: links to the plugin, never an independent install (CAN-5704).
+ * A reference to an entry that is gone does not count as representing one.
+ */
+function pluginServerResults(
+  entries: readonly UnifiedPluginEntry[],
+): UnifiedPluginEntry[] {
+  const listed = new Map(
+    entries
+      .filter((entry) => entry.kind === 'app')
+      .map((entry) => [entry.id, entry]),
+  );
+  const results: UnifiedPluginEntry[] = [];
+  for (const plugin of entries) {
+    if (plugin.kind !== 'plugin') continue;
+    const emitted = new Set<string>();
+    for (const server of plugin.bundledServers ?? []) {
+      if (emitted.has(server.key)) continue;
+      emitted.add(server.key);
+      const represented =
+        server.entryId === undefined ? undefined : listed.get(server.entryId);
+      const provider = represented?.bundledBy ?? represented?.installedVia;
+      if (
+        represented !== undefined &&
+        (provider === undefined || provider.entryId === plugin.id)
+      )
+        continue;
+      results.push({
+        id: `plugin-server:${encodeURIComponent(plugin.id)}:${encodeURIComponent(server.key)}`,
+        kind: 'app',
+        origin: plugin.origin,
+        name: server.name,
+        description: '',
+        logoUrl: plugin.logoUrl,
+        bundledLogo: plugin.bundledLogo,
+        brandMark: plugin.brandMark,
+        categories: [],
+        authorName: plugin.authorName,
+        typeLabel: 'MCP server',
+        sourceLabel: plugin.sourceLabel,
+        ownershipLabel: plugin.ownershipLabel,
+        availabilityLabel: plugin.availabilityLabel,
+        components: { skills: 0, mcpServers: 0, commands: 0, agents: 0 },
+        providerSupport: plugin.providerSupport,
+        state: plugin.state === 'available' ? 'available' : 'installed',
+        recommended: false,
+        bundledBy: { entryId: plugin.id, name: plugin.name },
+        pluginServerResult: true,
+        ref: plugin.ref,
+      });
+    }
+  }
+  return results;
+}
+
 const BROWSE_TITLES: Record<MarketplaceCatalogTabId, string> = {
   all: 'Browse',
   plugin: 'Browse plugins',
@@ -263,6 +329,7 @@ const BROWSE_TITLES: Record<MarketplaceCatalogTabId, string> = {
 export const INSTALLED_FOOTNOTES: Partial<
   Record<MarketplaceCatalogTabId, string>
 > = {
+  app: "Servers that come with a plugin are listed on the plugin's page.",
   workflow: WORKFLOW_INSTALLED_FOOTNOTE,
   collection:
     'Adding a collection adds everything in it. Removing it keeps what you already use.',
@@ -346,9 +413,17 @@ export function buildCustomizeTabModel(
 ): CustomizeTabModel {
   const query = input.query?.trim() ?? '';
   const searchActive = query !== '';
-  const tabEntries = unique(input.entries).filter(
+  // Searching MCP servers reaches plugin-provided servers too, each linking to
+  // its plugin; every other view keeps listing them as the plugin (CAN-3653).
+  const keepPluginProvided = searchActive && input.tab === 'app';
+  const candidates = unique(input.entries);
+  const tabEntries = (
+    keepPluginProvided
+      ? [...candidates, ...pluginServerResults(candidates)]
+      : candidates
+  ).filter(
     (entry) =>
-      !listedAsItsPlugin(entry) &&
+      (keepPluginProvided || !listedAsItsPlugin(entry)) &&
       marketplaceEntryInTab(entry, input.tab) &&
       (entry.kind !== 'agent' || input.agentsAvailable === true) &&
       (entry.kind !== 'blueprint' || input.projectTemplatesAvailable === true),
@@ -471,6 +546,7 @@ export function buildCustomizeTabModel(
       },
     );
   }
+  // A standalone MCP server has no share flow, so none is ever shared by me.
   const owned =
     input.ownershipAvailable && input.tab !== 'app'
       ? entries.filter(
@@ -503,6 +579,8 @@ export function buildCustomizeTabModel(
     const browse = marketplaceBrowseEntries(
       entries,
       new Set(installedKeys.keys()),
+      undefined,
+      { keepPluginProvided },
     )
       .concat(installedCollectionShares)
       .filter(

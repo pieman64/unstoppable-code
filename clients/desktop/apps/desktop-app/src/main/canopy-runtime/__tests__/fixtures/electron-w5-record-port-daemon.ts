@@ -76,6 +76,7 @@ export async function startW5TestDaemon(options?: {
   if (!root) throw new Error('Set up the W5 test data root first.');
   daemon = await startCanopyDaemon({
     dataRoot: root,
+    secureDataRoot: join(root, 'secure'),
     runtimeMode: 'dev',
     buildVersion: 'test',
     brandId: 'canopy',

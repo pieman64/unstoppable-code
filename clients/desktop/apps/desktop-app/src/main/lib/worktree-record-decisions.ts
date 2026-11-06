@@ -32,6 +32,7 @@ import type {
   WorktreeHealthIssue,
   WorktreePrStatus,
 } from '@canopy/desktop-shared/types';
+import type { CloudProjectBinding } from '@canopy/protocol/memory-sync';
 
 export type {
   WorktreeRecordTarget,
@@ -127,6 +128,18 @@ export type WorktreeDiscoveryDecision =
   | { kind: 'discovery.branch-prompt'; sent: boolean };
 
 /**
+ * A display label the summary helper generated and validated. It applies only
+ * while the row has no label or a provisional generated one, so a manual
+ * label is never replaced.
+ */
+export interface WorktreeGeneratedLabelDecision {
+  kind: 'label.generated';
+  /** Normalized by `normalizeGeneratedWorktreeLabel`. */
+  label: string;
+  provisional: boolean;
+}
+
+/**
  * Each names the row incarnation launch observed by its `createdAt`; a
  * different incarnation is `not-found`.
  */
@@ -156,6 +169,7 @@ export type WorktreeRecordRowDecision =
   | WorktreeGitRowDecision
   | WorktreeHealthDecision
   | WorktreeDiscoveryDecision
+  | WorktreeGeneratedLabelDecision
   | WorktreeRecoveryDecision;
 
 /** A decision that changes at most one row. */
@@ -329,6 +343,10 @@ export interface W5RecordDecisionPort {
     decision: PersonalCatalogIdDecision,
     allowed: () => Promise<boolean>,
   ): Promise<string | undefined>;
+  applyWorkspaceCloudBindingDecision(
+    workspaceId: string,
+    compare: WorkspaceCloudBindingCompare,
+  ): Promise<WorkspaceOwnershipRecordStatus>;
   applyWorkspaceOwnershipDecision(
     workspaceId: string,
     decision: OrganizationHookBindingsDecision,
@@ -736,6 +754,24 @@ export interface OrganizationOwnerRefreshOutcome {
 export interface PersonalCatalogIdDecision {
   kind: 'ownership.personal-catalog-id';
 }
+
+/** The manifest a cloud project binding (CAN-5190) decides from. */
+export interface WorkspaceCloudBindingSnapshot {
+  type: WorkspaceConfigFile['type'];
+  owner: WorkspaceOwnerBinding | undefined;
+  personalCatalogId: string | undefined;
+  temporary: boolean;
+  cloudBinding: CloudProjectBinding | undefined;
+}
+
+/**
+ * Decides a workspace's cloud project binding from the one read in the
+ * manifest queue: the replacement (`undefined` removes it), or `null` to
+ * leave the workspace as it is.
+ */
+export type WorkspaceCloudBindingCompare = (
+  current: WorkspaceCloudBindingSnapshot,
+) => { cloudBinding: CloudProjectBinding | undefined } | null;
 
 /** Binds inherited organization hooks in the local hooks. */
 export interface OrganizationHookBindingsDecision {

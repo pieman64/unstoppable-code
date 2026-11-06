@@ -2,14 +2,44 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { types } from 'node:util';
+import {
+  brandSecureDataDir,
+  resolveSecureDataDir,
+  resolveBuildStoragePaths,
+  type BuildStoragePaths,
+  secureStorageMode,
+} from '@canopy/core-runtime/node/secure-data-dir';
 import { BRAND } from '@canopy/brand/current';
+import {
+  compiledBuildIdentity,
+  testDataDirectoryOverride,
+} from '@canopy/core-runtime/node/build-identity';
 import type {
+  BrandBuildIdentity,
   CanopyRuntimeMode,
   CanopySecureStorageMode,
   ResolvedCanopyDataDir,
   ResolvedCanopySecureDataDir,
 } from '@canopy/protocol/brand';
-import { registerCanopyDataRootResolver } from './node/lib/canopy-data-root-registration';
+import {
+  registerCanopyDataRootResolver,
+  registerCanopySecureRootResolver,
+} from './node/lib/canopy-data-root-registration';
+
+const buildIdentity = compiledBuildIdentity(BRAND.id);
+
+export function getCanopyBuildIdentity(): BrandBuildIdentity {
+  return buildIdentity;
+}
+
+/** Inactive final paths: ordinary startup deliberately uses the legacy resolvers below. */
+export function getCanopyBuildStoragePaths(): BuildStoragePaths {
+  return resolveBuildStoragePaths({
+    home: os.homedir(),
+    brand: BRAND,
+    identity: getCanopyBuildIdentity(),
+  });
+}
 
 declare const __CANOPY_RELEASE_FLAVOR__: string | undefined;
 
@@ -73,15 +103,12 @@ export function getCanopyRuntimeMode(): CanopyRuntimeMode {
 }
 
 export function getCanopySecureStorageMode(): CanopySecureStorageMode {
-  if (typeof __CANOPY_RELEASE_FLAVOR__ !== 'undefined') {
-    if (__CANOPY_RELEASE_FLAVOR__ === 'internal') {
-      return 'internal';
-    }
-    if (__CANOPY_RELEASE_FLAVOR__ === 'rc') {
-      return 'rc';
-    }
-  }
-  return getCanopyRuntimeMode();
+  return secureStorageMode(
+    typeof __CANOPY_RELEASE_FLAVOR__ === 'undefined'
+      ? undefined
+      : __CANOPY_RELEASE_FLAVOR__,
+    getCanopyRuntimeMode(),
+  );
 }
 
 let resolvedDataDir: ResolvedCanopyDataDir | null = null;
@@ -115,7 +142,7 @@ export function getPrimaryBrandDataDir(
 export function getBrandSecureDataDir(
   mode: CanopySecureStorageMode = getCanopySecureStorageMode(),
 ): string {
-  return path.join(os.homedir(), brandSecureDataDirNames[mode]);
+  return brandSecureDataDir(os.homedir(), brandSecureDataDirNames, mode);
 }
 
 /**
@@ -279,7 +306,7 @@ function autoProvisionedWorkspaceHasContent(
 export function getResolvedCanopyDataDir(
   mode: CanopyRuntimeMode = getCanopyRuntimeMode(),
 ): ResolvedCanopyDataDir {
-  const override = process.env.CANOPY_DATA_DIR?.trim();
+  const override = testDataDirectoryOverride(process.env, 'CANOPY_DATA_DIR');
   const cacheKey = `${mode}:${override ?? ''}`;
   if (resolvedDataDir && resolvedDataDirCacheKey === cacheKey) {
     return resolvedDataDir;
@@ -334,6 +361,7 @@ export function getCanopyDataDir(): string {
 }
 
 registerCanopyDataRootResolver(getCanopyDataDir);
+registerCanopySecureRootResolver(getCanopySecureDataDir);
 
 function getLegacyEnvironmentConfigDataDir(): string {
   return getResolvedCanopyDataDir().path;
@@ -342,37 +370,26 @@ function getLegacyEnvironmentConfigDataDir(): string {
 export function getResolvedCanopySecureDataDir(
   mode: CanopySecureStorageMode = getCanopySecureStorageMode(),
 ): ResolvedCanopySecureDataDir {
-  const secureOverride = process.env.CANOPY_SECURE_DATA_DIR?.trim();
-  const dataOverride = process.env.CANOPY_DATA_DIR?.trim();
+  const secureOverride = testDataDirectoryOverride(
+    process.env,
+    'CANOPY_SECURE_DATA_DIR',
+  );
+  const dataOverride = testDataDirectoryOverride(
+    process.env,
+    'CANOPY_DATA_DIR',
+  );
   const cacheKey = `${mode}:${secureOverride ?? ''}:${dataOverride ?? ''}`;
   if (resolvedSecureDataDir && resolvedSecureDataDirCacheKey === cacheKey) {
     return resolvedSecureDataDir;
   }
 
-  if (secureOverride) {
-    resolvedSecureDataDirCacheKey = cacheKey;
-    resolvedSecureDataDir = {
-      path: path.resolve(secureOverride),
-      source: 'override',
-    };
-    return resolvedSecureDataDir;
-  }
-
-  if (dataOverride) {
-    resolvedSecureDataDirCacheKey = cacheKey;
-    resolvedSecureDataDir = {
-      path: `${path.resolve(dataOverride)}-secure`,
-      source: 'override',
-    };
-    return resolvedSecureDataDir;
-  }
-
-  const primary = getBrandSecureDataDir(mode);
   resolvedSecureDataDirCacheKey = cacheKey;
-  resolvedSecureDataDir = {
-    path: primary,
-    source: existsSync(primary) ? 'primary' : 'fresh',
-  };
+  resolvedSecureDataDir = resolveSecureDataDir({
+    home: os.homedir(),
+    names: brandSecureDataDirNames,
+    mode,
+    environment: process.env,
+  });
   return resolvedSecureDataDir;
 }
 
@@ -384,8 +401,8 @@ export function getResolvedCanopySecureDataDir(
 export function getInternalLegacySharedSecureDataDir(): string | null {
   if (
     getCanopySecureStorageMode() !== 'internal' ||
-    process.env.CANOPY_SECURE_DATA_DIR?.trim() ||
-    process.env.CANOPY_DATA_DIR?.trim()
+    testDataDirectoryOverride(process.env, 'CANOPY_SECURE_DATA_DIR') ||
+    testDataDirectoryOverride(process.env, 'CANOPY_DATA_DIR')
   ) {
     return null;
   }

@@ -789,6 +789,9 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
   const modelGatewayEnforced = useModelCatalogStore(
     (s) => s.modelGatewayEnforced,
   );
+  const personalOwner = useModelCatalogStore(
+    (s) => s.activeOwner?.kind === 'personal',
+  );
   /** The active owner's organization, named in policy and gateway copy. */
   const activeOrganizationName = useModelCatalogStore(
     (s) => s.activeOrganizationName,
@@ -1140,16 +1143,13 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
         ),
       },
       {
-        // The AI Credits group intentionally mixes Claude- and Codex-harness
-        // gateway-only models, so its provider is resolved per row.
-        key: 'ai-credits',
-        rows: buildRows(gatewayOnlyModels, undefined),
-      },
-      {
-        // The org's own gateway. Like AI Credits it mixes harnesses, so the
-        // provider is resolved per row.
+        // The owner's gateway follows native Claude and Codex, before AI Credits.
         key: 'org-gateway',
         rows: buildRows(orgGatewayModels, undefined),
+      },
+      {
+        key: 'ai-credits',
+        rows: buildRows(gatewayOnlyModels, undefined),
       },
       {
         key: 'ollama',
@@ -1238,16 +1238,24 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
     ],
     [agentRows, hideAgents, providerGroups],
   );
-  const catalog = useMemo<ModelCatalog>(
-    () =>
-      visibleRows.map((row) => {
-        const organizationId = orgGatewayOrganizationId(row.model);
-        return organizationId === undefined
-          ? rowToCatalogOption(row)
-          : orgRowToCatalogOption(row, organizationId);
-      }),
-    [visibleRows],
-  );
+  const catalog = useMemo<ModelCatalog>(() => {
+    const nativeSortCeiling = Math.max(
+      0,
+      ...[
+        ...(catalogSnapshot?.claude ?? []),
+        ...(catalogSnapshot?.codex ?? []),
+      ].map((model) => model.sortOrder ?? 0),
+    );
+    return visibleRows.map((row) => {
+      const organizationId = orgGatewayOrganizationId(row.model);
+      return organizationId === undefined
+        ? rowToCatalogOption(row)
+        : {
+            ...orgRowToCatalogOption(row, organizationId),
+            sortOrder: nativeSortCeiling + 0.5,
+          };
+    });
+  }, [visibleRows, catalogSnapshot]);
 
   /**
    * Heading text for each org-gateway section. The vendor key is synthetic, so
@@ -2011,7 +2019,12 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
     // locked harness or a not-yet-loaded gateway list keeps its own rows.
     ...(organizationEmptiedList === 'gateway'
       ? {
-          emptyCatalog: organizationGatewayEmptyCatalog(activeOrganizationName),
+          emptyCatalog: personalOwner
+            ? {
+                title: 'Your AI gateway has no available models',
+                subtitle: 'Add a model in AI gateway settings',
+              }
+            : organizationGatewayEmptyCatalog(activeOrganizationName),
         }
       : organizationEmptiedList === 'policy'
         ? {
@@ -2700,6 +2713,7 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
         footer={
           showBillingFooter ||
           showBillingSignIn ||
+          (personalOwner && modelGatewayEnforced) ||
           hiddenRows.orgGatewayOnly > 0 ||
           footerHarnessStatus
             ? ({ dismissMenu }: ModelPickerMenuControls): JSX.Element => (
@@ -2714,13 +2728,15 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
                       them. Rendered ahead of (and independently of) the billing
                       rows, which `resolveChatBillingFramework` hides outright
                       under enforcement. */}
-                  {hiddenRows.orgGatewayOnly > 0 ? (
+                  {hiddenRows.orgGatewayOnly > 0 ||
+                  (personalOwner && modelGatewayEnforced) ? (
                     <div
                       data-testid="chat-billing-org-gateway-note"
                       className="px-2 py-1 text-3xs leading-snug fg-secondary"
                     >
-                      {activeOrganizationName ?? 'Your organization'} routes all
-                      models through its gateway.
+                      {personalOwner
+                        ? 'Showing only your AI gateway.'
+                        : `${activeOrganizationName ?? 'Your organization'} routes all models through its AI gateway.`}
                     </div>
                   ) : null}
                   {billing && showBillingFooter ? (

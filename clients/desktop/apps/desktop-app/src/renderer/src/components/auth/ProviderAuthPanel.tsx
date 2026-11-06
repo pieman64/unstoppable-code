@@ -729,9 +729,7 @@ function GitHubAuthPanel({
       <Button
         onClick={(): void => setLoginOpen(true)}
         data-testid="auth-panel-github-connect"
-        // Settings rows take the settings size; the onboarding panel keeps
-        // the control rectangle.
-        size={row ? 'compact' : 'control'}
+        size="compact"
         className={row ? undefined : 'ml-auto'}
       >
         {ghStatus?.authenticated ? 'Change account' : 'Sign in'}

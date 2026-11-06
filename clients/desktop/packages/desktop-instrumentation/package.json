@@ -9,7 +9,6 @@
     ".": "./src/index.ts",
     "./client": "./src/client/index.ts",
     "./electron/main": "./src/electron/main.ts",
-    "./electron/preload": "./src/electron/preload.ts",
     "./node": "./src/node/index.ts",
     "./*": "./src/*"
   },

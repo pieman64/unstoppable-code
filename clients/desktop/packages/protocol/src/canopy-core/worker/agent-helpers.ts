@@ -15,7 +15,11 @@ import {
  * `core.helper.run` operation. Params carry ids only; the request itself is
  * staged by the owning core's host until CAN-4115 makes it portable.
  */
-export const WORKER_AGENT_GRANTS = { execute: 'worker.agent.execute' } as const;
+export const WORKER_AGENT_GRANTS = {
+  execute: 'worker.agent.execute',
+  auth: 'worker.agent.auth',
+  read: 'worker.agent.read',
+} as const;
 
 export const WORKER_AGENT_HELPER_KINDS = [
   'automation_if_command_generation',

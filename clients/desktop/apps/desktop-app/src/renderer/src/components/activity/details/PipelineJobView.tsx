@@ -144,9 +144,9 @@ function PipelineJobViewComponent({
             <p className="mt-3 text-s fg-secondary">Preparing variants…</p>
           ) : group.expansion === 'failure' ? (
             <div className="mt-3">
-              <h3 className="text-s font-medium fg-destructive">
+              <Heading level={3} variant="title" tone="destructive">
                 Expansion failed
-              </h3>
+              </Heading>
               <p className="text-xs fg-secondary">{group.error}</p>
             </div>
           ) : group.variant_job_ids.length === 0 ? (

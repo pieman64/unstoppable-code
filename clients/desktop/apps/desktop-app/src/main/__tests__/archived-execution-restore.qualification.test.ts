@@ -253,6 +253,37 @@ describe('archived-containers:restore execution qualification', () => {
     ).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('flushes the restored artifact tree before removing the archived copy', async () => {
+    const restoredLogs = join(runtime.executionsDir, id, 'logs');
+    const actual = jest.requireActual<typeof DirectoryFlush>(
+      '@canopy/core-platform/directory-flush',
+    );
+    jest
+      .mocked(flushDirectory)
+      .mockImplementation((directory) =>
+        directory === restoredLogs
+          ? Promise.reject(new Error('flush failed'))
+          : actual.flushDirectory(directory),
+      );
+
+    await restoreArchivedContainer('workspace-1', 'archive-1');
+
+    expect(
+      await fs.readFile(join(dir, 'archive', id, 'logs', 'say.log'), 'utf8'),
+    ).toBe('archived log');
+    jest.mocked(flushDirectory).mockImplementation(actual.flushDirectory);
+
+    await restoreArchivedContainer('workspace-1', 'archive-1');
+
+    expect(jest.mocked(flushDirectory)).toHaveBeenCalledWith(restoredLogs);
+    expect(await fs.readFile(join(restoredLogs, 'say.log'), 'utf8')).toBe(
+      'archived log',
+    );
+    await expect(fs.access(join(dir, 'archive', id))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
+
   it('retries an interrupted artifact copy without accepting a partial file', async () => {
     const actual = jest.requireActual<typeof fileOps>('node:fs/promises');
     const copy = actual.copyFile;

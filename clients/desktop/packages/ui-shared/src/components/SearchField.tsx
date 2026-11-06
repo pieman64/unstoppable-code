@@ -236,7 +236,7 @@ export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(
             spellCheck={false}
             onChange={(event): void => onValueChange(event.target.value)}
             onKeyDown={handleKeyDown}
-            className={`h-full min-w-0 flex-1 appearance-none truncate bg-transparent outline-none placeholder:fg-tertiary disabled:cursor-not-allowed [&::-webkit-search-cancel-button]:appearance-none [&::-webkit-search-decoration]:appearance-none ${inputClassName}`}
+            className={`h-full min-w-0 flex-1 appearance-none truncate bg-transparent pointer-coarse:text-m outline-none placeholder:fg-tertiary disabled:cursor-not-allowed [&::-webkit-search-cancel-button]:appearance-none [&::-webkit-search-decoration]:appearance-none ${inputClassName}`}
           />
           {hasCount ? (
             <span

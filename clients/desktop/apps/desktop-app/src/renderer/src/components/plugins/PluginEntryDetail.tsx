@@ -56,10 +56,14 @@ import {
 import {
   DetailActionBar,
   DetailActionSlotsProvider,
+  DetailMoreItemsContributionProvider,
+  DetailMoreItemsProvider,
+  DetailMoreMenu,
   DetailPageActions,
   ExecutionActionButton,
   MarketplaceShareButton,
   useDetailActionSlots,
+  useDetailMoreItemContributions,
   Notice,
   NoticeButton,
   type DetailMoreMenuItem,
@@ -372,6 +376,17 @@ function DetailShell({
   children: JSX.Element;
 }): JSX.Element {
   const slots = useDetailActionSlots();
+  const contributedMore = useDetailMoreItemContributions();
+  const fallbackMore =
+    slots.moreDeclared === 0 && contributedMore.items.length > 0 ? (
+      <DetailMoreMenu
+        name={title}
+        items={contributedMore.items}
+        triggerTestId="plugins-entry-detail-more"
+        menuTestId="plugins-entry-detail-menu"
+        placement="bottom-right"
+      />
+    ) : undefined;
   const shareButton = shareAction ? (
     <MarketplaceShareButton
       action={shareAction}
@@ -420,6 +435,7 @@ function DetailShell({
         {(onNavigateBack ||
           shareButton ||
           primaryAction ||
+          fallbackMore ||
           slots.declared > 0) && (
           <div className="flex items-start justify-between gap-2">
             {onNavigateBack ? (
@@ -428,6 +444,7 @@ function DetailShell({
               <span />
             )}
             <DetailActionBar
+              more={fallbackMore}
               share={shareButton}
               primary={primaryAction}
               slots={slots}
@@ -435,7 +452,13 @@ function DetailShell({
           </div>
         )}
         <DetailActionSlotsProvider slots={slots}>
-          {children}
+          <DetailMoreItemsContributionProvider
+            contribute={contributedMore.contribute}
+          >
+            <DetailMoreItemsProvider items={contributedMore.items}>
+              {children}
+            </DetailMoreItemsProvider>
+          </DetailMoreItemsContributionProvider>
         </DetailActionSlotsProvider>
       </div>
     </DialogModal>
@@ -1726,13 +1749,18 @@ export function PluginEntryDetail({
       fluid
     >
       <>
-        <InstalledEntryStatusSection entry={entry} onUninstalled={onClose} />
         <CuratedMcpConnectionDetail
           // Keyed by the entry that was opened (an account row's id carries its
           // configuration), never by the binding behind it: the connection Add
           // creates must not remount the detail and replay its Add (REG-3033).
           key={entry.id}
           {...connectionSource}
+          statusContent={
+            <InstalledEntryStatusSection
+              entry={entry}
+              onUninstalled={onClose}
+            />
+          }
           installedServerId={
             ref.type === 'local-mcp'
               ? localServer?.scope === 'account'

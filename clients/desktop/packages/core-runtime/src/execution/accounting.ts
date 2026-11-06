@@ -76,6 +76,7 @@ export class ExecutionAccounting<TMetadata extends { type: string }> {
   private readonly listeners = new Set<
     ExecutionAccountingListener<TMetadata>
   >();
+  private readonly registrationListeners = new Set<() => void>();
   private snapshot: ExecutionAccountingSnapshot<TMetadata>;
   private sampling: Promise<ExecutionAccountingSnapshot<TMetadata>> | null =
     null;
@@ -194,7 +195,7 @@ export class ExecutionAccounting<TMetadata extends { type: string }> {
       startedAt: registration.startedAt ?? new Date(this.now()).toISOString(),
     };
     this.registrations.set(registration.id, current);
-    this.registrationVersion += 1;
+    this.registrationsChanged();
     let active = true;
     return {
       update: (update): void => {
@@ -210,13 +211,13 @@ export class ExecutionAccounting<TMetadata extends { type: string }> {
           next.pid !== existing.pid ||
           next.processGroupId !== existing.processGroupId
         )
-          this.registrationVersion += 1;
+          this.registrationsChanged();
       },
       unregister: (): void => {
         if (!active) return;
         active = false;
         this.registrations.delete(registration.id);
-        this.registrationVersion += 1;
+        this.registrationsChanged();
       },
     };
   }
@@ -230,6 +231,23 @@ export class ExecutionAccounting<TMetadata extends { type: string }> {
     return (): void => {
       this.listeners.delete(listener);
     };
+  }
+
+  /**
+   * Notes each change to the processes registrations name: a registration,
+   * an unregistration, or an update that moves its pid or process group. The
+   * host decides whether and when to sample for it.
+   */
+  subscribeRegistrations(listener: () => void): () => void {
+    this.registrationListeners.add(listener);
+    return (): void => {
+      this.registrationListeners.delete(listener);
+    };
+  }
+
+  /** Whether a change `subscribeRegistrations` notes came after the last sample started. */
+  hasUnsampledRegistrationChanges(): boolean {
+    return this.sampledVersion < this.registrationVersion;
   }
 
   /**
@@ -270,7 +288,19 @@ export class ExecutionAccounting<TMetadata extends { type: string }> {
     this.registrationVersion += 1;
     this.pending.clear();
     this.listeners.clear();
+    this.registrationListeners.clear();
     this.snapshot = this.emptySnapshot();
+  }
+
+  private registrationsChanged(): void {
+    this.registrationVersion += 1;
+    for (const listener of Array.from(this.registrationListeners)) {
+      try {
+        listener();
+      } catch {
+        // A failing host listener must not fail the registration.
+      }
+    }
   }
 
   private memoryGuardBlocked(limits: ExecutionAccountingLimits): boolean {

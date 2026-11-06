@@ -133,6 +133,8 @@ const WORKTREE_FIELD_EXHAUSTIVENESS: Record<keyof WorktreeData, true> = {
   branchPromptSent: true,
   status: true,
   label: true,
+  labelSource: true,
+  labelProvisional: true,
   hidden: true,
   pausedHookKeys: true,
   seenPipelineExecutionIds: true,

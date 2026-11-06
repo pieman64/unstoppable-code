@@ -641,7 +641,10 @@ export async function executeAppAdvisorTool(
         parsed.data.action.type === 'installed_items.set_status' ||
         parsed.data.action.type === 'installed_items.uninstall' ||
         parsed.data.action.type === 'experiments.set_enabled' ||
-        parsed.data.action.type === 'settings.open'
+        parsed.data.action.type === 'settings.open' ||
+        parsed.data.action.type === 'settings.ai_gateway.get' ||
+        parsed.data.action.type === 'settings.ai_gateway.connect' ||
+        parsed.data.action.type === 'settings.ai_gateway.update'
       )
         return executeDesktopAgentActionTool(
           'dispatch_action',
