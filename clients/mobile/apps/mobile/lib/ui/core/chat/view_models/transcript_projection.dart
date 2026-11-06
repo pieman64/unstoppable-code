@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:mobile/data/models/chat_message.dart';
 import 'package:mobile/data/models/turn_timer.dart';
 import 'package:mobile/ui/core/chat/view_models/incremental_turn_groups.dart';
+import 'package:mobile/ui/core/chat/view_models/step_runs.dart';
 import 'package:mobile/ui/core/chat/view_models/tool_call_display.dart';
 import 'package:mobile/ui/core/chat/view_models/turn_grouping.dart';
 
@@ -20,9 +21,13 @@ final class TranscriptMessageRow extends TranscriptRow {
     this.message, {
     this.toolResults = const {},
     this.streamingSpinner = true,
+    this.parts = true,
   });
 
   final ChatMessage message;
+
+  /// False when the message's steps draw in the run before it.
+  final bool parts;
 
   /// The owning turn's `tool_result` parts keyed by `toolUseId`, so each
   /// tool-call row can show its outcome inline.
@@ -40,23 +45,82 @@ final class TranscriptMessageRow extends TranscriptRow {
       other is TranscriptMessageRow &&
       identical(other.message, message) &&
       identical(other.toolResults, toolResults) &&
-      other.streamingSpinner == streamingSpinner;
+      other.streamingSpinner == streamingSpinner &&
+      other.parts == parts;
 
   @override
   int get hashCode => Object.hash(
     identityHashCode(message),
     identityHashCode(toolResults),
     streamingSpinner,
+    parts,
   );
 }
 
-/// A completed turn's collapsed steps summary.
+/// A run of agent steps between two replies (desktop `ChatToolStepGroup`):
+/// one line in words that opens the steps before [shownFrom]; the steps
+/// from [shownFrom] on stay in view under it (a running turn's newest).
+/// Fewer than two calls draw as their own rows, with no line.
+final class TranscriptRunRow extends TranscriptRow {
+  const TranscriptRunRow(
+    this.runKey,
+    this.steps, {
+    required this.shownFrom,
+    required this.expanded,
+    this.toolResults = const {},
+    this.anchorMessageId,
+  });
+
+  /// The owner's expansion key for this run's line.
+  final String runKey;
+
+  /// The message this row holds the reader on across history loads
+  /// (see [RunSegment.anchorMessageId]).
+  final String? anchorMessageId;
+  final List<RunStep> steps;
+  final int shownFrom;
+  final bool expanded;
+  final Map<String, ToolCallResult> toolResults;
+
+  @override
+  String get key => runKey;
+
+  @override
+  bool operator ==(Object other) =>
+      other is TranscriptRunRow &&
+      other.runKey == runKey &&
+      listEquals(other.steps, steps) &&
+      other.shownFrom == shownFrom &&
+      other.expanded == expanded &&
+      other.anchorMessageId == anchorMessageId &&
+      identical(other.toolResults, toolResults);
+
+  @override
+  int get hashCode => Object.hash(
+    runKey,
+    Object.hashAll(steps),
+    shownFrom,
+    expanded,
+    anchorMessageId,
+    identityHashCode(toolResults),
+  );
+}
+
+/// A completed turn's "Worked for 3m 24s" header, which folds its steps.
 final class TranscriptStepsRow extends TranscriptRow {
-  const TranscriptStepsRow(this.turn, this.counts, {required this.expanded});
+  const TranscriptStepsRow(
+    this.turn,
+    this.counts, {
+    required this.expanded,
+    this.timer,
+  });
 
   final ChatTurn turn;
   final List<TurnStepCount> counts;
   final bool expanded;
+
+  /// The turn's completed timer, for the header's duration and ending.
+  final TurnTimer? timer;
 
   @override
   String? get key => turn.key.isEmpty ? null : 'turn-steps-row-${turn.key}';
@@ -66,23 +130,26 @@ final class TranscriptStepsRow extends TranscriptRow {
       other is TranscriptStepsRow &&
       identical(other.turn, turn) &&
       identical(other.counts, counts) &&
+      identical(other.timer, timer) &&
       other.expanded == expanded;
 
   @override
-  int get hashCode =>
-      Object.hash(identityHashCode(turn), identityHashCode(counts), expanded);
+  int get hashCode => Object.hash(
+    identityHashCode(turn),
+    identityHashCode(counts),
+    identityHashCode(timer),
+    expanded,
+  );
 }
 
-/// A turn's working or completed timer, or the bottom "Working..." bridge
+/// A running turn's live or paused timer, or the bottom "Thinking" bridge
 /// when [turnKey] is null.
 final class TranscriptTimerRow extends TranscriptRow {
-  const TranscriptTimerRow(this.timer, {this.initialElapsedMs, this.turnKey});
+  const TranscriptTimerRow(this.timer, {this.turnKey});
 
   /// The turn's authoritative timer, or null when only a streaming flag (no
-  /// timer part) says the turn is running — the row then shows a bare
-  /// "Working...".
+  /// timer part) says the turn is running.
   final TurnTimer? timer;
-  final int? initialElapsedMs;
   final String? turnKey;
 
   @override
@@ -96,12 +163,10 @@ final class TranscriptTimerRow extends TranscriptRow {
   bool operator ==(Object other) =>
       other is TranscriptTimerRow &&
       identical(other.timer, timer) &&
-      other.initialElapsedMs == initialElapsedMs &&
       other.turnKey == turnKey;
 
   @override
-  int get hashCode =>
-      Object.hash(identityHashCode(timer), initialElapsedMs, turnKey);
+  int get hashCode => Object.hash(identityHashCode(timer), turnKey);
 }
 
 /// A host-supplied row closing one turn, after its footer (or, for a live
@@ -146,7 +211,6 @@ class TranscriptProjection {
   List<TranscriptRow> rows({
     required List<ChatMessage> messages,
     required bool turnInProgress,
-    required int? turnElapsedMs,
     required Set<String> expandedTurns,
     Set<String> footerTurns = const {},
   }) {
@@ -175,8 +239,8 @@ class TranscriptProjection {
         facts.rows(
           isNewest: isNewest,
           turnInProgress: turnInProgress,
-          turnElapsedMs: turnElapsedMs,
           expanded: expandedTurns.contains(facts.turn.key),
+          expandedKeys: expandedTurns,
         ),
       );
       final key = facts.turn.key;
@@ -189,10 +253,10 @@ class TranscriptProjection {
       }
     }
     // Without an authoritative timer part, retain the send/streaming bridge
-    // as a bare bottom-of-transcript "Working..." row.
+    // as a bottom-of-transcript "Thinking" row.
     if (turnInProgress &&
         (newestTimer == null || newestTimer.completedAt != null)) {
-      rows.add(TranscriptTimerRow(null, initialElapsedMs: turnElapsedMs));
+      rows.add(const TranscriptTimerRow(null));
     }
     // The newest turn's footer follows that bridge, which belongs to it.
     if (newestFooter != null) rows.add(TranscriptTurnFooterRow(newestFooter));
@@ -236,39 +300,93 @@ final class _TurnFacts {
       ? summarizeTurnSteps(turn.intermediate)
       : const [];
 
-  ({bool isNewest, bool turnInProgress, int? turnElapsedMs, bool expanded})?
+  ({bool isNewest, bool turnInProgress, bool expanded, String openRuns})?
   _inputs;
   List<TranscriptRow> _rows = const [];
 
-  /// The turn's rows. Host liveness and duration reach only the newest turn.
+  /// Run keys the last build drew, so an opened run reads as a new input.
+  List<String> _runKeys = const [];
+
+  /// The turn's rows. Host liveness reaches only the newest turn.
+  /// [expandedKeys] holds opened turns and run lines alike; the owner may
+  /// mutate it in place, so only its members are read.
   List<TranscriptRow> rows({
     required bool isNewest,
     required bool turnInProgress,
-    required int? turnElapsedMs,
     required bool expanded,
+    Set<String> expandedKeys = const {},
   }) {
+    String openRuns() =>
+        [for (final key in _runKeys) expandedKeys.contains(key)].join();
     final inputs = (
       isNewest: isNewest,
       turnInProgress: isNewest && turnInProgress,
-      turnElapsedMs: isNewest ? turnElapsedMs : null,
       expanded: expanded,
+      openRuns: openRuns(),
     );
     if (inputs == _inputs) return _rows;
-    _inputs = inputs;
-    return _rows = _build(
+    _rows = _build(
       isNewest: isNewest,
       turnInProgress: turnInProgress,
-      turnElapsedMs: turnElapsedMs,
       expanded: expanded,
+      expandedKeys: expandedKeys,
     );
+    _inputs = (
+      isNewest: inputs.isNewest,
+      turnInProgress: inputs.turnInProgress,
+      expanded: expanded,
+      openRuns: openRuns(),
+    );
+    return _rows;
+  }
+
+  /// Replies and step runs for [messages]. While [live], the last run keeps
+  /// its newest steps in view under its line.
+  void _addSegments(
+    List<TranscriptRow> rows,
+    List<ChatMessage> messages, {
+    required bool live,
+    required bool streamingSpinner,
+    required Set<String> expandedKeys,
+  }) {
+    final segments = segmentTurn(messages, renderable: hasRenderableContent);
+    for (final (index, segment) in segments.indexed) {
+      switch (segment) {
+        case MessageSegment(:final message, :final parts):
+          rows.add(
+            TranscriptMessageRow(
+              message,
+              toolResults: toolResults,
+              streamingSpinner: streamingSpinner,
+              parts: parts,
+            ),
+          );
+        case RunSegment(:final key, :final steps, :final anchorMessageId):
+          _runKeys.add(key);
+          final tail = live && index == segments.length - 1;
+          rows.add(
+            TranscriptRunRow(
+              key,
+              steps,
+              shownFrom: tail
+                  ? (steps.length - recentStepCount).clamp(0, steps.length)
+                  : steps.length,
+              expanded: expandedKeys.contains(key),
+              toolResults: toolResults,
+              anchorMessageId: anchorMessageId,
+            ),
+          );
+      }
+    }
   }
 
   List<TranscriptRow> _build({
     required bool isNewest,
     required bool turnInProgress,
-    required int? turnElapsedMs,
     required bool expanded,
+    required Set<String> expandedKeys,
   }) {
+    _runKeys = [];
     final timer = this.timer;
     final inProgress = isLive || (isNewest && turnInProgress);
     // Either the turn's live timer row or the bottom fallback row.
@@ -283,24 +401,23 @@ final class _TurnFacts {
       rows.add(TranscriptMessageRow(user));
     }
     if (inProgress) {
-      // Desktop parity: a running turn shows every step inline (no steps
-      // row, nothing to collapse yet) in transcript order; it folds up and
+      // Desktop parity: a running turn reads in transcript order, each run
+      // of steps one line with its newest steps under it; it folds up and
       // applies the intermediate/final partition only when it completes.
-      for (final message in turn.assistantMessages) {
-        if (hasRenderableContent(message)) {
-          rows.add(
-            TranscriptMessageRow(
-              message,
-              toolResults: toolResults,
-              streamingSpinner: !showsWorkingRow,
-            ),
-          );
-        }
-      }
-    } else if (turn.hasCollapsibleIntermediate) {
+      _addSegments(
+        rows,
+        turn.assistantMessages,
+        live: true,
+        streamingSpinner: !showsWorkingRow,
+        expandedKeys: expandedKeys,
+      );
+    } else {
       final counts = stepCounts;
+      final finished = timer?.completedAt == null ? null : timer;
       if (counts.isNotEmpty) {
-        rows.add(TranscriptStepsRow(turn, counts, expanded: expanded));
+        rows.add(
+          TranscriptStepsRow(turn, counts, expanded: expanded, timer: finished),
+        );
         if (expanded) {
           for (final message in turn.intermediate) {
             if (hasRenderableContent(message)) {
@@ -308,30 +425,29 @@ final class _TurnFacts {
             }
           }
         }
+      } else if (finished != null) {
+        // A turn with nothing folded still says how long it took; its
+        // header has nothing to open.
+        rows.add(
+          TranscriptStepsRow(turn, const [], expanded: false, timer: finished),
+        );
       }
     }
+    // An opened turn lists its folded steps above (its header already says
+    // what they did); the replies it shows read like a running turn's.
     if (!inProgress) {
-      for (final message in turn.finalMessages) {
-        rows.add(TranscriptMessageRow(message, toolResults: toolResults));
-      }
-    }
-    // The authoritative timer closes every turn. Keeping the completed frame
-    // in the transcript produces the desktop-parity "Completed in M:SS" row
-    // instead of silently dropping it.
-    if (timer != null) {
-      rows.add(
-        TranscriptTimerRow(
-          timer,
-          turnKey: turn.key,
-          // On reopen, transcript hydration can return the original timer
-          // carrier frame while the freshly projected chat summary already
-          // knows how long the live turn has run. Preserve that newer host
-          // measurement so remounting the row cannot restart it at zero.
-          initialElapsedMs: isNewest && inProgress && timer.isLive
-              ? turnElapsedMs
-              : null,
-        ),
+      _addSegments(
+        rows,
+        turn.finalMessages,
+        live: false,
+        streamingSpinner: true,
+        expandedKeys: expandedKeys,
       );
+    }
+    // A running turn closes with its "Thinking" or waiting row. A finished
+    // turn's duration reads in its steps header instead, as on desktop.
+    if (timer != null && timer.completedAt == null) {
+      rows.add(TranscriptTimerRow(timer, turnKey: turn.key));
     }
     return rows;
   }

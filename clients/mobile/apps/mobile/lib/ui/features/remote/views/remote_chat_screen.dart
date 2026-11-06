@@ -2109,7 +2109,6 @@ class _RemoteChatScreenState extends State<RemoteChatScreen>
             messages: messages,
             expandedTurns: _expandedTurns,
             turnInProgress: isRunning,
-            turnElapsedMs: boundSummary?.turnElapsedMs,
             onToggleTurn: (key) => setState(() {
               if (!_expandedTurns.remove(key)) _expandedTurns.add(key);
             }),

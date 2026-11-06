@@ -5,6 +5,9 @@ import 'dart:typed_data';
 abstract interface class DesktopRelayTransport {
   Stream<Uint8List> get frames;
   Stream<void> get closed;
+
+  /// Why the transport ended, once it has.
+  String? get closeReason;
   void send(Uint8List payload);
 }
 
@@ -15,6 +18,8 @@ final class DesktopRelayChannel implements DesktopRelayTransport {
   final _frames = StreamController<Uint8List>.broadcast();
   final _closed = StreamController<void>.broadcast();
   bool _ended = false;
+  @override
+  String? closeReason;
   @override
   Stream<Uint8List> get frames => _frames.stream;
   @override
@@ -29,9 +34,10 @@ final class DesktopRelayChannel implements DesktopRelayTransport {
     sendFrame(payload);
   }
 
-  Future<void> close() async {
+  Future<void> close([String reason = 'Closed by this device.']) async {
     if (_ended) return;
     _ended = true;
+    closeReason = reason;
     onClose();
     _closed.add(null);
     unawaited(_closed.close());

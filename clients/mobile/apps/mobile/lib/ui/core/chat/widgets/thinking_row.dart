@@ -1,13 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:mobile/data/models/chat_message.dart';
+import 'package:mobile/ui/core/chat/widgets/step_chevron.dart';
 import 'package:mobile/ui/core/design_tokens.dart';
 import 'package:mobile/ui/core/typography.dart';
 import 'package:mobile/ui/core/widgets/brain_icon.dart';
 
 /// Flat "Thinking" row with the brand brain glyph, mirroring the shared
 /// desktop/web `CollapsibleBlock`: collapsed to the label plus an
-/// 80-character preview, whether the turn is live or finished, until the user
-/// taps it. Expansion is local state, so streamed reasoning neither resets
+/// 80-character preview and the step chevron, whether the turn is live or
+/// finished, until the user taps it. Expansion is local state, so streamed reasoning neither resets
 /// nor forces it.
 class ThinkingRow extends StatefulWidget {
   const ThinkingRow({super.key, required this.part});
@@ -64,7 +65,7 @@ class _ThinkingRowState extends State<ThinkingRow> {
                   ),
                   if (!expanded && preview != null) ...[
                     const SizedBox(width: 8),
-                    Expanded(
+                    Flexible(
                       child: Text(
                         preview,
                         maxLines: 1,
@@ -72,6 +73,10 @@ class _ThinkingRowState extends State<ThinkingRow> {
                         style: AppTypography.bodySmall.copyWith(color: muted),
                       ),
                     ),
+                  ],
+                  if (text != null) ...[
+                    const SizedBox(width: 4),
+                    StepChevron(open: expanded),
                   ],
                 ],
               ),

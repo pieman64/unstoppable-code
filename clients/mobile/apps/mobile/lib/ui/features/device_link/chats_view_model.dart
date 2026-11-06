@@ -2,7 +2,6 @@ import 'package:mobile/device_link/chats/attachments.dart';
 import 'package:mobile/device_link/chats/title.dart';
 import 'package:mobile/ui/core/chat/view_models/attachment_thumbnail_cache.dart';
 import 'package:mobile/ui/core/chat/view_models/chat_attachment_draft.dart';
-import 'package:mobile/device_link/chats/timing.dart';
 import 'package:mobile/data/models/chat_drafts.dart';
 import 'package:mobile/device_link/activity/repository.dart';
 import 'package:mobile/device_link/chats/read_receipts.dart';
@@ -22,7 +21,6 @@ final class DeviceChatsViewModel extends ChangeNotifier {
   DeviceChatsViewModel({required this.connection, required this.chats}) {
     _subscription = chats.updates.listen((_) {
       if (!_disposed) {
-        timing.observe(state, enabled: online && !_restoring);
         _reconcileDraft();
         _syncSettings();
         if (state case final current?) {
@@ -50,12 +48,6 @@ final class DeviceChatsViewModel extends ChangeNotifier {
   final DesktopLinkModel connection;
   final DeviceChatsRepository chats;
   late final activity = DeviceActivityRepository(chats.ipc);
-  late final timing = DeviceChatTiming(
-    chats.ipc,
-    onChanged: () {
-      if (!_disposed) notifyListeners();
-    },
-  );
   late final settings = DeviceChatSettings(chats.ipc);
   late final decisions = DeviceChatDecisions(chats.ipc);
   late final navigation = DeviceChatNavigation(chats.ipc);
@@ -271,7 +263,6 @@ final class DeviceChatsViewModel extends ChangeNotifier {
         _restoration = _restore(revision);
       }
     }
-    timing.observe(state, enabled: current && !_restoring);
     notifyListeners();
   }
 
@@ -318,7 +309,6 @@ final class DeviceChatsViewModel extends ChangeNotifier {
         _restoration = null;
         _restoring = false;
         catalogLoading = false;
-        timing.observe(state, enabled: true);
         _observeReadReceipts();
         notifyListeners();
       }
@@ -506,7 +496,6 @@ final class DeviceChatsViewModel extends ChangeNotifier {
     _disposed = true;
     attachmentThumbnails.dispose();
     settings.invalidate();
-    timing.dispose();
     readReceipts.dispose();
     unawaited(activity.dispose());
     connection.removeListener(_connectionChanged);

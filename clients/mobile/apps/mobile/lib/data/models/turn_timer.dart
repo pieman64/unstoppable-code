@@ -2,7 +2,7 @@
 /// of the shared desktop/web `TurnTimer` rules
 /// (`packages/ui-shared/src/components/TurnTimer.tsx`): elapsed time excludes
 /// completed and active pause windows, clamps at zero against desktop/phone
-/// clock skew, and formats as `M:SS` (or `H:MM:SS` past an hour).
+/// clock skew, and a finished turn reads "Worked for 3m 24s".
 library;
 
 import 'dart:math' as math;
@@ -19,7 +19,6 @@ class TurnTimer {
     this.resumedAt,
     this.accumulatedPausedDurationMs,
     this.completedAt,
-    this.updatedAt,
     this.endReason,
   });
 
@@ -28,13 +27,6 @@ class TurnTimer {
   final int? resumedAt;
   final int? accumulatedPausedDurationMs;
   final int? completedAt;
-
-  /// Desktop epoch ms at which the carrying message was emitted
-  /// (`createdAtMs`), i.e. "desktop now" for this frame. Lets a live count
-  /// be anchored on the phone clock from receipt instead of subtracting the
-  /// desktop's [startedAt] from the phone's `DateTime.now()` — which clamps
-  /// at 0:00 for as long as the phone clock trails the desktop's.
-  final int? updatedAt;
 
   /// Why the turn ended abnormally (`cancelled` or `failed`), stamped by the
   /// desktop on the completed timer. Null for a normal completion and for
@@ -49,8 +41,7 @@ class TurnTimer {
   bool get isLive => completedAt == null && !isPaused;
 
   /// Parses a `turn_timer` chat part; null for other kinds or missing data.
-  /// [updatedAt] is the carrying message's desktop send time, when known.
-  static TurnTimer? fromPart(ChatPart part, {int? updatedAt}) {
+  static TurnTimer? fromPart(ChatPart part) {
     if (part.kind != 'turn_timer') return null;
     final data = part.data;
     if (data == null) return null;
@@ -66,16 +57,8 @@ class TurnTimer {
       resumedAt: epoch('resumedAt'),
       accumulatedPausedDurationMs: epoch('accumulatedPausedDurationMs'),
       completedAt: epoch('completedAt'),
-      updatedAt: updatedAt,
       endReason: endReason is String ? endReason : null,
     );
-  }
-
-  /// Whole elapsed seconds at [now], excluding pause time. Null when the
-  /// timer never carried a start timestamp.
-  int? elapsedSeconds(DateTime now) {
-    if (startedAt == null) return null;
-    return elapsedMs(now.millisecondsSinceEpoch) ~/ 1000;
   }
 
   /// Elapsed milliseconds at desktop-clock instant [nowMs], excluding pause
@@ -98,48 +81,37 @@ class TurnTimer {
     final elapsed = endAt - startedAt - completedPauseMs - activePauseMs;
     return elapsed < 0 ? 0 : elapsed;
   }
-
-  /// Field-wise identity, so a re-pushed identical frame does not re-anchor
-  /// a phone-clock count.
-  bool sameFrameAs(TurnTimer other) =>
-      startedAt == other.startedAt &&
-      pausedAt == other.pausedAt &&
-      resumedAt == other.resumedAt &&
-      accumulatedPausedDurationMs == other.accumulatedPausedDurationMs &&
-      completedAt == other.completedAt &&
-      updatedAt == other.updatedAt;
 }
 
-/// `M:SS`, or `H:MM:SS` once the turn passes an hour (desktop parity).
-String formatElapsedSeconds(int seconds) {
+/// "28s", "3m 24s", "1h 5m": a turn's duration in words, as desktop's
+/// `formatWorkDuration`. Surface-specific exception to the spelled-out
+/// elapsed-time rule: the header is one quiet step line that must read the
+/// same as the desktop clean turn header it mirrors.
+String formatWorkDuration(int seconds) {
   final hours = seconds ~/ 3600;
   final minutes = (seconds % 3600) ~/ 60;
   final remaining = seconds % 60;
-  final paddedSeconds = remaining.toString().padLeft(2, '0');
-  if (hours > 0) {
-    return '$hours:${minutes.toString().padLeft(2, '0')}:$paddedSeconds';
+  if (hours > 0) return minutes > 0 ? '${hours}h ${minutes}m' : '${hours}h';
+  if (minutes > 0) {
+    return remaining > 0 ? '${minutes}m ${remaining}s' : '${minutes}m';
   }
-  return '$minutes:$paddedSeconds';
+  return '${remaining}s';
 }
 
-/// Status label matching the shared `TurnTimer` copy: `Working... 1:23`,
-/// `Paused at 1:20`, `Completed in 1:00` — or the bare state when the timer
-/// has no start timestamp.
-String turnTimerLabel(TurnTimer timer, DateTime now) {
-  final seconds = timer.elapsedSeconds(now);
-  if (seconds == null) {
-    return timer.isLive
-        ? 'Working...'
-        : timer.isPaused
-        ? 'Paused'
-        : 'Completed';
-  }
-  final formatted = formatElapsedSeconds(seconds);
-  return timer.isLive
-      ? 'Working... $formatted'
-      : timer.isPaused
-      ? 'Paused at $formatted'
-      : 'Completed in $formatted';
+/// A finished turn's header, as desktop's clean `TurnWorkHeader`: "Worked
+/// for 3m 24s", "Stopped after 12s" or "Failed after 4s", or the bare words
+/// when the turn carries no start timestamp. Reads only desktop timestamps.
+String turnWorkLabel(TurnTimer? timer) {
+  final completedAt = timer?.completedAt;
+  final seconds = timer?.startedAt == null || completedAt == null
+      ? null
+      : timer!.elapsedMs(completedAt) ~/ 1000;
+  final time = seconds == null ? null : formatWorkDuration(seconds);
+  return switch (timer?.endReason) {
+    'cancelled' => time == null ? 'Stopped' : 'Stopped after $time',
+    'failed' => time == null ? 'Failed' : 'Failed after $time',
+    _ => time == null ? 'Worked' : 'Worked for $time',
+  };
 }
 
 /// The transcript's newest turn-timer part, parsed. Only the newest matters:
@@ -149,10 +121,7 @@ TurnTimer? findNewestTurnTimer(List<ChatMessage> messages) {
   for (var i = messages.length - 1; i >= 0; i -= 1) {
     final message = messages[i];
     for (final part in message.parts) {
-      final timer = TurnTimer.fromPart(
-        part,
-        updatedAt: message.occurredAt?.millisecondsSinceEpoch,
-      );
+      final timer = TurnTimer.fromPart(part);
       if (timer != null) return timer;
     }
   }

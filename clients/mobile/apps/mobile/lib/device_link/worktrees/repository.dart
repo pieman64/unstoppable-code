@@ -3,39 +3,11 @@ import '../chats/dto.dart';
 import '../chats/models.dart';
 import '../desktop/ipc.dart';
 import '../protocol.dart';
+import 'row_projection.dart';
+import 'models.dart';
+import 'package:mobile/data/models/remote_session.dart';
 
-final class DeviceProject {
-  DeviceProject({
-    required this.id,
-    required this.name,
-    required this.type,
-    this.color,
-    this.temporary = false,
-    this.alwaysShow = true,
-  });
-  final String id, name, type;
-  final String? color;
-  final bool temporary, alwaysShow;
-}
-
-final class DeviceWorktree {
-  DeviceWorktree({
-    required this.projectId,
-    required this.projectName,
-    required this.id,
-    required this.name,
-    required this.savedStatus,
-  });
-  final String projectId, projectName, id, name;
-  final String? savedStatus;
-  List<DeviceChatRef> chats = [];
-  String status = 'Loading';
-  String? activeChatId;
-  bool unread = false;
-  final workingChats = <String>{};
-  Map<String, dynamic> get scope => {'projectId': projectId, 'worktreeId': id};
-  String get key => '$projectId/$id';
-}
+export 'models.dart';
 
 /// Reads the existing desktop workspace and chat authorities. No local writer.
 final class DeviceWorktreesRepository {
@@ -44,15 +16,74 @@ final class DeviceWorktreesRepository {
   List<DeviceWorktree> worktrees = [];
   List<DeviceProject> projects = [];
   Set<String> codeProjectIds = {};
+
+  /// Worktree keys with a code-graph build in flight. Desktop also learns
+  /// this only from `code-graph:build-status-changed` pushes.
+  final codeGraphBuilding = <String>{};
   int _generation = 0;
+
+  /// Drops in-flight reads and push-only state. Builds that finish while
+  /// disconnected would otherwise stay marked as building.
   void invalidate() {
+    codeGraphBuilding.clear();
+    invalidateInventory();
+  }
+
+  /// Retires ownership evidence without losing live build transitions.
+  void invalidateInventory() {
     _generation++;
+    projects = [];
+    worktrees = [];
+    codeProjectIds = {};
+  }
+
+  /// Applies a `code-graph:build-status-changed` push. Returns whether a
+  /// row changed.
+  bool applyCodeGraphStatus(Object? event) {
+    if (event is! Map) return false;
+    final key = '${event['projectId']}/${event['worktreeId']}';
+    return event['status'] == 'building'
+        ? codeGraphBuilding.add(key)
+        : codeGraphBuilding.remove(key);
   }
 
   Future<void> refresh() async {
     final generation = ++_generation;
-    final result = deviceLinkObject(
-      deviceChatDto(await ipc.invoke('projects:load')),
+    final reads = await Future.wait([
+      ipc.invoke('projects:load'),
+      _optional('desktop:session-snapshot'),
+      _optional('pipelines:list-executions'),
+    ]);
+    final result = deviceLinkObject(deviceChatDto(reads[0]));
+    final snapshot = _map(deviceChatDto(reads[1]));
+    final workspaceOwners = {
+      for (final row
+          in (snapshot['workspaces'] as List? ?? const [])
+              .whereType<Map<String, dynamic>>())
+        row['localId']: RemoteWorkspace.fromJson(row),
+    };
+    final projections = {
+      for (final row
+          in (snapshot['worktrees'] as List? ?? const [])
+              .whereType<Map<String, dynamic>>())
+        '${row['workspaceLocalId']}/${row['localId']}': row,
+    };
+    final executions = _map(deviceChatDto(reads[2]));
+    final pipelines = devicePipelineStatuses(
+      executions['success'] == true
+          ? (executions['data'] as List? ?? const [])
+                .whereType<Map<String, dynamic>>()
+          : const [],
+      {
+        for (final project in (result['items'] as List).map(deviceLinkObject))
+          for (final row
+              in (project['worktrees'] as List? ?? const [])
+                  .whereType<Map<String, dynamic>>())
+            '${project['id']}/${row['id']}': {
+              ...(row['seenPipelineExecutionIds'] as List? ?? const [])
+                  .whereType<String>(),
+            },
+      },
     );
     final codeProjects = {
       for (final project in (result['items'] as List).map(deviceLinkObject))
@@ -62,6 +93,8 @@ final class DeviceWorktreesRepository {
     final nextProjects = <DeviceProject>[];
     for (final project in (result['items'] as List).map(deviceLinkObject)) {
       if (project['hidden'] == true || project['archivedAt'] != null) continue;
+      final workspace = workspaceOwners[project['id']];
+      if (workspace?.placeholder == true || workspace?.hidden == true) continue;
       nextProjects.add(
         DeviceProject(
           id: deviceLinkString(project, 'id'),
@@ -70,19 +103,35 @@ final class DeviceWorktreesRepository {
           color: project['color'] as String?,
           temporary: project['temporary'] == true,
           alwaysShow: project['alwaysShow'] != false,
+          // An absent owner in an existing legacy workspace row is Personal.
+          // An absent row, failed snapshot or unrecognized owner stays unknown.
+          ownerContext: workspace?.ownerContext,
         ),
       );
       for (final row in (project['worktrees'] as List? ?? []).map(
         deviceLinkObject,
       )) {
         if (row['hidden'] == true || row['archivedAt'] != null) continue;
+        final key =
+            '${deviceLinkString(project, 'id')}/${deviceLinkString(row, 'id')}';
+        final projection = projections[key];
         next.add(
           DeviceWorktree(
             projectId: deviceLinkString(project, 'id'),
             projectName: deviceLinkString(project, 'name'),
             id: deviceLinkString(row, 'id'),
-            name: (row['label'] ?? row['branchName'] ?? 'Worktree') as String,
+            // The projection applies desktop's title rules ("New worktree",
+            // branch display mappings).
+            name:
+                (projection?['label'] ??
+                        projection?['branch'] ??
+                        row['label'] ??
+                        row['branchName'] ??
+                        'Worktree')
+                    as String,
             savedStatus: row['status'] as String?,
+            projection: projection,
+            pipelineStatus: pipelines[key],
           ),
         );
       }
@@ -98,6 +147,19 @@ final class DeviceWorktreesRepository {
       codeProjectIds = codeProjects;
     }
   }
+
+  /// Reads that older hosts may refuse or lack. Rows then keep the
+  /// projects-only presentation.
+  Future<Object?> _optional(String channel) async {
+    try {
+      return await ipc.invoke(channel);
+    } on DeviceLinkException {
+      return null;
+    }
+  }
+
+  static Map<String, dynamic> _map(Object? value) =>
+      value is Map<String, dynamic> ? value : const {};
 
   Future<void> load(DeviceWorktree worktree) async {
     try {
@@ -140,25 +202,29 @@ final class DeviceWorktreesRepository {
       final states = deviceLinkObject(
         snapshot['runtimeByChatId'],
       ).values.whereType<Map>().map((r) => r['status']).toSet();
-      final pending = [
-        ...(tabs['pendingApprovals'] as List? ?? []),
-        ...(tabs['pendingQuestions'] as List? ?? [])
-            .map(deviceLinkObject)
-            .where(
-              (question) =>
-                  question['answeredAt'] == null &&
-                  question['dismissedAt'] == null,
-            ),
-      ];
+      final approvals = tabs['pendingApprovals'] as List? ?? const [];
+      final questions = (tabs['pendingQuestions'] as List? ?? [])
+          .map(deviceLinkObject)
+          .where(
+            (question) =>
+                question['answeredAt'] == null &&
+                question['dismissedAt'] == null,
+          )
+          .toList();
+      final pending = [...approvals, ...questions];
       final plan = (tabs['tabs'] as List).whereType<Map>().any(
         (t) => t['pendingPlanExit'] != null,
+      );
+      worktree.pendingQuestion = questions.isNotEmpty;
+      worktree.pendingApproval =
+          approvals.isNotEmpty || states.contains('awaiting_input');
+      worktree.isStreaming = states.any(
+        ['queued', 'starting', 'streaming', 'completing'].contains,
       );
       worktree.status =
           states.contains('awaiting_input') || pending.isNotEmpty || plan
           ? 'Needs input'
-          : states.any(
-              ['queued', 'starting', 'streaming', 'completing'].contains,
-            )
+          : worktree.isStreaming
           ? 'Working'
           : states.contains('failed')
           ? 'Failed'

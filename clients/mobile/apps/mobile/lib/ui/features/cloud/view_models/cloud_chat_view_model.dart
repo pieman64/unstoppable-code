@@ -119,13 +119,6 @@ class CloudChatViewModel extends ChangeNotifier
     return latest;
   }
 
-  int get turnElapsedMs {
-    final started = _state?.liveTurn?.startedAt;
-    if (started == null) return 0;
-    final elapsed = _now().difference(started).inMilliseconds;
-    return elapsed < 0 ? 0 : elapsed;
-  }
-
   String? get bootstrapError => _state?.bootstrapError;
   CloudSendError? get sendError => _failed.values.lastOrNull?.lastError;
   bool get hasFailedContinuation =>

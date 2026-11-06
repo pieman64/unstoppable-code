@@ -76,32 +76,35 @@ class _DeviceNewTaskScreenState extends State<DeviceNewTaskScreen> {
           computer: model.connection.host?['name'] as String?,
         ),
       ),
-      body: Padding(
-        padding: CanopyScaffold.contentPaddingOf(context),
-        child: ChatBody(
-          transcript: _model.error != null
-              ? ChatCreationFailed(
-                  message: _model.error!,
-                  onRetry: _model.canRetryCreation
-                      ? () => unawaited(_model.retryCreation())
-                      : null,
-                )
-              : !_model.flat || _model.sending
-              ? ChatTranscriptLoading(
-                  label: _model.attempt.worktreeId == null
-                      ? 'Creating worktree…'
-                      : 'Setting up worktree…',
-                  labelKey: const ValueKey('creating-worktree-status'),
-                )
-              : const ChatEmptyTranscript(isNewChat: true),
-          composer: ChatInput(
-            controller: _draft,
-            sending: _model.sending,
-            enabled: model.online && _model.error == null,
-            onSend: () => unawaited(_model.send()),
-            voiceEnabled: false,
-            actionsEnabled: false,
-            hintText: 'Message the agent…',
+      // The scaffold's insets are only visible below it.
+      body: Builder(
+        builder: (context) => Padding(
+          padding: CanopyScaffold.contentPaddingOf(context),
+          child: ChatBody(
+            transcript: _model.error != null
+                ? ChatCreationFailed(
+                    message: _model.error!,
+                    onRetry: _model.canRetryCreation
+                        ? () => unawaited(_model.retryCreation())
+                        : null,
+                  )
+                : !_model.flat || _model.sending
+                ? ChatTranscriptLoading(
+                    label: _model.attempt.worktreeId == null
+                        ? 'Creating worktree…'
+                        : 'Setting up worktree…',
+                    labelKey: const ValueKey('creating-worktree-status'),
+                  )
+                : const ChatEmptyTranscript(isNewChat: true),
+            composer: ChatInput(
+              controller: _draft,
+              sending: _model.sending,
+              enabled: model.online && _model.error == null,
+              onSend: () => unawaited(_model.send()),
+              voiceEnabled: false,
+              actionsEnabled: false,
+              hintText: 'Message the agent…',
+            ),
           ),
         ),
       ),

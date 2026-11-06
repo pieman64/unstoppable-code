@@ -175,7 +175,18 @@ final class DesktopRelay implements DesktopRelayTransport {
     _lastInbound = now();
     _subscription = _socket
         .asyncMap(_receive)
-        .listen((_) {}, onError: (Object _) => close(), onDone: close);
+        .listen(
+          (_) {},
+          onError: (Object error) => close(
+            error is DeviceLinkException
+                ? error.message
+                : 'Relay stream failed (${error.runtimeType}).',
+          ),
+          onDone: () => close(
+            'Relay closed the socket (code ${_socket.closeCode}'
+            '${_socket.closeReason?.isNotEmpty == true ? ', ${_socket.closeReason}' : ''}).',
+          ),
+        );
   }
   static Future<DesktopRelay> connect({
     required DeviceLinkIdentity identity,
@@ -281,7 +292,30 @@ final class DesktopRelay implements DesktopRelayTransport {
   Timer? _ping;
   bool _ended = false;
   bool get isClosed => _ended;
+
+  /// Why the socket ended, for diagnostics. Never carries tokens or payloads.
+  @override
+  String? closeReason;
   late DateTime _lastInbound;
+  int? _probeSentAt;
+  Completer<void>? _probeAnswered;
+
+  /// Checks the socket still reaches the relay, for example after the app was
+  /// in the background. Closes the relay when no matching pong arrives.
+  Future<bool> probe({Duration timeout = const Duration(seconds: 3)}) async {
+    if (_ended) return false;
+    final answered = _probeAnswered ??= Completer<void>();
+    final sentAt = _probeSentAt ??= now().millisecondsSinceEpoch;
+    _socket.add(jsonEncode({'type': 'ping', 'sentAt': sentAt}));
+    try {
+      await answered.future.timeout(timeout);
+      return !_ended;
+    } on TimeoutException {
+      await close('The relay did not answer a liveness check.');
+      return false;
+    }
+  }
+
   Future<void> _receive(dynamic data) async {
     if (_ended) return;
     _lastInbound = now();
@@ -302,7 +336,7 @@ final class DesktopRelay implements DesktopRelayTransport {
           _ready.complete();
           _ping = createPeriodicTimer(const Duration(seconds: 10), (_) {
             if (now().difference(_lastInbound) > const Duration(seconds: 30)) {
-              unawaited(close());
+              unawaited(close('No relay traffic for 30 seconds.'));
             } else {
               _socket.add(
                 jsonEncode({
@@ -319,15 +353,21 @@ final class DesktopRelay implements DesktopRelayTransport {
         case 'peer.offline':
           peers.remove(json['deviceId']);
           _peerChanges.add(null);
-          await _channels[json['deviceId']]?.close();
-          if (json['deviceId'] == targetId) await close();
+          const offline = 'The computer went offline.';
+          await _channels[json['deviceId']]?.close(offline);
+          if (json['deviceId'] == targetId) await close(offline);
         case 'undeliverable':
-          await _channels[json['deviceId']]?.close();
-          if (json['deviceId'] == targetId) await close();
+          const unreachable = 'The relay could not reach the computer.';
+          await _channels[json['deviceId']]?.close(unreachable);
+          if (json['deviceId'] == targetId) await close(unreachable);
         case 'error':
           throw const DeviceLinkException('The relay refused this connection.');
         case 'pong':
-          break;
+          if (json['sentAt'] case final sentAt? when sentAt == _probeSentAt) {
+            _probeSentAt = null;
+            _probeAnswered?.complete();
+            _probeAnswered = null;
+          }
         default:
           throw const FormatException();
       }
@@ -347,13 +387,16 @@ final class DesktopRelay implements DesktopRelayTransport {
     _socket.add(encodeDeviceLinkFrame(targetId, payload));
   }
 
-  Future<void> close() async {
+  Future<void> close([String reason = 'Closed by this device.']) async {
     if (_ended) return;
     _ended = true;
+    closeReason = reason;
     for (final channel in _channels.values.toList()) {
-      await channel.close();
+      await channel.close(reason);
     }
     _ping?.cancel();
+    _probeAnswered?.complete();
+    _probeAnswered = null;
     if (!_ready.isCompleted) {
       _ready.completeError(
         const DeviceLinkException('The relay closed before registration.'),

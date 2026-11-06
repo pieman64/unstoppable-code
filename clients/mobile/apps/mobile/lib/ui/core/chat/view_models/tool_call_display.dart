@@ -179,6 +179,36 @@ String? _stringField(Map<String, Object?> parsed, String key) {
   return value is String && value.trim().isNotEmpty ? value : null;
 }
 
+/// An `Agent`/`Task` call that spawns a helper agent, as hosts that carry
+/// raw tool blocks (Computer Connect) send it instead of an `agent` part.
+bool isAgentSpawn(ChatPart part) =>
+    part.kind == 'tool_use' &&
+    (part.toolName == 'Agent' || part.toolName == 'Task');
+
+/// The `agent` part an [isAgentSpawn] call stands for, so it draws as the
+/// same helper agent row desktop folds the call into: its type, description,
+/// prompt and background flag from the input, and its outcome from [result].
+ChatPart agentPartOfSpawn(
+  ChatPart part, {
+  required ToolCallResult? result,
+  required bool running,
+}) {
+  final parsed = _parsedInput(part);
+  return ChatPart(
+    kind: 'agent',
+    data: {
+      'toolUseId': ?part.toolUseId,
+      'subagentType': ?_stringField(parsed, 'subagent_type'),
+      'description': ?_stringField(parsed, 'description'),
+      'prompt': ?_stringField(parsed, 'prompt'),
+      'runInBackground': parsed['run_in_background'] == true,
+      'isRunning': running,
+      'result': ?result?.content,
+      'isError': result?.isError ?? false,
+    },
+  );
+}
+
 /// Builds the friendly one-line label for a `tool_use` part, mirroring the
 /// desktop `getToolDisplayInfo` verb+parameter grammar for the common tools
 /// and falling back to `Server › Tool` for MCP names and a prettified name

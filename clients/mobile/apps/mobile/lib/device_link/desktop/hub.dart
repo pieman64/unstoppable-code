@@ -20,6 +20,10 @@ final class DesktopLinkHub {
   Future<DesktopRelay>? _opening;
   int _generation = 0;
   bool _disposed = false;
+  final _opened = StreamController<DesktopRelay>.broadcast();
+
+  /// Every account socket as it opens, whoever asked for it.
+  Stream<DesktopRelay> get opened => _opened.stream;
 
   Future<DeviceLinkIdentity> identity() {
     if (_loading case final current?) return current;
@@ -118,7 +122,9 @@ final class DesktopLinkHub {
         await opened.close();
         throw const DeviceLinkException('Connection cancelled.');
       }
-      return _relay = opened;
+      _relay = opened;
+      _opened.add(opened);
+      return opened;
     } finally {
       if (generation == _generation) _opening = null;
     }
@@ -135,6 +141,7 @@ final class DesktopLinkHub {
   Future<void> dispose() async {
     _disposed = true;
     await disconnect();
+    await _opened.close();
     await _writes;
   }
 }

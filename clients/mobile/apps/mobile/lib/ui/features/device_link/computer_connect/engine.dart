@@ -19,7 +19,7 @@ final class ComputerConnectEngine extends ChangeNotifier {
     this.createConnection = DesktopLinkRepository.shared,
     this.createRecoveryTimer = Timer.new,
   }) {
-    _selected = _create();
+    _selected = _create()..setActive(true);
   }
   final DesktopLinkHub hub;
   final ChatDraftStore? drafts;
@@ -50,6 +50,7 @@ final class ComputerConnectEngine extends ChangeNotifier {
       chats: DeviceChatsRepository(repository),
     );
     return ComputerConnectController(chats, connectComputer: connect)
+      ..setActive(false)
       ..addListener(_changed);
   }
 
@@ -73,7 +74,7 @@ final class ComputerConnectEngine extends ChangeNotifier {
     rememberComputer(peerId);
     final target = _sessions[peerId]!;
     if (drafts case final store?) target.chats.bindDrafts(peerId, store);
-    if (selectComputer) _selected = target;
+    if (selectComputer) _select(target);
     _changed();
     if (!target.chats.online && !target.chats.connection.busy) {
       await target.chats.connection.connectWith(
@@ -86,8 +87,14 @@ final class ComputerConnectEngine extends ChangeNotifier {
   void select(String peerId) {
     final target = _sessions[peerId];
     if (_disposed || target == null || identical(target, _selected)) return;
-    _selected = target;
+    _select(target);
     _changed();
+  }
+
+  void _select(ComputerConnectController target) {
+    if (!identical(target, _selected)) _selected.setActive(false);
+    _selected = target;
+    target.setActive(true);
   }
 
   Iterable<ComputerConnectController> get _all => {
@@ -127,6 +134,7 @@ final class ComputerConnectEngine extends ChangeNotifier {
     _disposed = true;
     for (final controller in _all) {
       controller.removeListener(_changed);
+      controller.setActive(false);
       controller.dispose();
       controller.chats.dispose();
     }

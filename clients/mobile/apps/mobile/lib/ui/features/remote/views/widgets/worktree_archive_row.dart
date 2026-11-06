@@ -4,11 +4,11 @@ import 'package:mobile/core/design-system/icon/canopy_icon.dart';
 import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
 import 'package:mobile/data/models/remote_session.dart';
 import 'package:mobile/data/repositories/remote_control_repository.dart';
-import 'package:mobile/ui/core/action_dialogs.dart';
 import 'package:mobile/ui/features/remote/view_models/remote_control_view_model.dart';
 import 'package:mobile/ui/features/remote/view_models/space_notifications_view_model.dart';
 import 'package:mobile/ui/features/remote/views/widgets/space_notifications_sheet.dart';
-import 'package:mobile/ui/features/remote/views/widgets/worktree_row.dart';
+import 'package:mobile/ui/core/workspaces/worktree_archive_menu.dart';
+import 'package:mobile/ui/core/workspaces/worktree_row.dart';
 import 'package:provider/provider.dart';
 import 'package:mobile/ui/core/dimens.dart';
 
@@ -40,12 +40,9 @@ class _WorktreeArchiveRowState extends State<WorktreeArchiveRow> {
     final generation = vm.sessionGeneration;
     final messenger = ScaffoldMessenger.of(context);
     try {
-      final confirmed = await confirmDestructive(
+      final confirmed = await confirmWorktreeArchive(
         context,
-        title: 'Archive worktree?',
-        message:
-            'Archive “${widget.worktree.label ?? widget.worktree.branch}” on your desktop? This stops its running sessions and removes the active checkout. Retained archives are managed on the desktop.',
-        confirmLabel: 'Archive',
+        widget.worktree.label ?? widget.worktree.branch,
       );
       if (!mounted || generation != vm.sessionGeneration) return;
 
@@ -107,23 +104,11 @@ class _WorktreeArchiveRowState extends State<WorktreeArchiveRow> {
                 ],
               ),
             ),
-          PopupMenuItem<String>(
+          worktreeArchiveMenuItem(
+            context,
             key: ValueKey('archive-worktree-${widget.worktree.localId}'),
-            value: 'archive',
-            enabled: enabled && !pending,
-            child: Row(
-              children: [
-                CanopyIcon(
-                  glyph: CanopyGlyph.archive,
-                  size: 20,
-                  tint: enabled && !pending
-                      ? Theme.of(context).colorScheme.error
-                      : Theme.of(context).disabledColor,
-                ),
-                const SizedBox(width: 12),
-                Text(pending ? 'Archiving…' : 'Archive'),
-              ],
-            ),
+            enabled: enabled,
+            pending: pending,
           ),
           if (!enabled && !pending)
             const PopupMenuItem<String>(

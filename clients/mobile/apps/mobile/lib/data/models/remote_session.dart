@@ -291,6 +291,7 @@ class RemoteWorktree {
     this.status,
     this.busy,
     this.isStreaming,
+    this.backgroundTasks,
     this.hasUnread,
     this.hidden,
     this.awaitingApproval,
@@ -343,6 +344,10 @@ class RemoteWorktree {
   /// Whether an agent is actively working in this worktree, across both the
   /// current wire field ([isStreaming]) and the legacy one ([busy]).
   bool get isWorking => busy == true || isStreaming == true;
+
+  /// Delegations and provider tasks still running after the agent's turn
+  /// ended (`PortalSessionShellState.worktrees[].backgroundTasks`).
+  final int? backgroundTasks;
 
   /// True when the worktree has at least one unread chat update.
   final bool? hasUnread;
@@ -467,6 +472,7 @@ class RemoteWorktree {
     status: status,
     busy: busy,
     isStreaming: isStreaming ?? this.isStreaming,
+    backgroundTasks: backgroundTasks,
     hasUnread: hasUnread ?? this.hasUnread,
     hidden: hidden,
     awaitingApproval: awaitingApproval,
@@ -503,6 +509,9 @@ class RemoteWorktree {
       status: _stringOrNull(json['status']),
       busy: _boolOrNull(json['busy']),
       isStreaming: _boolOrNull(json['isStreaming']),
+      backgroundTasks: json['backgroundTasks'] is num
+          ? (json['backgroundTasks'] as num).toInt()
+          : null,
       hasUnread: _boolOrNull(json['hasUnread']),
       hidden: _boolOrNull(json['hidden']),
       awaitingApproval: _boolOrNull(json['awaitingApproval']),

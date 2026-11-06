@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:mobile/ui/core/typography.dart';
 import 'package:mobile/ui/features/auth/view_models/auth_view_model.dart';
 import 'package:mobile/ui/features/auth/views/social_sign_in_buttons.dart';
+import 'package:mobile/ui/features/auth/views/email_sign_in_entry.dart';
 import 'package:provider/provider.dart';
 
 /// Where a guest signs in (CAN-2872), pushed over their app from Settings.
@@ -106,6 +107,7 @@ class _GuestSignInScreenState extends State<GuestSignInScreen> {
                         unawaited(auth.signInWithSocial(provider)),
                     onApple: () => unawaited(auth.signInWithApple()),
                   ),
+                  EmailSignInEntry(enabled: !busy),
                   if (busy) ...[
                     const SizedBox(height: 24),
                     const Center(

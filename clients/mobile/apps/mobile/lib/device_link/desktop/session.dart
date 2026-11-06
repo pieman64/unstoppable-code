@@ -23,8 +23,18 @@ final class DesktopSession {
        peerName = peer.name {
     _subscription = _relay.frames
         .asyncMap(_receive)
-        .listen((_) {}, onError: (Object _) => _end(), onDone: _end);
-    _relaySubscription = _relay.closed.listen((_) => _end());
+        .listen(
+          (_) {},
+          onError: (Object error) => _end(
+            error is DeviceLinkException
+                ? error.message
+                : 'Unreadable message from the computer (${error.runtimeType}).',
+          ),
+          onDone: () => _end(_relay.closeReason ?? 'The relay channel ended.'),
+        );
+    _relaySubscription = _relay.closed.listen(
+      (_) => _end(_relay.closeReason ?? 'The relay channel ended.'),
+    );
   }
   final Timer Function(Duration, void Function(Timer)) createPeriodicTimer;
   final DesktopRelayTransport _relay;
@@ -79,11 +89,11 @@ final class DesktopSession {
           utf8.encode(jsonEncode(handshake.start())),
         );
       } catch (_) {
-        _end();
+        _end('The handshake could not be sent.');
       }
       return await response;
     } catch (_) {
-      _end();
+      _end('The secure handshake did not finish.');
       throw const DeviceLinkException('The secure connection did not finish.');
     }
   }
@@ -122,7 +132,7 @@ final class DesktopSession {
               'kind': 'event',
               'name': 'rpc.keepalive',
               'payload': null,
-            }).catchError((Object _) => _end()),
+            }).catchError((Object _) => _end('A keepalive could not be sent.')),
           );
         });
       case 0x20:
@@ -164,7 +174,7 @@ final class DesktopSession {
           }
         } else if (message['kind'] == 'event') {
           if (message['name'] == 'session.ended') {
-            _end();
+            _end('The computer ended the session.');
             return;
           }
           if (message['name'] != 'rpc.keepalive') _events.add(message);
@@ -180,7 +190,7 @@ final class DesktopSession {
             },
           });
         } else if (message['kind'] == 'close') {
-          _end();
+          _end('The computer closed the session.');
         } else {
           throw const DeviceLinkException('Unsupported peer message.');
         }
@@ -280,7 +290,7 @@ final class DesktopSession {
       _protocolVersion = version;
       return hello;
     } catch (_) {
-      _end();
+      _end('The control session could not open.');
       rethrow;
     }
   }
@@ -309,12 +319,12 @@ final class DesktopSession {
       _checkVersion(hello, version);
       return hello;
     } catch (_) {
-      _end();
+      _end('Host information could not be refreshed.');
       rethrow;
     }
   }
 
-  void _end() {
+  void _end(String reason) {
     if (_ended) return;
     _ended = true;
     _protocolVersion = null;
@@ -329,7 +339,7 @@ final class DesktopSession {
       request.completeError(error);
     }
     _requests.clear();
-    _events.add({'kind': 'closed'});
+    _events.add({'kind': 'closed', 'reason': reason});
     unawaited(_events.close());
   }
 
@@ -339,7 +349,7 @@ final class DesktopSession {
         await _send({'kind': 'close', 'reason': 'closed'});
       } catch (_) {}
     }
-    _end();
+    _end('Closed by this device.');
     await _subscription?.cancel();
     await _relaySubscription?.cancel();
   }

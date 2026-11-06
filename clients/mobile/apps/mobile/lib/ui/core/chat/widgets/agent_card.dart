@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
 import 'package:mobile/core/design-system/icon/canopy_icon.dart';
-import 'package:mobile/core/design-system/spinner/dot_spinner.dart';
+import 'package:mobile/core/design-system/shimmer/shimmer_text.dart';
 import 'package:mobile/data/models/chat_message.dart';
+import 'package:mobile/ui/core/chat/widgets/step_chevron.dart';
+import 'package:mobile/ui/core/chat/widgets/step_words.dart';
 import 'package:mobile/ui/core/chat/widgets/thinking_row.dart';
 import 'package:mobile/ui/core/chat/widgets/tool_call_row.dart';
 import 'package:mobile/ui/core/design_tokens.dart';
@@ -11,9 +13,9 @@ import 'package:mobile/ui/core/status_colors.dart';
 import 'package:mobile/ui/core/typography.dart';
 import 'package:mobile/ui/core/widgets/message_markdown.dart';
 
-/// A subagent (`agent`) part, mirroring the shared desktop/web
-/// `AgentBlockCard`: an `Agent · type` header with a description preview, a
-/// spinner while it runs, and an expanded panel with its configuration,
+/// A subagent (`agent`) part, mirroring the shared desktop/web clean
+/// `AgentBlockCard`: one step row ("Explore agent" and a description
+/// preview) that shimmers while it runs, and an expanded tinted panel with its configuration,
 /// usage, the agent's own replies and tool rows (nested agents included),
 /// and its result and prompt. Expansion state is local and collapsed by
 /// default.
@@ -76,10 +78,30 @@ class _AgentCardState extends State<AgentCard> {
         : description.length > 80
         ? '${description.substring(0, 80)}…'
         : description;
-    final label = type.trim().toLowerCase() == 'agent'
-        ? 'Agent'
-        : 'Agent · $type';
+    // Desktop clean `AgentBlockCard`: "Explore agent", or "Agent".
+    final label =
+        '${type.trim().toLowerCase() == 'agent' ? 'Agent' : '$type agent'}'
+        '${background ? ' (background)' : ''}';
+    final words = StepWords(
+      words: Text(
+        label,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: small,
+      ),
+      detail: preview != null && (!_expanded || prompt == null)
+          ? Text(
+              preview,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: small.copyWith(color: colors.foregroundMuted),
+            )
+          : null,
+    );
 
+    // One quiet step row like every other: the agent glyph at the text's
+    // size and ink, words that shimmer while it runs, "Failed" in words,
+    // and the step chevron.
     final header = Semantics(
       button: true,
       expanded: _expanded,
@@ -91,61 +113,34 @@ class _AgentCardState extends State<AgentCard> {
           padding: const EdgeInsets.symmetric(vertical: 3),
           child: Row(
             children: [
-              CanopyIcon(
-                glyph: CanopyGlyph.agent,
-                size: 16,
-                tint: failed ? destructive : muted,
+              SizedBox.square(
+                dimension: 16,
+                child: Center(
+                  child: CanopyIcon(
+                    glyph: CanopyGlyph.agent,
+                    size: 14,
+                    tint: muted,
+                  ),
+                ),
               ),
               const SizedBox(width: 6),
               Flexible(
-                child: Text(
-                  label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: small,
-                ),
+                child: running
+                    ? Shimmer(
+                        key: const ValueKey('agent-card-running'),
+                        child: words,
+                      )
+                    : words,
               ),
-              if (background) ...[
-                const SizedBox(width: 6),
-                Flexible(
-                  child: _Badge(text: 'background', color: muted),
-                ),
-              ],
-              if (preview != null && (!_expanded || prompt == null)) ...[
-                const SizedBox(width: 8),
-                Expanded(
-                  flex: 2,
-                  child: Text(
-                    preview,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: AppTypography.bodySmall.copyWith(
-                      color: muted.withValues(alpha: 0.8),
-                    ),
-                  ),
-                ),
-              ] else
-                const Spacer(),
-              if (running) ...[
-                const SizedBox(width: 6),
-                const ThinkingSpinner(
-                  key: ValueKey('agent-card-running'),
-                  size: 12,
-                ),
-              ],
               if (failed) ...[
                 const SizedBox(width: 6),
                 Text(
-                  'error',
-                  style: AppTypography.bodySmall.copyWith(color: destructive),
+                  'Failed',
+                  style: small.copyWith(color: colors.foregroundMuted),
                 ),
               ],
               const SizedBox(width: 4),
-              Icon(
-                _expanded ? Icons.remove : Icons.add,
-                size: 12,
-                color: muted,
-              ),
+              StepChevron(open: _expanded),
             ],
           ),
         ),
@@ -263,9 +258,10 @@ class _AgentCardState extends State<AgentCard> {
         Container(
           key: const ValueKey('agent-card-panel'),
           margin: EdgeInsets.only(left: compact ? 6 : 22, top: 2, bottom: 4),
+          clipBehavior: Clip.antiAlias,
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(AppRadii.sm),
-            border: Border.all(color: colors.border),
+            borderRadius: BorderRadius.circular(AppRadii.md),
+            color: colors.foreground.withValues(alpha: 0.03),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -374,26 +370,4 @@ class _SubBlock extends StatelessWidget {
       _ => const SizedBox.shrink(),
     };
   }
-}
-
-class _Badge extends StatelessWidget {
-  const _Badge({required this.text, required this.color});
-
-  final String text;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-    decoration: BoxDecoration(
-      color: color.withValues(alpha: 0.12),
-      borderRadius: BorderRadius.circular(4),
-    ),
-    child: Text(
-      text,
-      maxLines: 1,
-      overflow: TextOverflow.ellipsis,
-      style: AppTypography.bodySmall.copyWith(color: color),
-    ),
-  );
 }

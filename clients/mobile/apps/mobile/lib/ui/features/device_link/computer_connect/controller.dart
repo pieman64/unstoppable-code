@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:mobile/device_link/chats/models.dart';
 import 'package:mobile/ui/core/activity/worktree_activity_context.dart';
+import 'package:mobile/device_link/worktrees/archive.dart';
 import 'package:mobile/device_link/worktrees/creation.dart';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
@@ -8,6 +9,12 @@ import 'package:mobile/device_link/desktop/relay.dart';
 import 'package:mobile/device_link/worktrees/repository.dart';
 import 'package:mobile/device_link/protocol.dart';
 import '../chats_view_model.dart';
+import 'package:mobile/data/models/workspace_context.dart';
+import 'package:mobile/device_link/worktrees/context_scope.dart';
+
+// An interrupted open needs a next step while ownership is being re-read.
+const deviceScopeRefreshingMessage =
+    'Projects are refreshing. Try opening this task again when they finish.';
 
 /// Account discovery and overview lifetime belong only to Computer connect.
 class ComputerConnectController extends ChangeNotifier {
@@ -27,11 +34,32 @@ class ComputerConnectController extends ChangeNotifier {
   final DeviceWorktreesRepository worktrees;
   late final worktreeCreator = DeviceWorktreeCreator(chats.chats.ipc)
     ..setConnected(chats.online);
+  late final _archiver = DeviceWorktreeArchiver(chats.chats.ipc);
+  final _archiving = <String>{};
   List<DesktopRelayPeer> computers = [];
   bool discovering = false, loading = false;
   String? error;
   DesktopTokenProvider? _tokens;
   bool _disposed = false, _online = false, _overview = true;
+  bool _scopePending = false;
+  bool get scopePending => _scopePending;
+  bool _active = true;
+  bool get active => !_disposed && _active;
+
+  /// Navigation only. Other computers keep their sessions, caches and drafts.
+  void setActive(bool value) {
+    if (_active == value) return;
+    _active = value;
+    _notify();
+  }
+
+  DeviceContextScope scopeFor(WorkspaceContext? context) => DeviceContextScope(
+    context ?? const WorkspaceContext.personal(),
+    active ? worktrees.projects : const [],
+    active ? worktrees.worktrees : const [],
+  );
+
+  int _refreshGeneration = 0;
   int _generation = 0;
   StreamSubscription<Map<String, dynamic>>? _events;
   Timer? _refresh;
@@ -111,10 +139,14 @@ class ComputerConnectController extends ChangeNotifier {
     worktreeCreator.setConnected(online);
     if (_online != online) {
       _online = online;
+      _refreshGeneration++;
+      loading = false;
+      _scopePending = true;
       if (online && _overview) {
         unawaited(watchOverview());
       } else {
         worktrees.invalidate();
+        _pendingScopes.clear();
         loading = false;
         _refresh?.cancel();
       }
@@ -123,9 +155,31 @@ class ComputerConnectController extends ChangeNotifier {
   }
 
   void _event(Map<String, dynamic> message) {
-    if (!_overview || !chats.online || message['name'] != 'ipc.push') return;
+    if (!chats.online || message['name'] != 'ipc.push') return;
     final push = message['payload'];
     if (push is! Map) return;
+    // Desktop sends each build transition once, so track them while a chat
+    // is open too; going offline clears the set.
+    if (push['channel'] == 'code-graph:build-status-changed' &&
+        push['args'] is List &&
+        (push['args'] as List).isNotEmpty &&
+        worktrees.applyCodeGraphStatus((push['args'] as List).first)) {
+      _notify();
+    }
+    if (push['channel'] == 'org-projects:ownership-changed') {
+      // Retire old evidence and re-read immediately. Streaming activity must
+      // not postpone ownership behind the shared summary debounce.
+      _refreshGeneration++;
+      loading = false;
+      _scopePending = true;
+      worktrees.invalidateInventory();
+      _pendingScopes.clear();
+      _refresh?.cancel();
+      _notify();
+      if (_overview) unawaited(refresh());
+      return;
+    }
+    if (!_overview) return;
     if (push['channel'] == 'chat:state-changed' &&
         push['args'] is List &&
         (push['args'] as List).isNotEmpty) {
@@ -142,6 +196,18 @@ class ComputerConnectController extends ChangeNotifier {
       'worktrees:file-changed',
       'workspace:worktrees-updated',
       'chat:state-changed',
+      // Snapshot invalidation is Portal-scoped. Lifecycle pushes also arrive
+      // without Portal, so observe them directly for execution indicators.
+      'desktop:session-snapshot-stale',
+      'script:started',
+      'script:complete',
+      'hook:started',
+      'hook:complete',
+      'terminal:spawned',
+      'terminal:exit',
+      'terminal:running-changed',
+      'pipelines:execution-event',
+      'pipelines:queue-event',
     ].contains(push['channel'])) {
       // Re-read authoritative summaries after changes, once the burst settles.
       // No polling remains active while the app is suspended/disconnected.
@@ -176,17 +242,51 @@ class ComputerConnectController extends ChangeNotifier {
     }
   }
 
+  /// Explicit search retry acknowledges prior open errors before reloading.
+  Future<void> retrySearch() {
+    if (!active) return Future.value();
+    chats.error = null;
+    return refresh();
+  }
+
   Future<void> refresh() async {
     if (!chats.online || loading) return;
+    final generation = ++_refreshGeneration;
     loading = true;
     error = null;
     _notify();
     try {
       await Future.wait([worktrees.refresh(), chats.chats.refreshCatalog()]);
+      if (generation == _refreshGeneration) _scopePending = false;
     } catch (cause) {
-      error = _describe(cause);
+      if (generation == _refreshGeneration) error = _describe(cause);
     } finally {
-      loading = false;
+      if (generation == _refreshGeneration) {
+        loading = false;
+        _notify();
+      }
+    }
+  }
+
+  bool canArchiveWorktree(DeviceWorktree worktree) =>
+      chats.online && worktrees.codeProjectIds.contains(worktree.projectId);
+  bool isArchivingWorktree(DeviceWorktree worktree) =>
+      _archiving.contains(worktree.key);
+
+  /// Keeps the row archiving until a re-read drops it, so it does not flash
+  /// back between the archive reply and the overview refresh.
+  Future<void> archiveWorktree(DeviceWorktree worktree) async {
+    if (!canArchiveWorktree(worktree) || !_archiving.add(worktree.key)) return;
+    _notify();
+    try {
+      await _archiver.archive(worktree.projectId, worktree.id);
+      try {
+        await worktrees.refresh();
+      } catch (_) {
+        // Lifecycle pushes schedule another re-read.
+      }
+    } finally {
+      _archiving.remove(worktree.key);
       _notify();
     }
   }
@@ -232,7 +332,8 @@ class ComputerConnectController extends ChangeNotifier {
       return;
     }
     await chats.leaveChat(expectedGeneration: selectionGeneration);
-    if (_disposed || chats.chats.selectionGeneration != selectionGeneration + 1) {
+    if (_disposed ||
+        chats.chats.selectionGeneration != selectionGeneration + 1) {
       return;
     }
     await watchOverview();
@@ -254,6 +355,7 @@ class ComputerConnectController extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _generation++;
+    _refreshGeneration++;
     _refresh?.cancel();
     worktrees.invalidate();
     unawaited(worktreeCreator.dispose());

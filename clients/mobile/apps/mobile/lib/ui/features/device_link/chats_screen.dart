@@ -365,9 +365,10 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
         ),
         body: Builder(
           builder: (context) => Padding(
+            // Only the feed scrolls under the app bar; loading centers below it.
             padding: CanopyScaffold.contentPaddingOf(
               context,
-            ).copyWith(top: notices.isEmpty ? 0 : null),
+            ).copyWith(top: notices.isEmpty && !transcriptLoading ? 0 : null),
             child: ChatBody(
               transcript: LayoutBuilder(
                 builder: (context, constraints) => Column(
@@ -415,7 +416,6 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
                                   ),
                                   expandedTurns: _expanded,
                                   turnInProgress: state.running,
-                                  turnElapsedMs: model.timing.elapsedMs(state),
                                   onToggleTurn: (id) => setState(() {
                                     if (!_expanded.remove(id)) {
                                       _expanded.add(id);

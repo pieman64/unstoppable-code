@@ -5,6 +5,7 @@ import 'package:mobile/core/design-system/app-bar/canopy_scaffold.dart';
 import 'package:mobile/core/design-system/button/canopy_button.dart';
 import 'package:mobile/core/design-system/icon-button/canopy_icon_button.dart';
 import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
+import 'package:mobile/core/design-system/spinner/dot_spinner.dart';
 import 'package:mobile/core/design-system/text-field/canopy_text_field.dart';
 import 'package:mobile/device_link/chats/models.dart';
 import 'package:mobile/ui/core/widgets/inline_notice.dart';
@@ -137,8 +138,6 @@ class _DeviceChatsShellState extends State<DeviceChatsShell>
                       state: error,
                     ),
                   ),
-                if (model.catalogLoading || model.creating)
-                  const LinearProgressIndicator(minHeight: 2),
                 Expanded(
                   child: RefreshIndicator(
                     onRefresh: model.refreshCatalog,
@@ -147,8 +146,13 @@ class _DeviceChatsShellState extends State<DeviceChatsShell>
                       physics: const AlwaysScrollableScrollPhysics(),
                       padding: const EdgeInsets.only(top: 8, bottom: 16),
                       children: [
-                        if (model.chats.catalog.isEmpty &&
-                            !model.catalogLoading)
+                        if (model.chats.catalog.isEmpty && model.catalogLoading)
+                          const Padding(
+                            key: ValueKey('device-chats-loading'),
+                            padding: EdgeInsets.all(24),
+                            child: Center(child: LoadingSpinner(size: 22)),
+                          )
+                        else if (model.chats.catalog.isEmpty)
                           const Padding(
                             padding: EdgeInsets.all(24),
                             child: Text(

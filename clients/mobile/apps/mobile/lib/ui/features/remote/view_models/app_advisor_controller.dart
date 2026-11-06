@@ -230,8 +230,6 @@ final class RemoteAppAdvisorController {
         ),
       );
 
-  int? turnElapsedMs(String chatId) => _chats[chatId]?.summary.turnElapsedMs;
-
   /// The projected tab summary for [chatId]; null for a tab still being
   /// created.
   RemoteChatSummary? summaryFor(String chatId) => _chats[chatId]?.summary;

@@ -125,13 +125,17 @@
   --text-3xs: 0.625rem;
   --text-3xs--line-height: 0.875rem;
   --text-2xs: 0.6875rem;
-  --text-2xs--line-height: 0.75rem;
+  --text-2xs--line-height: 0.9375rem;
   --text-xs: 0.8125rem;
   --text-xs--line-height: 1.125rem;
   --text-s: 0.875rem;
   --text-s--line-height: 1.25rem;
   --text-m: 1rem;
   --text-m--line-height: 1.5rem;
+  /* Tailwind's text-sm and text-base duplicate text-s and text-m; remove them
+   * so the scale has one name per size. */
+  --text-sm: initial;
+  --text-base: initial;
 
   --color-line-depth: var(--line-depth);
   --color-line-base: var(--line-base);
@@ -149,9 +153,9 @@
   --color-line-positive: var(--line-positive);
   --color-line-special: var(--line-special);
   /* `base` must NOT be registered in the global `--color-*` namespace: a
-   * `--color-base` entry makes Tailwind resolve `text-base` as a color
+   * `--color-base` entry makes Tailwind generate `text-base` as a color
    * utility (`color: var(--bg-base)` — text painted with the page
-   * background) instead of the core 1rem font-size utility (CAN-1589).
+   * background), easily mistaken for a font size (CAN-1589).
    * Register it only in the property-scoped namespaces actually consumed
    * by the codebase: bg-base (+ opacity modifiers), border-b-base,
    * ring-offset-base, and from-base. */
@@ -255,6 +259,7 @@
   --shadow-md: var(--shadow-surface-md);
   --shadow-lg: var(--shadow-surface-lg);
   --shadow-xl: var(--shadow-surface-xl);
+  --shadow-bubble: var(--shadow-bubble-edge);
   /* Form field edge at rest, and its neutral focused state: a grey ink edge
    * with a soft line-base halo, replacing the resting edge in one box-shadow.
    * Neutral on purpose; accent is reserved for the primary action. */
@@ -563,7 +568,7 @@
  * and revealed from the ring's 32px circle, so the reveal never relayouts.
  * Closed shows the right 32px as a circle; open shows the whole pill. */
 @utility usage-weekly-fill-closed {
-  clip-path: inset(0 0 0 37px round 16px);
+  clip-path: inset(0 0 0 calc(100% - 32px) round 16px);
 }
 
 @utility usage-weekly-fill-open {
@@ -730,9 +735,19 @@
    * swaps it for the regular tooltip surface instead of a white sheet. */
   --bg-tooltip-inverse: var(--bg-inverse);
   --fg-tooltip-inverse: var(--bg-base);
+
+  /* The chat bubble's whole edge: one hairline. A bubble on a light page takes
+   * no `shadow-sm`: that recipe's own half-pixel ring and blurred layers sat
+   * beside the hairline and read as a heavier 1px line. */
+  --shadow-bubble-edge: 0 0 0 var(--border-hairline) var(--line-base);
 }
 
 :root.dark {
+  /* On a near-black page the `shadow-sm` layers vanish, so the inset hairline
+   * alone draws the edge. */
+  --shadow-bubble-edge:
+    inset 0 0 0 var(--border-hairline) var(--line-secondary),
+    var(--shadow-surface-sm);
   --bg-activity-card-hover: var(--bg-quaternary);
   --bg-tooltip-inverse: var(--bg-quaternary);
   --fg-tooltip-inverse: var(--fg-primary);
@@ -774,9 +789,8 @@ body {
   color: var(--fg-primary);
   font-family: var(--font-sans);
   font-weight: var(--font-weight-normal);
-  font-feature-settings:
-    'rlig' 1,
-    'calt' 1;
+  /* The font files stop at 500; never fake a heavier weight or an italic. */
+  font-synthesis: none;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -1611,18 +1625,17 @@ body {
   }
 }
 
-/* Base type size. The desktop "Interface scale" preference is NOT a
- * font-size scale: it is a uniform Electron page zoom applied by the main
- * process (apps/desktop-app/src/main/lib/ui-zoom.ts), so every CSS pixel —
- * text, controls, radii, icons, insets, shadows — grows together. The
- * renderer only records the selection as `data-ui-scale` on <html> and
- * publishes `--ui-zoom` / `--border-hairline` (see `:root` above and
+/* Base type size. The root font size stays the browser default (16px) so
+ * the rem scale follows a reader's browser font-size preference on web. The
+ * desktop "Interface scale" preference is NOT a font-size scale: it is a
+ * uniform Electron page zoom applied by the main process
+ * (apps/desktop-app/src/main/lib/ui-zoom.ts), so every CSS pixel — text,
+ * controls, radii, icons, insets, shadows — grows together. The renderer only
+ * records the selection as `data-ui-scale` on <html> and publishes
+ * `--ui-zoom` / `--border-hairline` (see `:root` above and
  * apps/desktop-app/src/renderer/src/lib/theme.ts). The web app zooms
  * natively through the browser and never sets either.
  */
-:root {
-  font-size: 16px;
-}
 
 /* ---------------------------------------------------------------------------
  * Shared sidebar row styles (desktop sidebar + web portal rail)
@@ -1709,7 +1722,7 @@ body {
   }
 }
 
-/* Skeletons (`SkeletonBlock`, `Skeleton`) draw through skullet, whose
+/* Skeletons (`Skeleton`) draw through skullet, whose
  * stylesheet the token entry points import. Its blocks and measured bones read
  * these properties: the muted surface in every theme, a slow pulse rather than
  * a sweep, and capsule bars over text. They are set on skullet's own elements,

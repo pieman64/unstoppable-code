@@ -22,8 +22,8 @@ class ChatListNotice extends StatelessWidget {
         ),
         if (onRetry != null)
           CanopyButton(
-            label: 'Retry',
-            semanticsLabel: 'Retry loading chats',
+            label: 'Try again',
+            semanticsLabel: 'Try again to load chats',
             variant: CanopyButtonVariant.inline,
             onPressed: onRetry,
           ),

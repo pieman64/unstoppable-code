@@ -11,9 +11,9 @@ import 'package:mobile/config/demo_mode.dart';
 import 'package:mobile/data/models/social_provider.dart';
 import 'package:mobile/ui/features/auth/view_models/auth_view_model.dart';
 import 'package:mobile/ui/features/auth/views/social_sign_in_buttons.dart';
+import 'package:mobile/ui/features/auth/views/email_sign_in_entry.dart';
 
-/// OAuth-only sign-in screen (Unstoppable Domains / Google / GitHub), matching the web product —
-/// which has no password form.
+/// Social sign-in and server-gated native email authentication.
 ///
 /// The email/password `AuthRepository.signIn` plumbing is retained for seeded
 /// test accounts and is surfaced only through a deliberately obscure gesture:
@@ -413,6 +413,7 @@ class _SignInScreenState extends State<SignInScreen> {
           onSocial: _signInWithSocial,
           onApple: _signInWithApple,
         ),
+        EmailSignInEntry(enabled: !isBusy),
         if (viewModel.guestEntryAvailable) ...[
           const SizedBox(height: 12),
           TextButton(

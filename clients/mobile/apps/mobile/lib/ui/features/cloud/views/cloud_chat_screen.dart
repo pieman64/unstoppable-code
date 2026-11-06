@@ -1174,7 +1174,6 @@ class _CloudChatScreenState extends State<CloudChatScreen>
           loadingOlder: session.loadingOlder,
           expandedTurns: _expandedTurns,
           turnInProgress: isRunning,
-          turnElapsedMs: isRunning ? session.turnElapsedMs : null,
           onToggleTurn: (key) => setState(() {
             if (!_expandedTurns.remove(key)) _expandedTurns.add(key);
           }),

@@ -1,5 +1,4 @@
 import 'package:mobile/data/models/apple_native_result.dart';
-import 'package:mobile/data/models/auth_session.dart';
 import 'package:mobile/data/models/auth_user.dart';
 import 'package:mobile/data/services/api_client.dart';
 
@@ -17,25 +16,12 @@ final class MobileOAuthTokenResult {
 /// Wraps the Better Auth REST endpoints used by the real auth repository.
 ///
 /// Base path `/api/auth`:
-///   POST /sign-in/email  → `{ token, user }`
 ///   GET  /get-session    → `{ session, user }` or `null` (needs bearer token)
 ///   POST /sign-out       → `{}` (needs bearer token)
 final class AuthApiService {
   const AuthApiService({required this.apiClient});
 
   final ApiClient apiClient;
-
-  /// Signs in with email + password, returning the token + user.
-  Future<AuthSession> signInWithEmail({
-    required String email,
-    required String password,
-  }) async {
-    final json = await apiClient.postJson(
-      '/api/auth/sign-in/email',
-      body: {'email': email, 'password': password, 'rememberMe': true},
-    );
-    return AuthSession.fromSignInJson(json);
-  }
 
   /// Returns the user for the current bearer token, or `null` when there is no
   /// valid session.

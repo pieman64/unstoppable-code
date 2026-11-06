@@ -17,30 +17,53 @@ final class ComputerConnectAccount extends ChangeNotifier {
     required String origin,
     required this.createCredential,
     this.fetchToken = fetchDesktopRelayToken,
-    this.scheduleRetry = Timer.new,
+    this.createTimer = Timer.new,
+    this.now = DateTime.now,
   }) : saved = SavedComputerConnection(accountId: accountId, origin: origin) {
     engine.addListener(_engineChanged);
+    // Session recovery can open the account socket before discovery does.
+    _opened = engine.hub.opened.listen(_watch);
   }
+
+  /// How long the app may stay in the background before its sessions close.
+  /// The relay drops a phone that stops answering after about 20 seconds.
+  static const backgroundGrace = Duration(seconds: 15);
   final ComputerConnectEngine engine;
   final DeviceLinkStore store;
   final SavedComputerConnection saved;
   final Future<ComputerConnectCredential> Function() createCredential;
   final Future<DesktopRelayToken> Function(DesktopRelayCredentials, String)
   fetchToken;
-  final Timer Function(Duration, void Function()) scheduleRetry;
+  final Timer Function(Duration, void Function()) createTimer;
+  final DateTime Function() now;
   final peers = <String, DesktopRelayPeer>{};
-  bool ready = false, busy = false, accessDenied = false;
+  bool ready = false, busy = false, finding = false, accessDenied = false;
   int? accessStatus;
   String? error;
+  String? _connectingId;
   bool _disposed = false, _foreground = true, _unreadable = false;
+  // The app's lifecycle, apart from whether sessions are open: a resume can
+  // still be closing stale sessions when the app is hidden again.
+  bool _hidden = false;
   bool _credentialNeedsSave = false;
   int _attempt = 0;
-  Timer? _retry;
+  Timer? _retry, _closing;
+  DateTime? _hiddenAt;
   StreamSubscription<void>? _peerChanges, _relayClosed;
+  StreamSubscription<DesktopRelay>? _opened;
   DesktopRelay? _relay;
   Future<void> _writes = Future.value();
   List<SavedComputer> get computers => saved.computers.values.toList();
   String? get selectedName => saved.computers[engine.selectedId]?.name;
+
+  /// Saved computers whose session is open or briefly recovering, in saved
+  /// order. These are the ones a person can switch between.
+  List<SavedComputer> get connectedComputers => [
+    for (final computer in computers)
+      if (engine.sessions[computer.id]?.chats case final chats?
+          when chats.online || chats.connection.reconnecting)
+        computer,
+  ];
   bool get setupUncertain =>
       saved.creatingCredential && saved.credential == null;
   bool get hasCredential => saved.credential != null;
@@ -144,6 +167,7 @@ final class ComputerConnectAccount extends ChangeNotifier {
     }
     _retry?.cancel();
     busy = true;
+    finding = true;
     error = null;
     _notify();
     try {
@@ -177,20 +201,7 @@ final class ComputerConnectAccount extends ChangeNotifier {
       if (_disposed || !_foreground) return;
       final relay = await engine.hub.relay(_token);
       if (_disposed || !_foreground) return;
-      if (!identical(relay, _relay)) {
-        await _peerChanges?.cancel();
-        await _relayClosed?.cancel();
-        _relay = relay;
-        _peerChanges = relay.peerChanges.listen((_) {
-          _readPeers(relay);
-          _schedule();
-        });
-        _relayClosed = relay.closed.listen((_) {
-          peers.clear();
-          _notify();
-          _schedule();
-        });
-      }
+      _watch(relay);
       _readPeers(relay);
       accessDenied = false;
       accessStatus = null;
@@ -230,24 +241,66 @@ final class ComputerConnectAccount extends ChangeNotifier {
           : 'Could not connect. Your saved settings were kept. Try again.';
     } finally {
       busy = false;
+      finding = false;
       _notify();
       _schedule();
     }
   }
 
-  void _readPeers(DesktopRelay relay) {
-    if (_disposed) return;
+  void _watch(DesktopRelay relay) {
+    if (_disposed || identical(relay, _relay) || relay.isClosed) return;
+    unawaited(_peerChanges?.cancel());
+    unawaited(_relayClosed?.cancel());
+    _relay = relay;
+    _peerChanges = relay.peerChanges.listen((_) {
+      _retryReturned(_readPeers(relay));
+      _schedule();
+    });
+    _relayClosed = relay.closed.listen((_) {
+      peers.clear();
+      _notify();
+      _schedule();
+    });
+    _retryReturned(_readPeers(relay));
+  }
+
+  /// Returns the saved computers that just became reachable.
+  List<String> _readPeers(DesktopRelay relay) {
+    if (_disposed) return const [];
+    final returned = <String>[];
     for (final peer in relay.peers.values) {
       if (peer.acceptsControl &&
           peers[peer.id]?.acceptsControl != true &&
           saved.computers[peer.id]?.reconnect == true) {
         engine.sessions[peer.id]?.chats.connection.recoveryExpired = false;
+        returned.add(peer.id);
       }
     }
     peers
       ..clear()
       ..addAll(relay.peers);
     _notify();
+    return returned;
+  }
+
+  /// A computer that comes back is retried now, not at the next backoff step.
+  void _retryReturned(List<String> returned) {
+    var discover = false;
+    for (final id in returned) {
+      final connection = engine.sessions[id]?.chats.connection;
+      if (connection == null) continue;
+      if (connection.reconnecting) {
+        connection.retryNow();
+      } else if (!connection.busy &&
+          connection.phase != DesktopLinkPhase.connected) {
+        discover = true;
+      }
+    }
+    if (discover && !busy && !accessDenied && _foreground) {
+      _retry?.cancel();
+      _retry = null;
+      unawaited(findComputers());
+    }
   }
 
   void _engineChanged() {
@@ -282,7 +335,7 @@ final class ComputerConnectAccount extends ChangeNotifier {
     const delays = [2, 5, 15, 30];
     final delay = delays[_attempt.clamp(0, delays.length - 1)];
     _attempt++;
-    _retry = scheduleRetry(Duration(seconds: delay), () {
+    _retry = createTimer(Duration(seconds: delay), () {
       _retry = null;
       unawaited(findComputers());
     });
@@ -297,11 +350,12 @@ final class ComputerConnectAccount extends ChangeNotifier {
       return;
     }
     busy = true;
+    _connectingId = id;
     error = null;
     _notify();
     try {
       await engine.connect(peer, _token);
-      if (_disposed || !_foreground) return;
+      if (_disposed || !_foreground || _connectingId != id) return;
       if (engine.sessions[id]?.chats.online == true) {
         saved.computers[id] = SavedComputer(id, peer.name);
         saved.selectedId = id;
@@ -310,15 +364,35 @@ final class ComputerConnectAccount extends ChangeNotifier {
     } catch (_) {
       error = 'Could not save this connection. Try again.';
     } finally {
+      _connectingId = null;
       busy = false;
       _notify();
       _schedule();
     }
   }
 
+  /// Shows a saved computer. Selection is navigation: every session keeps
+  /// running, and only the next cold start's choice depends on the write.
+  Future<void> select(String id) async {
+    if (_disposed || !saved.computers.containsKey(id)) return;
+    engine.select(id);
+    if (saved.selectedId == id) return;
+    saved.selectedId = id;
+    try {
+      await _save();
+    } catch (_) {
+      // The switch already took effect; a cold start reopens the prior one.
+    }
+  }
+
   Future<void> disconnect(String id) async {
     final computer = saved.computers[id];
     if (_disposed || computer == null) return;
+    // A handshake may finish while the intent write is pending. Its completion
+    // must not overwrite this explicit disconnect with reconnect=true.
+    if (_connectingId == id) {
+      _connectingId = null;
+    }
     // Persist intent before closing. A cold start must honor a manual disconnect.
     saved.computers[id] = SavedComputer(id, computer.name, reconnect: false);
     try {
@@ -376,7 +450,20 @@ final class ComputerConnectAccount extends ChangeNotifier {
     await findComputers();
   }
 
+  /// Leaving the app briefly keeps its sessions; they close after
+  /// [backgroundGrace].
   Future<void> suspend() async {
+    if (_disposed || _hidden) return;
+    _hidden = true;
+    if (!_foreground) return; // Sessions are already closed or closing.
+    _hiddenAt = now();
+    _closing = createTimer(backgroundGrace, () {
+      _closing = null;
+      unawaited(_closeSessions());
+    });
+  }
+
+  Future<void> _closeSessions() async {
     _foreground = false;
     _retry?.cancel();
     _retry = null;
@@ -384,6 +471,27 @@ final class ComputerConnectAccount extends ChangeNotifier {
   }
 
   Future<void> resume() async {
+    _hidden = false;
+    final closing = _closing;
+    final hiddenAt = _hiddenAt;
+    _closing = null;
+    _hiddenAt = null;
+    if (closing != null && hiddenAt != null) {
+      closing.cancel();
+      // Timers stop while the OS suspends the app, so measure the absence.
+      if (now().difference(hiddenAt) < backgroundGrace) {
+        _resetRecovery();
+        // The socket may have died silently, for example on a network change.
+        if (_relay case final relay? when !relay.isClosed) {
+          await relay.probe();
+        }
+        if (!_disposed) await findComputers();
+        return;
+      }
+      await _closeSessions();
+      // Hidden again while closing: stay closed until the next resume.
+      if (_hidden || _disposed) return;
+    }
     _foreground = true;
     _resetRecovery();
     await engine.resume();
@@ -394,7 +502,9 @@ final class ComputerConnectAccount extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _retry?.cancel();
+    _closing?.cancel();
     engine.removeListener(_engineChanged);
+    unawaited(_opened?.cancel());
     unawaited(_peerChanges?.cancel());
     unawaited(_relayClosed?.cancel());
     super.dispose();

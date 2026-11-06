@@ -320,7 +320,7 @@ class ModelGatewayModel {
 
 /// Org configuration surfaced to the settings UI.
 class OrganizationConfigDetail {
-  const OrganizationConfigDetail({required this.allowExternalContainerSharing, this.applicable, required this.blockedModelIds, required this.enforceMemberDataSharing, required this.enforceMemberModelGateway, required this.enforceMemberModelPolicy, required this.enforcedSync, this.externalAgentAccess, this.modelGatewayBaseUrl, required this.modelGatewayEnforced, required this.modelGatewayModels, required this.modelGatewayPromptCachePassthrough, required this.reviewedModelIds, required this.usageStatsMinRole});
+  const OrganizationConfigDetail({required this.allowExternalContainerSharing, this.applicable, required this.blockedModelIds, required this.enforceMemberDataSharing, required this.enforceMemberModelGateway, required this.enforceMemberModelPolicy, required this.enforcedSync, this.externalAgentAccess, this.modelGatewayBaseUrl, this.modelGatewayDisplayName, required this.modelGatewayEnforced, required this.modelGatewayModels, required this.modelGatewayPromptCachePassthrough, this.modelGatewayRevision, required this.reviewedModelIds, required this.usageStatsMinRole});
 
   final bool allowExternalContainerSharing;
   /// Whether this organization-level control applies to the target.
@@ -335,9 +335,11 @@ class OrganizationConfigDetail {
   /// Owner-controlled outside-agent access, hidden by the route until rollout.
   final OrganizationExternalAgentAccessWire? externalAgentAccess;
   final String? modelGatewayBaseUrl;
+  final String? modelGatewayDisplayName;
   final bool modelGatewayEnforced;
   final List<ModelGatewayModel> modelGatewayModels;
   final bool modelGatewayPromptCachePassthrough;
+  final String? modelGatewayRevision;
   final List<String> reviewedModelIds;
   final OrganizationRole usageStatsMinRole;
 
@@ -351,9 +353,11 @@ class OrganizationConfigDetail {
         enforcedSync: EnforcedSyncScopes.fromJson(json['enforcedSync'] as Map<String, dynamic>),
         externalAgentAccess: json['externalAgentAccess'] == null ? null : OrganizationExternalAgentAccessWire.fromWire(json['externalAgentAccess'] as String),
         modelGatewayBaseUrl: json['modelGatewayBaseUrl'] as String?,
+        modelGatewayDisplayName: json['modelGatewayDisplayName'] as String?,
         modelGatewayEnforced: json['modelGatewayEnforced'] as bool,
         modelGatewayModels: _parseList(json['modelGatewayModels'], (e) => ModelGatewayModel.fromJson(e as Map<String, dynamic>)),
         modelGatewayPromptCachePassthrough: json['modelGatewayPromptCachePassthrough'] as bool,
+        modelGatewayRevision: json['modelGatewayRevision'] as String?,
         reviewedModelIds: (json['reviewedModelIds'] as List<dynamic>).cast<String>(),
         usageStatsMinRole: OrganizationRole.fromWire(json['usageStatsMinRole'] as String),
       );

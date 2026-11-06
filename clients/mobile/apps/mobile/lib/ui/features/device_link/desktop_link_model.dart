@@ -23,6 +23,7 @@ final class DesktopLinkModel extends ChangeNotifier {
     _recovery = DesktopLinkRecovery(
       attempt: () => _connect(recovering: true),
       onExpired: () {
+        debugPrint('Computer connection did not recover within a minute.');
         recoveryExpired = true;
         unawaited(_drop());
       },
@@ -37,6 +38,10 @@ final class DesktopLinkModel extends ChangeNotifier {
           _revision++;
           phase = DesktopLinkPhase.reconnecting;
           error = null;
+          debugPrint(
+            'Computer connection lost: ${event['reason'] ?? 'unknown reason'}',
+          );
+          _outage = createStopwatch()..start();
           _recovery.start();
         } else if (!_recovery.active) {
           // A close during a handshake belongs to the pending connect. Its
@@ -60,6 +65,7 @@ final class DesktopLinkModel extends ChangeNotifier {
   Map<String, dynamic>? host;
   int pushes = 0;
   Duration? roundTrip;
+  Stopwatch? _outage;
   ({String peerDeviceId, DesktopTokenProvider fetchToken})? _target;
   int _revision = 0;
   bool _disposed = false, _suspended = false, _resume = false;
@@ -130,6 +136,13 @@ final class DesktopLinkModel extends ChangeNotifier {
       );
       if (_disposed || revision != _revision) return false;
       _recovery.cancel();
+      if (recovering && _outage != null) {
+        debugPrint(
+          'Computer connection restored after '
+          '${_outage!.elapsedMilliseconds} ms.',
+        );
+      }
+      _outage = null;
       host = info;
       code = null;
       phase = DesktopLinkPhase.connected;
@@ -152,6 +165,12 @@ final class DesktopLinkModel extends ChangeNotifier {
     }
     if (!_disposed && revision == _revision) notifyListeners();
     return phase == DesktopLinkPhase.connected;
+  }
+
+  /// Retries a recovering connection now, for example when its computer
+  /// comes back online, instead of waiting for the next scheduled attempt.
+  void retryNow() {
+    if (reconnecting && !_suspended) _recovery.retryNow();
   }
 
   Future<void> refresh() async {
@@ -187,6 +206,7 @@ final class DesktopLinkModel extends ChangeNotifier {
 
   Future<void> _drop() async {
     _recovery.cancel();
+    _outage = null;
     _revision++;
     phase = DesktopLinkPhase.disconnected;
     code = null;

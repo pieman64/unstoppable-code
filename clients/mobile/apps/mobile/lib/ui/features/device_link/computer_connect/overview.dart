@@ -1,17 +1,16 @@
 import 'package:flutter/material.dart';
-import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
-import 'package:mobile/core/design-system/icon/canopy_icon.dart';
 import 'package:mobile/core/design-system/spinner/dot_spinner.dart';
 import 'package:mobile/device_link/chats/models.dart';
 import 'package:mobile/device_link/worktrees/repository.dart';
-import 'package:mobile/ui/core/chat/widgets/pending_question_indicator.dart';
 import 'package:mobile/ui/core/design_tokens.dart';
 import 'package:mobile/ui/core/dimens.dart';
-import 'package:mobile/ui/core/status_colors.dart';
 import 'package:mobile/ui/core/typography.dart';
-import 'package:mobile/ui/core/workspaces/workspace_navigation_row.dart';
 import 'package:mobile/ui/core/workspaces/workspace_section_header.dart';
 import 'controller.dart';
+import 'package:provider/provider.dart';
+import 'package:mobile/data/models/workspace_context.dart';
+import 'package:mobile/ui/core/widgets/chat_list_notice.dart';
+import 'worktree_archive_row.dart';
 
 class DeviceProjectsOverview extends StatefulWidget {
   const DeviceProjectsOverview({
@@ -38,10 +37,11 @@ class _DeviceProjectsOverviewState extends State<DeviceProjectsOverview> {
   @override
   Widget build(BuildContext context) {
     final controller = widget.controller;
-    final worktrees = controller.worktrees.worktrees;
-    final projects = controller.worktrees.projects;
+    final scope = controller.scopeFor(context.watch<WorkspaceContext?>());
+    final worktrees = scope.worktrees;
+    final projects = scope.projects;
     final colors = AppColors.of(context);
-    final allChats = controller.chats.chats.catalog;
+    final allChats = scope.chats(controller.chats.chats.catalog);
     final coworkProjectIds = {
       for (final project in projects)
         if (project.type == 'cowork') project.id,
@@ -50,9 +50,15 @@ class _DeviceProjectsOverviewState extends State<DeviceProjectsOverview> {
         .where((chat) => coworkProjectIds.contains(chat.projectId))
         .toList();
     final rows = <Widget>[
-      if (widget.opening) const LinearProgressIndicator(minHeight: 2),
       if (controller.error case final error?) Text(error),
       if (widget.openError case final error?) Text(error),
+      if (scope.hasUnknownOwners)
+        // Missing ownership is not an empty computer or a Personal project.
+        ChatListNotice(
+          message:
+              'Some projects are hidden because their ownership is unavailable.',
+          onRetry: controller.refresh,
+        ),
       for (final worktree in worktrees.where(
         (w) => w.status == 'Needs input' || w.unread,
       ))
@@ -143,9 +149,10 @@ class _DeviceProjectsOverviewState extends State<DeviceProjectsOverview> {
     }
     final nothingLoaded =
         worktrees.isEmpty && standalone.isEmpty && projects.isEmpty;
-    if (controller.loading && nothingLoaded) {
-      // Like Remote Control, only a first load with nothing to show presents
-      // loading; refreshes behind loaded rows stay silent.
+    final pending = controller.loading || controller.scopePending;
+    if (pending && nothingLoaded && controller.error == null) {
+      // Initial loads and invalidated ownership are pending, never known empty.
+      // Refreshes behind loaded rows stay silent.
       rows.add(
         const Padding(
           key: ValueKey('device-projects-loading'),
@@ -153,11 +160,15 @@ class _DeviceProjectsOverviewState extends State<DeviceProjectsOverview> {
           child: Center(child: LoadingSpinner(size: 22)),
         ),
       );
-    } else if (worktrees.isEmpty && standalone.isEmpty && !controller.loading) {
+    } else if (worktrees.isEmpty &&
+        standalone.isEmpty &&
+        !pending &&
+        controller.error == null &&
+        !scope.hasUnknownOwners) {
       rows.add(
         const Padding(
           padding: EdgeInsets.all(24),
-          child: Text('No worktrees are available on this computer.'),
+          child: Text('No worktrees are available in this context.'),
         ),
       );
     }
@@ -199,47 +210,15 @@ class _DeviceProjectsOverviewState extends State<DeviceProjectsOverview> {
     BuildContext context,
     DeviceWorktree worktree, {
     String? contextLabel,
-  }) {
-    final status = StatusColors.of(context);
-    return WorkspaceNavigationRow(
-      key: ValueKey(
-        contextLabel == null
-            ? 'device-worktree-${worktree.key}'
-            : 'device-attention-${worktree.key}',
-      ),
-      title: worktree.name,
-      centerLeading: worktree.status == 'Needs input',
-      leading: worktree.status == 'Needs input'
-          ? const PendingQuestionIndicator()
-          : worktree.status == 'Working'
-          ? const ThinkingSpinner(size: 18)
-          : worktree.status == 'Failed'
-          ? CanopyIcon(
-              glyph: CanopyGlyph.circleX,
-              size: 18,
-              tint: status.failed,
-            )
-          : null,
-      titleSignals: worktree.unread
-          ? Container(
-              width: 8,
-              height: 8,
-              decoration: BoxDecoration(
-                color: status.unread,
-                shape: BoxShape.circle,
-              ),
-            )
-          : const SizedBox.shrink(),
-      metadata: Text(
-        contextLabel ?? worktree.id,
-        key: const ValueKey('worktree-metadata'),
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-          color: Theme.of(context).colorScheme.onSurfaceVariant,
-        ),
-      ),
-      onTap: () => widget.onOpenWorktree(worktree),
-    );
-  }
+  }) => DeviceWorktreeArchiveRow(
+    key: ValueKey(
+      contextLabel == null
+          ? 'device-worktree-${worktree.key}'
+          : 'device-attention-${worktree.key}',
+    ),
+    controller: widget.controller,
+    worktree: worktree,
+    contextLabel: contextLabel,
+    onTap: () => widget.onOpenWorktree(worktree),
+  );
 }

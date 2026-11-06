@@ -286,7 +286,6 @@ class _RemoteAppAdvisorChatScreenState
         messages: messages,
         expandedTurns: _expandedTurns,
         turnInProgress: isRunning || startingMessage != null,
-        turnElapsedMs: chatId == null ? null : advisor.turnElapsedMs(chatId),
         onToggleTurn: (key) => setState(() {
           if (!_expandedTurns.remove(key)) _expandedTurns.add(key);
         }),

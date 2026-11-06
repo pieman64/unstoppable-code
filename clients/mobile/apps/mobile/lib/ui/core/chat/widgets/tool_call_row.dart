@@ -4,7 +4,10 @@ import 'package:mobile/core/design-system/icon/canopy_icon.dart';
 import 'package:mobile/data/models/chat_message.dart';
 import 'package:mobile/ui/core/status_colors.dart';
 import 'package:mobile/ui/core/typography.dart';
-import 'package:mobile/core/design-system/spinner/dot_spinner.dart';
+import 'package:mobile/core/design-system/shimmer/shimmer_text.dart';
+import 'package:mobile/ui/core/chat/widgets/step_chevron.dart';
+import 'package:mobile/ui/core/chat/widgets/step_words.dart';
+import 'package:mobile/ui/core/design_tokens.dart';
 import 'package:mobile/ui/core/chat/view_models/tool_call_display.dart';
 
 export 'package:mobile/ui/core/chat/view_models/tool_call_display.dart'
@@ -12,9 +15,11 @@ export 'package:mobile/ui/core/chat/view_models/tool_call_display.dart'
 
 /// A single tool call rendered as a flat transcript row, mirroring the shared
 /// desktop/web `ToolCallCard`: a fixed icon slot, a friendly `verb + target`
-/// label with an optional monospace detail, a pending spinner while the turn
-/// streams, and a tap-to-expand indented panel showing the tool input and its
-/// Result/Error output. Expansion state is local and collapsed by default.
+/// label with an optional monospace detail in a lighter ink, words that
+/// shimmer while the call runs (desktop `StepRow`), "Failed" said in words
+/// rather than color, and a chevron that opens an indented panel showing the
+/// tool input and its Result/Error output. Expansion state is local and
+/// collapsed by default.
 class ToolCallRow extends StatefulWidget {
   const ToolCallRow({
     super.key,
@@ -27,7 +32,7 @@ class ToolCallRow extends StatefulWidget {
   final ToolCallResult? result;
 
   /// True while the owning turn still streams and no result has landed —
-  /// renders the working spinner after the label.
+  /// shimmers the label.
   final bool pending;
 
   @override
@@ -48,12 +53,33 @@ class _ToolCallRowState extends State<ToolCallRow> {
     final status = StatusColors.of(context);
     final label = toolCallLabel(widget.part);
     final result = widget.result;
+    final colors = AppColors.of(context);
     final isError = result?.isError ?? false;
-    final iconColor = isError
-        ? status.destructive
-        : theme.colorScheme.onSurfaceVariant;
+    final iconColor = colors.foregroundSecondary;
     final mutedText = theme.textTheme.labelMedium?.copyWith(
-      color: theme.colorScheme.onSurfaceVariant,
+      color: colors.foregroundSecondary,
+    );
+    final running = widget.pending && result == null;
+
+    final words = StepWords(
+      words: Text(
+        label.title,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: mutedText,
+      ),
+      detail: switch (label.detail) {
+        final detail? => Text(
+          detail,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: mutedText?.copyWith(
+            color: colors.foregroundMuted,
+            fontFamily: AppTypography.monoFamily,
+          ),
+        ),
+        null => null,
+      },
     );
 
     return Column(
@@ -89,45 +115,20 @@ class _ToolCallRowState extends State<ToolCallRow> {
                           ),
                   ),
                   const SizedBox(width: 6),
-                  // Both segments must be flexible on phone widths: an
-                  // unwrapped title would claim unbounded row width and
-                  // overflow (long Bash descriptions, MCP `Server › Tool`
-                  // titles). RenderFlex divides remaining width by flex
-                  // weight regardless of need, so the mono detail gets the
-                  // larger share — titles are typically short verbs while
-                  // commands benefit from every pixel.
-                  Flexible(
-                    child: Text(
-                      label.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: mutedText,
-                    ),
-                  ),
-                  if (label.detail case final detail?) ...[
-                    const SizedBox(width: 5),
-                    Flexible(
-                      flex: 3,
-                      child: Text(
-                        detail,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: mutedText?.copyWith(
-                          fontFamily: AppTypography.monoFamily,
-                        ),
-                      ),
+                  // The words stay whole and the detail ends in "…" first,
+                  // as on desktop; both stay inside the row on phone widths.
+                  Flexible(child: running ? Shimmer(child: words) : words),
+                  if (isError) ...[
+                    const SizedBox(width: 6),
+                    Text(
+                      'Failed',
+                      key: const ValueKey('tool-call-failed'),
+                      style: mutedText?.copyWith(color: colors.foregroundMuted),
                     ),
                   ],
-                  if (widget.pending && result == null) ...[
-                    const SizedBox(width: 6),
-                    const ThinkingSpinner(size: 12),
-                  ] else if (_hasDetailPanel) ...[
+                  if (!running && _hasDetailPanel) ...[
                     const SizedBox(width: 4),
-                    Icon(
-                      _expanded ? Icons.remove : Icons.add,
-                      size: 12,
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
+                    StepChevron(open: _expanded),
                   ],
                 ],
               ),

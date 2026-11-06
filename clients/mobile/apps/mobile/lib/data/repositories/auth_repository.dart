@@ -12,6 +12,8 @@ import 'package:mobile/data/services/browser_capabilities.dart';
 import 'package:mobile/data/services/oauth_authenticator.dart';
 import 'package:mobile/data/services/pkce.dart';
 import 'package:mobile/data/services/session_store.dart';
+import 'package:mobile/data/services/email_auth_api_service.dart';
+import 'package:mobile/data/repositories/email_auth_repository.dart';
 
 /// Thrown by [AuthRepository.signIn] when authentication fails
 /// (bad credentials, network error, etc.).
@@ -207,7 +209,7 @@ final class MockAuthRepository implements AuthRepository {
 /// Live [AuthRepository] backed by Better Auth via [AuthApiService], persisting
 /// the bearer token in [SessionStore].
 final class HttpAuthRepository
-    implements AuthRepository, GuestSessionRepository {
+    implements AuthRepository, GuestSessionRepository, EmailAuthRepository {
   HttpAuthRepository({
     required this.service,
     required this.sessionStore,
@@ -225,6 +227,56 @@ final class HttpAuthRepository
   final OAuthAuthenticator? oauthAuthenticator;
   final BrowserCapabilities browserCapabilities;
   final AppleCredentialProvider appleCredentialProvider;
+
+  late final EmailAuthApiService _emailAuth = EmailAuthApiService(
+    apiClient: service.apiClient,
+  );
+
+  @override
+  Future<bool> emailAuthAvailable() => _emailAuth.available();
+  @override
+  Future<void> signUpWithEmail(String email, String password) =>
+      _emailAuth.signUp(email, password);
+  @override
+  Future<void> verifyEmailCode(String email, String code) =>
+      _emailAuth.verify(email, code);
+  @override
+  Future<void> requestEmailPasswordReset(String email) =>
+      _emailAuth.forgot(email);
+  @override
+  Future<void> resetEmailPassword(String email, String code, String password) =>
+      _emailAuth.reset(email, code, password);
+
+  @override
+  void cancelEmailSignIn() {
+    ++_generation;
+  }
+
+  @override
+  Future<EmailSignInResult> signInWithEmail({
+    required String email,
+    required String password,
+  }) async {
+    final generation = ++_generation;
+    final verifier = Pkce.generateCodeVerifier();
+    final proof = await _emailAuth.signIn(
+      email: email,
+      password: password,
+      codeChallenge: Pkce.deriveCodeChallenge(verifier),
+    );
+    if (generation != _generation) throw const SessionValidationException();
+    return switch (proof) {
+      EmailVerificationRequired() => const EmailSignInVerification(),
+      EmailFactorChallenge(:final challenge) => EmailSignInComplete(
+        SocialSignInTwoFactorRequired(challenge: challenge, verifier: verifier),
+      ),
+      EmailExchangeCode(:final code) => EmailSignInComplete(
+        SocialSignInSuccess(
+          await _exchangeAndPersist(code, verifier, generation),
+        ),
+      ),
+    };
+  }
 
   @override
   Future<AuthSession?> restoreSession() async {
@@ -276,16 +328,19 @@ final class HttpAuthRepository
     required String email,
     required String password,
   }) async {
-    final generation = ++_generation;
-    final AuthSession session;
     try {
-      session = await service.signInWithEmail(email: email, password: password);
-    } on ApiException catch (e) {
-      throw AuthException(_messageForStatus(e.statusCode));
+      final result = await signInWithEmail(email: email, password: password);
+      if (result case EmailSignInComplete(
+        result: SocialSignInSuccess(:final session),
+      )) {
+        return session;
+      }
+      throw const AuthException(
+        'Complete email verification or two-factor authentication to sign in.',
+      );
+    } on EmailAuthException catch (error) {
+      throw AuthException(error.message);
     }
-    if (generation != _generation) throw const SessionValidationException();
-    await sessionStore.save(session.token);
-    return session;
   }
 
   @override

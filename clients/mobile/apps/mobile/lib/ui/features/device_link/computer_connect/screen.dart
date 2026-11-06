@@ -18,11 +18,14 @@ import '../desktop_link_model.dart';
 import 'controller.dart';
 import 'account.dart';
 import 'connection_view.dart';
+import 'computer_switcher.dart';
 import 'overview.dart';
 import 'new_task_screen.dart';
 import 'search_screen.dart';
 import '../chats_screen.dart';
 import 'package:mobile/device_link/chats/models.dart';
+import 'package:mobile/data/models/workspace_context.dart';
+import 'package:provider/provider.dart';
 
 class ComputerConnectScreen extends StatefulWidget {
   const ComputerConnectScreen({
@@ -77,7 +80,10 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
   }
 
   Future<void> _open(DeviceWorktree worktree) async {
-    if (_opening || !widget.controller.chats.online) return;
+    if (_opening || !widget.controller.chats.online || !_includes(worktree)) {
+      _explainPendingScope();
+      return;
+    }
     setState(() {
       _opening = true;
       _openError = null;
@@ -86,6 +92,10 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
     controller.enterChat();
     try {
       await controller.worktrees.load(worktree);
+      if (!_includes(worktree)) {
+        _explainPendingScope();
+        return;
+      }
       if (worktree.status == 'Unavailable') {
         throw const DeviceLinkException(
           'Could not load this worktree. Refresh and try again.',
@@ -123,7 +133,12 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
   }
 
   Future<void> _newTask(DeviceProject project) async {
-    if (_opening || !widget.controller.chats.online) return;
+    if (_opening ||
+        !widget.controller.chats.online ||
+        !_includesProject(project)) {
+      _explainPendingScope();
+      return;
+    }
     setState(() {
       _opening = true;
       _openError = null;
@@ -132,13 +147,15 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
     controller.enterChat();
     try {
       await controller.chats.leaveChat();
-      if (mounted && controller.chats.online) {
+      if (mounted && controller.chats.online && _includesProject(project)) {
         await Navigator.of(context).push<void>(
           MaterialPageRoute(
             builder: (_) =>
                 DeviceNewTaskScreen(controller: controller, project: project),
           ),
         );
+      } else {
+        _explainPendingScope();
       }
     } finally {
       if (mounted) setState(() => _opening = false);
@@ -148,7 +165,10 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
   }
 
   Future<void> _openChat(DeviceChatRef ref) async {
-    if (_opening || !widget.controller.chats.online) return;
+    if (_opening || !widget.controller.chats.online || !_includesChat(ref)) {
+      _explainPendingScope();
+      return;
+    }
     setState(() {
       _opening = true;
       _openError = null;
@@ -165,29 +185,82 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
     }
   }
 
+  void _manageComputers(ComputerConnectAccount account) => unawaited(
+    Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => CanopyScaffold(
+          appBar: const CanopyAppBar(
+            content: Text('Computers'),
+            automaticallyImplyLeading: true,
+          ),
+          body: ComputerConnectionView(account: account),
+        ),
+      ),
+    ),
+  );
+
   Future<void> _showChat([String? worktreeName]) {
     final controller = widget.controller;
     final ref = controller.chats.state?.ref;
+    if (ref == null || !_includesChat(ref)) {
+      _explainPendingScope();
+      return Future.value();
+    }
     return Navigator.of(context).push<void>(
       MaterialPageRoute(
         builder: (_) => DeviceChatScreen(
           model: widget.controller.chats,
           locationLabel: worktreeName,
-          worktree: ref == null ? null : controller.activityContext(ref),
+          worktree: controller.activityContext(ref),
         ),
       ),
     );
   }
 
+  bool _includes(DeviceWorktree worktree) =>
+      mounted &&
+      widget.controller
+          .scopeFor(context.read<WorkspaceContext?>())
+          .includesWorktree(worktree);
+
+  bool _includesProject(DeviceProject project) =>
+      mounted &&
+      widget.controller
+          .scopeFor(context.read<WorkspaceContext?>())
+          .projects
+          .any((p) => p.id == project.id);
+
+  bool _includesChat(DeviceChatRef ref) =>
+      mounted &&
+      widget.controller
+          .scopeFor(context.read<WorkspaceContext?>())
+          .includesChat(ref);
+
+  void _explainPendingScope() {
+    if (mounted && widget.controller.active && widget.controller.scopePending) {
+      setState(() => _openError = deviceScopeRefreshingMessage);
+    }
+  }
+
   @override
   Widget build(BuildContext context) => ListenableBuilder(
-    listenable: widget.controller,
+    listenable: Listenable.merge([widget.controller, ?widget.account]),
     builder: (context, _) {
       final controller = widget.controller;
       final connection = controller.chats.connection;
       final online = controller.chats.online;
       final retainingComputer = online || connection.reconnecting;
       final navigation = HomeNavigationScope.maybeOf(context);
+      final account = widget.account;
+      final hostName = retainingComputer
+          ? (connection.host?['name'] as String?)
+          : null;
+      final title = hostName ?? account?.selectedName ?? 'Computer connect';
+      final status = !retainingComputer
+          ? 'Not connected'
+          : connection.reconnecting
+          ? 'Reconnecting…'
+          : 'Connected';
       return CanopyScaffold(
         appBar: CanopyAppBar(
           // Hosted in the home shell, the drawer is the way out, as on
@@ -201,13 +274,19 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
                   onPressed: navigation.openDrawer,
                 ),
           automaticallyImplyLeading: navigation == null,
-          content: retainingComputer
+          content:
+              account != null &&
+                  (retainingComputer || account.connectedComputers.isNotEmpty)
+              ? ComputerSwitcher(
+                  account: account,
+                  title: title,
+                  label: status,
+                  onManage: () => _manageComputers(account),
+                )
+              : retainingComputer
               ? ComputerConnectionTitle(
-                  title:
-                      connection.host?['name'] as String? ?? 'Computer connect',
-                  label: connection.reconnecting
-                      ? 'Reconnecting…'
-                      : 'Connected',
+                  title: title,
+                  label: status,
                   titleKey: const ValueKey('computer-connect-device-name'),
                   labelKey: const ValueKey('computer-connect-device-status'),
                 )
@@ -221,21 +300,6 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
                     onPressed: () => menu.isOpen ? menu.close() : menu.open(),
                   ),
                   menuChildren: [
-                    if (widget.account case final account?)
-                      MenuItemButton(
-                        onPressed: () => Navigator.of(context).push<void>(
-                          MaterialPageRoute(
-                            builder: (_) => CanopyScaffold(
-                              appBar: const CanopyAppBar(
-                                content: Text('Computers'),
-                                automaticallyImplyLeading: true,
-                              ),
-                              body: ComputerConnectionView(account: account),
-                            ),
-                          ),
-                        ),
-                        child: const Text('Computers'),
-                      ),
                     MenuItemButton(
                       leadingIcon: CanopyIcon(
                         glyph: CanopyGlyph.magnifyingGlass,

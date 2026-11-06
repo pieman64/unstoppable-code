@@ -10,6 +10,7 @@ import 'package:mobile/ui/core/design_tokens.dart';
 import 'package:mobile/ui/core/status_colors.dart';
 import 'package:mobile/ui/core/typography.dart';
 import 'package:mobile/ui/core/widgets/inline_notice.dart';
+import 'package:mobile/core/design-system/spinner/dot_spinner.dart';
 import 'package:mobile/device_link/desktop/saved_connection.dart';
 import '../desktop_link_model.dart';
 import 'account.dart';
@@ -102,13 +103,6 @@ class ComputerConnectionView extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 24),
-                if (connection.busy) ...[
-                  _ProgressCard(
-                    code: connection.code,
-                    onCancel: connection.disconnect,
-                  ),
-                  const SizedBox(height: 16),
-                ],
                 if (error != null) ...[
                   InlineNotice(glyph: CanopyGlyph.circleInfo, state: error),
                   const SizedBox(height: 16),
@@ -122,7 +116,13 @@ class ComputerConnectionView extends StatelessWidget {
                             'computer-connect-saved-${computer.id}',
                           ),
                           name: computer.name,
-                          status: _status(computer),
+                          status: _status(computer.id),
+                          connection: account
+                              .engine
+                              .sessions[computer.id]
+                              ?.chats
+                              .connection,
+                          onCancel: () => account.disconnect(computer.id),
                           onTap: account.busy
                               ? null
                               : () => account.connect(computer.id),
@@ -157,10 +157,30 @@ class ComputerConnectionView extends StatelessWidget {
                         _ComputerRow(
                           key: ValueKey('computer-connect-peer-${peer.id}'),
                           name: peer.name,
-                          status: const (
-                            label: 'Ready to pair',
-                            tone: _Tone.active,
-                          ),
+                          status:
+                              account
+                                      .engine
+                                      .sessions[peer.id]
+                                      ?.chats
+                                      .connection
+                                      .busy ==
+                                  true
+                              ? _status(peer.id)
+                              : const (
+                                  label: 'Ready to pair',
+                                  tone: _Tone.active,
+                                ),
+                          connection: account
+                              .engine
+                              .sessions[peer.id]
+                              ?.chats
+                              .connection,
+                          onCancel: () => account
+                              .engine
+                              .sessions[peer.id]
+                              ?.chats
+                              .connection
+                              .disconnect(),
                           onTap: account.busy
                               ? null
                               : () => account.connect(peer.id),
@@ -172,7 +192,7 @@ class ComputerConnectionView extends StatelessWidget {
                     ],
                   ),
                   const SizedBox(height: 24),
-                ] else if (!connection.busy) ...[
+                ] else ...[
                   if (searched && error == null) ...[
                     Text(
                       'No computers found yet.',
@@ -184,23 +204,22 @@ class ComputerConnectionView extends StatelessWidget {
                   const _SetupSteps(),
                   const SizedBox(height: 24),
                 ],
-                if (!connection.busy)
-                  CanopyButton(
-                    expand: true,
-                    label: account.busy
-                        ? 'Finding computers…'
-                        : recover || error != null
-                        ? 'Try again'
-                        : !account.hasCredential
-                        ? 'Connect a computer'
-                        : 'Find computers',
-                    loading: account.busy,
-                    onPressed: account.busy
-                        ? null
-                        : () => recover
-                              ? account.setUpAgain()
-                              : account.findComputers(),
-                  ),
+                CanopyButton(
+                  expand: true,
+                  label: account.finding
+                      ? 'Finding computers…'
+                      : recover || error != null
+                      ? 'Try again'
+                      : !account.hasCredential
+                      ? 'Connect a computer'
+                      : 'Find computers',
+                  loading: account.finding,
+                  onPressed: account.busy
+                      ? null
+                      : () => recover
+                            ? account.setUpAgain()
+                            : account.findComputers(),
+                ),
               ],
             ),
           ),
@@ -209,27 +228,31 @@ class ComputerConnectionView extends StatelessWidget {
     },
   );
 
-  _Status _status(SavedComputer computer) {
-    final connection = account.engine.sessions[computer.id]?.chats.connection;
+  _Status _status(String id) {
+    final computer = account.saved.computers[id];
+    final connection = account.engine.sessions[id]?.chats.connection;
     if (connection?.phase == DesktopLinkPhase.connected) {
       return (label: 'Connected', tone: _Tone.success);
     }
     if (connection?.reconnecting == true) {
       return (label: 'Reconnecting…', tone: _Tone.active);
     }
+    if (connection?.phase == DesktopLinkPhase.pairing) {
+      return (label: 'Waiting for approval…', tone: _Tone.active);
+    }
     if (connection?.busy == true) {
       return (label: 'Connecting…', tone: _Tone.active);
     }
-    if (!computer.reconnect) {
+    if (computer?.reconnect == false) {
       return (label: 'Disconnected', tone: _Tone.neutral);
     }
     if (account.accessDenied) {
       return (label: 'Connection needs attention', tone: _Tone.warning);
     }
-    if (!account.peers.containsKey(computer.id)) {
+    if (!account.peers.containsKey(id)) {
       return (label: 'Computer offline', tone: _Tone.neutral);
     }
-    if (account.peers[computer.id]?.acceptsControl != true) {
+    if (account.peers[id]?.acceptsControl != true) {
       return (label: 'Remote access is off', tone: _Tone.neutral);
     }
     if (connection?.error != null) {
@@ -299,87 +322,40 @@ class _SetupSteps extends StatelessWidget {
   }
 }
 
-/// Connecting, or waiting for the person to compare and approve a code.
-class _ProgressCard extends StatelessWidget {
-  const _ProgressCard({required this.code, required this.onCancel});
-  final String? code;
-  final Future<void> Function() onCancel;
+/// Approval stays attached to the computer whose identity is being checked.
+class _PairingCode extends StatelessWidget {
+  const _PairingCode(this.code);
+  final String code;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final colors = AppColors.of(context);
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: colors.surfaceRaised,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: colors.border),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (code case final code?) ...[
-              Semantics(
-                liveRegion: true,
-                child: Text(
-                  'Check the code on your computer',
-                  textAlign: TextAlign.center,
-                  style: theme.textTheme.titleSmall,
-                ),
-              ),
-              const SizedBox(height: 12),
-              Text(
-                code,
-                key: const ValueKey('computer-connect-code'),
-                textAlign: TextAlign.center,
-                style: theme.textTheme.headlineLarge?.copyWith(
-                  fontFamily: AppTypography.monoFamily,
-                  fontFeatures: const [FontFeature.tabularFigures()],
-                ),
-              ),
-              const SizedBox(height: 12),
-              Text(
-                'Approve on your computer only if both codes match. You only need to do this once.',
-                textAlign: TextAlign.center,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: colors.foregroundSecondary,
-                ),
-              ),
-            ] else
-              Semantics(
-                liveRegion: true,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    SizedBox.square(
-                      dimension: 16,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: colors.foregroundSecondary,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Flexible(
-                      child: Text(
-                        'Connecting…',
-                        style: theme.textTheme.titleSmall,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            const SizedBox(height: 8),
-            Center(
-              child: CanopyButton(
-                label: 'Cancel',
-                variant: CanopyButtonVariant.inline,
-                onPressed: onCancel,
-              ),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'Check the code on your computer',
+            style: theme.textTheme.titleSmall,
+          ),
+          const SizedBox(height: 12),
+          Text(
+            code,
+            key: const ValueKey('computer-connect-code'),
+            style: theme.textTheme.headlineLarge?.copyWith(
+              fontFamily: AppTypography.monoFamily,
+              fontFeatures: const [FontFeature.tabularFigures()],
             ),
-          ],
-        ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Approve on your computer only if both codes match. You only need to do this once.',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: AppColors.of(context).foregroundSecondary,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -419,7 +395,11 @@ class _ComputerRow extends StatelessWidget {
     required this.status,
     required this.onTap,
     required this.trailing,
+    required this.connection,
+    required this.onCancel,
   });
+  final DesktopLinkModel? connection;
+  final VoidCallback onCancel;
   final String name;
   final _Status status;
   final VoidCallback? onTap;
@@ -435,34 +415,60 @@ class _ComputerRow extends StatelessWidget {
       _Tone.warning => status.warning,
       _Tone.neutral => status.neutral,
     };
-    return ListTile(
-      contentPadding: const EdgeInsetsDirectional.only(start: 16, end: 8),
-      leading: CanopyIcon(glyph: CanopyGlyph.macbook, tint: colors.foreground),
-      title: Text(
-        name,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: AppTypography.title.copyWith(color: colors.foreground),
-      ),
-      subtitle: Row(
-        children: [
-          DecoratedBox(
-            decoration: BoxDecoration(color: tone, shape: BoxShape.circle),
-            child: const SizedBox.square(dimension: 8),
+    final busy = connection?.busy == true;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        ListTile(
+          contentPadding: const EdgeInsetsDirectional.only(start: 16, end: 8),
+          leading: CanopyIcon(
+            glyph: CanopyGlyph.macbook,
+            tint: colors.foreground,
           ),
-          const SizedBox(width: 6),
-          Flexible(
-            child: Text(
-              this.status.label,
-              style: AppTypography.bodySmall.copyWith(
-                color: colors.foregroundSecondary,
-              ),
+          title: Text(
+            name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: AppTypography.title.copyWith(color: colors.foreground),
+          ),
+          subtitle: Semantics(
+            liveRegion: true,
+            child: Row(
+              children: [
+                if (busy)
+                  const LoadingSpinner(size: 12)
+                else
+                  DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: tone,
+                      shape: BoxShape.circle,
+                    ),
+                    child: const SizedBox.square(dimension: 8),
+                  ),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    this.status.label,
+                    style: AppTypography.bodySmall.copyWith(
+                      color: colors.foregroundSecondary,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
-        ],
-      ),
-      trailing: trailing,
-      onTap: onTap,
+          trailing: busy
+              ? CanopyButton(
+                  label: 'Cancel',
+                  semanticsLabel: 'Cancel connection to $name',
+                  variant: CanopyButtonVariant.inline,
+                  onPressed: onCancel,
+                )
+              : trailing,
+          onTap: busy ? null : onTap,
+        ),
+        if (connection?.code case final code?) _PairingCode(code),
+      ],
     );
   }
 }

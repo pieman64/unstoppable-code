@@ -8,7 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mobile/data/models/remote_session.dart';
 import 'package:mobile/ui/core/theme.dart';
-import 'package:mobile/ui/features/remote/views/widgets/worktree_row.dart';
+import 'package:mobile/ui/core/workspaces/worktree_row.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();

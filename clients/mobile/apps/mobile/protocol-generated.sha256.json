@@ -4,7 +4,7 @@
     "apps/mobile/lib/data/protocol/generated/account.dart": "587106a03a290537ebaead649ed7cb0014c4e9dd6414541f89fa23ff89f152c8",
     "apps/mobile/lib/data/protocol/generated/api_keys.dart": "ee32ed5b587fd7f9921549578dbc515a7943dadb0c97a5ca6160ef6df8401d50",
     "apps/mobile/lib/data/protocol/generated/feed.dart": "a663fb72748aef8a31e22b2965265b53b1c59db1ccc2d8d12fec78972f3dd4cd",
-    "apps/mobile/lib/data/protocol/generated/organization.dart": "739f1accd5aa614d89003aef292d28271530fab6ea9e77701d845c9fb9b0c152",
+    "apps/mobile/lib/data/protocol/generated/organization.dart": "5dc19c70269bf458c0d57fa6346c9a74aa0a1db0e2f412afe8f91f167d1a4798",
     "apps/mobile/lib/data/protocol/generated/portal_command_status.dart": "2e7b13df33c69c4401927cb97ae8d6d8d72d8a6154fedc87937d48990a791275",
     "apps/mobile/lib/data/protocol/generated/provider_usage.dart": "a09ebdf94135a147f2d26f64bf277ccb636fafebefd05321c5f8da316f72739a",
     "apps/mobile/lib/data/protocol/generated/usage.dart": "6086540b9dc53faa7f09ee7c09fdef93005dc6ff2afd2482c727492a2525535d"

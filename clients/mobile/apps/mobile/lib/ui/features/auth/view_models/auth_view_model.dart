@@ -9,6 +9,7 @@ import 'package:mobile/data/models/social_sign_in_result.dart';
 import 'package:mobile/data/models/workspace_context.dart';
 import 'package:mobile/data/protocol/generated/organization.dart';
 import 'package:mobile/data/repositories/auth_repository.dart';
+import 'package:mobile/data/repositories/email_auth_repository.dart';
 import 'package:mobile/data/services/api_client.dart';
 import 'package:mobile/data/services/workspace_context_store.dart';
 
@@ -114,6 +115,8 @@ final class AuthViewModel extends ChangeNotifier {
   String? _pendingChallenge;
   String? _pendingVerifier;
   bool _guestEntryAvailable = false;
+  bool _emailEntryAvailable = false;
+  int _emailEntryGeneration = 0;
   bool _upgradingGuest = false;
   String? _signedInFromGuestId;
 
@@ -141,6 +144,21 @@ final class AuthViewModel extends ChangeNotifier {
   /// Whether the sign-in screen may offer "Continue as guest". False until
   /// [loadGuestEntry] hears from the server.
   bool get guestEntryAvailable => _guestEntryAvailable;
+  bool get emailEntryAvailable => _emailEntryAvailable;
+
+  EmailAuthRepository? get emailAuthRepository => switch (repository) {
+    final EmailAuthRepository emailRepository => emailRepository,
+    _ => null,
+  };
+
+  Future<void> loadEmailEntry() async {
+    if (_disposed) return;
+    final generation = ++_emailEntryGeneration;
+    final enabled = await emailAuthRepository?.emailAuthAvailable() ?? false;
+    if (_disposed || generation != _emailEntryGeneration) return;
+    _emailEntryAvailable = enabled;
+    notifyListeners();
+  }
 
   /// True while a sign-in is in flight: the signed-out flow, or a guest
   /// signing in, which stays [AuthStatus.authenticated] so the app behind the
@@ -319,6 +337,15 @@ final class AuthViewModel extends ChangeNotifier {
   /// sheet), with [signInWithSocial]'s status transitions.
   Future<void> signInWithApple() =>
       _runSocialSignIn(repository.signInWithApple);
+
+  /// Email password proof feeds the same validated session/factor lifecycle.
+  Future<void> acceptEmailSignIn(SocialSignInResult result) =>
+      _runSocialSignIn(() async => result);
+
+  /// An email exchange can save credentials before validation becomes
+  /// unavailable. Preserve the same recovery/guest reconciliation as OAuth.
+  Future<void> handleEmailSignInFailure(Object error) =>
+      _runSocialSignIn(() => Future<SocialSignInResult?>.error(error));
 
   /// Shared by the social and Apple flows. A guest signing in (CAN-2872) stays
   /// [AuthStatus.authenticated] as the guest until the new session arrives, so

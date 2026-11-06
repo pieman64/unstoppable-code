@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -8,13 +7,12 @@ import 'package:mobile/data/models/turn_timer.dart';
 import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
 import 'package:mobile/core/design-system/icon/canopy_icon.dart';
 import 'package:mobile/core/design-system/overlay-action/canopy_overlay_action.dart';
+import 'package:mobile/core/design-system/shimmer/shimmer_text.dart';
 import 'package:mobile/ui/core/design_tokens.dart';
 import 'package:mobile/ui/core/status_colors.dart';
 import 'package:mobile/ui/core/typography.dart';
-import 'package:mobile/ui/core/widgets/chat_glyph.dart';
 import 'package:mobile/core/design-system/spinner/dot_spinner.dart';
 import 'package:mobile/ui/core/widgets/message_markdown.dart';
-import 'package:mobile/ui/core/chat/widgets/agent_card.dart';
 import 'package:mobile/ui/core/chat/view_models/attachment_thumbnail_cache.dart';
 import 'package:mobile/ui/core/chat/view_models/transcript_projection.dart';
 import 'package:mobile/ui/core/chat/view_models/turn_grouping.dart';
@@ -26,7 +24,8 @@ import 'package:mobile/ui/core/chat/widgets/latest_first_scroll_controller.dart'
 import 'package:mobile/ui/core/chat/widgets/message_bubble_surface.dart';
 import 'package:mobile/ui/core/chat/widgets/row_widget_cache.dart';
 import 'package:mobile/ui/core/chat/widgets/retained_message_attribution.dart';
-import 'package:mobile/ui/core/chat/widgets/thinking_row.dart';
+import 'package:mobile/ui/core/chat/widgets/step_chevron.dart';
+import 'package:mobile/ui/core/chat/widgets/step_run_row.dart';
 import 'package:mobile/ui/core/chat/widgets/tool_call_row.dart';
 import 'package:mobile/ui/core/chat/widgets/watcher_message_bubble.dart';
 
@@ -81,12 +80,10 @@ class ChatFeed extends StatefulWidget {
     required this.onToggleTurn,
     this.onLoadOlder,
     this.loadingOlder = false,
-    this.turnElapsedMs,
     this.trailing = const [],
     this.turnFooters = const {},
     this.bottomActionInset = 0,
     this.topContentInset = 0,
-    this.clock = DateTime.now,
     this.controller,
     this.onResend,
     this.canResend,
@@ -104,9 +101,6 @@ class ChatFeed extends StatefulWidget {
   /// post-send bridge before either projection has landed.
   final bool turnInProgress;
 
-  /// Host-measured duration for a turn that was already running when this
-  /// client attached. Null on older hosts and when a live timer part exists.
-  final int? turnElapsedMs;
   final ValueChanged<String> onToggleTurn;
 
   /// Fired once on entering the oldest-content threshold. The feed rearms on
@@ -137,10 +131,6 @@ class ChatFeed extends StatefulWidget {
 
   /// Scrollable clearance for overlaid chrome above the oldest message.
   final double topContentInset;
-
-  /// Phone wall clock, injectable for tests. The working row counts on it
-  /// from the moment a live timer frame lands, never against desktop time.
-  final DateTime Function() clock;
 
   /// Overrides the feed's own controller so a test can observe the position
   /// writes it makes. The feed keeps ownership of a controller it created and
@@ -775,6 +765,7 @@ class _ChatFeedState extends State<ChatFeed> {
                 message: message,
                 toolResults: row.toolResults,
                 streamingSpinner: row.streamingSpinner,
+                showParts: row.parts,
                 onResend: !canResend
                     ? null
                     : (messageId) => widget.onResend?.call(messageId),
@@ -785,23 +776,62 @@ class _ChatFeedState extends State<ChatFeed> {
             ),
           ),
         );
-      case TranscriptStepsRow(:final turn, :final counts, :final expanded):
-        Widget build() => _CollapsedStepsRow(
+      case TranscriptStepsRow(
+        :final turn,
+        :final counts,
+        :final expanded,
+        :final timer,
+      ):
+        Widget build() => _TurnWorkHeader(
           turn: turn,
           counts: counts,
           expanded: expanded,
+          timer: timer,
           // Reads the callback when tapped, so a reused row never calls a
           // callback from an older build.
           onTap: () => widget.onToggleTurn(turn.key),
         );
         return _keyedRow(row, row, build);
-      case TranscriptTimerRow(:final timer, :final initialElapsedMs):
-        Widget build() => _WorkingIndicatorRow(
-          timer: timer,
-          initialElapsedMs: initialElapsedMs,
-          clock: widget.clock,
+      case TranscriptRunRow(
+        :final runKey,
+        :final steps,
+        :final shownFrom,
+        :final expanded,
+        :final toolResults,
+        :final anchorMessageId,
+      ):
+        Widget build() => StepRunRow(
+          steps: steps,
+          shownFrom: shownFrom,
+          expanded: expanded,
+          toolResults: toolResults,
+          // Reads the callback when tapped, so a reused row never calls a
+          // callback from an older build.
+          onToggle: () => widget.onToggleTurn(runKey),
         );
-        return _keyedRow(row, (row, widget.clock), build);
+        if (anchorMessageId == null) return _keyedRow(row, row, build);
+        // A run is the only row of its step-only messages, so it holds the
+        // reader in place across history loads, as a message row does.
+        final anchorKey = _messageAnchorKeys.putIfAbsent(
+          anchorMessageId,
+          GlobalKey.new,
+        );
+        final keepAlive = anchorMessageId == _prependAnchor.messageId;
+        return _rowWidgets.obtain(
+          row.key,
+          (row, anchorKey, keepAlive),
+          () => KeyedSubtree(
+            key: ValueKey(row.key),
+            child: _PrependAnchorKeeper(
+              key: anchorKey,
+              keepAlive: keepAlive,
+              child: build(),
+            ),
+          ),
+        );
+      case TranscriptTimerRow(:final timer):
+        Widget build() => _TurnStatusRow(timer: timer);
+        return _keyedRow(row, row, build);
       case TranscriptTurnFooterRow(:final turnKey):
         // Owner-supplied and owner-updated: never served from the row cache.
         return KeyedSubtree(
@@ -831,7 +861,6 @@ class _ChatFeedState extends State<ChatFeed> {
       for (final row in _projection.rows(
         messages: widget.messages,
         turnInProgress: widget.turnInProgress,
-        turnElapsedMs: widget.turnElapsedMs,
         expandedTurns: widget.expandedTurns,
         footerTurns: widget.turnFooters.keys.toSet(),
       ))
@@ -932,86 +961,74 @@ class _ChatFeedState extends State<ChatFeed> {
   }
 }
 
-/// Left-aligned tappable pill summarizing a turn's collapsed intermediate
-/// steps (`"7 steps · Bash ×3 · Read ×2"`), with live progress while the
-/// steps are still streaming.
-/// Collapsed steps card for one turn, mirroring desktop's
-/// `CollapsedTurnSummary`: a full-width surface one elevation step above the
-/// transcript (`bg-primary`, rounded-xl, soft shadow) carrying a chevron and
-/// one icon + count per step category in the desktop order. No prose — the
-/// counts ARE the summary; the semantics label carries the readable form.
-class _CollapsedStepsRow extends StatelessWidget {
-  const _CollapsedStepsRow({
+/// A finished turn's header, as desktop's clean `TurnWorkHeader`: "Worked
+/// for 3m 24s" in the step rows' quiet ink with a chevron that opens the
+/// steps the turn folded away, over a hairline that closes the header. The
+/// semantics label names what the steps did. A turn with no steps keeps the
+/// words and nothing to open.
+class _TurnWorkHeader extends StatelessWidget {
+  const _TurnWorkHeader({
     required this.turn,
     required this.counts,
     required this.expanded,
+    required this.timer,
     required this.onTap,
   });
 
   final ChatTurn turn;
   final List<TurnStepCount> counts;
   final bool expanded;
+  final TurnTimer? timer;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final colors = AppColors.of(context);
-    final muted = colors.foregroundSecondary;
-    final stepsStreaming = turn.isStreaming;
-    final countStyle = AppTypography.compactLabel.copyWith(color: muted);
-
+    final label = turnWorkLabel(timer);
+    final opens = counts.isNotEmpty;
+    // The hairline sits on the reply's text inset, as desktop's `px-3`.
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.fromLTRB(
+        MessageBubbleSurface.textInset,
+        8,
+        MessageBubbleSurface.textInset,
+        4,
+      ),
       child: Semantics(
-        button: true,
-        expanded: expanded,
-        label: 'Agent steps: ${describeTurnStepCounts(counts)}',
-        child: Material(
-          key: ValueKey('turn-steps-${turn.key}'),
-          color: colors.surface,
-          elevation: 1,
-          shadowColor: const Color(0x14000000),
-          borderRadius: BorderRadius.circular(AppRadii.xl),
+        button: opens,
+        expanded: opens ? expanded : null,
+        label: opens ? 'Agent steps: ${describeTurnStepCounts(counts)}' : label,
+        value: opens ? label : null,
+        child: Container(
+          decoration: BoxDecoration(
+            border: Border(bottom: BorderSide(color: colors.border)),
+          ),
+          padding: const EdgeInsets.only(bottom: 4),
           child: InkWell(
-            onTap: onTap,
-            borderRadius: BorderRadius.circular(AppRadii.xl),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              child: Row(
-                children: [
-                  CanopyIcon(
-                    glyph: expanded
-                        ? CanopyGlyph.chevronDownSmall
-                        : CanopyGlyph.chevronRightSmall,
-                    size: 16,
-                    tint: muted,
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Wrap(
-                      spacing: 12,
-                      runSpacing: 4,
-                      crossAxisAlignment: WrapCrossAlignment.center,
-                      children: [
-                        for (final entry in counts)
-                          ExcludeSemantics(
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                _StepCategoryIcon(
-                                  category: entry.category,
-                                  color: muted,
-                                ),
-                                const SizedBox(width: 4),
-                                Text('${entry.count}', style: countStyle),
-                              ],
-                            ),
-                          ),
-                        if (stepsStreaming) const ThinkingSpinner(size: 12),
-                      ],
+            key: ValueKey('turn-steps-${turn.key}'),
+            onTap: opens ? onTap : null,
+            borderRadius: BorderRadius.circular(AppRadii.sm),
+            child: ExcludeSemantics(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppTypography.bodySmall.copyWith(
+                          color: colors.foregroundSecondary,
+                        ),
+                      ),
                     ),
-                  ),
-                ],
+                    if (opens) ...[
+                      const SizedBox(width: 4),
+                      StepChevron(open: expanded),
+                    ],
+                  ],
+                ),
               ),
             ),
           ),
@@ -1021,232 +1038,35 @@ class _CollapsedStepsRow extends StatelessWidget {
   }
 }
 
-/// 14px glyph for one steps-card category: the same SVG the desktop
-/// `CollapsedTurnSummary` renders for that bucket (ported into
-/// `assets/icons/chat/`), except Plan, Claude and App which use the shared
-/// app/brand glyphs on both platforms.
-class _StepCategoryIcon extends StatelessWidget {
-  const _StepCategoryIcon({required this.category, required this.color});
-
-  final TurnStepCategory category;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    final appGlyph = switch (category) {
-      TurnStepCategory.plan => CanopyGlyph.map,
-      TurnStepCategory.claude => CanopyGlyph.claudeai,
-      TurnStepCategory.canopy => CanopyGlyph.apps,
-      TurnStepCategory.computerUse => CanopyGlyph.cursorClick,
-      _ => null,
-    };
-    if (appGlyph != null) {
-      return CanopyIcon(glyph: appGlyph, size: 14, tint: color);
-    }
-    final glyph = switch (category) {
-      TurnStepCategory.messages => ChatGlyph.message,
-      TurnStepCategory.thinking => ChatGlyph.thinking,
-      TurnStepCategory.bash => ChatGlyph.terminal,
-      TurnStepCategory.read || TurnStepCategory.readLines => ChatGlyph.document,
-      TurnStepCategory.writeEdit => ChatGlyph.documentPencil,
-      TurnStepCategory.search => ChatGlyph.magnifyingGlass,
-      TurnStepCategory.grep => ChatGlyph.documentSearch,
-      TurnStepCategory.web => ChatGlyph.globe,
-      TurnStepCategory.agent => ChatGlyph.agent,
-      TurnStepCategory.workflow => ChatGlyph.workflow,
-      TurnStepCategory.tasks => ChatGlyph.task,
-      TurnStepCategory.taskStop => ChatGlyph.stop,
-      TurnStepCategory.skills => ChatGlyph.skill,
-      TurnStepCategory.monitor => ChatGlyph.monitor,
-      TurnStepCategory.scheduleWakeup => ChatGlyph.stopwatch,
-      TurnStepCategory.askUser => ChatGlyph.questionMark,
-      TurnStepCategory.scriptOutput => ChatGlyph.terminalBordered,
-      TurnStepCategory.watcher => ChatGlyph.watcher,
-      TurnStepCategory.graph => ChatGlyph.graph,
-      TurnStepCategory.appAdvisor => ChatGlyph.appAdvisor,
-      TurnStepCategory.pipelineEditor => ChatGlyph.pipeline,
-      TurnStepCategory.mcp => ChatGlyph.mcp,
-      TurnStepCategory.plan ||
-      TurnStepCategory.claude ||
-      TurnStepCategory.canopy ||
-      TurnStepCategory.computerUse ||
-      TurnStepCategory.other => ChatGlyph.wrench,
-    };
-    return ChatIcon(glyph: glyph, size: 14, color: color);
-  }
-}
-
-/// Bottom-of-transcript "Working... M:SS" row shown while the current turn is
-/// live, mirroring the desktop's `TurnTimer` (elapsed time excludes pauses;
-/// `Paused at M:SS` while the agent waits on user input). Ticks once a second
-/// only while running.
-///
-/// The live count is anchored on the PHONE clock: when a timer frame lands,
-/// the desktop-side elapsed time is read once from the frame's own
-/// timestamps (`updatedAt - startedAt`, minus pauses), and the phone clock
-/// adds to that from then on. Subtracting the desktop's `startedAt` from the
-/// phone's `DateTime.now()` instead pinned the row at 0:00 whenever the
-/// phone's clock trailed the desktop's (emulators routinely do).
-///
-/// Every count therefore starts from a host-measured duration. Between
-/// sending a message and the host's first report there is nothing
-/// authoritative to count from — the desktop starts its own turn clock only
-/// once the message lands — so the row reads a bare "Working..." and begins
-/// counting when the host reports. Counting locally from zero instead made
-/// the row rewind to 0:00 a second or two after every send.
-class _WorkingIndicatorRow extends StatefulWidget {
-  const _WorkingIndicatorRow({
-    required this.timer,
-    required this.initialElapsedMs,
-    required this.clock,
-  });
+/// Bottom-of-turn status while a turn runs, as desktop's clean look: the
+/// shimmering "Thinking" while the agent works, or "Waiting for you" while
+/// it waits on input. No elapsed count; a finished turn's duration reads in
+/// its "Worked for" header instead.
+class _TurnStatusRow extends StatelessWidget {
+  const _TurnStatusRow({required this.timer});
 
   final TurnTimer? timer;
-  final int? initialElapsedMs;
-  final DateTime Function() clock;
-
-  @override
-  State<_WorkingIndicatorRow> createState() => _WorkingIndicatorRowState();
-}
-
-class _WorkingIndicatorRowState extends State<_WorkingIndicatorRow> {
-  Timer? _ticker;
-  TurnTimer? _anchoredTimer;
-  int? _anchoredInitialElapsedMs;
-  DateTime? _anchorAt;
-  int _anchorElapsedMs = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    _anchor();
-    _syncTicker();
-  }
-
-  @override
-  void didUpdateWidget(_WorkingIndicatorRow oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    _anchor();
-    _syncTicker();
-  }
-
-  @override
-  void dispose() {
-    _ticker?.cancel();
-    super.dispose();
-  }
-
-  /// Re-anchors only when the timer frame or host duration changed (start,
-  /// pause, resume, completion, or a fresher summary projection), so
-  /// per-second rebuilds keep counting smoothly.
-  void _anchor() {
-    final timer = widget.timer;
-    final initial = widget.initialElapsedMs;
-    final previous = _anchoredTimer;
-    if (timer == null) {
-      if (previous != null || _anchoredInitialElapsedMs != initial) {
-        // A null anchor means "no host duration yet", which reads as a bare
-        // "Working..." rather than a local count the host would contradict.
-        _anchorAt = initial == null ? null : widget.clock();
-        _anchorElapsedMs = initial ?? 0;
-      }
-      _anchoredTimer = null;
-      _anchoredInitialElapsedMs = initial;
-      return;
-    }
-    if (previous != null &&
-        previous.sameFrameAs(timer) &&
-        _anchoredInitialElapsedMs == initial) {
-      return;
-    }
-    final now = widget.clock();
-    final locallyAccumulatedMs =
-        previous != null && previous.sameFrameAs(timer) && _anchorAt != null
-        ? _anchorElapsedMs + now.difference(_anchorAt!).inMilliseconds
-        : 0;
-    _anchoredTimer = timer;
-    _anchoredInitialElapsedMs = initial;
-    _anchorAt = now;
-    _anchorElapsedMs = math.max(
-      locallyAccumulatedMs,
-      math.max(
-        timer.elapsedMs(timer.updatedAt ?? now.millisecondsSinceEpoch),
-        initial ?? 0,
-      ),
-    );
-  }
-
-  void _syncTicker() {
-    final timer = widget.timer;
-    final shouldTick = timer == null
-        ? _anchorAt != null
-        : (timer.isLive && timer.startedAt != null);
-    if (shouldTick && _ticker == null) {
-      _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
-        if (mounted) setState(() {});
-      });
-    } else if (!shouldTick) {
-      _ticker?.cancel();
-      _ticker = null;
-    }
-  }
-
-  String _label(DateTime now) {
-    final timer = widget.timer;
-    final anchorAt = _anchorAt;
-    if (timer == null) {
-      if (anchorAt == null) return 'Working...';
-      final elapsedMs =
-          _anchorElapsedMs + now.difference(anchorAt).inMilliseconds;
-      return 'Working... ${formatElapsedSeconds(math.max(0, elapsedMs) ~/ 1000)}';
-    }
-    if (timer.isLive && timer.startedAt != null && anchorAt != null) {
-      final elapsedMs =
-          _anchorElapsedMs + now.difference(anchorAt).inMilliseconds;
-      return 'Working... ${formatElapsedSeconds(math.max(0, elapsedMs) ~/ 1000)}';
-    }
-    // Paused and completed labels read only desktop timestamps
-    // (pausedAt/completedAt minus startedAt), so they are skew-free already.
-    return turnTimerLabel(timer, now);
-  }
 
   @override
   Widget build(BuildContext context) {
-    final muted = AppColors.of(context).foregroundSecondary;
-    final timer = widget.timer;
-    final label = _label(widget.clock());
-    final showSpinner = timer == null || timer.isLive;
+    final style = AppTypography.bodySmall;
+    final waiting = timer?.isPaused ?? false;
     return Padding(
-      key: ValueKey(
-        timer?.completedAt == null
-            ? 'remote-chat-working-indicator'
-            : 'remote-chat-completed-indicator',
+      key: const ValueKey('remote-chat-working-indicator'),
+      padding: const EdgeInsets.symmetric(
+        horizontal: MessageBubbleSurface.textInset,
+        vertical: 4,
       ),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
       child: Align(
         alignment: Alignment.centerLeft,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (showSpinner) ...[
-                  const ThinkingSpinner(size: 12),
-                  const SizedBox(width: 8),
-                ],
-                // Wraps under large text instead of overflowing the row.
-                Flexible(
-                  child: Text(
-                    label,
-                    style: AppTypography.bodySmall.copyWith(color: muted),
-                  ),
+        child: waiting
+            ? Text(
+                'Waiting for you',
+                style: style.copyWith(
+                  color: AppColors.of(context).foregroundSecondary,
                 ),
-              ],
-            ),
-          ],
-        ),
+              )
+            : ShimmerText('Thinking', style: style),
       ),
     );
   }
@@ -1264,6 +1084,7 @@ class _MessageBubble extends StatelessWidget {
     required this.message,
     this.toolResults = const {},
     this.streamingSpinner = true,
+    this.showParts = true,
     this.onResend,
     this.onDiscard,
   });
@@ -1278,6 +1099,9 @@ class _MessageBubble extends StatelessWidget {
   /// Whether a streaming message shows its own spinner; false while the
   /// turn's working row already does.
   final bool streamingSpinner;
+
+  /// False when the message's steps draw in the run before it.
+  final bool showParts;
 
   /// Resends a not-sent or uncertain user row, by message id.
   final ValueChanged<String>? onResend;
@@ -1294,7 +1118,7 @@ class _MessageBubble extends StatelessWidget {
         message.status == ChatMessageStatus.failed ||
         message.status == ChatMessageStatus.cancelled;
 
-    final partRows = _partRows(colors);
+    final partRows = _partRows();
     final text = message.text.trim();
     final spinner = message.isStreaming && streamingSpinner;
     final showContent =
@@ -1335,7 +1159,7 @@ class _MessageBubble extends StatelessWidget {
               ],
               if (spinner) ...[
                 if (text.isNotEmpty) const SizedBox(height: 6),
-                const ThinkingSpinner(size: 12),
+                ShimmerText('Thinking', style: AppTypography.bodySmall),
               ],
               if (message.delivery case final delivery?) ...[
                 const SizedBox(height: 4),
@@ -1412,46 +1236,14 @@ class _MessageBubble extends StatelessWidget {
   }
 
   /// Renders the message's tool/thinking/agent parts in order as flat rows.
-  List<Widget> _partRows(AppColors colors) {
+  List<Widget> _partRows() {
+    if (!showParts) return const [];
     const renderedKinds = {'tool_use', 'thinking', 'agent'};
-    final rows = <Widget>[];
-    for (var index = 0; index < message.parts.length; index++) {
-      final part = message.parts[index];
-      if (!renderedKinds.contains(part.kind)) continue;
-      switch (part.kind) {
-        case 'tool_use':
-          final id = part.toolUseId;
-          rows.add(
-            ToolCallRow(
-              // Stable identity so per-row expansion state cannot migrate
-              // between calls when the surrounding lists change shape.
-              key: ValueKey('tool-${message.messageId}-${id ?? index}'),
-              part: part,
-              result:
-                  (id == null ? null : toolResults[id]) ??
-                  embeddedToolResult(part),
-              pending: message.isStreaming,
-            ),
-          );
-        case 'thinking':
-          rows.add(
-            ThinkingRow(
-              key: ValueKey('thinking-${message.messageId}-$index'),
-              part: part,
-            ),
-          );
-        default:
-          rows.add(
-            AgentCard(
-              key: ValueKey(
-                'agent-${message.messageId}-${part.data?['taskId'] ?? part.data?['toolUseId'] ?? index}',
-              ),
-              part: part,
-            ),
-          );
-      }
-    }
-    return rows;
+    return [
+      for (var index = 0; index < message.parts.length; index++)
+        if (renderedKinds.contains(message.parts[index].kind))
+          stepPartRow(message, index, toolResults),
+    ];
   }
 }
 

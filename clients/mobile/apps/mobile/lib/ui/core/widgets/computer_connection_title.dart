@@ -11,9 +11,13 @@ class ComputerConnectionTitle extends StatelessWidget {
     this.statusColor,
     this.titleKey,
     this.labelKey,
+    this.titleTrailing,
   });
   final String title, label;
   final Color? statusColor;
+
+  /// Shown after the title, such as the switcher's chevron.
+  final Widget? titleTrailing;
   final Key? titleKey, labelKey;
   @override
   Widget build(BuildContext context) {
@@ -28,16 +32,24 @@ class ComputerConnectionTitle extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Text(
-            title,
-            key: titleKey,
-            style: theme.textTheme.titleMedium?.copyWith(
-              color: colors.foreground,
-              fontWeight: AppTypography.emphasisWeight,
-              fontVariations: AppTypography.emphasisVariations,
-            ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Flexible(
+                child: Text(
+                  title,
+                  key: titleKey,
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    color: colors.foreground,
+                    fontWeight: AppTypography.emphasisWeight,
+                    fontVariations: AppTypography.emphasisVariations,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              ?titleTrailing,
+            ],
           ),
           Text(
             label,
