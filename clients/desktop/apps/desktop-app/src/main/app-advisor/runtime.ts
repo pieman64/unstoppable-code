@@ -94,17 +94,24 @@ import type { PipelineYamlReadResult } from '../canopy-tools/pipeline-yaml-reade
 import {
   getCachedAppAdvisorUiStateForChat,
   requestAppAdvisorRendererTool,
-  requestCurrentAppAdvisorUiState,
+  requestCurrentAppAdvisorUiStateThroughLease,
 } from '../ipc/app-advisor';
 import { isRecord } from '../lib/type-guards';
 import { withAppAdvisorListUiEnvelope } from './list-ui-envelope';
 import { getPipelineFailureDebugContext } from '../services/pipelines-service';
 import { logMainProcessWarn } from '../lib/main-process-logging';
-import { getObservabilityService } from '../observability';
+import { getExecutionObservabilityIngest } from '../observability/ingest';
 import { getAppAdvisorWatcherService } from './watchers';
 import { resolveGitHubRepositoryCandidates } from '../lib/github-repository-context';
-import { requestShowFiles } from '../canopy-tools/show-files-runtime';
+import type { InterfaceToolName } from '@canopy/protocol/canopy-core';
+import { requestShowFilesThroughInterfaceTool } from '../canopy-tools/show-files-runtime';
+import {
+  boundAppAdvisorInterfaceTools,
+  presentAppAdvisorAction,
+} from './presentation-tools';
 import { getAppAdvisorHomeDir } from '../lib/paths';
+import { appAdvisorActionDisposition } from '@canopy/desktop-shared/lib/app-advisor-action-dispositions';
+import { APP_ADVISOR_ACTION_TEXTS } from './action-router';
 import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { createApprovalSession } from '../approvals/approval-service';
 import {
@@ -150,6 +157,24 @@ export interface AppAdvisorToolRuntime extends CanopyInjectedToolRuntime {
     signal?: AbortSignal,
   ): Promise<unknown>;
   requestUiState(): Promise<AppAdvisorUiStateEnvelope>;
+  /**
+   * CAN-4131: the GetCurrentUiState tool's own read, through the interface
+   * lease. `bound` says whether the calling session or route bound the tool.
+   */
+  /** The window accessors this runtime was created with (CAN-4133). */
+  readonly appAdvisorSurfaces: AppAdvisorToolRuntimeSurfaces;
+  /**
+   * CAN-4133: records the interface tools this runtime's session or route
+   * bound, as each tool call reports them; SDK sessions and Claude terminal
+   * routes both carry them in the call context.
+   */
+  rememberInterfaceTools(tools: readonly InterfaceToolName[]): void;
+  /** The recorded bound tools, else the SDK session's. */
+  boundInterfaceTools(): Promise<readonly InterfaceToolName[]>;
+  requestUiStateForTool(options: {
+    bound: boolean;
+    signal?: AbortSignal;
+  }): Promise<AppAdvisorUiStateEnvelope>;
   dispatchRendererAction(
     action: AppAdvisorDispatchAction,
     expectedUiRevision?: number,
@@ -414,6 +439,10 @@ export function createAppAdvisorToolRuntime(
     canFork?: boolean;
   },
 ): AppAdvisorToolRuntime {
+  let rememberedInterfaceTools: readonly InterfaceToolName[] | undefined;
+  const boundInterfaceTools = async (): Promise<readonly InterfaceToolName[]> =>
+    rememberedInterfaceTools ??
+    (await boundAppAdvisorInterfaceTools(destination));
   const runtime: AppAdvisorToolRuntime = {
     watcherDestination: destination,
     worktreeWatcherRuntime: destination,
@@ -492,7 +521,7 @@ export function createAppAdvisorToolRuntime(
       const answers: McpQuestionAnswer[] = [];
       for (const question of questions) {
         const requestId = randomUUID();
-        getObservabilityService().pauseChatTurn(
+        getExecutionObservabilityIngest().pauseChatTurn(
           destination.projectId,
           destination.worktreeId,
           destination.chatId,
@@ -512,7 +541,7 @@ export function createAppAdvisorToolRuntime(
             options?.signal ? { signal: options.signal } : undefined,
           );
         } finally {
-          getObservabilityService().resumeChatTurn(
+          getExecutionObservabilityIngest().resumeChatTurn(
             destination.projectId,
             destination.worktreeId,
             destination.chatId,
@@ -534,15 +563,39 @@ export function createAppAdvisorToolRuntime(
       return answers;
     },
 
-    requestUiState: () =>
-      requestCurrentAppAdvisorUiState(surfaces, destination.chatId),
+    appAdvisorSurfaces: surfaces,
+    rememberInterfaceTools: (tools) => {
+      rememberedInterfaceTools = tools;
+    },
+    boundInterfaceTools,
+    requestUiState: async () =>
+      runtime.requestUiStateForTool({
+        bound: (await boundInterfaceTools()).includes(
+          'ui.get_current_ui_state',
+        ),
+      }),
+    requestUiStateForTool: ({ bound, signal }) =>
+      requestCurrentAppAdvisorUiStateThroughLease({
+        scope: {
+          workspaceId: destination.projectId,
+          worktreeId: destination.worktreeId,
+          chatId: destination.chatId,
+        },
+        originChatTabId: destination.chatId,
+        bound,
+        remoteFallbackSurfaces: surfaces,
+        ...(signal ? { signal } : {}),
+      }),
 
     showFiles: (files, workspace) => {
       const target = workspace ?? {
         projectId: APP_ADVISOR_PROJECT_ID,
         worktreeId: destination.worktreeId,
       };
-      return requestShowFiles(
+      return requestShowFilesThroughInterfaceTool(
+        target.projectId === APP_ADVISOR_PROJECT_ID
+          ? 'ui.app_advisor.show_files'
+          : 'ui.show_files',
         {
           files,
           target,
@@ -752,20 +805,6 @@ export function createAppAdvisorToolRuntime(
         const legacy =
           action.type === 'worktree-chat.steer_queued_message' ||
           action.type === 'worktree-chat.schedule_message';
-        if (legacy) {
-          // These legacy aliases kept the renderer's revision check; the
-          // canonical actions are revision-independent.
-          const { legacyUiRevisionFailure } =
-            await import('./ui-revision-preflight');
-          const stale = await legacyUiRevisionFailure({
-            surfaces,
-            requestId,
-            preflight: 'control-preflight',
-            ...(expectedUiRevision !== undefined ? { expectedUiRevision } : {}),
-            ...(signal ? { signal } : {}),
-          });
-          if (stale) return stale;
-        }
         try {
           let control: z.output<typeof projectMessageControlActionSchema>;
           if (legacy) {
@@ -995,18 +1034,14 @@ export function createAppAdvisorToolRuntime(
                     projectId: target.address.projectId,
                     chatId: target.address.chatId,
                   };
-            const response = await requestAppAdvisorRendererTool(
-              {
-                kind: 'dispatch_action',
-                requestId,
-                action: navigation,
-                originWorktreeId: destination.worktreeId,
-                originChatTabId: destination.chatId,
-                expectedUiRevision,
-              },
-              surfaces,
-              ...(signal ? [{ signal }] : []),
-            );
+            const response = await presentAppAdvisorAction({
+              action: navigation,
+              requestId,
+              destination,
+              boundTools: await boundInterfaceTools(),
+              remoteFallbackSurfaces: surfaces,
+              ...(signal ? { signal } : {}),
+            });
             if (!response.ok) return { ...response, requestId };
             if (
               action.type === 'standalone-chat.send_message' &&
@@ -1146,6 +1181,7 @@ export function createAppAdvisorToolRuntime(
         return dispatchLegacyChatCreation(action, {
           destination,
           surfaces,
+          boundTools: await boundInterfaceTools(),
           requestId,
           ...(expectedUiRevision !== undefined ? { expectedUiRevision } : {}),
           ...(signal ? { signal } : {}),
@@ -1278,22 +1314,30 @@ export function createAppAdvisorToolRuntime(
         expectedUiRevision,
         originChatTabId: destination.chatId,
       };
-      const actionSurfaces =
-        action.type === 'sharing.open_dialog' ||
-        action.type === 'script_actions.open_review'
-          ? mainWindowOnlyToolSurfaces(surfaces.getMainWindow)
-          : surfaces;
+      const actionSurfaces = mainWindowOnlyToolSurfaces(surfaces.getMainWindow);
       const dispatchAutomation = async (
         resourceAction: AppAdvisorAction,
       ): Promise<AppAdvisorActionResponse> => {
         const { dispatchAgentResourceAction, isAgentResourceAction } =
           await import('../canopy-tools/resource-actions');
-        if (!isAgentResourceAction(resourceAction))
+        if (!isAgentResourceAction(resourceAction)) {
+          if (appAdvisorActionDisposition(resourceAction.type)?.kind === 'core')
+            return {
+              requestId,
+              ok: false,
+              error: {
+                code: 'unsupported_action',
+                message: APP_ADVISOR_ACTION_TEXTS.coreReachedRenderer(
+                  resourceAction.type,
+                ),
+              },
+            };
           return requestAppAdvisorRendererTool(
             { ...rendererRequest, action: resourceAction },
             actionSurfaces,
             signal ? { signal } : undefined,
           );
+        }
         return dispatchAgentResourceAction(resourceAction, {
           projectId: destination.projectId,
           worktreeId: destination.worktreeId,
@@ -1303,6 +1347,19 @@ export function createAppAdvisorToolRuntime(
           getWindow: surfaces.getMainWindow,
         });
       };
+      if (
+        !action.type.startsWith('automation.') &&
+        appAdvisorActionDisposition(action.type)?.kind === 'core' &&
+        !(action.type === 'worktree-chat.open_tab' && action.chatId)
+      )
+        return {
+          requestId,
+          ok: false,
+          error: {
+            code: 'unsupported_action',
+            message: APP_ADVISOR_ACTION_TEXTS.coreReachedRenderer(action.type),
+          },
+        };
       const rawResponse = action.type.startsWith('automation.')
         ? await dispatchAutomation(rendererAction)
         : signal

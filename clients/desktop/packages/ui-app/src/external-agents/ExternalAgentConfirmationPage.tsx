@@ -30,6 +30,7 @@ import {
 import { ExternalAgentConfirmationSkeleton } from './external-agents-skeletons';
 import { EXTERNAL_AGENTS_PATH, externalAgentPath } from './paths';
 import { useMountedStore } from './use-mounted-store';
+import { Surface } from '@canopy/ui-shared/components';
 
 export interface ExternalAgentConfirmationPageProps {
   readonly pendingActionId: string;
@@ -347,9 +348,11 @@ function ExactRequest({
             The exact request is no longer kept.
           </p>
         ) : (
-          <pre className="max-w-full overflow-x-auto whitespace-pre rounded-md bg-base p-3 font-mono text-xs fg-secondary">
-            {JSON.stringify(action.arguments, null, 2)}
-          </pre>
+          <Surface variant="inset" className="max-w-full overflow-hidden">
+            <pre className="overflow-x-auto whitespace-pre p-3 font-mono text-xs fg-secondary">
+              {JSON.stringify(action.arguments, null, 2)}
+            </pre>
+          </Surface>
         )}
       </div>
     </Disclosure>

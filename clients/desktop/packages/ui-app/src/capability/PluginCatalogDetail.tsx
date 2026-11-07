@@ -12,6 +12,7 @@ import {
   Heading,
 } from '@canopy/ui-shared/components';
 import { PluginAlternatives } from './PluginAlternatives';
+import { Divider } from '@canopy/ui-shared/components';
 
 export interface PluginCatalogDetailModel {
   name: PluginInfo['name'];
@@ -130,15 +131,18 @@ export function PluginCatalogDetail({
           ))}
         </div>
       )}
-      <div className="border-t pt-4">
-        <Heading level={4} variant="title">
-          Included
-        </Heading>
-        <p className="mt-1 text-xs fg-secondary">
-          {componentCount > 0
-            ? `${componentCount} plugin component${componentCount === 1 ? '' : 's'} available after adding.`
-            : 'Plugin capabilities become available after adding.'}
-        </p>
+      <div>
+        <Divider />
+        <div className="pt-4">
+          <Heading level={4} variant="title">
+            Included
+          </Heading>
+          <p className="mt-1 text-xs fg-secondary">
+            {componentCount > 0
+              ? `${componentCount} plugin component${componentCount === 1 ? '' : 's'} available after adding.`
+              : 'Plugin capabilities become available after adding.'}
+          </p>
+        </div>
       </div>
     </div>
   );

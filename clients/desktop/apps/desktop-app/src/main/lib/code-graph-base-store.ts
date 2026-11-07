@@ -1,6 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { constants as fsConstants } from 'node:fs';
-import { copyFile, mkdir, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import * as path from 'node:path';
 import {
   codeGraphBaseVariantHash,
@@ -10,6 +8,7 @@ import {
   type CodeGraphSeedSource,
   type ValidatedCodeGraphBase,
 } from '@canopy/code-graph/base-graph';
+import { copyPublishedCodeGraphBaseForSeed } from '@canopy/code-graph/host/base-seed';
 import { resolveWorkspaceReferenceRepoPath } from './workspace-reference-repo';
 import { getRepoShadowDir } from './repo-shadow';
 
@@ -197,38 +196,11 @@ export async function copyCompatibleCodeGraphBaseForSeed(input: {
     if (retiringShadowDirs.has(shadowDir)) {
       throw new Error('code-graph base seed cancelled: repository is retiring');
     }
-    const published = await readPublishedCodeGraphBase({
-      variantDir,
+    return copyPublishedCodeGraphBaseForSeed({
+      shadowDir,
       identity,
-      validation: 'manifest-only',
-    });
-    if (published === null) {
-      return null;
-    }
-    await mkdir(input.seedStagingDir, { recursive: true });
-    const copiedPath = path.join(
-      input.seedStagingDir,
-      `${createHash('sha256').update(input.repoId).digest('hex').slice(0, 16)}-${randomUUID()}.db`,
-    );
-    try {
-      // Generations reach 1–1.6 GB; clone where the filesystem supports it.
-      await copyFile(
-        published.dbPath,
-        copiedPath,
-        fsConstants.COPYFILE_FICLONE,
-      );
-    } catch (error) {
-      await rm(copiedPath, { force: true }).catch(() => undefined);
-      throw error;
-    }
-    return {
-      dbPath: copiedPath,
-      repoId: input.repoId,
-      canonicalRepoRoot,
       destinationRootPath: input.destinationRootPath,
-      generationId: published.manifest.generationId,
-      gitHead: published.manifest.gitHead,
-      completedBuildAt: Date.parse(published.manifest.publishedAt),
-    };
+      seedStagingDir: input.seedStagingDir,
+    });
   });
 }

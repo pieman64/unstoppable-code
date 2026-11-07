@@ -2,6 +2,7 @@ import {
   createContext,
   forwardRef,
   useContext,
+  type AnchorHTMLAttributes,
   type ButtonHTMLAttributes,
   type HTMLAttributes,
   type JSX,
@@ -66,12 +67,13 @@ export type DropdownMenuSurfacePadding =
 
 /**
  * `picker` is the flagship picker anatomy (`.canopy-picker-menu`): the
- * surface's width follows its trigger between the shared 216px default and
- * the 320px/viewport cap, it lays out as a clipping flex column, and its
+ * surface's width follows its longest option between the shared 160px/trigger
+ * minimum and the 320px/viewport cap, it lays out as a clipping flex column, and its
  * vertical inset moves to the list content. `FloatingPickerMenu` sets it.
  */
 export type DropdownMenuSurfaceShell =
   | 'menu'
+  | 'content-menu'
   | 'picker'
   /** The harness model picker's framed 23rem shell. */
   | 'model-picker'
@@ -82,6 +84,7 @@ export type DropdownMenuSurfaceShell =
 
 const SURFACE_SHELL_CLASS_NAMES: Record<DropdownMenuSurfaceShell, string> = {
   menu: '',
+  'content-menu': ' canopy-floating-menu-content',
   picker: ' canopy-picker-menu',
   'model-picker':
     ' canopy-picker-menu canopy-model-picker-shell relative flex flex-col w-92',
@@ -294,6 +297,41 @@ export const DropdownMenuItem = forwardRef<
 });
 
 DropdownMenuItem.displayName = 'DropdownMenuItem';
+
+export interface DropdownMenuLinkItemProps extends AnchorHTMLAttributes<HTMLAnchorElement> {
+  readonly href: string;
+}
+
+/**
+ * A menu row that navigates: a real anchor, so opening it in a new tab and
+ * copying its address work, in the action row's geometry, ink and icon column.
+ */
+export const DropdownMenuLinkItem = forwardRef<
+  HTMLAnchorElement,
+  DropdownMenuLinkItemProps
+>(function DropdownMenuLinkItem(
+  { className = '', role = 'menuitem', children, ...props },
+  ref,
+): JSX.Element {
+  const rowStyle = useContext(DropdownMenuRowStyleContext);
+  const textClassName = rowStyle.textStyle === 'small' ? 'text-xs' : 'text-s';
+  const cornersClassName =
+    rowStyle.corners === 'row' ? 'rounded-row' : 'rounded-md';
+  return (
+    <a
+      ref={ref}
+      role={role}
+      className={`canopy-dropdown-menu-item outline-none flex h-8 w-full items-center gap-2 ${cornersClassName} px-2 text-left ${textClassName} font-normal fg-primary transition-colors hover:bg-subtle focus-visible:bg-subtle ${className}`}
+      {...props}
+    >
+      <PlainRowContext.Provider value={true}>
+        {children}
+      </PlainRowContext.Provider>
+    </a>
+  );
+});
+
+DropdownMenuLinkItem.displayName = 'DropdownMenuLinkItem';
 
 /**
  * A row that reports a state instead of acting: the account menu's

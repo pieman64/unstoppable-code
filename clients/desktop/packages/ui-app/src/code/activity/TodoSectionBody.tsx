@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type JSX } from 'react';
 import { Disclosure } from '@canopy/ui-shared/components';
+import { Surface } from '@canopy/ui-shared/components';
 
 export interface TodoSectionBodyItem {
   readonly id: string;
@@ -74,25 +75,25 @@ function TodoItemRow({ item }: { item: TodoSectionBodyItem }): JSX.Element {
   const isActive = item.status === 'in_progress';
 
   return (
-    <div
-      className={`flex items-center gap-2.5 rounded-lg border px-3 py-2 ${
-        isCompleted ? 'bg-fg-primary/[0.015]' : 'bg-fg-primary/[0.03]'
-      }`}
-      data-testid="activity-todo-item"
-    >
-      <TodoStatusIcon status={item.status} />
-      <span
-        className={`text-xs ${
-          isCompleted
-            ? 'fg-secondary/60 line-through'
-            : isActive
-              ? 'font-medium fg-primary/80'
-              : 'fg-secondary'
-        }`}
+    <Surface variant="group">
+      <div
+        className="flex items-center gap-2.5 px-3 py-2"
+        data-testid="activity-todo-item"
       >
-        {item.content}
-      </span>
-    </div>
+        <TodoStatusIcon status={item.status} />
+        <span
+          className={`text-xs ${
+            isCompleted
+              ? 'fg-secondary/60 line-through'
+              : isActive
+                ? 'font-medium fg-primary/80'
+                : 'fg-secondary'
+          }`}
+        >
+          {item.content}
+        </span>
+      </div>
+    </Surface>
   );
 }
 

@@ -33,6 +33,8 @@ function fixture(
     authToken: `t-${name}`,
     createdAt: 0,
     hookHandler: () => undefined,
+    // Bound as a session created while the main window's lease serves both tools (CAN-4131).
+    interfaceTools: ['ui.get_current_ui_state', 'ui.show_files'],
     ...fields,
   };
 }

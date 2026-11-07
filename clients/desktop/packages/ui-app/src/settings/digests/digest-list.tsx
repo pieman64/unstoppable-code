@@ -9,6 +9,7 @@ import {
   formatCredits,
   formatDigestPeriod,
 } from './digest-format';
+import { Surface } from '@canopy/ui-shared/components';
 
 export interface DigestListItem {
   externalId: string;
@@ -83,9 +84,9 @@ export function DigestList({
   const { blockClassName } = useSettingsPrivacy();
   if (digests.length === 0) {
     return (
-      <p className="rounded-xl bg-card p-5 text-s fg-secondary shadow-sm">
-        {emptyMessage}
-      </p>
+      <Surface variant="raised">
+        <p className="p-5 text-s fg-secondary">{emptyMessage}</p>
+      </Surface>
     );
   }
 
@@ -140,12 +141,15 @@ export function DigestList({
                 {body}
               </SettingsLink>
             ) : (
-              <div
-                data-testid={`digest-list-item-${digest.externalId}`}
-                data-digest-status={digest.status}
-                className="block rounded-xl bg-card p-4 shadow-sm opacity-80"
-              >
-                {body}
+              <div className="opacity-80">
+                <Surface
+                  variant="raised"
+                  padding="default"
+                  data-testid={`digest-list-item-${digest.externalId}`}
+                  data-digest-status={digest.status}
+                >
+                  {body}
+                </Surface>
               </div>
             )}
           </li>

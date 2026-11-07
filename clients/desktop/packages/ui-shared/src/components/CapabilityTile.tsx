@@ -6,7 +6,7 @@ import {
   type ReactNode,
 } from 'react';
 import { AgentIcon } from '../icons/AgentIcon';
-import { ArrowUpRightIcon } from '../icons/AppIcons';
+import { ArrowUpRightIcon, type AppIcon } from '../icons/AppIcons';
 import { AutomationsIcon } from '../icons/AutomationsIcon';
 import { FolderIcon } from '../icons/FolderIcon';
 import { McpServerIcon } from '../icons/McpServerIcon';
@@ -63,10 +63,7 @@ export interface CapabilityTileProps {
   statusTooltip?: boolean;
 }
 
-const ICONS: Record<
-  CapabilityTileIconKind,
-  (props: { width: number; height: number }) => JSX.Element
-> = {
+const ICONS: Record<CapabilityTileIconKind, AppIcon> = {
   pipeline: PipelineIcon,
   skill: SkillIcon,
   automation: AutomationsIcon,
@@ -213,7 +210,7 @@ function TileBody({
           className="flex h-5 shrink-0 items-center fg-secondary"
           aria-hidden="true"
         >
-          <Icon width={14} height={14} />
+          <Icon size="sm" />
         </span>
         <span className="min-w-0 flex-1">
           <span
@@ -227,7 +224,7 @@ function TileBody({
                 className="flex h-5 shrink-0 items-center self-start fg-secondary"
                 aria-hidden="true"
               >
-                <ArrowUpRightIcon width={14} height={14} />
+                <ArrowUpRightIcon size="sm" />
               </span>
             ) : null}
             {model.state?.glyph ? (

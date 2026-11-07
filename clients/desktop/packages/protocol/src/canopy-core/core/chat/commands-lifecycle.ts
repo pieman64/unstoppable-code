@@ -1,5 +1,6 @@
 import { TrackedPlanImplementationInputSchema } from '../../chat-plan-review';
 import { z } from 'zod';
+import { CODEX_SPEEDS } from '../../../automations';
 
 // Nested core modules use ../../ for common canopy-core contracts.
 
@@ -31,6 +32,15 @@ const origin = z.enum(['desktop', 'portal']);
 const modelConfig = z.strictObject({
   thinkingLevel: z.string().optional(),
   fastMode: z.boolean().optional(),
+  // A Codex context window preset, or tokens at or above the 128K floor
+  // (`CODEX_CONTEXT_WINDOW_FLOOR` in desktop-shared).
+  contextWindow: z
+    .union([
+      z.enum(['model-default', 'standard-pricing', 'maximum']),
+      z.number().int().min(128_000),
+    ])
+    .optional(),
+  speed: z.enum(CODEX_SPEEDS).optional(),
 });
 const providerType = z.enum([
   'claude',
@@ -286,6 +296,8 @@ export const CoreChatLifecycleResultSchema = z
     reason: z.string().optional(),
     entityId: id.optional(),
     messageId: id.optional(),
+    /** Set when the command archived chats: the archive entries' `archivedAt`. */
+    archivedAt: z.string().optional(),
   })
   .catchall(CanopyJsonValueSchema);
 

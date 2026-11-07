@@ -26,29 +26,30 @@ import {
 } from 'react';
 import {
   AccountProxySwitchLine,
+  type AnsweredQuestionDisplay,
   AnsweredQuestionsBlock,
   ApprovalSafetyDeniedNotice,
   askUserQuestionCount,
-  askUserQuestionRowLabel,
-  resolveAskUserQuestionPresentation,
-  type AnsweredQuestionDisplay,
   type AskUserQuestionResultEvidence,
-  CompactionInfoBlock,
+  askUserQuestionRowLabel,
+  ChatAppNote,
   compactionHeadline,
+  CompactionInfoBlock,
+  copyTextToClipboard,
   DEFAULT_MARKDOWN_OVERRIDES,
-  Markdown,
   extractExitPlanModePlan,
-  markdownOptions,
+  Markdown,
   MarkdownCodeBlock,
+  markdownOptions,
+  type MarkdownOverrides,
   markdownTableCellProps,
   Notice,
-  ChatAppNote,
-  copyTextToClipboard,
+  resolveAskUserQuestionPresentation,
+  Surface,
+  TRANSCRIPT_PROSE_CLASS,
   useCleanChatLook,
   useSmoothStreaming,
   withSoftLineBreaks,
-  type MarkdownOverrides,
-  TRANSCRIPT_PROSE_CLASS,
 } from '@canopy/ui-shared/components';
 import type { PendingQuestion } from '@/stores/chatStore';
 import { ThinkingSpinner } from '../shared/loading/spinners/ThinkingSpinner';
@@ -311,22 +312,18 @@ const ChatImageBlock = memo(function ChatImageBlock({
 
   if (src === undefined) {
     return (
-      <div
-        data-testid="chat-generated-image-loading"
-        className="flex min-h-32 items-center justify-center rounded-lg bg-fg-primary/[0.04] fg-secondary"
-      >
-        <ThinkingSpinner tone="accent" />
-      </div>
+      <Surface variant="group" data-testid="chat-generated-image-loading">
+        <div className="flex items-center justify-center min-h-32 fg-secondary">
+          <ThinkingSpinner tone="accent" />
+        </div>
+      </Surface>
     );
   }
   if (src === null) {
     return (
-      <div
-        data-testid="chat-generated-image-unavailable"
-        className="rounded-lg bg-fg-primary/[0.04] px-4 py-3 text-s fg-secondary"
-      >
-        Image unavailable
-      </div>
+      <Surface variant="group" data-testid="chat-generated-image-unavailable">
+        <div className="px-4 py-3 text-s fg-secondary">Image unavailable</div>
+      </Surface>
     );
   }
 
@@ -1687,26 +1684,21 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
         minute: '2-digit',
       });
       return (
-        <div
-          className="flex items-center gap-2 rounded-lg border bg-fg-primary/[0.03] px-3 py-1.5 text-xs fg-secondary"
-          data-testid="chat-automation-info"
-        >
-          <AppCatalogTimeFliesIcon
-            width="14"
-            height="14"
-            className="flex-shrink-0"
-          />
-          <span>
-            Chat initiated by automation
-            {block.activityName ? (
-              <>
-                {' '}
-                <strong>{block.activityName}</strong>
-              </>
-            ) : null}{' '}
-            at {localTime}
-          </span>
-        </div>
+        <Surface variant="group" data-testid="chat-automation-info">
+          <div className="flex items-center gap-2 px-3 py-1.5 text-xs fg-secondary">
+            <AppCatalogTimeFliesIcon size="sm" className="flex-shrink-0" />
+            <span>
+              Chat initiated by automation
+              {block.activityName ? (
+                <>
+                  {' '}
+                  <strong>{block.activityName}</strong>
+                </>
+              ) : null}{' '}
+              at {localTime}
+            </span>
+          </div>
+        </Surface>
       );
     }
 
@@ -1910,19 +1902,17 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
         target,
       );
       return (
-        <div className="flex items-start gap-2 rounded-lg border bg-fg-primary/[0.03] px-3 py-1.5 text-xs fg-secondary">
-          <AppCatalogInfoIcon
-            width="14"
-            height="14"
-            className="mt-0.5 flex-shrink-0"
-          />
-          <div className="space-y-0.5">
-            <div>
-              Chat initiated by <strong>{source}</strong> at {localTime}
+        <Surface variant="group">
+          <div className="flex items-start gap-2 px-3 py-1.5 text-xs fg-secondary">
+            <AppCatalogInfoIcon size="sm" className="mt-0.5 flex-shrink-0" />
+            <div className="space-y-0.5">
+              <div>
+                Chat initiated by <strong>{source}</strong> at {localTime}
+              </div>
+              <div>{description}</div>
             </div>
-            <div>{description}</div>
           </div>
-        </div>
+        </Surface>
       );
     }
   }

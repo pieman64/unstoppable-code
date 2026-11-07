@@ -20,7 +20,6 @@ import {
   sameHeaders,
   clearDeviceSignIns,
   keepsStoredSecrets,
-  promoteCustomMcpServer,
 } from '../mcp/mcpManagementOperations';
 import {
   isStoredSecretValue,
@@ -30,39 +29,24 @@ import {
 import {
   McpMoveToCloudDialog,
   McpMoveToDeviceDialog,
-  McpPromoteDialog,
 } from '../mcp/McpPlacementDialogs';
 import type { MarketplaceShareAction } from '@canopy/ui-shared/lib';
 import { InstalledEntryStatusSection } from '../plugins/InstalledEntryStatusSection';
 import { capitalizeFirstLetter } from '@canopy/ui-shared/lib';
 import { flattenMcpServerRows } from '@canopy/desktop-shared/lib/mcp-server-rows';
 import {
-  ACCOUNT_MCP_ENDPOINT_REQUIRED,
   type AccountMcpClientSetup,
   type AccountMcpOAuthClientCredentials,
 } from '@canopy/protocol/mcp-servers';
 import { DEFAULT_MCP_HTTP_AUTH_HANDLER } from '@canopy/desktop-shared/types';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
-import { useNavigationStore } from '@/stores/navigationStore';
-import {
-  ACCOUNT_MCP_ACTION_EVENT,
-  isAccountMcpActionEventDetail,
-} from '@/lib/accountMcpEvents';
-import {
-  AccountMcpCredentialDialog,
-  AccountMcpControls,
-  AccountMcpDetails,
-  McpTierBadge,
-  type AccountMcpCredentialKind,
-} from '../mcp/AccountMcpControls';
+import { AccountMcpDetails } from '../mcp/AccountMcpControls';
 import { useAccountMcpActions } from '../../hooks/useAccountMcpActions';
 import {
   CUSTOM_MCP_URL_EXAMPLE,
   CustomMcpAdvanced,
   CustomMcpServerFields,
   CustomMcpServerPlacement,
-  curatedMcpAddTarget,
-  customAccountMcpPromotable,
   customMcpAdvancedHint,
   prefilledCustomMcpName,
   findAccountMcpRow,
@@ -73,16 +57,11 @@ import { pointRefsAt } from '@/lib/mcpServerRefs';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { type JSX, useEffect, useId, useRef, useState } from 'react';
-import { useMcpServerList } from '../../hooks/useMcpServerList';
-import { McpServerLogo } from '../shared/McpServerLogo';
-import { useCuratedMcpServers } from '../../hooks/useCuratedMcpServers';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
-import { useMcpServerStatuses } from '../../hooks/useMcpServerStatuses';
 import {
   useCustomMcpCreateFlow,
   type CustomMcpCreateTarget,
 } from '../../hooks/useCustomMcpCreateFlow';
-import { formatDate } from '../../lib/format';
 import { EntityEditModalContent } from './EntityEditModalFooter';
 import { BackDetailOverlayShell } from './BackDetailOverlayShell';
 import {
@@ -91,25 +70,16 @@ import {
   runEntityEditOperation,
 } from './entityEditModalUtils';
 import { DialogModal } from '../shared/DialogModal';
-import { McpBrowseDialog } from '../mcp/McpBrowseDialog';
-import { ErrorBanner, EmptyState } from '../shared/StatusBlocks';
+import { ErrorBanner } from '../shared/StatusBlocks';
+import { McpAccountBindingSkeleton } from './McpServersTabSkeletons';
 import {
-  McpAccountBindingSkeleton,
-  McpServersTableSkeleton,
-} from './McpServersTabSkeletons';
-import {
-  DataTableBody,
-  DataTableCell,
-  DataTableFrame,
-  DataTableHead,
-  DataTableHeaderCell,
-  DataTableRow,
   DelayedLoadingPlaceholder,
+  Divider,
+  Surface,
   McpSignInPendingActions,
   McpSignInPendingStatus,
 } from '@canopy/ui-shared/components';
 import { brandText } from '@/lib/brand';
-import { useEarlyAccessTitle } from '@/lib/earlyAccessTitles';
 import {
   curatedMcpDesktopOnly,
   curatedMcpProviderOnly,
@@ -127,62 +97,39 @@ import type {
   McpServerCuratedMetadata,
   McpServerFileView,
   McpServerHealthCheckResult,
-  McpServerIndexEntry,
-  McpServerStatusEntry,
   McpServerTestConnectionResult,
   UpdateAccountMcpConnectionRequest,
 } from '@canopy/desktop-shared/types/mcp-servers';
 import { AccountMcpConnectionError } from '@canopy/desktop-shared/types/mcp-servers';
-import { Button, Tooltip } from '@canopy/ui-shared';
+import { Button } from '@canopy/ui-shared';
 import {
-  ActionMenuItems,
-  ActionMenuRowStyle,
   Checkbox,
   ChoiceField,
   DialogFormField,
-  FloatingMenu,
   McpClientSetupDetails,
   McpConnectionFacts,
-  McpConnectionStatusBadge,
   Notice,
   Select,
   TextInput,
-  overlayGeneration,
   SegmentedControl,
   StandaloneConfigsSection,
-  type ActionMenuItem,
   CopyDetailsButton,
 } from '@canopy/ui-shared/components';
 import {
-  deriveMcpConnectionBadge,
   mcpDeleteImpact,
   mcpPlacementLabel,
-  mcpConnectErrorCodeTitle,
   mcpConnectErrorMessage,
 } from '@canopy/ui-shared/lib';
 import {
-  accountMcpCatalogConnectStep,
-  accountMcpClientPromptStep,
-  accountMcpConnectionLive,
-  accountMcpConnectStep,
-  accountMcpCredentialTarget,
-  accountMcpEndpointEntry,
   accountMcpUnavailableMessage,
   mcpAlreadyConnectedMessage,
   mcpNoSignInNeededMessage,
-  type AccountMcpConnectStep,
-  type AccountMcpCredentialTarget,
 } from '../mcp/accountMcpConnectSteps';
-import { openCloudAccountSettings } from '@/lib/navigation/settings-destinations';
 import {
   CloseIcon as AppCatalogCloseIcon,
   ChevronRightMediumIcon as AppCatalogChevronRightMediumIcon,
   GlobeIcon as AppCatalogGlobeIcon,
-  ChevronDownMediumIcon as AppCatalogChevronDownMediumIcon,
-  DocumentPencilIcon as AppCatalogDocumentPencilIcon,
   TerminalIcon as AppCatalogTerminalIcon,
-  PlusIcon as AppCatalogPlusIcon,
-  StorefrontIcon as AppCatalogStorefrontIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 
 // ---------------------------------------------------------------------------
@@ -594,7 +541,7 @@ function KeyValueEditor({
             onClick={() => handleRemove(key)}
             aria-label={`Remove ${key}`}
           >
-            <AppCatalogCloseIcon width="12" height="12" />
+            <AppCatalogCloseIcon size="sm" />
           </Button>
         </div>
       ))}
@@ -657,7 +604,7 @@ function ConfigEditor({
   const fieldId = useId();
 
   return (
-    <div className="rounded-lg border bg-secondary/20">
+    <Surface variant="group">
       {/* Header row */}
       <div className="flex items-center gap-3 px-3 py-2">
         <Checkbox
@@ -678,8 +625,7 @@ function ConfigEditor({
           aria-label={expanded ? 'Collapse config' : 'Expand config'}
         >
           <AppCatalogChevronRightMediumIcon
-            width="14"
-            height="14"
+            size="sm"
             className={`transition-transform ${expanded ? 'rotate-90' : ''}`}
           />
         </Button>
@@ -819,7 +765,7 @@ function ConfigEditor({
           </div>
         </div>
       )}
-    </div>
+    </Surface>
   );
 }
 
@@ -2253,12 +2199,12 @@ export function McpServerDialog({
           {
             value: 'command',
             label: 'Command',
-            leading: <AppCatalogTerminalIcon width="14" height="14" />,
+            leading: <AppCatalogTerminalIcon size="sm" />,
           },
           {
             value: 'http',
             label: 'HTTP',
-            leading: <AppCatalogGlobeIcon width="14" height="14" />,
+            leading: <AppCatalogGlobeIcon size="sm" />,
           },
         ]}
         onChange={setServerType}
@@ -2569,268 +2515,279 @@ export function McpServerDialog({
       </div>
 
       {curatedRequiresProvider && (
-        <div
-          className="rounded-lg border bg-secondary/30 px-3 py-2 text-s fg-secondary"
-          data-testid="mcp-curated-provider-auth"
-        >
-          This catalog entry requires a confidential OAuth client. The agent
-          provider will handle authentication so the client secret is never
-          stored in the local server definition.
-        </div>
+        <Surface variant="group" data-testid="mcp-curated-provider-auth">
+          <div className="px-3 py-2 text-s fg-secondary">
+            This catalog entry requires a confidential OAuth client. The agent
+            provider will handle authentication so the client secret is never
+            stored in the local server definition.
+          </div>
+        </Surface>
       )}
 
       {/* OAuth section (HTTP only, for locally managed public clients) */}
       {!curatedRequiresProvider && !cloudOnlyInCloud && (
-        <div className="space-y-3 rounded-lg border bg-secondary/20 p-3">
-          <ChoiceField
-            checked={oauthForm.enabled}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>): void =>
-              setOauthForm({
-                ...oauthForm,
-                enabled: e.target.checked,
-              })
-            }
-            label={<span className="font-medium">Use OAuth</span>}
-            description={`${brandText.appName} discovers OAuth settings from the HTTP MCP server, uses a local loopback callback, and stores tokens in secure local storage.`}
-            data-testid="mcp-server-use-oauth"
-          />
+        <Surface variant="group" padding="compact">
+          <div className="space-y-3">
+            <ChoiceField
+              checked={oauthForm.enabled}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>): void =>
+                setOauthForm({
+                  ...oauthForm,
+                  enabled: e.target.checked,
+                })
+              }
+              label={<span className="font-medium">Use OAuth</span>}
+              description={`${brandText.appName} discovers OAuth settings from the HTTP MCP server, uses a local loopback callback, and stores tokens in secure local storage.`}
+              data-testid="mcp-server-use-oauth"
+            />
 
-          {oauthForm.enabled && (
-            <div className="space-y-3 border-t pt-3">
-              {oauthForm.enabled && hasAnyAuthTokenConfigured(configs) && (
-                <Notice
-                  role="none"
-                  intent="attention"
-                  title="OAuth covers proxied sessions"
-                  data-testid="mcp-server-oauth-token-warning"
-                >
-                  The static token is kept only for non-OAuth use.
-                </Notice>
-              )}
+            {oauthForm.enabled && (
+              <div>
+                <Divider />
+                <div className="space-y-3 pt-3">
+                  {oauthForm.enabled && hasAnyAuthTokenConfigured(configs) && (
+                    <Notice
+                      role="none"
+                      intent="attention"
+                      title="OAuth covers proxied sessions"
+                      data-testid="mcp-server-oauth-token-warning"
+                    >
+                      The static token is kept only for non-OAuth use.
+                    </Notice>
+                  )}
 
-              <div className="rounded-md border bg-base/50 px-3 py-2 text-xs fg-secondary">
-                PKCE and the loopback redirect are managed by{' '}
-                {brandText.appName}.
-              </div>
+                  <Surface variant="group" size="small">
+                    <div className="px-3 py-2 text-xs fg-secondary">
+                      PKCE and the loopback redirect are managed by{' '}
+                      {brandText.appName}.
+                    </div>
+                  </Surface>
 
-              <Button
-                size="compact"
-                onClick={(): void =>
-                  setOauthForm({
-                    ...oauthForm,
-                    advancedOpen: !oauthForm.advancedOpen,
-                  })
-                }
-                className="self-start"
-              >
-                {oauthForm.advancedOpen
-                  ? 'Hide advanced OAuth overrides'
-                  : 'Show advanced OAuth overrides'}
-              </Button>
-
-              {oauthForm.advancedOpen && (
-                <div className="space-y-3 rounded-md border bg-base/40 p-3">
-                  <p className="text-xs fg-secondary">
-                    Fill these only when OAuth discovery or dynamic registration
-                    is unavailable for this MCP server.
-                  </p>
-
-                  <DialogFormField
-                    label={
-                      curatedEntry?.requiredConfigFields?.some(
-                        (field) => field.kind === 'oauth-client-id',
-                      )
-                        ? 'Client ID'
-                        : 'Client ID (optional)'
+                  <Button
+                    size="compact"
+                    onClick={(): void =>
+                      setOauthForm({
+                        ...oauthForm,
+                        advancedOpen: !oauthForm.advancedOpen,
+                      })
                     }
-                    htmlFor={`${fieldId}-oauth-client-id`}
+                    className="self-start"
                   >
-                    <TextInput
-                      id={`${fieldId}-oauth-client-id`}
-                      value={oauthForm.clientId}
-                      onChange={(
-                        e: React.ChangeEvent<HTMLInputElement>,
-                      ): void =>
-                        setOauthForm({
-                          ...oauthForm,
-                          clientId: e.target.value,
-                        })
-                      }
-                      placeholder="optional client id"
-                    />
-                  </DialogFormField>
+                    {oauthForm.advancedOpen
+                      ? 'Hide advanced OAuth overrides'
+                      : 'Show advanced OAuth overrides'}
+                  </Button>
 
-                  <div className="text-xs">
-                    <p className="fg-secondary">
-                      Standalone saved client secrets are not supported.
-                    </p>
-                    <p className="mt-1 text-2xs fg-secondary">
-                      {brandText.appName} stores standalone MCP server
-                      definitions on disk, so this editor only supports
-                      public-client OAuth metadata plus PKCE.
-                    </p>
-                  </div>
+                  {oauthForm.advancedOpen && (
+                    <Surface variant="group" size="small">
+                      <div className="space-y-3 p-3">
+                        <p className="text-xs fg-secondary">
+                          Fill these only when OAuth discovery or dynamic
+                          registration is unavailable for this MCP server.
+                        </p>
 
-                  <DialogFormField
-                    label="Callback port (optional)"
-                    htmlFor={`${fieldId}-oauth-callback-port`}
-                    description={
-                      <>
-                        Uses a dedicated loopback listener instead of the shared
-                        MCP proxy port. Register{' '}
-                        {/* The shape depends on who owns the OAuth
+                        <DialogFormField
+                          label={
+                            curatedEntry?.requiredConfigFields?.some(
+                              (field) => field.kind === 'oauth-client-id',
+                            )
+                              ? 'Client ID'
+                              : 'Client ID (optional)'
+                          }
+                          htmlFor={`${fieldId}-oauth-client-id`}
+                        >
+                          <TextInput
+                            id={`${fieldId}-oauth-client-id`}
+                            value={oauthForm.clientId}
+                            onChange={(
+                              e: React.ChangeEvent<HTMLInputElement>,
+                            ): void =>
+                              setOauthForm({
+                                ...oauthForm,
+                                clientId: e.target.value,
+                              })
+                            }
+                            placeholder="optional client id"
+                          />
+                        </DialogFormField>
+
+                        <div className="text-xs">
+                          <p className="fg-secondary">
+                            Standalone saved client secrets are not supported.
+                          </p>
+                          <p className="mt-1 text-2xs fg-secondary">
+                            {brandText.appName} stores standalone MCP server
+                            definitions on disk, so this editor only supports
+                            public-client OAuth metadata plus PKCE.
+                          </p>
+                        </div>
+
+                        <DialogFormField
+                          label="Callback port (optional)"
+                          htmlFor={`${fieldId}-oauth-callback-port`}
+                          description={
+                            <>
+                              Uses a dedicated loopback listener instead of the
+                              shared MCP proxy port. Register{' '}
+                              {/* The shape depends on who owns the OAuth
                                   client. A catalog entry pins a port because
                                   the vendor registered the redirect; anything
                                   typed here is the user's own client, and
                                   Canopy keeps its own shape for it. Stating
                                   one unconditionally sent half the users to
                                   register a URI Canopy would never send. */}
-                        <code>
-                          {oauthForm.vendorRegisteredRedirect === true
-                            ? 'http://localhost:<port>/callback'
-                            : 'http://127.0.0.1:<port>/oauth/callback'}
-                        </code>{' '}
-                        with the OAuth provider.
-                      </>
-                    }
-                  >
-                    <TextInput
-                      id={`${fieldId}-oauth-callback-port`}
-                      type="number"
-                      min={1}
-                      max={65_535}
-                      step={1}
-                      inputMode="numeric"
-                      value={oauthForm.callbackPort ?? ''}
-                      onChange={(
-                        e: React.ChangeEvent<HTMLInputElement>,
-                      ): void => {
-                        setOauthForm({
-                          ...oauthForm,
-                          callbackPort: optionalNumberInputValue(
-                            e.currentTarget.valueAsNumber,
-                          ),
-                        });
-                      }}
-                      placeholder="e.g. 3118"
-                      data-testid="mcp-server-oauth-callback-port"
-                    />
-                  </DialogFormField>
+                              <code>
+                                {oauthForm.vendorRegisteredRedirect === true
+                                  ? 'http://localhost:<port>/callback'
+                                  : 'http://127.0.0.1:<port>/oauth/callback'}
+                              </code>{' '}
+                              with the OAuth provider.
+                            </>
+                          }
+                        >
+                          <TextInput
+                            id={`${fieldId}-oauth-callback-port`}
+                            type="number"
+                            min={1}
+                            max={65_535}
+                            step={1}
+                            inputMode="numeric"
+                            value={oauthForm.callbackPort ?? ''}
+                            onChange={(
+                              e: React.ChangeEvent<HTMLInputElement>,
+                            ): void => {
+                              setOauthForm({
+                                ...oauthForm,
+                                callbackPort: optionalNumberInputValue(
+                                  e.currentTarget.valueAsNumber,
+                                ),
+                              });
+                            }}
+                            placeholder="e.g. 3118"
+                            data-testid="mcp-server-oauth-callback-port"
+                          />
+                        </DialogFormField>
 
-                  <DialogFormField
-                    label="Authorization URL (optional)"
-                    htmlFor={`${fieldId}-oauth-authorizationUrl`}
-                  >
-                    <TextInput
-                      id={`${fieldId}-oauth-authorizationUrl`}
-                      value={oauthForm.authorizationUrl}
-                      onChange={(
-                        e: React.ChangeEvent<HTMLInputElement>,
-                      ): void =>
-                        setOauthForm({
-                          ...oauthForm,
-                          authorizationUrl: e.target.value,
-                        })
-                      }
-                      placeholder="optional authorization endpoint"
-                    />
-                  </DialogFormField>
+                        <DialogFormField
+                          label="Authorization URL (optional)"
+                          htmlFor={`${fieldId}-oauth-authorizationUrl`}
+                        >
+                          <TextInput
+                            id={`${fieldId}-oauth-authorizationUrl`}
+                            value={oauthForm.authorizationUrl}
+                            onChange={(
+                              e: React.ChangeEvent<HTMLInputElement>,
+                            ): void =>
+                              setOauthForm({
+                                ...oauthForm,
+                                authorizationUrl: e.target.value,
+                              })
+                            }
+                            placeholder="optional authorization endpoint"
+                          />
+                        </DialogFormField>
 
-                  <DialogFormField
-                    label="Token URL (optional)"
-                    htmlFor={`${fieldId}-oauth-tokenUrl`}
-                  >
-                    <TextInput
-                      id={`${fieldId}-oauth-tokenUrl`}
-                      value={oauthForm.tokenUrl}
-                      onChange={(
-                        e: React.ChangeEvent<HTMLInputElement>,
-                      ): void =>
-                        setOauthForm({
-                          ...oauthForm,
-                          tokenUrl: e.target.value,
-                        })
-                      }
-                      placeholder="optional token endpoint"
-                    />
-                  </DialogFormField>
+                        <DialogFormField
+                          label="Token URL (optional)"
+                          htmlFor={`${fieldId}-oauth-tokenUrl`}
+                        >
+                          <TextInput
+                            id={`${fieldId}-oauth-tokenUrl`}
+                            value={oauthForm.tokenUrl}
+                            onChange={(
+                              e: React.ChangeEvent<HTMLInputElement>,
+                            ): void =>
+                              setOauthForm({
+                                ...oauthForm,
+                                tokenUrl: e.target.value,
+                              })
+                            }
+                            placeholder="optional token endpoint"
+                          />
+                        </DialogFormField>
 
-                  <DialogFormField
-                    label="Scopes (optional)"
-                    htmlFor={`${fieldId}-oauth-scopes`}
-                  >
-                    <TextInput
-                      id={`${fieldId}-oauth-scopes`}
-                      value={oauthForm.scopes}
-                      onChange={(
-                        e: React.ChangeEvent<HTMLInputElement>,
-                      ): void =>
-                        setOauthForm({
-                          ...oauthForm,
-                          scopes: e.target.value,
-                        })
-                      }
-                      placeholder="optional scopes"
-                    />
-                  </DialogFormField>
+                        <DialogFormField
+                          label="Scopes (optional)"
+                          htmlFor={`${fieldId}-oauth-scopes`}
+                        >
+                          <TextInput
+                            id={`${fieldId}-oauth-scopes`}
+                            value={oauthForm.scopes}
+                            onChange={(
+                              e: React.ChangeEvent<HTMLInputElement>,
+                            ): void =>
+                              setOauthForm({
+                                ...oauthForm,
+                                scopes: e.target.value,
+                              })
+                            }
+                            placeholder="optional scopes"
+                          />
+                        </DialogFormField>
 
-                  <DialogFormField
-                    label="Audience (optional)"
-                    htmlFor={`${fieldId}-oauth-audience`}
-                  >
-                    <TextInput
-                      id={`${fieldId}-oauth-audience`}
-                      value={oauthForm.audience}
-                      onChange={(
-                        e: React.ChangeEvent<HTMLInputElement>,
-                      ): void =>
-                        setOauthForm({
-                          ...oauthForm,
-                          audience: e.target.value,
-                        })
-                      }
-                      placeholder="optional audience"
-                    />
-                  </DialogFormField>
+                        <DialogFormField
+                          label="Audience (optional)"
+                          htmlFor={`${fieldId}-oauth-audience`}
+                        >
+                          <TextInput
+                            id={`${fieldId}-oauth-audience`}
+                            value={oauthForm.audience}
+                            onChange={(
+                              e: React.ChangeEvent<HTMLInputElement>,
+                            ): void =>
+                              setOauthForm({
+                                ...oauthForm,
+                                audience: e.target.value,
+                              })
+                            }
+                            placeholder="optional audience"
+                          />
+                        </DialogFormField>
+                      </div>
+                    </Surface>
+                  )}
                 </div>
-              )}
-            </div>
-          )}
-        </div>
+              </div>
+            )}
+          </div>
+        </Surface>
       )}
     </>
   );
   const configurationsField = !cloudOnlyInCloud && (
-    <div className="border-t pt-4">
-      <div className="flex items-center justify-between mb-3">
-        <span className="text-s font-medium fg-primary">Configurations</span>
-        <Button
-          size="compact"
-          onClick={handleAddConfig}
-          data-testid="mcp-server-add-config"
-        >
-          Add
-        </Button>
-      </div>
+    <div>
+      <Divider />
+      <div className="pt-4">
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-s font-medium fg-primary">Configurations</span>
+          <Button
+            size="compact"
+            onClick={handleAddConfig}
+            data-testid="mcp-server-add-config"
+          >
+            Add
+          </Button>
+        </div>
 
-      {configs.length === 0 && (
-        <p className="text-xs fg-secondary py-3 text-center">
-          No configurations. Add one to define environment-specific settings.
-        </p>
-      )}
+        {configs.length === 0 && (
+          <p className="text-xs fg-secondary py-3 text-center">
+            No configurations. Add one to define environment-specific settings.
+          </p>
+        )}
 
-      <div className="space-y-2">
-        {configs.map((config, index) => (
-          <ConfigEditor
-            key={config.id || `new-${index}`}
-            config={config}
-            initialExpanded={expandedNewIds.has(config.id)}
-            onChange={(updated: McpServerConfigView) =>
-              handleUpdateConfig(index, updated)
-            }
-            onDelete={() => handleDeleteConfig(index)}
-          />
-        ))}
+        <div className="space-y-2">
+          {configs.map((config, index) => (
+            <ConfigEditor
+              key={config.id || `new-${index}`}
+              config={config}
+              initialExpanded={expandedNewIds.has(config.id)}
+              onChange={(updated: McpServerConfigView) =>
+                handleUpdateConfig(index, updated)
+              }
+              onDelete={() => handleDeleteConfig(index)}
+            />
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -2967,9 +2924,11 @@ export function McpServerDialog({
 
           {/* Connect (OAuth) result */}
           {connectMessage && (
-            <div className="rounded-lg border bg-secondary/30 px-3 py-2 text-xs fg-secondary">
-              {connectMessage}
-            </div>
+            <Surface variant="group">
+              <div className="px-3 py-2 text-xs fg-secondary">
+                {connectMessage}
+              </div>
+            </Surface>
           )}
 
           {/* Health check result */}
@@ -3378,22 +3337,24 @@ export function McpServerDetailOverlay({
           )}
 
           {/* Connection details */}
-          <div className="rounded-lg border bg-secondary/30 px-4 py-3 mb-4">
-            <McpConnectionFacts
-              type={def.type === 'command' ? 'command' : 'http'}
-              url={def.type === 'http' ? def.url : undefined}
-              commandLine={
-                def.type === 'command' && def.command
-                  ? `${def.command}${
-                      def.args && def.args.length > 0
-                        ? ` ${def.args.join(' ')}`
-                        : ''
-                    }`
-                  : undefined
-              }
-              oauth={def.type === 'http' ? Boolean(def.oauth) : undefined}
-            />
-          </div>
+          <Surface variant="group" className="mb-4">
+            <div className="px-4 py-3">
+              <McpConnectionFacts
+                type={def.type === 'command' ? 'command' : 'http'}
+                url={def.type === 'http' ? def.url : undefined}
+                commandLine={
+                  def.type === 'command' && def.command
+                    ? `${def.command}${
+                        def.args && def.args.length > 0
+                          ? ` ${def.args.join(' ')}`
+                          : ''
+                      }`
+                    : undefined
+                }
+                oauth={def.type === 'http' ? Boolean(def.oauth) : undefined}
+              />
+            </div>
+          </Surface>
 
           {/* Configurations */}
           <StandaloneConfigsSection
@@ -3404,1177 +3365,5 @@ export function McpServerDetailOverlay({
         </>
       )}
     </BackDetailOverlayShell>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// McpServersTab helpers (logo, status badge, Add menu)
-// ---------------------------------------------------------------------------
-
-/**
- * Row logo for the table Name cell: the shared circular {@link McpServerLogo}
- * with the monogram fallback (rows are identified by server name).
- */
-function McpRowLogo({
-  curatedKey,
-  logoUrl,
-  name,
-}: {
-  curatedKey?: string;
-  logoUrl?: string;
-  name?: string;
-}): JSX.Element {
-  return (
-    <McpServerLogo
-      curatedKey={curatedKey}
-      logoUrl={logoUrl}
-      size={20}
-      fallback="monogram"
-      name={name}
-      imgTestId="mcp-server-row-logo"
-      fallbackTestId="mcp-server-row-logo-fallback"
-    />
-  );
-}
-
-// Re-exported from the shared derivation so existing callers keep one import.
-export { deriveMcpConnectionBadge };
-
-/** Choose an enabled configuration that still needs a supported OAuth flow. */
-export function getMcpConnectConfigId(
-  server: McpServerIndexEntry,
-  entry: McpServerStatusEntry | undefined,
-): string | undefined {
-  const enabledConfigIds = new Set(
-    server.configs
-      .filter((config) => config.enabled)
-      .map((config) => config.id),
-  );
-  return (
-    entry?.configs.find(
-      (config) =>
-        enabledConfigIds.has(config.configId) &&
-        config.authStatus !== 'connected' &&
-        config.authStatus !== 'unsupported',
-    )?.configId ?? server.configs.find((config) => config.enabled)?.id
-  );
-}
-
-function McpStatusBadge({
-  entry,
-}: {
-  entry: McpServerStatusEntry | undefined;
-}): JSX.Element {
-  return <McpConnectionStatusBadge badge={deriveMcpConnectionBadge(entry)} />;
-}
-
-/**
- * Status-column cell: servers awaiting authentication get an inline Connect
- * button (launching the OAuth login flow) instead of an "Auth required" badge.
- */
-function McpStatusCell({
-  entry,
-  connecting,
-  onConnect,
-}: {
-  entry: McpServerStatusEntry | undefined;
-  connecting: boolean;
-  onConnect: () => void;
-}): JSX.Element {
-  const { status } = deriveMcpConnectionBadge(entry);
-  // Cached health and account recovery eligibility are separate: an
-  // unchecked/disconnected account still keeps its legacy Connect shortcut.
-  if (
-    status === 'auth_required' ||
-    (entry?.handler === 'account' && entry.connectionStatus === 'auth_required')
-  ) {
-    const accountAction =
-      entry?.handler === 'account'
-        ? entry.configs.some(
-            (config): boolean =>
-              config.authStatus === 'error' || config.authStatus === 'expired',
-          )
-          ? 'Reconnect in cloud'
-          : 'Connect in cloud'
-        : undefined;
-    return (
-      <Button
-        size="compact"
-        onClick={(e) => {
-          e.stopPropagation();
-          onConnect();
-        }}
-        disabled={connecting}
-        data-testid="mcp-server-connect-button"
-      >
-        {connecting ? 'Connecting…' : (accountAction ?? 'Connect')}
-      </Button>
-    );
-  }
-  return <McpStatusBadge entry={entry} />;
-}
-
-/**
- * Toolbar "Add" affordance. With a non-empty curated catalog it is a dropdown
- * (Browse / Add Custom); with an empty/unavailable catalog it degrades to a
- * plain "Add custom" button (the pre-catalog behavior, renamed).
- */
-function AddServerMenu({
-  hasCatalog,
-  onBrowse,
-  onAddCustom,
-}: {
-  hasCatalog: boolean;
-  onBrowse: () => void;
-  onAddCustom: () => void;
-}): JSX.Element {
-  const browseLabel = useEarlyAccessTitle('Browse MCP Servers');
-  const [open, setOpen] = useState(false);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const menuItems: readonly ActionMenuItem[] = [
-    {
-      key: 'browse',
-      label: browseLabel,
-      icon: <AppCatalogStorefrontIcon />,
-      testId: 'mcp-add-browse',
-      onSelect: onBrowse,
-    },
-    {
-      key: 'custom',
-      label: 'Add custom',
-      icon: <AppCatalogPlusIcon />,
-      testId: 'mcp-add-custom',
-      onSelect: onAddCustom,
-    },
-  ];
-
-  if (!hasCatalog) {
-    return (
-      <Button
-        variant="primary"
-        size="compact"
-        onClick={onAddCustom}
-        data-testid="mcp-add-custom"
-      >
-        Add custom
-      </Button>
-    );
-  }
-
-  return (
-    <div className="relative">
-      <Button
-        variant="primary"
-        size="compact"
-        ref={triggerRef}
-        onClick={() => setOpen((v) => !v)}
-        data-testid="mcp-add-menu-trigger"
-        aria-haspopup="menu"
-        aria-expanded={open}
-      >
-        Add
-        <AppCatalogChevronDownMediumIcon width="10" height="10" />
-      </Button>
-      <FloatingMenu
-        open={open}
-        onOpenChange={setOpen}
-        anchorRef={triggerRef}
-        placement="bottom-right"
-        aria-label="Add"
-        data-testid="mcp-add-menu"
-        className="min-w-50"
-      >
-        <ActionMenuRowStyle>
-          <ActionMenuItems
-            items={menuItems}
-            onSelect={(item): void => {
-              if (item.disabled || !item.onSelect) return;
-              setOpen(false);
-              triggerRef.current?.focus({ preventScroll: true });
-              item.onSelect();
-            }}
-          />
-        </ActionMenuRowStyle>
-      </FloatingMenu>
-    </div>
-  );
-}
-
-/** Table Name-cell subtitle: description for 0\u20131 configs, else a config summary. */
-export function mcpRowSubtitle(server: McpServerIndexEntry): string {
-  const enabledConfigs = server.configs.filter((config) => config.enabled);
-  if (enabledConfigs.length <= 1) return server.description;
-  const names = enabledConfigs.map((config) => config.name).join(', ');
-  return `${enabledConfigs.length} configs \u00b7 ${names}`;
-}
-
-// ---------------------------------------------------------------------------
-// McpServersTab (main export)
-// ---------------------------------------------------------------------------
-
-interface McpServersTabProps {
-  accountPanel?: boolean;
-}
-
-export function McpServersTab({
-  accountPanel = false,
-}: McpServersTabProps): JSX.Element {
-  const accountEnabled = useFeatureFlagsStore((state): boolean =>
-    state.isEnabled(CLIENT_FEATURE_FLAGS.canopySharedMcpAccountConnections.key),
-  );
-  const {
-    servers,
-    loading,
-    error,
-    refresh,
-    accountConnectionsAvailable,
-    accountConnectionsUnavailableReason,
-  } = useMcpServerList();
-  const accountActions = useAccountMcpActions(refresh);
-  // Keyed by connection id: two connections to one provider share a server
-  // key but are two rows (REG-3033).
-  const [accountDetails, setAccountDetails] = useState<string | null>(null);
-  const detailsConnection = servers.find(
-    (row): boolean => (row.accountConnectionId ?? row.id) === accountDetails,
-  )?.accountConnection;
-  const { entries: curatedEntries, refresh: refreshCurated } =
-    useCuratedMcpServers();
-  const { statuses, refresh: refreshStatuses } = useMcpServerStatuses(servers);
-  const [promoteRow, setPromoteRow] = useState<McpServerIndexEntry | null>(
-    null,
-  );
-  // A cloud connection with no device copy, opened for editing.
-  const [dialogAccountConnection, setDialogAccountConnection] = useState<
-    AccountMcpConnection | undefined
-  >(undefined);
-
-  // null = dialog closed, '' = create mode, string = edit by id
-  const [dialogServerId, setDialogServerId] = useState<string | null>(null);
-  // Curated entry to pre-fill the create dialog (undefined = blank custom add).
-  const [dialogCurated, setDialogCurated] = useState<
-    CuratedMcpServerEntry | undefined
-  >(undefined);
-  const [browseOpen, setBrowseOpen] = useState(false);
-  const [dialogMode, setDialogMode] = useState<'device' | 'account'>('device');
-  const [dialogAccountConfigId, setDialogAccountConfigId] = useState('default');
-  // Account setup for a catalog server that registers no OAuth clients: the
-  // dialog asks for the user's own app, with the cloud's setup when it sent one.
-  const [dialogOAuthClient, setDialogOAuthClient] = useState<{
-    clientSetup?: AccountMcpClientSetup;
-    endpointUrl?: string;
-  } | null>(null);
-  // The cloud account the account setup dialog was opened under. Credentials
-  // typed into that dialog are bound to it: a sign-in change closes the dialog
-  // (below) and the connect path refuses a mismatch, so a secret entered for one
-  // account is never submitted under another.
-  const dialogAccountId = useRef<string | undefined>(undefined);
-  const [setupError, setSetupError] = useState<string | null>(null);
-  // Guidance that is not an error: what to do when Connect can't start here,
-  // or that a sign-in needed no browser because it was already signed in.
-  const [connectNotice, setConnectNotice] = useState<string | null>(null);
-  const setupRequest = useRef(0);
-  // A connection awaiting a credential (a custom connection's replacement, or
-  // a catalog server's access token when its own app needs a secret the cloud
-  // can't store); bound to the captured account exactly like the curated
-  // setup dialog.
-  const [credentialPrompt, setCredentialPrompt] = useState<{
-    target: AccountMcpCredentialTarget;
-    kind: AccountMcpCredentialKind;
-    clientSetup?: AccountMcpClientSetup;
-    intro?: string;
-  } | null>(null);
-  // A custom row whose promotion needs an access token to go ahead.
-  const [promotionTokenPrompt, setPromotionTokenPrompt] = useState<{
-    row: McpServerIndexEntry;
-  } | null>(null);
-  const accountSetupOpenRef = useRef(false);
-  accountSetupOpenRef.current =
-    dialogMode === 'account' ||
-    credentialPrompt !== null ||
-    promotionTokenPrompt !== null ||
-    promoteRow !== null;
-  const dialogOpenRef = useRef(false);
-  dialogOpenRef.current =
-    accountSetupOpenRef.current ||
-    dialogServerId !== null ||
-    accountDetails !== null ||
-    browseOpen;
-  const closeAccountSetup = (): void => {
-    dialogAccountId.current = undefined;
-    setCredentialPrompt(null);
-    setPromotionTokenPrompt(null);
-    setPromoteRow(null);
-    setDialogServerId(null);
-    setDialogCurated(undefined);
-    setDialogAccountConnection(undefined);
-    setDialogOAuthClient(null);
-    setDialogMode('device');
-  };
-  // Setup only opens once the signed-in account is known, so every
-  // submission carries the account its credentials were typed under.
-  const withCapturedAccount = (open: () => void): void => {
-    const request = ++setupRequest.current;
-    setSetupError(null);
-    void (async (): Promise<void> => {
-      let accountId: string | undefined;
-      try {
-        accountId = (await window.api?.loadCanopyCloudAccount?.())?.account?.id;
-      } catch {
-        accountId = undefined;
-      }
-      if (request !== setupRequest.current) return;
-      if (!accountId) {
-        setSetupError('Sign in to connect account servers.');
-        return;
-      }
-      dialogAccountId.current = accountId;
-      open();
-    })();
-  };
-  const openAccountSetup = (
-    entry: CuratedMcpServerEntry,
-    configId: string,
-    oauthClient: {
-      clientSetup?: AccountMcpClientSetup;
-      endpointUrl?: string;
-    } | null = null,
-  ): void =>
-    withCapturedAccount((): void => {
-      setDialogMode('account');
-      setDialogCurated(entry);
-      setDialogAccountConfigId(configId);
-      setDialogOAuthClient(oauthClient);
-      setDialogServerId('');
-    });
-  const openCredentialPrompt = (
-    connection: AccountMcpConnection,
-    kind: AccountMcpCredentialKind,
-    clientSetup?: AccountMcpClientSetup,
-  ): void =>
-    withCapturedAccount((): void =>
-      setCredentialPrompt({
-        target: accountMcpCredentialTarget(connection),
-        kind,
-        ...(clientSetup ? { clientSetup } : {}),
-      }),
-    );
-  const promptForOAuthClient = (
-    entry: CuratedMcpServerEntry | undefined,
-    connection: AccountMcpConnection | undefined,
-    configId: string,
-    clientSetup?: AccountMcpClientSetup,
-    endpointUrl?: string,
-  ): void => {
-    const step = accountMcpClientPromptStep({
-      ...(entry ? { entry } : {}),
-      ...(connection ? { connection } : {}),
-      configId,
-      ...(clientSetup ? { clientSetup } : {}),
-      ...(endpointUrl ? { endpointUrl } : {}),
-    });
-    if (step.kind === 'error') setSetupError(step.message);
-    else if (step.kind === 'token')
-      withCapturedAccount((): void =>
-        setCredentialPrompt({
-          target: step.target,
-          kind: 'bearer',
-          intro: step.intro,
-        }),
-      );
-    else if (step.kind === 'setup')
-      openAccountSetup(step.entry, step.configId, {
-        ...(step.clientSetup ? { clientSetup: step.clientSetup } : {}),
-        ...(step.endpointUrl ? { endpointUrl: step.endpointUrl } : {}),
-      });
-    else
-      openCredentialPrompt(step.connection, 'oauth-client', step.clientSetup);
-  };
-  useEffect((): (() => void) | undefined => {
-    // The bridge fires this for every account operation (a connect settling,
-    // a disconnect, a tools save), not only for sign-in changes, so the dialog
-    // only closes when the signed-in account really differs from the one its
-    // credentials were captured under.
-    return window.mcpServers?.onAuthChanged?.((): void => {
-      if (!accountSetupOpenRef.current) return;
-      const captured = dialogAccountId.current;
-      if (captured === undefined) {
-        closeAccountSetup();
-        return;
-      }
-      void window.api
-        ?.loadCanopyCloudAccount?.()
-        .then((state): void => {
-          if (!accountSetupOpenRef.current) return;
-          if (state.account?.id === captured) return;
-          // Credentials in the open dialog belong to the previous sign-in.
-          closeAccountSetup();
-        })
-        .catch((): void => {
-          // The account can no longer be confirmed as the captured one.
-          closeAccountSetup();
-        });
-    });
-  }, []);
-
-  // The catalog read can outlast the user: a setup started, or any dialog
-  // open, opened or closed meanwhile wins over this delayed one.
-  const promptForEndpoint = (serverKey: string, configId: string): void => {
-    const request = ++setupRequest.current;
-    const overlays = overlayGeneration(document);
-    void accountMcpEndpointEntry(
-      serverKey,
-      curatedEntries,
-      refreshCurated,
-    ).then((entry): void => {
-      if (
-        request !== setupRequest.current ||
-        overlays !== overlayGeneration(document) ||
-        dialogOpenRef.current
-      )
-        return;
-      if (entry) openAccountSetup(entry, configId);
-      else setSetupError(mcpConnectErrorMessage(ACCOUNT_MCP_ENDPOINT_REQUIRED));
-    });
-  };
-
-  const startAccountStep = (
-    step: AccountMcpConnectStep<AccountMcpConnection>,
-    entry: CuratedMcpServerEntry | undefined,
-    connection?: AccountMcpConnection,
-  ): void => {
-    setConnectNotice(null);
-    if (step.kind === 'unavailable')
-      setConnectNotice(accountMcpUnavailableMessage(entry));
-    else if (step.kind === 'setup') openAccountSetup(step.entry, step.configId);
-    else if (step.kind === 'credential')
-      openCredentialPrompt(step.connection, 'bearer');
-    else if (step.kind === 'connect')
-      void accountActions.connect(step.serverKey, step.configId, {
-        // A server without dynamic registration needs the user's own OAuth
-        // app (a custom one, the client it was created with); collect it
-        // and retry.
-        onOAuthClientRequired: (clientSetup): void =>
-          promptForOAuthClient(entry, connection, step.configId, clientSetup),
-        onEndpointRequired: (): void =>
-          promptForEndpoint(step.serverKey, step.configId),
-      });
-  };
-
-  const hasCatalog = curatedEntries.length > 0;
-
-  const openAddCustom = (): void => {
-    setDialogMode('device');
-    setDialogCurated(undefined);
-    setDialogAccountConnection(undefined);
-    setDialogServerId('');
-  };
-
-  // The same Add rule as the Plugins page detail (REG-3033): one helper
-  // decides between an account connection and a device file for both.
-  const handleBrowseAdd = (entry: CuratedMcpServerEntry): void => {
-    setBrowseOpen(false);
-    setDialogAccountConfigId('default');
-    const target = curatedMcpAddTarget(entry, {
-      accountConnectionsEnabled: accountEnabled,
-      accountConnectionsAvailable,
-    });
-    if (target.kind === 'account') {
-      startAccountStep(
-        accountMcpCatalogConnectStep(entry, target.configId),
-        entry,
-      );
-      return;
-    }
-    // A provider connector's guidance renders inside the editor opened below.
-    setConnectNotice(null);
-    setDialogMode('device');
-    setDialogCurated(entry);
-    setDialogServerId('');
-  };
-
-  // Promotion moves the row to the cloud account with its own URL, name,
-  // headers, and the access token the user confirmed; non-HTTPS or local URLs
-  // have no cloud equivalent, so those rows stay on the device. The device
-  // copy stays bound to the new connection, loses its plaintext token, and
-  // hands its references to the cloud ref.
-  const promoteCustomRow = async (
-    row: McpServerIndexEntry,
-    credential: { bearerToken?: SecretValueInput; expectedAccountId: string },
-  ): Promise<void> => {
-    setSetupError(null);
-    try {
-      await promoteCustomMcpServer(row, credential, accountActions, () =>
-        withCapturedAccount((): void => setPromotionTokenPrompt({ row })),
-      );
-    } catch (error) {
-      setSetupError(extractIpcErrorMessage(error));
-    }
-  };
-
-  const customRowPromotable = (row: McpServerIndexEntry): boolean =>
-    customAccountMcpPromotable(row) &&
-    statuses.get(row.id)?.handler !== 'provider';
-
-  // Moving a row to the cloud account carries its token, so it always asks,
-  // App Advisor included; the confirmation is bound to the account it opened
-  // under, like the setup dialogs.
-  const openPromoteDialog = (server: McpServerIndexEntry): void =>
-    withCapturedAccount((): void => setPromoteRow(server));
-  const promoteRefusal = (server: McpServerIndexEntry): string | undefined =>
-    customRowPromotable(server) && server.configs.length > 1
-      ? CLOUD_SINGLE_CONFIG_REQUIRED
-      : undefined;
-  // Whether the catalog keeps this row's server off the cloud account.
-  const rowDesktopOnly = (server: McpServerIndexEntry): boolean =>
-    curatedEntries.some(
-      (entry): boolean =>
-        entry.key === server.curatedKey && curatedMcpDesktopOnly(entry),
-    );
-  const connectAccountRow = (server: McpServerIndexEntry): void => {
-    if (customRowPromotable(server)) {
-      const refusal = promoteRefusal(server);
-      if (refusal) setSetupError(refusal);
-      else openPromoteDialog(server);
-      return;
-    }
-    const entry = curatedEntries.find(
-      (catalog): boolean =>
-        catalog.key ===
-        (server.curatedKey ?? server.accountConnection?.serverKey),
-    );
-    const connection = server.accountConnection;
-    startAccountStep(
-      accountMcpConnectStep({
-        ...(entry ? { entry } : {}),
-        ...(connection ? { connection } : {}),
-        ...(server.curatedKey ? { curatedKey: server.curatedKey } : {}),
-      }),
-      entry,
-      connection,
-    );
-  };
-  // Custom cloud rows open the editor: on their device copy when this device
-  // has one, otherwise on the connection itself.
-  const editableAccountCopy = (
-    server: McpServerIndexEntry,
-  ): McpServerIndexEntry | undefined =>
-    server.deviceCopies?.find(
-      (copy): boolean =>
-        copy.accountConnectionId !== undefined &&
-        copy.accountConnectionId === server.accountConnection?.id,
-    );
-  const openAccountEditor = (server: McpServerIndexEntry): void => {
-    const connection = server.accountConnection;
-    if (!connection) return;
-    const copy = editableAccountCopy(server);
-    setDialogMode('device');
-    setDialogCurated(undefined);
-    if (copy) {
-      setDialogAccountConnection(undefined);
-      setDialogServerId(copy.id);
-    } else {
-      setDialogAccountConnection(connection);
-      setDialogServerId('');
-    }
-  };
-  useCurrentUiStateReporter(
-    `mcp.accountConnections.${accountPanel ? 'settings' : 'plugins'}`,
-    accountEnabled
-      ? {
-          available: accountConnectionsAvailable === true,
-          loading,
-          setupOpen:
-            (dialogMode === 'account' && dialogServerId !== null) ||
-            credentialPrompt !== null ||
-            promotionTokenPrompt !== null,
-          detailsOpen: accountDetails !== null,
-          promoteDialogOpen: promoteRow !== null,
-          detailsRowId: accountDetails,
-          pendingCount: accountActions.pending.size,
-          rows: servers.slice(0, 50).map((row) => ({
-            id: row.id,
-            serverKey:
-              row.accountConnection?.serverKey ?? row.curatedKey ?? null,
-            status: row.accountConnection?.status ?? null,
-          })),
-        }
-      : null,
-  );
-  useEffect((): (() => void) => {
-    const listener = (event: Event): void => {
-      if (
-        !(event instanceof CustomEvent) ||
-        !accountEnabled ||
-        !accountConnectionsAvailable ||
-        loading
-      )
-        return;
-      const nav = useNavigationStore.getState();
-      if (nav.settingsOpen !== accountPanel) return;
-      const detail: unknown = event.detail;
-      if (!isAccountMcpActionEventDetail(detail)) return;
-      const row = servers.find(
-        (server): boolean => server.id === detail.serverId,
-      );
-      const entry = curatedEntries.find(
-        (catalog): boolean =>
-          catalog.key ===
-          (row?.curatedKey ??
-            row?.accountConnection?.serverKey ??
-            detail.serverId),
-      );
-      // Desktop only blocks every cloud connect, never revoking a connection
-      // made before the server was marked (REG-3035).
-      if (
-        entry &&
-        curatedMcpDesktopOnly(entry) &&
-        detail.operation !== 'disconnect'
-      )
-        return;
-      const customPromotable = row !== undefined && customRowPromotable(row);
-      if (
-        !row?.accountConnection &&
-        !row?.curatedKey &&
-        !entry &&
-        !customPromotable
-      )
-        return;
-      const connection = row?.accountConnection;
-      if (detail.operation === 'edit') {
-        // Same rows as the Edit button: custom servers in the cloud account.
-        if (!row || connection?.kind !== 'CUSTOM') return;
-        openAccountEditor(row);
-      } else if (detail.operation === 'disconnect') {
-        if (!connection || connection.status === 'DISCONNECTED') return;
-        void accountActions.disconnect(connection.id);
-      } else {
-        if (
-          detail.operation === 'promote' &&
-          (!row || connection || (!row.curatedKey && !customPromotable))
-        )
-          return;
-        if (
-          detail.operation === 'reconnect' &&
-          connection?.status !== 'REAUTH_REQUIRED'
-        )
-          return;
-        if (
-          connection?.status === 'CONNECTED' ||
-          connection?.status === 'PENDING'
-        )
-          return;
-        const refusal = row ? promoteRefusal(row) : undefined;
-        if (refusal) {
-          setSetupError(refusal);
-          detail.refuse?.(refusal);
-          return;
-        }
-        if (row) connectAccountRow(row);
-        else if (detail.operation === 'connect' && entry)
-          handleBrowseAdd(entry);
-        else return;
-      }
-      detail.acknowledge();
-    };
-    window.addEventListener(ACCOUNT_MCP_ACTION_EVENT, listener);
-    return (): void =>
-      window.removeEventListener(ACCOUNT_MCP_ACTION_EVENT, listener);
-  });
-
-  const closeDialog = (): void => {
-    setupRequest.current += 1;
-    closeAccountSetup();
-  };
-
-  const handleSaved = async (): Promise<void> => {
-    await refresh();
-    refreshStatuses();
-  };
-
-  const [connectingServerId, setConnectingServerId] = useState<string | null>(
-    null,
-  );
-
-  const [connectError, setConnectError] = useState('');
-  const accountError = accountEnabled
-    ? setupError || accountActions.error
-    : null;
-  const bannerError = error || connectError || accountError;
-  // A cloud refusal's code stays out of the sentence but at hand.
-  const bannerErrorCode =
-    bannerError && bannerError === accountActions.error
-      ? accountActions.errorCode
-      : null;
-
-  const handleConnect = async (server: McpServerIndexEntry): Promise<void> => {
-    const entry = statuses.get(server.id);
-    setConnectError('');
-    setConnectNotice(null);
-    if (entry?.handler === 'account') {
-      openCloudAccountSettings();
-      return;
-    }
-    const configId = getMcpConnectConfigId(server, entry);
-    setConnectingServerId(server.id);
-    try {
-      const result = await window.mcpServers.startOAuthLogin({
-        serverId: server.id,
-        ...(configId ? { configId } : {}),
-      });
-      if (result.status === 'started') {
-        // Browser flow pending: re-check when the user returns to the app.
-        const handleFocus = (): void => {
-          window.removeEventListener('focus', handleFocus);
-          refreshStatuses();
-        };
-        window.addEventListener('focus', handleFocus);
-      } else {
-        setConnectNotice(
-          await completedConnectMessage(server.id, configId, server.name),
-        );
-      }
-    } catch (error: unknown) {
-      setConnectError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setConnectingServerId(null);
-      refreshStatuses();
-    }
-  };
-
-  return (
-    <>
-      {/* Toolbar */}
-      <div className="flex items-center justify-between mb-4">
-        <p className="text-xs fg-secondary">
-          {servers.length > 0
-            ? `${servers.length} server${servers.length !== 1 ? 's' : ''}`
-            : ''}
-        </p>
-        <AddServerMenu
-          hasCatalog={hasCatalog}
-          onBrowse={() => setBrowseOpen(true)}
-          onAddCustom={openAddCustom}
-        />
-      </div>
-
-      {accountEnabled && accountConnectionsAvailable === false && (
-        <Notice
-          intent="neutral"
-          icon={null}
-          className="mb-4"
-          data-testid="mcp-account-sign-in-hint"
-        >
-          {accountConnectionsUnavailableReason === 'unavailable'
-            ? 'Account MCP connections are unavailable.'
-            : 'Sign in to see account connections'}
-        </Notice>
-      )}
-      {/* Error */}
-      <div
-        title={mcpConnectErrorCodeTitle(bannerErrorCode)}
-        data-mcp-error-code={bannerErrorCode ?? undefined}
-      >
-        <ErrorBanner error={bannerError} />
-      </div>
-      {connectNotice && (
-        <Notice
-          intent="neutral"
-          className="mb-4"
-          role="status"
-          data-testid="mcp-connect-notice"
-          onDismiss={(): void => setConnectNotice(null)}
-          dismissTestId="mcp-connect-notice-dismiss"
-        >
-          {connectNotice}
-        </Notice>
-      )}
-
-      {/* Loading */}
-      {loading && servers.length === 0 && (
-        <DelayedLoadingPlaceholder slowNote="Still loading MCP servers…">
-          <McpServersTableSkeleton />
-        </DelayedLoadingPlaceholder>
-      )}
-
-      {/* Table */}
-      {servers.length > 0 && (
-        <DataTableFrame caption="MCP servers" testId="mcp-servers-table">
-          <DataTableHead>
-            {/* The Name column yields width to the others and truncates, but
-                    keeps a 10rem floor (CAN-4258). */}
-            <DataTableHeaderCell width="100%" minWidth="10rem">
-              Name
-            </DataTableHeaderCell>
-            <DataTableHeaderCell>Type</DataTableHeaderCell>
-            <DataTableHeaderCell>Status</DataTableHeaderCell>
-            <DataTableHeaderCell>Last updated</DataTableHeaderCell>
-            <DataTableHeaderCell align="right">Actions</DataTableHeaderCell>
-          </DataTableHead>
-          <DataTableBody>
-            {servers
-              .slice()
-              .sort((a, b) => a.name.localeCompare(b.name))
-              .map((server) => {
-                const subtitle = mcpRowSubtitle(server);
-                return (
-                  <DataTableRow
-                    key={server.accountConnectionId ?? server.id}
-                    data-testid={`mcp-server-row-${server.id}`}
-                    data-mcp-connection-id={server.accountConnectionId}
-                    onActivate={(): void =>
-                      server.accountConnection && accountEnabled
-                        ? setAccountDetails(
-                            server.accountConnectionId ?? server.id,
-                          )
-                        : setDialogServerId(server.id)
-                    }
-                  >
-                    {/* The Name column yields width to the others and
-                          truncates; the details open from the row keep the
-                          full name (CAN-4258). */}
-                    <DataTableCell tone="primary" overflow="truncate">
-                      <div className="flex items-start gap-2.5">
-                        <McpRowLogo
-                          curatedKey={server.curatedKey}
-                          logoUrl={server.logoUrl}
-                          name={server.name}
-                        />
-                        <div className="min-w-0 flex-1">
-                          <div className="flex min-w-0 items-baseline gap-1.5">
-                            <span className="truncate fg-primary font-medium">
-                              {server.name}
-                            </span>
-                            {server.accountConnection &&
-                              server.accountConnection.configId !==
-                                'default' && (
-                                // One row per connection (REG-3033): a second
-                                // configuration of the same provider names
-                                // itself beside the shared display name.
-                                <span
-                                  className="shrink-0 text-xs fg-secondary"
-                                  data-testid="mcp-account-config"
-                                >
-                                  {server.configs[0]?.name ??
-                                    server.accountConnection.configId}
-                                </span>
-                              )}
-                          </div>
-                          {accountEnabled && (
-                            <div className="mt-1">
-                              <McpTierBadge
-                                row={server}
-                                desktopOnly={rowDesktopOnly(server)}
-                                providers={
-                                  statuses.get(server.id)?.handler ===
-                                  'provider'
-                                    ? curatedEntries.find(
-                                        (entry): boolean =>
-                                          entry.key === server.curatedKey,
-                                      )?.providerConnector?.providers
-                                    : undefined
-                                }
-                              />
-                            </div>
-                          )}
-                          {subtitle && (
-                            <p className="text-xs fg-secondary mt-0.5 line-clamp-1">
-                              {subtitle}
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                    </DataTableCell>
-                    <DataTableCell>
-                      <span className="rounded bg-secondary px-1.5 py-0.5 text-3xs font-medium fg-secondary">
-                        {server.type}
-                      </span>
-                    </DataTableCell>
-                    <DataTableCell overflow="wrap">
-                      {accountEnabled && server.accountConnection ? (
-                        <span data-testid="mcp-account-status">
-                          {server.accountConnection.status === 'CONNECTED'
-                            ? 'Connected'
-                            : server.accountConnection.status ===
-                                'REAUTH_REQUIRED'
-                              ? 'Reconnect'
-                              : server.accountConnection.status === 'PENDING'
-                                ? 'Waiting for browser'
-                                : 'Not connected'}
-                        </span>
-                      ) : (
-                        <McpStatusCell
-                          entry={statuses.get(server.id)}
-                          connecting={connectingServerId === server.id}
-                          onConnect={(): void => void handleConnect(server)}
-                        />
-                      )}
-                    </DataTableCell>
-                    <DataTableCell>
-                      {server.updatedAt
-                        ? formatDate(server.updatedAt)
-                        : '\u2014'}
-                    </DataTableCell>
-                    <DataTableCell align="right" overflow="wrap">
-                      {/* Actions wrap onto further lines instead of
-                            widening the table (CAN-4258). */}
-                      <div className="flex flex-wrap items-center justify-end gap-1.5">
-                        {accountEnabled &&
-                          accountConnectionsAvailable &&
-                          (!customAccountMcpPromotable(server) ||
-                            customRowPromotable(server)) &&
-                          (!rowDesktopOnly(server) ||
-                            accountMcpConnectionLive(server)) && (
-                            // A desktop-only server never connects through
-                            // the cloud account, but a connection made before
-                            // it was marked keeps its Disconnect (REG-3035).
-                            <AccountMcpControls
-                              row={server}
-                              actions={accountActions}
-                              connectable={!rowDesktopOnly(server)}
-                              onConnect={(): void => connectAccountRow(server)}
-                            />
-                          )}
-                        {accountEnabled &&
-                          server.deviceCopies
-                            ?.filter(
-                              (device): boolean =>
-                                server.accountConnection?.kind !== 'CUSTOM' ||
-                                device !== editableAccountCopy(server),
-                            )
-                            .map(
-                              (device): JSX.Element => (
-                                <Button
-                                  key={device.id}
-                                  size="sm"
-                                  variant="ghost"
-                                  className="whitespace-nowrap"
-                                  data-testid="mcp-device-copy"
-                                  onClick={(): void =>
-                                    setDialogServerId(device.id)
-                                  }
-                                >
-                                  Device copy
-                                </Button>
-                              ),
-                            )}
-                        {accountEnabled && server.accountConnection ? (
-                          <>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="whitespace-nowrap"
-                              data-testid="mcp-account-details-button"
-                              onClick={(): void =>
-                                setAccountDetails(
-                                  server.accountConnectionId ?? server.id,
-                                )
-                              }
-                            >
-                              Details
-                            </Button>
-                            {server.accountConnection.kind === 'CUSTOM' && (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="whitespace-nowrap"
-                                data-testid="mcp-account-edit-button"
-                                onClick={(): void => openAccountEditor(server)}
-                              >
-                                Edit
-                              </Button>
-                            )}
-                          </>
-                        ) : (
-                          <Tooltip label="Edit server">
-                            <Button
-                              variant="ghost-quiet"
-                              size="compact"
-                              iconOnly
-                              onClick={(e): void => {
-                                e.stopPropagation();
-                                setDialogServerId(server.id);
-                              }}
-                              aria-label="Edit server"
-                              data-testid="mcp-server-edit-button"
-                            >
-                              <AppCatalogDocumentPencilIcon
-                                width="14"
-                                height="14"
-                              />
-                            </Button>
-                          </Tooltip>
-                        )}
-                      </div>
-                    </DataTableCell>
-                  </DataTableRow>
-                );
-              })}
-          </DataTableBody>
-        </DataTableFrame>
-      )}
-
-      {/* Empty state */}
-      {!loading && servers.length === 0 && !error && (
-        <EmptyState
-          title="No MCP servers registered"
-          subtitle="Register an MCP server to extend agent capabilities"
-        />
-      )}
-
-      {/* Browse dialog */}
-      {browseOpen && (
-        <McpBrowseDialog
-          entries={curatedEntries}
-          installedServers={servers}
-          onClose={() => setBrowseOpen(false)}
-          onAdd={handleBrowseAdd}
-        />
-      )}
-
-      {accountEnabled && detailsConnection && (
-        <AccountMcpDetails
-          key={detailsConnection.id}
-          connection={detailsConnection}
-          onClose={(): void => setAccountDetails(null)}
-          onSaved={handleSaved}
-        />
-      )}
-      {credentialPrompt && (
-        <AccountMcpCredentialDialog
-          key={`${credentialPrompt.kind}:${credentialPrompt.target.id}`}
-          kind={credentialPrompt.kind}
-          displayName={credentialPrompt.target.displayName}
-          {...(credentialPrompt.intro ? { intro: credentialPrompt.intro } : {})}
-          {...(credentialPrompt.clientSetup
-            ? { clientSetup: credentialPrompt.clientSetup }
-            : {})}
-          onSubmit={(credential): void => {
-            const { id, serverKey, configId } = credentialPrompt.target;
-            const expectedAccountId = dialogAccountId.current;
-            closeDialog();
-            if (!expectedAccountId) {
-              setSetupError(
-                new AccountMcpConnectionError('account-changed').message,
-              );
-              return;
-            }
-            void accountActions.connect(serverKey, configId, {
-              ...credential,
-              expectedAccountId,
-              // The server may still want more than this prompt collected,
-              // such as a secret, or an access token instead.
-              onOAuthClientRequired: (clientSetup): void =>
-                promptForOAuthClient(
-                  curatedEntries.find(
-                    (entry): boolean => entry.key === serverKey,
-                  ),
-                  servers.find(
-                    (row): boolean => row.accountConnection?.id === id,
-                  )?.accountConnection,
-                  configId,
-                  clientSetup,
-                ),
-            });
-          }}
-          onClose={closeDialog}
-        />
-      )}
-      {promoteRow && (
-        <McpPromoteDialog
-          key={promoteRow.id}
-          serverId={promoteRow.id}
-          serverName={promoteRow.name}
-          onClose={closeDialog}
-          onConfirm={(bearerToken): void => {
-            const row = promoteRow;
-            const expectedAccountId = dialogAccountId.current;
-            closeDialog();
-            if (!expectedAccountId) {
-              setSetupError(
-                new AccountMcpConnectionError('account-changed').message,
-              );
-              return;
-            }
-            void promoteCustomRow(row, { bearerToken, expectedAccountId });
-          }}
-        />
-      )}
-      {promotionTokenPrompt && (
-        <AccountMcpCredentialDialog
-          key={`promote:${promotionTokenPrompt.row.id}`}
-          kind="bearer"
-          intro={CLOUD_REGISTRATION_UNAVAILABLE}
-          displayName={promotionTokenPrompt.row.name}
-          onSubmit={(credential): void => {
-            const { row } = promotionTokenPrompt;
-            const expectedAccountId = dialogAccountId.current;
-            closeDialog();
-            if (!expectedAccountId) {
-              setSetupError(
-                new AccountMcpConnectionError('account-changed').message,
-              );
-              return;
-            }
-            if ('bearerToken' in credential)
-              void promoteCustomRow(row, {
-                bearerToken: credential.bearerToken,
-                expectedAccountId,
-              });
-          }}
-          onClose={closeDialog}
-        />
-      )}
-      {/* Add / edit dialog */}
-      {dialogServerId !== null && (
-        <McpServerDialog
-          key={`${dialogMode}:${dialogServerId}:${dialogCurated?.key ?? ''}:${dialogAccountConnection?.id ?? ''}`}
-          serverId={dialogServerId || null}
-          accountConnection={dialogAccountConnection}
-          initialCurated={dialogCurated}
-          {...(dialogOAuthClient
-            ? {
-                requiresOAuthClient: true,
-                ...(dialogOAuthClient.clientSetup
-                  ? { clientSetup: dialogOAuthClient.clientSetup }
-                  : {}),
-                ...(dialogOAuthClient.endpointUrl
-                  ? { initialEndpointUrl: dialogOAuthClient.endpointUrl }
-                  : {}),
-              }
-            : {})}
-          mode={dialogMode}
-          onAccountConnect={(options): void => {
-            if (!dialogCurated) return;
-            const entry = dialogCurated;
-            const configId = dialogAccountConfigId;
-            const expectedAccountId = dialogAccountId.current;
-            closeDialog();
-            if (!expectedAccountId) {
-              setSetupError(
-                new AccountMcpConnectionError('account-changed').message,
-              );
-              return;
-            }
-            void accountActions.connect(entry.key, configId, {
-              ...options,
-              expectedAccountId,
-              // Setup reopens for the user's own app, or the secret it lacked,
-              // on the endpoint this attempt chose.
-              onOAuthClientRequired: (clientSetup): void =>
-                promptForOAuthClient(
-                  entry,
-                  undefined,
-                  configId,
-                  clientSetup,
-                  options.endpointUrl,
-                ),
-            });
-          }}
-          curatedEntries={curatedEntries}
-          onClose={closeDialog}
-          onSaved={handleSaved}
-        />
-      )}
-    </>
   );
 }

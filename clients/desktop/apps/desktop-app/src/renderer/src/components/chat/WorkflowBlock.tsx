@@ -6,6 +6,7 @@ import { WorkflowIcon } from '../activity/WorkflowIcon';
 import { ThinkingSpinner } from '../shared/loading/spinners/ThinkingSpinner';
 import { ChevronIcon } from '@canopy/ui-shared/icons';
 import type { ToolResult } from './types';
+import { Surface } from '@canopy/ui-shared/components';
 
 const TERMINAL_STATUSES = new Set([
   'completed',
@@ -45,11 +46,12 @@ export function WorkflowBlock({
   const total = run?.agents.length ?? run?.agentCount ?? 0;
 
   return (
-    <div
+    <Surface
       data-testid="workflow-block"
       data-tool-use-id={toolUseId}
       data-launched={launched ? 'true' : 'false'}
-      className="my-1 rounded-lg border bg-fg-primary/[0.02]"
+      variant="group"
+      className="my-1"
     >
       <button
         type="button"
@@ -115,6 +117,6 @@ export function WorkflowBlock({
           />
         </div>
       )}
-    </div>
+    </Surface>
   );
 }

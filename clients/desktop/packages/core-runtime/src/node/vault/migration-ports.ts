@@ -1,3 +1,7 @@
+import type { MigrationProcessIdentity } from './migration-platform';
+import type { VaultSecretPin } from '../../vault/contracts';
+import type { MigrationUseReceipt } from './repository/migration-codec';
+
 /**
  * Ports for the ADR 7 one-time legacy-store migration (CAN-4504 VA-1).
  * VA-6b composes these only for qualification; production remains disabled.
@@ -89,7 +93,7 @@ export interface MigrationHostFacts {
   readonly authorityId: string;
   readonly coreAuthority: string;
   readonly coreIncarnation: string;
-  /** The daemon's own cdhash. */
+  /** The daemon's executable digest (Darwin cdhash or platform digest). */
   readonly coreDigest: string;
   readonly buildId: string;
   readonly packageDigest: string;
@@ -113,8 +117,8 @@ export const MIGRATION_LAUNCHER_TRANSPORT = 'launcher-channel';
 export interface MigrationChannelFacts {
   readonly transport: string;
   readonly channelId: string;
-  readonly launcher: { readonly pid: number; readonly pidversion: number };
-  /** The launcher's cdhash. */
+  readonly launcher: MigrationProcessIdentity;
+  /** The launcher's executable digest (Darwin cdhash or platform digest). */
   readonly launcherDigest: string;
   readonly source: MigrationSourceIdentity;
   /** Host identity when the channel was admitted. */
@@ -191,3 +195,85 @@ export function isMigrationImportResult(
 ): value is MigrationImportResult {
   return readMigrationImportResult(value) !== null;
 }
+
+/** Async observations never turn a failed read into an absent source. */
+export type MigrationObservation =
+  | { readonly kind: 'present'; readonly generation: string }
+  | {
+      readonly kind: 'absent' | 'malformed' | 'unreadable' | 'outcome_unknown';
+    };
+
+export interface MigrationSnapshotPort {
+  observe(source: MigrationSourceIdentity): Promise<MigrationObservation>;
+  /**
+   * Re-read under the sanctioned source writer queue, after draining owned
+   * successors. Hold that queue through `run`; no adopting read or path input.
+   * Both hosts must consult the durable prepare fence before legacy use.
+   */
+  withGeneration<T>(
+    source: MigrationSourceIdentity,
+    run: (observation: MigrationObservation) => Promise<T>,
+  ): Promise<T>;
+}
+
+export interface MigrationAttemptContext {
+  readonly attemptId: string;
+  readonly epoch: number;
+  readonly source: MigrationSourceIdentity;
+  readonly generation: string;
+}
+
+export interface MigrationLineageContext extends MigrationAttemptContext {
+  readonly pin: VaultSecretPin;
+  readonly successorKeys: readonly string[];
+}
+
+/** Trusted P4/P7 composition, never populated from a protocol frame. */
+export interface MigrationFamilyPorts {
+  readonly slot: string;
+  readonly snapshot?: MigrationSnapshotPort;
+  readonly importer?: {
+    /**
+     * Create-only using P1's reserved key and mint/intent attachment.
+     * Do not retain plaintext after settlement, including failed imports.
+     */
+    import(
+      context: MigrationAttemptContext & {
+        readonly idempotencyKey: string;
+        readonly value: Uint8Array;
+      },
+    ): Promise<void>;
+  };
+  readonly use?: {
+    /** Only actual admitted committed-lineage use, not delivery or existence. */
+    use(context: MigrationLineageContext): Promise<
+      | {
+          readonly kind: 'used';
+          readonly receipt: MigrationUseReceipt;
+        }
+      | { readonly kind: 'unavailable' }
+    >;
+  };
+  readonly deletion?: {
+    /** Exact-generation compare/unlink plus directory durability, same source queue. */
+    remove(
+      context: MigrationAttemptContext & { readonly operationId: string },
+    ): Promise<MigrationDeletionResult>;
+    /**
+     * Recover/finish this same operation, including a crash before remove ran.
+     * Retake the source queue; absence without durable evidence is not completion.
+     */
+    reconcile(
+      context: MigrationAttemptContext & { readonly operationId: string },
+    ): Promise<MigrationDeletionResult>;
+  };
+}
+
+export type MigrationDeletionResult =
+  | {
+      readonly kind: 'completed';
+      readonly operationId: string;
+      readonly generation: string;
+      readonly completionId: string;
+    }
+  | { readonly kind: 'absent' | 'changed' | 'unreadable' | 'outcome_unknown' };

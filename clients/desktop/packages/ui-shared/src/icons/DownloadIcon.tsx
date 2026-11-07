@@ -1,6 +1,9 @@
-import type { JSX, SVGProps } from 'react';
-import { DownloadIcon as AppCatalogDownloadIcon } from './AppIcons';
+import type { JSX } from 'react';
+import {
+  DownloadIcon as AppCatalogDownloadIcon,
+  type AppIconProps,
+} from './AppIcons';
 
-export function DownloadIcon(props: SVGProps<SVGSVGElement>): JSX.Element {
-  return <AppCatalogDownloadIcon width="14" height="14" {...props} />;
+export function DownloadIcon(props: AppIconProps): JSX.Element {
+  return <AppCatalogDownloadIcon size="sm" {...props} />;
 }

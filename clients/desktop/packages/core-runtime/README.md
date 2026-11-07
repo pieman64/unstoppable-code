@@ -66,7 +66,8 @@ the path-free message rule (`wire-errors`).
 ## Vault migration sessions (inert)
 
 `src/node/vault/` holds the ADR 7 legacy-store migration session state machine
-(CAN-4504 VA-1). Nothing composes it yet, and it has no `exports` subpath.
+(CAN-4504 VA-1). Only disabled qualification wiring composes it; production
+migration remains disabled.
 `createMigrationSessionRegistry` issues single-use sessions, each bound to
 one admitted launcher channel, one source (flavor and secure mode), one slot
 and one challenge. Failures after a possible release become `uncertain` and
@@ -83,8 +84,23 @@ launcher of the daemon's own flavor, as a constant `MigrationCaller`. It
 refuses anything else with a typed reason and reports it as ambiguity. On
 Windows and Linux it returns `unavailable`. Its `port` is the registry's
 `MigrationAdmissionPort`. `authenticateMigrationDestination` is the launcher's
-check of the daemon it spawned (R-12). The daemon wiring (VA-6b) lands
-separately.
+check of the daemon it spawned (R-12).
+
+CAN-5857 unit A adds the host-only `migration-platform.ts` evidence and
+expectations contract. Windows creation ticks use uint64 `bigint`; Linux uses
+boot ID and canonical decimal start ticks, with process-instance (not exec)
+continuity. Linux pidfd custody is a separate channel observation.
+Executable/package/signing observations are separate from identity and do not
+authorize admission. Strict parsers freeze copies; the evidence
+store still exports only opaque handles. Session bindings retain and compare
+the complete OS-tagged identity at presentation and release, including changes
+between consume and release. The contract is exported from `/node/vault` for
+host verifiers. Darwin admission is unchanged. W2/L2 must consume authenticated
+expectations and invalidation from unit T (CAN-5855)
+before platform verification/integration; neither is enabled here. Eight
+registered migration goldens cover admission, sessions, private protocol,
+platform evidence, transport, daemon/Electron composition and package-role checks.
+They do not qualify native Windows/Linux verifiers or signed release packages.
 
 ## Filesystem watch
 

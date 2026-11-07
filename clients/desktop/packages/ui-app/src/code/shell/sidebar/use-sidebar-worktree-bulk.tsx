@@ -133,7 +133,9 @@ export interface WorktreeBulkRowMenu {
   >;
   readonly callbacks: Pick<
     WorktreeMenuCallbacks,
-    'onBulkRemovalRequested' | 'onBulkStateActionRequested'
+    | 'onBulkRemovalRequested'
+    | 'onBulkStateActionRequested'
+    | 'onSelectItemRequested'
   >;
 }
 
@@ -477,6 +479,7 @@ export function worktreeBulkRowMenu(
         : {}),
     },
     callbacks: {
+      onSelectItemRequested: menu.onSelectItem,
       ...(menu.bulk !== undefined
         ? {
             onBulkRemovalRequested: menu.bulk.onBulkRemoval,

@@ -780,7 +780,7 @@ function SidebarWorkEntryRowContent({
           : undefined;
       const selectionItems = selectionMenu?.items ?? [];
       const runSelectionItem = (action: WorktreeMenuItem): void => {
-        menu.close();
+        if (action.role !== 'menuitemradio') menu.close();
         action.onSelect?.();
       };
       return (
@@ -2175,7 +2175,8 @@ function SidebarCoworkWorkspaceRowImpl({
                           pointing right while the rest is still hidden, down
                           once the list is open. */}
                   <ChevronDownMediumIcon
-                    className={`h-4 w-4 shrink-0 ${showAllEntries ? '' : '-rotate-90'}`}
+                    size="sm"
+                    className={`shrink-0 ${showAllEntries ? '' : '-rotate-90'}`}
                     aria-hidden="true"
                     data-testid={`sidebar-cowork-project-${item.id}-show-all-chevron`}
                   />

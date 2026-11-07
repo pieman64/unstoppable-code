@@ -134,6 +134,7 @@ import {
   validatePipelineOwnerTargetsOnSave,
 } from '../pipelines/pipeline-owner-policy';
 import * as skillService from '../skills/skill-service';
+import { notifyRenderersSkillsChanged } from '../skills/skill-change-events';
 import {
   createSharedSkill,
   deleteSharedSkill,
@@ -192,6 +193,10 @@ export interface AgentResourceActionRuntime {
   repoId?: string;
   executionScope?: 'worktree' | 'directory';
   getWindow: () => BrowserWindow | null;
+  /** Scope for stored definitions; defaults to this runtime's project. */
+  definitionScope?: { workspaceId?: string };
+  /** The chat to record as a write's agent author, when it lives outside this scope. */
+  authorChat?: { projectId: string; worktreeId: string; chatId: string };
 }
 
 export function isAgentResourceActionType(type: string): boolean {
@@ -218,11 +223,17 @@ function recordAgentPipelineWrite(
   setUserPipelineAgentAuthor(pipelineId, agentAuthorForRuntime(runtime));
 }
 
+function definitionScope(runtime: AgentResourceActionRuntime): {
+  workspaceId?: string;
+} {
+  return runtime.definitionScope ?? { workspaceId: runtime.projectId };
+}
+
 function agentAuthorForRuntime(
   runtime: AgentResourceActionRuntime,
 ): PipelineAgentAuthor {
   return {
-    chat: {
+    chat: runtime.authorChat ?? {
       projectId: runtime.projectId,
       worktreeId: runtime.worktreeId,
       chatId: runtime.chatId,
@@ -588,6 +599,7 @@ async function skillAction(
       if (!result.success || !result.data)
         return ipcFailure(result.error ?? 'Failed to create skill.');
       refreshInvocableInventoryAfterMutation('agent:skills:create-custom');
+      notifyRenderersSkillsChanged();
       return withAgentArtifacts(ok({ skill: result.data }), [
         skillReceipt({
           operation: action.type,
@@ -632,6 +644,7 @@ async function skillAction(
       if (!result.success || !result.data)
         return ipcFailure(result.error ?? 'Failed to update skill.');
       refreshInvocableInventoryAfterMutation('agent:skills:update-custom');
+      notifyRenderersSkillsChanged();
       return withAgentArtifacts(
         ok({ skill: result.data, originalName: action.originalName }),
         [
@@ -660,6 +673,7 @@ async function skillAction(
       if (!result.success)
         return ipcFailure(result.error ?? 'Failed to delete skill.');
       refreshInvocableInventoryAfterMutation('agent:skills:delete-custom');
+      notifyRenderersSkillsChanged();
       return ok({ name: action.name, deleted: true });
     }
     case 'skills.list_shared': {
@@ -739,6 +753,7 @@ async function skillAction(
         rawSkill: shared.rawSkill,
       });
       refreshInvocableInventoryAfterMutation('agent:skills:import-shared');
+      notifyRenderersSkillsChanged();
       return withAgentArtifacts(
         ok({ skill: installed, sharedSkillId: shared.id }),
         [
@@ -917,7 +932,7 @@ async function loadAgentPipelineSnapshot(
     try {
       const snapshot = await readDesktopPipelineSnapshot(
         id,
-        { workspaceId: runtime.projectId },
+        definitionScope(runtime),
         PIPELINE_DEFINITION_AGENT_CALLER,
       );
       // Hidden like the Orchestrator automation that owns it (CAN-4551).
@@ -1286,7 +1301,7 @@ async function pipelineAction(
               : await duplicatePipelineDefinition(
                   action.pipelineId,
                   {
-                    scope: { workspaceId: runtime.projectId },
+                    scope: definitionScope(runtime),
                     name: saveData.name,
                     ...(snapshot.checksum === undefined
                       ? {}

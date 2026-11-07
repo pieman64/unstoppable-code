@@ -712,7 +712,7 @@ export function MonacoFileEditor({
               onClick={handleConfirmationClick}
               className="flex items-center gap-1.5 rounded-md bg-card/95 px-2 py-1 text-2xs font-medium fg-success shadow-md backdrop-blur transition-colors hover:bg-accent-subtle"
             >
-              <CheckIcon className="h-3 w-3" />
+              <CheckIcon size="sm" />
               <span>Added to chat</span>
               <span className="rounded border bg-muted/60 px-1 py-px text-3xs font-normal fg-secondary">
                 View

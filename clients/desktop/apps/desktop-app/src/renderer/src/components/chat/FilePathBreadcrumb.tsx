@@ -26,7 +26,7 @@ import { FolderIcon } from '@canopy/ui-shared/icons';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { isCoworkWorkspaceFileTreeRoot } from '@/components/activity/files-tree-tab-state';
 import { FileTypeIcon } from '@/components/shared/file-icons';
-import { FloatingMenu } from '@canopy/ui-shared/components';
+import { Button, FloatingMenu } from '@canopy/ui-shared/components';
 import { LoadingSpinner } from '@/components/shared/loading';
 import { useChatStore } from '@/stores/chatStore';
 import {
@@ -142,11 +142,17 @@ function BreadcrumbDirectory({
                 style={{ paddingLeft: `${8 + depth * 14}px` }}
               >
                 {expanded ? (
-                  <ChevronDownIcon className="h-3 w-3 shrink-0 fg-secondary" />
+                  <ChevronDownIcon
+                    size="sm"
+                    className="shrink-0 fg-secondary"
+                  />
                 ) : (
-                  <ChevronRightIcon className="h-3 w-3 shrink-0 fg-secondary" />
+                  <ChevronRightIcon
+                    size="sm"
+                    className="shrink-0 fg-secondary"
+                  />
                 )}
-                <FolderIcon className="h-3.5 w-3.5 shrink-0 fg-secondary" />
+                <FolderIcon size="sm" className="shrink-0 fg-secondary" />
                 <span className="min-w-0 truncate">{child.name}</span>
               </button>
               {expanded && (
@@ -279,49 +285,69 @@ export function FilePathBreadcrumb({
       className="flex min-w-0 max-w-xl items-center gap-0.5 overflow-hidden whitespace-nowrap text-xs"
       data-testid="file-breadcrumb"
     >
-      <button
-        type="button"
-        data-testid="file-breadcrumb-segment-root"
-        className="max-w-40 min-w-0 shrink-999 truncate rounded px-0.5 fg-secondary transition-colors hover:bg-fg-primary/[0.06] hover:fg-primary"
-        onClick={(event): void =>
-          openSegmentMenu(0, event.currentTarget, '', null)
-        }
+      <span
+        className="flex min-w-12 shrink-999 items-center gap-0.5 overflow-hidden"
+        data-testid="file-breadcrumb-folders"
+        onFocusCapture={(event): void => {
+          // Keep a keyboard-focused folder visible in the clipped path strip.
+          event.target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        }}
       >
-        {isCoworkWorkspaceFileTreeRoot(root) ? (
-          // The Cowork root carries the user's project title.
-          <span className={REPLAY_MASK_CLASS}>{rootName}</span>
-        ) : (
-          rootName
-        )}
-      </button>
-      {folderParts.map((part, index) => (
-        <span
-          key={`${index}-${part}`}
-          className="flex min-w-0 shrink-999 items-center gap-0.5"
+        <Button
+          type="button"
+          variant="ghost"
+          size="compact"
+          touchArea="contained"
+          data-testid="file-breadcrumb-segment-root"
+          className="max-w-40 min-w-0 shrink-0"
+          onClick={(event): void =>
+            openSegmentMenu(0, event.currentTarget, '', null)
+          }
         >
-          <ChevronRightIcon className="h-3 w-3 shrink-0 fg-secondary/60" />
-          <button
-            type="button"
-            data-testid={`file-breadcrumb-segment-${index}`}
-            className="max-w-40 min-w-0 shrink-999 truncate rounded px-0.5 fg-secondary transition-colors hover:bg-fg-primary/[0.06] hover:fg-primary"
-            onClick={(event): void =>
-              openSegmentMenu(
-                index + 1,
-                event.currentTarget,
-                folderParts.slice(0, index).join('/'),
-                folderParts.slice(0, index + 1).join('/'),
-              )
-            }
+          <span className="min-w-0 truncate">
+            {isCoworkWorkspaceFileTreeRoot(root) ? (
+              // The Cowork root carries the user's project title.
+              <span className={REPLAY_MASK_CLASS}>{rootName}</span>
+            ) : (
+              rootName
+            )}
+          </span>
+        </Button>
+        {folderParts.map((part, index) => (
+          <span
+            key={`${index}-${part}`}
+            className="flex shrink-0 items-center gap-0.5"
           >
-            {part}
-          </button>
-        </span>
-      ))}
-      <ChevronRightIcon className="h-3 w-3 shrink-0 fg-secondary/60" />
-      <button
+            <ChevronRightIcon size="sm" className="shrink-0 fg-secondary/60" />
+            <Button
+              type="button"
+              variant="ghost"
+              size="compact"
+              touchArea="contained"
+              data-testid={`file-breadcrumb-segment-${index}`}
+              className="max-w-40 min-w-0 shrink-0"
+              onClick={(event): void =>
+                openSegmentMenu(
+                  index + 1,
+                  event.currentTarget,
+                  folderParts.slice(0, index).join('/'),
+                  folderParts.slice(0, index + 1).join('/'),
+                )
+              }
+            >
+              <span className="min-w-0 truncate">{part}</span>
+            </Button>
+          </span>
+        ))}
+      </span>
+      <ChevronRightIcon size="sm" className="shrink-0 fg-secondary/60" />
+      <Button
         type="button"
+        variant="ghost"
+        size="compact"
+        touchArea="contained"
         data-testid="file-breadcrumb-segment-file"
-        className="min-w-0 max-w-64 shrink truncate rounded px-0.5 fg-primary transition-colors hover:bg-fg-primary/[0.06]"
+        className="min-w-0 max-w-64 shrink-1"
         onClick={(event): void =>
           openSegmentMenu(
             parts.length,
@@ -333,8 +359,10 @@ export function FilePathBreadcrumb({
       >
         {/* The name can be cut off, so the text keeps a native title with the
             full name. */}
-        <span title={fileName}>{fileName}</span>
-      </button>
+        <span className="min-w-0 truncate" title={fileName}>
+          {fileName}
+        </span>
+      </Button>
       <FloatingMenu
         // Each segment's menu is its own: switching segments places it anew.
         key={menu?.segmentIndex ?? 'closed'}

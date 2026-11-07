@@ -18,7 +18,7 @@ import {
 } from './calendarEvents';
 import type { CalendarView } from './calendarPreferences';
 import { RichHoverTooltip } from '@/components/shared/RichHoverTooltip';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, Surface } from '@canopy/ui-shared/components';
 
 /** Max event chips shown per cell before collapsing into a "+N more" button. */
 export const MAX_CHIPS_PER_CELL = 3;
@@ -131,7 +131,7 @@ export function MonthGrid({
   }, [groups]);
 
   return (
-    <div className="overflow-hidden rounded-lg border">
+    <Surface variant="outline" className="overflow-hidden">
       <div className="grid grid-cols-7 border-b bg-fg-primary/[0.02]">
         {weekdayLabels.map((label) => (
           <div
@@ -195,6 +195,6 @@ export function MonthGrid({
           );
         })}
       </div>
-    </div>
+    </Surface>
   );
 }

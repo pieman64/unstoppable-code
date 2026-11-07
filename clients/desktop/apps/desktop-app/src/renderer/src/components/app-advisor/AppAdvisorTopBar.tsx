@@ -72,7 +72,7 @@ export const AppAdvisorTopBar = memo(function AppAdvisorTopBar({
         data-testid="app-advisor-top-bar-corner"
       />
       <div className="electron-drag flex min-w-0 flex-1 items-center gap-1.5 border-b bg-base/50 px-3">
-        <AppAdvisorIcon className="h-3.5 w-3.5 shrink-0 fg-secondary" />
+        <AppAdvisorIcon size="sm" className="shrink-0 fg-secondary" />
         <span className="select-none truncate text-xs font-medium fg-secondary">
           {ORCHESTRATOR_LABEL}
         </span>

@@ -20,6 +20,7 @@ import {
   getChatTurnAuditStatus,
   isRootTerminalChatEventData,
   readCodexRootThreadId,
+  readCodexRootTurnId,
 } from '../lib/chat-turn-audit';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { isRecord } from '../lib/type-guards';
@@ -45,6 +46,29 @@ export interface BeginChatTurnRunRequest {
   providerId: string;
   model: string | null;
   initiationSource: UsageInitiationSource | undefined;
+  /**
+   * 'host' (default): the caller settles the run. 'root-terminal': the run
+   * settles itself after a frame it classified as the root terminal has been
+   * committed, with chatTurnOutcomeOf(frame); a newer root-terminal run of the
+   * same chat settles any older one: completed when it continues the same
+   * turn, else cancelled.
+   */
+  settleOn?: 'host' | 'root-terminal';
+  /**
+   * The session options' `sdkSessionId`, as the event router seeds it: a
+   * reused Codex thread emits no init, and without its root thread a child
+   * thread's terminal would read as the root terminal.
+   */
+  codexRootThreadId?: string;
+}
+
+/**
+ * A deferred-tools continuation's namespace, one per reload: the run it
+ * continues stays live (the router suppressed its root terminal) until the
+ * continuation begins, so a shared namespace would collide with it.
+ */
+export function deferredReloadEventNamespace(reloadRequestId: string): string {
+  return `deferred-reload:${reloadRequestId}`;
 }
 
 export type ChatTurnEventHandler = (
@@ -123,6 +147,12 @@ export function settleStoppedChatTurnRuns(
     for (const cancel of Array.from(liveHostRuns.get(key) ?? [])) cancel();
 }
 
+/** Live root-terminal runs by chat, so a newer turn supersedes an older one. */
+const liveRootTerminalRuns = new Map<
+  string,
+  { run: ChatTurnRunHandle; turnId: string }
+>();
+
 export type ChatTurnWaitEvent =
   | { kind: 'wait_opened'; waitId: string; waitKind: WorkerAgentTurnWaitKind }
   | {
@@ -186,7 +216,8 @@ export async function beginChatTurnRun(
     resolveSettlement = resolve;
   });
   let eventSequence = 0;
-  let codexRootThreadId: string | undefined;
+  let codexRootThreadId = request.codexRootThreadId;
+  let codexRootTurnId: string | undefined;
   let handlerRef: ChatTurnEventHandler | undefined;
   let sinkRef: TurnEventSink | undefined;
   let acceptedOnce = false;
@@ -212,9 +243,14 @@ export async function beginChatTurnRun(
     turnId,
   );
   const cancelForStop = (): void => settleOnce('cancelled');
+  const chatKey = [scope.workspaceId, scope.worktreeId, scope.chatId].join(
+    '\u0000',
+  );
   const settleOnce = (outcome: WorkerAgentTurnOutcome): void => {
     if (settled) return;
     settled = true;
+    if (liveRootTerminalRuns.get(chatKey)?.run.turnRunId === turnRunId)
+      liveRootTerminalRuns.delete(chatKey);
     if (
       waitEmitter.current &&
       liveTurnWaitEmitters.get(waitKey) === waitEmitter.current
@@ -323,42 +359,57 @@ export async function beginChatTurnRun(
   });
 
   let observed = false;
-  return {
+  const handle: ChatTurnRunHandle = {
     turnRunId,
     signal: controller.signal,
-    execute: (fn) => staged.execute(fn),
-    executeSync: (fn) => staged.executeSync(fn),
+    execute: <T>(fn: () => T | Promise<T>): Promise<T> => staged.execute(fn),
+    // Cancellation aborts the signal before its exact-turn Stop settles the
+    // run: a cancelled run never sends.
+    executeSync: <T>(fn: () => T): T => {
+      controller.signal.throwIfAborted();
+      return staged.executeSync(fn);
+    },
     observe: (handler) => {
       if (observed)
         throw new Error('A chat turn run observes one event handler.');
       observed = true;
       handlerRef = handler;
-      return async (data, mark) => {
-        codexRootThreadId = readCodexRootThreadId(data) ?? codexRootThreadId;
+      return async (data, mark): Promise<void> => {
+        // The router's classification: a new root thread resets its turn.
+        const nextRootThreadId = readCodexRootThreadId(data);
+        if (nextRootThreadId && nextRootThreadId !== codexRootThreadId) {
+          codexRootThreadId = nextRootThreadId;
+          codexRootTurnId = undefined;
+        }
+        codexRootTurnId =
+          readCodexRootTurnId(data, codexRootThreadId) ?? codexRootTurnId;
+        const terminal =
+          isRecord(data) &&
+          isRootTerminalChatEventData(data, codexRootThreadId, codexRootTurnId);
         const sink = sinkRef;
         if (!sink) {
           logMainProcessWarn(
             '[turn-runs] A provider event arrived before the worker took the run',
             { turnRunId },
           );
-          return handler(data, mark);
-        }
-        return sink(
-          {
-            kind: 'transcript',
-            turnRunId,
-            sequence: eventSequence++,
-            format: WORKER_AGENT_TURN_PAYLOAD_FORMAT,
-            terminal:
-              isRecord(data) &&
-              isRootTerminalChatEventData(data, codexRootThreadId),
-            payload: data,
-          },
-          mark ? { markPersistenceSettled: mark } : {},
-        );
+          await handler(data, mark);
+        } else
+          await sink(
+            {
+              kind: 'transcript',
+              turnRunId,
+              sequence: eventSequence++,
+              format: WORKER_AGENT_TURN_PAYLOAD_FORMAT,
+              terminal,
+              payload: data,
+            },
+            mark ? { markPersistenceSettled: mark } : {},
+          );
+        if (terminal && request.settleOn === 'root-terminal' && isRecord(data))
+          settleOnce(chatTurnOutcomeOf(data));
       };
     },
-    accepted: () => {
+    accepted: (): void => {
       if (acceptedOnce) return;
       acceptedOnce = true;
       if (sinkRef)
@@ -368,9 +419,19 @@ export async function beginChatTurnRun(
         );
     },
     settle: settleOnce,
-    abandon: (error) => {
+    abandon: (error): void => {
       if (acceptedOnce || settled) return;
-      settleOnce(error === undefined ? 'cancelled' : 'failed');
+      settleOnce(
+        error === undefined || controller.signal.aborted
+          ? 'cancelled'
+          : 'failed',
+      );
     },
   };
+  if (request.settleOn === 'root-terminal') {
+    const older = liveRootTerminalRuns.get(chatKey);
+    older?.run.settle(older.turnId === turnId ? 'completed' : 'cancelled');
+    liveRootTerminalRuns.set(chatKey, { run: handle, turnId });
+  }
+  return handle;
 }

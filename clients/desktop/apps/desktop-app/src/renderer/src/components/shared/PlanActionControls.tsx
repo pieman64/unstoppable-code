@@ -225,7 +225,7 @@ export function PlanActionControls({
               disabled={exploreDisabled}
               data-testid={`${dataTestIdPrefix}-explore`}
             >
-              <SearchIcon width={16} height={16} />
+              <SearchIcon size="sm" />
             </Button>
           ) : (
             <Button
@@ -235,7 +235,7 @@ export function PlanActionControls({
               disabled={exploreDisabled}
               data-testid={`${dataTestIdPrefix}-explore`}
             >
-              <SearchIcon width={16} height={16} />
+              <SearchIcon size="sm" />
               Explore
             </Button>
           )}
@@ -258,7 +258,7 @@ export function PlanActionControls({
               aria-busy={shareBusy}
               data-testid={`${dataTestIdPrefix}-share`}
             >
-              <ShareIcon width={16} height={16} />
+              <ShareIcon size="sm" />
             </Button>
           ) : (
             <Button
@@ -270,7 +270,7 @@ export function PlanActionControls({
               aria-busy={shareBusy}
               data-testid={`${dataTestIdPrefix}-share`}
             >
-              <ShareIcon width={16} height={16} />
+              <ShareIcon size="sm" />
               {shareLabel}
             </Button>
           )}
@@ -329,8 +329,7 @@ export function PlanActionControls({
           >
             Execute
             <ChevronDownMediumIcon
-              width={16}
-              height={16}
+              size="sm"
               aria-hidden
               className={`shrink-0 transition-transform ${menuOpen ? 'rotate-180' : ''}`}
             />

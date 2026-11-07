@@ -1,11 +1,30 @@
+import {
+  EXPERIMENT_ACTION_TYPES,
+  INSTALLED_ITEM_ACTION_TYPES,
+  PIPELINES_ACTION_TYPES,
+  SETTINGS_ACTION_TYPES,
+  TRANSCRIPT_READ_ACTION_TYPES,
+} from '@canopy/agent-actions';
 import { CanopyGrantNameSchema } from '@canopy/protocol/canopy-core';
 import {
   APP_ADVISOR_ACTION_DISPOSITIONS,
   APP_ADVISOR_ACTION_GRANTS,
-  APP_ADVISOR_DISPATCH_ACTION_TYPES,
   APP_ADVISOR_PRESENTATION_ACTION_TYPES,
   type AppAdvisorActionDisposition,
 } from '../app-advisor-action-dispositions';
+import { APP_ADVISOR_ACTION_CATALOG } from '../app-advisor-actions';
+
+/** Every type DispatchAction accepts: the catalog, transcript reads and the shared-engine families. */
+const DISPATCH_ACTION_TYPES = [
+  ...new Set([
+    ...APP_ADVISOR_ACTION_CATALOG.map((entry) => entry.type),
+    ...TRANSCRIPT_READ_ACTION_TYPES,
+    ...INSTALLED_ITEM_ACTION_TYPES,
+    ...EXPERIMENT_ACTION_TYPES,
+    ...SETTINGS_ACTION_TYPES,
+    ...PIPELINES_ACTION_TYPES,
+  ]),
+].sort();
 
 const entries = Object.entries(APP_ADVISOR_ACTION_DISPOSITIONS);
 
@@ -28,7 +47,7 @@ function writeGrants(
 describe('App Advisor action dispositions (CAN-4133)', () => {
   it('every App Advisor action type has exactly one disposition', () => {
     expect(Object.keys(APP_ADVISOR_ACTION_DISPOSITIONS).sort()).toEqual(
-      APP_ADVISOR_DISPATCH_ACTION_TYPES,
+      DISPATCH_ACTION_TYPES,
     );
   });
 
@@ -85,6 +104,23 @@ describe('App Advisor action dispositions (CAN-4133)', () => {
         .map(([type]) => type)
         .sort(),
     );
+  });
+
+  // These act on a visible surface but change hosted connections, so a move of
+  // that surface must not turn them into presentation (CAN-5765).
+  it('the account MCP actions stay integration writes, not presentation', () => {
+    for (const type of [
+      'mcp.account_connect',
+      'mcp.account_reconnect',
+      'mcp.account_disconnect',
+      'mcp.account_promote',
+      'mcp.account_edit',
+    ] as const)
+      expect(APP_ADVISOR_ACTION_DISPOSITIONS[type]).toEqual({
+        kind: 'legacy',
+        access: 'write',
+        grants: ['core.integration.write'],
+      });
   });
 
   it('only the two composite types are composite, and only open_tab is presentation with a chatId', () => {

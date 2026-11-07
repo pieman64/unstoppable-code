@@ -1,8 +1,9 @@
-import type { JSX, SVGProps } from 'react';
-import { MagnifyingGlassIcon as AppCatalogMagnifyingGlassIcon } from './AppIcons';
+import type { JSX } from 'react';
+import {
+  MagnifyingGlassIcon as AppCatalogMagnifyingGlassIcon,
+  type AppIconProps,
+} from './AppIcons';
 
-export function MagnifyingGlassIcon(
-  props: SVGProps<SVGSVGElement>,
-): JSX.Element {
-  return <AppCatalogMagnifyingGlassIcon width="14" height="14" {...props} />;
+export function MagnifyingGlassIcon(props: AppIconProps): JSX.Element {
+  return <AppCatalogMagnifyingGlassIcon size="sm" {...props} />;
 }

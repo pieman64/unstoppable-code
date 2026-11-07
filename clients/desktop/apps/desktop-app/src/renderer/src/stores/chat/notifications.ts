@@ -2,6 +2,11 @@
 // notification scheduling. Owns the delayed-notification timer registry.
 import { CHAT_LABEL, ORCHESTRATOR_LABEL, chatTabLabel } from '@canopy/protocol';
 import {
+  getUnreadChatFallbackMessage,
+  getUnreadChatLabel,
+  type UnreadChatToastReason,
+} from '@canopy/ui-shared/lib';
+import {
   CODE_REVIEW_CHAT_PROJECT_ID,
   PLAN_EXPLORE_CHAT_PROJECT_ID,
   type AgentProviderType,
@@ -37,10 +42,7 @@ import {
   isAppAdvisorChatTarget,
   isAppAdvisorWindowFocused,
 } from './surface';
-import {
-  getUnreadChatLabel,
-  isChatAgentResponseEvent,
-} from './unread-previews';
+import { isChatAgentResponseEvent } from './unread-previews';
 import { isNewResponseTurnEventData } from './turn-events';
 import { tagStatusWrite } from './runtime-divergence';
 import {
@@ -54,7 +56,7 @@ import {
 import { waitForWorktreeHydration } from './hydration';
 import { chatStoreApi } from './store-ref';
 
-export type UnreadChatToastReason = 'activity' | 'plan' | 'question';
+export type { UnreadChatToastReason };
 
 export interface UnreadChatToastOptions {
   projectId: string;
@@ -259,34 +261,6 @@ export function clearUnreadOnResumedTurn(
   }
 
   return { ...tab, unread: false };
-}
-
-export function getUnreadChatFallbackMessage(options: {
-  reason: UnreadChatToastReason;
-  chatLabel: string;
-  /** Left out where the toast headline already names the worktree. */
-  worktreeName: string | undefined;
-  isAppAdvisor: boolean;
-}): string {
-  if (options.isAppAdvisor) {
-    if (options.reason === 'plan') {
-      return `Plan ready for review in ${ORCHESTRATOR_LABEL}${options.chatLabel}`;
-    }
-    if (options.reason === 'question') {
-      return `Question waiting in ${ORCHESTRATOR_LABEL}${options.chatLabel}`;
-    }
-    return `New ${ORCHESTRATOR_LABEL} activity${options.chatLabel}`;
-  }
-
-  const where =
-    options.worktreeName === undefined ? '' : ` in ${options.worktreeName}`;
-  if (options.reason === 'plan') {
-    return `Plan ready for review${where}${options.chatLabel}`;
-  }
-  if (options.reason === 'question') {
-    return `Question waiting${where}${options.chatLabel}`;
-  }
-  return `New chat activity${where}${options.chatLabel}`;
 }
 
 export function getVisibleWorktreeKey(

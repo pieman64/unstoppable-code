@@ -81,6 +81,7 @@ import {
   type InvoicePage,
 } from '@canopy/protocol/settings/billing';
 import type { SettingsFailure } from '../errors';
+import { Divider } from '@canopy/ui-shared/components';
 
 const HISTORY_LOAD_MORE_ERROR = 'Unable to load more history.';
 
@@ -1230,41 +1231,47 @@ function SavedCardSection({
   if (!paymentsAvailable) {
     if (!cardLabel) return null;
     return (
-      <div className="border-b pb-4" data-testid="billing-payment-method">
-        <p className="text-s font-medium fg-primary">Payment method</p>
-        <p className={cardLabelClass}>{cardLabel}</p>
+      <div>
+        <div className="pb-4" data-testid="billing-payment-method">
+          <p className="text-s font-medium fg-primary">Payment method</p>
+          <p className={cardLabelClass}>{cardLabel}</p>
+        </div>
+        <Divider />
       </div>
     );
   }
 
   return (
-    <div className="border-b pb-4" data-testid="billing-payment-method">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-s font-medium fg-primary">Payment method</p>
-          {cardLabel ? (
-            <p className={cardLabelClass}>{cardLabel}</p>
-          ) : (
-            <p className="mt-1 text-s fg-secondary">
-              No card on file. Add one to fund AI credit top-ups.
-            </p>
-          )}
+    <div>
+      <div className="pb-4" data-testid="billing-payment-method">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-s font-medium fg-primary">Payment method</p>
+            {cardLabel ? (
+              <p className={cardLabelClass}>{cardLabel}</p>
+            ) : (
+              <p className="mt-1 text-s fg-secondary">
+                No card on file. Add one to fund AI credit top-ups.
+              </p>
+            )}
+          </div>
+          <PaymentAreaCta
+            action="payment-method"
+            hasCard={paymentMethod !== null}
+            testId="billing-manage-payment-method"
+            inline={
+              slots !== null ? (
+                <slots.PersonalPaymentMethodActions
+                  paymentMethod={paymentMethod}
+                  onCardMutated={onCardMutated}
+                  openRequestId={openCardRequestId}
+                />
+              ) : null
+            }
+          />
         </div>
-        <PaymentAreaCta
-          action="payment-method"
-          hasCard={paymentMethod !== null}
-          testId="billing-manage-payment-method"
-          inline={
-            slots !== null ? (
-              <slots.PersonalPaymentMethodActions
-                paymentMethod={paymentMethod}
-                onCardMutated={onCardMutated}
-                openRequestId={openCardRequestId}
-              />
-            ) : null
-          }
-        />
       </div>
+      <Divider />
     </div>
   );
 }

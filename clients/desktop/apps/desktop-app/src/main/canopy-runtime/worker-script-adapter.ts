@@ -4,12 +4,17 @@ import type {
   WorkerScriptHandlers,
 } from '@canopy/core-runtime/node/script/execution';
 import { createWorkerScriptHandlers } from '@canopy/core-runtime/node/script/execution';
+import {
+  currentDaemonScriptRoute,
+  isDaemonScriptRunEligible,
+} from '../lib/daemon-script-route-context';
 
 /*
  * Registers `worker.script.*` on the desktop dispatcher (CAN-4143) over this
  * process's local worker script execution. The worker and its host load on
  * the first script call, because the host modules import back into the
- * runtime.
+ * runtime. A renderer run the `script:run` handler routed runs in the daemon
+ * instead (CAN-5087).
  */
 
 export interface WorkerScriptAdapter extends WorkerScriptHandlers {
@@ -43,11 +48,32 @@ export function createWorkerScriptAdapter(
         ),
     },
     instructions: {
-      'worker.script.execute': async (params, context) =>
-        (await handlers()).instructions['worker.script.execute'](
+      // The daemon branch needs no keyed replay: LocalWorkerExecution never
+      // sends a dispatch twice, and a lost reply is resolved through the
+      // executor receipt of this handler's result.
+      'worker.script.execute': async (params, context) => {
+        const route = currentDaemonScriptRoute();
+        if (
+          route !== undefined &&
+          isDaemonScriptRunEligible(params) &&
+          route.claim()
+        ) {
+          const daemon = await import('../lib/daemon-script-route');
+          const { result, servedByDaemon } = await daemon.executeScriptInDaemon(
+            {
+              params,
+              signal: context.signal,
+              worker: await loadWorker(),
+            },
+          );
+          if (servedByDaemon) route.servedByDaemon();
+          return result;
+        }
+        return (await handlers()).instructions['worker.script.execute'](
           params,
           context,
-        ),
+        );
+      },
       'worker.script.execution.cancel': async (params, context) =>
         (await handlers()).instructions['worker.script.execution.cancel'](
           params,

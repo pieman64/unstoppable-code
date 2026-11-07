@@ -27,6 +27,8 @@ export const BACKGROUND_SERVICE_CONSUMERS = [
   'terminals',
   // Eligible local renderer code-graph builds and summary reads (CAN-5719).
   'code_graph',
+  // Eligible local renderer script runs placed in the daemon (CAN-5087).
+  'scripts',
 ] as const;
 export type BackgroundServiceConsumer =
   (typeof BACKGROUND_SERVICE_CONSUMERS)[number];

@@ -183,7 +183,7 @@ export function ComposerActionList({
             onClick={onBack}
             aria-label="Back to all actions"
           >
-            <ChevronLeftMediumIcon aria-hidden className="h-4 w-4 shrink-0" />
+            <ChevronLeftMediumIcon size="sm" aria-hidden className="shrink-0" />
             {scope}
           </Button>
         </div>
@@ -278,9 +278,10 @@ export function ComposerActionList({
                         )}
                         {row.opensMenu && (
                           <ChevronRightMediumIcon
+                            size="sm"
                             data-menu-chevron
                             aria-hidden
-                            className="h-4 w-4 shrink-0 fg-tertiary"
+                            className="shrink-0 fg-tertiary"
                           />
                         )}
                       </span>
@@ -296,8 +297,7 @@ export function ComposerActionList({
                           <CheckIcon
                             data-radio-check
                             data-menu-check
-                            width={16}
-                            height={16}
+                            size="sm"
                           />
                         )}
                       </span>

@@ -125,9 +125,7 @@ export function ChatTab({
 }: ChatTabProps): JSX.Element {
   const isCloseable = !pinned && (closable ?? typeof onClose === 'function');
   const closeTestId = dataTestId ? `${dataTestId}-close` : undefined;
-  const closeGlyph = (
-    <AppCatalogCloseIcon width="10" height="10" aria-hidden="true" />
-  );
+  const closeGlyph = <AppCatalogCloseIcon size="sm" aria-hidden="true" />;
   // `aria-disabled` rather than `disabled`: a disabled button swallows the
   // pointer events its tooltip needs, and stays out of the tab order.
   const disabledCloseButton = (

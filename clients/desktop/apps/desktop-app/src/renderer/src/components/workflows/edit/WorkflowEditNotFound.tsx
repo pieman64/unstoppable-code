@@ -41,7 +41,7 @@ export function WorkflowEditNotFound({
         data-testid="workflow-edit-back"
         className="-ml-3 self-start"
       >
-        <BackIcon width={12} height={12} aria-hidden="true" />
+        <BackIcon size="sm" aria-hidden="true" />
         {backLabel}
       </Button>
       {loading ? (

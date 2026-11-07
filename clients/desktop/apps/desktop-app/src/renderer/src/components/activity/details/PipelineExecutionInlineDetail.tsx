@@ -6,7 +6,7 @@ import {
   useState,
   type JSX,
 } from 'react';
-import { Notice } from '@canopy/ui-shared/components';
+import { Notice, Surface } from '@canopy/ui-shared/components';
 import type {
   ExecutionState,
   ExecutionSummary,
@@ -122,7 +122,7 @@ function InlineStepDetail({
     Object.keys(resolved.stepDef.env ?? {}).length > 0;
 
   return (
-    <div className="mt-1 overflow-hidden rounded-md border bg-fg-primary/[0.03]">
+    <Surface variant="group" size="small" className="mt-1 overflow-hidden">
       {resolved.stepResult?.agentTerminalMode && (
         <div className="border-b px-3 py-2">
           <TerminalModeBanner
@@ -174,7 +174,7 @@ function InlineStepDetail({
           <AnsiOutput lines={lines} className="max-h-62.5" />
         )}
       </div>
-    </div>
+    </Surface>
   );
 }
 
@@ -443,10 +443,7 @@ export function PipelineExecutionInlineDetail({
                       ? []
                       : buildAttemptViews(jobResult);
                     return (
-                      <div
-                        key={jobId}
-                        className="rounded-lg border bg-fg-primary/[0.03] p-3"
-                      >
+                      <Surface key={jobId} variant="group" padding="compact">
                         <div className="mb-2 flex items-start justify-between gap-3">
                           <div>
                             <div className="text-s font-medium fg-primary/80">
@@ -481,22 +478,24 @@ export function PipelineExecutionInlineDetail({
                             )}
                         </div>
 
-                        <div className="mb-3 rounded-md border bg-base p-2.5">
-                          <TimingSummaryGrid
-                            identity={`job:${executionId}:${jobId}:current`}
-                            kind="job"
-                            status={
-                              group?.status ?? jobResult?.status ?? 'pending'
-                            }
-                            startedAt={
-                              group?.started_at ?? jobResult?.started_at
-                            }
-                            completedAt={
-                              group?.completed_at ?? jobResult?.completed_at
-                            }
-                            compact
-                          />
-                        </div>
+                        <Surface variant="inset" size="small" className="mb-3">
+                          <div className="p-2.5">
+                            <TimingSummaryGrid
+                              identity={`job:${executionId}:${jobId}:current`}
+                              kind="job"
+                              status={
+                                group?.status ?? jobResult?.status ?? 'pending'
+                              }
+                              startedAt={
+                                group?.started_at ?? jobResult?.started_at
+                              }
+                              completedAt={
+                                group?.completed_at ?? jobResult?.completed_at
+                              }
+                              compact
+                            />
+                          </div>
+                        </Surface>
 
                         {isMatrixJob ? (
                           <div className="mb-3">
@@ -660,7 +659,7 @@ export function PipelineExecutionInlineDetail({
                             </div>
                           ))}
                         </div>
-                      </div>
+                      </Surface>
                     );
                   },
                 )}

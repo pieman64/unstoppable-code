@@ -20,16 +20,17 @@ import {
 import { linuxUpdateCopy } from '@canopy/desktop-shared/lib/linux-update-copy';
 import { isCliPathManagementPlatform } from '@canopy/desktop-shared/platform-capabilities';
 import {
+  BusyLabel,
   Button,
   ConfirmDialog,
-  Notice,
-  NoticeButton,
-  ToggleSwitch,
-  BusyLabel,
   DialogModal,
   ErrorBanner,
+  Notice,
+  NoticeButton,
   Skeleton,
   StatusLabel,
+  Surface,
+  ToggleSwitch,
   WindowPage,
 } from '@canopy/ui-shared/components';
 import {
@@ -40,7 +41,6 @@ import {
   PickerMenuOptionLabel,
   SearchField,
 } from '@canopy/ui-shared/components';
-import { HAIRLINE_INSET_RING_CLASS } from '@canopy/ui-shared/lib';
 import {
   ClaudeIcon,
   CodexIcon,
@@ -734,53 +734,57 @@ export function CanopyTab(): JSX.Element {
 
             <ErrorBanner error={versionError} className="" />
 
-            <div
-              className={`max-h-80 overflow-y-auto rounded-lg p-1 ${HAIRLINE_INSET_RING_CLASS} ring-line-base`}
-              data-testid="settings-update-version-list"
-            >
-              {versionItems.length === 0 && !versionLoading ? (
-                <p
-                  className="px-4 py-6 text-center text-s fg-secondary"
-                  data-testid="settings-update-version-empty"
-                >
-                  No matching releases.
-                </p>
-              ) : (
-                versionItems.map((item) => (
-                  <PickerMenuOption
-                    key={item.tag}
-                    onClick={(): void => handleSelectTargetVersion(item)}
-                    disabled={targetUpdatePending}
-                    data-testid="settings-update-version-option"
-                    data-tag={item.tag}
-                    data-relation={item.relation ?? 'upgrade'}
+            <Surface variant="outline" className="overflow-hidden">
+              <div
+                className="max-h-80 overflow-y-auto p-1"
+                data-testid="settings-update-version-list"
+              >
+                {versionItems.length === 0 && !versionLoading ? (
+                  <p
+                    className="px-4 py-6 text-center text-s fg-secondary"
+                    data-testid="settings-update-version-empty"
                   >
-                    <PickerMenuOptionContent>
-                      <PickerMenuOptionLabel>
-                        {item.version}
-                      </PickerMenuOptionLabel>
-                      <PickerMenuOptionDescription>
-                        {item.tag}
-                        {item.releaseDate
-                          ? ` - ${new Date(item.releaseDate).toLocaleDateString()}`
-                          : ''}
-                      </PickerMenuOptionDescription>
-                    </PickerMenuOptionContent>
-                    {item.relation && item.relation !== 'upgrade' && (
-                      <Badge
-                        tone={
-                          item.relation === 'downgrade' ? 'warning' : 'neutral'
-                        }
-                      >
-                        {item.relation === 'downgrade'
-                          ? 'Downgrade'
-                          : 'Current'}
-                      </Badge>
-                    )}
-                  </PickerMenuOption>
-                ))
-              )}
-            </div>
+                    No matching releases.
+                  </p>
+                ) : (
+                  versionItems.map((item) => (
+                    <PickerMenuOption
+                      key={item.tag}
+                      onClick={(): void => handleSelectTargetVersion(item)}
+                      disabled={targetUpdatePending}
+                      data-testid="settings-update-version-option"
+                      data-tag={item.tag}
+                      data-relation={item.relation ?? 'upgrade'}
+                    >
+                      <PickerMenuOptionContent>
+                        <PickerMenuOptionLabel>
+                          {item.version}
+                        </PickerMenuOptionLabel>
+                        <PickerMenuOptionDescription>
+                          {item.tag}
+                          {item.releaseDate
+                            ? ` - ${new Date(item.releaseDate).toLocaleDateString()}`
+                            : ''}
+                        </PickerMenuOptionDescription>
+                      </PickerMenuOptionContent>
+                      {item.relation && item.relation !== 'upgrade' && (
+                        <Badge
+                          tone={
+                            item.relation === 'downgrade'
+                              ? 'warning'
+                              : 'neutral'
+                          }
+                        >
+                          {item.relation === 'downgrade'
+                            ? 'Downgrade'
+                            : 'Current'}
+                        </Badge>
+                      )}
+                    </PickerMenuOption>
+                  ))
+                )}
+              </div>
+            </Surface>
 
             <div>
               <Button

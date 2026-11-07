@@ -11,6 +11,7 @@ import {
   type MemoryTranscriptMessageProps,
 } from './memory-settings-slots';
 import { Heading } from '@canopy/ui-shared/components';
+import { Surface } from '@canopy/ui-shared/components';
 
 interface SourceTranscriptViewProps {
   transcript: ExplorerSourceTranscript;
@@ -62,78 +63,82 @@ export function SourceTranscriptView({
 
   if (transcript.restricted) {
     return (
-      <section className="rounded-xl border bg-card p-5">
-        <Heading level={2} variant="section">
-          Private source transcript
-        </Heading>
-        <p className="mt-2 text-s leading-6 fg-secondary">
-          This source is privately owned. Organization administrators can see
-          the extracted evidence and source metadata, but not the private
-          transcript.
-        </p>
-        {transcript.evidenceQuote !== null && (
-          <blockquote
-            className={withPrivacyClass(
-              'mt-4 rounded-lg border-l-2 border-line-accent bg-accent/5 px-4 py-3 text-s italic fg-secondary',
-              blockClassName,
-            )}
-          >
-            “{transcript.evidenceQuote}”
-          </blockquote>
-        )}
-      </section>
+      <Surface as="section" variant="card">
+        <div className="p-5">
+          <Heading level={2} variant="section">
+            Private source transcript
+          </Heading>
+          <p className="mt-2 text-s leading-6 fg-secondary">
+            This source is privately owned. Organization administrators can see
+            the extracted evidence and source metadata, but not the private
+            transcript.
+          </p>
+          {transcript.evidenceQuote !== null && (
+            <blockquote
+              className={withPrivacyClass(
+                'mt-4 rounded-lg border-l-2 border-line-accent bg-accent/5 px-4 py-3 text-s italic fg-secondary',
+                blockClassName,
+              )}
+            >
+              “{transcript.evidenceQuote}”
+            </blockquote>
+          )}
+        </div>
+      </Surface>
     );
   }
 
   return (
-    <section className="rounded-xl border bg-card p-5">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <Heading level={2} variant="section">
-            Source transcript
-          </Heading>
-          <p
-            className={withPrivacyClass(
-              'mt-1 text-xs fg-secondary',
-              blockClassName,
-            )}
-          >
-            {transcript.source.actor?.name ??
-              transcript.source.actor?.email ??
-              'Unknown actor'}{' '}
-            · {new Date(transcript.source.referenceTime).toLocaleString()}
+    <Surface as="section" variant="card">
+      <div className="p-5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <Heading level={2} variant="section">
+              Source transcript
+            </Heading>
+            <p
+              className={withPrivacyClass(
+                'mt-1 text-xs fg-secondary',
+                blockClassName,
+              )}
+            >
+              {transcript.source.actor?.name ??
+                transcript.source.actor?.email ??
+                'Unknown actor'}{' '}
+              · {new Date(transcript.source.referenceTime).toLocaleString()}
+            </p>
+          </div>
+        </div>
+        {transcript.messages.length === 0 ? (
+          <p className="py-12 text-center text-s fg-secondary">
+            The transcript could not be decrypted or parsed.
           </p>
-        </div>
+        ) : (
+          <div className={withPrivacyClass('mt-5 space-y-3', blockClassName)}>
+            {transcript.messages.map((message) => {
+              const highlighted = message.localMessageId === targetMessageId;
+              return (
+                <div
+                  key={message.localMessageId}
+                  ref={highlighted ? targetRef : undefined}
+                  className={
+                    highlighted
+                      ? 'rounded-lg border border-line-accent bg-accent/5 p-3'
+                      : 'rounded-lg p-3'
+                  }
+                >
+                  {highlighted && transcript.evidenceQuote !== null && (
+                    <mark className="mb-3 block rounded bg-warning-subtle px-2 py-1 text-xs fg-primary">
+                      Evidence match: “{transcript.evidenceQuote}”
+                    </mark>
+                  )}
+                  <TranscriptMessage message={message} />
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
-      {transcript.messages.length === 0 ? (
-        <p className="py-12 text-center text-s fg-secondary">
-          The transcript could not be decrypted or parsed.
-        </p>
-      ) : (
-        <div className={withPrivacyClass('mt-5 space-y-3', blockClassName)}>
-          {transcript.messages.map((message) => {
-            const highlighted = message.localMessageId === targetMessageId;
-            return (
-              <div
-                key={message.localMessageId}
-                ref={highlighted ? targetRef : undefined}
-                className={
-                  highlighted
-                    ? 'rounded-lg border border-line-accent bg-accent/5 p-3'
-                    : 'rounded-lg p-3'
-                }
-              >
-                {highlighted && transcript.evidenceQuote !== null && (
-                  <mark className="mb-3 block rounded bg-warning-subtle px-2 py-1 text-xs fg-primary">
-                    Evidence match: “{transcript.evidenceQuote}”
-                  </mark>
-                )}
-                <TranscriptMessage message={message} />
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </section>
+    </Surface>
   );
 }

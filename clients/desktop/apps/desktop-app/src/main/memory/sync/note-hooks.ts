@@ -171,5 +171,14 @@ export function createMemoryReplicaHooks(
     noteChanged(scopeDir) {
       registry.entryForDir(scopeDir)?.onLocalChange();
     },
+    usageRecorded(scopeDir, counts, usedAt) {
+      registry.entryForDir(scopeDir)?.recordUsage(counts, usedAt);
+    },
+    runSyncedConsolidation(scopeDir, reason, run) {
+      const entry = registry.entryForDir(scopeDir);
+      return entry === null
+        ? Promise.resolve({ status: 'cancelled', reason: 'cancelled' })
+        : entry.runConsolidation(reason, run);
+    },
   };
 }

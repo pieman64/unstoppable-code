@@ -7,7 +7,7 @@ import {
 import { request as httpsRequest } from 'node:https';
 import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { createCopilotCapabilitySnapshot } from '@canopy/desktop-shared/node/copilot/capability-snapshot';
+import { createCopilotCapabilitySnapshot } from '@canopy/copilot-recipient/capability-snapshot';
 import type {
   McpServerConfigData,
   McpServerDefinitionData,

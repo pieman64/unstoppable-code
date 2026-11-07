@@ -74,7 +74,7 @@ export const FileDeliverableCard = memo(function FileDeliverableCard({
   const descriptionId = useId();
   const details = (
     <>
-      <FileIcon width={20} height={20} aria-hidden="true" />
+      <FileIcon size="xl" aria-hidden="true" />
       <span className="min-w-0 flex-1">
         <span
           className="block truncate text-xs font-medium fg-primary"
@@ -128,7 +128,7 @@ export const FileDeliverableCard = memo(function FileDeliverableCard({
           aria-label={`Download ${filename}`}
           className="mr-3"
         >
-          <DownloadIcon width={14} height={14} aria-hidden="true" />
+          <DownloadIcon size="sm" aria-hidden="true" />
           Download
         </Button>
       )}

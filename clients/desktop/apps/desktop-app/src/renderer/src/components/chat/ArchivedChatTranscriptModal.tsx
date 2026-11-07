@@ -17,10 +17,9 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { useTeamOrgShareEntryVisible } from '@/lib/share-targets';
 import { DialogModal } from '@canopy/ui-shared/components';
-import { AgentProviderIcon } from '@/lib/providerUi';
+import { ModelProviderIcon } from '@canopy/ui-shared/components';
 import { getArchivedChatDisplayLabel } from '@/components/standalone-chat/chat-label';
-import { UnarchiveIcon } from '../icons/UnarchiveIcon';
-import { ArticleShortcutIcon } from '../icons/ArticleShortcutIcon';
+import { SummaryIcon, UnarchiveIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { useTranscriptSearch } from '@/hooks/useTranscriptSearch';
 import { SearchBar } from '../shared/search/SearchBar';
 import { ChatMessageList } from './ChatMessageList';
@@ -288,10 +287,9 @@ export function ArchivedChatTranscriptModal({
       title={
         <span className="flex min-w-0 items-center gap-2">
           {summary.providerType && (
-            <AgentProviderIcon
+            <ModelProviderIcon
               provider={summary.providerType}
-              width={16}
-              height={16}
+              size="md"
               className="shrink-0 fg-secondary"
             />
           )}
@@ -314,11 +312,7 @@ export function ArchivedChatTranscriptModal({
               disabled={busy}
               data-testid="archived-chat-transcript-restore"
             >
-              {restoring ? (
-                <LoadingSpinner />
-              ) : (
-                <UnarchiveIcon width={16} height={16} />
-              )}
+              {restoring ? <LoadingSpinner /> : <UnarchiveIcon size="md" />}
               <span>Restore</span>
             </Button>
           )}
@@ -328,11 +322,7 @@ export function ArchivedChatTranscriptModal({
             disabled={busy}
             data-testid="archived-chat-transcript-summarize"
           >
-            {summarizing ? (
-              <LoadingSpinner />
-            ) : (
-              <ArticleShortcutIcon width={16} height={16} />
-            )}
+            {summarizing ? <LoadingSpinner /> : <SummaryIcon size="md" />}
             <span>Summarize</span>
           </Button>
           {shareEntryVisible ? (
@@ -342,7 +332,7 @@ export function ArchivedChatTranscriptModal({
               disabled={busy}
               data-testid="archived-chat-transcript-share-run"
             >
-              <ShareIcon width={16} height={16} />
+              <ShareIcon size="sm" />
               <span>Share session</span>
             </Button>
           ) : null}

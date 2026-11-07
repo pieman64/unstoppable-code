@@ -180,7 +180,7 @@ function HomeComposerActionMenu({
       ? 'Turn workflow mode off'
       : 'Run the task through predefined automated steps',
     value: pipelineMode ? 'On' : undefined,
-    icon: <PipelineIcon width={16} height={16} />,
+    icon: <PipelineIcon size="sm" />,
     onSelect: onTogglePipeline,
     ariaChecked: pipelineMode,
     dataTestId: 'home-pipeline-mode-button',
@@ -192,7 +192,7 @@ function HomeComposerActionMenu({
         {
           id: 'plugins',
           label: 'Plugins',
-          icon: <PluginsIcon width={16} height={16} />,
+          icon: <PluginsIcon size="sm" />,
           onSelect: onOpenPlugins,
           ariaChecked: hasPluginSelections,
           dataTestId: 'home-plugins-button',
@@ -200,7 +200,7 @@ function HomeComposerActionMenu({
         {
           id: 'schedule',
           label: 'Schedule message',
-          icon: <ScheduleIcon width={16} height={16} />,
+          icon: <ScheduleIcon size="sm" />,
           onSelect: onOpenSchedule,
           disabled: scheduleDisabled,
           dataTestId: 'home-schedule-button',
@@ -214,7 +214,7 @@ function HomeComposerActionMenu({
           label: planReadOnly ? 'Read-only mode' : 'Plan mode',
           description: planMode ? 'Turn plan mode off' : 'Turn plan mode on',
           value: planMode ? 'On' : undefined,
-          icon: <PlanModeIcon width={16} height={16} active={planMode} />,
+          icon: <PlanModeIcon size="sm" active={planMode} />,
           onSelect: onTogglePlanMode,
           ariaChecked: planMode,
           dataTestId: 'home-plan-mode-button',

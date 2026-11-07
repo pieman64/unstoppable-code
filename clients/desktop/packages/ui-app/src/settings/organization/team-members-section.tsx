@@ -73,6 +73,7 @@ import {
   SETTINGS_GROUP_GRID_ROW_CLASS,
 } from '@canopy/ui-shared/components/settings/SettingsCard';
 import type { SettingsFailure } from '../errors';
+import { Surface } from '@canopy/ui-shared/components';
 
 interface TeamMembersSectionProps {
   detail: OrganizationDetail;
@@ -1000,7 +1001,7 @@ function AddMemberDialog({
     >
       {outcome ? (
         <div className="flex flex-col gap-4" data-testid="add-member-success">
-          <div className="rounded-md border bg-secondary/30 p-4">
+          <Surface variant="group" size="small" padding="default">
             <p className="text-s font-medium fg-primary">
               {outcome.seatPaymentState === 'PROCESSING'
                 ? 'Payment processing'
@@ -1051,14 +1052,20 @@ function AddMemberDialog({
             {outcome.seatPaymentState !== 'PROCESSING' &&
               !outcome.emailDeferred && (
                 <div className="mt-3 flex items-center gap-2">
-                  <code
-                    className={joinClassNames(
-                      'min-w-0 flex-1 truncate rounded-md border bg-card px-3 py-2 text-xs fg-secondary',
-                      blockClassName,
-                    )}
+                  <Surface
+                    variant="card"
+                    size="small"
+                    className="min-w-0 flex-1"
                   >
-                    {outcome.url}
-                  </code>
+                    <code
+                      className={joinClassNames(
+                        'block truncate px-3 py-2 text-xs fg-secondary',
+                        blockClassName,
+                      )}
+                    >
+                      {outcome.url}
+                    </code>
+                  </Surface>
                   <CopyButton
                     value={outcome.url}
                     label="Copy"
@@ -1069,7 +1076,7 @@ function AddMemberDialog({
                   />
                 </div>
               )}
-          </div>
+          </Surface>
           <div className="flex items-center justify-end gap-2">
             <Button
               size="compact"
@@ -1253,8 +1260,10 @@ function SeatChargeNotice({
 
   if (status === 'error') {
     return (
-      <div
-        className="rounded-md border bg-secondary/30 p-3"
+      <Surface
+        variant="group"
+        size="small"
+        padding="compact"
         data-testid="seat-charge-error"
       >
         <p className="text-s fg-primary">{QUOTE_ERROR}</p>
@@ -1266,7 +1275,7 @@ function SeatChargeNotice({
         >
           Try again
         </Button>
-      </div>
+      </Surface>
     );
   }
 
@@ -1278,8 +1287,10 @@ function SeatChargeNotice({
     quote.periodEndsAt !== null ? formatPlanDate(quote.periodEndsAt) : null;
 
   return (
-    <div
-      className="rounded-md border border-line-accent bg-secondary/30 p-3"
+    <Surface
+      variant="group"
+      size="small"
+      padding="compact"
       data-testid="seat-charge-notice"
     >
       <p className="text-s font-medium fg-primary">This adds a paid seat</p>
@@ -1320,6 +1331,6 @@ function SeatChargeNotice({
           Charging {quote.card.brand} ending in {quote.card.last4}.
         </p>
       ) : null}
-    </div>
+    </Surface>
   );
 }

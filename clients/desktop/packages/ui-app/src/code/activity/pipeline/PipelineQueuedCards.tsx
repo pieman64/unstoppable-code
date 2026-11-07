@@ -4,6 +4,7 @@ import { HookIcon } from '@canopy/ui-shared/icons';
 import { formatTimingTimestamp } from '@canopy/ui-shared/lib';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { StatusLabel } from '@canopy/ui-shared/components';
+import { Surface } from '@canopy/ui-shared/components';
 
 export interface PipelineHookTriggerSource {
   readonly kind: 'hook';
@@ -85,7 +86,7 @@ export function HookTriggerBadge({
       aria-label={tooltip}
       className="inline-flex items-center fg-secondary/70"
     >
-      <HookIcon width={12} height={12} />
+      <HookIcon size="sm" />
     </span>
   );
 }
@@ -95,28 +96,30 @@ export function QueuedHookPipelineCard({
   onCancel,
 }: QueuedHookPipelineCardProps): JSX.Element {
   return (
-    <div className="flex items-center justify-between gap-2 rounded-md border border-dashed bg-fg-primary/[0.04] px-2.5 py-1.5">
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1.5">
-          <span className="truncate text-s font-medium fg-primary">
-            {entry.pipelineName}
-          </span>
-          <HookTriggerBadge triggerSource={entry.trigger_source} />
+    <Surface variant="dashed" size="small">
+      <div className="flex items-center justify-between gap-2 px-2.5 py-1.5">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <span className="truncate text-s font-medium fg-primary">
+              {entry.pipelineName}
+            </span>
+            <HookTriggerBadge triggerSource={entry.trigger_source} />
+          </div>
+          <div className="truncate text-2xs fg-secondary">
+            Queued — waiting for active workflow runs to finish
+          </div>
         </div>
-        <div className="truncate text-2xs fg-secondary">
-          Queued — waiting for active workflow runs to finish
-        </div>
+        <Button
+          type="button"
+          variant="secondary"
+          size="compact"
+          onClick={() => onCancel(entry.queueId)}
+          aria-label="Cancel queued workflow"
+        >
+          Cancel
+        </Button>
       </div>
-      <Button
-        type="button"
-        variant="secondary"
-        size="compact"
-        onClick={() => onCancel(entry.queueId)}
-        aria-label="Cancel queued workflow"
-      >
-        Cancel
-      </Button>
-    </div>
+    </Surface>
   );
 }
 
@@ -157,29 +160,31 @@ export function PendingExecutionCard({
   onCancel,
 }: PendingExecutionCardProps): JSX.Element {
   return (
-    <div className="flex items-center justify-between gap-2 rounded-md border border-dashed bg-fg-primary/[0.04] px-2.5 py-1.5">
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-s font-medium fg-primary">
-          {entry.pipelineName}
+    <Surface variant="dashed" size="small">
+      <div className="flex items-center justify-between gap-2 px-2.5 py-1.5">
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-s font-medium fg-primary">
+            {entry.pipelineName}
+          </div>
+          {/* The tooltip is the task prompt the user wrote. */}
+          <div
+            className={`${REPLAY_BLOCK_CLASS} truncate text-2xs fg-secondary`}
+            title={entry.taskText}
+          >
+            Queued — waiting for setup
+          </div>
         </div>
-        {/* The tooltip is the task prompt the user wrote. */}
-        <div
-          className={`${REPLAY_BLOCK_CLASS} truncate text-2xs fg-secondary`}
-          title={entry.taskText}
+        <Button
+          type="button"
+          variant="secondary"
+          size="compact"
+          onClick={() => onCancel(entry.localId)}
+          aria-label="Cancel queued workflow"
         >
-          Queued — waiting for setup
-        </div>
+          Cancel
+        </Button>
       </div>
-      <Button
-        type="button"
-        variant="secondary"
-        size="compact"
-        onClick={() => onCancel(entry.localId)}
-        aria-label="Cancel queued workflow"
-      >
-        Cancel
-      </Button>
-    </div>
+    </Surface>
   );
 }
 

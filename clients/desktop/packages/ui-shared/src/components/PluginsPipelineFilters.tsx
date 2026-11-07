@@ -199,7 +199,7 @@ function PipelineFilterPicker({
                   aria-hidden="true"
                   className="ml-auto inline-flex h-4 w-4 shrink-0 items-center justify-center"
                 >
-                  <CheckIcon width={16} height={16} />
+                  <CheckIcon size="sm" />
                 </span>
               )}
             </DropdownMenuItem>

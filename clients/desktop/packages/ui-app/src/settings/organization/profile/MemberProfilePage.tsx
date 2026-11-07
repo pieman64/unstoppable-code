@@ -231,7 +231,7 @@ export function MemberProfilePage({
                 return {
                   id: tab.key,
                   label: tab.label,
-                  icon: <Icon size={15} />,
+                  icon: <Icon size="sm" />,
                   dataTestId: `profile-tab-${tab.key}`,
                 };
               })}

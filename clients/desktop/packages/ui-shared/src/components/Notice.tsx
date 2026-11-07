@@ -21,6 +21,10 @@ import {
 import { Button, buttonClassName, isAriaDisabled } from './Button';
 import { ReservedLabel } from './LoadingButton';
 import { LoadingSpinner } from './LoadingSpinner';
+import {
+  useNoticeErrorRecording,
+  type NoticeErrorChokePoint,
+} from './notice-error-recording';
 
 /**
  * The two tiers of action a notice can offer. `primary` is the single
@@ -262,6 +266,16 @@ export interface NoticeProps extends Omit<
    * work it reports.
    */
   titleLayout?: NoticeTitleLayout;
+  /**
+   * Internal to `ErrorBanner`, which is a destructive notice that reports as
+   * its own surface, so one banner stays one record.
+   */
+  errorRecordingChokePoint?: NoticeErrorChokePoint;
+  /**
+   * Internal. A boundary's own fallback, whose caught error is already
+   * reported, sets this so the crash does not count twice.
+   */
+  errorRecordingDisabled?: boolean;
 }
 
 /** Whether a notice's title leads the message's line or sits above it. */
@@ -472,6 +486,8 @@ export function Notice({
   shape,
   surface = 'tray',
   titleLayout = 'inline',
+  errorRecordingChokePoint = 'notice',
+  errorRecordingDisabled = false,
   className = '',
   ...rest
 }: NoticeProps): JSX.Element {
@@ -488,6 +504,15 @@ export function Notice({
   // follows the settings card instead, with its controls on the 16px edge
   // like every row's control.
   const pullControlsIn = resolvedShape === 'default';
+  // A destructive notice reports itself, except in a toast: the toast store
+  // already recorded that event.
+  const recordsError =
+    intent === 'destructive' && !toastShape && !errorRecordingDisabled;
+  const copyRef = useNoticeErrorRecording(
+    recordsError,
+    errorRecordingChokePoint,
+    recordsError ? [title, children, detail].map(nodeText).join('\u0000') : '',
+  );
   const resolvedIcon = icon === undefined ? defaultIcon(intent) : icon;
   const resolvedRole = role ?? (intent === 'destructive' ? 'alert' : 'status');
   const live = resolvedRole !== 'none';
@@ -560,6 +585,7 @@ export function Notice({
               </span>
             )}
             <div
+              ref={copyRef}
               className="min-w-0 flex-1 py-1.25"
               {...(live && liveRegionScope === 'content'
                 ? {

@@ -35,6 +35,7 @@ import {
   githubWorkflowJobDagStatus,
   type GitHubWorkflowRunRowJob,
 } from '@canopy/ui-shared/lib/github-workflow-display';
+import { Surface } from '@canopy/ui-shared/components';
 
 export interface GitHubWorkflowRunRowData {
   readonly repository: string;
@@ -211,75 +212,75 @@ export const GitHubWorkflowRunRow = memo(function GitHubWorkflowRunRow({
     [run.definition, run.jobs],
   );
   return (
-    <div
+    <Surface
+      variant="group"
+      interactive
+      className="relative"
       data-testid={dataTestId ?? `github-workflow-run-card-${run.runId}`}
       data-run-status={status.label}
-      className={
-        status.active
-          ? 'relative rounded-lg ring-1 ring-line-base bg-fg-primary/[0.03] px-3 py-3 transition-colors hover:ring-line-base hover:bg-fg-primary/[0.05]'
-          : 'relative rounded-lg ring-1 ring-line-base/40 bg-fg-primary/[0.015] px-3 py-2.5 transition-colors hover:ring-line-base hover:bg-fg-primary/[0.03]'
-      }
     >
-      <button
-        type="button"
-        data-testid={`github-workflow-run-open-${run.runId}`}
-        className="absolute inset-0 cursor-pointer rounded-lg"
-        onClick={onOpen}
-        aria-label={`Open ${githubWorkflowRunRowTitle(run)} on GitHub`}
-      />
-      <div className="pointer-events-none relative z-10 flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <span
-              className={statusBadgeClassName(status.tone, {
-                muted: status.muted || !status.active,
-              })}
+      <div className={status.active ? 'p-3' : 'px-3 py-2.5'}>
+        <button
+          type="button"
+          data-testid={`github-workflow-run-open-${run.runId}`}
+          className="absolute inset-0 cursor-pointer rounded-lg"
+          onClick={onOpen}
+          aria-label={`Open ${githubWorkflowRunRowTitle(run)} on GitHub`}
+        />
+        <div className="pointer-events-none relative z-10 flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span
+                className={statusBadgeClassName(status.tone, {
+                  muted: status.muted || !status.active,
+                })}
+              >
+                {status.label}
+              </span>
+              {run.startedAt ? (
+                <span className="text-2xs fg-secondary/60">
+                  {formatRelativeTime(run.startedAt)}
+                </span>
+              ) : null}
+              {renderWatcherButton ? (
+                <span className="pointer-events-auto">
+                  {renderWatcherButton()}
+                </span>
+              ) : null}
+            </div>
+            <div
+              className={`mt-1 truncate text-xs ${status.active ? 'font-medium fg-primary/80' : 'fg-secondary'}`}
             >
-              {status.label}
-            </span>
-            {run.startedAt ? (
-              <span className="text-2xs fg-secondary/60">
-                {formatRelativeTime(run.startedAt)}
-              </span>
-            ) : null}
-            {renderWatcherButton ? (
-              <span className="pointer-events-auto">
-                {renderWatcherButton()}
-              </span>
-            ) : null}
+              {githubWorkflowRunRowTitle(run)}
+            </div>
+            <div className="truncate text-2xs fg-secondary/70">
+              {run.repository}
+            </div>
           </div>
-          <div
-            className={`mt-1 truncate text-xs ${status.active ? 'font-medium fg-primary/80' : 'fg-secondary'}`}
+          <span
+            className="flex shrink-0 items-center gap-1 text-2xs fg-secondary/60"
+            aria-hidden="true"
           >
-            {githubWorkflowRunRowTitle(run)}
-          </div>
-          <div className="truncate text-2xs fg-secondary/70">
-            {run.repository}
-          </div>
+            GitHub
+            <ExternalLink size={12} aria-hidden="true" />
+          </span>
         </div>
-        <span
-          className="flex shrink-0 items-center gap-1 text-2xs fg-secondary/60"
-          aria-hidden="true"
-        >
-          GitHub
-          <ExternalLink size={12} aria-hidden="true" />
-        </span>
+        {layout.tiers.length > 0 ? (
+          <div className="relative z-10">
+            <DagProgressBar
+              tiers={layout.tiers}
+              jobs={layout.jobs}
+              muted={!status.active}
+              onJobClick={(jobId): void => {
+                // Placeholder dots for jobs GitHub has not created yet have
+                // no page to open.
+                const job = jobsById[jobId];
+                if (job) onJobClick(job);
+              }}
+            />
+          </div>
+        ) : null}
       </div>
-      {layout.tiers.length > 0 ? (
-        <div className="relative z-10">
-          <DagProgressBar
-            tiers={layout.tiers}
-            jobs={layout.jobs}
-            muted={!status.active}
-            onJobClick={(jobId): void => {
-              // Placeholder dots for jobs GitHub has not created yet have
-              // no page to open.
-              const job = jobsById[jobId];
-              if (job) onJobClick(job);
-            }}
-          />
-        </div>
-      ) : null}
-    </div>
+    </Surface>
   );
 });

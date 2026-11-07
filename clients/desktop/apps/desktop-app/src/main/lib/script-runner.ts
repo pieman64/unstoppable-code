@@ -186,56 +186,130 @@ export function buildShellScriptCommand(
   return buildScriptShellCommand(desktopScriptHost, script, shell, options);
 }
 
+/** Runs this process tracks that another host executes (CAN-5087). */
+export interface ExternalScriptRuns {
+  list(): ScriptRunTracking[];
+  subscribe(listener: () => void): () => void;
+  /** Stops every external run of the script key; resolves once each settled. */
+  stop(target: ScriptRunTracking): Promise<StoppedScriptRun[]>;
+  stopRun(
+    target: ScriptRunTracking & { runId: string },
+  ): Promise<StoppedScriptRun | null>;
+  drainMatching(
+    target: { projectId: string; worktreeId: string },
+    shouldDrain: (tracking: ScriptRunTracking) => boolean,
+  ): Promise<StoppedScriptRun[]>;
+  drainWorktree(projectId: string, worktreeId: string): Promise<void>;
+  /** Requests a stop of every external run without waiting. */
+  stopAll(): void;
+}
+
+let external: ExternalScriptRuns | null = null;
+let unsubscribeExternal: (() => void) | null = null;
+const externalListeners = new Set<() => void>();
+
+function notifyExternalListeners(): void {
+  externalListeners.forEach((listener) => listener());
+}
+
+export function setExternalScriptRuns(source: ExternalScriptRuns | null): void {
+  unsubscribeExternal?.();
+  unsubscribeExternal = null;
+  external = source;
+  if (source) unsubscribeExternal = source.subscribe(notifyExternalListeners);
+  notifyExternalListeners();
+}
+
+function withExternalListener(
+  listener: () => void,
+  unsubscribe: () => void,
+): () => void {
+  externalListeners.add(listener);
+  return (): void => {
+    unsubscribe();
+    externalListeners.delete(listener);
+  };
+}
+
 export function subscribeTrackedScriptsChanged(
   listener: () => void,
 ): () => void {
-  return desktopScriptWorker.registry.subscribe(listener);
+  return withExternalListener(
+    listener,
+    desktopScriptWorker.registry.subscribe(listener),
+  );
 }
 
 export function listTrackedShellScripts(): ScriptTrackingInfo[] {
-  return desktopScriptWorker.registry.list();
+  return [...desktopScriptWorker.registry.list(), ...(external?.list() ?? [])];
 }
 
 export function stopAllRunningShellScripts(): void {
   desktopScriptWorker.registry.stopAll();
+  external?.stopAll();
 }
 
-export function stopTrackedShellScript(
+export async function stopTrackedShellScript(
   target: ScriptTrackingInfo,
 ): Promise<StoppedTrackedShellScript | null> {
-  return desktopScriptWorker.registry.stop(target);
+  // Both hosts may hold a run of the key: stop every one of them.
+  const [own, others] = await Promise.all([
+    desktopScriptWorker.registry.stop(target),
+    external?.stop(target) ?? Promise.resolve([]),
+  ]);
+  return own ?? others[0] ?? null;
 }
 
 /** Stop one concrete run without affecting concurrent instances of its script. */
-export function stopTrackedShellScriptRun(
+export async function stopTrackedShellScriptRun(
   target: ScriptTrackingInfo & { logRef: ScriptRunLogRef },
 ): Promise<StoppedTrackedShellScript | null> {
-  return desktopScriptWorker.registry.stopRun({
-    ...target,
-    runId: target.logRef.runId,
-  });
+  return (
+    (await desktopScriptWorker.registry.stopRun({
+      ...target,
+      runId: target.logRef.runId,
+    })) ??
+    (await external?.stopRun({ ...target, runId: target.logRef.runId })) ??
+    null
+  );
 }
 
 /** See {@link ScriptRunRegistry.drainMatching}. */
-export function drainTrackedShellScriptRunsForWorktree(
+export async function drainTrackedShellScriptRunsForWorktree(
   target: { projectId: string; worktreeId: string },
   shouldDrain: (tracking: ScriptTrackingInfo) => boolean,
 ): Promise<StoppedTrackedShellScript[]> {
-  return desktopScriptWorker.registry.drainMatching(target, shouldDrain);
+  const [own, others] = await Promise.all([
+    desktopScriptWorker.registry.drainMatching(target, shouldDrain),
+    external?.drainMatching(target, shouldDrain) ?? Promise.resolve([]),
+  ]);
+  return [...own, ...others];
 }
 
 /** Includes hooks, automatic setup, and duplicate keys absent from renderer state. */
-export function drainWorktreeShellScripts(
+export async function drainWorktreeShellScripts(
   projectId: string,
   worktreeId: string,
 ): Promise<void> {
-  return desktopScriptWorker.registry.drainWorktree(projectId, worktreeId);
+  await Promise.all([
+    desktopScriptWorker.registry.drainWorktree(projectId, worktreeId),
+    external?.drainWorktree(projectId, worktreeId),
+  ]);
 }
 
 export function isTrackedShellScriptRunning(
   target: ScriptTrackingInfo,
 ): boolean {
-  return desktopScriptWorker.registry.isRunning(target);
+  return (
+    desktopScriptWorker.registry.isRunning(target) ||
+    (external?.list() ?? []).some(
+      (tracking) =>
+        tracking.projectId === target.projectId &&
+        tracking.worktreeId === target.worktreeId &&
+        tracking.scriptKey === target.scriptKey &&
+        (tracking.kind ?? 'script') === (target.kind ?? 'script'),
+    )
+  );
 }
 
 /**
@@ -247,7 +321,15 @@ export function listTrackedShellScriptsForWorktree(target: {
   projectId: string;
   worktreeId: string;
 }): ScriptTrackingInfo[] {
-  return desktopScriptWorker.registry.listForWorktree(target);
+  return [
+    ...desktopScriptWorker.registry.listForWorktree(target),
+    ...(external?.list() ?? []).filter(
+      (tracking) =>
+        tracking.projectId === target.projectId &&
+        tracking.worktreeId === target.worktreeId &&
+        (tracking.kind ?? 'script') === 'script',
+    ),
+  ];
 }
 
 /**

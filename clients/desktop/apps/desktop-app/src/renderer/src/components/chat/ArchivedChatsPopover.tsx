@@ -9,7 +9,7 @@ import {
   ListRow,
   type ArchivedChatsCardItem,
 } from '@canopy/ui-shared/components';
-import { AgentProviderIcon } from '@/lib/providerUi';
+import { ModelProviderIcon } from '@canopy/ui-shared/components';
 import { getArchivedChatDisplayLabel } from '@/components/standalone-chat/chat-label';
 import {
   ANCHORED_POPOVER_PADDING,
@@ -73,11 +73,7 @@ function toCardItem(
     title: getArchivedChatDisplayLabel(summary),
     meta: archivedChatMeta(summary),
     icon: summary.providerType ? (
-      <AgentProviderIcon
-        provider={summary.providerType}
-        width={14}
-        height={14}
-      />
+      <ModelProviderIcon provider={summary.providerType} size="sm" />
     ) : undefined,
     unread: summary.unread,
     restorable: summary.restorable,

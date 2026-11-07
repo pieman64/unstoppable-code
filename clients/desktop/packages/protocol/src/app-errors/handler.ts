@@ -84,7 +84,8 @@ const ReportOptionsSchema = z
   .strict();
 
 function errorKey(error: AppError): string {
-  if (error.kind !== 'defect') return JSON.stringify([error.kind, error.code]);
+  if (error.kind !== 'defect')
+    return JSON.stringify([error.kind, error.code, error.source ?? '']);
   const stack = error.detail.stack ?? '';
   const header = `${error.detail.name ?? 'Error'}: ${error.detail.message}`;
   const frames = stack.startsWith(header) ? stack.slice(header.length) : stack;
@@ -96,6 +97,7 @@ function errorKey(error: AppError): string {
     error.detail.name ?? '',
     error.detail.message,
     frame,
+    error.source ?? '',
   ]);
 }
 

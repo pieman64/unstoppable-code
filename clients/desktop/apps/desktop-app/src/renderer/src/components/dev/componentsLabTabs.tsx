@@ -1,8 +1,9 @@
 import { useState, type JSX } from 'react';
 import {
   SegmentedControl,
-  TabBar,
   type SegmentedControlShape,
+  Surface,
+  TabBar,
   type TabBarItem,
 } from '@canopy/ui-shared/components';
 import {
@@ -63,9 +64,9 @@ export function TabBarSpecimen(): JSX.Element {
         <LiveTabBar items={PAGE_TABS} />
       </SpecimenPanel>
       <SpecimenPanel title="Dialog header (compact, 24px dialog inset)">
-        <div className="rounded-lg bg-base">
+        <Surface variant="group">
           <LiveTabBar items={PAGE_TABS} density="compact" inset="dialog" />
-        </div>
+        </Surface>
       </SpecimenPanel>
       <SpecimenGrid min={240}>
         <SpecimenCell label="With icons and a count">

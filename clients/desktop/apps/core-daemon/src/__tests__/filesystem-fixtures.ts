@@ -123,10 +123,12 @@ export async function seedFilesystemRecords(dataRoot: string): Promise<void> {
   await symlink(
     paths.join(dataRoot, `${single}/src`),
     paths.join(dataRoot, `${single}/inside`),
+    'dir',
   );
   await symlink(
     paths.join(dataRoot, `${single}-outside`),
     paths.join(dataRoot, `${single}/escape`),
+    'dir',
   );
   await file(dataRoot, 'workspaces/single/attachments/task/image.png', 'png');
   await file(dataRoot, 'workspaces/multi/worktrees/task/repos/api/index.ts');

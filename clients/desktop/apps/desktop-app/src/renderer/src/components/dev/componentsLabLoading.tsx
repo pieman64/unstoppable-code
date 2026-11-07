@@ -1,5 +1,5 @@
 import { SettingsChartLoading } from '@canopy/ui-app/settings/pages';
-import { Heading } from '@canopy/ui-shared/components';
+import { Heading, Surface } from '@canopy/ui-shared/components';
 import { useState, type JSX } from 'react';
 import {
   BusyLabel,
@@ -33,7 +33,7 @@ const SPINNER_TONES: readonly SpinnerTone[] = [
 
 function SampleAgentCard(): JSX.Element {
   return (
-    <div className="flex w-full flex-col gap-3 rounded-lg border p-4">
+    <Surface variant="outline" padding="default" gap="item" className="w-full">
       <Heading level={3} variant="title" {...SKELETON_KEEP}>
         Connected agents
       </Heading>
@@ -49,7 +49,7 @@ function SampleAgentCard(): JSX.Element {
           <Button size="compact">Open</Button>
         </div>
       ))}
-    </div>
+    </Surface>
   );
 }
 

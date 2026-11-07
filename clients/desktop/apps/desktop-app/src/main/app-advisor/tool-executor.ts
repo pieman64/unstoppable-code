@@ -1,5 +1,3 @@
-import { scriptPreferencesActionSchema } from '@canopy/agent-actions/families/settings/script-preferences';
-import { dispatchDesktopScriptPreferences } from '../agent-actions/desktop-script-preferences-port';
 import type { z } from 'zod/v4';
 import { executeShowCapabilities } from '../canopy-tools/show-capabilities';
 import {
@@ -14,9 +12,7 @@ import {
 } from '@canopy/agent-actions';
 import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
 import { validateId } from '../lib/validation';
-import { executeDesktopAgentActionTool } from '../agent-actions/desktop-surface';
 import { startSplitAgentSchema } from '../canopy-tools/definitions';
-import { dispatchDesktopEditorSetupReview } from '../agent-actions/desktop-editor-setup-port';
 import {
   chatWatcherSetupSchema,
   containsCanonicalChatWatcher,
@@ -37,6 +33,8 @@ import {
   executeLedgerInjectedTool,
   type LedgerToolsRuntime,
 } from '../canopy-tools/ledger-tools-runtime';
+import type { InterfaceToolName } from '@canopy/protocol/canopy-core';
+import { hasInterfaceTool } from '../agents/interface-tool-binding';
 import {
   appAdvisorGetScriptOutputSchema,
   appAdvisorReadPipelineYamlSchema,
@@ -54,6 +52,8 @@ import {
   watchGitHubItemsSchema,
 } from './definitions';
 import type { AppAdvisorToolRuntime } from './runtime';
+import { routeAppAdvisorAction } from './action-router';
+import { appAdvisorActionDisposition } from '@canopy/desktop-shared/lib/app-advisor-action-dispositions';
 import { projectSetupWatchersResultForProvider } from '@canopy/desktop-shared/lib/app-advisor-watchers';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { getFeatureFlagService } from '../feature-flags';
@@ -115,7 +115,7 @@ function sharedEngineActionCatalog(): readonly AgentActionCatalogEntry[] {
  * it with `projectId` and `worktreeId`; main validates the pair and passes it
  * as trusted context, separate from the Advisor chat that starts the run.
  */
-function appAdvisorPipelineRunDispatch(
+export function appAdvisorPipelineRunDispatch(
   action: AppAdvisorPipelineRunAction,
   runtime: AppAdvisorToolRuntime,
 ):
@@ -381,9 +381,11 @@ export interface AppAdvisorToolContext extends CanopyInjectedToolContext {
    * answers that this chat has no Ledger.
    */
   ledgerRuntime?: LedgerToolsRuntime;
+  /** Interface tools the calling session or route bound when it was created (CAN-4131). */
+  interfaceTools?: readonly InterfaceToolName[];
 }
 
-function getDispatchRequestId(
+export function getDispatchRequestId(
   context: { toolUseId?: string } | undefined,
 ): string | undefined {
   if (context?.toolUseId) {
@@ -404,6 +406,8 @@ export async function executeAppAdvisorTool(
   runtime: AppAdvisorToolRuntime,
   context?: AppAdvisorToolContext,
 ): Promise<CanopyInjectedToolTextResult> {
+  if (context?.interfaceTools)
+    runtime.rememberInterfaceTools(context.interfaceTools);
   if (canonicalKey === 'start_forked_agent') {
     if (runtime.deferredToolsRuntime?.providerType === 'cursor') {
       return {
@@ -568,7 +572,13 @@ export async function executeAppAdvisorTool(
       if (!parsed.success) {
         return invalidArguments('GetCurrentUiState');
       }
-      const state = await runtime.requestUiState();
+      const state = await runtime.requestUiStateForTool({
+        bound: hasInterfaceTool(
+          context?.interfaceTools,
+          'ui.get_current_ui_state',
+        ),
+        ...(context?.signal ? { signal: context.signal } : {}),
+      });
       return { text: jsonText(state) };
     }
     case 'search_actions': {
@@ -578,7 +588,15 @@ export async function executeAppAdvisorTool(
       }
       // A disconnected renderer must not suppress unrelated catalog results or
       // let stale main-process flag data imply page availability.
-      const state = await runtime.requestUiState().catch(() => undefined);
+      const state = await runtime
+        .requestUiStateForTool({
+          bound: hasInterfaceTool(
+            context?.interfaceTools,
+            'ui.get_current_ui_state',
+          ),
+          ...(context?.signal ? { signal: context.signal } : {}),
+        })
+        .catch(() => undefined);
       const featureFlags = {
         ...getFeatureFlagService().getSnapshot().values,
         ...(state?.snapshot.canopyPortal
@@ -588,13 +606,19 @@ export async function executeAppAdvisorTool(
             }
           : {}),
       };
+      // D10: without the main window's lease, list only actions that work
+      // without a window; search wide first so filtering cannot starve a page.
+      const windowBound = (
+        context?.interfaceTools ?? (await runtime.boundInterfaceTools())
+      ).includes('ui.app_advisor.present');
+      const searchInput = { ...parsed.data, limit: 50 };
       const sharedActions = searchAgentActionCatalog(
         sharedEngineActionCatalog(),
-        parsed.data,
+        searchInput,
       );
       const existing = searchAppAdvisorActions(
         {
-          ...parsed.data,
+          ...searchInput,
           availablePages: state?.snapshot.availablePages,
           // Action availability accepts boolean gates, not numeric rollout values.
           featureFlags: Object.fromEntries(
@@ -606,10 +630,17 @@ export async function executeAppAdvisorTool(
         },
         transcriptReadActionCatalog(),
       );
-      const actions = [...sharedActions.actions, ...existing.actions].slice(
-        0,
-        parsed.data.limit ?? 12,
-      );
+      const actions = [...sharedActions.actions, ...existing.actions]
+        .filter((action) => {
+          if (windowBound) return true;
+          const kind = appAdvisorActionDisposition(action.type)?.kind;
+          return (
+            kind !== 'presentation' &&
+            kind !== 'host_presentation' &&
+            kind !== 'legacy'
+          );
+        })
+        .slice(0, parsed.data.limit ?? 12);
       return {
         text: jsonText({
           ...existing,
@@ -634,86 +665,13 @@ export async function executeAppAdvisorTool(
           ),
         );
       }
-      // Shared-family actions run through the shared engine in main, without
-      // a renderer round trip.
-      if (
-        parsed.data.action.type === 'installed_items.list_status' ||
-        parsed.data.action.type === 'installed_items.set_status' ||
-        parsed.data.action.type === 'installed_items.uninstall' ||
-        parsed.data.action.type === 'experiments.set_enabled' ||
-        parsed.data.action.type === 'settings.open' ||
-        parsed.data.action.type === 'settings.ai_gateway.get' ||
-        parsed.data.action.type === 'settings.ai_gateway.connect' ||
-        parsed.data.action.type === 'settings.ai_gateway.update'
-      )
-        return executeDesktopAgentActionTool(
-          'dispatch_action',
-          { action: parsed.data.action },
-          runtime,
-          context,
-        );
-      if (parsed.data.action.type === 'pipeline.run') {
-        const dispatch = appAdvisorPipelineRunDispatch(
-          parsed.data.action,
-          runtime,
-        );
-        if ('error' in dispatch) {
-          return {
-            text: jsonText({
-              requestId: getDispatchRequestId(context),
-              ok: false,
-              error: { code: 'invalid_target', message: dispatch.error },
-            }),
-            isError: true,
-          };
-        }
-        return executeDesktopAgentActionTool(
-          'dispatch_action',
-          { action: dispatch.action },
-          dispatch.runtime,
-          context,
-        );
-      }
-      const requestId = getDispatchRequestId(context);
-      const scriptPreference = scriptPreferencesActionSchema.safeParse(
-        parsed.data.action,
-      );
-      if (scriptPreference.success) {
-        const response = await dispatchDesktopScriptPreferences(
-          scriptPreference.data,
-          runtime,
-          requestId,
-          parsed.data.expectedUiRevision,
-          context?.signal,
-        );
-        return { text: jsonText(response), isError: response.ok !== true };
-      }
-      if (parsed.data.action.type === 'navigation.open_editor_setup') {
-        const response = await dispatchDesktopEditorSetupReview(
-          parsed.data.action,
-          runtime,
-          requestId,
-          parsed.data.expectedUiRevision,
-          context?.signal,
-        );
-        return { text: jsonText(response), isError: response.ok !== true };
-      }
-      const response = context?.signal
-        ? await runtime.dispatchRendererAction(
-            parsed.data.action,
-            parsed.data.expectedUiRevision,
-            requestId,
-            context.signal,
-          )
-        : await runtime.dispatchRendererAction(
-            parsed.data.action,
-            parsed.data.expectedUiRevision,
-            requestId,
-          );
-      return {
-        text: jsonText(response),
-        isError: response.ok !== true,
-      };
+      return routeAppAdvisorAction(parsed.data.action, runtime, {
+        toolUseId: getDispatchRequestId(context),
+        ...(parsed.data.expectedUiRevision !== undefined
+          ? { expectedUiRevision: parsed.data.expectedUiRevision }
+          : {}),
+        ...(context ? { context } : {}),
+      });
     }
     case 'get_pipeline_debug_context': {
       const parsed = getPipelineDebugContextSchema.safeParse(rawArgs);

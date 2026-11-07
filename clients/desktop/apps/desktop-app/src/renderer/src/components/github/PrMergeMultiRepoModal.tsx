@@ -10,7 +10,7 @@ import type { MergePrVerifiedRepo } from '@canopy/desktop-shared/types/github';
 import { Button } from '@canopy/ui-shared';
 import { DialogModal } from '@/components/shared/DialogModal';
 import { ThinkingSpinner } from '@/components/shared/loading/spinners/ThinkingSpinner';
-import { Checkbox } from '@canopy/ui-shared/components';
+import { Checkbox, Surface } from '@canopy/ui-shared/components';
 
 interface PrMergeMultiRepoModalProps {
   /** Freshly verified per-repo PR state for every repo with an open PR. */
@@ -164,59 +164,64 @@ export const PrMergeMultiRepoModal = memo(function PrMergeMultiRepoModal({
                     ? 'Unknown unresolved'
                     : `${unresolved} unresolved`;
                 return (
-                  <li
+                  <Surface
+                    as="li"
+                    variant="group"
+                    size="small"
+                    padding="compact"
                     key={repoId ?? repo.repoName}
-                    className="flex items-center gap-3 rounded-md border bg-secondary/30 p-3"
                   >
-                    <Checkbox
-                      checked={isChecked}
-                      disabled={!isSelectable || isSubmitting}
-                      onChange={(): void => {
-                        if (repoId !== undefined) toggle(repoId);
-                      }}
-                      aria-label={`Select ${repo.repoName} pull request #${repo.prNumber} for merge`}
-                      data-testid={`pr-merge-multi-repo-checkbox-${repo.repoName}`}
-                    />
-                    <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                      <span className="truncate font-semibold">
-                        {repo.repoName}
-                      </span>
-                      <span className="self-start text-xs">
-                        <Button
-                          variant="link"
-                          onClick={(): void => handleOpenPr(repo.prUrl)}
-                        >
-                          #{repo.prNumber}
-                        </Button>
-                      </span>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-2">
-                      {unresolved !== 0 && (
-                        <span className="rounded-full bg-warning-subtle px-2 py-0.5 text-2xs font-medium fg-warning">
-                          {unresolvedLabel}
+                    <div className="flex items-center gap-3">
+                      <Checkbox
+                        checked={isChecked}
+                        disabled={!isSelectable || isSubmitting}
+                        onChange={(): void => {
+                          if (repoId !== undefined) toggle(repoId);
+                        }}
+                        aria-label={`Select ${repo.repoName} pull request #${repo.prNumber} for merge`}
+                        data-testid={`pr-merge-multi-repo-checkbox-${repo.repoName}`}
+                      />
+                      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                        <span className="truncate font-semibold">
+                          {repo.repoName}
                         </span>
-                      )}
-                      {repo.mergeable ? (
-                        <>
-                          {repo.usesMergeQueue === true && (
-                            <span
-                              className="rounded-full bg-muted px-2 py-0.5 text-2xs font-medium fg-secondary"
-                              data-testid={`pr-merge-multi-repo-queue-hint-${repo.repoName}`}
-                            >
-                              Uses a merge queue
-                            </span>
-                          )}
-                          <span className="rounded-full bg-success-subtle px-2 py-0.5 text-2xs font-medium fg-success">
-                            Ready
+                        <span className="self-start text-xs">
+                          <Button
+                            variant="link"
+                            onClick={(): void => handleOpenPr(repo.prUrl)}
+                          >
+                            #{repo.prNumber}
+                          </Button>
+                        </span>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        {unresolved !== 0 && (
+                          <span className="rounded-full bg-warning-subtle px-2 py-0.5 text-2xs font-medium fg-warning">
+                            {unresolvedLabel}
                           </span>
-                        </>
-                      ) : (
-                        <span className="rounded-full bg-muted px-2 py-0.5 text-2xs font-medium fg-secondary">
-                          {blockedReasonLabel(repo.blockedReason)}
-                        </span>
-                      )}
+                        )}
+                        {repo.mergeable ? (
+                          <>
+                            {repo.usesMergeQueue === true && (
+                              <span
+                                className="rounded-full bg-muted px-2 py-0.5 text-2xs font-medium fg-secondary"
+                                data-testid={`pr-merge-multi-repo-queue-hint-${repo.repoName}`}
+                              >
+                                Uses a merge queue
+                              </span>
+                            )}
+                            <span className="rounded-full bg-success-subtle px-2 py-0.5 text-2xs font-medium fg-success">
+                              Ready
+                            </span>
+                          </>
+                        ) : (
+                          <span className="rounded-full bg-muted px-2 py-0.5 text-2xs font-medium fg-secondary">
+                            {blockedReasonLabel(repo.blockedReason)}
+                          </span>
+                        )}
+                      </div>
                     </div>
-                  </li>
+                  </Surface>
                 );
               })}
             </ul>

@@ -2,6 +2,7 @@ import { TrackedPlanImplementationSchema } from '../../chat-plan-review';
 import { z } from 'zod';
 
 import {
+  CanopyStreamCursorSchema,
   CanopyWorkspaceScopeSchema,
   CanopyErrorPayloadSchema,
   CanopyQueryRetryDirectiveSchema,
@@ -94,6 +95,8 @@ export const CoreChatTabSummarySchema = z.object({
   usage: CoreChatTabUsageSchema.optional(),
   usageLimit: CoreChatUsageLimitSchema.optional(),
   noBillingSource: CoreChatNoBillingSourceSchema.optional(),
+  /** The chat's committed transcript revision; reread transcript pages whose revision differs (CAN-4111). */
+  transcriptRevision: z.number().int().nonnegative().optional(),
 });
 
 export const CoreChatArchiveSummarySchema = z.object({
@@ -130,6 +133,7 @@ export const CoreChatQueueSummarySchema = z.object({
       id,
       origin: z.enum(['desktop', 'portal']),
       enqueuedAtMs: z.number(),
+      revision: z.number().int().min(1).optional(),
     }),
   ),
 });
@@ -138,6 +142,8 @@ export const CoreChatSnapshotGetResultSchema = z.object({
   workspaceId: id,
   worktreeId: id,
   revision,
+  /** Resumes `core.chat.events` for this scope right after `revision` (CAN-4111). */
+  eventsCursor: CanopyStreamCursorSchema.optional(),
   tabs: z.object({
     activeTabId: z.string(),
     items: z.array(CoreChatTabSummarySchema),

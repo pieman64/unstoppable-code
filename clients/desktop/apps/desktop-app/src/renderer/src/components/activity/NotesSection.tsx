@@ -25,14 +25,6 @@ export function useNotesHeaderChrome(
   });
 }
 
-/**
- * Same app note-text glyph the notes registry entry uses
- * (`activity-sections.tsx`), so the card and its tab share one icon.
- */
-export function NoteIcon(): JSX.Element {
-  return <CentralNoteIcon size={16} />;
-}
-
 export function NotesSection({
   projectId,
   worktreeId,
@@ -43,7 +35,7 @@ export function NotesSection({
       worktreeId={worktreeId}
       kind="note"
       title="Notes"
-      icon={<NoteIcon />}
+      icon={<CentralNoteIcon size="sm" />}
       noun="note"
       mentionRepoName="Notes"
       testIdPrefix="workspace-notes"

@@ -31,6 +31,7 @@ import { registerProjectHandlers } from './projects';
 import { registerRepoHandlers } from './repos';
 import { registerCloneJobHandlers } from './clone-jobs';
 import { registerWorktreeHandlers } from './worktrees';
+import type { DaemonGitRoute } from '../canopy-runtime/daemon-git-route';
 import { registerWorktreeDiscardHandlers } from './worktree-discard';
 import { registerWorktreeDiscoveryHandlers } from './worktree-discovery';
 import { registerHomeSurfaceHandlers } from './home-surface';
@@ -211,6 +212,7 @@ export interface WindowAccessors {
 
 export interface DesktopCanopyRuntimeAccessors {
   dispatcher: DesktopCanopyDispatcher;
+  daemonGitRoute?: () => DaemonGitRoute;
   resolveCaller: (event: IpcMainInvokeEvent) => CanopyCallerDescriptor;
   resolveRelaySurface: (
     event: RendererRelayEvent,
@@ -367,7 +369,7 @@ export function registerAllIpcHandlers(
   );
   registerTelemetrySyncHandlers(getMainWindow);
   registerMcpServerHandlers(getMainWindow);
-  registerScriptHandlers(canopyRuntime);
+  registerScriptHandlers(canopyRuntime, accessors);
   registerHookHandlers(getMainWindow, canopyRuntime);
   registerOpenInHandlers();
   registerFilePreviewHandlers(
@@ -375,7 +377,7 @@ export function registerAllIpcHandlers(
     canopyRuntime.resolveCaller,
   );
   registerUpdateHandlers();
-  registerModelRegistryHandlers(getMainWindow);
+  registerModelRegistryHandlers(getMainWindow, canopyRuntime);
   registerModelHarnessAssignmentHandlers();
   if (isOllamaSupportedOnPlatform()) {
     registerOllamaHandlers(getMainWindow);

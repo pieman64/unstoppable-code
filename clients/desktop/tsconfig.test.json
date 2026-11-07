@@ -31,6 +31,8 @@
     "packages/core-transport/src/**/*.tsx",
     "packages/core-client/src/**/*.ts",
     "packages/core-client/src/**/*.tsx",
+    "packages/copilot-recipient/src/**/*.ts",
+    "packages/copilot-recipient/src/**/*.tsx",
     "packages/code-graph/src/**/*.ts",
     "packages/code-graph/src/**/*.tsx",
     "packages/desktop-shared/src/**/*.ts",

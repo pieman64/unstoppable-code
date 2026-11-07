@@ -52,11 +52,10 @@ export async function readInstalledItemPolicy(
       });
   }
   const catalog = await loadMarketplacesCacheOnly();
-  if (!catalog.success || !catalog.data)
-    throw new Error(
-      catalog.error ?? 'Installed plugin catalog is unavailable.',
-    );
-  const marketplaces = catalog.data.marketplaces;
+  let catalogAvailable = catalog.success && catalog.data !== undefined;
+  const marketplaces = catalogAvailable
+    ? (catalog.data?.marketplaces ?? [])
+    : [];
   const codexMarketplaces = marketplaces.filter((marketplace) =>
     marketplace.plugins.some((plugin) => plugin.facets?.codex),
   );
@@ -89,6 +88,8 @@ export async function readInstalledItemPolicy(
           });
       }
     }
+    const latest = await loadMarketplacesCacheOnly();
+    catalogAvailable = latest.success && latest.data !== undefined;
   }
   const canonical = (ref: InstalledItemRef): InstalledItemRef =>
     canonicalInstalledItemRef(ref, marketplaces);
@@ -102,8 +103,11 @@ export async function readInstalledItemPolicy(
   return {
     canonical,
     disabledPluginRefs,
-    hasDisabledKind: (kind): boolean => refs.some((ref) => ref.kind === kind),
+    hasDisabledKind: (kind): boolean =>
+      (kind === 'plugin' && !catalogAvailable) ||
+      refs.some((ref) => ref.kind === kind),
     isDisabled: (ref): boolean =>
+      (ref.kind === 'plugin' && !catalogAvailable) ||
       disabled.has(installedItemKey(canonical(ref))),
   };
 }

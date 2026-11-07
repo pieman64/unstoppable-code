@@ -12,9 +12,13 @@ import {
 } from '@canopy/desktop-shared/lib/codex-speed';
 import {
   admitCodexSpeed,
+  buildCodexSpeedRouteFacts,
   codexSpeedGatewayForOrigin,
   reportCodexSpeedTurnFailure,
 } from '../codex/speed-policy';
+import { resolveCodexContextWindowConfig } from '../codex/context-window';
+import type { CodexContextWindowSetting } from '@canopy/desktop-shared/lib/codex-context-window';
+import type { CodexSpeedRouteFacts } from '@canopy/desktop-shared/lib/codex-speed-availability';
 import {
   APP_ADVISOR_TOOL_REGISTRY,
   getAppAdvisorLedgerToolNames,
@@ -207,7 +211,7 @@ import {
 import { BUILTIN_APP_PLUGIN_NAME } from '../plugins/codex-plugin-compat';
 import { resolveCodexMockAppServerOverride } from '@canopy/desktop-shared/node/e2e-mock-env';
 import { getMcpHttpProxyService } from '../mcp/http-proxy-service';
-import { getObservabilityService } from '../observability';
+import { getExecutionObservabilityIngest } from '../observability/ingest';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import type { CanopyInjectedToolRuntime } from '../canopy-tools/core';
 import {
@@ -224,8 +228,9 @@ import { codexNativeMemoryThreadConfig } from '@canopy/desktop-shared/node/lib/n
 import { readLocalMemoryEnabledPreference } from '../lib/preferences-store';
 import {
   mainWindowOnlyToolSurfaces,
-  requestShowFiles,
+  requestShowFilesThroughLease,
 } from '../canopy-tools/show-files-runtime';
+import { hasInterfaceTool } from './interface-tool-binding';
 import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/generated/serde_json/JsonValue';
 import type { ThreadStartParams } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/ThreadStartParams';
 import type { CodexIngestionLagChange } from '@canopy/desktop-shared/node/codex-runtime/runtime-service';
@@ -348,6 +353,24 @@ const MAX_INCOMPATIBLE_REASONING_HISTORY_REBUILDS = 3;
 
 const CODEX_PLUGIN_RESOLUTION_RETRY_DELAYS_MS = [150, 750, 2_000, 5_000];
 const SESSION_DESTROYED_ERROR_MESSAGE = 'session_destroyed';
+
+/**
+ * The context window setting and model each client's thread was loaded
+ * with. Codex reads `model_context_window` only when a thread loads, so a
+ * change replaces the client and the next turn resumes the thread with it.
+ */
+const appliedCodexContextWindows = new WeakMap<
+  CodexAppServerClient,
+  {
+    setting: CodexContextWindowSetting | undefined;
+    model: ChatModel | undefined;
+    /**
+     * The bounds weren't known when the client was built, so the setting
+     * wasn't sent; a later turn rebuilds once they are.
+     */
+    pending?: CodexSpeedRouteFacts;
+  }
+>();
 
 interface QueuedCodexMessage {
   text: string;
@@ -1002,6 +1025,7 @@ export class CodexProvider implements AgentProvider {
     let turnPreparationController = new AbortController();
     let forceClientReleaseAfterTurn = false;
     let forceClientReleaseAfterDelegation = false;
+    let forceClientReleaseAfterBackgroundWork = false;
     let releaseClientAfterDelegation = false;
     let destroyed = false;
     let client: CodexAppServerClient | null = null;
@@ -1229,6 +1253,7 @@ export class CodexProvider implements AgentProvider {
       clearIdleTimer();
       forceClientReleaseAfterTurn = false;
       forceClientReleaseAfterDelegation = false;
+      forceClientReleaseAfterBackgroundWork = false;
       releaseClientAfterDelegation = false;
       rootThreadId = disposedClient.getThreadId() ?? rootThreadId;
       retireClientSessionOwners(disposedClient);
@@ -1236,6 +1261,23 @@ export class CodexProvider implements AgentProvider {
       if (client === disposedClient) {
         client = null;
         notifySteeringEligibilityChanged(key);
+      }
+    };
+
+    // Rebuilds the client for a changed thread config once nothing still runs
+    // on it: a turn, a managed delegation, or native background work such as
+    // a terminal, which releasing the last owner would kill.
+    const releaseClientForReload = (): void => {
+      const live = client;
+      if (!live) return;
+      if (turnInProgress) {
+        forceClientReleaseAfterTurn = true;
+      } else if (managedDelegation?.activeCount) {
+        forceClientReleaseAfterDelegation = true;
+      } else if (hasLiveCodexBackgroundWork(live)) {
+        forceClientReleaseAfterBackgroundWork = true;
+      } else {
+        disposeClient(live);
       }
     };
 
@@ -1298,7 +1340,9 @@ export class CodexProvider implements AgentProvider {
       } else if (!turnInProgress) {
         // A completion snapshot can be observed while the raw item event is
         // still being projected by the client. Defer a pending idle release
-        // until after that event has had a chance to reach the session.
+        // until after that event has had a chance to reach the session. A
+        // reload waiting on this work runs at the next send or turn end, or
+        // with that idle release.
         scheduleIdleClientRelease();
       }
     };
@@ -1343,21 +1387,17 @@ export class CodexProvider implements AgentProvider {
       turnCancelling = false;
       if (forceClientReleaseAfterTurn) {
         forceClientReleaseAfterTurn = false;
-        if (managedDelegation?.activeCount) {
-          forceClientReleaseAfterDelegation = true;
-        } else {
-          const clientToDispose = client;
-          if (clientToDispose) disposeClient(clientToDispose);
-        }
+        releaseClientForReload();
       } else if (
-        forceClientReleaseAfterDelegation &&
-        !managedDelegation?.activeCount
+        (forceClientReleaseAfterDelegation &&
+          !managedDelegation?.activeCount) ||
+        forceClientReleaseAfterBackgroundWork
       ) {
-        // The delegation drained during this turn, so its drain callback
-        // could not rebuild the client; do it now that the turn is over.
+        // The delegation or background work may have drained during this
+        // turn, so its drain callback could not rebuild the client; do it now
+        // that the turn is over.
         forceClientReleaseAfterDelegation = false;
-        const clientToDispose = client;
-        if (clientToDispose) disposeClient(clientToDispose);
+        releaseClientForReload();
       } else if (releaseClientAfterDelegation) {
         releaseIdleClient();
       } else if (!destroyed) {
@@ -1561,6 +1601,33 @@ export class CodexProvider implements AgentProvider {
         setRequestedCodexSpeed(codexSpeedFromFastMode(enabled));
         return Promise.resolve();
       },
+      async setContextWindow(setting): Promise<void> {
+        const next: ResolvedAgentModelConfig = { ...currentModelConfig };
+        delete next.contextWindow;
+        if (setting !== undefined) next.contextWindow = setting;
+        currentModelConfig = next;
+        const live = client;
+        if (!live) return;
+        const applied = appliedCodexContextWindows.get(live);
+        const usesModelDefault =
+          setting === undefined || setting === 'model-default';
+        let unchanged = applied
+          ? (applied.setting ?? 'model-default') ===
+              (setting ?? 'model-default') &&
+            (usesModelDefault || applied.model === currentModel)
+          : usesModelDefault;
+        // The setting wasn't sent for want of bounds; rebuild only once they
+        // resolve, so an unreadable catalog doesn't reload every turn.
+        if (unchanged && applied?.pending) {
+          unchanged = !(
+            await resolveCodexContextWindowConfig(setting, applied.pending)
+          ).resolved;
+        }
+        if (unchanged || client !== live) return;
+        // The bounds belong to the model, so a model change with a
+        // non-default window reloads the thread too.
+        releaseClientForReload();
+      },
       setCodexProposalMode(mode: 'optional' | 'required'): Promise<void> {
         currentProposalMode = mode;
         return Promise.resolve();
@@ -1596,14 +1663,7 @@ export class CodexProvider implements AgentProvider {
             preparedInvocationState.threadConfig,
             prepared.codexConfig,
           );
-          if (turnInProgress) {
-            forceClientReleaseAfterTurn = true;
-          } else if (managedDelegation?.activeCount) {
-            forceClientReleaseAfterDelegation = true;
-          } else {
-            const clientToDispose = client;
-            if (clientToDispose) disposeClient(clientToDispose);
-          }
+          releaseClientForReload();
         }
       },
     };
@@ -2166,8 +2226,7 @@ export class CodexProvider implements AgentProvider {
             if (count !== 0) return;
             if (forceClientReleaseAfterDelegation && !turnInProgress) {
               forceClientReleaseAfterDelegation = false;
-              const clientToDispose = client;
-              if (clientToDispose) disposeClient(clientToDispose);
+              releaseClientForReload();
             } else if (releaseClientAfterDelegation) {
               releaseIdleClient();
             }
@@ -2362,7 +2421,7 @@ export class CodexProvider implements AgentProvider {
         | 'continued';
       error?: string;
     }): void => {
-      getObservabilityService().recordSessionDiagnostic({
+      getExecutionObservabilityIngest().recordSessionDiagnostic({
         version: 1,
         timestamp: new Date().toISOString(),
         kind: diagnostic.kind,
@@ -2917,23 +2976,27 @@ export class CodexProvider implements AgentProvider {
           ...(opts.assistantMode !== 'app-advisor' &&
           opts.assistantMode !== 'pipeline-editor'
             ? {
-                showFiles: (files) =>
-                  requestShowFiles(
-                    {
-                      files,
-                      target: {
-                        projectId: opts.projectId,
-                        worktreeId: opts.worktreeId,
-                      },
-                      origin: {
-                        projectId: opts.projectId,
-                        worktreeId: opts.worktreeId,
-                        chatTabId: opts.chatId,
-                      },
-                      cwd: opts.cwd,
-                    },
-                    mainWindowOnlyToolSurfaces(getWindow),
-                  ),
+                ...(hasInterfaceTool(opts.interfaceTools, 'ui.show_files')
+                  ? {
+                      showFiles: (files) =>
+                        requestShowFilesThroughLease(
+                          {
+                            files,
+                            target: {
+                              projectId: opts.projectId,
+                              worktreeId: opts.worktreeId,
+                            },
+                            origin: {
+                              projectId: opts.projectId,
+                              worktreeId: opts.worktreeId,
+                              chatTabId: opts.chatId,
+                            },
+                            cwd: opts.cwd,
+                          },
+                          mainWindowOnlyToolSurfaces(getWindow),
+                        ),
+                    }
+                  : {}),
                 getFileComments: ({ threadId }) =>
                   getFileCommentsInSession({
                     projectId: opts.projectId,
@@ -3010,6 +3073,7 @@ export class CodexProvider implements AgentProvider {
           includeCodeGraph: codeGraphToolsAdvertised,
           includeChatVisuals,
           includeLedger: ledger.tools !== null,
+          interfaceTools: opts.interfaceTools ?? [],
           isCodeReview,
           toolSchemaProfile,
         });
@@ -3024,6 +3088,28 @@ export class CodexProvider implements AgentProvider {
           retired: false,
         };
         const retainedExecutionUserMessageId = getLastExecutionUserMessageId();
+        const contextWindowModel = getModel() ?? opts.model;
+        const contextWindowSetting = getModelConfig().contextWindow;
+        const contextWindowRoute = buildCodexSpeedRouteFacts({
+          selectedModel: contextWindowModel ?? null,
+          runtimeModel:
+            preparedInvocationState.runtimeModel ?? contextWindowModel ?? null,
+          harness: 'codex',
+          providerType: this.providerType,
+          gateway: aiCreditsRoutingApplied
+            ? codexSpeedGatewayForOrigin(
+                resolveGatewayModelEntry(contextWindowModel)?.origin,
+              )
+            : null,
+          codexConfig: preparedInvocationState.threadConfig ?? null,
+          environment: preparedInvocationState.extraEnv,
+          mockProvider: Boolean(resolveCodexMockAppServerOverride()),
+        });
+        const contextWindow = await resolveCodexContextWindowConfig(
+          contextWindowSetting,
+          contextWindowRoute,
+        );
+        getTurnPreparationSignal().throwIfAborted();
         let constructingClient: CodexAppServerClient | null = null;
         const nextClient = new CodexAppServerClient({
           cwd: opts.cwd,
@@ -3056,14 +3142,16 @@ export class CodexProvider implements AgentProvider {
               chatId: opts.chatId,
             },
             (diagnostic) => {
-              getObservabilityService().recordSessionDiagnostic(diagnostic);
+              getExecutionObservabilityIngest().recordSessionDiagnostic(
+                diagnostic,
+              );
             },
           ),
           onSteeringEligibilityChanged: (): void => {
             onClientSteeringEligibilityChanged(constructingClient);
           },
           onIngestionLagChange: (change: CodexIngestionLagChange): void => {
-            getObservabilityService().recordSessionDiagnostic({
+            getExecutionObservabilityIngest().recordSessionDiagnostic({
               version: 1,
               timestamp: new Date().toISOString(),
               kind: 'ingestion_lag',
@@ -3114,6 +3202,7 @@ export class CodexProvider implements AgentProvider {
             ),
           threadConfig: {
             ...preparedInvocationState.threadConfig,
+            ...contextWindow.config,
             'features.goals': false,
             ...(managedDelegation
               ? {
@@ -3314,6 +3403,7 @@ export class CodexProvider implements AgentProvider {
                   {
                     ...requestOptions,
                     ...(ledger.tools ? { ledgerRuntime: ledger.tools } : {}),
+                    interfaceTools: opts.interfaceTools ?? [],
                   },
                 )
               : opts.assistantMode === 'pipeline-editor' &&
@@ -3368,6 +3458,11 @@ export class CodexProvider implements AgentProvider {
           },
         });
         constructingClient = nextClient;
+        appliedCodexContextWindows.set(nextClient, {
+          setting: contextWindowSetting,
+          model: contextWindowModel,
+          ...(contextWindow.resolved ? {} : { pending: contextWindowRoute }),
+        });
         ingestionLagOwner.client = nextClient;
         registerIngestionLagOwner(nextClient, ingestionLagOwner);
         turnState.recordSessionEvent({
@@ -3479,7 +3574,7 @@ export class CodexProvider implements AgentProvider {
                 ? undefined
                 : resolveModelIdForGatewayId(turnGatewayRoute.gatewayModel);
             if (servedModel !== undefined && servedModel !== pickedModel) {
-              getObservabilityService().setChatTurnServedModel(
+              getExecutionObservabilityIngest().setChatTurnServedModel(
                 buildSessionKey(opts.projectId, opts.worktreeId, opts.chatId),
                 servedModel,
               );
@@ -3703,7 +3798,7 @@ export class CodexProvider implements AgentProvider {
               !hasRetriedUnknownDynamicTool
             ) {
               hasRetriedUnknownDynamicTool = true;
-              getObservabilityService().recordSessionDiagnostic({
+              getExecutionObservabilityIngest().recordSessionDiagnostic({
                 version: 1,
                 timestamp: new Date().toISOString(),
                 kind: 'phase_slow',

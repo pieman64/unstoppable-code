@@ -218,7 +218,7 @@ export function HomeSection({
                 {
                   id: 'hide',
                   label: 'Hide section',
-                  icon: <EyeOffIcon width={16} height={16} aria-hidden />,
+                  icon: <EyeOffIcon size="sm" aria-hidden />,
                   testId: `home-section-hide-${sectionId}`,
                   onSelect: (): void => {
                     if (context) context.hide(sectionId);

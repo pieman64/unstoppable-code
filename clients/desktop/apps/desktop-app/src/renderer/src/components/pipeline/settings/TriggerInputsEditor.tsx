@@ -18,7 +18,7 @@ import { TextAreaField } from '../shared/TextAreaField';
 import { SelectField } from '../shared/SelectField';
 import { ToggleField } from '../shared/ToggleField';
 import { Tooltip } from '@canopy/ui-shared';
-import { Button, Heading } from '@canopy/ui-shared/components';
+import { Button, Heading, Surface } from '@canopy/ui-shared/components';
 import { CloseIcon as AppCatalogCloseIcon } from '@canopy/ui-shared/icons/AppIcons';
 
 const TRIGGER_LABELS: Record<PipelineTriggerType, string> = {
@@ -189,201 +189,203 @@ function InputDefEditor({
   }
 
   return (
-    <div className="rounded-md border bg-secondary/30 p-3 space-y-3">
-      <div className="flex gap-2 items-start">
-        <div className="flex-1">
-          <FormField label="Name" error={nameError}>
-            <TextField
-              value={nameDraft}
-              onChange={(e) => setNameDraft(e.target.value)}
-              onBlur={commitName}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  (e.target as HTMLInputElement).blur();
-                }
-              }}
-              placeholder="input_name"
+    <Surface variant="group" size="small" padding="compact">
+      <div className="space-y-3">
+        <div className="flex gap-2 items-start">
+          <div className="flex-1">
+            <FormField label="Name" error={nameError}>
+              <TextField
+                value={nameDraft}
+                onChange={(e) => setNameDraft(e.target.value)}
+                onBlur={commitName}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    (e.target as HTMLInputElement).blur();
+                  }
+                }}
+                placeholder="input_name"
+                disabled={readonly}
+              />
+            </FormField>
+          </div>
+          {!readonly && (
+            <Tooltip label="Remove input">
+              <Button
+                variant="ghost"
+                size="compact"
+                iconOnly
+                onClick={onRemove}
+                aria-label="Remove input"
+                className="mt-6"
+              >
+                <AppCatalogCloseIcon size="sm" />
+              </Button>
+            </Tooltip>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <FormField label="Type">
+            <SelectField
+              value={type}
+              onChange={(e) => updateType(e.target.value as PipelineInputType)}
+              options={INPUT_TYPE_OPTIONS}
               disabled={readonly}
             />
           </FormField>
+          <FormField label="Required">
+            <div className="pt-1">
+              <ToggleField
+                checked={def.required ?? false}
+                onChange={(checked) =>
+                  onChange({
+                    ...def,
+                    required: checked ? true : undefined,
+                  })
+                }
+                disabled={readonly}
+                label="Required"
+              />
+            </div>
+          </FormField>
         </div>
-        {!readonly && (
-          <Tooltip label="Remove input">
-            <Button
-              variant="ghost"
-              size="compact"
-              iconOnly
-              onClick={onRemove}
-              aria-label="Remove input"
-              className="mt-6"
-            >
-              <AppCatalogCloseIcon width="14" height="14" />
-            </Button>
-          </Tooltip>
-        )}
-      </div>
 
-      <div className="grid grid-cols-2 gap-2">
-        <FormField label="Type">
-          <SelectField
-            value={type}
-            onChange={(e) => updateType(e.target.value as PipelineInputType)}
-            options={INPUT_TYPE_OPTIONS}
+        <FormField label="Description">
+          <TextAreaField
+            value={def.description ?? ''}
+            onChange={(e) =>
+              onChange({
+                ...def,
+                description: e.target.value || undefined,
+              })
+            }
+            rows={2}
+            placeholder="Shown to users in the run dialog"
             disabled={readonly}
           />
         </FormField>
-        <FormField label="Required">
-          <div className="pt-1">
-            <ToggleField
-              checked={def.required ?? false}
-              onChange={(checked) =>
+
+        {type === 'choice' && (
+          <FormField
+            label="Options"
+            hint="One per line. Shown in a dropdown at run time."
+          >
+            <TextAreaField
+              value={(def.options ?? []).join('\n')}
+              onChange={(e) => {
+                const options = e.target.value
+                  .split('\n')
+                  .map((s) => s.trim())
+                  .filter((s) => s.length > 0);
                 onChange({
                   ...def,
-                  required: checked ? true : undefined,
+                  options: options.length > 0 ? options : [],
+                });
+              }}
+              rows={3}
+              disabled={readonly}
+            />
+          </FormField>
+        )}
+
+        {type === 'number' && (
+          <div className="grid grid-cols-2 gap-2">
+            <FormField label="Min">
+              <TextField
+                type="number"
+                value={def.min ?? ''}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  const parsed = raw === '' ? undefined : Number(raw);
+                  onChange({
+                    ...def,
+                    min:
+                      parsed === undefined || Number.isNaN(parsed)
+                        ? undefined
+                        : parsed,
+                  });
+                }}
+                disabled={readonly}
+              />
+            </FormField>
+            <FormField label="Max">
+              <TextField
+                type="number"
+                value={def.max ?? ''}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  const parsed = raw === '' ? undefined : Number(raw);
+                  onChange({
+                    ...def,
+                    max:
+                      parsed === undefined || Number.isNaN(parsed)
+                        ? undefined
+                        : parsed,
+                  });
+                }}
+                disabled={readonly}
+              />
+            </FormField>
+          </div>
+        )}
+
+        <FormField
+          label="Default"
+          hint={type === 'json' ? JSON_INPUT_HELPER_TEXT : undefined}
+        >
+          {type === 'json' ? (
+            <JsonDefaultField
+              name={name}
+              def={def}
+              onChange={onChange}
+              readonly={readonly}
+            />
+          ) : type === 'boolean' ? (
+            <SelectField
+              value={defaultToString(def.default)}
+              onChange={(e) =>
+                onChange({
+                  ...def,
+                  default: coerceDefault(e.target.value, 'boolean'),
                 })
               }
+              options={[
+                { value: 'true', label: 'True' },
+                { value: 'false', label: 'False' },
+              ]}
+              placeholder="(unset)"
               disabled={readonly}
-              label="Required"
             />
-          </div>
+          ) : type === 'choice' && def.options && def.options.length > 0 ? (
+            <SelectField
+              value={defaultToString(def.default)}
+              onChange={(e) =>
+                onChange({
+                  ...def,
+                  default: coerceDefault(e.target.value, 'choice'),
+                })
+              }
+              options={def.options.map((opt) => ({ value: opt, label: opt }))}
+              placeholder="(unset)"
+              disabled={readonly}
+            />
+          ) : (
+            <TextField
+              type={type === 'number' ? 'number' : 'text'}
+              value={defaultToString(def.default)}
+              onChange={(e) =>
+                onChange({
+                  ...def,
+                  default: coerceDefault(e.target.value, type),
+                })
+              }
+              placeholder="(unset)"
+              disabled={readonly}
+            />
+          )}
         </FormField>
       </div>
-
-      <FormField label="Description">
-        <TextAreaField
-          value={def.description ?? ''}
-          onChange={(e) =>
-            onChange({
-              ...def,
-              description: e.target.value || undefined,
-            })
-          }
-          rows={2}
-          placeholder="Shown to users in the run dialog"
-          disabled={readonly}
-        />
-      </FormField>
-
-      {type === 'choice' && (
-        <FormField
-          label="Options"
-          hint="One per line. Shown in a dropdown at run time."
-        >
-          <TextAreaField
-            value={(def.options ?? []).join('\n')}
-            onChange={(e) => {
-              const options = e.target.value
-                .split('\n')
-                .map((s) => s.trim())
-                .filter((s) => s.length > 0);
-              onChange({
-                ...def,
-                options: options.length > 0 ? options : [],
-              });
-            }}
-            rows={3}
-            disabled={readonly}
-          />
-        </FormField>
-      )}
-
-      {type === 'number' && (
-        <div className="grid grid-cols-2 gap-2">
-          <FormField label="Min">
-            <TextField
-              type="number"
-              value={def.min ?? ''}
-              onChange={(e) => {
-                const raw = e.target.value;
-                const parsed = raw === '' ? undefined : Number(raw);
-                onChange({
-                  ...def,
-                  min:
-                    parsed === undefined || Number.isNaN(parsed)
-                      ? undefined
-                      : parsed,
-                });
-              }}
-              disabled={readonly}
-            />
-          </FormField>
-          <FormField label="Max">
-            <TextField
-              type="number"
-              value={def.max ?? ''}
-              onChange={(e) => {
-                const raw = e.target.value;
-                const parsed = raw === '' ? undefined : Number(raw);
-                onChange({
-                  ...def,
-                  max:
-                    parsed === undefined || Number.isNaN(parsed)
-                      ? undefined
-                      : parsed,
-                });
-              }}
-              disabled={readonly}
-            />
-          </FormField>
-        </div>
-      )}
-
-      <FormField
-        label="Default"
-        hint={type === 'json' ? JSON_INPUT_HELPER_TEXT : undefined}
-      >
-        {type === 'json' ? (
-          <JsonDefaultField
-            name={name}
-            def={def}
-            onChange={onChange}
-            readonly={readonly}
-          />
-        ) : type === 'boolean' ? (
-          <SelectField
-            value={defaultToString(def.default)}
-            onChange={(e) =>
-              onChange({
-                ...def,
-                default: coerceDefault(e.target.value, 'boolean'),
-              })
-            }
-            options={[
-              { value: 'true', label: 'True' },
-              { value: 'false', label: 'False' },
-            ]}
-            placeholder="(unset)"
-            disabled={readonly}
-          />
-        ) : type === 'choice' && def.options && def.options.length > 0 ? (
-          <SelectField
-            value={defaultToString(def.default)}
-            onChange={(e) =>
-              onChange({
-                ...def,
-                default: coerceDefault(e.target.value, 'choice'),
-              })
-            }
-            options={def.options.map((opt) => ({ value: opt, label: opt }))}
-            placeholder="(unset)"
-            disabled={readonly}
-          />
-        ) : (
-          <TextField
-            type={type === 'number' ? 'number' : 'text'}
-            value={defaultToString(def.default)}
-            onChange={(e) =>
-              onChange({
-                ...def,
-                default: coerceDefault(e.target.value, type),
-              })
-            }
-            placeholder="(unset)"
-            disabled={readonly}
-          />
-        )}
-      </FormField>
-    </div>
+    </Surface>
   );
 }
 

@@ -181,6 +181,7 @@ function desktopLimits(): ExecutionAccountingLimits {
   const thresholds = buildThresholds();
   return {
     maxActive: { pipeline: limits.maxActivePipelineExecutions },
+    maxActiveChatTurns: limits.maxActiveChatTurns,
     memoryGuardEnabled: limits.memoryPressureGuardEnabled,
     warningMemoryBytes: thresholds.warningMemoryBytes,
     criticalMemoryBytes: thresholds.criticalMemoryBytes,

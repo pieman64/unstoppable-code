@@ -18,6 +18,11 @@ import { useAppAdvisorStore } from '@/stores/appAdvisorStore';
 import { useCurrentUiStateStore } from '@/stores/currentUiStateStore';
 import { showFilesInRenderer } from '@/lib/show-files';
 import {
+  registerInterfaceTools,
+  unregisterAllInterfaceTools,
+} from '@/client/interface-tools-client';
+import { APP_ADVISOR_PRESENTATION_ACTION_TYPES } from '@canopy/desktop-shared/lib/app-advisor-action-dispositions';
+import {
   onTurnFileViewerClosed,
   revealTurnFileTarget,
 } from '@/lib/turn-file-viewer';
@@ -103,9 +108,16 @@ function RuntimeBridge({
           useAppAdvisorStore.getState().dismissQuestion(requestId);
         },
       ) ?? ((): undefined => undefined);
+    void registerInterfaceTools(
+      surface === 'main'
+        ? ['ui.app_advisor.present', 'ui.get_current_ui_state', 'ui.show_files']
+        : ['ui.app_advisor.show_files'],
+      `interface-tools:${surface}:${crypto.randomUUID()}`,
+    );
     return (): void => {
       disposeRequest();
       disposeCancellation();
+      void unregisterAllInterfaceTools();
       closeDisposers.forEach((dispose) => dispose());
       closeDisposers.clear();
     };
@@ -204,6 +216,23 @@ function RuntimeBridge({
       };
     }
     if (request.kind === 'dispatch_action') {
+      if (
+        request.interfaceToolCall === true &&
+        !APP_ADVISOR_PRESENTATION_ACTION_TYPES.has(request.action.type) &&
+        !(
+          request.action.type === 'worktree-chat.open_tab' &&
+          request.action.chatId
+        )
+      )
+        return {
+          requestId: request.requestId,
+          ok: false,
+          error: {
+            code: 'unsupported_action',
+            message:
+              'Only navigation, panel and window actions run through this tool.',
+          },
+        };
       const browserAction = isBrowserAction(request.action);
       if (surface !== 'main' && !browserAction) {
         return surfaceUnavailableResponse(

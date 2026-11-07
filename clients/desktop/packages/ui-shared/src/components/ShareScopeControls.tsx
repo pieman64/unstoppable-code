@@ -622,7 +622,7 @@ function SelectionIndicator({ selected }: { selected: boolean }): JSX.Element {
       {/* Rendered only when selected: there is no `fg-transparent` token, and
           hiding the glyph behind a color would be one theme change away from
           a check mark on every unselected row. */}
-      {selected && <CheckIcon width={10} height={10} />}
+      {selected && <CheckIcon size="sm" />}
     </span>
   );
 }

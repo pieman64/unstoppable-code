@@ -453,29 +453,63 @@ describe('requirements', () => {
   });
 });
 
-describe('unsupported hosts', () => {
+describe('host and addon boundaries', () => {
   it.each(['linux', 'win32'] as const)(
-    'refuses %s without loading',
-    async (os) => {
-      const services = createPeerIdentityServices({
-        os,
-        nativePath: '/missing.node',
-      });
-      expect(thrown(() => services.claimLauncherChannel())).toEqual(
-        typed('capability_unavailable'),
-      );
-      await expect(
-        createOwnedChildServices({
+    'keeps Darwin peer-identity claims unavailable on %s without loading',
+    (os) => {
+      const dlopen = jest.spyOn(process, 'dlopen');
+      try {
+        const services = createPeerIdentityServices({
           os,
           nativePath: '/missing.node',
+        });
+        expect(thrown(() => services.claimLauncherChannel())).toEqual(
+          typed('capability_unavailable'),
+        );
+        expect(dlopen).not.toHaveBeenCalled();
+      } finally {
+        dlopen.mockRestore();
+      }
+    },
+  );
+
+  it('validates Linux channel executables before loading without granting Darwin claims', async () => {
+    const dlopen = jest.spyOn(process, 'dlopen');
+    try {
+      await expect(
+        createOwnedChildServices({
+          os: 'linux',
+          nativePath: '/missing.node',
+        }).spawnWithChannel({
+          executable: 'relative',
+          args: [],
+          environment: {},
+        }),
+      ).rejects.toMatchObject({ code: 'invalid_argument' });
+      expect(dlopen).not.toHaveBeenCalled();
+    } finally {
+      dlopen.mockRestore();
+    }
+  });
+
+  it('validates Windows channel executables as drive/UNC paths before loading, without granting Darwin claims', async () => {
+    const dlopen = jest.spyOn(process, 'dlopen');
+    try {
+      await expect(
+        createOwnedChildServices({
+          os: 'win32',
+          nativePath: 'C:\\missing.node',
         }).spawnWithChannel({
           executable: '/bin/true',
           args: [],
           environment: {},
         }),
-      ).rejects.toMatchObject({ code: 'capability_unavailable' });
-    },
-  );
+      ).rejects.toMatchObject({ code: 'invalid_argument' });
+      expect(dlopen).not.toHaveBeenCalled();
+    } finally {
+      dlopen.mockRestore();
+    }
+  });
 
   it.each([
     ['missing', '/nonexistent/core-peer-identity.node'],
@@ -1242,10 +1276,12 @@ describe('consumer boundary', () => {
     const hits = ['apps', 'packages', 'scripts'].flatMap(scan).sort()
       .filter(Boolean)
       .filter((file) => !file.startsWith('packages/core-platform/'))
-      // The closure test checks the daemon's host-only native composition.
+      // Named fixtures exercise host-only composition, not production consumers.
       .filter(
         (file) =>
-          file !== 'apps/core-daemon/src/__tests__/closure-sources.test.ts',
+          file !== 'apps/core-daemon/src/__tests__/closure-sources.test.ts' &&
+          file !==
+            'apps/desktop-app/src/main/canopy-runtime/__tests__/migration-channel.test.ts',
       );
     // Exact membership excludes CLI, renderer, preload, agent, Portal, relay and remote exposure.
     expect(hits).toEqual([

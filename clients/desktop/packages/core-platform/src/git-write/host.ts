@@ -1,12 +1,16 @@
 import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
-import type { PlatformOperatingSystem } from '@canopy/core-runtime';
+import {
+  CanopyOperationError,
+  type PlatformOperatingSystem,
+} from '@canopy/core-runtime';
 import {
   GitRepositoryWriteError,
   type GitChildEnvironment,
   type GitRepositoryWrite,
   type GitRepositoryWriteOutput,
   type GitRepositoryWritePort,
+  type GitHubCredentialLeasePort,
 } from '@canopy/core-runtime/node/git';
 import {
   isHostAbsolute,
@@ -84,6 +88,38 @@ export function gitWriteCommandFor(
   let args: readonly string[];
   let timeoutMs: number | undefined;
   switch (kind) {
+    case 'head-sha':
+      args = ['rev-parse', '--verify', 'HEAD'];
+      break;
+    case 'tracking-head-sha':
+      args = [
+        'rev-parse',
+        '--verify',
+        `refs/remotes/origin/${refValue(field('branch'))}`,
+      ];
+      break;
+    case 'stage-all':
+      args = ['add', '-A'];
+      break;
+    case 'commit-message': {
+      const message = field('message');
+      if (
+        typeof message !== 'string' ||
+        !message.trim() ||
+        message.length > 100_000 ||
+        message.includes('\0')
+      )
+        throw invalid();
+      args = ['commit', '-m', message.trim()];
+      break;
+    }
+    case 'push-head': {
+      const key = field('key');
+      if (typeof key !== 'string' || !key.trim() || key.includes('\0'))
+        throw invalid();
+      args = ['push', '-u', 'origin', 'HEAD'];
+      break;
+    }
     case 'status':
       args = ['status', '--porcelain', '--untracked-files=normal'];
       break;
@@ -180,6 +216,30 @@ export function gitWriteCommandFor(
       args = ['rev-parse', '--git-path', name];
       break;
     }
+
+    case 'merge-worktree-list':
+      args = ['worktree', 'list', '--porcelain'];
+      break;
+    case 'merge-worktree-add':
+    case 'merge-worktree-remove': {
+      const path = field('path');
+      if (typeof path !== 'string' || !isHostAbsolute('linux', path))
+        throw invalid();
+      args =
+        kind === 'merge-worktree-add'
+          ? ['worktree', 'add', path, refValue(field('branch'))]
+          : ['worktree', 'remove', '--force', path];
+      break;
+    }
+    case 'merge-local':
+      args = ['merge', '--no-edit', refValue(field('branch'))];
+      break;
+    case 'merge-abort':
+      args = ['merge', '--abort'];
+      break;
+    case 'merge-head':
+      args = ['rev-parse', 'HEAD'];
+      break;
     case 'stash-list':
       args = ['stash', 'list'];
       break;
@@ -205,6 +265,8 @@ export function gitWriteCommandFor(
 
 export interface GitWriteHostOptions {
   readonly os: PlatformOperatingSystem;
+  /** Daemon-owned credential authority; no token is supplied by the peer. */
+  readonly githubLeases?: GitHubCredentialLeasePort;
   /**
    * Daemon's own startup env after claim-marker removal. A request's own
    * forwarded environment replaces it for that command only (CAN-5496).
@@ -250,6 +312,39 @@ function environmentOf(source: unknown): GitReadEnvironment | null {
   } catch {
     return null;
   }
+}
+
+function credentialRefusal(): CanopyOperationError {
+  return new CanopyOperationError({
+    kind: 'permission_denied',
+    message: 'The Git credential lease was refused.',
+    retry: { kind: 'never' },
+  });
+}
+
+function hasForwardedCredential(environment: GitChildEnvironment): boolean {
+  for (const [key, value] of Object.entries(environment)) {
+    const name = key.toUpperCase();
+    if (
+      name === 'GH_TOKEN' ||
+      name === 'GITHUB_TOKEN' ||
+      name.includes('ASKPASS')
+    )
+      return true;
+    if (
+      name === 'GIT_CONFIG_PARAMETERS' ||
+      name === 'GIT_CONFIG' ||
+      name === 'GIT_CONFIG_GLOBAL' ||
+      name === 'GIT_CONFIG_SYSTEM'
+    )
+      return true;
+    if (
+      /^GIT_CONFIG_KEY_\d+$/.test(name) &&
+      value?.toLowerCase().startsWith('credential.')
+    )
+      return true;
+  }
+  return false;
 }
 
 /**
@@ -387,7 +482,42 @@ export function createGitWriteHostWith(
         );
       }
       if (stopping.signal.aborted) throw new GitRepositoryWriteError('stopped');
-      return await execute(plan(executable), cwd);
+      if (write.kind !== 'push-head')
+        return await execute(plan(executable), cwd);
+      // K10: the recipient gets credentials only from the daemon authority.
+      if (forwarded !== undefined && hasForwardedCredential(forwarded))
+        throw credentialRefusal();
+      const request = {
+        purpose: 'git-push',
+        audience: { operation: 'worker.git.push', key: write.key },
+      } as const;
+      const minted = await options.githubLeases?.mint({
+        ...request,
+        expiresAt: performance.now() + 30_000,
+      });
+      if (minted?.kind !== 'minted') throw credentialRefusal();
+      try {
+        const delivered = await minted.lease.deliver(request, (material) => {
+          if (stopping.signal.aborted)
+            return Promise.reject(new GitRepositoryWriteError('stopped'));
+          const selected = plan(executable);
+          // execute spawns synchronously, while serialized lease admission holds.
+          return execute(
+            {
+              ...selected,
+              env: {
+                ...selected.env,
+                GH_TOKEN: new TextDecoder().decode(material),
+              },
+            },
+            cwd,
+          );
+        });
+        if (delivered.kind !== 'delivered') throw credentialRefusal();
+        return await delivered.value;
+      } finally {
+        minted.lease.revoke();
+      }
     } finally {
       end();
     }

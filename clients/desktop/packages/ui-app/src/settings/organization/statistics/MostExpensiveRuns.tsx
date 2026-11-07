@@ -17,6 +17,7 @@ import {
   formatTurnStatusLabel,
   turnStatusBadgeVariant,
 } from './run-display';
+import { Surface } from '@canopy/ui-shared/components';
 
 interface MostExpensiveRunsProps {
   runs: readonly TelemetryExpensiveRun[];
@@ -45,12 +46,14 @@ export function MostExpensiveRuns({
   const { blockClassName } = useSettingsPrivacy();
   if (runs.length === 0) {
     return (
-      <p
-        className="rounded-lg border border-dashed px-4 py-6 text-center text-s fg-secondary"
-        data-testid="expensive-runs-empty"
-      >
-        No sessions recorded for this range.
-      </p>
+      <Surface variant="dashed">
+        <p
+          className="px-4 py-6 text-center text-s fg-secondary"
+          data-testid="expensive-runs-empty"
+        >
+          No sessions recorded for this range.
+        </p>
+      </Surface>
     );
   }
   return (
@@ -85,59 +88,58 @@ export function MostExpensiveRuns({
           run.branchName,
         ]);
         return (
-          <li
-            key={run.sessionId}
-            className="flex items-start justify-between gap-3 rounded-lg border bg-card px-4 py-3"
-          >
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <StatusBadge
-                  variant={turnStatusBadgeVariant(run.status)}
-                  label={formatTurnStatusLabel(run.status)}
-                  dataTestId={`expensive-run-status-${run.sessionId}`}
-                />
+          <Surface as="li" variant="card" key={run.sessionId}>
+            <div className="flex items-start justify-between gap-3 px-4 py-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <StatusBadge
+                    variant={turnStatusBadgeVariant(run.status)}
+                    label={formatTurnStatusLabel(run.status)}
+                    dataTestId={`expensive-run-status-${run.sessionId}`}
+                  />
+                  <p
+                    className={cx(
+                      'truncate text-s font-medium fg-primary',
+                      blockClassName,
+                    )}
+                  >
+                    {run.label}
+                  </p>
+                </div>
                 <p
                   className={cx(
-                    'truncate text-s font-medium fg-primary',
+                    'mt-0.5 truncate text-xs fg-secondary',
                     blockClassName,
                   )}
                 >
-                  {run.label}
+                  {metaLine}
+                </p>
+                <p
+                  className="mt-0.5 truncate text-xs tabular-nums fg-secondary"
+                  title={tokenBreakdown}
+                >
+                  {detailLine}
                 </p>
               </div>
-              <p
-                className={cx(
-                  'mt-0.5 truncate text-xs fg-secondary',
-                  blockClassName,
+              <div className="flex shrink-0 items-center gap-3">
+                <span className="text-s font-semibold tabular-nums fg-primary">
+                  {formatUsd(run.totalCostUsd)}
+                </span>
+                {run.prUrl && (
+                  <a
+                    href={run.prUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-xs font-medium fg-accent hover:underline"
+                    data-testid={`expensive-run-pr-${run.sessionId}`}
+                  >
+                    PR
+                    <ExternalLink size={12} aria-hidden="true" />
+                  </a>
                 )}
-              >
-                {metaLine}
-              </p>
-              <p
-                className="mt-0.5 truncate text-xs tabular-nums fg-secondary"
-                title={tokenBreakdown}
-              >
-                {detailLine}
-              </p>
+              </div>
             </div>
-            <div className="flex shrink-0 items-center gap-3">
-              <span className="text-s font-semibold tabular-nums fg-primary">
-                {formatUsd(run.totalCostUsd)}
-              </span>
-              {run.prUrl && (
-                <a
-                  href={run.prUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 text-xs font-medium fg-accent hover:underline"
-                  data-testid={`expensive-run-pr-${run.sessionId}`}
-                >
-                  PR
-                  <ExternalLink size={12} aria-hidden="true" />
-                </a>
-              )}
-            </div>
-          </li>
+          </Surface>
         );
       })}
     </ul>

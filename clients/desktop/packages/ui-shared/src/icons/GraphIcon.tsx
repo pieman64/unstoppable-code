@@ -1,5 +1,8 @@
-import type { JSX, SVGProps } from 'react';
-import { GraphIcon as AppCatalogGraphIcon } from './AppIcons';
+import type { JSX } from 'react';
+import {
+  GraphIcon as AppCatalogGraphIcon,
+  type AppIconProps,
+} from './AppIcons';
 
 /**
  * Polyline "graph" glyph (Material Symbols `polyline`). Shared across the
@@ -7,6 +10,6 @@ import { GraphIcon as AppCatalogGraphIcon } from './AppIcons';
  * worktree-row "graph building" indicator so all code-graph surfaces read as
  * one family.
  */
-export function GraphIcon(props: SVGProps<SVGSVGElement>): JSX.Element {
-  return <AppCatalogGraphIcon width="14" height="14" {...props} />;
+export function GraphIcon(props: AppIconProps): JSX.Element {
+  return <AppCatalogGraphIcon size="sm" {...props} />;
 }

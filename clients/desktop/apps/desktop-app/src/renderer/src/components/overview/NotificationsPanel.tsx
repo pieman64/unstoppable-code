@@ -212,7 +212,7 @@ function NotificationCard({
             aria-label="Dismiss notification"
             data-testid="overview-notification-dismiss"
           >
-            <AppCatalogCloseIcon width="14" height="14" aria-hidden="true" />
+            <AppCatalogCloseIcon size="sm" aria-hidden="true" />
           </Button>
         </Tooltip>
       </div>

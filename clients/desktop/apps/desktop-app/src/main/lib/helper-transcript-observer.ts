@@ -3,13 +3,13 @@ import {
   type HelperTranscriptObserver,
   type HelperTranscriptSeed,
 } from '@canopy/desktop-shared/lib/helper-transcript';
-import { getObservabilityService } from '../observability';
+import { getExecutionObservabilityIngest } from '../observability/ingest';
 
 function seedHelperTranscript(
   taskKey: string,
   seed: HelperTranscriptSeed,
 ): void {
-  getObservabilityService().seedTranscript(taskKey, {
+  getExecutionObservabilityIngest().seedTranscript(taskKey, {
     provider: seed.provider,
     originalText: seed.originalText,
     submittedText: seed.submittedText,
@@ -29,16 +29,22 @@ export function createHelperTranscriptObserver(
       seedHelperTranscript(taskKey, seed);
     },
     appendEvent: (event): void => {
-      getObservabilityService().appendTranscriptRecord(taskKey, event);
+      getExecutionObservabilityIngest().appendTranscriptRecord(taskKey, event);
     },
     markChatMode: (chatMode): void => {
-      getObservabilityService().updateObservedTask(taskKey, { chatMode });
+      getExecutionObservabilityIngest().updateObservedTask(taskKey, {
+        chatMode,
+      });
     },
     markAttempt: (attempt): void => {
-      getObservabilityService().updateObservedTask(taskKey, { attempt });
+      getExecutionObservabilityIngest().updateObservedTask(taskKey, {
+        attempt,
+      });
     },
     markSessionId: (sdkSessionId): void => {
-      getObservabilityService().updateObservedTask(taskKey, { sdkSessionId });
+      getExecutionObservabilityIngest().updateObservedTask(taskKey, {
+        sdkSessionId,
+      });
     },
   };
 }

@@ -931,7 +931,7 @@ export function SharedCollectionDetailModal({
                 {unshareAction}
                 {showEdit && (
                   <Button size="compact" onClick={onSwitchToEdit}>
-                    <AppCatalogDocumentPencilIcon width="12" height="12" />
+                    <AppCatalogDocumentPencilIcon size="sm" />
                     Edit
                   </Button>
                 )}

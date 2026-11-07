@@ -47,7 +47,7 @@ export const CORE_CLIENT_LEASE_EVICTED = 'core.client.lease.evicted';
 export const CoreClientLeaseEvictedSchema = z.strictObject({
   leaseId: id,
   reason: z.literal('expired'),
-  releasedRegistrationCount: z.number().int().min(0).max(288),
+  releasedRegistrationCount: z.number().int().min(0).max(368),
 });
 export type CoreClientLeaseEvicted = z.output<
   typeof CoreClientLeaseEvictedSchema
@@ -65,8 +65,8 @@ export const CoreClientLeaseReleaseParamsSchema = z.strictObject({
 export const CoreClientLeaseReleaseResultSchema = z
   .object({
     released: z.boolean(),
-    releasedRegistrationCount: z.number().int().min(0).max(288),
-    failedRequestIds: z.array(id).max(32),
+    releasedRegistrationCount: z.number().int().min(0).max(368),
+    failedRequestIds: z.array(id).max(112),
   })
   .catchall(json);
 

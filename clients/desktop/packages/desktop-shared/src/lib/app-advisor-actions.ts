@@ -58,11 +58,12 @@ const portalDisplayName = REMOTE_CONTROL_LABEL;
 const portalDisplayNameInline = REMOTE_CONTROL_LABEL.toLowerCase();
 
 /**
- * Page ids that only survive as compatibility aliases opening a Settings
- * section, so the catalog never advertises them as destinations. The agent
- * should call navigation.open_settings with the section instead.
+ * Page ids that only survive as compatibility aliases opening another
+ * destination, so the catalog never advertises them. The agent should call that
+ * destination's own action instead: plugins.open_management with section mcp,
+ * or navigation.open_settings with section environment.
  */
-const SETTINGS_ALIAS_NAVIGATION_PAGES: ReadonlySet<NavigationPage> =
+const COMPATIBILITY_ALIAS_NAVIGATION_PAGES: ReadonlySet<NavigationPage> =
   new Set<NavigationPage>(['mcp-account-connections', 'environments']);
 
 export type AppAdvisorActionField = AgentActionField;
@@ -1167,11 +1168,11 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
         field(
           'page',
           Object.values(NAVIGATION_PAGE_MAP)
-            .filter((page) => !SETTINGS_ALIAS_NAVIGATION_PAGES.has(page))
+            .filter((page) => !COMPATIBILITY_ALIAS_NAVIGATION_PAGES.has(page))
             .map((page) => `'${page}'`)
             .join(' | '),
           true,
-          'Available destination page. Workflows has three tabs: workflows opens Runs, workflows-schedule opens the calendar of scheduled automations and workflows-library opens the Library of pipelines and automations. The older ids still work: automations opens Library filtered to scheduled and one-time triggers, pipelines opens Library filtered to pipeline triggers, and watchers opens Runs filtered to watchers. For compatibility, mcp-account-connections opens Account connections in MCP settings; prefer navigation.open_settings with section mcp. Likewise, environments opens Settings → Environments; prefer navigation.open_settings with section environment.',
+          'Available destination page. Workflows has three tabs: workflows opens Runs, workflows-schedule opens the calendar of scheduled automations and workflows-library opens the Library of pipelines and automations. The older ids still work: automations opens Library filtered to scheduled and one-time triggers, pipelines opens Library filtered to pipeline triggers, and watchers opens Runs filtered to watchers. For compatibility, mcp-account-connections opens MCP servers in Customize; prefer plugins.open_management with section mcp. Likewise, environments opens Settings → Environments; prefer navigation.open_settings with section environment.',
         ),
         field(
           'tab',
@@ -3041,7 +3042,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       requiredFeatureFlag:
         CLIENT_FEATURE_FLAGS.canopySharedMcpAccountConnections.key,
       summary:
-        'Connect an account MCP server from the visible MCP panel. Open mcp-account-connections and read current UI state first. Setup opens for endpoint or fresh credential entry; credentials never come from the device copy.',
+        'Connect an account MCP server from the visible Customize MCP servers surface. Open plugins.open_management with section mcp and read current UI state first. Setup opens for endpoint or fresh credential entry; credentials never come from the device copy.',
       fields: [
         field(
           'serverId',
@@ -3062,7 +3063,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       requiredFeatureFlag:
         CLIENT_FEATURE_FLAGS.canopySharedMcpAccountConnections.key,
       summary:
-        'Reconnect an account MCP server from the visible MCP panel. Open mcp-account-connections and read current UI state first. Setup opens for endpoint or fresh credential entry; credentials never come from the device copy.',
+        'Reconnect an account MCP server from the visible Customize MCP servers surface. Open plugins.open_management with section mcp and read current UI state first. Setup opens for endpoint or fresh credential entry; credentials never come from the device copy.',
       fields: [field('serverId', 'string', true, 'Visible MCP row id.')],
       example: {
         type: 'mcp.account_reconnect',
@@ -3076,7 +3077,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       requiredFeatureFlag:
         CLIENT_FEATURE_FLAGS.canopySharedMcpAccountConnections.key,
       summary:
-        'Disconnect an account MCP server from the visible MCP panel. Open mcp-account-connections and read current UI state first. Setup opens for endpoint or fresh credential entry; credentials never come from the device copy.',
+        'Disconnect an account MCP server from the visible Customize MCP servers surface. Open plugins.open_management with section mcp and read current UI state first. Setup opens for endpoint or fresh credential entry; credentials never come from the device copy.',
       fields: [field('serverId', 'string', true, 'Visible MCP row id.')],
       example: {
         type: 'mcp.account_disconnect',
@@ -3090,7 +3091,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       requiredFeatureFlag:
         CLIENT_FEATURE_FLAGS.canopySharedMcpAccountConnections.key,
       summary:
-        'Make a local MCP server available in cloud from the visible MCP panel. Open mcp-account-connections and read current UI state first. Curated servers open setup for endpoint or fresh credential entry. A custom HTTPS server opens the Move to your cloud account confirmation (mcpAccountConnections.promoteDialogOpen), which says its URL, headers, and access token move with it and lets the user clear or replace the token; nothing is sent until the user confirms. One with a header the cloud refuses or a local address stays on the device. One with more than one configuration is refused with that reason, since a move carries a single configuration.',
+        'Make a local MCP server available in cloud from the visible Customize MCP servers surface. Open plugins.open_management with section mcp and read current UI state first. Curated servers open setup for endpoint or fresh credential entry. A custom HTTPS server opens the Move to your cloud account confirmation (mcpAccountConnections.promoteDialogOpen), which says its URL, headers, and access token move with it and lets the user clear or replace the token; nothing is sent until the user confirms. One with a header the cloud refuses or a local address stays on the device. One with more than one configuration is refused with that reason, since a move carries a single configuration.',
       fields: [
         field(
           'serverId',
@@ -3111,7 +3112,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       requiredFeatureFlag:
         CLIENT_FEATURE_FLAGS.canopySharedMcpAccountConnections.key,
       summary:
-        "Open the editor for a custom cloud MCP server from the visible MCP panel, like its Edit button. Open mcp-account-connections and read current UI state first. The editor's Scope control moves the server between the cloud account and this device; each move asks the user to confirm, which mcpServerEditor.moveToDeviceDialogOpen and mcpServerEditor.moveToCloudDialogOpen report. A move to the cloud account carries the server's URL, headers, and access token. When mcpServerEditor.moveDropsStoredHeaders is true, the cloud's stored headers can't come along: the user enters them again or ticks Move without its stored headers. The user saves and confirms.",
+        "Open the editor for a custom cloud MCP server from the visible MCP panel, like its Edit button. Open plugins.open_management with section mcp and read current UI state first. The editor's Scope control moves the server between the cloud account and this device; each move asks the user to confirm, which mcpServerEditor.moveToDeviceDialogOpen and mcpServerEditor.moveToCloudDialogOpen report. A move to the cloud account carries the server's URL, headers, and access token. When mcpServerEditor.moveDropsStoredHeaders is true, the cloud's stored headers can't come along: the user enters them again or ticks Move without its stored headers. The user saves and confirms.",
       fields: [
         field(
           'serverId',
@@ -11101,7 +11102,7 @@ export function searchAppAdvisorActions<
     : undefined;
   const availablePages = Object.values(NAVIGATION_PAGE_MAP).filter(
     (page) =>
-      !SETTINGS_ALIAS_NAVIGATION_PAGES.has(page) &&
+      !COMPATIBILITY_ALIAS_NAVIGATION_PAGES.has(page) &&
       (reportedPages
         ? reportedPages.includes(page)
         : !PAGES_REQUIRING_AVAILABILITY.has(page)),

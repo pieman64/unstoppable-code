@@ -6,7 +6,7 @@
 // addon reaps it. Group signals are sent only through a validated, owned,
 // unreaped handle. Errors carry fixed text: no paths, arguments, or input.
 //
-// A launcher-channel spawn (Darwin only) also hands the child one end of a
+// A launcher-channel spawn (Darwin and Linux) also hands the child one end of a
 // socketpair as fd 3. The parent end stays in the record and never reaches JS
 // as a descriptor.
 #if defined(__linux__)
@@ -28,6 +28,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
+#include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -40,6 +41,20 @@
 #else
 #include <dirent.h>
 #include <pthread.h>
+#include <sys/syscall.h>
+#include <sys/stat.h>
+#include <sys/vfs.h>
+// UAPI constants may be newer than the build host headers. The kernel must
+// implement these options and pidfs; channel setup refuses otherwise.
+#ifndef SO_PASSPIDFD
+#define SO_PASSPIDFD 76
+#endif
+#ifndef SCM_PIDFD
+#define SCM_PIDFD 4
+#endif
+#ifndef PID_FS_MAGIC
+#define PID_FS_MAGIC 0x50494446
+#endif
 #include <stdio.h>
 #endif
 
@@ -60,8 +75,17 @@ typedef struct record {
   bool delivered;
   // Parent end of the launcher channel, or -1.
   int channel;
-  // The root's pidversion right after spawn; an exec changes it.
+  // Darwin only: the root's spawn-time pidversion; an exec changes it.
   int pidversion;
+#ifdef __linux__
+  int pidfd;
+  struct linux_image *image;
+  bool image_taken;
+  uid_t uid;
+  gid_t gid;
+  bool launcher_end;
+  bool channel_eof;
+#endif
   // Bytes read from the channel: peer evidence waits for the peer's frame.
   uint64_t received;
   struct record *next;
@@ -70,6 +94,9 @@ typedef struct record {
 // One list per load: a handle from another load or env is unrelated.
 typedef struct {
   record *head;
+#ifdef __linux__
+  bool linux_channel_ready;
+#endif
 } instance;
 
 // Process-wide, so a serial never resolves in a load that did not issue it.
@@ -86,6 +113,10 @@ static const napi_type_tag HANDLE_TAG = {0x6f776e6564636869ULL,
                                          0x6c642d68616e646cULL};
 
 typedef enum { ROOT_LOST, ROOT_RUNNING, ROOT_EXITED } root_state;
+#ifdef __linux__
+static bool linux_pidfs(int fd, struct stat *identity);
+static void linux_image_close(record *item);
+#endif
 
 static void throw_code(napi_env env, const char *code, const char *message) {
   napi_throw_error(env, code, message);
@@ -251,6 +282,11 @@ static bool reap(pid_t pid) {
 }
 
 static void close_channel(record *item) {
+#ifdef __linux__
+  linux_image_close(item);
+  if (item->pidfd >= 0) close(item->pidfd);
+  item->pidfd = -1;
+#endif
   if (item->channel < 0) return;
   close(item->channel);
   item->channel = -1;
@@ -530,7 +566,6 @@ static bool open_pipe(int fds[2]) {
   return ok;
 }
 
-#ifdef __APPLE__
 // Moves a CLOEXEC descriptor above CHANNEL_FD.
 static bool raise_fd(int *fd) {
   if (*fd > CHANNEL_FD) return true;
@@ -544,12 +579,22 @@ static bool raise_fd(int *fd) {
 // fds[0] stays with the parent, nonblocking; fds[1] becomes the child's fd 3.
 // Both ends are CLOEXEC, so no other spawn in this process inherits either.
 static bool open_channel(int fds[2]) {
+#ifdef __linux__
+  if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, fds) != 0) return false;
+#else
   if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) return false;
+#endif
   int on = 1;
   bool ok = fcntl(fds[0], F_SETFD, FD_CLOEXEC) == 0 &&
             fcntl(fds[1], F_SETFD, FD_CLOEXEC) == 0 &&
-            setsockopt(fds[0], SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof on) ==
-                0 &&
+#ifdef __APPLE__
+            setsockopt(fds[0], SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof on) == 0 &&
+#else
+            setsockopt(fds[0], SOL_SOCKET, SO_PASSCRED, &on, sizeof on) == 0 &&
+            setsockopt(fds[1], SOL_SOCKET, SO_PASSCRED, &on, sizeof on) == 0 &&
+            setsockopt(fds[0], SOL_SOCKET, SO_PASSPIDFD, &on, sizeof on) == 0 &&
+            setsockopt(fds[1], SOL_SOCKET, SO_PASSPIDFD, &on, sizeof on) == 0 &&
+#endif
             fcntl(fds[0], F_SETFL, O_NONBLOCK) == 0 && raise_fd(&fds[1]);
   if (!ok) {
     close(fds[0]);
@@ -559,6 +604,21 @@ static bool open_channel(int fds[2]) {
   return ok;
 }
 
+#ifdef __linux__
+static bool linux_probe_channel(void);
+
+// Cache success per load: the fork/reap probe is not part of each channel poll.
+// Ordinary spawn needs none of these facilities.
+static bool require_linux_channel(napi_env env, instance *inst) {
+  if (!inst->linux_channel_ready) inst->linux_channel_ready = linux_probe_channel();
+  if (!inst->linux_channel_ready)
+    throw_code(env, "ERR_OWNED_CHILD_CHANNEL_UNSUPPORTED",
+               "Linux launcher channels require stale-sender pidfds and pidfs.");
+  return inst->linux_channel_ready;
+}
+#endif
+
+#ifdef __APPLE__
 // The audit token of a live task names its pid and pidversion.
 static bool task_pidversion(pid_t pid, int *version) {
   mach_port_t name = MACH_PORT_NULL;
@@ -573,23 +633,18 @@ static bool task_pidversion(pid_t pid, int *version) {
   *version = audit_token_to_pidversion(token);
   return true;
 }
-#else
-// The launcher channel is Darwin's alone; Linux never opens one.
-static bool open_channel(int fds[2]) {
-  (void)fds;
-  return false;
-}
-
-static bool task_pidversion(pid_t pid, int *version) {
-  (void)pid;
-  (void)version;
-  return false;
-}
 #endif
 
 // A record whose handle cannot be delivered: roll the child back here.
 static napi_value fail_undelivered(napi_env env, instance *inst,
                                    record *item) {
+#ifdef __linux__
+  if (item->launcher_end) {
+    unlink_record(inst, item);
+    throw_code(env, "ERR_OWNED_CHILD_CHANNEL", "Owned child channel is unavailable.");
+    return NULL;
+  }
+#endif
   bool cleaned = rollback_blocking(item->pid);
   if (cleaned) unlink_record(inst, item);
   else close_channel(item);
@@ -644,12 +699,25 @@ static napi_value spawn_record(napi_env env, napi_callback_info info,
                (stdin_type == napi_null || (input && strlen(input) <= MAX_STDIN_BYTES));
   for (char **at = environment; valid && *at; at++)
     valid = strchr(*at, '=') != NULL && **at != '=';
+#ifdef __linux__
+  if (valid && channel && !require_linux_channel(env, data)) {
+    free(executable);
+    free_vector(args);
+    free_vector(environment);
+    free(input);
+    return NULL;
+  }
+#endif
   record *item = valid ? calloc(1, sizeof *item) : NULL;
   int fds[2] = {-1, -1};
   int pair[2] = {-1, -1};
   pid_t pid = 0;
   int spawn_error = -1;
   int version = 0;
+#ifdef __linux__
+  int pidfd = -1;
+  if (item) item->pidfd = -1;
+#endif
   bool started = false;
   if (item && (!input || open_pipe(fds)) && (!channel || open_channel(pair))) {
     posix_spawnattr_t attrs;
@@ -672,8 +740,15 @@ static napi_value spawn_record(napi_env env, napi_callback_info info,
     // waitid(WEXITED) reports a stopped root as if it had exited.
     started = spawn_error == 0;
     if (started && channel) {
+#ifdef __APPLE__
       bool captured = task_pidversion(pid, &version);
       started = kill(pid, SIGCONT) == 0 && captured;
+#else
+      // The unreaped child reserves the numeric PID while pidfd_open runs.
+      pidfd = syscall(SYS_pidfd_open, pid, 0);
+      struct stat identity;
+      started = linux_pidfs(pidfd, &identity);
+#endif
       if (!started) kill(pid, SIGKILL);
     }
     if (started && input) write_stdin(fds[1], input, strlen(input));
@@ -700,6 +775,11 @@ static napi_value spawn_record(napi_env env, napi_callback_info info,
   item->state = OWNED;
   item->channel = pair[0];
   item->pidversion = version;
+#ifdef __linux__
+  item->pidfd = pidfd;
+  item->uid = getuid();
+  item->gid = getgid();
+#endif
   item->next = inst->head;
   inst->head = item;
   if (!started) return fail_undelivered(env, inst, item);
@@ -711,13 +791,11 @@ static napi_value spawn_child(napi_env env, napi_callback_info info) {
   return spawn_record(env, info, false);
 }
 
-#ifdef __APPLE__
 // spawnChannel(executable, argv, envPairs, stdin | null) -> { handle, pid }
 // As spawn, plus the launcher channel on the child's fd 3.
 static napi_value spawn_channel(napi_env env, napi_callback_info info) {
   return spawn_record(env, info, true);
 }
-#endif
 
 // observe(handle) -> { state: 'running' | 'lost' } | { state: 'exited', code, signal }
 static napi_value observe(napi_env env, napi_callback_info info) {
@@ -860,7 +938,6 @@ static napi_value rollback_undelivered(napi_env env, napi_callback_info info) {
   return make_bool(env, complete);
 }
 
-#ifdef __APPLE__
 // Resolves (handle, ...) for a channel call; `extra` arguments follow.
 static record *channel_args(napi_env env, napi_callback_info info,
                             napi_value *extra, size_t count) {
@@ -890,6 +967,373 @@ static void channel_failed(napi_env env, record *item) {
              "Owned child channel is unavailable.");
 }
 
+#ifdef __linux__
+// pidfs (Linux 6.9+) gives every process instance a stable inode shared by
+// independently opened pidfds, including SCM_PIDFD. Anonymous pidfd inodes on
+// older kernels cannot prove equality, so the channel has no fallback there.
+static bool linux_pidfs(int fd, struct stat *identity) {
+  struct statfs fs;
+  return fd >= 0 && fstatfs(fd, &fs) == 0 && fs.f_type == PID_FS_MAGIC &&
+         fstat(fd, identity) == 0;
+}
+
+static bool linux_sender(record *item, int sender) {
+  struct stat expected, actual;
+  return linux_pidfs(item->pidfd, &expected) && linux_pidfs(sender, &actual) &&
+         expected.st_dev == actual.st_dev && expected.st_ino == actual.st_ino;
+}
+
+// pidfd is instance/liveness custody, not an exec generation or code identity.
+static bool linux_live(record *item) {
+  struct pollfd fd = {item->pidfd, POLLIN, 0};
+  int result;
+  do { result = poll(&fd, 1, 0); } while (result < 0 && errno == EINTR);
+  return item->pidfd >= 0 && result == 0;
+}
+
+// SO_PEERCRED on a socketpair identifies its creator, not its writers. Every
+// returned byte instead passes recvmsg's SCM_CREDENTIALS check. Linux splits
+// stream receives at credential boundaries, even when payloads coalesce.
+static ssize_t linux_receive(record *item, void *bytes, size_t size) {
+  union {
+    struct cmsghdr align;
+    char bytes[CMSG_SPACE(sizeof(struct ucred)) + CMSG_SPACE(sizeof(int)) +
+               CMSG_SPACE(sizeof(int) * 16)];
+  } control;
+  struct iovec vector = {bytes, size};
+  struct msghdr msg = {0};
+  msg.msg_iov = &vector;
+  msg.msg_iovlen = 1;
+  msg.msg_control = control.bytes;
+  msg.msg_controllen = sizeof control.bytes;
+  ssize_t n = recvmsg(item->channel, &msg, MSG_DONTWAIT | MSG_CMSG_CLOEXEC);
+  if (n < 0) return n;
+  bool valid = !(msg.msg_flags & (MSG_CTRUNC | MSG_TRUNC));
+  unsigned credentials = 0, pidfds = 0;
+  for (struct cmsghdr *c = CMSG_FIRSTHDR(&msg); c; c = CMSG_NXTHDR(&msg, c)) {
+    size_t remaining = msg.msg_controllen - ((char *)c - (char *)msg.msg_control);
+    if (c->cmsg_len < CMSG_LEN(0) || c->cmsg_len > remaining) {
+      valid = false;
+      break;
+    }
+    if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS) {
+      // Even refused ancillary messages transfer descriptors: close all of them.
+      size_t count = (c->cmsg_len - CMSG_LEN(0)) / sizeof(int);
+      int *fds = (int *)CMSG_DATA(c);
+      for (size_t i = 0; i < count; i++) close(fds[i]);
+      valid = false;
+    } else if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_PIDFD &&
+               c->cmsg_len == CMSG_LEN(sizeof(int))) {
+      int sender;
+      memcpy(&sender, CMSG_DATA(c), sizeof sender);
+      pidfds++;
+      bool matches = linux_sender(item, sender);
+      close(sender);
+      valid = valid && matches;
+    } else if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_CREDENTIALS &&
+               c->cmsg_len == CMSG_LEN(sizeof(struct ucred))) {
+      struct ucred cred;
+      memcpy(&cred, CMSG_DATA(c), sizeof cred);
+      credentials++;
+      // Linux translates values into the receiver's PID/user namespaces.
+      // Defaults are sender tgid and real uid/gid; explicit creds may use its
+      // own pid and real/effective/saved ids. CAP_SYS_ADMIN in the active PID
+      // namespace's owning user ns / CAP_SETUID or CAP_SETGID in the sender's
+      // user ns permit overrides; SCM_PIDFD follows that credential pid.
+      // Such capable impersonation is outside L1, not prevented by pidfd.
+      valid = valid && cred.pid == item->pid && cred.uid == item->uid &&
+              cred.gid == item->gid;
+    } else {
+      valid = false;
+    }
+  }
+  if (n > 0 && (!valid || credentials != 1 || pidfds != 1)) {
+    errno = EACCES;
+    return -1;
+  }
+  return n;
+}
+
+// SCM_PIDFD must survive reaping, not just exit (upstream Linux 6.17+).
+// Hold the expected pidfd before waitpid releases the numeric PID reservation.
+static bool linux_probe_channel(void) {
+  int pair[2] = {-1, -1};
+  if (!open_channel(pair)) return false;
+  pid_t child = fork();
+  if (child == 0) {
+    // Only async-signal-safe calls after fork in the multithreaded Node host.
+    close(pair[0]);
+    ssize_t n;
+    do { n = write(pair[1], "!", 1); } while (n < 0 && errno == EINTR);
+    _exit(n == 1 ? 0 : 1);
+  }
+  close(pair[1]);
+  bool available = false;
+  if (child > 0) {
+    record peer = {0};
+    peer.channel = pair[0];
+    peer.pid = child;
+    peer.uid = getuid();
+    peer.gid = getgid();
+    peer.pidfd = syscall(SYS_pidfd_open, child, 0);
+    int status = 0;
+    pid_t reaped;
+    do { reaped = waitpid(child, &status, 0); } while (reaped < 0 && errno == EINTR);
+    if (reaped == child && WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+      char byte = 0;
+      ssize_t n;
+      do { n = linux_receive(&peer, &byte, 1); } while (n < 0 && errno == EINTR);
+      available = n == 1 && byte == '!';
+    }
+    if (peer.pidfd >= 0) close(peer.pidfd);
+  }
+  close(pair[0]);
+  return available;
+}
+
+static napi_value channel_peer(napi_env env, napi_callback_info info) {
+  record *item = channel_args(env, info, NULL, 0);
+  if (!item) return NULL;
+  if (!linux_live(item)) return make_state(env, "refused");
+  if (!item->received) return make_state(env, "refused");
+  napi_value out = make_state(env, "connected");
+  napi_set_named_property(env, out, "pid", make_int(env, item->pid));
+  napi_set_named_property(env, out, "uid", make_int(env, item->uid));
+  napi_set_named_property(env, out, "gid", make_int(env, item->gid));
+  return out;
+}
+
+
+// L2 pins the observed ELF inode, not a pathname later reopened for hashing.
+// procfs and pidfd are bracketed to bind /proc observations to L1's instance.
+typedef struct linux_image {
+  int proc;
+  int executable;
+  struct stat file;
+  pid_t parent;
+  pid_t local_parent;
+  char start[32];
+  char boot[64];
+  char command[MAX_STRING_BYTES];
+  size_t command_size;
+} linux_image;
+
+static void linux_image_close(record *item) {
+  linux_image *image = item->image;
+  item->image = NULL;
+  if (!image) return;
+  if (image->proc >= 0) close(image->proc);
+  if (image->executable >= 0) close(image->executable);
+  free(image);
+}
+
+static ssize_t linux_read_at(int directory, const char *name, char *out, size_t capacity) {
+  int fd = openat(directory, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (fd < 0) return -1;
+  size_t total = 0;
+  while (total < capacity) {
+    ssize_t n = read(fd, out + total, capacity - total);
+    if (n < 0 && errno == EINTR) continue;
+    if (n < 0) { close(fd); return -1; }
+    if (!n) break;
+    total += (size_t)n;
+  }
+  close(fd);
+  if (total == capacity) return -1;
+  out[total] = 0;
+  return (ssize_t)total;
+}
+
+static bool linux_process_stat(int proc, pid_t *parent, char start[32]) {
+  char bytes[8192];
+  if (linux_read_at(proc, "stat", bytes, sizeof bytes) <= 0) return false;
+  // comm may contain spaces and ')'; fields start after its final ')'.
+  char *end = strrchr(bytes, ')');
+  if (!end || end[1] != ' ') return false;
+  char *save = NULL, *part = strtok_r(end + 2, " ", &save);
+  for (int field = 3; part; field++, part = strtok_r(NULL, " ", &save)) {
+    if (field == 3 && (!strcmp(part, "Z") || !strcmp(part, "X"))) return false;
+    if (field == 4) {
+      char *tail = NULL;
+      long value = strtol(part, &tail, 10);
+      if (!tail || *tail || value <= 1 || value > INT32_MAX) return false;
+      *parent = (pid_t)value;
+    }
+    if (field == 22) {
+      size_t n = strlen(part);
+      if (!n || n >= 32 || strspn(part, "0123456789") != n || !strcmp(part, "0")) return false;
+      memcpy(start, part, n + 1);
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool linux_file_same(const struct stat *a, const struct stat *b) {
+  return S_ISREG(a->st_mode) && S_ISREG(b->st_mode) && a->st_nlink && b->st_nlink &&
+    a->st_dev == b->st_dev && a->st_ino == b->st_ino && a->st_size == b->st_size &&
+    a->st_mode == b->st_mode && a->st_uid == b->st_uid && a->st_gid == b->st_gid &&
+    a->st_mtim.tv_sec == b->st_mtim.tv_sec && a->st_mtim.tv_nsec == b->st_mtim.tv_nsec &&
+    a->st_ctim.tv_sec == b->st_ctim.tv_sec && a->st_ctim.tv_nsec == b->st_ctim.tv_nsec;
+}
+
+// Detect disconnects even when no reader has observed EOF yet. Do not consume
+// queued bytes here: L1 still owns sender attribution and final-byte draining.
+static bool linux_image_channel_live(record *item) {
+  if (item->channel < 0 || item->channel_eof) return false;
+  struct pollfd fd = {item->channel, POLLRDHUP, 0};
+  int result;
+  do { result = poll(&fd, 1, 0); } while (result < 0 && errno == EINTR);
+  return result == 0;
+}
+
+static bool linux_image_current(record *item) {
+  linux_image *image = item->image;
+  if (!image || !linux_image_channel_live(item) || !item->received || !linux_live(item) ||
+      getppid() != image->local_parent) return false;
+  struct stat held, observed;
+  pid_t parent = 0;
+  char start[32], command[MAX_STRING_BYTES];
+  ssize_t n = linux_read_at(image->proc, "cmdline", command, sizeof command);
+  bool valid = n > 0 && (size_t)n == image->command_size &&
+    !memcmp(command, image->command, (size_t)n) &&
+    linux_process_stat(image->proc, &parent, start) && parent == image->parent &&
+    !strcmp(start, image->start) &&
+    fstat(image->executable, &held) == 0 &&
+    fstatat(image->proc, "exe", &observed, 0) == 0 &&
+    linux_file_same(&image->file, &held) && linux_file_same(&held, &observed);
+  // starttime/pidfd survives exec: an away-and-back exec is NOT detected.
+  return valid && linux_live(item) && linux_image_channel_live(item);
+}
+
+static napi_value linux_migration_image(napi_env env, napi_callback_info info) {
+  record *item = channel_args(env, info, NULL, 0);
+  if (!item) return NULL;
+  if (item->image_taken || item->channel_eof || !item->received || !linux_live(item)) return make_state(env, "refused");
+  item->image_taken = true;
+  linux_image *image = calloc(1, sizeof *image);
+  if (!image) return make_state(env, "refused");
+  image->proc = image->executable = -1;
+  item->image = image;
+  image->local_parent = getppid();
+  char name[64];
+  snprintf(name, sizeof name, "/proc/%d", item->pid);
+  image->proc = open(name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  struct statfs fs;
+  int peer = syscall(SYS_pidfd_open, item->pid, 0);
+  bool valid = image->proc >= 0 && fstatfs(image->proc, &fs) == 0 &&
+    fs.f_type == 0x9fa0 && linux_sender(item, peer) && linux_live(item);
+  if (peer >= 0) close(peer);
+  if (valid) image->executable = openat(image->proc, "exe", O_RDONLY | O_CLOEXEC);
+  unsigned char magic[4];
+  valid = valid && image->executable >= 0 &&
+    pread(image->executable, magic, sizeof magic, 0) == sizeof magic &&
+    !memcmp(magic, "\177ELF", sizeof magic) &&
+    fstat(image->executable, &image->file) == 0 &&
+    linux_process_stat(image->proc, &image->parent, image->start);
+  ssize_t n = valid ? linux_read_at(image->proc, "cmdline", image->command, sizeof image->command) : -1;
+  valid = valid && n > 1 && image->command[n - 1] == 0;
+  if (valid) image->command_size = (size_t)n;
+  ssize_t boot = valid ? linux_read_at(AT_FDCWD, "/proc/sys/kernel/random/boot_id", image->boot, sizeof image->boot) : -1;
+  if (boot == 37 && image->boot[36] == '\n') image->boot[36] = 0;
+  else valid = false;
+  if (!valid || !linux_image_current(item)) {
+    linux_image_close(item);
+    return make_state(env, "refused");
+  }
+  napi_value out = make_state(env, "captured"), text, command;
+  napi_set_named_property(env, out, "pid", make_int(env, item->pid));
+  napi_set_named_property(env, out, "parentPid", make_int(env, image->parent));
+  napi_set_named_property(env, out, "localPid", make_int(env, getpid()));
+  napi_set_named_property(env, out, "localParentPid", make_int(env, image->local_parent));
+  napi_set_named_property(env, out, "fd", make_int(env, image->executable));
+  napi_create_string_utf8(env, image->start, NAPI_AUTO_LENGTH, &text);
+  napi_set_named_property(env, out, "startTime", text);
+  napi_create_string_utf8(env, image->boot, NAPI_AUTO_LENGTH, &text);
+  napi_set_named_property(env, out, "bootId", text);
+  snprintf(name, sizeof name, "%llu:%llu", (unsigned long long)image->file.st_dev, (unsigned long long)image->file.st_ino);
+  napi_create_string_utf8(env, name, NAPI_AUTO_LENGTH, &text);
+  napi_set_named_property(env, out, "fileId", text);
+  napi_create_string_utf8(env, item->launcher_end ? "launcher" : "daemon", NAPI_AUTO_LENGTH, &text);
+  napi_set_named_property(env, out, "role", text);
+  napi_create_buffer_copy(env, image->command_size, image->command, NULL, &command);
+  napi_set_named_property(env, out, "command", command);
+  return out;
+}
+
+static napi_value linux_migration_current(napi_env env, napi_callback_info info) {
+  record *item = channel_args(env, info, NULL, 0);
+  return item ? make_bool(env, linux_image_current(item)) : NULL;
+}
+
+static napi_value linux_migration_close(napi_env env, napi_callback_info info) {
+  instance *inst;
+  record *item = handle_arg(env, info, &inst);
+  if (!item) return NULL;
+  linux_image_close(item);
+  return make_bool(env, true);
+}
+
+// Only a directly spawned child may adopt fd 3. The endpoint remains native,
+// nonblocking and CLOEXEC; descendants writing an explicitly passed copy fail
+// the receiver's per-receive credential comparison, including after bootstrap.
+static napi_value connect_linux_launcher(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  void *data = NULL;
+  int64_t expected = 0;
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, &data) != napi_ok ||
+      argc != 1 || !data ||
+      napi_get_value_int64(env, argv[0], &expected) != napi_ok ||
+      expected <= 1 || expected > INT32_MAX) {
+    throw_code(env, "ERR_OWNED_CHILD_ARGUMENT", "Owned child call is invalid.");
+    return NULL;
+  }
+  if (!require_linux_channel(env, data)) return NULL;
+  struct ucred creator;
+  socklen_t length = sizeof creator;
+  int type = 0;
+  socklen_t type_length = sizeof type;
+  int on = 1;
+  int pidfd = -1, channel = -1;
+  bool valid = getppid() == expected &&
+      getsockopt(CHANNEL_FD, SOL_SOCKET, SO_TYPE, &type, &type_length) == 0 &&
+      type == SOCK_STREAM &&
+      getsockopt(CHANNEL_FD, SOL_SOCKET, SO_PEERCRED, &creator, &length) == 0 &&
+      length == sizeof creator && creator.pid == expected &&
+      creator.uid == getuid() && creator.gid == getgid();
+  if (valid) pidfd = syscall(SYS_pidfd_open, (pid_t)expected, 0);
+  struct stat identity;
+  valid = valid && linux_pidfs(pidfd, &identity) && getppid() == expected;
+  if (valid) channel = fcntl(CHANNEL_FD, F_DUPFD_CLOEXEC, CHANNEL_FD + 1);
+  valid = valid && channel >= 0 &&
+      fcntl(CHANNEL_FD, F_SETFD, FD_CLOEXEC) == 0 &&
+      setsockopt(channel, SOL_SOCKET, SO_PASSCRED, &on, sizeof on) == 0 &&
+      setsockopt(channel, SOL_SOCKET, SO_PASSPIDFD, &on, sizeof on) == 0 &&
+      fcntl(channel, F_SETFL, O_NONBLOCK) == 0;
+  record *item = valid ? calloc(1, sizeof *item) : NULL;
+  if (!item) {
+    if (channel >= 0) close(channel);
+    if (pidfd >= 0) close(pidfd);
+    throw_code(env, "ERR_OWNED_CHILD_CHANNEL", "Owned child channel is unavailable.");
+    return NULL;
+  }
+  close(CHANNEL_FD);
+  item->serial = __atomic_add_fetch(&next_serial, 1, __ATOMIC_RELAXED);
+  item->pid = (pid_t)expected;
+  item->pidfd = pidfd;
+  item->uid = creator.uid;
+  item->gid = creator.gid;
+  item->channel = channel;
+  item->launcher_end = true;
+  item->state = COMMITTED;
+  instance *inst = data;
+  item->next = inst->head;
+  inst->head = item;
+  return make_handle(env, inst, item);
+}
+#endif
+
 // channelRead(handle, max) -> Buffer (empty while nothing is ready) | null at
 // end of stream. A read error closes the channel.
 static napi_value channel_read(napi_env env, napi_callback_info info) {
@@ -902,11 +1346,33 @@ static napi_value channel_read(napi_env env, napi_callback_info info) {
     throw_code(env, "ERR_OWNED_CHILD_ARGUMENT", "Owned child call is invalid.");
     return NULL;
   }
+#ifdef __linux__
+  if (item->channel_eof) return make_null(env);
+#endif
   char bytes[MAX_CHANNEL_BYTES];
   ssize_t n;
   do {
+#ifdef __APPLE__
     n = read(item->channel, bytes, (size_t)max);
+#else
+    n = linux_receive(item, bytes, (size_t)max);
+#endif
   } while (n < 0 && errno == EINTR);
+#ifdef __linux__
+  // A co-holder cannot keep a dead peer's channel pending forever. Queued
+  // attributed bytes are drained first, even after a custody query refuses.
+  if (n < 0 && errno == EAGAIN && !linux_live(item)) {
+    // The peer may have sent its last bytes between recvmsg and the death check.
+    // Once dead it cannot send again: only a second empty receive proves EOF.
+    do { n = linux_receive(item, bytes, (size_t)max); } while (n < 0 && errno == EINTR);
+    if (n < 0 && errno == EAGAIN) n = 0;
+  }
+  if (n == 0) {
+    item->channel_eof = true;
+    if (item->pidfd >= 0) close(item->pidfd);
+    item->pidfd = -1;
+  }
+#endif
   if (n == 0) return make_null(env);
   if (n < 0 && errno != EAGAIN) {
     channel_failed(env, item);
@@ -937,9 +1403,19 @@ static napi_value channel_write(napi_env env, napi_callback_info info) {
     throw_code(env, "ERR_OWNED_CHILD_ARGUMENT", "Owned child call is invalid.");
     return NULL;
   }
+#ifdef __linux__
+  if (!linux_live(item)) {
+    channel_failed(env, item);
+    return NULL;
+  }
+#endif
   ssize_t n;
   do {
+#ifdef __APPLE__
     n = write(item->channel, bytes, length);
+#else
+    n = send(item->channel, bytes, length, MSG_NOSIGNAL);
+#endif
   } while (n < 0 && errno == EINTR);
   if (n < 0 && errno != EAGAIN) {
     channel_failed(env, item);
@@ -948,6 +1424,7 @@ static napi_value channel_write(napi_env env, napi_callback_info info) {
   return make_int(env, n > 0 ? n : 0);
 }
 
+#ifdef __APPLE__
 static napi_value refused(napi_env env, const char *reason) {
   napi_value out = make_state(env, "refused"), text;
   napi_create_string_utf8(env, reason, NAPI_AUTO_LENGTH, &text);
@@ -986,12 +1463,72 @@ static napi_value channel_peer(napi_env env, napi_callback_info info) {
   return out;
 }
 
+#endif
+
 // channelClose(handle) -> true; idempotent. Reaping the root also closes it.
 static napi_value channel_close(napi_env env, napi_callback_info info) {
   instance *inst;
   record *item = handle_arg(env, info, &inst);
   if (!item) return NULL;
   close_channel(item);
+  return make_bool(env, true);
+}
+
+#ifdef __linux__
+// Node's rename() can replace an independent empty directory. Linux publication
+// needs renameat2(RENAME_NOREPLACE); never emulate it with a stat/rename pair.
+static int migration_parent(char *path, char **leaf) {
+  if (!path || path[0] != '/' || !path[1]) return -1;
+  int parent = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (parent < 0) return -1;
+  char *component = path + 1;
+  for (;;) {
+    char *slash = strchr(component, '/');
+    if (slash) *slash = 0;
+    if (!*component || !strcmp(component, ".") || !strcmp(component, "..")) break;
+    if (!slash) { *leaf = component; return parent; }
+    int child = openat(parent, component,
+      O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    close(parent);
+    if (child < 0) return -1;
+    parent = child;
+    component = slash + 1;
+  }
+  close(parent);
+  return -1;
+}
+
+static napi_value migration_rename(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value args[3];
+  char *from = NULL, *to = NULL, *identity = NULL, *from_name = NULL, *to_name = NULL;
+  int from_parent = -1, to_parent = -1;
+  bool ok = false;
+  if (napi_get_cb_info(env, info, &argc, args, NULL, NULL) != napi_ok || argc != 3) goto done;
+  from = copy_string(env, args[0]);
+  to = copy_string(env, args[1]);
+  identity = copy_string(env, args[2]);
+  if (!from || !to || !identity) goto done;
+  from_parent = migration_parent(from, &from_name);
+  to_parent = migration_parent(to, &to_name);
+  struct stat source;
+  char observed[96];
+  if (from_parent < 0 || to_parent < 0 ||
+      fstatat(from_parent, from_name, &source, AT_SYMLINK_NOFOLLOW) ||
+      !S_ISDIR(source.st_mode) || source.st_uid != geteuid()) goto done;
+  snprintf(observed, sizeof observed, "%llu:%llu",
+    (unsigned long long)source.st_dev, (unsigned long long)source.st_ino);
+  if (strcmp(observed, identity)) goto done;
+  // RENAME_NOREPLACE = 1. ENOSYS/EINVAL/unsupported filesystem fail closed.
+  ok = syscall(SYS_renameat2, from_parent, from_name, to_parent, to_name, 1) == 0;
+done:
+  if (from_parent >= 0) close(from_parent);
+  if (to_parent >= 0) close(to_parent);
+  free(from); free(to); free(identity);
+  if (!ok) {
+    throw_code(env, "ERR_MIGRATION_RENAME", "No-replace directory rename refused; preserve both trees and the journal.");
+    return NULL;
+  }
   return make_bool(env, true);
 }
 #endif
@@ -1014,7 +1551,6 @@ NAPI_MODULE_INIT() {
        inst},
       {"rollbackUndelivered", NULL, rollback_undelivered, NULL, NULL, NULL,
        napi_enumerable, inst},
-#ifdef __APPLE__
       {"spawnChannel", NULL, spawn_channel, NULL, NULL, NULL, napi_enumerable,
        inst},
       {"channelRead", NULL, channel_read, NULL, NULL, NULL, napi_enumerable,
@@ -1025,6 +1561,14 @@ NAPI_MODULE_INIT() {
        inst},
       {"channelClose", NULL, channel_close, NULL, NULL, NULL, napi_enumerable,
        inst},
+#ifdef __linux__
+      {"linuxMigrationImage", NULL, linux_migration_image, NULL, NULL, NULL, napi_enumerable, inst},
+      {"linuxMigrationCurrent", NULL, linux_migration_current, NULL, NULL, NULL, napi_enumerable, inst},
+      {"linuxMigrationClose", NULL, linux_migration_close, NULL, NULL, NULL, napi_enumerable, inst},
+      {"migrationRenameNoReplace", NULL, migration_rename, NULL, NULL, NULL,
+       napi_enumerable, inst},
+      {"connectLinuxLauncher", NULL, connect_linux_launcher, NULL, NULL, NULL,
+       napi_enumerable, inst},
 #endif
   };
   // On failure the hook stays: it frees the empty instance at teardown.

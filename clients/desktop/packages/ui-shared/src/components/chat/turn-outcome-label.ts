@@ -20,5 +20,15 @@ export const TURN_OUTCOME_ORDER: readonly (keyof TurnOutcomeCounts)[] = [
   'interrupted',
 ];
 
+/** The nonzero outcomes in reading order. */
+export function turnOutcomeEntries(
+  outcomes: TurnOutcomeCounts | undefined,
+): { key: keyof TurnOutcomeCounts; count: number }[] {
+  if (!outcomes) return [];
+  return TURN_OUTCOME_ORDER.flatMap((key) =>
+    outcomes[key] > 0 ? [{ key, count: outcomes[key] }] : [],
+  );
+}
+
 /** Tool results alone cannot establish whether the agent recovered. */
 export const TURN_OUTCOME_UNKNOWN_IMPACT = 'Effect on the result is unknown';

@@ -9,6 +9,7 @@ export * from './kernel/service-container';
 export * from './kernel/canopy-runtime';
 export * from './kernel/runtime-profile-manifest';
 export * from './kernel/runtime-profile-graph';
+export * from './kernel/peer-scoped-idempotency';
 export * from './kernel/core-events-module';
 export * from './runtime/in-process-worker-binding';
 export {

@@ -3,6 +3,7 @@ import type { ReportOutputs } from '@canopy/desktop-shared/types/pipeline';
 import { formatPipelineReportContent } from '@/lib/pipelineExecutionDetail';
 import { LoadingSpinner } from '../../shared/loading/spinners/LoadingSpinner';
 import { PipelineReportMarkdown } from '../PipelineReportMarkdown';
+import { Surface } from '@canopy/ui-shared/components';
 
 type ReportKind = 'text' | 'json';
 
@@ -133,8 +134,9 @@ export function PipelineReportView({
   }
 
   return (
-    <div
-      className="overflow-hidden rounded-xl border bg-base"
+    <Surface
+      variant="inset"
+      className="overflow-hidden"
       data-testid="pipeline-report"
     >
       <div className="border-b px-4 py-2 text-xs font-medium fg-secondary">
@@ -172,6 +174,6 @@ export function PipelineReportView({
           );
         })}
       </div>
-    </div>
+    </Surface>
   );
 }

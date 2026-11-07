@@ -23,9 +23,20 @@ import type {
   ChatCommandRequest,
   ChatCommandExecutionOptions,
   ChatCommandResult,
+  ChatModel,
+  ChatModelChangeNotice,
   ChatStateCommandPort,
   FileTreeRoot,
+  ModelHarness,
+  ThinkingLevel,
 } from '@canopy/desktop-shared/types';
+import { isModelHarness, isThinkingLevel } from '@canopy/desktop-shared/types';
+import {
+  codexSpeedFastMode,
+  codexSpeedFromFastMode,
+  isCodexSpeed,
+} from '@canopy/desktop-shared/lib/codex-speed';
+import type { CodexSpeed } from '@canopy/desktop-shared/lib/codex-speed';
 import {
   CanopyOperationError,
   canopyInvalidArgumentError,
@@ -34,6 +45,7 @@ import {
   canopyUnavailableError,
 } from '@canopy/core-runtime';
 import { validateChatCommandRequest } from '../ipc/chat-state';
+import { validateId } from '../lib/validation';
 import { listFileTreeRoots } from '../services/files-service';
 import type { DesktopCanopyDispatcher } from './desktop-runtime';
 import { ChatCommandKeyFingerprints } from './chat-command-key-fingerprints';
@@ -613,6 +625,185 @@ async function dispatchAdmittedChatCommand(
   }
 }
 
+export interface CoreChatSettingsTarget {
+  projectId: string;
+  worktreeId: string;
+  chatId: string;
+}
+
+interface CoreChatSettingsCommand {
+  commandId: string;
+  target: CoreChatSettingsTarget;
+  expectedRevision?: number;
+  expectedTabRevision?: number;
+  origin?: 'desktop' | 'portal';
+}
+
+/** A plan, thinking or speed change from a core client (CAN-4110 D3). At least one is set. */
+export interface CoreChatSettingsChange extends CoreChatSettingsCommand {
+  planMode?: boolean;
+  thinkingLevel?: ThinkingLevel;
+  speed?: CodexSpeed;
+}
+
+/** A model change from a core client (CAN-4110 D5). */
+export interface CoreChatModelChange extends CoreChatSettingsCommand {
+  model: ChatModel;
+  executionHarness?: ModelHarness;
+  notice?: ChatModelChangeNotice;
+}
+
+/** Runs a settings change end to end: commit through `port`, then live-session effects. */
+export interface CoreChatSettingsHost {
+  applySettings(
+    change: CoreChatSettingsChange,
+    port: ChatStateCommandPort,
+  ): Promise<ChatCommandResult>;
+  changeModel(
+    change: CoreChatModelChange,
+    port: ChatStateCommandPort,
+  ): Promise<ChatCommandResult>;
+}
+
+let installedSettingsHost: CoreChatSettingsHost | null = null;
+
+/** Installed by main's chat IPC registration; null until then. */
+export function setCoreChatSettingsHost(
+  host: CoreChatSettingsHost | null,
+): void {
+  installedSettingsHost = host;
+}
+
+type ClientSettingsAction =
+  | {
+      kind: 'settings';
+      tabId: string;
+      planMode?: boolean;
+      thinkingLevel?: ThinkingLevel;
+      speed?: CodexSpeed;
+    }
+  | {
+      kind: 'model';
+      tabId: string;
+      model: ChatModel;
+      executionHarness?: ModelHarness;
+      notice?: ChatModelChangeNotice;
+    }
+  | null;
+
+const CLIENT_MODEL_CHANGE_KEYS = new Set([
+  'type',
+  'tabId',
+  'model',
+  'providerType',
+  'executionHarness',
+  'notice',
+]);
+const ORCHESTRATED_SETTINGS_KEYS = new Set([
+  'planMode',
+  'thinkingLevel',
+  'modelConfig',
+]);
+// The bound `validateChatCommandRequest` applies to `command.model`.
+const MAX_MODEL_LENGTH = 512 * 1024;
+
+function isModelChangeNotice(value: unknown): value is ChatModelChangeNotice {
+  return (
+    isRecord(value) &&
+    typeof value.id === 'string' &&
+    typeof value.timestamp === 'number' &&
+    Number.isFinite(value.timestamp) &&
+    typeof value.text === 'string'
+  );
+}
+
+/** Throws `invalid_argument` for a mixed, contradictory or main-only settings action. */
+function classifyClientSettingsAction(action: unknown): ClientSettingsAction {
+  if (!isRecord(action) || typeof action.tabId !== 'string') return null;
+  if (action.type === 'chat.set_model') {
+    if (Object.keys(action).some((key) => !CLIENT_MODEL_CHANGE_KEYS.has(key)))
+      throw canopyInvalidArgumentError(
+        'Model changes from a client carry only the model and harness.',
+      );
+    const { model, executionHarness, notice } = action;
+    if (
+      typeof model !== 'string' ||
+      model.length === 0 ||
+      model.length > MAX_MODEL_LENGTH ||
+      (executionHarness !== undefined && !isModelHarness(executionHarness)) ||
+      (notice !== undefined && !isModelChangeNotice(notice))
+    )
+      throw canopyInvalidArgumentError('Invalid model change.');
+    return {
+      kind: 'model',
+      tabId: action.tabId,
+      model,
+      ...(executionHarness === undefined ? {} : { executionHarness }),
+      ...(notice === undefined ? {} : { notice }),
+    };
+  }
+  if (action.type !== 'chat.patch_tab_settings' || !isRecord(action.patch))
+    return null;
+  const patch = action.patch;
+  const keys = Object.keys(patch);
+  if (!keys.some((key) => ORCHESTRATED_SETTINGS_KEYS.has(key))) return null;
+  if (
+    keys.some((key) => !ORCHESTRATED_SETTINGS_KEYS.has(key)) ||
+    action.fileRef !== undefined ||
+    action.expectedPendingPlanExitRequestId !== undefined ||
+    action.expectedPluginSelections !== undefined
+  )
+    throw canopyInvalidArgumentError(
+      'Change model, thinking, plan and speed settings on their own.',
+    );
+  const modelConfig = isRecord(patch.modelConfig)
+    ? patch.modelConfig
+    : undefined;
+  const directThinking = patch.thinkingLevel;
+  const configThinking = modelConfig?.thinkingLevel;
+  if (
+    directThinking !== undefined &&
+    configThinking !== undefined &&
+    directThinking !== configThinking
+  )
+    throw canopyInvalidArgumentError(
+      'Two different thinking levels were requested.',
+    );
+  const thinkingLevel = directThinking ?? configThinking;
+  if (thinkingLevel !== undefined && !isThinkingLevel(thinkingLevel))
+    throw canopyInvalidArgumentError('Unsupported thinking level.');
+  const requestedSpeed = modelConfig?.speed;
+  if (requestedSpeed !== undefined && !isCodexSpeed(requestedSpeed))
+    throw canopyInvalidArgumentError('Unsupported Codex speed.');
+  const fastMode = modelConfig?.fastMode;
+  const speed =
+    requestedSpeed ??
+    (typeof fastMode === 'boolean'
+      ? codexSpeedFromFastMode(fastMode)
+      : undefined);
+  if (
+    requestedSpeed !== undefined &&
+    typeof fastMode === 'boolean' &&
+    fastMode !== codexSpeedFastMode(requestedSpeed)
+  )
+    throw canopyInvalidArgumentError('Codex fast mode contradicts the speed.');
+  const planMode =
+    typeof patch.planMode === 'boolean' ? patch.planMode : undefined;
+  if (
+    planMode === undefined &&
+    thinkingLevel === undefined &&
+    speed === undefined
+  )
+    throw canopyInvalidArgumentError('Nothing to change.');
+  return {
+    kind: 'settings',
+    tabId: action.tabId,
+    ...(planMode === undefined ? {} : { planMode }),
+    ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
+    ...(speed === undefined ? {} : { speed }),
+  };
+}
+
 interface ChatLifecycleParams {
   projectId: string;
   worktreeId: string;
@@ -626,6 +817,8 @@ interface ChatLifecycleParams {
 
 export function createCoreChatCommandAdapter(
   getPort: () => ChatStateCommandPort | null,
+  getSettingsHost: () => CoreChatSettingsHost | null = () =>
+    installedSettingsHost,
   fingerprints = new ChatCommandKeyFingerprints(),
 ): {
   instructions: {
@@ -709,6 +902,69 @@ export function createCoreChatCommandAdapter(
       throw canopyPermissionDeniedError(
         'Approval mode changes only through the approval-mode setter.',
       );
+    }
+    const settings = classifyClientSettingsAction(params.action);
+    if (settings) {
+      try {
+        validateId(params.projectId, 'projectId');
+        validateId(params.worktreeId, 'worktreeId');
+        validateId(settings.tabId, 'tabId');
+      } catch (error) {
+        throw canopyInvalidArgumentError(
+          error instanceof Error ? error.message : 'Invalid chat id.',
+        );
+      }
+      const host = getSettingsHost();
+      if (!host)
+        throw canopyUnavailableError('Chat settings are unavailable.', {
+          kind: 'same_idempotency_key',
+        });
+      const command = {
+        commandId: params.commandId,
+        target: {
+          projectId: params.projectId,
+          worktreeId: params.worktreeId,
+          chatId: settings.tabId,
+        },
+        ...(params.expectedRevision === undefined
+          ? {}
+          : { expectedRevision: params.expectedRevision }),
+        ...(params.expectedTabRevision === undefined
+          ? {}
+          : { expectedTabRevision: params.expectedTabRevision }),
+        ...(params.origin === undefined ? {} : { origin: params.origin }),
+      };
+      const result =
+        settings.kind === 'model'
+          ? await host.changeModel(
+              {
+                ...command,
+                model: settings.model,
+                ...(settings.executionHarness === undefined
+                  ? {}
+                  : { executionHarness: settings.executionHarness }),
+                ...(settings.notice === undefined
+                  ? {}
+                  : { notice: settings.notice }),
+              },
+              port,
+            )
+          : await host.applySettings(
+              {
+                ...command,
+                ...(settings.planMode === undefined
+                  ? {}
+                  : { planMode: settings.planMode }),
+                ...(settings.thinkingLevel === undefined
+                  ? {}
+                  : { thinkingLevel: settings.thinkingLevel }),
+                ...(settings.speed === undefined
+                  ? {}
+                  : { speed: settings.speed }),
+              },
+              port,
+            );
+      return CoreChatLifecycleResultSchema.parse(result);
     }
     const action = await restoreLegacyAction(params.action, params);
     let reconstructed: ChatCommandRequest;

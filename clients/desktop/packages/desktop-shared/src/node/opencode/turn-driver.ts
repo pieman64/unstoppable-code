@@ -41,6 +41,8 @@ export interface OpenCodeTurnRequest extends Pick<
   OpenCodeRuntimeOptions,
   | 'runtimeIdentity'
   | 'executable'
+  | 'spawnProcess'
+  | 'processOwner'
   | 'prefix'
   | 'cwd'
   | 'profileDir'

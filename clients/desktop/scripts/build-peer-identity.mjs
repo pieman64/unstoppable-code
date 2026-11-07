@@ -2,16 +2,22 @@
 
 /**
  * Builds the peer-identity addon (packages/core-platform/native/peer-identity)
- * the same way as the owned-child addon. Explicit build only: nothing stages,
- * signs, or packages it, and no host loads it yet. Darwin only.
+ * the same way as the owned-child addon. Building does not sign or enable
+ * migration. Linux CLI staging reuses the owned-child payload: L1/L2 peer
+ * custody lives there, not in the Darwin verifier.
  *
  * Usage: node scripts/build-peer-identity.mjs [--out <file>]
- * Default output: .cache/native-peer-identity/<platform>-<arch>/core-peer-identity.node
+ * Default output: .cache/native-peer-identity/<platform>-<arch>/
+ * core-peer-identity.node on Darwin; core-owned-child.node on Linux.
  */
 
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildDarwinAddon } from './build-owned-child.mjs';
+import {
+  buildOwnedChild,
+  OWNED_CHILD_FILE,
+  buildDarwinAddon,
+} from './build-owned-child.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PEER_IDENTITY_SOURCE = join(
@@ -29,11 +35,13 @@ export const PEER_IDENTITY_DEFAULT_OUTPUT = join(
   '.cache',
   'native-peer-identity',
   `${process.platform}-${process.arch}`,
-  PEER_IDENTITY_FILE,
+  process.platform === 'linux' ? OWNED_CHILD_FILE : PEER_IDENTITY_FILE,
 );
 
-/** Returns the addon path, or `null` off Darwin. */
+/** Returns the peer payload path, or null off Darwin/Linux. */
 export function buildPeerIdentity({ out } = {}) {
+  if (process.platform === 'linux')
+    return buildOwnedChild({ out: out ?? PEER_IDENTITY_DEFAULT_OUTPUT });
   return buildDarwinAddon({
     source: PEER_IDENTITY_SOURCE,
     out: out ?? PEER_IDENTITY_DEFAULT_OUTPUT,
@@ -66,7 +74,7 @@ if (invokedDirectly) {
     console.log(
       built
         ? `Done! Addon: ${built}`
-        : `Peer identity addon is Darwin-only; nothing built on ${process.platform}.`,
+        : `Peer identity addon requires Darwin or Linux; nothing built on ${process.platform}.`,
     );
   } catch (error) {
     console.error(error instanceof Error ? error.message : error);

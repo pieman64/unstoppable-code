@@ -13,6 +13,7 @@ import {
 } from './process-tree';
 import {
   EXECUTION_FAMILY_POLICIES,
+  ChatTurnAdmissionError,
   ExecutionAdmissionError,
   type ExecutionAccountingLimits,
   type ExecutionAccountingSnapshot,
@@ -73,6 +74,7 @@ export class ExecutionAccounting<TMetadata extends { type: string }> {
   >();
   private readonly leases = new Map<ExecutionFamily, Set<symbol>>();
   private readonly pending = new Map<ExecutionFamily, number>();
+  private chatTurnPendingCount = 0;
   private readonly listeners = new Set<
     ExecutionAccountingListener<TMetadata>
   >();
@@ -149,6 +151,39 @@ export class ExecutionAccounting<TMetadata extends { type: string }> {
         );
       },
     };
+  }
+
+  /**
+   * Chat-turn admission (CAN-4115). `outside` is the host's count of active
+   * turns plus queued messages; core adds its own pending starts. Refuses at
+   * the cap, then under critical memory, exactly as the desktop guard did.
+   */
+  admitChatTurn(outside: number): ExecutionReservation {
+    const limits = this.options.limits();
+    const max = limits.maxActiveChatTurns ?? null;
+    if (max !== null && outside + this.chatTurnPendingCount >= max)
+      throw new ChatTurnAdmissionError('limit', max);
+    if (this.memoryGuardBlocked(limits))
+      throw new ChatTurnAdmissionError('memory', max);
+    this.chatTurnPendingCount += 1;
+    let released = false;
+    return {
+      release: (): void => {
+        if (released) return;
+        released = true;
+        this.chatTurnPendingCount = Math.max(0, this.chatTurnPendingCount - 1);
+      },
+    };
+  }
+
+  /** Pending chat-turn starts core holds. */
+  chatTurnPending(): number {
+    return this.chatTurnPendingCount;
+  }
+
+  /** Forget pending chat-turn starts (the host's reset). */
+  clearChatTurnPending(): void {
+    this.chatTurnPendingCount = 0;
   }
 
   /** Counts accepted work until its lease is released. */

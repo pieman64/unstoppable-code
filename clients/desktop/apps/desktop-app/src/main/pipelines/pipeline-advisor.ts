@@ -41,7 +41,7 @@ import {
   resolveHelperInvocation,
   resolveHelperWorkOwner,
 } from '../ollama/helper-invocation';
-import { getObservabilityService } from '../observability';
+import { getExecutionObservabilityIngest } from '../observability/ingest';
 import type {
   ExecutionHandle,
   ExecutionRuntime,
@@ -314,7 +314,7 @@ export class PipelineAdvisorService {
       active.timer = null;
     }
     if (active.activeTaskKey) {
-      getObservabilityService().finalizeObservedTask(
+      getExecutionObservabilityIngest().finalizeObservedTask(
         active.activeTaskKey,
         'interrupted',
         message,
@@ -511,7 +511,7 @@ export class PipelineAdvisorService {
     const startedAt = new Date().toISOString();
     const taskKey = `pipeline-advisor:${state.id}:${kind}:${startedAt}`;
     active.activeTaskKey = taskKey;
-    const observability = getObservabilityService();
+    const observability = getExecutionObservabilityIngest();
     void loadNestedRootPipelineExecutionId(
       state,
       async (executionId) =>

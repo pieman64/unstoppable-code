@@ -63,6 +63,7 @@ import {
   type WorkflowsRowMenuItem,
   WorkflowsSearchField,
 } from './workflows-controls';
+import { Surface } from '@canopy/ui-shared/components';
 
 /** Rows drawn before the footer's Load more reveals the next batch. */
 /**
@@ -351,12 +352,18 @@ export function WorkflowsRunsTable({
                         </span>
                       ) : null}
                       {expanded && row.output !== undefined ? (
-                        <pre
-                          className={`mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded-md bg-subtle p-2 font-mono text-xs fg-secondary ${REPLAY_BLOCK_CLASS}`}
-                          data-testid="workflows-run-output"
+                        <Surface
+                          variant="group"
+                          size="small"
+                          className="mt-1 overflow-hidden"
                         >
-                          {row.output}
-                        </pre>
+                          <pre
+                            className={`max-h-40 overflow-auto whitespace-pre-wrap p-2 font-mono text-xs fg-secondary ${REPLAY_BLOCK_CLASS}`}
+                            data-testid="workflows-run-output"
+                          >
+                            {row.output}
+                          </pre>
+                        </Surface>
                       ) : null}
                     </div>
                   </div>

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { app } from 'electron';
 import {
   CANOPY_JSON_RPC_PROTOCOL_ERROR_CODES,
+  CORE_CLIENT_TOOL_INSTRUCTION_DEFINITIONS,
   CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
   CORE_TRANSPORT_QUERY_DEFINITIONS,
   CanopyCallerDescriptorSchema,
@@ -18,6 +19,10 @@ import {
   type CanopyJsonRpcRequest,
   type CanopyOperationEnvelopes,
   type CanopySchemaOutput,
+  type CoreClientToolsRegisterParamsSchema,
+  type CoreClientToolsRegisterResult,
+  type CoreClientToolsUnregisterParamsSchema,
+  type CoreClientToolsUnregisterResult,
 } from '@canopy/protocol/canopy-core';
 import {
   CanopyOperationError,
@@ -36,6 +41,8 @@ import type { DesktopCanopyDispatcher } from '../desktop-runtime';
 import {
   CAPABILITIES_REGISTER,
   RELAY_DEFINITIONS,
+  TOOLS_REGISTER,
+  TOOLS_UNREGISTER,
   type RelayBindingProvider,
 } from './definitions';
 
@@ -67,7 +74,26 @@ export interface InterimInMemoryBindingOptions {
     caller: CanopyCallerDescriptor,
     capabilities: RelayCapabilities,
   ) => Promise<void> | void;
+  /**
+   * Lease-bound tool registrations (CAN-4131), with the WebContents the
+   * connection serves. Absent: both methods are not found.
+   */
+  onTools?: {
+    register(
+      caller: CanopyCallerDescriptor,
+      params: CanopySchemaOutput<typeof CoreClientToolsRegisterParamsSchema>,
+      webContentsId: number,
+    ): CoreClientToolsRegisterResult;
+    unregister(
+      caller: CanopyCallerDescriptor,
+      params: CanopySchemaOutput<typeof CoreClientToolsUnregisterParamsSchema>,
+      webContentsId: number,
+    ): CoreClientToolsUnregisterResult;
+  };
 }
+
+const isToolMethod = (name: string): boolean =>
+  name === TOOLS_REGISTER || name === TOOLS_UNREGISTER;
 
 type RelayClient = InProcessCanopyClient<
   (typeof RELAY_DEFINITIONS)['queries'],
@@ -156,6 +182,7 @@ class RelayConnection {
     private readonly server: CanopyFramedConnection,
     private readonly dispatcher: DesktopCanopyDispatcher,
     private readonly caller: CanopyCallerDescriptor,
+    private readonly webContentsId: number,
     private readonly options: InterimInMemoryBindingOptions,
   ) {
     this.grants = new Set(caller.grants);
@@ -237,7 +264,8 @@ class RelayConnection {
   private routable(name: string, route: Route): boolean {
     return (
       route.requiredGrants.every((grant) => this.grants.has(grant)) &&
-      (name !== CAPABILITIES_REGISTER || !!this.options.onCapabilities)
+      (name !== CAPABILITIES_REGISTER || !!this.options.onCapabilities) &&
+      (!isToolMethod(name) || !!this.options.onTools)
     );
   }
 
@@ -320,7 +348,8 @@ class RelayConnection {
     const route = routes.get(method);
     if (
       !route ||
-      (method === CAPABILITIES_REGISTER && !this.options.onCapabilities)
+      (method === CAPABILITIES_REGISTER && !this.options.onCapabilities) ||
+      (isToolMethod(method) && !this.options.onTools)
     ) {
       await this.deliver({
         jsonrpc: '2.0',
@@ -341,6 +370,14 @@ class RelayConnection {
       if (method === CAPABILITIES_REGISTER) {
         const result = await this.register(request.params);
         await this.respond(id, result, true);
+        return;
+      }
+      if (isToolMethod(method)) {
+        await this.respond(
+          id,
+          this.registerTools(method, request.params),
+          true,
+        );
         return;
       }
       const { _meta: metadata, ...rest } = request.params;
@@ -470,6 +507,31 @@ class RelayConnection {
     }
   }
 
+  private registerTools(
+    method: string,
+    raw: unknown,
+  ): CoreClientToolsRegisterResult | CoreClientToolsUnregisterResult {
+    if (!this.grants.has(MANAGE_GRANT))
+      throw error('permission_denied', 'The caller cannot register tools.');
+    const onTools = this.options.onTools;
+    if (method === TOOLS_REGISTER) {
+      const parsed =
+        CORE_CLIENT_TOOL_INSTRUCTION_DEFINITIONS[
+          TOOLS_REGISTER
+        ].params.safeParse(raw);
+      if (!parsed.success || !onTools)
+        throw error('invalid_argument', 'Invalid tool registration.');
+      return onTools.register(this.caller, parsed.data, this.webContentsId);
+    }
+    const parsed =
+      CORE_CLIENT_TOOL_INSTRUCTION_DEFINITIONS[
+        TOOLS_UNREGISTER
+      ].params.safeParse(raw);
+    if (!parsed.success || !onTools)
+      throw error('invalid_argument', 'Invalid tool registration.');
+    return onTools.unregister(this.caller, parsed.data, this.webContentsId);
+  }
+
   private async register(raw: unknown): Promise<RegisterResult> {
     if (!this.grants.has(MANAGE_GRANT))
       throw error(
@@ -552,7 +614,7 @@ export function createInterimInMemoryBindingProvider(
   dispatcher: DesktopCanopyDispatcher,
   options: InterimInMemoryBindingOptions = {},
 ): RelayBindingProvider {
-  return async ({ caller, signal }) => {
+  return async ({ caller, webContentsId, signal }) => {
     const cancelled = (): CanopyOperationError =>
       error('cancelled', 'The relay connection was cancelled.');
     if (signal.aborted) throw cancelled();
@@ -575,6 +637,7 @@ export function createInterimInMemoryBindingProvider(
       pair.server,
       dispatcher,
       parsedCaller.data,
+      webContentsId,
       options,
     );
     void relay.serve().catch(() => undefined);

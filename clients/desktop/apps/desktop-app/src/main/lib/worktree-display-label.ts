@@ -9,7 +9,7 @@ import {
   type GeneratedWorktreeLabelCandidate,
 } from '@canopy/protocol/worktree-display-labels';
 import { isDefaultWorktreeBranchName } from '@canopy/desktop-shared/lib/default-worktree-branch';
-import { getObservabilityService } from '../observability';
+import { getExecutionObservabilityIngest } from '../observability/ingest';
 import { sendToAllWindows } from './window-send';
 import { readWorkspaceWorktrees } from './workspace-persistence';
 import { isCoworkWorkspace } from './workspace-registry';
@@ -91,7 +91,7 @@ export async function applyGeneratedDisplayLabel(
     input.evidence,
   );
   if (input.observabilityTaskKey) {
-    getObservabilityService().appendTranscriptRecord(
+    getExecutionObservabilityIngest().appendTranscriptRecord(
       input.observabilityTaskKey,
       {
         type: 'canopy_helper_diagnostic',

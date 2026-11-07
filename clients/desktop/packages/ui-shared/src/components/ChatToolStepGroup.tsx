@@ -13,7 +13,7 @@ import { StepTenseProvider, useCleanChatLook } from './chat-look';
 import { STEP_GROUP_BODY_CLASS, StepRow } from './chat/StepRow';
 import type { ChatToolStepLive } from './chat/live-tool-activity';
 import { TOOL_APPROVAL_WAITING_LABEL } from './chat/tool-approval-wait';
-import { formatTurnOutcomeLabel } from './chat/turn-outcome-label';
+import { TurnOutcomeWords } from './chat/TurnOutcomeWords';
 
 /**
  * One transcript row standing in for a run of agent steps (tool calls, and
@@ -163,28 +163,14 @@ export const ChatToolStepGroup = memo(function ChatToolStepGroup({
                 (blockedCount > 0 ||
                   failedCount > 0 ||
                   interruptedCount > 0) ? (
-                <>
-                  {blockedCount > 0 && (
-                    <span data-testid="chat-tool-step-blocked">
-                      · {blockedCount} blocked
-                    </span>
-                  )}
-                  {blockedCount > 0 && failedCount > 0 && ' '}
-                  {failedCount > 0 && (
-                    <span data-testid="chat-tool-step-failed">
-                      · {formatTurnOutcomeLabel('failed', failedCount)}
-                    </span>
-                  )}
-                  {(blockedCount > 0 || failedCount > 0) &&
-                    interruptedCount > 0 &&
-                    ' '}
-                  {interruptedCount > 0 && (
-                    <span data-testid="chat-tool-step-interrupted">
-                      ·{' '}
-                      {formatTurnOutcomeLabel('interrupted', interruptedCount)}
-                    </span>
-                  )}
-                </>
+                <TurnOutcomeWords
+                  outcomes={{
+                    blocked: blockedCount,
+                    failed: failedCount,
+                    interrupted: interruptedCount,
+                  }}
+                  entryTestIdPrefix="chat-tool-step"
+                />
               ) : undefined
             }
             running={live !== undefined && !waiting}

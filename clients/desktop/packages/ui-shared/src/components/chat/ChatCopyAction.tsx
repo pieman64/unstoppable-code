@@ -3,7 +3,7 @@ import { CheckIcon } from '../../icons/CheckIcon';
 import { CopyIcon } from '../../icons/CopyIcon';
 import { stripOpaqueAgentCitationMarkers } from '../../lib/agent-citations';
 import { Button } from '../Button';
-import { CLEAN_ICON_BUTTON_VARIANT, useCleanChatLook } from '../chat-look';
+import { CLEAN_ICON_BUTTON_VARIANT } from '../chat-look';
 import { CopyStatusRegion, useAnnouncedCopy } from '../copy-feedback';
 import { Tooltip } from '../Tooltip';
 
@@ -37,7 +37,6 @@ function ChatCopyActionControl({
   label = 'Copy message',
   dataTestId,
 }: ChatCopyActionProps): JSX.Element {
-  const clean = useCleanChatLook();
   const { copied, announcement, copy } = useAnnouncedCopy();
   const handleClick = useCallback(
     (event: MouseEvent<HTMLButtonElement>): void => {
@@ -51,7 +50,6 @@ function ChatCopyActionControl({
     [copy, text],
   );
   const name = copied ? 'Copied' : label;
-  const iconSize = clean ? '14' : '13';
   return (
     <span className="relative inline-flex shrink-0">
       <Tooltip label={name}>
@@ -65,9 +63,9 @@ function ChatCopyActionControl({
           data-copied={copied ? '' : undefined}
         >
           {copied ? (
-            <CheckIcon width={iconSize} height={iconSize} aria-hidden="true" />
+            <CheckIcon size="sm" aria-hidden="true" />
           ) : (
-            <CopyIcon width={iconSize} height={iconSize} aria-hidden="true" />
+            <CopyIcon size="sm" aria-hidden="true" />
           )}
         </Button>
       </Tooltip>

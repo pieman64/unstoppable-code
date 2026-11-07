@@ -1182,6 +1182,31 @@ export const createModelsSlice: StateCreator<
     if (rollback !== undefined) showSpeed(rollback);
   },
 
+  setContextWindow: async (contextWindow, target): Promise<void> => {
+    const context = getWorktreeChatContext(get(), target);
+    if (!context?.activeTab || context.activeTab.kind === 'file') return;
+    const previous = context.activeTab.modelConfig?.contextWindow;
+    const show = (next: typeof previous): void =>
+      set((state) =>
+        updateCapturedChatTab(state, context, (tab) => {
+          const modelConfig = { ...tab.modelConfig };
+          if (next === undefined) delete modelConfig.contextWindow;
+          else modelConfig.contextWindow = next;
+          return { ...tab, modelConfig };
+        }),
+      );
+    show(contextWindow);
+    await get().dispatchChatCommand(
+      context.selection,
+      {
+        type: 'chat.patch_tab_settings',
+        tabId: context.chatId,
+        patch: { modelConfig: { contextWindow } },
+      },
+      { rollback: () => show(previous) },
+    );
+  },
+
   setFastMode: async (enabled, target): Promise<void> => {
     // Legacy boolean command: an explicit boolean replaces the speed, so
     // `false` moves Ultra fast to Regular rather than keeping it.

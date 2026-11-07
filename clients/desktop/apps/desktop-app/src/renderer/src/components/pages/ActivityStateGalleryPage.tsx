@@ -9,10 +9,11 @@ import {
   Chip,
   HeaderActionButton,
   Heading,
-  ProgressBar,
   PanelSection,
+  ProgressBar,
   SegmentedControl,
   type SegmentedControlOption,
+  Surface,
 } from '@canopy/ui-shared/components';
 import {
   AttachmentIcon,
@@ -191,45 +192,49 @@ function DemoBody({
           {body.rows.map((row, index) => {
             const rowTone = row.tone ?? 'neutral';
             return (
-              <li
+              <Surface
+                as="li"
+                variant="group"
+                size="small"
                 key={`${row.label}-${index}`}
-                className="flex min-h-9 items-center gap-2 rounded-md bg-base/40 px-2.5 py-2 text-xs"
               >
-                <span
-                  aria-hidden="true"
-                  className={`h-1.5 w-1.5 shrink-0 rounded-full bg-current ${TONE_CLASS_NAMES[rowTone]}`}
-                />
-                <span className="min-w-0 flex-1 truncate fg-primary">
-                  {row.label}
-                  {row.detail && (
-                    <span className="ml-1.5 fg-secondary">{row.detail}</span>
-                  )}
-                </span>
-                {row.meta && (
+                <div className="flex items-center min-h-9 gap-2 px-2.5 py-2 text-xs">
                   <span
-                    className={`shrink-0 text-2xs ${TONE_CLASS_NAMES[rowTone]}`}
-                  >
-                    {row.meta}
+                    aria-hidden="true"
+                    className={`h-1.5 w-1.5 shrink-0 rounded-full bg-current ${TONE_CLASS_NAMES[rowTone]}`}
+                  />
+                  <span className="min-w-0 flex-1 truncate fg-primary">
+                    {row.label}
+                    {row.detail && (
+                      <span className="ml-1.5 fg-secondary">{row.detail}</span>
+                    )}
                   </span>
-                )}
-                {(row.additions !== undefined ||
-                  row.deletions !== undefined) && (
-                  <span className="flex shrink-0 items-center gap-1 text-2xs tabular-nums">
+                  {row.meta && (
                     <span
-                      className="fg-positive"
-                      data-activity-gallery-additions="true"
+                      className={`shrink-0 text-2xs ${TONE_CLASS_NAMES[rowTone]}`}
                     >
-                      +{row.additions ?? 0}
+                      {row.meta}
                     </span>
-                    <span
-                      className="fg-destructive"
-                      data-activity-gallery-deletions="true"
-                    >
-                      −{row.deletions ?? 0}
+                  )}
+                  {(row.additions !== undefined ||
+                    row.deletions !== undefined) && (
+                    <span className="flex shrink-0 items-center gap-1 text-2xs tabular-nums">
+                      <span
+                        className="fg-positive"
+                        data-activity-gallery-additions="true"
+                      >
+                        +{row.additions ?? 0}
+                      </span>
+                      <span
+                        className="fg-destructive"
+                        data-activity-gallery-deletions="true"
+                      >
+                        −{row.deletions ?? 0}
+                      </span>
                     </span>
-                  </span>
-                )}
-              </li>
+                  )}
+                </div>
+              </Surface>
             );
           })}
         </ul>
@@ -244,20 +249,19 @@ function HiddenStatePreview({
   readonly state: ActivityGalleryState;
 }): JSX.Element {
   return (
-    <div
-      className="flex min-h-22 items-center gap-3 rounded-lg border border-dashed bg-secondary/30 px-4 py-3"
-      data-activity-gallery-preview="true"
-    >
-      <span className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-warning-subtle fg-warning">
-        <WarningIcon size={16} />
-      </span>
-      <div className="min-w-0">
-        <p className="text-s font-semibold fg-primary">Section hidden</p>
-        <p className="mt-0.5 text-2xs leading-relaxed fg-secondary">
-          {state.note}
-        </p>
+    <Surface variant="dashed" data-activity-gallery-preview="true">
+      <div className="flex items-center min-h-22 gap-3 px-4 py-3">
+        <span className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-warning-subtle fg-warning">
+          <WarningIcon size={16} />
+        </span>
+        <div className="min-w-0">
+          <p className="text-s font-semibold fg-primary">Section hidden</p>
+          <p className="mt-0.5 text-2xs leading-relaxed fg-secondary">
+            {state.note}
+          </p>
+        </div>
       </div>
-    </div>
+    </Surface>
   );
 }
 
@@ -430,66 +434,71 @@ export function ActivityStateGalleryPage(): JSX.Element {
                 const stateIndex = machine[section.id];
                 const state = section.states[stateIndex] ?? section.states[0];
                 return (
-                  <article
+                  <Surface
+                    as="article"
+                    variant="inset"
+                    padding="default"
+                    className="min-w-0"
                     key={section.id}
                     data-testid={`activity-state-machine-${section.id}`}
                     data-current-state={state.id}
-                    className="min-w-0 space-y-3 rounded-xl border bg-base p-4"
                   >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <Heading level={2} variant="title">
-                          {section.title}
-                        </Heading>
-                        <p className="mt-0.5 text-2xs fg-secondary">
-                          {state.label} · {stateIndex + 1}/
-                          {section.states.length}
-                        </p>
-                      </div>
-                      <HeaderActionButton
-                        iconOnly
-                        aria-label={`Advance ${section.title}`}
-                        tooltipLabel={`Advance ${section.title}`}
-                        data-testid={`activity-state-advance-${section.id}`}
-                        onClick={() =>
-                          dispatch({ type: 'advance', sectionId: section.id })
-                        }
-                      >
-                        <PlayIcon size={16} />
-                      </HeaderActionButton>
-                    </div>
-                    <div
-                      className="flex flex-wrap gap-1"
-                      role="group"
-                      aria-label={`${section.title} states`}
-                    >
-                      {section.states.map((candidate) => (
-                        <Chip
-                          key={candidate.id}
+                    <div className="space-y-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <Heading level={2} variant="title">
+                            {section.title}
+                          </Heading>
+                          <p className="mt-0.5 text-2xs fg-secondary">
+                            {state.label} · {stateIndex + 1}/
+                            {section.states.length}
+                          </p>
+                        </div>
+                        <HeaderActionButton
+                          iconOnly
+                          aria-label={`Advance ${section.title}`}
+                          tooltipLabel={`Advance ${section.title}`}
+                          data-testid={`activity-state-advance-${section.id}`}
                           onClick={() =>
-                            dispatch({
-                              type: 'select',
-                              sectionId: section.id,
-                              stateId: candidate.id,
-                            })
+                            dispatch({ type: 'advance', sectionId: section.id })
                           }
-                          selected={candidate.id === state.id}
                         >
-                          {candidate.label}
-                        </Chip>
-                      ))}
+                          <PlayIcon size={16} />
+                        </HeaderActionButton>
+                      </div>
+                      <div
+                        className="flex flex-wrap gap-1"
+                        role="group"
+                        aria-label={`${section.title} states`}
+                      >
+                        {section.states.map((candidate) => (
+                          <Chip
+                            key={candidate.id}
+                            onClick={() =>
+                              dispatch({
+                                type: 'select',
+                                sectionId: section.id,
+                                stateId: candidate.id,
+                              })
+                            }
+                            selected={candidate.id === state.id}
+                          >
+                            {candidate.label}
+                          </Chip>
+                        ))}
+                      </div>
+                      <p className="min-h-8 text-2xs leading-relaxed fg-secondary">
+                        {state.note}
+                      </p>
+                      <CardPreview
+                        section={section}
+                        state={state}
+                        onAction={() =>
+                          dispatch({ type: 'act', sectionId: section.id })
+                        }
+                      />
                     </div>
-                    <p className="min-h-8 text-2xs leading-relaxed fg-secondary">
-                      {state.note}
-                    </p>
-                    <CardPreview
-                      section={section}
-                      state={state}
-                      onAction={() =>
-                        dispatch({ type: 'act', sectionId: section.id })
-                      }
-                    />
-                  </article>
+                  </Surface>
                 );
               })}
             </div>
@@ -510,21 +519,25 @@ export function ActivityStateGalleryPage(): JSX.Element {
                   </div>
                   <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,19rem),1fr))] items-start gap-4">
                     {section.states.map((state) => (
-                      <article
+                      <Surface
+                        as="article"
+                        variant="inset"
+                        padding="compact"
                         key={state.id}
                         data-testid={`activity-gallery-catalog-${section.id}-${state.id}`}
-                        className="space-y-2 rounded-xl border bg-base p-3"
                       >
-                        <div>
-                          <Heading level={3} variant="title">
-                            {state.label}
-                          </Heading>
-                          <p className="mt-0.5 min-h-8 text-2xs leading-relaxed fg-secondary">
-                            {state.note}
-                          </p>
+                        <div className="space-y-2">
+                          <div>
+                            <Heading level={3} variant="title">
+                              {state.label}
+                            </Heading>
+                            <p className="mt-0.5 min-h-8 text-2xs leading-relaxed fg-secondary">
+                              {state.note}
+                            </p>
+                          </div>
+                          <CardPreview section={section} state={state} />
                         </div>
-                        <CardPreview section={section} state={state} />
-                      </article>
+                      </Surface>
                     ))}
                   </div>
                 </section>

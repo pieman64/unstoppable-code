@@ -11,7 +11,7 @@
  *   plan-mode icon while awaiting a plan approval, otherwise the provider
  *   logo (status-amber while unread) — the exact components ChatTabBar
  *   uses (`FileTypeIcon`, `ThinkingSpinner`, `PlanModeIcon`,
- *   `AgentProviderIcon`). With early access (the `fill` tab style) the icon
+ *   `ModelProviderIcon`). With early access (the `fill` tab style) the icon
  *   is only the spinner or the provider logo; the states move to the right.
  * - **Label** (via {@link renderPanelTabLabel}): the LIVE title from the
  *   bound chatStore tab (`customTitle`, then `description ?? title` for
@@ -84,7 +84,8 @@ import { useTerminalActivityStore } from '@/stores/terminalActivityStore';
 import { useWorktreeChatSelection } from '@/components/chat/useWorktreeChatSurfaceState';
 import { ThinkingSpinner } from '@/components/shared/loading/spinners/ThinkingSpinner';
 import { FileTypeIcon } from '@/components/shared/file-icons';
-import { AgentProviderIcon, resolveChatTabProvider } from '@/lib/providerUi';
+import { resolveChatTabProvider } from '@/lib/providerUi';
+import { ModelProviderIcon } from '@canopy/ui-shared/components';
 import { usePanelWorktreeSelection } from '@/lib/panels/panel-worktree-context';
 import {
   getActivitySectionIcon,
@@ -480,8 +481,7 @@ function ChatPanelTabIcon({ chatTabId }: { chatTabId: string }): JSX.Element {
     return (
       <span className="inline-flex shrink-0 items-center" {...unreadProps}>
         <PlanModeIcon
-          width={12}
-          height={12}
+          size="sm"
           className={`shrink-0 ${OPERATIONAL_STATUS_COLORS.unread.foreground}`}
         />
       </span>
@@ -527,14 +527,14 @@ function ChatPanelTabIcon({ chatTabId }: { chatTabId: string }): JSX.Element {
       {...unreadProps}
     >
       {provider !== undefined ? (
-        <AgentProviderIcon
+        <ModelProviderIcon
           provider={provider}
-          width={12}
-          height={12}
-          className={glyphClassName}
+          size="xs"
+          tone={fillTabs ? 'inherit' : unread ? 'unread' : 'secondary'}
+          className="shrink-0"
         />
       ) : (
-        <ChatIcon width={12} height={12} className={glyphClassName} />
+        <ChatIcon size="sm" className={glyphClassName} />
       )}
     </span>
   );
@@ -612,8 +612,7 @@ export function BrowserPanelTabIcon({
   if (faviconUrl === undefined || failedFaviconUrl === faviconUrl) {
     return (
       <GlobeIcon
-        width={14}
-        height={14}
+        size="sm"
         className="shrink-0"
         data-testid={`panel-tab-browser-globe-${browserId}`}
       />
@@ -653,7 +652,7 @@ function BrowserPanelTabTooltip({
       data-testid={`panel-tab-browser-tooltip-${browserId}`}
     >
       <span className="canopy-panel-tab-rich-tooltip-subtitle">
-        <GlobeIcon width={12} height={12} aria-hidden="true" />
+        <GlobeIcon size="sm" aria-hidden="true" />
         Browser
       </span>
       <span

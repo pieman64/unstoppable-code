@@ -1,5 +1,5 @@
 {
-  "protocolVersion": 15,
+  "protocolVersion": 16,
   "tunneledChannels": [
     "account-proxy:changed",
     "account-proxy:connect",
@@ -333,7 +333,13 @@
     "feature-flags:get-snapshot",
     "feature-flags:refresh-context",
     "feature-flags:snapshot-changed",
+    "feedback:diagnostics-capabilities",
+    "feedback:diagnostics-prepare",
+    "feedback:diagnostics-read",
+    "feedback:diagnostics-release",
+    "feedback:diagnostics-save",
     "feedback:prepare",
+    "feedback:report-submit",
     "feedback:submit",
     "file-annotations:append",
     "file-annotations:dismiss",
@@ -805,6 +811,7 @@
     "skill-share-nudge:changed",
     "skill-share-nudge:get-pending",
     "skill-share-nudge:resolve",
+    "skills:changed",
     "skills:check-updates",
     "skills:dependency-readiness",
     "skills:fetch-available",

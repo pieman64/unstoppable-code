@@ -15,6 +15,7 @@
     "@canopy/protocol": "workspace:*",
     "micromark": "4.0.2",
     "micromark-extension-gfm": "3.0.0",
-    "micromark-util-decode-string": "2.0.1"
+    "micromark-util-decode-string": "2.0.1",
+    "node-diff3": "3.2.1"
   }
 }

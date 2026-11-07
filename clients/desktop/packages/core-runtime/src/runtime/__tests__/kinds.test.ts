@@ -154,9 +154,14 @@ it('validates keyed instructions, grants, and returns the handler result', async
 });
 
 it('cancels pending instructions on deadline and shutdown drain', async () => {
-  let entered: () => void = () => undefined;
+  // A frozen clock keeps the deadline from passing before dispatch on a slow
+  // runner (CAN-5921); racing the call's settlement keeps the test from hanging.
+  const startedAt = new Date('2026-09-04T12:00:00.000Z');
+  jest.useFakeTimers({ now: startedAt });
+  let entered = false;
+  let markEntered: () => void = () => undefined;
   const started = new Promise<void>((resolve) => {
-    entered = resolve;
+    markEntered = resolve;
   });
   const dispatcher = createCanopyDispatcher({
     profile: 'core',
@@ -169,7 +174,8 @@ it('cancels pending instructions on deadline and shutdown drain', async () => {
       queries: {},
       instructions: {
         'core.example.write': () => {
-          entered();
+          entered = true;
+          markEntered();
           return new Promise<CanopyStreamCursor>(() => undefined);
         },
       },
@@ -177,24 +183,36 @@ it('cancels pending instructions on deadline and shutdown drain', async () => {
     },
     shutdownTimeoutMs: 0,
   });
-  const deadline = dispatcher.instruction(
-    'core.example.write',
-    { daemonEpoch: 'one', sequence: 0 },
-    {
-      caller,
-      metadata: {
-        idempotencyKey: 'deadline',
-        deadlineAt: new Date(Date.now() + 20).toISOString(),
+  try {
+    const deadline = dispatcher.instruction(
+      'core.example.write',
+      { daemonEpoch: 'one', sequence: 0 },
+      {
+        caller,
+        metadata: {
+          idempotencyKey: 'deadline',
+          deadlineAt: new Date(startedAt.getTime() + 20).toISOString(),
+        },
       },
-    },
-  );
-  await started;
-  await expect(deadline).rejects.toMatchObject({
-    payload: {
-      kind: 'deadline_exceeded',
-      retry: { kind: 'same_idempotency_key' },
-    },
-  });
+    );
+    await Promise.race([
+      started,
+      deadline.then(
+        () => undefined,
+        () => undefined,
+      ),
+    ]);
+    expect(entered).toBe(true);
+    jest.advanceTimersByTime(20);
+    await expect(deadline).rejects.toMatchObject({
+      payload: {
+        kind: 'deadline_exceeded',
+        retry: { kind: 'same_idempotency_key' },
+      },
+    });
+  } finally {
+    jest.useRealTimers();
+  }
   const pending = dispatcher.instruction(
     'core.example.write',
     { daemonEpoch: 'two', sequence: 0 },

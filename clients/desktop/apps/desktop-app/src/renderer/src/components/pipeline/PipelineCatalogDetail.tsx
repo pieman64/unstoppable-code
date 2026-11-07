@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState, type JSX } from 'react';
 import { RelatedItemsSection } from '@canopy/ui-shared';
 import {
   DetailPageActions,
+  Divider,
   ExecutionActionButton,
   Heading,
 } from '@canopy/ui-shared/components';
@@ -146,21 +147,24 @@ export function PipelineCatalogDetail({
         <p className="text-s fg-secondary">{pipeline.description}</p>
       )}
 
-      <div className="grid gap-4 border-t pt-4 sm:grid-cols-2">
-        <MetadataBadges
-          label="Triggers"
-          values={(pipeline.triggerTypes ?? []).map(
-            (type) => TRIGGER_META[type].label,
-          )}
-          empty="No trigger information"
-        />
-        <MetadataBadges
-          label="Scopes"
-          values={scopes.map(
-            (scope) => PIPELINE_EXECUTION_SCOPE_META[scope].label,
-          )}
-          empty="No scope information"
-        />
+      <div>
+        <Divider />
+        <div className="grid gap-4 pt-4 sm:grid-cols-2">
+          <MetadataBadges
+            label="Triggers"
+            values={(pipeline.triggerTypes ?? []).map(
+              (type) => TRIGGER_META[type].label,
+            )}
+            empty="No trigger information"
+          />
+          <MetadataBadges
+            label="Scopes"
+            values={scopes.map(
+              (scope) => PIPELINE_EXECUTION_SCOPE_META[scope].label,
+            )}
+            empty="No scope information"
+          />
+        </div>
       </div>
 
       <RelatedItemsSection

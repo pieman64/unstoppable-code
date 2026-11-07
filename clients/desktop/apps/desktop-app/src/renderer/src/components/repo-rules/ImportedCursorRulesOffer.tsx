@@ -1,6 +1,6 @@
 import { useEffect, useState, type JSX } from 'react';
 import { useCanopyClient } from '@canopy/app-state';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, Surface } from '@canopy/ui-shared/components';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 
 /** Presence checks are metadata-only, but an import can add many projects. */
@@ -54,40 +54,43 @@ export function ImportedCursorRulesOffer({
 
   if (withRules.length === 0) return null;
   return (
-    <div
-      className="rounded-md border px-3 py-2"
+    <Surface
+      variant="outline"
+      size="small"
       data-testid="import-projects-cursor-rules"
     >
-      <p className="text-s fg-primary">
-        {withRules.length === 1
-          ? 'This project has Cursor rules.'
-          : 'These projects have Cursor rules.'}
-      </p>
-      <p className="mt-0.5 text-xs fg-secondary">
-        Review them to use them in new chats. The repository stays unchanged.
-      </p>
-      <ul className="mt-2 space-y-1">
-        {withRules.map((workspace) => (
-          <li
-            key={workspace.workspaceId}
-            className="flex items-center justify-between gap-2"
-          >
-            <span
-              className={`min-w-0 truncate text-s fg-primary ${REPLAY_MASK_CLASS}`}
+      <div className="px-3 py-2">
+        <p className="text-s fg-primary">
+          {withRules.length === 1
+            ? 'This project has Cursor rules.'
+            : 'These projects have Cursor rules.'}
+        </p>
+        <p className="mt-0.5 text-xs fg-secondary">
+          Review them to use them in new chats. The repository stays unchanged.
+        </p>
+        <ul className="mt-2 space-y-1">
+          {withRules.map((workspace) => (
+            <li
+              key={workspace.workspaceId}
+              className="flex items-center justify-between gap-2"
             >
-              {workspace.displayName}
-            </span>
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={(): void => onReview(workspace.workspaceId)}
-              data-testid={`import-projects-cursor-rules-review-${workspace.workspaceId}`}
-            >
-              Review Cursor rules
-            </Button>
-          </li>
-        ))}
-      </ul>
-    </div>
+              <span
+                className={`min-w-0 truncate text-s fg-primary ${REPLAY_MASK_CLASS}`}
+              >
+                {workspace.displayName}
+              </span>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={(): void => onReview(workspace.workspaceId)}
+                data-testid={`import-projects-cursor-rules-review-${workspace.workspaceId}`}
+              >
+                Review Cursor rules
+              </Button>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </Surface>
   );
 }

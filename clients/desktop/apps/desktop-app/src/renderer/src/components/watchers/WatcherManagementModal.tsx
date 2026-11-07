@@ -17,7 +17,7 @@ import {
   useState,
   type JSX,
 } from 'react';
-import { Fact, FactList } from '@canopy/ui-shared/components';
+import { Fact, FactList, Surface } from '@canopy/ui-shared/components';
 import {
   ChoiceField,
   DialogModal,
@@ -399,10 +399,12 @@ export function WatcherManagementModal({
                       ? jumpError.message
                       : null;
                   return (
-                    <li
+                    <Surface
                       key={watcher.id}
                       data-testid={`watcher-management-row-${watcher.id}`}
-                      className="rounded-lg bg-subtle p-3"
+                      as="li"
+                      variant="group"
+                      padding="compact"
                     >
                       <div className="flex min-w-0 flex-col gap-3">
                         <div className="min-w-0 flex-1">
@@ -685,7 +687,7 @@ export function WatcherManagementModal({
                           )}
                         </div>
                       </div>
-                    </li>
+                    </Surface>
                   );
                 })}
               </ul>

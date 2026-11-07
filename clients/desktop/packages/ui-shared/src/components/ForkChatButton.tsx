@@ -61,7 +61,7 @@ export function ForkChatButton({
           {/* Split, turned a quarter right, reads as one line forking into
               two (ChatGPT's "Fork from here"). */}
           <span className="inline-flex rotate-90" aria-hidden="true">
-            <ForkSplitIcon width="14" height="14" />
+            <ForkSplitIcon size="sm" />
           </span>
         </Button>
       </Tooltip>
@@ -83,7 +83,7 @@ export function ForkChatButton({
         onClick={onClick}
         {...ariaAttributes}
       >
-        <AppCatalogGitForkIcon width="14" height="14" aria-hidden="true" />
+        <AppCatalogGitForkIcon size="sm" aria-hidden="true" />
       </Button>
     </Tooltip>
   );

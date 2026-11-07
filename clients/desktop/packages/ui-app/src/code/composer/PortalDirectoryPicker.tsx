@@ -122,7 +122,7 @@ export function PortalDirectoryPicker({
             aria-controls={open ? menuId : undefined}
             data-testid="portal-chat-directory-picker"
           >
-            {compact ? null : <FolderIcon width={16} height={16} />}
+            {compact ? null : <FolderIcon size="sm" />}
             <span className="min-w-0 truncate fg-primary">{currentName}</span>
           </PickerTrigger>
         </Tooltip>
@@ -132,13 +132,9 @@ export function PortalDirectoryPicker({
           buttonRef={triggerRef}
           onClick={disabled ? undefined : (): void => setOpen((prev) => !prev)}
           disabled={disabled}
-          icon={<FolderIcon width={16} height={16} />}
+          icon={<FolderIcon size="sm" />}
           label={currentName}
-          trailing={
-            disabled ? undefined : (
-              <ChevronDownMediumIcon width={12} height={12} />
-            )
-          }
+          trailing={disabled ? undefined : <ChevronDownMediumIcon size="sm" />}
           ariaLabel={`Select working directory, current ${currentName}`}
           ariaHasPopup={disabled ? undefined : 'listbox'}
           ariaExpanded={disabled ? undefined : open}

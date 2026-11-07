@@ -146,12 +146,16 @@ import {
   getRepoSlugForIpc,
   listPullRequestsForIpc,
   listUserReposForIpc,
+  getMergeQueueForIpc,
   resolvePullRequestForIpc,
   type GitHubPullRequestIpcDispatcher,
 } from '../canopy-runtime/github-pull-request-dispatch';
 import {
   createPullRequestDirectly,
   dispatchedPullRequestCreate,
+  dispatchedPullRequestMerge,
+  mergePullRequestDirectly,
+  type PullRequestMergeStep,
   updatePullRequestBaseForIpc,
   type PullRequestCreateStep,
 } from '../canopy-runtime/github-pull-request-write-dispatch';
@@ -167,7 +171,6 @@ import {
   getFullDiff,
   getCommitLog,
   fetchOrigin,
-  pullBranchRebase,
   getRemoteUrl,
   hasAutostashEntry,
   hasUnmergedPaths,
@@ -178,7 +181,6 @@ import {
   hasUnpulledCommits,
   hasUnpushedCommits,
   isRebaseInProgress,
-  mergeBranchIntoLocalBase,
   stageAllChanges,
   commitWithMessage,
   getUncommittedDiff,
@@ -191,7 +193,6 @@ import {
 import type { RebaseResolutionKind } from '../lib/rebase-resolution-chat';
 import {
   fetchRepoPrTrackingData,
-  mergePrForRepo,
   parseGitHubRemote,
   PR_MERGE_RETRY_DELAYS_MS,
 } from '../lib/github-pr';
@@ -214,7 +215,6 @@ import {
   suspendTrackingForE2e,
 } from '../lib/github-poller';
 import { getGitHubBroker } from '../lib/github-broker';
-import { getGitHubMergeQueue } from '../lib/github-merge-queue-read-model';
 import { sendToWindow } from '../lib/window-send';
 import { readPreferencesFile } from './preferences';
 import { registerIpcHandler } from './register';
@@ -227,7 +227,7 @@ import {
   type GitActionCancellationScope,
 } from './git-action-cancellation';
 import { triggerWorktreePrecommitFailureHook } from '../lib/worktree-precommit-failure-hook';
-import { getObservabilityService } from '../observability';
+import { getExecutionObservabilityIngest } from '../observability/ingest';
 import { planPrSplit, PrSplitPlanningError } from '../lib/pr-split-planner';
 import {
   executePrSplit,
@@ -262,10 +262,21 @@ import { hasActiveChatWorkForWorktree } from '../agents/session-manager';
 import { listExecutionSummaries } from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
 import { getDataDir } from '../lib/paths';
 import {
+  mergeWorktreeRepository,
   fetchWorktreeRepository,
   pullWorktreeRepository,
 } from '../canopy-runtime/worker-git-sync-dispatch';
+import type { WorkerGitMergeDispatcher } from '../canopy-runtime/worker-git-merge-adapter';
 import type { WorkerGitSyncDispatcher } from '../canopy-runtime/worker-git-sync-adapter';
+import type {
+  WorkerGitCommitPushDispatcher,
+  GitCommitPhases,
+} from '../canopy-runtime/worker-git-commit-push-adapter';
+import {
+  commitWorktreeRepository,
+  pushWorktreeRepository,
+} from '../canopy-runtime/worker-git-commit-push-dispatch';
+import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -453,15 +464,6 @@ async function runCancellableGitAction<T extends object>(
       finishGitActionCancellationScope(request, scope);
     }
   }
-}
-
-/**
- * A signal that never aborts. `fetchOrigin` swallows every failure for
- * signal-less background callers; a user flow passes this so a failed fetch
- * fails the repository instead of reading stale `origin/*` refs (b91fba5294).
- */
-function userFetchSignal(): AbortSignal {
-  return new AbortController().signal;
 }
 
 interface RepoSkipResult<TReason extends string> {
@@ -778,6 +780,7 @@ async function commitRepoChanges(args: {
   sendProgress: (phase: CommitPushPhase, repoName?: string) => void;
   cancellation: GitActionCancellationScope;
   onCommitted: () => void;
+  mutate?: (message: string, phases: GitCommitPhases) => Promise<string>;
 }): Promise<string> {
   const {
     repoPath,
@@ -831,28 +834,36 @@ async function commitRepoChanges(args: {
     );
   }
 
-  sendProgress('staging', repoName);
-  await args.cancellation.runGitStep(() => stageAllChanges(repoPath));
-
-  sendProgress('committing', repoName);
-  try {
-    return await args.cancellation.runGitStep(async () => {
-      const hash = await commitWithMessage(repoPath, message);
-      args.onCommitted();
-      return hash;
-    });
-  } catch (error) {
-    if (isGitActionCancelledError(error)) throw error;
-    await triggerWorktreePrecommitFailureHook({
-      projectId,
-      worktreeId,
-      repo: { repoPath, repoId, repoName },
-      error,
-      commitMessage: message,
-      getWindow: args.getWindow,
-    }).catch(() => {});
-    throw error;
-  }
+  const phases: GitCommitPhases = {
+    stage: async (run) => {
+      sendProgress('staging', repoName);
+      await args.cancellation.runGitStep(run);
+    },
+    commit: async (run) => {
+      sendProgress('committing', repoName);
+      try {
+        return await args.cancellation.runGitStep(async () => {
+          const hash = await run();
+          args.onCommitted();
+          return hash;
+        });
+      } catch (error) {
+        if (isGitActionCancelledError(error)) throw error;
+        await triggerWorktreePrecommitFailureHook({
+          projectId,
+          worktreeId,
+          repo: { repoPath, repoId, repoName },
+          error,
+          commitMessage: message,
+          getWindow: args.getWindow,
+        }).catch(() => {});
+        throw error;
+      }
+    },
+  };
+  if (args.mutate) return args.mutate(message, phases);
+  await phases.stage(() => stageAllChanges(repoPath));
+  return phases.commit(() => commitWithMessage(repoPath, message));
 }
 
 // In-flight Split PR executions keyed by "projectId:worktreeId" so a second
@@ -961,7 +972,10 @@ function gitShippingRepoCount(
 export function registerGitHubHandlers(
   getWindow: () => BrowserWindow | null,
   runtime: {
-    dispatcher: GitHubPullRequestIpcDispatcher & WorkerGitSyncDispatcher;
+    dispatcher: GitHubPullRequestIpcDispatcher &
+      WorkerGitSyncDispatcher &
+      WorkerGitCommitPushDispatcher &
+      WorkerGitMergeDispatcher;
     resolveCaller: DesktopIpcCallerResolver;
   },
 ): void {
@@ -1240,6 +1254,7 @@ export function registerGitHubHandlers(
     requireReviewedMessages,
     cancellation,
     telemetry,
+    caller,
   }: {
     entry: RepoEntry;
     request: WorktreeRepoOperationRequest;
@@ -1248,8 +1263,20 @@ export function registerGitHubHandlers(
     requireReviewedMessages?: boolean;
     cancellation: GitActionCancellationScope;
     telemetry: GitShippingTelemetryInput;
+    caller?: CanopyCallerDescriptor;
   }): Promise<string> {
     return commitRepoChanges({
+      ...(caller && {
+        mutate: (message: string, phases: GitCommitPhases) =>
+          commitWorktreeRepository(
+            runtime.dispatcher,
+            caller,
+            request,
+            entry,
+            message,
+            phases,
+          ),
+      }),
       onCommitted: () => {
         try {
           recordGitCommitTelemetry(telemetry);
@@ -2098,7 +2125,7 @@ export function registerGitHubHandlers(
   registerIpcHandler(
     IPC_CHANNELS.githubCommitAndPush,
     async (
-      _event: IpcMainInvokeEvent,
+      event: IpcMainInvokeEvent,
       request: CommitAndPushRequest,
     ): Promise<CommitAndPushResponse> => {
       assertWritableScope(request.projectId);
@@ -2162,6 +2189,7 @@ export function registerGitHubHandlers(
                 }
 
                 const commitHash = await commitRepoAndEmitProgress({
+                  caller: runtime.resolveCaller(event),
                   entry,
                   request,
                   prefs,
@@ -2196,7 +2224,13 @@ export function registerGitHubHandlers(
 
               try {
                 await scope.runGitStep(() =>
-                  fetchOrigin(repoPath, { signal: userFetchSignal() }),
+                  fetchWorktreeRepository(
+                    runtime.dispatcher,
+                    runtime.resolveCaller(event),
+                    request,
+                    entry,
+                    { prune: false },
+                  ),
                 );
               } catch (error) {
                 if (classifyGitHubAuthFailure(originUrl, error)) {
@@ -2234,7 +2268,13 @@ export function registerGitHubHandlers(
                   const branchName = await getCurrentBranch(repoPath);
                   try {
                     await scope.runGitStep(() =>
-                      pullBranchRebase(repoPath, branchName),
+                      pullWorktreeRepository(
+                        runtime.dispatcher,
+                        runtime.resolveCaller(event),
+                        request,
+                        entry,
+                        { branch: branchName, strategy: 'rebase' },
+                      ),
                     );
                   } catch (pullErr) {
                     if (isGitActionCancelledError(pullErr)) throw pullErr;
@@ -2256,7 +2296,12 @@ export function registerGitHubHandlers(
                 await assertHeadUnchanged();
                 sendRepoCommitProgress(request, 'pushing', repoName);
                 await scope.runGitStep(() =>
-                  pushBranchWithAuthFailure(repoPath),
+                  pushWorktreeRepository(
+                    runtime.dispatcher,
+                    runtime.resolveCaller(event),
+                    request,
+                    entry,
+                  ),
                 );
                 await scheduleSharedContainerPublicationAfterPush(
                   request.projectId,
@@ -2278,7 +2323,13 @@ export function registerGitHubHandlers(
                 const branchName = await getCurrentBranch(repoPath);
                 try {
                   await scope.runGitStep(() =>
-                    pullBranchRebase(repoPath, branchName),
+                    pullWorktreeRepository(
+                      runtime.dispatcher,
+                      runtime.resolveCaller(event),
+                      request,
+                      entry,
+                      { branch: branchName, strategy: 'rebase' },
+                    ),
                   );
                 } catch (pullErr) {
                   if (isGitActionCancelledError(pullErr)) throw pullErr;
@@ -2304,6 +2355,7 @@ export function registerGitHubHandlers(
 
               await assertHeadUnchanged();
               const commitHash = await commitRepoAndEmitProgress({
+                caller: runtime.resolveCaller(event),
                 entry,
                 request,
                 prefs,
@@ -2328,7 +2380,14 @@ export function registerGitHubHandlers(
 
               await assertHeadUnchanged();
               sendRepoCommitProgress(request, 'pushing', repoName);
-              await scope.runGitStep(() => pushBranchWithAuthFailure(repoPath));
+              await scope.runGitStep(() =>
+                pushWorktreeRepository(
+                  runtime.dispatcher,
+                  runtime.resolveCaller(event),
+                  request,
+                  entry,
+                ),
+              );
               await scheduleSharedContainerPublicationAfterPush(
                 request.projectId,
                 request.worktreeId,
@@ -2386,7 +2445,7 @@ export function registerGitHubHandlers(
   registerIpcHandler(
     IPC_CHANNELS.githubPushOnly,
     async (
-      _event: IpcMainInvokeEvent,
+      event: IpcMainInvokeEvent,
       request: PushOnlyRequest,
     ): Promise<PushOnlyResponse> => {
       assertWritableScope(request.projectId);
@@ -2458,7 +2517,13 @@ export function registerGitHubHandlers(
                 const originUrl = await getRemoteUrl(entry.repoPath);
                 try {
                   await scope.runGitStep(() =>
-                    fetchOrigin(entry.repoPath, { signal: userFetchSignal() }),
+                    fetchWorktreeRepository(
+                      runtime.dispatcher,
+                      runtime.resolveCaller(event),
+                      request,
+                      entry,
+                      { prune: false },
+                    ),
                   );
                 } catch (error) {
                   if (classifyGitHubAuthFailure(originUrl, error))
@@ -2471,7 +2536,13 @@ export function registerGitHubHandlers(
                 if (await hasUnpulledCommits(entry.repoPath)) {
                   sendRepoCommitProgress(request, 'pulling', entry.repoName);
                   await scope.runGitStep(() =>
-                    pullBranchRebase(entry.repoPath, branch),
+                    pullWorktreeRepository(
+                      runtime.dispatcher,
+                      runtime.resolveCaller(event),
+                      request,
+                      entry,
+                      { branch, strategy: 'rebase' },
+                    ),
                   );
                 }
                 if (
@@ -2480,7 +2551,12 @@ export function registerGitHubHandlers(
                 )
                   throw new Error('The branch changed. Start a new push.');
               }
-              await pushBranchWithAuthFailure(entry.repoPath);
+              await pushWorktreeRepository(
+                runtime.dispatcher,
+                runtime.resolveCaller(event),
+                request,
+                entry,
+              );
               await scheduleSharedContainerPublicationAfterPush(
                 request.projectId,
                 request.worktreeId,
@@ -2678,7 +2754,7 @@ export function registerGitHubHandlers(
   registerIpcHandler(
     IPC_CHANNELS.githubMergeLocalBranches,
     async (
-      _event: IpcMainInvokeEvent,
+      event: IpcMainInvokeEvent,
       request: MergeLocalBranchesRequest,
     ): Promise<MergeLocalBranchesResponse> => {
       assertWritableScope(request.projectId);
@@ -2691,6 +2767,8 @@ export function registerGitHubHandlers(
           cancelled: true,
         }),
         async (scope): Promise<MergeLocalBranchesResponse> => {
+          // Match github:pull: reject untracked senders once, before repository Git.
+          const caller = runtime.resolveCaller(event);
           const { repoEntries } = await resolveRequestedRepoEntries(request);
           const repos: MergeLocalBranchRepoResult[] = [];
           const skippedRepos: MergeLocalBranchSkippedRepo[] = [];
@@ -2778,10 +2856,15 @@ export function registerGitHubHandlers(
               const resolvedBranchName = branchName;
               const resolvedBaseBranch = baseBranch;
               const mergeCommitHash = await scope.runGitStep(() =>
-                mergeBranchIntoLocalBase(
-                  repoPath,
-                  resolvedBranchName,
-                  resolvedBaseBranch,
+                mergeWorktreeRepository(
+                  runtime.dispatcher,
+                  caller,
+                  request,
+                  entry,
+                  {
+                    sourceBranch: resolvedBranchName,
+                    baseBranch: resolvedBaseBranch,
+                  },
                 ),
               );
               repos.push({
@@ -2833,7 +2916,10 @@ export function registerGitHubHandlers(
   const MERGE_CLICK_READ = { priority: 'high' } as const;
 
   const mergeWorktreePr = {
-    run: async (request: MergePrRequest): Promise<MergePrResponse> => {
+    run: async (
+      request: MergePrRequest,
+      mergePullRequest: PullRequestMergeStep,
+    ): Promise<MergePrResponse> => {
       const dryRun = request.dryRun === true;
       const verifiedRepos: MergePrVerifiedRepo[] = [];
       const mergedRepos: MergePrRepoResult[] = [];
@@ -3123,11 +3209,13 @@ export function registerGitHubHandlers(
                 const verifiedHeadSha = status.headSha;
                 const mergePrNumber = status.prNumber;
                 const result = await scope.runGitStep(async () => {
-                  const merged = await mergePrForRepo(
+                  const merged = await mergePullRequest({
+                    projectId: request.projectId,
+                    repoId: entry.repoId,
                     repoPath,
-                    mergePrNumber,
-                    verifiedHeadSha,
-                  );
+                    prNumber: mergePrNumber,
+                    expectedHeadSha: verifiedHeadSha,
+                  });
                   if (
                     merged.outcome === 'merged' &&
                     merged.newlyMerged === true
@@ -3370,9 +3458,14 @@ export function registerGitHubHandlers(
 
   registerIpcHandler(
     IPC_CHANNELS.githubMergePr,
-    (_event, request: MergePrRequest) => {
+    (event, request: MergePrRequest) => {
       assertWritableScope(request.projectId);
-      return mergeWorktreePr.run(request);
+      return mergeWorktreePr.run(
+        request,
+        dispatchedPullRequestMerge(runtime.dispatcher, () =>
+          runtime.resolveCaller(event),
+        ),
+      );
     },
   );
 
@@ -3384,7 +3477,7 @@ export function registerGitHubHandlers(
     },
     merge: (request) => {
       assertWritableScope(request.projectId);
-      return mergeWorktreePr.run(request);
+      return mergeWorktreePr.run(request, mergePullRequestDirectly);
     },
     state: async (target) => {
       const { repoEntries } = await resolveAllRepoEntries(target);
@@ -3609,18 +3702,25 @@ export function registerGitHubHandlers(
   registerIpcHandler(
     IPC_CHANNELS.githubSearchPullRequests,
     async (
-      _event: IpcMainInvokeEvent,
+      event: IpcMainInvokeEvent,
       request: unknown,
     ): Promise<SearchPullRequestsResponse> =>
-      handleSearchPullRequestsRequest(request),
+      handleSearchPullRequestsRequest(request, runtime.dispatcher, () =>
+        runtime.resolveCaller(event),
+      ),
   );
 
   registerIpcHandler(
     IPC_CHANNELS.githubGetMergeQueue,
     async (
-      _event: IpcMainInvokeEvent,
+      event: IpcMainInvokeEvent,
       request: GitHubMergeQueueRequest,
-    ): Promise<GitHubMergeQueueResponse> => getGitHubMergeQueue(request),
+    ): Promise<GitHubMergeQueueResponse> =>
+      getMergeQueueForIpc(
+        runtime.dispatcher,
+        () => runtime.resolveCaller(event),
+        request,
+      ),
   );
 
   // worker.git.remote.get for a recorded path (CAN-4109 D5).
@@ -4383,7 +4483,7 @@ async function processRepoForPr(
     } catch {
       /* Best effort. */
     }
-    getObservabilityService().recordCreatedPullRequest({
+    getExecutionObservabilityIngest().recordCreatedPullRequest({
       projectId,
       worktreeId,
       repoId,

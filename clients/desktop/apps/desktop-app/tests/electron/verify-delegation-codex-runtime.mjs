@@ -186,6 +186,7 @@ const address = server.address();
 assert(address && typeof address !== 'string');
 const service = runtime.createCodexRuntimeService({
   capabilityStore: new runtime.CodexCapabilityStore(temporary),
+  mcpLauncher: { command: 'unused-mcp-launcher', args: [] },
 });
 const profile = {
   configArgs: ['-c', 'features.hooks=false', '-c', 'features.apps=false'],

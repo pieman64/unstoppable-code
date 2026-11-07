@@ -90,6 +90,7 @@ import {
   ChatToolResultPart,
   readChatToolResultVisual,
 } from './ChatToolResultPart';
+import { Notice } from '@canopy/ui-shared/components/Notice';
 
 /**
  * Renders one neutral {@link PortalChatPart} by dispatching on its typed `kind`
@@ -206,6 +207,9 @@ export interface AskUserQuestionInteraction {
 const AskUserQuestionInteractionContext =
   createContext<AskUserQuestionInteraction | null>(null);
 
+const NO_COMPOSER_QUESTIONS: readonly PortalAskUserQuestionState[] = [];
+const ComposerAskUserQuestionsContext = createContext(NO_COMPOSER_QUESTIONS);
+
 const EMPTY_WAITING_DELEGATION_IDS: ReadonlySet<string> = new Set();
 
 /** Parent chats identify delegates whose internal request is waiting in queue. */
@@ -221,14 +225,22 @@ export const ChatWaitingDelegationsContext = createContext<ReadonlySet<string>>(
  */
 export function AskUserQuestionInteractionProvider({
   value,
+  composerQuestions = NO_COMPOSER_QUESTIONS,
   children,
 }: {
   value: AskUserQuestionInteraction | null;
+  /**
+   * Unanswered questions the host's composer asks. The transcript row one of
+   * them matches renders nothing, as desktop's does while its composer asks.
+   */
+  composerQuestions?: readonly PortalAskUserQuestionState[];
   children: ReactNode;
 }): JSX.Element {
   return (
     <AskUserQuestionInteractionContext.Provider value={value}>
-      {children}
+      <ComposerAskUserQuestionsContext.Provider value={composerQuestions}>
+        {children}
+      </ComposerAskUserQuestionsContext.Provider>
     </AskUserQuestionInteractionContext.Provider>
   );
 }
@@ -735,6 +747,7 @@ function ChatPartViewImpl({
   const workingStatus = useContext(TurnWorkingStatusContext);
   const data = partData(part);
   const askUserInteraction = useAskUserQuestionInteraction();
+  const composerQuestions = useContext(ComposerAskUserQuestionsContext);
   const outputReader = useContext(ToolOutputReaderContext);
   const turnSettled = useContext(ToolTurnSettledContext);
   const clean = useCleanChatLook();
@@ -815,16 +828,23 @@ function ChatPartViewImpl({
         // be answered; the shared resolver settles it from the projection.
         const presentation = resolveAskUserQuestionPresentation(
           askUserQuestionResultEvidence(result, input),
-          portalAskUserQuestionRecordState(askUserInteraction?.states ?? [], {
-            toolName,
-            toolUseId,
-            questionTexts: parseAskUserQuestionTexts(input),
-          }),
+          portalAskUserQuestionRecordState(
+            [...(askUserInteraction?.states ?? []), ...composerQuestions],
+            {
+              toolName,
+              toolUseId,
+              questionTexts: parseAskUserQuestionTexts(input),
+            },
+          ),
+          live,
         );
         switch (presentation.kind) {
           case 'awaiting': {
-            if (!askUserInteraction) return null;
             const pending = presentation.record;
+            // The composer asks it, so the row stays hidden, as on desktop.
+            if (!askUserInteraction || composerQuestions.includes(pending)) {
+              return null;
+            }
             const status = askUserInteraction.getRequestStatus?.(
               pending.requestId,
             );
@@ -856,12 +876,14 @@ function ChatPartViewImpl({
           }
           case 'preparing':
             return (
-              <div
-                className="rounded-lg border border-line-accent/20 bg-accent/[0.04] px-4 py-3 text-xs fg-secondary"
+              <Notice
+                intent="neutral"
+                icon={null}
+                role="none"
                 data-testid="ask-user-question-preparing"
               >
                 Preparing question…
-              </div>
+              </Notice>
             );
           case 'answered':
             return (

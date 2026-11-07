@@ -991,8 +991,7 @@ function ResourceRow({
             </span>
             <ChevronRightIcon
               aria-hidden="true"
-              width={SOURCE_ICON_SIZE}
-              height={SOURCE_ICON_SIZE}
+              size="sm"
               className={`hidden group-hover:block group-focus-visible:block group-has-[:focus-visible]:block transition-transform motion-reduce:transition-none ${
                 expanded ? 'rotate-90' : ''
               }`}

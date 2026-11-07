@@ -1,3 +1,9 @@
+import type {
+  GitHubMergePolicy,
+  GitHubMergeResult,
+  GitHubPullRequestRecord,
+  GitHubPullRequestRef,
+} from '@canopy/core-runtime/node/github';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type {
   GitHubRepoSummary,
@@ -16,12 +22,12 @@ interface RepositoryLocation {
   /** The path the IPC request named. */
   readonly repoPath: string;
   /** Where the host resolved the dispatched repository id. */
-  resolvedRepoPath?: string;
+  resolvedRepoPath?: string | null;
 }
 
-/** `github:list-pull-requests`: today's REST listing, not the canonical read. */
+/** Legacy listing or title-search rows, not the canonical full read. */
 export interface PullRequestListCapture extends RepositoryLocation {
-  readonly kind: 'list';
+  readonly kind: 'list' | 'search';
   legacy?: PullRequestSummary[];
 }
 
@@ -47,7 +53,21 @@ export interface PullRequestWriteCapture {
   written?: { number: number; url: string; created: boolean };
 }
 
+export interface PullRequestMergeCapture {
+  readonly kind: 'merge';
+  policyRead?: {
+    readonly ref: GitHubPullRequestRef;
+    readonly record: GitHubPullRequestRecord;
+  };
+  policy?: GitHubMergePolicy;
+  policyConsumed?: boolean;
+  current?: GitHubPullRequestRecord;
+  mutationSent?: boolean;
+  result?: GitHubMergeResult;
+}
+
 export type GitHubProjectionCapture =
+  | PullRequestMergeCapture
   | PullRequestListCapture
   | PullRequestResolveCapture
   | RepositoryListCapture

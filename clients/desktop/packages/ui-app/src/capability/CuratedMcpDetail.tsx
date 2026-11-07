@@ -20,6 +20,7 @@ import {
   Heading,
   Skeleton,
 } from '@canopy/ui-shared/components';
+import { Divider } from '@canopy/ui-shared/components';
 import {
   MCP_PROVIDER_CONNECTOR_LABELS,
   mcpProviderOnlyGuidance,
@@ -150,14 +151,17 @@ export function CuratedMcpDetail<T extends McpDetailEntry>({
   const tools = renderManagement ? (
     renderManagement(<div data-testid="mcp-browse-tools">{toolsBody}</div>)
   ) : (
-    <div
-      className={routes === undefined ? 'border-t pt-3' : undefined}
-      data-testid="mcp-browse-tools"
-    >
-      <Heading level={4} variant="label" className="mb-2">
-        Tools
-      </Heading>
-      {toolsBody}
+    <div>
+      {routes === undefined ? <Divider /> : null}
+      <div
+        className={routes === undefined ? 'pt-3' : undefined}
+        data-testid="mcp-browse-tools"
+      >
+        <Heading level={4} variant="label" className="mb-2">
+          Tools
+        </Heading>
+        {toolsBody}
+      </div>
     </div>
   );
 

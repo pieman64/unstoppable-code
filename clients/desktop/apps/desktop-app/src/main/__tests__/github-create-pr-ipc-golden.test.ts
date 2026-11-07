@@ -1,3 +1,5 @@
+import { WORKER_GIT_MERGE_INSTRUCTION_DEFINITIONS } from '@canopy/protocol/canopy-core';
+import { createWorkerGitMergeAdapter } from '../canopy-runtime/worker-git-merge-adapter';
 // CAN-4070 rule: captured on the unchanged `github:create-pr` handler before
 // CAN-4109 sends its two GitHub create steps through core.pullRequest.create.
 // GitHub is faked at the broker client, the boundary the create reaches, so
@@ -200,6 +202,8 @@ import {
 } from '@canopy/desktop-shared/types';
 import {
   CORE_PULL_REQUEST_INSTRUCTION_DEFINITIONS,
+  CORE_PULL_REQUEST_MERGE_INSTRUCTION_DEFINITIONS,
+  CORE_PULL_REQUEST_MERGE_QUEUE_QUERY_DEFINITIONS,
   CORE_PULL_REQUEST_QUERY_DEFINITIONS,
   type CanopyCallerDescriptor,
 } from '@canopy/protocol/canopy-core';
@@ -211,6 +215,7 @@ import { createCorePullRequestAdapter } from '../canopy-runtime/core-pull-reques
 import { registerGitHubHandlers } from '../ipc/github';
 import { recordPullRequestOpenedTelemetry } from '../lib/desktop-telemetry';
 import { generatePrContent } from '../lib/github-pr-generator';
+import { createPrForRepo } from '../lib/github-pr';
 import { resolveEffectiveBaseBranchForRepo } from '../lib/worktree-base-branches';
 
 initAgentModels([]);
@@ -309,13 +314,23 @@ const pullRequestAdapter = createCorePullRequestAdapter();
 const dispatcher = createCanopyDispatcher({
   profile: 'core+worker',
   definitions: {
-    queries: CORE_PULL_REQUEST_QUERY_DEFINITIONS,
-    instructions: CORE_PULL_REQUEST_INSTRUCTION_DEFINITIONS,
+    queries: {
+      ...CORE_PULL_REQUEST_QUERY_DEFINITIONS,
+      ...CORE_PULL_REQUEST_MERGE_QUEUE_QUERY_DEFINITIONS,
+    },
+    instructions: {
+      ...CORE_PULL_REQUEST_INSTRUCTION_DEFINITIONS,
+      ...CORE_PULL_REQUEST_MERGE_INSTRUCTION_DEFINITIONS,
+      ...WORKER_GIT_MERGE_INSTRUCTION_DEFINITIONS,
+    },
     streams: {},
   },
   handlers: {
     queries: pullRequestAdapter.queries,
-    instructions: pullRequestAdapter.instructions,
+    instructions: {
+      ...pullRequestAdapter.instructions,
+      ...createWorkerGitMergeAdapter(),
+    },
     streams: {},
   },
 });
@@ -739,6 +754,30 @@ describe('github:create-pr through core.pullRequest.create', () => {
     expect(createRequests()).toEqual([]);
   });
 
+  it('refuses origin drift before the repository-unavailable direct create fallback', async () => {
+    const { getRemoteUrl } = jest.requireMock<{
+      getRemoteUrl: jest.Mock<Promise<string | null>, [string]>;
+    }>('../lib/git');
+    let sourceReads = 0;
+    getRemoteUrl.mockImplementation((path: string) => {
+      if (path === '/source/single-repo' && ++sourceReads === 2)
+        return Promise.resolve(null);
+      return Promise.resolve(
+        sourceReads >= 2
+          ? 'git@github.com:another/repository.git'
+          : 'git@github.com:golden-org/single-repo.git',
+      );
+    });
+    try {
+      await expect(rejection(REQUEST)).resolves.toEqual(STATE_CHANGED);
+      expect(createRequests()).toEqual([]);
+    } finally {
+      getRemoteUrl.mockImplementation(() =>
+        Promise.resolve('git@github.com:golden-org/single-repo.git'),
+      );
+    }
+  });
+
   it('returns and records the created pull request when the read after it fails', async () => {
     mockReadGitHubPullRequestProjection.mockRejectedValue(
       new GitHubBrokerError('network', 'socket hang up'),
@@ -752,6 +791,157 @@ describe('github:create-pr through core.pullRequest.create', () => {
     expect(createRequests()).toHaveLength(1);
     expect(recordPullRequestOpenedTelemetry).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    'git@github.com:another/repository.git',
+    null,
+    'https://gitlab.com/golden-org/single-repo.git',
+  ])(
+    'refuses duplicate reconciliation origin drift (%s) without further GitHub use',
+    async (origin) => {
+      const { getRemoteUrl, resolveRefSha } = jest.requireMock<{
+        getRemoteUrl: jest.Mock<Promise<string | null>, [string]>;
+        resolveRefSha: jest.Mock<Promise<string>, [string, string]>;
+      }>('../lib/git');
+      resolveRefSha.mockRejectedValueOnce(new Error('unknown revision'));
+      let callsAtDuplicate = 0;
+      mockOctokit.pulls.create.mockImplementationOnce(() => {
+        getRemoteUrl.mockResolvedValue(origin);
+        callsAtDuplicate = mockEnqueue.mock.calls.length;
+        return Promise.reject(
+          githubValidationError(
+            'A pull request already exists for golden-org:feature-branch.',
+          ),
+        );
+      });
+      mockOctokit.pulls.list.mockImplementation(() =>
+        Promise.resolve({
+          data: createRequests().length > 0 ? [listedPullRequest(12)] : [],
+        }),
+      );
+      try {
+        await expect(rejection(REQUEST)).resolves.toEqual(STATE_CHANGED);
+        expect(createRequests()).toHaveLength(1);
+        expect(mockEnqueue).toHaveBeenCalledTimes(callsAtDuplicate);
+        expect(recordPullRequestOpenedTelemetry).not.toHaveBeenCalled();
+        expect(mockRecordCreatedPullRequest).not.toHaveBeenCalled();
+      } finally {
+        getRemoteUrl.mockImplementation(() =>
+          Promise.resolve('git@github.com:golden-org/single-repo.git'),
+        );
+      }
+    },
+  );
+
+  it.each([false, true])(
+    'keeps duplicate adoption byte for byte through the direct IPC create step (drift during reconciliation: %s)',
+    async (moved) => {
+      const { getRemoteUrl, resolveRefSha } = jest.requireMock<{
+        getRemoteUrl: jest.Mock<Promise<string | null>, [string]>;
+        resolveRefSha: jest.Mock<Promise<string>, [string, string]>;
+      }>('../lib/git');
+      resolveRefSha.mockRejectedValueOnce(new Error('unknown revision'));
+      mockOctokit.pulls.create.mockRejectedValueOnce(
+        githubValidationError(
+          'A pull request already exists for golden-org:feature-branch.',
+        ),
+      );
+      mockOctokit.pulls.list.mockImplementation(() => {
+        const reconciling = createRequests().length > 0;
+        if (reconciling && moved)
+          getRemoteUrl.mockResolvedValue(
+            'git@github.com:another/repository.git',
+          );
+        return Promise.resolve({
+          data: reconciling ? [listedPullRequest(12)] : [],
+        });
+      });
+      try {
+        await expect(
+          createPr(REQUEST).then((r) => JSON.stringify(r)),
+        ).resolves.toBe(
+          `{"repos":[{"repoId":"__single_repo__","repoName":"single-repo","prNumber":12,"prUrl":"${PR_URL(12)}"}],"skippedRepos":[],"localOnlyCommittedRepos":[]}`,
+        );
+        expect(createRequests()).toHaveLength(1);
+        // Every reconciliation read stays on the attempted create's repository.
+        for (const read of [
+          mockOctokit.pulls.list,
+          mockOctokit.pulls.get,
+          mockOctokit.pulls.listReviews,
+          mockOctokit.checks.listForRef,
+        ])
+          for (const [params] of read.mock.calls)
+            expect(params).toEqual(
+              expect.objectContaining({
+                owner: 'golden-org',
+                repo: 'single-repo',
+              }),
+            );
+        expect(recordPullRequestOpenedTelemetry).not.toHaveBeenCalled();
+        expect(mockRecordCreatedPullRequest).not.toHaveBeenCalled();
+      } finally {
+        getRemoteUrl.mockImplementation(() =>
+          Promise.resolve('git@github.com:golden-org/single-repo.git'),
+        );
+      }
+    },
+  );
+
+  it.each([false, true])(
+    'only adopts a duplicate on the verified repository (origin moved: %s)',
+    async (moved) => {
+      const { getRemoteUrl } = jest.requireMock<{
+        getRemoteUrl: jest.Mock<Promise<string | null>, [string]>;
+      }>('../lib/git');
+      mockOctokit.pulls.create.mockImplementationOnce(() => {
+        if (moved)
+          getRemoteUrl.mockResolvedValue(
+            'git@github.com:another/repository.git',
+          );
+        return Promise.reject(
+          githubValidationError(
+            'A pull request already exists for golden-org:feature-branch.',
+          ),
+        );
+      });
+      mockOctokit.pulls.list.mockResolvedValue({
+        data: [listedPullRequest(12)],
+      });
+      try {
+        const result = createPrForRepo(
+          '/workspace/single-repo',
+          'feature-branch',
+          'title',
+          'body',
+          'main',
+          false,
+          { owner: 'golden-org', repo: 'single-repo' },
+        );
+        if (moved) {
+          await expect(result).rejects.toThrow(
+            'PR state changed. Refresh and try again.',
+          );
+        } else {
+          await expect(result).resolves.toEqual({
+            prNumber: 12,
+            prUrl: PR_URL(12),
+            created: false,
+          });
+        }
+        expect(createRequests()).toHaveLength(1);
+        expect(createRequests()[0]).toEqual(
+          expect.objectContaining({
+            owner: 'golden-org',
+            repo: 'single-repo',
+          }),
+        );
+      } finally {
+        getRemoteUrl.mockImplementation(() =>
+          Promise.resolve('git@github.com:golden-org/single-repo.git'),
+        );
+      }
+    },
+  );
 
   it('keeps the direct create for a checkout whose origin is not the recorded one', async () => {
     const { getRemoteUrl } = jest.requireMock<{

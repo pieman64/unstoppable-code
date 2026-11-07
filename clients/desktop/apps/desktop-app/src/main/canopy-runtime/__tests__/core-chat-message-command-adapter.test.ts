@@ -6,6 +6,7 @@ import type {
   ChatStateCommandPort,
 } from '@canopy/desktop-shared/types';
 import { createDesktopRuntime } from '../desktop-runtime';
+import { CHAT_MESSAGE_COMMAND_ROUTES } from '../core-chat-message-command-adapter';
 import {
   createChatCommandDispatchOptions,
   dispatchTrustedChatCommand,
@@ -533,4 +534,47 @@ describe('chat message command adapter', () => {
       }
     },
   );
+
+  it('carries entry revisions between core params and chat commands', async () => {
+    const { port, command } = createPort(receipt);
+    const runtime = createDesktopRuntime({ chatCommandPort: port });
+    try {
+      await runtime.instruction(
+        'core.chat.queue.entry.force',
+        {
+          scope: { workspaceId: 'project-1', worktreeId: 'worktree-1' },
+          commandId: 'command-1',
+          _meta: { idempotencyKey: 'command-1' },
+          chatId: 'chat-1',
+          entryId: 'queue-1',
+          entryRevision: 4,
+        },
+        { caller, metadata: { idempotencyKey: 'command-1' } },
+      );
+      expect(command).toHaveBeenCalledWith(
+        expect.objectContaining({
+          command: {
+            type: 'chat.force_queued_message',
+            chatId: 'chat-1',
+            queuedMessageId: 'queue-1',
+            queuedMessageRevision: 4,
+          },
+        }),
+      );
+    } finally {
+      await runtime.shutdown();
+    }
+    const cancel: ChatCommand = {
+      type: 'chat.cancel_queued_message',
+      chatId: 'chat-1',
+      queuedMessageId: 'queue-1',
+      queuedMessageRevision: 2,
+    };
+    expect(
+      CHAT_MESSAGE_COMMAND_ROUTES['chat.cancel_queued_message']?.toParams(
+        cancel,
+        request(cancel),
+      ),
+    ).toMatchObject({ entryId: 'queue-1', entryRevision: 2 });
+  });
 });

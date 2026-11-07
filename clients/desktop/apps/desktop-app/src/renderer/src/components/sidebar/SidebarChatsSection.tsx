@@ -167,8 +167,9 @@ export function SidebarChatsSection(): JSX.Element | null {
               {sectionLabel}
             </span>
             <ChevronDownMediumIcon
+              size="sm"
               data-testid="sidebar-chats-chevron"
-              className={`h-4 w-4 shrink-0 fg-quaternary transition-[color,opacity] group-hover/chats:fg-secondary group-hover/chats:opacity-100 group-focus-within/chats:fg-secondary group-focus-within/chats:opacity-100 ${
+              className={`shrink-0 fg-quaternary transition-[color,opacity] group-hover/chats:fg-secondary group-hover/chats:opacity-100 group-focus-within/chats:fg-secondary group-focus-within/chats:opacity-100 ${
                 stuck
                   ? // Pointing back up at its own rows — the mirror of the
                     // Projects stand-in's chevron at the foot of the rail.

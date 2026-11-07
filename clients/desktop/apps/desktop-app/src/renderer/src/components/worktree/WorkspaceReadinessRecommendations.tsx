@@ -35,6 +35,7 @@ import {
   ErrorBanner,
   Heading,
   Skeleton,
+  Surface,
 } from '@canopy/ui-shared/components';
 
 interface WorkspaceReadinessRecommendationsProps {
@@ -228,8 +229,7 @@ export function WorkspaceReadinessRecommendations({
             ) : ready ? (
               <>
                 <CheckIcon
-                  width={14}
-                  height={14}
+                  size="sm"
                   aria-hidden={true}
                   className="fg-success"
                 />
@@ -287,8 +287,10 @@ export function WorkspaceReadinessRecommendations({
   }
 
   return (
-    <section
-      className="rounded-lg border bg-secondary/10 p-4"
+    <Surface
+      as="section"
+      variant="group"
+      padding="default"
       data-testid="workspace-readiness-recommendations"
     >
       <div className="flex items-start gap-3">
@@ -299,11 +301,7 @@ export function WorkspaceReadinessRecommendations({
               : 'bg-accent-subtle fg-accent'
           }`}
         >
-          {ready ? (
-            <CheckIcon width={15} height={15} />
-          ) : (
-            <WrenchIcon width={15} height={15} />
-          )}
+          {ready ? <CheckIcon size="sm" /> : <WrenchIcon size="sm" />}
         </span>
         <div className="min-w-0 flex-1">
           <Heading level={3} variant="title">
@@ -355,38 +353,39 @@ export function WorkspaceReadinessRecommendations({
                     launched !== undefined &&
                     missingChats.includes(launchedReadinessFixKey(launched));
                   return (
-                    <div
-                      key={key}
-                      className="flex items-center justify-between gap-4 rounded-lg border bg-base px-3 py-3"
-                    >
-                      <div className="min-w-0">
-                        <div className="text-xs font-medium fg-primary">
-                          {issue.title}
+                    <Surface variant="inset" key={key}>
+                      <div className="flex items-center justify-between gap-4 px-3 py-3">
+                        <div className="min-w-0">
+                          <div className="text-xs font-medium fg-primary">
+                            {issue.title}
+                          </div>
+                          <div className="mt-1 text-xs fg-secondary">
+                            {issue.message}
+                            {chatMissing && ' Conversation unavailable.'}
+                          </div>
                         </div>
-                        <div className="mt-1 text-xs fg-secondary">
-                          {issue.message}
-                          {chatMissing && ' Conversation unavailable.'}
-                        </div>
+                        {issue.fixPrompt === null ? null : launched ? (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => void handleView(launched)}
+                          >
+                            {chatMissing
+                              ? 'Open worktree'
+                              : 'View conversation'}
+                          </Button>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={launchingKey !== null}
+                            onClick={() => void handleFix(issue)}
+                          >
+                            {isLaunching ? 'Starting…' : 'Fix in new worktree'}
+                          </Button>
+                        )}
                       </div>
-                      {issue.fixPrompt === null ? null : launched ? (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => void handleView(launched)}
-                        >
-                          {chatMissing ? 'Open worktree' : 'View conversation'}
-                        </Button>
-                      ) : (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={launchingKey !== null}
-                          onClick={() => void handleFix(issue)}
-                        >
-                          {isLaunching ? 'Starting…' : 'Fix in new worktree'}
-                        </Button>
-                      )}
-                    </div>
+                    </Surface>
                   );
                 })}
               </div>
@@ -396,6 +395,6 @@ export function WorkspaceReadinessRecommendations({
       )}
 
       <ErrorBanner error={launchError} className="mt-3" />
-    </section>
+    </Surface>
   );
 }

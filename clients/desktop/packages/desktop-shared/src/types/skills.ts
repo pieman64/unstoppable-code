@@ -327,6 +327,8 @@ export interface SkillsAPI {
   onUpdateProgress(
     callback: (progress: SkillUpdateProgress) => void,
   ): () => void;
+  /** Fires when an agent changes local skills in Electron main. */
+  onChanged(callback: () => void): () => void;
   readContent(
     sourceId: string,
     skillName: string,

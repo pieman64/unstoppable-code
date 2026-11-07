@@ -2,13 +2,14 @@ import { type JSX, useCallback, useEffect, useState } from 'react';
 import {
   CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
+  ErrorBanner,
   Markdown,
+  markdownOptions,
   PlanCommentComposer,
+  type PlanReviewAuthor,
   PlanReviewComment,
   PlanReviewThread,
-  markdownOptions,
-  type PlanReviewAuthor,
-  ErrorBanner,
+  Surface,
 } from '@canopy/ui-shared/components';
 import type {
   SharedRunComment,
@@ -196,7 +197,7 @@ export function RunCommentsModal({
             ))
           )}
 
-          <div className="rounded-xl border bg-card p-3">
+          <Surface variant="card" padding="compact">
             <PlanCommentComposer
               value={newComment}
               onChange={setNewComment}
@@ -208,7 +209,7 @@ export function RunCommentsModal({
               submitTestId="run-comments-add"
               placeholder="Reply to reviewers… (Enter to send, Shift+Enter for a new line)"
             />
-          </div>
+          </Surface>
 
           <ErrorBanner className="" error={error} testId="run-comments-error" />
         </div>

@@ -62,6 +62,7 @@ import {
   type EntityGraphLiveness,
 } from './graph-helpers';
 import type { SettingsFailure } from '../errors';
+import { Surface } from '@canopy/ui-shared/components';
 
 // Matches MAX_FACT_DETAIL_BATCH on the facts/batch route.
 const MAX_SELECTED_FACTS = 25;
@@ -356,7 +357,7 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
 
   return (
     <div className="space-y-4">
-      <div className="rounded-xl border bg-card p-4">
+      <Surface variant="card" padding="default">
         <form onSubmit={submitQuery} className="flex gap-2">
           <SearchField
             value={queryInput}
@@ -401,7 +402,7 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
             aria-label="Facts created to"
           />
         </div>
-      </div>
+      </Surface>
 
       <GraphRetrievalPanel
         orgId={orgId}
@@ -466,104 +467,106 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
         )
       ) : (
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(300px,24rem)]">
-          <section
-            className={`relative ${GRAPH_AREA_HEIGHT} overflow-hidden rounded-xl border bg-card`}
-          >
-            <div className="absolute left-4 top-4 z-10 flex flex-wrap items-center gap-3 rounded-lg border bg-card/90 px-3 py-2 text-xs fg-secondary backdrop-blur">
-              <span>
-                <i className="mr-1.5 inline-block h-2.5 w-2.5 rounded-full bg-accent" />
-                Service
-              </span>
-              <span>
-                <i className="mr-1.5 inline-block h-2.5 w-2.5 rounded-full bg-success" />
-                Code
-              </span>
-              <span>
-                <i className="mr-1.5 inline-block h-2.5 w-2.5 rounded-full bg-warning" />
-                Tool
-              </span>
-              {graph.truncated && (
-                <span className="fg-tertiary">
-                  Truncated — showing the most connected activity
+          <Surface variant="card" className="overflow-hidden">
+            <section className={`relative ${GRAPH_AREA_HEIGHT}`}>
+              <div className="absolute left-4 top-4 z-10 flex flex-wrap items-center gap-3 rounded-lg border bg-card/90 px-3 py-2 text-xs fg-secondary backdrop-blur">
+                <span>
+                  <i className="mr-1.5 inline-block h-2.5 w-2.5 rounded-full bg-accent" />
+                  Service
                 </span>
-              )}
-              <Button
-                size="compact"
-                onClick={handleRefresh}
-                disabled={graphLoading}
-                aria-label="Refresh graph"
-              >
-                <RefreshCw
-                  size={14}
-                  className={graphLoading ? 'animate-spin' : ''}
-                />
-                Refresh
-              </Button>
-            </div>
-            {/* The canvas paints entity names. */}
-            <div className={withPrivacyClass('h-full w-full', blockClassName)}>
-              {isClient ? (
-                <Suspense fallback={<GraphLoading />}>
-                  <EntityForceGraph
-                    graph={graph}
-                    onSelectNode={handleSelectNode}
-                    onSelectEdge={handleSelectEdge}
-                    highlight={highlight}
-                  />
-                </Suspense>
-              ) : (
-                <GraphLoading />
-              )}
-            </div>
-          </section>
-          <aside
-            className={`${GRAPH_AREA_HEIGHT} overflow-y-auto rounded-xl border bg-card p-4`}
-          >
-            <Heading level={2} variant="section">
-              <span
-                className={blockClassName === '' ? undefined : blockClassName}
-              >
-                {selectionTitle}
-              </span>
-            </Heading>
-            {selectedFactIds.length === 0 ? (
-              <p className="mt-2 text-s fg-secondary">
-                Click an entity or connection to inspect its facts. Drag to
-                rearrange, scroll to zoom, hover to highlight neighbors.
-              </p>
-            ) : selectedFactsError !== null && selectedFacts.length === 0 ? (
-              <ErrorBanner
-                className="mt-4"
-                error={selectedFactsError?.copy}
-                details={selectedFactsError?.details}
-                onRetry={retrySelectedFacts}
-              />
-            ) : selectedFacts.length === 0 ? (
-              <DelayedLoadingPlaceholder className="mt-4">
-                <FactCardsSkeleton layout="column" />
-              </DelayedLoadingPlaceholder>
-            ) : (
-              <div className="mt-4 space-y-3">
-                {selectedFactsError !== null && (
-                  <Notice
-                    intent="attention"
-                    actions={
-                      selectedFactsError.details !== undefined ? (
-                        <CopyDetailsButton
-                          details={selectedFactsError.details}
-                        />
-                      ) : undefined
-                    }
-                  >
-                    {selectedFactsError.copy}
-                  </Notice>
+                <span>
+                  <i className="mr-1.5 inline-block h-2.5 w-2.5 rounded-full bg-success" />
+                  Code
+                </span>
+                <span>
+                  <i className="mr-1.5 inline-block h-2.5 w-2.5 rounded-full bg-warning" />
+                  Tool
+                </span>
+                {graph.truncated && (
+                  <span className="fg-tertiary">
+                    Truncated — showing the most connected activity
+                  </span>
                 )}
-                {selectedFacts.map((fact) => (
-                  <FactCard key={fact.id} fact={fact} />
-                ))}
+                <Button
+                  size="compact"
+                  onClick={handleRefresh}
+                  disabled={graphLoading}
+                  aria-label="Refresh graph"
+                >
+                  <RefreshCw
+                    size={14}
+                    className={graphLoading ? 'animate-spin' : ''}
+                  />
+                  Refresh
+                </Button>
               </div>
-            )}
-          </aside>
+              {/* The canvas paints entity names. */}
+              <div
+                className={withPrivacyClass('h-full w-full', blockClassName)}
+              >
+                {isClient ? (
+                  <Suspense fallback={<GraphLoading />}>
+                    <EntityForceGraph
+                      graph={graph}
+                      onSelectNode={handleSelectNode}
+                      onSelectEdge={handleSelectEdge}
+                      highlight={highlight}
+                    />
+                  </Suspense>
+                ) : (
+                  <GraphLoading />
+                )}
+              </div>
+            </section>
+          </Surface>
+          <Surface variant="card" className="overflow-hidden">
+            <aside className={`${GRAPH_AREA_HEIGHT} overflow-y-auto p-4`}>
+              <Heading level={2} variant="section">
+                <span
+                  className={blockClassName === '' ? undefined : blockClassName}
+                >
+                  {selectionTitle}
+                </span>
+              </Heading>
+              {selectedFactIds.length === 0 ? (
+                <p className="mt-2 text-s fg-secondary">
+                  Click an entity or connection to inspect its facts. Drag to
+                  rearrange, scroll to zoom, hover to highlight neighbors.
+                </p>
+              ) : selectedFactsError !== null && selectedFacts.length === 0 ? (
+                <ErrorBanner
+                  className="mt-4"
+                  error={selectedFactsError?.copy}
+                  details={selectedFactsError?.details}
+                  onRetry={retrySelectedFacts}
+                />
+              ) : selectedFacts.length === 0 ? (
+                <DelayedLoadingPlaceholder className="mt-4">
+                  <FactCardsSkeleton layout="column" />
+                </DelayedLoadingPlaceholder>
+              ) : (
+                <div className="mt-4 space-y-3">
+                  {selectedFactsError !== null && (
+                    <Notice
+                      intent="attention"
+                      actions={
+                        selectedFactsError.details !== undefined ? (
+                          <CopyDetailsButton
+                            details={selectedFactsError.details}
+                          />
+                        ) : undefined
+                      }
+                    >
+                      {selectedFactsError.copy}
+                    </Notice>
+                  )}
+                  {selectedFacts.map((fact) => (
+                    <FactCard key={fact.id} fact={fact} />
+                  ))}
+                </div>
+              )}
+            </aside>
+          </Surface>
         </div>
       )}
     </div>

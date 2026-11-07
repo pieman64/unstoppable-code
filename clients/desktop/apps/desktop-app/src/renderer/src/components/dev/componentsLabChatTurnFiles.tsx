@@ -1,6 +1,7 @@
 import { useState, type JSX, type ReactNode } from 'react';
 import {
   Button,
+  Surface,
   TurnFileChipView,
   TurnFilesSummaryView,
   turnChangedFileRowsFrom,
@@ -34,11 +35,10 @@ function Frame({
   readonly width?: number;
 }): JSX.Element {
   return (
-    <div
-      className="max-w-full overflow-hidden rounded-xl border bg-base p-1"
-      style={width ? { width } : { width: '100%' }}
-    >
-      {children}
+    <div className="max-w-full" style={width ? { width } : { width: '100%' }}>
+      <Surface variant="inset" className="overflow-hidden">
+        <div className="p-1">{children}</div>
+      </Surface>
     </div>
   );
 }
@@ -130,14 +130,22 @@ export function TurnFileChipSpecimen(): JSX.Element {
       </SpecimenPanel>
       <SpecimenPanel title="Summary presentation (one file in a header)">
         <SpecimenCell label="Created" wide>
-          <div className="flex w-full items-center rounded-xl border bg-base p-3">
+          <Surface
+            variant="inset"
+            padding="compact"
+            className="flex items-center w-full"
+          >
             <Chip presentation="summary" />
-          </div>
+          </Surface>
         </SpecimenCell>
         <SpecimenCell label="Creating" wide>
-          <div className="flex w-full items-center rounded-xl border bg-base p-3">
+          <Surface
+            variant="inset"
+            padding="compact"
+            className="flex items-center w-full"
+          >
             <Chip presentation="summary" pending />
-          </div>
+          </Surface>
         </SpecimenCell>
       </SpecimenPanel>
     </div>

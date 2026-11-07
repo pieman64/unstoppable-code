@@ -13,6 +13,7 @@ import { useMemberUsage } from './useMemberUsage';
 import { UsageRangeSelect } from './UsageRangeSelect';
 import { useSettingsPrivacy } from '../../host';
 import { joinClassNames } from '../join-class-names';
+import { Surface } from '@canopy/ui-shared/components';
 
 /** A plain sample run: a short label, no tokens and no pull request. */
 function sampleExpensiveRun(
@@ -77,16 +78,18 @@ export function ProfileRunsSection({
 
   if (!viewerCanViewStats) {
     return (
-      <p
-        className={joinClassNames(
-          'rounded-xl border border-dashed px-4 py-12 text-center text-s fg-secondary',
-          blockClassName,
-        )}
-        data-testid="profile-runs-stats-hidden"
-      >
-        Usage statistics for {memberName} are restricted by this team&apos;s
-        settings.
-      </p>
+      <Surface variant="dashed">
+        <p
+          className={joinClassNames(
+            'px-4 py-12 text-center text-s fg-secondary',
+            blockClassName,
+          )}
+          data-testid="profile-runs-stats-hidden"
+        >
+          Usage statistics for {memberName} are restricted by this team&apos;s
+          settings.
+        </p>
+      </Surface>
     );
   }
 
@@ -117,23 +120,25 @@ export function ProfileRunsSection({
               label="Loading sessions"
               testId="settings-skeleton-list"
             >
-              <div className="rounded-xl bg-card p-4 shadow-sm">
+              <Surface variant="raised" padding="default">
                 <MostExpensiveRuns runs={SAMPLE_EXPENSIVE_RUNS} />
-              </div>
+              </Surface>
             </Skeleton>
           </DelayedLoadingPlaceholder>
         </div>
       ) : error ? null : !usage ? (
-        <p
-          className="rounded-xl border border-dashed px-4 py-12 text-center text-s fg-secondary"
-          data-testid="profile-runs-empty"
-        >
-          No usage data available for this range.
-        </p>
+        <Surface variant="dashed">
+          <p
+            className="px-4 py-12 text-center text-s fg-secondary"
+            data-testid="profile-runs-empty"
+          >
+            No usage data available for this range.
+          </p>
+        </Surface>
       ) : (
-        <div className="rounded-xl bg-card p-4 shadow-sm">
+        <Surface variant="raised" padding="default">
           <MostExpensiveRuns runs={usage.mostExpensiveRuns} />
-        </div>
+        </Surface>
       )}
     </section>
   );

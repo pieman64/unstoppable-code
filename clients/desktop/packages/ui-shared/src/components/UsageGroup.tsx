@@ -514,8 +514,7 @@ export function UsageGroupHeading({
           {provider ? (
             <ModelProviderIcon
               provider={provider}
-              width={14}
-              height={14}
+              size="sm"
               aria-hidden="true"
               className="block shrink-0 fg-primary"
               data-testid="usage-group-provider-mark"
@@ -652,7 +651,7 @@ export function UsageRefreshButton({
         onClick={onRefresh}
         data-testid={testId}
       >
-        <RefreshSpinner spinning={refreshing} size={14} />
+        <RefreshSpinner spinning={refreshing} size="sm" />
       </Button>
     </Tooltip>
   );

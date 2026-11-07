@@ -58,7 +58,7 @@ export function MissingPluginsBadge({
         data-testid={testId}
         className="inline-flex items-center gap-1 rounded bg-warning-subtle px-1.5 py-0.5 text-3xs font-medium fg-warning tabular-nums"
       >
-        <DownloadIcon width={11} height={11} />
+        <DownloadIcon size="sm" />
         {count}
       </span>
     </Tooltip>

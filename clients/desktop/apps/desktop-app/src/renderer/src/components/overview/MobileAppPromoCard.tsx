@@ -4,6 +4,7 @@ import { MobileAppPromo } from '@canopy/ui-shared/components/MobileAppPromo';
 import type { MobileAppStore } from '@canopy/ui-shared/components/StoreBadgeLink';
 import { brandText } from '@/lib/brand';
 import { useMobileAppPromo } from '@/hooks/useMobileAppPromo';
+import { Surface } from '@canopy/ui-shared/components';
 
 /**
  * Home/overview nudge to install the companion mobile app.
@@ -36,7 +37,7 @@ export function MobileAppPromoCard(): JSX.Element | null {
   };
 
   return (
-    <div className="rounded-lg border border-line-accent/40 bg-card p-4">
+    <Surface variant="card" padding="default">
       <MobileAppPromo
         data-testid="mobile-app-promo-card"
         brandDisplayName={brandText.appName}
@@ -47,6 +48,6 @@ export function MobileAppPromoCard(): JSX.Element | null {
         description={`Check on your agents, approve work, and keep things moving from your phone with ${REMOTE_CONTROL_LABEL}.`}
         onDismiss={snooze}
       />
-    </div>
+    </Surface>
   );
 }

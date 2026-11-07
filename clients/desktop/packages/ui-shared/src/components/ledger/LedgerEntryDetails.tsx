@@ -110,7 +110,7 @@ export function LedgerActivityLine({
       className="flex items-center gap-2 text-2xs fg-tertiary"
     >
       <span className="flex h-6 w-6 shrink-0 items-center justify-center">
-        <HistoryIcon size={13} aria-hidden="true" />
+        <HistoryIcon size="sm" aria-hidden="true" />
       </span>
       <span className="min-w-0 break-words">
         {item.parts === undefined

@@ -66,6 +66,12 @@ export interface StepRowProps {
   /** Keep the chevron visible at rest instead of only on hover. */
   chevronAtRest?: boolean;
   /**
+   * Stretch the toggle's hit area, hover and focus ring over the nearest
+   * positioned ancestor, for a row that has other controls beside the toggle.
+   * Those controls stay clickable by being positioned too.
+   */
+  stretched?: boolean;
+  /**
    * The row of one step (a tool call, a helper agent, a thought), not a turn
    * header or a run's line. At every chat detail level it takes the tool call
    * row: message-sized text, a 14px icon at the default stroke, and its words
@@ -75,6 +81,12 @@ export interface StepRowProps {
 }
 
 export const STEP_ROW_TEXT_CLASS = 'text-s fg-secondary';
+
+/** The lighter ink of a row's detail, for words that sit beside the row. */
+export const STEP_ROW_DETAIL_INK_CLASS = 'fg-tertiary';
+
+const STRETCHED_TOGGLE_CLASS =
+  "focus-ring-stretched focus-ring-inset before:absolute before:inset-0 before:rounded-sm before:content-['']";
 
 /** One shimmer sweep, matching `canopy-text-shimmer-sweep` in the tokens CSS. */
 const SHIMMER_CYCLE_MS = 2400;
@@ -173,6 +185,7 @@ export const StepRow = forwardRef<HTMLButtonElement, StepRowProps>(
       className = '',
       trailing,
       chevronAtRest = false,
+      stretched = false,
       step = false,
     },
     ref,
@@ -211,7 +224,9 @@ export const StepRow = forwardRef<HTMLButtonElement, StepRowProps>(
         {detail != null && (
           <span
             className={
-              badges ? 'min-w-0 truncate fg-tertiary' : 'ml-1.5 fg-tertiary'
+              badges
+                ? `min-w-0 truncate ${STEP_ROW_DETAIL_INK_CLASS}`
+                : `ml-1.5 ${STEP_ROW_DETAIL_INK_CLASS}`
             }
           >
             {detail}
@@ -278,7 +293,7 @@ export const StepRow = forwardRef<HTMLButtonElement, StepRowProps>(
         aria-label={ariaLabel}
         data-testid={dataTestId}
         data-step-row=""
-        className={`focus-ring rounded-sm transition-colors hover:fg-primary ${rowClass}`}
+        className={`focus-ring rounded-sm transition-colors hover:fg-primary ${rowClass}${stretched ? ` ${STRETCHED_TOGGLE_CLASS}` : ''}`}
       >
         {content}
       </button>

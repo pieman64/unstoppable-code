@@ -680,6 +680,39 @@ async function readScopedFileContent(
   }
 }
 
+/** `fileReadContent`'s read of a plain absolute path, for callers in main. */
+export async function readLocalFileContent(
+  absolutePath: string,
+): Promise<FileContentResponse> {
+  let fileStat: Stats;
+  try {
+    fileStat = await stat(absolutePath);
+  } catch (error) {
+    if (getErrorCode(error) === 'ENOENT')
+      return buildMissingResponse(basename(absolutePath));
+    throw error;
+  }
+  const filename = basename(absolutePath);
+  const kind = classifyExtension(absolutePath);
+  if (kind === 'unsupported')
+    return buildUnsupportedResponse(filename, fileStat.size, fileStat.mtimeMs);
+  if (kind === 'image')
+    return readImageContent(
+      absolutePath,
+      filename,
+      fileStat.size,
+      fileStat.mtimeMs,
+    );
+  return readTextContent(
+    absolutePath,
+    filename,
+    fileStat.size,
+    fileStat.mtimeMs,
+    kind,
+    MAX_FULL_TEXT_BYTES,
+  );
+}
+
 export function registerFilePreviewHandlers(
   dispatcher: FilePreviewDispatcher,
   resolveCaller: DesktopIpcCallerResolver,

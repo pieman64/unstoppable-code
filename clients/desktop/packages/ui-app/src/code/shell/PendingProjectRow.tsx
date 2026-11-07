@@ -1,6 +1,7 @@
 import type { JSX } from 'react';
 import { Button, LoadingSpinner } from '@canopy/ui-shared/components';
 import { FolderIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { Surface } from '@canopy/ui-shared/components';
 
 /**
  * A project the host is still adding: a clone that has not produced a
@@ -57,12 +58,19 @@ export function PendingProjectRow({
       data-testid={`sidebar-pending-project-${project.id}`}
     >
       {/* Dashed like the organization project placeholder: "not here yet". */}
-      <span
-        aria-hidden="true"
-        className="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded border border-dashed fg-quaternary"
+      <Surface
+        as="span"
+        variant="dashed"
+        size="small"
+        className="mt-0.5 shrink-0"
       >
-        <FolderIcon className="size-3" aria-hidden="true" />
-      </span>
+        <span
+          aria-hidden="true"
+          className="flex size-4 items-center justify-center fg-quaternary"
+        >
+          <FolderIcon size="sm" aria-hidden="true" />
+        </span>
+      </Surface>
       <div className="min-w-0 flex-1">
         <div className="truncate text-s fg-primary" title={project.name}>
           {project.name}

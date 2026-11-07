@@ -25,13 +25,29 @@ import {
   applyCollectionUpdate,
   CollectionUpdateError,
 } from '../../collections/collection-mutations';
-import type { PortalShareScope } from '@canopy/protocol/portal';
+import type {
+  PortalMarketplaceMutationResult,
+  PortalMarketplaceRemoveResult,
+  PortalPluginMutationResult,
+  PortalShareScope,
+} from '@canopy/protocol/portal';
 import type {
   PortalCommandEnvelope,
   PortalCommandPayloadMap,
 } from '@canopy/desktop-shared/types';
 import type { PluginProvider } from '@canopy/desktop-shared/types/plugins';
 import type { PortalAdapterContext } from './types';
+import {
+  dispatchPortalCatalogInstruction,
+  portalCommandKey,
+  portalError,
+} from './plugin-catalog-core';
+import { pluginEntryId } from '@canopy/protocol/canopy-core';
+import {
+  isBuiltInPluginMarketplaceId,
+  isCuratedPluginMarketplaceId,
+} from '@canopy/protocol/plugins/catalog';
+import { parseGitHubRepo } from '@canopy/desktop-shared/lib/github-repo';
 import { completePortalShareOffLoop } from './share-result';
 import { failServiceError, isRecord } from './validation';
 import { notifyDesktopInventoryChanged } from '../../services/desktop-inventory-sync-signals';
@@ -367,6 +383,24 @@ function requireProviders(
  *   QUEUED/DELIVERED), so completing an EXPIRED command is a harmless no-op
  *   server-side and the browser reconciles by refetching.
  */
+function isPluginMutationResult(
+  value: unknown,
+): value is PortalPluginMutationResult {
+  return isRecord(value) && isRecord(value.plugin);
+}
+
+function isMarketplaceMutationResult(
+  value: unknown,
+): value is PortalMarketplaceMutationResult {
+  return isRecord(value) && isRecord(value.marketplace);
+}
+
+function isRemovalResult(
+  value: unknown,
+): value is PortalMarketplaceRemoveResult {
+  return isRecord(value) && value.removed === true;
+}
+
 function completeOffLoop<TResult>(
   command: PortalCommandEnvelope<unknown>,
   context: PortalAdapterContext,
@@ -414,10 +448,37 @@ export function handlePortalPluginsInstallBuiltin(
   if (providers === null) {
     return;
   }
+  const sortedProviders = [...providers].sort((a, b) =>
+    a === b ? 0 : a === 'claude' ? -1 : 1,
+  );
   completeOffLoop(command, context, async () => {
-    const { installPortalBuiltInPlugin } =
+    if (
+      !isBuiltInPluginMarketplaceId(marketplaceId) &&
+      !isCuratedPluginMarketplaceId(marketplaceId)
+    )
+      throw portalError(
+        'execution_failed',
+        'Built-in plugin installs require the built-in or curated marketplace.',
+      );
+    const { portal } = await dispatchPortalCatalogInstruction(
+      'core.catalog.plugin.install',
+      {
+        entryId: pluginEntryId({ marketplaceId, pluginName }),
+        providers: sortedProviders,
+        _meta: { idempotencyKey: portalCommandKey(command) },
+      },
+      {
+        'core.catalog.pluginNotFound': () =>
+          portalError(
+            'execution_failed',
+            'Plugin not found in the marketplace.',
+          ),
+      },
+    );
+    if (isPluginMutationResult(portal)) return portal;
+    const { readPortalPluginMutationResult } =
       await import('../../services/plugin-catalog-service');
-    return installPortalBuiltInPlugin(marketplaceId, pluginName, providers);
+    return readPortalPluginMutationResult(marketplaceId, pluginName);
   });
 }
 
@@ -788,9 +849,40 @@ export function handlePortalPluginsInstallExternal(
     return;
   }
   completeOffLoop(command, context, async () => {
-    const { installPortalExternalPlugin } =
+    // Built-in and curated plugins install as managed plugins through the core,
+    // so an external install of one keeps today's refusal or clone.
+    if (
+      isBuiltInPluginMarketplaceId(marketplaceId) ||
+      isCuratedPluginMarketplaceId(marketplaceId)
+    ) {
+      const { installPortalExternalPlugin } =
+        await import('../../services/plugin-catalog-service');
+      return installPortalExternalPlugin(marketplaceId, pluginName);
+    }
+    const { portal } = await dispatchPortalCatalogInstruction(
+      'core.catalog.plugin.install',
+      {
+        entryId: pluginEntryId({ marketplaceId, pluginName }),
+        providers: ['claude'],
+        _meta: { idempotencyKey: portalCommandKey(command) },
+      },
+      {
+        'core.catalog.pluginNotFound': () =>
+          portalError(
+            'not_found',
+            `Plugin "${pluginName}" not found in marketplace "${marketplaceId}".`,
+          ),
+        'core.catalog.pluginNotInstallable': () =>
+          portalError(
+            'invalid_payload',
+            `Plugin "${pluginName}" has no external source to install from.`,
+          ),
+      },
+    );
+    if (isPluginMutationResult(portal)) return portal;
+    const { readPortalPluginMutationResult } =
       await import('../../services/plugin-catalog-service');
-    return installPortalExternalPlugin(marketplaceId, pluginName);
+    return readPortalPluginMutationResult(marketplaceId, pluginName);
   });
 }
 
@@ -818,9 +910,30 @@ export function handlePortalMarketplaceAdd(
     return;
   }
   completeOffLoop(command, context, async () => {
-    const { addPortalMarketplace } =
+    const repository = parseGitHubRepo(repo);
+    if (!repository)
+      throw Object.assign(
+        new Error(
+          'Marketplace source must be an owner/repo reference or a GitHub repository URL.',
+        ),
+        { code: 'invalid_payload' },
+      );
+    const { result, portal } = await dispatchPortalCatalogInstruction(
+      'core.catalog.source.upsert',
+      {
+        sourceId: null,
+        displayName: repository,
+        locator: { kind: 'git', repository, ref: null },
+        providers: ['claude', 'codex'],
+        enabled: true,
+        expectedRevision: null,
+        _meta: { idempotencyKey: portalCommandKey(command) },
+      },
+    );
+    if (isMarketplaceMutationResult(portal)) return portal;
+    const { readPortalMarketplaceMutationResult } =
       await import('../../services/plugin-catalog-service');
-    return addPortalMarketplace(repo);
+    return readPortalMarketplaceMutationResult(result.sourceId);
   });
 }
 
@@ -891,9 +1004,36 @@ export function handlePortalMarketplaceRemove(
     providers = validated;
   }
   completeOffLoop(command, context, async () => {
-    const { removePortalMarketplace } =
-      await import('../../services/plugin-catalog-service');
-    return removePortalMarketplace(marketplaceId, providers);
+    // Built-in and curated rows keep their direct path and refusal text.
+    if (
+      isBuiltInPluginMarketplaceId(marketplaceId) ||
+      isCuratedPluginMarketplaceId(marketplaceId)
+    ) {
+      const { removePortalMarketplace } =
+        await import('../../services/plugin-catalog-service');
+      return removePortalMarketplace(marketplaceId, providers);
+    }
+    try {
+      const { result, portal } = await dispatchPortalCatalogInstruction(
+        'core.catalog.source.delete',
+        {
+          sourceId: marketplaceId,
+          providers: providers ?? ['claude', 'codex'],
+          expectedRevision: null,
+          _meta: { idempotencyKey: portalCommandKey(command) },
+        },
+      );
+      return isRemovalResult(portal)
+        ? portal
+        : {
+            removed: true,
+            ...(result.alreadyAbsent ? { alreadyAbsent: true } : {}),
+          };
+    } catch (error) {
+      if (isRecord(error) && error.code === 'not_found')
+        return { removed: true, alreadyAbsent: true };
+      throw error;
+    }
   });
 }
 
@@ -907,12 +1047,27 @@ export async function handlePortalMarketplaceRefreshAll(
     return;
   }
   try {
-    const { startPortalMarketplacesRefresh } =
-      await import('../../services/plugin-catalog-service');
-    // FIRE-AND-FORGET: the fan-out refresh routinely takes minutes — far past
-    // the 60s command TTL — so the command completes as soon as the refresh
-    // has been kicked off and the browser reconciles with a later refetch.
-    await startPortalMarketplacesRefresh();
+    // The core admits the refresh and returns at once; it runs detached, since
+    // the refresh routinely outlasts the 60s command TTL. `'all'` keeps a
+    // redelivery's params equal when a marketplace was added or removed since.
+    const tooLarge = new Error('Too many sources for one keyed refresh.');
+    try {
+      await dispatchPortalCatalogInstruction(
+        'core.catalog.source.refresh',
+        {
+          sourceIds: 'all',
+          providers: ['claude', 'codex'],
+          mode: 'update_then_scan',
+          _meta: { idempotencyKey: portalCommandKey(command) },
+        },
+        { 'core.catalog.refreshTooLarge': () => tooLarge },
+      );
+    } catch (error) {
+      if (error !== tooLarge) throw error;
+      const { startPortalMarketplacesRefresh } =
+        await import('../../services/plugin-catalog-service');
+      await startPortalMarketplacesRefresh();
+    }
     context.complete(command, { started: true });
   } catch (error) {
     failServiceError(command, context, error);

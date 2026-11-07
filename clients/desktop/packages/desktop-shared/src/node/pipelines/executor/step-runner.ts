@@ -567,10 +567,13 @@ export function applyClaudeMockPipelineEnv(
   return safe;
 }
 
-function buildSafeProcessEnv(): Record<string, string> {
+function buildSafeProcessEnv(
+  source?: Readonly<Record<string, string>>,
+): Record<string, string> {
   const safe: Record<string, string> = {};
   for (const [key, value] of Object.entries(
-    getEnhancedEnv({ environment: false, includeCanopySecrets: false }),
+    source ??
+      getEnhancedEnv({ environment: false, includeCanopySecrets: false }),
   )) {
     if (value === undefined) continue;
     if (EXECUTOR_MANAGED_ENV_KEYS.has(key)) {
@@ -641,11 +644,16 @@ function buildSafeProcessEnv(): Record<string, string> {
       JSON.stringify(supportedThinkingLevels),
     );
   }
-  const loginPath = getLoginShellPath();
-  safe.PATH = loginPath;
-  const binDir = getBundledBinDir();
-  if (binDir) {
-    safe.PATH = loginPath ? `${binDir}${path.delimiter}${loginPath}` : binDir;
+  if (source?.PATH !== undefined) {
+    // A supplied base environment brings the PATH its core resolved.
+    safe.PATH = source.PATH;
+  } else {
+    const loginPath = getLoginShellPath();
+    safe.PATH = loginPath;
+    const binDir = getBundledBinDir();
+    if (binDir) {
+      safe.PATH = loginPath ? `${binDir}${path.delimiter}${loginPath}` : binDir;
+    }
   }
   // UI-automation seam: translate the harness mock LLM base URL into the
   // Anthropic SDK env vars consumed by Claude-backed builtin action
@@ -665,7 +673,17 @@ function buildSafeProcessEnv(): Record<string, string> {
  * we force child processes into Node compatibility mode. In SEA builds there
  * is no usable embedded Node runtime, so we fall back to `node` on PATH.
  */
-function getNodeProcessSpec(args: string[]): ProcessSpec {
+function getNodeProcessSpec(
+  args: string[],
+  override?: ExecutionRuntime['nodeProcess'],
+): ProcessSpec {
+  if (override) {
+    return {
+      command: override.command,
+      args,
+      ...(override.env ? { env: { ...override.env } } : {}),
+    };
+  }
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const sea = require('node:sea') as { isSea: () => boolean };
@@ -1084,6 +1102,7 @@ function getCmdProcessSpec(scriptPath: string): ProcessSpec {
 async function buildRunProcessSpec(
   step: NormalizedStep,
   tempDir: string,
+  nodeProcess?: ExecutionRuntime['nodeProcess'],
 ): Promise<ProcessSpec> {
   if (!step.run) {
     throw new Error(`Step "${step.id}" is missing a run command`);
@@ -1115,7 +1134,7 @@ async function buildRunProcessSpec(
     case 'node': {
       const scriptPath = await writeInlineScript(tempDir, step.shell, step.run);
       return {
-        ...getNodeProcessSpec([scriptPath]),
+        ...getNodeProcessSpec([scriptPath], nodeProcess),
         scriptPath,
       };
     }
@@ -5786,14 +5805,18 @@ async function runStepBody(
 
   try {
     if (options.step.run) {
-      const processSpec = await buildRunProcessSpec(options.step, tempDir);
+      const processSpec = await buildRunProcessSpec(
+        options.step,
+        tempDir,
+        options.runtime.nodeProcess,
+      );
       if (onOutput) {
         spawnedLogPositions = await openAppendingStepLogCursor(logFile);
       }
       const result = await runSpawnedProcess(processSpec, {
         cwd: effectiveCwd,
         env: {
-          ...buildSafeProcessEnv(),
+          ...buildSafeProcessEnv(options.runtime.processEnvironment),
           ...options.secretEnv,
           ...options.env,
           ...buildStepManagedEnv({
@@ -6256,7 +6279,7 @@ async function runStepBody(
         ...(ledgerSubprocess?.secretValues ?? []),
       ];
       const runtimeEnv = {
-        ...buildSafeProcessEnv(),
+        ...buildSafeProcessEnv(options.runtime.processEnvironment),
         ...ollamaEnv,
         ...options.secretEnv,
         ...options.env,
@@ -6336,7 +6359,10 @@ async function runStepBody(
       }
       let processSpec: ProcessSpec;
       if (runsUsing === 'node') {
-        processSpec = getNodeProcessSpec([action.mainPath ?? '']);
+        processSpec = getNodeProcessSpec(
+          [action.mainPath ?? ''],
+          options.runtime.nodeProcess,
+        );
       } else if (runsUsing === 'python') {
         processSpec = getPythonProcessSpec(action.mainPath ?? '');
       } else {

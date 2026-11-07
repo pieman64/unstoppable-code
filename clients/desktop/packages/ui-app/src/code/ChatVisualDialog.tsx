@@ -18,6 +18,7 @@ import {
   type ChatVisualOwner,
 } from './chat-visual-host';
 import { saveChatVisualAsHtml } from './chat-visual-save';
+import { Surface } from '@canopy/ui-shared/components';
 
 export interface ChatVisualDialogProps {
   owner: ChatVisualOwner;
@@ -130,15 +131,20 @@ export function ChatVisualDialog({
               <p className="text-s fg-secondary">This visual is empty.</p>
             )
           ) : (
-            <pre
-              data-testid={CHAT_VISUAL_TEST_IDS.sourceView}
-              className={`${REPLAY_BLOCK_CLASS} min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-all rounded-lg border bg-secondary p-3 font-mono text-xs fg-primary`}
-              aria-label="Visual source"
+            <Surface
+              variant="group"
+              className="flex min-h-0 flex-1 overflow-hidden"
             >
-              {document.length > 100000
-                ? `${document.slice(0, 100000)}\n… Source preview limited to 100,000 characters.`
-                : document}
-            </pre>
+              <pre
+                data-testid={CHAT_VISUAL_TEST_IDS.sourceView}
+                className={`${REPLAY_BLOCK_CLASS} min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-all p-3 font-mono text-xs fg-primary`}
+                aria-label="Visual source"
+              >
+                {document.length > 100000
+                  ? `${document.slice(0, 100000)}\n… Source preview limited to 100,000 characters.`
+                  : document}
+              </pre>
+            </Surface>
           )}
         </div>
       </div>

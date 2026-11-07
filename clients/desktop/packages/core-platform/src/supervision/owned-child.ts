@@ -1,4 +1,5 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+import { readSync } from 'node:fs';
 import { constants } from 'node:os';
 import path from 'node:path';
 import type {
@@ -6,11 +7,15 @@ import type {
   PlatformOwnedChild,
   PlatformOwnedChildServices,
 } from '@canopy/core-runtime';
+import type {
+  LinuxMigrationCapture,
+  WindowsMigrationCapture,
+} from '@canopy/core-runtime/node/vault';
 
 /** Staged beside the daemon host; built from `packages/core-platform/native/owned-child`. */
 export const OWNED_CHILD_FILE = 'core-owned-child.node';
 
-/** The launcher's end of a launcher channel; the child holds the other as fd 3. */
+/** The launcher's private byte channel; Windows connects rather than inheriting it. */
 export type OwnedChildChannel = ByteChannel;
 
 export interface OwnedChildLaunch {
@@ -20,8 +25,9 @@ export interface OwnedChildLaunch {
 
 export interface OwnedChildServices extends PlatformOwnedChildServices {
   /**
-   * As `spawn`, plus a socketpair whose other end is the child's fd 3. Only
-   * the Electron daemon host requests the channel.
+   * As `spawn`, plus a private launcher channel. Darwin and Linux use fd 3; Windows
+   * delivers a channel locator header before the bounded stdin payload. This
+   * establishes process custody only, never migration admission.
    */
   spawnWithChannel(request: SpawnRequest): Promise<OwnedChildLaunch>;
 }
@@ -53,6 +59,7 @@ export type OwnedChildErrorCode =
 export class OwnedChildError extends Error {
   override readonly name = 'OwnedChildError';
   readonly code: OwnedChildErrorCode;
+  nativeDiagnostic?: { readonly stage: string; readonly win32: number };
 
   constructor(code: OwnedChildErrorCode, message: string) {
     super(message);
@@ -86,11 +93,25 @@ interface OwnedChildNative {
 
 /** Launcher-channel calls; an addon without them still serves `spawn`. */
 interface OwnedChildChannelNative {
-  spawnChannel(...args: Parameters<OwnedChildNative['spawn']>): unknown;
+  spawnChannel(
+    ...args: [...Parameters<OwnedChildNative['spawn']>, nonce?: string]
+  ): unknown;
   channelRead(handle: object, max: number): unknown;
   channelWrite(handle: object, bytes: Uint8Array): unknown;
   channelPeer(handle: object): unknown;
   channelClose(handle: object): unknown;
+}
+
+interface WindowsChannelNative extends OwnedChildChannelNative {
+  connectLauncher(pid: number, creationTime: bigint, nonce: string): unknown;
+}
+
+function hasWindowsChannel(
+  value: OwnedChildNative,
+): value is OwnedChildNative & WindowsChannelNative {
+  return (
+    hasChannel(value) && typeof field(value, 'connectLauncher') === 'function'
+  );
 }
 
 const CHANNEL_METHODS = [
@@ -127,6 +148,10 @@ const EXITED = 'Owned child exited before commit.';
 const NATIVE_ERRORS: Readonly<
   Record<string, readonly [OwnedChildErrorCode, string]>
 > = {
+  ERR_OWNED_CHILD_CHANNEL_UNSUPPORTED: [
+    'capability_unavailable',
+    'Linux launcher channels require stale-sender pidfds and pidfs.',
+  ],
   ERR_OWNED_CHILD_ARGUMENT: ['invalid_argument', INVALID],
   ERR_OWNED_CHILD_SPAWN: [
     'failed_precondition',
@@ -155,7 +180,7 @@ const fail = (code: OwnedChildErrorCode, message: string): OwnedChildError =>
 // native host-exit suites load this module directly under Node type stripping.
 const WIN32_FULLY_QUALIFIED =
   /^(?:[A-Za-z]:[\\/]|[\\/]{2}(?![?.][\\/])[^\\/]+[\\/]+[^\\/])/;
-/** Hosts with an owned-child backend; the launcher channel is Darwin's alone. */
+/** Hosts with an owned-child backend. */
 const SPAWN_HOSTS: ReadonlySet<PlatformOperatingSystem> =
   new Set<PlatformOperatingSystem>(['darwin', 'linux', 'win32']);
 /** Package-internal: a drive/UNC path on win32, an absolute path on POSIX. */
@@ -251,6 +276,7 @@ export function channelPeer(channel: OwnedChildChannel): ChannelPeer {
 function createChannel(
   native: OwnedChildChannelNative,
   handle: object,
+  os: PlatformOperatingSystem = 'darwin',
 ): OwnedChildChannel {
   const channel = createPolledChannel(
     {
@@ -263,6 +289,22 @@ function createChannel(
       busy: () => fail('failed_precondition', CHANNEL_BUSY),
     },
   );
+  if (os === 'linux') {
+    linuxPeers.set(channel, () => native.channelPeer(handle));
+    if (hasLinuxImage(native))
+      linuxImages.set(channel, () =>
+        captureLinuxImage(native, handle, channel),
+      );
+    return channel;
+  }
+  if (os === 'win32') {
+    windowsPeers.set(channel, () => native.channelPeer(handle));
+    if (hasWindowsImage(native))
+      windowsImages.set(channel, () =>
+        captureWindowsImage(native, handle, channel),
+      );
+    return channel;
+  }
   peers.set(channel, () => {
     try {
       return parsePeer(native.channelPeer(handle));
@@ -279,6 +321,429 @@ function createChannel(
     }
   });
   return channel;
+}
+
+/** Linux sender-attributed byte custody, not executable or migration evidence. */
+export type LinuxChannelPeer =
+  | {
+      readonly state: 'connected';
+      readonly pid: number;
+      readonly uid: number;
+      readonly gid: number;
+    }
+  | { readonly state: 'refused' };
+
+const linuxPeers = new WeakMap<ByteChannel, () => unknown>();
+
+export function linuxChannelPeer(channel: ByteChannel): LinuxChannelPeer {
+  const capture = linuxPeers.get(channel);
+  if (!capture) throw fail('invalid_argument', INVALID);
+  let result: unknown;
+  try {
+    result = capture();
+  } catch {
+    return { state: 'refused' };
+  }
+  if (field(result, 'state') === 'refused') return { state: 'refused' };
+  const pid = field(result, 'pid');
+  const uid = field(result, 'uid');
+  const gid = field(result, 'gid');
+  if (
+    field(result, 'state') === 'connected' &&
+    typeof pid === 'number' &&
+    Number.isSafeInteger(pid) &&
+    pid > 1 &&
+    pid <= 0x7fffffff &&
+    typeof uid === 'number' &&
+    Number.isSafeInteger(uid) &&
+    uid >= 0 &&
+    uid < 0xffffffff &&
+    typeof gid === 'number' &&
+    Number.isSafeInteger(gid) &&
+    gid >= 0 &&
+    gid < 0xffffffff
+  )
+    return { state: 'connected', pid, uid, gid };
+  throw fail('unavailable', LOST);
+}
+
+interface LinuxImageNative extends OwnedChildChannelNative {
+  linuxMigrationImage(handle: object): unknown;
+  linuxMigrationCurrent(handle: object): unknown;
+  linuxMigrationClose(handle: object): unknown;
+}
+function hasLinuxImage(
+  native: OwnedChildChannelNative,
+): native is LinuxImageNative {
+  return [
+    'linuxMigrationImage',
+    'linuxMigrationCurrent',
+    'linuxMigrationClose',
+  ].every((name) => typeof field(native, name) === 'function');
+}
+const linuxImages = new WeakMap<
+  ByteChannel,
+  () => LinuxMigrationCapture | null
+>();
+
+/** Host-only L2 observation. Forged/remote wrappers never enter this WeakMap. */
+export function captureLinuxMigrationPeer(
+  channel: ByteChannel,
+): LinuxMigrationCapture | null {
+  try {
+    return linuxImages.get(channel)?.() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function linuxImageDigest(fd: number): string {
+  const hash = createHash('sha256');
+  const bytes = Buffer.alloc(64 * 1024);
+  let offset = 0;
+  for (;;) {
+    const count = readSync(fd, bytes, 0, bytes.length, offset);
+    if (!count) return `sha256:${hash.digest('hex')}`;
+    hash.update(bytes.subarray(0, count));
+    offset += count;
+  }
+}
+
+function captureLinuxImage(
+  native: LinuxImageNative,
+  handle: object,
+  channel: ByteChannel,
+): LinuxMigrationCapture | null {
+  const value = native.linuxMigrationImage(handle);
+  if (field(value, 'state') !== 'captured') return null;
+  let retained = false;
+  try {
+    const peer = linuxChannelPeer(channel);
+    const fd = field(value, 'fd');
+    const role = field(value, 'role');
+    const startTime = field(value, 'startTime');
+    const bootId = field(value, 'bootId');
+    const fileId = field(value, 'fileId');
+    const command = field(value, 'command');
+    const localPid = field(value, 'localPid');
+    const localParentPid = field(value, 'localParentPid');
+    const parentPid = field(value, 'parentPid');
+    const pid = (v: unknown): v is number =>
+      typeof v === 'number' &&
+      Number.isSafeInteger(v) &&
+      v > 1 &&
+      v <= 0x7fffffff;
+    if (
+      peer.state !== 'connected' ||
+      peer.pid !== field(value, 'pid') ||
+      typeof fd !== 'number' ||
+      !Number.isSafeInteger(fd) ||
+      fd < 0 ||
+      (role !== 'launcher' && role !== 'daemon') ||
+      typeof startTime !== 'string' ||
+      !/^[1-9][0-9]*$/.test(startTime) ||
+      typeof bootId !== 'string' ||
+      !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(bootId) ||
+      typeof fileId !== 'string' ||
+      !/^[0-9]+:[0-9]+$/.test(fileId) ||
+      !Buffer.isBuffer(command) ||
+      command.length < 2 ||
+      command[command.length - 1] !== 0 ||
+      !pid(localPid) ||
+      !pid(localParentPid) ||
+      !pid(parentPid)
+    )
+      return null;
+    const text = command.toString('utf8');
+    // Refuse lossy argument decoding, never compare two replacement strings.
+    if (!Buffer.from(text).equals(command)) return null;
+    const argv = Object.freeze(text.slice(0, -1).split('\0'));
+    const digest = linuxImageDigest(fd);
+    if (native.linuxMigrationCurrent(handle) !== true) return null;
+    let closed = false;
+    retained = true;
+    return Object.freeze({
+      role,
+      identity: Object.freeze({
+        os: 'linux' as const,
+        pid: peer.pid,
+        bootId,
+        startTime,
+        continuity: 'process-instance' as const,
+      }),
+      localPid,
+      localParentPid,
+      parentPid,
+      fileId,
+      digest,
+      argv,
+      current(): boolean {
+        try {
+          if (closed || native.linuxMigrationCurrent(handle) !== true)
+            return false;
+          const current = linuxChannelPeer(channel);
+          return (
+            current.state === 'connected' &&
+            current.pid === peer.pid &&
+            linuxImageDigest(fd) === digest &&
+            native.linuxMigrationCurrent(handle) === true
+          );
+        } catch {
+          return false;
+        }
+      },
+      close(): void {
+        if (closed) return;
+        closed = true;
+        try {
+          native.linuxMigrationClose(handle);
+        } catch {
+          /* Channel already released its pins. */
+        }
+      },
+    });
+  } finally {
+    if (!retained) native.linuxMigrationClose(handle);
+  }
+}
+
+/** L1 qualifier only, requiring Linux pidfs and stale-sender SCM_PIDFD. No production composition calls this. */
+export function connectLinuxLauncherChannel(
+  nativePath: string,
+  launcherPid: number,
+): ByteChannel {
+  if (process.platform !== 'linux')
+    throw fail('capability_unavailable', UNSUPPORTED);
+  if (
+    !Number.isSafeInteger(launcherPid) ||
+    launcherPid <= 1 ||
+    launcherPid > 0x7fffffff
+  )
+    throw fail('invalid_argument', INVALID);
+  const native = loadNative('linux', nativePath);
+  const connect = field(native, 'connectLinuxLauncher');
+  if (!hasChannel(native) || typeof connect !== 'function')
+    throw fail('capability_unavailable', UNSUPPORTED);
+  const result: unknown = call(() =>
+    Reflect.apply(connect, native, [launcherPid]),
+  );
+  const handle = field(result, 'handle');
+  if (typeof handle !== 'object' || handle === null)
+    throw fail('unavailable', LOST);
+  return createChannel(native, handle, 'linux');
+}
+
+/** Native channel custody only; not a shared migration-evidence variant. */
+export type WindowsChannelPeer =
+  | {
+      readonly state: 'connected';
+      readonly pid: number;
+      readonly creationTime: bigint;
+    }
+  | { readonly state: 'refused' };
+
+const windowsPeers = new WeakMap<ByteChannel, () => unknown>();
+
+export function windowsChannelPeer(channel: ByteChannel): WindowsChannelPeer {
+  const capture = windowsPeers.get(channel);
+  if (!capture) throw fail('invalid_argument', INVALID);
+  let result: unknown;
+  try {
+    result = capture();
+  } catch {
+    return { state: 'refused' };
+  }
+  const pid = field(result, 'pid');
+  const creationTime = field(result, 'creationTime');
+  if (field(result, 'state') === 'refused') return { state: 'refused' };
+  if (
+    field(result, 'state') === 'connected' &&
+    typeof pid === 'number' &&
+    Number.isSafeInteger(pid) &&
+    pid > 1 &&
+    typeof creationTime === 'bigint' &&
+    creationTime > 0n &&
+    creationTime <= 0xffffffffffffffffn
+  )
+    return { state: 'connected', pid, creationTime };
+  throw fail('unavailable', LOST);
+}
+
+interface WindowsImageNative extends OwnedChildChannelNative {
+  channelImage(handle: object): unknown;
+  imageCurrent(pin: object): unknown;
+  imageClose(pin: object): unknown;
+}
+function hasWindowsImage(
+  native: OwnedChildChannelNative,
+): native is WindowsImageNative {
+  return ['channelImage', 'imageCurrent', 'imageClose'].every(
+    (name) => typeof field(native, name) === 'function',
+  );
+}
+const windowsImages = new WeakMap<
+  ByteChannel,
+  () => WindowsMigrationCapture | null
+>();
+
+/** Host-only W2 capture; a caller cannot manufacture a W1 channel wrapper. */
+export function captureWindowsMigrationPeer(
+  channel: ByteChannel,
+): WindowsMigrationCapture | null {
+  try {
+    return windowsImages.get(channel)?.() ?? null;
+  } catch {
+    // W1 may already have released its launch record after the peer exited.
+    return null;
+  }
+}
+
+function captureWindowsImage(
+  native: WindowsImageNative,
+  handle: object,
+  channel: ByteChannel,
+): WindowsMigrationCapture | null {
+  const value = native.channelImage(handle);
+  const pin = field(value, 'pin');
+  if (typeof pin !== 'object' || pin === null) return null;
+  let retained = false;
+  try {
+    const peer = windowsChannelPeer(channel);
+    const role = field(value, 'role');
+    const digest = field(value, 'digest');
+    const fileId = field(value, 'fileId');
+    const commandLine = field(value, 'commandLine');
+    const publisher = field(value, 'publisher');
+    const certificateDigest = field(value, 'certificateDigest');
+    const localPid = field(value, 'localPid');
+    const localParentPid = field(value, 'localParentPid');
+    const parentPid = field(value, 'parentPid');
+    const pid = (v: unknown): v is number =>
+      typeof v === 'number' &&
+      Number.isSafeInteger(v) &&
+      v > 0 &&
+      v <= 0xffffffff;
+    if (
+      peer.state !== 'connected' ||
+      peer.pid !== field(value, 'pid') ||
+      peer.creationTime !== field(value, 'creationTime') ||
+      (role !== 'launcher' && role !== 'daemon') ||
+      typeof digest !== 'string' ||
+      !/^sha256:[0-9a-f]{64}$/.test(digest) ||
+      typeof fileId !== 'string' ||
+      !/^[0-9a-f]{24}$/.test(fileId) ||
+      typeof commandLine !== 'string' ||
+      !commandLine ||
+      commandLine.includes('\0') ||
+      !pid(localPid) ||
+      !pid(localParentPid) ||
+      !pid(parentPid)
+    )
+      return null;
+    const signing =
+      field(value, 'signing') === 'valid' &&
+      typeof publisher === 'string' &&
+      typeof certificateDigest === 'string' &&
+      /^sha256:[0-9a-f]{64}$/.test(certificateDigest)
+        ? { status: 'valid' as const, publisher, certificateDigest }
+        : {
+            status: 'invalid' as const,
+            publisher: null,
+            certificateDigest: null,
+          };
+    retained = true;
+    let closed = false;
+    return Object.freeze({
+      role,
+      identity: Object.freeze({
+        os: 'win32' as const,
+        pid: peer.pid,
+        creationTime: peer.creationTime,
+      }),
+      localPid,
+      localParentPid,
+      parentPid,
+      fileId,
+      digest,
+      commandLine,
+      signing: Object.freeze(signing),
+      current(): boolean {
+        if (closed || native.imageCurrent(pin) !== true) return false;
+        const current = windowsChannelPeer(channel);
+        return (
+          current.state === 'connected' &&
+          current.pid === peer.pid &&
+          current.creationTime === peer.creationTime
+        );
+      },
+      close(): void {
+        closed = true;
+        native.imageClose(pin);
+      },
+    });
+  } finally {
+    if (!retained) native.imageClose(pin);
+  }
+}
+
+const WINDOWS_CONNECT_STAGES: ReadonlySet<string> = new Set([
+  'allocation',
+  'open',
+  'server_pid',
+  'server_mismatch',
+  'mode',
+  'process',
+  'creation_time',
+  'process_exited',
+  'delivery',
+]);
+
+/**
+ * Host-only W1 primitive. The header comes from the child's private stdin,
+ * not a control request. No production composition calls this on Windows.
+ */
+export function connectWindowsLauncherChannel(
+  nativePath: string,
+  header: string,
+): ByteChannel {
+  if (process.platform !== 'win32')
+    throw fail('capability_unavailable', UNSUPPORTED);
+  const match =
+    /^canopy-launcher-v1 ([1-9][0-9]{0,9}) ([1-9][0-9]{0,19}) ([0-9a-f]{32})\n$/.exec(
+      header,
+    );
+  if (!match) throw fail('invalid_argument', INVALID);
+  const pid = Number(match[1]);
+  const ticks = BigInt(match[2]);
+  if (pid <= 1 || pid > 0xffffffff || ticks > 0xffffffffffffffffn)
+    throw fail('invalid_argument', INVALID);
+  const native = loadNative('win32', nativePath);
+  if (!hasWindowsChannel(native))
+    throw fail('capability_unavailable', UNSUPPORTED);
+  let handle: unknown;
+  try {
+    handle = native.connectLauncher(pid, ticks, match[3] ?? '');
+  } catch (error) {
+    const mapped = fail(
+      'unavailable',
+      'Launcher channel could not be connected.',
+    );
+    const stage = field(error, 'stage');
+    const win32 = field(error, 'win32');
+    if (
+      typeof stage === 'string' &&
+      WINDOWS_CONNECT_STAGES.has(stage) &&
+      typeof win32 === 'number' &&
+      Number.isSafeInteger(win32) &&
+      win32 >= 0 &&
+      win32 <= 0xffffffff
+    )
+      mapped.nativeDiagnostic = { stage, win32 };
+    throw mapped;
+  }
+  if (typeof handle !== 'object' || handle === null)
+    throw fail('unavailable', LOST);
+  return createChannel(native, handle, 'win32');
 }
 
 /** Loads the addon from an explicit path; anything else fails closed. */
@@ -393,6 +858,7 @@ const unsafe = (value: string): boolean => value.includes('\0');
 function nativeRequest(
   os: PlatformOperatingSystem,
   request: SpawnRequest,
+  withChannel = false,
 ): Parameters<OwnedChildNative['spawn']> {
   const { executable, args, environment, stdin } = request;
   const win32 = os === 'win32';
@@ -417,9 +883,8 @@ function nativeRequest(
     strings(args) &&
     strings(pairs) &&
     new Set(names).size === names.length &&
-    // The launcher never hands a startup claim over on Windows.
     (stdin === undefined ||
-      (!win32 &&
+      ((!win32 || withChannel) &&
         typeof stdin === 'string' &&
         !unsafe(stdin) &&
         Buffer.byteLength(stdin) <= MAX_STDIN_BYTES));
@@ -1003,23 +1468,25 @@ function createOwnedChildHost(options: {
     request: SpawnRequest,
     withChannel: boolean,
   ): { child: PlatformOwnedChild; channel?: OwnedChildChannel } => {
-    const supported = withChannel ? os === 'darwin' : SPAWN_HOSTS.has(os);
+    const supported = SPAWN_HOSTS.has(os);
     if (!supported) throw fail('capability_unavailable', UNSUPPORTED);
-    const args = nativeRequest(os, request);
+    const args = nativeRequest(os, request, withChannel);
     const loaded = (native ??= loadNative(os, nativePath));
     const channelNative = hasChannel(loaded) ? loaded : undefined;
     if (withChannel && !channelNative)
       throw fail('capability_unavailable', UNSUPPORTED);
     const result = retaining(() =>
       withChannel && channelNative
-        ? channelNative.spawnChannel(...args)
+        ? os === 'win32'
+          ? channelNative.spawnChannel(...args, randomBytes(16).toString('hex'))
+          : channelNative.spawnChannel(...args)
         : loaded.spawn(...args),
     );
     const handle = delivered(result);
     const pid = Number(field(result, 'pid'));
     const child = createChild({ native: loaded, custody }, handle, pid);
     return withChannel && channelNative
-      ? { child, channel: createChannel(channelNative, handle) }
+      ? { child, channel: createChannel(channelNative, handle, os) }
       : { child };
   };
   const services: OwnedChildServices = {
@@ -1094,10 +1561,10 @@ function createOwnedChildHost(options: {
 /**
  * Owned daemon roots for startup rollback, on Darwin and Linux (a process
  * group held by its unreaped root) and Windows (a kill-on-close job held with
- * the root's process handle). `spawnWithChannel` off Darwin, and any other
- * host, reject with `capability_unavailable`. Executables and the addon path
- * must be fully qualified for `os`; Windows refuses `stdin`. The addon loads
- * on first spawn.
+ * the root's process handle). `spawnWithChannel` supports Darwin, Linux and Windows;
+ * other hosts reject it with `capability_unavailable`. Executables and the addon
+ * path must be fully qualified for `os`; ordinary Windows `spawn` refuses
+ * `stdin`. The addon loads on first spawn.
  */
 export function createOwnedChildServices(options: {
   readonly os: PlatformOperatingSystem;
@@ -1122,4 +1589,38 @@ export function createJobLauncher(options: {
     ready: (): void => host.ready(),
     launch: (request: LaunchRequest): LaunchedTree => host.launch(request),
   });
+}
+
+/** Host-injected offline filesystem custody; absent/stale addons fail closed. */
+export function loadMigrationFilesystem(
+  nativePath: string,
+): (
+  action: 'inspect' | 'mkdir' | 'copy' | 'finish' | 'read',
+  path: string,
+  other?: string,
+) => unknown {
+  const native = loadNative('win32', nativePath);
+  const operation = field(native, 'migrationFilesystem');
+  if (typeof operation !== 'function')
+    throw fail('capability_unavailable', UNSUPPORTED);
+  return (action, path, other): unknown =>
+    Reflect.apply(
+      operation,
+      native,
+      other === undefined ? [action, path] : [action, path, other],
+    );
+}
+
+/** Linux directory publication has no safe plain-Node no-replace equivalent. */
+export function loadMigrationRenameNoReplace(
+  nativePath: string,
+): (from: string, to: string, identity: string) => void {
+  const native = loadNative('linux', nativePath);
+  const operation = field(native, 'migrationRenameNoReplace');
+  if (typeof operation !== 'function')
+    throw fail('capability_unavailable', UNSUPPORTED);
+  return (from, to, identity): void => {
+    if (Reflect.apply(operation, native, [from, to, identity]) !== true)
+      throw fail('failed_precondition', UNCONFIRMED);
+  };
 }

@@ -23,7 +23,7 @@ export function DetailBackChip({
         data-testid="plugins-entry-detail-back"
         className="-ml-3"
       >
-        <AppCatalogChevronLeftMediumIcon width="12" height="12" />
+        <AppCatalogChevronLeftMediumIcon size="sm" />
         Back
       </Button>
     </div>

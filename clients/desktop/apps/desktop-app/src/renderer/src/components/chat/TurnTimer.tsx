@@ -139,7 +139,7 @@ export function TurnTimer({
             }
             aria-label={`Branch ${CHAT_UNIT_LABEL} into new worktree`}
           >
-            <BranchIcon width="14" height="14" aria-hidden="true" />
+            <BranchIcon size="sm" aria-hidden="true" />
           </button>
         </ActionTooltip>
       )}

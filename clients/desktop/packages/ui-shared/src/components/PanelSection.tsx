@@ -64,17 +64,6 @@ export interface PanelSectionProps {
   keyboardDragHandleRef?: Ref<HTMLButtonElement>;
 }
 
-function SectionChevronIcon({ expanded }: { expanded: boolean }): JSX.Element {
-  return (
-    <ChevronRightMediumIcon
-      size={16}
-      className={`transition-transform duration-150 ease-out motion-reduce:transition-none ${
-        expanded ? 'rotate-90' : ''
-      }`}
-    />
-  );
-}
-
 function getCollapsedIconColorClass(color: CollapsedIconColor): string {
   return color === 'amber' ? 'fg-warning' : 'fg-secondary';
 }
@@ -143,7 +132,12 @@ export function PanelSection({
           data-panel-section-hover-chevron
           aria-hidden="true"
         >
-          <SectionChevronIcon expanded={!collapsed} />
+          <ChevronRightMediumIcon
+            size="sm"
+            className={`transition-transform duration-150 ease-out motion-reduce:transition-none ${
+              !collapsed ? 'rotate-90' : ''
+            }`}
+          />
         </span>
       )}
     </span>

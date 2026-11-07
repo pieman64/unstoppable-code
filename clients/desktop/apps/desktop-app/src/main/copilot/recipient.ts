@@ -3,7 +3,7 @@ import type {
   GitHubTokenProvider,
   GitHubTokenProviderResult,
 } from '@github/copilot-sdk';
-import type { CopilotRuntimeAuth } from '@canopy/desktop-shared/node/copilot/runtime-auth';
+import type { CopilotRuntimeAuth } from '@canopy/copilot-recipient/runtime-auth';
 import type { CopilotRecipientIdentity } from '@canopy/desktop-shared/node/copilot/runtime';
 import {
   CopilotSignInChangedError,

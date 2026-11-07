@@ -503,6 +503,8 @@ export interface McpServerManagementActionsProps {
   /** Disables every action while other work on this server runs. */
   readonly busy?: boolean;
   readonly onPendingChange?: (pending: boolean) => void;
+  /** Joins the owning surface's synchronous action-error reset. */
+  readonly registerErrorClearer?: (clear: () => void) => () => void;
 }
 
 type ManagementActionId = 'account' | 'move-cloud' | 'move-device' | 'delete';
@@ -540,6 +542,7 @@ function McpServerManagementActionsForTarget({
   onDeleted,
   busy = false,
   onPendingChange,
+  registerErrorClearer,
 }: McpServerManagementActionsProps): JSX.Element {
   const idPrefix = useId();
   const [pending, setPending] = useState<ManagementActionId | null>(null);
@@ -547,6 +550,14 @@ function McpServerManagementActionsForTarget({
   const [error, setError] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  useEffect(
+    (): (() => void) | undefined =>
+      registerErrorClearer?.((): void => {
+        setError(null);
+        setDeleteError(null);
+      }),
+    [registerErrorClearer],
+  );
   const deleteRef = useRef(deleteServer);
   deleteRef.current = deleteServer;
   const mounted = useRef(true);

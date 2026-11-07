@@ -48,7 +48,15 @@ import {
   CORE_TRANSPORT_QUERY_DEFINITIONS,
   CORE_TRANSPORT_STREAM_DEFINITIONS,
 } from '../core';
-import { CoreChatSnapshotGetResultSchema } from '../core/chat/snapshot';
+import {
+  CoreChatQueueSummarySchema,
+  CoreChatSnapshotGetResultSchema,
+} from '../core/chat/snapshot';
+import {
+  CoreChatQueueEntryCancelParamsSchema,
+  CoreChatQueueEntryForceParamsSchema,
+  CoreChatQueueEntryUpdateParamsSchema,
+} from '../core/chat/commands-messaging';
 import {
   CoreChatTranscriptPageParamsSchema,
   CoreChatTranscriptPageResultSchema,
@@ -83,6 +91,7 @@ type Expect<Value extends true> = Value;
 type _QueryNamesAreExact = Expect<
   Equal<
     CanopyQueryName,
+    | 'worker.agent.provider.list'
     | 'worker.filesystem.roots.list'
     | 'worker.filesystem.directory.list'
     | 'worker.filesystem.file.read'
@@ -115,6 +124,7 @@ type _QueryNamesAreExact = Expect<
     | 'core.chat.content.read'
     | 'core.chat.transcript.blocks.page'
     | 'core.chat.visual.read'
+    | 'core.chat.transfer.list'
     | 'core.chat.send.receipt'
     | 'core.workspace.instructions.get'
     | 'core.workspace.item.get'
@@ -133,6 +143,7 @@ type _QueryNamesAreExact = Expect<
     | 'core.cost.scope.get'
     | 'core.cost.chat.get'
     | 'core.cost.pipelineRun.get'
+    | 'core.search.query'
     | 'core.annotation.document.get'
     | 'core.annotation.thread.get'
     | 'core.annotation.thread.list'
@@ -150,17 +161,21 @@ type _QueryNamesAreExact = Expect<
     | 'core.observability.audit.transcript.get'
     | 'core.observability.usage.query'
     | 'core.observability.summary.get'
+    // CAN-4114.
+    | 'core.summary.get'
     | 'core.integration.get'
     | 'core.integration.list'
     | 'core.integration.resource.list'
     | 'core.pullRequest.get'
     | 'core.pullRequest.list'
+    | 'core.pullRequest.mergeQueue.get'
     | 'core.terminal.settings.get'
   >
 >;
 type _WorkerNamesAreExact = Expect<
   Equal<
     WorkerPlaneQueryName,
+    | 'worker.agent.provider.list'
     | 'worker.filesystem.roots.list'
     | 'worker.filesystem.directory.list'
     | 'worker.filesystem.file.read'
@@ -199,6 +214,7 @@ type _CoreNamesAreExact = Expect<
     | 'core.chat.content.read'
     | 'core.chat.transcript.blocks.page'
     | 'core.chat.visual.read'
+    | 'core.chat.transfer.list'
     | 'core.ledger.entries.search'
     | 'core.ledger.entry.get'
     | 'core.ledger.owners.list'
@@ -208,6 +224,7 @@ type _CoreNamesAreExact = Expect<
     | 'core.cost.scope.get'
     | 'core.cost.chat.get'
     | 'core.cost.pipelineRun.get'
+    | 'core.search.query'
     | 'core.annotation.document.get'
     | 'core.annotation.thread.get'
     | 'core.annotation.thread.list'
@@ -225,11 +242,14 @@ type _CoreNamesAreExact = Expect<
     | 'core.observability.audit.transcript.get'
     | 'core.observability.usage.query'
     | 'core.observability.summary.get'
+    // CAN-4114.
+    | 'core.summary.get'
     | 'core.integration.get'
     | 'core.integration.list'
     | 'core.integration.resource.list'
     | 'core.pullRequest.get'
     | 'core.pullRequest.list'
+    | 'core.pullRequest.mergeQueue.get'
     | 'core.terminal.settings.get'
     | 'core.workspace.instructions.get'
     | 'core.workspace.item.get'
@@ -285,6 +305,7 @@ const typedHandlers: Pick<
   | 'core.chat.content.read'
   | 'core.chat.transcript.blocks.page'
   | 'core.chat.visual.read'
+  | 'core.chat.transfer.list'
 > = {
   'core.chat.snapshot.get': (params) => ({
     workspaceId: params.scope.workspaceId,
@@ -303,6 +324,7 @@ const typedHandlers: Pick<
     transcriptRevision: 0,
   }),
   'core.chat.transcript.search': () => ({ matches: [], totalCount: 0 }),
+  'core.chat.transfer.list': () => ({ transfers: [], nextCursor: null }),
   'core.chat.toolOutput.read': () => ({ text: '', byteLength: 0 }),
   'core.chat.content.read': () => ({ text: '', byteLength: 0 }),
   'core.chat.transcript.blocks.page': () => ({
@@ -1357,6 +1379,7 @@ describe('universal Canopy query registry', () => {
       'core.chat.content.read',
       'core.chat.transcript.blocks.page',
       'core.chat.visual.read',
+      'core.chat.transfer.list',
       'core.workspace.list',
       'core.workspace.get',
       'core.workspace.sharedMultiRepo.prepare',
@@ -1383,6 +1406,9 @@ describe('universal Canopy query registry', () => {
       'core.cost.scope.get',
       'core.cost.chat.get',
       'core.cost.pipelineRun.get',
+      // CAN-4114.
+      'core.summary.get',
+      'core.search.query',
       'core.annotation.document.get',
       'core.annotation.thread.get',
       'core.annotation.thread.list',
@@ -1401,9 +1427,33 @@ describe('universal Canopy query registry', () => {
       'core.integration.resource.list',
       'core.pullRequest.get',
       'core.pullRequest.list',
+      'core.pullRequest.mergeQueue.get',
       'core.terminal.settings.get',
     ]);
+    expect(
+      CORE_QUERY_DEFINITIONS['core.pullRequest.mergeQueue.get'],
+    ).toMatchObject({
+      kind: 'query',
+      plane: 'core',
+      domain: 'pullRequest',
+      version: 1,
+      placement: 'core-only',
+      idempotency: 'inherent',
+      requiredGrants: ['core.pullRequest.read'],
+    });
+    expect(
+      CORE_INSTRUCTION_DEFINITIONS['core.pullRequest.merge'],
+    ).toMatchObject({
+      kind: 'instruction',
+      plane: 'core',
+      domain: 'pullRequest',
+      version: 1,
+      placement: 'core-only',
+      idempotency: 'keyed',
+      requiredGrants: ['core.pullRequest.write'],
+    });
     expect(Object.keys(WORKER_QUERY_DEFINITIONS)).toEqual([
+      'worker.agent.provider.list',
       'worker.filesystem.roots.list',
       'worker.filesystem.directory.list',
       'worker.filesystem.file.read',
@@ -1479,16 +1529,20 @@ describe('universal Canopy query registry', () => {
         requiredGrants: ['core.workspace.read'],
       });
     }
-    expect(
-      CANOPY_INSTRUCTION_DEFINITIONS['core.workspace.item.import'],
-    ).toMatchObject({
-      kind: 'instruction',
-      plane: 'core',
-      domain: 'workspace',
-      placement: 'core-only',
-      idempotency: 'keyed',
-      requiredGrants: ['core.workspace.write'],
-    });
+    for (const name of [
+      'core.workspace.item.import',
+      'core.workspace.item.upsert',
+      'core.workspace.item.delete',
+    ] as const) {
+      expect(CANOPY_INSTRUCTION_DEFINITIONS[name]).toMatchObject({
+        kind: 'instruction',
+        plane: 'core',
+        domain: 'workspace',
+        placement: 'core-only',
+        idempotency: 'keyed',
+        requiredGrants: ['core.workspace.write'],
+      });
+    }
     for (const name of [
       'core.workspace.repoRules.scan',
       'core.workspace.repoRules.preview',
@@ -2127,6 +2181,7 @@ describe('common request and error contracts', () => {
       'core.chat.transcript.blocks.page',
       'core.chat.transcript.page',
       'core.chat.transcript.search',
+      'core.chat.transfer.list',
       'core.chat.visual.read',
       'core.cost.chat.get',
       'core.cost.pipelineRun.get',
@@ -2154,8 +2209,12 @@ describe('common request and error contracts', () => {
       'core.pipeline.definition.validate',
       'core.pullRequest.get',
       'core.pullRequest.list',
+      'core.pullRequest.mergeQueue.get',
       'core.script.definition.get',
       'core.script.definition.list',
+      'core.search.query',
+      // CAN-4114.
+      'core.summary.get',
       'core.terminal.settings.get',
       'core.workspace.get',
       'core.workspace.instructions.get',
@@ -2201,12 +2260,17 @@ describe('common request and error contracts', () => {
       'core.pipeline.definition.setEnabled',
       'core.pipeline.definition.upsert',
       'core.pullRequest.create',
+      'core.pullRequest.merge',
       'core.pullRequest.update',
       'core.script.definition.delete',
       'core.script.definition.upsert',
+      // CAN-4114.
+      'core.summary.regenerate',
       'core.terminal.settings.update',
       'core.workspace.instructions.update',
+      'core.workspace.item.delete',
       'core.workspace.item.import',
+      'core.workspace.item.upsert',
       'core.workspace.repoRules.apply',
       'core.workspace.sharedMultiRepo.create',
       // CAN-4149; CAN-4150 adds the snapshot import, CAN-5089 builds.cancel.
@@ -2215,19 +2279,25 @@ describe('common request and error contracts', () => {
       'worker.codeGraph.buildQueue.update',
       'worker.codeGraph.builds.cancel',
       'worker.codeGraph.snapshot.import',
+      // CAN-5518: create/save instructions admitted to the composed registry.
+      'worker.filesystem.directory.create',
       // CAN-5502: entry instructions admitted to the composed registry.
       'worker.filesystem.entry.copy',
       'worker.filesystem.entry.delete',
       'worker.filesystem.entry.move',
+      'worker.filesystem.file.write',
       // CAN-4108: the composed git branch-write instructions; CAN-5516 adds
       // branch delete and rename.
       'worker.git.branch.create',
       'worker.git.branch.delete',
       'worker.git.branch.rename',
       'worker.git.checkout',
+      'worker.git.commit',
       // CAN-5517.
       'worker.git.fetch',
+      'worker.git.merge',
       'worker.git.pull',
+      'worker.git.push',
       'worker.pipeline.execution.cancel',
       // CAN-4141: the recovery controls.
       'worker.pipeline.execution.resume',
@@ -2599,4 +2669,128 @@ describe('integration credential write-only wire contract (CAN-5815)', () => {
         ).toBe(true);
     }
   });
+});
+
+describe('chat queue entry revisions (CAN-4112)', () => {
+  const base = {
+    scope: { workspaceId: 'ws-1', worktreeId: 'wt-1' },
+    commandId: 'command-1',
+    _meta: { idempotencyKey: 'command-1' },
+    chatId: 'chat-1',
+    entryId: 'queue-1',
+  };
+
+  it.each([
+    ['cancel', CoreChatQueueEntryCancelParamsSchema, base],
+    [
+      'update',
+      CoreChatQueueEntryUpdateParamsSchema,
+      { ...base, mutation: { kind: 'steer' } },
+    ],
+    ['force', CoreChatQueueEntryForceParamsSchema, base],
+  ] as const)(
+    'queue entry operations accept an optional positive entry revision (%s)',
+    (_name, schema, params) => {
+      expect(schema.safeParse({ ...params, entryRevision: 1 }).success).toBe(
+        true,
+      );
+      expect(schema.safeParse({ ...params, entryRevision: 0 }).success).toBe(
+        false,
+      );
+      expect(schema.safeParse({ ...params, entryRevision: 1.5 }).success).toBe(
+        false,
+      );
+      expect(schema.safeParse(params).success).toBe(true);
+    },
+  );
+
+  it('the lock mutation is strict', () => {
+    const parse = (mutation: unknown): boolean =>
+      CoreChatQueueEntryUpdateParamsSchema.safeParse({ ...base, mutation })
+        .success;
+    expect(parse({ kind: 'lock', locked: true })).toBe(true);
+    expect(parse({ kind: 'lock', locked: true, extra: 1 })).toBe(false);
+    expect(parse({ kind: 'lock' })).toBe(false);
+  });
+
+  it('keeps queue entry revisions in the snapshot summary', () => {
+    expect(
+      CoreChatQueueSummarySchema.parse({
+        chatId: 'chat-1',
+        entries: [
+          { id: 'queue-1', origin: 'desktop', enqueuedAtMs: 1, revision: 3 },
+        ],
+      }).entries[0]?.revision,
+    ).toBe(3);
+  });
+});
+
+describe('worker.git.merge wire contract (CAN-5884)', () => {
+  const definition = CANOPY_INSTRUCTION_DEFINITIONS['worker.git.merge'];
+  const params = {
+    scope: { workspaceId: 'ws', worktreeId: 'wt' },
+    sourceBranch: 'feature/one',
+    baseBranch: 'main',
+  };
+  it('has no idempotency key and preserves a typed conflict outcome', () => {
+    expect(definition.idempotency).toBe('none');
+    expect(definition.requiredGrants).toEqual(['worker.git.write']);
+    expect(definition.params.safeParse(params).success).toBe(true);
+    expect(
+      definition.params.safeParse({
+        ...params,
+        _meta: { idempotencyKey: 'key' },
+      }).success,
+    ).toBe(false);
+    expect(definition.result.safeParse({ outcome: 'conflict' }).success).toBe(
+      true,
+    );
+    expect(
+      definition.result.safeParse({
+        outcome: 'merged',
+        mergeCommitHash: 'a'.repeat(40),
+      }).success,
+    ).toBe(true);
+  });
+  it.each(['', '--abort', 'a\0b'])(
+    'rejects a non-branch argument %p',
+    (branch) => {
+      expect(
+        definition.params.safeParse({ ...params, sourceBranch: branch })
+          .success,
+      ).toBe(false);
+      expect(
+        definition.params.safeParse({ ...params, baseBranch: branch }).success,
+      ).toBe(false);
+    },
+  );
+});
+
+describe('core.pullRequest.list additive title query (CAN-5891)', () => {
+  const definition = CORE_QUERY_DEFINITIONS['core.pullRequest.list'];
+  const list = {
+    integrationId: null,
+    repositoryId: 'repo',
+    states: ['open'],
+    cursor: null,
+    limit: 50,
+  };
+  it('keeps an omitted query absent and accepts bounded raw title text', () => {
+    expect(definition.params.parse(list)).toEqual(list);
+    expect(definition.params.parse({ ...list, query: 'fix login' })).toEqual({
+      ...list,
+      query: 'fix login',
+    });
+    expect(
+      definition.params.safeParse({ ...list, query: 'x'.repeat(100) }).success,
+    ).toBe(true);
+  });
+  it.each([null, 1, '', 'x'.repeat(101)])(
+    'rejects a malformed title query (%s)',
+    (query) => {
+      expect(definition.params.safeParse({ ...list, query }).success).toBe(
+        false,
+      );
+    },
+  );
 });

@@ -390,7 +390,7 @@ export const ACTIVITY_SECTIONS: readonly ActivitySectionDefinition[] = [
   {
     id: 'mcp-servers',
     title: 'MCP Servers',
-    icon: <McpServerIcon width={16} height={16} />,
+    icon: <McpServerIcon size="sm" />,
     render: (props: ActivitySectionRenderProps): JSX.Element => (
       <McpServersActivitySection {...props} />
     ),
@@ -420,7 +420,7 @@ export const ACTIVITY_SECTIONS: readonly ActivitySectionDefinition[] = [
   {
     id: 'scripts',
     title: 'Scripts',
-    icon: <RocketLaunchIcon width="14" height="14" />,
+    icon: <RocketLaunchIcon size="sm" />,
     render: (props: ActivitySectionRenderProps): JSX.Element => (
       <ScriptsActivitySection {...props} />
     ),

@@ -1,6 +1,6 @@
-import type { JSX, SVGProps } from 'react';
-import { InfoIcon as AppCatalogInfoIcon } from './AppIcons';
+import type { JSX } from 'react';
+import { InfoIcon as AppCatalogInfoIcon, type AppIconProps } from './AppIcons';
 
-export function InfoIcon(props: SVGProps<SVGSVGElement>): JSX.Element {
-  return <AppCatalogInfoIcon width="14" height="14" {...props} />;
+export function InfoIcon(props: AppIconProps): JSX.Element {
+  return <AppCatalogInfoIcon size="sm" {...props} />;
 }

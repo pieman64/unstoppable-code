@@ -29,6 +29,7 @@ export const SIDEBAR_SELECTION_ROW_ATTR = 'data-worktree-selection-row';
  */
 export const SIDEBAR_SELECTION_KEEPER_SELECTOR = [
   `[${SIDEBAR_SELECTION_ROW_ATTR}]`,
+  '[data-sidebar-selection-keeper]',
   '[role="menu"]',
   '[role="dialog"]',
   '[role="alertdialog"]',
@@ -418,6 +419,8 @@ export function useSidebarRowSelection(
     sidebarRowSelectionReducer,
     EMPTY_SIDEBAR_ROW_SELECTION,
   );
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
   // Only rows a list reports as selectable can be selected: a row no list
   // reports (a read-only list's menu) never enters the selection, and one
@@ -448,6 +451,21 @@ export function useSidebarRowSelection(
   );
   const keysRef = useRef(state.keys);
   keysRef.current = state.keys;
+  const seedOpenRangeAnchor = useCallback(
+    (listId: string, kind: SidebarRowKind): void => {
+      const current = stateRef.current;
+      if (current.anchor !== undefined || current.keys.size > 0) return;
+      // An already-open row may come from restored navigation rather than a
+      // rail click. The first Shift gesture still starts from that visible row.
+      const open = rowsFor(listId).find(
+        (row) => row.open === true && row.selectable && row.kind === kind,
+      );
+      if (open !== undefined) {
+        dispatch({ type: 'anchor', listId, key: open.key, kind });
+      }
+    },
+    [rowsFor],
+  );
   const toggle = useCallback(
     (listId: string, key: string): void => {
       if (!keysRef.current.has(key) && !visibleKeys.has(key)) return;
@@ -461,6 +479,7 @@ export function useSidebarRowSelection(
     (listId: string, key: string): void => {
       const kind = kindByKey.get(key);
       if (kind === undefined) return;
+      seedOpenRangeAnchor(listId, kind);
       dispatch({
         type: 'selectRange',
         listId,
@@ -469,7 +488,7 @@ export function useSidebarRowSelection(
         rows: rowsFor(listId),
       });
     },
-    [kindByKey, rowsFor],
+    [kindByKey, rowsFor, seedOpenRangeAnchor],
   );
   const selectAllInList = useCallback(
     (listId: string): void => {
@@ -488,8 +507,6 @@ export function useSidebarRowSelection(
     },
     [kindByKey],
   );
-  const stateRef = useRef(state);
-  stateRef.current = state;
   const extend = useCallback(
     (listId: string, key: string, step: 1 | -1): string | undefined => {
       const kind = kindByKey.get(key);

@@ -13,7 +13,7 @@ import { TextField } from '../shared/TextField';
 import { TextAreaField } from '../shared/TextAreaField';
 import { SelectField } from '../shared/SelectField';
 import { Tooltip } from '@canopy/ui-shared';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, Surface } from '@canopy/ui-shared/components';
 import {
   ChevronRightMediumIcon as AppCatalogChevronRightMediumIcon,
   CloseIcon as AppCatalogCloseIcon,
@@ -174,7 +174,7 @@ function ModelAliasItem({
   const summary = buildAliasSummary(alias);
 
   return (
-    <div className="rounded-md border bg-secondary/30">
+    <Surface variant="group" size="small">
       {/* The remove action sits beside the toggle, not inside it. */}
       <div className="flex items-start">
         <button
@@ -183,8 +183,7 @@ function ModelAliasItem({
           className="flex min-w-0 flex-1 items-start gap-2 px-3 py-2.5 text-left hover:bg-fg-primary/[0.04]"
         >
           <AppCatalogChevronRightMediumIcon
-            width="12"
-            height="12"
+            size="sm"
             className={`mt-1 shrink-0 fg-secondary transition-transform ${
               expanded ? 'rotate-90' : ''
             }`}
@@ -208,7 +207,7 @@ function ModelAliasItem({
                 onClick={onRemove}
                 aria-label="Remove model alias"
               >
-                <AppCatalogCloseIcon width="14" height="14" />
+                <AppCatalogCloseIcon size="sm" />
               </Button>
             </Tooltip>
           </span>
@@ -297,17 +296,19 @@ function ModelAliasItem({
             {mode === 'inline' && (
               <div className="space-y-3 pt-1">
                 <FormField label="Base model">
-                  <div className="flex items-center rounded-md border bg-base px-2 py-1.5">
-                    <ModelPicker
-                      currentModel={getInlineDefaults(alias).base || ''}
-                      onModelChange={(model) => updateInline({ base: model })}
-                      allowWorkspaceDefault={false}
-                      hideAgents
-                      disabled={readonly}
-                      placeholderLabel="Choose a model"
-                      triggerTooltip="Model this alias resolves to"
-                    />
-                  </div>
+                  <Surface variant="inset" size="small">
+                    <div className="flex items-center px-2 py-1.5">
+                      <ModelPicker
+                        currentModel={getInlineDefaults(alias).base || ''}
+                        onModelChange={(model) => updateInline({ base: model })}
+                        allowWorkspaceDefault={false}
+                        hideAgents
+                        disabled={readonly}
+                        placeholderLabel="Choose a model"
+                        triggerTooltip="Model this alias resolves to"
+                      />
+                    </div>
+                  </Surface>
                 </FormField>
                 <FormField label="Instructions">
                   <TextAreaField
@@ -375,7 +376,7 @@ function ModelAliasItem({
           </div>
         </div>
       )}
-    </div>
+    </Surface>
   );
 }
 

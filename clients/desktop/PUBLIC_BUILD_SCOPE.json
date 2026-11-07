@@ -14,6 +14,7 @@
     "packages/core-platform",
     "packages/core-transport",
     "packages/core-client",
+    "packages/copilot-recipient",
     "packages/code-graph",
     "packages/desktop-shared",
     "packages/desktop-instrumentation",
@@ -31,10 +32,14 @@
   ],
   "distribution": false,
   "excludedTestScopes": [
+    "Windows Phase 3 manual qualification requiring apps/core-daemon and private build helpers",
     "W5 recovery golden and crash child requiring apps/core-daemon",
+    "Copilot grant authority production-selection golden requiring apps/core-daemon",
     "omitted daemon/VM peer-identity consumer audit rows",
     "daemon workspace record-port fixture requiring apps/core-daemon",
     "admitted storage path census cross-check requiring planning docs",
+    "Windows, macOS and Linux native vault SEA qualification requiring private release/signing helpers",
+    "four daemon host filesystem integrations requiring apps/core-daemon",
     "daemon status host-change qualification requiring apps/core-daemon"
   ]
 }

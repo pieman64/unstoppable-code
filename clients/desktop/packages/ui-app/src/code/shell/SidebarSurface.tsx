@@ -59,15 +59,14 @@ import {
   type TerminalPopoverRow,
   EmptyStateRow,
 } from '@canopy/ui-shared/components';
+import { SidebarMoreControl } from '@canopy/ui-shared';
 import {
+  RailSectionHeader,
+  SidebarSelectionHeaderActions,
+  SidebarSelectionToolbar,
   DropdownMenuItem,
   DropdownMenuItemIcon,
-  FloatingMenu,
-  SidebarMoreControl,
-} from '@canopy/ui-shared';
-import {
-  ActionMenuRowStyle,
-  RailIconButton,
+  DropdownMenuDivider,
   SearchField,
   SIDEBAR_LIST_ICON_CLASSNAME,
   SIDEBAR_NAV_ICON_CLASSNAME,
@@ -80,11 +79,10 @@ import {
 import {
   ArchiveBoxIcon,
   ChevronDownMediumIcon,
+  ListChecks,
   EditBigIcon,
-  MoreHorizontalIcon,
   PinFilledIcon,
   PinIcon,
-  PlusMediumIcon,
   SearchIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import {
@@ -2095,7 +2093,6 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
   };
   const [createOpen, setCreateOpen] = useState(false);
   const [workspacesMenuOpen, setWorkspacesMenuOpen] = useState(false);
-  const workspacesMenuButtonRef = useRef<HTMLButtonElement>(null);
   const [chatSearchQuery, setChatSearchQuery] = useState('');
   const chatSearchInHeader =
     props.chatSearch !== undefined &&
@@ -2414,6 +2411,39 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
         : value) ?? fallback;
   // Bulk selection and removal (CAN-3975): offered only where the host wired
   // an awaitable batch removal.
+  // Normalize both classification axes once, so the list below and the
+  // placement branches inside it read concrete values (REG-2819).
+  const sections = scopedSnapshot.workspaces.map((workspace) => ({
+    ...workspace,
+    type: workspace.type ?? workspaceKind(workspace),
+    layout: workspaceLayout(workspace),
+  }));
+  const defaultChatsWorkspaceId = defaultCoworkWorkspaceIdForContext(
+    props.context,
+  );
+  const defaultChatsWorkspace = sections.find(
+    (workspace) =>
+      workspace.layout === 'flat' &&
+      workspace.localId === defaultChatsWorkspaceId,
+  );
+  // CAN-3898: with no flat catch-all in this context, the automatic default
+  // cloud workspace owns Chats, keeping its tree rows. The server's marker
+  // elects it, never its name; more than one candidate hoists none rather
+  // than choosing by order. `sections` is already context-scoped, so an
+  // out-of-context default never reaches this.
+  const cloudChatsCandidates = defaultChatsWorkspace
+    ? []
+    : sections.filter(
+        (workspace) =>
+          workspace.chatsHome === true &&
+          workspace.layout === 'tree' &&
+          workspace.backend === 'cloud' &&
+          workspace.sharedFrom !== true &&
+          props.sharedWorkspaceIds?.has(workspace.localId) !== true,
+      );
+  const cloudChatsWorkspace =
+    cloudChatsCandidates.length === 1 ? cloudChatsCandidates[0] : undefined;
+  const chatsOwner = defaultChatsWorkspace ?? cloudChatsWorkspace;
   const selectionRows = useSidebarSelectionRows();
   const worktreeBulk = useSidebarWorktreeBulk({
     enabled: props.onRemoveWorktreeInBatch !== undefined,
@@ -2486,6 +2516,8 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
     requestNotificationState: props.onWorktreeNotificationSettingsRequested,
   });
   const bulk = useSidebarBulk({
+    enableSelectMode: true,
+    chatsListId: chatsOwner?.localId,
     ...selectionRows,
     bindings: [worktreeBulk.binding, workEntryBulk.binding],
   });
@@ -3319,13 +3351,6 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
   const className = fillsParent
     ? 'relative min-w-0 flex-1'
     : 'relative min-w-0';
-  // Normalize both classification axes once, so the list below and the
-  // placement branches inside it read concrete values (REG-2819).
-  const sections = scopedSnapshot.workspaces.map((workspace) => ({
-    ...workspace,
-    type: workspace.type ?? workspaceKind(workspace),
-    layout: workspaceLayout(workspace),
-  }));
   const visibleWorktrees = props.hiddenWorktreeIds
     ? scopedSnapshot.worktrees.filter(
         (worktree) => !props.hiddenWorktreeIds?.has(worktree.localId),
@@ -3441,7 +3466,7 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
         }
         workEntryMultiSelectFor={readOnly ? undefined : workEntryMultiSelectFor}
         worktreeMultiSelect={
-          readOnly || !worktreeBulk.binding.enabled
+          !worktreeBulk.binding.enabled
             ? undefined
             : {
                 ...bulk.bindingFor(listTestIds.hiddenWorkspacesToggle),
@@ -3708,31 +3733,6 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
   // qualifies; a cloud workspace (cowork-typed but tree-shaped) never leaves
   // the list (REG-2819). Each context has its own catch-all: Personal's
   // `cowork-default`, or the organization's `cowork-org-<id>` in org scope.
-  const defaultChatsWorkspaceId = defaultCoworkWorkspaceIdForContext(
-    props.context,
-  );
-  const defaultChatsWorkspace = sections.find(
-    (workspace) =>
-      workspace.layout === 'flat' &&
-      workspace.localId === defaultChatsWorkspaceId,
-  );
-  // CAN-3898: with no flat catch-all in this context, the automatic default
-  // cloud workspace owns Chats, keeping its tree rows. The server's marker
-  // elects it, never its name; more than one candidate hoists none rather
-  // than choosing by order. `sections` is already context-scoped, so an
-  // out-of-context default never reaches this.
-  const cloudChatsCandidates = defaultChatsWorkspace
-    ? []
-    : sections.filter(
-        (workspace) =>
-          workspace.chatsHome === true &&
-          workspace.layout === 'tree' &&
-          workspace.backend === 'cloud' &&
-          workspace.sharedFrom !== true &&
-          props.sharedWorkspaceIds?.has(workspace.localId) !== true,
-      );
-  const cloudChatsWorkspace =
-    cloudChatsCandidates.length === 1 ? cloudChatsCandidates[0] : undefined;
   const cloudChatsWorkspaceId = cloudChatsWorkspace?.localId;
   useEffect(() => {
     if (!pendingCloudChat) return;
@@ -3760,7 +3760,6 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
       });
     }
   }, [cloudChatsWorkspaceId, onSelect, pendingCloudChat, snapshot.worktrees]);
-  const chatsOwner = defaultChatsWorkspace ?? cloudChatsWorkspace;
   const showStandaloneChats =
     snapshotWorkspaceMatchesContext({}, props.context) &&
     sections.every(
@@ -3865,6 +3864,25 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
     !cloudChatsCommandsDisabled &&
     (cloudChatsWorkspace === undefined ||
       cloudChatsCapabilities.workspaceSettings === 'full');
+  const selectionActionsFor = (section: 'projects' | 'chats'): ReactNode =>
+    bulk.selectionMode === section ? (
+      <SidebarSelectionHeaderActions
+        projects={section === 'projects'}
+        allSelected={bulk.allInSectionSelected(section)}
+        onToggleAll={() => bulk.toggleSection(section)}
+        onDone={bulk.exitSelection}
+      />
+    ) : undefined;
+  const startSelection = (section: 'projects' | 'chats'): void => {
+    if (section === 'projects') {
+      setWorkspacesSectionCollapsed(false);
+      props.onWorkspacesSectionCollapsedChange?.(false);
+    } else if (chatsOwner) {
+      props.onChatsSectionCollapsedChange?.(false);
+      props.onWorkspaceCollapsedChange?.(chatsOwner.localId, false);
+    }
+    bulk.enterSection(section);
+  };
   const chatsSection =
     chatsOwner && chatsSectionVisible ? (
       <div
@@ -3918,6 +3936,16 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
           }
           headerPresentation="section"
           workEntryNotifications={workEntryNotifications}
+          selectionActions={selectionActionsFor('chats')}
+          onEnterSelection={
+            (
+              cloudChatsWorkspace
+                ? worktreeBulk.binding.enabled
+                : workEntryBulk.binding.enabled
+            )
+              ? (): void => startSelection('chats')
+              : undefined
+          }
           workEntryMultiSelect={workEntryMultiSelectFor(chatsOwner.localId)}
           // Desktop's Chats header carries a settings control; wiring it
           // here gives both hosts the same one. Passed only when the action
@@ -4069,177 +4097,95 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
     props.onCreateWorkspace !== undefined ||
     props.onOpenCreateWorkspaceOverride !== undefined;
   const workspacesHeader = (
-    <div
+    <RailSectionHeader
+      kind="projects"
+      label={WORKSPACE_LABEL_PLURAL}
+      touchTargets={touch}
+      expanded={!workspacesSectionCollapsed}
+      chevronTestId="portal-workspaces-chevron"
+      toggleProps={
+        props.workspacesSectionCollapsible
+          ? {
+              'data-onboarding-anchor': 'sidebar-workspaces',
+              'data-testid':
+                testIds?.workspacesSectionToggle ??
+                'portal-workspaces-section-toggle',
+              'aria-label': workspacesSectionCollapsed
+                ? 'Expand projects'
+                : 'Collapse projects',
+              onClick: (event): void => {
+                const next = !workspacesSectionCollapsed;
+                setWorkspacesSectionCollapsed(next);
+                props.onWorkspacesSectionCollapsedChange?.(next);
+                if (event.detail > 0) event.currentTarget.blur();
+              },
+            }
+          : undefined
+      }
       data-testid="portal-workspaces-header"
-      // The rail's stand-in geometry finds this header by mark rather than by
-      // component identity, the way the Chats header is found.
       data-sidebar-projects-header=""
-      // Touch layouts raise the row to the 44px coarse-pointer minimum, as
-      // every other sidebar row does.
-      //
-      // Seated BELOW the pinned Chats header rather than at the top edge, so
-      // the two stack the way desktop's rail stacks them. Sharing `top-0`
-      // makes them trade the same seat instead: scrolling past Chats replaced
-      // it with Projects and the Chats title vanished entirely. A host rail
-      // seats this itself and needs no class.
       data-sidebar-header-resting={workspacesHeaderRest.resting || undefined}
       onPointerEnter={workspacesHeaderRest.onPointerEnter}
       onPointerMove={workspacesHeaderRest.onPointerMove}
       onFocusCapture={workspacesHeaderRest.onFocusCapture}
       onKeyDownCapture={workspacesHeaderRest.onKeyDownCapture}
-      className={`sidebar-sticky-header group/section group/workspaces ${workspacesHeaderRest.resting ? '' : 'group/sidebar-item '}${
-        props.renderProjectsBand ? '' : 'sticky '
-      }z-10 flex shrink-0 items-center gap-1 bg-sidebar px-1 ${
-        props.scrollOwner === 'host' || chatsSection === null
-          ? 'top-0'
-          : touch
-            ? 'top-11'
-            : 'top-8'
-      } ${touch ? 'min-h-11' : 'h-8'}`}
-      // The Chats header's trailing inset, so the two "+" share an edge.
+      resting={workspacesHeaderRest.resting}
+      sticky={!props.renderProjectsBand}
+      belowChats={props.scrollOwner !== 'host' && chatsSection !== null}
       style={
         props.scrollOwner === 'host'
           ? { paddingRight: RAIL_SECTION_HEADER_PADDING_RIGHT }
           : undefined
       }
-    >
-      {props.workspacesSectionCollapsible ? (
-        // Per-workspace collapse already existed; this opt-in collapses the
-        // SECTION, so `/chat` can put the whole list away without changing
-        // the default shared/desktop surface.
-        <button
-          data-onboarding-anchor="sidebar-workspaces"
-          type="button"
-          onClick={(event): void => {
-            const next = !workspacesSectionCollapsed;
-            setWorkspacesSectionCollapsed(next);
-            props.onWorkspacesSectionCollapsedChange?.(next);
-            if (event.detail > 0) event.currentTarget.blur();
-          }}
-          aria-expanded={!workspacesSectionCollapsed}
-          aria-label={
-            workspacesSectionCollapsed ? 'Expand projects' : 'Collapse projects'
-          }
-          data-testid={
-            testIds?.workspacesSectionToggle ??
-            'portal-workspaces-section-toggle'
-          }
-          className={`focus-ring flex min-w-0 flex-1 items-center gap-1 rounded px-1 text-left text-s font-normal fg-quaternary transition-colors hover:fg-secondary group-focus-within/workspaces:fg-secondary ${
-            touch ? 'min-h-11' : 'h-8'
-          }`}
-        >
-          {/* Nudged 2px down like the legacy label block, so the gap to the
-              first project reads 4px (its sticky-seat geometry contract). */}
-          <span className="shrink-0 translate-y-0.5 whitespace-nowrap">
-            {WORKSPACE_LABEL_PLURAL}
-          </span>
-          <ChevronDownMediumIcon
-            data-testid="portal-workspaces-chevron"
-            className={`h-4 w-4 shrink-0 translate-y-0.5 transition-[transform,opacity] group-hover/workspaces:opacity-100 group-focus-within/workspaces:opacity-100 ${
-              workspacesSectionCollapsed
-                ? '-rotate-90 opacity-100'
-                : 'opacity-0'
-            }`}
-          />
-        </button>
-      ) : (
-        <span
-          className={`flex min-w-0 flex-1 items-center px-1 text-s font-normal fg-quaternary ${
-            touch ? 'min-h-11' : 'h-8'
-          }`}
-        >
-          <span className="translate-y-0.5">{WORKSPACE_LABEL_PLURAL}</span>
-        </span>
-      )}
-      {(canAddWorkspace || props.renderWorkspacesSectionMenuItems) && (
-        // The ONE add-workspace entry point. A host whose workspaces can live
-        // in more than one place overrides it and offers the choice in its own
-        // modal, rather than growing a second header button per destination
-        // (REG-2818). Nudged 2px down with the label: the "+" rests on screen
-        // while the list is empty, and sits on the label's line as the Chats
-        // header's does.
-        <span className="ml-auto flex shrink-0 translate-y-0.5 items-center gap-0.5">
-          {props.renderWorkspacesSectionMenuItems && (
-            <span className="relative inline-flex">
-              <RailIconButton
-                ref={workspacesMenuButtonRef}
-                icon={MoreHorizontalIcon}
-                aria-label={`More actions for ${WORKSPACE_LABEL_PLURAL}`}
-                title="More actions"
-                aria-haspopup="menu"
-                aria-expanded={workspacesMenuOpen}
-                data-testid={
-                  testIds?.workspacesSectionMenu ?? 'portal-workspaces-menu'
-                }
-                // Stays put while a filter is on, rather than revealing on
-                // hover: see `workspacesSectionFiltered`.
-                data-active={props.workspacesSectionFiltered || undefined}
-                tone="section"
-                hoverSurface
-                revealOnItemHover={!props.workspacesSectionFiltered}
-                onClick={(): void => setWorkspacesMenuOpen((open) => !open)}
-              />
-              {props.workspacesSectionFiltered && (
-                <span
-                  aria-hidden="true"
-                  data-testid={`${testIds?.workspacesSectionMenu ?? 'portal-workspaces-menu'}-active-dot`}
-                  className="pointer-events-none absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-fg-info"
-                />
-              )}
-              <FloatingMenu
-                open={workspacesMenuOpen}
-                onOpenChange={setWorkspacesMenuOpen}
-                anchorRef={workspacesMenuButtonRef}
-                placement="bottom-left"
-                // Every sidebar menu shares one compact width: long project
-                // names in the visibility list truncate instead of widening it.
-                className="w-45"
-                aria-label={`${WORKSPACE_LABEL_PLURAL} actions`}
-                data-testid={
-                  testIds?.workspacesSectionMenuContent ??
-                  'portal-workspaces-menu-content'
-                }
-                // The visibility rows are multi-select; entries that should
-                // dismiss the menu close it themselves.
-                closeOnSelect={false}
-              >
-                <ActionMenuRowStyle>
-                  {props.renderWorkspacesSectionMenuItems(() =>
-                    setWorkspacesMenuOpen(false),
-                  )}
-                </ActionMenuRowStyle>
-              </FloatingMenu>
-            </span>
-          )}
-          {canAddWorkspace && (
-            <RailIconButton
-              icon={PlusMediumIcon}
-              onClick={() => {
-                if (props.onOpenCreateWorkspaceOverride?.() === true) return;
-                if (props.onCreateWorkspace) setCreateOpen(true);
-              }}
-              aria-label="Add project"
-              title="Add project"
-              data-testid={testIds?.addWorkspace ?? 'portal-add-workspace'}
-              {...(props.addWorkspaceButtonDataAttrs ?? {})}
-              tone="section"
-              hoverSurface
-              // Stays on screen while a host spotlights it (onboarding),
-              // while a project is hidden, or while the Projects body lists no
-              // project, so the section's controls read as present rather
-              // than empty.
-              revealOnItemHover={
-                props.addWorkspaceRevealed !== true &&
-                !projectsListEmpty &&
-                !projectsPartitionEmpty &&
-                contentState !== 'empty'
-              }
-              coarsePointerTarget
-            />
-          )}
-        </span>
-      )}
-    </div>
+      menuOpen={workspacesMenuOpen}
+      onMenuOpenChange={setWorkspacesMenuOpen}
+      menuTestId={testIds?.workspacesSectionMenu ?? 'portal-workspaces-menu'}
+      menuContentTestId={
+        testIds?.workspacesSectionMenuContent ??
+        'portal-workspaces-menu-content'
+      }
+      menuFiltered={props.workspacesSectionFiltered}
+      actions={selectionActionsFor('projects')}
+      renderMenuItems={
+        !worktreeBulk.binding.enabled && !workEntryBulk.binding.enabled
+          ? props.renderWorkspacesSectionMenuItems
+          : (close): ReactNode => (
+              <>
+                {props.renderWorkspacesSectionMenuItems?.(close)}
+                {props.renderWorkspacesSectionMenuItems && (
+                  <DropdownMenuDivider />
+                )}
+                <DropdownMenuItem
+                  onClick={() => {
+                    close();
+                    startSelection('projects');
+                  }}
+                >
+                  <DropdownMenuItemIcon>
+                    <ListChecks />
+                  </DropdownMenuItemIcon>
+                  Select
+                </DropdownMenuItem>
+              </>
+            )
+      }
+      onCreate={
+        canAddWorkspace
+          ? (): void => {
+              if (props.onOpenCreateWorkspaceOverride?.() === true) return;
+              if (props.onCreateWorkspace) setCreateOpen(true);
+            }
+          : undefined
+      }
+      createTestId={testIds?.addWorkspace ?? 'portal-add-workspace'}
+      createDataAttrs={props.addWorkspaceButtonDataAttrs}
+      createRevealed={
+        props.addWorkspaceRevealed === true ||
+        projectsListEmpty ||
+        projectsPartitionEmpty ||
+        contentState === 'empty'
+      }
+    />
   );
 
   // Without a context header, Search keeps its navigation row or narrow strip
@@ -4460,6 +4406,15 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
       </div>
     ) : null;
 
+  const selectionToolbar = (
+    <div className="pointer-events-none absolute inset-x-2 bottom-2 z-sticky">
+      <SidebarSelectionToolbar
+        count={chatSearchActive ? 0 : bulk.selectionCount}
+        items={bulk.toolbarItems}
+        onCancel={bulk.exitSelection}
+      />
+    </div>
+  );
   return (
     <>
       <SidebarChrome
@@ -4719,6 +4674,12 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
               workspaceTree
             )}
           </div>
+          {footerCalloutHost === null
+            ? selectionToolbar
+            : createPortal(
+                <div className="relative">{selectionToolbar}</div>,
+                footerCalloutHost,
+              )}
         </div>
         {slotContainer !== null &&
           createPortal(
@@ -4773,7 +4734,7 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
             }}
           >
             <span className="truncate">{WORKSPACE_LABEL_PLURAL}</span>
-            <ChevronDownMediumIcon className="h-4 w-4 shrink-0" aria-hidden />
+            <ChevronDownMediumIcon size="sm" className="shrink-0" aria-hidden />
           </button>
         )}
         {footerCallout !== null &&

@@ -86,6 +86,14 @@ function payloadFor(
         message: 'GitHub reports an open pull request for the head branch.',
         retry: NEVER,
       };
+    case 'merge_queue_required':
+    case 'head_mismatch':
+    case 'not_mergeable':
+      return {
+        kind: 'failed_precondition',
+        message: 'GitHub refused the merge.',
+        retry: { kind: 'after_refresh', resource: 'pull-request' },
+      };
     case 'base_rejected':
       return {
         kind: 'failed_precondition',

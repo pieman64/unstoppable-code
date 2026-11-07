@@ -239,14 +239,7 @@ function RowIcon({
   readonly icon: typeof DragHandleIcon;
   readonly strokePx?: number;
 }): JSX.Element {
-  return (
-    <Icon
-      width={14}
-      height={14}
-      drawnStrokeWidth={strokePx}
-      aria-hidden="true"
-    />
-  );
+  return <Icon size="sm" drawnStrokeWidth={strokePx} aria-hidden="true" />;
 }
 
 /** A 24px square with a compact 4px corner for queued media. */

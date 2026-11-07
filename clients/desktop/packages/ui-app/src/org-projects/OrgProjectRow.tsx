@@ -22,6 +22,7 @@ import type {
   OrgProjectRepositoryVisibility,
   OrgProjectSummary,
 } from '@canopy/protocol/org-projects';
+import { Badge } from '@canopy/ui-shared/components/Badge';
 
 const VISIBILITY_LABEL: Record<OrgProjectRepositoryVisibility, string> = {
   PUBLIC: 'Public',
@@ -176,12 +177,12 @@ export function OrgProjectRow({
             </StatusPill>
           )}
           {project.visibility === 'private' && !hidePrivatePill && (
-            <span
+            <Badge
+              className="shrink-0"
               data-testid={`${testIdPrefix}-private-${project.id}`}
-              className="shrink-0 rounded-md bg-secondary px-1.5 text-xs fg-secondary"
             >
               Only you
-            </span>
+            </Badge>
           )}
           {pills}
         </div>

@@ -1,8 +1,16 @@
 import { CoreHelperRuns } from '@canopy/core-runtime/node/agent/helpers';
+import { CoreSignInRuns } from '@canopy/core-runtime/node/agent/sign-in';
+import { AdvisorActionRuns } from '@canopy/core-runtime/node/agent/advisor';
+import { InterfaceToolRegistry } from '@canopy/core-runtime/node/client';
+import { setSessionInterfaceToolRegistry } from '../agents/interface-tool-binding';
 import {
   CoreChatTurnRuns,
   CoreSubagentRuns,
 } from '@canopy/core-runtime/node/agent/turns';
+import {
+  CoreDeferredToolReloads,
+  type DeferredToolReloadHost,
+} from '@canopy/core-runtime/node/agent/deferred-tools';
 import {
   createWorkerAgentAdapter,
   type WorkerAgentAdapter,
@@ -19,6 +27,8 @@ import {
   CANOPY_INSTRUCTION_DEFINITIONS,
   WORKER_AGENT_HELPER_INSTRUCTION_DEFINITIONS,
   WORKER_AGENT_RUN_INSTRUCTION_DEFINITIONS,
+  WORKER_AGENT_SIGN_IN_INSTRUCTION_DEFINITIONS,
+  WORKER_CATALOG_INSTRUCTION_DEFINITIONS,
   CANOPY_STREAM_DEFINITIONS,
   type CanopyStreamCursor,
   type CanopyInstructionDefinitionMap,
@@ -61,6 +71,7 @@ import {
   createWorkerExecutorReceipts,
   type CanopyDispatcher,
   type CanopyDispatcherStreamHandlerMap,
+  type CanopyDispatcherHandlerMap,
   type CanopyDispatcherInstructionHandlerMap,
   type CanopyRuntimeQueries,
   type CanopyRuntimeStreams,
@@ -90,6 +101,7 @@ import type {
   WorkspaceConfigFile,
   ChatTranscriptSearchResult,
   ChatToolOutputResponse,
+  WorktreeSummaryData,
 } from '@canopy/desktop-shared/types';
 import { createCoreChatStateAdapter } from './core-chat-state-adapter';
 import {
@@ -100,11 +112,13 @@ import {
   createCoreChatQuestionAdapter,
   type CoreChatQuestionHost,
 } from './core-chat-question-adapter';
+import { stopSubagentNatively } from '../agent-runs/subagent-native-stop';
 import { respondToChatQuestion } from '../chat-questions/respond';
 import { getDesktopChatWaits } from '../chat-waits/desktop-chat-waits';
 import { installQuestionTurnWaits } from '../chat-questions/question-turn-waits';
 import type { TranscriptPage } from '@canopy/agent-transcript/transcript-storage';
 import { createCoreChatEventsAdapter } from './core-chat-events-adapter';
+import { createChatEventReplayLog } from './chat-event-replay-log';
 import {
   coalesceFileIndexBuild,
   fileIndexEntriesPerRoot,
@@ -116,12 +130,22 @@ import { validateId } from '../lib/validation';
 import { logMainProcessError } from '../lib/main-process-logging';
 import { getChatStateCommandPort } from '../ipc/chat-state';
 import { createCoreChatCommandAdapter } from './core-chat-command-adapter';
+import {
+  createDesktopChatArchiveEffects,
+  withChatArchiveEffects,
+  type CoreChatArchiveEffects,
+} from './core-chat-archive-effects';
+import type { CoreChatSettingsHost } from './core-chat-command-adapter';
 import { ChatCommandKeyFingerprints } from './chat-command-key-fingerprints';
 import {
   createCoreChatLocateAdapter,
   createDesktopChatLocateHost,
   type CoreChatLocateHost,
 } from './core-chat-locate-adapter';
+import {
+  createCoreChatTransferAdapter,
+  type CoreChatTransferHost,
+} from './core-chat-transfer-adapter';
 import { getChatStateService } from '../services/chat-state-service';
 import { getChatTurnOwnership } from '../services/chat-turn-ownership';
 import { createCoreChatMessageAdapter } from './core-chat-message-command-adapter';
@@ -139,12 +163,31 @@ import {
 } from '../ledger/core-ledger-adapter';
 import type { LedgerService } from '../ledger/service';
 import { createCoreCostAdapter } from './core-cost-adapter';
+import {
+  createCoreSearchAdapter,
+  type CoreSearchIndex,
+} from './core-search-adapter';
 import { createCoreWorkspaceInstructionsAdapter } from './core-workspace-instructions-adapter';
 import { createCoreWorkspaceItemsAdapter } from './core-workspace-items-adapter';
+import { createDesktopWorkspaceTextItemProviders } from './core-workspace-note-items-host';
 import { createCoreInitiatedWorkSourceAdapter } from './core-initiated-work-source-adapter';
 import { createCoreExecutionAdapter } from './core-execution-adapter';
 import { createCoreTerminalSettingsAdapter } from './core-terminal-settings-adapter';
+import { createCoreCatalogAdapter } from './core-catalog-adapter';
+import { createWorkerCatalogAdapter } from './worker-catalog-adapter';
+import { createDesktopMaterializationResolver } from './catalog-materialization-host';
+import {
+  DESKTOP_QUERY_DEFINITIONS,
+  type DesktopQueryDefinitions,
+} from './desktop-query-definitions';
 import type { TerminalSettingsStore } from '@canopy/core-runtime/node/terminal';
+import {
+  CoreCatalogMaterializations,
+  type CatalogMaterializationResolver,
+  type CoreCatalogHost,
+  type WorkerCatalogHost,
+  type WorkerCatalogMaterializationReader,
+} from '@canopy/core-runtime/node/catalog';
 import { createCoreObservabilityAdapter } from './core-observability-adapter';
 import type { CoreHookSourceHost } from '@canopy/core-runtime/node/initiated-work/hook-sources';
 import type { HookAction } from '@canopy/desktop-shared/hooks';
@@ -186,7 +229,9 @@ import {
   createWorkerGitAdapter,
   type DesktopHealthWorktree,
 } from './worker-git-adapter';
+import { createWorkerGitCommitPushAdapter } from './worker-git-commit-push-adapter';
 import { createWorkerGitSyncWriteAdapter } from './worker-git-sync-adapter';
+import { createWorkerGitMergeAdapter } from './worker-git-merge-adapter';
 import type {
   WorkerGitBranchListHost,
   WorkerGitBranchWriteHost,
@@ -194,6 +239,7 @@ import type {
   WorkerGitExecutableHost,
   WorkerGitRemoteHost,
   WorkerGitSyncWriteHost,
+  WorkerGitMergeHost,
   WorkerGitWorktreeHealthHost,
 } from '@canopy/core-runtime/node/git';
 import type { CoreWorkspaceRepoRulesHost } from '@canopy/core-runtime/node/workspace/workspace-repo-rules';
@@ -226,7 +272,16 @@ import {
   HookQueue,
   InitiatedWorkEngine,
 } from '@canopy/core-runtime/node/initiated-work';
-import { logMainProcessWarn } from '../lib/main-process-logging';
+import {
+  logMainProcessDebug,
+  logMainProcessWarn,
+} from '../lib/main-process-logging';
+import {
+  createDesktopDeferredToolReloadHost,
+  type DesktopDeferredToolReloadPayload,
+} from '../deferred-tools/reload-host';
+import { setDeferredToolReloads } from '../deferred-tools/reload-coordinator';
+import { emitChatTurnWait } from '../agent-runs/turn-runs';
 import { createHookQueuePayloadStore } from '../lib/hook-queue-store';
 import type { CostService } from '../cost-index/service';
 import type { ObservabilityReadModel } from '@canopy/core-runtime/observability';
@@ -262,6 +317,11 @@ import {
 } from './core-chat-read-adapter';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from './desktop-runtime-identity';
 import { createDesktopSummaryScheduleHost } from './core-summary-schedule-host';
+import {
+  createCoreSummaryAdapter,
+  DESKTOP_SUMMARY_ADAPTER_HOST,
+  type CoreSummaryAdapterHost,
+} from './core-summary-adapter';
 import type {
   DaemonFilesRoute,
   DaemonFilesRouteRequest,
@@ -303,8 +363,14 @@ export interface CreateDesktopRuntimeOptions {
   workspaceReadSnapshotLimits?: CoreReadSnapshotLimits;
   chatServices?: CoreChatReadServices;
   chatCommandPort?: ChatStateCommandPort;
+  /** Bookkeeping after core archives and restores; null disables it; tests may inject one. */
+  chatArchiveEffects?: CoreChatArchiveEffects | null;
+  /** Host behind `core.chat.update` settings changes; null disables them; tests may inject one. */
+  chatSettingsHost?: CoreChatSettingsHost | null;
   /** Work Entry lookup behind `core.chat.locate`; tests may inject one. */
   chatLocateHost?: CoreChatLocateHost;
+  /** Session transfer behind core.chat.transfer.*; tests may inject one. */
+  chatTransferHost?: CoreChatTransferHost;
   /** Effects behind `core.chat.turn.cancel`; default to the desktop Stop. */
   turnCancelHost?: CoreChatTurnCancelHost;
   /** Effects behind core.chat.question.respond; default to the chat store and the question wait lifecycle. */
@@ -317,10 +383,19 @@ export interface CreateDesktopRuntimeOptions {
   ledgerService?: LedgerService;
   /** Handler logic for `core.cost.*`; tests may inject an isolated service. */
   costService?: CostService;
+  /** Index behind `core.search.query`; defaults to the chat search service. */
+  searchIndex?: () => Promise<CoreSearchIndex>;
   /** Host facts and generation for the core summary schedule; tests inject one. */
   summaryScheduleHost?: CoreSummaryScheduleHost;
+  /** Summary file reads behind `core.summary.*`; tests inject one. */
+  summaryAdapterHost?: CoreSummaryAdapterHost;
   /** Store behind `core.terminal.settings.*`; tests may inject one. */
   terminalSettingsStore?: TerminalSettingsStore;
+  /** Host behind `core.catalog.*`; tests may inject one. */
+  catalogHost?: CoreCatalogHost;
+  /** Worker host behind `worker.catalog.*` and the resolver behind materialization; tests may inject them. */
+  workerCatalogHost?: WorkerCatalogHost;
+  catalogMaterializationResolver?: CatalogMaterializationResolver;
   /** Read model for `core.observability.*`; tests may inject isolated stores. */
   observabilityReadModel?: ObservabilityReadModel;
   /** Host port for `core.workspace.instructions.*`; defaults to the desktop files. */
@@ -373,6 +448,8 @@ export interface CreateDesktopRuntimeOptions {
   workerGitBranchWriteHost?: WorkerGitBranchWriteHost<string>;
   /** Host port for `worker.git.fetch` and `worker.git.pull`; defaults to the desktop checkouts. */
   workerGitSyncWriteHost?: WorkerGitSyncWriteHost<string>;
+  /** Host port for `worker.git.merge`; defaults to the desktop checkouts. */
+  workerGitMergeHost?: WorkerGitMergeHost<string>;
   /** Host port for `core.integration.*`; defaults to the desktop GitHub connections. */
   integrationHost?: CoreIntegrationHost;
   /** Host port for `core.pullRequest.*`; defaults to the desktop records and GitHub handle. */
@@ -414,6 +491,8 @@ export interface CreateDesktopRuntimeOptions {
   entryTransferIo?: FilesystemEntryTransferIo;
   /** Test seams around `worker.filesystem.file.write` and `.directory.create`. */
   fileWriteIo?: FilesystemFileWriteIo;
+  /** Host behind deferred-tool reloads (CAN-4127); tests may inject it. */
+  deferredToolReloadHost?: DeferredToolReloadHost<DesktopDeferredToolReloadPayload>;
 }
 
 function defaultEntryMutationPlatform(): DesktopEntryMutationPlatform {
@@ -422,7 +501,7 @@ function defaultEntryMutationPlatform(): DesktopEntryMutationPlatform {
 }
 
 export interface DesktopDomainAdapter {
-  queries?: Partial<CanopyQueryHandlerMap<CanopyHandlerContext>>;
+  queries?: Partial<CanopyDispatcherHandlerMap<DesktopQueryDefinitions>>;
   instructions?: Partial<
     CanopyDispatcherInstructionHandlerMap<DesktopInstructionDefinitions>
   >;
@@ -579,7 +658,7 @@ interface ChatReadProjectionContext {
 }
 
 export interface DesktopCanopyDispatcher extends CanopyDispatcher<
-  typeof CANOPY_QUERY_DEFINITIONS & CanopyRuntimeQueries,
+  DesktopQueryDefinitions & CanopyRuntimeQueries,
   DesktopInstructionDefinitions,
   typeof CANOPY_STREAM_DEFINITIONS & CanopyRuntimeStreams
 > {
@@ -637,6 +716,13 @@ export interface DesktopCanopyDispatcher extends CanopyDispatcher<
     canonicalResult: CanopyQueryResult<'core.chat.snapshot.get'>;
     legacyResult: ChatStateSnapshot;
   }>;
+  querySummaryForLegacyIpc(
+    params: CanopyQueryParams<'core.summary.get'>,
+    options: CanopyQueryOptions,
+  ): Promise<{
+    canonicalResult: CanopyQueryResult<'core.summary.get'>;
+    legacyResult: WorktreeSummaryData | null;
+  }>;
   isShuttingDown(): boolean;
   /**
    * Dispatch and placement records for work on the builtin local worker
@@ -651,12 +737,24 @@ export interface DesktopCanopyDispatcher extends CanopyDispatcher<
   readonly scriptRuns: CoreScriptRuns;
   /** Helper model calls (CAN-4122): each a core.helper.run operation whose worker.agent.helper.run dispatch runs on the local worker. */
   readonly helperRuns: CoreHelperRuns;
+  /** Provider sign-in attempts (CAN-5070): each a core.signIn.run operation whose worker.agent.signIn.run dispatch runs on the local worker. */
+  readonly signInRuns: CoreSignInRuns;
+  /** Catalog materialization (CAN-4123): the core resolves a chat's selection and the local worker materializes it under an immutable id. */
+  readonly catalogMaterializations: CoreCatalogMaterializations;
+  /** Worker-local materialized bundles (CAN-4123); CAN-4115 reads them at session start. */
+  readonly catalogMaterializationReader: WorkerCatalogMaterializationReader;
+  /** App Advisor writes as keyed operations (CAN-4133). */
+  readonly appAdvisorActions: AdvisorActionRuns;
   /** Worktree summary generations (CAN-4114): each a core.summary.regenerate operation that survives restart. */
   readonly summarySchedule: CoreSummarySchedule;
+  /** Deferred-tool reloads (CAN-4127): the core drives search/load reloads and their resume. */
+  readonly deferredToolReloads: CoreDeferredToolReloads<DesktopDeferredToolReloadPayload>;
   /** Chat turns (CAN-4115): each a core.chat.turn.run operation whose worker.agent.turn.run dispatch runs on the local worker. */
   readonly chatTurnRuns: CoreChatTurnRuns;
   /** Managed subagent runs (CAN-4115). */
   readonly subagentRuns: CoreSubagentRuns;
+  /** Lease-bound interface agent tools (CAN-4131). In memory; leases are opened by the renderer relay host. */
+  readonly interfaceTools: InterfaceToolRegistry;
   /**
    * Initiated work (CAN-4144): each hook firing is a `core.initiatedWork.run`
    * operation with its gates, target queue and cancellation.
@@ -862,8 +960,14 @@ export function createDesktopRuntime(
   const chatProjectionContext = new AsyncLocalStorage<{
     legacyResult?: ChatStateSnapshot;
   }>();
+  const summaryProjectionContext = new AsyncLocalStorage<{
+    legacyResult?: WorktreeSummaryData | null;
+  }>();
   const chatLocateAdapter = createCoreChatLocateAdapter(
     options.chatLocateHost ?? createDesktopChatLocateHost(),
+  );
+  const chatEventReplay = createChatEventReplayLog(
+    options.getChatStatePort ?? ((): ChatStateCommandPort | null => null),
   );
   const chatStateAdapter = createCoreChatStateAdapter(
     options.getChatStatePort ?? ((): ChatStateCommandPort | null => null),
@@ -873,6 +977,7 @@ export function createDesktopRuntime(
         if (context) context.legacyResult = result;
       },
     },
+    chatEventReplay,
   );
   const workspaceProjectionContext =
     new AsyncLocalStorage<WorkspaceProjectionContext>();
@@ -951,6 +1056,7 @@ export function createDesktopRuntime(
         }
       };
     },
+    chatEventReplay,
   );
   const adapter = createWorkerFilesystemAdapter(
     options.services ?? { listFileTreeRoots, listFileTreeDirectory },
@@ -1141,7 +1247,20 @@ export function createDesktopRuntime(
   const chatCommandKeys = new ChatCommandKeyFingerprints();
   const commandAdapter = createCoreChatCommandAdapter(
     getChatStateCommandPort,
+    options.chatSettingsHost === undefined
+      ? undefined
+      : (): CoreChatSettingsHost | null => options.chatSettingsHost ?? null,
     chatCommandKeys,
+  );
+  const chatCommandsAdapter = withChatArchiveEffects(
+    commandAdapter,
+    getChatStateCommandPort,
+    options.chatArchiveEffects === undefined
+      ? createDesktopChatArchiveEffects()
+      : options.chatArchiveEffects,
+  );
+  const chatTransferAdapter = createCoreChatTransferAdapter(
+    options.chatTransferHost,
   );
   const messageAdapter = createCoreChatMessageAdapter(
     () => options.chatCommandPort ?? getChatStateService(),
@@ -1158,12 +1277,34 @@ export function createDesktopRuntime(
         return serviceModule.getDesktopCostService();
       }),
   );
+  const summaryAdapter = createCoreSummaryAdapter(
+    options.summaryAdapterHost ?? DESKTOP_SUMMARY_ADAPTER_HOST,
+    {
+      schedule: () => summarySchedule,
+      captureLegacy: (summary): void => {
+        const context = summaryProjectionContext.getStore();
+        if (context) context.legacyResult = summary;
+      },
+    },
+  );
+  const coreSearchAdapter = createCoreSearchAdapter(
+    options.searchIndex ??
+      (async (): Promise<CoreSearchIndex> => {
+        const { getChatSearchService } = await import('../chat-search/service');
+        const service = getChatSearchService();
+        // Not awaited, as the palette catalog does: a query reads the current
+        // index while the scan fills it, and indexRevision advances with it.
+        service.ensureInitialScan();
+        return service;
+      }),
+  );
   const workspaceInstructionsAdapter = createCoreWorkspaceInstructionsAdapter(
     options.workspaceInstructionsHost,
   );
-  const workspaceItemsAdapter = createCoreWorkspaceItemsAdapter(
-    options.workspaceItems,
-  );
+  const workspaceItemsAdapter = createCoreWorkspaceItemsAdapter({
+    providers: createDesktopWorkspaceTextItemProviders(),
+    ...options.workspaceItems,
+  });
   const initiatedWorkSourceAdapter = createCoreInitiatedWorkSourceAdapter(
     options.hookSourceHost,
   );
@@ -1212,6 +1353,9 @@ export function createDesktopRuntime(
     createWorkerAgentAdapter({
       sinkFor: (id) => chatTurnRunsRef.current?.sinkFor(id) ?? null,
     });
+  const workerCatalogAdapter = createWorkerCatalogAdapter(
+    options.workerCatalogHost,
+  );
   const workerScriptHandlers: DesktopDomainAdapter = {
     queries: workerScriptAdapter.queries,
     instructions: workerScriptAdapter.instructions,
@@ -1243,10 +1387,14 @@ export function createDesktopRuntime(
     options.workerGitDiffHost,
     options.workerGitBranchWriteHost,
   );
+  const workerGitMergeAdapter: DesktopDomainAdapter = {
+    instructions: createWorkerGitMergeAdapter(options.workerGitMergeHost),
+  };
   const workerGitSyncAdapter: DesktopDomainAdapter = {
-    instructions: createWorkerGitSyncWriteAdapter(
-      options.workerGitSyncWriteHost,
-    ),
+    instructions: {
+      ...createWorkerGitSyncWriteAdapter(options.workerGitSyncWriteHost),
+      ...createWorkerGitCommitPushAdapter(),
+    },
   };
   const integrationAdapter = createCoreIntegrationAdapter(
     options.integrationHost,
@@ -1259,6 +1407,22 @@ export function createDesktopRuntime(
     createCoreAnnotationAdapter({ publish: publishFileAnnotationsUpdated });
   const operationAdapter =
     options.operationAdapter ?? createCoreOperationAdapter();
+  let catalogDispatcher: DesktopCanopyDispatcher | null = null;
+  const catalogAdapter = createCoreCatalogAdapter({
+    operations: operationAdapter.service,
+    host: options.catalogHost,
+    dispatchWorkspacePluginsUpdate: (params, caller) =>
+      catalogDispatcher
+        ? catalogDispatcher.instruction(
+            'core.workspace.plugins.update',
+            params,
+            {
+              caller,
+              metadata: { idempotencyKey: params._meta.idempotencyKey },
+            },
+          )
+        : Promise.reject(canopyUnavailableError()),
+  });
   const operationQueriesAndInstructions: DesktopDomainAdapter = {
     queries: operationAdapter.queries,
     instructions: operationAdapter.instructions,
@@ -1335,13 +1499,17 @@ export function createDesktopRuntime(
     ),
   };
   const adapters: DesktopDomainAdapter[] = [
-    commandAdapter,
+    chatCommandsAdapter,
     turnAdapter,
     questionAdapter,
     messageAdapter,
+    chatTransferAdapter,
     ledgerAdapter,
     costAdapter,
+    summaryAdapter,
+    coreSearchAdapter,
     terminalSettingsAdapter,
+    catalogAdapter,
     workspaceInstructionsAdapter,
     workspaceItemsAdapter,
     initiatedWorkSourceAdapter,
@@ -1353,8 +1521,10 @@ export function createDesktopRuntime(
     scriptDefinitionsAdapter,
     workerScriptHandlers,
     workerAgentAdapter,
+    workerCatalogAdapter,
     workerGitAdapter,
     workerGitSyncAdapter,
+    workerGitMergeAdapter,
     integrationAdapter,
     pullRequestAdapter,
     workerPipelineAdapter,
@@ -1364,10 +1534,11 @@ export function createDesktopRuntime(
     operationQueriesAndInstructions,
     ...(options.adapters ?? []),
   ];
-  const queries: Partial<CanopyQueryHandlerMap<CanopyHandlerContext>> = {
-    ...builtInHandlers,
-    ...workspaceAdapter,
-  };
+  const queries: Partial<CanopyDispatcherHandlerMap<DesktopQueryDefinitions>> =
+    {
+      ...builtInHandlers,
+      ...workspaceAdapter,
+    };
   const instructions: Partial<
     CanopyDispatcherInstructionHandlerMap<DesktopInstructionDefinitions>
   > = {};
@@ -1399,16 +1570,21 @@ export function createDesktopRuntime(
   // the local worker execution resolve an unknown reply (CAN-4132). Only the
   // composed registry's worker instructions are wrapped: the git branch
   // writes (CAN-4108), the entry instructions (CAN-5502) and the git fetch
-  // and pull (CAN-5517), which the transport carries. file.write and
-  // directory.create stay outside it.
+  // and pull (CAN-5517), which the transport carries. Create/save are now
+  // composed (CAN-5518), but stay outside this transport until CAN-4730.
   const instructionDefinitions: CanopyInstructionDefinitionMap = {
     ...CANOPY_INSTRUCTION_DEFINITIONS,
     ...WORKER_AGENT_HELPER_INSTRUCTION_DEFINITIONS,
     ...WORKER_AGENT_RUN_INSTRUCTION_DEFINITIONS,
+    ...WORKER_AGENT_SIGN_IN_INSTRUCTION_DEFINITIONS,
+    ...WORKER_CATALOG_INSTRUCTION_DEFINITIONS,
   };
   const workerInstructions: CanopyInstructionDefinitionMap = Object.fromEntries(
     Object.entries(instructionDefinitions).filter(
-      ([, definition]) => definition.plane === 'worker',
+      ([name, definition]) =>
+        definition.plane === 'worker' &&
+        name !== 'worker.filesystem.file.write' &&
+        name !== 'worker.filesystem.directory.create',
     ),
   );
   const workerReceipts = createWorkerExecutorReceipts(workerInstructions);
@@ -1458,7 +1634,7 @@ export function createDesktopRuntime(
       authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
     },
     definitions: {
-      queries: CANOPY_QUERY_DEFINITIONS,
+      queries: DESKTOP_QUERY_DEFINITIONS,
       instructions: DESKTOP_INSTRUCTION_DEFINITIONS,
       streams: CANOPY_STREAM_DEFINITIONS,
     },
@@ -1489,11 +1665,16 @@ export function createDesktopRuntime(
       owned('core.chat.events', chatEventsAdapter.handlers),
       ownedAdapter('core.chat.turn', turnAdapter),
       ownedAdapter('core.chat.question', questionAdapter),
-      ownedAdapter('core.chat.commands', commandAdapter),
+      ownedAdapter('core.chat.commands', chatCommandsAdapter),
       ownedAdapter('core.chat.messages', messageAdapter),
+      ownedAdapter('core.chat.transfer', chatTransferAdapter),
       ownedAdapter('core.ledger', ledgerAdapter),
       ownedAdapter('core.cost', costAdapter),
+      ownedAdapter('core.summary', summaryAdapter),
+      ownedAdapter('core.search', coreSearchAdapter),
       ownedAdapter('core.terminal.settings', terminalSettingsAdapter),
+      ownedAdapter('core.catalog', catalogAdapter),
+      ownedAdapter('worker.catalog', workerCatalogAdapter),
       ownedAdapter('core.workspace.instructions', workspaceInstructionsAdapter),
       ownedAdapter('core.workspace.item', workspaceItemsAdapter),
       ownedAdapter('core.initiatedWork.source', initiatedWorkSourceAdapter),
@@ -1525,6 +1706,7 @@ export function createDesktopRuntime(
         workerGitAdapter.queries,
         workerGitAdapter.instructions,
         workerGitSyncAdapter.instructions,
+        workerGitMergeAdapter.instructions,
       ),
       ownedAdapter('core.integration', integrationAdapter),
       ownedAdapter('core.pullRequest', pullRequestAdapter),
@@ -1611,6 +1793,22 @@ export function createDesktopRuntime(
     operations: operationAdapter.service,
     localWorker,
   });
+  const signInRuns = new CoreSignInRuns({
+    operations: operationAdapter.service,
+    localWorker,
+  });
+  const catalogMaterializations = new CoreCatalogMaterializations({
+    operations: operationAdapter.service,
+    localWorker,
+    resolver:
+      options.catalogMaterializationResolver ??
+      createDesktopMaterializationResolver(),
+  });
+  const appAdvisorActions = new AdvisorActionRuns({
+    operations: operationAdapter.service,
+    onError: (error, context): void =>
+      logMainProcessWarn(`[app-advisor-actions] ${context} failed`, error),
+  });
   const summarySchedule = new CoreSummarySchedule({
     operations: operationAdapter.service,
     ownerId: LOCAL_DESKTOP_AUTHORITY_ID,
@@ -1631,7 +1829,41 @@ export function createDesktopRuntime(
     localWorker,
     onError: (error, context): void =>
       logMainProcessWarn(`[subagent-runs] ${context} failed`, error),
+    stopNative: stopSubagentNatively,
   });
+  const interfaceTools = new InterfaceToolRegistry({
+    onError: (error, context): void =>
+      logMainProcessWarn(`[interface-tools] ${context} failed`, error),
+    onDelivered: (event): void =>
+      logMainProcessDebug('[interface-tools] delivered', event),
+  });
+  setSessionInterfaceToolRegistry(interfaceTools);
+  const deferredToolReloads =
+    new CoreDeferredToolReloads<DesktopDeferredToolReloadPayload>({
+      operations: operationAdapter.service,
+      host:
+        options.deferredToolReloadHost ?? createDesktopDeferredToolReloadHost(),
+      display: null,
+      materializations: catalogMaterializations,
+      waits: {
+        opened: (scope, waitId): void => {
+          emitChatTurnWait(scope, {
+            kind: 'wait_opened',
+            waitId,
+            waitKind: 'deferred_tools',
+          });
+        },
+        resolved: (scope, waitId, resolution): void => {
+          emitChatTurnWait(scope, {
+            kind: 'wait_resolved',
+            waitId,
+            resolution,
+          });
+        },
+      },
+      onError: (error, context): void =>
+        logMainProcessWarn(`[deferred-tools] ${context} failed`, error),
+    });
   const initiatedWork = new InitiatedWorkEngine({
     operations: operationAdapter.service,
     // Hook runs a restart interrupted resume through the hook source
@@ -1768,6 +2000,21 @@ export function createDesktopRuntime(
     );
     if (!context.legacyResult)
       throw new Error('Chat state projection was not captured.');
+    return { canonicalResult, legacyResult: context.legacyResult };
+  };
+  const querySummaryForLegacyIpc = async (
+    params: CanopyQueryParams<'core.summary.get'>,
+    queryOptions: CanopyQueryOptions,
+  ): Promise<{
+    canonicalResult: CanopyQueryResult<'core.summary.get'>;
+    legacyResult: WorktreeSummaryData | null;
+  }> => {
+    const context: { legacyResult?: WorktreeSummaryData | null } = {};
+    const canonicalResult = await summaryProjectionContext.run(context, () =>
+      dispatcher.query('core.summary.get', params, queryOptions),
+    );
+    if (context.legacyResult === undefined)
+      throw new Error('Summary projection was not captured.');
     return { canonicalResult, legacyResult: context.legacyResult };
   };
   const queryFileTreeRootsForLegacyIpc = async (
@@ -2199,9 +2446,15 @@ export function createDesktopRuntime(
     localWorker,
     scriptRuns,
     helperRuns,
+    signInRuns,
+    catalogMaterializations,
+    catalogMaterializationReader: workerCatalogAdapter.reader,
+    appAdvisorActions,
     summarySchedule,
+    deferredToolReloads,
     chatTurnRuns,
     subagentRuns,
+    interfaceTools,
     initiatedWork,
     hookChatClaims,
     hookQueue,
@@ -2215,11 +2468,16 @@ export function createDesktopRuntime(
     ),
     shutdown: async (): Promise<void> => {
       shuttingDown = true;
+      deferredToolReloads.close();
+      setDeferredToolReloads(null);
       if (activeDesktopRuntime === desktopDispatcher)
         activeDesktopRuntime = null;
       chatEventsAdapter.closeLegacy();
+      chatEventReplay.dispose();
       legacyEvents.length = 0;
       workspaceReadSnapshots.close();
+      setSessionInterfaceToolRegistry(null);
+      interfaceTools.close();
       // An open stream is an active call that shutdown would wait out.
       closeFileTreeWatchesForLegacyIpc();
       (await stopSettlingHostRequests)?.();
@@ -2230,6 +2488,7 @@ export function createDesktopRuntime(
     queryChatStateForLegacyIpc: refuseOnceShuttingDown(
       queryChatStateForLegacyIpc,
     ),
+    querySummaryForLegacyIpc: refuseOnceShuttingDown(querySummaryForLegacyIpc),
     queryWorktreeListForLegacyIpc: refuseOnceShuttingDown(
       queryWorktreeListForLegacyIpc,
     ),
@@ -2441,6 +2700,8 @@ export function createDesktopRuntime(
       },
     ),
   });
+  setDeferredToolReloads(deferredToolReloads);
+  catalogDispatcher = desktopDispatcher;
   lifecycleEffects.dispatcher = desktopDispatcher;
   activeDesktopRuntime = desktopDispatcher;
   return desktopDispatcher;

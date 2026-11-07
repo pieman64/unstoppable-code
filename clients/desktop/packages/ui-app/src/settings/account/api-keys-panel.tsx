@@ -34,6 +34,7 @@ import { withPrivacyClass } from './privacy-class';
 import { useSettingsErrorCopy } from '../errors';
 import { SETTINGS_CARD_ROW_CLASS } from '@canopy/ui-shared/components/settings/SettingsCard';
 import type { SettingsFailure } from '../errors';
+import { Divider, Surface } from '@canopy/ui-shared/components';
 
 const API_KEYS_ERROR_SCOPE = 'api-keys-panel';
 
@@ -121,9 +122,11 @@ export function ApiKeysPanel({
   brandDisplayName,
 }: ApiKeysPanelProps): JSX.Element {
   return (
-    <section className="rounded-xl bg-card p-8 shadow-sm">
-      <ApiKeysManager brandDisplayName={brandDisplayName} />
-    </section>
+    <Surface as="section" variant="raised">
+      <div className="p-8">
+        <ApiKeysManager brandDisplayName={brandDisplayName} />
+      </div>
+    </Surface>
   );
 }
 
@@ -304,8 +307,11 @@ export function ApiKeysManager({
       />
 
       {createdToken && (
-        <div
-          className="mb-3 rounded-md border bg-secondary p-4"
+        <Surface
+          variant="group"
+          size="small"
+          padding="default"
+          className="mb-3"
           aria-live="polite"
         >
           <p className="text-s font-medium fg-primary">
@@ -315,14 +321,20 @@ export function ApiKeysManager({
             Name: {createdToken.userApiKey.name}
           </p>
           <div className="mt-3 flex items-center gap-2">
-            <code
-              className={withPrivacyClass(
-                'flex-1 overflow-x-auto rounded-md border bg-card px-3 py-2 font-mono text-xs fg-primary',
-                blockClassName,
-              )}
+            <Surface
+              variant="card"
+              size="small"
+              className="flex-1 overflow-hidden"
             >
-              {createdToken.token}
-            </code>
+              <code
+                className={withPrivacyClass(
+                  'block overflow-x-auto px-3 py-2 font-mono text-xs fg-primary',
+                  blockClassName,
+                )}
+              >
+                {createdToken.token}
+              </code>
+            </Surface>
             <Button size="compact" onClick={() => void handleCopy()}>
               <Copy size={14} aria-hidden="true" />
               {copied ? 'Copied' : 'Copy'}
@@ -331,7 +343,7 @@ export function ApiKeysManager({
               Done
             </Button>
           </div>
-        </div>
+        </Surface>
       )}
 
       {creating && (
@@ -375,19 +387,22 @@ export function ApiKeysManager({
             label="Loading API keys"
             testId="settings-skeleton-list"
           >
-            <ul className="flex flex-col border-t">
-              {SAMPLE_API_KEYS.map((key) => (
-                <ApiKeyRow
-                  key={key.id}
-                  apiKey={key}
-                  pendingDelete={false}
-                  deleting={false}
-                  onRequestDelete={noop}
-                  onConfirmDelete={noop}
-                  onCancelDelete={noop}
-                />
-              ))}
-            </ul>
+            <div>
+              <Divider />
+              <ul className="flex flex-col">
+                {SAMPLE_API_KEYS.map((key) => (
+                  <ApiKeyRow
+                    key={key.id}
+                    apiKey={key}
+                    pendingDelete={false}
+                    deleting={false}
+                    onRequestDelete={noop}
+                    onConfirmDelete={noop}
+                    onCancelDelete={noop}
+                  />
+                ))}
+              </ul>
+            </div>
           </Skeleton>
         </DelayedLoadingPlaceholder>
       )}
@@ -397,19 +412,22 @@ export function ApiKeysManager({
         </div>
       )}
       {status === 'ready' && keys.length > 0 && (
-        <ul className="flex flex-col border-t">
-          {keys.map((key) => (
-            <ApiKeyRow
-              key={key.id}
-              apiKey={key}
-              pendingDelete={pendingDeleteId === key.id}
-              deleting={deletingId === key.id}
-              onRequestDelete={handleRequestDelete}
-              onConfirmDelete={(id) => void handleConfirmDelete(id)}
-              onCancelDelete={handleCancelDelete}
-            />
-          ))}
-        </ul>
+        <div>
+          <Divider />
+          <ul className="flex flex-col">
+            {keys.map((key) => (
+              <ApiKeyRow
+                key={key.id}
+                apiKey={key}
+                pendingDelete={pendingDeleteId === key.id}
+                deleting={deletingId === key.id}
+                onRequestDelete={handleRequestDelete}
+                onConfirmDelete={(id) => void handleConfirmDelete(id)}
+                onCancelDelete={handleCancelDelete}
+              />
+            ))}
+          </ul>
+        </div>
       )}
     </div>
   );

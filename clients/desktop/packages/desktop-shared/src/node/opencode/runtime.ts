@@ -4,7 +4,6 @@ import {
   serializeOpenCodeRuntimeConfig,
 } from './provider-settings';
 import { readOpenCodeRuntimeJson } from './runtime-api';
-import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
@@ -15,7 +14,11 @@ import {
   createCursorHookTransport,
   type CursorHookOutcome,
 } from '../cursor/hook-transport';
-import { stopCursorProcessGroup } from '../cursor/runtime-process';
+import type {
+  ProviderProcess,
+  ProviderProcessRequest,
+  ProviderProcessSpawner,
+} from '../provider-process/spawn';
 import {
   openCodeApprovalPlugin,
   type OpenCodeForkScope,
@@ -39,6 +42,10 @@ export interface OpenCodeToolInput {
 
 export interface OpenCodeRuntimeOptions {
   executable: string;
+  /** Starts the ACP process. Desktop passes the provider process host (CAN-4118); nothing here spawns directly (CAN-4120). */
+  spawnProcess: ProviderProcessSpawner;
+  /** Attribution recorded by the provider process host. */
+  processOwner: ProviderProcessRequest['owner'];
   runtimeIdentity?: {
     version: string;
     executableSha256?: string;
@@ -233,27 +240,17 @@ export async function startOpenCodeRuntime(
         ],
       }),
     };
-    const child = spawn(
-      options.executable,
-      [...(options.prefix ?? []), 'acp'],
-      {
-        cwd: options.cwd,
-        env,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        detached: process.platform !== 'win32',
-        windowsHide: true,
-      },
-    );
-    child.stderr.resume();
-    const exited = new Promise<void>((resolve) => {
-      child.once('close', () => resolve());
-      child.once('error', () => {
-        if (!child.pid) resolve();
-      });
+    const child: ProviderProcess = options.spawnProcess({
+      command: options.executable,
+      args: [...(options.prefix ?? []), 'acp'],
+      cwd: options.cwd,
+      env,
+      owner: options.processOwner,
     });
+    child.stderr.resume();
     let stopping: Promise<void> | undefined;
-    stopProcess = (): Promise<void> =>
-      (stopping ??= stopCursorProcessGroup(child.pid, exited));
+    // The seam's stop is today's group drain: SIGTERM, close or 1.5 s, SIGKILL, close.
+    stopProcess = (): Promise<void> => (stopping ??= child.stop());
     child.once('error', () => {
       client?.close();
     });

@@ -44,7 +44,7 @@ import {
   mergeHelperUsage,
   readHelperUsage,
 } from '@canopy/desktop-shared/lib/helper-usage';
-import { getObservabilityService } from '../observability';
+import { getExecutionObservabilityIngest } from '../observability/ingest';
 import { isRecord } from './type-guards';
 import { isWorktreeSummaryData } from './worktree-summary-persistence';
 import { resolveHelperInvocation } from '../ollama/helper-invocation';
@@ -306,7 +306,7 @@ function seedWorktreeSummaryTranscript(
     return;
   }
 
-  getObservabilityService().seedTranscript(taskKey, {
+  getExecutionObservabilityIngest().seedTranscript(taskKey, {
     provider,
     originalText: userMessage,
     submittedText,
@@ -330,7 +330,7 @@ function appendWorktreeSummaryTranscriptEvent(
     return;
   }
 
-  getObservabilityService().appendTranscriptRecord(taskKey, event);
+  getExecutionObservabilityIngest().appendTranscriptRecord(taskKey, event);
 }
 
 function updateWorktreeSummaryRetryMetadata(
@@ -340,7 +340,7 @@ function updateWorktreeSummaryRetryMetadata(
   if (!taskKey) {
     return;
   }
-  getObservabilityService().updateObservedTask(taskKey, patch);
+  getExecutionObservabilityIngest().updateObservedTask(taskKey, patch);
 }
 
 function buildSystemPrompt(options: WorktreeSummaryGeneratorOptions): string {

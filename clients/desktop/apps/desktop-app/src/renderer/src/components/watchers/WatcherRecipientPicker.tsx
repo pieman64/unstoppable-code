@@ -12,7 +12,7 @@
 // clips it.
 
 import { useCallback, useMemo, useRef, useState } from 'react';
-import type { JSX, SVGProps } from 'react';
+import type { JSX } from 'react';
 import type { AppAdvisorWatcherDestination } from '@canopy/desktop-shared/types';
 import {
   Button,
@@ -25,7 +25,10 @@ import {
   PickerMenuSectionLabel,
 } from '@canopy/ui-shared';
 import { AppAdvisorIcon, ChatIcon } from '@canopy/ui-shared/icons';
-import { ChevronDownMediumIcon as AppCatalogChevronDownMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
+import {
+  ChevronDownMediumIcon as AppCatalogChevronDownMediumIcon,
+  type AppIconProps,
+} from '@canopy/ui-shared/icons/AppIcons';
 
 type RecipientGroupKey = 'app-advisor' | 'worktree';
 
@@ -39,7 +42,7 @@ type RecipientGroupKey = 'app-advisor' | 'worktree';
 function RecipientGroupIcon({
   groupKey,
   ...props
-}: { groupKey: RecipientGroupKey } & SVGProps<SVGSVGElement>): JSX.Element {
+}: { groupKey: RecipientGroupKey } & AppIconProps): JSX.Element {
   const Icon = groupKey === 'app-advisor' ? AppAdvisorIcon : ChatIcon;
   return <Icon {...props} />;
 }
@@ -150,8 +153,7 @@ export function WatcherRecipientPicker({
           {selected && (
             <RecipientGroupIcon
               groupKey={selected.groupKey}
-              width={12}
-              height={12}
+              size="sm"
               aria-hidden="true"
               className="shrink-0 fg-secondary"
             />
@@ -163,8 +165,7 @@ export function WatcherRecipientPicker({
           </span>
         </span>
         <AppCatalogChevronDownMediumIcon
-          width="12"
-          height="12"
+          size="sm"
           aria-hidden="true"
           className="shrink-0 fg-secondary"
         />
@@ -194,8 +195,7 @@ export function WatcherRecipientPicker({
                     <span className="flex items-center gap-1.5">
                       <RecipientGroupIcon
                         groupKey={group.key}
-                        width={12}
-                        height={12}
+                        size="sm"
                         aria-hidden="true"
                         className="shrink-0"
                       />

@@ -12,7 +12,10 @@ import type {
   ChatWaitLifecycle,
   ChatWaitScope,
 } from '@canopy/core-runtime/node/agent/waits';
-import { validateQuestionControlAnswers } from '@canopy/protocol/portal';
+import {
+  validateQuestionControlAnswers,
+  type ExternalAgentSender,
+} from '@canopy/protocol/portal';
 import { getDesktopChatWaits } from '../chat-waits/desktop-chat-waits';
 import { getChatStateCommandPort } from '../ipc/chat-state';
 
@@ -50,6 +53,10 @@ export type ChatQuestionResponse =
   | { kind: 'answer'; answers: McpQuestionAnswer[] }
   | { kind: 'dismiss' };
 
+export type QuestionCommandExecutionOptions = ChatCommandExecutionOptions & {
+  agentSent?: ExternalAgentSender;
+};
+
 export interface RespondToChatQuestionRequest {
   scope: { projectId: string; worktreeId: string };
   chatId: string;
@@ -58,13 +65,14 @@ export interface RespondToChatQuestionRequest {
   response: ChatQuestionResponse;
   commandId: string;
   origin?: ChatCommandRequest['origin'];
-  executionOptions?: ChatCommandExecutionOptions;
+  /** `agentSent` carries a trusted Portal sender's provenance. */
+  executionOptions?: QuestionCommandExecutionOptions;
   /** Defaults to getChatStateCommandPort(). */
   port?: ChatStateCommandPort | null;
   /** Defaults to the port's command. Portal passes its trusted dispatch. */
   dispatch?: (
     request: ChatCommandRequest,
-    executionOptions?: ChatCommandExecutionOptions,
+    executionOptions?: QuestionCommandExecutionOptions,
   ) => Promise<ChatCommandResult>;
 }
 
@@ -157,7 +165,7 @@ export async function respondToChatQuestion(
     request.dispatch ??
     ((
       next: ChatCommandRequest,
-      options?: ChatCommandExecutionOptions,
+      options?: QuestionCommandExecutionOptions,
     ): Promise<ChatCommandResult> =>
       options ? port.command(next, options) : port.command(next));
   let result: ChatCommandResult;

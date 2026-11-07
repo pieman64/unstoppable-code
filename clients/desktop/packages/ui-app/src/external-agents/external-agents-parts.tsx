@@ -73,6 +73,7 @@ import {
   type AccessModelSource,
 } from './access-model';
 import { externalAgentConfirmationPath, externalAgentPath } from './paths';
+import { Surface } from '@canopy/ui-shared/components';
 
 export function SettingsSection({
   title,
@@ -114,14 +115,14 @@ export function SettingsGroup({
   readonly disabled?: boolean;
 }): JSX.Element {
   return (
-    <div
-      aria-disabled={disabled || undefined}
-      className={`flex min-w-0 flex-col divide-y rounded-lg bg-secondary px-4 ring-[length:var(--border-hairline)] ring-line-base *:py-3 ${
-        disabled ? 'pointer-events-none opacity-50' : ''
-      }`}
-    >
-      {children}
-    </div>
+    <Surface variant="group" className="min-w-0">
+      <div
+        aria-disabled={disabled || undefined}
+        className={`flex min-w-0 flex-col divide-y px-4 *:py-3 ${disabled ? 'pointer-events-none opacity-50' : ''}`}
+      >
+        {children}
+      </div>
+    </Surface>
   );
 }
 
@@ -554,12 +555,14 @@ export function ConnectSection({
               />
             }
           >
-            <pre
-              data-testid="external-agents-cursor-snippet"
-              className="max-w-full overflow-x-auto whitespace-pre rounded-md bg-base p-3 font-mono text-xs fg-secondary"
-            >
-              {cursorMcpSnippet(servers, cursorClientId)}
-            </pre>
+            <Surface variant="inset" className="max-w-full overflow-hidden">
+              <pre
+                data-testid="external-agents-cursor-snippet"
+                className="overflow-x-auto whitespace-pre p-3 font-mono text-xs fg-secondary"
+              >
+                {cursorMcpSnippet(servers, cursorClientId)}
+              </pre>
+            </Surface>
           </AgentSetup>
           <AgentSetup
             testId="external-agents-opencode"
@@ -690,20 +693,22 @@ function CommandBlock({
   return (
     <div className="flex min-w-0 flex-col gap-1" data-testid={testId}>
       {caption ? <span className="text-xs fg-tertiary">{caption}</span> : null}
-      <div className="flex min-w-0 items-start gap-2 rounded-md bg-base p-3">
-        <pre className="min-w-0 flex-1 whitespace-pre-wrap wrap-anywhere font-mono text-xs fg-secondary">
-          {value}
-        </pre>
-        <CopyButton
-          value={value}
-          ariaLabel={caption ? `Copy ${caption} command` : 'Copy'}
-          label="Copy"
-          copiedLabel="Copied"
-          variant="secondary"
-          size="compact"
-          dataTestId={`${testId}-copy`}
-        />
-      </div>
+      <Surface variant="inset" padding="compact" className="min-w-0">
+        <div className="flex items-start gap-2">
+          <pre className="min-w-0 flex-1 whitespace-pre-wrap wrap-anywhere font-mono text-xs fg-secondary">
+            {value}
+          </pre>
+          <CopyButton
+            value={value}
+            ariaLabel={caption ? `Copy ${caption} command` : 'Copy'}
+            label="Copy"
+            copiedLabel="Copied"
+            variant="secondary"
+            size="compact"
+            dataTestId={`${testId}-copy`}
+          />
+        </div>
+      </Surface>
     </div>
   );
 }

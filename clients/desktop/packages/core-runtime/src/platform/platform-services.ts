@@ -439,10 +439,13 @@ export interface PlatformExecutionProcess {
    * Resolves once the tree holds no member; rejects when that cannot be confirmed,
    * and the outcome is then `lost` unless the root's exit was observed.
    * Concurrent callers share one attempt; a failed attempt may be retried.
+   * `keepOutput` delivers what the tree writes while it stops instead; a
+   * later call without it discards the rest.
    */
   terminate(options?: {
     readonly mode?: PlatformStopMode;
     readonly signal?: AbortSignal;
+    readonly keepOutput?: boolean;
   }): Promise<void>;
 }
 

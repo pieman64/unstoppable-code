@@ -131,6 +131,9 @@ export function parseCodexSpeedCatalogModel(
       ? { isDefault: entry.isDefault }
       : {}),
     ...(reasoningEfforts ? { reasoningEfforts } : {}),
+    // `model/list` carries no window bounds today (they are merged from the
+    // sign-in's catalog); an entry that does carry them keeps them.
+    ...readCodexWireContextWindow(entry),
   };
 }
 
@@ -159,6 +162,39 @@ function readCodexModelReasoningEfforts(value: unknown): string[] | undefined {
   return efforts.length > 0 ? efforts : undefined;
 }
 
+const CONTEXT_WINDOW_FIELDS = [
+  ['context_window', 'contextWindow'],
+  ['max_context_window', 'maxContextWindow'],
+  ['auto_compact_token_limit', 'autoCompactTokenLimit'],
+  ['effective_context_window_percent', 'effectiveContextWindowPercent'],
+] as const;
+
+type CodexCatalogContextWindowFields = Pick<
+  CodexSpeedCatalogModel,
+  (typeof CONTEXT_WINDOW_FIELDS)[number][1]
+>;
+
+function isPositiveTokenCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+}
+
+/**
+ * The context window fields of one Codex `/models` wire entry (snake_case),
+ * from `codex debug models` or a provider such as CLIProxyAPI. Missing or
+ * malformed fields are left out.
+ */
+export function readCodexWireContextWindow(
+  entry: unknown,
+): CodexCatalogContextWindowFields {
+  const fields: CodexCatalogContextWindowFields = {};
+  if (!isRecord(entry)) return fields;
+  for (const [wire, key] of CONTEXT_WINDOW_FIELDS) {
+    const value = entry[wire];
+    if (isPositiveTokenCount(value)) fields[key] = value;
+  }
+  return fields;
+}
+
 /**
  * Project one entry of Codex's own `/models` wire catalog (snake_case, as a
  * provider such as CLIProxyAPI serves it) into the sanitized catalog shape,
@@ -174,7 +210,13 @@ export function parseCodexSpeedCatalogWireModel(
     serviceTiers: entry.service_tiers,
     additionalSpeedTiers: entry.additional_speed_tiers,
   });
-  return { id: slug, model: slug, tiers, source };
+  return {
+    id: slug,
+    model: slug,
+    tiers,
+    source,
+    ...readCodexWireContextWindow(entry),
+  };
 }
 
 /** A catalog with no usable data for the given generation. */
@@ -240,6 +282,11 @@ function isCatalogModel(value: unknown): value is CodexSpeedCatalogModel {
     )
   ) {
     return false;
+  }
+  for (const [, key] of CONTEXT_WINDOW_FIELDS) {
+    if (value[key] !== undefined && !isPositiveTokenCount(value[key])) {
+      return false;
+    }
   }
   if (value.tiers === null) return true;
   return (

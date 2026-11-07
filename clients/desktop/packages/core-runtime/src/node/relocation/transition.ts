@@ -22,6 +22,14 @@ export interface RelocationTransition {
 }
 
 export function isWithin(root: string, path: string): boolean {
+  if (
+    sep === '\\' &&
+    [root, path].some(
+      (value) =>
+        !isAbsolute(value) || /^[\\/](?![\\/])|^[\\/]{2}[?.][\\/]/.test(value),
+    )
+  )
+    return false;
   const suffix = relative(root, path);
   return (
     suffix === '' ||
@@ -37,6 +45,7 @@ export function relocationTransition(
     if (
       !/^[a-f0-9]{64}$/.test(identity.authorityId) ||
       !isAbsolute(identity.canonicalDataRoot) ||
+      !isWithin(identity.canonicalDataRoot, identity.canonicalDataRoot) ||
       resolve(identity.canonicalDataRoot) !== identity.canonicalDataRoot
     )
       throw new RelocationRefusedError('invalid-authority-observation');
@@ -62,7 +71,7 @@ export function movedOwnedPath(
   transition: RelocationTransition,
   path: string,
 ): string {
-  if (!isAbsolute(path) || resolve(path) !== path)
+  if (!isAbsolute(path) || !isWithin(path, path) || resolve(path) !== path)
     throw new RelocationRefusedError('noncanonical-owned-path');
   return isWithin(transition.from.canonicalDataRoot, path)
     ? resolve(

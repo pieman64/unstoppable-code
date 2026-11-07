@@ -15,6 +15,7 @@ import {
 } from '@canopy/ui-shared/components';
 import { WarningIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { formatLedgerRelativeTime } from '@canopy/ui-shared/lib';
+import { Surface } from '@canopy/ui-shared/components';
 
 const LEFT_OPEN_COPY: Record<
   LedgerLeftOpen['reason'],
@@ -208,55 +209,58 @@ export function LedgerLeftOpenNote({
   );
 
   return (
-    <div
+    <Surface
+      variant="group"
+      size="small"
       role="group"
       aria-label="Left open options"
       data-testid={testId}
-      className="flex flex-col gap-2 rounded-md bg-subtle px-3 py-2"
     >
-      <p className="text-xs fg-secondary">
-        {ledgerLeftOpenText(leftOpen, now)}
-      </p>
-      <div className="flex flex-wrap items-center gap-1.5">
-        <LedgerOwnerPicker
-          ownerName={ownerName}
-          ownerActorId={ownerActorId}
-          candidates={candidates}
-          status={ownersStatus}
-          saving={pendingAction !== null}
-          onOpen={onLoadOwners}
-          onSelect={(owner) => {
-            void runAction('hand-to', () => onHandTo(owner));
-          }}
-          triggerLabel="Hand to …"
-          triggerTestId="ledger-left-open-hand-to"
-          variant="capsule"
+      <div className="flex flex-col gap-2 px-3 py-2">
+        <p className="text-xs fg-secondary">
+          {ledgerLeftOpenText(leftOpen, now)}
+        </p>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <LedgerOwnerPicker
+            ownerName={ownerName}
+            ownerActorId={ownerActorId}
+            candidates={candidates}
+            status={ownersStatus}
+            saving={pendingAction !== null}
+            onOpen={onLoadOwners}
+            onSelect={(owner) => {
+              void runAction('hand-to', () => onHandTo(owner));
+            }}
+            triggerLabel="Hand to …"
+            triggerTestId="ledger-left-open-hand-to"
+            variant="capsule"
+          />
+          {takeUnavailable ? (
+            // A disabled button takes no pointer events: the reason's tooltip
+            // hangs on its wrapper.
+            <Tooltip label={disabledReason}>{takeButton}</Tooltip>
+          ) : (
+            takeButton
+          )}
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            disabled={pendingAction !== null}
+            data-testid="ledger-left-open-close"
+            onClick={() => {
+              void runAction('close', close);
+            }}
+          >
+            Close
+          </Button>
+        </div>
+        <ErrorBanner
+          className=""
+          error={failure}
+          testId="ledger-left-open-error"
         />
-        {takeUnavailable ? (
-          // A disabled button takes no pointer events: the reason's tooltip
-          // hangs on its wrapper.
-          <Tooltip label={disabledReason}>{takeButton}</Tooltip>
-        ) : (
-          takeButton
-        )}
-        <Button
-          type="button"
-          size="sm"
-          variant="secondary"
-          disabled={pendingAction !== null}
-          data-testid="ledger-left-open-close"
-          onClick={() => {
-            void runAction('close', close);
-          }}
-        >
-          Close
-        </Button>
       </div>
-      <ErrorBanner
-        className=""
-        error={failure}
-        testId="ledger-left-open-error"
-      />
-    </div>
+    </Surface>
   );
 }

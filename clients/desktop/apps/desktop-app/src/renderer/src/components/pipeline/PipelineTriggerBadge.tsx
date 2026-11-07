@@ -1,7 +1,7 @@
 import { type JSX } from 'react';
 import { ActionTooltip } from '@canopy/ui-shared';
 import type { PipelineTriggerType } from '@canopy/desktop-shared/types/pipeline';
-import { TriggerIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { TriggerIcon, type IconSize } from '@canopy/ui-shared/icons/AppIcons';
 import { PlanModeIcon, TaskIcon } from '@canopy/ui-shared/icons';
 import { getTriggerMeta } from './pipeline-trigger-meta';
 
@@ -11,7 +11,7 @@ interface TriggerBadgeProps {
 
 interface PipelineTriggerTypeIconProps {
   type: PipelineTriggerType;
-  size?: number;
+  size?: IconSize;
 }
 
 /**
@@ -20,11 +20,11 @@ interface PipelineTriggerTypeIconProps {
  */
 export function PipelineTriggerTypeIcon({
   type,
-  size = 12,
+  size = 'sm',
 }: PipelineTriggerTypeIconProps): JSX.Element {
-  if (type === 'dispatch') return <TriggerIcon width={size} height={size} />;
-  if (type === 'task_ready') return <TaskIcon width={size} height={size} />;
-  return <PlanModeIcon width={size} height={size} />;
+  if (type === 'dispatch') return <TriggerIcon size={size} />;
+  if (type === 'task_ready') return <TaskIcon size={size} />;
+  return <PlanModeIcon size={size} />;
 }
 
 export function TriggerBadge({ type }: TriggerBadgeProps): JSX.Element {

@@ -544,8 +544,7 @@ export function PipelineListView({
                   <EmptyState
                     icon={
                       <AppCatalogPipelineIcon
-                        width="24"
-                        height="24"
+                        size="xl"
                         className="fg-secondary"
                       />
                     }

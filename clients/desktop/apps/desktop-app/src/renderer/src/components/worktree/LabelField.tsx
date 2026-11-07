@@ -1,4 +1,4 @@
-import { Button } from '@canopy/ui-shared/components';
+import { Button, Surface } from '@canopy/ui-shared/components';
 import {
   useEffect,
   useId,
@@ -11,10 +11,6 @@ import {
 import { Tooltip } from '@canopy/ui-shared';
 import { FieldError, TextInput } from '@canopy/ui-shared/components';
 import { PencilIcon as AppCatalogPencilIcon } from '@canopy/ui-shared/icons/AppIcons';
-
-function PencilIcon(): JSX.Element {
-  return <AppCatalogPencilIcon width="14" height="14" />;
-}
 
 export interface LabelFieldProps {
   /** Current custom label, or undefined/empty when none is set. */
@@ -112,81 +108,83 @@ export function LabelField({
   };
 
   return (
-    <div className="rounded-lg border px-3 py-2">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-3xs font-medium fg-secondary">Label</span>
-        {!editing && (
-          <Tooltip label={trimmedLabel ? 'Edit label' : 'Set label'}>
-            <Button
-              variant="ghost"
-              size="compact"
-              iconOnly
-              onClick={beginEdit}
-              aria-label={trimmedLabel ? 'Edit label' : 'Set label'}
-              data-testid="label-field-edit"
-            >
-              <PencilIcon />
-            </Button>
-          </Tooltip>
+    <Surface variant="outline">
+      <div className="px-3 py-2">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-3xs font-medium fg-secondary">Label</span>
+          {!editing && (
+            <Tooltip label={trimmedLabel ? 'Edit label' : 'Set label'}>
+              <Button
+                variant="ghost"
+                size="compact"
+                iconOnly
+                onClick={beginEdit}
+                aria-label={trimmedLabel ? 'Edit label' : 'Set label'}
+                data-testid="label-field-edit"
+              >
+                <AppCatalogPencilIcon size="sm" />
+              </Button>
+            </Tooltip>
+          )}
+        </div>
+        {editing ? (
+          <div className="mt-1 flex flex-col gap-1.5">
+            <div className="flex items-center gap-1.5">
+              <TextInput
+                ref={inputRef}
+                density="compact"
+                className="min-w-0 flex-1"
+                type="text"
+                value={value}
+                onChange={(e) => {
+                  setValue(e.target.value);
+                  setError(null);
+                }}
+                onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
+                  if (e.key === 'Enter') {
+                    submit();
+                  } else if (e.key === 'Escape') {
+                    cancelEdit();
+                  }
+                }}
+                disabled={saving}
+                placeholder={placeholder ?? fallback}
+                aria-label="Label"
+                aria-invalid={error ? true : undefined}
+                aria-describedby={error ? errorId : undefined}
+                data-testid="label-field-input"
+              />
+              <Button
+                variant="primary"
+                size="compact"
+                disabled={saving}
+                onClick={submit}
+                data-testid="label-field-save"
+              >
+                {saving ? 'Saving…' : 'Save'}
+              </Button>
+              <Button size="compact" onClick={cancelEdit} disabled={saving}>
+                Cancel
+              </Button>
+            </div>
+            {error ? (
+              <div role="alert">
+                <FieldError id={errorId}>{error}</FieldError>
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <p
+            className={`mt-1 truncate text-xs ${
+              trimmedLabel ? 'fg-primary' : 'fg-secondary'
+            }`}
+            title={trimmedLabel || fallback}
+            data-testid="label-field-display"
+          >
+            {trimmedLabel || fallback || 'No label set'}
+          </p>
         )}
       </div>
-      {editing ? (
-        <div className="mt-1 flex flex-col gap-1.5">
-          <div className="flex items-center gap-1.5">
-            <TextInput
-              ref={inputRef}
-              density="compact"
-              className="min-w-0 flex-1"
-              type="text"
-              value={value}
-              onChange={(e) => {
-                setValue(e.target.value);
-                setError(null);
-              }}
-              onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
-                if (e.key === 'Enter') {
-                  submit();
-                } else if (e.key === 'Escape') {
-                  cancelEdit();
-                }
-              }}
-              disabled={saving}
-              placeholder={placeholder ?? fallback}
-              aria-label="Label"
-              aria-invalid={error ? true : undefined}
-              aria-describedby={error ? errorId : undefined}
-              data-testid="label-field-input"
-            />
-            <Button
-              variant="primary"
-              size="compact"
-              disabled={saving}
-              onClick={submit}
-              data-testid="label-field-save"
-            >
-              {saving ? 'Saving…' : 'Save'}
-            </Button>
-            <Button size="compact" onClick={cancelEdit} disabled={saving}>
-              Cancel
-            </Button>
-          </div>
-          {error ? (
-            <div role="alert">
-              <FieldError id={errorId}>{error}</FieldError>
-            </div>
-          ) : null}
-        </div>
-      ) : (
-        <p
-          className={`mt-1 truncate text-xs ${
-            trimmedLabel ? 'fg-primary' : 'fg-secondary'
-          }`}
-          title={trimmedLabel || fallback}
-          data-testid="label-field-display"
-        >
-          {trimmedLabel || fallback || 'No label set'}
-        </p>
-      )}
-    </div>
+    </Surface>
   );
 }

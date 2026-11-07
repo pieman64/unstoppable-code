@@ -16,6 +16,7 @@ import { joinClassNames } from './digest-class-names';
 import { cadenceLabel, formatDigestPeriod } from './digest-format';
 import { readContributorMetrics, readHeadlineMetrics } from './digest-metrics';
 import { TrendChip } from '../organization/statistics/TrendChip';
+import { Surface } from '@canopy/ui-shared/components';
 
 /**
  * Whether this surface may render navigable links.
@@ -194,108 +195,112 @@ export function DigestReport({
       </FactList>
 
       {digest.variant === 'NUDGE' ? (
-        <div
-          className="rounded-xl bg-card p-5 shadow-sm"
-          data-testid="digest-quiet-period"
-        >
-          <Heading level={2} variant="section">
-            Quiet period
-          </Heading>
-          <div
-            className={joinClassNames(
-              `mt-2 ${DIGEST_PROSE_CLASS}`,
-              blockClassName,
-            )}
-          >
-            <Markdown options={markdownOpts}>
-              {digest.executiveSummaryMarkdown ??
-                'There was not enough activity for a full report.'}
-            </Markdown>
+        <Surface variant="raised" data-testid="digest-quiet-period">
+          <div className="p-5">
+            <Heading level={2} variant="section">
+              Quiet period
+            </Heading>
+            <div
+              className={joinClassNames(
+                `mt-2 ${DIGEST_PROSE_CLASS}`,
+                blockClassName,
+              )}
+            >
+              <Markdown options={markdownOpts}>
+                {digest.executiveSummaryMarkdown ??
+                  'There was not enough activity for a full report.'}
+              </Markdown>
+            </div>
           </div>
-        </div>
+        </Surface>
       ) : (
-        <div className="rounded-xl bg-card p-5 shadow-sm">
-          <div className={joinClassNames(DIGEST_PROSE_CLASS, blockClassName)}>
-            <Markdown options={markdownOpts}>
-              {digest.bodyMarkdown ?? ''}
-            </Markdown>
+        <Surface variant="raised">
+          <div className="p-5">
+            <div className={joinClassNames(DIGEST_PROSE_CLASS, blockClassName)}>
+              <Markdown options={markdownOpts}>
+                {digest.bodyMarkdown ?? ''}
+              </Markdown>
+            </div>
           </div>
-        </div>
+        </Surface>
       )}
 
       {digest.subjectType === 'ORGANIZATION' &&
         (contributors.rows.length > 0 || contributors.remainderCount > 0) && (
-          <section
-            className="rounded-xl bg-card p-5 shadow-sm"
+          <Surface
+            as="section"
+            variant="raised"
             aria-labelledby="digest-contributors-heading"
             data-testid="digest-contributors"
           >
-            <Heading
-              level={2}
-              variant="section"
-              id="digest-contributors-heading"
-            >
-              Team
-            </Heading>
-            {/*
+            <div className="p-5">
+              <Heading
+                level={2}
+                variant="section"
+                id="digest-contributors-heading"
+              >
+                Team
+              </Heading>
+              {/*
             Ranked by Impact score, the same ordering and the same numbers the
             Statistics People tab shows — both read `computeUserLeaderboard`
             over the same window. Usage stays as the secondary line because
             this section only ever renders for viewers who already passed the
             usage-stats gate.
           */}
-            <ol className="mt-3 divide-y">
-              {contributors.rows.map((contributor) => (
-                <li
-                  key={contributor.key}
-                  className="flex items-center justify-between gap-4 py-2 text-s"
-                  data-testid="digest-contributor-row"
-                >
-                  <span
-                    className={joinClassNames(
-                      'min-w-0 truncate font-medium fg-primary',
-                      blockClassName,
-                    )}
+              <ol className="mt-3 divide-y">
+                {contributors.rows.map((contributor) => (
+                  <li
+                    key={contributor.key}
+                    className="flex items-center justify-between gap-4 py-2 text-s"
+                    data-testid="digest-contributor-row"
                   >
-                    {contributor.href === null ? (
-                      contributor.name
-                    ) : (
-                      <SettingsLink
-                        href={contributor.href}
-                        className="hover:underline"
-                      >
-                        {contributor.name}
-                      </SettingsLink>
-                    )}
-                  </span>
-                  <span className="flex shrink-0 items-baseline gap-2">
-                    {contributor.impactScore !== null && (
-                      <span
-                        className="font-semibold fg-primary"
-                        data-testid="digest-contributor-impact"
-                      >
-                        {formatImpactScore(contributor.impactScore)} impact
-                      </span>
-                    )}
-                    <span className="fg-secondary">
-                      {formatCountExact(contributor.turns)} turns ·{' '}
-                      {formatUsdExact(contributor.costUsd)}
+                    <span
+                      className={joinClassNames(
+                        'min-w-0 truncate font-medium fg-primary',
+                        blockClassName,
+                      )}
+                    >
+                      {contributor.href === null ? (
+                        contributor.name
+                      ) : (
+                        <SettingsLink
+                          href={contributor.href}
+                          className="hover:underline"
+                        >
+                          {contributor.name}
+                        </SettingsLink>
+                      )}
                     </span>
-                  </span>
-                </li>
-              ))}
-            </ol>
-            {contributors.remainderCount > 0 && (
-              <p
-                className="mt-3 text-xs fg-secondary"
-                data-testid="digest-contributors-remainder"
-              >
-                and {formatCountExact(contributors.remainderCount)} more
-                contributor
-                {contributors.remainderCount === 1 ? '' : 's'}
-              </p>
-            )}
-          </section>
+                    <span className="flex shrink-0 items-baseline gap-2">
+                      {contributor.impactScore !== null && (
+                        <span
+                          className="font-semibold fg-primary"
+                          data-testid="digest-contributor-impact"
+                        >
+                          {formatImpactScore(contributor.impactScore)} impact
+                        </span>
+                      )}
+                      <span className="fg-secondary">
+                        {formatCountExact(contributor.turns)} turns ·{' '}
+                        {formatUsdExact(contributor.costUsd)}
+                      </span>
+                    </span>
+                  </li>
+                ))}
+              </ol>
+              {contributors.remainderCount > 0 && (
+                <p
+                  className="mt-3 text-xs fg-secondary"
+                  data-testid="digest-contributors-remainder"
+                >
+                  and {formatCountExact(contributors.remainderCount)} more
+                  contributor
+                  {contributors.remainderCount === 1 ? '' : 's'}
+                </p>
+              )}
+            </div>
+          </Surface>
         )}
     </article>
   );

@@ -16,6 +16,7 @@ import {
   IMPORTS_INPUT_BUDGET_BYTES,
   INBOX_INPUT_BUDGET_BYTES,
   MAX_INBOX_FILES_PER_RUN,
+  MAX_UNUSED_DAYS,
   TOPICS_INPUT_BUDGET_BYTES,
 } from '@canopy/memory-consolidation/limits';
 import {
@@ -31,6 +32,8 @@ import type {
   ConsolidationOutput,
   ConsolidationUsageStats,
 } from '@canopy/memory-consolidation/input';
+import { normalizeMemoryDocumentContent } from '@canopy/memory-consolidation/document-merge';
+import { memoryConsolidationInputHashParts } from '@canopy/memory-consolidation/input-hash';
 import { isMemoryIndexWithinLimits } from '@canopy/memory-consolidation/memory-index';
 import {
   compareUsageForRetention,
@@ -46,6 +49,7 @@ import {
   type MemoryConsolidationResult,
 } from '@canopy/memory-consolidation/run';
 import {
+  memoryFileIdentity,
   normalizeTopicName,
   topicIdentity,
 } from '@canopy/memory-consolidation/topic-identity';
@@ -53,9 +57,22 @@ import {
   finalizeObservedHelperTask,
   startObservedHelperTask,
 } from '../../lib/helper-observed-task';
-import { LOCAL_MEMORY_SYNCED_CONSOLIDATION_MESSAGE } from '@canopy/protocol/local-memory';
+import {
+  LOCAL_MEMORY_SYNCED_REFUSED_MESSAGE,
+  LOCAL_MEMORY_SYNCED_SECRET_MESSAGE,
+} from '@canopy/protocol/local-memory';
+import type {
+  MemoryDocumentChange,
+  MemoryUsageAggregate,
+} from '@canopy/protocol/memory-sync';
 import { runLocalMemoryStructuredHelper } from './structured-helper';
-import { isSyncedMemoryReplica } from './replica-hooks';
+import {
+  isSyncedMemoryReplica,
+  localMemoryReplicaHooks,
+  type LocalMemorySyncedConsolidation,
+  type LocalMemorySyncedNote,
+} from './replica-hooks';
+import { memoryNoteId } from './note-identity';
 import {
   assertMemoryPathContained,
   assertMemoryScopeLockHeld,
@@ -69,6 +86,7 @@ import {
 import { listPendingSources, type PendingSources } from './pending-sources';
 import {
   LocalMemoryScopeChangedError,
+  localMemoryScopeHoldsState,
   readLocalMemoryState,
   runVerifiedLocalMemoryWrite,
   saveLocalMemorySnapshot,
@@ -116,6 +134,8 @@ export interface RunConsolidationOptions {
     options: RunConsolidationOptions,
   ) => Promise<unknown>;
   now?: Date;
+  /** Why a synced replica's run takes its lease (design §11.2). */
+  leaseReason?: 'scheduled' | 'manual';
 }
 
 export type RunConsolidationResult = MemoryConsolidationResult;
@@ -316,6 +336,8 @@ async function selectFilesWithinBudget(options: {
   budgetBytes: number;
   maxFiles: number;
   onOverBudget: 'stop' | 'skip';
+  /** False for a file read as something other than it was listed as: left out. */
+  accepts?: (file: ConsolidationInputFile) => boolean;
 }): Promise<ConsolidationInputBatch> {
   const files: ConsolidationInputFile[] = [];
   const omitted: ConsolidationInputOmission = {
@@ -354,7 +376,7 @@ async function selectFilesWithinBudget(options: {
       candidate,
       options.usage,
     );
-    if (file === null) {
+    if (file === null || options.accepts?.(file) === false) {
       continue;
     }
     const costBytes = promptEntryCostBytes(file);
@@ -379,6 +401,7 @@ async function readInboxFiles(
   scopeDir: string,
   usage: Map<string, MemoryUsageEntry>,
   names: string[],
+  accepts: ((file: ConsolidationInputFile) => boolean) | undefined,
 ): Promise<ConsolidationInputBatch> {
   const candidates = await inspectInputFiles(
     scopeDir,
@@ -392,6 +415,7 @@ async function readInboxFiles(
     budgetBytes: INBOX_INPUT_BUDGET_BYTES,
     maxFiles: MAX_INBOX_FILES_PER_RUN,
     onOverBudget: 'stop',
+    ...(accepts ? { accepts } : {}),
   });
 }
 
@@ -465,6 +489,7 @@ async function readImportFiles(
   scopeDir: string,
   usage: Map<string, MemoryUsageEntry>,
   pending: PendingSources,
+  accepts: ((file: ConsolidationInputFile) => boolean) | undefined,
 ): Promise<ConsolidationImportInputBatch> {
   warnAboutUnusableImports(pending);
   const entries = pending.imports.map((pendingImport) => ({
@@ -499,6 +524,7 @@ async function readImportFiles(
     budgetBytes: IMPORTS_INPUT_BUDGET_BYTES,
     maxFiles: Number.POSITIVE_INFINITY,
     onOverBudget: 'stop',
+    ...(accepts ? { accepts } : {}),
   });
   return { ...selected, hashMaterials };
 }
@@ -511,46 +537,80 @@ function hashInput(input: {
   importHashMaterials: ConsolidationImportInputBatch['hashMaterials'];
 }): string {
   const hash = createHash('sha256');
-  hash.update('MEMORY.md\0');
-  hash.update(input.memoryMd);
-  for (const file of [
-    ...input.topicFiles,
-    ...input.inboxFiles,
-    ...input.importFiles,
-  ].sort((a, b) => a.fileKey.localeCompare(b.fileKey))) {
-    hash.update('\0');
-    hash.update(file.fileKey);
-    hash.update('\0');
-    hash.update(file.content);
-  }
-  for (const material of [...input.importHashMaterials].sort((left, right) =>
-    left.fileKey.localeCompare(right.fileKey),
-  )) {
-    hash.update('\0import-ledger\0');
-    hash.update(material.fileKey);
-    hash.update('\0');
-    hash.update(material.fileHash);
-    hash.update('\0');
-    if (material.sourceTool) {
-      hash.update(material.sourceTool);
-      hash.update('\0');
-    }
-    hash.update(material.repo ?? '');
-    hash.update('\0');
-    hash.update(material.modified ?? '');
+  for (const part of memoryConsolidationInputHashParts({
+    memoryMd: input.memoryMd,
+    files: [...input.topicFiles, ...input.inboxFiles, ...input.importFiles],
+    imports: input.importHashMaterials,
+  })) {
+    hash.update(part);
   }
   return hash.digest('hex');
 }
 
+function sha256Hex(content: string): string {
+  return createHash('sha256').update(content, 'utf8').digest('hex');
+}
+
+/**
+ * A synced run may consume only the notes the cloud holds as pending: a note
+ * still queued for sync, kept on this device, or an import never sent stays
+ * for a later run.
+ */
+function consumablePending(
+  pending: PendingSources,
+  consumable: ReadonlyMap<string, LocalMemorySyncedNote> | undefined,
+): PendingSources {
+  if (consumable === undefined) return pending;
+  return {
+    ...pending,
+    inboxFiles: pending.inboxFiles.filter((name) =>
+      consumable.has(`inbox/${name}`),
+    ),
+    imports: pending.imports.filter((pendingImport) =>
+      consumable.has(pendingImport.fileKey),
+    ),
+  };
+}
+
+/**
+ * Whether a file holds the note the cloud holds pending under its key: an
+ * inbox note by the ID in its content, an import by the hash of its body. A
+ * file replaced after the listing was read is left for a later run.
+ */
+function holdsConsumableNote(
+  consumable: ReadonlyMap<string, LocalMemorySyncedNote>,
+): (file: ConsolidationInputFile) => boolean {
+  return (file) => {
+    const note = consumable.get(file.fileKey);
+    if (note === undefined) return false;
+    return note.contentHash === null
+      ? memoryNoteId(file.content) === note.noteId
+      : sha256Hex(file.content) === note.contentHash;
+  };
+}
+
 export async function collectConsolidationInput(
   scopeDir: string,
+  options: { consumable?: ReadonlyMap<string, LocalMemorySyncedNote> } = {},
 ): Promise<ConsolidationInput> {
   const memoryMd = await readTextOrEmpty(join(scopeDir, 'MEMORY.md'));
   const { trackingSince, entries: usage } = await readUsage(scopeDir);
-  const pending = await listPendingSources(scopeDir);
-  const inbox = await readInboxFiles(scopeDir, usage, pending.inboxFiles);
+  const pending = consumablePending(
+    await listPendingSources(scopeDir),
+    options.consumable,
+  );
+  const accepts =
+    options.consumable === undefined
+      ? undefined
+      : holdsConsumableNote(options.consumable);
+  const inbox = await readInboxFiles(
+    scopeDir,
+    usage,
+    pending.inboxFiles,
+    accepts,
+  );
   const inboxFiles = inbox.files;
-  const imports = await readImportFiles(scopeDir, usage, pending);
+  const imports = await readImportFiles(scopeDir, usage, pending, accepts);
   const importFiles = imports.files;
   const indexWithinLimits = isMemoryIndexWithinLimits(memoryMd);
   if (
@@ -1067,17 +1127,180 @@ async function writableEditRevision(scopeDir: string): Promise<string | null> {
   }
 }
 
+/**
+ * The document changes a complete commit of `output` over `prior` makes: a
+ * put for every new or changed document and a delete for every topic the
+ * output dropped or pruned (design §12.1 step 5). Documents are compared and
+ * sent as the cloud holds them, with LF line endings: what a run keeps from
+ * the replica may have been saved with CRLF.
+ */
+function consolidationChanges(
+  prior: LocalMemoryState,
+  output: ConsolidationOutput,
+  prunedTopics: ConsolidationInputFile[],
+): MemoryDocumentChange[] {
+  const target = consolidationTargetState(prior, output, prunedTopics);
+  const put = (path: string, content: string): MemoryDocumentChange => ({
+    op: 'put',
+    path,
+    content,
+    contentHash: sha256Hex(content),
+  });
+  const changes: MemoryDocumentChange[] = [];
+  const memoryMd = normalizeMemoryDocumentContent(output.memoryMd);
+  if (
+    prior.memoryMd === null ||
+    memoryMd !== normalizeMemoryDocumentContent(prior.memoryMd)
+  ) {
+    changes.push(put('MEMORY.md', memoryMd));
+  }
+  const priorTopics = new Map(
+    prior.topicFiles.map((topic) => [topicIdentity(topic.filename), topic]),
+  );
+  const targetIdentities = new Set<string>();
+  for (const topic of target.topicFiles) {
+    const identity = topicIdentity(topic.filename);
+    targetIdentities.add(identity);
+    // A topic keeps its identity across a change of case; the cloud
+    // replaces the version of that identity, so one put is the change.
+    const before = priorTopics.get(identity);
+    const content = normalizeMemoryDocumentContent(topic.content);
+    if (
+      before === undefined ||
+      normalizeMemoryDocumentContent(before.content) !== content ||
+      before.filename !== topic.filename
+    ) {
+      changes.push(put(`topics/${topic.filename}`, content));
+    }
+  }
+  for (const [identity, topic] of priorTopics) {
+    if (!targetIdentities.has(identity)) {
+      changes.push({ op: 'delete', path: `topics/${topic.filename}` });
+    }
+  }
+  return changes;
+}
+
+/** Whether the cloud would refuse a change as holding a secret (design §10.5). */
+function holdsSecret(change: MemoryDocumentChange): boolean {
+  return (
+    change.op === 'put' &&
+    redactMemoryContent(change.content) !== change.content
+  );
+}
+
+/** A note a synced run read, as it read it: by file key, its ID and content hash. */
+type PinnedInputs = ReadonlyMap<
+  string,
+  { noteId: string; contentHash: string }
+>;
+
+/**
+ * The identity of every note and import in a synced run's input, taken
+ * before generation from what the prompt holds, so the commit consumes
+ * exactly those notes whatever their files hold by then.
+ */
+function pinInputs(
+  input: ConsolidationInput,
+  consumable: ReadonlyMap<string, LocalMemorySyncedNote>,
+): PinnedInputs {
+  const pinned = new Map<string, { noteId: string; contentHash: string }>();
+  for (const file of [...input.inboxFiles, ...input.importFiles]) {
+    const note = consumable.get(file.fileKey);
+    if (note !== undefined) {
+      pinned.set(file.fileKey, {
+        noteId: note.noteId,
+        contentHash: sha256Hex(file.content),
+      });
+    }
+  }
+  return pinned;
+}
+
+function consumedNoteIds(
+  plan: MemoryConsolidationApplyPlan,
+  pinned: PinnedInputs,
+): string[] {
+  return [...plan.consumedInboxFiles, ...plan.consumedImportFiles].flatMap(
+    (file) => {
+      const note = pinned.get(file.fileKey);
+      return note === undefined ? [] : [note.noteId];
+    },
+  );
+}
+
+/**
+ * Whether a pinned input is still the note it was, pending in the cloud as
+ * far as this replica knows, with the bytes the run read.
+ */
+async function pinnedInputCurrent(
+  scopeDir: string,
+  fileKey: string,
+  read: { noteId: string; contentHash: string },
+  live: ReadonlyMap<string, LocalMemorySyncedNote>,
+): Promise<boolean> {
+  const note = live.get(fileKey);
+  if (note?.noteId !== read.noteId) return false;
+  if (note.contentHash !== null && note.contentHash !== read.contentHash) {
+    return false;
+  }
+  const content = await readFile(join(scopeDir, fileKey), 'utf8').catch(
+    (error: unknown) => {
+      if (isNodeError(error, 'ENOENT')) return null;
+      throw error;
+    },
+  );
+  return content !== null && sha256Hex(content) === read.contentHash;
+}
+
+/**
+ * Prune candidates the cloud's usage also shows unused (design §15), under
+ * the local rule: the cloud must have tracked uses for the whole unused
+ * window, and a use on any device keeps a topic.
+ */
+function unusedAcrossDevices(
+  usage: MemoryUsageAggregate,
+  candidates: ConsolidationInputFile[],
+  now: Date,
+): ConsolidationInputFile[] {
+  const trackedMs =
+    usage.trackingSince === null
+      ? 0
+      : now.getTime() - Date.parse(usage.trackingSince);
+  if (!(trackedMs >= MAX_UNUSED_DAYS * 24 * 60 * 60 * 1_000)) return [];
+  const used = new Set(
+    usage.entries
+      .filter((entry) => entry.usageCount > 0)
+      .map((entry) => memoryFileIdentity(entry.fileKey)),
+  );
+  return candidates.filter(
+    (file) => !used.has(memoryFileIdentity(file.fileKey)),
+  );
+}
+
 export async function runLocalMemoryConsolidation(
   options: RunConsolidationOptions,
 ): Promise<RunConsolidationResult> {
-  // A synced replica changes its documents only through cloud commits; its
-  // consolidation runs under the scope's lease (CAN-5186), never here.
+  // A synced replica changes its documents only through cloud commits, so
+  // its run holds the scope's lease and commits instead of writing files. A
+  // replica no engine keeps now (signed out, another account, sync off) is
+  // never consolidated here.
   if (await isSyncedMemoryReplica(options.scopeDir)) {
-    return {
-      status: 'cancelled',
-      reason: LOCAL_MEMORY_SYNCED_CONSOLIDATION_MESSAGE,
-    };
+    const hooks = localMemoryReplicaHooks();
+    if (hooks === null) return { status: 'cancelled', reason: 'cancelled' };
+    return hooks.runSyncedConsolidation(
+      options.scopeDir,
+      options.leaseReason ?? 'scheduled',
+      (synced) => runConsolidation(options, synced),
+    );
   }
+  return runConsolidation(options, null);
+}
+
+async function runConsolidation(
+  options: RunConsolidationOptions,
+  synced: LocalMemorySyncedConsolidation | null,
+): Promise<RunConsolidationResult> {
   const editRevision = await writableEditRevision(options.scopeDir);
   if (editRevision === null) {
     return { status: 'failed', reason: LOCAL_MEMORY_READ_ONLY_MESSAGE };
@@ -1088,10 +1311,73 @@ export async function runLocalMemoryConsolidation(
   // saves it, and a failed commit's rollback accepts only this state or the
   // one the commit was writing.
   const priorState = await readLocalMemoryState(options.scopeDir);
-  const input = await collectConsolidationInput(options.scopeDir);
+  const input = await collectConsolidationInput(
+    options.scopeDir,
+    synced === null ? {} : { consumable: synced.consumable },
+  );
+  const pinned = pinInputs(
+    input,
+    synced?.consumable ?? new Map<string, LocalMemorySyncedNote>(),
+  );
+  // The local path's checks, for a commit the cloud cannot make stale: no
+  // edit through the app, no other change to the index or a topic, and every
+  // note the run read still pending here with the bytes it read.
+  const inputsCurrent =
+    (consolidation: LocalMemorySyncedConsolidation) => (): Promise<boolean> =>
+      withMemoryWriteLock(options.scopeDir, async () => {
+        if ((await memoryEditRevision(options.scopeDir)) !== editRevision) {
+          return false;
+        }
+        if (!(await localMemoryScopeHoldsState(options.scopeDir, priorState))) {
+          return false;
+        }
+        const live = await consolidation.listConsumable();
+        for (const [fileKey, read] of pinned) {
+          if (
+            !(await pinnedInputCurrent(options.scopeDir, fileKey, read, live))
+          ) {
+            return false;
+          }
+        }
+        return true;
+      });
+  const commitSynced = async (
+    consolidation: LocalMemorySyncedConsolidation,
+    plan: MemoryConsolidationApplyPlan,
+  ): Promise<boolean> => {
+    const changes = plan.writesDocuments
+      ? consolidationChanges(priorState, plan.output, plan.prunedTopics)
+      : [];
+    const consumed = consumedNoteIds(plan, pinned);
+    if (changes.length === 0 && consumed.length === 0) return true;
+    // The output is redacted, but the index line and sources a run keeps
+    // come from the replica as it is, which may hold a local edit never
+    // committed for its secret: nothing with a secret leaves the device.
+    if (changes.some(holdsSecret)) {
+      throw new Error(LOCAL_MEMORY_SYNCED_SECRET_MESSAGE);
+    }
+    const outcome = await consolidation.commit({
+      changes,
+      consumedNoteIds: consumed,
+      prunedTopicPaths: plan.writesDocuments
+        ? plan.prunedTopics.map((topic) => topic.fileKey)
+        : [],
+      model: { modelId: options.model, thinkingLevel: options.thinkingLevel },
+      inputHash: input.inputHash ?? null,
+      inputsCurrent: inputsCurrent(consolidation),
+    });
+    if (outcome === 'refused') {
+      throw new Error(LOCAL_MEMORY_SYNCED_REFUSED_MESSAGE);
+    }
+    if (outcome !== 'committed') return false;
+    const usage = await readUsage(options.scopeDir);
+    await deleteStaleUsageRows(options.scopeDir, usage.entries.keys());
+    return true;
+  };
   const apply = async (
     plan: MemoryConsolidationApplyPlan,
   ): Promise<boolean> => {
+    if (synced !== null) return commitSynced(synced, plan);
     const applied = await withMemoryWriteLock(options.scopeDir, async () => {
       if ((await memoryEditRevision(options.scopeDir)) !== editRevision) {
         return false;
@@ -1141,19 +1427,28 @@ export async function runLocalMemoryConsolidation(
     }
     return applied;
   };
+  const shouldContinue =
+    synced === null
+      ? options.shouldContinue
+      : async (): Promise<boolean> =>
+          synced.shouldContinue() &&
+          (options.shouldContinue === undefined ||
+            (await options.shouldContinue()));
   return runMemoryConsolidation(input, {
     model: consolidationModel(options),
-    ...(options.shouldContinue
-      ? { shouldContinue: options.shouldContinue }
-      : {}),
+    ...(shouldContinue ? { shouldContinue } : {}),
     listTopicIdentities: () => existingTopicIdentities(options.scopeDir),
     listTopicNames: () => existingTopicNames(options.scopeDir),
-    confirmPrunable: (candidates) =>
-      revalidatePruneCandidates(
+    confirmPrunable: async (candidates) => {
+      const local = await revalidatePruneCandidates(
         options.scopeDir,
         input.usageTrackingSince,
         candidates,
-      ),
+      );
+      return synced === null
+        ? local
+        : unusedAcrossDevices(synced.usage, local, options.now ?? new Date());
+    },
     apply,
     warn: (message, code) => {
       process.emitWarning(message, { code });

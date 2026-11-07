@@ -655,7 +655,7 @@ export const LEADING_PRIORITY_ITEMS: Record<string, LeadingPriorityItem> = {
       'PR merged / wrapped up — fallback when nothing else is active.',
     icon: (
       <span className="fg-purple">
-        <DoneCheckIcon width={16} height={16} aria-hidden="true" />
+        <DoneCheckIcon size="sm" aria-hidden="true" />
       </span>
     ),
   },
@@ -664,7 +664,7 @@ export const LEADING_PRIORITY_ITEMS: Record<string, LeadingPriorityItem> = {
     description: 'Plan awaiting your approval.',
     icon: (
       <span className="fg-warning">
-        <PlanMapIcon width={16} height={16} aria-hidden="true" />
+        <PlanMapIcon size="sm" aria-hidden="true" />
       </span>
     ),
   },
@@ -709,7 +709,7 @@ export const LEADING_PRIORITY_ITEMS: Record<string, LeadingPriorityItem> = {
     description: 'Plan mode active, nothing to approve yet.',
     icon: (
       <span className="fg-secondary">
-        <PlanMapIcon width={16} height={16} aria-hidden="true" />
+        <PlanMapIcon size="sm" aria-hidden="true" />
       </span>
     ),
   },
@@ -727,7 +727,7 @@ export const LEADING_PRIORITY_ITEMS: Record<string, LeadingPriorityItem> = {
     description: 'Idle chats with active watchers.',
     icon: (
       <span className="fg-secondary">
-        <AppAdvisorWatcherIcon width={16} height={16} />
+        <AppAdvisorWatcherIcon size="sm" />
       </span>
     ),
   },

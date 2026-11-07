@@ -1,11 +1,25 @@
+import { getActiveDesktopRuntime } from '../canopy-runtime/desktop-runtime';
+import {
+  commitWorktreeRepository,
+  pushWorktreeRepository,
+} from '../canopy-runtime/worker-git-commit-push-dispatch';
+import { pullWorktreeRepository } from '../canopy-runtime/worker-git-sync-dispatch';
+import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
+import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
+
+// Trusted main-side orchestration after Portal authorization and Git-action guards.
+const PORTAL_GIT_EFFECT_CALLER: CanopyCallerDescriptor = {
+  principalId: 'core',
+  clientInstanceId: 'electron-main-portal-git',
+  authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+  interfaceKind: 'desktop',
+  grants: [],
+};
 import {
   recordGitCommitTelemetry,
   recordPullRequestOpenedTelemetry,
 } from '../lib/desktop-telemetry';
-import {
-  pushBranchWithAuthFailure,
-  withGitHubPushAuthFailure,
-} from '../lib/github-push';
+import { withGitHubPushAuthFailure } from '../lib/github-push';
 import { githubAuthFailureCode } from '../lib/github-push-auth-failure';
 import type {
   PortalPrRepoFailure,
@@ -25,6 +39,7 @@ import type {
   PortalPullRequestRepoStatus,
   PortalPullRequestState,
 } from '@canopy/desktop-shared/types';
+import { SINGLE_REPO_USAGE_REPO_ID } from '@canopy/desktop-shared/types';
 import type {
   CreatePrResponse,
   RepoFailureResult,
@@ -53,13 +68,7 @@ import {
 } from '../lib/github-pr';
 import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { validateId } from '../lib/validation';
-import {
-  commitWithMessage,
-  getCurrentBranch,
-  hasUncommittedChanges,
-  pullBranchRebase,
-  stageAllChanges,
-} from '../lib/git';
+import { getCurrentBranch, hasUncommittedChanges } from '../lib/git';
 import { listWorkspaceWorktreeRepoEntries } from '../lib/worktree-repo-entries';
 import { readAllSidebarItems } from '../lib/sidebar-items';
 import { PortalServiceError } from './portal-service-error';
@@ -504,7 +513,13 @@ export async function runPrAction(
         await runExclusiveGitMutation(gitActionTarget(request), async () => {
           for (const repo of await resolveTargetRepos(request)) {
             const branch = await getCurrentBranch(repo.repoPath);
-            await pullBranchRebase(repo.repoPath, branch);
+            await pullWorktreeRepository(
+              getActiveDesktopRuntime(),
+              PORTAL_GIT_EFFECT_CALLER,
+              gitActionTarget(request),
+              { repoPath: repo.repoPath, repoId: repo.gitRepoId },
+              { branch, strategy: 'rebase' },
+            );
           }
         });
         return refreshPullRequestStateAfterMutation(request);
@@ -563,32 +578,49 @@ async function pushTargetRepos(
         request.action === 'commit_and_push' &&
         (await hasUncommittedChanges(repo.repoPath))
       ) {
-        await stageAllChanges(repo.repoPath);
-        try {
-          await commitWithMessage(repo.repoPath, request.commitMessage);
-          try {
-            recordGitCommitTelemetry({
-              projectId: request.workspaceLocalId,
-              source: 'manual',
-              flow: 'portal',
-              repoCount,
-            });
-          } catch {
-            /* Best effort. */
-          }
-        } catch (error) {
-          await triggerWorktreePrecommitFailureHook({
-            projectId: request.workspaceLocalId,
-            worktreeId: request.worktreeLocalId,
-            repo,
-            error,
-            commitMessage: request.commitMessage,
-            getWindow: options.getWindow,
-          }).catch(() => {});
-          throw error;
-        }
+        await commitWorktreeRepository(
+          getActiveDesktopRuntime(),
+          PORTAL_GIT_EFFECT_CALLER,
+          gitActionTarget(request),
+          { repoPath: repo.repoPath, repoId: repo.gitRepoId },
+          request.commitMessage,
+          {
+            stage: (run) => run(),
+            commit: async (run) => {
+              try {
+                const hash = await run();
+                try {
+                  recordGitCommitTelemetry({
+                    projectId: request.workspaceLocalId,
+                    source: 'manual',
+                    flow: 'portal',
+                    repoCount,
+                  });
+                } catch {
+                  /* Best effort. */
+                }
+                return hash;
+              } catch (error) {
+                await triggerWorktreePrecommitFailureHook({
+                  projectId: request.workspaceLocalId,
+                  worktreeId: request.worktreeLocalId,
+                  repo,
+                  error,
+                  commitMessage: request.commitMessage,
+                  getWindow: options.getWindow,
+                }).catch(() => {});
+                throw error;
+              }
+            },
+          },
+        );
       }
-      await pushBranchWithAuthFailure(repo.repoPath);
+      await pushWorktreeRepository(
+        getActiveDesktopRuntime(),
+        PORTAL_GIT_EFFECT_CALLER,
+        gitActionTarget(request),
+        { repoPath: repo.repoPath, repoId: repo.gitRepoId },
+      );
       result.repos.push({ repoId: repo.repoId, repoName: repo.repoName });
       await scheduleSharedContainerPublicationAfterPush(
         request.workspaceLocalId,
@@ -645,7 +677,14 @@ async function resolveTargetRepos(request: {
   workspaceLocalId: string;
   worktreeLocalId: string;
   repoIds?: string[];
-}): Promise<Array<{ repoId: string; repoName: string; repoPath: string }>> {
+}): Promise<
+  Array<{
+    repoId: string;
+    repoName: string;
+    repoPath: string;
+    gitRepoId: string;
+  }>
+> {
   const cwd = resolveWorktreeCwd(
     request.workspaceLocalId,
     request.worktreeLocalId,
@@ -656,12 +695,16 @@ async function resolveTargetRepos(request: {
   );
   const repos =
     item?.type === 'multi-repo'
-      ? await listWorkspaceWorktreeRepoEntries(request.workspaceLocalId, cwd)
+      ? (
+          await listWorkspaceWorktreeRepoEntries(request.workspaceLocalId, cwd)
+        ).map((repo) => ({ ...repo, gitRepoId: repo.repoId }))
       : [
           {
             repoId: item?.id ?? request.workspaceLocalId,
             repoName: item?.name ?? request.workspaceLocalId,
             repoPath: cwd,
+            // Portal filtering/reporting keeps the workspace ID, not this sentinel.
+            gitRepoId: SINGLE_REPO_USAGE_REPO_ID,
           },
         ];
   if (!request.repoIds?.length) return repos;

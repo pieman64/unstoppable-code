@@ -394,7 +394,7 @@ export function ChatComposerOverflowMenu({
                 {item.stateLabel}
               </span>
               <span className="flex h-4 w-4 shrink-0 items-center justify-center fg-accent">
-                {item.active ? <CheckIcon width={14} height={14} /> : null}
+                {item.active ? <CheckIcon size="sm" /> : null}
               </span>
             </button>
           ))}

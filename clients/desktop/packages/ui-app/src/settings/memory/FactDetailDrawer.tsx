@@ -1,11 +1,13 @@
 'use client';
 
-import type { JSX } from 'react';
+import type { JSX, ReactNode } from 'react';
 import { Button, Heading } from '@canopy/ui-shared/components';
 import { X } from '@canopy/ui-shared/icons/AppIcons';
 import type { ExplorerFactDetail } from '@canopy/protocol/settings/organization-memory';
 import { withPrivacyClass } from '../account/privacy-class';
 import { SettingsLink, useSettingsPrivacy } from '../host';
+import { Surface } from '@canopy/ui-shared/components';
+import { Badge } from '@canopy/ui-shared/components/Badge';
 
 interface FactDetailDrawerProps {
   orgId: string;
@@ -22,133 +24,142 @@ export function FactDetailDrawer({
 }: FactDetailDrawerProps): JSX.Element {
   const { blockClassName } = useSettingsPrivacy();
   return (
-    <aside
-      className={
-        embedded
-          ? 'rounded-xl border bg-card p-5'
-          : // Content-only variant: the shared Sheet supplies the sliding
-            // panel, backdrop, and dismiss behavior.
-            'h-full overflow-y-auto p-5'
-      }
-      aria-label="Memory fact detail"
-    >
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex flex-wrap gap-2 text-xs">
-          <span
-            className={`rounded-full px-2 py-0.5 font-semibold ${
-              detail.liveness === 'live'
-                ? 'bg-success-subtle fg-success'
-                : 'bg-warning-subtle fg-warning'
-            }`}
-          >
-            {detail.liveness === 'live' ? 'LIVE' : 'SUPERSEDED'}
-          </span>
-          <span className="rounded-full bg-base px-2 py-0.5 fg-secondary">
-            {detail.evidenceType}
-          </span>
-        </div>
-        {onClose !== undefined && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="compact"
-            iconOnly
-            data-settings-control="dismiss"
-            onClick={onClose}
-            aria-label="Close fact detail"
-          >
-            <X size={18} />
-          </Button>
-        )}
-      </div>
-
-      <Heading level={2} variant="section" className="mt-5">
-        Fact
-      </Heading>
-      <p
-        className={withPrivacyClass(
-          'mt-2 whitespace-pre-wrap text-s leading-6 fg-primary',
-          blockClassName,
-        )}
+    <CardIfEmbedded embedded={embedded}>
+      <aside
+        className={embedded ? 'p-5' : 'h-full overflow-y-auto p-5'}
+        aria-label="Memory fact detail"
       >
-        {detail.factText}
-      </p>
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex flex-wrap gap-2 text-xs">
+            <Badge tone={detail.liveness === 'live' ? 'success' : 'warning'}>
+              {detail.liveness === 'live' ? 'LIVE' : 'SUPERSEDED'}
+            </Badge>
+            <Badge>{detail.evidenceType}</Badge>
+          </div>
+          {onClose !== undefined && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="compact"
+              iconOnly
+              data-settings-control="dismiss"
+              onClick={onClose}
+              aria-label="Close fact detail"
+            >
+              <X size={18} />
+            </Button>
+          )}
+        </div>
 
-      {detail.evidenceQuote !== null && (
-        <section className="mt-6">
-          <Heading level={3} variant="title">
-            Evidence
-          </Heading>
-          <blockquote
-            className={withPrivacyClass(
-              'mt-2 rounded-lg border-l-2 border-line-accent bg-accent/5 px-4 py-3 text-s italic fg-secondary',
-              blockClassName,
-            )}
-          >
-            “{detail.evidenceQuote}”
-          </blockquote>
-        </section>
-      )}
-
-      <section className="mt-6">
-        <Heading level={3} variant="title">
-          Provenance
+        <Heading level={2} variant="section" className="mt-5">
+          Fact
         </Heading>
-        {detail.sources.length === 0 ? (
-          <p className="mt-2 text-s fg-secondary">No source rows recorded.</p>
-        ) : (
-          <ul className="mt-2 space-y-2">
-            {detail.sources.map((source) => (
-              <li
-                key={source.id}
-                className="rounded-lg border bg-base p-3 text-xs fg-secondary"
-              >
-                <div
-                  className={withPrivacyClass(
-                    'font-medium fg-primary',
-                    blockClassName,
-                  )}
-                >
-                  {source.actor?.name ?? source.actor?.email ?? 'Unknown actor'}
-                </div>
-                <div className="mt-1">
-                  {new Date(source.referenceTime).toLocaleString()}
-                </div>
-                <SettingsLink
-                  className="mt-2 inline-block font-medium fg-accent hover:underline"
-                  href={`/organization/${orgId}/memory/fact/${detail.id}?source=${source.id}`}
-                >
-                  View source
-                </SettingsLink>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+        <p
+          className={withPrivacyClass(
+            'mt-2 whitespace-pre-wrap text-s leading-6 fg-primary',
+            blockClassName,
+          )}
+        >
+          {detail.factText}
+        </p>
 
-      {detail.supersessionChain.length > 1 && (
+        {detail.evidenceQuote !== null && (
+          <section className="mt-6">
+            <Heading level={3} variant="title">
+              Evidence
+            </Heading>
+            <blockquote
+              className={withPrivacyClass(
+                'mt-2 rounded-lg border-l-2 border-line-accent bg-accent/5 px-4 py-3 text-s italic fg-secondary',
+                blockClassName,
+              )}
+            >
+              “{detail.evidenceQuote}”
+            </blockquote>
+          </section>
+        )}
+
         <section className="mt-6">
           <Heading level={3} variant="title">
-            Supersession chain
+            Provenance
           </Heading>
-          <ol className="mt-2 space-y-2 border-l pl-4">
-            {detail.supersessionChain.map((fact) => (
-              <li key={fact.id} className="relative text-xs fg-secondary">
-                <span className="absolute -left-4.75 top-1 h-2 w-2 rounded-full bg-fg-tertiary" />
-                <SettingsLink
-                  href={`/organization/${orgId}/memory/fact/${fact.id}`}
-                  className={withPrivacyClass(
-                    'line-clamp-2 hover:fg-accent',
-                    blockClassName,
-                  )}
+          {detail.sources.length === 0 ? (
+            <p className="mt-2 text-s fg-secondary">No source rows recorded.</p>
+          ) : (
+            <ul className="mt-2 space-y-2">
+              {detail.sources.map((source) => (
+                <Surface
+                  as="li"
+                  variant="inset"
+                  padding="compact"
+                  key={source.id}
                 >
-                  {fact.factText}
-                </SettingsLink>
-              </li>
-            ))}
-          </ol>
+                  <div className="text-xs fg-secondary">
+                    <div
+                      className={withPrivacyClass(
+                        'font-medium fg-primary',
+                        blockClassName,
+                      )}
+                    >
+                      {source.actor?.name ??
+                        source.actor?.email ??
+                        'Unknown actor'}
+                    </div>
+                    <div className="mt-1">
+                      {new Date(source.referenceTime).toLocaleString()}
+                    </div>
+                    <SettingsLink
+                      className="mt-2 inline-block font-medium fg-accent hover:underline"
+                      href={`/organization/${orgId}/memory/fact/${detail.id}?source=${source.id}`}
+                    >
+                      View source
+                    </SettingsLink>
+                  </div>
+                </Surface>
+              ))}
+            </ul>
+          )}
         </section>
-      )}
-    </aside>
+
+        {detail.supersessionChain.length > 1 && (
+          <section className="mt-6">
+            <Heading level={3} variant="title">
+              Supersession chain
+            </Heading>
+            <ol className="mt-2 space-y-2 border-l pl-4">
+              {detail.supersessionChain.map((fact) => (
+                <li key={fact.id} className="relative text-xs fg-secondary">
+                  <span className="absolute -left-4.75 top-1 h-2 w-2 rounded-full bg-fg-tertiary" />
+                  <SettingsLink
+                    href={`/organization/${orgId}/memory/fact/${fact.id}`}
+                    className={withPrivacyClass(
+                      'line-clamp-2 hover:fg-accent',
+                      blockClassName,
+                    )}
+                  >
+                    {fact.factText}
+                  </SettingsLink>
+                </li>
+              ))}
+            </ol>
+          </section>
+        )}
+      </aside>
+    </CardIfEmbedded>
+  );
+}
+
+/** The drawer's own card when it sits in the page; the Sheet frames it otherwise. */
+function CardIfEmbedded({
+  embedded,
+  children,
+}: {
+  readonly embedded: boolean;
+  readonly children: ReactNode;
+}): JSX.Element {
+  return embedded ? (
+    <Surface variant="card">{children}</Surface>
+  ) : (
+    <>{children}</>
   );
 }

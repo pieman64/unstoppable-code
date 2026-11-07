@@ -1,19 +1,15 @@
-import type { JSX, SVGProps } from 'react';
-import { CoworkWorkspaceIcon as AppCatalogCoworkWorkspaceIcon } from './AppIcons';
+import type { JSX } from 'react';
+import {
+  CoworkWorkspaceIcon as AppCatalogCoworkWorkspaceIcon,
+  type AppIconProps,
+} from './AppIcons';
 
 /**
  * Cowork workspace badge glyph — the compact filled-folder symbol the unified sidebar
  * uses for cowork (non-git) workspaces. Monochrome; inherits `currentColor`.
  */
-export function CoworkWorkspaceIcon(
-  props: SVGProps<SVGSVGElement>,
-): JSX.Element {
+export function CoworkWorkspaceIcon(props: AppIconProps): JSX.Element {
   return (
-    <AppCatalogCoworkWorkspaceIcon
-      width="14"
-      height="14"
-      aria-hidden="true"
-      {...props}
-    />
+    <AppCatalogCoworkWorkspaceIcon size="sm" aria-hidden="true" {...props} />
   );
 }

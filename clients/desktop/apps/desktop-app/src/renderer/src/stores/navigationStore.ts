@@ -1179,13 +1179,20 @@ export const useNavigationStore = create<NavigationState>(
         });
         return;
       }
-      const apply = (): void => {
-        if (requestedPage === 'mcp-account-connections') {
-          get().openSettings('mcp', {
-            scrollTo: 'settings-mcp-account-connections',
-          });
+      // CAN-5765: account connections moved from Settings to Customize's MCP
+      // servers. Opening it closes Settings and any detail above that tab.
+      if (requestedPage === 'mcp-account-connections') {
+        if (!isPageAvailable('plugins')) {
+          get().navigate(NAVIGATION_FALLBACK_PAGE);
           return;
         }
+        get().openPluginsNavigation({
+          kind: 'marketplace-browse',
+          ...marketplaceManagementDestination('mcp'),
+        });
+        return;
+      }
+      const apply = (): void => {
         // CAN-4269: the Environments page moved into Settings → Environments.
         if (requestedPage === 'environments') {
           get().openSettings('environment');

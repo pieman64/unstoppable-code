@@ -16,6 +16,7 @@ import {
   PauseIcon,
   PlayIcon,
   TrashIcon,
+  type IconSize,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { projectAccountProxyUsageAccount } from '@canopy/desktop-shared/lib/account-proxy-usage-projection';
@@ -73,7 +74,7 @@ function AccountLabel({
   labelId,
 }: {
   readonly account: AccountProxyAccount;
-  readonly iconSize: number;
+  readonly iconSize: IconSize;
   /** Lets the row's menu button name the account by reference, not text. */
   readonly labelId: string;
 }): JSX.Element {
@@ -83,12 +84,7 @@ function AccountLabel({
         className="inline-flex shrink-0 fg-primary"
         title={accountProxyProviderLabel(account.provider)}
       >
-        <ModelProviderIcon
-          provider={account.provider}
-          width={iconSize}
-          height={iconSize}
-          size={iconSize}
-        />
+        <ModelProviderIcon provider={account.provider} size={iconSize} />
       </span>
       <span id={labelId} className={`truncate ${POSTHOG_REPLAY_BLOCK_CLASS}`}>
         {account.label}
@@ -264,7 +260,7 @@ export function AccountProxyAccountList({
         key={account.authIndex}
         dataTestId={`account-proxy-account-${account.authIndex}`}
         label={
-          <AccountLabel account={account} iconSize={16} labelId={labelId} />
+          <AccountLabel account={account} iconSize="md" labelId={labelId} />
         }
         description={
           account.status === 'error' ? (
@@ -282,7 +278,7 @@ export function AccountProxyAccountList({
         key={account.authIndex}
         dataTestId={`account-proxy-account-${account.authIndex}`}
         label={
-          <AccountLabel account={account} iconSize={14} labelId={labelId} />
+          <AccountLabel account={account} iconSize="sm" labelId={labelId} />
         }
         description={
           account.status === 'error' ? (

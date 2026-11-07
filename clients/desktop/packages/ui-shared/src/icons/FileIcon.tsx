@@ -1,6 +1,6 @@
-import type { JSX, SVGProps } from 'react';
-import { FileIcon as AppCatalogFileIcon } from './AppIcons';
+import type { JSX } from 'react';
+import { FileIcon as AppCatalogFileIcon, type AppIconProps } from './AppIcons';
 
-export function FileIcon(props: SVGProps<SVGSVGElement>): JSX.Element {
-  return <AppCatalogFileIcon width="14" height="14" {...props} />;
+export function FileIcon(props: AppIconProps): JSX.Element {
+  return <AppCatalogFileIcon size="sm" {...props} />;
 }

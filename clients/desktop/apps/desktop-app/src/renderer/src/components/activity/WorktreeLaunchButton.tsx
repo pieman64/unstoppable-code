@@ -296,8 +296,7 @@ export function WorktreeLaunchButton({
               iconOnlyWhenNarrow
               icon={
                 <RocketLaunchIcon
-                  width={14}
-                  height={14}
+                  size="sm"
                   className="shrink-0 @[640px]/topbar:hidden"
                   aria-hidden="true"
                 />

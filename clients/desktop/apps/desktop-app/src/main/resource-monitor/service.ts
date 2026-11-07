@@ -1,6 +1,7 @@
 import { getHeapStatistics } from 'node:v8';
 import { BRAND } from '@canopy/brand/current';
 import {
+  ChatTurnAdmissionError,
   ExecutionAdmissionError,
   type ExecutionAccountingSnapshot,
   type ExecutionRegistrationHandle,
@@ -231,7 +232,6 @@ export class ResourceMonitorService {
   private monitoringActive = false;
   private lastBroadcastSignature: string | null = null;
   private lastBroadcastAtMs = 0;
-  private pendingChatTurnStartCount = 0;
   private lastAccounted: ExecutionAccountingSnapshot<ResourceMetadata>;
   private lastOverlay: DesktopOverlay = {
     chatTurns: { activeTurns: 0, pendingMessages: 0 },
@@ -335,7 +335,7 @@ export class ResourceMonitorService {
     this.lastBroadcastSignature = null;
     this.lastBroadcastAtMs = 0;
     this.activeRegistrations.clear();
-    this.pendingChatTurnStartCount = 0;
+    this.accounting.clearChatTurnPending();
     resetExecutionAccountingSamples();
   }
 
@@ -373,41 +373,22 @@ export class ResourceMonitorService {
     reservation.release();
   }
 
-  /** Chat-turn admission stays here until Phase 5 reads core accounting. */
+  /** Chat-turn admission is core's (CAN-4115); the host supplies active turns and queued messages and keeps the refusal copy. */
   async reserveChatTurnStart(): Promise<ResourceGuardReservation> {
     const chatTurns = await this.readChatTurnConcurrencySnapshot();
-    const maxConcurrentTurns = readMaxConcurrentChatTurns();
-    const activeOrQueuedTurns =
-      chatTurns.activeTurns +
-      chatTurns.pendingMessages +
-      this.pendingChatTurnStartCount;
-    if (
-      maxConcurrentTurns !== null &&
-      activeOrQueuedTurns >= maxConcurrentTurns
-    ) {
-      this.recordGuardBlocked('resource_guard_blocked_chat');
-      throw new ResourceGuardError(chatGuardMessage(maxConcurrentTurns));
-    }
-    if (this.accounting.isMemoryGuardBlocked()) {
+    try {
+      return this.accounting.admitChatTurn(
+        chatTurns.activeTurns + chatTurns.pendingMessages,
+      );
+    } catch (error) {
+      if (!(error instanceof ChatTurnAdmissionError)) throw error;
       this.recordGuardBlocked('resource_guard_blocked_chat');
       throw new ResourceGuardError(
-        `${BRAND.displayName} is under high memory pressure. Wait for active work to finish before starting another chat.`,
+        error.reason === 'limit' && error.maxActive !== null
+          ? chatGuardMessage(error.maxActive)
+          : `${BRAND.displayName} is under high memory pressure. Wait for active work to finish before starting another chat.`,
       );
     }
-    this.pendingChatTurnStartCount += 1;
-    let released = false;
-    return {
-      release: (): void => {
-        if (released) {
-          return;
-        }
-        released = true;
-        this.pendingChatTurnStartCount = Math.max(
-          0,
-          this.pendingChatTurnStartCount - 1,
-        );
-      },
-    };
   }
 
   assertCanStartPipelineExecution(): void {
@@ -520,7 +501,7 @@ export class ResourceMonitorService {
             (maxConcurrentTurns !== null &&
               desktop.chatTurns.activeTurns +
                 desktop.chatTurns.pendingMessages +
-                this.pendingChatTurnStartCount >=
+                this.accounting.chatTurnPending() >=
                 maxConcurrentTurns) ||
             accounted.memoryGuardBlocked,
         },

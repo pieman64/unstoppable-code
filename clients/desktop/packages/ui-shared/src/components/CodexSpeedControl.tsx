@@ -128,8 +128,6 @@ export interface CodexSpeedChipInput {
   variant?: 'chip' | 'capsule';
 }
 
-const SPEED_ICON_SIZE = 16;
-
 /**
  * Toolbar chip for the quick speed cycle. It always names the current speed,
  * so its accessible name states both the current speed and the next one; it
@@ -159,16 +157,10 @@ export function buildCodexSpeedChip({
     effectiveSpeed !== undefined && effectiveSpeed !== 'standard';
   return {
     variant,
-    icon: (
-      <FastModeIcon
-        width={SPEED_ICON_SIZE}
-        height={SPEED_ICON_SIZE}
-        active={elevated}
-      />
-    ),
+    icon: <FastModeIcon size="sm" active={elevated} />,
     label: codexSpeedSelectionLabel(selection),
     trailing: blocked ? (
-      <WarningIcon aria-hidden width={12} height={12} data-speed-blocked />
+      <WarningIcon aria-hidden size="sm" data-speed-blocked />
     ) : undefined,
     active: elevated || blocked,
     activeTone: blocked ? 'warning' : 'default',

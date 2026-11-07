@@ -10,21 +10,11 @@ import { brandText } from '@/lib/brand';
 import type { WindowsGitGateState } from '@/hooks/useWindowsGitRequirement';
 import { MonitorDownIcon as AppCatalogMonitorDownIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
+  Divider,
   ErrorBanner,
   Heading,
   ProgressBar,
 } from '@canopy/ui-shared/components';
-
-interface InstallDesktopIconProps {
-  className?: string;
-}
-
-/** Material Symbols "install_desktop" glyph, inheriting the button text color. */
-function InstallDesktopIcon({
-  className,
-}: InstallDesktopIconProps): JSX.Element {
-  return <AppCatalogMonitorDownIcon aria-hidden className={className} />;
-}
 
 /** Git homepage linked from the description copy. */
 const GIT_HOMEPAGE_URL = 'https://git-scm.com/';
@@ -60,13 +50,13 @@ interface SectionDividerProps {
 
 function SectionDivider({ label }: SectionDividerProps): JSX.Element {
   if (!label) {
-    return <div className="h-px w-full bg-line-base" aria-hidden />;
+    return <Divider aria-hidden />;
   }
   return (
     <div className="flex items-center gap-3">
-      <div className="h-px flex-1 bg-line-base" aria-hidden />
+      <Divider className="flex-1" aria-hidden />
       <span className="text-xs font-medium fg-secondary">{label}</span>
-      <div className="h-px flex-1 bg-line-base" aria-hidden />
+      <Divider className="flex-1" aria-hidden />
     </div>
   );
 }
@@ -165,7 +155,7 @@ function MissingGitView({
               disabled={!wingetAvailable}
               data-testid="git-gate-auto"
             >
-              <InstallDesktopIcon className="h-4 w-4" />
+              <AppCatalogMonitorDownIcon aria-hidden size="sm" />
               Install
             </Button>
           )}
@@ -183,7 +173,7 @@ function MissingGitView({
               onClick={(): void => openExternal(GIT_WINDOWS_INSTALL_URL)}
               data-testid="git-gate-manual"
             >
-              <DownloadIcon className="h-4 w-4" />
+              <DownloadIcon size="sm" />
               Manual
             </Button>
           )}
@@ -255,11 +245,11 @@ function InstallingView({ message }: InstallingViewProps): JSX.Element {
         <SectionDivider label="Install Git" />
         <div className="flex flex-col gap-2">
           <Button variant="primary" disabled data-testid="git-gate-auto">
-            <InstallDesktopIcon className="h-4 w-4" />
+            <AppCatalogMonitorDownIcon aria-hidden size="sm" />
             Install
           </Button>
           <Button variant="secondary" disabled data-testid="git-gate-manual">
-            <DownloadIcon className="h-4 w-4" />
+            <DownloadIcon size="sm" />
             Manual
           </Button>
         </div>

@@ -286,7 +286,7 @@ export const PlanVisualizerPanel = forwardRef<
           onClick={handleGenerate}
           disabled={requested}
         >
-          <RefreshSpinner spinning={isGenerating} size={13} />
+          <RefreshSpinner spinning={isGenerating} size="sm" />
           {generateLabel}
         </Button>
       </div>

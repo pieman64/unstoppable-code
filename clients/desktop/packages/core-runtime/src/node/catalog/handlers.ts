@@ -1,6 +1,7 @@
 import {
   type CORE_CATALOG_INSTRUCTION_DEFINITIONS,
   type CORE_CATALOG_QUERY_DEFINITIONS,
+  CATALOG_REFRESH_MAX_SOURCES,
   CORE_CATALOG_SOURCE_CODES,
   type CORE_CATALOG_SOURCE_INSTRUCTION_DEFINITIONS,
   type CORE_CATALOG_SOURCE_QUERY_DEFINITIONS,
@@ -52,6 +53,12 @@ const RecordedRefreshAcknowledgementSchema =
     acceptedSources: true,
     scanOnlySources: true,
   });
+
+/** An install receipt recorded before per-provider outcomes (CAN-5859). */
+const LegacyPluginInstallOutcomeSchema = CatalogPluginInstallResultSchema.pick({
+  entryId: true,
+  providers: true,
+});
 
 const SELECTION_CODES = [
   'core.catalog.selection.invalidState',
@@ -506,7 +513,10 @@ export function createCoreCatalogHandlers(options: {
                     current.locator.kind === 'curated'
                   )
                     return 'builtin';
-                  if (current.revision !== params.expectedRevision)
+                  if (
+                    params.expectedRevision !== null &&
+                    current.revision !== params.expectedRevision
+                  )
                     return 'conflict';
                   return 'proceed';
                 },
@@ -578,7 +588,15 @@ export function createCoreCatalogHandlers(options: {
         const byId = new Map(
           sources.map((source) => [source.sourceId, source]),
         );
-        const requested = params.sourceIds;
+        const requested =
+          params.sourceIds === 'all' ? [...byId.keys()] : params.sourceIds;
+        // The receipt records every accepted source, so it stays bounded.
+        if (requested.length > CATALOG_REFRESH_MAX_SOURCES)
+          throw fail(
+            'resource_exhausted',
+            'This core refreshes at most 100 sources at once.',
+            { code: 'core.catalog.refreshTooLarge' },
+          );
         const unknown = requested.find((id) => !byId.has(id));
         if (unknown !== undefined && recorded === null)
           throw fail('not_found', 'This source is not registered.', {
@@ -587,8 +605,9 @@ export function createCoreCatalogHandlers(options: {
         const isGit = (id: string): boolean =>
           byId.get(id)?.locator.kind === 'git';
         const all =
-          requested.length === byId.size &&
-          requested.every((id) => byId.has(id));
+          params.sourceIds === 'all' ||
+          (requested.length === byId.size &&
+            requested.every((id) => byId.has(id)));
         const scanOnlySourceIds =
           params.mode === 'scan'
             ? [...requested]
@@ -626,9 +645,10 @@ export function createCoreCatalogHandlers(options: {
               updateSourceIds,
               scanOnlySourceIds,
             });
+            // An empty `'all'` names no source that could have failed.
             if (
-              updateSourceIds.length > 0 &&
-              updateSourceIds.every((id) => outcome.failed.includes(id))
+              requested.length > 0 &&
+              requested.every((id) => outcome.failed.includes(id))
             )
               throw fail('unavailable', 'No source could be refreshed.', {
                 code: 'core.catalog.refreshUnavailable',
@@ -646,7 +666,15 @@ export function createCoreCatalogHandlers(options: {
           keyReused: keyReusedConflict,
           decode: (outcome) => {
             const parsed = CatalogPluginInstallResultSchema.safeParse(outcome);
-            return parsed.success ? parsed.data : null;
+            if (parsed.success) return parsed.data;
+            const legacy = LegacyPluginInstallOutcomeSchema.safeParse(outcome);
+            return legacy.success
+              ? {
+                  ...legacy.data,
+                  installedProviders: [...legacy.data.providers],
+                  failedProviders: [],
+                }
+              : null;
           },
           effect: async () => {
             const notFound = (cause?: unknown): CanopyOperationError =>
@@ -671,8 +699,17 @@ export function createCoreCatalogHandlers(options: {
                 ))
             )
               throw notInstallable();
+            const installFailed = (cause?: unknown): CanopyOperationError =>
+              fail('unavailable', 'The plugin could not be installed.', {
+                code: 'core.catalog.pluginInstallFailed',
+                cause,
+              });
+            let installed: readonly string[];
             try {
-              await host.installPlugin(target, params.providers);
+              ({ installed } = await host.installPlugin(
+                target,
+                params.providers,
+              ));
             } catch (error) {
               throw (
                 refusalError(error, {
@@ -690,17 +727,23 @@ export function createCoreCatalogHandlers(options: {
                       'Finish uninstalling this plugin before adding it again.',
                       { code: 'core.catalog.pluginUninstallPending', cause },
                     ),
-                  'plugin-install-failed': (cause) =>
-                    fail('unavailable', 'The plugin could not be installed.', {
-                      code: 'core.catalog.pluginInstallFailed',
-                      cause,
-                    }),
+                  'plugin-install-failed': installFailed,
                 }) ?? error
               );
             }
+            // A requested provider the host does not report installed failed.
+            const providers = [...params.providers].sort();
+            const installedProviders = providers.filter((provider) =>
+              installed.includes(provider),
+            );
+            if (installedProviders.length === 0) throw installFailed();
             return {
               entryId: params.entryId,
-              providers: [...params.providers].sort(),
+              providers,
+              installedProviders,
+              failedProviders: providers.filter(
+                (provider) => !installed.includes(provider),
+              ),
             };
           },
         }),

@@ -6350,6 +6350,7 @@ function ChatInputContent({
       onPaste={handlePaste}
       monospace={isTerminalMode}
       density="minimal"
+      typeToFocus
       className={
         composerInline || promptOpen
           ? ONE_LINE_COMPOSER_CLASS_NAMES.editor
@@ -7416,6 +7417,9 @@ function ChatInputContent({
                       }
                     : {})}
                   turnActive={isStreaming}
+                  {...(tab?.modelConfig?.contextWindow !== undefined
+                    ? { contextWindowSetting: tab.modelConfig.contextWindow }
+                    : {})}
                   {...(composerProjectId && composerWorktreeId && tab
                     ? {
                         contextTarget: {

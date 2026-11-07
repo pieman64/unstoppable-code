@@ -32,6 +32,8 @@ const MAX_VALUE_CHARS = Math.ceil((MIGRATION_MAX_VALUE_BYTES * 4) / 3);
 const DECLINE_REASONS: readonly MigrationDeclineReason[] = [
   'absent',
   'unreadable',
+  'malformed',
+  'outcome_unknown',
 ];
 const CLOSED_REASONS = [
   'unsupported-version',

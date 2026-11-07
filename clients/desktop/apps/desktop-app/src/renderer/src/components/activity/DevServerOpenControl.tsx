@@ -1,16 +1,11 @@
-import {
-  useCallback,
-  useEffect,
-  useId,
-  useRef,
-  useState,
-  type JSX,
-} from 'react';
-import { useCloseOnOutsideMouseDown } from '@/hooks/useCloseOnOutsideMouseDown';
+import { useId, useRef, useState, type JSX } from 'react';
 import type { DevServerHit } from '@/lib/scriptDevServerDetection';
 import { GlobeIcon } from '@canopy/ui-shared/icons';
-import { DropdownMenuSurface } from '@canopy/ui-shared';
-import { ActionMenuRowStyle, Button } from '@canopy/ui-shared/components';
+import {
+  ActionMenuRowStyle,
+  Button,
+  FloatingMenu,
+} from '@canopy/ui-shared/components';
 import { DevServerMenuItem } from './DevServerMenuItem';
 import {
   getDevServerOpenAriaLabel,
@@ -41,30 +36,7 @@ export function DevServerOpenControl({
 }: DevServerOpenControlProps): JSX.Element {
   const [menuOpen, setMenuOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
   const menuId = useId();
-
-  const close = useCallback((): void => {
-    setMenuOpen(false);
-  }, []);
-
-  useCloseOnOutsideMouseDown(menuOpen, triggerRef, menuRef, close);
-
-  useEffect(() => {
-    if (!menuOpen) {
-      return;
-    }
-    const handleKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') {
-        event.stopPropagation();
-        close();
-      }
-    };
-    document.addEventListener('keydown', handleKeyDown, true);
-    return (): void => {
-      document.removeEventListener('keydown', handleKeyDown, true);
-    };
-  }, [menuOpen, close]);
 
   if (hits.length === 0) {
     return <></>;
@@ -79,14 +51,14 @@ export function DevServerOpenControl({
         onClick={(): void => openDevServerHit(hit, context)}
         aria-label={getDevServerOpenAriaLabel(hit)}
       >
-        <GlobeIcon className="h-3.5 w-3.5" aria-hidden="true" />
+        <GlobeIcon size="sm" aria-hidden="true" />
         {getDevServerOpenButtonText(hit)}
       </Button>
     );
   }
 
   return (
-    <div className="relative inline-flex">
+    <div className="inline-flex">
       <Button
         ref={triggerRef}
         variant="ghost-accent"
@@ -96,32 +68,32 @@ export function DevServerOpenControl({
         aria-expanded={menuOpen}
         aria-controls={menuOpen ? menuId : undefined}
       >
-        <GlobeIcon className="h-3.5 w-3.5" aria-hidden="true" />
+        <GlobeIcon size="sm" aria-hidden="true" />
         Open ({hits.length})
       </Button>
-      {menuOpen && (
-        <DropdownMenuSurface
-          ref={menuRef}
-          id={menuId}
-          className="absolute right-0 top-full z-10 mt-1 min-w-48 max-w-96"
-        >
-          <ActionMenuRowStyle>
-            {hits.map((hit, index) => (
-              <DevServerMenuItem
-                key={hit.url}
-                hit={hit}
-                context={context}
-                icon={
-                  index === 0 ? (
-                    <GlobeIcon className="h-4 w-4" aria-hidden="true" />
-                  ) : null
-                }
-                onSelect={close}
-              />
-            ))}
-          </ActionMenuRowStyle>
-        </DropdownMenuSurface>
-      )}
+      <FloatingMenu
+        id={menuId}
+        open={menuOpen}
+        onOpenChange={setMenuOpen}
+        anchorRef={triggerRef}
+        placement="bottom-right"
+        interaction="menu"
+        className="min-w-48 max-w-96"
+      >
+        <ActionMenuRowStyle>
+          {hits.map((hit, index) => (
+            <DevServerMenuItem
+              key={hit.url}
+              hit={hit}
+              context={context}
+              icon={
+                index === 0 ? <GlobeIcon size="sm" aria-hidden="true" /> : null
+              }
+              onSelect={(): void => setMenuOpen(false)}
+            />
+          ))}
+        </ActionMenuRowStyle>
+      </FloatingMenu>
     </div>
   );
 }

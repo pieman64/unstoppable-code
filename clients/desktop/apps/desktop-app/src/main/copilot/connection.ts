@@ -29,9 +29,10 @@ import {
 import {
   startCopilotRuntime,
   type OwnedCopilotRuntime,
-} from '@canopy/desktop-shared/node/copilot/runtime';
-import { reapCopilotProcessReceipts } from '@canopy/desktop-shared/node/copilot/process-receipts';
-import { runCopilotTurn } from '@canopy/desktop-shared/node/copilot/turn-driver';
+} from '@canopy/copilot-recipient/runtime';
+import { copilotReceiptStorage } from '@canopy/desktop-shared/node/copilot/receipt-storage';
+import { reapCopilotProcessReceipts } from '@canopy/copilot-recipient/process-receipts';
+import { runCopilotTurn } from '@canopy/copilot-recipient/turn-driver';
 import type { CopilotRecipientHandle } from '@canopy/desktop-shared/node/copilot/recipient-handle';
 import { probeCopilotRotationAttempt } from './rotation-attempt';
 import type { GitHubTokenProvider } from '@github/copilot-sdk';
@@ -114,7 +115,10 @@ export function recoverCopilotAtStartup(): Promise<void> {
         'A Copilot rotation was interrupted; the stored grant is unchanged.',
         { code: 'COPILOT_ROTATION_UNCERTAIN' },
       );
-    await reapCopilotProcessReceipts(getCopilotRuntimeReceiptsDir());
+    await reapCopilotProcessReceipts(
+      getCopilotRuntimeReceiptsDir(),
+      copilotReceiptStorage,
+    );
   })().catch((error: unknown): never => {
     // Retry on the next demand after an inspection/cleanup failure, but never
     // re-run a successful pass against receipts admitted during this boot.
@@ -490,6 +494,7 @@ async function openCopilotRuntime(
       workingDirectory: options.cwd ?? getCopilotRuntimeStateDir(),
       stateDirectory: getCopilotRuntimeStateDir(),
       receiptDirectory: getCopilotRuntimeReceiptsDir(),
+      receiptStorage: copilotReceiptStorage,
       env: {
         ...(options.restrictedEnvironment
           ? buildDelegationCursorEnvironment(baseEnvironment)

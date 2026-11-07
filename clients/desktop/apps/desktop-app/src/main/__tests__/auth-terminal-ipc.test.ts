@@ -1,6 +1,6 @@
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import type { ProviderConnectionEvent } from '../lib/provider-connection-events';
-import type { AuthTerminalEventSender } from '../auth-terminal/manager';
+import type { AuthTerminalEventSender } from '../ipc/auth-terminal-events';
 import type { refreshOpenCodeAccounts } from '../opencode/connection';
 
 const mockSetEventSender = jest.fn<void, [AuthTerminalEventSender]>();
@@ -35,15 +35,34 @@ jest.mock('../opencode/connection', () => ({
   refreshOpenCodeAccounts: mockRefreshOpenCodeAccounts,
 }));
 
-jest.mock('../auth-terminal/manager', () => ({
-  getAuthTerminalManager: jest.fn(() => ({
-    setEventSender: mockSetEventSender,
-    start: mockStart,
-    write: mockWrite,
-    resize: mockResize,
-    stop: mockStop,
-    getActiveSessionId: mockGetActiveSessionId,
-  })),
+jest.mock('../sign-in-runs/sign-in-runs', () => ({
+  SignInWorkerUnavailableError: class SignInWorkerUnavailableError extends Error {
+    constructor() {
+      super('Sign-in could not start on the local worker.');
+      this.name = 'SignInWorkerUnavailableError';
+    }
+  },
+  setSignInTerminalEventSender: (sender: AuthTerminalEventSender): void =>
+    mockSetEventSender(sender),
+  startSignInTerminal: (request: {
+    provider: string;
+    cols: number;
+    rows: number;
+    verifiedOpenCodeExecutable?: string;
+  }): Promise<{ sessionId: string }> =>
+    Promise.resolve().then(() => {
+      const sessionId: unknown = mockStart(
+        request.provider,
+        request.cols,
+        request.rows,
+        request.verifiedOpenCodeExecutable,
+      );
+      return { sessionId: String(sessionId) };
+    }),
+  writeSignInTerminal: (...args: unknown[]): unknown => mockWrite(...args),
+  resizeSignInTerminal: (...args: unknown[]): unknown => mockResize(...args),
+  stopSignInTerminal: (...args: unknown[]): unknown => mockStop(...args),
+  getActiveSignInTerminalSessionId: (): unknown => mockGetActiveSessionId(),
 }));
 
 jest.mock('../lib/window-send', () => ({
@@ -281,6 +300,53 @@ it('releases the login lease if terminal creation fails', async () => {
     connectSource: 'in_app',
     failureReason: 'other',
   });
+  stop();
+});
+
+it('an unavailable worker fails start with the existing message shape', async () => {
+  const events = await import('../lib/provider-connection-events');
+  const { SignInWorkerUnavailableError } =
+    await import('../sign-in-runs/sign-in-runs');
+  const connection = jest.fn();
+  const stop = events.subscribeProviderConnections(connection);
+  registerAndGetSender();
+  mockStart.mockImplementationOnce(() => {
+    throw new SignInWorkerUnavailableError();
+  });
+  const handler = mockRegisterIpcHandler.mock.calls.find(
+    ([channel]) => channel === IPC_CHANNELS.authTerminalStart,
+  )?.[1];
+  if (!handler) throw new Error('Missing start handler');
+  await expect(
+    handler({}, { provider: 'claude', cols: 80, rows: 24 }),
+  ).rejects.toThrow('Sign-in could not start on the local worker.');
+  const claudeFailure: unknown = expect.objectContaining({
+    provider: 'claude',
+    connectionMethod: 'native_login',
+  });
+  expect(connection).toHaveBeenCalledWith(claudeFailure);
+  stop();
+});
+
+it('OpenCode releases its runtime lease when start fails', async () => {
+  const events = await import('../lib/provider-connection-events');
+  const { SignInWorkerUnavailableError } =
+    await import('../sign-in-runs/sign-in-runs');
+  const connection = jest.fn();
+  const stop = events.subscribeProviderConnections(connection);
+  registerAndGetSender();
+  mockStart.mockImplementationOnce(() => {
+    throw new SignInWorkerUnavailableError();
+  });
+  await expect(startOpenCodeLogin()).rejects.toThrow(
+    'Sign-in could not start on the local worker.',
+  );
+  expect(mockRuntimeClose).toHaveBeenCalledTimes(1);
+  const openCodeFailure: unknown = expect.objectContaining({
+    provider: 'opencode',
+    connectionMethod: 'native_login',
+  });
+  expect(connection).toHaveBeenCalledWith(openCodeFailure);
   stop();
 });
 

@@ -22,7 +22,7 @@ export function ChatDropOverlay(): JSX.Element {
       aria-hidden
       className="pointer-events-none absolute inset-0 z-40 flex flex-col items-center justify-center gap-2 bg-overlay-scrim fg-emphasis"
     >
-      <DownloadIcon width={24} height={24} />
+      <DownloadIcon size="xl" />
       <span className="text-s font-medium">Drop files to attach</span>
     </div>
   );

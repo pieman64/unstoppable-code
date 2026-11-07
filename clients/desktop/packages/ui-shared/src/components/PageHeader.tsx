@@ -98,7 +98,7 @@ export function PageHeader({
           data-testid={back.testId ?? 'page-header-back'}
           className="-ml-3 mb-2"
         >
-          <BackIcon width={14} height={14} aria-hidden="true" />
+          <BackIcon size="sm" aria-hidden="true" />
           {back.label}
         </Button>
       ) : null}

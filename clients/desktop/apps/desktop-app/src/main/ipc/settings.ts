@@ -1142,9 +1142,6 @@ export async function loadNativeAiCreditsAvailability(
           }
         : {}),
       pricingUrl,
-      ...(typeof credits.balance?.dailyDripEnabled === 'boolean'
-        ? { dailyDripEnabled: credits.balance.dailyDripEnabled }
-        : {}),
       ...(readsInconclusive ? { inconclusive: true } : {}),
     };
   } catch {

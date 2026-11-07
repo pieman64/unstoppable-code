@@ -52,7 +52,7 @@ export const FileAttachmentChip = memo(function FileAttachmentChip({
           aria-label={`Download ${filename}`}
           className="focus-ring ml-0.5 inline-flex shrink-0 items-center rounded-sm hover:fg-primary"
         >
-          <DownloadIcon width={12} height={12} aria-hidden="true" />
+          <DownloadIcon size="sm" aria-hidden="true" />
         </button>
       )}
     </span>

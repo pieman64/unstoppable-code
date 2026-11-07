@@ -1,4 +1,4 @@
-import { app, ipcMain } from 'electron';
+import { app, ipcMain, webContents } from 'electron';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import type {
@@ -6,6 +6,12 @@ import type {
   CanopyCoreRelayReply,
 } from '../../shared/canopy-core-relay';
 import { registerIpcHandler } from './register';
+import {
+  sendInterfaceToolCancellation,
+  sendInterfaceToolRequest,
+  setInterfaceToolReplyHandler,
+} from './app-advisor';
+import { createDesktopInterfaceLeases } from '../canopy-runtime/interface-tools/desktop-interface-leases';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 import { RELAY_DEFINITIONS } from '../canopy-runtime/renderer-relay/definitions';
 import {
@@ -35,12 +41,35 @@ export function registerCanopyCoreRelayHandlers(
 ): () => void {
   // Interim connection-scoped declarations; durable ownership waits for a relay daemon binding (W3 exit, CAN-3166).
   const registrations = new Map<string, RelayCapabilities>();
+  const interfaceLeases = createDesktopInterfaceLeases({
+    registry: dispatcher.interfaceTools,
+    webContentsFromId: (id) => webContents.fromId(id) ?? null,
+    send: (target, request) => {
+      const contents = webContents.fromId(target.id);
+      return contents ? sendInterfaceToolRequest(contents, request) : false;
+    },
+    sendCancellation: (target, cancellation) => {
+      const contents = webContents.fromId(target.id);
+      return contents
+        ? sendInterfaceToolCancellation(contents, cancellation)
+        : false;
+    },
+  });
+  setInterfaceToolReplyHandler((senderId, response) =>
+    interfaceLeases.reply(senderId, response) === 'unknown_call'
+      ? 'not_claimed'
+      : 'claimed',
+  );
   const relay = createRendererRelay({
     bindingProvider: createInterimInMemoryBindingProvider(dispatcher, {
       onCapabilities: (caller, capabilities) => {
         if (capabilities.length === 0)
           registrations.delete(caller.clientInstanceId);
         else registrations.set(caller.clientInstanceId, capabilities);
+      },
+      onTools: {
+        register: interfaceLeases.register,
+        unregister: interfaceLeases.unregister,
       },
     }),
     resolveSurface,
@@ -52,6 +81,8 @@ export function registerCanopyCoreRelayHandlers(
   );
   return () => {
     ipcMain.removeHandler(IPC_CHANNELS.canopyCoreRelay);
+    setInterfaceToolReplyHandler(null);
+    interfaceLeases.dispose();
     relay.dispose();
     registrations.clear();
   };

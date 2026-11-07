@@ -1,7 +1,16 @@
 import * as fs from 'fs';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
+import {
+  decodePluginCatalog,
+  decodePluginCacheIndex,
+  readPluginCatalog,
+  readPluginCacheIndex,
+  type PluginCacheIndex,
+  type PluginReadHealth,
+} from '@canopy/desktop-shared/node/plugins/catalog-read-health';
 import { BRAND } from '@canopy/brand/current';
 import {
   claudeMarketplaceNames,
@@ -76,15 +85,15 @@ import { parseFrontmatterAndBody } from '../lib/frontmatter';
 import { isPathInside } from '../lib/path-safety';
 import { parseGitHubSource } from '../skills/source-parser';
 import {
-  addCodexMarketplace,
+  addCodexMarketplace as addCodexMarketplaceUnchecked,
   codexMarketplaceManifestPath,
-  installCodexPlugin,
+  installCodexPlugin as installCodexPluginUnchecked,
   isStructuralCodexMarketplaceFailure,
   listCodexPlugins,
   readCodexMarketplaceInstallMetadata,
-  removeCodexMarketplace,
+  removeCodexMarketplace as removeCodexMarketplaceUnchecked,
   resolveCodexPluginInstallRoots,
-  upgradeCodexMarketplace,
+  upgradeCodexMarketplace as upgradeCodexMarketplaceUnchecked,
   type CodexMarketplaceOperationResult,
 } from './codex-marketplace-service';
 import { codexMarketplaceRootFromPath } from './codex-marketplace-paths';
@@ -167,17 +176,78 @@ const LEGACY_CODEX_CHAT_PLUGIN_MARKETPLACE_NAME = 'canopy-chat-plugins';
 // adding newly supported providers) always runs regardless.
 const MARKETPLACE_PROVIDER_REFRESH_TTL_MS = 24 * 60 * 60 * 1000;
 
+// Only an explicit provider refresh may consume supported legacy sources.
+const providerRevalidation = new AsyncLocalStorage<boolean>();
+
 async function execPluginCli(
   file: string,
   args: string[],
   env: NodeJS.ProcessEnv,
 ): Promise<void> {
+  assertCatalogHealth({
+    allowLegacy: providerRevalidation.getStore() === true,
+  });
   await runClaudeCliProcessOffMain({
     command: file,
     args,
     env,
     timeoutMs: PLUGIN_CLI_TIMEOUT_MS,
   });
+  assertCatalogHealth({
+    allowLegacy: providerRevalidation.getStore() === true,
+  });
+}
+
+async function addCodexMarketplace(
+  ...args: Parameters<typeof addCodexMarketplaceUnchecked>
+): ReturnType<typeof addCodexMarketplaceUnchecked> {
+  assertCatalogHealth({
+    allowLegacy: providerRevalidation.getStore() === true,
+  });
+  const result = await addCodexMarketplaceUnchecked(...args);
+  assertCatalogHealth({
+    allowLegacy: providerRevalidation.getStore() === true,
+  });
+  return result;
+}
+
+async function removeCodexMarketplace(
+  ...args: Parameters<typeof removeCodexMarketplaceUnchecked>
+): ReturnType<typeof removeCodexMarketplaceUnchecked> {
+  assertCatalogHealth({
+    allowLegacy: providerRevalidation.getStore() === true,
+  });
+  const result = await removeCodexMarketplaceUnchecked(...args);
+  assertCatalogHealth({
+    allowLegacy: providerRevalidation.getStore() === true,
+  });
+  return result;
+}
+
+async function upgradeCodexMarketplace(
+  ...args: Parameters<typeof upgradeCodexMarketplaceUnchecked>
+): ReturnType<typeof upgradeCodexMarketplaceUnchecked> {
+  assertCatalogHealth({
+    allowLegacy: providerRevalidation.getStore() === true,
+  });
+  const result = await upgradeCodexMarketplaceUnchecked(...args);
+  assertCatalogHealth({
+    allowLegacy: providerRevalidation.getStore() === true,
+  });
+  return result;
+}
+
+async function installCodexPlugin(
+  ...args: Parameters<typeof installCodexPluginUnchecked>
+): ReturnType<typeof installCodexPluginUnchecked> {
+  assertCatalogHealth({
+    allowLegacy: providerRevalidation.getStore() === true,
+  });
+  const result = await installCodexPluginUnchecked(...args);
+  assertCatalogHealth({
+    allowLegacy: providerRevalidation.getStore() === true,
+  });
+  return result;
 }
 
 type MarketplaceProgressReporter = (
@@ -299,6 +369,7 @@ export async function removeInstalledPluginCache(
   pluginName: string,
 ): Promise<void> {
   await withCacheLock(() => {
+    assertCatalogHealth();
     const index = readCacheIndex();
     const prefix = `${marketplaceId}/`;
     const entries = Object.entries(index.entries).filter(
@@ -417,55 +488,47 @@ function getBuiltInMarketplaceDisplayName(): string {
   return `${BRAND.displayName} Marketplace`;
 }
 
-function readCache(): AnyPluginsCache | null {
-  const cache = safeReadJson<AnyPluginsCache>(getPluginsCacheFilePath());
-  if (
-    cache &&
-    (cache.version === 1 || cache.version === 2) &&
-    Array.isArray(cache.marketplaces)
-  ) {
-    if (cache.version === 2) {
-      // `safeReadJson` guards a parse failure but not the SHAPE, so a
-      // truncated or hand-edited cache can carry an entry without
-      // `providerStatus` / `validProviders`. This function is total by
-      // contract - `shouldRunProviderUpdates()` calls it unguarded - and
-      // CLAUDE.md's persistence rule is silent fallback on corrupt files, so
-      // a malformed entry must not throw a TypeError out of a cache read.
-      try {
-        return {
-          ...cache,
-          marketplaces: cache.marketplaces.map((marketplace) => {
-            const codex = marketplace?.providerStatus?.codex;
-            if (
-              !codex ||
-              codex.state !== 'invalid' ||
-              codex.accepted !== true ||
-              !Array.isArray(marketplace.validProviders)
-            ) {
-              return marketplace;
-            }
-            return {
-              ...marketplace,
-              validProviders: marketplace.validProviders.filter(
-                (provider) => provider !== 'codex',
-              ),
-              providerStatus: {
-                ...marketplace.providerStatus,
-                codex: { ...codex, accepted: false },
-              },
-            };
-          }),
-        };
-      } catch {
-        return null;
-      }
-    }
-    return cache;
-  }
-  return null;
+export function readPluginCatalogHealth(): PluginReadHealth<
+  PluginsCache,
+  PluginsCacheV1
+> {
+  return readPluginCatalog(getPluginsCacheFilePath());
 }
 
-function writeCache(cache: PluginsCache): void {
+export function readPluginIndexHealth(): PluginReadHealth<PluginCacheIndex> {
+  return readPluginCacheIndex(getCacheIndexPath());
+}
+
+function catalogReadError(state: string): Error {
+  return new Error(
+    `Couldn't use the plugin catalog because it is ${state}. Plugin changes and execution are blocked.`,
+  );
+}
+
+function assertCatalogHealth(options?: { allowLegacy?: boolean }): void {
+  const catalog = readPluginCatalogHealth();
+  if (
+    catalog.state !== 'valid' &&
+    catalog.state !== 'absent' &&
+    !(options?.allowLegacy && catalog.state === 'legacy')
+  ) {
+    throw catalogReadError(catalog.state);
+  }
+  const index = readPluginIndexHealth();
+  if (index.state !== 'valid' && index.state !== 'absent') {
+    throw catalogReadError(index.state);
+  }
+}
+
+// Strict internal read: callers must translate failure, never treat it as absence.
+function readCache(): AnyPluginsCache | null {
+  const result = readPluginCatalogHealth();
+  if (result.state === 'absent') return null;
+  if (result.state === 'valid' || result.state === 'legacy') return result.data;
+  throw catalogReadError(result.state);
+}
+
+function validateCachePayload(cache: PluginsCache): PluginsCache {
   // Preserve the provider-refresh stamp across writers that rebuild the
   // cache literal (single-marketplace updates, install/uninstall, etc.) so
   // only refreshes that actually ran provider updates move it forward.
@@ -477,20 +540,21 @@ function writeCache(cache: PluginsCache): void {
     ...cache,
     ...(lastProviderRefreshAt ? { lastProviderRefreshAt } : {}),
   };
+  const outgoing = decodePluginCatalog(nextCache);
+  if (outgoing.state !== 'valid') {
+    throw new Error(
+      "Couldn't save the plugin catalog because the updated data doesn't match the supported format. The existing file hasn't changed.",
+    );
+  }
+  return outgoing.data;
+}
+
+function writeCache(cache: PluginsCache, revalidatedLegacy = false): void {
+  assertCatalogHealth({ allowLegacy: revalidatedLegacy });
+  const outgoing = validateCachePayload(cache);
   const filePath = getPluginsCacheFilePath();
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify(nextCache, null, 2), 'utf-8');
-}
-
-interface PluginCacheEntry {
-  cachePath: string;
-  sourceUrl: string;
-  cachedAt: string;
-}
-
-interface PluginCacheIndex {
-  version: 1;
-  entries: Record<string, PluginCacheEntry>;
+  fs.writeFileSync(filePath, JSON.stringify(outgoing, null, 2), 'utf-8');
 }
 
 interface CodexDiscoveredMarketplaceSource {
@@ -523,15 +587,28 @@ function getCacheIndexPath(): string {
 }
 
 function readCacheIndex(): PluginCacheIndex {
-  const data = safeReadJson<PluginCacheIndex>(getCacheIndexPath());
-  if (data && data.version === 1 && data.entries) return data;
-  return { version: 1, entries: {} };
+  const result = readPluginIndexHealth();
+  if (result.state === 'valid') return result.data;
+  if (result.state === 'absent') return { version: 1, entries: {} };
+  throw catalogReadError(result.state);
+}
+
+function validateCacheIndexPayload(index: PluginCacheIndex): PluginCacheIndex {
+  const outgoing = decodePluginCacheIndex(index);
+  if (outgoing.state !== 'valid') {
+    throw new Error(
+      "Couldn't save the plugin cache index because the updated data doesn't match the supported format. The existing file hasn't changed.",
+    );
+  }
+  return outgoing.data;
 }
 
 function writeCacheIndex(index: PluginCacheIndex): void {
+  assertCatalogHealth();
+  const outgoing = validateCacheIndexPayload(index);
   const filePath = getCacheIndexPath();
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify(index, null, 2), 'utf-8');
+  fs.writeFileSync(filePath, JSON.stringify(outgoing, null, 2), 'utf-8');
 }
 
 function normalizeLocalMarketplaceRoot(sourceRoot: string): string | null {
@@ -1060,6 +1137,18 @@ function findKnownMarketplaceBySource(
   return null;
 }
 
+function manifestText(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function manifestAuthor(value: unknown): string | undefined {
+  return typeof value === 'string'
+    ? value
+    : isRecord(value)
+      ? manifestText(value.name)
+      : undefined;
+}
+
 function readClaudePluginFacet(args: {
   marketplaceId: string;
   marketplaceInstallDir: string;
@@ -1068,18 +1157,36 @@ function readClaudePluginFacet(args: {
 }): PluginProviderFacet | null {
   const { marketplaceId, marketplaceInstallDir, pluginEntry, cacheIndex } =
     args;
-  if (!pluginEntry.name) {
+  if (
+    !pluginEntry ||
+    typeof pluginEntry.name !== 'string' ||
+    !pluginEntry.name
+  ) {
     return null;
   }
 
   const resolvedRoot = path.resolve(marketplaceInstallDir);
-  const isExternal =
-    typeof pluginEntry.source === 'object' && pluginEntry.source !== null;
   const sourcePath =
     typeof pluginEntry.source === 'string' ? pluginEntry.source : null;
+  const source = pluginEntry.source;
+  if (
+    source !== undefined &&
+    typeof source !== 'string' &&
+    (!isRecord(source) ||
+      (source.source !== undefined && typeof source.source !== 'string') ||
+      (source.url !== undefined && typeof source.url !== 'string'))
+  )
+    return null;
   const externalSource =
-    isExternal && typeof pluginEntry.source === 'object'
-      ? pluginEntry.source
+    isRecord(source) &&
+    (source.source === undefined || typeof source.source === 'string') &&
+    (source.url === undefined || typeof source.url === 'string')
+      ? {
+          ...source,
+          source: source.source,
+          url: source.url,
+          sha: manifestText(source.sha),
+        }
       : undefined;
 
   let pluginManifest: PluginManifest | null = null;
@@ -1095,7 +1202,7 @@ function readClaudePluginFacet(args: {
     pluginManifest = safeReadJson<PluginManifest>(
       path.join(pluginDir, '.claude-plugin', 'plugin.json'),
     );
-  } else if (externalSource && 'url' in externalSource) {
+  } else if (typeof externalSource?.url === 'string') {
     const cached =
       cacheIndex.entries[cacheKey(marketplaceId, pluginEntry.name)];
     if (cached && fs.existsSync(cached.cachePath)) {
@@ -1114,16 +1221,28 @@ function readClaudePluginFacet(args: {
   return {
     provider: 'claude',
     mode: 'native',
-    name: pluginManifest?.name || pluginEntry.name,
+    name: manifestText(pluginManifest?.name) || pluginEntry.name,
     displayName:
       typeof pluginEntry.displayName === 'string'
         ? pluginEntry.displayName.trim() || undefined
         : undefined,
-    description: pluginManifest?.description || pluginEntry.description || '',
-    version: pluginManifest?.version || pluginEntry.version || '',
-    author: pluginManifest?.author?.name || pluginEntry.author?.name || '',
-    category: pluginEntry.category || '',
-    homepage: pluginManifest?.homepage || pluginEntry.homepage || '',
+    description:
+      manifestText(pluginManifest?.description) ||
+      manifestText(pluginEntry.description) ||
+      '',
+    version:
+      manifestText(pluginManifest?.version) ||
+      manifestText(pluginEntry.version) ||
+      '',
+    author:
+      manifestAuthor(pluginManifest?.author) ||
+      manifestAuthor(pluginEntry.author) ||
+      '',
+    category: manifestText(pluginEntry.category) || '',
+    homepage:
+      manifestText(pluginManifest?.homepage) ||
+      manifestText(pluginEntry.homepage) ||
+      '',
     installLocation: pluginDir ?? '',
     sourcePath: sourcePath || cachePath || '',
     marketplacePath: path.join(
@@ -1181,7 +1300,7 @@ function scanClaudeMarketplace(input: {
       }),
       sourceUrl: knownMarketplaceSourceUrl(entry),
       installLocation: entry.installLocation,
-      lastUpdated: entry.lastUpdated,
+      lastUpdated: manifestText(entry.lastUpdated),
     };
   }
 
@@ -1202,17 +1321,17 @@ function scanClaudeMarketplace(input: {
     status: providerStatus('claude', {
       accepted: true,
       pluginCount: facets.length,
-      marketplaceName: manifest.name || id,
+      marketplaceName: manifestText(manifest.name) || id,
       marketplacePath: manifestPath,
       installLocation: entry.installLocation,
       error:
         facets.length === 0 ? 'No Claude plugins were detected.' : undefined,
     }),
-    name: manifest.name || id,
-    description: manifest.description || '',
+    name: manifestText(manifest.name) || id,
+    description: manifestText(manifest.description) || '',
     sourceUrl: knownMarketplaceSourceUrl(entry),
     installLocation: entry.installLocation,
-    lastUpdated: entry.lastUpdated,
+    lastUpdated: manifestText(entry.lastUpdated),
   };
 }
 
@@ -1225,15 +1344,15 @@ function pluginMetadataFromSummary(summary: PluginSummary | undefined): {
   displayName?: string;
 } {
   return {
-    displayName: summary?.interface?.displayName ?? undefined,
+    displayName: manifestText(summary?.interface?.displayName) ?? undefined,
     description:
-      summary?.interface?.shortDescription ??
-      summary?.interface?.longDescription ??
+      manifestText(summary?.interface?.shortDescription) ??
+      manifestText(summary?.interface?.longDescription) ??
       '',
-    author: summary?.interface?.developerName ?? '',
-    category: summary?.interface?.category ?? '',
-    homepage: summary?.interface?.websiteUrl ?? '',
-    logoUrl: summary?.interface?.logoUrl ?? undefined,
+    author: manifestText(summary?.interface?.developerName) ?? '',
+    category: manifestText(summary?.interface?.category) ?? '',
+    homepage: manifestText(summary?.interface?.websiteUrl) ?? '',
+    logoUrl: manifestText(summary?.interface?.logoUrl) ?? undefined,
   };
 }
 
@@ -1255,13 +1374,19 @@ function readCodexLocalPluginFacet(args: {
   pluginEntry: CodexMarketplaceManifestPluginEntry;
 }): PluginProviderFacet | null {
   const { marketplaceRoot, marketplacePath, pluginEntry } = args;
+  if (!pluginEntry) return null;
   const sourcePath =
     typeof pluginEntry.source === 'string'
       ? pluginEntry.source
       : pluginEntry.source?.source === 'local'
         ? pluginEntry.source.path
         : undefined;
-  if (!pluginEntry.name || !sourcePath) {
+  if (
+    typeof pluginEntry.name !== 'string' ||
+    !pluginEntry.name ||
+    typeof sourcePath !== 'string' ||
+    !sourcePath
+  ) {
     return null;
   }
   const pluginRoot = path.resolve(marketplaceRoot, sourcePath);
@@ -1293,11 +1418,8 @@ function readCodexLocalPluginFacet(args: {
       '',
     version:
       (typeof manifest.version === 'string' ? manifest.version : '') || '',
-    author:
-      typeof manifest.author === 'object' && manifest.author?.name
-        ? manifest.author.name
-        : '',
-    category: pluginEntry.category ?? '',
+    author: manifestAuthor(manifest.author) ?? '',
+    category: manifestText(pluginEntry.category) ?? '',
     homepage:
       (typeof manifest.homepage === 'string' ? manifest.homepage : '') || '',
     installLocation: pluginRoot,
@@ -1344,11 +1466,14 @@ function scanBundledCodexMarketplace(
 
   return {
     facets,
-    name: manifest.interface?.displayName ?? manifest.name,
+    name:
+      manifestText(manifest.interface?.displayName) ??
+      manifestText(manifest.name),
     status: providerStatus('codex', {
       accepted: true,
       pluginCount: facets.length,
-      marketplaceName: manifest.name ?? getBuiltInProviderMarketplaceName(),
+      marketplaceName:
+        manifestText(manifest.name) ?? getBuiltInProviderMarketplaceName(),
       marketplacePath: manifestPath,
       installLocation: getBundledPluginsDir(),
       error:
@@ -1491,8 +1616,9 @@ async function readCodexBuiltInPluginInstallStatus(
     return {
       available: true,
       installed: summary?.installed === true,
-      enabled: summary?.enabled,
-      version: version ?? summary?.localVersion ?? undefined,
+      enabled:
+        typeof summary?.enabled === 'boolean' ? summary.enabled : undefined,
+      version: manifestText(version) ?? manifestText(summary?.localVersion),
     };
   } catch (error) {
     return {
@@ -1684,7 +1810,8 @@ async function scanCodexMarketplace(input: {
 
   const summaryByName = new Map<string, PluginSummary>();
   for (const summary of marketplaceEntry?.plugins ?? []) {
-    summaryByName.set(summary.name.toLowerCase(), summary);
+    if (typeof summary?.name === 'string')
+      summaryByName.set(summary.name.toLowerCase(), summary);
   }
 
   const facets = accepted
@@ -1716,12 +1843,9 @@ async function scanCodexMarketplace(input: {
               : '') || metadata.description,
           version:
             (typeof manifest?.version === 'string' ? manifest.version : '') ||
-            summary?.localVersion ||
+            manifestText(summary?.localVersion) ||
             '',
-          author:
-            (typeof manifest?.author === 'object' && manifest.author?.name
-              ? manifest.author.name
-              : '') || metadata.author,
+          author: (manifestAuthor(manifest?.author) ?? '') || metadata.author,
           category: metadata.category,
           homepage:
             (typeof manifest?.homepage === 'string' ? manifest.homepage : '') ||
@@ -1847,7 +1971,7 @@ async function scanCodexMarketplace(input: {
       structurallyInvalidAtRevision:
         facets.length === 0 ? structurallyInvalidAtRevision : undefined,
     }),
-    name: marketplaceEntry?.interface?.displayName ?? name,
+    name: manifestText(marketplaceEntry?.interface?.displayName) ?? name,
     installLocation: addResult?.installedRoot ?? installedRoot,
   };
 }
@@ -1916,7 +2040,7 @@ async function scanBuiltInMarketplaceUncached(): Promise<MarketplaceInfo | null>
     accepted: hasClaudeManifest,
     pluginCount: claudeFacets.length,
     marketplaceName:
-      claudeManifest?.name ?? getBuiltInProviderMarketplaceName(),
+      manifestText(claudeManifest?.name) ?? getBuiltInProviderMarketplaceName(),
     marketplacePath: claudeManifestPath,
     installLocation: getBundledPluginsDir(),
     error:
@@ -2644,6 +2768,7 @@ export async function loadMarketplaces(
     const result = await loadMarketplacesWithoutDefaults(progress);
     if (result.success && result.data) {
       await initializeCuratedPluginDefaults(result.data.marketplaces);
+      assertCatalogHealth();
     }
     return result;
   } catch (error) {
@@ -2674,12 +2799,14 @@ async function persistCuratedPluginDefaults(
     .flatMap((marketplace) => marketplace.plugins.map((plugin) => plugin.name));
   if (names.length === 0) return;
   const current = await readPreferencesFile();
+  assertCatalogHealth();
   if (peekPreferencesLoadError()) return;
   const initialized = new Set(current.initializedCuratedPluginDefaults ?? []);
   if (names.every((name) => initialized.has(name))) return;
 
   let changed = false;
   const preferences = await updatePreferencesFile((latest) => {
+    assertCatalogHealth();
     const seen = new Set(latest.initializedCuratedPluginDefaults ?? []);
     const additions = names.filter((name) => !seen.has(name));
     if (additions.length === 0) return {};
@@ -2724,6 +2851,7 @@ async function loadMarketplacesWithoutDefaults(
   progress?: MarketplaceProgressReporter,
 ): Promise<IPCResult<PluginsCache>> {
   try {
+    assertCatalogHealth();
     const cache = readCache();
     if (cache?.version === 2 && cache.lastRefreshed !== '') {
       const filteredCachedMarketplaces = cache.marketplaces.filter(
@@ -2749,23 +2877,7 @@ async function loadMarketplacesWithoutDefaults(
       });
     }
     if (cache?.version === 1) {
-      const migratedBase = migrateLegacyCacheForFastLoad(cache);
-      if (isE2eBuild()) {
-        writeCache(migratedBase);
-        return await applyCodexCompatDisabledOverlay({
-          success: true,
-          data: migratedBase,
-        });
-      }
-      const migrated = {
-        ...migratedBase,
-        marketplaces: await mergeManagedMarketplaces(migratedBase.marketplaces),
-      };
-      writeCache(migrated);
-      return await applyCodexCompatDisabledOverlay({
-        success: true,
-        data: migrated,
-      });
+      return { success: false, error: catalogReadError('legacy').message };
     }
     reportMarketplaceProgress(progress, 'load', {
       status: 'running',
@@ -2779,10 +2891,36 @@ async function loadMarketplacesWithoutDefaults(
   }
 }
 
+/** Display projection only: never use this result to plan effects or execution. */
+export async function loadMarketplacesForPresentation(
+  progress?: MarketplaceProgressReporter,
+  cacheOnly = false,
+): Promise<IPCResult<PluginsCache>> {
+  const health = readPluginCatalogHealth();
+  const index = readPluginIndexHealth();
+  if (
+    (health.state === 'valid' || health.state === 'absent') &&
+    (index.state === 'valid' || index.state === 'absent')
+  ) {
+    return cacheOnly ? loadMarketplacesCacheOnly() : loadMarketplaces(progress);
+  }
+  const fallback = readPluginCatalogHealth();
+  return {
+    success: true,
+    data:
+      fallback.state === 'legacy'
+        ? migrateLegacyCacheForFastLoad(fallback.data)
+        : fallback.state === 'valid'
+          ? fallback.data
+          : { version: 2, lastRefreshed: '', marketplaces: [] },
+  };
+}
+
 export async function loadMarketplacesCacheOnly(): Promise<
   IPCResult<PluginsCache>
 > {
   try {
+    assertCatalogHealth();
     const cache = readCache();
     if (cache?.version === 2) {
       return await applyCodexCompatDisabledOverlay({
@@ -2796,10 +2934,7 @@ export async function loadMarketplacesCacheOnly(): Promise<
       });
     }
     if (cache?.version === 1) {
-      return await applyCodexCompatDisabledOverlay({
-        success: true,
-        data: migrateLegacyCacheForFastLoad(cache),
-      });
+      return { success: false, error: catalogReadError('legacy').message };
     }
     return {
       success: true,
@@ -2993,7 +3128,9 @@ async function syncCuratedPluginsForRefreshUnlocked(
   behavior?: { lockBackgroundNudge?: boolean },
 ): Promise<CuratedPluginSyncResult | null> {
   try {
+    assertCatalogHealth();
     const result = await syncCuratedPlugins(options);
+    assertCatalogHealth();
     if (result.status === 'synced') invalidateCuratedMarketplaceScanCache();
     // A no-op sync can be an existing user's first run with curated defaults.
     if (result.status !== 'skipped') {
@@ -3039,8 +3176,11 @@ export async function refreshMarketplaces(
   options?: RefreshMarketplacesOptions,
 ): Promise<IPCResult<PluginsCache>> {
   try {
+    assertCatalogHealth({ allowLegacy: true });
     return await withMarketplaceRefreshLock(() =>
-      refreshMarketplacesUnlocked(progress, options),
+      providerRevalidation.run(true, () =>
+        refreshMarketplacesUnlocked(progress, options),
+      ),
     );
   } catch (error) {
     reportMarketplaceProgress(progress, 'refresh', {
@@ -3062,6 +3202,7 @@ async function refreshMarketplacesUnlocked(
       totalSteps: 1,
       message: 'Checking installed marketplaces...',
     });
+    assertCatalogHealth({ allowLegacy: true });
     const providerUpdates = shouldRunProviderUpdates(options);
     const curatedSync = await syncCuratedPluginsForRefreshUnlocked();
     if (providerUpdates) {
@@ -3083,7 +3224,12 @@ async function refreshMarketplacesUnlocked(
       );
       if (
         previousCache?.version === 1 &&
-        previousCache.marketplaces.length > 0 &&
+        previousCache.marketplaces.some(
+          (marketplace) =>
+            marketplace.id !== BUILTIN_PLUGIN_MARKETPLACE_ID &&
+            !isCuratedPluginMarketplaceId(marketplace.id) &&
+            !isLegacyCodexChatPluginMarketplace(marketplace),
+        ) &&
         externalMarketplaces.length > 0 &&
         externalMarketplaces.every(
           (marketplace) => marketplace.validProviders.length === 0,
@@ -3105,7 +3251,7 @@ async function refreshMarketplacesUnlocked(
         ...(providerUpdates ? { lastProviderRefreshAt: nowIso() } : {}),
         marketplaces: mergedMarketplaces,
       };
-      writeCache(cache);
+      writeCache(cache, true);
       return { success: true, data: cache };
     });
     if (!result.success) {
@@ -3181,6 +3327,19 @@ async function removeClaudeMarketplace(
 }
 
 export async function addMarketplace(
+  ...args: Parameters<typeof addMarketplaceUnlocked>
+): ReturnType<typeof addMarketplaceUnlocked> {
+  try {
+    assertCatalogHealth();
+    const result = await addMarketplaceUnlocked(...args);
+    assertCatalogHealth();
+    return result;
+  } catch (error) {
+    return { success: false, error: errorMessage(error) };
+  }
+}
+
+async function addMarketplaceUnlocked(
   repo: string,
   progress?: MarketplaceProgressReporter,
 ): Promise<IPCResult<MarketplaceRegistrationResult>> {
@@ -3278,6 +3437,7 @@ async function updateMarketplaceUnlocked(
   progress?: MarketplaceProgressReporter,
 ): Promise<IPCResult<MarketplaceInfo>> {
   try {
+    assertCatalogHealth();
     if (isCuratedPluginMarketplaceId(id)) {
       return {
         success: false,
@@ -3490,9 +3650,11 @@ export async function updateMarketplace(
   progress?: MarketplaceProgressReporter,
 ): Promise<IPCResult<MarketplaceInfo>> {
   try {
-    return await withMarketplaceRefreshLock(() =>
+    const result = await withMarketplaceRefreshLock(() =>
       updateMarketplaceUnlocked(id, progress),
     );
+    assertCatalogHealth();
+    return result;
   } catch (error) {
     reportMarketplaceProgress(progress, 'update', {
       status: 'error',
@@ -4068,6 +4230,19 @@ export function flushMarketplaceSelectionPruneForTests(): Promise<void> {
 }
 
 export async function removeMarketplace(
+  ...args: Parameters<typeof removeMarketplaceUnlocked>
+): ReturnType<typeof removeMarketplaceUnlocked> {
+  try {
+    assertCatalogHealth();
+    const result = await removeMarketplaceUnlocked(...args);
+    assertCatalogHealth();
+    return result;
+  } catch (error) {
+    return { success: false, error: errorMessage(error) };
+  }
+}
+
+async function removeMarketplaceUnlocked(
   id: string,
   options?: {
     providers?: PluginProvider[];
@@ -4234,9 +4409,15 @@ export async function prepareCodexCompatibilityPlugin(
   marketplaceId: string,
   pluginName: string,
 ): Promise<IPCResult<PluginInfo>> {
-  return runSerializedPluginMutation(() =>
-    prepareCodexCompatibilityPluginUnlocked(marketplaceId, pluginName),
-  );
+  try {
+    const result = await runSerializedPluginMutation(() =>
+      prepareCodexCompatibilityPluginUnlocked(marketplaceId, pluginName),
+    );
+    assertCatalogHealth();
+    return result;
+  } catch (error) {
+    return { success: false, error: errorMessage(error) };
+  }
 }
 
 async function prepareCodexCompatibilityPluginUnlocked(
@@ -4244,7 +4425,9 @@ async function prepareCodexCompatibilityPluginUnlocked(
   pluginName: string,
 ): Promise<IPCResult<PluginInfo>> {
   try {
+    assertCatalogHealth();
     return await withCacheLock(async () => {
+      assertCatalogHealth();
       const cache = readCache();
       if (cache?.version !== 2) {
         return { success: false, error: 'Plugin cache is not initialized.' };
@@ -4278,6 +4461,7 @@ async function prepareCodexCompatibilityPluginUnlocked(
       );
       let compatibility: MaterializedCodexPlugin | undefined;
       try {
+        assertCatalogHealth();
         const materialized = await materializeCodexPluginsOffMain({
           nativeProjectionRoot,
           plugins: [
@@ -4486,6 +4670,7 @@ async function applyCodexCompatDisabledOverlay(
     return result;
   }
   const preferences = await readPreferencesFile();
+  assertCatalogHealth();
   const disabled = new Set<string>(
     preferences.codexCompatDisabledPlugins ?? [],
   );
@@ -4554,6 +4739,7 @@ export async function setCodexCompatDisabled(
 
     const key = buildCodexCompatDisabledKey(marketplaceId, plugin.name);
     await updatePreferencesFile((latest) => {
+      assertCatalogHealth();
       const current = new Set<string>(latest.codexCompatDisabledPlugins ?? []);
       if (disabled) {
         current.add(key);
@@ -4564,6 +4750,7 @@ export async function setCodexCompatDisabled(
         codexCompatDisabledPlugins: Array.from(current),
       };
     });
+    assertCatalogHealth();
 
     const updated: PluginInfo = { ...plugin, codexCompatDisabled: disabled };
     return { success: true, data: updated };
@@ -4884,6 +5071,7 @@ async function installBuiltInPluginUnlocked(
       ? request.marketplaceId
       : undefined;
   try {
+    assertCatalogHealth();
     if (
       !isRecord(request) ||
       typeof request.marketplaceId !== 'string' ||
@@ -4960,6 +5148,7 @@ async function installBuiltInPluginUnlocked(
     // so re-read it rather than serving the pre-install snapshot back.
     invalidateManagedMarketplaceScanCache(marketplaceId);
     const refreshed = await scanManagedMarketplace(marketplaceId);
+    assertCatalogHealth();
     const refreshedPlugin = findBuiltInPlugin(refreshed, pluginName) ?? plugin;
     if (refreshed) {
       await withCacheLock(() => {
@@ -5080,6 +5269,7 @@ async function installPluginUnlocked(
   },
 ): Promise<IPCResult<PluginInfo>> {
   try {
+    assertCatalogHealth();
     if (!marketplaceId || !pluginName || !sourceUrl) {
       return { success: false, error: 'Missing required parameters.' };
     }
@@ -5092,6 +5282,7 @@ async function installPluginUnlocked(
       followRedirects: options?.disableRedirects !== true,
     });
 
+    assertCatalogHealth();
     const pluginManifest = safeReadJson<PluginManifest>(
       path.join(cacheDir, '.claude-plugin', 'plugin.json'),
     );
@@ -5101,29 +5292,21 @@ async function installPluginUnlocked(
     const index = readCacheIndex();
     const key = cacheKey(marketplaceId, pluginName);
     const prev = index.entries[key];
-    if (
-      prev?.cachePath &&
-      prev.cachePath !== cacheDir &&
-      fs.existsSync(prev.cachePath)
-    ) {
-      fs.rmSync(prev.cachePath, { recursive: true, force: true });
-    }
     index.entries[key] = {
       cachePath: cacheDir,
       sourceUrl,
       cachedAt,
     };
-    writeCacheIndex(index);
 
     const facet: PluginProviderFacet = {
       provider: 'claude',
       mode: 'native',
-      name: pluginManifest?.name || pluginName,
-      description: pluginManifest?.description || '',
-      version: pluginManifest?.version || '',
-      author: pluginManifest?.author?.name || '',
+      name: manifestText(pluginManifest?.name) || pluginName,
+      description: manifestText(pluginManifest?.description) || '',
+      version: manifestText(pluginManifest?.version) || '',
+      author: manifestAuthor(pluginManifest?.author) || '',
       category: '',
-      homepage: pluginManifest?.homepage || '',
+      homepage: manifestText(pluginManifest?.homepage) || '',
       installLocation: cacheDir,
       sourcePath: cacheDir,
       externalSource: { source: 'github', url: sourceUrl },
@@ -5151,9 +5334,10 @@ async function installPluginUnlocked(
     // navigating away from and back to the plugins page) reflects it
     // immediately. The background refresh below re-hydrates external installs
     // from the cache index, so it stays consistent with this write.
+    let persisted: PluginsCache | undefined;
     if (cache?.version === 2) {
       const target = pluginName.toLowerCase();
-      const persisted: PluginsCache = {
+      persisted = {
         ...cache,
         marketplaces: cache.marketplaces.map((entry) =>
           entry.id !== marketplaceId
@@ -5168,7 +5352,22 @@ async function installPluginUnlocked(
               },
         ),
       };
-      writeCache(persisted);
+    }
+
+    // Reject inconsistent output before publishing either file or retiring
+    // the previous payload. I/O failures are not a cross-file transaction.
+    const validatedIndex = validateCacheIndexPayload(index);
+    const validatedCache = persisted
+      ? validateCachePayload(persisted)
+      : undefined;
+    writeCacheIndex(validatedIndex);
+    if (validatedCache) writeCache(validatedCache);
+    if (
+      prev?.cachePath &&
+      prev.cachePath !== cacheDir &&
+      fs.existsSync(prev.cachePath)
+    ) {
+      fs.rmSync(prev.cachePath, { recursive: true, force: true });
     }
 
     if (options?.skipRefresh !== true) {
@@ -5188,27 +5387,48 @@ export type {
 export function installPlugin(
   ...args: Parameters<typeof installPluginUnlocked>
 ): ReturnType<typeof installPluginUnlocked> {
-  return runSerializedPluginMutation(async () =>
-    (await pluginUninstallPending(args[0], args[1]))
-      ? {
+  return runSerializedPluginMutation(async () => {
+    try {
+      assertCatalogHealth();
+      if (await pluginUninstallPending(args[0], args[1])) {
+        return {
           success: false,
           error: 'Finish uninstalling this plugin before adding it again.',
-        }
-      : installPluginUnlocked(...args),
-  );
+        };
+      }
+      const result = await installPluginUnlocked(...args);
+      assertCatalogHealth();
+      return result;
+    } catch (error) {
+      return { success: false, error: errorMessage(error) };
+    }
+  });
 }
 
 export function installBuiltInPlugin(
   ...args: Parameters<typeof installBuiltInPluginUnlocked>
 ): ReturnType<typeof installBuiltInPluginUnlocked> {
-  return runSerializedPluginMutation(async () =>
-    (await pluginUninstallPending(args[0]?.marketplaceId, args[0]?.pluginName))
-      ? {
+  return runSerializedPluginMutation(async () => {
+    try {
+      assertCatalogHealth();
+      if (
+        await pluginUninstallPending(
+          args[0]?.marketplaceId,
+          args[0]?.pluginName,
+        )
+      ) {
+        return {
           success: false,
           error: 'Finish uninstalling this plugin before adding it again.',
-        }
-      : installBuiltInPluginUnlocked(...args),
-  );
+        };
+      }
+      const result = await installBuiltInPluginUnlocked(...args);
+      assertCatalogHealth();
+      return result;
+    } catch (error) {
+      return { success: false, error: errorMessage(error) };
+    }
+  });
 }
 
 async function pluginUninstallPending(

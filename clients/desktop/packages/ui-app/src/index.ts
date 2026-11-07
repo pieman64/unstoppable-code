@@ -795,7 +795,15 @@ export {
   type WorktreePanelLayout,
 } from './code/panels/panel-layout-store';
 export * from './code/shell/SidebarPlanSubtitle';
-export * from './feedback/FeedbackDialog';
+export { FeedbackSubmissionHeldError } from './feedback/feedback-submission-held-error';
+// Keep the base form on its on-demand subpath, outside the startup barrel.
+export type {
+  FeedbackDialogProps,
+  FeedbackDialogReportType,
+  FeedbackDialogSubmission,
+} from './feedback/FeedbackDialog';
+export * from './feedback/FeedbackReportDialogEntry';
+export * from './feedback/ReportThisAction';
 
 export {
   ChatMessageAttachments,

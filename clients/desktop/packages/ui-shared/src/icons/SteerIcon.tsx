@@ -1,9 +1,10 @@
-import type { JSX, SVGProps } from 'react';
-import { SteerIcon as AppCatalogSteerIcon } from './AppIcons';
+import type { JSX } from 'react';
+import {
+  SteerIcon as AppCatalogSteerIcon,
+  type AppIconProps,
+} from './AppIcons';
 
 /** The steering glyph previously used by the queued-message Interrupt action. */
-export function SteerIcon(props: SVGProps<SVGSVGElement>): JSX.Element {
-  return (
-    <AppCatalogSteerIcon width="16" height="16" aria-hidden="true" {...props} />
-  );
+export function SteerIcon(props: AppIconProps): JSX.Element {
+  return <AppCatalogSteerIcon size="sm" aria-hidden="true" {...props} />;
 }

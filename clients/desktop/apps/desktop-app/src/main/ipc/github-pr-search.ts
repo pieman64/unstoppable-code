@@ -1,11 +1,17 @@
 import type { SearchPullRequestsResponse } from '@canopy/desktop-shared/types';
 import { normalizePullRequestTitleQuery } from '@canopy/desktop-shared/lib/pull-request-search';
 import { validateAbsolutePath } from '../lib/validation';
-import { searchOpenPullRequestsForRepo } from '../lib/github-pr-listing';
+import {
+  searchPullRequestsForIpc,
+  type GitHubPullRequestIpcDispatcher,
+  type LazyCaller,
+} from '../canopy-runtime/github-pull-request-dispatch';
 
 /** Validate the untrusted IPC envelope before entering the GitHub service. */
 export async function handleSearchPullRequestsRequest(
   request: unknown,
+  dispatcher: GitHubPullRequestIpcDispatcher,
+  resolveCaller: LazyCaller,
 ): Promise<SearchPullRequestsResponse> {
   if (
     !request ||
@@ -20,9 +26,8 @@ export async function handleSearchPullRequestsRequest(
   }
   validateAbsolutePath(request.repoPath, 'repoPath');
   normalizePullRequestTitleQuery(request.query);
-  const pullRequests = await searchOpenPullRequestsForRepo(
-    request.repoPath,
-    request.query,
-  );
-  return { pullRequests };
+  return searchPullRequestsForIpc(dispatcher, resolveCaller, {
+    repoPath: request.repoPath,
+    query: request.query,
+  });
 }

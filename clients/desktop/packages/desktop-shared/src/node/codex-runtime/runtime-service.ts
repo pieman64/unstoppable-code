@@ -1,10 +1,6 @@
 import { CodexAuthenticationSession } from './managed-auth';
 import { getCanopyDataDir } from '../../canopy-paths';
 import {
-  getBundledCanopyCliPath,
-  getCanopyCliDevLaunchArgs,
-} from '../../pipelines/config-paths';
-import {
   type AppServerRequestMethod,
   type AppServerRequestParams,
   type AppServerRequestResponse,
@@ -73,7 +69,10 @@ import {
   flattenCodexThreadConfig,
   omitCodexMcpServersFromThreadConfig,
 } from './thread-config';
-import { loadBundledCodexModelCatalog } from './bundled-model-catalog';
+import {
+  loadAccountCodexModelCatalog,
+  loadBundledCodexModelCatalog,
+} from './bundled-model-catalog';
 import { isJsonValue } from './rollout-seed';
 import { classifyCodexTransportError } from './transport-errors';
 import {
@@ -220,6 +219,12 @@ export interface CodexInteractiveTransport {
   release(): void;
 }
 
+/** The executable the Codex app-server starts for every stdio MCP route (CAN-4117). */
+export interface CodexMcpLauncherCommand {
+  readonly command: string;
+  readonly args: readonly string[];
+}
+
 export interface CodexRuntimeService {
   beginAuthentication(): CodexAuthenticationSession;
   startThread(request: CodexStartThreadRequest): Promise<CodexThreadHandle>;
@@ -241,6 +246,8 @@ export interface CodexRuntimeService {
   revokeStdioMcpRoutes(ownerId: string): Promise<void>;
   admin(): CodexRuntimeAdmin;
   getBundledModelCatalog(): Promise<unknown>;
+  /** This sign-in's catalog, the source of context window bounds. */
+  getAccountModelCatalog(): Promise<unknown>;
   getCanonicalState(): Promise<{ codexHome: string }>;
   shutdown(): Promise<void>;
 }
@@ -1559,8 +1566,10 @@ class DefaultCodexRuntimeService implements CodexRuntimeService {
       getCanopyDataDir(),
     ),
     pool: CodexAppServerPool = new CodexAppServerPool(),
-    mcpSecretBroker?: CodexMcpSecretBroker,
+    mcpSecretBroker: CodexMcpSecretBroker | undefined,
     private readonly bundledModelCatalogLoader = loadBundledCodexModelCatalog,
+    private readonly accountModelCatalogLoader = loadAccountCodexModelCatalog,
+    private readonly mcpLauncher: CodexMcpLauncherCommand,
   ) {
     this.pool = pool;
     this.mcpSecretBroker = mcpSecretBroker ?? null;
@@ -1586,11 +1595,26 @@ class DefaultCodexRuntimeService implements CodexRuntimeService {
   }
 
   getBundledModelCatalog(): Promise<unknown> {
+    return this.trackModelCatalogLoad((signal) =>
+      this.bundledModelCatalogLoader(signal),
+    );
+  }
+
+  getAccountModelCatalog(): Promise<unknown> {
+    return this.trackModelCatalogLoad((signal) =>
+      this.accountModelCatalogLoader(signal),
+    );
+  }
+
+  /** Runs a catalog read that shutdown aborts and waits for. */
+  private trackModelCatalogLoad(
+    start: (signal: AbortSignal) => Promise<unknown>,
+  ): Promise<unknown> {
     if (this.shutdownPromise) {
       return Promise.reject(new Error('Codex runtime is shutting down'));
     }
     const controller = new AbortController();
-    const load = this.bundledModelCatalogLoader(controller.signal);
+    const load = start(controller.signal);
     this.bundledModelCatalogLoads.set(controller, load);
     void load.then(
       () => this.bundledModelCatalogLoads.delete(controller),
@@ -2161,12 +2185,10 @@ class DefaultCodexRuntimeService implements CodexRuntimeService {
   }
 
   private getMcpSecretBroker(): CodexMcpSecretBroker {
-    const devLaunch = getCanopyCliDevLaunchArgs();
     this.mcpSecretBroker ??= new CodexMcpSecretBroker(
       getCodexMcpBrokerRuntimeDir(),
-      devLaunch?.command ?? getBundledCanopyCliPath(),
-      devLaunch?.args ?? [],
-      devLaunch?.cwd,
+      this.mcpLauncher.command,
+      [...this.mcpLauncher.args],
     );
     return this.mcpSecretBroker;
   }
@@ -2350,15 +2372,19 @@ class DefaultCodexRuntimeService implements CodexRuntimeService {
   }
 }
 
-export function createCodexRuntimeService(options?: {
+export function createCodexRuntimeService(options: {
+  mcpLauncher: CodexMcpLauncherCommand;
   capabilityStore?: CodexCapabilityStore;
   mcpSecretBroker?: CodexMcpSecretBroker;
   bundledModelCatalogLoader?: (signal: AbortSignal) => Promise<unknown>;
+  accountModelCatalogLoader?: (signal: AbortSignal) => Promise<unknown>;
 }): CodexRuntimeService {
   return new DefaultCodexRuntimeService(
-    options?.capabilityStore,
+    options.capabilityStore,
     undefined,
-    options?.mcpSecretBroker,
-    options?.bundledModelCatalogLoader,
+    options.mcpSecretBroker,
+    options.bundledModelCatalogLoader,
+    options.accountModelCatalogLoader,
+    options.mcpLauncher,
   );
 }

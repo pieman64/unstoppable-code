@@ -334,6 +334,10 @@ export function workEntryRowMultiSelectProps(
   const { selection } = binding;
   return {
     selected: selection.isSelected(key),
+    selectMode: binding.selectMode,
+    onSelectItem: binding.onSelectItem
+      ? () => binding.onSelectItem?.(key)
+      : undefined,
     selectable,
     rowKey: key,
     active: selection.active,

@@ -46,6 +46,8 @@ import {
   parseGitCheckedOutBranches,
   parseGitWorktreeListPorcelain,
   selectAvailableGitBranchName,
+  mergeGitBranches,
+  type GitMergeWritePort,
   type GitBranchDeletePort,
   type GitBranchNameReads,
   type GitBranchWritePort,
@@ -3781,74 +3783,66 @@ function extractGitErrorStderr(error: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+export function gitMergeWritePort(
+  repoPath: string,
+  onFailure?: (error: unknown) => void,
+): GitMergeWritePort {
+  return {
+    currentBranch: () => getCurrentBranch(repoPath),
+    repositoryRoot: () => getRepoRootFromWorktree(repoPath),
+    localBranchExists: (root, branch) => doesLocalBranchExist(root, branch),
+    baseWorktree: (root, branch) =>
+      findExistingWorktreePathForBranch(root, branch),
+    temporaryWorktree: () =>
+      join(tmpdir(), `${BRAND.internalName}-merge-${randomUUID()}`),
+    addWorktree: async (root, path, branch) => {
+      await runGit(['worktree', 'add', path, branch], root);
+    },
+    isDirty: async (path) =>
+      (
+        await runGit(
+          ['status', '--porcelain', '--untracked-files=normal'],
+          path,
+        )
+      ).trim().length > 0,
+    merge: async (path, source, base) => {
+      try {
+        await runGit(['merge', '--no-edit', source], path);
+      } catch (error) {
+        const failure = new Error(
+          extractGitErrorStderr(error) ??
+            (error instanceof Error
+              ? error.message
+              : `Failed to merge "${source}" into "${base}"`),
+        );
+        onFailure?.(failure);
+        throw failure;
+      }
+    },
+    hasUnmergedPaths: (path) => hasUnmergedPaths(path),
+    abort: (path) => abortMerge(path),
+    head: (path) => runGit(['rev-parse', 'HEAD'], path),
+    removeWorktree: async (root, path) => {
+      await runGit(['worktree', 'remove', '--force', path], root);
+    },
+  };
+}
+
 export async function mergeBranchIntoLocalBase(
   repoPath: string,
   sourceBranch: string,
   baseBranch: string,
 ): Promise<string> {
-  if (sourceBranch === baseBranch) {
-    throw new Error('Source and base branches must be different');
-  }
-
-  const repoRoot = await getRepoRootFromWorktree(repoPath);
-  const baseBranchExists = await doesLocalBranchExist(repoRoot, baseBranch);
-  if (!baseBranchExists) {
-    throw new Error(`Base branch "${baseBranch}" does not exist locally`);
-  }
-
-  const existingBaseWorktreePath = await findExistingWorktreePathForBranch(
-    repoRoot,
+  let failure: unknown;
+  const result = await mergeGitBranches(
+    gitMergeWritePort(repoPath, (error) => {
+      failure = error;
+    }),
+    sourceBranch,
     baseBranch,
   );
-  const mergeWorktreePath: string =
-    existingBaseWorktreePath ??
-    join(tmpdir(), `${BRAND.internalName}-merge-${randomUUID()}`);
-  const temporaryWorktreePath =
-    existingBaseWorktreePath === null ? mergeWorktreePath : null;
-
-  if (temporaryWorktreePath) {
-    await runGit(
-      ['worktree', 'add', temporaryWorktreePath, baseBranch],
-      repoRoot,
-    );
-  }
-
-  try {
-    const statusOutput = await runGit(
-      ['status', '--porcelain', '--untracked-files=normal'],
-      mergeWorktreePath,
-    );
-    if (statusOutput.trim().length > 0) {
-      throw new Error(
-        `Cannot merge into "${baseBranch}" because its worktree has uncommitted changes`,
-      );
-    }
-
-    try {
-      await runGit(['merge', '--no-edit', sourceBranch], mergeWorktreePath);
-    } catch (error) {
-      await abortMerge(mergeWorktreePath).catch(() => undefined);
-      throw new Error(
-        extractGitErrorStderr(error) ??
-          (error instanceof Error
-            ? error.message
-            : `Failed to merge "${sourceBranch}" into "${baseBranch}"`),
-      );
-    }
-
-    return await runGit(['rev-parse', 'HEAD'], mergeWorktreePath);
-  } finally {
-    if (temporaryWorktreePath) {
-      try {
-        await runGit(
-          ['worktree', 'remove', '--force', temporaryWorktreePath],
-          repoRoot,
-        );
-      } catch {
-        // Best-effort cleanup of temporary merge worktrees.
-      }
-    }
-  }
+  if (result.outcome === 'conflict') throw failure;
+  return result.mergeCommitHash;
 }
 
 export async function hasCommitsAhead(

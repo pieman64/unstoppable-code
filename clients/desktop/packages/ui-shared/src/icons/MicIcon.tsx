@@ -1,6 +1,6 @@
-import type { JSX, SVGProps } from 'react';
-import { MicIcon as AppCatalogMicIcon } from './AppIcons';
+import type { JSX } from 'react';
+import { MicIcon as AppCatalogMicIcon, type AppIconProps } from './AppIcons';
 
-export function MicIcon(props: SVGProps<SVGSVGElement>): JSX.Element {
-  return <AppCatalogMicIcon width="14" height="14" {...props} />;
+export function MicIcon(props: AppIconProps): JSX.Element {
+  return <AppCatalogMicIcon size="sm" {...props} />;
 }

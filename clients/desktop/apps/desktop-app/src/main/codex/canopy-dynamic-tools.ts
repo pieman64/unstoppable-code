@@ -202,6 +202,11 @@ export function buildCanopyDynamicToolSpecs(options: {
   includeLedger?: boolean;
   includeChatVisuals: boolean;
   /**
+   * ShowFiles is advertised only while the main window's interface lease
+   * serves it (CAN-4131). Defaults to true.
+   */
+  includeShowFiles?: boolean;
+  /**
    * Projection profile for advertised tool JSON Schemas. Runtime Zod
    * validation is unaffected; the JSON schema is advisory to the model.
    */
@@ -291,11 +296,15 @@ export function buildCanopyDynamicToolSpecs(options: {
       description: SHOW_CAPABILITIES_DESCRIPTION,
       inputSchema: showCapabilitiesJsonSchema,
     }),
-    defineCodexFunctionToolSpec({
-      name: CANOPY_INJECTED_TOOL_REGISTRY.show_files.codexToolName,
-      description: SHOW_FILES_DESCRIPTION,
-      inputSchema: showFilesJsonSchema,
-    }),
+    ...(options.includeShowFiles !== false
+      ? [
+          defineCodexFunctionToolSpec({
+            name: CANOPY_INJECTED_TOOL_REGISTRY.show_files.codexToolName,
+            description: SHOW_FILES_DESCRIPTION,
+            inputSchema: showFilesJsonSchema,
+          }),
+        ]
+      : []),
     ...(options.includeChatVisuals
       ? [
           defineCodexFunctionToolSpec({

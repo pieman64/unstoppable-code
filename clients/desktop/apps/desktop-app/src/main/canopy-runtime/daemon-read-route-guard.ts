@@ -10,8 +10,9 @@ import { LOCAL_DESKTOP_AUTHORITY_ID } from './desktop-runtime-identity';
 /**
  * Which local reads may be sent to the core daemon, as code (CAN-5501).
  * The eligibility half of each daemon read route: the operation × platform
- * table, the caller and scope rules, and local lookups only, never daemon
- * contact. A route still applies its own disposal and selection set.
+ * qualification table, operation prerequisites, caller and scope rules, and
+ * local lookups only, never daemon contact. A route still applies its own
+ * disposal and selection set.
  * Nothing here reads a user setting; under the always-on daemon model there
  * is no switch.
  */
@@ -42,7 +43,7 @@ export type ReadRouteDisposition =
   | { readonly kind: 'eligible' }
   | {
       readonly kind: 'blocked';
-      /** The ticket that flips this cell. */
+      /** The ticket that satisfies this prerequisite or qualification. */
       readonly until: `CAN-${number}`;
       readonly reason: string;
     };
@@ -70,15 +71,27 @@ const CHANGED_FILES_PENDING: ReadRouteDisposition = {
   until: 'CAN-4103',
   reason: 'Reserved for the changed-files and diff reads.',
 };
+const PROTOCOL_QUALIFICATION_PENDING: ReadRouteDisposition = {
+  kind: 'blocked',
+  until: 'CAN-4729',
+  reason:
+    'Platform qualification has not been assessed for this reserved read.',
+};
+const CHANGED_FILES_QUALIFICATION_PENDING: ReadRouteDisposition = {
+  kind: 'blocked',
+  until: 'CAN-4103',
+  reason:
+    'Platform qualification has not been assessed for this reserved read.',
+};
 
 /**
- * Every operation on every platform; a missing row or platform fails to
- * compile. Roots and directory keep their shipped reach on all three hosts.
- * Linux hosts own the daemon since CAN-4966 A2, and packaged Linux builds
- * stage it since CAN-4966 PR B; file, search, link and branch list are
- * eligible on Linux since CAN-5547, after their equivalence suites passed
- * there. A `blocked` cell keeps the in-process reader whatever a route's
- * selection set says.
+ * Platform qualification only, not route selection or proof of serving.
+ * Roots and directory keep their shipped reach on all three hosts. File,
+ * search, link and branch list qualified on Linux in CAN-5547 after their
+ * equivalence suites passed; Linux owns the daemon since CAN-4966.
+ * Reserved cells stay blocked pending assessment even when prerequisites
+ * are met.
+ * A missing row or platform fails to compile.
  */
 export const READ_ROUTE_TABLE: Readonly<
   Record<
@@ -93,30 +106,47 @@ export const READ_ROUTE_TABLE: Readonly<
   'files.link': ELIGIBLE_EXCEPT_WINDOWS,
   'git.branch.list': ELIGIBLE_EXCEPT_WINDOWS,
   'git.remote.get': {
-    darwin: PROTOCOL_PENDING,
-    win32: PROTOCOL_PENDING,
-    linux: PROTOCOL_PENDING,
+    darwin: PROTOCOL_QUALIFICATION_PENDING,
+    win32: PROTOCOL_QUALIFICATION_PENDING,
+    linux: PROTOCOL_QUALIFICATION_PENDING,
   },
   'git.worktree.health.get': {
-    darwin: PROTOCOL_PENDING,
-    win32: PROTOCOL_PENDING,
-    linux: PROTOCOL_PENDING,
+    darwin: PROTOCOL_QUALIFICATION_PENDING,
+    win32: PROTOCOL_QUALIFICATION_PENDING,
+    linux: PROTOCOL_QUALIFICATION_PENDING,
   },
   'git.executable.get': {
-    darwin: PROTOCOL_PENDING,
-    win32: PROTOCOL_PENDING,
-    linux: PROTOCOL_PENDING,
+    darwin: PROTOCOL_QUALIFICATION_PENDING,
+    win32: PROTOCOL_QUALIFICATION_PENDING,
+    linux: PROTOCOL_QUALIFICATION_PENDING,
   },
   'git.status.get': {
-    darwin: CHANGED_FILES_PENDING,
+    darwin: CHANGED_FILES_QUALIFICATION_PENDING,
     win32: WINDOWS_PENDING,
-    linux: CHANGED_FILES_PENDING,
+    linux: CHANGED_FILES_QUALIFICATION_PENDING,
   },
   'git.diff.get': {
-    darwin: CHANGED_FILES_PENDING,
+    darwin: CHANGED_FILES_QUALIFICATION_PENDING,
     win32: WINDOWS_PENDING,
-    linux: CHANGED_FILES_PENDING,
+    linux: CHANGED_FILES_QUALIFICATION_PENDING,
   },
+};
+
+/** Non-platform blockers survive any platform qualification change. */
+export const READ_ROUTE_PREREQUISITES: Readonly<
+  Record<ReadRouteOperation, ReadRouteDisposition>
+> = {
+  'files.roots': ELIGIBLE,
+  'files.directory': ELIGIBLE,
+  'files.file': ELIGIBLE,
+  'files.search': ELIGIBLE,
+  'files.link': ELIGIBLE,
+  'git.branch.list': ELIGIBLE,
+  'git.remote.get': PROTOCOL_PENDING,
+  'git.worktree.health.get': PROTOCOL_PENDING,
+  'git.executable.get': PROTOCOL_PENDING,
+  'git.status.get': CHANGED_FILES_PENDING,
+  'git.diff.get': CHANGED_FILES_PENDING,
 };
 
 /**
@@ -229,7 +259,8 @@ export function isLocalWindowCaller(
 }
 
 /**
- * Whether a read may leave for the daemon: an eligible cell for this host,
+ * Whether a read is eligible, independent of production selection: satisfied
+ * operation prerequisites and platform qualification for this host,
  * the trusted local window caller for this exact sender, a scope of the
  * operation's shape, and a registered, routed workspace. `null` keeps the
  * in-process reader.
@@ -239,6 +270,7 @@ export function evaluateReadRoute(
 ): ReadRouteTarget | null {
   const { operation, platform, caller, scope, lookups } = input;
   if (platform === null) return null;
+  if (READ_ROUTE_PREREQUISITES[operation].kind !== 'eligible') return null;
   if (READ_ROUTE_TABLE[operation][platform].kind !== 'eligible') return null;
   if (!isLocalWindowCaller(caller, input.senderId)) return null;
   const shape = READ_ROUTE_SCOPE_SHAPES[operation];

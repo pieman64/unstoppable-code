@@ -38,9 +38,6 @@ import { useCoworkEntryLabel } from './useCoworkEntryLabel';
 
 const OPEN_LABEL = 'Open';
 
-/** Glyph size inside a toast action, matching its 13px label. */
-const TOAST_ACTION_GLYPH_PX = 14;
-
 /**
  * Copy/open actions for a shareable link attached to a toast. Rendered inside
  * both the compact toast and its detail modal so a "shared" notification always
@@ -72,12 +69,7 @@ function ToastLinkActions({ link }: { link: ToastLink }): JSX.Element {
       <NoticeButton
         onClick={handleOpen}
         data-testid="toast-open-link"
-        icon={
-          <ExternalIcon
-            width={TOAST_ACTION_GLYPH_PX}
-            height={TOAST_ACTION_GLYPH_PX}
-          />
-        }
+        icon={<ExternalIcon size="sm" />}
       >
         {OPEN_LABEL}
       </NoticeButton>

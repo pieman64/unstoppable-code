@@ -201,8 +201,7 @@ function RefreshGlyph({ spinning }: { spinning: boolean }): JSX.Element {
   return (
     <AppCatalogRefreshIcon
       aria-hidden="true"
-      width="12"
-      height="12"
+      size="sm"
       className={spinning ? 'animate-spin' : undefined}
     />
   );

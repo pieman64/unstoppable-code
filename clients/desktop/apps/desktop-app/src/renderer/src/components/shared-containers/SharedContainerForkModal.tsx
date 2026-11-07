@@ -85,6 +85,7 @@ import {
   Disclosure,
   ErrorBanner,
   SettingsSelect,
+  Surface,
   TextInput,
 } from '@canopy/ui-shared/components';
 
@@ -500,30 +501,33 @@ function SharedContainerForkReview({
         {/* Polite live region: announced on either step, focus stays put. */}
         <div role="status" aria-live="polite">
           {updated !== null && (
-            <div
-              className="flex flex-col items-start gap-2 rounded border px-3 py-2"
+            <Surface
+              variant="outline"
+              size="small"
               data-testid="shared-container-fork-revision-update"
             >
-              <p className="text-s fg-primary">
-                {ownerSentenceLabel} published a newer version
-                {updatedTime !== null && (
-                  <>
-                    {' '}
-                    at <RevisionTime label={updatedTime} />
-                  </>
-                )}{' '}
-                while this was open. Review it before making your copy.
-              </p>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={busy}
-                data-testid="shared-container-fork-revision-accept"
-                onClick={handleUseUpdated}
-              >
-                Use updated version
-              </Button>
-            </div>
+              <div className="flex flex-col items-start gap-2 px-3 py-2">
+                <p className="text-s fg-primary">
+                  {ownerSentenceLabel} published a newer version
+                  {updatedTime !== null && (
+                    <>
+                      {' '}
+                      at <RevisionTime label={updatedTime} />
+                    </>
+                  )}{' '}
+                  while this was open. Review it before making your copy.
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={busy}
+                  data-testid="shared-container-fork-revision-accept"
+                  onClick={handleUseUpdated}
+                >
+                  Use updated version
+                </Button>
+              </div>
+            </Surface>
           )}
           {unavailable && (
             <ErrorBanner

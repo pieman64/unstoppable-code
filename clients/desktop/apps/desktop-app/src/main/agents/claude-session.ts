@@ -232,7 +232,7 @@ import { getAttentionTracker } from '../services/attention-tracker';
 import { commitPendingPlanExit } from '../services/chat-state-plan-exit';
 import { readChatTabsFile } from '../lib/chat-tabs-reader';
 import { isRecord } from '../lib/type-guards';
-import { getObservabilityService } from '../observability';
+import { getExecutionObservabilityIngest } from '../observability/ingest';
 import {
   captureClaudeContextSnapshot,
   claudeContextEndTokens,
@@ -255,9 +255,11 @@ import {
 } from '../lib/chat-turn-audit';
 import {
   mainWindowOnlyToolSurfaces,
-  requestShowFiles,
+  requestShowFilesThroughLease,
 } from '../canopy-tools/show-files-runtime';
+import { hasInterfaceTool } from './interface-tool-binding';
 import { createE2eClaudeQueryWithPrelude } from '../lib/e2e-claude-query-prelude';
+import { assertAgentWorkerContext } from '../agent-runs/agent-worker-context';
 
 /** Map of session keys to their active Query refs — used by stopTaskForClaudeSession. */
 const queryRefs = new Map<string, Query>();
@@ -362,7 +364,7 @@ export interface ClaudeCompatibleInvocation {
   envOverride?: Record<string, string>;
 }
 
-interface ClaudeCodeProviderOptions {
+export interface ClaudeCodeProviderOptions {
   providerType?: 'claude' | 'ollama';
   prepareInvocation?: (
     model: ChatModel | undefined,
@@ -1034,6 +1036,7 @@ export class ClaudeCodeProvider implements AgentProvider {
     onEvent: (data: unknown) => void | Promise<void>,
     getWindow: () => BrowserWindow | null,
   ): AgentSession {
+    assertAgentWorkerContext('ClaudeCodeProvider.createSession');
     const prepareInvocation = this.prepareInvocationImpl;
     const key = buildSessionKey(opts.projectId, opts.worktreeId, opts.chatId);
     const sessionOwner = Symbol();
@@ -1087,7 +1090,7 @@ export class ClaudeCodeProvider implements AgentProvider {
         chatId: opts.chatId,
       },
       (diagnostic) =>
-        getObservabilityService().recordSessionDiagnostic(diagnostic),
+        getExecutionObservabilityIngest().recordSessionDiagnostic(diagnostic),
       nativeClaudeSession,
     );
     let lifecycleProducerReleased = false;
@@ -1806,7 +1809,7 @@ export class ClaudeCodeProvider implements AgentProvider {
           truncated: bindingLimitDiagnostic.truncated,
         });
         try {
-          getObservabilityService().recordSessionDiagnostic({
+          getExecutionObservabilityIngest().recordSessionDiagnostic({
             version: 1,
             timestamp: new Date().toISOString(),
             kind: 'chat_event_dropped',
@@ -2122,7 +2125,7 @@ export class ClaudeCodeProvider implements AgentProvider {
             ? creditsOwner.id
             : creditsOwner.userMessageId
           : undefined;
-        getObservabilityService().recordSessionDiagnostic({
+        getExecutionObservabilityIngest().recordSessionDiagnostic({
           version: 1,
           timestamp: new Date().toISOString(),
           kind: 'claude_ai_credits_402',
@@ -3463,23 +3466,27 @@ export class ClaudeCodeProvider implements AgentProvider {
         ...(opts.assistantMode !== 'app-advisor' &&
         opts.assistantMode !== 'pipeline-editor'
           ? {
-              showFiles: (files) =>
-                requestShowFiles(
-                  {
-                    files,
-                    target: {
-                      projectId: opts.projectId,
-                      worktreeId: opts.worktreeId,
-                    },
-                    origin: {
-                      projectId: opts.projectId,
-                      worktreeId: opts.worktreeId,
-                      chatTabId: opts.chatId,
-                    },
-                    cwd: opts.cwd,
-                  },
-                  mainWindowOnlyToolSurfaces(getWindow),
-                ),
+              ...(hasInterfaceTool(opts.interfaceTools, 'ui.show_files')
+                ? {
+                    showFiles: (files) =>
+                      requestShowFilesThroughLease(
+                        {
+                          files,
+                          target: {
+                            projectId: opts.projectId,
+                            worktreeId: opts.worktreeId,
+                          },
+                          origin: {
+                            projectId: opts.projectId,
+                            worktreeId: opts.worktreeId,
+                            chatTabId: opts.chatId,
+                          },
+                          cwd: opts.cwd,
+                        },
+                        mainWindowOnlyToolSurfaces(getWindow),
+                      ),
+                  }
+                : {}),
               getFileComments: ({ threadId }) =>
                 getFileCommentsInSession({
                   projectId: opts.projectId,
@@ -3563,6 +3570,7 @@ export class ClaudeCodeProvider implements AgentProvider {
           projectId: opts.projectId,
           worktreeId: opts.worktreeId,
           chatId: opts.chatId,
+          interfaceTools: opts.interfaceTools ?? [],
           assistantMode: 'app-advisor',
           cwd: opts.cwd,
           ...(opts.selectedRepoId ? { repoId: opts.selectedRepoId } : {}),
@@ -3604,6 +3612,7 @@ export class ClaudeCodeProvider implements AgentProvider {
           projectId: opts.projectId,
           worktreeId: opts.worktreeId,
           chatId: opts.chatId,
+          interfaceTools: opts.interfaceTools ?? [],
           assistantMode: 'pipeline-editor',
           cwd: opts.cwd,
           ...(opts.selectedRepoId ? { repoId: opts.selectedRepoId } : {}),
@@ -3662,6 +3671,7 @@ export class ClaudeCodeProvider implements AgentProvider {
           projectId: opts.projectId,
           worktreeId: opts.worktreeId,
           chatId: opts.chatId,
+          interfaceTools: opts.interfaceTools ?? [],
           assistantMode: 'default',
           toolSurface: isCoworkWorkspace(opts.projectId)
             ? 'native-sdk-standalone'
@@ -4616,7 +4626,7 @@ export class ClaudeCodeProvider implements AgentProvider {
         const queryOptions = buildSdkOptions();
         const resumeSessionId = queryOptions.resume;
         if (invocationProvider === 'claude') {
-          getObservabilityService().beginClaudeQuery(
+          getExecutionObservabilityIngest().beginClaudeQuery(
             observabilityQueryId,
             typeof resumeSessionId === 'string' && resumeSessionId.trim()
               ? {
@@ -4630,7 +4640,9 @@ export class ClaudeCodeProvider implements AgentProvider {
           return claudeQuery({ prompt, options: queryOptions });
         } catch (error) {
           if (invocationProvider === 'claude') {
-            getObservabilityService().endClaudeQuery(observabilityQueryId);
+            getExecutionObservabilityIngest().endClaudeQuery(
+              observabilityQueryId,
+            );
           }
           throw error;
         }
@@ -4707,7 +4719,7 @@ export class ClaudeCodeProvider implements AgentProvider {
                 ) {
                   if (!saturated) {
                     saturated = true;
-                    getObservabilityService().recordSessionDiagnostic({
+                    getExecutionObservabilityIngest().recordSessionDiagnostic({
                       version: 1,
                       timestamp: new Date().toISOString(),
                       kind: 'claude_event_receipt_backlog',
@@ -4871,7 +4883,7 @@ export class ClaudeCodeProvider implements AgentProvider {
                     ? { userMessageId: foregroundTurn.userMessageId }
                     : {}),
                   onSnapshot: (snapshot): void => {
-                    getObservabilityService().observeChatEvent(
+                    getExecutionObservabilityIngest().observeChatEvent(
                       opts.projectId,
                       opts.worktreeId,
                       opts.chatId,
@@ -4920,7 +4932,9 @@ export class ClaudeCodeProvider implements AgentProvider {
           forkResumeRetryPending = true;
         } finally {
           if (invocationProvider === 'claude') {
-            getObservabilityService().endClaudeQuery(observabilityQueryId);
+            getExecutionObservabilityIngest().endClaudeQuery(
+              observabilityQueryId,
+            );
           }
         }
         // A cancelled turn is not recovered: the outer catch owns the abort
@@ -4939,7 +4953,7 @@ export class ClaudeCodeProvider implements AgentProvider {
           type: 'phase',
           phase: 'claude.fork_resume_point_rejected',
         });
-        getObservabilityService().recordSessionDiagnostic({
+        getExecutionObservabilityIngest().recordSessionDiagnostic({
           version: 1,
           timestamp: new Date().toISOString(),
           kind: 'claude_fork_resume_point_rejected',

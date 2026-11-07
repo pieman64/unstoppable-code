@@ -6,6 +6,7 @@ import type {
 import {
   Button,
   DropdownMenuItem,
+  Surface,
   TurnMoreMenu,
   TurnOutcomeControl,
   TurnOutcomeTooltip,
@@ -349,9 +350,9 @@ function TooltipSurface({
   readonly children: JSX.Element;
 }): JSX.Element {
   return (
-    <div className="w-80 max-w-full rounded-lg border bg-card p-2 text-xs fg-secondary">
-      {children}
-    </div>
+    <Surface variant="card" padding="tight" className="w-80 max-w-full">
+      <div className="text-xs fg-secondary">{children}</div>
+    </Surface>
   );
 }
 

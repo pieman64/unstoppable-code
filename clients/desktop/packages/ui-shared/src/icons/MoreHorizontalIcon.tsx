@@ -1,15 +1,11 @@
-import type { JSX, SVGProps } from 'react';
-import { MoreHorizontalIcon as AppCatalogMoreHorizontalIcon } from './AppIcons';
+import type { JSX } from 'react';
+import {
+  MoreHorizontalIcon as AppCatalogMoreHorizontalIcon,
+  type AppIconProps,
+} from './AppIcons';
 
-export function MoreHorizontalIcon(
-  props: SVGProps<SVGSVGElement>,
-): JSX.Element {
+export function MoreHorizontalIcon(props: AppIconProps): JSX.Element {
   return (
-    <AppCatalogMoreHorizontalIcon
-      width="14"
-      height="14"
-      aria-hidden="true"
-      {...props}
-    />
+    <AppCatalogMoreHorizontalIcon size="sm" aria-hidden="true" {...props} />
   );
 }

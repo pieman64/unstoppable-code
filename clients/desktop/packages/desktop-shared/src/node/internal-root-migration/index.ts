@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, realpath } from 'node:fs/promises';
+import { mkdir, open, realpath } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 import {
   createPlatformEndpointServices,
@@ -10,6 +10,13 @@ import {
 import { daemonName, type BrandCore } from '@canopy/protocol/brand';
 import { listW5HostPeers, inspectW5MaintenanceOwner } from '../w5-host-cohort';
 import { basename, dirname, join } from 'node:path';
+import {
+  createPrivateMigrationDirectory,
+  internalRootFilesystemHost,
+  migrationNodeIdentity,
+  observeMigrationNode,
+  type InternalRootFilesystemHost,
+} from './filesystem-host';
 import { DatabaseSync } from 'node:sqlite';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import {
@@ -20,6 +27,7 @@ import {
 } from '@canopy/core-runtime/node/internal-root-migration';
 import {
   inspectInternalRoot,
+  isWithinInternalRoot,
   captureInternalRootExternal,
   sealInternalRootExternal,
   assertInternalRootExternalPostimages,
@@ -40,7 +48,11 @@ import {
   statIfPresent,
   flush,
 } from './filesystem';
-export { internalRootIdentity, readInternalRootJournal } from './filesystem';
+export {
+  internalRootIdentity,
+  readInternalRootJournal,
+  isWithinInternalRoot,
+} from './filesystem';
 const run = promisify(execFile);
 
 type ExecutableBrand = Pick<BrandCore, 'displayName' | 'cliName'>;
@@ -101,7 +113,7 @@ export function assertInternalRootColdProcesses(
 }
 
 function under(path: string, root: string): boolean {
-  return path === root || path.startsWith(`${root}/`);
+  return isWithinInternalRoot(root, path);
 }
 
 async function canonical(path: string): Promise<string> {
@@ -290,11 +302,40 @@ export async function proveInternalRootCold(
 /** SQLite's OS lock is outside both resolver candidates and released on crash. */
 async function coordinate(
   identity: InternalRootIdentity,
+  host: InternalRootFilesystemHost,
 ): Promise<() => Promise<void>> {
-  await mkdir(identity.coordination, { mode: 0o700, recursive: true });
-  await privateDirectory(identity.coordination);
+  if (hostOperatingSystem() === 'win32') {
+    if (!(await statIfPresent(identity.coordination))) {
+      try {
+        await createPrivateMigrationDirectory(identity.coordination, host);
+      } catch (error) {
+        if (!(await statIfPresent(identity.coordination))) throw error;
+      }
+    }
+  } else await mkdir(identity.coordination, { mode: 0o700, recursive: true });
+  await privateDirectory(identity.coordination, host);
   const path = join(identity.coordination, 'coordination.sqlite');
-  const stat = await statIfPresent(path);
+  let stat = await statIfPresent(path);
+  if (hostOperatingSystem() === 'win32') {
+    if (!stat) {
+      try {
+        const file = await open(path, 'wx', 0o600);
+        await file.close();
+      } catch (error) {
+        if (!(await statIfPresent(path))) throw error;
+      }
+      stat = await statIfPresent(path);
+    }
+    try {
+      if (!stat) throw new Error('Missing coordination file');
+      await observeMigrationNode(path, stat, host);
+    } catch (error) {
+      throw new InternalRootMigrationRefused(
+        'coordination-held',
+        `Coordination database is locked or its native privacy/identity is unprovable. Retain it for recovery. ${error instanceof Error ? error.message : 'Native observation failed.'}`,
+      );
+    }
+  }
   if (stat && (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1))
     throw new InternalRootMigrationRefused(
       'coordination-held',
@@ -328,8 +369,10 @@ async function coordinate(
 }
 
 export function createInternalRootMigrationWorker(options: {
+  /** Trusted offline host only; required for Windows custody and Linux publication. */
+  readonly ownedChildPath?: string;
   readonly executableBrands?: readonly ExecutableBrand[];
-  /** Test-only clone substitute; production always requires APFS clonefile. */
+  /** Test-only substitute; Darwin production still requires APFS clonefile. */
   readonly cloneTree?: (source: string, destination: string) => Promise<void>;
   readonly recoverW5: (
     source: string,
@@ -341,14 +384,16 @@ export function createInternalRootMigrationWorker(options: {
     externalFiles?: readonly string[],
   ) => Promise<void>;
 }): InternalRootMigrationWorker {
+  const host = internalRootFilesystemHost(options.ownedChildPath);
   const coordinationTokens = new Map<string, symbol>();
   const worker: InternalRootMigrationWorker = {
-    inventory: inspectInternalRoot,
-    readJournal: readInternalRootJournal,
+    inventory: (identity, destination) =>
+      inspectInternalRoot(identity, destination, host),
+    readJournal: (identity) => readInternalRootJournal(identity, host),
     coordinate: async (
       identity,
     ): ReturnType<InternalRootMigrationWorker['coordinate']> => {
-      const release = await coordinate(identity);
+      const release = await coordinate(identity, host);
       const token = Symbol('internal-root-migration');
       coordinationTokens.set(identity.coordination, token);
       return async (): Promise<void> => {
@@ -358,10 +403,11 @@ export function createInternalRootMigrationWorker(options: {
       };
     },
     saveJournal: async (journal): Promise<void> => {
-      await privateDirectory(journal.identity.coordination);
+      await privateDirectory(journal.identity.coordination, host);
       await durableJson(
         join(journal.identity.coordination, 'journal.json'),
         journal,
+        host,
       );
     },
     proveCold:
@@ -373,24 +419,30 @@ export function createInternalRootMigrationWorker(options: {
           options.executableBrands ?? [],
         )),
     stagingRoot: internalRootStaging,
-    validateStaging: validateInternalRootStaging,
-    validateExternal: validateExternalRootFiles,
-    build: (journal) => buildInternalRoot(journal, options.cloneTree),
-    exposeStaging: exposeInternalRootStaging,
-    seal: sealInternalRoot,
-    publicationRoot: internalRootPublicationRoot,
-    publish: publishInternalRoot,
-    validateRebuild: (journal) => discardInternalRootDestination(journal, true),
-    discardDestination: discardInternalRootDestination,
-    captureExternal: captureInternalRootExternal,
-    sealExternal: sealInternalRootExternal,
-    assertExternalPostimages: assertInternalRootExternalPostimages,
-    assertExternalPreimages: assertInternalRootExternalPreimages,
-    restoreExternal: restoreInternalRootExternal,
+    validateStaging: (identity, value) =>
+      validateInternalRootStaging(identity, value, host),
+    validateExternal: (identity, value) =>
+      validateExternalRootFiles(identity, value, host),
+    build: (journal) => buildInternalRoot(journal, options.cloneTree, host),
+    exposeStaging: (journal) => exposeInternalRootStaging(journal, host),
+    seal: (journal, identity) => sealInternalRoot(journal, identity, host),
+    publicationRoot: (journal) => internalRootPublicationRoot(journal, host),
+    publish: (journal) => publishInternalRoot(journal, host),
+    validateRebuild: (journal) =>
+      discardInternalRootDestination(journal, true, host),
+    discardDestination: (journal) =>
+      discardInternalRootDestination(journal, false, host),
+    captureExternal: (journal) => captureInternalRootExternal(journal, host),
+    sealExternal: (journal) => sealInternalRootExternal(journal, host),
+    assertExternalPostimages: (journal) =>
+      assertInternalRootExternalPostimages(journal, host),
+    assertExternalPreimages: (journal) =>
+      assertInternalRootExternalPreimages(journal, host),
+    restoreExternal: (journal) => restoreInternalRootExternal(journal, host),
     recoverW5: async (journal): Promise<void> => {
       const token = coordinationTokens.get(journal.identity.coordination);
       const assertHeld = async (): Promise<void> => {
-        const loaded = await readInternalRootJournal(journal.identity);
+        const loaded = await readInternalRootJournal(journal.identity, host);
         const stat = await statIfPresent(journal.identity.source);
         if (
           !token ||
@@ -398,7 +450,8 @@ export function createInternalRootMigrationWorker(options: {
           loaded?.transactionId !== journal.transactionId ||
           loaded.phase !== 'prepared' ||
           !stat ||
-          `${stat.dev}:${stat.ino}` !== journal.inventory.sourceIdentity
+          (await migrationNodeIdentity(journal.identity.source, stat)) !==
+            journal.inventory.sourceIdentity
         )
           throw new InternalRootMigrationRefused(
             'recovery-required',

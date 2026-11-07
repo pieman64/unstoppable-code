@@ -51,6 +51,8 @@ import {
   updateModelGatewayConfig,
 } from './team-api';
 import type { SettingsFailure } from '../errors';
+import { Divider, Surface } from '@canopy/ui-shared/components';
+import { Badge } from '@canopy/ui-shared/components/Badge';
 
 interface TeamModelGatewaySectionProps {
   detail: OrganizationDetail;
@@ -312,12 +314,13 @@ function ModelGatewayCard({
             </p>
           </div>
           {gateway?.enabled === true ? (
-            <span
-              className="shrink-0 rounded-full bg-success-subtle px-2 py-0.5 text-xs font-medium fg-success"
+            <Badge
+              tone="success"
+              className="shrink-0"
               data-testid="model-gateway-status-pill"
             >
               {gateway.enforced ? 'Only route' : 'Active'}
-            </span>
+            </Badge>
           ) : null}
         </div>
       </div>
@@ -355,7 +358,7 @@ function ModelGatewayCard({
            * a route that only the first panel can switch on.
            */
           <div className="mt-4 space-y-3">
-            <div className="rounded-lg border bg-subtle/45 p-4">
+            <Surface variant="group" padding="default">
               <SettingsRowsRow
                 label="Route member traffic through your gateway"
                 description="Members add their own gateway key in desktop settings."
@@ -388,32 +391,33 @@ function ModelGatewayCard({
               ) : null}
 
               {gateway.enabled || editable ? (
-                <div
-                  className={`mt-3 border-t pt-3 ${
-                    onlyRouteLocked ? 'opacity-60' : ''
-                  }`}
-                >
-                  <SettingsRowsRow
-                    label="Make this the only route"
-                    description="Members can't use their own provider sign-ins or hosted credits."
-                    control={
-                      <ToggleSwitch
-                        label="Make this the only route"
-                        checked={gateway.enforced}
-                        disabled={saving || onlyRouteLocked}
-                        dataTestId="model-gateway-enforced-checkbox"
-                        onChange={(next) =>
-                          void save({
-                            ...latestRef.current,
-                            enforced: next,
-                          })
-                        }
-                      />
-                    }
-                  />
+                <div className="mt-3">
+                  <Divider />
+                  <div
+                    className={`pt-3 ${onlyRouteLocked ? 'opacity-60' : ''}`}
+                  >
+                    <SettingsRowsRow
+                      label="Make this the only route"
+                      description="Members can't use their own provider sign-ins or hosted credits."
+                      control={
+                        <ToggleSwitch
+                          label="Make this the only route"
+                          checked={gateway.enforced}
+                          disabled={saving || onlyRouteLocked}
+                          dataTestId="model-gateway-enforced-checkbox"
+                          onChange={(next) =>
+                            void save({
+                              ...latestRef.current,
+                              enforced: next,
+                            })
+                          }
+                        />
+                      }
+                    />
+                  </div>
                 </div>
               ) : null}
-            </div>
+            </Surface>
 
             {relaxOnly ? (
               <Notice
@@ -440,7 +444,7 @@ function ModelGatewayCard({
 
             {gateway.enabled || editable ? (
               <>
-                <div className="rounded-lg border p-4">
+                <Surface variant="outline" padding="default">
                   <FormField
                     id="model-gateway-base-url"
                     label="Gateway URL"
@@ -492,30 +496,33 @@ function ModelGatewayCard({
                       </div>
                     )}
                   </FormField>
-                  <div className="mt-3 border-t pt-3">
-                    <SettingsRowsRow
-                      label="Gateway supports prompt caching"
-                      description="Most of the savings come from caching. Turn it off only if your gateway rejects cache markers."
-                      control={
-                        <ToggleSwitch
-                          label="Gateway supports prompt caching"
-                          checked={gateway.promptCachePassthrough}
-                          disabled={saving || relaxOnly}
-                          dataTestId="model-gateway-prompt-cache-checkbox"
-                          onChange={(next) =>
-                            void save({
-                              ...latestRef.current,
-                              promptCachePassthrough: next,
-                            })
-                          }
-                        />
-                      }
-                    />
+                  <div className="mt-3">
+                    <Divider />
+                    <div className="pt-3">
+                      <SettingsRowsRow
+                        label="Gateway supports prompt caching"
+                        description="Most of the savings come from caching. Turn it off only if your gateway rejects cache markers."
+                        control={
+                          <ToggleSwitch
+                            label="Gateway supports prompt caching"
+                            checked={gateway.promptCachePassthrough}
+                            disabled={saving || relaxOnly}
+                            dataTestId="model-gateway-prompt-cache-checkbox"
+                            onChange={(next) =>
+                              void save({
+                                ...latestRef.current,
+                                promptCachePassthrough: next,
+                              })
+                            }
+                          />
+                        }
+                      />
+                    </div>
                   </div>
-                </div>
+                </Surface>
 
-                <div
-                  className="rounded-lg border"
+                <Surface
+                  variant="outline"
                   data-testid="model-gateway-models-panel"
                 >
                   <div className="flex items-center justify-between gap-3 px-4 py-3">
@@ -549,12 +556,15 @@ function ModelGatewayCard({
                       onRemove={removeModel}
                     />
                   ) : !addOpen ? (
-                    <p
-                      className="border-t px-4 py-5 text-center text-xs fg-secondary"
-                      data-testid="model-gateway-models-empty"
-                    >
-                      Add a model so your members have something to pick.
-                    </p>
+                    <div>
+                      <Divider />
+                      <p
+                        className="px-4 py-5 text-center text-xs fg-secondary"
+                        data-testid="model-gateway-models-empty"
+                      >
+                        Add a model so your members have something to pick.
+                      </p>
+                    </div>
                   ) : null}
 
                   {addOpen && canAddModel ? (
@@ -569,16 +579,19 @@ function ModelGatewayCard({
 
                   {!relaxOnly &&
                   gateway.models.length >= MODEL_GATEWAY_MAX_MODELS ? (
-                    <p
-                      className="border-t px-4 py-3 text-xs fg-secondary"
-                      data-testid="model-gateway-model-limit"
-                    >
-                      You&apos;ve added the maximum of{' '}
-                      {MODEL_GATEWAY_MAX_MODELS} models. Remove one to add
-                      another.
-                    </p>
+                    <div>
+                      <Divider />
+                      <p
+                        className="px-4 py-3 text-xs fg-secondary"
+                        data-testid="model-gateway-model-limit"
+                      >
+                        You&apos;ve added the maximum of{' '}
+                        {MODEL_GATEWAY_MAX_MODELS} models. Remove one to add
+                        another.
+                      </p>
+                    </div>
                   ) : null}
-                </div>
+                </Surface>
               </>
             ) : null}
           </div>
@@ -685,26 +698,26 @@ function ModelGatewaySkeleton(): JSX.Element {
       testId="settings-skeleton-form"
       className="w-full"
     >
-      <div className="flex flex-col gap-3 rounded-lg border bg-subtle/45 p-4">
+      <Surface variant="group" padding="default" gap="item">
         {SAMPLE_GATEWAY_ROWS.map((row, index) => (
-          <div
-            key={row.label}
-            className={index > 0 ? 'border-t pt-3' : undefined}
-          >
-            <SettingsRowsRow
-              label={row.label}
-              description={row.description}
-              control={
-                <ToggleSwitch
-                  label={row.label}
-                  checked={false}
-                  onChange={noop}
-                />
-              }
-            />
+          <div key={row.label}>
+            {index > 0 ? <Divider /> : null}
+            <div className={index > 0 ? 'pt-3' : undefined}>
+              <SettingsRowsRow
+                label={row.label}
+                description={row.description}
+                control={
+                  <ToggleSwitch
+                    label={row.label}
+                    checked={false}
+                    onChange={noop}
+                  />
+                }
+              />
+            </div>
           </div>
         ))}
-      </div>
+      </Surface>
     </Skeleton>
   );
 }

@@ -5,9 +5,10 @@ import type {
   Step,
 } from '@canopy/desktop-shared/types/pipeline';
 import {
+  Divider,
+  Heading,
   SegmentedControl,
   type SegmentedControlOption,
-  Heading,
 } from '@canopy/ui-shared/components';
 import { FormField } from '../shared/FormField';
 import { TextField } from '../shared/TextField';
@@ -222,239 +223,245 @@ export function StepDetailPanel({
       </FormField>
 
       {/* Mode-specific fields */}
-      <div className="pt-2 border-t space-y-4">
-        {mode === 'action' ? (
-          <>
-            <FormField label="Uses" hint="Action reference">
-              <TextField
-                value={step.uses || ''}
-                onChange={(e): void => handleUsesChange(e.target.value)}
-                placeholder="builtin/action-name or project/action-name"
-                disabled={readonly}
-              />
-            </FormField>
+      <div>
+        <Divider />
+        <div className="pt-2 space-y-4">
+          {mode === 'action' ? (
+            <>
+              <FormField label="Uses" hint="Action reference">
+                <TextField
+                  value={step.uses || ''}
+                  onChange={(e): void => handleUsesChange(e.target.value)}
+                  placeholder="builtin/action-name or project/action-name"
+                  disabled={readonly}
+                />
+              </FormField>
 
-            <div>
-              <Heading level={4} variant="label" className="mb-2">
-                Inputs (with)
-              </Heading>
-              <KeyValueEditor
-                value={step.with || {}}
-                onChange={handleWithChange}
-                readonly={readonly}
-              />
-            </div>
-
-            <FormField
-              label="Log format"
-              hint="Choose how this action step’s log should be rendered"
-            >
-              <SelectField
-                value={step.log_format_hint || ''}
-                onChange={(e): void =>
-                  handleFieldChange(
-                    'log_format_hint',
-                    parseLogFormatHintValue(e.target.value),
-                  )
-                }
-                options={LOG_FORMAT_HINT_OPTIONS}
-                disabled={readonly}
-              />
-            </FormField>
-
-            {isRunPipeline && (
-              <div
-                className="pt-2 border-t space-y-4"
-                data-testid="step-target-editor"
-              >
-                <Heading level={4} variant="label">
-                  Target
+              <div>
+                <Heading level={4} variant="label" className="mb-2">
+                  Inputs (with)
                 </Heading>
-
-                <FormField
-                  label="Scope"
-                  hint="Where the child workflow runs. Inherit reuses this step’s context."
-                >
-                  <SelectField
-                    value={targetForm.scope}
-                    onChange={(e): void => {
-                      const scope = parseStepTargetScope(e.target.value);
-                      if (!scope) return;
-                      updateTargetForm({ scope });
-                    }}
-                    options={TARGET_SCOPE_OPTIONS}
-                    disabled={readonly}
-                  />
-                </FormField>
-
-                {targetForm.scope === 'directory' && (
-                  <FormField label="Path">
-                    <TextField
-                      value={targetForm.path}
-                      onChange={(e): void =>
-                        updateTargetForm({ path: e.target.value })
-                      }
-                      placeholder="Path for child workflow"
-                      disabled={readonly}
-                    />
-                  </FormField>
-                )}
-
-                {targetForm.scope === 'worktree' && (
-                  <>
-                    <FormField label="Project ID">
-                      <TextField
-                        value={targetForm.workspaceId}
-                        onChange={(e): void =>
-                          updateTargetForm({ workspaceId: e.target.value })
-                        }
-                        placeholder="workspace_id"
-                        disabled={readonly}
-                      />
-                    </FormField>
-
-                    <FormField label="Worktree ID">
-                      <TextField
-                        value={targetForm.worktreeId}
-                        onChange={(e): void =>
-                          updateTargetForm({ worktreeId: e.target.value })
-                        }
-                        placeholder="worktree_id"
-                        disabled={readonly}
-                      />
-                    </FormField>
-                  </>
-                )}
+                <KeyValueEditor
+                  value={step.with || {}}
+                  onChange={handleWithChange}
+                  readonly={readonly}
+                />
               </div>
-            )}
-          </>
-        ) : (
-          <>
-            <FormField label="Run" hint="Inline script to execute">
-              <TextAreaField
-                value={step.run || ''}
-                onChange={(e): void =>
-                  handleFieldChange('run', e.target.value || undefined)
-                }
-                rows={6}
-                placeholder="echo 'hello world'"
-                disabled={readonly}
-              />
-            </FormField>
 
-            <FormField label="Shell">
-              <SelectField
-                value={step.shell || ''}
-                onChange={(e): void =>
-                  handleFieldChange(
-                    'shell',
-                    (e.target.value as Step['shell']) || undefined,
-                  )
-                }
-                options={buildShellOptions()}
-                disabled={readonly}
-              />
-            </FormField>
+              <FormField
+                label="Log format"
+                hint="Choose how this action step’s log should be rendered"
+              >
+                <SelectField
+                  value={step.log_format_hint || ''}
+                  onChange={(e): void =>
+                    handleFieldChange(
+                      'log_format_hint',
+                      parseLogFormatHintValue(e.target.value),
+                    )
+                  }
+                  options={LOG_FORMAT_HINT_OPTIONS}
+                  disabled={readonly}
+                />
+              </FormField>
 
-            <FormField label="Working directory">
-              <TextField
-                value={step.working_directory || ''}
-                onChange={(e): void =>
-                  handleFieldChange(
-                    'working_directory',
-                    e.target.value || undefined,
-                  )
-                }
-                placeholder="e.g. ./packages/core"
-                disabled={readonly}
-              />
-            </FormField>
-          </>
-        )}
+              {isRunPipeline && (
+                <div data-testid="step-target-editor">
+                  <Divider />
+                  <div className="pt-2 space-y-4">
+                    <Heading level={4} variant="label">
+                      Target
+                    </Heading>
+
+                    <FormField
+                      label="Scope"
+                      hint="Where the child workflow runs. Inherit reuses this step’s context."
+                    >
+                      <SelectField
+                        value={targetForm.scope}
+                        onChange={(e): void => {
+                          const scope = parseStepTargetScope(e.target.value);
+                          if (!scope) return;
+                          updateTargetForm({ scope });
+                        }}
+                        options={TARGET_SCOPE_OPTIONS}
+                        disabled={readonly}
+                      />
+                    </FormField>
+
+                    {targetForm.scope === 'directory' && (
+                      <FormField label="Path">
+                        <TextField
+                          value={targetForm.path}
+                          onChange={(e): void =>
+                            updateTargetForm({ path: e.target.value })
+                          }
+                          placeholder="Path for child workflow"
+                          disabled={readonly}
+                        />
+                      </FormField>
+                    )}
+
+                    {targetForm.scope === 'worktree' && (
+                      <>
+                        <FormField label="Project ID">
+                          <TextField
+                            value={targetForm.workspaceId}
+                            onChange={(e): void =>
+                              updateTargetForm({ workspaceId: e.target.value })
+                            }
+                            placeholder="workspace_id"
+                            disabled={readonly}
+                          />
+                        </FormField>
+
+                        <FormField label="Worktree ID">
+                          <TextField
+                            value={targetForm.worktreeId}
+                            onChange={(e): void =>
+                              updateTargetForm({ worktreeId: e.target.value })
+                            }
+                            placeholder="worktree_id"
+                            disabled={readonly}
+                          />
+                        </FormField>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <FormField label="Run" hint="Inline script to execute">
+                <TextAreaField
+                  value={step.run || ''}
+                  onChange={(e): void =>
+                    handleFieldChange('run', e.target.value || undefined)
+                  }
+                  rows={6}
+                  placeholder="echo 'hello world'"
+                  disabled={readonly}
+                />
+              </FormField>
+
+              <FormField label="Shell">
+                <SelectField
+                  value={step.shell || ''}
+                  onChange={(e): void =>
+                    handleFieldChange(
+                      'shell',
+                      (e.target.value as Step['shell']) || undefined,
+                    )
+                  }
+                  options={buildShellOptions()}
+                  disabled={readonly}
+                />
+              </FormField>
+
+              <FormField label="Working directory">
+                <TextField
+                  value={step.working_directory || ''}
+                  onChange={(e): void =>
+                    handleFieldChange(
+                      'working_directory',
+                      e.target.value || undefined,
+                    )
+                  }
+                  placeholder="e.g. ./packages/core"
+                  disabled={readonly}
+                />
+              </FormField>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Common fields */}
-      <div className="pt-2 border-t space-y-4">
-        <Heading level={4} variant="label">
-          Common settings
-        </Heading>
-
-        <FormField
-          label="Condition (if)"
-          hint="Expression that determines if this step runs"
-        >
-          <TextField
-            value={step.if || ''}
-            onChange={(e): void =>
-              handleFieldChange('if', e.target.value || undefined)
-            }
-            placeholder="e.g. steps.build.outcome == 'success'"
-            disabled={readonly}
-          />
-        </FormField>
-
-        <div>
-          <Heading level={4} variant="label" className="mb-2">
-            Environment variables
+      <div>
+        <Divider />
+        <div className="pt-2 space-y-4">
+          <Heading level={4} variant="label">
+            Common settings
           </Heading>
-          <KeyValueEditor
-            value={step.env || {}}
-            onChange={handleEnvChange}
-            readonly={readonly}
-          />
-        </div>
 
-        <FormField label="Timeout (minutes)">
-          <TextField
-            type="number"
-            value={
-              step.timeout_minutes !== undefined
-                ? String(step.timeout_minutes)
-                : ''
-            }
-            onChange={(e): void => {
-              const val = e.target.value;
-              if (val === '') {
-                handleFieldChange('timeout_minutes', undefined);
-              } else {
-                const num = Number(val);
-                if (!Number.isNaN(num) && num >= 0) {
-                  handleFieldChange('timeout_minutes', num);
-                }
+          <FormField
+            label="Condition (if)"
+            hint="Expression that determines if this step runs"
+          >
+            <TextField
+              value={step.if || ''}
+              onChange={(e): void =>
+                handleFieldChange('if', e.target.value || undefined)
               }
-            }}
-            placeholder="No timeout"
-            min="0"
-            disabled={readonly}
-          />
-        </FormField>
-
-        <FormField label="Continue on error">
-          <ToggleField
-            checked={step.continue_on_error || false}
-            onChange={(checked): void =>
-              handleFieldChange('continue_on_error', checked || undefined)
-            }
-            disabled={readonly}
-            label="Continue on error"
-          />
-        </FormField>
-
-        {step.uses !== undefined && (
-          <FormField label="Skip on missing action">
-            <ToggleField
-              checked={step.skip_on_missing_action || false}
-              onChange={(checked): void =>
-                handleFieldChange(
-                  'skip_on_missing_action',
-                  checked || undefined,
-                )
-              }
+              placeholder="e.g. steps.build.outcome == 'success'"
               disabled={readonly}
-              label="Skip on missing action"
             />
           </FormField>
-        )}
+
+          <div>
+            <Heading level={4} variant="label" className="mb-2">
+              Environment variables
+            </Heading>
+            <KeyValueEditor
+              value={step.env || {}}
+              onChange={handleEnvChange}
+              readonly={readonly}
+            />
+          </div>
+
+          <FormField label="Timeout (minutes)">
+            <TextField
+              type="number"
+              value={
+                step.timeout_minutes !== undefined
+                  ? String(step.timeout_minutes)
+                  : ''
+              }
+              onChange={(e): void => {
+                const val = e.target.value;
+                if (val === '') {
+                  handleFieldChange('timeout_minutes', undefined);
+                } else {
+                  const num = Number(val);
+                  if (!Number.isNaN(num) && num >= 0) {
+                    handleFieldChange('timeout_minutes', num);
+                  }
+                }
+              }}
+              placeholder="No timeout"
+              min="0"
+              disabled={readonly}
+            />
+          </FormField>
+
+          <FormField label="Continue on error">
+            <ToggleField
+              checked={step.continue_on_error || false}
+              onChange={(checked): void =>
+                handleFieldChange('continue_on_error', checked || undefined)
+              }
+              disabled={readonly}
+              label="Continue on error"
+            />
+          </FormField>
+
+          {step.uses !== undefined && (
+            <FormField label="Skip on missing action">
+              <ToggleField
+                checked={step.skip_on_missing_action || false}
+                onChange={(checked): void =>
+                  handleFieldChange(
+                    'skip_on_missing_action',
+                    checked || undefined,
+                  )
+                }
+                disabled={readonly}
+                label="Skip on missing action"
+              />
+            </FormField>
+          )}
+        </div>
       </div>
     </PipelineDetailPanelShell>
   );

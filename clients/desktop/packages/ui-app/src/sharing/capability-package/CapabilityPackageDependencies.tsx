@@ -38,6 +38,7 @@ import {
   describeDependencyReason,
 } from './capability-package-closure';
 import { CapabilityPackageProblems } from './CapabilityPackageProblems';
+import { Surface } from '@canopy/ui-shared/components';
 
 /**
  * Publisher-facing dependency review for a self-contained capability share.
@@ -1121,28 +1122,27 @@ function RecipientSetupList({
             .map(bindingLabelFor)
             .filter((label): label is string => label !== null);
           return (
-            <li
-              key={requirement.id}
-              className="rounded-lg border bg-base px-3 py-2"
-            >
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span className="text-s fg-primary">
-                  {requirement.displayName}
-                </span>
-                <Badge>
-                  {pipelinePackageRequirementKindLabel(requirement.kind)}
-                </Badge>
-                {requirement.required && <Badge>Required</Badge>}
-              </div>
-              <p className="mt-0.5 text-xs fg-secondary">
-                {requirement.setupHint}
-              </p>
-              {locations.length > 0 && (
+            <Surface as="li" variant="inset" key={requirement.id}>
+              <div className="px-3 py-2">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-s fg-primary">
+                    {requirement.displayName}
+                  </span>
+                  <Badge>
+                    {pipelinePackageRequirementKindLabel(requirement.kind)}
+                  </Badge>
+                  {requirement.required && <Badge>Required</Badge>}
+                </div>
                 <p className="mt-0.5 text-xs fg-secondary">
-                  Affects {locations.join(', ')}
+                  {requirement.setupHint}
                 </p>
-              )}
-            </li>
+                {locations.length > 0 && (
+                  <p className="mt-0.5 text-xs fg-secondary">
+                    Affects {locations.join(', ')}
+                  </p>
+                )}
+              </div>
+            </Surface>
           );
         })}
       </ul>

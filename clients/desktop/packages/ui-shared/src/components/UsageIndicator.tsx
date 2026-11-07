@@ -747,6 +747,17 @@ export interface UsageIndicatorProps {
    * context fill.
    */
   weeklyLimit?: UsageIndicatorWeeklyLimit;
+  /**
+   * A host control for the chat's context window, shown under Context
+   * (`CodexContextWindowControl` for Codex chats). Mounted only while the
+   * popover is open.
+   */
+  contextWindowControl?: ReactNode;
+  /**
+   * Requests with more input than this are billed at long-context rates; the
+   * context meter marks it when the window is larger.
+   */
+  longContextThresholdTokens?: number;
 }
 
 export interface UsageIndicatorWeeklyLimit {
@@ -828,6 +839,8 @@ export function UsageIndicator({
   alignRef,
   creditBalance,
   weeklyLimit,
+  contextWindowControl,
+  longContextThresholdTokens,
 }: UsageIndicatorProps): JSX.Element {
   // A tab with no usage yet still gets a usable meter: the host's seed when
   // one is known, otherwise an all-zero placeholder so the popover can at
@@ -996,6 +1009,8 @@ export function UsageIndicator({
             contextBreakdown={contextBreakdown}
             costPreview={costPreview}
             hideCost={hideCost}
+            contextWindowControl={contextWindowControl}
+            longContextThresholdTokens={longContextThresholdTokens}
             onSeeDetails={
               onSeeDetails
                 ? (): void => {

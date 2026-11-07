@@ -1,5 +1,11 @@
 import { memo, useMemo, useState, type JSX } from 'react';
-import { Button, Chip, Disclosure, Notice } from '@canopy/ui-shared/components';
+import {
+  Button,
+  Chip,
+  Disclosure,
+  Notice,
+  Surface,
+} from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { FormField } from '@/components/pipeline/shared/FormField';
 import { SelectField } from '@/components/pipeline/shared/SelectField';
@@ -269,33 +275,35 @@ function HunkRow({
   onReassign,
 }: HunkRowProps): JSX.Element {
   return (
-    <div className="flex items-start justify-between gap-2 rounded-md bg-fg-primary/[0.03] px-2 py-1.5">
-      <div className="min-w-0 flex-1">
-        <div className="truncate font-mono text-2xs fg-secondary">
-          {hunk ? hunk.header : '(whole file)'}
+    <Surface variant="group" size="small">
+      <div className="flex items-start justify-between gap-2 px-2 py-1.5">
+        <div className="min-w-0 flex-1">
+          <div className="truncate font-mono text-2xs fg-secondary">
+            {hunk ? hunk.header : '(whole file)'}
+          </div>
+          {hunk && (
+            <>
+              <pre
+                className={`${POSTHOG_REPLAY_BLOCK_CLASS} mt-0.5 max-h-24 overflow-y-auto whitespace-pre-wrap break-all font-mono text-3xs fg-primary/80`}
+              >
+                {hunk.preview}
+              </pre>
+              <div className="mt-0.5 text-3xs fg-secondary">
+                <span className="fg-success-strong">+{hunk.additions}</span>{' '}
+                <span className="fg-destructive">-{hunk.deletions}</span>
+              </div>
+            </>
+          )}
         </div>
-        {hunk && (
-          <>
-            <pre
-              className={`${POSTHOG_REPLAY_BLOCK_CLASS} mt-0.5 max-h-24 overflow-y-auto whitespace-pre-wrap break-all font-mono text-3xs fg-primary/80`}
-            >
-              {hunk.preview}
-            </pre>
-            <div className="mt-0.5 text-3xs fg-secondary">
-              <span className="fg-success-strong">+{hunk.additions}</span>{' '}
-              <span className="fg-destructive">-{hunk.deletions}</span>
-            </div>
-          </>
-        )}
+        <SelectField
+          aria-label={`Reassign ${file.path}${hunk ? ` hunk ${hunk.hunkIndex}` : ''}`}
+          value={ownerChildIndex >= 0 ? String(ownerChildIndex) : ''}
+          onChange={(e) => onReassign(Number(e.target.value))}
+          options={childOptions}
+          className="w-28 shrink-0 text-xs"
+        />
       </div>
-      <SelectField
-        aria-label={`Reassign ${file.path}${hunk ? ` hunk ${hunk.hunkIndex}` : ''}`}
-        value={ownerChildIndex >= 0 ? String(ownerChildIndex) : ''}
-        onChange={(e) => onReassign(Number(e.target.value))}
-        options={childOptions}
-        className="w-28 shrink-0 text-xs"
-      />
-    </div>
+    </Surface>
   );
 }
 
@@ -453,9 +461,10 @@ const SplitPlanChildRow = memo(function SplitPlanChildRow({
   }
 
   return (
-    <div
+    <Surface
       data-testid={`split-plan-row-${child.index}`}
-      className="rounded-lg border bg-card/50 p-3"
+      variant="group"
+      padding="compact"
     >
       <div className="mb-2 flex items-center justify-between gap-2">
         <span className="text-xs font-medium fg-secondary">
@@ -592,7 +601,7 @@ const SplitPlanChildRow = memo(function SplitPlanChildRow({
           onReassign={onReassign}
         />
       </div>
-    </div>
+    </Surface>
   );
 });
 
@@ -711,15 +720,17 @@ export function SplitPlanReviewPanel({
       className="flex min-h-0 flex-1 flex-col"
     >
       <div className="flex-1 overflow-y-auto px-5 py-3">
-        <div className="mb-3 rounded-lg bg-fg-primary/[0.03] px-3 py-2.5">
-          <div className="text-xs font-medium fg-secondary">Final goal</div>
-          <div
-            className="mt-0.5 text-s fg-primary"
-            data-testid="split-plan-final-goal"
-          >
-            {plan.finalGoal}
+        <Surface variant="group" className="mb-3">
+          <div className="px-3 py-2.5">
+            <div className="text-xs font-medium fg-secondary">Final goal</div>
+            <div
+              className="mt-0.5 text-s fg-primary"
+              data-testid="split-plan-final-goal"
+            >
+              {plan.finalGoal}
+            </div>
           </div>
-        </div>
+        </Surface>
 
         <div className="mb-3">
           <FormField
@@ -737,28 +748,31 @@ export function SplitPlanReviewPanel({
           </FormField>
         </div>
 
-        <div
-          className="mb-3 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs"
+        <Surface
+          variant="outline"
+          className="mb-3"
           data-testid="split-plan-aggregate-check"
         >
-          <span
-            className={
-              aggregateMatches ? 'fg-success-strong' : 'fg-destructive'
-            }
-          >
-            {aggregateMatches ? '✅' : '❌'}
-          </span>
-          <span className="fg-secondary">
-            Children total{' '}
-            <span className="fg-primary">
-              +{aggregateAdditions}/-{aggregateDeletions}
-            </span>{' '}
-            vs. original{' '}
-            <span className="fg-primary">
-              +{snapshot.totalAdditions}/-{snapshot.totalDeletions}
+          <div className="flex items-center gap-2 px-3 py-2 text-xs">
+            <span
+              className={
+                aggregateMatches ? 'fg-success-strong' : 'fg-destructive'
+              }
+            >
+              {aggregateMatches ? '✅' : '❌'}
             </span>
-          </span>
-        </div>
+            <span className="fg-secondary">
+              Children total{' '}
+              <span className="fg-primary">
+                +{aggregateAdditions}/-{aggregateDeletions}
+              </span>{' '}
+              vs. original{' '}
+              <span className="fg-primary">
+                +{snapshot.totalAdditions}/-{snapshot.totalDeletions}
+              </span>
+            </span>
+          </div>
+        </Surface>
 
         <IssueBanner issues={validation.issues} severity="error" />
         <IssueBanner issues={validation.issues} severity="warning" />

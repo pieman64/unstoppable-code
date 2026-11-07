@@ -20,7 +20,7 @@ import {
   finalizeObservedHelperTask,
   startObservedHelperTask,
 } from '../lib/helper-observed-task';
-import { getObservabilityService } from '../observability';
+import { getExecutionObservabilityIngest } from '../observability/ingest';
 import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/generated/serde_json/JsonValue';
 import { readLocalMemoryEnabledPreference } from '../lib/preferences-store';
 import {
@@ -101,7 +101,7 @@ function seedCronGenerationTranscript(
   originalText: string,
   submittedText: string,
 ): void {
-  getObservabilityService().seedTranscript(taskKey, {
+  getExecutionObservabilityIngest().seedTranscript(taskKey, {
     provider,
     originalText,
     submittedText,
@@ -114,7 +114,7 @@ function appendCronGenerationTranscriptEvent(
   taskKey: string,
   event: unknown,
 ): void {
-  getObservabilityService().appendTranscriptRecord(taskKey, event);
+  getExecutionObservabilityIngest().appendTranscriptRecord(taskKey, event);
 }
 
 function cronTranscriptObserver(taskKey: string): HelperTranscriptObserver {
@@ -123,9 +123,13 @@ function cronTranscriptObserver(taskKey: string): HelperTranscriptObserver {
     appendEvent: (event: unknown): void =>
       appendCronGenerationTranscriptEvent(taskKey, event),
     markAttempt: (attempt: number): void =>
-      getObservabilityService().updateObservedTask(taskKey, { attempt }),
+      getExecutionObservabilityIngest().updateObservedTask(taskKey, {
+        attempt,
+      }),
     markSessionId: (sdkSessionId: string): void =>
-      getObservabilityService().updateObservedTask(taskKey, { sdkSessionId }),
+      getExecutionObservabilityIngest().updateObservedTask(taskKey, {
+        sdkSessionId,
+      }),
   };
 }
 

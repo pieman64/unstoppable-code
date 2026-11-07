@@ -78,8 +78,7 @@ export const ModelPickerTriggerControl = forwardRef<
       )}
       {hideChevron ? null : (
         <ChevronDownMediumIcon
-          width={variant === 'capsule' ? 16 : 8}
-          height={variant === 'capsule' ? 16 : 8}
+          size="sm"
           className={
             variant === 'capsule' ? 'shrink-0 fg-quaternary' : 'shrink-0'
           }

@@ -102,8 +102,7 @@ function renderStatusIcon(status: ChangedFileInfo['status']): JSX.Element {
     return (
       <AppCatalogCloseIcon
         aria-hidden="true"
-        width="12"
-        height="12"
+        size="sm"
         className="fg-destructive"
       />
     );
@@ -111,22 +110,12 @@ function renderStatusIcon(status: ChangedFileInfo['status']): JSX.Element {
 
   if (status === 'renamed') {
     return (
-      <AppCatalogForwardIcon
-        aria-hidden="true"
-        width="12"
-        height="12"
-        className="fg-info"
-      />
+      <AppCatalogForwardIcon aria-hidden="true" size="sm" className="fg-info" />
     );
   }
 
   return (
-    <AppCatalogPencilIcon
-      aria-hidden="true"
-      width="12"
-      height="12"
-      className="fg-info"
-    />
+    <AppCatalogPencilIcon aria-hidden="true" size="sm" className="fg-info" />
   );
 }
 

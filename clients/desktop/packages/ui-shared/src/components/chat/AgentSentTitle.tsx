@@ -84,12 +84,7 @@ function PipelineAgentSentTitle({
       data-sender="pipeline"
       className={inline ? INLINE_TITLE_CLASS : TITLE_CLASS}
     >
-      <WorkflowIcon
-        width={inline ? 14 : 11}
-        height={inline ? 14 : 11}
-        className="shrink-0"
-        aria-hidden="true"
-      />
+      <WorkflowIcon size="sm" className="shrink-0" aria-hidden="true" />
       <span className={`min-w-0 truncate ${REPLAY_MASK_CLASS}`}>{name}</span>
     </span>
   );
@@ -121,12 +116,7 @@ function ChatAgentSentTitle({
         sender.projectId === receivingContext.projectId;
   const content = (
     <>
-      <AgentIcon
-        width={inline ? 14 : 11}
-        height={inline ? 14 : 11}
-        className="shrink-0"
-        aria-hidden="true"
-      />
+      <AgentIcon size="sm" className="shrink-0" aria-hidden="true" />
       <span className={`min-w-0 truncate ${REPLAY_MASK_CLASS}`}>
         {agentSent.chatTitle}
       </span>

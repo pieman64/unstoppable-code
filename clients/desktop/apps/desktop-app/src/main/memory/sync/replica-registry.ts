@@ -4,6 +4,8 @@ import type {
   MemoryDeviceRef,
   MemoryScopeRef,
 } from '@canopy/protocol/memory-sync';
+import type { MemoryConsolidationResult } from '@canopy/memory-consolidation/run';
+import type { LocalMemorySyncedConsolidation } from '../local/replica-hooks';
 import type { LocalMemoryReplicaLocator } from '../local/scope-resolver';
 import type { MemoryReplicaBinding } from './replica-files';
 import { memoryScopeKey } from './replica-layout';
@@ -23,8 +25,17 @@ export interface MemoryReplicaEntry {
   binding: MemoryReplicaBinding;
   /** This device as its new notes name it. */
   device: MemoryDeviceRef;
-  /** A note changed here: the engine pushes soon. */
+  /** A note or document changed here: the engine syncs soon. */
   onLocalChange: () => void;
+  /** Uses counted here, queued as the scope's usage deltas. */
+  recordUsage: (counts: ReadonlyMap<string, number>, usedAt: string) => void;
+  /** Runs a consolidation of this replica holding its lease. */
+  runConsolidation: (
+    reason: 'scheduled' | 'manual',
+    run: (
+      consolidation: LocalMemorySyncedConsolidation,
+    ) => Promise<MemoryConsolidationResult>,
+  ) => Promise<MemoryConsolidationResult>;
 }
 
 export class MemoryReplicaRegistry {

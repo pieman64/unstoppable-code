@@ -1,9 +1,15 @@
 import type {
+  GitHubMergeQueueRequest,
+  GitHubMergeQueueResponse,
+} from '@canopy/desktop-shared/types/github';
+import type {
   GetRepoSlugRequest,
   GetRepoSlugResponse,
   GitHubRepoSummary,
   ListPullRequestsRequest,
   ListPullRequestsResponse,
+  SearchPullRequestsRequest,
+  SearchPullRequestsResponse,
   ResolvePullRequestRequest,
   ResolvePullRequestResponse,
 } from '@canopy/desktop-shared/types';
@@ -29,6 +35,7 @@ import {
 import {
   getRepoSlugForRepoPath,
   listOpenPullRequestsForRepo,
+  searchOpenPullRequestsForRepo,
 } from '../lib/github-pr-listing';
 import {
   bindPullRequestReference,
@@ -36,6 +43,7 @@ import {
   pullRequestResolution,
   resolvePullRequestForRepo,
 } from '../lib/github-pr-resolver';
+import { validateGitHubMergeQueueRequest } from '../lib/github-merge-queue-read-model';
 import { validateAbsolutePath } from '../lib/validation';
 import { findRecordedRepository } from '../lib/workspace-recorded-repo';
 import type { CorePullRequestDispatcher } from './core-pull-request-adapter';
@@ -84,7 +92,7 @@ export function hostError(error: unknown): unknown {
  */
 function servedElsewhere(
   error: unknown,
-  capture: { repoPath: string; resolvedRepoPath?: string },
+  capture: { repoPath: string; resolvedRepoPath?: string | null },
 ): boolean {
   if (
     capture.resolvedRepoPath !== undefined &&
@@ -159,6 +167,55 @@ export async function listPullRequestsForIpc(
   }
   if (capture.legacy === undefined)
     throw new Error('Pull request listing projection was not captured.');
+  return { pullRequests: capture.legacy };
+}
+
+/** Title search keeps the host's bounded GraphQL read and per-path cache. */
+export async function searchPullRequestsForIpc(
+  dispatcher: GitHubPullRequestIpcDispatcher,
+  resolveCaller: LazyCaller,
+  request: SearchPullRequestsRequest,
+): Promise<SearchPullRequestsResponse> {
+  const recorded = await recordedRepository(request.repoPath);
+  if (!recorded)
+    return {
+      pullRequests: await searchOpenPullRequestsForRepo(
+        request.repoPath,
+        request.query,
+      ),
+    };
+  const capture: PullRequestListCapture = {
+    kind: 'search',
+    repoPath: request.repoPath,
+  };
+  try {
+    await runInGitHubProjection(capture, () =>
+      dispatcher.query(
+        'core.pullRequest.list',
+        {
+          integrationId: GITHUB_INTEGRATION_ID,
+          repositoryId: recorded.repositoryId,
+          states: ['open'],
+          cursor: null,
+          limit: 20,
+          query: request.query.trim(),
+        },
+        { caller: withGrant(resolveCaller(), CORE_PULL_REQUEST_GRANTS.read) },
+      ),
+    );
+  } catch (error) {
+    if (capture.legacy !== undefined) return { pullRequests: capture.legacy };
+    if (servedElsewhere(error, capture))
+      return {
+        pullRequests: await searchOpenPullRequestsForRepo(
+          request.repoPath,
+          request.query,
+        ),
+      };
+    throw hostError(error);
+  }
+  if (capture.legacy === undefined)
+    throw new Error('Pull request search projection was not captured.');
   return { pullRequests: capture.legacy };
 }
 
@@ -277,4 +334,22 @@ export async function listUserReposForIpc(
   if (capture.legacy === undefined)
     throw new Error('Repository listing projection was not captured.');
   return capture.legacy;
+}
+
+/** RC-14: canonical and legacy reads share the broker and its 20-second cache. */
+export async function getMergeQueueForIpc(
+  dispatcher: CorePullRequestDispatcher,
+  resolveCaller: LazyCaller,
+  request: GitHubMergeQueueRequest,
+): Promise<GitHubMergeQueueResponse> {
+  validateGitHubMergeQueueRequest(request);
+  try {
+    return await dispatcher.query(
+      'core.pullRequest.mergeQueue.get',
+      { repository: request.repository, baseBranch: request.baseBranch },
+      { caller: withGrant(resolveCaller(), CORE_PULL_REQUEST_GRANTS.read) },
+    );
+  } catch (error) {
+    throw hostError(error);
+  }
 }

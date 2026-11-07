@@ -27,6 +27,11 @@ import { useDesktopStandaloneSettingsHost } from '@/components/settings/hosted/D
 import { useHostedSettingsClient } from '@/components/settings/hosted/hosted-settings-availability';
 import { useCanopyCloudAccountState } from '@/hooks/useCanopyCloudAccountState';
 import { usePersonalModelGateway } from '@/hooks/useOrgModelGateway';
+import { announceCanopyCloudAccountChanged } from '@/lib/canopyCloudAccountChange';
+import {
+  isConnectedNonGuest,
+  useCloudConnectGateStore,
+} from '@/stores/cloudConnectGateStore';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 
 interface GatewaySummary {
@@ -37,11 +42,18 @@ interface GatewaySummary {
 }
 
 /**
- * First run's provider rows plus its quiet way to use your own AI gateway:
- * a link below the box before one is set up, then a row in the box with its
- * name, model count, and whether this computer has its key. Neither shows
- * until the account names its Personal organization, so a key is never
- * saved under a guess.
+ * First run's provider rows plus its quiet way to use your own AI gateway.
+ * Nothing extra shows until the account is read. Guests and signed-out users
+ * get a sign-in prompt below the box: it opens the shared cloud connect gate,
+ * then opens the gateway dialog once the signed-in account names its Personal
+ * organization. A signed-in account without one gets the plain rows, so a key
+ * is never saved under a guess. Otherwise a link below the box before a
+ * gateway is set up, then a row in the box with its name, model count, and
+ * whether this computer has its key.
+ *
+ * The open-after-sign-in intent is used once. It lapses quietly when the
+ * gateway flag is off for the signed-in account, and it waits through a failed
+ * read after sign-in until the next successful one.
  */
 export function FirstRunProviderGroup({
   children,
@@ -53,17 +65,67 @@ export function FirstRunProviderGroup({
     state.isEnabled(CLIENT_FEATURE_FLAGS.canopyAiGatewaySettingsEnabled.key),
   );
   const { account } = useCanopyCloudAccountState();
+  const accountId = account?.account?.id;
   const organizationId = account?.personalOrganizationId;
+  const signedIn = isConnectedNonGuest(account);
   const projected = usePersonalModelGateway();
   const [saved, setSaved] = useState<AiGatewayEditorConfig | null>(null);
   const [open, setOpen] = useState(false);
+  // Open the dialog once sign-in from the prompt below lands. Not reset with
+  // the account: it waits for exactly that change.
+  const [pendingOpen, setPendingOpen] = useState(false);
 
   useEffect(() => {
     setSaved(null);
     setOpen(false);
-  }, [organizationId, account?.account?.id]);
+  }, [organizationId, accountId]);
 
-  if (!client || !enabled || !organizationId) {
+  // Runs in the same effect phase as the reset above, after it, so this
+  // `setOpen(true)` wins over its `setOpen(false)`. Keep it below.
+  useEffect(() => {
+    if (!pendingOpen || !signedIn) return;
+    if (organizationId && client && enabled) setOpen(true);
+    setPendingOpen(false);
+  }, [pendingOpen, signedIn, organizationId, client, enabled]);
+
+  if (!client || !enabled || account === null) {
+    return <SettingsGroup>{children}</SettingsGroup>;
+  }
+
+  if (!signedIn) {
+    const signIn = (): void => {
+      useCloudConnectGateStore.getState().requestConnect(
+        {
+          title: 'Sign in to use your own AI gateway',
+          subtitle: null,
+          description:
+            'Your AI gateway is saved to your account. Its key stays on this computer.',
+          toastMessage: "You're signed in. Finish setting up your AI gateway.",
+        },
+        () => {
+          setPendingOpen(true);
+          announceCanopyCloudAccountChanged('same-account-refresh');
+        },
+      );
+    };
+    return (
+      <>
+        <SettingsGroup>{children}</SettingsGroup>
+        <div>
+          <Button
+            variant="ghost-accent"
+            size="compact"
+            data-testid="first-run-ai-gateway-sign-in"
+            onClick={signIn}
+          >
+            Sign in to use your own AI gateway
+          </Button>
+        </div>
+      </>
+    );
+  }
+
+  if (!organizationId) {
     return <SettingsGroup>{children}</SettingsGroup>;
   }
 
@@ -109,7 +171,7 @@ export function FirstRunProviderGroup({
       )}
       {open ? (
         <FirstRunAiGatewayDialog
-          key={`${account.account?.id}/${organizationId}`}
+          key={`${accountId}/${organizationId}`}
           client={client}
           organizationId={organizationId}
           onClose={() => setOpen(false)}

@@ -1,19 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
-import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { BRAND } from '@canopy/brand/current';
+import { isAbsolute, relative, sep } from 'node:path';
 import type { CanopyClientStreamFrame } from '@canopy/core-client';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import type { PlatformOperatingSystem } from '@canopy/core-runtime';
+import { readFilesystemScope } from '@canopy/core-runtime/node';
 import {
-  createFilesystemScopeResolver,
-  readFilesystemScope,
-  readNativeRootIdentity,
-  type FilesystemScopeResolver,
-} from '@canopy/core-runtime/node';
-import {
-  CANOPY_IN_PROCESS_WORKER_TARGET_ID,
   WORKER_TERMINAL_GRANTS,
   type CanopyCallerDescriptor,
   type CanopyWorkspaceScope,
@@ -32,6 +25,7 @@ import {
   getElectronDaemonFilesContext,
 } from '../canopy-runtime/electron-daemon-access';
 import type { ElectronDaemonClient } from '../canopy-runtime/electron-daemon-host';
+import { getDaemonScopeResolver } from '../canopy-runtime/daemon-scope-resolver';
 import { getElectronDaemonHealth } from '../canopy-runtime/electron-daemon-health';
 import {
   RemoteTerminals,
@@ -126,28 +120,6 @@ function hostPlatform(): PlatformOperatingSystem | null {
   }
 }
 
-let resolver: Promise<FilesystemScopeResolver> | undefined;
-
-function scopeResolver(): Promise<FilesystemScopeResolver> {
-  if (resolver) return resolver;
-  const pending = getElectronDaemonFilesContext().then((host) =>
-    createFilesystemScopeResolver({
-      canonicalDataRoot: host.canonicalDataRoot,
-      authorityId: host.authorityId,
-      targetId: CANOPY_IN_PROCESS_WORKER_TARGET_ID,
-      // `build-core-daemon.mjs` bakes the same name into the daemon.
-      coworkManagedDirName: BRAND.storage.projectConfigDirNames[0] ?? '',
-      paths: { join, resolve, isAbsolute, sep, basename },
-      rootIdentity: readNativeRootIdentity,
-    }),
-  );
-  resolver = pending;
-  void pending.catch(() => {
-    if (resolver === pending) resolver = undefined;
-  });
-  return pending;
-}
-
 async function canonical(path: string): Promise<string | null> {
   try {
     return await realpath(path);
@@ -178,7 +150,7 @@ async function resolveTarget(
     const catalog = await readFilesystemScope(
       scope,
       await (
-        await scopeResolver()
+        await getDaemonScopeResolver()
       )(scope, 'roots'),
       'roots',
     );

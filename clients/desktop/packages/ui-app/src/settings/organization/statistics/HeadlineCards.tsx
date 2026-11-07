@@ -7,6 +7,7 @@ import { Button } from '@canopy/ui-shared/components';
 import type { TelemetryHeadlineCard } from '@canopy/protocol/telemetry';
 import { formatCardValue } from './format';
 import { TrendChip, type TrendColorScheme } from './TrendChip';
+import { Surface } from '@canopy/ui-shared/components';
 
 export type { TrendColorScheme };
 
@@ -81,9 +82,10 @@ export function HeadlineCards({
         const description = resolvedDescriptions[card.key];
         const detail = cardDetails?.[card.key];
         return (
-          <div
+          <Surface
             key={card.key}
-            className="rounded-xl bg-card p-4 shadow-sm"
+            variant="raised"
+            padding="default"
             data-testid={`usage-card-${card.key}`}
           >
             <div className="flex items-start justify-between gap-2">
@@ -129,7 +131,7 @@ export function HeadlineCards({
                 comparisonLabel="vs. prior"
               />
             )}
-          </div>
+          </Surface>
         );
       })}
     </div>

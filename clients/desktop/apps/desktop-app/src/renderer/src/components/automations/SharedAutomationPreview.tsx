@@ -1,10 +1,11 @@
 import type { JSX } from 'react';
 import {
+  Heading,
   SettingsRowsGroup,
   SettingsRowsRow,
   SettingsRowsSection,
   SettingsRowsValue,
-  Heading,
+  Surface,
 } from '@canopy/ui-shared/components';
 import { CHAT_LABEL, ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import type {
@@ -120,184 +121,187 @@ export function SharedAutomationPreview({
   const preview = promptPreview(automation.action);
 
   return (
-    <div
-      className="space-y-4 rounded-lg border bg-base p-4"
+    <Surface
+      variant="inset"
+      padding="default"
       data-testid="shared-automation-preview"
     >
-      <div className="flex items-start justify-between gap-3">
-        <div
-          className="min-w-0"
-          data-testid="shared-automation-preview-heading"
-        >
-          <Heading level={3} variant="section" truncate>
-            {automation.name}
-          </Heading>
-          {hasMarkdownDescriptionText(automation.description) && (
-            <DescriptionMarkdown
-              className="mt-1"
-              dataTestId="share-description"
+      <div className="space-y-4">
+        <div className="flex items-start justify-between gap-3">
+          <div
+            className="min-w-0"
+            data-testid="shared-automation-preview-heading"
+          >
+            <Heading level={3} variant="section" truncate>
+              {automation.name}
+            </Heading>
+            {hasMarkdownDescriptionText(automation.description) && (
+              <DescriptionMarkdown
+                className="mt-1"
+                dataTestId="share-description"
+              >
+                {automation.description}
+              </DescriptionMarkdown>
+            )}
+          </div>
+          {localBadge && (
+            <span
+              className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-3xs font-medium ${BADGE_CLASSES[localBadge]}`}
+              data-testid={`shared-automation-badge-${localBadge}`}
             >
-              {automation.description}
-            </DescriptionMarkdown>
+              {BADGE_COPY[localBadge]}
+            </span>
           )}
         </div>
-        {localBadge && (
-          <span
-            className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-3xs font-medium ${BADGE_CLASSES[localBadge]}`}
-            data-testid={`shared-automation-badge-${localBadge}`}
-          >
-            {BADGE_COPY[localBadge]}
-          </span>
-        )}
-      </div>
 
-      <SettingsRowsSection title="Details">
-        <SettingsRowsGroup>
-          <SettingsRowsRow
-            fact
-            label="Trigger"
-            control={
-              <SettingsRowsValue dataTestId="shared-automation-preview-trigger">
-                {describeTrigger(automation.trigger)}
-              </SettingsRowsValue>
-            }
-          />
-          <SettingsRowsRow
-            fact
-            label="Action"
-            control={
-              <SettingsRowsValue dataTestId="shared-automation-preview-action">
-                {describeSharedAction(automation.action)}
-              </SettingsRowsValue>
-            }
-          />
-          <SettingsRowsRow
-            fact
-            label="Owner"
-            control={
-              <SettingsRowsValue>
-                {/* A person owner's name is blocked from replay; a team's or
+        <SettingsRowsSection title="Details">
+          <SettingsRowsGroup>
+            <SettingsRowsRow
+              fact
+              label="Trigger"
+              control={
+                <SettingsRowsValue dataTestId="shared-automation-preview-trigger">
+                  {describeTrigger(automation.trigger)}
+                </SettingsRowsValue>
+              }
+            />
+            <SettingsRowsRow
+              fact
+              label="Action"
+              control={
+                <SettingsRowsValue dataTestId="shared-automation-preview-action">
+                  {describeSharedAction(automation.action)}
+                </SettingsRowsValue>
+              }
+            />
+            <SettingsRowsRow
+              fact
+              label="Owner"
+              control={
+                <SettingsRowsValue>
+                  {/* A person owner's name is blocked from replay; a team's or
                 organization's is recorded. */}
-                {'name' in detail.owner && detail.owner.name !== null ? (
-                  <span
-                    className={
-                      detail.owner.type === 'user'
-                        ? POSTHOG_REPLAY_BLOCK_CLASS
-                        : undefined
-                    }
-                  >
-                    {detail.owner.name}
-                  </span>
-                ) : (
-                  detail.owner.type
-                )}{' '}
-                · {capitalizeFirstLetter(detail.shareScope)}
-              </SettingsRowsValue>
-            }
-          />
-          <SettingsRowsRow
-            fact
-            label="Shared by"
-            control={
-              <SettingsRowsValue>
-                {/* The sharer is a person: replay records a box for the name. */}
-                {detail.createdBy.name === null &&
-                detail.createdBy.email === null ? (
-                  'Unknown'
-                ) : (
-                  <span className={POSTHOG_REPLAY_BLOCK_CLASS}>
-                    {detail.createdBy.name ?? detail.createdBy.email}
-                  </span>
-                )}
-              </SettingsRowsValue>
-            }
-          />
-        </SettingsRowsGroup>
-      </SettingsRowsSection>
+                  {'name' in detail.owner && detail.owner.name !== null ? (
+                    <span
+                      className={
+                        detail.owner.type === 'user'
+                          ? POSTHOG_REPLAY_BLOCK_CLASS
+                          : undefined
+                      }
+                    >
+                      {detail.owner.name}
+                    </span>
+                  ) : (
+                    detail.owner.type
+                  )}{' '}
+                  · {capitalizeFirstLetter(detail.shareScope)}
+                </SettingsRowsValue>
+              }
+            />
+            <SettingsRowsRow
+              fact
+              label="Shared by"
+              control={
+                <SettingsRowsValue>
+                  {/* The sharer is a person: replay records a box for the name. */}
+                  {detail.createdBy.name === null &&
+                  detail.createdBy.email === null ? (
+                    'Unknown'
+                  ) : (
+                    <span className={POSTHOG_REPLAY_BLOCK_CLASS}>
+                      {detail.createdBy.name ?? detail.createdBy.email}
+                    </span>
+                  )}
+                </SettingsRowsValue>
+              }
+            />
+          </SettingsRowsGroup>
+        </SettingsRowsSection>
 
-      {/* The public link belongs to the share, not to the local automation,
+        {/* The public link belongs to the share, not to the local automation,
           so it is managed from the shared-resource preview — the same
           placement `PipelinePublicShareRow` uses. Both inputs are already on
           the fetched detail, so this costs no extra request. */}
-      <AutomationPublicShareRow
-        remoteId={detail.id}
-        facts={detail}
-        name={detail.automation.name}
-        initialShare={detail.publicShare ?? null}
-        // The author can manage it, and so can an organization admin who
-        // may delete a departed creator's share, as in the share dialog.
-        canManage={canManagePublicLink(detail)}
-      />
+        <AutomationPublicShareRow
+          remoteId={detail.id}
+          facts={detail}
+          name={detail.automation.name}
+          initialShare={detail.publicShare ?? null}
+          // The author can manage it, and so can an organization admin who
+          // may delete a departed creator's share, as in the share dialog.
+          canManage={canManagePublicLink(detail)}
+        />
 
-      {automation.hasRunCondition && (
-        <p
-          className="text-xs fg-secondary"
-          data-testid="shared-automation-preview-run-condition"
-        >
-          {automation.runCondition
-            ? 'The author included a run-condition command. You review it when installing.'
-            : 'The author gated this automation with a run-condition command; the command itself stays on their machine.'}
-        </p>
-      )}
-
-      {preview && (
-        <div>
-          <p className="mb-1 text-xs fg-secondary">Prompt</p>
-          <pre
-            className={`${POSTHOG_REPLAY_BLOCK_CLASS} max-h-40 overflow-auto whitespace-pre-wrap rounded-md border bg-fg-primary/[0.03] px-3 py-2 text-xs fg-primary`}
-            data-testid="shared-automation-preview-prompt"
+        {automation.hasRunCondition && (
+          <p
+            className="text-xs fg-secondary"
+            data-testid="shared-automation-preview-run-condition"
           >
-            {preview}
-          </pre>
-        </div>
-      )}
-
-      {inputKeys.length > 0 && (
-        <div data-testid="shared-automation-preview-input-keys">
-          <p className="mb-1 text-xs fg-secondary">
-            Inputs you provide at install
+            {automation.runCondition
+              ? 'The author included a run-condition command. You review it when installing.'
+              : 'The author gated this automation with a run-condition command; the command itself stays on their machine.'}
           </p>
-          <div className="flex flex-wrap gap-1.5">
-            {inputKeys.map((key) => (
-              <span
-                key={key}
-                className="rounded-full border bg-fg-primary/[0.04] px-2 py-0.5 text-3xs fg-primary"
-              >
-                {key}
-              </span>
-            ))}
+        )}
+
+        {preview && (
+          <div>
+            <p className="mb-1 text-xs fg-secondary">Prompt</p>
+            <pre
+              className={`${POSTHOG_REPLAY_BLOCK_CLASS} max-h-40 overflow-auto whitespace-pre-wrap rounded-md border bg-fg-primary/[0.03] px-3 py-2 text-xs fg-primary`}
+              data-testid="shared-automation-preview-prompt"
+            >
+              {preview}
+            </pre>
           </div>
-        </div>
-      )}
+        )}
 
-      {plugins.length > 0 && (
-        <div data-testid="shared-automation-preview-plugins">
-          <p className="mb-1 text-xs fg-secondary">Plugins</p>
-          <ul className="space-y-1">
-            {plugins.map((ref, index) => {
-              const display = buildShareablePluginDisplay(ref);
-              return (
-                <li
-                  key={`${display.title}-${index}`}
-                  className="text-xs fg-primary"
+        {inputKeys.length > 0 && (
+          <div data-testid="shared-automation-preview-input-keys">
+            <p className="mb-1 text-xs fg-secondary">
+              Inputs you provide at install
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {inputKeys.map((key) => (
+                <span
+                  key={key}
+                  className="rounded-full border bg-fg-primary/[0.04] px-2 py-0.5 text-3xs fg-primary"
                 >
-                  {display.title}
-                  <span className="fg-secondary"> · {display.subtitle}</span>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      )}
+                  {key}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
 
-      {detail.savedFrom && (
-        <p
-          className="text-xs fg-secondary"
-          data-testid="shared-automation-preview-lineage"
-        >
-          Forked from another shared automation.
-        </p>
-      )}
-    </div>
+        {plugins.length > 0 && (
+          <div data-testid="shared-automation-preview-plugins">
+            <p className="mb-1 text-xs fg-secondary">Plugins</p>
+            <ul className="space-y-1">
+              {plugins.map((ref, index) => {
+                const display = buildShareablePluginDisplay(ref);
+                return (
+                  <li
+                    key={`${display.title}-${index}`}
+                    className="text-xs fg-primary"
+                  >
+                    {display.title}
+                    <span className="fg-secondary"> · {display.subtitle}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
+
+        {detail.savedFrom && (
+          <p
+            className="text-xs fg-secondary"
+            data-testid="shared-automation-preview-lineage"
+          >
+            Forked from another shared automation.
+          </p>
+        )}
+      </div>
+    </Surface>
   );
 }

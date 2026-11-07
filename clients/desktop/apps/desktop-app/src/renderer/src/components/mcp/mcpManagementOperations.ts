@@ -243,6 +243,7 @@ export async function promoteCustomMcpServer(
   let bound = false;
   let cancelled = false;
   await accountActions.connect(undefined, 'default', {
+    errorOperation: 'promote',
     customUrl: definition.url,
     displayName: definition.name.trim().slice(0, CLOUD_DISPLAY_NAME_MAX),
     pendingKey: row.id,

@@ -1,4 +1,8 @@
-import { Button, TranscriptPagingControls } from '@canopy/ui-shared/components';
+import {
+  Button,
+  Surface,
+  TranscriptPagingControls,
+} from '@canopy/ui-shared/components';
 import { installTranscriptPage } from '@/stores/chat/transcript-pages';
 import type { ChatTranscriptPageRequest } from '@canopy/desktop-shared/types';
 import {
@@ -160,7 +164,7 @@ export function StandaloneArchiveViewer({
         <div className="mb-4 flex items-center justify-between">
           <div>
             <div className="flex items-center gap-2 text-xs fg-secondary">
-              <AppCatalogArchiveBoxIcon width="14" height="14" />
+              <AppCatalogArchiveBoxIcon size="sm" />
               <span>Archived chat</span>
             </div>
             <div
@@ -179,7 +183,7 @@ export function StandaloneArchiveViewer({
                 data-testid="standalone-archive-new-chat"
                 aria-label="New chat"
               >
-                <AppCatalogPlusIcon width="14" height="14" />
+                <AppCatalogPlusIcon size="sm" />
               </Button>
             </Tooltip>
             <Button
@@ -206,48 +210,51 @@ export function StandaloneArchiveViewer({
           // with a resolved height. A plain `min-h` block collapses that
           // scroller to 0px and the transcript renders invisibly, so give it an
           // explicit flex-column height here.
-          <div className="flex h-[min(70vh,800px)] min-h-80 flex-col overflow-hidden rounded-xl border bg-base/60">
-            <Suspense
-              fallback={
-                <div className="flex min-h-80 items-center justify-center">
-                  <LoadingSpinner tone="secondary" />
-                </div>
-              }
-            >
-              <ChatMessageList
-                pagingControls={
-                  <TranscriptPagingControls
-                    needsLoad={Boolean(
-                      tab?.transcript && tab.transcriptWindow?.view !== 'turns',
-                    )}
-                    hasEarlier={tab.transcriptWindow?.before !== undefined}
-                    loading={loading && turnPageId === null}
-                    suspended={loading}
-                    error={
-                      error && turnPageId === null
-                        ? "Couldn't load archived messages."
-                        : null
-                    }
-                    onLoadEarlier={() => void loadPage(true)}
-                    onReload={() => void loadPage(false)}
-                  />
+          <Surface variant="group" className="overflow-hidden">
+            <div className="flex flex-col h-[min(70vh,800px)] min-h-80">
+              <Suspense
+                fallback={
+                  <div className="flex min-h-80 items-center justify-center">
+                    <LoadingSpinner tone="secondary" />
+                  </div>
                 }
-                transcriptTurns={tab?.transcriptWindow?.turns}
-                onLoadTurn={loadTurn}
-                turnPageId={turnPageId}
-                turnLoading={loading}
-                turnError={error ? "Couldn't load archived messages." : null}
-                targetOverride={transcriptScope}
-                standaloneHistory={transcriptScope?.standaloneHistory}
-                messages={tab.messages}
-                queuedMessages={[]}
-                chatId={tab.id}
-                agentUsage={tab.agentUsage}
-                turnDiffs={tab.turnDiffs}
-                onClearQueuedMessage={() => undefined}
-              />
-            </Suspense>
-          </div>
+              >
+                <ChatMessageList
+                  pagingControls={
+                    <TranscriptPagingControls
+                      needsLoad={Boolean(
+                        tab?.transcript &&
+                        tab.transcriptWindow?.view !== 'turns',
+                      )}
+                      hasEarlier={tab.transcriptWindow?.before !== undefined}
+                      loading={loading && turnPageId === null}
+                      suspended={loading}
+                      error={
+                        error && turnPageId === null
+                          ? "Couldn't load archived messages."
+                          : null
+                      }
+                      onLoadEarlier={() => void loadPage(true)}
+                      onReload={() => void loadPage(false)}
+                    />
+                  }
+                  transcriptTurns={tab?.transcriptWindow?.turns}
+                  onLoadTurn={loadTurn}
+                  turnPageId={turnPageId}
+                  turnLoading={loading}
+                  turnError={error ? "Couldn't load archived messages." : null}
+                  targetOverride={transcriptScope}
+                  standaloneHistory={transcriptScope?.standaloneHistory}
+                  messages={tab.messages}
+                  queuedMessages={[]}
+                  chatId={tab.id}
+                  agentUsage={tab.agentUsage}
+                  turnDiffs={tab.turnDiffs}
+                  onClearQueuedMessage={() => undefined}
+                />
+              </Suspense>
+            </div>
+          </Surface>
         ) : summary ? (
           <div
             data-testid="standalone-archive-summary"

@@ -25,10 +25,10 @@ import {
  * then runs each request's repository method to completion before it reads the
  * next, so every command is serialized on that one connection.
  *
- * `LedgerStorageHost` stops the worker with `Worker.terminate()`, and no
- * JavaScript runs after that. Node closes the connection as it tears down the
- * thread, before the host sees `exit`, which releases the database lock for
- * the next opener.
+ * `Worker.terminate()` cannot interrupt native SQLite: a timed-out write may
+ * have committed while its caller receives `STORAGE_UNAVAILABLE` (CAN-5329).
+ * Node closes the connection during teardown, before the host sees `exit`,
+ * releasing the database lock for the next opener.
  *
  * Nothing here logs. Error messages are fixed, content-free text with no entry
  * text, paths or SQL values; only a store error's protocol details can carry

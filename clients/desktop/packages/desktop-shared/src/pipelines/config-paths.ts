@@ -889,46 +889,6 @@ export function getBundledCanopyCliPath(): string {
   return getResolvedExecPath();
 }
 
-export function getCanopyCliDevLaunchArgs():
-  | { command: string; args: string[]; cwd: string }
-  | undefined {
-  if (!isDevRuntime()) {
-    return undefined;
-  }
-  const workspaceRoot = process.cwd();
-  const nodeExecutable = process.env.NODE?.trim();
-  if (
-    nodeExecutable &&
-    path.isAbsolute(nodeExecutable) &&
-    existsSync(nodeExecutable)
-  ) {
-    return {
-      command: nodeExecutable,
-      cwd: workspaceRoot,
-      args: [
-        path.resolve(workspaceRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs'),
-        '--tsconfig',
-        path.resolve(workspaceRoot, 'tsconfig.json'),
-        path.resolve(workspaceRoot, 'apps', 'desktop-cli', 'src', 'index.ts'),
-      ],
-    };
-  }
-  return {
-    command: path.resolve(
-      workspaceRoot,
-      'node_modules',
-      '.bin',
-      withExeOnWindows('tsx'),
-    ),
-    cwd: workspaceRoot,
-    args: [
-      '--tsconfig',
-      path.resolve(workspaceRoot, 'tsconfig.json'),
-      path.resolve(workspaceRoot, 'apps', 'desktop-cli', 'src', 'index.ts'),
-    ],
-  };
-}
-
 export interface GetEnhancedEnvOptions {
   /**
    * When `false`, omit Canopy-managed secret env vars (e.g. the PAT-derived

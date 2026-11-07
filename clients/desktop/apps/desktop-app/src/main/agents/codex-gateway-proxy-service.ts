@@ -291,6 +291,7 @@ interface CodexGatewayRoute {
   inferencePolicy?: OpenCodeGatewayInferencePolicy;
   submittedBodies?: Set<string>;
   inferenceFailure?: OpenCodeGatewayInferenceFailure;
+  unlimitedRequestBody: boolean;
   onCredentialRejected?: (
     status: 401 | 403,
     credentialVersion?: string,
@@ -505,7 +506,10 @@ export interface CodexGatewayRouteLease {
   readInferenceFailure?: () => OpenCodeGatewayInferenceFailure | undefined;
 }
 
-function readBody(request: IncomingMessage): Promise<Buffer<ArrayBuffer>> {
+function readBody(
+  request: IncomingMessage,
+  maxBytes: number,
+): Promise<Buffer<ArrayBuffer>> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
@@ -513,7 +517,7 @@ function readBody(request: IncomingMessage): Promise<Buffer<ArrayBuffer>> {
     request.on('data', (chunk: Buffer) => {
       if (exceeded) return;
       size += chunk.length;
-      if (size > MAX_REQUEST_BYTES) {
+      if (size > maxBytes) {
         exceeded = true;
         // Drop the buffered chunks immediately: the request is rejected, so
         // holding up to MAX_REQUEST_BYTES reachable from the still-attached
@@ -597,6 +601,14 @@ export class CodexGatewayProxyService {
     extraHeaders?: Readonly<Record<string, string>>;
     waitForQuotaRecovery?: (signal: AbortSignal) => Promise<void>;
     inferencePolicy?: OpenCodeGatewayInferencePolicy;
+    /**
+     * Relay request bodies of any size instead of refusing those over
+     * {@link MAX_REQUEST_BYTES}. For an upstream the user runs, such as an
+     * account proxy: the body is the chat's whole context, which can pass
+     * 8 MiB on a large context window, and that upstream sets its own limit.
+     * Defaults to false.
+     */
+    unlimitedRequestBody?: boolean;
     onCredentialRejected?: (
       status: 401 | 403,
       credentialVersion?: string,
@@ -624,6 +636,7 @@ export class CodexGatewayProxyService {
       allowedQueries: [...(options.allowedQueries ?? [])],
       forwardHeaders: [...(options.forwardHeaders ?? [])],
       stripCacheControl: options.stripCacheControl ?? false,
+      unlimitedRequestBody: options.unlimitedRequestBody ?? false,
       inferencePolicy,
       ...(inferencePolicy ? { submittedBodies: new Set<string>() } : {}),
     };
@@ -1210,7 +1223,10 @@ export class CodexGatewayProxyService {
         : resolvedToken.credentialVersion;
     let body: Buffer<ArrayBuffer>;
     try {
-      body = await readBody(request);
+      body = await readBody(
+        request,
+        route.unlimitedRequestBody ? Infinity : MAX_REQUEST_BYTES,
+      );
     } catch (error) {
       if (error instanceof RangeError) {
         const correlationId = randomUUID();

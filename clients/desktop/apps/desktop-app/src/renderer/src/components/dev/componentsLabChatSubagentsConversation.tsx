@@ -1,11 +1,12 @@
 import { useState, type JSX } from 'react';
 import {
   SubagentBanner,
+  type SubagentNode,
   SubagentRecipientTrigger,
   SubagentRunDivider,
   SubagentSetupDetails,
   SubagentTaskBubble,
-  type SubagentNode,
+  Surface,
 } from '@canopy/ui-shared/components';
 import {
   CHAT_TREE,
@@ -152,7 +153,7 @@ function BannerSpecimen({
   const [expanded, setExpanded] = useState(startExpanded);
   return (
     <SpecimenCell label={label} wide>
-      <div className="relative w-full overflow-hidden rounded-lg border">
+      <Surface variant="outline" className="relative w-full overflow-hidden">
         <SubagentBanner
           tree={tree}
           node={target}
@@ -166,7 +167,7 @@ function BannerSpecimen({
             Details sit here when the disclosure is open.
           </p>
         </SubagentBanner>
-      </div>
+      </Surface>
     </SpecimenCell>
   );
 }

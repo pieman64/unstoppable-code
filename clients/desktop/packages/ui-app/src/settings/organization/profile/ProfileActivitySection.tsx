@@ -16,6 +16,7 @@ import { TeamFeedSkeleton } from '../team-feed-skeleton';
 import { useSettingsErrorCopy } from '../../errors';
 import { MEMBER_PROFILE_ERROR_SCOPE } from './use-member-paged-resource';
 import type { SettingsFailure } from '../../errors';
+import { Surface } from '@canopy/ui-shared/components';
 
 interface ProfileActivitySectionProps {
   orgId: string;
@@ -128,12 +129,14 @@ export function ProfileActivitySection({
             onRetry={retry}
           />
         ) : (
-          <p
-            className="rounded-xl border border-dashed px-4 py-12 text-center text-s fg-secondary"
-            data-testid="profile-activity-empty"
-          >
-            {subject.name} doesn&apos;t have any activity yet.
-          </p>
+          <Surface variant="dashed">
+            <p
+              className="px-4 py-12 text-center text-s fg-secondary"
+              data-testid="profile-activity-empty"
+            >
+              {subject.name} doesn&apos;t have any activity yet.
+            </p>
+          </Surface>
         )}
       </div>
     );

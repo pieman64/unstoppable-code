@@ -1,10 +1,13 @@
 import type { JSX } from 'react';
 import { SPINNER_TONE_CLASS_NAMES, type SpinnerTone } from './spinner-tone';
-import { RefreshIcon as AppCatalogRefreshIcon } from '../icons/AppIcons';
+import {
+  RefreshIcon as AppCatalogRefreshIcon,
+  type IconSize,
+} from '../icons/AppIcons';
 
 interface RefreshSpinnerProps {
   spinning?: boolean;
-  size?: number;
+  size?: IconSize;
   /** Ink. `inherit` (the default) takes the surrounding text color. */
   tone?: SpinnerTone;
   className?: string;
@@ -12,15 +15,14 @@ interface RefreshSpinnerProps {
 
 export function RefreshSpinner({
   spinning = false,
-  size = 14,
+  size = 'sm',
   tone = 'inherit',
   className = '',
 }: RefreshSpinnerProps): JSX.Element {
   return (
     <AppCatalogRefreshIcon
       aria-hidden="true"
-      width={size}
-      height={size}
+      size={size}
       className={`${spinning ? 'animate-spin' : ''} ${SPINNER_TONE_CLASS_NAMES[tone]} ${className}`}
     />
   );

@@ -240,7 +240,7 @@ import {
   cleanupCompatibilitySymlinks,
   listCompatibilitySymlinkReservedWorktreeIds,
 } from './adhoc-multi-repo-workspaces';
-import { getObservabilityService } from '../observability';
+import { getExecutionObservabilityIngest } from '../observability/ingest';
 import { getChatQueueService } from '../services/chat-queue-service';
 import { getChatStateService } from '../services/chat-state-service';
 import { notifyLedgerContainerArchived } from '../ledger/lifecycle';
@@ -2906,7 +2906,7 @@ async function recordWorktreeCreatedUsageEvent(
 ): Promise<void> {
   const timestamp = new Date().toISOString();
   const repos = await buildUsageRepoScopes(workspaceId, worktreeId, config);
-  getObservabilityService().recordUsageMetricEvent({
+  getExecutionObservabilityIngest().recordUsageMetricEvent({
     version: 1,
     id: `worktree-created:${workspaceId}/${worktreeId}:${timestamp}`,
     type: 'worktree_created',
@@ -2927,7 +2927,7 @@ function recordWorktreeDeletedUsageEvent(
 ): void {
   const timestamp = new Date().toISOString();
   const createdAtTime = createdAt ? Date.parse(createdAt) : Number.NaN;
-  getObservabilityService().recordUsageMetricEvent({
+  getExecutionObservabilityIngest().recordUsageMetricEvent({
     version: 1,
     id: `worktree-deleted:${workspaceId}/${worktreeId}:${timestamp}`,
     type: 'worktree_deleted',

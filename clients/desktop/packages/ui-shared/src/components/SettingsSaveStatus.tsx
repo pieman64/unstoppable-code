@@ -46,12 +46,7 @@ export function SettingsSaveStatus({
         </>
       ) : state === 'saved' ? (
         <>
-          <CheckIcon
-            width={13}
-            height={13}
-            aria-hidden={true}
-            className="fg-success"
-          />
+          <CheckIcon size="sm" aria-hidden={true} className="fg-success" />
           Saved
         </>
       ) : state === 'error' ? (

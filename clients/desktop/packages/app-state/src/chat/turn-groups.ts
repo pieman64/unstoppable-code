@@ -270,14 +270,15 @@ interface PortalCountedCall {
  * invents a step, and a call reported twice counts once, with the latest
  * result winning.
  *
- * `blocked` is always 0: the Portal carries no structured safety receipt, so
- * a safety refusal reads as a failed step here until that transport exists.
+ * The Portal carries no structured safety receipt, so a step is blocked only
+ * when `isDenial` recognizes its error text, as desktop's step line does.
  * Helper agent outcomes are not derived.
  */
 export function computePortalTurnOutcomes(
   countedMessages: readonly PortalChatMessage[],
   resultMessages: readonly PortalChatMessage[] = countedMessages,
   evidence?: TurnOutcomeEvidence,
+  isDenial: (output: string) => boolean = () => false,
 ): TurnOutcomeCounts {
   const calls = collectCountedCalls(countedMessages, evidence);
   applyTurnResults(calls.byId, resultMessages);
@@ -287,7 +288,11 @@ export function computePortalTurnOutcomes(
     interrupted: calls.interruptedWithoutId,
   };
   calls.byId.forEach((call) => {
-    const outcome = classifyTurnStepOutcome(call.result, false, evidence);
+    const outcome = classifyTurnStepOutcome(
+      call.result,
+      deniedResult(call.result, isDenial),
+      evidence,
+    );
     if (outcome !== undefined) counts[outcome] += 1;
   });
   return counts;
@@ -303,12 +308,17 @@ export function getPortalTurnOutcomeSteps(
   countedMessages: readonly PortalChatMessage[],
   resultMessages: readonly PortalChatMessage[] = countedMessages,
   evidence?: TurnOutcomeEvidence,
+  isDenial: (output: string) => boolean = () => false,
 ): TurnOutcomeStepDetail[] {
   const calls = collectCountedCalls(countedMessages, evidence);
   applyTurnResults(calls.byId, resultMessages);
   const steps: TurnOutcomeStepDetail[] = [];
   calls.byId.forEach((call, toolUseId) => {
-    const outcome = classifyTurnStepOutcome(call.result, false, evidence);
+    const outcome = classifyTurnStepOutcome(
+      call.result,
+      deniedResult(call.result, isDenial),
+      evidence,
+    );
     if (outcome === undefined) return;
     const step: TurnOutcomeStepDetail = {
       toolUseId,
@@ -322,6 +332,14 @@ export function getPortalTurnOutcomeSteps(
     steps.push(step);
   });
   return steps;
+}
+
+/** An errored result whose text the host recognizes as a denial. */
+function deniedResult(
+  result: PortalToolResult | undefined,
+  isDenial: (output: string) => boolean,
+): boolean {
+  return result?.isError === true && isDenial(result.output ?? '');
 }
 
 /** The `data` of each part of `kind` across `messages`, in order. */

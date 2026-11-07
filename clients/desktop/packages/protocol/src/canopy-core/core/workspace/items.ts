@@ -74,8 +74,38 @@ export const CORE_WORKSPACE_ITEM_IMPORT_ERROR_CODES = [
   'core.workspace.item.idempotencyKeyReused',
 ] as const;
 
+/** Codes of a note or prompt `delete`. */
+export const CORE_WORKSPACE_ITEM_DELETE_ERROR_CODES = [
+  'core.workspace.item.invalidScope',
+  'core.workspace.item.invalidItemId',
+  'core.workspace.item.notFound',
+  'core.workspace.item.kindUnavailable',
+  'core.workspace.item.readOnlyScope',
+  'core.workspace.item.revisionConflict',
+  'core.workspace.item.idempotencyKeyReused',
+] as const;
+
+/** Codes of a note or prompt `upsert`. */
+export const CORE_WORKSPACE_ITEM_UPSERT_ERROR_CODES = [
+  'core.workspace.item.invalidScope',
+  'core.workspace.item.invalidItemId',
+  'core.workspace.item.notFound',
+  'core.workspace.item.kindUnavailable',
+  'core.workspace.item.readOnlyScope',
+  'core.workspace.item.unsupportedScope',
+  'core.workspace.item.revisionConflict',
+  'core.workspace.item.idempotencyKeyReused',
+] as const;
+
+/** `after_refresh` resource of a `core.workspace.item.revisionConflict`. */
+export const CORE_WORKSPACE_ITEM_RESOURCE = 'core.workspace.item';
+
 export type CoreWorkspaceItemReadErrorCode =
   (typeof CORE_WORKSPACE_ITEM_READ_ERROR_CODES)[number];
+export type CoreWorkspaceItemUpsertErrorCode =
+  (typeof CORE_WORKSPACE_ITEM_UPSERT_ERROR_CODES)[number];
+export type CoreWorkspaceItemDeleteErrorCode =
+  (typeof CORE_WORKSPACE_ITEM_DELETE_ERROR_CODES)[number];
 export type CoreWorkspaceItemSourceErrorCode =
   (typeof CORE_WORKSPACE_ITEM_SOURCE_ERROR_CODES)[number];
 export type CoreWorkspaceItemImportErrorCode =
@@ -180,6 +210,49 @@ export const CoreWorkspaceItemImportResultSchema = z.strictObject({
     .max(CORE_WORKSPACE_ITEM_IMPORT_MAX_SOURCES),
 });
 
+export const CoreWorkspaceItemUpsertParamsSchema = z.strictObject({
+  itemId: id.nullable(),
+  workspaceId: id,
+  worktreeId: id.nullable(),
+  kind: CoreWorkspaceItemKindSchema,
+  title: CoreWorkspaceItemSchema.shape.title,
+  content: CoreWorkspaceItemSchema.shape.content,
+  artifactId: id.nullable(),
+  expectedRevision: z.number().int().nonnegative().nullable(),
+  originWorktreeId: id.nullable(),
+});
+
+export const CoreWorkspaceItemDeleteParamsSchema = z.strictObject({
+  itemId: id,
+  expectedRevision: z.number().int().nonnegative(),
+});
+
+export const CoreWorkspaceItemDeleteResultSchema = z.strictObject({
+  deleted: z.literal(true),
+});
+
+export const CoreWorkspaceItemUpsertErrorSchema =
+  CanopyErrorPayloadSchema.extend({
+    code: z.enum(CORE_WORKSPACE_ITEM_UPSERT_ERROR_CODES).optional(),
+    retry: CanopyKeyedRetryDirectiveSchema,
+  });
+
+export const CoreWorkspaceItemDeleteErrorSchema =
+  CanopyErrorPayloadSchema.extend({
+    code: z.enum(CORE_WORKSPACE_ITEM_DELETE_ERROR_CODES).optional(),
+    retry: CanopyKeyedRetryDirectiveSchema,
+  });
+
+export type CoreWorkspaceItemUpsertParams = z.output<
+  typeof CoreWorkspaceItemUpsertParamsSchema
+>;
+export type CoreWorkspaceItemDeleteParams = z.output<
+  typeof CoreWorkspaceItemDeleteParamsSchema
+>;
+export type CoreWorkspaceItemDeleteResult = z.output<
+  typeof CoreWorkspaceItemDeleteResultSchema
+>;
+
 export const CoreWorkspaceItemReadErrorSchema = CanopyErrorPayloadSchema.extend(
   {
     code: z.enum(CORE_WORKSPACE_ITEM_READ_ERROR_CODES).optional(),
@@ -247,6 +320,28 @@ export const CORE_WORKSPACE_ITEM_INSTRUCTIONS = defineCanopyInstructionRegistry(
       params: CoreWorkspaceItemImportParamsSchema,
       result: CoreWorkspaceItemImportResultSchema,
       error: CoreWorkspaceItemImportErrorSchema,
+    }),
+    'core.workspace.item.upsert': defineCanopyInstruction({
+      plane: 'core',
+      domain: 'workspace',
+      version: 1,
+      placement: 'core-only',
+      idempotency: 'keyed',
+      requiredGrants: [CORE_WORKSPACE_ITEM_GRANTS.write],
+      params: CoreWorkspaceItemUpsertParamsSchema,
+      result: CoreWorkspaceItemSchema,
+      error: CoreWorkspaceItemUpsertErrorSchema,
+    }),
+    'core.workspace.item.delete': defineCanopyInstruction({
+      plane: 'core',
+      domain: 'workspace',
+      version: 1,
+      placement: 'core-only',
+      idempotency: 'keyed',
+      requiredGrants: [CORE_WORKSPACE_ITEM_GRANTS.write],
+      params: CoreWorkspaceItemDeleteParamsSchema,
+      result: CoreWorkspaceItemDeleteResultSchema,
+      error: CoreWorkspaceItemDeleteErrorSchema,
     }),
   },
 );

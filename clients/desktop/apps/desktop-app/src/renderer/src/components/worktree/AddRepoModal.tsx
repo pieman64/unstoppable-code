@@ -25,7 +25,7 @@ import {
   WORKSPACE_ROOT_REPO_ID,
 } from '@canopy/desktop-shared/types';
 import { CHAT_LABEL } from '@canopy/protocol';
-import { RepositoryCloneError } from '@canopy/ui-shared/components';
+import { RepositoryCloneError, Surface } from '@canopy/ui-shared/components';
 import {
   trackAddProjectDialogCancel,
   trackAddProjectDialogOpen,
@@ -2842,7 +2842,7 @@ function AddRepoModalDraft({
               testId="add-workspace-mode-catalog"
               selected={mode === 'catalog'}
               onSelect={() => selectMode('catalog')}
-              icon={<BuildingIcon className="h-4 w-4 shrink-0" />}
+              icon={<BuildingIcon size="sm" className="shrink-0" />}
               title={orgCatalogOption.label}
               description={orgCatalogOption.scopedSummary}
             />
@@ -2950,31 +2950,32 @@ function AddRepoModalDraft({
               </p>
             )}
             {!existingFolderPending && (
-              <div
+              <Surface
+                variant="dashed"
+                selected={folderDragActive}
                 data-testid="add-workspace-folder-drop"
                 data-drag-active={folderDragActive || undefined}
-                className={`flex flex-col items-center justify-center gap-3 rounded-xl border px-4 py-8 text-center transition-colors ${
-                  folderDragActive ? 'border-line-accent bg-accent-subtle' : ''
-                }`}
               >
-                <p className="text-s fg-secondary">
-                  Drop a folder here, or choose one from this computer
-                </p>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  data-testid="add-workspace-choose-folder"
-                  onClick={() => void handleBrowseExisting()}
-                  disabled={isSubmitting || orgRetrying}
-                >
-                  <FolderIcon className="shrink-0" />
-                  {browsingExisting
-                    ? 'Opening…'
-                    : isSubmitting
-                      ? 'Adding…'
-                      : 'Choose folder'}
-                </Button>
-              </div>
+                <div className="flex flex-col items-center justify-center gap-3 px-4 py-8 text-center">
+                  <p className="text-s fg-secondary">
+                    Drop a folder here, or choose one from this computer
+                  </p>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    data-testid="add-workspace-choose-folder"
+                    onClick={() => void handleBrowseExisting()}
+                    disabled={isSubmitting || orgRetrying}
+                  >
+                    <FolderIcon className="shrink-0" />
+                    {browsingExisting
+                      ? 'Opening…'
+                      : isSubmitting
+                        ? 'Adding…'
+                        : 'Choose folder'}
+                  </Button>
+                </div>
+              </Surface>
             )}
             {!inOrganization && orgConflict !== null && (
               <OrgFolderConflictNotice
@@ -3172,7 +3173,10 @@ function AddRepoModalDraft({
                       label: 'New repository',
                       dataTestId: 'add-workspace-type-single-repo',
                       leading: (
-                        <SingleRepoWorkspaceIcon className="h-3.5 w-3.5 shrink-0" />
+                        <SingleRepoWorkspaceIcon
+                          size="sm"
+                          className="shrink-0"
+                        />
                       ),
                     },
                     {
@@ -3180,16 +3184,14 @@ function AddRepoModalDraft({
                       label: CHAT_LABEL,
                       dataTestId: 'add-workspace-type-cowork',
                       leading: (
-                        <CoworkWorkspaceIcon className="h-3.5 w-3.5 shrink-0" />
+                        <CoworkWorkspaceIcon size="sm" className="shrink-0" />
                       ),
                     },
                     {
                       value: 'multi-repo',
                       label: 'Multi-repo',
                       dataTestId: 'add-workspace-type-multi-repo',
-                      leading: (
-                        <MultiRepoIcon className="h-3.5 w-3.5 shrink-0" />
-                      ),
+                      leading: <MultiRepoIcon size="sm" className="shrink-0" />,
                     },
                     ...(inOrganization
                       ? []
@@ -3205,7 +3207,10 @@ function AddRepoModalDraft({
                                 }
                               : {}),
                             leading: (
-                              <TemporaryMultiRepoIcon className="h-3.5 w-3.5 shrink-0" />
+                              <TemporaryMultiRepoIcon
+                                size="sm"
+                                className="shrink-0"
+                              />
                             ),
                           },
                         ]),

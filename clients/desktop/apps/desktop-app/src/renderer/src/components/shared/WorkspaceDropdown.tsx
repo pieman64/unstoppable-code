@@ -390,7 +390,7 @@ export function WorkspaceDropdown({
             </>
           ) : pending ? (
             <>
-              <PlusMediumIcon width={16} height={16} aria-hidden />
+              <PlusMediumIcon size="sm" aria-hidden />
               <span className="truncate fg-primary">{addWorkspaceLabel}</span>
             </>
           ) : (

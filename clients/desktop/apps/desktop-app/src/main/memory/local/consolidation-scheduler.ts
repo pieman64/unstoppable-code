@@ -160,6 +160,24 @@ export async function requestLocalMemoryConsolidation(options: {
   );
 }
 
+/**
+ * Arms the scope again after `delayMs` for a run the memory sync engine
+ * dropped as worth retrying (design §12.1 step 8): that run committed
+ * nothing, so its hourly stamp is cleared instead of holding the retry back.
+ */
+export async function retryLocalMemoryConsolidation(
+  options: { workspaceId?: string },
+  delayMs: number,
+): Promise<void> {
+  if (!started) return;
+  const scope =
+    options.workspaceId === undefined
+      ? userScope()
+      : workspaceScope(options.workspaceId);
+  lastRunAt.delete(scope.scopeDir);
+  await scheduleScope(scope, delayMs);
+}
+
 function isWithinHourlyCap(lastConsolidatedAt: string | undefined): boolean {
   if (lastConsolidatedAt === undefined) {
     return false;

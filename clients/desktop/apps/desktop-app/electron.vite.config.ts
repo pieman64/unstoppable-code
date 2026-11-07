@@ -190,6 +190,10 @@ const aliases = {
   '@canopy/core-platform': resolve(repoRoot, 'packages/core-platform/src'),
   '@canopy/core-transport': resolve(repoRoot, 'packages/core-transport/src'),
   '@canopy/core-client': resolve(repoRoot, 'packages/core-client/src'),
+  '@canopy/copilot-recipient': resolve(
+    repoRoot,
+    'packages/copilot-recipient/src',
+  ),
   '@canopy/code-graph': resolve(repoRoot, 'packages/code-graph/src'),
   '@canopy/desktop-shared': resolve(repoRoot, 'packages/desktop-shared/src'),
   '@canopy/desktop-instrumentation': resolve(
@@ -599,6 +603,10 @@ const claudeProcessHostWorkerEntry = resolve(
   repoRoot,
   'apps/desktop-app/src/main/agents/claude-process-host-worker.ts',
 );
+const providerProcessHostWorkerEntry = resolve(
+  repoRoot,
+  'apps/desktop-app/src/main/agent-runs/provider-process-host/entry.ts',
+);
 const codexPluginMaterializationWorkerEntry = resolve(
   repoRoot,
   'apps/desktop-app/src/main/plugins/codex-plugin-materialization-worker.ts',
@@ -626,6 +634,11 @@ const w5CommitLogWorkerEntry = resolve(
 const localMemoryParseWorkerEntry = resolve(
   repoRoot,
   'apps/desktop-app/src/main/memory/local/parse-worker.ts',
+);
+
+const memorySyncMergeWorkerEntry = resolve(
+  repoRoot,
+  'apps/desktop-app/src/main/memory/sync/merge-worker.ts',
 );
 
 const interruptedWorkScanWorkerEntry = resolve(
@@ -716,6 +729,7 @@ function utilityWorkerPlugin(define: Record<string, string>): Plugin {
       this.addWatchFile(codeGraphFingerprintWorkerEntry);
       this.addWatchFile(pipelineProcessHostWorkerEntry);
       this.addWatchFile(claudeProcessHostWorkerEntry);
+      this.addWatchFile(providerProcessHostWorkerEntry);
       this.addWatchFile(codexPluginMaterializationWorkerEntry);
       this.addWatchFile(chatSearchQueryWorkerEntry);
       this.addWatchFile(chatSearchIndexWorkerEntry);
@@ -761,6 +775,10 @@ function utilityWorkerPlugin(define: Record<string, string>): Plugin {
             outfile: 'claude-process-host-worker.js',
           },
           {
+            entry: providerProcessHostWorkerEntry,
+            outfile: 'provider-process-host-worker.js',
+          },
+          {
             entry: codexPluginMaterializationWorkerEntry,
             outfile: 'codex-plugin-materialization-worker.js',
           },
@@ -783,6 +801,10 @@ function utilityWorkerPlugin(define: Record<string, string>): Plugin {
           {
             entry: localMemoryParseWorkerEntry,
             outfile: 'local-memory-parse-worker.js',
+          },
+          {
+            entry: memorySyncMergeWorkerEntry,
+            outfile: 'memory-sync-merge-worker.js',
           },
           {
             entry: interruptedWorkScanWorkerEntry,

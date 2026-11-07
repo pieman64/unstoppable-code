@@ -1,6 +1,9 @@
-import type { JSX, SVGProps } from 'react';
-import { PlayCircleIcon as AppCatalogPlayCircleIcon } from './AppIcons';
+import type { JSX } from 'react';
+import {
+  PlayCircleIcon as AppCatalogPlayCircleIcon,
+  type AppIconProps,
+} from './AppIcons';
 
-export function PlayCircleIcon(props: SVGProps<SVGSVGElement>): JSX.Element {
-  return <AppCatalogPlayCircleIcon width="14" height="14" {...props} />;
+export function PlayCircleIcon(props: AppIconProps): JSX.Element {
+  return <AppCatalogPlayCircleIcon size="sm" {...props} />;
 }

@@ -4,6 +4,7 @@ import {
   Heading,
   SegmentedControl,
   type SegmentedControlOption,
+  Surface,
 } from '@canopy/ui-shared/components';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 import { unwrapShareOperationResult } from '@/lib/sharing/share-operation-result';
@@ -1378,10 +1379,12 @@ function SkillEditorBody({
           />
         )
       ) : (
-        <p className="rounded-lg border bg-secondary/30 px-3 py-2 text-xs fg-secondary">
-          This file cannot be edited here. It is kept unchanged when the skill
-          is saved.
-        </p>
+        <Surface variant="group">
+          <p className="px-3 py-2 text-xs fg-secondary">
+            This file cannot be edited here. It is kept unchanged when the skill
+            is saved.
+          </p>
+        </Surface>
       )}
     </div>
   ) : null;
@@ -1441,8 +1444,7 @@ function SkillEditorBody({
           onClick={() => state.setShowAdvanced(!state.showAdvanced)}
         >
           <AppCatalogChevronRightMediumIcon
-            width="10"
-            height="10"
+            size="sm"
             className={`transition-transform ${state.showAdvanced ? 'rotate-90' : ''}`}
           />
           Advanced metadata
@@ -1454,75 +1456,79 @@ function SkillEditorBody({
         </Button>
 
         {state.showAdvanced && (
-          <div className="mt-2 rounded-lg border bg-secondary/30 p-3 space-y-2">
-            <p className="text-xs fg-secondary">
-              Extra YAML frontmatter keys. <code>name</code> and{' '}
-              <code>description</code> are reserved.
-            </p>
-            {state.metadataRows.length === 0 && (
-              <p className="text-xs fg-secondary italic">
-                No additional fields.
+          <Surface variant="group" padding="compact" className="mt-2">
+            <div className="space-y-2">
+              <p className="text-xs fg-secondary">
+                Extra YAML frontmatter keys. <code>name</code> and{' '}
+                <code>description</code> are reserved.
               </p>
-            )}
-            {state.metadataRows.map((row) => (
-              <div key={row.id} className="flex items-center gap-2">
-                <div className="w-1/3 shrink-0">
-                  <TextInput
-                    data-canopy-escape-boundary={escapeBoundary}
-                    mono
-                    value={row.key}
-                    onChange={(e) =>
-                      state.updateMetadataRow(row.id, 'key', e.target.value)
-                    }
-                    placeholder="key"
-                    spellCheck={false}
-                    aria-label="Metadata key"
-                    aria-invalid={state.shownErrors.metadata ? true : undefined}
-                    aria-describedby={
-                      state.shownErrors.metadata
-                        ? 'skill-metadata-error'
-                        : undefined
-                    }
-                  />
+              {state.metadataRows.length === 0 && (
+                <p className="text-xs fg-secondary italic">
+                  No additional fields.
+                </p>
+              )}
+              {state.metadataRows.map((row) => (
+                <div key={row.id} className="flex items-center gap-2">
+                  <div className="w-1/3 shrink-0">
+                    <TextInput
+                      data-canopy-escape-boundary={escapeBoundary}
+                      mono
+                      value={row.key}
+                      onChange={(e) =>
+                        state.updateMetadataRow(row.id, 'key', e.target.value)
+                      }
+                      placeholder="key"
+                      spellCheck={false}
+                      aria-label="Metadata key"
+                      aria-invalid={
+                        state.shownErrors.metadata ? true : undefined
+                      }
+                      aria-describedby={
+                        state.shownErrors.metadata
+                          ? 'skill-metadata-error'
+                          : undefined
+                      }
+                    />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <TextInput
+                      data-canopy-escape-boundary={escapeBoundary}
+                      value={row.value}
+                      onChange={(e) =>
+                        state.updateMetadataRow(row.id, 'value', e.target.value)
+                      }
+                      placeholder="value"
+                      aria-label="Metadata value"
+                    />
+                  </div>
+                  <Tooltip label="Remove field">
+                    <Button
+                      variant="ghost-destructive"
+                      size="compact"
+                      iconOnly
+                      onClick={() => state.removeMetadataRow(row.id)}
+                      aria-label="Remove field"
+                    >
+                      <AppCatalogCloseIcon size="sm" />
+                    </Button>
+                  </Tooltip>
                 </div>
-                <div className="min-w-0 flex-1">
-                  <TextInput
-                    data-canopy-escape-boundary={escapeBoundary}
-                    value={row.value}
-                    onChange={(e) =>
-                      state.updateMetadataRow(row.id, 'value', e.target.value)
-                    }
-                    placeholder="value"
-                    aria-label="Metadata value"
-                  />
-                </div>
-                <Tooltip label="Remove field">
-                  <Button
-                    variant="ghost-destructive"
-                    size="compact"
-                    iconOnly
-                    onClick={() => state.removeMetadataRow(row.id)}
-                    aria-label="Remove field"
-                  >
-                    <AppCatalogCloseIcon width="12" height="12" />
-                  </Button>
-                </Tooltip>
-              </div>
-            ))}
-            {state.shownErrors.metadata && (
-              <FieldError id="skill-metadata-error">
-                {state.shownErrors.metadata}
-              </FieldError>
-            )}
-            <Button
-              variant="ghost"
-              size="compact"
-              onClick={state.addMetadataRow}
-            >
-              <AppCatalogPlusIcon width="12" height="12" />
-              Add field
-            </Button>
-          </div>
+              ))}
+              {state.shownErrors.metadata && (
+                <FieldError id="skill-metadata-error">
+                  {state.shownErrors.metadata}
+                </FieldError>
+              )}
+              <Button
+                variant="ghost"
+                size="compact"
+                onClick={state.addMetadataRow}
+              >
+                <AppCatalogPlusIcon size="sm" />
+                Add field
+              </Button>
+            </div>
+          </Surface>
         )}
       </div>
 
@@ -1600,7 +1606,7 @@ function SkillEditorBody({
                   data-testid="skill-editor-add-file"
                   className="ml-1"
                 >
-                  <AppCatalogPlusIcon width="12" height="12" />
+                  <AppCatalogPlusIcon size="sm" />
                 </Button>
               </Tooltip>
             }
@@ -1617,22 +1623,27 @@ function SkillEditorBody({
 
       <div className="flex gap-3">
         {enableFiles && state.showFileTree && (
-          <div className="max-h-96 w-48 shrink-0 self-start overflow-y-auto rounded-lg border">
-            <SkillFileTree
-              files={treePaths}
-              activePath={activeFile ? activeFile.path.trim() : null}
-              onSelectFile={(selected) => {
-                if (selected === SKILL_MAIN_FILE) {
-                  state.selectMainFile();
-                  return;
-                }
-                const target = state.files.find(
-                  (f) => f.path.trim() === selected,
-                );
-                if (target) state.openFileTab(target.id);
-              }}
-            />
-          </div>
+          <Surface
+            variant="outline"
+            className="w-48 shrink-0 self-start overflow-hidden"
+          >
+            <div className="max-h-96 overflow-y-auto">
+              <SkillFileTree
+                files={treePaths}
+                activePath={activeFile ? activeFile.path.trim() : null}
+                onSelectFile={(selected) => {
+                  if (selected === SKILL_MAIN_FILE) {
+                    state.selectMainFile();
+                    return;
+                  }
+                  const target = state.files.find(
+                    (f) => f.path.trim() === selected,
+                  );
+                  if (target) state.openFileTab(target.id);
+                }}
+              />
+            </div>
+          </Surface>
         )}
         <div
           // Blocks the rendered SKILL.md and file previews; the edit form is
@@ -2589,7 +2600,7 @@ export function SharedSkillDetailModal({
     !loading && detail ? (unshareOptions?.(detail) ?? null) : null;
   const editButton = summary.canUpdate && (
     <Button size="compact" onClick={onSwitchToEdit}>
-      <AppCatalogDocumentPencilIcon width="12" height="12" />
+      <AppCatalogDocumentPencilIcon size="sm" />
       Edit
     </Button>
   );
@@ -2860,7 +2871,7 @@ export function SharedSkillDetailModal({
       moreItems.push({
         id: 'open-installed',
         label: 'Open installed skill',
-        icon: <ArrowUpRightIcon width={14} height={14} aria-hidden />,
+        icon: <ArrowUpRightIcon size="sm" aria-hidden />,
         testId: 'shared-skill-detail-open',
         onSelect: () => onOpenInstalled(installed.skillName),
       });

@@ -1,4 +1,4 @@
-import { Button, Heading } from '@canopy/ui-shared/components';
+import { Button, Heading, Surface } from '@canopy/ui-shared/components';
 import { type JSX, useCallback, useEffect, useMemo, useState } from 'react';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { PageTitlebar } from '../shared/PageTitlebar';
@@ -306,7 +306,7 @@ function WorkerCard({
           }}
           data-testid={testId(`worker-inspect-${worker.workerId}`)}
         >
-          <AppCatalogExternalIcon width="14" height="14" />
+          <AppCatalogExternalIcon size="sm" />
           Inspect
         </Button>
         {unsettled && (
@@ -502,42 +502,47 @@ export function WorkersPage(): JSX.Element {
           description="Live, read-only view of background and workflow tasks running as managed Claude Code terminal sessions."
         />
         {alreadyCompletedNotice && (
-          <p
-            className="mt-3 inline-flex rounded-md border bg-card px-3 py-1.5 text-s fg-secondary"
-            role="status"
-            data-testid="worker-already-completed-notice"
-          >
-            Worker already completed.
-          </p>
+          <Surface variant="card" size="small" className="mt-3 inline-block">
+            <p
+              className="inline-flex px-3 py-1.5 text-s fg-secondary"
+              role="status"
+              data-testid="worker-already-completed-notice"
+            >
+              Worker already completed.
+            </p>
+          </Surface>
         )}
       </PageContent>
 
       <div className="min-h-0 flex-1 overflow-auto">
         <PageContent>
           {workerList.length === 0 ? (
-            <div
-              className="mx-auto max-w-lg rounded-xl border border-dashed bg-card/40 px-6 py-12 text-center"
+            <Surface
+              variant="dashed"
+              className="mx-auto max-w-lg"
               data-testid="workers-empty-state"
             >
-              <div className="mx-auto mb-4 flex h-10 w-10 items-center justify-center rounded-full bg-secondary fg-secondary">
-                <ClaudeLogo width={18} height={18} />
+              <div className="px-6 py-12 text-center">
+                <div className="mx-auto mb-4 flex h-10 w-10 items-center justify-center rounded-full bg-secondary fg-secondary">
+                  <ClaudeLogo width={18} height={18} />
+                </div>
+                <Heading level={2} variant="title">
+                  No active workers
+                </Heading>
+                <p className="mt-1 text-s fg-secondary">
+                  When {brandText.appName} runs background helpers or workflow
+                  steps in Terminal mode, each appears here as a read-only
+                  terminal you can watch, inspect, or cancel.
+                </p>
+                <Button
+                  onClick={openClaudeSettings}
+                  data-testid="workers-empty-open-settings"
+                  className="mt-4"
+                >
+                  Open Claude settings
+                </Button>
               </div>
-              <Heading level={2} variant="title">
-                No active workers
-              </Heading>
-              <p className="mt-1 text-s fg-secondary">
-                When {brandText.appName} runs background helpers or workflow
-                steps in Terminal mode, each appears here as a read-only
-                terminal you can watch, inspect, or cancel.
-              </p>
-              <Button
-                onClick={openClaudeSettings}
-                data-testid="workers-empty-open-settings"
-                className="mt-4"
-              >
-                Open Claude settings
-              </Button>
-            </div>
+            </Surface>
           ) : (
             <div className="space-y-8">
               {queuedWorkers.length > 0 && (

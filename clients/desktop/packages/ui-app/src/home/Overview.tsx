@@ -245,9 +245,7 @@ export function Overview({
                   )
                 }
                 leadingIcon={
-                  summary?.planMode ? (
-                    <PlanModeIcon width={12} height={12} />
-                  ) : undefined
+                  summary?.planMode ? <PlanModeIcon size="sm" /> : undefined
                 }
                 badge={
                   worktree.awaitingApproval ? (
@@ -314,9 +312,7 @@ export function Overview({
                   )
                 }
                 leadingIcon={
-                  summary?.planMode ? (
-                    <PlanModeIcon width={12} height={12} />
-                  ) : undefined
+                  summary?.planMode ? <PlanModeIcon size="sm" /> : undefined
                 }
                 badge={
                   <span className="inline-flex items-center gap-1.5 rounded-full border border-fg-info/40 bg-info-subtle px-2 py-0.5 text-3xs font-medium fg-info">

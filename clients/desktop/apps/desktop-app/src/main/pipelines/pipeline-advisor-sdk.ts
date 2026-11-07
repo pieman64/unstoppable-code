@@ -26,13 +26,13 @@ import {
   codexNativeMemoryThreadConfig,
 } from '@canopy/desktop-shared/node/lib/native-memory';
 import { readLocalMemoryEnabledPreference } from '../lib/preferences-store';
-import { getObservabilityService } from '../observability';
+import { getExecutionObservabilityIngest } from '../observability/ingest';
 import {
   getBundledClaudeBinaryPath,
   getBundledRgBinaryPath,
   getEnhancedEnv,
 } from './config-paths';
-import { getCodexRuntimeService } from '../codex/runtime-service';
+import { codexRuntimeForWorkerRun } from '../codex/runtime-service';
 import { resolveCodexRuntimeEnvironmentProfile } from '../lib/user-environment-runtime';
 import { spawnClaudeCodeProcessOffMain } from '../agents/claude-process-host-runner';
 import {
@@ -172,7 +172,7 @@ async function runClaudeAdvisorTurn(
     ...input.envOverride,
   };
 
-  const observabilityService = getObservabilityService();
+  const observabilityService = getExecutionObservabilityIngest();
   const observedProvider =
     input.providerType === 'ollama' ? 'ollama' : 'claude';
   if (observedProvider === 'claude') {
@@ -225,7 +225,7 @@ async function runClaudeAdvisorTurn(
 
     for await (const sdkEvent of events) {
       const event: unknown = sdkEvent;
-      getObservabilityService().appendTranscriptRecord(
+      getExecutionObservabilityIngest().appendTranscriptRecord(
         input.observabilityTaskKey,
         event,
       );
@@ -336,7 +336,7 @@ async function runCodexAdvisorTurn(
       ),
     },
   };
-  const service = getCodexRuntimeService();
+  const service = codexRuntimeForWorkerRun('pipelineAdvisorSdkTurn');
   const profile = {
     environment: workspaceEnvironment.environment,
     logicalWorkspaceEnvironmentId:
@@ -423,7 +423,7 @@ async function runCodexStreamedAttempt(
     effort: mapThinkingToReasoningEffort(args.thinkingLevel, args.model),
     signal: args.abortController?.signal,
     onEvent: (event) =>
-      getObservabilityService().appendTranscriptRecord(
+      getExecutionObservabilityIngest().appendTranscriptRecord(
         args.observabilityTaskKey,
         event,
       ),

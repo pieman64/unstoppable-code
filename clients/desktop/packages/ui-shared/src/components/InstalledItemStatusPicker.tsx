@@ -226,12 +226,7 @@ export function InstalledItemStatusPicker({
           <InstalledItemStatusIcon status={status} />
         )}
         {copy.label}
-        <ChevronDownIcon
-          width={12}
-          height={12}
-          aria-hidden
-          className="fg-tertiary"
-        />
+        <ChevronDownIcon size="sm" aria-hidden className="fg-tertiary" />
       </button>
       <FloatingMenu
         open={open}
@@ -269,7 +264,7 @@ export function InstalledItemStatusPicker({
                 </span>
               </span>
               <DropdownMenuItemIcon>
-                {selected && <CheckIcon width={16} height={16} aria-hidden />}
+                {selected && <CheckIcon size="sm" aria-hidden />}
               </DropdownMenuItemIcon>
             </DropdownMenuItem>
           );

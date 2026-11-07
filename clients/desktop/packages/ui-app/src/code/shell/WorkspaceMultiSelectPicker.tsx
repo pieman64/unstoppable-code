@@ -7,7 +7,10 @@ import {
   ProjectAvatarBadge,
   SearchEmptyState,
   SearchField,
+  Skeleton,
+  SlowLoadNote,
 } from '@canopy/ui-shared/components';
+import { SLOW_LOAD_NOTE_DELAY_MS, useDelayedFlag } from '@canopy/ui-shared/lib';
 
 /**
  * Neutral, display-only project option for {@link WorkspaceMultiSelectPicker}.
@@ -60,9 +63,20 @@ export interface WorkspaceMultiSelectPickerProps<
   readonly listHeight?: WorkspacePickerListHeight;
   /** The row's project icon; defaults to the shared project avatar badge. */
   readonly renderOptionIcon?: (option: TOption) => ReactNode;
+  /** The options are on their way: the search waits over placeholder rows. */
+  readonly loading?: boolean;
+  /** Says what is still loading once a load runs long. */
+  readonly loadingSlowNote?: ReactNode;
 }
 
 export type WorkspacePickerListHeight = 'compact' | 'medium' | 'viewport';
+
+const LOADING_ROW_SAMPLES = [
+  'Project name',
+  'Another project name',
+  'Project',
+  'Longer project name',
+];
 
 const LIST_HEIGHT_CLASS: Readonly<Record<WorkspacePickerListHeight, string>> = {
   compact: 'max-h-48',
@@ -95,7 +109,13 @@ export function WorkspaceMultiSelectPicker<
   testIdPrefix = 'workspace-picker',
   listHeight = 'compact',
   renderOptionIcon,
+  loading = false,
+  loadingSlowNote,
 }: WorkspaceMultiSelectPickerProps<TOption>): JSX.Element {
+  const slowLoad = useDelayedFlag(
+    loading && loadingSlowNote !== undefined,
+    SLOW_LOAD_NOTE_DELAY_MS,
+  );
   const selectedWorkspaceIdSet = useMemo(
     () => new Set(selectedWorkspaceIds),
     [selectedWorkspaceIds],
@@ -109,7 +129,7 @@ export function WorkspaceMultiSelectPicker<
   }, [options, searchQuery]);
 
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex min-w-0 flex-col gap-1.5">
       <span className="block text-xs fg-secondary">{label}</span>
       <SearchField
         size="sm"
@@ -118,8 +138,30 @@ export function WorkspaceMultiSelectPicker<
         placeholder="Search projects"
         aria-label="Search projects"
         data-testid={`${testIdPrefix}-search`}
+        disabled={loading}
       />
-      {filteredOptions.length === 0 ? (
+      {loading ? (
+        // No placeholder delay: these rows hold the list's shape from the first
+        // frame, and only the slow-load note waits.
+        <div className="flex flex-col gap-3">
+          <Skeleton
+            loading
+            label="Loading projects"
+            testId={`${testIdPrefix}-loading`}
+          >
+            <ChoiceList aria-label={label}>
+              {LOADING_ROW_SAMPLES.map((sample) => (
+                <ChoiceListRow key={sample} selected={false} disabled>
+                  {sample}
+                </ChoiceListRow>
+              ))}
+            </ChoiceList>
+          </Skeleton>
+          {loadingSlowNote === undefined ? null : (
+            <SlowLoadNote show={slowLoad}>{loadingSlowNote}</SlowLoadNote>
+          )}
+        </div>
+      ) : filteredOptions.length === 0 ? (
         <SearchEmptyState
           testId={`${testIdPrefix}-no-matches`}
           title={emptyMessage}
@@ -132,10 +174,12 @@ export function WorkspaceMultiSelectPicker<
               })}
         />
       ) : (
-        <div className={`flex flex-col ${LIST_HEIGHT_CLASS[listHeight]}`}>
+        <div
+          className={`flex min-w-0 flex-col ${LIST_HEIGHT_CLASS[listHeight]}`}
+        >
           <ChoiceList
             aria-label={label}
-            className="min-h-0"
+            className="min-h-0 overflow-x-hidden"
             data-testid={`${testIdPrefix}-list`}
           >
             {filteredOptions.map((option) => {
@@ -161,7 +205,10 @@ export function WorkspaceMultiSelectPicker<
                   }
                   trailing={subtitle || undefined}
                 >
-                  <span className="block truncate font-medium">
+                  <span
+                    className="block truncate font-medium"
+                    title={optionName}
+                  >
                     {optionName}
                   </span>
                 </ChoiceListRow>

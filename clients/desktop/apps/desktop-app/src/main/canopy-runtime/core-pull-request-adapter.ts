@@ -5,6 +5,9 @@ import type {
   CorePullRequestListParams,
   CorePullRequestListResult,
   CorePullRequestUpdateParams,
+  CorePullRequestMergeParams,
+  CorePullRequestMergeQueueGetParams,
+  CorePullRequestMergeQueueGetResult,
   CoreIntegrationResourceListParams,
   CoreIntegrationResourceListResult,
 } from '@canopy/protocol/canopy-core';
@@ -12,6 +15,7 @@ import type {
   CanopyInstructionOptions,
   CanopyQueryOptions,
 } from '@canopy/core-runtime';
+import { CanopyOperationError } from '@canopy/core-runtime';
 import {
   createCorePullRequestHandlers,
   createCorePullRequestInstructionHandlers,
@@ -22,7 +26,10 @@ import {
   type CorePullRequestInstructionHandlers,
   type PullRequestWriteReceipt,
 } from '@canopy/core-runtime/node/github';
-import { desktopGitHubRequestHandle } from '../github/request-handle';
+import {
+  desktopGitHubRequestHandle,
+  readPullRequestTitleSearch,
+} from '../github/request-handle';
 import { currentGitHubProjection } from '../github/projection-capture';
 import { getRemoteUrl } from '../lib/git';
 import { parseGitHubRemote } from '../lib/github-pr';
@@ -34,6 +41,16 @@ import { recordedRepositoryPath } from '../lib/workspace-recorded-repo';
 
 /** The dispatcher surface the `core.pullRequest.*` projections use. */
 export interface CorePullRequestDispatcher {
+  query(
+    name: 'core.pullRequest.mergeQueue.get',
+    params: CorePullRequestMergeQueueGetParams,
+    options: CanopyQueryOptions,
+  ): Promise<CorePullRequestMergeQueueGetResult>;
+  instruction(
+    name: 'core.pullRequest.merge',
+    params: CorePullRequestMergeParams,
+    options: CanopyInstructionOptions,
+  ): Promise<CorePullRequest>;
   query(
     name: 'core.pullRequest.get',
     params: CorePullRequestGetParams,
@@ -76,6 +93,16 @@ async function recordedPath(
   return recordedRepositoryPath(await readWorkspaceConfig(workspaceId), repoId);
 }
 
+function searchRepositoryUnavailable(): CanopyOperationError {
+  return new CanopyOperationError({
+    kind: 'failed_precondition',
+    code: 'core.pullRequest.repositoryUnavailable',
+    message:
+      'The repository record is gone, or its origin does not name a GitHub repository.',
+    retry: { kind: 'after_refresh', resource: 'workspace-repository' },
+  });
+}
+
 /**
  * The desktop host for `core.pullRequest.*`: workspace records locate the
  * repository, and its `origin` (read as today's pull-request reads read it)
@@ -84,6 +111,32 @@ async function recordedPath(
  */
 export const desktopCorePullRequestHost: CorePullRequestHost = {
   github: desktopGitHubRequestHandle,
+  searchPullRequests: async (repository, query, limit, signal) => {
+    const repoPath = await recordedPath(
+      repository.workspaceId,
+      repository.repoId,
+    );
+    const capture = currentGitHubProjection();
+    if (capture?.kind === 'search') capture.resolvedRepoPath = repoPath;
+    if (
+      repoPath === null ||
+      (capture?.kind === 'search' && capture.repoPath !== repoPath)
+    )
+      throw searchRepositoryUnavailable();
+    return readPullRequestTitleSearch(
+      repoPath,
+      async () => {
+        const remoteUrl = await getRemoteUrl(repoPath);
+        const remote = remoteUrl ? parseGitHubRemote(remoteUrl) : null;
+        if (!remote || !isGitHubRepositoryRef(remote.owner, remote.repo))
+          throw searchRepositoryUnavailable();
+        return remote;
+      },
+      query,
+      limit,
+      signal,
+    );
+  },
   resolveRepository: async ({ workspaceId, repoId }, access) => {
     // The shared-container viewer is read-only (assertWritableScope's rule).
     if (access === 'write' && !isWritableScope(workspaceId)) return null;

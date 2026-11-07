@@ -8,7 +8,7 @@ import { isActivitySectionAllowedForAccess } from '@/lib/shared-containers/panel
 import { useWorkspaceAccess } from '@/lib/workspace-access';
 import { ChatMarkdownFileTargetContext } from './chat-markdown-file-target';
 import { InfoIcon as AppCatalogInfoIcon } from '@canopy/ui-shared/icons/AppIcons';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, Surface } from '@canopy/ui-shared/components';
 
 const HOOKS_SECTION = {
   id: 'hooks',
@@ -58,26 +58,25 @@ export const HookInfoBanner = memo(function HookInfoBanner({
       : null;
 
   return (
-    <div
-      data-testid="chat-hook-info-banner"
-      className="flex items-center gap-2 rounded-lg border bg-fg-primary/[0.03] px-3 py-1.5 text-xs fg-secondary"
-    >
-      <AppCatalogInfoIcon width="14" height="14" className="flex-shrink-0" />
-      <span>
-        Chat initiated by{' '}
-        {openHooks !== null ? (
-          <Button
-            variant="link"
-            data-testid="chat-hook-info-open-hooks"
-            onClick={openHooks}
-          >
-            {hookName}
-          </Button>
-        ) : (
-          <strong>{hookName}</strong>
-        )}{' '}
-        hook at {localTime}
-      </span>
-    </div>
+    <Surface variant="group" data-testid="chat-hook-info-banner">
+      <div className="flex items-center gap-2 px-3 py-1.5 text-xs fg-secondary">
+        <AppCatalogInfoIcon size="sm" className="flex-shrink-0" />
+        <span>
+          Chat initiated by{' '}
+          {openHooks !== null ? (
+            <Button
+              variant="link"
+              data-testid="chat-hook-info-open-hooks"
+              onClick={openHooks}
+            >
+              {hookName}
+            </Button>
+          ) : (
+            <strong>{hookName}</strong>
+          )}{' '}
+          hook at {localTime}
+        </span>
+      </div>
+    </Surface>
   );
 });

@@ -55,6 +55,7 @@ import {
   codexSpeedFastMode,
   isCodexSpeed,
 } from '@canopy/desktop-shared/lib/codex-speed';
+import { isCodexContextWindowSetting } from '@canopy/desktop-shared/lib/codex-context-window';
 import { isChatTabPluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
 import { registerIpcHandler } from './register';
 import {
@@ -204,11 +205,12 @@ function readOptionalBoolean(value: unknown, label: string): void {
   }
 }
 
-/** Every command model-config shape: thinking plus the Codex speed fields. */
+/** Every command model-config shape: thinking plus the Codex fields. */
 const MODEL_CONFIG_KEYS: ReadonlySet<string> = new Set([
   'thinkingLevel',
   'speed',
   'fastMode',
+  'contextWindow',
 ]);
 
 /**
@@ -220,7 +222,13 @@ function validateCodexSpeedFields(
   modelConfig: JsonRecord,
   label: string,
 ): void {
-  const { speed, fastMode } = modelConfig;
+  const { speed, fastMode, contextWindow } = modelConfig;
+  if (
+    contextWindow !== undefined &&
+    !isCodexContextWindowSetting(contextWindow)
+  ) {
+    failInvalidRequest(`${label}.contextWindow is unsupported.`);
+  }
   if (speed === undefined) return;
   if (!isCodexSpeed(speed)) {
     failInvalidRequest(`${label}.speed is unsupported.`);
@@ -634,16 +642,41 @@ const COMMAND_KEYS: Record<ChatCommand['type'], ReadonlySet<string>> = {
     'fileReferences',
     'attachmentPaths',
     'attachmentPromptContexts',
+    'queuedMessageRevision',
   ]),
   'chat.move_queued_message': new Set([
     'type',
     'chatId',
     'queuedMessageId',
     'beforeQueuedMessageId',
+    'queuedMessageRevision',
   ]),
-  'chat.cancel_queued_message': new Set(['type', 'chatId', 'queuedMessageId']),
-  'chat.force_queued_message': new Set(['type', 'chatId', 'queuedMessageId']),
-  'chat.steer_queued_message': new Set(['type', 'chatId', 'queuedMessageId']),
+  'chat.cancel_queued_message': new Set([
+    'type',
+    'chatId',
+    'queuedMessageId',
+    'queuedMessageRevision',
+  ]),
+  'chat.force_queued_message': new Set([
+    'type',
+    'chatId',
+    'queuedMessageId',
+    'queuedMessageRevision',
+  ]),
+  'chat.steer_queued_message': new Set([
+    'type',
+    'chatId',
+    'queuedMessageId',
+    'queuedMessageRevision',
+  ]),
+  'chat.set_queued_message_edit_lock': new Set([
+    'type',
+    'chatId',
+    'queuedMessageId',
+    'locked',
+    'acquisitionId',
+    'queuedMessageRevision',
+  ]),
   'chat.input_delivery_action': new Set([
     'type',
     'chatId',
@@ -1207,6 +1240,7 @@ function validateCommand(
     'chat.cancel_queued_message': ['chatId', 'queuedMessageId'],
     'chat.force_queued_message': ['chatId', 'queuedMessageId'],
     'chat.steer_queued_message': ['chatId', 'queuedMessageId'],
+    'chat.set_queued_message_edit_lock': ['chatId', 'queuedMessageId'],
     'chat.input_delivery_action': ['chatId', 'rowId', 'action'],
     'chat.answer_question': ['chatId', 'questionId'],
     'chat.dismiss_question': ['chatId', 'questionId'],
@@ -1244,6 +1278,20 @@ function validateCommand(
     command.beforeQueuedMessageId !== null
   ) {
     readId(command.beforeQueuedMessageId, 'command.beforeQueuedMessageId');
+  }
+  if (
+    command.queuedMessageRevision !== undefined &&
+    (!Number.isSafeInteger(command.queuedMessageRevision) ||
+      Number(command.queuedMessageRevision) < 1)
+  )
+    failInvalidRequest(
+      'command.queuedMessageRevision must be a positive integer.',
+    );
+  if (commandType === 'chat.set_queued_message_edit_lock') {
+    if (typeof command.locked !== 'boolean')
+      failInvalidRequest('command.locked must be a boolean.');
+    if (command.acquisitionId !== undefined)
+      readId(command.acquisitionId, 'command.acquisitionId');
   }
   if (
     commandType === 'chat.set_approval_mode' &&

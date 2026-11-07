@@ -3393,7 +3393,24 @@ export async function handleCloudRequest(request, response, url) {
       jsonResponse(response, 400, { error: 'Description is required.' });
       return true;
     }
-    jsonResponse(response, 200, { reportId: 'feedback-report-e2e' });
+    const errorReferenceId = body.error?.referenceId;
+    if (
+      body.error !== undefined &&
+      (typeof errorReferenceId !== 'string' ||
+        !/^ERR-[0-9A-HJKMNP-TV-Z]{8}$/.test(errorReferenceId))
+    ) {
+      jsonResponse(response, 400, {
+        error: 'Invalid feedback error reference.',
+      });
+      return true;
+    }
+    jsonResponse(response, 200, {
+      reportId: 'feedback-report-e2e',
+      referenceId: errorReferenceId ?? 'REP-00000000',
+      diagnosticsStatus: body.attachDiagnostics
+        ? 'unavailable'
+        : 'not-requested',
+    });
     return true;
   }
 
@@ -3653,113 +3670,6 @@ export async function handleCloudRequest(request, response, url) {
         getScenario(bearer).cloud?.aiCreditsOrgPools,
       ),
     });
-    return true;
-  }
-
-  // Daily free-credit drip opt-in (CAN-3761). The default (unregistered or
-  // unconfigured) scenario reports a user who already DECIDED and is opted in,
-  // so the Home "Getting started" card never appears and no existing spec's
-  // queue order shifts (same reasoning as the account-match default below). A
-  // `cloud.dailyCreditDrip` override selects undecided / opted-out state:
-  //   { enabled, decidedAt, capCredits?, grantFails?, httpStatus? }
-  // A PUT on a registered scenario persists the choice so the next GET reports
-  // decided, and (unless `grantFails`) credits the balance with the cap and
-  // `dailyDripEnabled: true` through the `cloud.aiCreditsBalance` override, so
-  // the desktop's balance surfaces visibly move from 0 to the granted amount.
-  // A second enable on the same mock "day" grants nothing, mirroring the real
-  // one-row-per-Pacific-day idempotency.
-  if (pathname === '/api/v1/ai-credits/daily-drip') {
-    if (method !== 'GET' && method !== 'PUT') {
-      jsonResponse(response, 405, { error: 'Method not allowed' });
-      return true;
-    }
-    if (!hasValidAuth(request)) {
-      jsonResponse(response, 401, { error: 'Invalid API key.' });
-      return true;
-    }
-    const scenarioKey = keyFromBearer(request);
-    const scenario = getScenario(scenarioKey);
-    const configured = scenario.cloud?.dailyCreditDrip;
-    const forcedStatus = configured?.httpStatus;
-    if (
-      typeof forcedStatus === 'number' &&
-      Number.isInteger(forcedStatus) &&
-      forcedStatus >= 400
-    ) {
-      jsonResponse(response, forcedStatus, {
-        error: `Mock daily drip failure (${forcedStatus})`,
-      });
-      return true;
-    }
-    const current = {
-      enabled: configured?.enabled ?? true,
-      decidedAt:
-        configured && 'decidedAt' in configured
-          ? configured.decidedAt
-          : '2026-01-01T00:00:00.000Z',
-      capCredits: configured?.capCredits ?? 10,
-    };
-    if (method === 'GET') {
-      recordScenarioActivity(scenarioKey, 'dailyCreditDripRead');
-      jsonResponse(response, 200, current);
-      return true;
-    }
-    const body = await readJsonBody(request);
-    if (
-      !body ||
-      typeof body !== 'object' ||
-      Object.keys(body).length !== 1 ||
-      typeof body.enabled !== 'boolean'
-    ) {
-      jsonResponse(response, 400, { error: 'enabled must be a boolean' });
-      return true;
-    }
-    recordScenarioActivity(
-      scenarioKey,
-      body.enabled ? 'dailyCreditDripEnable' : 'dailyCreditDripDisable',
-    );
-    // Deterministic pending-state/layout coverage for the first-run opt-in.
-    if (
-      typeof configured?.saveDelayMs === 'number' &&
-      configured.saveDelayMs > 0
-    ) {
-      await new Promise((resolve) =>
-        setTimeout(resolve, configured.saveDelayMs),
-      );
-    }
-    const next = {
-      enabled: body.enabled,
-      decidedAt: new Date().toISOString(),
-      capCredits: current.capCredits,
-    };
-    const previousBalance = scenario.cloud?.aiCreditsBalance ?? {};
-    const previousCredits =
-      typeof previousBalance.credits === 'number'
-        ? previousBalance.credits
-        : 1234;
-    const shouldGrant =
-      body.enabled &&
-      configured?.grantFails !== true &&
-      configured?.grantedToday !== true;
-    const granted = shouldGrant
-      ? Math.max(current.capCredits - previousCredits, 0)
-      : 0;
-    const balanceCredits = previousCredits + granted;
-    // Only a registered scenario keeps state; the default stays stateless.
-    if (scenarioKey && scenario.cloud) {
-      scenario.cloud.dailyCreditDrip = {
-        ...configured,
-        ...next,
-        ...(shouldGrant ? { grantedToday: true } : {}),
-      };
-      scenario.cloud.aiCreditsBalance = {
-        ...previousBalance,
-        credits: balanceCredits,
-        ...(balanceCredits > 0 ? { eligible: true } : {}),
-        dailyDripEnabled: body.enabled,
-      };
-    }
-    jsonResponse(response, 200, { ...next, balanceCredits, granted });
     return true;
   }
 

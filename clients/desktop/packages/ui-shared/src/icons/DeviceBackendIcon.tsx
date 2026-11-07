@@ -1,5 +1,8 @@
-import type { JSX, SVGProps } from 'react';
-import { MonitorIcon as AppCatalogMonitorIcon } from './AppIcons';
+import type { JSX } from 'react';
+import {
+  MonitorIcon as AppCatalogMonitorIcon,
+  type AppIconProps,
+} from './AppIcons';
 
 /**
  * Backend pip glyph for rows that execute on the user's own machine: a plain
@@ -9,13 +12,6 @@ import { MonitorIcon as AppCatalogMonitorIcon } from './AppIcons';
  * white-labeled across brand packs, so the pip may only depict WHERE work runs,
  * never whose product runs it.
  */
-export function DeviceBackendIcon(props: SVGProps<SVGSVGElement>): JSX.Element {
-  return (
-    <AppCatalogMonitorIcon
-      width="14"
-      height="14"
-      aria-hidden="true"
-      {...props}
-    />
-  );
+export function DeviceBackendIcon(props: AppIconProps): JSX.Element {
+  return <AppCatalogMonitorIcon size="sm" aria-hidden="true" {...props} />;
 }

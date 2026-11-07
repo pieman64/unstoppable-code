@@ -15,7 +15,7 @@ import { pickerKeyHints } from '@canopy/ui-shared/lib/shortcuts';
 const SEARCH_DEBOUNCE_MS = 300;
 const NO_TICKETS: readonly LinearTicketSearchResult[] = [];
 
-// Stable across renders: PickList keys its active-row reset on them.
+// Stable across renders, so PickList's row list memoizes.
 function ticketKey(ticket: LinearTicketSearchResult): string {
   return ticket.id;
 }

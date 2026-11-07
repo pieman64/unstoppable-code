@@ -5,6 +5,8 @@ import type {
 } from '@canopy/protocol/settings/organization-memory';
 import { withPrivacyClass } from '../account/privacy-class';
 import { useSettingsPrivacy } from '../host';
+import { Surface } from '@canopy/ui-shared/components';
+import { Badge } from '@canopy/ui-shared/components/Badge';
 
 interface FactCardProps {
   fact: ExplorerFact | ExplorerRankedFact;
@@ -25,18 +27,10 @@ function FactCardComponent({ fact, onSelect }: FactCardProps): JSX.Element {
   const content = (
     <>
       <div className="flex flex-wrap items-center gap-2 text-xs">
-        <span
-          className={`rounded-full px-2 py-0.5 font-semibold ${
-            fact.liveness === 'live'
-              ? 'bg-success-subtle fg-success'
-              : 'bg-warning-subtle fg-warning'
-          }`}
-        >
+        <Badge tone={fact.liveness === 'live' ? 'success' : 'warning'}>
           {fact.liveness === 'live' ? 'LIVE' : 'SUPERSEDED'}
-        </span>
-        <span className="rounded-full bg-base px-2 py-0.5 font-medium fg-secondary">
-          {fact.evidenceType}
-        </span>
+        </Badge>
+        <Badge>{fact.evidenceType}</Badge>
         {isRanked(fact) && (
           <span className="ml-auto tabular-nums fg-secondary">
             score {fact.score.toFixed(3)}
@@ -66,12 +60,9 @@ function FactCardComponent({ fact, onSelect }: FactCardProps): JSX.Element {
           {fact.entities.map((entity) => (
             <span
               key={entity.id}
-              className={withPrivacyClass(
-                'rounded-md border bg-base px-2 py-0.5 text-xs fg-secondary',
-                blockClassName,
-              )}
+              className={blockClassName === '' ? undefined : blockClassName}
             >
-              {entity.canonicalName}
+              <Badge>{entity.canonicalName}</Badge>
             </span>
           ))}
         </div>
@@ -86,8 +77,11 @@ function FactCardComponent({ fact, onSelect }: FactCardProps): JSX.Element {
   );
 
   return (
-    <article
-      className="rounded-xl border bg-card p-4 transition-colors hover:border-fg-secondary/30"
+    <Surface
+      as="article"
+      variant="card"
+      interactive={onSelect !== undefined}
+      padding="default"
       data-testid={`memory-fact-${fact.id}`}
     >
       {onSelect === undefined ? (
@@ -102,7 +96,7 @@ function FactCardComponent({ fact, onSelect }: FactCardProps): JSX.Element {
           {content}
         </button>
       )}
-    </article>
+    </Surface>
   );
 }
 

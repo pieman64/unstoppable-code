@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import {
   access,
   mkdir,
@@ -8,6 +7,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { codeGraphRepoShadowKey } from '@canopy/code-graph/host/base-seed';
 import {
   addDetachedWorktree,
   checkoutDetachedRef,
@@ -170,8 +170,7 @@ interface RepoShadowMetaFile {
 }
 
 export function getRepoShadowDir(repoRoot: string): string {
-  const key = createHash('sha256').update(repoRoot).digest('hex').slice(0, 16);
-  return join(getRepoShadowsRootDir(), key);
+  return join(getRepoShadowsRootDir(), codeGraphRepoShadowKey(repoRoot));
 }
 
 function getShadowCheckoutPath(repoRoot: string): string {

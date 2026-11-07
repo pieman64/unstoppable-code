@@ -24,6 +24,7 @@ import type {
   FileTreeRoot,
 } from '@canopy/desktop-shared/types';
 import {
+  Surface,
   CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
 } from '@canopy/ui-shared/components';
@@ -597,7 +598,7 @@ function FolderRow({
                 onOpenInFileManager(absolutePath);
               }}
             >
-              <FolderIcon className="h-3 w-3" />
+              <FolderIcon size="sm" />
             </Button>
           </Tooltip>
         ) : undefined
@@ -731,7 +732,7 @@ const FileNodeRow = memo(function FileNodeRow({
               onOpenInFileManager(entry.absolutePath);
             }}
           >
-            <FolderIcon className="h-3 w-3" />
+            <FolderIcon size="sm" />
           </Button>
         </Tooltip>
       }
@@ -3448,119 +3449,127 @@ export function FilesTreeTab({
           createDisabled={!projectId || !worktreeId || roots.length === 0}
         />
       ) : (
-        <div className="flex items-center justify-between border-b px-3 py-2">
-          <span className="text-3xs font-medium fg-secondary">Files</span>
-          <div className="flex items-center gap-0.5">
-            <Tooltip label="New file…">
-              <Button
-                variant="ghost"
-                size="compact"
-                iconOnly
-                onClick={() => handleToolbarCreate('create-file')}
-                disabled={!projectId || !worktreeId || roots.length === 0}
-                data-testid="files-tree-new-file"
-                aria-label="New file…"
-              >
-                <PlusIcon className="h-3 w-3" />
-              </Button>
-            </Tooltip>
-            <Tooltip label="New folder…">
-              <Button
-                variant="ghost"
-                size="compact"
-                iconOnly
-                onClick={() => handleToolbarCreate('create-directory')}
-                disabled={!projectId || !worktreeId || roots.length === 0}
-                data-testid="files-tree-new-folder"
-                aria-label="New folder…"
-              >
-                <FolderPlusIcon className="h-3 w-3" />
-              </Button>
-            </Tooltip>
-            <Tooltip label="Search files">
-              <Button
-                variant="ghost-quiet"
-                size="compact"
-                iconOnly
-                onClick={handleToggleSearch}
-                data-testid="files-tree-search-toggle"
-                aria-expanded={searchOpen}
-                aria-label="Search files"
-              >
-                <SearchIcon className="h-3 w-3" />
-              </Button>
-            </Tooltip>
-            {currentFilePath && (
-              <Tooltip label="Jump to file">
+        <Surface variant="section" boundary="bottom">
+          <div className="flex items-center justify-between px-3 py-2">
+            <span className="text-3xs font-medium fg-secondary">Files</span>
+            <div className="flex items-center gap-0.5">
+              <Tooltip label="New file…">
                 <Button
                   variant="ghost"
                   size="compact"
                   iconOnly
-                  onClick={revealCurrentFile}
-                  disabled={!currentFileTarget}
-                  data-testid="files-tree-jump-to-file"
-                  aria-label="Jump to file"
+                  onClick={() => handleToolbarCreate('create-file')}
+                  disabled={!projectId || !worktreeId || roots.length === 0}
+                  data-testid="files-tree-new-file"
+                  aria-label="New file…"
                 >
-                  <FocusSquareIcon className="h-3 w-3" />
+                  <PlusIcon size="sm" />
                 </Button>
               </Tooltip>
-            )}
-            <FilesTreeRefreshButton
-              onClick={handleRefresh}
-              disabled={refreshDisabled}
-              spinning={rootsLoading}
-              density="compact"
-              showTooltip={false}
-            />
-            <Tooltip label="Collapse all">
-              <Button
-                variant="ghost"
-                size="compact"
-                iconOnly
-                onClick={handleCollapseAll}
-                disabled={!projectId || !worktreeId || expandedPaths.size === 0}
-                data-testid="files-tree-collapse-all"
-                aria-label="Collapse all"
-              >
-                <ChevronUp className="h-3 w-3" />
-              </Button>
-            </Tooltip>
+              <Tooltip label="New folder…">
+                <Button
+                  variant="ghost"
+                  size="compact"
+                  iconOnly
+                  onClick={() => handleToolbarCreate('create-directory')}
+                  disabled={!projectId || !worktreeId || roots.length === 0}
+                  data-testid="files-tree-new-folder"
+                  aria-label="New folder…"
+                >
+                  <FolderPlusIcon size="sm" />
+                </Button>
+              </Tooltip>
+              <Tooltip label="Search files">
+                <Button
+                  variant="ghost-quiet"
+                  size="compact"
+                  iconOnly
+                  onClick={handleToggleSearch}
+                  data-testid="files-tree-search-toggle"
+                  aria-expanded={searchOpen}
+                  aria-label="Search files"
+                >
+                  <SearchIcon size="sm" />
+                </Button>
+              </Tooltip>
+              {currentFilePath && (
+                <Tooltip label="Jump to file">
+                  <Button
+                    variant="ghost"
+                    size="compact"
+                    iconOnly
+                    onClick={revealCurrentFile}
+                    disabled={!currentFileTarget}
+                    data-testid="files-tree-jump-to-file"
+                    aria-label="Jump to file"
+                  >
+                    <FocusSquareIcon size="sm" />
+                  </Button>
+                </Tooltip>
+              )}
+              <FilesTreeRefreshButton
+                onClick={handleRefresh}
+                disabled={refreshDisabled}
+                spinning={rootsLoading}
+                density="compact"
+                showTooltip={false}
+              />
+              <Tooltip label="Collapse all">
+                <Button
+                  variant="ghost"
+                  size="compact"
+                  iconOnly
+                  onClick={handleCollapseAll}
+                  disabled={
+                    !projectId || !worktreeId || expandedPaths.size === 0
+                  }
+                  data-testid="files-tree-collapse-all"
+                  aria-label="Collapse all"
+                >
+                  <ChevronUp className="h-3 w-3" />
+                </Button>
+              </Tooltip>
+            </div>
           </div>
-        </div>
+        </Surface>
       )}
       {searchOpen && (
-        <div
-          className="flex items-center gap-1.5 border-b px-2 py-1.5"
-          data-testid="files-tree-search"
-        >
-          <SearchField
-            ref={searchInputRef}
-            className="flex-1"
-            value={searchQuery}
-            onValueChange={setSearchQuery}
-            onKeyDown={handleSearchKeyDown}
-            placeholder="Filter files…"
-            data-testid="files-tree-search-input"
-            aria-label="Filter files"
-            clearLabel="Clear file filter"
-            clearTestId="files-tree-search-clear"
-          />
-          <Button
-            variant="ghost"
-            size="compact"
-            iconOnly
-            onClick={handleCloseSearch}
-            data-testid="files-tree-search-close"
-            aria-label="Close file search"
+        <Surface variant="section" boundary="bottom">
+          <div
+            className="flex items-center gap-1.5 px-2 py-1.5"
+            data-testid="files-tree-search"
           >
-            <CloseIcon className="h-3 w-3" />
-          </Button>
-        </div>
+            <SearchField
+              ref={searchInputRef}
+              className="flex-1"
+              value={searchQuery}
+              onValueChange={setSearchQuery}
+              onKeyDown={handleSearchKeyDown}
+              placeholder="Filter files…"
+              data-testid="files-tree-search-input"
+              aria-label="Filter files"
+              clearLabel="Clear file filter"
+              clearTestId="files-tree-search-clear"
+            />
+            <Button
+              variant="ghost"
+              size="compact"
+              iconOnly
+              onClick={handleCloseSearch}
+              data-testid="files-tree-search-close"
+              aria-label="Close file search"
+            >
+              <CloseIcon size="sm" />
+            </Button>
+          </div>
+        </Surface>
       )}
       {!inlineEditor && mutationError && (
-        <div className="border-b px-3 py-1.5">
-          <ErrorBanner error={mutationError} className="" />
-        </div>
+        <Surface variant="section" boundary="bottom">
+          <div className="px-3 py-1.5">
+            <ErrorBanner error={mutationError} className="" />
+          </div>
+        </Surface>
       )}
       <div
         ref={scrollRef}

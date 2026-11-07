@@ -8,7 +8,10 @@ import type {
   SidebarItemsFile,
   WorkspaceAttachmentItem,
   WorkspaceConfigFile,
+  WorkspaceNoteItem,
+  WorkspaceNoteReadResponse,
 } from '@canopy/desktop-shared/types';
+import type { CoreWorkspaceTextItemKind } from '@canopy/core-runtime/node/workspace/workspace-note-items';
 import { getDesktopCanopyRuntime } from '../canopy-runtime/desktop-runtime-access';
 import { getCanopyPortalState } from './portal-session-manager';
 import { createPortalCaller } from './portal-caller';
@@ -23,6 +26,10 @@ import {
   updateWorkspaceInstructions,
 } from '../canopy-runtime/workspace-instructions-dispatch';
 import { listAttachmentsForIpc } from '../canopy-runtime/workspace-item-attachments-dispatch';
+import {
+  listTextItemsForIpc,
+  readTextItemForIpc,
+} from '../canopy-runtime/workspace-item-notes-dispatch';
 
 function caller(
   grants: CanopyCallerDescriptor['grants'],
@@ -128,5 +135,33 @@ export function listPortalWorkspaceAttachments(
     caller([]),
     projectId,
     worktreeId,
+  );
+}
+
+/** `portal.workspace_items.list_notes`/`list_prompts` through `core.workspace.item.list`. */
+export function listPortalWorkspaceTextItems(
+  kind: CoreWorkspaceTextItemKind,
+  projectId: unknown,
+): Promise<WorkspaceNoteItem[]> {
+  return listTextItemsForIpc(
+    getDesktopCanopyRuntime(),
+    caller([]),
+    kind,
+    projectId,
+  );
+}
+
+/** `portal.workspace_items.read_note`/`read_prompt` through `core.workspace.item.get`. */
+export function readPortalWorkspaceTextItem(
+  kind: CoreWorkspaceTextItemKind,
+  projectId: unknown,
+  itemId: unknown,
+): Promise<WorkspaceNoteReadResponse> {
+  return readTextItemForIpc(
+    getDesktopCanopyRuntime(),
+    caller([]),
+    kind,
+    projectId,
+    itemId,
   );
 }

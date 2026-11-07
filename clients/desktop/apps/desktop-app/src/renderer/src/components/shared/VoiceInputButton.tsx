@@ -94,7 +94,7 @@ export function VoiceInputButton({
           aria-label={title}
           aria-pressed={false}
         >
-          <MicIcon width={16} height={16} />
+          <MicIcon size="sm" />
         </Button>
       </Tooltip>
     );
@@ -115,11 +115,7 @@ export function VoiceInputButton({
         aria-label={title}
         aria-pressed={state === 'listening'}
       >
-        {state === 'connecting' ? (
-          <LoadingSpinner />
-        ) : (
-          <MicIcon width={16} height={16} />
-        )}
+        {state === 'connecting' ? <LoadingSpinner /> : <MicIcon size="sm" />}
       </ComposerIconButton>
     </Tooltip>
   );

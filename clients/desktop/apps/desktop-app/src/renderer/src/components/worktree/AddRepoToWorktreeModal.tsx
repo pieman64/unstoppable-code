@@ -1,6 +1,6 @@
 import {
   DesktopOrgSharedMultiRepoSetup,
-  useSharedMultiRepoRequired,
+  useSharedMultiRepoRouting,
 } from './DesktopOrgSharedMultiRepoSetup';
 import {
   useCallback,
@@ -12,24 +12,32 @@ import {
 } from 'react';
 import type {
   AdhocMultiRepoMode,
+  AdhocMultiRepoCombineResponse,
   AdhocMultiRepoJoinOption,
   ExistingWorktreeJoinCandidate,
   ExistingWorktreeJoinWorkspaceGroup,
 } from '@canopy/desktop-shared/types';
 import {
+  CenteredLoadingSpinner,
   ChoiceList,
   ChoiceListRow,
-  EmptyState,
-  CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
+  EmptyState,
   Notice,
+  NoticeButton,
+  Surface,
 } from '@canopy/ui-shared/components';
 import { useChatStore } from '@/stores/chatStore';
 import { useGitHubStore } from '@/stores/githubStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { brandText } from '@/lib/brand';
-import { switchContextForWorkspace } from '@/lib/contextScope';
+import { extractIpcErrorMessage } from '@/lib/errors';
+import { useNavigationStore } from '@/stores/navigationStore';
+import {
+  isWorkspaceIdInScopingContext,
+  switchContextForWorkspace,
+} from '@/lib/contextScope';
 import { DialogModal } from '../shared';
 import {
   ExistingWorktreePicker,
@@ -40,6 +48,19 @@ import {
   AddRepositoryDialog,
   type AddRepositoryPickerMode,
 } from '@canopy/ui-app/code/shell/AddRepositoryDialog';
+
+function combineFailureMessage(cause: unknown, fallback: string): string {
+  const message = extractIpcErrorMessage(cause);
+  if (
+    message ===
+      'Wait for running scripts, such as setup, to finish before adding a repo to this worktree.' ||
+    message ===
+      'Wait for the selected worktree’s running scripts, such as setup, to finish before joining it.'
+  ) {
+    return 'Setup is still running. Try again when it finishes.';
+  }
+  return message === 'Unknown error' ? fallback : message;
+}
 
 interface AddRepoToWorktreeModalProps {
   onOpenSharedDestination?: (workspaceId: string) => void;
@@ -65,6 +86,54 @@ async function showDestinationContext(
   } catch {
     return false;
   }
+}
+
+/** A committed move must either open its destination or explain where it lives. */
+function finishCombinedDestination(
+  response: AdhocMultiRepoCombineResponse,
+  visible: boolean,
+  message: string,
+): void {
+  const { addToast } = useGitHubStore.getState();
+  const meta = {
+    projectId: response.destinationWorkspaceId,
+    worktreeId: response.destinationWorktreeId,
+  };
+  if (
+    visible &&
+    isWorkspaceIdInScopingContext(response.destinationWorkspaceId)
+  ) {
+    // Selection alone does not leave Home/New task. Reassert it only after
+    // every canonical tab migration has settled, so the moved chat is ready.
+    useNavigationStore.getState().navigate('main');
+    useChatStore
+      .getState()
+      .selectWorktree(
+        response.destinationWorkspaceId,
+        response.destinationWorktreeId,
+      );
+    addToast(message, 'success', undefined, meta);
+    return;
+  }
+  const destination =
+    useProjectsStore
+      .getState()
+      .projects.find((item) => item.id === response.destinationWorkspaceId) ??
+    response.destinationWorkspace;
+  const location = destination.owner
+    ? `organization ${destination.owner.organizationId}`
+    : 'Personal';
+  addToast(
+    `Combined into "${destination.name}" (${response.destinationWorkspaceId}) in ${location}, but it could not be opened in the current context. The moved chats are there. Switch to an account with access to open the project.`,
+    'warning',
+    undefined,
+    {
+      ...meta,
+      forceInApp: true,
+      keepUntilDismissed: true,
+      blockMessageFromReplay: true,
+    },
+  );
 }
 
 /**
@@ -105,8 +174,24 @@ function clearConsumedWorktreeSelection(
  * extend the source workspace itself (the "Update project" mode). For
  * single-repo and temporary multi-repo sources, the mode is locked to
  * temporary.
+ *
+ * Temporary never depends on the shared-project classification. An Update of
+ * shared organization sources routes to shared setup once classified, and one
+ * that is unclassified cannot be submitted. An organization source can also
+ * ask for shared setup directly, keeping the current selection.
  */
-export function AddRepoToWorktreeModal({
+export function AddRepoToWorktreeModal(
+  props: AddRepoToWorktreeModalProps,
+): JSX.Element {
+  return (
+    <AddRepoToWorktreeModalContent
+      key={`${props.sourceWorkspaceId}:${props.sourceWorktreeId}`}
+      {...props}
+    />
+  );
+}
+
+function AddRepoToWorktreeModalContent({
   onOpenSharedDestination,
   sourceWorkspaceId,
   sourceWorktreeId,
@@ -124,7 +209,6 @@ export function AddRepoToWorktreeModal({
   );
   const flushWorktreeTabs = useChatStore((state) => state.flushWorktreeTabs);
   const selectWorktree = useChatStore((state) => state.selectWorktree);
-  const addToast = useGitHubStore((state) => state.addToast);
 
   const sourceWorkspace = useMemo(
     () => projects.find((p) => p.id === sourceWorkspaceId),
@@ -165,12 +249,32 @@ export function AddRepoToWorktreeModal({
     [existingGroups, selectedExisting],
   );
 
-  const sharedRequired = useSharedMultiRepoRequired([
-    sourceWorkspaceId,
-    ...(pickerMode === 'existing-worktrees' && selectedExisting
-      ? [selectedExisting.workspaceId]
-      : selectedWorkspaceIds),
-  ]);
+  const showModeToggle = sourceIsNonTempMultiRepo;
+  const effectiveMode: AdhocMultiRepoMode = showModeToggle ? mode : 'temporary';
+  const updatingSource = effectiveMode === 'update-source-workspace';
+  const selectedIds =
+    pickerMode === 'new-worktrees'
+      ? selectedWorkspaceIds
+      : selectedExisting
+        ? [selectedExisting.workspaceId]
+        : [];
+  const updateRouting = useSharedMultiRepoRouting(
+    updatingSource && selectedIds.length > 0
+      ? [sourceWorkspaceId, ...selectedIds]
+      : [],
+  );
+  // Only a classification that admits the update may reach the mutating path.
+  const updateBlocked = updatingSource && updateRouting !== 'legacy';
+  // Remembered per source, so another source starts back at the picker.
+  const sharedSetupSource = `${sourceWorkspaceId}:${sourceWorktreeId}`;
+  const [sharedSetupRequestedFor, setSharedSetupRequestedFor] = useState<
+    string | null
+  >(null);
+  // A combine in flight refreshes projects; it must not swap the dialog away.
+  const showSharedSetup =
+    !submitting &&
+    (sharedSetupRequestedFor === sharedSetupSource ||
+      (updatingSource && updateRouting === 'shared'));
 
   useCurrentUiStateReporter('worktree.adhocJoinModal', {
     open: true,
@@ -200,6 +304,7 @@ export function AddRepoToWorktreeModal({
     loading: pickerMode === 'new-worktrees' ? loadingOptions : loadingExisting,
     submitting,
     errorVisible: errorMessage !== null,
+    sharedSetupVisible: showSharedSetup,
   });
 
   // Track the modal's mounted lifetime and the latest in-flight existing-load
@@ -282,14 +387,13 @@ export function AddRepoToWorktreeModal({
     }
   }, [hasLoadedExisting, loadingExisting, loadExistingOptions]);
 
-  const showModeToggle = sourceIsNonTempMultiRepo;
   const selectedExistingWarnings = useMemo<string[]>(
     () => (selectedExisting ? getCandidateWarnings(selectedExisting) : []),
     [selectedExisting],
   );
 
   const handleCombine = useCallback(async (): Promise<void> => {
-    if (submitting) return;
+    if (submitting || updateBlocked) return;
     if (selectedWorkspaceIds.length === 0) {
       setErrorMessage('Choose at least one project to combine with.');
       return;
@@ -297,14 +401,9 @@ export function AddRepoToWorktreeModal({
     setErrorMessage(null);
     setSubmitting(true);
     try {
-      if (sharedRequired) return;
       // Flush any pending chat-tab persistence on the source so the migration
       // sees the latest state. Mirrors the chatStore migration contract.
       await flushWorktreeTabs(sourceWorkspaceId, sourceWorktreeId);
-
-      const effectiveMode: AdhocMultiRepoMode = showModeToggle
-        ? mode
-        : 'temporary';
 
       const response = await combineWorktreeWithWorkspace({
         sourceWorkspaceId,
@@ -317,7 +416,9 @@ export function AddRepoToWorktreeModal({
         // projectsStore set `worktreeError`; read it directly so we keep the
         // modal-local error area in sync with whatever the backend reported.
         const worktreeError = useProjectsStore.getState().worktreeError;
-        setErrorMessage(worktreeError ?? 'Failed to combine projects.');
+        setErrorMessage(
+          combineFailureMessage(worktreeError, 'Failed to combine projects.'),
+        );
         return;
       }
 
@@ -347,43 +448,37 @@ export function AddRepoToWorktreeModal({
         await migrateWorktreeTabsToAdhocWorkspace(response);
       }
 
-      addToast(
+      finishCombinedDestination(
+        response,
+        destinationVisible,
         effectiveMode === 'update-source-workspace'
           ? 'Project updated'
           : 'Created multi-repo worktree',
-        'success',
-        undefined,
-        {
-          projectId: response.destinationWorkspaceId,
-          worktreeId: response.destinationWorktreeId,
-        },
       );
       onClose();
     } catch (cause: unknown) {
       setErrorMessage(
-        cause instanceof Error ? cause.message : 'Failed to combine projects.',
+        combineFailureMessage(cause, 'Failed to combine projects.'),
       );
     } finally {
       setSubmitting(false);
     }
   }, [
-    addToast,
     combineWorktreeWithWorkspace,
+    effectiveMode,
     flushWorktreeTabs,
     migrateWorktreeTabsToAdhocWorkspace,
-    mode,
-    sharedRequired,
     onClose,
     selectWorktree,
     selectedWorkspaceIds,
-    showModeToggle,
     sourceWorkspaceId,
     sourceWorktreeId,
     submitting,
+    updateBlocked,
   ]);
 
   const handleJoinExisting = useCallback(async (): Promise<void> => {
-    if (submitting || !selectedExisting) return;
+    if (submitting || updateBlocked || !selectedExisting) return;
     setErrorMessage(null);
     setSubmitting(true);
     try {
@@ -395,9 +490,6 @@ export function AddRepoToWorktreeModal({
         selectedExisting.worktreeId,
       );
 
-      const effectiveMode: AdhocMultiRepoMode = showModeToggle
-        ? mode
-        : 'temporary';
       const response = await combineWorktreeWithExistingWorktree({
         sourceWorkspaceId,
         sourceWorktreeId,
@@ -407,7 +499,9 @@ export function AddRepoToWorktreeModal({
       });
       if (!response) {
         const worktreeError = useProjectsStore.getState().worktreeError;
-        setErrorMessage(worktreeError ?? 'Failed to join worktree.');
+        setErrorMessage(
+          combineFailureMessage(worktreeError, 'Failed to join worktree.'),
+        );
         return;
       }
 
@@ -451,70 +545,57 @@ export function AddRepoToWorktreeModal({
         compatibilitySymlinks: joined.compatibilitySymlinks,
         removedTemporaryWorkspaceId: joined.removedTemporaryWorkspaceId,
       });
-      addToast(
+      finishCombinedDestination(
+        response,
+        destinationVisible,
         effectiveMode === 'update-source-workspace'
           ? 'Project updated'
           : 'Joined worktree',
-        'success',
-        undefined,
-        {
-          projectId: response.destinationWorkspaceId,
-          worktreeId: response.destinationWorktreeId,
-        },
       );
       onClose();
     } catch (cause: unknown) {
-      setErrorMessage(
-        cause instanceof Error ? cause.message : 'Failed to join worktree.',
-      );
+      setErrorMessage(combineFailureMessage(cause, 'Failed to join worktree.'));
     } finally {
       setSubmitting(false);
     }
   }, [
-    addToast,
     combineWorktreeWithExistingWorktree,
+    effectiveMode,
     flushWorktreeTabs,
     migrateWorktreeTabsToAdhocWorkspace,
-    mode,
     onClose,
     selectWorktree,
     selectedExisting,
-    showModeToggle,
     sourceWorkspaceId,
     sourceWorktreeId,
     submitting,
+    updateBlocked,
   ]);
 
-  const selectedIds =
-    pickerMode === 'new-worktrees'
-      ? selectedWorkspaceIds
-      : selectedExisting
-        ? [selectedExisting.workspaceId]
-        : [];
   const selectedSharedSources = [
     sourceWorkspace,
     ...selectedIds.map((id) => projects.find((project) => project.id === id)),
   ].filter((project) => project !== undefined);
-  if (sharedRequired) {
+  if (showSharedSetup) {
     return (
       <DialogModal
         onClose={onClose}
         title="New shared multi-repo project"
         titleId="shared-multi-repo-title"
         maxWidth="xl"
+        maxHeight="calc(100dvh - 2rem)"
+        scrollableBody={false}
       >
-        <div className="space-y-4">
-          <DesktopOrgSharedMultiRepoSetup
-            mode="combine"
-            onClose={onClose}
-            sources={selectedSharedSources.map((project) => ({
-              kind: 'workspace',
-              id: project.id,
-              name: project.name,
-            }))}
-            onOpenDestination={onOpenSharedDestination}
-          />
-        </div>
+        <DesktopOrgSharedMultiRepoSetup
+          mode="combine"
+          onClose={onClose}
+          sources={selectedSharedSources.map((project) => ({
+            kind: 'workspace',
+            id: project.id,
+            name: project.name,
+          }))}
+          onOpenDestination={onOpenSharedDestination}
+        />
       </DialogModal>
     );
   }
@@ -603,13 +684,14 @@ export function AddRepoToWorktreeModal({
       }}
       selectionAccessory={
         showModeToggle ? (
-          <div className="rounded-xl border bg-secondary/10 p-3">
+          <Surface variant="group" padding="compact">
             <span className="block text-xs fg-secondary">Update mode</span>
             <ChoiceList kind="radio" aria-label="Update mode" className="mt-2">
               <ChoiceListRow
                 kind="radio"
                 selected={mode === 'temporary'}
                 onClick={() => setMode('temporary')}
+                disabled={submitting}
                 data-testid="add-repo-to-worktree-modal-mode-temporary"
               >
                 <span className="block text-s font-medium">Temporary</span>
@@ -622,6 +704,7 @@ export function AddRepoToWorktreeModal({
                 kind="radio"
                 selected={mode === 'update-source-workspace'}
                 onClick={() => setMode('update-source-workspace')}
+                disabled={submitting}
                 data-testid="add-repo-to-worktree-modal-mode-update"
               >
                 <span className="block text-s font-medium">Update project</span>
@@ -630,9 +713,42 @@ export function AddRepoToWorktreeModal({
                 </span>
               </ChoiceListRow>
             </ChoiceList>
-          </div>
+          </Surface>
         ) : null
       }
+      notices={
+        <>
+          {updateBlocked && selectedIds.length > 0 ? (
+            <Notice
+              intent={updateRouting === 'unavailable' ? 'attention' : 'neutral'}
+              data-testid="add-repo-to-worktree-modal-update-check"
+            >
+              {updateRouting === 'unavailable'
+                ? 'Couldn’t check whether this project can be updated. Use Temporary, or refresh and try again.'
+                : 'Checking whether this project can be updated…'}
+            </Notice>
+          ) : null}
+          {sourceWorkspace?.owner?.type === 'organization' ? (
+            <Notice
+              intent="neutral"
+              role="none"
+              actions={
+                <NoticeButton
+                  disabled={submitting}
+                  onClick={() => setSharedSetupRequestedFor(sharedSetupSource)}
+                  data-testid="add-repo-to-worktree-modal-create-shared"
+                >
+                  Create shared project instead
+                </NoticeButton>
+              }
+            >
+              To make these repositories a project your whole organization can
+              use, create a shared project.
+            </Notice>
+          ) : null}
+        </>
+      }
+      submitBlocked={updateBlocked}
       submitting={submitting}
       errorMessage={errorMessage}
     />

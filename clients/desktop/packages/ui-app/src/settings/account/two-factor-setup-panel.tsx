@@ -17,6 +17,7 @@ import {
 import { isOkResponse } from '@canopy/protocol/settings/account';
 import { SettingsImage, useSettingsClient, useSettingsPrivacy } from '../host';
 import { withPrivacyClass } from './privacy-class';
+import { Surface } from '@canopy/ui-shared/components';
 
 const INVALID_CODE_ERROR = 'Invalid verification code.';
 const ENABLE_FAILED_ERROR = 'Unable to enable two-factor authentication.';
@@ -357,14 +358,20 @@ export function TwoFactorSetupPanel({
               />
               {totpUri && (
                 <Disclosure label="Setup key" dataTestId="two-factor-setup-key">
-                  <code
-                    className={withPrivacyClass(
-                      'block overflow-x-auto rounded-md border bg-secondary px-3 py-2 font-mono text-xs fg-primary',
-                      blockClassName,
-                    )}
+                  <Surface
+                    variant="group"
+                    size="small"
+                    className="overflow-hidden"
                   >
-                    {totpUri}
-                  </code>
+                    <code
+                      className={withPrivacyClass(
+                        'block overflow-x-auto px-3 py-2 font-mono text-xs fg-primary',
+                        blockClassName,
+                      )}
+                    >
+                      {totpUri}
+                    </code>
+                  </Surface>
                 </Disclosure>
               )}
             </div>
@@ -416,18 +423,20 @@ export function TwoFactorSetupPanel({
             <p className="text-s fg-secondary">
               These codes are shown once. Store them somewhere safe.
             </p>
-            <ul
-              className={withPrivacyClass(
-                'grid grid-cols-2 gap-2 rounded-md border bg-secondary p-3',
-                blockClassName,
-              )}
-            >
-              {backupCodes.map((backupCode) => (
-                <li key={backupCode} className="font-mono text-s fg-primary">
-                  {backupCode}
-                </li>
-              ))}
-            </ul>
+            <Surface variant="group" size="small" padding="compact">
+              <ul
+                className={withPrivacyClass(
+                  'grid grid-cols-2 gap-2',
+                  blockClassName,
+                )}
+              >
+                {backupCodes.map((backupCode) => (
+                  <li key={backupCode} className="font-mono text-s fg-primary">
+                    {backupCode}
+                  </li>
+                ))}
+              </ul>
+            </Surface>
             <div className="flex flex-wrap items-center gap-2">
               <Button
                 size="compact"

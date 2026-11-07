@@ -182,6 +182,9 @@ export const CHAT_MESSAGE_COMMAND_ROUTES: Partial<
         ...baseParams(request),
         chatId: cancel.chatId,
         entryId: cancel.queuedMessageId,
+        ...(cancel.queuedMessageRevision !== undefined
+          ? { entryRevision: cancel.queuedMessageRevision }
+          : {}),
       };
     },
     toLegacyResult: (result) => CoreChatCommandReceiptSchema.parse(result),
@@ -194,6 +197,9 @@ export const CHAT_MESSAGE_COMMAND_ROUTES: Partial<
         ...baseParams(request),
         chatId: edit.chatId,
         entryId: edit.queuedMessageId,
+        ...(edit.queuedMessageRevision !== undefined
+          ? { entryRevision: edit.queuedMessageRevision }
+          : {}),
         mutation: {
           kind: 'edit',
           text: edit.text,
@@ -211,6 +217,9 @@ export const CHAT_MESSAGE_COMMAND_ROUTES: Partial<
         ...baseParams(request),
         chatId: steer.chatId,
         entryId: steer.queuedMessageId,
+        ...(steer.queuedMessageRevision !== undefined
+          ? { entryRevision: steer.queuedMessageRevision }
+          : {}),
         mutation: { kind: 'steer' },
       };
     },
@@ -224,7 +233,32 @@ export const CHAT_MESSAGE_COMMAND_ROUTES: Partial<
         ...baseParams(request),
         chatId: move.chatId,
         entryId: move.queuedMessageId,
+        ...(move.queuedMessageRevision !== undefined
+          ? { entryRevision: move.queuedMessageRevision }
+          : {}),
         mutation: { kind: 'move', beforeEntryId: move.beforeQueuedMessageId },
+      };
+    },
+    toLegacyResult: (result) => CoreChatCommandReceiptSchema.parse(result),
+  },
+  'chat.set_queued_message_edit_lock': {
+    instruction: 'core.chat.queue.entry.update',
+    toParams: (command, request) => {
+      const lock = requireCommand(command, 'chat.set_queued_message_edit_lock');
+      return {
+        ...baseParams(request),
+        chatId: lock.chatId,
+        entryId: lock.queuedMessageId,
+        ...(lock.queuedMessageRevision !== undefined
+          ? { entryRevision: lock.queuedMessageRevision }
+          : {}),
+        mutation: {
+          kind: 'lock',
+          locked: lock.locked,
+          ...(lock.acquisitionId !== undefined
+            ? { acquisitionId: lock.acquisitionId }
+            : {}),
+        },
       };
     },
     toLegacyResult: (result) => CoreChatCommandReceiptSchema.parse(result),
@@ -237,6 +271,9 @@ export const CHAT_MESSAGE_COMMAND_ROUTES: Partial<
         ...baseParams(request),
         chatId: force.chatId,
         entryId: force.queuedMessageId,
+        ...(force.queuedMessageRevision !== undefined
+          ? { entryRevision: force.queuedMessageRevision }
+          : {}),
       };
     },
     toLegacyResult: (result) => CoreChatCommandReceiptSchema.parse(result),
@@ -253,6 +290,9 @@ function queueUpdateCommand(
         type: 'chat.steer_queued_message',
         chatId: params.chatId,
         queuedMessageId: params.entryId,
+        ...(params.entryRevision !== undefined
+          ? { queuedMessageRevision: params.entryRevision }
+          : {}),
       };
     case 'move':
       return {
@@ -260,6 +300,9 @@ function queueUpdateCommand(
         chatId: params.chatId,
         queuedMessageId: params.entryId,
         beforeQueuedMessageId: mutation.beforeEntryId,
+        ...(params.entryRevision !== undefined
+          ? { queuedMessageRevision: params.entryRevision }
+          : {}),
       };
     case 'edit':
       return {
@@ -268,6 +311,22 @@ function queueUpdateCommand(
         queuedMessageId: params.entryId,
         text: mutation.text,
         ...(mutation.inputMode ? { inputMode: mutation.inputMode } : {}),
+        ...(params.entryRevision !== undefined
+          ? { queuedMessageRevision: params.entryRevision }
+          : {}),
+      };
+    case 'lock':
+      return {
+        type: 'chat.set_queued_message_edit_lock',
+        chatId: params.chatId,
+        queuedMessageId: params.entryId,
+        locked: mutation.locked,
+        ...(mutation.acquisitionId !== undefined
+          ? { acquisitionId: mutation.acquisitionId }
+          : {}),
+        ...(params.entryRevision !== undefined
+          ? { queuedMessageRevision: params.entryRevision }
+          : {}),
       };
   }
 }
@@ -425,6 +484,9 @@ export function createCoreChatMessageAdapter(
           type: 'chat.cancel_queued_message',
           chatId: params.chatId,
           queuedMessageId: params.entryId,
+          ...(params.entryRevision !== undefined
+            ? { queuedMessageRevision: params.entryRevision }
+            : {}),
         },
         context,
       ),
@@ -443,6 +505,9 @@ export function createCoreChatMessageAdapter(
           type: 'chat.force_queued_message',
           chatId: params.chatId,
           queuedMessageId: params.entryId,
+          ...(params.entryRevision !== undefined
+            ? { queuedMessageRevision: params.entryRevision }
+            : {}),
         },
         context,
       ),

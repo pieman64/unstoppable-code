@@ -12,6 +12,10 @@ import { createContext, useContext, type JSX, type ReactNode } from 'react';
  * more columns: for long values such as paths and ids, and, with large
  * values, for a row of stat tiles (design calls 2A and 3A, 2026-10-31).
  *
+ * The `spread` layout puts each value on the trailing edge of its own row,
+ * for facts on a tooltip. The `inline` layout runs the facts along one
+ * wrapping line, for a chart legend.
+ *
  * The list owns the grid, the type size, the spacing and the label ink; each
  * `Fact` is one label and its value. Every option is spelled out so Tailwind
  * emits it; there is no class passthrough beyond placement.
@@ -25,10 +29,11 @@ export type FactListLabelWidth =
   | '6rem'
   | '6.5rem'
   | '7rem';
-export type FactListSize = 'xs' | 's' | 'inherit';
+export type FactListSize = '2xs' | 'xs' | 's' | 'inherit';
 export type FactListRowGap = '0.5' | '1' | '1.5' | '2' | '3';
 export type FactListColumnGap = '2' | '3' | '4';
-export type FactLabelTone = 'secondary' | 'tertiary';
+/** `inherit`: the surface's own ink, dimmed, for a list on a tooltip. */
+export type FactLabelTone = 'secondary' | 'tertiary' | 'inherit';
 
 const LABEL_WIDTH_CLASS: Record<FactListLabelWidth, string> = {
   auto: 'grid-cols-[auto_minmax(0,1fr)]',
@@ -40,6 +45,7 @@ const LABEL_WIDTH_CLASS: Record<FactListLabelWidth, string> = {
 };
 
 const SIZE_CLASS: Record<FactListSize, string> = {
+  '2xs': ' text-2xs leading-snug',
   xs: ' text-xs',
   s: ' text-s',
   inherit: '',
@@ -62,6 +68,7 @@ const COLUMN_GAP_CLASS: Record<FactListColumnGap, string> = {
 const LABEL_TONE_CLASS: Record<FactLabelTone, string> = {
   secondary: 'fg-secondary',
   tertiary: 'fg-tertiary',
+  inherit: 'opacity-70',
 };
 
 /** Placement only: margins around the list. */
@@ -77,9 +84,11 @@ const PLACEMENT_CLASS: Record<FactListPlacement, string> = {
 
 /**
  * `columns`: a label column beside a value column. `stacked`: each label above
- * its value, the facts laid out in `columns` columns.
+ * its value, the facts laid out in `columns` columns. `spread`: one row per
+ * fact, the value on the trailing edge. `inline`: the facts on one wrapping
+ * line.
  */
-export type FactListLayout = 'columns' | 'stacked';
+export type FactListLayout = 'columns' | 'stacked' | 'spread' | 'inline';
 
 /** Columns of a stacked list; `4` is two columns on a phone-width screen. */
 export type FactListColumns = 1 | 2 | 4;
@@ -93,12 +102,14 @@ const STACKED_COLUMNS_CLASS: Record<FactListColumns, string> = {
 /** A stacked list's value size: `large` for stat tiles. */
 export type FactValueSize = 'default' | 'large';
 
-export type FactValueTone = 'primary' | 'secondary' | 'destructive';
+/** `inherit`: the surface's own ink, for a list on a tooltip. */
+export type FactValueTone = 'primary' | 'secondary' | 'destructive' | 'inherit';
 
 const VALUE_TONE_CLASS: Record<FactValueTone, string> = {
   primary: 'fg-primary',
   secondary: 'fg-secondary',
   destructive: 'fg-destructive',
+  inherit: 'opacity-90',
 };
 
 interface FactListContextValue {
@@ -156,11 +167,13 @@ export function FactList({
   dataTestId,
   children,
 }: FactListProps): JSX.Element {
-  const gridClass =
-    layout === 'stacked'
-      ? STACKED_COLUMNS_CLASS[columns]
-      : LABEL_WIDTH_CLASS[labelWidth];
-  const className = `grid ${gridClass}${COLUMN_GAP_CLASS[columnGap]}${ROW_GAP_CLASS[rowGap]}${SIZE_CLASS[size]}${divided ? ' border-t pt-1.5' : ''}${placement ? PLACEMENT_CLASS[placement] : ''}`;
+  const layoutClass: Record<FactListLayout, string> = {
+    columns: `grid ${LABEL_WIDTH_CLASS[labelWidth]}`,
+    stacked: `grid ${STACKED_COLUMNS_CLASS[columns]}`,
+    spread: 'flex flex-col',
+    inline: 'flex flex-wrap',
+  };
+  const className = `${layoutClass[layout]}${COLUMN_GAP_CLASS[columnGap]}${ROW_GAP_CLASS[rowGap]}${SIZE_CLASS[size]}${divided ? ' border-t pt-1.5' : ''}${placement ? PLACEMENT_CLASS[placement] : ''}`;
   return (
     <dl className={className} data-testid={dataTestId}>
       <FactListContext.Provider
@@ -201,6 +214,10 @@ export interface FactProps {
   readonly title?: string;
   /** Value ink: the list's (primary by default); secondary for a quieter value. */
   readonly valueTone?: FactValueTone;
+  /** A color swatch before the label, in an `inline` list (a chart series). */
+  readonly swatch?: string;
+  /** A second, quieter value after the first, in an `inline` list. */
+  readonly detail?: ReactNode;
   /** Test id on the value. */
   readonly dataTestId?: string;
   /** Test id on the label. */
@@ -208,6 +225,13 @@ export interface FactProps {
   /** Test id on the fact as a whole (its label and value). */
   readonly testId?: string;
 }
+
+const FACT_CLASS: Record<FactListLayout, string> = {
+  columns: 'contents',
+  stacked: 'flex min-w-0 flex-col gap-0.5',
+  spread: 'flex items-center justify-between gap-6',
+  inline: 'flex items-center gap-1.5',
+};
 
 const VALUE_SIZE_CLASS: Record<FactValueSize, string> = {
   default: '',
@@ -226,6 +250,8 @@ export function Fact({
   mono = false,
   title,
   valueTone,
+  swatch,
+  detail,
   dataTestId,
   labelTestId,
   testId,
@@ -234,24 +260,33 @@ export function Fact({
   const { labelTone, labelMono, layout, valueSize } = list;
   const tone = valueTone ?? list.valueTone;
   const stacked = layout === 'stacked';
+  const spread = layout === 'spread';
+  const inline = layout === 'inline';
   return (
-    <div
-      className={stacked ? 'flex min-w-0 flex-col gap-0.5' : 'contents'}
-      data-testid={testId}
-    >
+    <div className={FACT_CLASS[layout]} data-testid={testId}>
       <dt
-        className={`${LABEL_TONE_CLASS[labelTone]}${labelMono ? ' font-mono' : ''}`}
+        className={`${LABEL_TONE_CLASS[labelTone]}${labelMono ? ' font-mono' : ''}${spread ? ' shrink-0' : ''}${inline ? ' inline-flex items-center gap-1.5' : ''}`}
         data-testid={labelTestId}
       >
+        {inline && swatch !== undefined ? (
+          <span
+            aria-hidden="true"
+            className="size-2 shrink-0 rounded-xs"
+            style={{ backgroundColor: swatch }}
+          />
+        ) : null}
         {label}
       </dt>
       <dd
-        className={`min-w-0 ${VALUE_TONE_CLASS[tone]}${VALUE_FIT_CLASS[fit]}${stacked ? VALUE_SIZE_CLASS[valueSize] : ''}${numeric ? ' tabular-nums' : ''}${mono ? ' font-mono' : ''}`}
+        className={`${inline ? '' : 'min-w-0 '}${VALUE_TONE_CLASS[tone]}${inline ? '' : VALUE_FIT_CLASS[fit]}${spread ? ' justify-end text-right' : ''}${stacked ? VALUE_SIZE_CLASS[valueSize] : ''}${numeric ? ' tabular-nums' : ''}${mono ? ' font-mono' : ''}`}
         title={title}
         data-testid={dataTestId}
       >
         {children}
       </dd>
+      {inline && detail !== undefined ? (
+        <dd className="tabular-nums fg-tertiary">{detail}</dd>
+      ) : null}
     </div>
   );
 }

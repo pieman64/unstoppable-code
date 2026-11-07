@@ -22,6 +22,7 @@ import {
   PLAN_MARKDOWN_OPTIONS,
   stripPlanTitleLine,
 } from '../plans/plan-markdown';
+import { Surface } from '@canopy/ui-shared/components';
 
 export interface PlansSectionProps {
   readonly plans: readonly PortalPlan[];
@@ -61,7 +62,7 @@ function PlanCard({
   if (plan.content && onImplementPlan && !executionUnavailable) {
     actions.push({
       label: 'Implement',
-      icon: <ChatIcon width={13} height={13} aria-hidden="true" />,
+      icon: <ChatIcon size="sm" aria-hidden="true" />,
       onClick: (): void => onImplementPlan(plan),
       dataTestId: `activity-plan-send-${plan.localId ?? plan.title}`,
     });
@@ -72,7 +73,7 @@ function PlanCard({
   if (plan.content && onRunPlanPipeline && !executionUnavailable) {
     actions.push({
       label: 'Workflow',
-      icon: <PipelineIcon width={13} height={13} aria-hidden="true" />,
+      icon: <PipelineIcon size="sm" aria-hidden="true" />,
       onClick: (): void => onRunPlanPipeline(plan),
       dataTestId: `activity-plan-pipeline-${plan.localId ?? plan.title}`,
     });
@@ -89,58 +90,67 @@ function PlanCard({
   if (!plan.content && onGetPlan) {
     actions.push({
       label: 'Load',
-      icon: <DocumentIcon width={13} height={13} aria-hidden="true" />,
+      icon: <DocumentIcon size="sm" aria-hidden="true" />,
       onClick: (): void => onGetPlan(plan),
     });
   }
   return (
-    <div
+    <Surface
+      variant="group"
+      interactive
+      padding="compact"
+      className="group/plan relative w-full"
       data-testid={`activity-plan-row-${plan.localId ?? plan.title}`}
-      className="group/plan relative w-full rounded-lg border bg-fg-primary/[0.03] p-3 text-left transition-colors hover:bg-fg-primary/[0.06]"
     >
-      <div className="truncate text-s font-semibold fg-primary">
-        <Markdown options={INLINE_PLAN_MARKDOWN_OPTIONS}>{plan.title}</Markdown>
-      </div>
-      {body && (
-        <div
-          className="prose prose-sm mt-1 line-clamp-3 max-w-none text-xs leading-5 fg-secondary"
-          data-testid={`activity-plan-body-${plan.localId ?? plan.title}`}
-        >
-          <Markdown options={PLAN_MARKDOWN_OPTIONS}>{body}</Markdown>
+      <div className="text-left">
+        <div className="truncate text-s font-semibold fg-primary">
+          <Markdown options={INLINE_PLAN_MARKDOWN_OPTIONS}>
+            {plan.title}
+          </Markdown>
         </div>
-      )}
-      <div className="mt-2 flex items-center gap-3 text-2xs fg-secondary">
-        {typeof revision === 'number' && (
-          <span
-            className="shrink-0 rounded-full bg-fg-primary/[0.05] px-1.5 py-0.5 text-3xs font-medium"
-            data-testid={`activity-plan-revision-${plan.localId ?? plan.title}`}
+        {body && (
+          <div
+            className="prose prose-sm mt-1 line-clamp-3 max-w-none text-xs leading-5 fg-secondary"
+            data-testid={`activity-plan-body-${plan.localId ?? plan.title}`}
           >
-            Rev {revision}
-          </span>
+            <Markdown options={PLAN_MARKDOWN_OPTIONS}>{body}</Markdown>
+          </div>
         )}
-        {plan.status && plan.status !== reviewStatus && (
-          <span className="shrink-0">{plan.status}</span>
-        )}
-        {/* The Portal projection carries no execution evidence, so web shows
+        <div className="mt-2 flex items-center gap-3 text-2xs fg-secondary">
+          {typeof revision === 'number' && (
+            <span
+              className="shrink-0 rounded-full bg-fg-primary/[0.05] px-1.5 py-0.5 text-3xs font-medium"
+              data-testid={`activity-plan-revision-${plan.localId ?? plan.title}`}
+            >
+              Rev {revision}
+            </span>
+          )}
+          {plan.status && plan.status !== reviewStatus && (
+            <span className="shrink-0">{plan.status}</span>
+          )}
+          {/* The Portal projection carries no execution evidence, so web shows
             the stored review status only (never Implementing/Implemented). */}
-        <PlanReviewStatusBadge
-          className="shrink-0"
-          status={resolvePlanDisplayStatus({ reviewStatus })}
-          data-testid={`activity-plan-status-${plan.localId ?? plan.title}`}
-        />
-        {hasPlanProvenance(plan.source, plan.sourceFilePath) ? (
-          <PlanProvenance
-            source={plan.source}
-            sourceFilePath={plan.sourceFilePath}
+          <PlanReviewStatusBadge
+            className="shrink-0"
+            status={resolvePlanDisplayStatus({ reviewStatus })}
+            data-testid={`activity-plan-status-${plan.localId ?? plan.title}`}
           />
-        ) : (
-          plan.source && <span className="fg-secondary/60">{plan.source}</span>
+          {hasPlanProvenance(plan.source, plan.sourceFilePath) ? (
+            <PlanProvenance
+              source={plan.source}
+              sourceFilePath={plan.sourceFilePath}
+            />
+          ) : (
+            plan.source && (
+              <span className="fg-secondary/60">{plan.source}</span>
+            )
+          )}
+        </div>
+        {(actions.length > 0 || copyAction) && (
+          <PlanActionButtonRow items={actions} trailing={copyAction} />
         )}
       </div>
-      {(actions.length > 0 || copyAction) && (
-        <PlanActionButtonRow items={actions} trailing={copyAction} />
-      )}
-    </div>
+    </Surface>
   );
 }
 

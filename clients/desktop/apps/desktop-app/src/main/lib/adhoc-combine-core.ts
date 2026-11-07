@@ -418,6 +418,7 @@ export async function resolveDestinationWorkspace(
   candidates: RepoCandidate[],
   options: {
     repoPathsMustMatch?: boolean;
+    reuseOwner?: SidebarItem['owner'];
     beforeEffects?: () => void;
     commit?: W5CommitOptions;
   } = {},
@@ -427,7 +428,9 @@ export async function resolveDestinationWorkspace(
     finalIdentities.map(repoIdentityKey),
   );
   const multiRepoItems = items.filter(
-    (item): item is MultiRepoSidebarItem => item.type === 'multi-repo',
+    (item): item is MultiRepoSidebarItem =>
+      item.type === 'multi-repo' &&
+      item.owner?.organizationId === options.reuseOwner?.organizationId,
   );
 
   for (const temporary of [false, true]) {

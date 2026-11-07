@@ -15,6 +15,7 @@ import { fetchMemberSharedPipelines } from './profile-api';
 import { useMemberPagedResource } from './use-member-paged-resource';
 import { useSettingsPrivacy } from '../../host';
 import { joinClassNames } from '../join-class-names';
+import { Surface } from '@canopy/ui-shared/components';
 
 /** The fields a pipeline row shows. */
 type PipelineRowItem = Pick<PipelineApiItem, 'id' | 'name' | 'description'>;
@@ -42,25 +43,29 @@ function PipelineList({
           pipeline.description,
         );
         return (
-          <li
+          <Surface
+            as="li"
+            variant="raised"
+            padding="default"
             key={pipeline.id}
             data-testid="profile-pipeline-row"
-            className="flex items-start gap-3 rounded-xl bg-card p-4 shadow-sm"
           >
-            <span className="mt-0.5 shrink-0 fg-accent">
-              <Workflow size={18} aria-hidden="true" />
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-s font-medium fg-primary">
-                {pipeline.name}
+            <div className="flex items-start gap-3">
+              <span className="mt-0.5 shrink-0 fg-accent">
+                <Workflow size={18} aria-hidden="true" />
               </span>
-              {description && (
-                <span className="mt-0.5 block truncate text-xs fg-secondary">
-                  {description}
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-s font-medium fg-primary">
+                  {pipeline.name}
                 </span>
-              )}
-            </span>
-          </li>
+                {description && (
+                  <span className="mt-0.5 block truncate text-xs fg-secondary">
+                    {description}
+                  </span>
+                )}
+              </span>
+            </div>
+          </Surface>
         );
       })}
     </ul>
@@ -122,15 +127,17 @@ export function ProfilePipelinesSection({
             onRetry={retry}
           />
         ) : (
-          <p
-            className={joinClassNames(
-              'rounded-xl border border-dashed px-4 py-12 text-center text-s fg-secondary',
-              blockClassName,
-            )}
-            data-testid="profile-pipelines-empty"
-          >
-            {memberName} hasn&apos;t shared any workflows with this team yet.
-          </p>
+          <Surface variant="dashed">
+            <p
+              className={joinClassNames(
+                'px-4 py-12 text-center text-s fg-secondary',
+                blockClassName,
+              )}
+              data-testid="profile-pipelines-empty"
+            >
+              {memberName} hasn&apos;t shared any workflows with this team yet.
+            </p>
+          </Surface>
         )}
       </div>
     );

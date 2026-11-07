@@ -12,6 +12,7 @@ import {
   EmptyStateRow,
 } from '@canopy/ui-shared/components';
 import { PlusMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { Divider } from '@canopy/ui-shared/components';
 
 /**
  * Which block of the card a row joins. `work` is what happened in this
@@ -283,7 +284,7 @@ export function ActivityCardView({
           <>
             {/* Inset to the rows' 8px padding, so it starts at their icons
                   and ends with their labels; 4px of space above and below. */}
-            <div role="separator" className="mx-2 my-1 border-t" />
+            <Divider className="mx-2 my-1" />
             <AddMenu
               rows={add}
               onChoose={(row): void => {

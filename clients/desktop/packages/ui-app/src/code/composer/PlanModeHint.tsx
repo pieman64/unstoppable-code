@@ -25,7 +25,7 @@ export function PlanModeHint({
   return (
     <ComposerHint
       appearance={appearance}
-      icon={<PlanModeIcon width={16} height={16} aria-hidden="true" />}
+      icon={<PlanModeIcon size="sm" aria-hidden="true" />}
       title="Plan first?"
       action={{
         label: 'Plan first',

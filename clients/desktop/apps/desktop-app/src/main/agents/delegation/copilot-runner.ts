@@ -32,25 +32,25 @@ import type {
 import {
   copilotNativeOperations,
   isCopilotShellControl,
-} from '@canopy/desktop-shared/node/copilot/tool-input';
-import { CopilotToolCorrelation } from '@canopy/desktop-shared/node/copilot/tool-correlation';
+} from '@canopy/copilot-recipient/tool-input';
+import { CopilotToolCorrelation } from '@canopy/copilot-recipient/tool-correlation';
 import {
   createCopilotCapabilitySnapshot,
   isCopilotCapabilitySnapshot,
   type CopilotCapabilitySnapshot,
-} from '@canopy/desktop-shared/node/copilot/capability-snapshot';
+} from '@canopy/copilot-recipient/capability-snapshot';
 import { COPILOT_RUNTIME_VERSION } from '@canopy/desktop-shared/node/copilot/runtime-metadata';
-import { COPILOT_NATIVE_TOOLS } from '@canopy/desktop-shared/node/copilot/session-policy';
+import { COPILOT_NATIVE_TOOLS } from '@canopy/copilot-recipient/session-policy';
 import { getMcpHttpProxyService } from '../../mcp/http-proxy-service';
 import {
   assertCopilotMcpServersConnected,
   collectCopilotMcpSecretValues,
-} from '@canopy/desktop-shared/node/copilot/tool-snapshot';
+} from '@canopy/copilot-recipient/tool-snapshot';
 import { materializeSelectedCapabilityRoot } from '@canopy/desktop-shared/node/cursor/capability-root';
 import type {
   CopilotPreToolInput,
   CopilotToolDecision,
-} from '@canopy/desktop-shared/node/copilot/session-policy';
+} from '@canopy/copilot-recipient/session-policy';
 import {
   openManagedCopilotRuntime,
   assertCopilotConnectionGeneration,

@@ -3,11 +3,12 @@ import type { UnifiedEntryKind } from '@canopy/protocol/unified-entry';
 import {
   Button,
   CuratedSourceLabel,
+  MarketplaceTypeLabel,
   McpConnectionStatusBadge,
+  type McpRowDestination,
   McpRowSettings,
   McpServerCardRow,
-  MarketplaceTypeLabel,
-  type McpRowDestination,
+  Surface,
 } from '@canopy/ui-shared/components';
 import {
   SpecimenCell,
@@ -111,9 +112,9 @@ const LINK_DESTINATION: McpRowDestination = {
 
 function Rows({ children }: { readonly children: JSX.Element }): JSX.Element {
   return (
-    <ul className="w-full divide-y divide-line-base rounded-lg bg-secondary">
-      {children}
-    </ul>
+    <Surface variant="group" className="w-full">
+      <ul className="divide-y divide-line-base">{children}</ul>
+    </Surface>
   );
 }
 

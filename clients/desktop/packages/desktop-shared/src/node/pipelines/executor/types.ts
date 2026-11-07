@@ -282,6 +282,17 @@ export interface ExecutionRuntime {
    * utility-process implementation; the CLI and tests use the local fallback.
    */
   spawnedProcessRunner?: SpawnedProcessRunner;
+  /**
+   * The environment a step starts from in place of this process's own
+   * (`getEnhancedEnv({ environment: false })`). A daemon pipeline host sets it
+   * from the start's `_execution.childEnvironment` (CAN-5086).
+   */
+  processEnvironment?: Readonly<Record<string, string>>;
+  /** How `node` steps and node actions start, in place of the built-in choice. */
+  nodeProcess?: {
+    readonly command: string;
+    readonly env?: Readonly<Record<string, string>>;
+  };
   lifecycle?: ExecutionLifecycleHooks;
   onStepPostProcess?: (ctx: StepPostProcessContext) => void | Promise<void>;
   planPersistence?: ExecutionPlanPersistenceHooks;

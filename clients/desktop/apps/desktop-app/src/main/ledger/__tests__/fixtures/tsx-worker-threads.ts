@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import type * as WorkerThreads from 'node:worker_threads';
 
 /*
@@ -26,19 +27,44 @@ export interface StartedWorker {
   readonly workerData: unknown;
   readonly exited: Promise<void>;
   exitCode: number | undefined;
+  workersStartedAtExit: number | undefined;
+  termination: { active: boolean; sqliteCall: number | undefined } | undefined;
 }
 
 /** Every worker started in this test file, in start order. */
 export const startedWorkers: StartedWorker[] = [];
 
-export function createTsxWorkerThreads(): typeof WorkerThreads {
+export function createTsxWorkerThreads({
+  observeSqliteCalls = false,
+}: { observeSqliteCalls?: boolean } = {}): typeof WorkerThreads {
   const actual = jest.requireActual<typeof WorkerThreads>(
     'node:worker_threads',
   );
   class TsxWorker extends actual.Worker {
+    private readonly started: StartedWorker;
+    private readonly sqliteCallState: Int32Array | undefined;
+
     constructor(...args: ConstructorParameters<typeof actual.Worker>) {
       const [filename, options] = args;
-      super(filename, { ...options, execArgv: [...TSX_EXEC_ARGV] });
+      const sqliteCallState = observeSqliteCalls
+        ? new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT))
+        : undefined;
+      const data: unknown = options?.workerData;
+      super(filename, {
+        ...options,
+        workerData: sqliteCallState
+          ? {
+              ...(typeof data === 'object' && data !== null ? data : {}),
+              sqliteCallState,
+            }
+          : data,
+        execArgv: [
+          ...TSX_EXEC_ARGV,
+          ...(sqliteCallState
+            ? ['--require', join(__dirname, 'observe-sqlite-call.ts')]
+            : []),
+        ],
+      });
       let markExited = (): void => undefined;
       const exited = new Promise<void>((resolve) => {
         markExited = resolve;
@@ -48,12 +74,27 @@ export function createTsxWorkerThreads(): typeof WorkerThreads {
         workerData: options?.workerData,
         exited,
         exitCode: undefined,
+        workersStartedAtExit: undefined,
+        termination: undefined,
       };
+      this.started = started;
+      this.sqliteCallState = sqliteCallState;
       this.once('exit', (exitCode: number): void => {
         started.exitCode = exitCode;
+        started.workersStartedAtExit = startedWorkers.length;
         markExited();
       });
       startedWorkers.push(started);
+    }
+
+    override terminate(): Promise<number> {
+      this.started.termination = {
+        active: this.threadId !== -1,
+        sqliteCall: this.sqliteCallState
+          ? Atomics.load(this.sqliteCallState, 0)
+          : undefined,
+      };
+      return super.terminate();
     }
   }
   return { ...actual, Worker: TsxWorker };

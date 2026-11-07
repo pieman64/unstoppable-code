@@ -850,6 +850,22 @@ async function applySnapshotContent(
 }
 
 /**
+ * Whether the scope's index and topics are exactly `state`, as
+ * {@link runVerifiedLocalMemoryWrite} checks before it writes. Any read
+ * failure counts as a mismatch.
+ */
+export async function localMemoryScopeHoldsState(
+  scopeDir: string,
+  state: LocalMemoryState,
+): Promise<boolean> {
+  try {
+    return stateMatches(await readLocalMemoryState(scopeDir), [state]);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Whether snapshot `id` holds exactly `state`. Any read failure counts as a
  * mismatch.
  */
@@ -953,12 +969,18 @@ function emitRestoreRollbackWarning(error: unknown): void {
  * unchanged. A restore that fails part way writes the replaced state back,
  * but only while every file still holds either its replaced or its restored
  * bytes; otherwise it leaves the scope as it is and says so.
+ *
+ * `assertTarget` runs once the write lock is held and again right before
+ * the first write: a throw there rejects with memory unchanged, and from
+ * the first check with nothing written at all.
  */
 export async function restoreLocalMemorySnapshot(
   scopeDir: string,
   id: string,
+  assertTarget: () => void = () => undefined,
 ): Promise<{ previousSnapshotId: string | null }> {
   return withMemoryWriteLock(scopeDir, async () => {
+    assertTarget();
     await recordMemoryEdit(scopeDir);
     const snapshot = await readLocalMemorySnapshot(scopeDir, id);
     // Read once: the snapshot saves this state, the guard checks the scope
@@ -972,6 +994,7 @@ export async function restoreLocalMemorySnapshot(
       throw new Error(LOCAL_MEMORY_RESTORE_SNAPSHOT_UNVERIFIED_MESSAGE);
     }
     const plan = planSnapshotRestore(prior, snapshot);
+    assertTarget();
     try {
       await runVerifiedLocalMemoryWrite(scopeDir, [prior], (guard) =>
         applySnapshotContent(scopeDir, plan, guard),

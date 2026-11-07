@@ -57,6 +57,7 @@ jest.mock('../build-runner', () => ({
   getCodeGraphSourceBuildState: (): string => mockLocalState(),
   setCodeGraphGenerationQueueListener: (): void => undefined,
   isCodeGraphSummaryRepairActive: (): boolean => false,
+  reconcileCodeGraphBuildAvailability: (): Promise<void> => Promise.resolve(),
   requestCodeGraphSummaryRepair: (): Promise<void> =>
     Promise.reject(new Error('Unexpected repair')),
 }));
@@ -66,9 +67,12 @@ jest.mock('../graph-builds', () => ({
 }));
 jest.mock('../../lib/code-graph-base-manager', () => ({
   describeCodeGraphBaseWorkspace: (): null => null,
+  reconcileCodeGraphBaseAvailability: (): Promise<void> => Promise.resolve(),
 }));
 jest.mock('../../lib/code-graph-scheduler', () => ({
   isCodeGraphPerformanceSchedulerEnabled: (): boolean => false,
+  reconcileCodeGraphSchedulerAvailability: (): Promise<void> =>
+    Promise.resolve(),
   runCodeGraphPerformanceBuild: (): Promise<void> =>
     Promise.reject(new Error('Unexpected scheduling')),
 }));
@@ -99,9 +103,14 @@ import {
 } from '../../canopy-runtime/worker-code-graph-adapter';
 import { createWorkerCodeGraphReadAdapter } from '../../canopy-runtime/worker-code-graph-read-adapter';
 import { setCodeGraphReadDispatcherForTests } from '../graph-reads';
-import { setCodeGraphPreferences } from '../../lib/code-graph-availability';
+import {
+  reconcileCodeGraphAvailability,
+  setCodeGraphPreferences,
+} from '../../lib/code-graph-availability';
+import { getDaemonCodeGraphQueue } from '../../canopy-runtime/daemon-code-graph-queue';
 import { registerCodeGraphHandlers } from '../../ipc/code-graph';
 import { registerLabsExperimentsHandlers } from '../../ipc/labs-experiments';
+import { hostRendererInView } from '../../lib/renderer-surface';
 
 import {
   buildCodeGraphInDaemon,
@@ -618,6 +627,52 @@ describe('default code-graph dispatcher route (CAN-5719)', () => {
     },
   );
 
+  it("builds and reads from App Advisor's hosted renderer in the daemon (CAN-5870)", async () => {
+    const view = new BrowserWindow();
+    const unhost = hostRendererInView(
+      advisor.webContents,
+      () => view.webContents,
+    );
+    try {
+      const instructions: string[] = [];
+      const queries: string[] = [];
+      mockGet.mockResolvedValue({
+        client: {
+          signal: new AbortController().signal,
+          instruction: (name: string): Promise<unknown> => {
+            instructions.push(name);
+            return Promise.resolve(BUILD_RESULT);
+          },
+          query: (name: string): Promise<unknown> => {
+            queries.push(name);
+            return Promise.resolve(readAnswer('running'));
+          },
+        },
+      });
+      await expect(
+        invoke(IPC_CHANNELS.codeGraphBuildWorktree, SUMMARY.scope, view),
+      ).resolves.toMatchObject({ state: 'missing', buildState: 'running' });
+      await expect(
+        invoke(IPC_CHANNELS.codeGraphGetWorktreeSummary, SUMMARY.scope, view),
+      ).resolves.toMatchObject({ state: 'missing', buildState: 'running' });
+      expect(instructions).toEqual(['worker.codeGraph.build']);
+      expect(queries).toEqual([
+        'worker.codeGraph.query',
+        'worker.codeGraph.query',
+      ]);
+      expect(localBuild).not.toHaveBeenCalled();
+      expect(localQuery).not.toHaveBeenCalled();
+      // The window's own page no longer stands for App Advisor's renderer.
+      await expect(
+        invoke(IPC_CHANNELS.codeGraphBuildWorktree, SUMMARY.scope, advisor),
+      ).resolves.toMatchObject({ state: 'missing', buildState: 'idle' });
+      expect(instructions).toEqual(['worker.codeGraph.build']);
+      expect(localBuild).toHaveBeenCalledTimes(1);
+    } finally {
+      unhost();
+    }
+  });
+
   it.each(['feature flag', 'workspace preference', 'invalid worktree'])(
     'refuses builds before contacting either host with %s off/invalid',
     async (control) => {
@@ -816,6 +871,257 @@ describe('default code-graph dispatcher route (CAN-5719)', () => {
       }
     },
   );
+
+  describe('Code Graph turned off (CAN-5840)', () => {
+    const canceled = new CanopyClientError({
+      kind: 'cancelled',
+      code: 'worker.codeGraph.buildCanceled',
+      message: 'The code graph build was canceled.',
+      retry: { kind: 'never' },
+    });
+    function queueView(
+      items: Array<{
+        graphScope: 'worktree' | 'workspace_base';
+        workspaceId: string;
+        worktreeId: string | null;
+      }>,
+    ): void {
+      queueSpy?.mockRestore();
+      queueSpy = jest.spyOn(getDaemonCodeGraphQueue(), 'current');
+      queueSpy.mockReturnValue({
+        revision: 1,
+        items: items.map((item, index) => ({
+          queueItemId: `item-${index}`,
+          graphScope: item.graphScope,
+          workspaceIds: [item.workspaceId],
+          worktreeId: item.worktreeId,
+          repositoryId: null,
+          workspaceLabel: null,
+          label: null,
+          trigger: 'refresh',
+          priority: 'worktree',
+          state: 'queued',
+          reorderable: true,
+          enqueuedAt: '2026-11-06T00:00:00.000Z',
+          startedAt: null,
+          timing: { queueWaitMs: 0, runningMs: null },
+        })),
+      });
+    }
+    let queueSpy: jest.SpyInstance | undefined;
+    afterEach(() => {
+      queueSpy?.mockRestore();
+      queueSpy = undefined;
+    });
+
+    it('cancels daemon builds when Code Graph turns off for their project (CAN-5840)', async () => {
+      const cancels: unknown[] = [];
+      let rejectBuild: ((error: unknown) => void) | undefined;
+      mockGet.mockResolvedValue({
+        client: {
+          signal: new AbortController().signal,
+          instruction: (name: string, params: unknown): Promise<unknown> => {
+            if (name === 'worker.codeGraph.build')
+              return new Promise((_resolve, reject) => {
+                rejectBuild = reject;
+              });
+            cancels.push(params);
+            rejectBuild?.(canceled);
+            return Promise.resolve({ canceled: 1 });
+          },
+          query: (): Promise<unknown> => Promise.resolve(readAnswer('idle')),
+        },
+      });
+      const build = invoke(IPC_CHANNELS.codeGraphBuildWorktree, SUMMARY.scope);
+      while (rejectBuild === undefined) await flushMicrotasks();
+      queueView([
+        {
+          graphScope: 'worktree',
+          workspaceId: 'project',
+          worktreeId: 'queued',
+        },
+        {
+          graphScope: 'workspace_base',
+          workspaceId: 'project',
+          worktreeId: null,
+        },
+      ]);
+      // The build is still in the daemon when the flag turns off.
+      mockFeatureEnabled.mockReturnValue(false);
+      await reconcileCodeGraphAvailability();
+      expect(cancels).toContainEqual({
+        workspaceId: 'project',
+        worktreeId: 'task',
+      });
+      expect(cancels).toContainEqual({
+        workspaceId: 'project',
+        worktreeId: 'queued',
+      });
+      expect(cancels).not.toContainEqual({
+        workspaceId: 'project',
+        worktreeId: null,
+      });
+      await expect(build).resolves.toMatchObject({
+        ok: false,
+        code: 'unavailable',
+      });
+      expect(localBuild).not.toHaveBeenCalled();
+      // A cancelled worktree is forgotten; the queue view still lists one.
+      cancels.length = 0;
+      queueView([]);
+      await reconcileCodeGraphAvailability();
+      expect(cancels).toEqual([]);
+    });
+
+    it('refuses a daemon build the flag turned off before it was sent (CAN-5840)', async () => {
+      const instructions: string[] = [];
+      let openSession: (() => void) | undefined;
+      mockGet.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            openSession = (): void =>
+              resolve({
+                client: {
+                  signal: new AbortController().signal,
+                  instruction: (name: string): Promise<unknown> => {
+                    instructions.push(name);
+                    return Promise.resolve(BUILD_RESULT);
+                  },
+                },
+              });
+          }),
+      );
+      const build = invoke(IPC_CHANNELS.codeGraphBuildWorktree, SUMMARY.scope);
+      while (openSession === undefined) await flushMicrotasks();
+      mockFeatureEnabled.mockReturnValue(false);
+      openSession();
+      await expect(build).resolves.toMatchObject({
+        ok: false,
+        code: 'unavailable',
+      });
+      expect(instructions).not.toContain('worker.codeGraph.build');
+      expect(localBuild).not.toHaveBeenCalled();
+    });
+
+    it('retries a failed cancel of a queue-only worktree after the queue clears (CAN-5840)', async () => {
+      const cancels: unknown[] = [];
+      let refuse = true;
+      mockGet.mockResolvedValue({
+        client: {
+          instruction: (_name: string, params: unknown): Promise<unknown> => {
+            cancels.push(params);
+            if (refuse) return Promise.reject(new Error('refused'));
+            return Promise.resolve({ canceled: 1 });
+          },
+        },
+      });
+      queueView([
+        { graphScope: 'worktree', workspaceId: 'project', worktreeId: 'retry' },
+      ]);
+      mockFeatureEnabled.mockReturnValue(false);
+      await reconcileCodeGraphAvailability();
+      expect(cancels).toContainEqual({
+        workspaceId: 'project',
+        worktreeId: 'retry',
+      });
+      cancels.length = 0;
+      refuse = false;
+      queueView([]);
+      await reconcileCodeGraphAvailability();
+      expect(cancels).toContainEqual({
+        workspaceId: 'project',
+        worktreeId: 'retry',
+      });
+      cancels.length = 0;
+      await reconcileCodeGraphAvailability();
+      expect(cancels).not.toContainEqual({
+        workspaceId: 'project',
+        worktreeId: 'retry',
+      });
+    });
+
+    it('keeps a build sent while its worktree cancel ran (CAN-5840)', async () => {
+      const isTaskCancel = (params: unknown): boolean =>
+        typeof params === 'object' &&
+        params !== null &&
+        'worktreeId' in params &&
+        params.worktreeId === 'task';
+      const cancels: unknown[] = [];
+      let finishCancel: (() => void) | undefined;
+      mockGet.mockResolvedValue({
+        client: {
+          signal: new AbortController().signal,
+          instruction: (name: string, params: unknown): Promise<unknown> => {
+            if (name === 'worker.codeGraph.build')
+              return Promise.resolve(BUILD_RESULT);
+            cancels.push(params);
+            if (finishCancel !== undefined || !isTaskCancel(params))
+              return Promise.resolve({ canceled: 1 });
+            return new Promise((resolve) => {
+              finishCancel = (): void => resolve({ canceled: 1 });
+            });
+          },
+          query: (): Promise<unknown> => Promise.resolve(readAnswer('idle')),
+        },
+      });
+      queueView([
+        { graphScope: 'worktree', workspaceId: 'project', worktreeId: 'task' },
+      ]);
+      mockFeatureEnabled.mockReturnValue(false);
+      const reconciling = reconcileCodeGraphAvailability();
+      while (finishCancel === undefined) await flushMicrotasks();
+      // Code Graph turns back on and a new build goes out mid-cancel.
+      mockFeatureEnabled.mockReturnValue(true);
+      await expect(
+        invoke(IPC_CHANNELS.codeGraphBuildWorktree, SUMMARY.scope),
+      ).resolves.toMatchObject({ state: 'missing' });
+      finishCancel();
+      await reconciling;
+      cancels.length = 0;
+      queueView([]);
+      mockFeatureEnabled.mockReturnValue(false);
+      await reconcileCodeGraphAvailability();
+      expect(cancels).toContainEqual({
+        workspaceId: 'project',
+        worktreeId: 'task',
+      });
+    });
+
+    it('leaves available projects and an idle daemon alone (CAN-5840)', async () => {
+      const cancels: unknown[] = [];
+      mockGet.mockResolvedValue({
+        client: {
+          instruction: (_name: string, params: unknown): Promise<unknown> => {
+            cancels.push(params);
+            return Promise.resolve({ canceled: 0 });
+          },
+        },
+      });
+      queueView([
+        { graphScope: 'worktree', workspaceId: 'other', worktreeId: 'kept' },
+      ]);
+      await reconcileCodeGraphAvailability();
+      expect(mockGet).not.toHaveBeenCalled();
+      queueView([
+        { graphScope: 'worktree', workspaceId: 'other', worktreeId: 'kept' },
+        { graphScope: 'worktree', workspaceId: 'project', worktreeId: 'off' },
+      ]);
+      setCodeGraphPreferences({
+        mode: 'selected-workspaces',
+        selectedWorkspaceIds: ['other'],
+        generationTimeoutMinutes: 30,
+      });
+      await reconcileCodeGraphAvailability();
+      expect(cancels).toContainEqual({
+        workspaceId: 'project',
+        worktreeId: 'off',
+      });
+      expect(cancels).not.toContainEqual({
+        workspaceId: 'other',
+        worktreeId: 'kept',
+      });
+    });
+  });
 });
 
 describe('cleanup across answered-but-still-exiting graph hosts (CAN-5683)', () => {

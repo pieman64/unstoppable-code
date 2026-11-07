@@ -112,7 +112,8 @@ class UnknownAttachmentSourceError extends Error {
   }
 }
 
-function workEntryHomeDir(projectId: string): string {
+/** A Cowork or App Advisor workspace's working folder. */
+export function workEntryHomeDir(projectId: string): string {
   if (projectId === APP_ADVISOR_PROJECT_ID) return getAppAdvisorHomeDir();
   return getCoworkWorkspaceRootDir(resolveCoworkWorkspaceId(projectId));
 }
@@ -228,8 +229,8 @@ export const desktopWorkspaceAttachmentsHost: CoreWorkspaceAttachmentsHost = {
 };
 
 /**
- * The one `core.workspace.item` owner's handlers. CAN-4152 passes its note
- * and prompt providers here and adds its instructions to the same set.
+ * The one `core.workspace.item` owner's handlers. The desktop runtime passes
+ * the note and prompt providers (core-workspace-note-items-host).
  */
 export function createCoreWorkspaceItemsAdapter(
   options: Partial<CoreWorkspaceItemHandlerOptions> = {},

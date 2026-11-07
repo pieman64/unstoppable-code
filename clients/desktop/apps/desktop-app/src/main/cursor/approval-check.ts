@@ -11,7 +11,11 @@ import {
 } from '@canopy/desktop-shared/types';
 import { createApprovalSession } from '../approvals/approval-service';
 import { terminateProcessTree } from '@canopy/desktop-shared/node/cursor/process-tree';
-import { verifyCursorRuntimeVersion } from '@canopy/desktop-shared/node/cursor/runtime-process';
+import {
+  verifyCursorRuntimeVersion,
+  type CursorProviderProcess,
+} from '@canopy/desktop-shared/node/cursor/runtime-process';
+import { spawnProviderProcess } from '../agent-runs/provider-process-host';
 import { encodeCursorProjectDir } from '@canopy/desktop-shared/node/cursor/project-dir';
 import type { CursorLaunch } from './runtime-installer';
 import type { SendableBrowserWindow } from '../lib/window-send';
@@ -49,11 +53,13 @@ function cursorEnvironment(): NodeJS.ProcessEnv {
 }
 
 export function verifyCursorVersion(
+  providerProcess: CursorProviderProcess,
   launch: CursorLaunch,
   env: NodeJS.ProcessEnv,
   signal: AbortSignal,
 ): Promise<void> {
   return verifyCursorRuntimeVersion(
+    providerProcess,
     launch,
     env,
     signal,
@@ -123,6 +129,13 @@ export async function runCursorApprovalCheck(options: {
     // This opt-in check is macOS-only (guarded above), so the launcher is
     // always the single `cursor-agent` executable.
     await verifyCursorVersion(
+      {
+        spawner: spawnProviderProcess,
+        owner: {
+          kind: 'discovery',
+          id: `cursor-approval-check:${randomUUID()}`,
+        },
+      },
       { command: options.binaryPath, prefix: [] },
       env,
       abort.signal,

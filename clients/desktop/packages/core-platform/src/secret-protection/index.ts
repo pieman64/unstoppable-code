@@ -1,4 +1,4 @@
-import { isAbsolute } from 'node:path';
+import { loadPreparedNativeArtifact } from './authorization';
 import type { PlatformSecretProtectionServices } from '@canopy/core-runtime';
 import { createDarwinSecretProtection, type KeychainNative } from './darwin';
 import { createWindowsSecretProtection, type CredentialNative } from './win32';
@@ -11,10 +11,6 @@ import {
 export type { SecretProtectionOptions } from './policy';
 
 export const SECRET_PROTECTION_FILE = 'core-secret-protection.node';
-
-// One binding per immutable host-selected addon, including its shared unlock queue.
-const darwinBindings = new Map<string, KeychainNative>();
-const linuxBindings = new Map<string, SecretServiceNative>();
 
 function isKeychainNative(value: unknown): value is KeychainNative {
   return (
@@ -42,18 +38,15 @@ function createWindowsServices(
   options: SecretProtectionOptions,
 ): PlatformSecretProtectionServices {
   const policy = resolveWindowsSecretProtectionPolicy(options);
-  const { nativePath } = options;
-  let attempted = false;
+
   let loaded: CredentialNative | undefined;
   return createWindowsSecretProtection(
     () => {
-      if (attempted) return loaded;
-      attempted = true;
-      if (!policy.enabled || !isAbsolute(nativePath)) return undefined;
+      loaded = undefined;
+      if (!policy.enabled) return undefined;
       try {
-        const module = { exports: {} };
-        process.dlopen(module, nativePath);
-        if (isCredentialNative(module.exports)) loaded = module.exports;
+        const value = loadPreparedNativeArtifact(options.preparedNative);
+        if (isCredentialNative(value)) loaded = value;
       } catch {
         // No fallback and no native diagnostic disclosure.
       }
@@ -80,23 +73,15 @@ function createLinuxServices(
   options: SecretProtectionOptions,
 ): PlatformSecretProtectionServices {
   const policy = resolveSecretProtectionPolicy(options);
-  const { nativePath } = options;
-  let attempted = false;
+
   let loaded: SecretServiceNative | undefined;
   return createLinuxSecretProtection(
     () => {
-      if (attempted) return loaded;
-      attempted = true;
-      if (!policy.enabled || !isAbsolute(nativePath)) return undefined;
-      const existing = linuxBindings.get(nativePath);
-      if (existing) return (loaded = existing);
+      loaded = undefined;
+      if (!policy.enabled) return undefined;
       try {
-        const module = { exports: {} };
-        process.dlopen(module, nativePath);
-        if (isSecretServiceNative(module.exports)) {
-          loaded = module.exports;
-          linuxBindings.set(nativePath, loaded);
-        }
+        const value = loadPreparedNativeArtifact(options.preparedNative);
+        if (isSecretServiceNative(value)) loaded = value;
       } catch {
         // No fallback and no native diagnostic disclosure.
       }
@@ -117,23 +102,15 @@ export function createSecretProtectionServices(
 ): PlatformSecretProtectionServices {
   if (options.os === 'win32') return createWindowsServices(options);
   if (options.os === 'linux') return createLinuxServices(options);
-  const { nativePath } = options;
+
   const policy = resolveSecretProtectionPolicy(options);
   let loaded: KeychainNative | undefined;
-  let attempted = false;
   const load = (): KeychainNative | undefined => {
-    if (attempted) return loaded;
-    attempted = true;
-    if (!policy.enabled || !isAbsolute(nativePath)) return undefined;
-    const existing = darwinBindings.get(nativePath);
-    if (existing) return (loaded = existing);
+    loaded = undefined;
+    if (!policy.enabled) return undefined;
     try {
-      const module = { exports: {} };
-      process.dlopen(module, nativePath);
-      if (isKeychainNative(module.exports)) {
-        loaded = module.exports;
-        darwinBindings.set(nativePath, loaded);
-      }
+      const value = loadPreparedNativeArtifact(options.preparedNative);
+      if (isKeychainNative(value)) loaded = value;
     } catch {
       // An unavailable native backend is never a reason to fall back.
     }

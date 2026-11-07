@@ -101,6 +101,7 @@ describe('core deferred-tool reloads (CAN-4127)', () => {
   let timers: Array<{ callback: () => void; cancelled: boolean }>;
   let events: DeferredToolReloadEvent<Payload>[];
   let hasLiveLease: boolean | null;
+  let timeline: string[];
   let reloads: CoreDeferredToolReloads<Payload>;
 
   function create(
@@ -123,12 +124,29 @@ describe('core deferred-tool reloads (CAN-4127)', () => {
           },
         };
       },
+      waits: {
+        opened: (target, waitId): void => {
+          expect(target).toEqual(scope);
+          timeline.push(`opened:${waitId}`);
+        },
+        resolved: (target, waitId, resolution): void => {
+          expect(target).toEqual(scope);
+          timeline.push(`resolved:${waitId}:${resolution}`);
+        },
+      },
       newRequestId: (): string => {
         next += 1;
         return `r${next}`;
       },
     });
-    instance.subscribe((event) => events.push(event));
+    instance.subscribe((event) => {
+      events.push(event);
+      timeline.push(
+        event.lifecycle.kind === 'state'
+          ? event.lifecycle.state
+          : event.lifecycle.outcome,
+      );
+    });
     return instance;
   }
   function fireTimer(): void {
@@ -179,6 +197,7 @@ describe('core deferred-tool reloads (CAN-4127)', () => {
     host = new FakeHost();
     timers = [];
     events = [];
+    timeline = [];
     hasLiveLease = null;
     reloads = create();
   });
@@ -292,7 +311,15 @@ describe('core deferred-tool reloads (CAN-4127)', () => {
     expect(failures).toHaveLength(1);
     expect(failures[0]?.error?.outcome).toBe('enable_failed');
     expect(failures[0]?.error?.message.endsWith('skill x: missing')).toBe(true);
-    expect(host.calls).toEqual(['revalidate']);
+    expect(host.calls).toEqual(['revalidate', 'settleInterruptedTurn']);
+    expect(host.settlements).toEqual([
+      {
+        outcome: 'enable_failed',
+        message: failures[0]?.error?.message,
+        userMessageId: null,
+        interrupted: false,
+      },
+    ]);
     const operation = await operations.get(operationId);
     expect(operation?.status).toBe('failed');
     expect(operation?.error?.code).toBe(
@@ -307,7 +334,7 @@ describe('core deferred-tool reloads (CAN-4127)', () => {
     host.revalidation.resolve(null);
     await flush();
     expect(lifecycles()).toEqual(['result_pending', 'cancelled']);
-    expect(host.calls).toEqual(['revalidate']);
+    expect(host.calls).toEqual(['revalidate', 'settleInterruptedTurn']);
   });
 
   it('cancel during enable aborts the host and settles cancelled once', async () => {
@@ -324,7 +351,12 @@ describe('core deferred-tool reloads (CAN-4127)', () => {
     expect(lifecycles()[lifecycles().length - 1]).toBe('cancelled');
     expect(host.calls).not.toContain('resume');
     expect(host.settlements).toEqual([
-      { outcome: 'cancelled', message: 'stop', userMessageId: 'msg-1' },
+      {
+        outcome: 'cancelled',
+        message: 'stop',
+        userMessageId: 'msg-1',
+        interrupted: true,
+      },
     ]);
   });
 
@@ -341,7 +373,12 @@ describe('core deferred-tool reloads (CAN-4127)', () => {
       message: 'boom',
     });
     expect(host.settlements).toEqual([
-      { outcome: 'resume_failed', message: 'boom', userMessageId: 'msg-1' },
+      {
+        outcome: 'resume_failed',
+        message: 'boom',
+        userMessageId: 'msg-1',
+        interrupted: true,
+      },
     ]);
     const operation = await operations.get(operationId);
     expect(operation?.status).toBe('failed');
@@ -510,6 +547,79 @@ describe('core deferred-tool reloads (CAN-4127)', () => {
     unsubscribe();
     await flush();
     expect(lifecycles()).toEqual(['result_pending', 'cancelled']);
-    expect(host.calls).toEqual([]);
+    expect(host.calls).toEqual(['settleInterruptedTurn']);
+  });
+
+  it('a reload opens one deferred_tools wait and resolves it at the interruption', async () => {
+    await toEnable();
+    host.enabled.resolve({ sdkSessionId: null });
+    await flush();
+    host.resumed.resolve();
+    await flush();
+    const waits = timeline.filter((entry) => entry.includes(':'));
+    expect(waits).toEqual(['opened:r1', 'resolved:r1:answered']);
+    expect(timeline.indexOf('resolved:r1:answered')).toBeLessThan(
+      timeline.indexOf('interrupting'),
+    );
+  });
+
+  it('a reload that times out before interruption resolves its wait expired', async () => {
+    await admit();
+    reloads.acknowledge({ scope, toolCallId: 'tool-1' });
+    fireTimer();
+    await flush();
+    expect(timeline.filter((entry) => entry.includes(':'))).toEqual([
+      'opened:r1',
+      'resolved:r1:expired',
+    ]);
+  });
+
+  it('a cancelled reload resolves its wait cancelled once', async () => {
+    await admit();
+    reloads.acknowledge({ scope, toolCallId: 'tool-1' });
+    reloads.cancel(scope, 'stop');
+    reloads.cancel(scope, 'stop');
+    host.revalidation.resolve(null);
+    await flush();
+    expect(timeline.filter((entry) => entry.includes(':'))).toEqual([
+      'opened:r1',
+      'resolved:r1:cancelled',
+    ]);
+  });
+
+  it('a thrown materialization fails enable once', async () => {
+    operations.close();
+    const path = join(dir, 'materialize.db');
+    operations = new OperationService({
+      openLedger: (): OperationLedger => OperationLedger.open(path),
+    });
+    let materializeCalls = 0;
+    reloads = new CoreDeferredToolReloads<Payload>({
+      operations,
+      host,
+      materializations: {
+        materialize: (): Promise<never> => {
+          materializeCalls += 1;
+          return Promise.reject(new Error('resolver failed'));
+        },
+      },
+      setTimer: (): { cancel(): void } => ({ cancel: (): void => undefined }),
+      newRequestId: (): string => 'r1',
+    });
+    reloads.subscribe((event) => events.push(event));
+    await toEnable();
+    host.enabled.resolve({ sdkSessionId: null });
+    await flush();
+    expect(materializeCalls).toBe(1);
+    const failures = events.filter((event) => event.error);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.error).toEqual({
+      outcome: 'enable_failed',
+      message: 'The enabled items could not be materialized for this chat.',
+    });
+    expect(host.calls).not.toContain('resume');
+    expect(
+      host.calls.filter((call) => call === 'settleInterruptedTurn'),
+    ).toHaveLength(1);
   });
 });

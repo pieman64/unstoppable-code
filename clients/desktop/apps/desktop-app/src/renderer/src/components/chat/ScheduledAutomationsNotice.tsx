@@ -290,7 +290,7 @@ export function ScheduledAutomationsNoticeView({
               onClick={(): void => setMenuOpen((open) => !open)}
               data-testid="scheduled-automation-more"
             >
-              <MoreHorizontalIcon width={14} height={14} />
+              <MoreHorizontalIcon size="sm" />
             </NoticeButton>
             <FloatingMenu
               open={menuOpen}

@@ -1,5 +1,6 @@
 import { useState, type JSX } from 'react';
 import { Button, ErrorBanner } from '@canopy/ui-shared/components';
+import { Surface } from '@canopy/ui-shared/components';
 
 export type LedgerCloseIntentChoice = 'cancel' | 'detach' | 'complete';
 export type LedgerCloseIntentKind = 'OPERATION' | 'TASK';
@@ -55,9 +56,12 @@ export function LedgerCloseIntentPrompt({
   };
 
   return (
-    <div
+    <Surface
       data-testid={testId}
-      className="flex flex-col gap-2 rounded-md border border-line-base bg-subtle/40 p-3"
+      variant="group"
+      size="small"
+      padding="compact"
+      gap="inline"
     >
       <p className="text-s fg-primary">
         {ledgerCloseIntentCopy(openCount, kind, openCountIsLowerBound)}
@@ -95,6 +99,6 @@ export function LedgerCloseIntentPrompt({
         </Button>
       </div>
       <ErrorBanner className="" error={error} />
-    </div>
+    </Surface>
   );
 }

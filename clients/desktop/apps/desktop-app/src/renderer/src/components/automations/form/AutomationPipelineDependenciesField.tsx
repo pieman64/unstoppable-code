@@ -1,5 +1,5 @@
 import { type JSX, useEffect, useState } from 'react';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, Surface } from '@canopy/ui-shared/components';
 import type { AutomationPipelineDependency } from '@canopy/desktop-shared/types';
 import type { PipelineInfo } from '@canopy/desktop-shared/types/pipeline';
 import { SettingsSelect } from '@canopy/ui-shared/components';
@@ -62,32 +62,36 @@ export function AutomationPipelineDependenciesField({
       {value.length > 0 && (
         <ul className="space-y-1">
           {value.map((entry) => (
-            <li
+            <Surface
+              as="li"
+              variant="inset"
+              size="small"
               key={`${entry.source}:${entry.pipelineId}`}
-              className="flex items-center justify-between gap-2 rounded-md border bg-base px-2 py-1.5 text-xs"
               data-testid={`automations-form-pipeline-dependency-${entry.pipelineId}`}
             >
-              <span className="min-w-0 truncate fg-primary">
-                {nameFor(entry)}
-              </span>
-              <Button
-                variant="ghost-quiet"
-                size="compact"
-                disabled={disabled}
-                onClick={(): void =>
-                  onChange(
-                    value.filter(
-                      (candidate) =>
-                        candidate.pipelineId !== entry.pipelineId ||
-                        candidate.source !== entry.source,
-                    ),
-                  )
-                }
-                aria-label={`Remove ${nameFor(entry)}`}
-              >
-                Remove
-              </Button>
-            </li>
+              <div className="flex items-center justify-between gap-2 px-2 py-1.5 text-xs">
+                <span className="min-w-0 truncate fg-primary">
+                  {nameFor(entry)}
+                </span>
+                <Button
+                  variant="ghost-quiet"
+                  size="compact"
+                  disabled={disabled}
+                  onClick={(): void =>
+                    onChange(
+                      value.filter(
+                        (candidate) =>
+                          candidate.pipelineId !== entry.pipelineId ||
+                          candidate.source !== entry.source,
+                      ),
+                    )
+                  }
+                  aria-label={`Remove ${nameFor(entry)}`}
+                >
+                  Remove
+                </Button>
+              </div>
+            </Surface>
           ))}
         </ul>
       )}

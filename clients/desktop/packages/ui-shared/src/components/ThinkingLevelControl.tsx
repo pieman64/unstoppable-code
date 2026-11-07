@@ -126,8 +126,7 @@ export function ThinkingLevelIcon({
 }: ThinkingLevelIconProps): JSX.Element {
   return (
     <ThinkingIcon
-      width={16}
-      height={16}
+      size="sm"
       className={`shrink-0 ${getThinkingIconColorClass(value)}`}
       active={value !== undefined && value !== 'off'}
     />
@@ -418,7 +417,7 @@ export function ThinkingLevelPicker({
                   aria-hidden="true"
                   className="ml-auto inline-flex h-4 w-4 shrink-0 items-center justify-center"
                 >
-                  <CheckIcon width={16} height={16} />
+                  <CheckIcon size="sm" />
                 </span>
               )}
             </DropdownMenuItem>

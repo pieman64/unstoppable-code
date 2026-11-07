@@ -78,16 +78,17 @@ import { ProjectIcon } from '@/components/shared/ProjectIcon';
 import { Tooltip } from '@canopy/ui-shared';
 import {
   AutomationPipelineTargetFields,
+  Button,
+  Disclosure,
+  ErrorBanner,
   FORM_FIELD_LABEL_CLASS,
   FormField,
   type FormFieldControlProps,
   isAutomationPipelineTaskStale,
-  Button,
   Notice,
   NoticeButton,
-  ErrorBanner,
-  Disclosure,
   SegmentedControl as SharedSegmentedControl,
+  Surface,
   TextArea,
   TextInput,
   ToggleSwitch,
@@ -228,12 +229,12 @@ function WorkspaceActionModePill({
     {
       value: 'chat',
       label: CHAT_UNIT_LABEL,
-      icon: <ChatIcon width={14} height={14} aria-hidden="true" />,
+      icon: <ChatIcon size="sm" aria-hidden="true" />,
     },
     {
       value: 'pipeline',
       label: WORKFLOW_ITEM_LABEL,
-      icon: <PipelineIcon width={14} height={14} aria-hidden="true" />,
+      icon: <PipelineIcon size="sm" aria-hidden="true" />,
     },
   ];
   return (
@@ -279,7 +280,7 @@ function InterfaceModePill({
     {
       value: 'claude-code',
       label: 'Claude Code',
-      icon: <TerminalBorderedIcon width={14} height={14} aria-hidden="true" />,
+      icon: <TerminalBorderedIcon size="sm" aria-hidden="true" />,
     },
   ];
 
@@ -1052,46 +1053,55 @@ export function ActivityFormBody({
         {showTrigger && (
           <>
             {formReadOnly ? (
-              <div
+              <Surface
+                variant="group"
+                size="small"
                 data-testid="automations-form-schedule-readonly"
-                className="rounded-md border bg-base/40 px-3 py-2"
               >
-                <div className="mb-2 text-xs font-medium fg-secondary">
-                  Trigger
-                </div>
-                <div className="mb-2 inline-flex rounded-md border bg-fg-primary/[0.04] px-2 py-1 text-xs fg-primary">
-                  One-time
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <Field label="Date">
-                    {(control) => (
-                      <TextInput
-                        {...control}
-                        type="date"
-                        value={state.oneTimeDate}
-                        readOnly
-                        data-testid="automations-form-date"
-                      />
-                    )}
-                  </Field>
-                  <Field label="Time">
-                    {(control) => (
-                      <TextInput
-                        {...control}
-                        type="time"
-                        value={state.oneTimeTime}
-                        readOnly
-                        data-testid="automations-form-time"
-                      />
-                    )}
-                  </Field>
-                </div>
-                {previewDate ? (
-                  <div className="mt-2 text-xs fg-secondary">
-                    Triggers at {previewDate.toLocaleString()}
+                <div className="px-3 py-2">
+                  <div className="mb-2 text-xs font-medium fg-secondary">
+                    Trigger
                   </div>
-                ) : null}
-              </div>
+                  <Surface
+                    variant="group"
+                    size="small"
+                    className="mb-2 inline-block"
+                  >
+                    <div className="inline-flex px-2 py-1 text-xs fg-primary">
+                      One-time
+                    </div>
+                  </Surface>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Field label="Date">
+                      {(control) => (
+                        <TextInput
+                          {...control}
+                          type="date"
+                          value={state.oneTimeDate}
+                          readOnly
+                          data-testid="automations-form-date"
+                        />
+                      )}
+                    </Field>
+                    <Field label="Time">
+                      {(control) => (
+                        <TextInput
+                          {...control}
+                          type="time"
+                          value={state.oneTimeTime}
+                          readOnly
+                          data-testid="automations-form-time"
+                        />
+                      )}
+                    </Field>
+                  </div>
+                  {previewDate ? (
+                    <div className="mt-2 text-xs fg-secondary">
+                      Triggers at {previewDate.toLocaleString()}
+                    </div>
+                  ) : null}
+                </div>
+              </Surface>
             ) : (
               <SegmentedControl
                 label="Trigger"
@@ -1134,7 +1144,7 @@ export function ActivityFormBody({
                             }}
                             data-testid="automations-form-cron-assistant"
                           >
-                            <AppAdvisorIcon className="h-4 w-4" />
+                            <AppAdvisorIcon size="sm" />
                           </Button>
                         </Tooltip>
                       }
@@ -1306,7 +1316,7 @@ export function ActivityFormBody({
                         }}
                         data-testid="automations-form-if-command-assistant"
                       >
-                        <AppAdvisorIcon className="h-4 w-4" />
+                        <AppAdvisorIcon size="sm" />
                       </Button>
                     </Tooltip>
                   </span>
@@ -1629,7 +1639,7 @@ export function ActivityFormBody({
               (selectedProject || isGlobalPipeline) && (
                 <>
                   <Field label="Workflow">
-                    <div className="rounded-md border bg-base p-2">
+                    <Surface variant="inset" size="small" padding="tight">
                       {state.pipelineId ? (
                         <div className="mb-2 min-w-0">
                           <div className="truncate text-s font-medium fg-primary">
@@ -1683,32 +1693,36 @@ export function ActivityFormBody({
                         error={modelAliasBlockingError}
                         testId="automations-form-model-alias-error"
                       />
-                    </div>
+                    </Surface>
                   </Field>
                   {state.pipelineInputs.length > 0 && (
                     <Field label="Inputs">
-                      <div
-                        className="space-y-1 rounded-md border bg-fg-primary/[0.02] p-2"
+                      <Surface
+                        variant="group"
+                        size="small"
+                        padding="tight"
                         data-testid="automations-form-pipeline-inputs"
                       >
-                        {state.pipelineInputs.map((row) => (
-                          <div
-                            key={row.key}
-                            className="grid grid-cols-[minmax(0,0.4fr)_minmax(0,0.6fr)] gap-2 text-xs"
-                          >
-                            <span className="truncate fg-secondary">
-                              {row.key}
-                            </span>
-                            <span
-                              // Input values can carry the automation's prompt;
-                              // keys stay recorded.
-                              className={`${POSTHOG_REPLAY_BLOCK_CLASS} truncate fg-primary`}
+                        <div className="space-y-1">
+                          {state.pipelineInputs.map((row) => (
+                            <div
+                              key={row.key}
+                              className="grid grid-cols-[minmax(0,0.4fr)_minmax(0,0.6fr)] gap-2 text-xs"
                             >
-                              {row.value || '(empty)'}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
+                              <span className="truncate fg-secondary">
+                                {row.key}
+                              </span>
+                              <span
+                                // Input values can carry the automation's prompt;
+                                // keys stay recorded.
+                                className={`${POSTHOG_REPLAY_BLOCK_CLASS} truncate fg-primary`}
+                              >
+                                {row.value || '(empty)'}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </Surface>
                     </Field>
                   )}
                 </>

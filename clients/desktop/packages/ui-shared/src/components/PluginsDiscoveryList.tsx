@@ -193,7 +193,7 @@ const PluginsEntryCard = memo(function PluginsEntryCard({
             testId={`plugins-update-available-${entry.id}`}
             onClick={() => onSelect(entry)}
           >
-            <DownloadIcon width={14} height={14} aria-hidden="true" />
+            <DownloadIcon size="sm" aria-hidden="true" />
           </TableActionButton>
         ) : undefined
       }

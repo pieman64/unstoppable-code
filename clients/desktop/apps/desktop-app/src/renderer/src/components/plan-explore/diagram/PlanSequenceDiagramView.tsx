@@ -22,12 +22,13 @@ import '@xyflow/react/dist/style.css';
 import {
   Badge,
   Button,
+  Divider,
   EmptyState,
   ErrorState,
-  TextArea,
-  ThinkingSpinner,
   Heading,
   PaneSheet,
+  TextArea,
+  ThinkingSpinner,
 } from '@canopy/ui-shared/components';
 import { DiagramCenteredMessage } from './DiagramCenteredMessage';
 import type { PlanDiagramArtifact } from '@canopy/desktop-shared/types/plan-diagrams';
@@ -165,7 +166,7 @@ function SelectedNodeDetail({
           onClick={onClose}
           aria-label="Close node detail"
         >
-          <AppCatalogCloseIcon width="14" height="14" />
+          <AppCatalogCloseIcon size="sm" />
         </Button>
       </div>
       <p className="mb-2 text-xs fg-secondary">{data.description}</p>
@@ -202,48 +203,51 @@ function SelectedNodeDetail({
         </div>
       )}
       {onAddNodeComment && (
-        <div className="mt-3 border-t pt-2">
-          {composing ? (
-            <div className="flex flex-col gap-1.5">
-              <TextArea
-                aria-label="Comment"
-                value={body}
-                onChange={(e): void => setBody(e.target.value)}
-                placeholder="Comment on this node…"
-                rows={3}
-                autoFocus
-                data-testid="plan-node-comment-input"
-              />
-              <div className="flex items-center justify-end gap-1.5">
-                <Button
-                  size="compact"
-                  onClick={(): void => {
-                    setComposing(false);
-                    setBody('');
-                  }}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  variant="primary"
-                  size="compact"
-                  onClick={handleSave}
-                  disabled={body.trim().length === 0}
-                  data-testid="plan-node-comment-save"
-                >
-                  Save comment
-                </Button>
+        <div className="mt-3">
+          <Divider />
+          <div className="pt-2">
+            {composing ? (
+              <div className="flex flex-col gap-1.5">
+                <TextArea
+                  aria-label="Comment"
+                  value={body}
+                  onChange={(e): void => setBody(e.target.value)}
+                  placeholder="Comment on this node…"
+                  rows={3}
+                  autoFocus
+                  data-testid="plan-node-comment-input"
+                />
+                <div className="flex items-center justify-end gap-1.5">
+                  <Button
+                    size="compact"
+                    onClick={(): void => {
+                      setComposing(false);
+                      setBody('');
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="primary"
+                    size="compact"
+                    onClick={handleSave}
+                    disabled={body.trim().length === 0}
+                    data-testid="plan-node-comment-save"
+                  >
+                    Save comment
+                  </Button>
+                </div>
               </div>
-            </div>
-          ) : (
-            <Button
-              size="compact"
-              onClick={(): void => setComposing(true)}
-              data-testid="plan-node-add-comment"
-            >
-              + Add comment
-            </Button>
-          )}
+            ) : (
+              <Button
+                size="compact"
+                onClick={(): void => setComposing(true)}
+                data-testid="plan-node-add-comment"
+              >
+                + Add comment
+              </Button>
+            )}
+          </div>
         </div>
       )}
     </PaneSheet>

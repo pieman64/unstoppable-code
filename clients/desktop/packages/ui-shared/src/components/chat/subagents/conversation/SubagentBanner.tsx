@@ -86,7 +86,7 @@ function LineageBreadcrumb({
               : 'flex min-w-0 items-center gap-1'
           }
         >
-          <ChevronRightIcon size={10} aria-hidden className="shrink-0" />
+          <ChevronRightIcon size="sm" aria-hidden className="shrink-0" />
           {ancestor.kind === 'workflow-run' ? (
             <SubagentWorkflowMark size={12} />
           ) : null}
@@ -112,7 +112,7 @@ function LineageBreadcrumb({
           </button>
         </span>
       ))}
-      <ChevronRightIcon size={10} aria-hidden className="shrink-0" />
+      <ChevronRightIcon size="sm" aria-hidden className="shrink-0" />
       <span className="inline-flex shrink-0 fg-accent">
         <SubagentIcon size={12} />
       </span>

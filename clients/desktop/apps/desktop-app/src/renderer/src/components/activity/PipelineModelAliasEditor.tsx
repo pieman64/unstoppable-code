@@ -25,6 +25,7 @@ import {
   DialogFormField,
   FieldError,
   SettingsSelect,
+  Surface,
   TextArea,
 } from '@canopy/ui-shared/components';
 import {
@@ -239,21 +240,23 @@ export function PipelineModelAliasEditor({
               error={errorFor('base')}
               errorId={errorId}
             >
-              <div className="flex w-full items-center rounded-md border bg-base px-2 py-1.5">
-                <ModelPicker
-                  currentModel={
-                    effective.preference?.mode === 'inline'
-                      ? effective.preference.base || ''
-                      : ''
-                  }
-                  onModelChange={(model) => updateInline({ base: model })}
-                  allowWorkspaceDefault={false}
-                  hideAgents
-                  disabled={readonly}
-                  placeholderLabel="Choose a model"
-                  triggerTooltip="Model this alias resolves to"
-                />
-              </div>
+              <Surface variant="inset" size="small" className="w-full">
+                <div className="flex items-center px-2 py-1.5">
+                  <ModelPicker
+                    currentModel={
+                      effective.preference?.mode === 'inline'
+                        ? effective.preference.base || ''
+                        : ''
+                    }
+                    onModelChange={(model) => updateInline({ base: model })}
+                    allowWorkspaceDefault={false}
+                    hideAgents
+                    disabled={readonly}
+                    placeholderLabel="Choose a model"
+                    triggerTooltip="Model this alias resolves to"
+                  />
+                </div>
+              </Surface>
             </DialogFormField>
             <DialogFormField label="Instructions" htmlFor={instructionsId}>
               <TextArea

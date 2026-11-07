@@ -46,11 +46,7 @@ export const WatcherFiredTitle = memo(function WatcherFiredTitle({
           : 'mb-1 flex items-center gap-1.5 text-3xs font-medium fg-info'
       }${combinedWatchers?.length ? ' cursor-help' : ''}`}
     >
-      <AppAdvisorWatcherIcon
-        width={inline ? 14 : 11}
-        height={inline ? 14 : 11}
-        className="shrink-0"
-      />
+      <AppAdvisorWatcherIcon size="sm" className="shrink-0" />
       {/* The kind names the watched chat and project: mask it, as titles are. */}
       <span
         className={inline ? `truncate ${REPLAY_MASK_CLASS}` : REPLAY_MASK_CLASS}

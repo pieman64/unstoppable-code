@@ -33,7 +33,11 @@ import {
 } from '../cursor/runtime-environment';
 import type { CursorLaunch } from '../cursor/runtime-launch';
 import { CURSOR_RUNTIME_VERSION } from '../cursor/runtime-metadata';
-import { verifyCursorRuntimeVersion } from '../cursor/runtime-process';
+import {
+  verifyCursorRuntimeVersion,
+  type CursorProviderProcess,
+} from '../cursor/runtime-process';
+import type { ProviderProcessSpawner } from '../provider-process/spawn';
 import { runCursorTurn } from '../cursor/turn-driver';
 import {
   getPipelineExecutionCursorProfileDir,
@@ -55,6 +59,8 @@ export interface CursorPromptDriverOptions {
    * Defaults to desktop Settings.
    */
   reinstallGuidance?: string;
+  /** How this host starts Cursor children (CAN-4118). */
+  spawner: ProviderProcessSpawner;
 }
 
 /** Canonical-home environment keys a pipeline-declared environment must never override. */
@@ -580,10 +586,15 @@ export async function runCursorPromptWithDriver(
         ELECTRON_RUN_AS_NODE: '1',
       }),
     );
+    const providerProcess: CursorProviderProcess = {
+      spawner: driver.spawner,
+      owner: { kind: 'pipeline', id: request.executionId },
+    };
     // The probe's own child is stopped by the same boundary, not just
     // abandoned.
     await withinSetup(
       verifyCursorRuntimeVersion(
+        providerProcess,
         driver.launch,
         env,
         setupStop.signal,
@@ -773,6 +784,7 @@ export async function runCursorPromptWithDriver(
                 cwd: request.cwd,
                 text: prompt,
                 launch: driver.launch,
+                providerProcess,
                 env,
                 hookRuntime,
                 profileDir,

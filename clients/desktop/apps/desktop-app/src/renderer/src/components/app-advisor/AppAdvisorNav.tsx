@@ -200,7 +200,7 @@ function AppAdvisorNavEntryRow({
       });
       const selectionItems = selectionMenu?.items ?? [];
       const runSelectionItem = (item: WorktreeMenuItem): void => {
-        menu.close();
+        if (item.role !== 'menuitemradio') menu.close();
         item.onSelect?.();
       };
       if (selectionMenu?.replacesMenu === true) {

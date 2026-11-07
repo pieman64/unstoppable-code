@@ -240,7 +240,7 @@ function BranchSyncButton({
               spinnerTone="accent"
             />
           ) : (
-            <GitCommitIcon className="h-4 w-4" />
+            <GitCommitIcon size="sm" />
           )}
           {label}
         </HeaderActionButton>,
@@ -304,7 +304,7 @@ function CreatePrButton({
           spinnerTone="accent"
         />
       ) : (
-        <GitPullRequestIcon className="h-4 w-4 shrink-0" />
+        <GitPullRequestIcon size="sm" className="shrink-0" />
       )}
       <CreatePrLabel {...create.label} />
     </HeaderActionButton>,
@@ -349,7 +349,7 @@ export function PullRequestActions({
         {activity.startingCiFix ? (
           <ThinkingSpinner tone="emphasis" quiet className="mr-1" />
         ) : (
-          <ChatIcon className="h-4 w-4" />
+          <ChatIcon size="sm" />
         )}
         Fix
       </HeaderActionButton>
@@ -426,7 +426,7 @@ export function PullRequestActions({
             onClick={() => onAction({ kind: 'split-pr' })}
             data-testid="split-pr-status-bar-button"
           >
-            <SplitPrIcon className="h-4 w-4" />
+            <SplitPrIcon size="sm" />
             Split PR
           </HeaderActionButton>
         ) : (
@@ -438,7 +438,7 @@ export function PullRequestActions({
             aria-disabled="true"
             data-testid="split-pr-status-bar-button"
           >
-            <SplitPrIcon className="h-4 w-4" />
+            <SplitPrIcon size="sm" />
             Split PR
           </HeaderActionButton>
         ))}
@@ -475,7 +475,7 @@ export function PullRequestActions({
                   spinnerTone="accent"
                 />
               ) : (
-                <GitCommitIcon className="h-4 w-4" />
+                <GitCommitIcon size="sm" />
               )}
               {activity.commitReviewPending ? 'Review…' : 'Commit'}
             </HeaderActionButton>,
@@ -511,7 +511,7 @@ export function PullRequestActions({
                   spinnerTone="accent"
                 />
               ) : (
-                <GitMergeIcon className="h-4 w-4" />
+                <GitMergeIcon size="sm" />
               )}
               Merge
             </HeaderActionButton>,
@@ -586,9 +586,9 @@ export function PullRequestActions({
                     spinnerTone="inherit"
                   />
                 ) : plan.merge.via === 'chat' ? (
-                  <ChatIcon className="h-4 w-4" />
+                  <ChatIcon size="sm" />
                 ) : (
-                  <GitMergeIcon className="h-4 w-4" />
+                  <GitMergeIcon size="sm" />
                 )}
                 Merge
               </HeaderActionButton>,
@@ -618,7 +618,7 @@ export function PullRequestActions({
               className={MERGE_QUEUE_STATUS}
               data-testid="pr-status-bar-merge-queue"
             >
-              <GitMergeIcon className="h-4 w-4" />
+              <GitMergeIcon size="sm" />
               {plan.mergeQueue.label}
             </span>
           </Tooltip>
@@ -653,7 +653,7 @@ export function PullRequestActions({
               {activity.startingConflictResolution ? (
                 <ThinkingSpinner tone="primary" quiet className="mr-1" />
               ) : (
-                <ChatIcon className="h-4 w-4" />
+                <ChatIcon size="sm" />
               )}
               Resolve, commit &amp; push
             </HeaderActionButton>
@@ -665,7 +665,7 @@ export function PullRequestActions({
             aria-disabled="true"
             data-testid="pr-status-bar-resolve-conflicts"
           >
-            <ChatIcon className="h-4 w-4" />
+            <ChatIcon size="sm" />
             Resolve, commit &amp; push
           </HeaderActionButton>
         ))}

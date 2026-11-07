@@ -10,7 +10,7 @@ import { FolderIcon } from '@canopy/ui-shared/icons/AppIcons';
 export function DirectoryPickerHeading(): JSX.Element {
   return (
     <div className="flex items-center gap-1.5 px-2 pb-0.5 pt-1 text-xs font-normal fg-secondary">
-      <FolderIcon width={13} height={13} />
+      <FolderIcon size="sm" />
       Working directory
     </div>
   );

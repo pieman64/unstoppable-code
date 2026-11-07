@@ -1,20 +1,16 @@
-import type { JSX, SVGProps } from 'react';
-import { AgentAssistantIcon as AppCatalogAgentAssistantIcon } from './AppIcons';
+import type { JSX } from 'react';
+import {
+  AgentAssistantIcon as AppCatalogAgentAssistantIcon,
+  type AppIconProps,
+} from './AppIcons';
 
 /**
  * Generic assistant icon — the robot glyph used for assistants other than
  * Orchestrator, such as Pipeline Advisor and the Ledger sidecar. Orchestrator
  * uses {@link AppAdvisorIcon} (the orbit) instead.
  */
-export function AgentAssistantIcon(
-  props: SVGProps<SVGSVGElement>,
-): JSX.Element {
+export function AgentAssistantIcon(props: AppIconProps): JSX.Element {
   return (
-    <AppCatalogAgentAssistantIcon
-      width="14"
-      height="14"
-      aria-hidden="true"
-      {...props}
-    />
+    <AppCatalogAgentAssistantIcon size="sm" aria-hidden="true" {...props} />
   );
 }

@@ -1,13 +1,9 @@
-import type { JSX, SVGProps } from 'react';
-import { McpServerIcon as AppCatalogMcpServerIcon } from './AppIcons';
+import type { JSX } from 'react';
+import {
+  McpServerIcon as AppCatalogMcpServerIcon,
+  type AppIconProps,
+} from './AppIcons';
 
-export function McpServerIcon(props: SVGProps<SVGSVGElement>): JSX.Element {
-  return (
-    <AppCatalogMcpServerIcon
-      width="14"
-      height="14"
-      fillRule="evenodd"
-      {...props}
-    />
-  );
+export function McpServerIcon(props: AppIconProps): JSX.Element {
+  return <AppCatalogMcpServerIcon size="sm" fillRule="evenodd" {...props} />;
 }

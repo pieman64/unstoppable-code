@@ -32,27 +32,27 @@ import {
   expandLeadingCursorCommand,
 } from '@canopy/desktop-shared/lib/cursor-capabilities';
 import { materializeSelectedCapabilityRoot } from '@canopy/desktop-shared/node/cursor/capability-root';
-import type { CopilotTurnRequest } from '@canopy/desktop-shared/node/copilot/turn-driver';
-import { handleCopilotTurnCleanupError } from '@canopy/desktop-shared/node/copilot/turn-cleanup';
+import type { CopilotTurnRequest } from '@canopy/copilot-recipient/turn-driver';
+import { handleCopilotTurnCleanupError } from '@canopy/copilot-recipient/turn-cleanup';
 import {
   collectCopilotMcpSecretValues,
   describeCopilotMcpServerError,
   type CopilotMcpServerReadiness,
-} from '@canopy/desktop-shared/node/copilot/tool-snapshot';
+} from '@canopy/copilot-recipient/tool-snapshot';
 import { managedMcpServerFriendlyLabel } from '@canopy/desktop-shared/node/plugins/mcp-server-name';
 import {
   createCopilotCapabilitySnapshot,
   isCopilotCapabilitySnapshot,
   type CopilotCapabilitySnapshot,
-} from '@canopy/desktop-shared/node/copilot/capability-snapshot';
+} from '@canopy/copilot-recipient/capability-snapshot';
 import { COPILOT_RUNTIME_VERSION } from '@canopy/desktop-shared/node/copilot/runtime-metadata';
-import { COPILOT_NATIVE_TOOLS } from '@canopy/desktop-shared/node/copilot/session-policy';
-import { CopilotToolCorrelation } from '@canopy/desktop-shared/node/copilot/tool-correlation';
+import { COPILOT_NATIVE_TOOLS } from '@canopy/copilot-recipient/session-policy';
+import { CopilotToolCorrelation } from '@canopy/copilot-recipient/tool-correlation';
 import {
   CopilotMcpApprovals,
   CopilotToolReceipts,
   copilotReceiptText,
-} from '@canopy/desktop-shared/node/copilot/tool-receipts';
+} from '@canopy/copilot-recipient/tool-receipts';
 import { deferredToolsReloadCoordinator } from '../deferred-tools/reload-coordinator';
 import { clampThinkingLevelToDeclared } from '@canopy/protocol/thinking';
 import type { TurnBinding } from '@canopy/protocol/canopy-core';
@@ -727,6 +727,7 @@ export class CopilotProvider implements AgentProvider {
           projectId: opts.projectId,
           worktreeId: opts.worktreeId,
           chatId: opts.chatId,
+          interfaceTools: opts.interfaceTools ?? [],
           assistantMode: opts.assistantMode,
           ...(serverMode === 'app-advisor'
             ? { appAdvisorRuntime: opts.appAdvisorRuntime }

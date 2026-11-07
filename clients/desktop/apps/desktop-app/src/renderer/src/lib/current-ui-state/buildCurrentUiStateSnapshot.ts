@@ -53,6 +53,7 @@ import { useNavigationStore } from '@/stores/navigationStore';
 import { usePipelineRunsStore } from '@/stores/pipelineRunsStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useSidebarStore } from '@/stores/sidebarStore';
+import { useSidebarPageHandoffStore } from '@/stores/sidebarPageHandoffStore';
 import { useTerminalStore } from '@/stores/terminalStore';
 import {
   DEFAULT_BROWSER_INSPECTOR_TAB,
@@ -711,13 +712,13 @@ export function buildCurrentUiStateSnapshot(
     };
   }
 
-  const mcpAccounts = readObject(
-    slices[
-      nav.settingsOpen
-        ? 'mcp.accountConnections.settings'
-        : 'mcp.accountConnections.plugins'
-    ],
-  );
+  // Customize reports only while its MCP surface shows; Settings hides it.
+  const mcpAccounts =
+    nav.activePage === 'plugins' &&
+    !nav.settingsOpen &&
+    !useSidebarPageHandoffStore.getState().coversMainShell
+      ? readObject(slices['mcp.accountConnections.plugins'])
+      : undefined;
   if (mcpAccounts) {
     const rows: NonNullable<
       AppAdvisorUiStateSnapshot['mcpAccountConnections']
@@ -1594,6 +1595,9 @@ export function buildCurrentUiStateSnapshot(
         : {}),
       ...(typeof adhocJoinModalSlice.errorVisible === 'boolean'
         ? { errorVisible: adhocJoinModalSlice.errorVisible }
+        : {}),
+      ...(typeof adhocJoinModalSlice.sharedSetupVisible === 'boolean'
+        ? { sharedSetupVisible: adhocJoinModalSlice.sharedSetupVisible }
         : {}),
     };
   }

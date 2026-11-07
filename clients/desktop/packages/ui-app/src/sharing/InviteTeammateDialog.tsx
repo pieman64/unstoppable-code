@@ -39,6 +39,7 @@ import {
   useContextRebind,
 } from './defaultOrganizationForContext';
 import { InviteTeammateRefusal } from './invite-teammate-refusal';
+import { Divider } from '@canopy/ui-shared/components';
 
 export { InviteTeammateRefusal };
 
@@ -424,11 +425,7 @@ export function InviteTeammateDialog({
         </div>
 
         <div>
-          <div
-            aria-hidden="true"
-            data-testid="invite-teammate-access-divider"
-            className="mb-4 h-px bg-line-base"
-          />
+          <Divider className="mb-4" />
           <div className="space-y-2">
             <p className="text-s font-medium fg-primary">People with access</p>
             {recipientsLoading && (
@@ -459,7 +456,7 @@ export function InviteTeammateDialog({
               recipients.map((grant) => (
                 <div
                   key={grant.id}
-                  className="flex items-center gap-3 rounded-lg px-3 py-2 text-s"
+                  className="flex items-center gap-3 px-3 py-2 text-s"
                 >
                   <DisplayAvatar
                     name={memberLabel(grant.recipient)}

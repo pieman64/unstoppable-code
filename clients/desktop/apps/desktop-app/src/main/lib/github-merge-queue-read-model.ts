@@ -106,6 +106,13 @@ function toQueueRef(request: GitHubMergeQueueRequest): QueueRef {
   return { owner, repo, baseBranch };
 }
 
+/** Legacy IPC validation, before canonical envelope validation. */
+export function validateGitHubMergeQueueRequest(
+  request: GitHubMergeQueueRequest,
+): void {
+  toQueueRef(request);
+}
+
 function cacheKey(ref: QueueRef): string {
   return `${generation}:${ref.owner.toLowerCase()}/${ref.repo.toLowerCase()}@${ref.baseBranch}`;
 }

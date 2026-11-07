@@ -2,6 +2,7 @@ import type { JSX } from 'react';
 import { REMOTE_CONTROL_LABEL } from '@canopy/protocol';
 import { Button } from '@/components/shared/Button';
 import { GUEST_WORK_PRESERVED } from '@/lib/guest-cta-copy';
+import { Surface } from '@canopy/ui-shared/components';
 
 interface RemoteControlGuestCtaProps {
   /**
@@ -37,22 +38,27 @@ export function RemoteControlGuestCta({
   className = '',
 }: RemoteControlGuestCtaProps): JSX.Element {
   return (
-    <div
-      className={`flex flex-col gap-2 rounded-lg border bg-secondary/40 p-3 sm:flex-row sm:items-center sm:justify-between ${className}`}
+    <Surface
+      variant="group"
+      padding="compact"
       data-testid="canopy-portal-guest-cta"
     >
-      <p className="text-s fg-secondary">
-        Create a free account to unlock {REMOTE_CONTROL_LABEL}.{' '}
-        {GUEST_WORK_PRESERVED}
-      </p>
-      <Button
-        variant="primary"
-        size="compact"
-        onClick={onCreateAccount}
-        data-testid="canopy-portal-guest-cta-button"
+      <div
+        className={`flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between ${className}`}
       >
-        {freeAccess ? 'Sign in' : 'Start free trial'}
-      </Button>
-    </div>
+        <p className="text-s fg-secondary">
+          Create a free account to unlock {REMOTE_CONTROL_LABEL}.{' '}
+          {GUEST_WORK_PRESERVED}
+        </p>
+        <Button
+          variant="primary"
+          size="compact"
+          onClick={onCreateAccount}
+          data-testid="canopy-portal-guest-cta-button"
+        >
+          {freeAccess ? 'Sign in' : 'Start free trial'}
+        </Button>
+      </div>
+    </Surface>
   );
 }

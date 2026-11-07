@@ -32,6 +32,7 @@ import {
   Fact,
   FactList,
   Heading,
+  Surface,
 } from '@canopy/ui-shared/components';
 import { SkillPublisherProvenance } from '@canopy/ui-shared/components/SkillPublisherProvenance';
 import { parseSkillSource } from '@/lib/skillFrontmatter';
@@ -240,8 +241,9 @@ export function MarketplaceSkillDetailBody({
           </div>
         )}
         {snapshot?.entity === 'plugin' && (
-          <div
-            className="rounded-lg border bg-secondary/30 p-4"
+          <Surface
+            variant="group"
+            padding="default"
             data-testid="deep-link-plugin-summary"
           >
             {hasMarkdownDescriptionText(snapshot.description) ? (
@@ -258,7 +260,7 @@ export function MarketplaceSkillDetailBody({
                 {snapshot.marketplaceOrigin}
               </Fact>
             </FactList>
-          </div>
+          </Surface>
         )}
       </div>
     </div>
@@ -387,77 +389,80 @@ function PackageReview({
   summary: PipelinePackageSummary;
 }): JSX.Element {
   return (
-    <section
-      className="space-y-3 rounded-lg border bg-base px-3 py-2.5"
+    <Surface
+      as="section"
+      variant="inset"
       data-testid="deep-link-share-package-summary"
     >
-      <div>
-        <Heading level={3} variant="title">
-          {PIPELINE_PACKAGE_INCLUDED_HEADING}
-        </Heading>
-        <p className="text-xs fg-secondary">
-          {formatPipelinePackageFileSummary(
-            summary.totalFiles,
-            summary.totalBytes,
-          )}
-        </p>
-      </div>
-      <ul className="space-y-1.5">
-        {summary.resources.map((resource) => (
-          <li key={resource.id} className="text-xs">
-            <span className="fg-primary">{resource.displayName}</span>{' '}
-            <span className="fg-secondary">
-              {pipelinePackageKindLabel(resource.kind)} · {resource.sourceLabel}{' '}
-              ·{' '}
-              {formatPipelinePackageFileSummary(
-                resource.fileCount,
-                resource.totalBytes,
-              )}
-            </span>
-            {resource.executableFiles &&
-              resource.executableFiles.length > 0 && (
-                <span
-                  className="block fg-primary"
-                  data-testid="deep-link-share-package-executable-files"
-                >
-                  {formatPipelinePackageExecutableFiles(
-                    resource.executableFiles,
-                  )}
-                </span>
-              )}
-            {resource.affectedSteps.length > 0 && (
-              <span className="block fg-secondary">
-                Used by {formatPipelinePackageSteps(resource.affectedSteps)}
-              </span>
-            )}
-          </li>
-        ))}
-      </ul>
-      {(summary.publisherNotes?.length ?? 0) > 0 && (
-        <div data-testid="deep-link-share-package-notes">
+      <div className="space-y-3 px-3 py-2.5">
+        <div>
           <Heading level={3} variant="title">
-            {PIPELINE_PACKAGE_NOT_INCLUDED_HEADING}
+            {PIPELINE_PACKAGE_INCLUDED_HEADING}
           </Heading>
           <p className="text-xs fg-secondary">
-            {PIPELINE_PACKAGE_PUBLISHER_NOTE}
+            {formatPipelinePackageFileSummary(
+              summary.totalFiles,
+              summary.totalBytes,
+            )}
           </p>
-          <ul className="mt-1 space-y-1">
-            {summary.publisherNotes?.map((note) => (
-              <li key={note.id} className="text-xs">
-                <span className="fg-primary">{note.label}</span>
-                {note.affectedSteps.length > 0 && (
-                  <span className="block fg-secondary">
-                    Used by {formatPipelinePackageSteps(note.affectedSteps)}
+        </div>
+        <ul className="space-y-1.5">
+          {summary.resources.map((resource) => (
+            <li key={resource.id} className="text-xs">
+              <span className="fg-primary">{resource.displayName}</span>{' '}
+              <span className="fg-secondary">
+                {pipelinePackageKindLabel(resource.kind)} ·{' '}
+                {resource.sourceLabel} ·{' '}
+                {formatPipelinePackageFileSummary(
+                  resource.fileCount,
+                  resource.totalBytes,
+                )}
+              </span>
+              {resource.executableFiles &&
+                resource.executableFiles.length > 0 && (
+                  <span
+                    className="block fg-primary"
+                    data-testid="deep-link-share-package-executable-files"
+                  >
+                    {formatPipelinePackageExecutableFiles(
+                      resource.executableFiles,
+                    )}
                   </span>
                 )}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      <p className="text-xs fg-secondary">
-        {PIPELINE_PACKAGE_NO_CREDENTIALS_NOTE}
-      </p>
-    </section>
+              {resource.affectedSteps.length > 0 && (
+                <span className="block fg-secondary">
+                  Used by {formatPipelinePackageSteps(resource.affectedSteps)}
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+        {(summary.publisherNotes?.length ?? 0) > 0 && (
+          <div data-testid="deep-link-share-package-notes">
+            <Heading level={3} variant="title">
+              {PIPELINE_PACKAGE_NOT_INCLUDED_HEADING}
+            </Heading>
+            <p className="text-xs fg-secondary">
+              {PIPELINE_PACKAGE_PUBLISHER_NOTE}
+            </p>
+            <ul className="mt-1 space-y-1">
+              {summary.publisherNotes?.map((note) => (
+                <li key={note.id} className="text-xs">
+                  <span className="fg-primary">{note.label}</span>
+                  {note.affectedSteps.length > 0 && (
+                    <span className="block fg-secondary">
+                      Used by {formatPipelinePackageSteps(note.affectedSteps)}
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        <p className="text-xs fg-secondary">
+          {PIPELINE_PACKAGE_NO_CREDENTIALS_NOTE}
+        </p>
+      </div>
+    </Surface>
   );
 }

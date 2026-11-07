@@ -56,7 +56,7 @@ export function CustomizeRowMenu({
         }}
         onClick={() => setOpen((value) => !value)}
       >
-        <MoreHorizontalIcon width={16} height={16} aria-hidden />
+        <MoreHorizontalIcon size="sm" aria-hidden />
       </Button>
       <FloatingMenu
         id={menuId}

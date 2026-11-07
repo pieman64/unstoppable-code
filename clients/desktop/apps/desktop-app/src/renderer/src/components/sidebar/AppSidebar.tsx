@@ -71,6 +71,7 @@ import {
 import { useSidebarStore } from '@/stores/sidebarStore';
 import {
   Badge,
+  ThinkingSpinner,
   TitlebarIconButton,
   useOverlayEscape,
 } from '@canopy/ui-shared/components';
@@ -2699,7 +2700,7 @@ export function AppSidebar({
     appAdvisorThinking ? 'active' : appAdvisorUnread ? 'unread' : undefined;
 
   // App Advisor keeps its bespoke thinking/unread/open treatment and the
-  // pulsing thinking dots in either region; only padding, testid, onboarding
+  // shared thinking spinner in either region; only padding, testid, onboarding
   // anchor, and the click wrapper differ between main nav and the More menu.
   const renderAppAdvisorButton = (
     def: SidebarNavItemDef,
@@ -2725,9 +2726,7 @@ export function AppSidebar({
                 aria-hidden="true"
                 className="absolute left-1/2 top-3.5 flex -translate-x-1/2 gap-0.5"
               >
-                <span className="h-1 w-1 rounded-full bg-current animate-pulse" />
-                <span className="h-1 w-1 rounded-full bg-current animate-pulse [animation-delay:150ms]" />
-                <span className="h-1 w-1 rounded-full bg-current animate-pulse [animation-delay:300ms]" />
+                <ThinkingSpinner />
               </span>
             )}
           </DropdownMenuItemIcon>
@@ -2755,11 +2754,9 @@ export function AppSidebar({
               <span
                 data-testid="sidebar-app-advisor-thinking"
                 aria-hidden="true"
-                className="absolute left-1/2 top-4 flex -translate-x-1/2 gap-0.5"
+                className="absolute left-1/2 top-3.5 flex -translate-x-1/2 gap-0.5"
               >
-                <span className="h-1 w-1 rounded-full bg-current animate-pulse" />
-                <span className="h-1 w-1 rounded-full bg-current animate-pulse [animation-delay:150ms]" />
-                <span className="h-1 w-1 rounded-full bg-current animate-pulse [animation-delay:300ms]" />
+                <ThinkingSpinner />
               </span>
             )}
           </>
@@ -2772,7 +2769,7 @@ export function AppSidebar({
 
   // Claude Workers keeps the bespoke "active" affordance it had in the account
   // menu before moving into the sidebar nav: a sky-tinted tone, an
-  // `aria-label` announcing the active state, and pulsing indicator dots while
+  // `aria-label` announcing the active state, and the shared thinking spinner while
   // a worker is queued/starting/running. Only padding, testid, onboarding
   // anchor, and the click wrapper differ between the main nav and the More menu.
   // The shared row rule: a row enters its page, and the current row returns
@@ -2817,9 +2814,7 @@ export function AppSidebar({
                 aria-hidden="true"
                 className="absolute left-1/2 top-3.5 flex -translate-x-1/2 gap-0.5"
               >
-                <span className="h-1 w-1 rounded-full bg-current animate-pulse" />
-                <span className="h-1 w-1 rounded-full bg-current animate-pulse [animation-delay:150ms]" />
-                <span className="h-1 w-1 rounded-full bg-current animate-pulse [animation-delay:300ms]" />
+                <ThinkingSpinner />
               </span>
             )}
           </DropdownMenuItemIcon>
@@ -2844,11 +2839,9 @@ export function AppSidebar({
               <span
                 data-testid="sidebar-workers-active"
                 aria-hidden="true"
-                className="absolute left-1/2 top-4 flex -translate-x-1/2 gap-0.5"
+                className="absolute left-1/2 top-3.5 flex -translate-x-1/2 gap-0.5"
               >
-                <span className="h-1 w-1 rounded-full bg-current animate-pulse" />
-                <span className="h-1 w-1 rounded-full bg-current animate-pulse [animation-delay:150ms]" />
-                <span className="h-1 w-1 rounded-full bg-current animate-pulse [animation-delay:300ms]" />
+                <ThinkingSpinner />
               </span>
             )}
           </>
@@ -3684,7 +3677,8 @@ export function AppSidebar({
                 >
                   <span className="truncate">{WORKSPACE_LABEL_PLURAL}</span>
                   <ChevronDownMediumIcon
-                    className="h-4 w-4 shrink-0"
+                    size="sm"
+                    className="shrink-0"
                     aria-hidden="true"
                   />
                 </button>

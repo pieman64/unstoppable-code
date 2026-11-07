@@ -41,6 +41,8 @@ export interface LedgerStorageHostOptions {
   requestTimeoutMs?: number;
   /** Bounds the wait for the in-flight request during shutdown. */
   shutdownTimeoutMs?: number;
+  /** Bounds the wait for retired workers to exit. */
+  workerExitWaitMs?: number;
   /** Calls allowed to wait for their turn before new calls are refused. */
   maxQueuedCalls?: number;
 }
@@ -53,7 +55,8 @@ export interface LedgerStorageHostOptions {
  * timed out or broke the protocol, the queue is full, or the host is shutting
  * down; `INTERNAL` when the request could not be sent (no method, or arguments
  * that cannot be cloned); otherwise the reason the worker reported for the
- * request.
+ * request. A timed-out write may have committed (CAN-5329); retry a keyed
+ * instruction with the same key and payload to recover its stored receipt.
  */
 export class LedgerStorageHostError extends Error {
   readonly reason: LedgerStorageErrorReason;
@@ -134,6 +137,7 @@ export class LedgerStorageHost {
   private readonly startupTimeoutMs: number;
   private readonly requestTimeoutMs: number;
   private readonly shutdownTimeoutMs: number;
+  private readonly workerExitWaitMs: number;
   private readonly maxQueuedCalls: number;
   private readonly queue: PendingCall[] = [];
   /** Settles when a started worker exits; removed once it has. */
@@ -161,6 +165,11 @@ export class LedgerStorageHost {
       options.shutdownTimeoutMs,
       DEFAULT_SHUTDOWN_TIMEOUT_MS,
       'shutdownTimeoutMs',
+    );
+    this.workerExitWaitMs = positiveOption(
+      options.workerExitWaitMs,
+      WORKER_EXIT_WAIT_MS,
+      'workerExitWaitMs',
     );
     this.maxQueuedCalls = positiveOption(
       options.maxQueuedCalls,
@@ -303,6 +312,7 @@ export class LedgerStorageHost {
 
   private send(session: WorkerSession, call: PendingCall): boolean {
     session.active = call;
+    // Timeout is an unknown write outcome: native SQLite may still COMMIT.
     this.arm(session, this.requestTimeoutMs, 'Ledger storage did not answer');
     try {
       session.worker.postMessage(call.request);
@@ -436,7 +446,7 @@ export class LedgerStorageHost {
   }
 
   private waitForWorkerExits(): Promise<void> {
-    return waitAtMost(Promise.all(this.runningWorkers), WORKER_EXIT_WAIT_MS);
+    return waitAtMost(Promise.all(this.runningWorkers), this.workerExitWaitMs);
   }
 }
 

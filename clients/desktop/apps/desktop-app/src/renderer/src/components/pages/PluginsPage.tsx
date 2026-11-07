@@ -9,6 +9,7 @@ import {
   EMPTY_INSTALLED_STATUS_SNAPSHOT,
   MarketplaceUnshareAction,
   buildCustomizeTabModel,
+  mcpSharedPluginEntryIds,
   type InstalledStatusSnapshot,
   useOpenCreatedCustomItem,
   useResourceContext,
@@ -60,6 +61,7 @@ import {
   type CapabilityMarketplaceInventory,
 } from '../../hooks/useCapabilityMarketplaceInventory';
 import { MCP_MANAGEMENT_REASONS } from '@canopy/ui-shared/lib/mcp-card-display';
+import { mcpConnectErrorCodeTitle } from '@canopy/ui-shared/lib';
 import { formatRelativeTime } from '@/lib/format';
 import { mcpHasMultipleTargets } from '@canopy/ui-shared/lib/mcp-row-health';
 import { useDetectedMcpServers } from '../../hooks/useDetectedMcpServers';
@@ -108,6 +110,12 @@ import {
 } from '@/lib/marketplaceUnshare';
 import { PipelineCatalogStatus } from '../plugins/PipelineCatalogStatus';
 import { AutomationCatalogStatus } from '../plugins/AutomationCatalogStatus';
+import {
+  accountRowOf,
+  customizeMcpSurfaceInForeground,
+} from '../mcp/accountMcpActionRequests';
+import { useAccountMcpActionRequests } from '../mcp/useAccountMcpActionRequests';
+import { accountMcpConnectionKey } from '@/hooks/useAccountMcpActions';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { useWorkspaceContextReset } from '@/hooks/useWorkspaceContextReset';
 import { useProviderConnectors } from '@/hooks/useProviderConnectors';
@@ -167,12 +175,13 @@ import {
   createMarketplaceEntryShareResolver,
   refreshMarketplaceEntryShareResolution,
   marketplaceEntryShareState,
+  pluginShareRefKey,
   type MarketplaceShareResolution,
   type PluginShareTarget,
 } from '../plugins/marketplaceShareResolution';
 import { pluginNeedsInstall } from '@/lib/pluginInstallStatus';
 import { CUSTOM_SKILL_SOURCE_ID } from '@/lib/sharedSkillImport';
-import { SKILLS_CHANGED_EVENT, trackSkillsRefresh } from '@/lib/skillsChanged';
+import { useSkillsChangedRefresh } from '@/lib/skillsChanged';
 import { COLLECTIONS_CHANGED_EVENT } from '../share/installReveal';
 import { marketplaceEntryInstallLink } from '@/lib/sharedResourceInstallLink';
 import { useDesktopInstalledItemStatuses } from '@/hooks/useDesktopInstalledItemStatuses';
@@ -331,6 +340,7 @@ export function PluginsPage({
     error: mcpError,
     refresh: refreshServers,
     accountConnectionsAvailable,
+    accountConnectionsUnavailableReason,
   } = useMcpServerList();
   const { entries: curatedMcpServers } = useCuratedMcpServers();
   const savedRoles = useSavedProfileRoles();
@@ -542,10 +552,12 @@ export function PluginsPage({
         agentDialog !== null),
     // Shared plugins also load for an open plugin detail, so an installed
     // plugin's Shared by you finds the owner's share under any type filter
-    // (CAN-4842).
+    // (CAN-4842), and for MCP servers, whose Shared by me lists the plugin
+    // shares that match a listed server (CAN-4843).
     sharedPluginsEnabled:
       kindFilter === null ||
       kindFilter === 'plugin' ||
+      kindFilter === 'app' ||
       selectedEntryId?.startsWith('mkt:') === true ||
       selectedEntryId?.startsWith('curated:') === true ||
       selectedEntryId?.startsWith('plugin:shared:') === true,
@@ -1444,6 +1456,23 @@ export function PluginsPage({
       refreshSharedCollections,
     ],
   );
+  // Existing shares list whether or not this viewer can create one now.
+  const mcpSharedEntryIds = useMemo(
+    () =>
+      activeCatalogTab === 'app'
+        ? mcpSharedPluginEntryIds(
+            entries,
+            capabilityInventory.sharedPlugins,
+            (entry) => pluginShareRefKey(resolveEntryShare(entry)),
+          )
+        : undefined,
+    [
+      activeCatalogTab,
+      entries,
+      capabilityInventory.sharedPlugins,
+      resolveEntryShare,
+    ],
+  );
   const sectionModel = useMemo(
     () =>
       buildCustomizeTabModel({
@@ -1459,6 +1488,7 @@ export function PluginsPage({
         suggestedNames,
         agentsAvailable: sharedCustomAgentsEnabled,
         projectTemplatesAvailable: true,
+        mcpSharedEntryIds,
       }),
     [
       activeCatalogTab,
@@ -1471,6 +1501,7 @@ export function PluginsPage({
       category,
       suggestedNames,
       sharedCustomAgentsEnabled,
+      mcpSharedEntryIds,
     ],
   );
   const resultCount = sectionModel.resultCount;
@@ -1936,15 +1967,7 @@ export function PluginsPage({
   // an installed skill's detail page) only
   // reaches this projection by refreshing on the shared skills-changed event.
   // The refresh is tracked so a sender can wait for it.
-  useEffect(() => {
-    const handleSkillsChanged = (event: Event): void => {
-      trackSkillsRefresh(event, refreshSkillsOrThrow());
-    };
-    window.addEventListener(SKILLS_CHANGED_EVENT, handleSkillsChanged);
-    return (): void => {
-      window.removeEventListener(SKILLS_CHANGED_EVENT, handleSkillsChanged);
-    };
-  }, [refreshSkillsOrThrow]);
+  useSkillsChangedRefresh(refreshSkillsOrThrow);
 
   /**
    * Entry for an installed skill opened by identity (the Installed Skills list
@@ -2457,140 +2480,6 @@ export function PluginsPage({
     ],
   );
 
-  const mcpRowActions = useMemo((): CustomizeMcpRowActions => {
-    const deviceTarget = (
-      entry: UnifiedPluginEntry,
-    ): { serverId: string; configId: string | undefined } | null => {
-      if (mcpHasMultipleTargets(entry)) return null;
-      const [only, ...others] = entry.integration?.connections ?? [];
-      if (only) {
-        return others.length === 0 && only.binding === 'device'
-          ? { serverId: only.serverId, configId: only.configId }
-          : null;
-      }
-      if (entry.ref.type !== 'local-mcp' || entry.placement !== 'desktop')
-        return null;
-      const { serverId } = entry.ref;
-      const configs = servers.find((row) => row.id === serverId)?.configs;
-      const [onlyConfig, ...otherConfigs] = configs ?? [];
-      return onlyConfig && otherConfigs.length === 0
-        ? { serverId, configId: onlyConfig.id }
-        : null;
-    };
-    const runTest = async (target: {
-      serverId: string;
-      configId: string | undefined;
-    }): Promise<void> => {
-      setMcpRowError('');
-      const result = await window.mcpServers.testConnection(
-        target.serverId,
-        target.configId,
-      );
-      await refreshMcpStatuses();
-      if (!result.success) throw new Error(result.error ?? result.message);
-    };
-    return {
-      formatTimestamp: formatRelativeTime,
-      // The shared row shows a thrown message verbatim.
-      onError: (message) => setMcpRowError(extractIpcErrorMessage(message)),
-      test: (entry) => {
-        if ((entry.connection ?? entry.aggregateConnection)?.provider)
-          return { available: false, reason: MCP_MANAGEMENT_REASONS.provider };
-        if ((entry.connection ?? entry.aggregateConnection)?.disabled)
-          return {
-            available: false,
-            reason: 'Enable this server before testing its connection.',
-          };
-        if (mcpHasMultipleTargets(entry))
-          return {
-            available: true,
-            run: () => Promise.resolve(handleSelectEntry(entry)),
-          };
-        const target = deviceTarget(entry);
-        return target
-          ? { available: true, run: () => runTest(target) }
-          : { available: false, reason: MCP_MANAGEMENT_REASONS.cloudTest };
-      },
-      pending: (entry) => {
-        const target = deviceTarget(entry);
-        if (!target || rowMcp.connectingKey === null) return undefined;
-        const active = rowMcp.servers.find(
-          (server) =>
-            server.key === rowMcp.connectingKey &&
-            server.serverId === target.serverId &&
-            server.configId === target.configId,
-        );
-        return active
-          ? {
-              authorizationUrl: rowMcp.signInUrl,
-              onCancel: () => rowMcp.cancelConnect(),
-            }
-          : undefined;
-      },
-      connect: (entry) => {
-        if (rowMcp.connectingKey !== null)
-          return {
-            available: false,
-            reason: 'Finish the current sign-in first.',
-          };
-        const target = deviceTarget(entry);
-        if (!target)
-          return { available: true, run: () => handleAddEntry(entry) };
-        return {
-          available: true,
-          run: async () => {
-            setMcpRowError('');
-            const server = rowMcp.servers.find(
-              (candidate) =>
-                candidate.serverId === target.serverId &&
-                candidate.configId === target.configId,
-            );
-            if (!server) throw new Error(MCP_MANAGEMENT_REASONS.noTarget);
-            const connection = entry.connection ?? entry.aggregateConnection;
-            const signInRequired =
-              connection?.status === 'auth_required' ||
-              connection?.signIn === 'connect' ||
-              connection?.signIn === 'reconnect';
-            if (
-              (server.canConnect || signInRequired) &&
-              !(await rowMcp.connect(server, { signInRequired }))
-            )
-              return;
-            await runTest(target);
-          },
-        };
-      },
-      edit: (entry) => {
-        if (!mcpHasMultipleTargets(entry)) {
-          const connectionId =
-            entry.integration?.connections[0]?.accountConnectionId;
-          const connection = servers.find((server) =>
-            connectionId !== undefined
-              ? server.accountConnection?.id === connectionId
-              : entry.ref.type === 'local-mcp' &&
-                server.id === entry.ref.serverId &&
-                server.accountConnection?.configId === entry.ref.configId,
-          )?.accountConnection;
-          if (connection)
-            return {
-              available: true,
-              run: () => setMcpEditAccount(connection),
-            };
-        }
-        const target = deviceTarget(entry);
-        return target
-          ? {
-              available: true,
-              run: () => setMcpEditServerId(target.serverId),
-            }
-          : {
-              available: true,
-              run: () => handleSelectEntry(entry),
-            };
-      },
-    };
-  }, [handleAddEntry, handleSelectEntry, refreshMcpStatuses, rowMcp, servers]);
-
   // Resolved against the full projection, not `visibleEntries`: a detail
   // surface must survive the user switching away from the MCP servers tab.
   const foundSelectedEntry = useMemo(() => {
@@ -2683,6 +2572,225 @@ export function PluginsPage({
     selectedEntryId,
     sharedCustomAgentsEnabled,
   ]);
+  const selectedAccountRow = useMemo(
+    () => (selectedEntry ? accountRowOf(selectedEntry, servers) : undefined),
+    [selectedEntry, servers],
+  );
+  const accountRequests = useAccountMcpActionRequests({
+    clearSurfaceError: (): void => setMcpRowError(''),
+    servers,
+    curatedEntries: curatedMcpServers,
+    statuses: mcpStatuses,
+    loading: mcpLoading,
+    accountConnectionsAvailable,
+    accountConnectionsUnavailableReason,
+    refresh: refreshServers,
+    mcpSurfaceInForeground: customizeMcpSurfaceInForeground({
+      activeTab: kindFilter,
+      selectedEntryId,
+      selectedEntryType: selectedEntry?.ref.type,
+    }),
+    detailRowId: selectedAccountRow
+      ? (selectedAccountRow.accountConnectionId ?? selectedAccountRow.id)
+      : null,
+    openDeviceEditor: (serverId): void => {
+      setMcpEditAccount(null);
+      setMcpEditServerId(serverId);
+    },
+    openCloudEditor: (connection): void => {
+      setMcpEditServerId(null);
+      setMcpEditAccount(connection);
+    },
+  });
+
+  const { connectRow: connectAccountRow, pendingOf: accountPendingOf } =
+    accountRequests;
+  const mcpBannerError = mcpRowError || accountRequests.error;
+  // A cloud refusal's code stays out of the sentence but at hand.
+  const mcpBannerErrorCode =
+    mcpBannerError !== '' && mcpBannerError === accountRequests.error
+      ? accountRequests.errorCode
+      : null;
+
+  const mcpRowActions = useMemo((): CustomizeMcpRowActions => {
+    const deviceTarget = (
+      entry: UnifiedPluginEntry,
+    ): { serverId: string; configId: string | undefined } | null => {
+      if (mcpHasMultipleTargets(entry)) return null;
+      const [only, ...others] = entry.integration?.connections ?? [];
+      if (only) {
+        return others.length === 0 && only.binding === 'device'
+          ? { serverId: only.serverId, configId: only.configId }
+          : null;
+      }
+      if (entry.ref.type !== 'local-mcp' || entry.placement !== 'desktop')
+        return null;
+      const { serverId } = entry.ref;
+      const configs = servers.find((row) => row.id === serverId)?.configs;
+      const [onlyConfig, ...otherConfigs] = configs ?? [];
+      return onlyConfig && otherConfigs.length === 0
+        ? { serverId, configId: onlyConfig.id }
+        : null;
+    };
+    const runTest = async (target: {
+      serverId: string;
+      configId: string | undefined;
+    }): Promise<void> => {
+      setMcpRowError('');
+      const result = await window.mcpServers.testConnection(
+        target.serverId,
+        target.configId,
+      );
+      await refreshMcpStatuses();
+      if (!result.success) throw new Error(result.error ?? result.message);
+    };
+    return {
+      formatTimestamp: formatRelativeTime,
+      // The shared row shows a thrown message verbatim.
+      onError: (message) => setMcpRowError(extractIpcErrorMessage(message)),
+      test: (entry) => {
+        if ((entry.connection ?? entry.aggregateConnection)?.provider)
+          return { available: false, reason: MCP_MANAGEMENT_REASONS.provider };
+        if ((entry.connection ?? entry.aggregateConnection)?.disabled)
+          return {
+            available: false,
+            reason: 'Enable this server before testing its connection.',
+          };
+        if (mcpHasMultipleTargets(entry))
+          return {
+            available: true,
+            run: () => Promise.resolve(handleSelectEntry(entry)),
+          };
+        const target = deviceTarget(entry);
+        return target
+          ? { available: true, run: () => runTest(target) }
+          : { available: false, reason: MCP_MANAGEMENT_REASONS.cloudTest };
+      },
+      pending: (entry) => {
+        const target = deviceTarget(entry);
+        if (!target) {
+          const accountRow = accountRowOf(entry, servers);
+          const pending = accountRow && accountPendingOf(accountRow);
+          return pending ? { onCancel: pending.cancel } : undefined;
+        }
+        if (rowMcp.connectingKey === null) return undefined;
+        const active = rowMcp.servers.find(
+          (server) =>
+            server.key === rowMcp.connectingKey &&
+            server.serverId === target.serverId &&
+            server.configId === target.configId,
+        );
+        return active
+          ? {
+              authorizationUrl: rowMcp.signInUrl,
+              onCancel: () => rowMcp.cancelConnect(),
+            }
+          : undefined;
+      },
+      connect: (entry) => {
+        if (rowMcp.connectingKey !== null)
+          return {
+            available: false,
+            reason: 'Finish the current sign-in first.',
+          };
+        const target = deviceTarget(entry);
+        if (!target) {
+          const accountRow = accountRowOf(entry, servers);
+          const connection = accountRow?.accountConnection;
+          // A custom connection has no catalog entry for Add to open, so its
+          // Connect and Reconnect start here. Curated rows keep their detail.
+          if (accountRow && connection?.kind === 'CUSTOM') {
+            if (accountPendingOf(accountRow))
+              return {
+                available: false,
+                reason: 'Finish the current sign-in first.',
+              };
+            return {
+              available: true,
+              run: () => {
+                setMcpRowError('');
+                const started = connectAccountRow(accountRow);
+                if (started.kind === 'unsupported')
+                  throw new Error(started.message);
+                // Blocked starts nothing: the detail says what it waits for.
+                if (started.kind === 'blocked') handleSelectEntry(entry);
+              },
+            };
+          }
+          return { available: true, run: () => handleAddEntry(entry) };
+        }
+        return {
+          available: true,
+          run: async () => {
+            setMcpRowError('');
+            const server = rowMcp.servers.find(
+              (candidate) =>
+                candidate.serverId === target.serverId &&
+                candidate.configId === target.configId,
+            );
+            if (!server) throw new Error(MCP_MANAGEMENT_REASONS.noTarget);
+            const connection = entry.connection ?? entry.aggregateConnection;
+            const signInRequired =
+              connection?.status === 'auth_required' ||
+              connection?.signIn === 'connect' ||
+              connection?.signIn === 'reconnect';
+            if (
+              (server.canConnect || signInRequired) &&
+              !(await rowMcp.connect(server, { signInRequired }))
+            )
+              return;
+            await runTest(target);
+          },
+        };
+      },
+      edit: (entry) => {
+        if (!mcpHasMultipleTargets(entry)) {
+          const connectionId =
+            entry.integration?.connections[0]?.accountConnectionId;
+          const connection = servers.find((server) =>
+            connectionId !== undefined
+              ? server.accountConnection?.id === connectionId
+              : entry.ref.type === 'local-mcp' &&
+                server.id === entry.ref.serverId &&
+                server.accountConnection?.configId === entry.ref.configId,
+          )?.accountConnection;
+          if (connection)
+            return {
+              available: true,
+              run: (): void => {
+                accountRequests.detailSignIn.clearError(
+                  accountMcpConnectionKey(connection),
+                );
+                setMcpEditAccount(connection);
+              },
+            };
+        }
+        const target = deviceTarget(entry);
+        return target
+          ? {
+              available: true,
+              run: (): void => {
+                accountRequests.detailSignIn.clearError(target.serverId);
+                setMcpEditServerId(target.serverId);
+              },
+            }
+          : {
+              available: true,
+              run: () => handleSelectEntry(entry),
+            };
+      },
+    };
+  }, [
+    accountPendingOf,
+    accountRequests.detailSignIn,
+    connectAccountRow,
+    handleAddEntry,
+    handleSelectEntry,
+    refreshMcpStatuses,
+    rowMcp,
+    servers,
+  ]);
+
   useEffect(() => {
     setDetailNameOverride(null);
   }, [selectedEntryId]);
@@ -3051,6 +3159,7 @@ export function PluginsPage({
       marketplaces={marketplaces}
       mcpServers={servers}
       accountConnectionsAvailable={accountConnectionsAvailable}
+      accountSignIn={accountRequests.detailSignIn}
       sharedCollectionEditAvailable={isFeatureSurfaceAvailable(
         capabilities,
         'marketplace-shared-collection-edit',
@@ -3730,7 +3839,15 @@ export function PluginsPage({
                     error={collectionActionError}
                     blockMessageFromReplay
                   />
-                  <ErrorBanner error={mcpRowError} blockMessageFromReplay />
+                  <div
+                    title={mcpConnectErrorCodeTitle(mcpBannerErrorCode)}
+                    data-mcp-error-code={mcpBannerErrorCode ?? undefined}
+                  >
+                    <ErrorBanner
+                      error={mcpBannerError}
+                      blockMessageFromReplay
+                    />
+                  </div>
                   <CustomizeTabSections
                     tab={activeCatalogTab}
                     entries={entries}
@@ -3766,6 +3883,7 @@ export function PluginsPage({
                     suggestedNames={suggestedNames}
                     agentsAvailable={sharedCustomAgentsEnabled}
                     projectTemplatesAvailable
+                    mcpSharedEntryIds={mcpSharedEntryIds}
                     McpServerLogoComponent={McpServerLogo}
                     contextKey={JSON.stringify([
                       shareScopingContext,
@@ -4019,6 +4137,7 @@ export function PluginsPage({
 
       {mcpEditServerId !== null && (
         <McpServerDialog
+          key={mcpEditServerId}
           serverId={mcpEditServerId}
           curatedEntries={curatedMcpServers}
           onClose={() => setMcpEditServerId(null)}
@@ -4030,6 +4149,7 @@ export function PluginsPage({
       )}
       {mcpEditAccount !== null && (
         <McpServerDialog
+          key={mcpEditAccount.id}
           serverId={null}
           accountConnection={mcpEditAccount}
           curatedEntries={curatedMcpServers}
@@ -4040,6 +4160,8 @@ export function PluginsPage({
           }}
         />
       )}
+
+      {accountRequests.dialogs}
 
       <AddSkillsModal
         isOpen={addSkillsOpen}

@@ -35,7 +35,7 @@ import { derivePlanTitle } from '@canopy/protocol/plans';
 import { resolveTrackedPlansFilePath } from './resolve-worktree';
 import { getPlanExplorePlanFilePath } from './paths';
 import { isRecord } from './type-guards';
-import { getObservabilityService } from '../observability';
+import { getExecutionObservabilityIngest } from '../observability/ingest';
 
 /**
  * Per-file write queue that serializes read-modify-write operations on the same
@@ -698,7 +698,7 @@ function recordPlanUsageEvent(
     initiationSource?: PlanUsageEvent['initiationSource'];
   },
 ): void {
-  getObservabilityService().recordUsageMetricEvent(
+  getExecutionObservabilityIngest().recordUsageMetricEvent(
     buildPlanUsageEvent(type, plan, request),
   );
 }

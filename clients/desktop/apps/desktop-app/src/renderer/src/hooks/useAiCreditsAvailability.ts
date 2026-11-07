@@ -39,19 +39,11 @@ export interface AiCreditsAvailability {
    * only offer a CTA can keep ignoring it.
    */
   inconclusive: boolean;
-  /**
-   * Whether the user opted in to the daily free-credit drip. `undefined` while
-   * loading, on an inconclusive read, or from an older server: unknown, keep
-   * current behavior. Only an explicit `false` offers "Turn on free daily
-   * credits".
-   */
-  dailyDripEnabled?: boolean;
 }
 
 interface CachedAvailability {
   eligible: boolean;
   inconclusive: boolean;
-  dailyDripEnabled?: boolean;
 }
 
 /**
@@ -225,9 +217,6 @@ function ensurePendingRead(
           settle({
             eligible: computeEligible(native),
             inconclusive: native.inconclusive === true,
-            ...(typeof native.dailyDripEnabled === 'boolean'
-              ? { dailyDripEnabled: native.dailyDripEnabled }
-              : {}),
           }),
       )
       // A rejected read is the same class of non-answer the loader reports
@@ -253,9 +242,6 @@ function toAvailability(
     eligible: value?.eligible ?? false,
     loading: value === null,
     inconclusive: value?.inconclusive ?? false,
-    ...(typeof value?.dailyDripEnabled === 'boolean'
-      ? { dailyDripEnabled: value.dailyDripEnabled }
-      : {}),
   };
 }
 export function readAiCreditsAvailabilityFresh(): Promise<AiCreditsAvailability> {

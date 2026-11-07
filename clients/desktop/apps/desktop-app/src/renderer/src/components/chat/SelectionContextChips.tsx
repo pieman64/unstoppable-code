@@ -254,7 +254,10 @@ export const SelectionContextChips = memo(function SelectionContextChips({
                     />
                   }
                   icon={
-                    <CodeBracketsIcon className="h-4 w-4 shrink-0 fg-secondary" />
+                    <CodeBracketsIcon
+                      size="sm"
+                      className="shrink-0 fg-secondary"
+                    />
                   }
                   name={label}
                   badge={badge}

@@ -101,7 +101,7 @@ export function OrgProjectPlaceholderRow({
           aria-label={statusText}
           className="flex shrink-0 items-center justify-center rounded border border-dashed p-1 fg-quaternary"
         >
-          <FolderIcon className="size-4" aria-hidden="true" />
+          <FolderIcon size="sm" aria-hidden="true" />
         </span>
       </Tooltip>
       <div className="min-w-0 flex-1">

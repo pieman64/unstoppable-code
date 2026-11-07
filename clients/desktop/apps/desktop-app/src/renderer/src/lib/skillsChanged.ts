@@ -1,3 +1,5 @@
+import { useEffect } from 'react';
+
 /**
  * Dispatched after a local skill mutation. Discovery, the Installed Skills
  * list, and the publisher catalog each own a separate inventory instance and
@@ -41,4 +43,32 @@ export async function notifySkillsChanged(
     const failed = results.find((result) => result.status === 'rejected');
     if (failed?.status === 'rejected') throw failed.reason;
   }
+}
+
+/**
+ * Re-announces skill changes Electron main made (agent skill actions) as the
+ * renderer's skills-changed event, so every inventory listener refreshes.
+ */
+export function bridgeMainSkillsChanged(
+  subscribe: (listener: () => void) => () => void,
+): () => void {
+  return subscribe(() => {
+    void notifySkillsChanged();
+  });
+}
+
+/**
+ * Runs `refresh` on every skills-changed event and tracks it, so a sender can
+ * wait until this inventory shows the change.
+ */
+export function useSkillsChangedRefresh(refresh: () => Promise<unknown>): void {
+  useEffect(() => {
+    const handleSkillsChanged = (event: Event): void => {
+      trackSkillsRefresh(event, refresh());
+    };
+    window.addEventListener(SKILLS_CHANGED_EVENT, handleSkillsChanged);
+    return (): void => {
+      window.removeEventListener(SKILLS_CHANGED_EVENT, handleSkillsChanged);
+    };
+  }, [refresh]);
 }

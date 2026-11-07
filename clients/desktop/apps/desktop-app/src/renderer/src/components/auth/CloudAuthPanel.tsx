@@ -4,7 +4,6 @@ import {
   type JSX,
   type ReactNode,
   type RefObject,
-  type SVGProps,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -15,6 +14,7 @@ import {
   ShareIcon,
   ChevronRightIcon,
 } from '@canopy/ui-shared/icons';
+import type { AppIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
 import { Button } from '@/components/shared/Button';
 import { LoadingSpinner } from '@/components/shared/loading';
@@ -29,7 +29,7 @@ import {
 export interface CloudAuthBenefit {
   /** Stable key; also the testid suffix. */
   id: string;
-  icon: (props: SVGProps<SVGSVGElement>) => JSX.Element;
+  icon: AppIcon;
   label: string;
 }
 
@@ -394,8 +394,7 @@ export function CloudAuthPanel({
                 data-testid={`cloud-auth-benefit-${benefit.id}`}
               >
                 <Icon
-                  width={16}
-                  height={16}
+                  size="sm"
                   className="mt-0.5 shrink-0 fg-accent"
                   aria-hidden="true"
                 />
@@ -469,8 +468,7 @@ export function CloudAuthPanel({
             className={`inline-flex items-center gap-1 ${MODE_LINK_CLASS}`}
           >
             <ChevronRightIcon
-              width={12}
-              height={12}
+              size="sm"
               className="-scale-x-100"
               aria-hidden="true"
             />

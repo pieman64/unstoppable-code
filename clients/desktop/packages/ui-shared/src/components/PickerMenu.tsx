@@ -46,10 +46,10 @@ export interface FloatingPickerMenuProps extends Omit<
 }
 
 /**
- * Canonical picker shell. Unlike action menus, picker width follows one shared
- * trigger-aware 216px default up to the 320px/viewport cap. Tabbed or richer
+ * Canonical picker shell. Width follows the longest option between a shared
+ * trigger-aware 160px minimum and the 320px/viewport cap. Tabbed or richer
  * pickers may declare a deliberate minimum (or a slightly wider maximum) without
- * bypassing the viewport bound; intrinsic labels still cannot change the shell.
+ * bypassing the viewport bound; longer labels grow the shell until its cap.
  * Searchable composites retain manual keyboard ownership while FloatingMenu
  * owns portals, collision placement, motion, and dismissal.
  */
@@ -245,8 +245,7 @@ export function PickerTriggerChevron({
 }): JSX.Element {
   return (
     <ChevronDownMediumIcon
-      width={16}
-      height={16}
+      size="sm"
       className={`shrink-0 transition-transform ${PICKER_TRIGGER_CHEVRON_INKS[variant]} ${
         open ? 'rotate-180' : ''
       } ${className}`}
@@ -698,7 +697,7 @@ export function PickerMenuOptionCheck({
       data-picker-selected-check={selected ? 'true' : 'false'}
       className={`inline-flex h-4 w-4 shrink-0 items-center justify-center fg-primary ${className}`}
     >
-      {selected ? <CheckIcon width={14} height={14} /> : null}
+      {selected ? <CheckIcon size="sm" /> : null}
     </span>
   );
 }

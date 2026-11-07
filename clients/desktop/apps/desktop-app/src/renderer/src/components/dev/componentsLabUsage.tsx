@@ -107,8 +107,8 @@ function UsageActionsSection(): JSX.Element {
         <SpecimenCell label="UsageResetIcon, 14, 16 and 20px, quiet and primary ink">
           <span className="inline-flex items-center gap-3">
             <UsageResetIcon />
-            <UsageResetIcon size={16} className="shrink-0 fg-tertiary" />
-            <UsageResetIcon size={20} className="shrink-0 fg-primary" />
+            <UsageResetIcon size="sm" className="shrink-0 fg-tertiary" />
+            <UsageResetIcon size="xl" className="shrink-0 fg-primary" />
           </span>
         </SpecimenCell>
       </SpecimenGrid>

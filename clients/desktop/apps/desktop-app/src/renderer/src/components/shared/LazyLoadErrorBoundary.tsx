@@ -1,6 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { captureClientInstrumentationError } from '@canopy/desktop-instrumentation/client';
 import { reportRendererConsoleError } from '@/lib/renderer-error-logging';
+import { recordBoundaryError } from '@/lib/surfaced-error-recording';
 import { Button } from '@/components/shared/Button';
 import { DialogModal } from '@canopy/ui-shared/components';
 
@@ -48,6 +49,7 @@ export class LazyLoadErrorBoundary extends Component<
       componentStack: errorInfo.componentStack,
       label: this.props.label,
     });
+    recordBoundaryError('lazy-load', 'panel', error);
   }
 
   handleRetry = (): void => {

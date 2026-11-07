@@ -83,7 +83,7 @@ export function FileTab({
           aria-label={`Close ${label}`}
           className="focus-ring mr-1 rounded p-0.5 fg-secondary opacity-60 transition-opacity hover:fg-primary hover:bg-base group-hover:opacity-100"
         >
-          <AppCatalogCloseIcon width="10" height="10" />
+          <AppCatalogCloseIcon size="sm" />
         </button>
       )}
     </div>
@@ -132,7 +132,7 @@ export function SkillFileTabBar({
               `focus-ring mr-1 shrink-0 rounded-md border p-1.5 transition-colors ${treeToggle.open ? 'bg-secondary fg-primary' : 'border-transparent fg-secondary hover:fg-primary hover:bg-secondary/50'}`
             }
           >
-            <FolderIcon className="h-3.5 w-3.5" />
+            <FolderIcon size="sm" />
           </button>
         </Tooltip>
       )}

@@ -10,6 +10,7 @@ import {
   ChoiceField,
   ErrorBanner,
   Heading,
+  Surface,
 } from '@canopy/ui-shared/components';
 
 export interface LegalConsentGateProps {
@@ -125,38 +126,40 @@ export function LegalConsentGate({
               it toggles), and the document names follow under it in the text
               column, outside that label, so clicking one never accepts them
               (CAN-2621). */}
-          <div className="w-full rounded-lg border bg-card p-4 text-left">
-            <ChoiceField
-              aria-label="I have read and agree to the Terms of Service and Privacy Policy"
-              checked={agreed}
-              onChange={(e): void => setAgreed(e.target.checked)}
-              disabled={submitting}
-              data-testid="legal-consent-checkbox"
-              label={
-                <span data-testid="legal-consent-label">
-                  I have read and agree to the
-                </span>
-              }
-              trailing={
-                <>
-                  <LegalDocumentLink
-                    url={termsUrl}
-                    testId="legal-consent-terms-link"
-                  >
-                    Terms of Service
-                  </LegalDocumentLink>{' '}
-                  and{' '}
-                  <LegalDocumentLink
-                    url={privacyUrl}
-                    testId="legal-consent-privacy-link"
-                  >
-                    Privacy Policy
-                  </LegalDocumentLink>
-                  .
-                </>
-              }
-            />
-          </div>
+          <Surface variant="card" padding="default" className="w-full">
+            <div className="text-left">
+              <ChoiceField
+                aria-label="I have read and agree to the Terms of Service and Privacy Policy"
+                checked={agreed}
+                onChange={(e): void => setAgreed(e.target.checked)}
+                disabled={submitting}
+                data-testid="legal-consent-checkbox"
+                label={
+                  <span data-testid="legal-consent-label">
+                    I have read and agree to the
+                  </span>
+                }
+                trailing={
+                  <>
+                    <LegalDocumentLink
+                      url={termsUrl}
+                      testId="legal-consent-terms-link"
+                    >
+                      Terms of Service
+                    </LegalDocumentLink>{' '}
+                    and{' '}
+                    <LegalDocumentLink
+                      url={privacyUrl}
+                      testId="legal-consent-privacy-link"
+                    >
+                      Privacy Policy
+                    </LegalDocumentLink>
+                    .
+                  </>
+                }
+              />
+            </div>
+          </Surface>
 
           <Button
             variant="primary"

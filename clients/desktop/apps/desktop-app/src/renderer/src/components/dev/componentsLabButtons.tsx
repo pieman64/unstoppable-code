@@ -1,7 +1,11 @@
 import type { JSX } from 'react';
 import {
   Button,
+  InlineDeleteConfirm,
   ListRow,
+  ListRowLink,
+  ListRowStatic,
+  RowActionButton,
   type ButtonSize,
   type ButtonVariant,
 } from '@canopy/ui-shared/components';
@@ -225,6 +229,8 @@ export function ButtonsSpecimen(): JSX.Element {
   );
 }
 
+function noop(): void {}
+
 export function ListRowSpecimen(): JSX.Element {
   return (
     <SpecimenPanel>
@@ -252,6 +258,138 @@ export function ListRowSpecimen(): JSX.Element {
           <ListRow icon={<SettingsIcon />}>Focused row</ListRow>
         </FocusOnMount>
       </div>
+      <SpecimenGrid min={320}>
+        <SpecimenCell label="Sizes: 28, 32, 40">
+          <div className="flex w-full flex-col gap-0.5">
+            <ListRow size="sm" icon={<FolderIcon />} trailing="2m">
+              Small
+            </ListRow>
+            <ListRow icon={<FolderIcon />} trailing="2m">
+              Medium
+            </ListRow>
+            <ListRow size="lg" icon={<FolderIcon />} trailing="2m">
+              Large
+            </ListRow>
+            <ListRow
+              size="sm"
+              icon={<FolderIcon />}
+              description="A description grows the row"
+            >
+              Small, two lines
+            </ListRow>
+            <ListRow
+              size="lg"
+              icon={<FolderIcon />}
+              description="A description grows the row"
+            >
+              Large, two lines
+            </ListRow>
+          </div>
+        </SpecimenCell>
+        <SpecimenCell label="ListRowLink">
+          <div className="flex w-full flex-col gap-0.5">
+            <ListRowLink href="#row" icon={<FolderIcon />} trailing="2m">
+              Link row
+            </ListRowLink>
+            <ListRowLink href="#row" icon={<FolderIcon />} selected>
+              Selected link row
+            </ListRowLink>
+            <ListRowLink href="#row" icon={<FolderIcon />} disabled>
+              Disabled link row
+            </ListRowLink>
+          </div>
+        </SpecimenCell>
+        <SpecimenCell label="ListRowStatic">
+          <div className="flex w-full flex-col gap-0.5">
+            <ListRowStatic icon={<FolderIcon />} trailing="Saved">
+              No hover fill
+            </ListRowStatic>
+            <ListRowStatic icon={<FolderIcon />} selected>
+              Selected static row
+            </ListRowStatic>
+            <ListRowStatic icon={<FolderIcon />} disabled>
+              Disabled static row
+            </ListRowStatic>
+            <ListRowStatic
+              size="lg"
+              icon={<FolderIcon />}
+              description="Its controls go in actions"
+              actions={<Button size="compact">Connect</Button>}
+            >
+              Static row with an action
+            </ListRowStatic>
+          </div>
+        </SpecimenCell>
+        <SpecimenCell label="Actions">
+          <div className="flex w-full flex-col gap-0.5">
+            <ListRow
+              icon={<FolderIcon />}
+              trailing="2m"
+              actions={
+                <RowActionButton label="Open settings" onClick={noop}>
+                  <SettingsIcon />
+                </RowActionButton>
+              }
+            >
+              Reveals on hover and focus
+            </ListRow>
+            <ListRow
+              size="lg"
+              icon={<FolderIcon />}
+              actions={<Button size="compact">Open</Button>}
+            >
+              Always visible at 40px
+            </ListRow>
+            <ListRow
+              icon={<FolderIcon />}
+              actionsReveal={false}
+              actions={
+                <InlineDeleteConfirm
+                  onConfirm={noop}
+                  onCancel={noop}
+                  deleting={false}
+                />
+              }
+            >
+              Holding a confirmation
+            </ListRow>
+            <ListRow
+              icon={<FolderIcon />}
+              selected
+              actions={
+                <RowActionButton label="Open settings" onClick={noop}>
+                  <SettingsIcon />
+                </RowActionButton>
+              }
+            >
+              Selected with actions
+            </ListRow>
+            <ListRow
+              icon={<FolderIcon />}
+              disabled
+              actions={
+                <RowActionButton label="Open settings" onClick={noop}>
+                  <SettingsIcon />
+                </RowActionButton>
+              }
+            >
+              Disabled, actions still work
+            </ListRow>
+            <ListRow
+              icon={<FolderIcon />}
+              aria-disabled
+              aria-describedby="list-row-reason"
+              description={
+                <span id="list-row-reason">
+                  Stays focusable for this reason
+                </span>
+              }
+            >
+              Unavailable row
+            </ListRow>
+          </div>
+        </SpecimenCell>
+      </SpecimenGrid>
     </SpecimenPanel>
   );
 }

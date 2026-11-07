@@ -34,6 +34,7 @@ import {
   DetailPageActions,
   PluginConfigurationButton,
   ErrorBanner,
+  Notice,
 } from '@canopy/ui-shared/components';
 import { McpWorkspaceDefaultsSection } from '@canopy/ui-app';
 import {
@@ -55,8 +56,13 @@ import {
 } from '@canopy/ui-app/capability';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { AccountMcpDetails } from '../mcp/AccountMcpControls';
-import { useAccountMcpActions } from '@/hooks/useAccountMcpActions';
+import {
+  useAccountMcpActions,
+  accountMcpConnectionKey,
+  accountMcpConfigurationKey,
+} from '@/hooks/useAccountMcpActions';
 import { accountMcpCatalogConnectStep } from '../mcp/accountMcpConnectSteps';
+import type { AccountMcpDetailSignIn } from '../mcp/useAccountMcpActionRequests';
 import { CuratedDetail } from '../mcp/McpBrowseDialog';
 import {
   McpServerDialog,
@@ -98,6 +104,12 @@ type CuratedMcpConnectionDetailProps = McpConnectionSource & {
    * the server (REG-3033); unknown reads as unavailable.
    */
   accountConnectionsAvailable?: boolean;
+  /**
+   * The page's sign-in, which owns Connect and Reconnect for an account-backed
+   * card without a device server. A folded plugin stays with this card, whose
+   * connect also installs it.
+   */
+  accountSignIn?: AccountMcpDetailSignIn;
   /** The curated plugin folded into this integration card, when one is. */
   foldedPlugin?: UnifiedEntryFoldedPlugin;
   /**
@@ -136,6 +148,8 @@ type CuratedMcpConnectionDetailProps = McpConnectionSource & {
   renderPrimaryAction?: (input: CuratedMcpPrimaryActionInput) => ReactNode;
   onServersChanged: () => Promise<void>;
   onEditorOpenChange?: (open: boolean) => void;
+  /** Keeps the host's target picker on the instance that owns sign-in. */
+  onBusyChange?: (busy: boolean) => void;
   /** Leaves the detail after a confirmed deletion of its device server. */
   onDeleted?: () => void;
 };
@@ -367,6 +381,7 @@ function AppMcpConnectionDetail({
   installedServerId,
   autoConnect = false,
   accountConnectionsAvailable,
+  accountSignIn,
   foldedPlugin,
   installFoldedPluginRequest = 0,
   accountConnection: givenAccountConnection,
@@ -375,6 +390,7 @@ function AppMcpConnectionDetail({
   renderPrimaryAction,
   onServersChanged,
   onEditorOpenChange,
+  onBusyChange,
   onDeleted,
   statusContent,
 }: CuratedMcpConnectionDetailProps): JSX.Element {
@@ -398,6 +414,16 @@ function AppMcpConnectionDetail({
   );
   const accountSetupRef = useRef(accountSetup);
   accountSetupRef.current = accountSetup;
+  const accountFlowKey = accountConnection
+    ? accountMcpConnectionKey(accountConnection)
+    : (localServer?.id ??
+      installedServerId ??
+      (entry ? accountMcpConfigurationKey(entry.key) : undefined));
+  const pageOwnedSignIn = foldedPlugin ? undefined : accountSignIn;
+  // The page never starts a flow on a connection this card is signing in.
+  const reportDetailPending = accountSignIn?.reportDetailPending;
+  const detailPending = accountActions.pending;
+  const detailSetupKey = accountSetup ? accountFlowKey : undefined;
   const { pluginInstall, installFoldedPlugin } = useFoldedPluginInstall(
     foldedPlugin,
     installFoldedPluginRequest,
@@ -413,6 +439,44 @@ function AppMcpConnectionDetail({
     return (): void => onEditorOpenChange?.(false);
   }, [editorOpen, moveEditorOpen, onEditorOpenChange]);
   const [saving, setSaving] = useState(false);
+  const [capturingSetup, setCapturingSetup] = useState(false);
+  const setupCapturePending = useRef(false);
+  const mounted = useRef(true);
+  const onManagementBusyChange = useCallback(
+    (busy: boolean): void => {
+      // Parent cleanup releases the page's slot before child cleanup runs.
+      if (!mounted.current) return;
+      setManagementBusy(busy);
+      reportDetailPending?.(
+        new Set([
+          ...detailPending,
+          ...(busy && accountFlowKey ? [accountFlowKey] : []),
+        ]),
+      );
+    },
+    [accountFlowKey, detailPending, reportDetailPending],
+  );
+  useEffect((): (() => void) | undefined => {
+    if (!reportDetailPending) return undefined;
+    reportDetailPending(
+      new Set([
+        ...Array.from(detailPending),
+        ...(detailSetupKey ? [detailSetupKey] : []),
+        ...((saving || managementBusy || capturingSetup) && accountFlowKey
+          ? [accountFlowKey]
+          : []),
+      ]),
+    );
+    return (): void => reportDetailPending(new Set());
+  }, [
+    accountFlowKey,
+    capturingSetup,
+    detailPending,
+    detailSetupKey,
+    managementBusy,
+    reportDetailPending,
+    saving,
+  ]);
   const [error, setError] = useState('');
   const [refreshError, setRefreshError] = useState('');
   const [guidance, setGuidance] = useState<string>();
@@ -422,11 +486,56 @@ function AppMcpConnectionDetail({
   const [toolsRevision, setToolsRevision] = useState(0);
   const oauth = useMarketplaceOAuth();
   const { pending, finish, start, url: authorizationUrl } = oauth;
+  const detailBusy =
+    saving ||
+    managementBusy ||
+    capturingSetup ||
+    accountSetup !== null ||
+    detailPending.size > 0 ||
+    pending;
+  useEffect(() => {
+    onBusyChange?.(detailBusy);
+    return (): void => onBusyChange?.(false);
+  }, [detailBusy, onBusyChange]);
+  const managementErrorClearer = useRef<(() => void) | undefined>(undefined);
+  const registerManagementErrorClearer = useCallback(
+    (clear: () => void): (() => void) => {
+      managementErrorClearer.current = clear;
+      return (): void => {
+        if (managementErrorClearer.current === clear)
+          managementErrorClearer.current = undefined;
+      };
+    },
+    [],
+  );
+  const clearLocalErrors = useRef((): void => undefined);
+  clearLocalErrors.current = (): void => {
+    setError('');
+    setRefreshError('');
+    setGuidance(undefined);
+    setMoveNotice(undefined);
+    accountActions.clearError();
+    oauth.clearError();
+    managementErrorClearer.current?.();
+  };
+  const registerErrorClearer = accountSignIn?.registerErrorClearer;
+  useEffect(
+    (): (() => void) | undefined =>
+      accountFlowKey
+        ? registerErrorClearer?.(accountFlowKey, (): void =>
+            clearLocalErrors.current(),
+          )
+        : undefined,
+    [accountFlowKey, registerErrorClearer],
+  );
+  const clearErrors = useCallback((): void => {
+    clearLocalErrors.current();
+    if (accountFlowKey) accountSignIn?.clearError(accountFlowKey);
+  }, [accountFlowKey, accountSignIn]);
   const serverRef = useRef(server);
   serverRef.current = server;
   const inFlight = useRef(false);
   const replacedServerIds = useRef(new Set<string>());
-  const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
     return (): void => {
@@ -559,18 +668,24 @@ function AppMcpConnectionDetail({
    */
   const openAccountSetup = useCallback(
     async (request: Omit<AccountSetupRequest, 'accountId'>): Promise<void> => {
+      setupCapturePending.current = true;
+      setCapturingSetup(true);
       let accountId: string | undefined;
       try {
         accountId = (await window.api?.loadCanopyCloudAccount?.())?.account?.id;
       } catch {
         accountId = undefined;
       }
+      setupCapturePending.current = false;
       if (!mounted.current) return;
+      setCapturingSetup(false);
       if (!accountId) {
         setError(SIGN_IN_TO_CONNECT);
         return;
       }
-      setAccountSetup({ ...request, accountId });
+      const open = { ...request, accountId };
+      accountSetupRef.current = open;
+      setAccountSetup(open);
     },
     [],
   );
@@ -655,6 +770,7 @@ function AppMcpConnectionDetail({
         return;
       }
       await accountActions.connect(step.serverKey, step.configId, {
+        ...(accountFlowKey ? { pendingKey: accountFlowKey } : {}),
         onStarted: installFoldedPlugin,
         onOAuthClientRequired: (clientSetup): void =>
           void openAccountSetup({
@@ -673,6 +789,7 @@ function AppMcpConnectionDetail({
       if (mounted.current) await onServersChanged();
     },
     [
+      accountFlowKey,
       accountActions,
       installFoldedPlugin,
       onServersChanged,
@@ -721,11 +838,25 @@ function AppMcpConnectionDetail({
     if (inFlight.current) return;
     inFlight.current = true;
     setSaving(true);
-    setError('');
-    setGuidance(undefined);
-    setMoveNotice(undefined);
+    clearErrors();
     try {
       let current = serverRef.current;
+      if (accountFlowKey && accountSignIn?.isPending(accountFlowKey)) {
+        setGuidance('Finish the current sign-in first.');
+        return;
+      }
+      // Whatever the page answers, it owns this path: a wait or a refusal must
+      // not fall through to this card's own actions.
+      if (!current && accountConnection && pageOwnedSignIn) {
+        if (accountConnection.status === 'CONNECTED') return;
+        const started = pageOwnedSignIn.start(accountConnection);
+        if (started.kind === 'blocked') setGuidance(started.reason);
+        else if (started.kind === 'unsupported') setError(started.message);
+        return;
+      }
+      // Reserve before yielding to a catalog or identity read. The page's
+      // listener must see this even before React commits pending state.
+      if (accountFlowKey) reportDetailPending?.(new Set([accountFlowKey]));
       // An account connection backs this card: Connect reconnects it through
       // the account rather than creating anything.
       if (!current && entry && accountConnection) {
@@ -837,30 +968,47 @@ function AppMcpConnectionDetail({
         setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       inFlight.current = false;
-      if (mounted.current) setSaving(false);
+      if (mounted.current) {
+        reportDetailPending?.(
+          new Set([
+            ...accountActions.pending,
+            ...((accountSetupRef.current || setupCapturePending.current) &&
+            accountFlowKey
+              ? [accountFlowKey]
+              : []),
+          ]),
+        );
+        setSaving(false);
+      }
     }
   }, [
     accountConnection,
     accountConnectionsAvailable,
     accountConnectionsEnabled,
+    accountActions,
+    accountFlowKey,
+    accountSignIn,
+    clearErrors,
     connectAccount,
     desktopOnly,
     entry,
     installFoldedPlugin,
+    pageOwnedSignIn,
     installedServerId,
     onServersChanged,
     signInThroughAccount,
     start,
     refresh,
+    reportDetailPending,
   ]);
   const moveToAccount = useCallback(async (): Promise<void> => {
     const current = serverRef.current;
     if (inFlight.current || !current) return;
+    if (accountFlowKey && accountSignIn?.isPending(accountFlowKey)) return;
     inFlight.current = true;
+    if (accountFlowKey) reportDetailPending?.(new Set([accountFlowKey]));
     setSaving(true);
-    setError('');
-    setGuidance(undefined);
-    setMoveNotice(undefined);
+    clearErrors();
     try {
       await signInThroughAccount(current);
     } catch (cause) {
@@ -868,9 +1016,19 @@ function AppMcpConnectionDetail({
         setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       inFlight.current = false;
-      if (mounted.current) setSaving(false);
+      if (mounted.current) {
+        if (!accountSetupRef.current && !setupCapturePending.current)
+          reportDetailPending?.(new Set());
+        setSaving(false);
+      }
     }
-  }, [signInThroughAccount]);
+  }, [
+    accountFlowKey,
+    accountSignIn,
+    clearErrors,
+    reportDetailPending,
+    signInThroughAccount,
+  ]);
   const started = useRef(false);
   useEffect(() => {
     if (autoConnect && !started.current) {
@@ -878,13 +1036,36 @@ function AppMcpConnectionDetail({
       void connect();
     }
   }, [autoConnect, connect]);
+  const accountActionError =
+    accountActions.error ||
+    (accountFlowKey ? accountSignIn?.errorFor(accountFlowKey) : undefined);
+  const accountErrorOperation = accountActions.error
+    ? accountActions.errorOperation
+    : accountFlowKey
+      ? accountSignIn?.errorOperationFor(accountFlowKey)
+      : null;
+  const showAccountActionError =
+    !error &&
+    !oauth.error &&
+    accountActionError &&
+    (accountErrorOperation === 'disconnect' ||
+      accountErrorOperation === 'promote');
   const connectionError =
     error ||
     oauth.error ||
-    accountActions.error ||
+    accountActionError ||
     refreshError ||
     (!pending && auth?.authStatus === 'error' ? auth.lastError : undefined);
-  const accountPending = entry ? accountActions.pending.has(entry.key) : false;
+  const accountPending = accountFlowKey
+    ? accountActions.pending.has(accountFlowKey) ||
+      accountSignIn?.isPending(accountFlowKey) === true
+    : false;
+  // The card disables every row while busy, and its account row is what cancels
+  // a sign-in the page owns, so that sign-in alone must not block the card.
+  const pageSignInCancellable =
+    accountConnection?.status === 'PENDING' &&
+    pageOwnedSignIn?.isConnectingConnection(accountConnection) === true &&
+    !accountActions.isConnectingConnection(accountConnection);
   const noAuth =
     accountConnection === undefined &&
     ((server?.definition.type ?? localServer?.type) === 'command' ||
@@ -1045,7 +1226,10 @@ function AppMcpConnectionDetail({
           <>
             <PluginConfigurationButton
               size="compact"
-              onConfigure={() => setEditorOpen(true)}
+              onConfigure={(): void => {
+                clearErrors();
+                setEditorOpen(true);
+              }}
               disabled={saving || accountPending || managementBusy}
             />
             {foldedPlugin && pluginInstall.status !== 'installed' && (
@@ -1099,10 +1283,13 @@ function AppMcpConnectionDetail({
                       connection={accountConnection}
                       row={localServer}
                       actions={accountActions}
+                      accountSignIn={pageOwnedSignIn}
+                      onActionStart={clearErrors}
+                      registerErrorClearer={registerManagementErrorClearer}
                       accountEnabled={accountConnectionsEnabled}
                       busy={
                         saving ||
-                        accountPending ||
+                        (accountPending && !pageSignInCancellable) ||
                         oauth.pending ||
                         editorOpen ||
                         moveEditorOpen
@@ -1116,7 +1303,7 @@ function AppMcpConnectionDetail({
                         setMoveConnection(connection);
                         setMoveEditorOpen(true);
                       }}
-                      onBusyChange={setManagementBusy}
+                      onBusyChange={onManagementBusyChange}
                       tools={tools}
                     />
                   </div>
@@ -1198,27 +1385,38 @@ function AppMcpConnectionDetail({
                       size="sm"
                       variant="ghost"
                       data-testid="mcp-browse-detail-cloud-disconnect"
-                      onClick={() =>
-                        void accountActions.disconnect(cloudLeftover.id)
-                      }
+                      onClick={(): void => {
+                        clearErrors();
+                        void accountActions.disconnect(cloudLeftover.id);
+                      }}
                     >
                       Disconnect
                     </Button>
                   </div>
                 )}
-                {connectionError && (
-                  <PluginConnectionNotice
-                    error={connectionError}
-                    checkingStatus={
-                      Boolean(refreshError) && !error && !oauth.error
-                    }
-                    guidance={
-                      guidance ??
-                      (error.includes('Advanced configuration')
-                        ? error
-                        : undefined)
-                    }
+                {!connectionError && guidance && (
+                  <Notice intent="neutral">{guidance}</Notice>
+                )}
+                {showAccountActionError ? (
+                  <ErrorBanner
+                    error={accountActionError}
+                    blockMessageFromReplay
                   />
+                ) : (
+                  connectionError && (
+                    <PluginConnectionNotice
+                      error={connectionError}
+                      checkingStatus={
+                        Boolean(refreshError) && !error && !oauth.error
+                      }
+                      guidance={
+                        guidance ??
+                        (error.includes('Advanced configuration')
+                          ? error
+                          : undefined)
+                      }
+                    />
+                  )
                 )}
               </PluginAccountConnection>
             </div>
@@ -1228,7 +1426,10 @@ function AppMcpConnectionDetail({
           <McpOAuthBrowser
             key={oauth.url}
             url={oauth.url}
-            onClose={oauth.closeBrowser}
+            onClose={(): void => {
+              clearErrors();
+              oauth.closeBrowser();
+            }}
           />
         )}
       </div>
@@ -1283,6 +1484,7 @@ function AppMcpConnectionDetail({
             ? { initialEndpointUrl: accountSetup.endpointUrl }
             : {})}
           onAccountConnect={(options): void => {
+            clearErrors();
             const {
               entry: catalogEntry,
               configId,
@@ -1293,6 +1495,7 @@ function AppMcpConnectionDetail({
             void (async (): Promise<void> => {
               await accountActions.connect(catalogEntry.key, configId, {
                 ...options,
+                ...(accountFlowKey ? { pendingKey: accountFlowKey } : {}),
                 // Bound to the account the dialog opened under; a change in
                 // between is refused before any secret leaves the renderer.
                 expectedAccountId: accountId,
@@ -1319,7 +1522,10 @@ function AppMcpConnectionDetail({
               if (mounted.current) await onServersChanged();
             })();
           }}
-          onClose={() => setAccountSetup(null)}
+          onClose={(): void => {
+            clearErrors();
+            setAccountSetup(null);
+          }}
           onSaved={async () => {
             setAccountSetup(null);
             await onServersChanged();

@@ -44,6 +44,7 @@ import {
   NameEditor,
 } from '../organization/profile/ProfileIdentityEditor';
 import { useProfileEditor } from '../organization/profile/use-profile-editor';
+import { Surface } from '@canopy/ui-shared/components';
 
 const USERNAME_HINT: Record<UsernameUnavailableReason, string> = {
   invalid: 'Use 3–40 lowercase letters, numbers, or hyphens.',
@@ -189,43 +190,46 @@ export function PublicProfileSection({
         className="flex flex-col gap-6"
         data-testid="account-public-profile-section"
       >
-        <section
-          className="flex flex-col items-center rounded-xl bg-card p-8 text-center shadow-sm"
+        <Surface
+          as="section"
+          variant="raised"
           data-testid="public-profile-empty-state"
         >
-          {/* Deliberately NOT `SETTINGS_CARD_ICON_CLASS`. This is a full-width
+          <div className="flex flex-col items-center p-8 text-center">
+            {/* Deliberately NOT `SETTINGS_CARD_ICON_CLASS`. This is a full-width
               centred hero, not a card heading row: it keeps the larger 48px
               disc it has always had, and omits `mt-0.5`/`shrink-0`, which are
               written for a horizontal `items-start` row and would push the
               glyph off centre here. */}
-          <span className="flex h-12 w-12 items-center justify-center rounded-full bg-accent-subtle fg-accent">
-            <Globe size={22} aria-hidden="true" />
-          </span>
-          <Heading level={2} variant="section" className="mt-4">
-            Set up your public profile
-          </Heading>
-          <p className="mt-2 max-w-md text-s fg-secondary">
-            Your public profile is a shareable page that showcases your impact,
-            activity, and published work. Claim a username to publish it and
-            share your work with anyone.
-          </p>
+            <span className="flex h-12 w-12 items-center justify-center rounded-full bg-accent-subtle fg-accent">
+              <Globe size={22} aria-hidden="true" />
+            </span>
+            <Heading level={2} variant="section" className="mt-4">
+              Set up your public profile
+            </Heading>
+            <p className="mt-2 max-w-md text-s fg-secondary">
+              Your public profile is a shareable page that showcases your
+              impact, activity, and published work. Claim a username to publish
+              it and share your work with anyone.
+            </p>
 
-          <ErrorBanner
-            className="mt-3 w-full max-w-md"
-            error={editor.error?.copy}
-            details={editor.error?.details}
-          />
-
-          <div className="mt-6 w-full max-w-md text-left">
-            <UsernameField
-              currentUsername={null}
-              busy={editor.busy}
-              check={editor.checkUsername}
-              ctaLabel="Claim username"
-              onClaim={(username) => void apply({ username, enabled: true })}
+            <ErrorBanner
+              className="mt-3 w-full max-w-md"
+              error={editor.error?.copy}
+              details={editor.error?.details}
             />
+
+            <div className="mt-6 w-full max-w-md text-left">
+              <UsernameField
+                currentUsername={null}
+                busy={editor.busy}
+                check={editor.checkUsername}
+                ctaLabel="Claim username"
+                onClaim={(username) => void apply({ username, enabled: true })}
+              />
+            </div>
           </div>
-        </section>
+        </Surface>
       </div>
     );
   }

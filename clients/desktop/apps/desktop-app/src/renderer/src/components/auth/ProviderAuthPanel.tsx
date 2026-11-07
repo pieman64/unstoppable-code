@@ -712,7 +712,7 @@ function GitHubAuthPanel({
 
   const row = layout === 'row';
   const githubIcon = (
-    <GitHubIcon className="h-4 w-4 shrink-0 fg-primary" aria-hidden />
+    <GitHubIcon size="md" className="shrink-0 fg-primary" aria-hidden />
   );
   const statusDot =
     ghMode === 'pat' ? (

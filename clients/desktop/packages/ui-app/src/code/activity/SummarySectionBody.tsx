@@ -10,6 +10,7 @@ import {
 } from '@canopy/ui-shared/components';
 import { formatRelativeTime } from '@canopy/ui-shared/lib';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
+import { Surface } from '@canopy/ui-shared/components';
 
 export interface SummarySectionBodyRepo {
   readonly name: string;
@@ -114,18 +115,21 @@ export function SummarySectionBody({
                 </Heading>
                 <div className={`${REPLAY_BLOCK_CLASS} space-y-2`}>
                   {summary.highlights.map((highlight, index) => (
-                    <div
+                    <Surface
+                      variant="group"
+                      padding="compact"
                       key={`highlight-${index}`}
-                      className="flex items-start gap-3 rounded-xl border bg-fg-primary/[0.03] px-3 py-3"
                     >
-                      <span
-                        className="mt-1 h-2 w-2 rounded-full bg-accent"
-                        data-testid="summary-highlight-dot"
-                      />
-                      <p className="text-s leading-6 fg-primary/90">
-                        {highlight}
-                      </p>
-                    </div>
+                      <div className="flex items-start gap-3">
+                        <span
+                          className="mt-1 h-2 w-2 rounded-full bg-accent"
+                          data-testid="summary-highlight-dot"
+                        />
+                        <p className="text-s leading-6 fg-primary/90">
+                          {highlight}
+                        </p>
+                      </div>
+                    </Surface>
                   ))}
                 </div>
               </div>
@@ -138,10 +142,7 @@ export function SummarySectionBody({
                 </Heading>
                 <div className="space-y-2">
                   {summary.repos.map((repo) => (
-                    <div
-                      key={repo.name}
-                      className="rounded-xl border bg-fg-primary/[0.03] px-3 py-3"
-                    >
+                    <Surface key={repo.name} variant="group" padding="compact">
                       <Heading level={5} variant="title">
                         {repo.name}
                       </Heading>
@@ -150,7 +151,7 @@ export function SummarySectionBody({
                       >
                         {repo.description}
                       </p>
-                    </div>
+                    </Surface>
                   ))}
                 </div>
               </div>

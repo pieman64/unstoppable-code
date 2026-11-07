@@ -1,4 +1,5 @@
 import type { AssistantMode } from '@canopy/desktop-shared/types';
+import type { InterfaceToolName } from '@canopy/protocol/canopy-core';
 import type { DynamicToolSpec } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/DynamicToolSpec';
 import { buildAppAdvisorDynamicToolSpecs } from '../app-advisor/codex-dynamic-tools';
 import { buildPipelineEditorDynamicToolSpecs } from '../pipeline-editor/codex-dynamic-tools';
@@ -11,6 +12,7 @@ export function buildCodexSessionDynamicToolSpecs(options: {
   isCodeReview: boolean;
   includeCodeGraph: boolean;
   includeChatVisuals: boolean;
+  interfaceTools: readonly InterfaceToolName[];
   /** Only for a session that passed the Ledger exposure gate. */
   includeLedger?: boolean;
   toolSchemaProfile: AiGatewayToolSchemaProfile;
@@ -18,6 +20,12 @@ export function buildCodexSessionDynamicToolSpecs(options: {
   if (options.assistantMode === 'app-advisor') {
     return buildAppAdvisorDynamicToolSpecs({
       includeLedger: options.includeLedger === true,
+      includeUiState: options.interfaceTools.includes(
+        'ui.get_current_ui_state',
+      ),
+      includeShowFiles:
+        options.interfaceTools.includes('ui.show_files') ||
+        options.interfaceTools.includes('ui.app_advisor.show_files'),
     });
   }
   if (options.assistantMode === 'pipeline-editor') {
@@ -27,6 +35,7 @@ export function buildCodexSessionDynamicToolSpecs(options: {
     mode: options.workspaceMode,
     includeCodeGraph: options.includeCodeGraph,
     includeChatVisuals: options.includeChatVisuals,
+    includeShowFiles: options.interfaceTools.includes('ui.show_files'),
     includeLedger: options.includeLedger === true,
     isCodeReview: options.isCodeReview,
     toolSchemaProfile: options.toolSchemaProfile,

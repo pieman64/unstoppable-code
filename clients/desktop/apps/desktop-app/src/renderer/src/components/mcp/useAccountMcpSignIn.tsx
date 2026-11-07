@@ -20,6 +20,9 @@ import { overlayGeneration } from '@canopy/ui-shared/components';
 import { mcpConnectErrorMessage } from '@canopy/ui-shared/lib';
 import {
   useAccountMcpActions,
+  accountMcpConnectionKey,
+  accountMcpConfigurationKey,
+  type AccountMcpActions,
   type AccountMcpConnectOptions,
   type AccountMcpConnectOutcome,
 } from '@/hooks/useAccountMcpActions';
@@ -45,6 +48,16 @@ export interface AccountMcpSignInTarget {
   readonly configId?: string;
 }
 
+/** The same identity Connect registers and its caller uses to cancel. */
+export function accountMcpSignInTargetKey(
+  target: AccountMcpSignInTarget,
+): string | undefined {
+  if (target.connection) return accountMcpConnectionKey(target.connection);
+  return target.curatedKey
+    ? accountMcpConfigurationKey(target.curatedKey, target.configId)
+    : undefined;
+}
+
 /** How one sign-in ended; a setup dialog's close is a cancellation. */
 export type AccountMcpSignInOutcome = Exclude<
   AccountMcpConnectOutcome,
@@ -56,12 +69,15 @@ export type AccountMcpSignInOutcome = Exclude<
  * dialog it opens. {@link onSettled} runs exactly once.
  */
 export interface AccountMcpSignInFlow {
+  /** Identity of the initiating device row or account/configuration. */
+  readonly pendingKey?: string;
   readonly browser?: 'embedded';
   readonly onAuthorizing?: (embeddedUrl: string | undefined) => void;
   readonly onSettled?: (outcome: AccountMcpSignInOutcome) => void;
 }
 
 interface SignInAttempt {
+  readonly key: string | undefined;
   readonly flow: AccountMcpSignInFlow;
   settled: boolean;
 }
@@ -81,6 +97,7 @@ function attemptOptions(
 ): AccountMcpConnectOptions {
   if (!attempt) return {};
   return {
+    ...(attempt.key ? { pendingKey: attempt.key } : {}),
     ...(attempt.flow.browser ? { browser: attempt.flow.browser } : {}),
     ...(attempt.flow.onAuthorizing
       ? { onAuthorizing: attempt.flow.onAuthorizing }
@@ -93,10 +110,13 @@ function attemptOptions(
 }
 
 export interface AccountMcpSignIn {
-  /** Server keys whose sign-in is waiting on the browser. */
+  /** The actions behind this sign-in, so other work shares its flow map. */
+  readonly actions: AccountMcpActions;
+  /** Target keys whose sign-in is waiting on the browser. */
   readonly pending: ReadonlySet<string>;
   readonly error: string | null;
   readonly errorCode: string | null;
+  readonly clearError: () => void;
   /** A setup or credential dialog is open. */
   readonly setupOpen: boolean;
   /**
@@ -111,8 +131,8 @@ export interface AccountMcpSignIn {
     target: AccountMcpSignInTarget,
     flow?: AccountMcpSignInFlow,
   ) => void;
-  /** Cancels the flow for `serverKey`, closing its setup dialog if open. */
-  readonly cancel: (serverKey: string) => void;
+  /** Cancels only this target's flow and setup dialog. */
+  readonly cancel: (targetKey: string, knownConnectionId?: string) => void;
   readonly stopObserving: () => void;
   /** The setup and credential dialogs; render once. */
   readonly dialogs: JSX.Element;
@@ -141,7 +161,7 @@ interface CatalogSetup {
 const ACCOUNT_CHANGED = new AccountMcpConnectionError('account-changed')
   .message;
 
-/** The MCP servers settings' setup dialog, fetched when a setup step opens it. */
+/** The MCP server setup dialog, fetched when a setup step opens it. */
 const McpServerDialog = lazy(() =>
   import('@/components/pages/McpServersTab').then((module) => ({
     default: module.McpServerDialog,
@@ -149,8 +169,7 @@ const McpServerDialog = lazy(() =>
 );
 
 /**
- * Connect for account MCP servers outside the MCP servers settings, the same
- * way those settings connect them: the shared steps, `useAccountMcpActions`,
+ * Connect for account MCP servers: the shared steps, `useAccountMcpActions`,
  * and the catalog setup and credential dialogs, including the user's own
  * OAuth app when a server registers no clients itself. Credentials typed into
  * a dialog are bound to the account it opened under. A catalog server's
@@ -185,13 +204,13 @@ export function useAccountMcpSignIn(
   // The attempt a dialog (or a dialog about to open) carries; closing the
   // setup without connecting ends it as cancelled.
   const setupAttempt = useRef<SignInAttempt | undefined>(undefined);
-  const setupServerKey = useRef<string | undefined>(undefined);
+  const setupTargetKey = useRef<string | undefined>(undefined);
   const closeSetup = useCallback((): void => {
     setupRequest.current += 1;
     capturedAccountId.current = undefined;
     settleAttempt(setupAttempt.current, { kind: 'cancelled' });
     setupAttempt.current = undefined;
-    setupServerKey.current = undefined;
+    setupTargetKey.current = undefined;
     setCredentialPrompt(null);
     setCatalogSetup(null);
   }, []);
@@ -212,6 +231,7 @@ export function useAccountMcpSignIn(
     if (setupAttempt.current !== attempt)
       settleAttempt(setupAttempt.current, { kind: 'cancelled' });
     setupAttempt.current = attempt;
+    setupTargetKey.current = attempt?.key;
     setSetupError(null);
     void (async (): Promise<void> => {
       let accountId: string | undefined;
@@ -396,18 +416,18 @@ export function useAccountMcpSignIn(
     target: AccountMcpSignInTarget,
     flow?: AccountMcpSignInFlow,
   ): void => {
-    const attempt: SignInAttempt | undefined = flow
-      ? { flow, settled: false }
-      : undefined;
+    const key = flow?.pendingKey ?? accountMcpSignInTargetKey(target);
+    const attempt: SignInAttempt = { key, flow: flow ?? {}, settled: false };
     if (waitsForCatalog(target)) {
       settleAttempt(attempt, { kind: 'failed', message: null });
       return;
     }
     setSetupError(null);
+    actions.clearError();
     const { connection, curatedKey, configId } = target;
     settleAttempt(setupAttempt.current, { kind: 'cancelled' });
     setupAttempt.current = attempt;
-    setupServerKey.current = connection?.serverKey ?? curatedKey;
+    setupTargetKey.current = key;
     const entry = curatedEntries.find(
       (candidate): boolean =>
         candidate.key === (curatedKey ?? connection?.serverKey),
@@ -512,6 +532,7 @@ export function useAccountMcpSignIn(
   );
 
   return {
+    actions,
     stopObserving: (): void => {
       actions.stopObserving();
       closeSetup();
@@ -520,17 +541,18 @@ export function useAccountMcpSignIn(
     pending: actions.pending,
     error: setupError ?? actions.error,
     errorCode: setupError === null ? actions.errorCode : null,
+    clearError: (): void => {
+      setSetupError(null);
+      actions.clearError();
+    },
     setupOpen,
     waitsForCatalog,
     catalogFailed: !catalog.loading && catalog.error !== null,
     retryCatalog: (): void => void catalog.refresh(),
     connect,
-    cancel: (serverKey: string): void => {
-      const open =
-        credentialPrompt?.target.serverKey ?? catalogSetup?.entry.key;
-      if (open === serverKey || setupServerKey.current === serverKey)
-        closeSetup();
-      void actions.cancel(serverKey);
+    cancel: (targetKey: string, knownConnectionId?: string): void => {
+      if (setupTargetKey.current === targetKey) closeSetup();
+      void actions.cancel(targetKey, knownConnectionId);
     },
     dialogs,
   };

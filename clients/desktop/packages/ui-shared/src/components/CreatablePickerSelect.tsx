@@ -393,7 +393,7 @@ export function CreatablePickerSelect({
         onClick={(): void => chooseRow(row)}
       >
         <PickerMenuOptionLeading tone="accent">
-          <PlusIcon width={16} height={16} />
+          <PlusIcon size="sm" />
         </PickerMenuOptionLeading>
         <PickerMenuOptionContent>
           <PickerMenuOptionLabel>{createLabel(row.text)}</PickerMenuOptionLabel>

@@ -120,7 +120,7 @@ export function LedgerStatusControl({
         >
           <LedgerStatusGlyph status={status} />
           {LEDGER_STATUS_LABELS[status]}
-          <ChevronDownIcon size={10} aria-hidden="true" className="shrink-0" />
+          <ChevronDownIcon size="sm" aria-hidden="true" className="shrink-0" />
         </button>
       ) : (
         <PickerTrigger

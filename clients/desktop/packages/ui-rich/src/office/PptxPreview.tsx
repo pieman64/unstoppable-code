@@ -20,6 +20,7 @@ import type {
   PptxTableCell,
   PptxTextBody,
 } from './pptx-parse';
+import { Surface } from '@canopy/ui-shared/components';
 
 const EMU_PER_POINT = 12_700;
 const SAFE_IMAGE_SRC =
@@ -179,12 +180,11 @@ function SlideSection({
       <div className="flex items-center gap-2 text-xs fg-secondary">
         <span>Slide {slide.number}</span>
         {slide.hidden && (
-          <span
-            className="rounded border px-1.5"
-            data-testid="pptx-slide-hidden"
-          >
-            Hidden
-          </span>
+          <Surface as="span" variant="outline" size="small">
+            <span className="px-1.5" data-testid="pptx-slide-hidden">
+              Hidden
+            </span>
+          </Surface>
         )}
       </div>
       <div
@@ -210,17 +210,16 @@ function SlideSection({
         </p>
       )}
       {slide.notes.length > 0 && (
-        <div
-          className="flex flex-col gap-1 rounded border px-3 py-2 text-xs"
-          data-testid="pptx-slide-notes"
-        >
-          <span className="font-medium fg-secondary">Speaker notes</span>
-          {slide.notes.map((line, index) => (
-            <p key={index} className="m-0 whitespace-pre-wrap fg-primary">
-              {line}
-            </p>
-          ))}
-        </div>
+        <Surface variant="outline" size="small" data-testid="pptx-slide-notes">
+          <div className="flex flex-col gap-1 px-3 py-2 text-xs">
+            <span className="font-medium fg-secondary">Speaker notes</span>
+            {slide.notes.map((line, index) => (
+              <p key={index} className="m-0 whitespace-pre-wrap fg-primary">
+                {line}
+              </p>
+            ))}
+          </div>
+        </Surface>
       )}
     </section>
   );

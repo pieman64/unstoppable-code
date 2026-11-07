@@ -46,7 +46,7 @@ export function StandaloneColdStartEmptyState({
               onClick={onNewChat}
               data-testid="empty-new-chat"
             >
-              <AppCatalogPlusIcon width="14" height="14" aria-hidden="true" />
+              <AppCatalogPlusIcon size="sm" aria-hidden="true" />
               New {CHAT_UNIT_LABEL}
             </Button>
           }

@@ -8,12 +8,40 @@ import {
   type WorktreeSummaryLoadRequest,
   type WorktreeSummaryRefreshRequest,
 } from '@canopy/desktop-shared/types';
+import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
+import { getActiveDesktopRuntimeIfAccepting } from '../canopy-runtime/desktop-runtime';
+import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
 import { readWorktreeSummary } from '../lib/worktree-summary-persistence';
 import { validateId } from '../lib/validation';
 import { registerIpcHandler } from './register';
 import { refreshWorktreeSummary } from '../services/worktree-summary-service';
 
 const SUMMARY_BATCH_CONCURRENCY = 8;
+
+const SUMMARY_LOAD_CALLER: CanopyCallerDescriptor = {
+  principalId: 'local-desktop-user',
+  clientInstanceId: 'electron-main-summary-load',
+  authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+  interfaceKind: 'desktop',
+  grants: ['core.summary.read'],
+};
+
+/**
+ * CAN-4114: a projection of core.summary.get. Only while the desktop core is
+ * not accepting requests does it read the summary file directly.
+ */
+async function loadWorktreeSummary(
+  projectId: string,
+  worktreeId: string,
+): Promise<WorktreeSummaryData | null> {
+  const runtime = getActiveDesktopRuntimeIfAccepting();
+  if (!runtime) return readWorktreeSummary(projectId, worktreeId);
+  const { legacyResult } = await runtime.querySummaryForLegacyIpc(
+    { scope: { workspaceId: projectId, worktreeId } },
+    { caller: SUMMARY_LOAD_CALLER },
+  );
+  return legacyResult;
+}
 
 function summaryKey(projectId: string, worktreeId: string): string {
   return `${projectId}/${worktreeId}`;
@@ -41,7 +69,7 @@ async function readWorktreeSummaryBatch(
         return;
       }
       response[summaryKey(request.projectId, request.worktreeId)] =
-        await readWorktreeSummary(request.projectId, request.worktreeId);
+        await loadWorktreeSummary(request.projectId, request.worktreeId);
     }
   };
 
@@ -67,7 +95,7 @@ export function registerWorktreeSummaryHandlers(
       // Cowork workspaces have summaries too (workspaces/{id}/summaries/
       // home.json); the scheduler summarizes folder activity instead of git
       // diffs for them.
-      return readWorktreeSummary(request.projectId, request.worktreeId);
+      return loadWorktreeSummary(request.projectId, request.worktreeId);
     },
   );
 

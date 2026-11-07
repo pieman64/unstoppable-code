@@ -179,7 +179,7 @@ export const SubagentMoreBelowCard = memo(function SubagentMoreBelowCard({
           {subagentsMoreBelowLiveLabel(hiddenLiveCount)}
         </span>
       ) : null}
-      <ChevronRightIcon size={10} aria-hidden className="shrink-0" />
+      <ChevronRightIcon size="sm" aria-hidden className="shrink-0" />
     </div>
   );
 });
@@ -207,7 +207,7 @@ export const SubagentFoldedParentsCard = memo(
       >
         <span className="flex min-w-0 items-center gap-1.5">
           <span className="inline-flex shrink-0">
-            <ChatIcon size={10} aria-hidden />
+            <ChatIcon size="sm" aria-hidden />
           </span>
           <span className="min-w-0 truncate">{rootTitle}</span>
         </span>

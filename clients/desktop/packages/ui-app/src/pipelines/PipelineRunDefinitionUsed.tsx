@@ -3,6 +3,7 @@
 import type { JSX } from 'react';
 import type { PortalPipelineDefinitionViewModel } from '@canopy/protocol/portal';
 import { PipelineReadDetail } from './PipelineReadDetail';
+import { Surface } from '@canopy/ui-shared/components';
 
 export interface PipelineRunDefinitionUsedProps {
   /**
@@ -26,12 +27,14 @@ export function PipelineRunDefinitionUsed({
       data-testid="pipeline-run-definition-used"
     >
       {definition === null ? (
-        <p
-          className="rounded-xl border bg-base px-4 py-6 text-center text-s fg-secondary"
-          data-testid="pipeline-run-definition-used-not-recorded"
-        >
-          Not recorded
-        </p>
+        <Surface variant="inset">
+          <p
+            className="px-4 py-6 text-center text-s fg-secondary"
+            data-testid="pipeline-run-definition-used-not-recorded"
+          >
+            Not recorded
+          </p>
+        </Surface>
       ) : (
         <PipelineReadDetail definition={definition} flushTop />
       )}

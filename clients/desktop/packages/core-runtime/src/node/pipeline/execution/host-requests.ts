@@ -1,14 +1,20 @@
 import {
   WORKER_PIPELINE_GRANTS,
+  WORKER_PIPELINE_OWNER_RESULT_KIND,
+  isWorkerPipelineOwnerAction,
   type CanopyCallerDescriptor,
   type CanopyInstructionHandler,
   type CanopyStreamHandlerMap,
   type WorkerPipelineHostRequest,
   type WorkerPipelineHostRespondResult,
   type WorkerPipelineHostResult,
+  type WorkerPipelineOwnerValues,
 } from '@canopy/protocol/canopy-core';
 
-import { CanopyOperationError } from '../../../runtime/errors';
+import {
+  CanopyOperationError,
+  canopyInvalidArgumentError,
+} from '../../../runtime/errors';
 import type {
   CanopyDispatcher,
   CanopyHandlerContext,
@@ -42,9 +48,59 @@ export class PipelineHostUnavailableError extends Error {
   }
 }
 
+/** What a host step settles with: never an owner answer (CAN-5095). */
+export type PipelineHostStepResult = Exclude<
+  WorkerPipelineHostResult,
+  { status: 'owner' }
+>;
+
+/** An owner request's answer and its host-local values (CAN-5095). */
+export interface PipelineOwnerSettlement {
+  readonly result: WorkerPipelineHostResult;
+  readonly values?: WorkerPipelineOwnerValues;
+}
+
 interface Pending {
   readonly request: WorkerPipelineHostRequest;
-  resolve(result: WorkerPipelineHostResult): void;
+  resolve(
+    result: WorkerPipelineHostResult,
+    values?: WorkerPipelineOwnerValues,
+  ): void;
+}
+
+const UNEXPECTED: PipelineHostStepResult = {
+  status: 'failure',
+  failureReason: null,
+  message: 'The host step failed unexpectedly.',
+  outputs: {},
+};
+
+function isOwnerRequest(request: WorkerPipelineHostRequest): boolean {
+  return isWorkerPipelineOwnerAction(request.request.action);
+}
+
+/** A host step never takes an owner answer. */
+function hostStepResult(
+  result: WorkerPipelineHostResult,
+): PipelineHostStepResult {
+  return result.status === 'owner' ? UNEXPECTED : result;
+}
+
+/** An owner request takes only an owner answer of its own kind, or a failure. */
+function ownerSettlement(
+  request: WorkerPipelineHostRequest,
+  result: WorkerPipelineHostResult,
+  values: WorkerPipelineOwnerValues | undefined,
+): PipelineOwnerSettlement {
+  if (result.status === 'failure') return { result };
+  const action = request.request.action;
+  if (
+    result.status !== 'owner' ||
+    !isWorkerPipelineOwnerAction(action) ||
+    result.value.kind !== WORKER_PIPELINE_OWNER_RESULT_KIND[action]
+  )
+    return { result: UNEXPECTED };
+  return values ? { result, values } : { result };
 }
 
 /** The worker side: pending host requests and their subscribers. */
@@ -72,7 +128,38 @@ export class PipelineHostRequestBroker {
   raise(
     request: WorkerPipelineHostRequest,
     signal: AbortSignal,
-  ): Promise<WorkerPipelineHostResult> {
+  ): Promise<PipelineHostStepResult> {
+    if (isOwnerRequest(request))
+      return Promise.reject(
+        new Error('Owner requests are raised with raiseOwner.'),
+      );
+    return this.enqueue(request, signal, (result) => hostStepResult(result));
+  }
+
+  /**
+   * Raise an owner request (`owner.*` action, CAN-5095) and resolve with
+   * core's settlement. Shares pending requests, withdrawal and subscribers
+   * with {@link raise}.
+   */
+  raiseOwner(
+    request: WorkerPipelineHostRequest,
+    signal: AbortSignal,
+  ): Promise<PipelineOwnerSettlement> {
+    if (!isOwnerRequest(request))
+      return Promise.reject(new Error('Host steps are raised with raise.'));
+    return this.enqueue(request, signal, (result, values) =>
+      ownerSettlement(request, result, values),
+    );
+  }
+
+  private enqueue<T>(
+    request: WorkerPipelineHostRequest,
+    signal: AbortSignal,
+    settle: (
+      result: WorkerPipelineHostResult,
+      values: WorkerPipelineOwnerValues | undefined,
+    ) => T,
+  ): Promise<T> {
     if (this.subscribers.size === 0)
       return Promise.reject(new PipelineHostUnavailableError());
     return new Promise((resolve, reject) => {
@@ -95,9 +182,9 @@ export class PipelineHostRequestBroker {
       signal.addEventListener('abort', withdraw, { once: true });
       this.pending.set(request.requestId, {
         request,
-        resolve: (result) => {
+        resolve: (result, values) => {
           signal.removeEventListener('abort', withdraw);
-          resolve(result);
+          resolve(settle(result, values));
         },
       });
       for (const subscriber of Array.from(this.subscribers))
@@ -105,17 +192,25 @@ export class PipelineHostRequestBroker {
     });
   }
 
-  /** Settle a pending request exactly once. */
+  /** Settle a pending request exactly once; `values` only for an owner request. */
   respond(
     executionId: string,
     requestId: string,
     result: WorkerPipelineHostResult,
+    values?: WorkerPipelineOwnerValues,
   ): WorkerPipelineHostRespondResult {
+    if (values !== undefined && values.requestId !== requestId)
+      throw canopyInvalidArgumentError(
+        'These owner values belong to another request.',
+      );
     const pending = this.pending.get(requestId);
     if (pending?.request.executionId === executionId) {
       this.pending.delete(requestId);
       const settledAt = this.remember(pending.request);
-      pending.resolve(result);
+      pending.resolve(
+        result,
+        isOwnerRequest(pending.request) ? values : undefined,
+      );
       return { executionId, requestId, outcome: 'applied', settledAt };
     }
     const done = this.done.get(requestId);
@@ -174,12 +269,18 @@ export function createWorkerPipelineHostRequestHandlers(
 ): WorkerPipelineHostRequestHandlers {
   return {
     instructions: {
-      'worker.pipeline.hostRequest.respond': ({
-        executionId,
-        requestId,
-        result,
-      }): Promise<WorkerPipelineHostRespondResult> =>
-        Promise.resolve(broker.respond(executionId, requestId, result)),
+      'worker.pipeline.hostRequest.respond': (
+        { executionId, requestId, result },
+        context,
+      ): Promise<WorkerPipelineHostRespondResult> =>
+        Promise.resolve(
+          broker.respond(
+            executionId,
+            requestId,
+            result,
+            context.execution?.pipelineOwnerValues,
+          ),
+        ),
     },
     streams: {
       'worker.pipeline.hostRequests': (
@@ -210,13 +311,6 @@ export function pipelineHostCoreCaller(
   };
 }
 
-const UNEXPECTED: WorkerPipelineHostResult = {
-  status: 'failure',
-  failureReason: null,
-  message: 'The host step failed unexpectedly.',
-  outputs: {},
-};
-
 /**
  * The core side: subscribe to a worker's host requests, apply core policy to
  * each and settle it. An unexpected error, or a result the boundary refuses,
@@ -228,7 +322,7 @@ export async function settlePipelineHostRequests(options: {
   apply(
     request: WorkerPipelineHostRequest,
     signal: AbortSignal,
-  ): Promise<WorkerPipelineHostResult>;
+  ): Promise<WorkerPipelineHostResult | PipelineOwnerSettlement>;
   onError?(error: unknown, request: WorkerPipelineHostRequest): void;
 }): Promise<() => void> {
   const controller = new AbortController();
@@ -243,29 +337,41 @@ export async function settlePipelineHostRequests(options: {
         const request = frame.item;
         if (!isHostRequest(request)) return;
         void (async (): Promise<void> => {
-          let result: WorkerPipelineHostResult;
+          let settlement: PipelineOwnerSettlement;
           try {
-            result = await options.apply(request, controller.signal);
+            const applied = await options.apply(request, controller.signal);
+            settlement = 'status' in applied ? { result: applied } : applied;
           } catch (error) {
             options.onError?.(error, request);
-            result = UNEXPECTED;
+            settlement = { result: UNEXPECTED };
           }
           const respond = (
-            settled: WorkerPipelineHostResult,
+            settled: PipelineOwnerSettlement,
           ): Promise<unknown> =>
             options.dispatcher.instruction(
               'worker.pipeline.hostRequest.respond',
               {
                 executionId: request.executionId,
                 requestId: request.requestId,
-                result: settled,
+                result: settled.result,
               },
-              { caller: options.caller, metadata: {} },
+              {
+                caller: options.caller,
+                metadata: {},
+                ...(settled.values
+                  ? {
+                      execution: {
+                        childEnvironment: {},
+                        pipelineOwnerValues: settled.values,
+                      },
+                    }
+                  : {}),
+              },
             );
-          await respond(result).catch((error: unknown) => {
-            if (result === UNEXPECTED) return undefined;
+          await respond(settlement).catch((error: unknown) => {
+            if (settlement.result === UNEXPECTED) return undefined;
             options.onError?.(error, request);
-            return respond(UNEXPECTED).catch(() => undefined);
+            return respond({ result: UNEXPECTED }).catch(() => undefined);
           });
         })();
       },

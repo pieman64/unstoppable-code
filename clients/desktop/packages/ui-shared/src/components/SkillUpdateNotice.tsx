@@ -97,7 +97,7 @@ export function SkillUpdateNotice({
   if (action.pending === 'applying') {
     return (
       <Notice
-        icon={<RefreshSpinner spinning size={16} tone="secondary" />}
+        icon={<RefreshSpinner spinning size="sm" tone="secondary" />}
         data-testid="skill-update-notice"
         data-state="applying"
       >
@@ -164,7 +164,7 @@ export function SkillUpdateStatus({
         data-testid="skill-update-status"
         data-state="checking"
       >
-        <RefreshSpinner spinning size={12} />
+        <RefreshSpinner spinning size="sm" />
         Checking for updates…
       </span>
     );

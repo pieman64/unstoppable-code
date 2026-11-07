@@ -1,3 +1,4 @@
+import { DEFAULT_MAX_ACTIVE_REQUESTS } from './limits';
 import { Buffer } from 'node:buffer';
 import { Duplex } from 'node:stream';
 import {
@@ -79,7 +80,6 @@ const LEASE_OPERATIONS = [
 type LeaseOperation = (typeof LEASE_OPERATIONS)[number];
 // Platform streams accept bounded writes; larger frames are written in slices.
 const MAX_STREAM_WRITE_BYTES = 64 * 1024;
-const DEFAULT_MAX_ACTIVE_REQUESTS = 128;
 
 /** Per-connection identity handed to the host's caller policy. */
 export interface CanopyControlConnectionIdentity {
@@ -133,9 +133,9 @@ export interface CanopyDaemonControlPlaneOptions {
    */
   readonly leaseBoundOperations?: readonly string[];
   /**
-   * Lease-bound keyed operations whose receipts never name the lease: a
-   * fenced call answers `same_idempotency_key` instead of `never`, since a
-   * decided call replays on a new lease (DM-5 #4).
+   * Lease-bound keyed operations requiring `same_idempotency_key` rather
+   * than `never` after a fence (W5 DM-5 #4; entry q-22(d)). Hosts must qualify
+   * real-result replay before granting production callers.
    */
   readonly sameKeyFencedOperations?: readonly string[];
   /**

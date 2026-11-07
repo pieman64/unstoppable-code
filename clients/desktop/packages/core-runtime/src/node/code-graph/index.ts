@@ -5,3 +5,4 @@ export * from './generation-report';
 export * from './read-report';
 export * from './build-queue-events';
 export * from './preferences';
+export * from './workspace-sources';

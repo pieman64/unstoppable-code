@@ -79,3 +79,21 @@ export {
   SECRET_PROTECTION_FILE,
   type SecretProtectionOptions,
 } from './secret-protection';
+
+export {
+  createNativeArtifactAuthorizer,
+  nativeArtifactSnapshotRoot,
+  type PreparedNativeArtifact,
+  type NativeArtifactAuthorizer,
+  type NativeArtifactPreparationOptions,
+} from './secret-protection/authorization';
+export {
+  compiledNativeArtifactCatalog,
+  type NativeArtifactCatalog,
+} from './secret-protection/catalog';
+export {
+  createHostTrustGeneration,
+  type HostLocalCapability,
+  type HostTrustGeneration,
+  type PreparedTrustScope,
+} from './prepared-trust';

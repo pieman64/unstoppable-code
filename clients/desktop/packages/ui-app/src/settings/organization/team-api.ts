@@ -23,11 +23,6 @@ import type {
   MemoryParticipationMember,
   ViewerDataSharingStatus,
 } from '@canopy/protocol';
-import {
-  parseDailyCreditDripPreferenceSaveResult,
-  type DailyCreditDripPreferenceInput,
-  type DailyCreditDripPreferenceSaveResult,
-} from '@canopy/protocol/billing';
 import type {
   EnforcedSyncScopes,
   IncomingTeamInvitation,
@@ -941,32 +936,6 @@ export async function getCreditsLedger(
           ...page,
         }),
   );
-}
-
-/**
- * Save the signed-in user's daily free AI credits choice (personal wallet
- * only; there is no org variant). Daily free credits are a grant, not a
- * payment. A resolved result means the preference was committed, even when
- * `balanceCredits` is `null` (the post-save balance read failed and the
- * caller should re-fetch). Rejects with a {@link TeamApiError} on a non-2xx
- * response or a malformed body.
- */
-export async function updateDailyDrip(
-  client: AccountOrganizationSettingsClient,
-  input: DailyCreditDripPreferenceInput,
-): Promise<DailyCreditDripPreferenceSaveResult> {
-  const saved = await settle(() =>
-    client.write('account.billing.dailyFreeCredits.update', {
-      enabled: input.enabled,
-    }),
-  );
-  // Stricter than the table's structural check (finite numbers, a known
-  // blocked reason), as the hand-written parse was.
-  const result = parseDailyCreditDripPreferenceSaveResult(saved);
-  if (result === null) {
-    throw new TeamApiError(200, INVALID_RESPONSE);
-  }
-  return result;
 }
 
 /** Pending team invitations bound to the viewer's verified email. */

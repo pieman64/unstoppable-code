@@ -1,0 +1,303 @@
+import { createServer, type AddressInfo } from 'node:net';
+import type { BrowserWindow } from 'electron';
+import type { CanopyInjectedToolRuntime } from '../../canopy-tools/core';
+
+jest.mock('../../canopy-tools/core', () => ({
+  executeCanopyInjectedTool: jest.fn(),
+}));
+jest.mock('../../canopy-tools/show-files-runtime', () => ({
+  requestShowFiles: (): never => {
+    throw new Error('window touched');
+  },
+  mainWindowOnlyToolSurfaces: (): never => {
+    throw new Error('window touched');
+  },
+}));
+jest.mock('../../lib/window-send', () => ({
+  sendToWindow: (): never => {
+    throw new Error('window touched');
+  },
+}));
+jest.mock('../../lib/main-process-logging', () => ({
+  logMainProcessError: jest.fn(),
+}));
+jest.mock('../../lib/resolve-worktree', () => ({
+  resolveWorktreeCwd: (): string => '/worktree',
+}));
+jest.mock('../../canopy-tools/session-runtime', () => ({
+  ...jest.requireActual<object>('../../canopy-tools/session-runtime'),
+  requestAnswersFromRenderer: (): never => {
+    throw new Error('window touched');
+  },
+  respondToFileCommentInSession: jest.fn(),
+}));
+
+import {
+  CANOPY_INJECTED_TOOL_REGISTRY,
+  type CanopyInjectedToolKey,
+} from '@canopy/desktop-shared/lib/canopy-injected-tools';
+import { executeCanopyInjectedTool } from '../../canopy-tools/core';
+import { respondToFileCommentInSession } from '../../canopy-tools/session-runtime';
+import { ledgerUnavailableResult } from '../../canopy-tools/ledger-tools-runtime';
+import { CODE_GRAPH_UNAVAILABLE_MESSAGE } from '../../lib/code-graph-availability';
+import {
+  CanopyToolRouter,
+  type CanopyWorktreeSessionRoute,
+} from '../canopy-tool-router';
+import { toMcpToolResult } from '../canopy-route-tools';
+import type { InterfaceToolRequests } from '../interface-tool-requests';
+import { McpHttpProxyService } from '../http-proxy-service';
+import { canopyRouteFixtures } from './helpers/canopy-route-fixtures';
+
+const sentinelWindow = { sentinel: true } as unknown as BrowserWindow;
+
+function fakeInterface(): InterfaceToolRequests & {
+  calls: { method: string; request: unknown }[];
+} {
+  const calls: { method: string; request: unknown }[] = [];
+  return {
+    calls,
+    requestUserAnswers: (request) => {
+      calls.push({ method: 'requestUserAnswers', request });
+      return Promise.resolve([]);
+    },
+    showFiles: (request) => {
+      calls.push({ method: 'showFiles', request });
+      return Promise.resolve({ ok: true }) as unknown as ReturnType<
+        InterfaceToolRequests['showFiles']
+      >;
+    },
+    showVisualHost: (target) => {
+      calls.push({ method: 'showVisualHost', request: target });
+      return {} as unknown as ReturnType<
+        InterfaceToolRequests['showVisualHost']
+      >;
+    },
+    legacyWindow: () => {
+      calls.push({ method: 'legacyWindow', request: null });
+      return sentinelWindow;
+    },
+  };
+}
+
+function fixture(
+  name: string,
+  overrides: Partial<CanopyWorktreeSessionRoute> = {},
+): CanopyWorktreeSessionRoute {
+  const route = canopyRouteFixtures().find(
+    (candidate) => candidate.sessionKey === `k-${name}`,
+  );
+  if (!route) throw new Error(`no fixture ${name}`);
+  return { ...route, ...overrides };
+}
+
+const displayName = (key: CanopyInjectedToolKey): string =>
+  CANOPY_INJECTED_TOOL_REGISTRY[key].displayName;
+
+async function freePort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address: AddressInfo | string | null = server.address();
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return typeof address === 'object' && address ? address.port : 0;
+}
+
+describe('Canopy tool router (CAN-4125)', () => {
+  const execute = jest.mocked(executeCanopyInjectedTool);
+
+  beforeEach(() => {
+    execute.mockReset();
+    jest.mocked(respondToFileCommentInSession).mockReset();
+  });
+
+  it('presentation calls go through the interface port and nothing else touches a window', async () => {
+    const port = fakeInterface();
+    const router = new CanopyToolRouter({ interfaceRequests: port });
+    execute.mockImplementation(
+      async (key, _args, runtime: CanopyInjectedToolRuntime) => {
+        if (key === 'ask_user_question')
+          await runtime.requestUserAnswers?.([], {});
+        if (key === 'show_files') await runtime.showFiles?.([]);
+        if (key === 'respond_to_file_comment')
+          await runtime.respondToFileComment?.({
+            threadId: 't',
+            body: 'b',
+            resolve: false,
+          });
+        return { text: 'ok' };
+      },
+    );
+    let seenWindow: unknown;
+    jest.mocked(respondToFileCommentInSession).mockImplementation((request) => {
+      seenWindow = request.getWindow?.();
+      return Promise.resolve({ ok: true, text: '' }) as unknown as ReturnType<
+        typeof respondToFileCommentInSession
+      >;
+    });
+
+    const route = fixture('native-sdk-full');
+    const answer1 = await router.callTool(route, {
+      id: 1,
+      params: { name: displayName('ask_user_question'), arguments: {} },
+      uiServer: true,
+    });
+    const ask = port.calls.filter((c) => c.method === 'requestUserAnswers');
+    expect(ask).toHaveLength(1);
+    expect(ask[0]?.request).toMatchObject({
+      sessionKey: route.sessionKey,
+      projectId: 'p',
+      worktreeId: 'w',
+      chatId: 'c',
+      questions: [],
+    });
+    expect(ask[0]?.request).not.toHaveProperty('getWindow');
+    expect(answer1.result).toEqual(toMcpToolResult({ text: 'ok' }));
+
+    const answer2 = await router.callTool(route, {
+      id: 2,
+      params: { name: displayName('show_files'), arguments: {} },
+      uiServer: false,
+    });
+    const show = port.calls.filter((c) => c.method === 'showFiles');
+    expect(show).toHaveLength(1);
+    expect(show[0]?.request).toEqual({
+      files: [],
+      target: { projectId: 'p', worktreeId: 'w' },
+      origin: { projectId: 'p', worktreeId: 'w', chatTabId: 'c' },
+      cwd: '/worktree',
+    });
+    expect(answer2.result).toEqual(toMcpToolResult({ text: 'ok' }));
+
+    const answer3 = await router.callTool(route, {
+      id: 3,
+      params: { name: displayName('respond_to_file_comment'), arguments: {} },
+      uiServer: false,
+    });
+    expect(answer3.result).toEqual(toMcpToolResult({ text: 'ok' }));
+    expect(seenWindow).toBe(sentinelWindow);
+  });
+
+  it('a denied or unexposed tool runs nothing', async () => {
+    const router = new CanopyToolRouter({ interfaceRequests: fakeInterface() });
+    const call = (
+      route: CanopyWorktreeSessionRoute,
+      name: string,
+    ): Promise<Record<string, unknown>> =>
+      router.callTool(route, {
+        id: 9,
+        params: { name, arguments: {} },
+        uiServer: false,
+      });
+
+    const denied = await call(
+      fixture('native-sdk-full', {
+        authorizeToolCall: () => Promise.resolve(false),
+      }),
+      displayName('get_script_output'),
+    );
+    expect(denied.result).toEqual(
+      toMcpToolResult({
+        text: `${displayName('get_script_output')} was denied.`,
+        isError: true,
+      }),
+    );
+
+    expect(
+      await call(fixture('cursor-acp-full'), displayName('query_code_graph')),
+    ).toMatchObject({ error: { code: -32602 } });
+    expect(
+      await call(fixture('worker-none'), displayName('save_memory')),
+    ).toMatchObject({ error: { code: -32602 } });
+    expect(
+      (await call(fixture('native-sdk-bare'), displayName('add_ledger_entry')))
+        .result,
+    ).toEqual(toMcpToolResult(ledgerUnavailableResult('no_ledger_scope')));
+    expect(
+      (await call(fixture('native-sdk-bare'), displayName('query_code_graph')))
+        .result,
+    ).toEqual(
+      toMcpToolResult({ text: CODE_GRAPH_UNAVAILABLE_MESSAGE, isError: true }),
+    );
+    expect(
+      (
+        await call(
+          fixture('delegate-exclusive'),
+          displayName('get_script_output'),
+        )
+      ).result,
+    ).toEqual(
+      toMcpToolResult({
+        text: 'This tool is not available to this delegated task.',
+        isError: true,
+      }),
+    );
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('the session server answers only initialize, tools/list and tools/call', async () => {
+    const service = new McpHttpProxyService();
+    await service.ensureStarted(await freePort());
+    try {
+      const route = fixture('native-sdk-full');
+      await service.registerCanopyWorktreeSessionRoute(route);
+      const post = (
+        url: string,
+        body: unknown,
+        token = route.authToken,
+      ): Promise<Response> =>
+        fetch(url, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(body),
+        });
+      const url = service.getCanopyWorktreeMcpUrl(route.sessionKey);
+
+      const unknown = await post(url, {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'resources/list',
+      });
+      expect(await unknown.json()).toMatchObject({
+        error: { code: -32601, message: 'Method not found' },
+      });
+      expect(
+        (await post(url, { jsonrpc: '2.0', method: 'tools/list' })).status,
+      ).toBe(204);
+      expect(
+        (await post(url, { jsonrpc: '2.0', id: 2, method: 'tools/list' }, 'x'))
+          .status,
+      ).toBe(401);
+      const missing = await post(service.getCanopyWorktreeMcpUrl('k-missing'), {
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/list',
+      });
+      expect(missing.status).toBe(404);
+      expect(await missing.json()).toMatchObject({ error: { code: -32004 } });
+    } finally {
+      await service.shutdown();
+    }
+  }, 60_000);
+
+  it('tool-use ids keep their per-route forms', () => {
+    const router = new CanopyToolRouter({ interfaceRequests: fakeInterface() });
+    const worktree = fixture('native-sdk-full');
+    expect(router.routeToolUseId(worktree, 7, undefined)).toBe('7');
+
+    const advisor = fixture('advisor-claude');
+    expect(
+      router.routeToolUseId(advisor, 7, { 'claudecode/toolUseId': 'toolu_1' }),
+    ).toBe('toolu_1');
+    const first = router.routeToolUseId(advisor, 7, undefined);
+    expect(first).toMatch(/^[0-9a-f-]+:7$/);
+    expect(router.routeToolUseId(advisor, 8, undefined)).toBe(
+      `${first.split(':')[0] ?? ''}:8`,
+    );
+    const other = fixture('advisor-cursor');
+    expect(router.routeToolUseId(other, 7, undefined)).not.toBe(first);
+  });
+});

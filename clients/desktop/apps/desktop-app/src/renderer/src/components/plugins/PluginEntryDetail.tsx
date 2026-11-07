@@ -25,6 +25,7 @@ import { DialogModal } from '../shared';
 import { McpServerLogo } from '../shared/McpServerLogo';
 import {
   MarketplaceDetailPageShell,
+  McpAccountConnectionPicker,
   MarketplaceUnshareAction,
   PluginCatalogDetail,
   useMarketplaceUnshare,
@@ -101,6 +102,11 @@ import type {
 } from '@canopy/desktop-shared/types/skills';
 import { ProviderConnectorDetail } from './ProviderConnectorDetail';
 import { TryItPrimaryCta } from './TryItPrimaryCta';
+import type { AccountMcpDetailSignIn } from '../mcp/useAccountMcpActionRequests';
+import {
+  accountMcpConnectionKey,
+  accountMcpConfigurationKey,
+} from '@/hooks/useAccountMcpActions';
 import { pluginHarnessSupport } from '@/lib/tryItRuntime';
 import {
   buildTryItPrompt,
@@ -184,6 +190,8 @@ export interface PluginEntryDetailProps {
   mcpServers: McpServerIndexEntry[];
   /** Whether the account connection list was read; drives the Add rule. */
   accountConnectionsAvailable?: boolean;
+  /** The page's sign-in, which owns Connect for an account-backed card. */
+  accountSignIn?: AccountMcpDetailSignIn;
   /**
    * Whether the host can edit a shared collection from its detail
    * (`marketplace-shared-collection-edit`, CAN-4263). Off hides Edit.
@@ -544,6 +552,7 @@ export function PluginEntryDetail({
   marketplaces,
   mcpServers,
   accountConnectionsAvailable,
+  accountSignIn,
   sharedCollectionEditAvailable = false,
   curatedMcpServers,
   localCollections,
@@ -590,6 +599,9 @@ export function PluginEntryDetail({
   const [pluginOverride, setPluginOverride] = useState<PluginInfo | null>(null);
   const [pluginAddOpen, setPluginAddOpen] = useState(false);
   const [curatedEditorOpen, setCuratedEditorOpen] = useState(false);
+  const [curatedDetailBusy, setCuratedDetailBusy] = useState(false);
+  const [selectedAccountConnectionId, setSelectedAccountConnectionId] =
+    useState<string | null | undefined>(undefined);
   // Add through a folded provider connector installs the folded plugin as
   // that route starts or confirms; the connection detail owns the install.
   const [foldedPluginInstallRequest, setFoldedPluginInstallRequest] =
@@ -776,6 +788,22 @@ export function PluginEntryDetail({
       ? curatedMcpServers.find((candidate) => candidate.key === key)
       : undefined;
   }, [curatedMcpServers, localServer, ref]);
+  const accountConnections = useMemo(
+    () =>
+      ref.type === 'curated-mcp'
+        ? flattenMcpServerRows(mcpServers).flatMap((row) =>
+            row.scope === 'account' &&
+            row.curatedKey === ref.key &&
+            row.accountConnection
+              ? [row.accountConnection]
+              : [],
+          )
+        : [],
+    [mcpServers, ref],
+  );
+  const selectedAccountConnection = accountConnections.find(
+    (connection) => connection.id === selectedAccountConnectionId,
+  );
 
   // Account rows carry no device file, so only a device-backed row (or a
   // device copy nested under an account row) may be loaded by the local
@@ -1671,6 +1699,7 @@ export function PluginEntryDetail({
   // editor on that one device server. A desktop-only card passes its account
   // connection whatever backs it, only so the detail can disconnect it.
   const accountConnection =
+    selectedAccountConnection ??
     localServer?.accountConnection ??
     (ref.type === 'curated-mcp' &&
     (accountServerId !== null || curatedDesktopOnly)
@@ -1749,11 +1778,31 @@ export function PluginEntryDetail({
       fluid
     >
       <>
+        <McpAccountConnectionPicker
+          connections={accountConnections}
+          value={
+            selectedAccountConnection?.id ??
+            (installedCuratedServerId ? null : (accountConnection?.id ?? null))
+          }
+          onChange={setSelectedAccountConnectionId}
+          deviceAvailable={installedCuratedServerId !== null}
+          disabled={
+            curatedDetailBusy ||
+            accountSignIn?.isPending(
+              accountConnection
+                ? accountMcpConnectionKey(accountConnection)
+                : (installedCuratedServerId ??
+                    (curatedEntry
+                      ? accountMcpConfigurationKey(curatedEntry.key)
+                      : '')),
+            )
+          }
+        />
         <CuratedMcpConnectionDetail
           // Keyed by the entry that was opened (an account row's id carries its
           // configuration), never by the binding behind it: the connection Add
           // creates must not remount the detail and replay its Add (REG-3033).
-          key={entry.id}
+          key={`${entry.id}:${selectedAccountConnection?.id ?? 'primary'}`}
           {...connectionSource}
           statusContent={
             <InstalledEntryStatusSection
@@ -1762,11 +1811,13 @@ export function PluginEntryDetail({
             />
           }
           installedServerId={
-            ref.type === 'local-mcp'
-              ? localServer?.scope === 'account'
-                ? null
-                : ref.serverId
-              : installedCuratedServerId
+            selectedAccountConnection && !curatedDesktopOnly
+              ? null
+              : ref.type === 'local-mcp'
+                ? localServer?.scope === 'account'
+                  ? null
+                  : ref.serverId
+                : installedCuratedServerId
           }
           // Add on an existing account binding that is not connected
           // reconnects it at once; a connected binding never reaches Add. A
@@ -1774,10 +1825,12 @@ export function PluginEntryDetail({
           // always creates (or signs in) its device server.
           autoConnect={
             initialIntent === 'add' &&
+            selectedAccountConnectionId === undefined &&
             foldedConnector === undefined &&
             (curatedDesktopOnly || accountConnection?.status !== 'CONNECTED')
           }
           accountConnectionsAvailable={accountConnectionsAvailable}
+          accountSignIn={accountSignIn}
           accountConnection={accountConnection}
           accountConnectionBehindDevice={accountConnectionBehindDevice}
           foldedPlugin={entry.integration?.plugin}
@@ -1823,6 +1876,7 @@ export function PluginEntryDetail({
           )}
           onServersChanged={onServersChanged}
           onEditorOpenChange={setCuratedEditorOpen}
+          onBusyChange={setCuratedDetailBusy}
           onDeleted={onNavigateBack ?? onClose}
         />
       </>

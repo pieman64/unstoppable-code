@@ -1,4 +1,4 @@
-import { Heading } from '@canopy/ui-shared/components';
+import { Heading, Surface } from '@canopy/ui-shared/components';
 import { getPlanModeHintStore } from '@/lib/planModeHint';
 import { getGitHubStarPromptStore } from '@/lib/githubStarPrompt';
 import { ComposerTipArbiterProvider, Chip } from '@canopy/ui-shared/components';
@@ -1453,7 +1453,7 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
                       <span className="truncate" title={collapsedBranchSummary}>
                         {collapsedBranchSummary}
                       </span>
-                      <ChevronDownMediumIcon className="h-3.5 w-3.5 shrink-0" />
+                      <ChevronDownMediumIcon size="sm" className="shrink-0" />
                     </button>
                   )}
                   {selectionPickersVisible && showNewWorktreeBasePicker && (
@@ -1497,6 +1497,7 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
               />
               <DraftComposerEditor
                 editor={editor}
+                typeToFocus
                 value={editorValue}
                 onChange={handleEditorChange}
                 onKeyDown={handleEditorKeyDown}
@@ -1556,24 +1557,30 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
                   data-testid="home-task-plan-guidance"
                   className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 pb-3"
                 >
-                  <div className="inline-flex shrink-0 items-center gap-1 rounded-md bg-fg-primary/[0.06] py-0.5 pl-2.5 pr-0.5 text-xs font-medium fg-secondary">
-                    <span>Task planning</span>
-                    <Tooltip label="Cancel task planning">
-                      <button
-                        type="button"
-                        data-testid="home-task-plan-cancel"
-                        aria-label="Cancel task planning"
-                        disabled={composerDisabled}
-                        onClick={(): void => {
-                          useHomeComposerStore.getState().setMode('chat');
-                          focusEditor(editor);
-                        }}
-                        className="focus-ring inline-flex h-6 w-6 items-center justify-center rounded-sm fg-secondary transition-colors hover:bg-fg-primary/[0.08] hover:fg-primary disabled:opacity-40"
-                      >
-                        <CloseMediumIcon size={16} aria-hidden="true" />
-                      </button>
-                    </Tooltip>
-                  </div>
+                  <Surface
+                    variant="group"
+                    size="small"
+                    className="shrink-0 inline-block"
+                  >
+                    <div className="inline-flex items-center gap-1 py-0.5 pl-2.5 pr-0.5 text-xs font-medium fg-secondary">
+                      <span>Task planning</span>
+                      <Tooltip label="Cancel task planning">
+                        <button
+                          type="button"
+                          data-testid="home-task-plan-cancel"
+                          aria-label="Cancel task planning"
+                          disabled={composerDisabled}
+                          onClick={(): void => {
+                            useHomeComposerStore.getState().setMode('chat');
+                            focusEditor(editor);
+                          }}
+                          className="focus-ring inline-flex h-6 w-6 items-center justify-center rounded-sm fg-secondary transition-colors hover:bg-fg-primary/[0.08] hover:fg-primary disabled:opacity-40"
+                        >
+                          <CloseMediumIcon size={16} aria-hidden="true" />
+                        </button>
+                      </Tooltip>
+                    </div>
+                  </Surface>
                   <p
                     role="status"
                     className="min-w-0 flex-1 basis-64 text-xs fg-secondary"

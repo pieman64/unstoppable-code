@@ -1,3 +1,4 @@
+import type { InterfaceToolName } from '@canopy/protocol/canopy-core';
 import type {
   AppAdvisorAction,
   AppAdvisorActionResponse,
@@ -8,11 +9,10 @@ import {
   isAgentChatSendError,
   type AgentChatSendContext,
 } from '../agent-messaging/send-orchestration';
-import { requestAppAdvisorRendererTool } from '../ipc/app-advisor';
 import { isRecord } from '../lib/type-guards';
 import { DiscoveryError } from '../project-discovery/errors';
 import { isSplitLocked } from '../services/split-lock-service';
-import { legacyUiRevisionFailure } from './ui-revision-preflight';
+import { presentAppAdvisorAction } from './presentation-tools';
 import type { AppAdvisorToolRuntimeSurfaces } from './runtime';
 
 /** Compatibility projection: create in main, reveal in the UI, then send. */
@@ -23,13 +23,14 @@ export async function dispatchLegacyChatCreation(
   context: {
     destination: AppAdvisorWatcherDestination;
     surfaces: AppAdvisorToolRuntimeSurfaces;
+    /** The calling session's or route's bound interface tools. */
+    boundTools?: readonly InterfaceToolName[];
     requestId: string;
     expectedUiRevision?: number;
     signal?: AbortSignal;
   },
 ): Promise<AppAdvisorActionResponse> {
-  const { destination, surfaces, requestId, expectedUiRevision, signal } =
-    context;
+  const { destination, surfaces, boundTools, requestId, signal } = context;
   const failure = (
     code: NonNullable<AppAdvisorActionResponse['error']>['code'],
     message: string,
@@ -42,16 +43,6 @@ export async function dispatchLegacyChatCreation(
     if (action.type === 'worktree-chat.open_tab' && action.chatId !== undefined)
       return failure('invalid_payload', 'This adapter only creates chat tabs.');
 
-    // The original renderer gate ran before creation. Navigation actions are
-    // revision-agnostic, so checking only the subsequent reveal is too late.
-    const stale = await legacyUiRevisionFailure({
-      surfaces,
-      requestId,
-      preflight: 'creation-preflight',
-      ...(expectedUiRevision !== undefined ? { expectedUiRevision } : {}),
-      ...(signal ? { signal } : {}),
-    });
-    if (stale) return stale;
     if (
       action.type === 'worktree-chat.open_tab' &&
       action.initialMessage?.trim() &&
@@ -96,30 +87,26 @@ export async function dispatchLegacyChatCreation(
         'execution_failed',
         'Chat creation was cancelled after creation. The chat remains available.',
       );
-    const response = await requestAppAdvisorRendererTool(
-      {
-        kind: 'dispatch_action',
-        requestId,
-        action:
-          action.type === 'standalone-chat.create_chat'
-            ? {
-                type: 'standalone-chat.switch_chat',
-                projectId: address.projectId,
-                chatId: address.chatId,
-              }
-            : {
-                type: 'worktree-chat.open_tab',
-                projectId: address.projectId,
-                worktreeId: address.taskId,
-                chatId: address.chatId,
-              },
-        originWorktreeId: destination.worktreeId,
-        originChatTabId: destination.chatId,
-        expectedUiRevision,
-      },
-      surfaces,
-      ...(signal ? [{ signal }] : []),
-    );
+    const response = await presentAppAdvisorAction({
+      action:
+        action.type === 'standalone-chat.create_chat'
+          ? {
+              type: 'standalone-chat.switch_chat',
+              projectId: address.projectId,
+              chatId: address.chatId,
+            }
+          : {
+              type: 'worktree-chat.open_tab',
+              projectId: address.projectId,
+              worktreeId: address.taskId,
+              chatId: address.chatId,
+            },
+      requestId,
+      destination,
+      remoteFallbackSurfaces: surfaces,
+      ...(boundTools ? { boundTools } : {}),
+      ...(signal ? { signal } : {}),
+    });
     if (!response.ok) return { ...response, requestId };
     if (action.type === 'standalone-chat.create_chat') {
       const projection = response.result;

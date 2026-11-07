@@ -10,6 +10,8 @@ import {
   realpath,
   rename,
   rm,
+  rmdir,
+  unlink,
 } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import type {
@@ -19,6 +21,8 @@ import type {
   ArchivedPullRequestCapture,
 } from '@canopy/desktop-shared/types';
 import { killProcessGroupByPid } from '@canopy/desktop-shared/node/lib/process-kill';
+import type { Stats } from 'node:fs';
+import { assertArchiveWorktreeRemoval } from '../lib/archive-worktree-postconditions';
 import { renameArchiveQuarantine } from '../lib/archive-quarantine';
 import { isPathInside } from '../lib/path-safety';
 import { isErrnoException } from '../lib/type-guards';
@@ -743,18 +747,32 @@ export async function removeArchiveWorktree(args: {
     }
   }
   if (isRegistered) {
-    await clearArchiveWorktreeContents(
+    const administration = await clearArchiveWorktreeContents(
       args.worktreePath,
       repositoryIdentity,
       args.signal,
       args,
     );
-    await runArchiveGit({
-      ...args,
-      cwd: args.referenceRepoPath,
-      arguments: ['worktree', 'remove', '--force', args.worktreePath],
-      timeoutMs: getWorktreeDeleteTimeoutMs(args.git.env),
-    });
+    try {
+      await runArchiveGit({
+        ...args,
+        cwd: args.referenceRepoPath,
+        arguments: ['worktree', 'remove', '--force', args.worktreePath],
+        timeoutMs: getWorktreeDeleteTimeoutMs(args.git.env),
+      });
+    } catch (error) {
+      try {
+        if (!administration || !(error instanceof ArchiveGitCommandError))
+          throw error;
+        await reconcileArchiveGitRemoval(args, administration);
+      } catch {
+        if (args.signal.aborted)
+          throw new Error('Archive I/O request cancelled.');
+        // Keep Git's error primary, including when a later filesystem race
+        // leaves partial metadata cleanup. There is no rollback guarantee.
+        throw error;
+      }
+    }
   }
   await removeAbsentWorktreeRegistrations(
     repositoryIdentity,
@@ -763,6 +781,91 @@ export async function removeArchiveWorktree(args: {
       : [args.worktreePath, args.preMoveWorktreePath],
     { signal: args.signal },
   );
+}
+
+interface ArchiveWorktreeAdministration {
+  path: string;
+  identity: Stats;
+}
+
+// CAN-5717: observed after Git's partial removal; the writer is unconfirmed.
+// Only this regular metadata file is disposable under this local policy.
+const DISPOSABLE_ARCHIVE_GIT_METADATA = '.DS_Store';
+
+async function reconcileArchiveGitRemoval(
+  args: Parameters<typeof removeArchiveWorktree>[0],
+  administration: ArchiveWorktreeAdministration,
+): Promise<void> {
+  const assertNotCancelled = (): void => {
+    if (args.signal.aborted) throw new Error('Archive I/O request cancelled.');
+  };
+  assertNotCancelled();
+  await assertArchiveWorktreeRemoval(
+    args.preMoveWorktreePath === undefined
+      ? [args.worktreePath]
+      : [args.worktreePath, args.preMoveWorktreePath],
+    await runArchiveGit({
+      ...args,
+      cwd: args.referenceRepoPath,
+      arguments: ['worktree', 'list', '--porcelain', '-z'],
+    }),
+  );
+  const assertIdentity = async (): Promise<Stats | null> => {
+    assertNotCancelled();
+    const actual = await lstat(administration.path).catch((error: unknown) => {
+      if (isErrnoException(error) && error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (
+      actual &&
+      (!actual.isDirectory() ||
+        actual.isSymbolicLink() ||
+        actual.dev !== administration.identity.dev ||
+        actual.ino !== administration.identity.ino ||
+        actual.birthtimeMs !== administration.identity.birthtimeMs)
+    ) {
+      throw new Error('Archive Git administration identity changed.');
+    }
+    return actual;
+  };
+  if (!(await assertIdentity())) {
+    assertNotCancelled();
+    return;
+  }
+  const validateEntries = async (): Promise<string[]> => {
+    const entries = await readdir(administration.path);
+    for (const entry of entries) {
+      if (
+        entry !== DISPOSABLE_ARCHIVE_GIT_METADATA ||
+        !(await lstat(join(administration.path, entry))).isFile()
+      ) {
+        throw new Error('Archive Git administration contains unexpected data.');
+      }
+    }
+    return entries;
+  };
+  // Validate everything before mutating anything, then recheck immediately
+  // before each unlink/rmdir. Node has no directory-handle-relative unlinkat
+  // or rmdir API: replacement between the last check and mutation remains a
+  // path-based race. Never use recursive removal to widen this policy.
+  const entries = await validateEntries();
+  for (const entry of entries) {
+    await validateEntries();
+    if (!(await assertIdentity()))
+      throw new Error('Archive Git administration disappeared.');
+    const path = join(administration.path, entry);
+    if (!(await lstat(path)).isFile())
+      throw new Error('Archive Git metadata changed.');
+    assertNotCancelled();
+    await unlink(path);
+  }
+  if ((await validateEntries()).length !== 0)
+    throw new Error('Archive Git administration changed.');
+  if (!(await assertIdentity()))
+    throw new Error('Archive Git administration disappeared.');
+  assertNotCancelled();
+  await rmdir(administration.path);
+  assertNotCancelled();
 }
 
 /**
@@ -781,12 +884,12 @@ async function clearArchiveWorktreeContents(
     Parameters<typeof runArchiveGit>[0],
     'git' | 'signal' | 'child'
   >,
-): Promise<void> {
+): Promise<ArchiveWorktreeAdministration | null> {
   const original = await lstat(worktreePath).catch((error: unknown) => {
     if (isErrnoException(error) && error.code === 'ENOENT') return null;
     throw error;
   });
-  if (!original) return;
+  if (!original) return null;
   if (!original.isDirectory() || original.isSymbolicLink()) {
     throw new Error('Archive worktree removal target must be a directory.');
   }
@@ -836,6 +939,17 @@ async function clearArchiveWorktreeContents(
     backPointer !== (await realpath(join(worktreePath, '.git')))
   ) {
     throw new Error('Archive worktree Git pointer identity changed.');
+  }
+  const administrationIdentity = await lstat(gitDirectory);
+  if (
+    !administrationIdentity.isDirectory() ||
+    administrationIdentity.isSymbolicLink() ||
+    dirname(gitDirectory) !==
+      (await realpath(join(commonDirectory, 'worktrees')))
+  ) {
+    throw new Error(
+      'Archive Git administration is outside the repository worktree area.',
+    );
   }
   let pointerEntry: string | undefined;
   for (const entry of await readdir(worktreePath)) {
@@ -901,6 +1015,7 @@ async function clearArchiveWorktreeContents(
   ) {
     throw new Error('Archive worktree contents changed during removal.');
   }
+  return { path: gitDirectory, identity: administrationIdentity };
 }
 
 export async function deleteArchiveBranches(args: {

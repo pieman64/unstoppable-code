@@ -1,6 +1,6 @@
-import type { JSX, SVGProps } from 'react';
-import { TaskIcon as AppCatalogTaskIcon } from './AppIcons';
+import type { JSX } from 'react';
+import { TaskIcon as AppCatalogTaskIcon, type AppIconProps } from './AppIcons';
 
-export function TaskIcon(props: SVGProps<SVGSVGElement>): JSX.Element {
-  return <AppCatalogTaskIcon width="14" height="14" {...props} />;
+export function TaskIcon(props: AppIconProps): JSX.Element {
+  return <AppCatalogTaskIcon size="sm" {...props} />;
 }

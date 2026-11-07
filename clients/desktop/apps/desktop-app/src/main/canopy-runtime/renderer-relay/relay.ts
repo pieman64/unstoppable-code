@@ -229,6 +229,7 @@ class RelaySession {
   constructor(
     readonly surface: RendererRelaySurface,
     readonly caller: CanopyCallerDescriptor,
+    readonly webContentsId: number,
     private readonly detach: () => void,
   ) {}
 
@@ -367,6 +368,7 @@ export function createRendererRelay(
     const session = new RelaySession(
       resolved.surface,
       rendererCaller(resolved),
+      sender.id,
       () => {
         sender.removeListener('destroyed', onGone);
         sender.removeListener('render-process-gone', onGone);
@@ -384,7 +386,11 @@ export function createRendererRelay(
 
   async function connect(session: RelaySession): Promise<CanopyClient> {
     const { signal } = session;
-    const binding = options.bindingProvider({ caller: session.caller, signal });
+    const binding = options.bindingProvider({
+      caller: session.caller,
+      webContentsId: session.webContentsId,
+      signal,
+    });
     // A binding that settles after disconnect is closed on arrival.
     signal.addEventListener(
       'abort',

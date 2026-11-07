@@ -378,7 +378,10 @@ import {
   type ChildStreamWritePreparation,
   type PreparedChildStreamCommit,
 } from './chat-state-contracts';
-import type { ChatQueuePersistenceMutation } from './chat-queue-service';
+import type {
+  ChatQueueEntryGuard,
+  ChatQueuePersistenceMutation,
+} from './chat-queue-service';
 import {
   SHOW_VISUAL_TOOL_KEY,
   type StageVisualDocument,
@@ -2047,7 +2050,7 @@ function commandResult(
   revision: number,
   outcome: ChatCommandResult['outcome'],
   details: Partial<
-    Pick<ChatCommandResult, 'reason' | 'entityId' | 'messageId'>
+    Pick<ChatCommandResult, 'reason' | 'entityId' | 'messageId' | 'archivedAt'>
   > = {},
 ): ChatCommandResult {
   return {
@@ -3194,6 +3197,15 @@ function defaultIdleScopeUnloadOption(): { idleScopeUnloadMs?: number } {
   return process.env.NODE_ENV === 'test' ? { idleScopeUnloadMs: 0 } : {};
 }
 
+type QueueHydrationOptions = { ordinaryOnly?: true; creditRefused?: true };
+
+function withQueuedRevision(
+  options: [] | [QueueHydrationOptions],
+  revision: number | undefined,
+): [] | [QueueHydrationOptions & { revision?: number }] {
+  return revision === undefined ? options : [{ ...options[0], revision }];
+}
+
 export class ChatStateService implements ChatStateCommandPort {
   public readonly inputDelivery: ChatInputDeliveryCoordinator;
   private readonly repository: ChatStateRepositoryPort;
@@ -3249,6 +3261,7 @@ export class ChatStateService implements ChatStateCommandPort {
     delayMs: number,
   ) => ReturnType<typeof setTimeout>;
   private readonly reconcileHostRuntime: boolean;
+  private readonly scopeRuntimeRecoveries = new Map<string, Promise<void>>();
   /**
    * Chats whose initial naming is settled: ineligible and not `pending`
    * (closed, a saved custom title or description, a file or read-only tab,
@@ -3431,9 +3444,9 @@ export class ChatStateService implements ChatStateCommandPort {
         // Lazy by design: the observability service pulls in the codex runtime
         // graph, which reaches back into the chat state port; a static import
         // here would reintroduce an initialization cycle.
-        void import('../observability')
-          .then(({ getObservabilityService }) => {
-            getObservabilityService().recordSessionDiagnostic(record);
+        void import('../observability/ingest')
+          .then(({ getExecutionObservabilityIngest }) => {
+            getExecutionObservabilityIngest().recordSessionDiagnostic(record);
           })
           .catch(() => {
             // A diagnostic that cannot be recorded must never change the
@@ -3780,9 +3793,9 @@ export class ChatStateService implements ChatStateCommandPort {
             // Observability composes chat-state during main-process startup;
             // defer the reverse edge to avoid that initialization cycle. The
             // packaged Electron main build exercises this local import path.
-            const { getObservabilityService } =
-              await import('../observability');
-            getObservabilityService().observeSteeringInput({
+            const { getExecutionObservabilityIngest } =
+              await import('../observability/ingest');
+            getExecutionObservabilityIngest().observeSteeringInput({
               ...target,
               provider: event.provider,
               userMessageId: row.id,
@@ -4356,21 +4369,11 @@ export class ChatStateService implements ChatStateCommandPort {
         )
       : undefined;
     try {
+      if (this.reconcileHostRuntime) await this.recoverScopeRuntime(request);
       let state = await this.repository.getState(request);
       await this.requestPersistedBackgroundSnapshots(request, state);
-      if (this.reconcileHostRuntime) {
-        state = await this.reconcileRuntimeHosts(request, state);
-        for (const tab of state.tabsFile.tabs) {
-          if (isInputLedger(tab.inputDelivery))
-            await this.inputDelivery.recover(
-              { ...request, chatId: tab.id },
-              tab.inputDelivery,
-            );
-        }
-        state = await this.repository.getState(request);
-        await this.requestPersistedBackgroundSnapshots(request, state);
+      if (this.reconcileHostRuntime)
         this.scheduleRecoveredHistoryResolution(request, state.tabsFile.tabs);
-      }
       if (state.tabsFile.activeTabId)
         state = await this.repository.getState(request, {
           chatIds: [state.tabsFile.activeTabId],
@@ -4482,6 +4485,37 @@ export class ChatStateService implements ChatStateCommandPort {
     }
   }
 
+  /**
+   * Share one in-flight recovery per scope. Each pass holds a full snapshot
+   * while it waits in the scope's serial queue, so overlapping readers must
+   * not each run one. Callers read after this settles, so none gets a snapshot
+   * from before it arrived; a failed pass rejects its callers and the next
+   * read retries.
+   */
+  private recoverScopeRuntime(scope: ChatScopeKey): Promise<void> {
+    const key = chatScopeLifecycleKey(scope);
+    const running = this.scopeRuntimeRecoveries.get(key);
+    if (running) return running;
+    const recovery = this.reconcileScopeRuntime(scope).finally(() => {
+      this.scopeRuntimeRecoveries.delete(key);
+    });
+    this.scopeRuntimeRecoveries.set(key, recovery);
+    return recovery;
+  }
+
+  private async reconcileScopeRuntime(scope: ChatScopeKey): Promise<void> {
+    const read = await this.repository.getState(scope);
+    await this.requestPersistedBackgroundSnapshots(scope, read);
+    const state = await this.reconcileRuntimeHosts(scope, read);
+    for (const tab of state.tabsFile.tabs) {
+      if (isInputLedger(tab.inputDelivery))
+        await this.inputDelivery.recover(
+          { ...scope, chatId: tab.id },
+          tab.inputDelivery,
+        );
+    }
+  }
+
   private async requestPersistedBackgroundSnapshots(
     scope: ChatScopeKey,
     state: CanonicalChatState,
@@ -4547,22 +4581,11 @@ export class ChatStateService implements ChatStateCommandPort {
         )
       : undefined;
     try {
-      let state = await this.repository.getState(scope);
+      if (this.reconcileHostRuntime) await this.recoverScopeRuntime(scope);
+      const state = await this.repository.getState(scope);
       await this.requestPersistedBackgroundSnapshots(scope, state);
-      if (this.reconcileHostRuntime) {
-        state = await this.reconcileRuntimeHosts(scope, state);
-        for (const tab of state.tabsFile.tabs) {
-          if (isInputLedger(tab.inputDelivery)) {
-            await this.inputDelivery.recover(
-              { ...scope, chatId: tab.id },
-              tab.inputDelivery,
-            );
-          }
-        }
-        state = await this.repository.getState(scope);
-        await this.requestPersistedBackgroundSnapshots(scope, state);
+      if (this.reconcileHostRuntime)
         this.scheduleRecoveredHistoryResolution(scope, state.tabsFile.tabs);
-      }
       return {
         tabs: state.tabsFile.tabs,
         runtimeByChatId: state.runtimeByChatId,
@@ -5594,6 +5617,9 @@ export class ChatStateService implements ChatStateCommandPort {
             {
               atHead: true,
               ...hydrationOptions[0],
+              ...(message.revision !== undefined
+                ? { revision: message.revision }
+                : {}),
             },
           );
           hydratedTargets.set(tab.id, { ...scope, chatId: tab.id });
@@ -5607,7 +5633,7 @@ export class ChatStateService implements ChatStateCommandPort {
           message.enqueuedAtMs,
           message.authenticationAttemptId,
           message.requiredAccountProxyConnectionId,
-          ...hydrationOptions,
+          ...withQueuedRevision(hydrationOptions, message.revision),
         );
         hydratedTargets.set(tab.id, { ...scope, chatId: tab.id });
       }
@@ -5717,7 +5743,7 @@ export class ChatStateService implements ChatStateCommandPort {
           message.enqueuedAtMs,
           message.authenticationAttemptId,
           message.requiredAccountProxyConnectionId,
-          ...hydrationOptions,
+          ...withQueuedRevision(hydrationOptions, message.revision),
         );
         hydratedTargets.set(tab.id, { ...scope, chatId: tab.id });
       }
@@ -6264,6 +6290,7 @@ export class ChatStateService implements ChatStateCommandPort {
         ...(receipt.reason ? { reason: receipt.reason } : {}),
         ...(receipt.entityId ? { entityId: receipt.entityId } : {}),
         ...(receipt.messageId ? { messageId: receipt.messageId } : {}),
+        ...(receipt.archivedAt ? { archivedAt: receipt.archivedAt } : {}),
       });
     }
     const revision = await this.repository.getRevision(scope);
@@ -6359,6 +6386,7 @@ export class ChatStateService implements ChatStateCommandPort {
       case 'chat.cancel_queued_message':
       case 'chat.steer_queued_message':
       case 'chat.force_queued_message':
+      case 'chat.set_queued_message_edit_lock':
         return this.queueCommand(scope, envelope);
       case 'chat.input_delivery_action':
         return this.inputDelivery.action(envelope);
@@ -8406,8 +8434,9 @@ export class ChatStateService implements ChatStateCommandPort {
   public async cancelRetainedTerminalAgentInput(
     target: ChatScopeKey & { chatId: string },
     entryId: string,
-  ): Promise<'applied' | 'not_found'> {
-    let outcome: 'applied' | 'not_found' = 'not_found';
+    guard?: ChatQueueEntryGuard,
+  ): Promise<'applied' | 'not_found' | 'conflict'> {
+    let outcome: 'applied' | 'not_found' | 'conflict' = 'not_found';
     let endedTurn = false;
     const commit = await this.repository.transactWith(
       target,
@@ -8457,6 +8486,11 @@ export class ChatStateService implements ChatStateCommandPort {
           row.state === 'picked-up'
         )
           return [];
+        // Retained inputs left the queue, so no entry revision can match.
+        if (guard?.entryRevision !== undefined) {
+          outcome = 'conflict';
+          return [];
+        }
         const now = this.now();
         outcome = 'applied';
         const mutations: ChatCoreMutation[] = [
@@ -8672,7 +8706,8 @@ export class ChatStateService implements ChatStateCommandPort {
   /** Canonical edit for a trusted terminal input still waiting in a renderer queue. */
   public async editRetainedTerminalAgentInput(
     request: ChatQueueEditRequest,
-  ): Promise<'applied' | 'not_found'> {
+    guard?: ChatQueueEntryGuard,
+  ): Promise<'applied' | 'not_found' | 'conflict'> {
     assertUntrustedChatInput(request);
     validateId(request.projectId, 'projectId');
     validateId(request.worktreeId, 'worktreeId');
@@ -8680,7 +8715,7 @@ export class ChatStateService implements ChatStateCommandPort {
     validateId(request.entryId, 'entryId');
     if (typeof request.text !== 'string')
       throw new Error('Queued message text must be a string.');
-    let outcome: 'applied' | 'not_found' = 'not_found';
+    let outcome: 'applied' | 'not_found' | 'conflict' = 'not_found';
     await this.repository.transactWith(
       request,
       (current) => {
@@ -8733,6 +8768,10 @@ export class ChatStateService implements ChatStateCommandPort {
           throw new Error(
             'The retained terminal agent input is no longer editable.',
           );
+        }
+        if (guard?.entryRevision !== undefined) {
+          outcome = 'conflict';
+          return [];
         }
         outcome = 'applied';
         const editedPayload: ChatSendMessageRequest = {
@@ -13813,7 +13852,8 @@ export class ChatStateService implements ChatStateCommandPort {
   ): Promise<ChatCommandResult> {
     // See getState(): queue-service is loaded lazily to break its chat-state
     // port initialization cycle, not as a performance deferral.
-    const { getChatQueueService } = await import('./chat-queue-service');
+    const { getChatQueueService, QUEUE_ENTRY_REVISION_CONFLICT_REASON } =
+      await import('./chat-queue-service');
     const queue = getChatQueueService();
     const command = envelope.command;
     if (
@@ -13821,7 +13861,8 @@ export class ChatStateService implements ChatStateCommandPort {
       command.type !== 'chat.move_queued_message' &&
       command.type !== 'chat.cancel_queued_message' &&
       command.type !== 'chat.steer_queued_message' &&
-      command.type !== 'chat.force_queued_message'
+      command.type !== 'chat.force_queued_message' &&
+      command.type !== 'chat.set_queued_message_edit_lock'
     ) {
       return commandResult(
         envelope,
@@ -13846,7 +13887,12 @@ export class ChatStateService implements ChatStateCommandPort {
       scope,
       expectedRevisionForCommand(envelope),
     );
-    let queueResult: 'applied' | 'not_found' | 'busy';
+    const guard =
+      command.queuedMessageRevision === undefined
+        ? undefined
+        : { entryRevision: command.queuedMessageRevision };
+    const guardArgs: [] | [ChatQueueEntryGuard] = guard ? [guard] : [];
+    let queueResult: 'applied' | 'not_found' | 'busy' | 'conflict';
     if (command.type === 'chat.edit_queued_message') {
       queueResult = await queue.edit(
         {
@@ -13867,6 +13913,7 @@ export class ChatStateService implements ChatStateCommandPort {
         },
         durableCommandResult,
         envelope.origin === 'portal' ? 'preserve' : 'replace',
+        guard,
       );
     } else if (command.type === 'chat.move_queued_message') {
       queueResult = await queue.move(
@@ -13874,26 +13921,60 @@ export class ChatStateService implements ChatStateCommandPort {
         command.queuedMessageId,
         command.beforeQueuedMessageId,
         durableCommandResult,
+        ...guardArgs,
       );
     } else if (command.type === 'chat.cancel_queued_message') {
       queueResult = await queue.cancel(
         { ...scope, chatId: command.chatId },
         command.queuedMessageId,
         durableCommandResult,
+        ...guardArgs,
       );
     } else if (command.type === 'chat.steer_queued_message') {
       queueResult = await queue.steer(
         { ...scope, chatId: command.chatId },
         command.queuedMessageId,
         durableCommandResult,
+        ...guardArgs,
       );
+    } else if (command.type === 'chat.set_queued_message_edit_lock') {
+      // A lease, not a queue change: no receipt is written (CAN-4112 D7).
+      try {
+        queueResult = await queue.setEditLock(
+          { ...scope, chatId: command.chatId },
+          command.queuedMessageId,
+          command.locked,
+          command.acquisitionId,
+          guard,
+        );
+      } catch (error) {
+        return commandResult(
+          envelope,
+          await this.repository.getRevision(scope),
+          'rejected',
+          {
+            reason:
+              error instanceof Error && error.message
+                ? error.message
+                : 'This message is no longer available to edit.',
+          },
+        );
+      }
     } else {
       queueResult = await queue.force(
         { ...scope, chatId: command.chatId },
         command.queuedMessageId,
         durableCommandResult,
+        ...guardArgs,
       );
     }
+    if (queueResult === 'conflict')
+      return commandResult(
+        envelope,
+        await this.repository.getRevision(scope),
+        'conflict',
+        { reason: QUEUE_ENTRY_REVISION_CONFLICT_REASON },
+      );
     if (queueResult !== 'applied') {
       return commandResult(
         envelope,
@@ -14144,6 +14225,11 @@ export class ChatStateService implements ChatStateCommandPort {
     let result: ChatCommandResult;
     try {
       const chatCloseBlockReason = await this.getChatCloseBlockReasonChecker();
+      const archivedAt = mode === 'archive' ? this.now() : undefined;
+      const archivedAtIso =
+        archivedAt === undefined
+          ? undefined
+          : new Date(archivedAt).toISOString();
       const commit = await this.repository.transactWith(
         scope,
         (state) => {
@@ -14202,8 +14288,7 @@ export class ChatStateService implements ChatStateCommandPort {
           const mutations: ChatCoreMutation[] = [
             { type: 'tab.removed', tabId },
           ];
-          if (mode === 'archive') {
-            const archivedAt = this.now();
+          if (archivedAt !== undefined && archivedAtIso !== undefined) {
             const messages = settlePersistedInterruptedMessages(
               tab.messages,
               archivedAt,
@@ -14215,7 +14300,7 @@ export class ChatStateService implements ChatStateCommandPort {
               type: 'archive.upserted',
               entry: {
                 tab: finalizedTab,
-                archivedAt: new Date(archivedAt).toISOString(),
+                archivedAt: archivedAtIso,
                 turnFence: archiveTurnFence(
                   finalizedTab,
                   this.turnHandoff.getState({ ...scope, chatId: tabId }) ??
@@ -14290,6 +14375,7 @@ export class ChatStateService implements ChatStateCommandPort {
               commandId: envelope.commandId,
               outcome: 'applied',
               entityId: tabId,
+              ...(archivedAtIso ? { archivedAt: archivedAtIso } : {}),
             },
             ...expectedRevisionOption(envelope),
           },
@@ -14299,6 +14385,9 @@ export class ChatStateService implements ChatStateCommandPort {
       result = commandResult(envelope, commit.revision, outcome, {
         ...(reason ? { reason } : {}),
         ...(outcome === 'applied' ? { entityId: tabId } : {}),
+        ...(outcome === 'applied' && archivedAtIso
+          ? { archivedAt: archivedAtIso }
+          : {}),
       });
     } catch (error) {
       const revision = await this.repository.getRevision(scope);
@@ -14364,12 +14453,17 @@ export class ChatStateService implements ChatStateCommandPort {
     let result: ChatCommandResult;
     try {
       const chatCloseBlockReason = await this.getChatCloseBlockReasonChecker();
+      const archivedAt = this.now();
+      const archivedAtIso = command.targets.some(
+        (target) => target.mode === 'archive',
+      )
+        ? new Date(archivedAt).toISOString()
+        : undefined;
       const commit = await this.repository.transactWith(
         scope,
         (state) => {
           const targetIds = new Set<string>();
           const mutations: ChatCoreMutation[] = [];
-          const archivedAt = this.now();
           cleanupIds.length = 0;
 
           for (const target of command.targets) {
@@ -14533,6 +14627,7 @@ export class ChatStateService implements ChatStateCommandPort {
               ...(command.targets[0]?.tabId
                 ? { entityId: command.targets[0].tabId }
                 : {}),
+              ...(archivedAtIso ? { archivedAt: archivedAtIso } : {}),
             },
             ...expectedRevisionOption(envelope),
           },
@@ -14542,6 +14637,9 @@ export class ChatStateService implements ChatStateCommandPort {
       result = commandResult(envelope, commit.revision, outcome, {
         ...(reason ? { reason } : {}),
         ...(resultEntityId ? { entityId: resultEntityId } : {}),
+        ...(outcome === 'applied' && archivedAtIso
+          ? { archivedAt: archivedAtIso }
+          : {}),
       });
     } catch (error) {
       const revision = await this.repository.getRevision(scope);
@@ -15506,18 +15604,18 @@ export function getChatStateService(): ChatStateService {
     replaceChatStateService(service);
     // Lazy for the same initialization cycle as `recordDiagnostic` above.
     installChatTranscriptRewriteDiagnosticSink((record): void => {
-      void import('../observability')
-        .then(({ getObservabilityService }) => {
-          getObservabilityService().recordAppDiagnostic(record);
+      void import('../observability/ingest')
+        .then(({ getExecutionObservabilityIngest }) => {
+          getExecutionObservabilityIngest().recordAppDiagnostic(record);
         })
         .catch(() => {
           // A rewrite diagnostic never changes a committed transaction.
         });
     });
     installChatTranscriptRewriteRateDiagnosticSink((record): void => {
-      void import('../observability')
-        .then(({ getObservabilityService }) => {
-          getObservabilityService().recordAppDiagnostic(record);
+      void import('../observability/ingest')
+        .then(({ getExecutionObservabilityIngest }) => {
+          getExecutionObservabilityIngest().recordAppDiagnostic(record);
         })
         .catch(() => {
           // A rewrite diagnostic never changes a committed transaction.

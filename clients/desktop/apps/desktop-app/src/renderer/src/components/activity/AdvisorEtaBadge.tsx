@@ -54,7 +54,7 @@ export function AdvisorEtaBadge({
         aria-label="Workflow Advisor ETA"
         className={interactive ? `${className} focus-ring` : className}
       >
-        <AgentAssistantIcon className="h-3 w-3" />
+        <AgentAssistantIcon size="sm" />
         <span>{etaText}</span>
         {stale ? <span aria-hidden="true">!</span> : null}
       </span>

@@ -50,6 +50,18 @@ const HOOK_ERROR_PREFIX = /^\s*PreToolUse:[\w.-]+ hook error:[ \t]*/;
 
 const USER_DENIED_REASON_PREFIX = `${USER_DENIED_MESSAGE.slice(0, -1)}: `;
 
+/**
+ * Claude Code's own result for a call the person denied and stopped: the CLI
+ * replaces the denial message with it (cloud "Deny and stop", REG-3132).
+ */
+const CLAUDE_USER_REJECTED_MESSAGE = 'User rejected tool use';
+
+/**
+ * Claude Code's result prefix for a denied call: a cloud harness denial reads
+ * `Error: The user denied this tool call: …` (REG-3132).
+ */
+const CLAUDE_ERROR_PREFIX = 'Error: ';
+
 const SAVED_RULE_SCOPES: readonly SavedRuleDenialScope[] = [
   'session',
   'project',
@@ -85,13 +97,20 @@ export function stripHookErrorPrefix(output: string): string {
 export function classifyToolDenial(output: string): ToolDenial | null {
   const displayMessage = stripHookErrorPrefix(output).trimStart();
   const message = displayMessage.trimEnd();
-  if (message === USER_DENIED_MESSAGE) {
-    return { attribution: 'user', message };
+  // Only the person's denial sentence may carry the CLI's prefix.
+  const userMessage = displayMessage.startsWith(CLAUDE_ERROR_PREFIX)
+    ? displayMessage.slice(CLAUDE_ERROR_PREFIX.length)
+    : displayMessage;
+  if (
+    userMessage.trimEnd() === USER_DENIED_MESSAGE ||
+    message === CLAUDE_USER_REJECTED_MESSAGE
+  ) {
+    return { attribution: 'user', message: userMessage.trimEnd() };
   }
-  if (displayMessage.startsWith(USER_DENIED_REASON_PREFIX)) {
-    const userReason = displayMessage.slice(USER_DENIED_REASON_PREFIX.length);
+  if (userMessage.startsWith(USER_DENIED_REASON_PREFIX)) {
+    const userReason = userMessage.slice(USER_DENIED_REASON_PREFIX.length);
     if (userReason.trim() === '') return null;
-    return { attribution: 'user', message: displayMessage, userReason };
+    return { attribution: 'user', message: userMessage, userReason };
   }
   if (POLICY_MESSAGES.has(message)) {
     return { attribution: 'policy', message };
@@ -115,6 +134,11 @@ export function classifyToolDenial(output: string): ToolDenial | null {
     return { attribution: 'saved-rule', message, savedRuleScope };
   }
   return null;
+}
+
+/** Whether an error result's text is a known denial; see {@link classifyToolDenial}. */
+export function isToolDenial(output: string): boolean {
+  return classifyToolDenial(output) !== null;
 }
 
 /** The heading that names who stopped the call ("Blocked by safety rule"). */

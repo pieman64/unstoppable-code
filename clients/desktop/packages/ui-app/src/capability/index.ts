@@ -1,4 +1,5 @@
 export * from './accountMcpRows';
+export * from './McpAccountConnectionPicker';
 export * from './ResourceContext';
 export * from './curatedMcpAdd';
 export * from './mcpConnectionCopy';
@@ -9,6 +10,7 @@ export * from './CapabilityGate';
 export * from './providerConnectorRows';
 export * from './unifiedPluginEntries';
 export * from './marketplaceBrowse';
+export * from './mcpSharedPluginEntryIds';
 export * from './MarketplaceDetailPageShell';
 export * from './PluginCatalogDetail';
 export * from './PluginDetailHost';

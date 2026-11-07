@@ -93,6 +93,8 @@ export interface CustomizeTabModelInput {
   readonly suggestedNames?: readonly string[];
   readonly agentsAvailable?: boolean;
   readonly projectTemplatesAvailable?: boolean;
+  /** Plugin shares eligible for Shared by me on the MCP servers tab. */
+  readonly mcpSharedEntryIds?: ReadonlySet<string>;
 }
 
 export interface CustomizeTabModel {
@@ -429,13 +431,15 @@ export function buildCustomizeTabModel(
       (entry.kind !== 'blueprint' || input.projectTemplatesAvailable === true),
   );
   // Ranked search determines matching identities; section order remains stable.
-  const matches = searchActive
-    ? new Set(
-        marketplaceResultEntries(searchUnifiedEntries(tabEntries, query, null))
-          .map((entry) => entry.id)
-          .concat(input.searchMatchedEntryIds ?? []),
-      )
-    : null;
+  const matchIds = (rows: UnifiedPluginEntry[]): Set<string> | null =>
+    searchActive
+      ? new Set(
+          marketplaceResultEntries(searchUnifiedEntries(rows, query, null))
+            .map((entry) => entry.id)
+            .concat(input.searchMatchedEntryIds ?? []),
+        )
+      : null;
+  const matches = matchIds(tabEntries);
   const entries = tabEntries.filter(
     (entry) => matches === null || matches.has(entry.id),
   );
@@ -546,19 +550,44 @@ export function buildCustomizeTabModel(
       },
     );
   }
-  // A standalone MCP server has no share flow, so none is ever shared by me.
-  const owned =
-    input.ownershipAvailable && input.tab !== 'app'
-      ? entries.filter(
+  const ownedByViewer = (entry: UnifiedPluginEntry): boolean =>
+    entry.origin === 'shared' &&
+    entry.isShared !== false &&
+    entry.ownedByViewer === true;
+  // A standalone MCP server has no share flow, so the MCP tab lists only the
+  // plugin shares its host joined to a listed card. They stay out of the tab's
+  // entries, so they never reach Browse or Installed; the chip names the plugin.
+  const mcpOwned = (): UnifiedPluginEntry[] => {
+    const eligible = candidates.filter(
+      (entry) =>
+        entry.kind === 'plugin' &&
+        ownedByViewer(entry) &&
+        input.mcpSharedEntryIds?.has(entry.id) === true,
+    );
+    const shareMatches = matchIds(eligible);
+    return eligible.filter(
+      (entry) =>
+        (shareMatches === null || shareMatches.has(entry.id)) &&
+        matchesStatus(entry),
+    );
+  };
+  const owned = !input.ownershipAvailable
+    ? []
+    : input.tab === 'app'
+      ? mcpOwned()
+      : entries.filter(
           (entry) =>
-            entry.origin === 'shared' &&
-            entry.isShared !== false &&
-            entry.ownedByViewer === true &&
+            ownedByViewer(entry) &&
             entry.kind !== 'app' &&
             matchesStatus(entry),
-        )
-      : [];
-  if (owned.length) section('shared-by-me', 'Shared by me', owned);
+        );
+  if (owned.length)
+    section(
+      'shared-by-me',
+      'Shared by me',
+      owned,
+      input.tab === 'app' ? { showEntryTypes: true } : {},
+    );
   // Browse is what is not installed (CAN-5272): a status filter only applies
   // to installs, so it hides Browse. Collection shares retain their Installed
   // label in Shared with you, as required by the collections tab.

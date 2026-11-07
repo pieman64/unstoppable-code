@@ -1224,6 +1224,7 @@ export function ChatPanel({
               ) : (
                 <ChatComposer
                   key={chatId}
+                  typeToFocus
                   onSend={handleSend}
                   onStop={onStop}
                   isStreaming={status === 'streaming'}

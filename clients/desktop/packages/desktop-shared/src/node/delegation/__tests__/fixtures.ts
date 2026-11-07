@@ -7,6 +7,7 @@ import type {
   DelegationParentContext,
   DelegationToolSurfaceAdapter,
   DelegationDeliveryReceipt,
+  DelegationStopReceipt,
 } from '../types';
 import type { ChatInputAdmission } from '@canopy/protocol/portal/input-delivery';
 
@@ -70,7 +71,7 @@ export class FakeRunner implements AgentRunnerAdapter {
     return Promise.resolve({ runId: request.delegationId });
   }
 
-  stop(handle: NativeRunHandle): Promise<{ stopped: true }> {
+  stop(handle: NativeRunHandle): Promise<DelegationStopReceipt> {
     this.stopped.push(handle.runId);
     return Promise.resolve({ stopped: true });
   }

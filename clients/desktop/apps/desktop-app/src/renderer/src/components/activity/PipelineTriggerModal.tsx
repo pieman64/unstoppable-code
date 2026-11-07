@@ -1,5 +1,5 @@
 import { pipelineSupportsExecutionScope } from '@/lib/pipelineExecutionScope';
-import { ErrorBanner, ErrorState } from '@canopy/ui-shared/components';
+import { ErrorBanner, ErrorState, Surface } from '@canopy/ui-shared/components';
 import {
   type JSX,
   type ReactNode,
@@ -294,10 +294,6 @@ function arePreferencesEqual(a: unknown, b: unknown): boolean {
   return stableStringify(a) === stableStringify(b);
 }
 
-function BackArrowIcon(): JSX.Element {
-  return <AppCatalogChevronLeftMediumIcon width="14" height="14" />;
-}
-
 interface SharedPipelineSelectorProps {
   state: ReturnType<typeof useSharedPipelineList>;
   /**
@@ -425,7 +421,7 @@ function PipelineListIcon({ icon }: { icon?: string | null }): JSX.Element {
     return <span className="shrink-0 text-m">{icon}</span>;
   }
 
-  return <TriggerIcon className="h-4 w-4 shrink-0 fg-secondary" />;
+  return <TriggerIcon size="sm" className="shrink-0 fg-secondary" />;
 }
 
 function InputField({
@@ -2138,26 +2134,28 @@ export function PipelineTriggerModal({
               disabled={isRunning}
               className="mb-4"
             >
-              <BackArrowIcon />
+              <AppCatalogChevronLeftMediumIcon size="sm" />
               Back to workflow list
             </Button>
 
-            <div className="mb-4 flex items-center gap-3 rounded-lg bg-fg-primary/[0.03] px-3 py-2.5">
-              <PipelineListIcon icon={selectedPipeline.info.icon} />
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-s font-medium fg-primary">
-                  {selectedPipeline.info.name}
-                </div>
-                {selectedPipeline.info.description && (
-                  <div
-                    className="truncate text-xs fg-secondary"
-                    title={selectedPipeline.info.description}
-                  >
-                    {selectedPipeline.info.description}
+            <Surface variant="group" className="mb-4">
+              <div className="flex items-center gap-3 px-3 py-2.5">
+                <PipelineListIcon icon={selectedPipeline.info.icon} />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-s font-medium fg-primary">
+                    {selectedPipeline.info.name}
                   </div>
-                )}
+                  {selectedPipeline.info.description && (
+                    <div
+                      className="truncate text-xs fg-secondary"
+                      title={selectedPipeline.info.description}
+                    >
+                      {selectedPipeline.info.description}
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
+            </Surface>
 
             {runContext?.fields ? (
               <div className="mb-4">{runContext.fields}</div>
@@ -2355,7 +2353,7 @@ export function PipelineTriggerModal({
                         : 'bg-popover fg-secondary hover:bg-fg-primary/[0.06] hover:fg-primary'
                     }`}
                   >
-                    <WatcherEyeIcon width={15} height={15} aria-hidden="true" />
+                    <WatcherEyeIcon size="sm" aria-hidden="true" />
                   </button>
                 </ActionTooltip>
                 {watcherEnabled && (

@@ -1,4 +1,5 @@
 import { useCallback, type JSX, type MouseEvent } from 'react';
+import type { IconSize } from '../icons/AppIcons';
 import { CheckIcon } from '../icons/CheckIcon';
 import { CopyIcon } from '../icons/CopyIcon';
 import { Button, type ButtonSize, type ButtonVariant } from './Button';
@@ -8,12 +9,12 @@ import { CopyStatusRegion, useAnnouncedCopy } from './copy-feedback';
 export { copyTextToClipboard } from './copy-to-clipboard';
 
 /** Glyph size per button size, matching the icon-only buttons elsewhere. */
-const GLYPH_PX: Record<ButtonSize, number> = {
-  sm: 14,
-  md: 16,
-  lg: 18,
-  compact: 14,
-  field: 14,
+const GLYPH_SIZE: Record<ButtonSize, IconSize> = {
+  sm: 'sm',
+  md: 'sm',
+  lg: 'xl',
+  compact: 'sm',
+  field: 'sm',
 };
 
 export interface CopyButtonProps {
@@ -85,11 +86,11 @@ function CopyButtonControl({
     [copy, value],
   );
 
-  const glyphPx = GLYPH_PX[size];
+  const glyphSize = GLYPH_SIZE[size];
   const glyph = copied ? (
-    <CheckIcon width={glyphPx} height={glyphPx} aria-hidden="true" />
+    <CheckIcon size={glyphSize} aria-hidden="true" />
   ) : (
-    <CopyIcon width={glyphPx} height={glyphPx} />
+    <CopyIcon size={glyphSize} />
   );
   const name = copied ? copiedLabel : ariaLabel;
 

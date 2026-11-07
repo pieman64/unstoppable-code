@@ -158,9 +158,9 @@ function PanelSectionShell({
         className="focus-ring flex w-full shrink-0 items-center gap-1.5 px-3 py-2 text-xs font-medium fg-secondary transition-colors hover:fg-primary"
       >
         {collapsed ? (
-          <ChevronRightIcon width={12} height={12} aria-hidden="true" />
+          <ChevronRightIcon size="sm" aria-hidden="true" />
         ) : (
-          <ChevronDownIcon width={12} height={12} aria-hidden="true" />
+          <ChevronDownIcon size="sm" aria-hidden="true" />
         )}
         {icon}
         <span>{title}</span>
@@ -820,7 +820,7 @@ export const AutomationsPanel = memo(function AutomationsPanel({
               pressed={worktreeOnly}
               label={worktreeToggleLabel}
               tooltip={worktreeToggleLabel}
-              icon={<BranchIcon width={14} height={14} aria-hidden="true" />}
+              icon={<BranchIcon size="sm" aria-hidden="true" />}
               onClick={(): void => setWorktreeOnly((prev) => !prev)}
               testId="automations-panel-worktree-toggle"
             />
@@ -835,7 +835,7 @@ export const AutomationsPanel = memo(function AutomationsPanel({
                 onClick={openCreate}
                 data-testid="automations-panel-add"
               >
-                <PlusIcon width={14} height={14} aria-hidden="true" />
+                <PlusIcon size="sm" aria-hidden="true" />
               </Button>
             </Tooltip>
           )}
@@ -873,9 +873,7 @@ export const AutomationsPanel = memo(function AutomationsPanel({
               <PanelSectionShell
                 id="upcoming"
                 title="Schedule"
-                icon={
-                  <ScheduleIcon width={14} height={14} aria-hidden="true" />
-                }
+                icon={<ScheduleIcon size="sm" aria-hidden="true" />}
                 count={upcomingEntries.length}
                 collapsible={collapsible}
                 collapsed={collapsedSections.upcoming}
@@ -892,9 +890,7 @@ export const AutomationsPanel = memo(function AutomationsPanel({
               <PanelSectionShell
                 id="overview"
                 title="Library"
-                icon={
-                  <BulletListIcon width={14} height={14} aria-hidden="true" />
-                }
+                icon={<BulletListIcon size="sm" aria-hidden="true" />}
                 count={overviewRows.length}
                 collapsible={collapsible}
                 collapsed={collapsedSections.overview}
@@ -916,9 +912,7 @@ export const AutomationsPanel = memo(function AutomationsPanel({
               <PanelSectionShell
                 id="completed"
                 title="Runs"
-                icon={
-                  <PlayCircleIcon width={14} height={14} aria-hidden="true" />
-                }
+                icon={<PlayCircleIcon size="sm" aria-hidden="true" />}
                 count={runRows.length}
                 collapsible={collapsible}
                 collapsed={collapsedSections.completed}

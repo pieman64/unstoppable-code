@@ -1949,13 +1949,13 @@ function BranchTargetPicker({
             aria-hidden="true"
           >
             {triggerIconKind === 'pr' ? (
-              <GitPullRequestIcon width={16} height={16} />
+              <GitPullRequestIcon size="sm" />
             ) : triggerIconKind === 'linear' ? (
-              <LinearIcon width={16} height={16} />
+              <LinearIcon size="md" />
             ) : triggerIconKind === 'worktree' ? (
-              <WorktreeIcon width={16} height={16} />
+              <WorktreeIcon size="sm" />
             ) : (
-              <BranchIcon width={16} height={16} />
+              <BranchIcon size="sm" />
             )}
           </span>
           <span className="min-w-0 flex-1 truncate fg-primary">

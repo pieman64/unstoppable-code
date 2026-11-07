@@ -28,14 +28,11 @@ import {
   QuestionMarkIcon,
   TaskIcon,
   WrenchIcon,
-  StopIcon,
 } from '../../icons';
 import {
   DocumentPencilIcon,
   LightbulbIcon,
   PickIcon,
-  ShieldIcon,
-  WarningIcon,
 } from '../../icons/AppIcons';
 import type {
   TurnOutcomeCounts,
@@ -47,11 +44,13 @@ import { useIsPhone } from '../useMediaQuery';
 import { useCleanChatLook } from '../chat-look';
 import { describeStepCounts, type StepKind } from './step-words';
 import { TurnOutcomeTooltip } from './TurnOutcomeTooltip';
+import { TurnOutcomeWords } from './TurnOutcomeWords';
 import {
   formatTurnOutcomeLabel,
-  TURN_OUTCOME_ORDER,
+  turnOutcomeEntries,
 } from './turn-outcome-label';
 import type { TurnCompletionStatus } from './turn-completion-status';
+import { STEP_ROW_DETAIL_INK_CLASS } from './StepRow';
 import { TurnWorkHeader } from './TurnWorkHeader';
 
 /**
@@ -289,32 +288,11 @@ function formatElapsedLabel(elapsedMs: number | undefined): string | null {
   return elapsedMs < 1000 ? '<1s' : formatDuration(elapsedMs);
 }
 
-/** The nonzero outcomes in reading order: blocked, errored, interrupted. */
-function outcomeEntries(
-  outcomes: TurnOutcomeCounts | undefined,
-): { key: keyof TurnOutcomeCounts; count: number }[] {
-  if (!outcomes) return [];
-  return TURN_OUTCOME_ORDER.flatMap((key) =>
-    outcomes[key] > 0 ? [{ key, count: outcomes[key] }] : [],
-  );
-}
-
-/** The glyph beside one outcome's words. */
-function TurnOutcomeGlyph({
-  outcome,
-}: {
-  outcome: keyof TurnOutcomeCounts;
-}): JSX.Element {
-  if (outcome === 'blocked') return <ShieldIcon />;
-  if (outcome === 'interrupted') return <StopIcon />;
-  return <WarningIcon />;
-}
-
 /** Whether a turn has any blocked, errored or interrupted step to report. */
 export function hasTurnOutcomes(
   outcomes: TurnOutcomeCounts | undefined,
 ): boolean {
-  return outcomeEntries(outcomes).length > 0;
+  return turnOutcomeEntries(outcomes).length > 0;
 }
 
 /** Shared and desktop chip keys with a plain-language step equivalent. */
@@ -340,7 +318,7 @@ function describeTurnSummaryChip(chip: TurnSummaryChip): string {
 function formatTurnOutcomeWords(
   outcomes: TurnOutcomeCounts | undefined,
 ): string {
-  return outcomeEntries(outcomes)
+  return turnOutcomeEntries(outcomes)
     .map((entry) => formatTurnOutcomeLabel(entry.key, entry.count))
     .join(', ');
 }
@@ -357,59 +335,12 @@ export function formatTurnSummaryAriaLabel(
 ): string {
   const detail = [
     ...chips.map(describeTurnSummaryChip),
-    ...outcomeEntries(outcomes).map((entry) =>
+    ...turnOutcomeEntries(outcomes).map((entry) =>
       formatTurnOutcomeLabel(entry.key, entry.count),
     ),
   ].join(', ');
   return detail === '' ? 'Agent steps' : `Agent steps: ${detail}`;
 }
-
-/** Each nonzero outcome's glyph and words, `·`-separated after the first. */
-function TurnOutcomeWords({
-  entries,
-}: {
-  entries: readonly { key: keyof TurnOutcomeCounts; count: number }[];
-}): JSX.Element {
-  return (
-    <>
-      {entries.map((entry, index) => (
-        <span key={entry.key} className="inline-flex items-center gap-1.5">
-          {index > 0 && (
-            <span className="font-normal fg-tertiary" aria-hidden="true">
-              ·
-            </span>
-          )}
-          <span
-            // An interruption is not a fault: neutral ink, not warning ink.
-            className={`inline-flex items-center gap-1 ${
-              entry.key === 'interrupted' ? 'fg-secondary' : 'fg-warning-strong'
-            }`}
-            data-turn-outcome={entry.key}
-          >
-            <span
-              className="inline-flex flex-shrink-0 [&_svg]:size-3.5"
-              aria-hidden="true"
-            >
-              <TurnOutcomeGlyph outcome={entry.key} />
-            </span>
-            {formatTurnOutcomeLabel(entry.key, entry.count)}
-          </span>
-        </span>
-      ))}
-    </>
-  );
-}
-
-function OutcomeSeparator(): JSX.Element {
-  return (
-    <span className="flex-shrink-0 font-normal fg-tertiary" aria-hidden="true">
-      ·
-    </span>
-  );
-}
-
-const OUTCOME_WORDS_CLASS =
-  'inline-flex flex-shrink-0 items-center gap-1.5 whitespace-nowrap font-medium';
 
 export interface TurnOutcomeControlProps {
   outcomes?: TurnOutcomeCounts;
@@ -429,9 +360,8 @@ const OUTCOME_TOOLTIP_OPEN_KEYS: readonly string[] = ['ArrowDown'];
 
 /**
  * "· 1 blocked · 2 errors · 1 interrupted": what went wrong in a finished
- * turn, said in words with a shield, warning or stop glyph beside each count,
- * so neither color nor icon carries the meaning alone. Blocked and errored
- * counts take the attention role's strong ink; interrupted stays neutral.
+ * turn, said quietly in {@link TurnOutcomeWords}, the same words a run of
+ * steps ends with. No glyph and no color: the words carry the meaning.
  *
  * The words are a control of their own beside the turn's
  * toggle, never inside it. Hover or keyboard focus shows
@@ -454,8 +384,7 @@ export function TurnOutcomeControl({
 }: TurnOutcomeControlProps): JSX.Element | null {
   const [dismissed, setDismissed] = useState(false);
   const shownRef = useRef(false);
-  const entries = outcomeEntries(outcomes);
-  if (entries.length === 0) return null;
+  if (!outcomes || !hasTurnOutcomes(outcomes)) return null;
 
   const words = formatTurnOutcomeWords(outcomes);
   const jump = (toolUseId?: string): void => {
@@ -479,11 +408,11 @@ export function TurnOutcomeControl({
     setDismissed(true);
   };
   const triggerProps = {
-    className: `focus-ring rounded-sm ${OUTCOME_WORDS_CLASS}`,
+    className: 'focus-ring rounded-sm whitespace-nowrap',
     'data-turn-outcomes': '',
-    'data-turn-blocked': outcomes?.blocked || undefined,
-    'data-turn-failed': outcomes?.failed || undefined,
-    'data-turn-interrupted': outcomes?.interrupted || undefined,
+    'data-turn-blocked': outcomes.blocked || undefined,
+    'data-turn-failed': outcomes.failed || undefined,
+    'data-turn-interrupted': outcomes.interrupted || undefined,
     'data-testid': 'turn-outcome-control',
     // The pointer coming back or focus arriving again reopens it; leaving
     // doesn't, or the surface would flash during its close grace period.
@@ -491,27 +420,30 @@ export function TurnOutcomeControl({
     onFocus: reopen,
     onKeyDown,
   };
+  const content = (
+    <TurnOutcomeWords outcomes={outcomes} leadingSeparator={leadingSeparator} />
+  );
   const trigger = onJumpToOutcome ? (
     <button
       type="button"
       {...triggerProps}
+      className={`${triggerProps.className} transition-colors hover:fg-secondary`}
       aria-label={`${words}, show steps`}
       onClick={(event): void => {
         event.stopPropagation();
         jump(undefined);
       }}
     >
-      <TurnOutcomeWords entries={entries} />
+      {content}
     </button>
   ) : (
     <span tabIndex={0} {...triggerProps}>
-      <TurnOutcomeWords entries={entries} />
+      {content}
     </span>
   );
 
   return (
-    <span className="inline-flex flex-shrink-0 items-center gap-1.5">
-      {leadingSeparator && <OutcomeSeparator />}
+    <span className={`inline-flex flex-shrink-0 ${STEP_ROW_DETAIL_INK_CLASS}`}>
       <RichHoverTooltip
         content={
           <TurnOutcomeTooltip

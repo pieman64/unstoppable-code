@@ -39,6 +39,7 @@ import {
   withMemoryNoteScalarFields,
 } from './note-identity';
 import {
+  assertReplicaStillSyncing,
   LocalMemoryReplicaUnavailableError,
   localMemoryReplicaHooks,
   type LocalMemoryNoteChange,
@@ -289,21 +290,6 @@ function writeTarget(
     : target;
 }
 
-/**
- * Rejects a write into a synced replica that stopped syncing for its account
- * after the write resolved it (a sign-out or sync turned off while it waited
- * for the lock): written now, the change would stay on this device without
- * its outbox operation.
- */
-function assertReplicaStillSyncing(target: LocalMemoryWriteTarget): void {
-  if (
-    target.accountId !== null &&
-    localMemoryReplicaHooks()?.replicaAccountId(target.dir) !== target.accountId
-  ) {
-    throw new LocalMemoryReplicaUnavailableError();
-  }
-}
-
 export function mutateLocalMemoryItem(
   scope: string | LocalMemoryWriteTarget,
   request: { fileKey: string; itemId: string; revision: string; text?: string },
@@ -361,7 +347,7 @@ export function mutateLocalMemoryItem(
       result,
     );
     await replaceAtRevision(target, request, path, result, change);
-    notifyNoteChanged(scopeDir, request.fileKey);
+    notifySyncedChange(scopeDir);
     return { ...updatedDocument, markdown: bodyMarkdown(result) };
   });
 }
@@ -463,10 +449,9 @@ function syncedNoteEdit(
   };
 }
 
-function notifyNoteChanged(scopeDir: string, fileKey: string): void {
-  if (syncedNoteFields(scopeDir, fileKey) !== null) {
-    localMemoryReplicaHooks()?.noteChanged(scopeDir);
-  }
+/** A synced replica commits its document edits and pushes its notes soon. */
+function notifySyncedChange(scopeDir: string): void {
+  localMemoryReplicaHooks()?.noteChanged(scopeDir);
 }
 
 function deletableFileKey(fileKey: string): void {
@@ -535,7 +520,7 @@ export async function updateLocalMemoryFile(
       result,
     );
     await replaceAtRevision(target, request, path, result, change);
-    notifyNoteChanged(scopeDir, request.fileKey);
+    notifySyncedChange(scopeDir);
     return { ...updatedDocument, markdown: bodyMarkdown(result) };
   });
 }
@@ -576,7 +561,7 @@ export async function deleteLocalMemoryFile(
       if (!synced) assertReplicaStillSyncing(target);
       await unlink(path);
     } finally {
-      notifyNoteChanged(scopeDir, request.fileKey);
+      notifySyncedChange(scopeDir);
     }
   });
 }

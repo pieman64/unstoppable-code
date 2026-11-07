@@ -5,7 +5,7 @@ import {
   STANDALONE_CHAT_PROJECT_ID,
 } from '@canopy/desktop-shared/types';
 import { ForkContextNotice } from '@canopy/ui-shared';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, Divider } from '@canopy/ui-shared/components';
 import { getProviderLabel } from '@/lib/providerLabels';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import {
@@ -135,7 +135,7 @@ export const ForkedFromLink = memo(function ForkedFromLink({
   return (
     <>
       <div className="flex items-center gap-3 py-3 text-xs">
-        <div className="h-px flex-1 bg-line-base" />
+        <Divider className="flex-1" />
         {/* The glyph sits beside the link so the link's hover underline
             reaches its text (an inline-flex child would not take it). */}
         <span className="flex items-center gap-1.5 fg-accent">
@@ -146,7 +146,7 @@ export const ForkedFromLink = memo(function ForkedFromLink({
               : 'Forked from conversation'}
           </Button>
         </span>
-        <div className="h-px flex-1 bg-line-base" />
+        <Divider className="flex-1" />
       </div>
       {forkedFrom.modelContext && (
         <ForkContextNotice mode={forkedFrom.modelContext} />

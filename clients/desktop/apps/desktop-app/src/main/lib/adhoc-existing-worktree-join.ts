@@ -689,10 +689,10 @@ async function combineWorktreeWithExistingWorktreeAdmitted(
     throw new Error('Cannot join a worktree from the same project');
   }
 
-  await assertLegacyCombineAllowed([
-    request.sourceWorkspaceId,
-    request.joinWorkspaceId,
-  ]);
+  await assertLegacyCombineAllowed(
+    [request.sourceWorkspaceId, request.joinWorkspaceId],
+    request.mode,
+  );
   // Retry path: the source worktree may already have been handled by a prior
   // combine attempt.
   const existingDestination = await findExistingAdhocDestination(
@@ -896,6 +896,7 @@ async function combineWorktreeWithExistingWorktreeAdmitted(
     finalCandidates,
     {
       repoPathsMustMatch: true,
+      reuseOwner: sourceWorkspace.owner,
       beforeEffects: attempt?.beforeEffects,
       commit,
     },

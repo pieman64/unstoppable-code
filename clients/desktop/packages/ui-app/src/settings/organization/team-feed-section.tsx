@@ -61,6 +61,7 @@ import { TeamPageHeaderActions } from './team-page-header-slot';
 import { useViewerDataSharing } from './use-viewer-data-sharing';
 import { OrganizationDataSharingOptIn } from './web-data-sharing-opt-in';
 import type { SettingsFailure } from '../errors';
+import { Surface } from '@canopy/ui-shared/components';
 
 interface TeamFeedSectionProps {
   /** Org id used to fetch the feed and link the empty-state CTA. */
@@ -674,7 +675,7 @@ export function TeamFeedSection({
     );
   } else if (items.length === 0) {
     body = (
-      <div className="rounded-xl bg-card shadow-sm">
+      <Surface variant="raised">
         {error && (
           <div className="px-6 pt-6">
             <ErrorBanner
@@ -728,7 +729,7 @@ export function TeamFeedSection({
             />
           </div>
         )}
-      </div>
+      </Surface>
     );
   } else {
     body = (

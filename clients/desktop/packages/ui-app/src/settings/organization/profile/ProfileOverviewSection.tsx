@@ -13,6 +13,7 @@ import { useMemberUsage } from './useMemberUsage';
 import { UsageRangeSelect } from './UsageRangeSelect';
 import { ProfileActivitySection } from './ProfileActivitySection';
 import { useSettingsPrivacy } from '../../host';
+import { Surface } from '@canopy/ui-shared/components';
 
 interface ProfileOverviewSectionProps {
   orgId: string;
@@ -85,12 +86,14 @@ export function ProfileOverviewSection({
               </DelayedLoadingPlaceholder>
             </div>
           ) : error ? null : !usage ? (
-            <p
-              className="rounded-xl border border-dashed px-4 py-12 text-center text-s fg-secondary"
-              data-testid="profile-overview-empty"
-            >
-              No usage data available for this range.
-            </p>
+            <Surface variant="dashed">
+              <p
+                className="px-4 py-12 text-center text-s fg-secondary"
+                data-testid="profile-overview-empty"
+              >
+                No usage data available for this range.
+              </p>
+            </Surface>
           ) : (
             <HeadlineCards cards={usage.headline} />
           )}

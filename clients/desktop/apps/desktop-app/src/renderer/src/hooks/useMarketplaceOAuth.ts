@@ -8,11 +8,13 @@ export function useMarketplaceOAuth(): {
   pending: boolean;
   url: string | null;
   error: string | null;
+  clearError: () => void;
   closeBrowser: () => void;
 } {
   const [pending, setPending] = useState(false);
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const clearError = useCallback((): void => setError(null), []);
   const generation = useRef(0);
   const busy = useRef(false);
   const flowId = useRef<string | undefined>(undefined);
@@ -87,6 +89,7 @@ export function useMarketplaceOAuth(): {
     pending,
     url,
     error,
+    clearError,
     closeBrowser: () => finish(),
   };
 }

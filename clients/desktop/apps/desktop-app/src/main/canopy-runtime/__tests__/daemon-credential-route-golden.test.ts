@@ -564,10 +564,6 @@ it('bounds a mirror attempt and ignores cancellation without retrying', async ()
   }
 });
 
-// Each case loads the auth modules ten times into a fresh registry (about
-// 150 ms each on an idle machine, several times that on a loaded CI runner).
-const LEGACY_PATH_CASE_TIMEOUT_MS = 30_000;
-
 // A case that times out keeps running; the next case waits for its isolated
 // registry to close instead of failing to nest a second one.
 let isolationTail: Promise<void> = Promise.resolve();
@@ -616,34 +612,39 @@ describe.each([canopyBrand, unstoppableBrand])(
         });
         jest.doMock('@canopy/brand/current', () => ({ BRAND: brand }));
         try {
-          for (const testBuild of [false, true]) {
-            Object.defineProperty(
-              globalThis,
-              '__CANOPY_TEST_DATA_OVERRIDES__',
-              {
-                value: testBuild,
-                configurable: true,
-              },
-            );
-            for (const overrides of [
-              {},
-              { CANOPY_DATA_DIR: '  ', CANOPY_SECURE_DATA_DIR: '  ' },
-              { CANOPY_DATA_DIR: join(root, 'override-data') },
-              { CANOPY_SECURE_DATA_DIR: join(root, 'override-secure') },
-              {
-                CANOPY_DATA_DIR: join(root, 'both-data'),
-                CANOPY_SECURE_DATA_DIR: join(root, 'both-secure'),
-              },
-            ]) {
-              process.env.CANOPY_DATA_DIR = overrides.CANOPY_DATA_DIR;
-              process.env.CANOPY_SECURE_DATA_DIR =
-                overrides.CANOPY_SECURE_DATA_DIR;
-              jest.dontMock('../../lib/paths');
-              await isolated(async () => {
-                const paths =
-                  jest.requireActual<typeof LegacyPaths>('../../lib/paths');
-                const { readStoredPatWithStatus } =
-                  await import('../../lib/github-auth');
+          // Build identity is fixed for this brand/flavor. Keep one isolated
+          // auth graph, but reset path caches for every environment case.
+          jest.dontMock('../../lib/paths');
+          await isolated(async () => {
+            const paths =
+              jest.requireActual<typeof LegacyPaths>('../../lib/paths');
+            const { readStoredPatWithStatus } =
+              await import('../../lib/github-auth');
+            const { getCanopyBuildIdentity, resetResolvedCanopyDataDirCache } =
+              await import('@canopy/desktop-shared/canopy-paths');
+            for (const testBuild of [false, true]) {
+              Object.defineProperty(
+                globalThis,
+                '__CANOPY_TEST_DATA_OVERRIDES__',
+                {
+                  value: testBuild,
+                  configurable: true,
+                },
+              );
+              for (const overrides of [
+                {},
+                { CANOPY_DATA_DIR: '  ', CANOPY_SECURE_DATA_DIR: '  ' },
+                { CANOPY_DATA_DIR: join(root, 'override-data') },
+                { CANOPY_SECURE_DATA_DIR: join(root, 'override-secure') },
+                {
+                  CANOPY_DATA_DIR: join(root, 'both-data'),
+                  CANOPY_SECURE_DATA_DIR: join(root, 'both-secure'),
+                },
+              ]) {
+                process.env.CANOPY_DATA_DIR = overrides.CANOPY_DATA_DIR;
+                process.env.CANOPY_SECURE_DATA_DIR =
+                  overrides.CANOPY_SECURE_DATA_DIR;
+                resetResolvedCanopyDataDirCache();
                 const runtimeMode =
                   flavor === 'dev' ? 'dev' : flavor === 'rc' ? 'rc' : 'prod';
                 const daemonOptions: Parameters<
@@ -671,7 +672,7 @@ describe.each([canopyBrand, unstoppableBrand])(
                   await expect(readStoredPatWithStatus()).rejects.toThrow(
                     'require a dev or test build',
                   );
-                  return;
+                  continue;
                 }
                 const daemonPaths = resolveLegacyPatPaths(daemonOptions);
                 const hostPaths = [
@@ -682,8 +683,6 @@ describe.each([canopyBrand, unstoppableBrand])(
                 expect(daemonPaths).toEqual(hostPaths);
                 const identity = compiledBuildIdentity(brand.id);
                 expect(identity).toEqual({ brandId: brand.id, build: flavor });
-                const { getCanopyBuildIdentity } =
-                  await import('@canopy/desktop-shared/canopy-paths');
                 expect(getCanopyBuildIdentity()).toEqual(identity);
                 const generation = createLegacyPatGenerationReader({
                   identity,
@@ -710,9 +709,9 @@ describe.each([canopyBrand, unstoppableBrand])(
                   await rm(daemonPaths[0], { force: true });
                 }
                 expect(await generation(identity)).toBeNull();
-              });
+              }
             }
-          }
+          });
         } finally {
           environment.restore();
           for (const [key, original] of originals) {
@@ -722,7 +721,6 @@ describe.each([canopyBrand, unstoppableBrand])(
           jest.dontMock('@canopy/brand/current');
         }
       },
-      LEGACY_PATH_CASE_TIMEOUT_MS,
     );
   },
 );

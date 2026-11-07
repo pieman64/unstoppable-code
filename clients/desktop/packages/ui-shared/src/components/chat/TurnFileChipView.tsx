@@ -77,7 +77,7 @@ function FileLabel({ filename }: { filename: string }): JSX.Element {
       >
         {!clean && (
           <span className="flex h-3 w-3 shrink-0 items-center justify-center fg-secondary">
-            <FileIcon width={12} height={12} aria-hidden="true" />
+            <FileIcon size="sm" aria-hidden="true" />
           </span>
         )}
         {clean ? (

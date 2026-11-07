@@ -14,7 +14,11 @@ import { TextField } from '../shared/TextField';
 import { TextAreaField } from '../shared/TextAreaField';
 import { ToggleField } from '../shared/ToggleField';
 import { Tooltip } from '@canopy/ui-shared';
-import { Button, FORM_FIELD_LABEL_CLASS } from '@canopy/ui-shared/components';
+import {
+  Button,
+  FORM_FIELD_LABEL_CLASS,
+  Surface,
+} from '@canopy/ui-shared/components';
 import {
   ChevronRightMediumIcon as AppCatalogChevronRightMediumIcon,
   CloseIcon as AppCatalogCloseIcon,
@@ -204,7 +208,7 @@ function CollectionItem({
   const summary = `${collection.defaults.length} plugin${collection.defaults.length === 1 ? '' : 's'}`;
 
   return (
-    <div className="rounded-md border bg-secondary/30">
+    <Surface variant="group" size="small">
       {/* The remove action sits beside the toggle, not inside it. */}
       <div className="flex items-start">
         <button
@@ -213,8 +217,7 @@ function CollectionItem({
           className="flex min-w-0 flex-1 items-start gap-2 px-3 py-2.5 text-left hover:bg-fg-primary/[0.04]"
         >
           <AppCatalogChevronRightMediumIcon
-            width="12"
-            height="12"
+            size="sm"
             className={`mt-1 shrink-0 fg-secondary transition-transform ${
               expanded ? 'rotate-90' : ''
             }`}
@@ -241,7 +244,7 @@ function CollectionItem({
                 onClick={onRemove}
                 aria-label="Remove collection"
               >
-                <AppCatalogCloseIcon width="14" height="14" />
+                <AppCatalogCloseIcon size="sm" />
               </Button>
             </Tooltip>
           </span>
@@ -313,46 +316,50 @@ function CollectionItem({
                   const display = buildShareablePluginDisplay(entry.ref);
                   const required = Boolean(entry.def.required);
                   return (
-                    <li
+                    <Surface
+                      as="li"
+                      variant="inset"
+                      size="small"
                       key={entry.key}
-                      className="flex items-center gap-2 rounded-md border bg-base px-2.5 py-1.5"
                     >
-                      <Badge>
-                        {entry.ref.type === 'skill' ? 'Skill' : 'Plugin'}
-                      </Badge>
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-s fg-primary">
-                          {display.title}
+                      <div className="flex items-center gap-2 px-2.5 py-1.5">
+                        <Badge>
+                          {entry.ref.type === 'skill' ? 'Skill' : 'Plugin'}
+                        </Badge>
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-s fg-primary">
+                            {display.title}
+                          </div>
+                          <div className="truncate text-xs fg-secondary">
+                            {display.subtitle}
+                          </div>
                         </div>
-                        <div className="truncate text-xs fg-secondary">
-                          {display.subtitle}
+                        <div className="flex items-center gap-1.5 text-xs fg-secondary">
+                          <ToggleField
+                            checked={required}
+                            onChange={(checked) =>
+                              updateRequired(entry.key, checked)
+                            }
+                            disabled={readonly}
+                            label="Required"
+                          />
+                          <span aria-hidden="true">Required</span>
                         </div>
+                        {!readonly && (
+                          <Tooltip label="Remove default">
+                            <Button
+                              variant="ghost-quiet"
+                              size="compact"
+                              iconOnly
+                              onClick={() => removeDefault(entry.key)}
+                              aria-label="Remove default"
+                            >
+                              <AppCatalogCloseIcon size="sm" />
+                            </Button>
+                          </Tooltip>
+                        )}
                       </div>
-                      <div className="flex items-center gap-1.5 text-xs fg-secondary">
-                        <ToggleField
-                          checked={required}
-                          onChange={(checked) =>
-                            updateRequired(entry.key, checked)
-                          }
-                          disabled={readonly}
-                          label="Required"
-                        />
-                        <span aria-hidden="true">Required</span>
-                      </div>
-                      {!readonly && (
-                        <Tooltip label="Remove default">
-                          <Button
-                            variant="ghost-quiet"
-                            size="compact"
-                            iconOnly
-                            onClick={() => removeDefault(entry.key)}
-                            aria-label="Remove default"
-                          >
-                            <AppCatalogCloseIcon width="12" height="12" />
-                          </Button>
-                        </Tooltip>
-                      )}
-                    </li>
+                    </Surface>
                   );
                 })}
               </ul>
@@ -370,7 +377,7 @@ function CollectionItem({
           onClose={() => setPickerOpen(false)}
         />
       )}
-    </div>
+    </Surface>
   );
 }
 

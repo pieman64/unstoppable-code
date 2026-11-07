@@ -256,7 +256,7 @@ export function ComposerPlusMenuPresentation({
             aria-expanded={isOpen}
             aria-controls={isOpen ? menuId : undefined}
           >
-            <PlusLargeIcon width={16} height={16} />
+            <PlusLargeIcon size="sm" />
           </ComposerIconButton>
         )}
       </Tooltip>

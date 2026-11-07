@@ -65,13 +65,7 @@ export function ShareActionButton({
   dataTestId,
 }: ShareActionButtonProps): JSX.Element {
   const labeled = placement === 'detail';
-  const icon = (
-    <ShareIcon
-      width={labeled ? 14 : 16}
-      height={labeled ? 14 : 16}
-      aria-hidden
-    />
-  );
+  const icon = <ShareIcon size="sm" aria-hidden />;
   const shared = {
     variant: PLACEMENT_VARIANT[placement],
     'data-testid': dataTestId,

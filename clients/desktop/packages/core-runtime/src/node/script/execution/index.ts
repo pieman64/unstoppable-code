@@ -6,6 +6,7 @@ export {
   type CoreScriptRunResult,
 } from './core-script-runs';
 export {
+  FORCE_KILL_DELAY_MS,
   MAX_SCRIPT_OUTPUT_BYTES,
   runScriptProcess,
   type RunScriptProcessOptions,
@@ -64,9 +65,29 @@ export {
   createWorkerScriptHandlers,
   ScriptExecutionWorker,
   scriptContextUnavailableError,
+  type ScriptExecuteOptions,
   type ScriptExecutionObserver,
   type ScriptExecutionPlace,
+  type ScriptExecutionRelay,
+  type ScriptExecutionState,
   type ScriptExecutionWorkerHost,
+  type WorkerScriptHandlerOptions,
   type WorkerScriptHandlers,
 } from './worker-scripts';
+export {
+  createWorkerScriptStreamHandlers,
+  WORKER_SCRIPT_OUTPUT_AWAIT_START_MS,
+  WORKER_SCRIPT_OUTPUT_BACKLOG,
+  type WorkerScriptStreamHandlers,
+} from './output-stream';
+export {
+  runScriptRemotely,
+  scriptPlacementUnreachableError,
+  type RemoteScriptOutputFrame,
+  type RemoteScriptRelay,
+  type RemoteScriptRunOutcome,
+  type RemoteScriptRunRequest,
+  type RemoteScriptTransport,
+} from './remote-script-runs';
 export { scriptRunFileStem } from '../run-log-stem';
+export { scriptContextDirectory } from './context-directory';

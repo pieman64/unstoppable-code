@@ -7,6 +7,7 @@ import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import { seedWorktreeChat } from './seeders/index.mjs';
 
+// Boundary: worktree:archive, the current core.worktree.archive compatibility path.
 // Golden: archiving a worktree removes it for good. A late chat flush cannot
 // recreate its sidecars, a pre-teardown reload cannot resurrect its row, and a
 // failed teardown leaves it in place with the removal control usable again.

@@ -87,11 +87,10 @@ function LinkedExecutionsMenu({
         aria-expanded={open}
         onClick={(): void => onOpenChange(!open)}
       >
-        <PipelineIcon width={12} height={12} className="shrink-0" />
+        <PipelineIcon size="sm" className="shrink-0" />
         {executions.length} linked
         <AppCatalogChevronDownMediumIcon
-          width="11"
-          height="11"
+          size="sm"
           className={`transition-transform ${open ? 'rotate-180' : ''}`}
         />
       </Button>

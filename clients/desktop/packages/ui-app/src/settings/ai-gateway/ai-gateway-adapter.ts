@@ -55,6 +55,29 @@ export interface AiGatewayEditorAdapter {
   ): Promise<AiGatewayEditorConfig>;
 }
 
+/**
+ * A host that keeps no key on the device also saves a key typed to connect
+ * as the member's cloud chats key. Best effort: a refusal, or cloud keys off
+ * (404), leaves Cloud chats showing its own not-saved state.
+ */
+export async function keepKeyForCloudChats(
+  client: AccountOrganizationSettingsClient,
+  organizationId: string,
+  apiKey: string,
+  /** The gateway the key connected to; the server refuses if another is stored. */
+  expectedBaseUrl: string,
+): Promise<void> {
+  try {
+    await client.write('organization.settings.ai-gateway.cloud-key.save', {
+      organizationId,
+      apiKey,
+      expectedBaseUrl,
+    });
+  } catch {
+    // Silent on purpose: the section below reports the key's state.
+  }
+}
+
 /** The revision a scope without a stored gateway reports. */
 export const ABSENT_GATEWAY_REVISION = 'absent';
 

@@ -938,7 +938,7 @@ function CollapsedKinds({
               ) : kind === 'github' ? (
                 <GitHubIcon size={14} aria-hidden="true" />
               ) : (
-                <PipelineIcon width={14} height={14} aria-hidden="true" />
+                <PipelineIcon size="sm" aria-hidden="true" />
               )}
               {ofKind.length > 1 && <Count value={ofKind.length} aria-hidden />}
               {runDot !== null && (

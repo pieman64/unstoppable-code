@@ -42,7 +42,7 @@ export function EveryoneHasAccessEmptyState({
   return (
     <div data-testid="shared-container-invite-modal-empty-everyone-has-access">
       <EmptyState
-        icon={<DoneCheckIcon className="h-5 w-5 fg-success" />}
+        icon={<DoneCheckIcon size="xl" className="fg-success" />}
         title={`Everyone in ${organizationName} already has access.`}
         subtitle="There is nobody left to invite from this organization."
       />
@@ -224,7 +224,7 @@ export function SearchForMoreTeammatesEmptyState({
   return (
     <div data-testid="shared-container-invite-modal-empty-search-for-more">
       <EmptyState
-        icon={<MagnifyingGlassIcon className="h-5 w-5 fg-secondary" />}
+        icon={<MagnifyingGlassIcon size="xl" className="fg-secondary" />}
         title={CAPPED_PAGE_LABEL}
         subtitle={`${organizationName} has more members than this list shows. Search by name to find someone else.`}
       />
@@ -244,7 +244,7 @@ export function NoQueryMatchEmptyState({
       <EmptyState
         // The same glyph the search input uses, so this state visibly belongs
         // to the query rather than to the organization.
-        icon={<MagnifyingGlassIcon className="h-5 w-5 fg-secondary" />}
+        icon={<MagnifyingGlassIcon size="xl" className="fg-secondary" />}
         // The echoed query may be a person's name: replay records a box for
         // it, and the rest of the sentence stays recorded.
         title={

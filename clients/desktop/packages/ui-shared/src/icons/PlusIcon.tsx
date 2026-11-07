@@ -1,6 +1,6 @@
-import type { JSX, SVGProps } from 'react';
-import { PlusIcon as AppCatalogPlusIcon } from './AppIcons';
+import type { JSX } from 'react';
+import { PlusIcon as AppCatalogPlusIcon, type AppIconProps } from './AppIcons';
 
-export function PlusIcon(props: SVGProps<SVGSVGElement>): JSX.Element {
-  return <AppCatalogPlusIcon width="14" height="14" {...props} />;
+export function PlusIcon(props: AppIconProps): JSX.Element {
+  return <AppCatalogPlusIcon size="sm" {...props} />;
 }

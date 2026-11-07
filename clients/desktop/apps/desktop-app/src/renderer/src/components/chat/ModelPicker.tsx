@@ -138,7 +138,7 @@ import {
   type ModelCommitOutcome,
   type PendingModelRecovery,
 } from './ModelRecoveryModal';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, Divider } from '@canopy/ui-shared/components';
 
 // Re-exported from its new home in the pure resolver so the seven existing
 // call sites keep importing it from the picker.
@@ -2717,185 +2717,187 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
           hiddenRows.orgGatewayOnly > 0 ||
           footerHarnessStatus
             ? ({ dismissMenu }: ModelPickerMenuControls): JSX.Element => (
-                <div role="group" className="mt-1 border-t pt-1">
-                  {footerHarnessStatus
-                    ? harnessStatusLine(footerHarnessStatus)
-                    : null}
-                  {/* The enforced-gateway filter. No count and no remedy,
+                <div className="mt-1" role="group">
+                  <Divider />
+                  <div className="pt-1">
+                    {footerHarnessStatus
+                      ? harnessStatusLine(footerHarnessStatus)
+                      : null}
+                    {/* The enforced-gateway filter. No count and no remedy,
                       deliberately: the models are not coming back while the org
                       routes everything through its own gateway, so a count would
                       only invite the reader to look for the control that restores
                       them. Rendered ahead of (and independently of) the billing
                       rows, which `resolveChatBillingFramework` hides outright
                       under enforcement. */}
-                  {hiddenRows.orgGatewayOnly > 0 ||
-                  (personalOwner && modelGatewayEnforced) ? (
-                    <div
-                      data-testid="chat-billing-org-gateway-note"
-                      className="px-2 py-1 text-3xs leading-snug fg-secondary"
-                    >
-                      {personalOwner
-                        ? 'Showing only your AI gateway.'
-                        : `${activeOrganizationName ?? 'Your organization'} routes all models through its AI gateway.`}
-                    </div>
-                  ) : null}
-                  {billing && showBillingFooter ? (
-                    <>
-                      <RichHoverTooltip
-                        triggerWrapperClassName="w-full"
-                        dataTestId="chat-billing-tooltip"
-                        surfaceClassName="w-max max-w-56"
-                        surfacePadding="relaxed"
-                        content={
-                          <span className="flex flex-col text-left">
-                            <span className="text-2xs font-medium leading-tight fg-primary">
-                              {billing.value === 'ai-credits'
-                                ? 'Currently billing to AI Credits'
-                                : 'Currently billing to your subscription'}
-                            </span>
-                            <span className="mt-0.5 text-3xs leading-snug fg-secondary">
-                              {billing.disabled
-                                ? (billing.lockedReason ??
-                                  'This is the only billing option for this model.')
-                                : billing.value === 'ai-credits'
-                                  ? 'Toggle off to use your Claude or Codex subscription.'
-                                  : 'Toggle on to bill this chat to your AI Credits balance.'}
-                            </span>
-                          </span>
-                        }
+                    {hiddenRows.orgGatewayOnly > 0 ||
+                    (personalOwner && modelGatewayEnforced) ? (
+                      <div
+                        data-testid="chat-billing-org-gateway-note"
+                        className="px-2 py-1 text-3xs leading-snug fg-secondary"
                       >
-                        <button
-                          type="button"
-                          role="menuitemcheckbox"
-                          aria-checked={billing.value === 'ai-credits'}
-                          aria-disabled={billing.disabled === true}
-                          disabled={billing.disabled === true}
-                          aria-label="Bill this chat to AI Credits"
-                          data-testid="chat-billing-framework"
-                          onMouseDown={(e): void => {
-                            e.preventDefault();
-                          }}
-                          onClick={(event): void => {
-                            event.preventDefault();
-                            if (billing.disabled) {
-                              return;
-                            }
-                            const nextBilling: BillingFramework =
-                              billing.value === 'ai-credits'
-                                ? 'subscription'
-                                : 'ai-credits';
-                            // CAN-3026 — the "manually selected" half of the
-                            // guest gate. Flipping a chat that sits on a
-                            // non-allowlisted model ONTO AI Credits routes that
-                            // model through the lane Canopy pays for, which is
-                            // exactly what the row gate refuses. Route it
-                            // through the SHARED cloud connect gate rather than
-                            // duplicating the recovery modal: this is a billing
-                            // switch, not a model selection, and it has no
-                            // model to commit afterwards.
-                            //
-                            // Turning credits OFF is never gated — moving a
-                            // guest back onto their own subscription lowers
-                            // Canopy's cost.
-                            //
-                            // `isGuestAllowedSelection` (not the raw protocol
-                            // predicate) so an Agent overlay is judged by its
-                            // BASE model here exactly as it is in the row gate.
-                            if (
-                              nextBilling === 'ai-credits' &&
-                              isGuest &&
-                              currentModel !== undefined &&
-                              !isGuestAllowedSelection(currentModel)
-                            ) {
-                              dismissMenu();
-                              requestConnect(
-                                {
-                                  title: guestModelGateTitle(),
-                                  subtitle: null,
-                                  toastMessage: guestModelGateToast(
-                                    getModelDisplayName(currentModel),
-                                  ),
-                                  guestBenefits: true,
-                                },
-                                // Empty on purpose: the gate close re-reads the
-                                // account, and the user re-flips the toggle
-                                // themselves. Auto-applying a billing mode
-                                // behind a sign-in would be a silent write.
-                                () => {},
-                              );
-                              return;
-                            }
-                            // CAN-4028 — the same switch for a signed-in
-                            // account that has not purchased. Signing in is
-                            // not the remedy here, so it opens the purchase
-                            // recovery instead, as a billing-mode switch: the
-                            // unlock applies AI Credits billing to this chat,
-                            // not a different model.
-                            if (
-                              nextBilling === 'ai-credits' &&
-                              !isGuest &&
-                              libraryAccess === 'needs_purchase' &&
-                              currentModel !== undefined &&
-                              !isGuestAllowedSelection(currentModel)
-                            ) {
-                              recoveryBillingOnChangeRef.current =
-                                billing.onChange;
-                              recoveryChatKeyRef.current = recoveryChatKey;
-                              dismissMenu();
-                              setRecoveryAiCreditsScope(aiCreditsScope);
-                              setPendingRecovery({
-                                model: currentModel,
-                                recovery: { kind: 'needs-purchase' },
-                                intent: 'enable-ai-credits',
-                              });
-                              return;
-                            }
-                            billing.onChange(nextBilling);
-                          }}
-                          className={`outline-none flex h-8 w-full items-center justify-between rounded-md px-2 text-s fg-primary/80 transition-colors ${
-                            billing.disabled
-                              ? 'cursor-not-allowed opacity-50'
-                              : 'hover:bg-subtle focus-visible:bg-subtle'
-                          }`}
+                        {personalOwner
+                          ? 'Showing only your AI gateway.'
+                          : `${activeOrganizationName ?? 'Your organization'} routes all models through its AI gateway.`}
+                      </div>
+                    ) : null}
+                    {billing && showBillingFooter ? (
+                      <>
+                        <RichHoverTooltip
+                          triggerWrapperClassName="w-full"
+                          dataTestId="chat-billing-tooltip"
+                          surfaceClassName="w-max max-w-56"
+                          surfacePadding="relaxed"
+                          content={
+                            <span className="flex flex-col text-left">
+                              <span className="text-2xs font-medium leading-tight fg-primary">
+                                {billing.value === 'ai-credits'
+                                  ? 'Currently billing to AI Credits'
+                                  : 'Currently billing to your subscription'}
+                              </span>
+                              <span className="mt-0.5 text-3xs leading-snug fg-secondary">
+                                {billing.disabled
+                                  ? (billing.lockedReason ??
+                                    'This is the only billing option for this model.')
+                                  : billing.value === 'ai-credits'
+                                    ? 'Toggle off to use your Claude or Codex subscription.'
+                                    : 'Toggle on to bill this chat to your AI Credits balance.'}
+                              </span>
+                            </span>
+                          }
                         >
-                          {/* Verb-framed billing-mode label keeps the chat-wide switch
-                      distinct from the family-grouped model rows above. */}
-                          <span>Use AI Credits</span>
-                          <span
-                            className={`relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors duration-200 ${
-                              billing.value === 'ai-credits'
-                                ? 'bg-accent'
-                                : 'bg-fg-primary/25'
+                          <button
+                            type="button"
+                            role="menuitemcheckbox"
+                            aria-checked={billing.value === 'ai-credits'}
+                            aria-disabled={billing.disabled === true}
+                            disabled={billing.disabled === true}
+                            aria-label="Bill this chat to AI Credits"
+                            data-testid="chat-billing-framework"
+                            onMouseDown={(e): void => {
+                              e.preventDefault();
+                            }}
+                            onClick={(event): void => {
+                              event.preventDefault();
+                              if (billing.disabled) {
+                                return;
+                              }
+                              const nextBilling: BillingFramework =
+                                billing.value === 'ai-credits'
+                                  ? 'subscription'
+                                  : 'ai-credits';
+                              // CAN-3026 — the "manually selected" half of the
+                              // guest gate. Flipping a chat that sits on a
+                              // non-allowlisted model ONTO AI Credits routes that
+                              // model through the lane Canopy pays for, which is
+                              // exactly what the row gate refuses. Route it
+                              // through the SHARED cloud connect gate rather than
+                              // duplicating the recovery modal: this is a billing
+                              // switch, not a model selection, and it has no
+                              // model to commit afterwards.
+                              //
+                              // Turning credits OFF is never gated — moving a
+                              // guest back onto their own subscription lowers
+                              // Canopy's cost.
+                              //
+                              // `isGuestAllowedSelection` (not the raw protocol
+                              // predicate) so an Agent overlay is judged by its
+                              // BASE model here exactly as it is in the row gate.
+                              if (
+                                nextBilling === 'ai-credits' &&
+                                isGuest &&
+                                currentModel !== undefined &&
+                                !isGuestAllowedSelection(currentModel)
+                              ) {
+                                dismissMenu();
+                                requestConnect(
+                                  {
+                                    title: guestModelGateTitle(),
+                                    subtitle: null,
+                                    toastMessage: guestModelGateToast(
+                                      getModelDisplayName(currentModel),
+                                    ),
+                                    guestBenefits: true,
+                                  },
+                                  // Empty on purpose: the gate close re-reads the
+                                  // account, and the user re-flips the toggle
+                                  // themselves. Auto-applying a billing mode
+                                  // behind a sign-in would be a silent write.
+                                  () => {},
+                                );
+                                return;
+                              }
+                              // CAN-4028 — the same switch for a signed-in
+                              // account that has not purchased. Signing in is
+                              // not the remedy here, so it opens the purchase
+                              // recovery instead, as a billing-mode switch: the
+                              // unlock applies AI Credits billing to this chat,
+                              // not a different model.
+                              if (
+                                nextBilling === 'ai-credits' &&
+                                !isGuest &&
+                                libraryAccess === 'needs_purchase' &&
+                                currentModel !== undefined &&
+                                !isGuestAllowedSelection(currentModel)
+                              ) {
+                                recoveryBillingOnChangeRef.current =
+                                  billing.onChange;
+                                recoveryChatKeyRef.current = recoveryChatKey;
+                                dismissMenu();
+                                setRecoveryAiCreditsScope(aiCreditsScope);
+                                setPendingRecovery({
+                                  model: currentModel,
+                                  recovery: { kind: 'needs-purchase' },
+                                  intent: 'enable-ai-credits',
+                                });
+                                return;
+                              }
+                              billing.onChange(nextBilling);
+                            }}
+                            className={`outline-none flex h-8 w-full items-center justify-between rounded-md px-2 text-s fg-primary/80 transition-colors ${
+                              billing.disabled
+                                ? 'cursor-not-allowed opacity-50'
+                                : 'hover:bg-subtle focus-visible:bg-subtle'
                             }`}
                           >
+                            {/* Verb-framed billing-mode label keeps the chat-wide switch
+                      distinct from the family-grouped model rows above. */}
+                            <span>Use AI Credits</span>
                             <span
-                              className={`inline-block h-3 w-3 rounded-full bg-fg-emphasis shadow-sm transition-transform duration-200 ${
+                              className={`relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors duration-200 ${
                                 billing.value === 'ai-credits'
-                                  ? 'translate-x-3.5'
-                                  : 'translate-x-0.5'
+                                  ? 'bg-accent'
+                                  : 'bg-fg-primary/25'
                               }`}
-                            />
-                          </span>
-                        </button>
-                      </RichHoverTooltip>
-                      {billing.disabled && billing.lockedReason ? (
-                        <div
-                          data-testid="chat-billing-locked-reason"
-                          className="mt-1.5 px-2 text-3xs leading-snug fg-secondary"
-                        >
-                          {billing.lockedReason}
-                        </div>
-                      ) : null}
-                      {/* Case E: the rows AI Credits can't pay for are hidden rather than
+                            >
+                              <span
+                                className={`inline-block h-3 w-3 rounded-full bg-fg-emphasis shadow-sm transition-transform duration-200 ${
+                                  billing.value === 'ai-credits'
+                                    ? 'translate-x-3.5'
+                                    : 'translate-x-0.5'
+                                }`}
+                              />
+                            </span>
+                          </button>
+                        </RichHoverTooltip>
+                        {billing.disabled && billing.lockedReason ? (
+                          <div
+                            data-testid="chat-billing-locked-reason"
+                            className="mt-1.5 px-2 text-3xs leading-snug fg-secondary"
+                          >
+                            {billing.lockedReason}
+                          </div>
+                        ) : null}
+                        {/* Case E: the rows AI Credits can't pay for are hidden rather than
                   dimmed, so this note is the only thing that says they exist and
                   that the toggle brings them back. Sibling of the locked reason,
                   same visual weight. */}
-                      {hiddenRows.notBillableToCredits > 0 ? (
-                        <div
-                          data-testid="chat-billing-hidden-count"
-                          className="mt-1.5 px-2 text-3xs leading-snug fg-secondary"
-                        >
-                          {/* Names the REMEDY as well as the count: a shrinking list
+                        {hiddenRows.notBillableToCredits > 0 ? (
+                          <div
+                            data-testid="chat-billing-hidden-count"
+                            className="mt-1.5 px-2 text-3xs leading-snug fg-secondary"
+                          >
+                            {/* Names the REMEDY as well as the count: a shrinking list
                       otherwise reads as models being gone rather than filtered,
                       which is the specific failure this note exists to prevent.
 
@@ -2905,16 +2907,16 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
                       worse than saying nothing: it reads as the user having
                       missed something. There the note states the filter and
                       stops. */}
-                          {billing.disabled
-                            ? hiddenRows.notBillableToCredits === 1
-                              ? '1 model is hidden because AI Credits can’t pay for it.'
-                              : `${hiddenRows.notBillableToCredits} models are hidden because AI Credits can’t pay for them.`
-                            : hiddenRows.notBillableToCredits === 1
-                              ? '1 model is hidden because AI Credits can’t pay for it — turn AI Credits off to see it.'
-                              : `${hiddenRows.notBillableToCredits} models are hidden because AI Credits can’t pay for them — turn AI Credits off to see them.`}
-                        </div>
-                      ) : null}
-                      {/* Case C: the toggle is locked purely because the account has no
+                            {billing.disabled
+                              ? hiddenRows.notBillableToCredits === 1
+                                ? '1 model is hidden because AI Credits can’t pay for it.'
+                                : `${hiddenRows.notBillableToCredits} models are hidden because AI Credits can’t pay for them.`
+                              : hiddenRows.notBillableToCredits === 1
+                                ? '1 model is hidden because AI Credits can’t pay for it — turn AI Credits off to see it.'
+                                : `${hiddenRows.notBillableToCredits} models are hidden because AI Credits can’t pay for them — turn AI Credits off to see them.`}
+                          </div>
+                        ) : null}
+                        {/* Case C: the toggle is locked purely because the account has no
                   credits — which the user can fix. Renders the SAME
                   `GetAiCreditsCta` as the modal, so the purchase chain, spinner,
                   hand-off and reprobe are one implementation. `onCovered` flips
@@ -2924,99 +2926,103 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
                   Deliberately absent for `'model-not-routable'` and
                   `'gateway-only-model'` (case D): those are properties of the
                   MODEL, not the account, and no purchase changes them. */}
-                      {billing.disabled && billing.lockKind === 'no-credits' ? (
-                        <div className="mt-1.5 px-2">
-                          <GetAiCreditsCta
-                            variant="inline"
-                            label={AI_CREDITS_PURCHASE_LABEL}
-                            {...(aiCreditsScope ? { aiCreditsScope } : {})}
-                            onCovered={(): void =>
-                              billing.onChange('ai-credits')
-                            }
-                            // The browser, like the chat banners: the purchase
-                            // stays tracked here, so Check again works and the
-                            // composer confirms the credits once they land
-                            // (CAN-5160). Settings would end the hand-off.
-                            billingDestination="browser"
-                            confirmArrival="model-picker"
-                            // Escalation needs a model to snapshot. Without one, OMIT the
-                            // prop entirely so the CTA takes its plain billing hand-off
-                            // path — an `onNeedsRecovery` that early-returns would be a
-                            // click that visibly does nothing, which is the dead end this
-                            // ticket exists to remove.
-                            {...(currentModel
-                              ? {
-                                  onNeedsRecovery: (): void => {
-                                    // Bind the intent to THIS chat's toggle now, while we
-                                    // still have it.
-                                    recoveryBillingOnChangeRef.current =
-                                      billing.onChange;
-                                    dismissMenu();
-                                    setRecoveryAiCreditsScope(aiCreditsScope);
-                                    setPendingRecovery({
-                                      model: currentModel,
-                                      recovery: { kind: 'needs-credits' },
-                                      // The modal must not tell the user that their
-                                      // CURRENT model needs credits — it usually
-                                      // doesn't. They are switching billing mode.
-                                      intent: 'enable-ai-credits',
-                                    });
-                                  },
-                                }
-                              : {})}
-                            dataTestId="chat-billing-get-credits"
-                          />
-                        </div>
-                      ) : null}
-                    </>
-                  ) : null}
-                  {separateVendorTabs &&
-                  showBillingSignIn &&
-                  billing?.lockedReason ? (
-                    <div
-                      data-testid="chat-billing-locked-reason"
-                      className="px-2 py-1 text-3xs leading-snug fg-secondary"
-                    >
-                      {billing.lockedReason}
-                    </div>
-                  ) : null}
-                  {billing &&
-                  billing.disabled &&
-                  billing.lockKind === 'no-native-login' &&
-                  (billing.provider === 'claude' ||
-                    billing.provider === 'codex') ? (
-                    <Button
-                      size="compact"
-                      className="mt-1.5 w-full"
-                      data-testid="chat-billing-sign-in"
-                      onMouseDown={(e): void => {
-                        e.preventDefault();
-                      }}
-                      onClick={(): void => {
-                        // Close the picker dropdown before opening the modal so
-                        // the menu doesn't linger behind AuthLoginModal and
-                        // steal keyboard focus / Escape handling. The modal is
-                        // rendered at the picker root (outside the `open &&`
-                        // menu portal), so closing the dropdown does not unmount
-                        // it.
-                        dismissMenu();
-                        // Snapshot the provider instead of deriving the open modal
-                        // from the live `billing` prop. AuthLoginModal invalidates
-                        // provider availability before each fresh probe, and the
-                        // parent temporarily omits `billing` while that read is
-                        // loading. Keeping the provider here prevents that transient
-                        // state from unmounting/remounting the modal in a loop.
-                        if (
-                          billing.provider === 'claude' ||
-                          billing.provider === 'codex'
-                        ) {
-                          setBillingLoginProvider(billing.provider);
-                        }
-                      }}
-                    >
-                      {connectProviderLabel(getProviderLabel(billing.provider))}
-                    </Button>
-                  ) : null}
+                        {billing.disabled &&
+                        billing.lockKind === 'no-credits' ? (
+                          <div className="mt-1.5 px-2">
+                            <GetAiCreditsCta
+                              variant="inline"
+                              label={AI_CREDITS_PURCHASE_LABEL}
+                              {...(aiCreditsScope ? { aiCreditsScope } : {})}
+                              onCovered={(): void =>
+                                billing.onChange('ai-credits')
+                              }
+                              // The browser, like the chat banners: the purchase
+                              // stays tracked here, so Check again works and the
+                              // composer confirms the credits once they land
+                              // (CAN-5160). Settings would end the hand-off.
+                              billingDestination="browser"
+                              confirmArrival="model-picker"
+                              // Escalation needs a model to snapshot. Without one, OMIT the
+                              // prop entirely so the CTA takes its plain billing hand-off
+                              // path — an `onNeedsRecovery` that early-returns would be a
+                              // click that visibly does nothing, which is the dead end this
+                              // ticket exists to remove.
+                              {...(currentModel
+                                ? {
+                                    onNeedsRecovery: (): void => {
+                                      // Bind the intent to THIS chat's toggle now, while we
+                                      // still have it.
+                                      recoveryBillingOnChangeRef.current =
+                                        billing.onChange;
+                                      dismissMenu();
+                                      setRecoveryAiCreditsScope(aiCreditsScope);
+                                      setPendingRecovery({
+                                        model: currentModel,
+                                        recovery: { kind: 'needs-credits' },
+                                        // The modal must not tell the user that their
+                                        // CURRENT model needs credits — it usually
+                                        // doesn't. They are switching billing mode.
+                                        intent: 'enable-ai-credits',
+                                      });
+                                    },
+                                  }
+                                : {})}
+                              dataTestId="chat-billing-get-credits"
+                            />
+                          </div>
+                        ) : null}
+                      </>
+                    ) : null}
+                    {separateVendorTabs &&
+                    showBillingSignIn &&
+                    billing?.lockedReason ? (
+                      <div
+                        data-testid="chat-billing-locked-reason"
+                        className="px-2 py-1 text-3xs leading-snug fg-secondary"
+                      >
+                        {billing.lockedReason}
+                      </div>
+                    ) : null}
+                    {billing &&
+                    billing.disabled &&
+                    billing.lockKind === 'no-native-login' &&
+                    (billing.provider === 'claude' ||
+                      billing.provider === 'codex') ? (
+                      <Button
+                        size="compact"
+                        className="mt-1.5 w-full"
+                        data-testid="chat-billing-sign-in"
+                        onMouseDown={(e): void => {
+                          e.preventDefault();
+                        }}
+                        onClick={(): void => {
+                          // Close the picker dropdown before opening the modal so
+                          // the menu doesn't linger behind AuthLoginModal and
+                          // steal keyboard focus / Escape handling. The modal is
+                          // rendered at the picker root (outside the `open &&`
+                          // menu portal), so closing the dropdown does not unmount
+                          // it.
+                          dismissMenu();
+                          // Snapshot the provider instead of deriving the open modal
+                          // from the live `billing` prop. AuthLoginModal invalidates
+                          // provider availability before each fresh probe, and the
+                          // parent temporarily omits `billing` while that read is
+                          // loading. Keeping the provider here prevents that transient
+                          // state from unmounting/remounting the modal in a loop.
+                          if (
+                            billing.provider === 'claude' ||
+                            billing.provider === 'codex'
+                          ) {
+                            setBillingLoginProvider(billing.provider);
+                          }
+                        }}
+                      >
+                        {connectProviderLabel(
+                          getProviderLabel(billing.provider),
+                        )}
+                      </Button>
+                    ) : null}
+                  </div>
                 </div>
               )
             : undefined

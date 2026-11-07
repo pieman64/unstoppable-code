@@ -152,7 +152,7 @@ export function ActivityOpenControl({
                   context={context}
                   icon={
                     hitIndex === 0 ? (
-                      <GlobeIcon className="h-4 w-4" aria-hidden="true" />
+                      <GlobeIcon size="sm" aria-hidden="true" />
                     ) : null
                   }
                   onSelect={closeMenu}

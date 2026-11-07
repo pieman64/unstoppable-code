@@ -164,7 +164,11 @@ describe('chat snapshot usage and limit projection (CAN-4114)', () => {
     const first = await readState(snapshot);
     const storedSnapshot: unknown = JSON.parse(JSON.stringify(snapshot));
     const restarted = await readState(storedSnapshot);
-    expect(restarted).toEqual(first);
+    const anyEpoch: unknown = expect.any(String);
+    expect(restarted).toEqual({
+      ...first,
+      eventsCursor: { daemonEpoch: anyEpoch, sequence: first.revision },
+    });
     expect(first.tabs.items[0]?.noBillingSource).toEqual({
       provider: 'claude',
       detectedAt: 3000,

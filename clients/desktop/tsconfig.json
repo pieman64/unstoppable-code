@@ -76,6 +76,9 @@
     },
     {
       "path": "./apps/desktop-app/tests/benchmark"
+    },
+    {
+      "path": "./packages/copilot-recipient"
     }
   ]
 }

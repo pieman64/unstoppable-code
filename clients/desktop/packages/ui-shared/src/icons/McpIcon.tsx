@@ -1,6 +1,7 @@
-import type { JSX, SVGProps } from 'react';
+import type { JSX } from 'react';
+import type { AppIconProps } from './AppIcons';
 import { McpServerIcon } from './McpServerIcon';
 
-export function McpIcon(props: SVGProps<SVGSVGElement>): JSX.Element {
+export function McpIcon(props: AppIconProps): JSX.Element {
   return <McpServerIcon {...props} />;
 }

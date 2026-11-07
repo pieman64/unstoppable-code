@@ -12,8 +12,6 @@ import {
   Button,
   DialogModal,
   EmptyState,
-  CenteredLoadingSpinner,
-  DelayedLoadingPlaceholder,
   Notice,
   SegmentedControl,
   type NoticeIntent,
@@ -83,6 +81,8 @@ export interface AddRepositoryDialogProps<
   readonly selectionAccessory?: ReactNode;
   /** Host notices above the actions, e.g. what Combine pauses. */
   readonly notices?: ReactNode;
+  /** The host cannot accept a submit yet; its notices say why. */
+  readonly submitBlocked?: boolean;
   readonly savedAttempt?: AddRepositorySavedAttempt;
   readonly submitting: boolean;
   readonly errorMessage: string | null;
@@ -130,6 +130,7 @@ export function AddRepositoryDialog<TOption extends WorkspacePickerOption>({
   existingWorktrees,
   selectionAccessory,
   notices,
+  submitBlocked = false,
   savedAttempt,
   submitting,
   errorMessage,
@@ -183,6 +184,7 @@ export function AddRepositoryDialog<TOption extends WorkspacePickerOption>({
   const dismissLocked = submitting && !dismissWhileSubmitting;
   const submitDisabled =
     submitting ||
+    submitBlocked ||
     (existingMode
       ? existingWorktrees.loading || !existingWorktrees.canSubmit
       : loadingOptions ||
@@ -252,7 +254,10 @@ export function AddRepositoryDialog<TOption extends WorkspacePickerOption>({
         </>
       }
     >
-      <div className="flex flex-col gap-4 text-s">
+      <fieldset
+        disabled={submitting}
+        className="flex min-w-0 flex-col gap-4 text-s"
+      >
         {savedAttempt ? (
           <Notice
             intent={savedAttempt.intent}
@@ -302,11 +307,7 @@ export function AddRepositoryDialog<TOption extends WorkspacePickerOption>({
           <>
             <p className="text-xs fg-secondary">{newWorktreesDescription}</p>
 
-            {loadingOptions ? (
-              <DelayedLoadingPlaceholder slowNote="Still loading projects…">
-                <CenteredLoadingSpinner />
-              </DelayedLoadingPlaceholder>
-            ) : workspaceOptions.length === 0 ? (
+            {!loadingOptions && workspaceOptions.length === 0 ? (
               <EmptyState
                 testId="add-repo-to-worktree-modal-empty"
                 title="No eligible projects"
@@ -322,6 +323,8 @@ export function AddRepositoryDialog<TOption extends WorkspacePickerOption>({
                 testIdPrefix="add-repo-to-worktree-modal"
                 listHeight="viewport"
                 renderOptionIcon={renderOptionIcon}
+                loading={loadingOptions}
+                loadingSlowNote="Still loading projects…"
               />
             )}
           </>
@@ -344,7 +347,7 @@ export function AddRepositoryDialog<TOption extends WorkspacePickerOption>({
             </span>
           </Notice>
         )}
-      </div>
+      </fieldset>
     </DialogModal>
   );
 }

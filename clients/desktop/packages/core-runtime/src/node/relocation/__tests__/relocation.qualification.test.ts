@@ -48,6 +48,22 @@ import {
 } from '..';
 
 const exec = promisify(execFile);
+const gitPathSpelling = (path: string): string =>
+  process.platform === 'win32' ? path.replace(/\\/g, '/') : path;
+async function overwriteExistingFile(
+  path: string,
+  contents: string,
+): Promise<void> {
+  // CREATE_ALWAYS refuses Git for Windows' hidden .git files.
+  const file = await fs.open(path, 'r+');
+  try {
+    const bytes = Buffer.from(contents);
+    await file.writeFile(bytes);
+    await file.truncate(bytes.length);
+  } finally {
+    await file.close();
+  }
+}
 const git = async (cwd: string, args: readonly string[]): Promise<string> =>
   (
     await exec('git', [...args], {
@@ -133,11 +149,11 @@ async function repository(path: string): Promise<void> {
 
 async function expectNoStagingReferences(root: string): Promise<void> {
   const snapshot = await treeSnapshot(root, true);
-  const bytes = Buffer.from(workingRoot).toString('hex');
-  for (const contents of Object.values(snapshot)) {
-    expect(contents).not.toContain(workingRoot);
-    expect(contents).not.toContain(bytes);
-  }
+  for (const spelling of new Set([workingRoot, gitPathSpelling(workingRoot)]))
+    for (const contents of Object.values(snapshot)) {
+      expect(contents).not.toContain(spelling);
+      expect(contents).not.toContain(Buffer.from(spelling).toString('hex'));
+    }
 }
 
 it.each(['absolute', 'relative'])(
@@ -155,7 +171,7 @@ it.each(['absolute', 'relative'])(
     if (backlinkKind === 'absolute')
       await writeFile(join(gitDir, 'commondir'), `${join(common, '.git')}\n`);
     else
-      await writeFile(
+      await overwriteExistingFile(
         join(checkout, '.git'),
         `gitdir: ${relative(checkout, gitDir)}\n`,
       );
@@ -227,10 +243,15 @@ it.each(['absolute', 'relative'])(
         repairRelocatedWorkspace(transition, fixture.evidence, manifest, list),
     });
     await expect(lstat(newRoot)).rejects.toMatchObject({ code: 'ENOENT' });
-    expect(
-      await readFile(join(workingRoot, 'checkout', '.git'), 'utf8'),
-    ).not.toContain(workingRoot);
-    expect(await readFile(join(external, '.git'), 'utf8')).toContain(newRoot);
+    const stagingBacklink = await readFile(
+      join(workingRoot, 'checkout', '.git'),
+      'utf8',
+    );
+    expect(stagingBacklink).not.toContain(workingRoot);
+    expect(stagingBacklink).not.toContain(gitPathSpelling(workingRoot));
+    expect(await readFile(join(external, '.git'), 'utf8')).toContain(
+      gitPathSpelling(newRoot),
+    );
     await expect(
       readFile(join(workingRoot, 'runtime', 'core.json')),
     ).rejects.toMatchObject({ code: 'ENOENT' });
@@ -436,7 +457,7 @@ it('relocates managed checkouts of an external bare repository, changing only th
       await git(path, ['rev-parse', '--absolute-git-dir'])
     ).trim();
     expectedBare[relative(common, join(gitDir, 'gitdir'))] = Buffer.from(
-      `${movedOwnedPath(transition, join(path, '.git'))}\n`,
+      `${gitPathSpelling(movedOwnedPath(transition, join(path, '.git')))}\n`,
     ).toString('hex');
   }
   const externalBytes = await treeSnapshot(external, true);
@@ -525,13 +546,17 @@ it('refuses an omitted external checkout, and exposes recovery preimages before 
     }),
   ).rejects.toThrow('external repair failed');
   await repairRelocationGit(transition, plan, workingRoot);
-  expect(await readFile(join(checkout, '.git'), 'utf8')).toContain(newRoot);
+  expect(await readFile(join(checkout, '.git'), 'utf8')).toContain(
+    gitPathSpelling(newRoot),
+  );
   // B may restore an individual external preimage before resuming the frozen plan.
-  await writeFile(join(checkout, '.git'), original);
+  await overwriteExistingFile(join(checkout, '.git'), original);
   expect(await readFile(join(checkout, '.git'), 'utf8')).toBe(original);
   expect(await git(checkout, ['branch', '--show-current'])).toBe('feature\n');
   await repairRelocationGit(transition, plan, workingRoot);
-  expect(await readFile(join(checkout, '.git'), 'utf8')).toContain(newRoot);
+  expect(await readFile(join(checkout, '.git'), 'utf8')).toContain(
+    gitPathSpelling(newRoot),
+  );
   await rename(workingRoot, newRoot);
   expect(await git(checkout, ['branch', '--show-current'])).toBe('feature\n');
 });
@@ -579,7 +604,9 @@ it.each(['write', 'publish'])(
     }
     expect(count).toBe(2);
     // The first effect landed; the second still has its exact frozen preimage.
-    expect(await readFile(join(checkout, '.git'), 'utf8')).toContain(newRoot);
+    expect(await readFile(join(checkout, '.git'), 'utf8')).toContain(
+      gitPathSpelling(newRoot),
+    );
     for (const image of plan.backlinks) {
       const final = movedOwnedPath(transition, image.path);
       const actual =
@@ -589,7 +616,10 @@ it.each(['write', 'publish'])(
       const current = await readFile(actual, 'utf8');
       expect([
         image.contents,
-        image.contents.replaceAll(oldRoot, newRoot),
+        image.contents.replaceAll(
+          gitPathSpelling(oldRoot),
+          gitPathSpelling(newRoot),
+        ),
       ]).toContain(current);
     }
     for (const root of [workingRoot, checkout])

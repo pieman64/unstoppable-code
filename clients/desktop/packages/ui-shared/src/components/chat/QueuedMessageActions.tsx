@@ -287,8 +287,7 @@ export const QueuedMessageActions = memo(function QueuedMessageActions({
         >
           <StopIcon
             data-testid="queued-message-interrupt-icon"
-            width={16}
-            height={16}
+            size="sm"
             className="-my-1"
           />
           Interrupt
@@ -312,8 +311,7 @@ export const QueuedMessageActions = memo(function QueuedMessageActions({
           >
             <RetryIcon
               data-testid="queued-message-retry-icon"
-              width={16}
-              height={16}
+              size="sm"
               className="-my-1"
             />
             Try again
@@ -329,8 +327,7 @@ export const QueuedMessageActions = memo(function QueuedMessageActions({
         >
           <PlayCircleIcon
             data-testid="queued-message-run-now-icon"
-            width={16}
-            height={16}
+            size="sm"
             className="-my-1"
           />
           Run now

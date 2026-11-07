@@ -73,6 +73,9 @@ const files = (): RuntimeModule =>
     handlers: {
       ...none,
       queries: {
+        'worker.agent.provider.list': (): never => {
+          throw new Error('Not exercised.');
+        },
         'worker.filesystem.roots.list': () => roots,
         'worker.filesystem.directory.list': () => ({ entries: [] }),
         'worker.filesystem.file.read': (): never => {

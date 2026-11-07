@@ -1,6 +1,6 @@
 'use client';
 
-import type { ComponentType, JSX, ReactNode, SVGProps } from 'react';
+import type { ComponentType, JSX, ReactNode } from 'react';
 import {
   Button,
   DataTableBody,
@@ -49,6 +49,8 @@ import {
   TimeslotIcon,
   TrashIcon,
   WarningIcon,
+  type AppIconProps,
+  type IconSize,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
@@ -85,7 +87,7 @@ import {
   WorkflowsSearchField,
 } from './workflows-controls';
 
-type Glyph = ComponentType<SVGProps<SVGSVGElement>>;
+type Glyph = ComponentType<AppIconProps>;
 
 const TRIGGER_GLYPHS: Readonly<Record<WorkflowTriggerKind, Glyph>> = {
   schedule: ScheduleIcon,
@@ -109,13 +111,13 @@ const STEP_GLYPHS: Readonly<Record<WorkflowStepGlyph, Glyph>> = {
 
 function TriggerGlyph({
   trigger,
-  size = 14,
+  size = 'sm',
 }: {
   readonly trigger: WorkflowTriggerKind;
-  readonly size?: number;
+  readonly size?: IconSize;
 }): JSX.Element {
   const Icon = TRIGGER_GLYPHS[trigger];
-  return <Icon width={size} height={size} aria-hidden="true" />;
+  return <Icon size={size} aria-hidden="true" />;
 }
 
 /**
@@ -169,8 +171,7 @@ export function WorkflowStepChain({
       </span>
       {shown.length > 0 ? (
         <ChevronRightMediumIcon
-          width={12}
-          height={12}
+          size="sm"
           aria-hidden="true"
           className="fg-quaternary"
         />
@@ -185,7 +186,7 @@ export function WorkflowStepChain({
             title={WORKFLOW_STEP_LABELS[step]}
             data-step={step}
           >
-            <Icon width={14} height={14} aria-hidden="true" />
+            <Icon size="sm" aria-hidden="true" />
           </span>
         );
       })}
@@ -493,12 +494,7 @@ export function WorkflowsLibraryTableRow({
               className="inline-flex min-w-0 items-center gap-1 text-xs fg-warning"
               data-testid="workflows-library-attention"
             >
-              <WarningIcon
-                width={12}
-                height={12}
-                aria-hidden="true"
-                className="shrink-0"
-              />
+              <WarningIcon size="sm" aria-hidden="true" className="shrink-0" />
               <span className="truncate">{row.attention}</span>
             </span>
           ) : null}
@@ -575,7 +571,7 @@ export function WorkflowsLibraryTableRow({
                     testId="workflows-library-run"
                     onClick={(): void => onAction(row, 'run')}
                   >
-                    <PlayIcon width={14} height={14} aria-hidden="true" />
+                    <PlayIcon size="sm" aria-hidden="true" />
                   </TableActionButton>
                 ) : null}
               </>
@@ -801,7 +797,7 @@ export function WorkflowsLibraryPagination({
             data-testid="workflows-library-page-previous"
             onClick={(): void => onPageChange(page.page - 1)}
           >
-            <ChevronLeftMediumIcon width={16} height={16} aria-hidden="true" />
+            <ChevronLeftMediumIcon size="sm" aria-hidden="true" />
           </Button>
           {numbers.map((number) => (
             <Button
@@ -824,7 +820,7 @@ export function WorkflowsLibraryPagination({
             data-testid="workflows-library-page-next"
             onClick={(): void => onPageChange(page.page + 1)}
           >
-            <ChevronRightMediumIcon width={16} height={16} aria-hidden="true" />
+            <ChevronRightMediumIcon size="sm" aria-hidden="true" />
           </Button>
         </nav>
       ) : null}

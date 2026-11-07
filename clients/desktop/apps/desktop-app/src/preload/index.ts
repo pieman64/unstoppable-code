@@ -3198,10 +3198,6 @@ const canopyApi: CanopyApi = {
         .catch(() => undefined);
     };
   },
-  loadCloudDailyCreditDrip: () =>
-    ipcRenderer.invoke(IPC_CHANNELS.settingsLoadDailyCreditDrip),
-  saveCloudDailyCreditDrip: (request) =>
-    ipcRenderer.invoke(IPC_CHANNELS.settingsSaveDailyCreditDrip, request),
   loadCloudReleaseNotes: (version) =>
     ipcRenderer.invoke(IPC_CHANNELS.settingsLoadCloudReleaseNotes, version),
   loadCloudDigestPreferences: () =>
@@ -3255,6 +3251,22 @@ const canopyApi: CanopyApi = {
     ipcRenderer.invoke(IPC_CHANNELS.githubSearchPullRequests, request),
   getRepoSlug: (request) =>
     ipcRenderer.invoke(IPC_CHANNELS.githubGetRepoSlug, request),
+  prepareFeedbackDiagnostics: (request) =>
+    ipcRenderer.invoke(IPC_CHANNELS.feedbackDiagnosticsPrepare, request),
+  readFeedbackDiagnosticsEntry: (snapshotId, entryPath) =>
+    ipcRenderer.invoke(
+      IPC_CHANNELS.feedbackDiagnosticsRead,
+      snapshotId,
+      entryPath,
+    ),
+  saveFeedbackDiagnostics: (snapshotId) =>
+    ipcRenderer.invoke(IPC_CHANNELS.feedbackDiagnosticsSave, snapshotId),
+  releaseFeedbackDiagnostics: (snapshotId) =>
+    ipcRenderer.invoke(IPC_CHANNELS.feedbackDiagnosticsRelease, snapshotId),
+  submitFeedbackReport: (request) =>
+    ipcRenderer.invoke(IPC_CHANNELS.feedbackReportSubmit, request),
+  feedbackDiagnosticsCapabilities: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.feedbackDiagnosticsCapabilities),
   prepareFeedback: (request) =>
     ipcRenderer.invoke(IPC_CHANNELS.feedbackPrepare, request),
   submitFeedback: (request) =>

@@ -10,6 +10,8 @@ import {
   OnboardingTipSpecimen,
   OpenCodeAccountSpecimen,
   PageColumnSpecimen,
+  ComposerSuggestionMenuSpecimen,
+  PickListResultsSpecimen,
   PickListSpecimen,
   PipelineDispatchedTimeSpecimen,
 } from './componentsLabPanels';
@@ -102,6 +104,24 @@ export const GAP_ROOT_3A_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     source: `${SRC}/PickList.tsx`,
     prs: [],
     View: PickListSpecimen,
+  },
+  {
+    id: 'pick-list-results',
+    name: 'PickListResults',
+    group: 'Unified',
+    note: 'The results of a PickList for a host that owns its input, a palette or a composer: usePickListKeys drives it, and it brings the sections, tabs, disabled rows and row-end controls.',
+    source: `${SRC}/PickList.tsx`,
+    prs: [],
+    View: PickListResultsSpecimen,
+  },
+  {
+    id: 'composer-suggestion-menu',
+    name: 'ComposerSuggestionMenu',
+    group: 'Unified',
+    note: 'A list that suggests as the user types: above the composer at its width, in the 20px corners, and it never takes focus.',
+    source: `${SRC}/ComposerSuggestionMenu.tsx`,
+    prs: [],
+    View: ComposerSuggestionMenuSpecimen,
   },
   {
     id: 'pipeline-dispatched-time',

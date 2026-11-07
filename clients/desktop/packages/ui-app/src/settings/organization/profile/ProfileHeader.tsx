@@ -10,6 +10,7 @@ import { TeamRoleBadge } from '../team-role-badge';
 import { ProfileIdentityEditor } from './ProfileIdentityEditor';
 import type { ProfileEditTarget } from './use-profile-editor';
 import { Heading } from '@canopy/ui-shared/components';
+import { Surface } from '@canopy/ui-shared/components';
 
 interface ProfileHeaderProps {
   member: MemberProfileHeader;
@@ -87,39 +88,45 @@ export function ProfileHeader({
   );
 
   return (
-    <header
+    <Surface
+      as="header"
+      variant="raised"
+      padding="roomy"
       data-testid="profile-header"
       data-editable={editContext ? 'true' : 'false'}
       data-edit-mode={editContext?.mode ?? 'none'}
-      className="flex flex-col items-start gap-4 rounded-xl bg-card p-6 shadow-sm sm:flex-row sm:items-center"
     >
-      {editContext ? (
-        <ProfileIdentityEditor
-          initialName={member.name}
-          initialImage={member.image}
-          roleBadge={<TeamRoleBadge role={role} />}
-          target={editContext}
-        >
-          {meta}
-        </ProfileIdentityEditor>
-      ) : (
-        <>
-          <MemberAvatar name={member.name} image={member.image} size="2xl" />
-          <div className="flex min-w-0 flex-col gap-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <Heading level={1} variant="page" truncate>
-                <span
-                  className={blockClassName === '' ? undefined : blockClassName}
-                >
-                  {member.name}
-                </span>
-              </Heading>
-              <TeamRoleBadge role={role} />
-            </div>
+      <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-center">
+        {editContext ? (
+          <ProfileIdentityEditor
+            initialName={member.name}
+            initialImage={member.image}
+            roleBadge={<TeamRoleBadge role={role} />}
+            target={editContext}
+          >
             {meta}
-          </div>
-        </>
-      )}
-    </header>
+          </ProfileIdentityEditor>
+        ) : (
+          <>
+            <MemberAvatar name={member.name} image={member.image} size="2xl" />
+            <div className="flex min-w-0 flex-col gap-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <Heading level={1} variant="page" truncate>
+                  <span
+                    className={
+                      blockClassName === '' ? undefined : blockClassName
+                    }
+                  >
+                    {member.name}
+                  </span>
+                </Heading>
+                <TeamRoleBadge role={role} />
+              </div>
+              {meta}
+            </div>
+          </>
+        )}
+      </div>
+    </Surface>
   );
 }

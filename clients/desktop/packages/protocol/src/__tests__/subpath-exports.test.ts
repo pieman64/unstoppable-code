@@ -202,28 +202,33 @@ describe('@canopy/protocol subpath exports', () => {
   });
 });
 
-it('bundles the app-error contract and handler using only protocol and Zod', async () => {
-  const result = await build({
-    absWorkingDir: REPO_ROOT,
-    stdin: {
-      resolveDir: REPO_ROOT,
-      contents: "export * from '@canopy/protocol/app-errors';",
-    },
-    tsconfigRaw: { compilerOptions: {} },
-    bundle: true,
-    platform: 'browser',
-    format: 'esm',
-    write: false,
-    metafile: true,
-  });
-  const forbidden = Object.keys(result.metafile.inputs).filter(
-    (input) =>
-      input !== '<stdin>' &&
-      !input.startsWith('packages/protocol/src/') &&
-      !/^node_modules\/(?:\.pnpm\/zod@[^/]+\/node_modules\/)?zod\//.test(input),
-  );
-  expect(forbidden).toEqual([]);
-});
+it.each(['app-errors', 'feedback-report'])(
+  'bundles %s using only protocol and Zod',
+  async (subpath) => {
+    const result = await build({
+      absWorkingDir: REPO_ROOT,
+      stdin: {
+        resolveDir: REPO_ROOT,
+        contents: `export * from '@canopy/protocol/${subpath}';`,
+      },
+      tsconfigRaw: { compilerOptions: {} },
+      bundle: true,
+      platform: 'browser',
+      format: 'esm',
+      write: false,
+      metafile: true,
+    });
+    const forbidden = Object.keys(result.metafile.inputs).filter(
+      (input) =>
+        input !== '<stdin>' &&
+        !input.startsWith('packages/protocol/src/') &&
+        !/^node_modules\/(?:\.pnpm\/zod@[^/]+\/node_modules\/)?zod\//.test(
+          input,
+        ),
+    );
+    expect(forbidden).toEqual([]);
+  },
+);
 
 it('bundles published file-indexing and desktop compatibility exports for browsers without Node', async () => {
   const result = await build({

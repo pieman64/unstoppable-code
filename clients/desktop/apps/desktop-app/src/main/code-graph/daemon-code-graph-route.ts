@@ -25,6 +25,7 @@ import {
 } from '../canopy-runtime/electron-daemon-access';
 import type { ElectronDaemonClient } from '../canopy-runtime/electron-daemon-host';
 import { getElectronDaemonHealth } from '../canopy-runtime/electron-daemon-health';
+import { getDaemonCodeGraphQueue } from '../canopy-runtime/daemon-code-graph-queue';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { isCodeGraphAvailableForWorkspace } from '../lib/code-graph-availability';
 import { recordCodeGraphGenerationReport } from '../lib/code-graph-generation-report';
@@ -32,6 +33,7 @@ import { codeGraphReadRecorders } from './read-recorders';
 import {
   codeGraphGenerationReportOf,
   codeGraphReadReportOf,
+  codeGraphUnavailableError,
   recordCodeGraphReadReport,
 } from '@canopy/core-runtime/node/code-graph';
 import { CanopyClientError } from '@canopy/core-client';
@@ -149,8 +151,12 @@ async function client(): Promise<ElectronDaemonClient> {
     interfaceKind: 'desktop',
     grants: [WORKER_CODE_GRAPH_GRANTS.read, WORKER_CODE_GRAPH_GRANTS.write],
   };
-  return (await getElectronDaemonConnections().get(caller, owner.signal))
-    .client;
+  const session = await getElectronDaemonConnections().get(
+    caller,
+    owner.signal,
+  );
+  getDaemonCodeGraphQueue().observe(session);
+  return session.client;
 }
 
 /**
@@ -158,7 +164,7 @@ async function client(): Promise<ElectronDaemonClient> {
  * the answer, the daemon may still prepare, build or drain derived analysis
  * for them, so cleanup ends their graph work there.
  */
-const built = new Set<string>();
+const built = new Map<string, { workspaceId: string; worktreeId: string }>();
 
 function worktreeKey(workspaceId: string, worktreeId: string): string {
   return `${workspaceId}/${worktreeId}`;
@@ -175,7 +181,12 @@ export async function buildCodeGraphInDaemon(
     { kind: 'worktree' }
   >,
 ): Promise<WorkerCodeGraphBuildResult> {
-  built.add(worktreeKey(graphScope.workspaceId, graphScope.worktreeId));
+  const key = worktreeKey(graphScope.workspaceId, graphScope.worktreeId);
+  const target = {
+    workspaceId: graphScope.workspaceId,
+    worktreeId: graphScope.worktreeId,
+  };
+  built.set(key, target);
   const record = (report: WorkerCodeGraphGenerationReport | null): void => {
     if (report)
       recordCodeGraphGenerationReport({
@@ -186,9 +197,13 @@ export async function buildCodeGraphInDaemon(
   };
   let result: WorkerCodeGraphBuildResult;
   try {
-    result = await (
-      await client()
-    ).instruction(
+    const session = await client();
+    // Code Graph may have turned off while the session opened; once sent,
+    // availability reconciliation cancels the build (CAN-5840).
+    if (!isCodeGraphAvailableForWorkspace(graphScope.workspaceId))
+      throw codeGraphUnavailableError();
+    built.set(key, target);
+    result = await session.instruction(
       'worker.codeGraph.build',
       { graphScope },
       { metadata: { idempotencyKey: randomUUID() } },
@@ -235,6 +250,66 @@ export async function drainDaemonCodeGraphWorktree(
       reason: 'daemon refused or unreachable',
     });
   }
+}
+
+/**
+ * Availability reconciliation (CAN-5840): ends the daemon's graph work,
+ * queued, running or still preparing, for every worktree whose project the
+ * Code Graph flag or preference turned off. The daemon reads the preference
+ * itself but never the flag, which stays with this client. Targets are this
+ * app's remembered daemon worktrees and the worktree items of the daemon's
+ * current queue view; with neither, the daemon is not contacted. A refusal
+ * or an unreachable daemon warns and leaves the worktree remembered.
+ */
+export async function cancelUnavailableDaemonCodeGraphBuilds(
+  isAvailable: (workspaceId: string) => boolean,
+): Promise<void> {
+  const targets = new Map(built);
+  for (const item of getDaemonCodeGraphQueue().current()?.items ?? []) {
+    const workspaceId = item.workspaceIds[0];
+    if (
+      item.graphScope === 'worktree' &&
+      item.worktreeId !== null &&
+      workspaceId !== undefined
+    ) {
+      targets.set(worktreeKey(workspaceId, item.worktreeId), {
+        workspaceId,
+        worktreeId: item.worktreeId,
+      });
+    }
+  }
+  const unavailable = Array.from(targets).filter(
+    ([, target]) => !isAvailable(target.workspaceId),
+  );
+  if (unavailable.length === 0) return;
+  // Remembered until a cancel succeeds, so a failed one is retried later.
+  for (const [key, target] of unavailable) built.set(key, target);
+  let session: ElectronDaemonClient;
+  try {
+    session = await client();
+  } catch {
+    logMainProcessWarn('Daemon code graph builds were not cancelled.', {
+      reason: 'daemon unreachable',
+    });
+    return;
+  }
+  await Promise.all(
+    unavailable.map(async ([key, target]) => {
+      try {
+        await session.instruction(
+          'worker.codeGraph.builds.cancel',
+          { workspaceId: target.workspaceId, worktreeId: target.worktreeId },
+          { metadata: { idempotencyKey: randomUUID() } },
+        );
+        // A build sent while the cancel ran stays remembered.
+        if (built.get(key) === target) built.delete(key);
+      } catch {
+        logMainProcessWarn('Daemon code graph builds were not cancelled.', {
+          reason: 'daemon refused or unreachable',
+        });
+      }
+    }),
+  );
 }
 
 /**

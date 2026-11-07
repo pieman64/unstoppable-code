@@ -85,6 +85,63 @@ export function FactsSpecimen(): JSX.Element {
           <Fact label="Effort">High</Fact>
         </FactList>
       </SpecimenPanel>
+      <SpecimenPanel title="FactList, spread and inline">
+        <SpecimenGrid min={280}>
+          <SpecimenCell label="Spread, as on a tooltip: inherited ink, 2xs">
+            <div className="w-56">
+              <FactList
+                layout="spread"
+                size="2xs"
+                rowGap="0.5"
+                labelTone="inherit"
+                valueTone="inherit"
+              >
+                <Fact label="Provider" fit="row">
+                  Anthropic
+                </Fact>
+                <Fact label="Billing" fit="row">
+                  Organization gateway
+                </Fact>
+                <Fact label="Context" fit="row">
+                  A long value that wraps to a second line at the trailing edge
+                </Fact>
+              </FactList>
+            </div>
+          </SpecimenCell>
+          <SpecimenCell label="Inline, a chart legend: swatch, value, quiet detail">
+            <FactList
+              layout="inline"
+              rowGap="1"
+              columnGap="3"
+              labelTone="secondary"
+            >
+              <Fact
+                label="Input"
+                swatch="var(--chart-categorical-1)"
+                detail="61%"
+                numeric
+              >
+                $1.24
+              </Fact>
+              <Fact
+                label="Output"
+                swatch="var(--chart-categorical-2)"
+                detail="21%"
+                numeric
+              >
+                $0.42
+              </Fact>
+              <Fact
+                label="Cache reads"
+                swatch="var(--chart-categorical-3)"
+                numeric
+              >
+                $0.36
+              </Fact>
+            </FactList>
+          </SpecimenCell>
+        </SpecimenGrid>
+      </SpecimenPanel>
       <SpecimenPanel title="ValueRows (figures in panels, sheets and popovers)">
         <div className="max-w-110">
           <ValueRows>

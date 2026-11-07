@@ -40,6 +40,7 @@ import {
   SegmentedControl,
   type SegmentedControlOption,
   Skeleton,
+  Surface,
   TextArea,
   TextInput,
   WordBoundaryTruncatedText,
@@ -122,7 +123,7 @@ function LinearTicketCard({
 }: LinearTicketCardProps): JSX.Element {
   const description = ticket.description?.trim() ?? '';
   return (
-    <div className="rounded-lg border bg-base p-3">
+    <Surface variant="inset" padding="compact">
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
@@ -155,7 +156,7 @@ function LinearTicketCard({
           Change ticket
         </Button>
       </div>
-    </div>
+    </Surface>
   );
 }
 
@@ -231,9 +232,9 @@ function LinearSearch({
         data-testid="create-task-linear-search"
       />
       {dropdownContent && (
-        <div className="max-h-64 overflow-y-auto rounded-lg border bg-base">
-          {dropdownContent}
-        </div>
+        <Surface variant="inset" className="overflow-hidden">
+          <div className="max-h-64 overflow-y-auto">{dropdownContent}</div>
+        </Surface>
       )}
     </div>
   );
@@ -280,22 +281,24 @@ function BranchResultList({
   onSelect,
 }: Omit<BranchResultsProps, 'loading'>): JSX.Element {
   return (
-    <ul className="max-h-64 overflow-y-auto rounded-lg border bg-base p-1">
-      {options.map((option) => {
-        const badge = getBranchProvenanceBadge(option);
-        return (
-          <li key={option.name}>
-            <ListRow
-              onClick={() => onSelect(option.name)}
-              data-testid={`create-from-branch-result-${option.name}`}
-              trailing={badge || undefined}
-            >
-              <span className="font-mono">{option.name}</span>
-            </ListRow>
-          </li>
-        );
-      })}
-    </ul>
+    <Surface variant="inset" className="overflow-hidden">
+      <ul className="max-h-64 overflow-y-auto p-1">
+        {options.map((option) => {
+          const badge = getBranchProvenanceBadge(option);
+          return (
+            <li key={option.name}>
+              <ListRow
+                onClick={() => onSelect(option.name)}
+                data-testid={`create-from-branch-result-${option.name}`}
+                trailing={badge || undefined}
+              >
+                <span className="font-mono">{option.name}</span>
+              </ListRow>
+            </li>
+          );
+        })}
+      </ul>
+    </Surface>
   );
 }
 
@@ -319,9 +322,9 @@ function BranchResults({
   }
   if (options.length === 0) {
     return (
-      <p className="rounded-lg border bg-base px-3 py-2 text-xs fg-secondary">
-        No matching branches
-      </p>
+      <Surface variant="inset">
+        <p className="px-3 py-2 text-xs fg-secondary">No matching branches</p>
+      </Surface>
     );
   }
   return <BranchResultList options={options} onSelect={onSelect} />;
@@ -340,9 +343,11 @@ function PrPreview({
 }: PrPreviewProps): JSX.Element | null {
   if (resolving) {
     return (
-      <div className="flex items-center justify-center rounded-lg border bg-base px-3 py-3 fg-secondary">
-        <LoadingSpinner />
-      </div>
+      <Surface variant="inset">
+        <div className="flex items-center justify-center px-3 py-3 fg-secondary">
+          <LoadingSpinner />
+        </div>
+      </Surface>
     );
   }
   if (error) {
@@ -354,9 +359,10 @@ function PrPreview({
     return null;
   }
   return (
-    <div
+    <Surface
       data-testid="create-from-pr-card"
-      className="rounded-lg border bg-base p-3"
+      variant="inset"
+      padding="compact"
     >
       <div className="flex items-center gap-2">
         <span className="rounded bg-fg-primary/[0.08] px-1.5 py-0.5 font-mono text-2xs fg-primary">
@@ -370,7 +376,7 @@ function PrPreview({
         Checks out <span className="font-mono">{pr.headRefName}</span> (into{' '}
         <span className="font-mono">{pr.baseRefName}</span>)
       </p>
-    </div>
+    </Surface>
   );
 }
 
@@ -678,20 +684,26 @@ export function CreateTaskModal({
     >
       <div className="flex-1 space-y-4 overflow-y-auto px-6 py-4 text-s">
         {eligibleWorkspaces.length === 0 ? (
-          <div className="rounded-lg border border-dashed bg-secondary/10 p-4 text-s fg-secondary">
-            No eligible projects available. Add a single-repo project or attach
-            a source repository to a multi-repo project to create a task.
-          </div>
+          <Surface variant="dashed" padding="default">
+            <div className="text-s fg-secondary">
+              No eligible projects available. Add a single-repo project or
+              attach a source repository to a multi-repo project to create a
+              task.
+            </div>
+          </Surface>
         ) : (
           <>
             {contextChanged && (
-              <p
-                role="status"
-                data-testid="create-task-context-changed"
-                className="rounded-md border px-3 py-2 text-xs fg-secondary"
-              >
-                The project and task draft were reset for the selected context.
-              </p>
+              <Surface variant="outline" size="small">
+                <p
+                  className="px-3 py-2 text-xs fg-secondary"
+                  role="status"
+                  data-testid="create-task-context-changed"
+                >
+                  The project and task draft were reset for the selected
+                  context.
+                </p>
+              </Surface>
             )}
             <div>
               <span className="mb-1.5 block text-xs fg-secondary">Project</span>
@@ -723,20 +735,23 @@ export function CreateTaskModal({
                 />
                 {mode === 'branch' &&
                   (selectedBranch ? (
-                    <div
+                    <Surface
+                      variant="inset"
+                      padding="compact"
                       data-testid="create-from-branch-selected"
-                      className="flex items-center gap-2 rounded-lg border bg-base p-3"
                     >
-                      <span className="min-w-0 flex-1 truncate font-mono text-s fg-primary">
-                        {selectedBranch}
-                      </span>
-                      <Button
-                        size="compact"
-                        onClick={() => setSelectedBranch(null)}
-                      >
-                        Change branch
-                      </Button>
-                    </div>
+                      <div className="flex items-center gap-2">
+                        <span className="min-w-0 flex-1 truncate font-mono text-s fg-primary">
+                          {selectedBranch}
+                        </span>
+                        <Button
+                          size="compact"
+                          onClick={() => setSelectedBranch(null)}
+                        >
+                          Change branch
+                        </Button>
+                      </div>
+                    </Surface>
                   ) : (
                     <BranchResults
                       loading={branchTargetsLoading}
@@ -820,7 +835,7 @@ export function CreateTaskModal({
           disabled={!canSubmitPipeline}
           data-testid="create-task-pipeline-button"
         >
-          <PipelineIcon width={14} height={14} />
+          <PipelineIcon size="sm" />
           Workflow
         </Button>
         <Button
@@ -829,7 +844,7 @@ export function CreateTaskModal({
           disabled={!canSubmit}
           data-testid="create-task-plan-button"
         >
-          <PlanModeIcon width={14} height={14} />
+          <PlanModeIcon size="sm" />
           Plan
         </Button>
         <Button
@@ -839,7 +854,7 @@ export function CreateTaskModal({
           disabled={!canSubmit}
           data-testid="create-task-chat-button"
         >
-          <ChatIcon width={14} height={14} />
+          <ChatIcon size="sm" />
           Chat
         </Button>
       </div>

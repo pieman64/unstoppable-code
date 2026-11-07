@@ -25,6 +25,7 @@ import { useSettingsClient, useSettingsPrivacy } from '../host';
 import { fetchMemoryJobs } from './api';
 import { useMemoryErrorCopy } from './memory-error-copy';
 import type { SettingsFailure } from '../errors';
+import { Surface } from '@canopy/ui-shared/components';
 
 interface OpsViewProps {
   orgId: string;
@@ -231,7 +232,7 @@ export function OpsView({
           )}
         </section>
 
-        <section className="rounded-xl border bg-card p-4">
+        <Surface as="section" variant="card" padding="default">
           <Heading level={2} variant="section">
             Recently injected
           </Heading>
@@ -284,15 +285,16 @@ export function OpsView({
                   {entry.injectedFacts.length > 0 && (
                     <ul className="mt-2 space-y-1">
                       {entry.injectedFacts.map((fact) => (
-                        <li
-                          key={fact.id}
-                          className={withPrivacyClass(
-                            'line-clamp-2 rounded-md bg-base px-2 py-1.5 text-xs fg-secondary',
-                            blockClassName,
-                          )}
-                        >
-                          {fact.factText}
-                        </li>
+                        <Surface as="li" variant="inset" key={fact.id}>
+                          <div
+                            className={withPrivacyClass(
+                              'line-clamp-2 px-2 py-1.5 text-xs fg-secondary',
+                              blockClassName,
+                            )}
+                          >
+                            {fact.factText}
+                          </div>
+                        </Surface>
                       ))}
                     </ul>
                   )}
@@ -300,10 +302,15 @@ export function OpsView({
               ))
             )}
           </div>
-        </section>
+        </Surface>
       </div>
 
-      <aside className="h-fit rounded-xl border bg-card p-4 xl:sticky xl:top-6">
+      <Surface
+        as="aside"
+        variant="card"
+        padding="default"
+        className="self-start xl:sticky xl:top-6"
+      >
         <Heading level={2} variant="section">
           Effective configuration
         </Heading>
@@ -320,7 +327,7 @@ export function OpsView({
             ))}
           </ValueRows>
         </div>
-      </aside>
+      </Surface>
     </div>
   );
 }

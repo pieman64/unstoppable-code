@@ -49,7 +49,7 @@ import { getWorkspaceWorktreeRepoDir } from './paths';
 import { isModelBlockedByStoredPolicy } from './model-policy-state';
 import { resolveHelperWorkOwner } from '../ollama/helper-invocation';
 import { readPreferencesFile } from '../lib/preferences-store';
-import { getObservabilityService } from '../observability';
+import { getExecutionObservabilityIngest } from '../observability/ingest';
 import type { HelperUsage } from '../agents/utils';
 import { sendToAllWindows } from './window-send';
 import { logMainProcessWarn } from './main-process-logging';
@@ -256,7 +256,7 @@ export async function generateDesktopWorktreeSummary(
 
     const { generateWorktreeSummary } =
       await import('./worktree-summary-generator');
-    const observability = getObservabilityService();
+    const observability = getExecutionObservabilityIngest();
     const taskKey = `helper:worktree-summary:${projectId}/${worktreeId}:${Date.now()}`;
     const worktreeSummaryHarness = getExecutionHarnessForModel(
       preferences.worktreeSummaryModel,

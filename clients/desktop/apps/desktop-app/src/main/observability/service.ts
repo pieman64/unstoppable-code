@@ -149,7 +149,11 @@ import {
   parseGetAccountRateLimitsPayload,
   parseGetAccountResponsePayload,
 } from '../codex/app-server-client';
-import { computeCodexObservedCost } from '../openai-pricing/cost-calculator';
+import {
+  codexLongContextThreshold,
+  computeCodexObservedCost,
+  type CodexObservedCostInput,
+} from '../openai-pricing/cost-calculator';
 import {
   CodexSubagentUsageTracker,
   isCodexSubagentThreadStarted,
@@ -237,6 +241,7 @@ import {
   toIsoDay,
   upsertUsageEventById,
   USAGE_EVENT_RETENTION_DAYS,
+  type CanonicalChatTurnDuration,
   type ObservabilityInstrumentationPort,
   type ObservabilityOperationName,
   type ObservabilityPricingState,
@@ -285,6 +290,8 @@ import type {
 } from './types';
 
 const RECENT_ENTRY_LIMIT = 200;
+const CANONICAL_DURATION_EVENT_TYPES: ReadonlySet<AgentAuditEventType> =
+  new Set(['worktree_chat', 'standalone_chat', 'worktree_plan_chat']);
 
 /** The chat turn a plan usage event is counted on. */
 interface PlanUsageTarget {
@@ -521,6 +528,12 @@ interface OpenAuditEntry {
   seenManualPrCreateKeys: Set<string>;
   currentPauseStartedAtMs?: number;
   pausedDurationMs: number;
+  /**
+   * The canonical turn reducer's durations for this chat turn, by canonical
+   * turn id (CAN-5096). A tools reload continues the entry as a second
+   * canonical turn, so the entry's duration is their sum.
+   */
+  canonicalDurations?: Map<string, { durationMs: number; pausedMs: number }>;
   seenCompactionIds: Set<string>;
   contextEndTokens?: number;
   /**
@@ -532,6 +545,16 @@ interface OpenAuditEntry {
   codexCumulativeTokenUsage?: Map<string, CodexTurnTokenUsage>;
   /** Provider turns already accounted from cumulative snapshots. */
   codexCumulativeUsageTurnIds?: Set<string>;
+  /**
+   * The part of `entry.tokens` from requests whose own input passed the
+   * model's long-context threshold. Set only when every request of the entry
+   * was observed here, so pricing can apply the long rate per request.
+   * shortcut: in memory only, so an entry revived after a restart is priced
+   * on its summed input; persist it on the entry if that case matters.
+   */
+  codexLongContextTokens?: CodexTurnTokenUsage;
+  /** Whether the split's first request, the one a model switch's cache miss falls on, was long-context. */
+  codexFirstRequestLongContext?: boolean;
   /** Root provider turn currently eligible for streamed token accounting. */
   codexActiveProviderTurn?: { threadId: string; turnId: string };
   /** Provider-native child usage; chat state survives turns, pipeline state does not. */
@@ -557,6 +580,51 @@ interface CodexTurnTokenUsage {
   outputTokens?: number;
   cacheReadInputTokens?: number;
   reasoningOutputTokens?: number;
+}
+
+/** The entry's per-request long-context split, as costing takes it. */
+function codexLongContextCostInput(
+  openEntry: OpenAuditEntry,
+): Pick<CodexObservedCostInput, 'longContextTokens'> {
+  const split = openEntry.codexLongContextTokens;
+  return split
+    ? {
+        longContextTokens: {
+          input: split.inputTokens ?? 0,
+          output: split.outputTokens ?? 0,
+          cacheReadInputTokens: split.cacheReadInputTokens ?? 0,
+          cacheCreationInputTokens: 0,
+        },
+      }
+    : {};
+}
+
+/** The long-context split with the benchmark's cache adjustment applied. */
+function benchmarkLongContextCostInput(
+  openEntry: OpenAuditEntry,
+  cacheMissContextTokens: number | undefined,
+): Pick<CodexObservedCostInput, 'longContextTokens'> {
+  const longContext = codexLongContextCostInput(openEntry);
+  const split = longContext.longContextTokens;
+  // A model switch misses the cache on the turn's first request, so the
+  // adjustment belongs to the split only when that request was long-context.
+  if (!split || !openEntry.codexFirstRequestLongContext) return longContext;
+  const usage = benchmarkModelRoutingUsage(
+    {
+      input: split.input,
+      output: split.output,
+      cacheReadInput: split.cacheReadInputTokens,
+      cacheCreationInput: split.cacheCreationInputTokens,
+    },
+    cacheMissContextTokens,
+  );
+  return {
+    longContextTokens: {
+      ...split,
+      cacheReadInputTokens: usage.cacheReadInput,
+      cacheCreationInputTokens: usage.cacheCreationInput,
+    },
+  };
 }
 
 function hasCodexTokenUsage(usage: CodexTurnTokenUsage): boolean {
@@ -6275,6 +6343,32 @@ export class ObservabilityService {
         : hasCodexTokenUsage(latestUsage)
           ? latestUsage
           : cumulativeUsage;
+      // OpenAI bills the long-context rate per request: `latestUsage` is this
+      // one request, so its input decides where its tokens go. The split only
+      // starts on an entry with no earlier usage, so it covers every request.
+      const firstRequest =
+        openEntry.codexLongContextTokens === undefined &&
+        openEntry.entry.tokens.input === 0 &&
+        openEntry.entry.tokens.output === 0;
+      if (firstRequest) openEntry.codexLongContextTokens = {};
+      const threshold = codexLongContextThreshold(
+        openEntry.entry.model,
+        this.host.pricing.current(),
+      );
+      if (openEntry.codexLongContextTokens !== undefined) {
+        if (threshold === undefined) {
+          // Pricing isn't loaded (or the model has no rule), so this request
+          // can't be classified: an incomplete split must not be trusted, and
+          // pricing falls back to the summed input.
+          delete openEntry.codexLongContextTokens;
+        } else if ((latestUsage.inputTokens ?? 0) > threshold) {
+          if (firstRequest) openEntry.codexFirstRequestLongContext = true;
+          openEntry.codexLongContextTokens = addCodexTokenUsage(
+            openEntry.codexLongContextTokens,
+            increment,
+          );
+        }
+      }
       const updated = addCodexTokenUsage(
         {
           inputTokens: openEntry.entry.tokens.input,
@@ -6588,6 +6682,38 @@ export class ObservabilityService {
       Date.now() - openEntry.currentPauseStartedAtMs,
     );
     openEntry.currentPauseStartedAtMs = undefined;
+  }
+
+  recordCanonicalTurnDuration(
+    projectId: string,
+    worktreeId: string,
+    chatId: string,
+    turn: CanonicalChatTurnDuration,
+  ): void {
+    const key = `chat:${projectId}/${worktreeId}/${chatId}`;
+    const openEntry = this.openEntries.get(key);
+    if (
+      !openEntry ||
+      !CANONICAL_DURATION_EVENT_TYPES.has(openEntry.entry.eventType) ||
+      !Number.isFinite(turn.durationMs) ||
+      turn.durationMs < 0 ||
+      !Number.isFinite(turn.pausedMs) ||
+      turn.pausedMs < 0
+    ) {
+      return;
+    }
+    const sameMessage =
+      turn.userMessageId !== undefined &&
+      openEntry.entry.userMessageId === turn.userMessageId;
+    const sameAutonomousTurn =
+      openEntry.entry.autonomous === true &&
+      this.openedAutonomousTurnIds.get(key) === turn.turnId;
+    if (!sameMessage && !sameAutonomousTurn) return;
+    openEntry.canonicalDurations ??= new Map();
+    openEntry.canonicalDurations.set(turn.turnId, {
+      durationMs: turn.durationMs,
+      pausedMs: turn.pausedMs,
+    });
   }
 
   seedTranscript(key: string, options: TranscriptSeedOptions): void {
@@ -8352,11 +8478,26 @@ export class ObservabilityService {
       openEntry.currentPauseStartedAtMs === undefined
         ? 0
         : Math.max(0, completedAtMs - openEntry.currentPauseStartedAtMs);
-    const pausedDurationMs = openEntry.pausedDurationMs + openPauseMs;
+    // The canonical turn reducer is the one source of a chat turn's duration
+    // (CAN-5096); the audit's own pause tally is the fallback when no
+    // matching canonical record reached this entry.
+    const canonical =
+      key.startsWith('chat:') && openEntry.canonicalDurations
+        ? Array.from(openEntry.canonicalDurations.values()).reduce(
+            (sum, turn) => ({
+              durationMs: sum.durationMs + turn.durationMs,
+              pausedMs: sum.pausedMs + turn.pausedMs,
+            }),
+            { durationMs: 0, pausedMs: 0 },
+          )
+        : undefined;
+    const pausedDurationMs =
+      canonical?.pausedMs ?? openEntry.pausedDurationMs + openPauseMs;
     const providerSuppliedDuration = openEntry.entry.durationMs !== undefined;
     const rawDurationMs =
       openEntry.entry.durationMs ?? Math.max(0, completedAtMs - startedAtMs);
-    openEntry.entry.durationMs = Math.max(0, rawDurationMs - pausedDurationMs);
+    openEntry.entry.durationMs =
+      canonical?.durationMs ?? Math.max(0, rawDurationMs - pausedDurationMs);
     // Keep the locally recorded value for audit-trail fidelity — the wire
     // mapper is what omits it — but leave a trail naming the inputs, because a
     // multi-day duration is always a bug somewhere upstream and we could not
@@ -8421,6 +8562,7 @@ export class ObservabilityService {
           usageObserved: openEntry.usageObserved,
           tokens: openEntry.entry.tokens,
           billableToolCounts: openEntry.entry.billableToolCounts,
+          ...codexLongContextCostInput(openEntry),
         },
         this.host.pricing.current(),
       );
@@ -8471,6 +8613,12 @@ export class ObservabilityService {
             usageObserved: openEntry.usageObserved,
             tokens: benchmarkTokens,
             billableToolCounts: openEntry.entry.billableToolCounts,
+            // The same requests ran on the benchmark, so the same ones are
+            // long, with the same cache adjustment as the totals.
+            ...benchmarkLongContextCostInput(
+              openEntry,
+              attribution.cacheMissContextTokens,
+            ),
           },
           pricingState,
         );

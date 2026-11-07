@@ -17,9 +17,10 @@ import {
 import type { PortalStandaloneWorkEntryFields } from '@canopy/protocol';
 import {
   Dot,
-  FloatingMenu,
-  ActionMenuRowStyle,
-  RailIconButton,
+  RailSectionHeader,
+  DropdownMenuItem,
+  DropdownMenuItemIcon,
+  DropdownMenuDivider,
   SIDEBAR_ROW_TRAILING_CELL_CLASSNAME,
   SidebarMoreRow,
   StandaloneChatRow,
@@ -36,9 +37,7 @@ import {
 } from '@canopy/ui-shared/components';
 import {
   ChevronDownMediumIcon,
-  MoreHorizontalIcon,
-  PlusMediumIcon,
-  SettingsIcon,
+  ListChecks,
 } from '@canopy/ui-shared/icons/AppIcons';
 import {
   CHATS_HEADER_SELECTOR,
@@ -313,6 +312,8 @@ export interface StandaloneChatsSidebarSectionProps {
    * Omit it and no overflow control renders, rather than an empty menu.
    */
   readonly renderHeaderMenuItems?: () => ReactNode;
+  readonly selectionActions?: ReactNode;
+  readonly onEnterSelection?: () => void;
   /** Keep header action geometry while first-use provisioning is pending. */
   readonly headerActionsDisabled?: boolean;
   /**
@@ -494,6 +495,8 @@ export function StandaloneChatsSidebarSection({
   onOpenSettings,
   onCreateChat,
   renderHeaderMenuItems,
+  selectionActions,
+  onEnterSelection,
   headerActionsDisabled = false,
   renderRows,
   hasSelectedRow = false,
@@ -534,7 +537,6 @@ export function StandaloneChatsSidebarSection({
   const [menuOpen, setMenuOpen] = useState(false);
   const headerRest = useSidebarHeaderRest(!expanded, menuOpen);
   const [showAllChats, setShowAllChats] = useState(false);
-  const menuButtonRef = useRef<HTMLButtonElement | null>(null);
   const stuckObserverRef = useRef<MutationObserver | null>(null);
   // A callback ref, not an effect: this section can mount before the header
   // exists and the header can be replaced without the section unmounting, and
@@ -761,31 +763,31 @@ export function StandaloneChatsSidebarSection({
         : {})}
     >
       {isChatsSection ? (
-        <div
-          // The rail's sticky sync and the header's own "back to the rows"
-          // reveal both find their subjects by this mark rather than by
-          // component identity, so emitting it is what lets a host drive this
-          // header without the shared surface reimplementing the behavior.
-          //
-          // The mark is a data attribute, not a class: desktop's
-          // `sidebar-chats-sticky-header` has no rule anywhere in the repo, so
-          // carrying it here would be a dead class name rather than styling.
+        <RailSectionHeader
           ref={attachHeader}
+          kind="chats"
+          label={sectionLabel}
+          touchTargets={touchTargets}
+          labelSetsHeight={stickyHeader}
+          expanded={expanded}
+          returnToRows={stuck}
+          chevronTestId="sidebar-chats-chevron"
+          toggleProps={{
+            'data-testid': testIds?.sectionToggle ?? testIds?.folderToggle,
+            'aria-label': stuck ? `Back to ${sectionLabel}` : undefined,
+            onClick: (event): void => {
+              const header = event.currentTarget.closest<HTMLElement>(
+                CHATS_HEADER_SELECTOR,
+              );
+              if (header !== null && revealOccludedChats(header)) return;
+              toggle();
+              if (event.detail > 0) event.currentTarget.blur();
+            },
+          }}
           data-sidebar-chats-header=""
-          // Under a rail, `top` is the pre-measurement fallback its sync
-          // overwrites on the first layout pass; standalone, the class pins it
-          // to the top of the host's own scroll box.
-          // Under a rail the 12px above the row is PADDING, not a gap from a
-          // sibling: the rail measures this header's BOX to seat everything
-          // below it. Taken out of the box, the whole sticky stack lands 12px
-          // high while the occlusion clip stays put — which hides a band of
-          // rows under the pinned header.
           style={
             stickyHeader
-              ? {
-                  top: '1px',
-                  paddingRight: RAIL_SECTION_HEADER_PADDING_RIGHT,
-                }
+              ? { top: '1px', paddingRight: RAIL_SECTION_HEADER_PADDING_RIGHT }
               : undefined
           }
           data-sidebar-header-resting={headerRest.resting || undefined}
@@ -793,127 +795,44 @@ export function StandaloneChatsSidebarSection({
           onPointerMove={headerRest.onPointerMove}
           onFocusCapture={headerRest.onFocusCapture}
           onKeyDownCapture={headerRest.onKeyDownCapture}
-          className={`group/section group/chats ${headerRest.resting ? '' : 'group/sidebar-item '}sticky flex min-w-0 items-center gap-1 bg-sidebar px-1 ${
-            stickyHeader
-              ? // No fixed height here: the 12px has to ENLARGE the box, and a
-                // height would absorb it as inner padding instead. The inner
-                // toggle already sets the row's own height, exactly as the
-                // desktop header does.
-                'z-40 pt-3 '
-              : `top-0 z-20 ${touchTargets ? 'min-h-11' : 'h-8'} `
-          }`}
-        >
-          <button
-            type="button"
-            data-testid={testIds?.sectionToggle ?? testIds?.folderToggle}
-            // Stuck, this control is not a disclosure: activating it returns
-            // to the rows rather than changing whether they are shown.
-            // Announcing `aria-expanded` there would promise a state change
-            // that never comes, so it drops the disclosure role and says what
-            // it actually does instead.
-            aria-expanded={stuck ? undefined : expanded}
-            aria-label={stuck ? `Back to ${sectionLabel}` : undefined}
-            onClick={(event): void => {
-              // While the header is stuck over its own occluded rows it is
-              // the way back to them, not a collapse — the inverse of the
-              // Projects stand-in at the foot of the rail.
-              const header = event.currentTarget.closest<HTMLElement>(
-                CHATS_HEADER_SELECTOR,
-              );
-              if (header !== null && revealOccludedChats(header)) return;
-              toggle();
-              if (event.detail > 0) event.currentTarget.blur();
-            }}
-            className={`focus-ring flex min-w-0 flex-1 items-center gap-1 rounded px-1 text-left text-s font-normal fg-quaternary transition-colors hover:fg-secondary group-focus-within/chats:fg-secondary ${
-              touchTargets ? 'min-h-11' : 'h-8'
-            }`}
-          >
-            <span className="min-w-0 truncate">{sectionLabel}</span>
-            <ChevronDownMediumIcon
-              data-testid="sidebar-chats-chevron"
-              className={`h-4 w-4 shrink-0 transition-[transform,opacity] group-hover/chats:opacity-100 group-focus-within/chats:opacity-100 ${
-                stuck
-                  ? // Pointing back up at its own rows — the mirror of the
-                    // Projects stand-in's chevron at the foot of the rail.
-                    // Collapsed or not: stuck, a click goes back either way.
-                    'rotate-180 opacity-100'
-                  : !expanded
-                    ? '-rotate-90 opacity-100'
-                    : 'opacity-0'
-              }`}
-            />
-          </button>
-          {(onOpenSettings || onCreateChat || renderHeaderMenuItems) && (
-            // Outside the toggle button, and outside the `expanded` guard
-            // below: on a fresh install the "+" is the only way into this
-            // bucket, so it must survive a collapse.
-            <div className="ml-auto flex shrink-0 items-center gap-0.5">
-              {onOpenSettings && (
-                <RailIconButton
-                  icon={SettingsIcon}
-                  onClick={onOpenSettings}
-                  aria-label={`${sectionLabel} settings`}
-                  title="Settings"
-                  data-testid={testIds?.sectionSettings}
-                  tone="section"
-                  hoverSurface
-                  revealOnItemHover
-                  disabled={headerActionsDisabled}
-                />
-              )}
-              {renderHeaderMenuItems && (
-                <>
-                  <RailIconButton
-                    ref={menuButtonRef}
-                    icon={MoreHorizontalIcon}
-                    aria-label={`More actions for ${sectionLabel}`}
-                    title="More actions"
-                    aria-haspopup="menu"
-                    aria-expanded={menuOpen}
-                    data-testid={testIds?.sectionMenu}
-                    disabled={headerActionsDisabled}
-                    tone="section"
-                    hoverSurface
-                    revealOnItemHover
-                    onClick={(): void => {
-                      if (!headerActionsDisabled) {
-                        setMenuOpen((open) => !open);
-                      }
-                    }}
-                  />
-                  <FloatingMenu
-                    open={!headerActionsDisabled && menuOpen}
-                    onOpenChange={setMenuOpen}
-                    anchorRef={menuButtonRef}
-                    placement="bottom-left"
-                    className="w-45"
-                    aria-label={`${sectionLabel} actions`}
-                    data-testid={testIds?.sectionMenuContent}
-                  >
-                    <ActionMenuRowStyle>
-                      {renderHeaderMenuItems()}
-                    </ActionMenuRowStyle>
-                  </FloatingMenu>
-                </>
-              )}
-              {onCreateChat && (
-                <RailIconButton
-                  icon={PlusMediumIcon}
-                  onClick={onCreateChat}
-                  aria-label="New chat"
-                  title="New chat"
-                  data-testid={testIds?.sectionCreateChat}
-                  tone="section"
-                  hoverSurface
-                  // Revealed on hover like the Projects "+", except while the
-                  // section is empty: then it is the only way to start a chat
-                  // here, so it stays on screen.
-                  revealOnItemHover={!sectionEmpty}
-                />
-              )}
-            </div>
-          )}
-        </div>
+          resting={headerRest.resting}
+          menuOpen={menuOpen}
+          onMenuOpenChange={setMenuOpen}
+          menuTestId={testIds?.sectionMenu}
+          menuContentTestId={testIds?.sectionMenuContent}
+          actions={selectionActions}
+          renderMenuItems={
+            renderHeaderMenuItems || onEnterSelection
+              ? (close) => (
+                  <>
+                    {renderHeaderMenuItems?.()}
+                    {renderHeaderMenuItems && onEnterSelection && (
+                      <DropdownMenuDivider />
+                    )}
+                    {onEnterSelection && (
+                      <DropdownMenuItem
+                        onClick={() => {
+                          close();
+                          onEnterSelection();
+                        }}
+                      >
+                        <DropdownMenuItemIcon>
+                          <ListChecks />
+                        </DropdownMenuItemIcon>
+                        Select
+                      </DropdownMenuItem>
+                    )}
+                  </>
+                )
+              : undefined
+          }
+          actionsDisabled={headerActionsDisabled}
+          onCreate={onCreateChat}
+          createRevealed={sectionEmpty}
+          createTestId={testIds?.sectionCreateChat}
+          onSettings={onOpenSettings}
+          settingsTestId={testIds?.sectionSettings}
+        />
       ) : (
         // The rail's sticky-seat sync collects `.sidebar-workspace-sticky-header`
         // boxes (the desktop cowork row marks its header the same way) and
@@ -1138,7 +1057,8 @@ export function StandaloneChatsSidebarSection({
                     {showAllChats ? 'Show fewer' : 'Show all'}
                   </span>
                   <ChevronDownMediumIcon
-                    className={`h-4 w-4 shrink-0 ${showAllChats ? '' : '-rotate-90'}`}
+                    size="sm"
+                    className={`shrink-0 ${showAllChats ? '' : '-rotate-90'}`}
                     aria-hidden="true"
                   />
                 </span>
@@ -1289,8 +1209,13 @@ function ChatsSectionWorkEntryRow({
       ? { ...item, separatorBefore: false }
       : item,
   );
+  const offersSelectItem =
+    !replaces && selectable && multiSelect?.onSelectItem !== undefined;
   const hasMenu =
-    rowMenu.length > 0 || showsNotifications || selectionItems.length > 0;
+    rowMenu.length > 0 ||
+    showsNotifications ||
+    offersSelectItem ||
+    selectionItems.length > 0;
   return (
     <SidebarRowFrame
       data-testid={testIds?.chatRow?.(row.targetChat.localId)}
@@ -1351,7 +1276,7 @@ function ChatsSectionWorkEntryRow({
                     <WorktreeActionMenuItems
                       items={rowMenu}
                       onSelect={(item) => {
-                        menuContext.close();
+                        if (item.role !== 'menuitemradio') menuContext.close();
                         item.onSelect?.();
                       }}
                     />
@@ -1364,11 +1289,16 @@ function ChatsSectionWorkEntryRow({
                       notifications={notifications}
                     />
                   )}
+                  {/* The notification renderer already includes Select item.
+                      Without notifications, reuse those same standard rows. */}
+                  {offersSelectItem && !showsNotifications && (
+                    <WorkEntryRowMenuItems menu={menuContext} />
+                  )}
                   {selectionItems.length > 0 && (
                     <WorktreeActionMenuItems
                       items={selectionItems}
                       onSelect={(item) => {
-                        menuContext.close();
+                        if (item.role !== 'menuitemradio') menuContext.close();
                         item.onSelect?.();
                       }}
                     />

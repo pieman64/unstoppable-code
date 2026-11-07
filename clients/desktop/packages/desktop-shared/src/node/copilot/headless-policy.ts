@@ -2,8 +2,11 @@ import type { PermissionPreset } from '../../builtin-actions/agent-prompt/logic'
 import type {
   CopilotPreToolInput,
   CopilotToolDecision,
-} from './session-policy';
-import { copilotNativeOperations, isCopilotShellControl } from './tool-input';
+} from '@canopy/copilot-recipient/session-policy';
+import {
+  copilotNativeOperations,
+  isCopilotShellControl,
+} from '@canopy/copilot-recipient/tool-input';
 
 export function headlessCopilotDecision(
   preset: PermissionPreset,

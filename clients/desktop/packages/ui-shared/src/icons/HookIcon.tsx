@@ -1,6 +1,6 @@
-import type { JSX, SVGProps } from 'react';
-import { HookIcon as AppCatalogHookIcon } from './AppIcons';
+import type { JSX } from 'react';
+import { HookIcon as AppCatalogHookIcon, type AppIconProps } from './AppIcons';
 
-export function HookIcon(props: SVGProps<SVGSVGElement>): JSX.Element {
-  return <AppCatalogHookIcon width="14" height="14" {...props} />;
+export function HookIcon(props: AppIconProps): JSX.Element {
+  return <AppCatalogHookIcon size="sm" {...props} />;
 }

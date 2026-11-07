@@ -194,9 +194,7 @@ function FilterRows<T extends string>({
           onClick={onClear}
         >
           <DropdownMenuItemIcon>
-            {active ? null : (
-              <CheckIcon width={14} height={14} aria-hidden="true" />
-            )}
+            {active ? null : <CheckIcon size="sm" aria-hidden="true" />}
           </DropdownMenuItemIcon>
           <span className="truncate">{anyLabel}</span>
         </DropdownMenuItem>
@@ -212,9 +210,7 @@ function FilterRows<T extends string>({
             onClick={(): void => onToggle(option.value)}
           >
             <DropdownMenuItemIcon>
-              {checked ? (
-                <CheckIcon width={14} height={14} aria-hidden="true" />
-              ) : null}
+              {checked ? <CheckIcon size="sm" aria-hidden="true" /> : null}
             </DropdownMenuItemIcon>
             {option.icon ? (
               <DropdownMenuItemIcon>{option.icon}</DropdownMenuItemIcon>
@@ -516,9 +512,7 @@ export function SortDropdown<T extends string>({
                 onClick={(): void => onChange(option.value)}
               >
                 <DropdownMenuItemIcon>
-                  {checked ? (
-                    <CheckIcon width={14} height={14} aria-hidden="true" />
-                  ) : null}
+                  {checked ? <CheckIcon size="sm" aria-hidden="true" /> : null}
                 </DropdownMenuItemIcon>
                 <span className="truncate">{option.label}</span>
               </DropdownMenuItem>

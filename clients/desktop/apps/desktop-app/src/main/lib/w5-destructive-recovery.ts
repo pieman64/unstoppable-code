@@ -948,6 +948,7 @@ const CHILD_ARCHIVE_STEP_RULES = {
   'git-capture': { resume: 'redo-or-tolerate' },
   'provider-capture': { resume: 'redo' },
   'checkout-quarantine': { resume: 'redo' },
+  // Child redo stays broader than CAN-5717's standalone admission below.
   'git-worktree-removal': { resume: 'redo' },
   'quarantine-directory-removal': { resume: 'redo' },
   'branch-deletion': { resume: 'redo' },
@@ -1119,6 +1120,40 @@ const PRE_GIT_CAPTURE_ARCHIVE_PHASES: ReadonlySet<string> = new Set([
   'retained-payload-capture',
 ]);
 
+// CAN-5717: standalone retry is narrower than the child redo rules. Capture
+// must have succeeded; no tolerated git-capture failure qualifies here.
+const GIT_REMOVAL_ARCHIVE_RETRY_PHASES = [
+  'live-state-teardown',
+  'retained-payload-capture',
+  'git-capture',
+  'provider-capture',
+  'checkout-quarantine',
+  'git-worktree-removal',
+] as const;
+
+function isInterruptedArchiveGitRemoval(
+  record: DestructiveRecoveryRecord,
+): boolean {
+  if (
+    !isOwnerless(record) ||
+    (record.state !== 'recovery-required' && !isCrashed(record))
+  )
+    return false;
+  const steps =
+    record.steps[0]?.phase === 'teardown-script'
+      ? record.steps.slice(1)
+      : record.steps;
+  return (
+    (steps === record.steps || record.steps[0].state === 'done') &&
+    steps.length === GIT_REMOVAL_ARCHIVE_RETRY_PHASES.length &&
+    steps.every(
+      (step, index) =>
+        step.phase === GIT_REMOVAL_ARCHIVE_RETRY_PHASES[index] &&
+        step.state === (index === steps.length - 1 ? 'pending' : 'done'),
+    )
+  );
+}
+
 /** A standalone delete's checkout removal, which must not have finished. */
 const DELETE_CHECKOUT_REMOVAL_PHASES: ReadonlySet<string> = new Set([
   'checkout-removal',
@@ -1129,8 +1164,12 @@ const DELETE_CHECKOUT_REMOVAL_PHASES: ReadonlySet<string> = new Set([
  * A standalone archive of this worktree, outside any lifecycle, redoes an
  * archive journal that a crash left `active` before its Git capture. The
  * lifecycle rechecks its identities before taking it over. A failure that
- * marked its journal `recovery-required` still refuses, and so do project
- * deletion and the archive janitors.
+ * marked its journal `recovery-required` still refuses except at exactly a
+ * pending Git removal after all ordered capture and quarantine steps are done
+ * (CAN-5717). That alternative also admits an ownerless crashed active journal.
+ * Admission only permits revalidation through the lifecycle and verified
+ * teardown; it never authorizes attributing gitdir-less administrative residue.
+ * Project deletion and the archive janitors keep refusing standalone journals.
  *
  * It also takes over a standalone delete that failed or crashed before its
  * checkout removal finished, such as a failed `git worktree remove`. An
@@ -1161,12 +1200,13 @@ export function canResumeInterruptedArchive(
     );
   return (
     record.operation === 'worktree-archive' &&
-    isCrashed(record) &&
-    record.steps.every(
-      (step) =>
-        PRE_GIT_CAPTURE_ARCHIVE_PHASES.has(step.phase) &&
-        isResumableChildArchiveStep(step),
-    )
+    (isInterruptedArchiveGitRemoval(record) ||
+      (isCrashed(record) &&
+        record.steps.every(
+          (step) =>
+            PRE_GIT_CAPTURE_ARCHIVE_PHASES.has(step.phase) &&
+            isResumableChildArchiveStep(step),
+        )))
   );
 }
 

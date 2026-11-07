@@ -242,6 +242,16 @@ export function createMarketplaceEntryShareResolver(
   };
 }
 
+/** The share key a resolution's plugin target publishes under, when it has one. */
+export function pluginShareRefKey(
+  resolution: MarketplaceShareResolution | null,
+): string | undefined {
+  return resolution?.status === 'shareable' &&
+    resolution.activation.kind === 'plugin'
+    ? getShareablePluginRefKey(resolution.activation.target.pluginRef)
+    : undefined;
+}
+
 /** The display state a card shows for a resolution. */
 export function marketplaceEntryShareState(
   entry: Pick<UnifiedPluginEntry, 'kind' | 'components'>,

@@ -57,6 +57,7 @@ import {
   validateScriptActionShortcut,
   type ReservedScriptShortcut,
 } from './shortcut-validation';
+import { Surface } from '@canopy/ui-shared/components';
 
 /** Host-supplied, platform-dependent parts of the review. */
 export interface ScriptActionsReviewHostProps {
@@ -530,31 +531,35 @@ function ScriptActionsReviewBody({
           }
         />
         {!snapshot.shellAliasScanEnabled ? (
-          <section
-            className="space-y-2 rounded-lg border p-3"
+          <Surface
+            as="section"
+            variant="outline"
+            padding="compact"
             data-testid="script-actions-alias-opt-in"
             aria-labelledby={aliasHeadingId}
           >
-            <Heading level={4} variant="title" id={aliasHeadingId}>
-              Personal shell aliases
-            </Heading>
-            <p className="text-xs fg-secondary">
-              Find aliases in your shell configuration, such as ~/.zshrc and
-              ~/.bashrc. Files are read, never run, and each alias still needs
-              your approval. Rescans include them from then on.
-            </p>
-            <ErrorBanner className="" error={aliasState.error} />
-            <Button
-              size="compact"
-              variant="secondary"
-              disabled={aliasState.busy}
-              onClick={enableAliases}
-              data-testid="script-actions-scan-shell"
-            >
-              {aliasState.busy ? <LoadingSpinner decorative /> : null}
-              Scan shell configuration
-            </Button>
-          </section>
+            <div className="space-y-2">
+              <Heading level={4} variant="title" id={aliasHeadingId}>
+                Personal shell aliases
+              </Heading>
+              <p className="text-xs fg-secondary">
+                Find aliases in your shell configuration, such as ~/.zshrc and
+                ~/.bashrc. Files are read, never run, and each alias still needs
+                your approval. Rescans include them from then on.
+              </p>
+              <ErrorBanner className="" error={aliasState.error} />
+              <Button
+                size="compact"
+                variant="secondary"
+                disabled={aliasState.busy}
+                onClick={enableAliases}
+                data-testid="script-actions-scan-shell"
+              >
+                {aliasState.busy ? <LoadingSpinner decorative /> : null}
+                Scan shell configuration
+              </Button>
+            </div>
+          </Surface>
         ) : null}
         {dismissed.length > 0 ? (
           <DismissedSection
@@ -717,13 +722,15 @@ function ScriptDetails({
           <span className="text-xs fg-tertiary">From project settings</span>
         ) : null}
       </p>
-      <pre
-        id={commandId}
-        className={`max-h-24 overflow-auto whitespace-pre-wrap break-all rounded bg-secondary px-2 py-1 font-mono text-xs fg-secondary ${REPLAY_BLOCK_CLASS}`}
-        data-testid="script-actions-command"
-      >
-        {action.command}
-      </pre>
+      <Surface variant="group" size="small" className="overflow-hidden">
+        <pre
+          id={commandId}
+          className={`max-h-24 overflow-auto whitespace-pre-wrap break-all px-2 py-1 font-mono text-xs fg-secondary ${REPLAY_BLOCK_CLASS}`}
+          data-testid="script-actions-command"
+        >
+          {action.command}
+        </pre>
+      </Surface>
       <p className={`text-xs fg-tertiary ${REPLAY_BLOCK_CLASS}`}>
         {scriptSourceLabel(action)}
       </p>
@@ -833,24 +840,26 @@ function PendingGroup({
           {group.label}
         </span>
       </div>
-      <ul className="divide-y rounded-lg border">
-        {group.actions.map((action) => (
-          <PendingRow
-            key={action.id}
-            action={action}
-            preferences={renderPreferences(action)}
-            checked={selection.get(action.id) === action.revision}
-            disabled={disabled}
-            onToggle={(): void => {
-              const next = new Map(selection);
-              if (next.get(action.id) === action.revision)
-                next.delete(action.id);
-              else next.set(action.id, action.revision);
-              onSelectionChange(next);
-            }}
-          />
-        ))}
-      </ul>
+      <Surface variant="outline">
+        <ul className="divide-y">
+          {group.actions.map((action) => (
+            <PendingRow
+              key={action.id}
+              action={action}
+              preferences={renderPreferences(action)}
+              checked={selection.get(action.id) === action.revision}
+              disabled={disabled}
+              onToggle={(): void => {
+                const next = new Map(selection);
+                if (next.get(action.id) === action.revision)
+                  next.delete(action.id);
+                else next.set(action.id, action.revision);
+                onSelectionChange(next);
+              }}
+            />
+          ))}
+        </ul>
+      </Surface>
     </div>
   );
 }
@@ -943,77 +952,79 @@ function ApprovedSection({
             >
               {group.label}
             </p>
-            <ul className="divide-y rounded-lg border">
-              {group.actions.map((action, index) => (
-                <li
-                  key={action.id}
-                  className="space-y-2 p-3"
-                  data-testid="script-actions-approved-row"
-                  data-script-name={action.name}
-                >
-                  <div className="flex items-start gap-3">
-                    <ScriptDetails action={action} />
-                    {action.kind !== 'tracked' ? (
-                      <Button
-                        size="compact"
-                        variant="ghost"
-                        disabled={busy[action.id] === true}
-                        onClick={(): void => onRemove(action)}
-                        aria-label={`Remove approval for ${action.name}`}
-                        data-testid="script-actions-remove"
-                      >
-                        Remove
-                      </Button>
-                    ) : null}
-                  </div>
-                  {action.unavailableReason ? (
-                    <p className="text-xs fg-warning">
-                      {action.unavailableReason}
-                    </p>
-                  ) : null}
-                  <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
-                    <ShortcutRecorderField
-                      value={action.shortcut}
-                      platform={shortcutPlatform}
-                      label={`Shortcut for ${action.name}`}
-                      validate={validateShortcut(action)}
-                      onSave={(accelerator): Promise<void> =>
-                        onSaveShortcut(action, accelerator)
-                      }
-                      disabled={busy[action.id] === true}
-                      testId="script-actions-shortcut"
-                    />
-                    {/* The caption labels the switch, so a click on it flips it. */}
-                    <SettingsRowsSubRow
-                      label="Pin to header"
-                      htmlFor={`${headingId}-pin-${groupIndex}-${index}`}
-                      control={
-                        <ToggleSwitch
-                          id={`${headingId}-pin-${groupIndex}-${index}`}
-                          checked={action.pinned}
+            <Surface variant="outline">
+              <ul className="divide-y">
+                {group.actions.map((action, index) => (
+                  <li
+                    key={action.id}
+                    className="space-y-2 p-3"
+                    data-testid="script-actions-approved-row"
+                    data-script-name={action.name}
+                  >
+                    <div className="flex items-start gap-3">
+                      <ScriptDetails action={action} />
+                      {action.kind !== 'tracked' ? (
+                        <Button
+                          size="compact"
+                          variant="ghost"
                           disabled={busy[action.id] === true}
-                          label={`Pin ${action.name} to the header`}
-                          onChange={(next): void => onPin(action, next)}
-                          dataTestId="script-actions-pin"
-                        />
-                      }
-                    />
-                  </div>
-                  {action.shortcutConflict ? (
-                    <p data-testid="script-actions-shortcut-conflict">
-                      <StatusLabel size="xs">
-                        Shortcut is off. {action.shortcutConflict}
-                      </StatusLabel>
-                    </p>
-                  ) : null}
-                  {errors[action.id] ? (
-                    <p role="alert">
-                      <StatusLabel size="xs">{errors[action.id]}</StatusLabel>
-                    </p>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
+                          onClick={(): void => onRemove(action)}
+                          aria-label={`Remove approval for ${action.name}`}
+                          data-testid="script-actions-remove"
+                        >
+                          Remove
+                        </Button>
+                      ) : null}
+                    </div>
+                    {action.unavailableReason ? (
+                      <p className="text-xs fg-warning">
+                        {action.unavailableReason}
+                      </p>
+                    ) : null}
+                    <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+                      <ShortcutRecorderField
+                        value={action.shortcut}
+                        platform={shortcutPlatform}
+                        label={`Shortcut for ${action.name}`}
+                        validate={validateShortcut(action)}
+                        onSave={(accelerator): Promise<void> =>
+                          onSaveShortcut(action, accelerator)
+                        }
+                        disabled={busy[action.id] === true}
+                        testId="script-actions-shortcut"
+                      />
+                      {/* The caption labels the switch, so a click on it flips it. */}
+                      <SettingsRowsSubRow
+                        label="Pin to header"
+                        htmlFor={`${headingId}-pin-${groupIndex}-${index}`}
+                        control={
+                          <ToggleSwitch
+                            id={`${headingId}-pin-${groupIndex}-${index}`}
+                            checked={action.pinned}
+                            disabled={busy[action.id] === true}
+                            label={`Pin ${action.name} to the header`}
+                            onChange={(next): void => onPin(action, next)}
+                            dataTestId="script-actions-pin"
+                          />
+                        }
+                      />
+                    </div>
+                    {action.shortcutConflict ? (
+                      <p data-testid="script-actions-shortcut-conflict">
+                        <StatusLabel size="xs">
+                          Shortcut is off. {action.shortcutConflict}
+                        </StatusLabel>
+                      </p>
+                    ) : null}
+                    {errors[action.id] ? (
+                      <p role="alert">
+                        <StatusLabel size="xs">{errors[action.id]}</StatusLabel>
+                      </p>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </Surface>
           </div>
         ))
       )}
@@ -1050,35 +1061,37 @@ function DismissedSection({
         {expanded ? 'Hide dismissed' : `Show dismissed (${actions.length})`}
       </Button>
       {expanded ? (
-        <ul id={listId} className="divide-y rounded-lg border">
-          {actions.map((action) => (
-            <li
-              key={action.id}
-              className="space-y-1 p-3"
-              data-testid="script-actions-dismissed-row"
-              data-script-name={action.name}
-            >
-              <div className="flex items-start gap-3">
-                <ScriptDetails action={action} />
-                <Button
-                  size="compact"
-                  variant="secondary"
-                  disabled={busy[action.id] === true}
-                  onClick={(): void => onRestore(action)}
-                  aria-label={`Restore ${action.name}`}
-                  data-testid="script-actions-restore"
-                >
-                  Restore
-                </Button>
-              </div>
-              {errors[action.id] ? (
-                <p role="alert">
-                  <StatusLabel size="xs">{errors[action.id]}</StatusLabel>
-                </p>
-              ) : null}
-            </li>
-          ))}
-        </ul>
+        <Surface variant="outline">
+          <ul id={listId} className="divide-y">
+            {actions.map((action) => (
+              <li
+                key={action.id}
+                className="space-y-1 p-3"
+                data-testid="script-actions-dismissed-row"
+                data-script-name={action.name}
+              >
+                <div className="flex items-start gap-3">
+                  <ScriptDetails action={action} />
+                  <Button
+                    size="compact"
+                    variant="secondary"
+                    disabled={busy[action.id] === true}
+                    onClick={(): void => onRestore(action)}
+                    aria-label={`Restore ${action.name}`}
+                    data-testid="script-actions-restore"
+                  >
+                    Restore
+                  </Button>
+                </div>
+                {errors[action.id] ? (
+                  <p role="alert">
+                    <StatusLabel size="xs">{errors[action.id]}</StatusLabel>
+                  </p>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </Surface>
       ) : null}
     </section>
   );

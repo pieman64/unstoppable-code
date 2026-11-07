@@ -17,7 +17,7 @@ import type { UseSharePreviewResult } from './useSharePreview';
 import { useCanopyDesktopStartPageEnabled } from '@/hooks/useCanopyDesktopStartPageEnabled';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { openStartPageSettings } from '@/lib/start-page/save-start-page';
-import { Button, ErrorBanner } from '@canopy/ui-shared/components';
+import { Button, ErrorBanner, Surface } from '@canopy/ui-shared/components';
 
 export interface ShareScopePanelProps {
   containerType: SharedContainerType;
@@ -126,46 +126,47 @@ export function ShareScopePanel({
       )}
 
       {startPageEnabled && share.preview.startPage && (
-        <div
-          className="rounded-lg border px-3 py-2 text-xs fg-secondary"
-          data-testid="shared-container-start-page"
-        >
-          <span>{`Opens to: ${share.preview.startPage.label}`}</span>
-          <span aria-hidden="true"> · </span>
-          <Button
-            variant="link"
-            onClick={() => {
-              const project = useProjectsStore
-                .getState()
-                .projects.find((candidate) => candidate.id === share.projectId);
-              if (project?.type === 'cowork') {
-                openStartPageSettings(share.projectId, 'local');
-                return;
-              }
-              void window.api
-                .resolveProjectStartPage({
-                  projectId: share.projectId,
-                  worktreeId: share.worktreeId,
-                })
-                .then((resolved) =>
-                  openStartPageSettings(
-                    share.projectId,
-                    resolved?.source === 'source' ? 'source' : 'local',
-                    undefined,
-                    share.worktreeId,
-                  ),
-                );
-            }}
-          >
-            Change
-          </Button>
-          {/* The layout wins over the start page while it is on, so the
+        <Surface variant="outline" data-testid="shared-container-start-page">
+          <div className="px-3 py-2 text-xs fg-secondary">
+            <span>{`Opens to: ${share.preview.startPage.label}`}</span>
+            <span aria-hidden="true"> · </span>
+            <Button
+              variant="link"
+              onClick={() => {
+                const project = useProjectsStore
+                  .getState()
+                  .projects.find(
+                    (candidate) => candidate.id === share.projectId,
+                  );
+                if (project?.type === 'cowork') {
+                  openStartPageSettings(share.projectId, 'local');
+                  return;
+                }
+                void window.api
+                  .resolveProjectStartPage({
+                    projectId: share.projectId,
+                    worktreeId: share.worktreeId,
+                  })
+                  .then((resolved) =>
+                    openStartPageSettings(
+                      share.projectId,
+                      resolved?.source === 'source' ? 'source' : 'local',
+                      undefined,
+                      share.worktreeId,
+                    ),
+                  );
+              }}
+            >
+              Change
+            </Button>
+            {/* The layout wins over the start page while it is on, so the
               withheld note only decides anything once it is off. */}
-          {!share.preferredLayoutEnabled &&
-            share.preview.startPage.status === 'withheld' && (
-              <p className="mt-1">{START_PAGE_WITHHELD_LABEL}</p>
-            )}
-        </div>
+            {!share.preferredLayoutEnabled &&
+              share.preview.startPage.status === 'withheld' && (
+                <p className="mt-1">{START_PAGE_WITHHELD_LABEL}</p>
+              )}
+          </div>
+        </Surface>
       )}
 
       <ShareLayoutRow

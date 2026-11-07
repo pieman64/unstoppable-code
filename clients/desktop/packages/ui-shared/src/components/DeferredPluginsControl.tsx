@@ -39,7 +39,7 @@ export function DeferredPluginsControl({
               : 'bg-popover fg-secondary hover:bg-fg-primary/[0.06] hover:fg-primary'
           }`}
         >
-          <CognitionIcon width={15} height={15} aria-hidden="true" />
+          <CognitionIcon size="sm" aria-hidden="true" />
         </button>
       </ActionTooltip>
       <span

@@ -3,6 +3,7 @@ import {
   codeGraphQueueUnavailableError,
   createCodeGraphBuildQueueWorker,
   createWorkerCodeGraphHandlers,
+  KeyedOutcomes,
   projectCodeGraphBuildQueue as projectSchedulerQueue,
   type CodeGraphBuildQueueWorker,
   type WorkerCodeGraphHandlers,
@@ -35,12 +36,14 @@ import type {
   CodeGraphReorderGenerationQueueResponse,
 } from '@canopy/desktop-shared/types';
 import { onDaemonCodeGraphRoute } from '../code-graph/daemon-code-graph-route-context';
+import type { MergedGenerationQueue } from '../code-graph/merged-generation-queue';
 
 /*
  * Registers the code-graph build queue controls (CAN-4149) on the desktop
  * dispatcher over Electron main's build scheduler, and projects the
- * `code-graph:*-generation-queue` channels over them. The scheduler loads on
- * the first call, because its host modules import back into main.
+ * `code-graph:*-generation-queue` channels over the merged queue of Electron
+ * main's scheduler and the daemon's (CAN-5628). The scheduler loads on the
+ * first call, because its host modules import back into main.
  */
 
 /** The scheduler surface the build and queue operations need. */
@@ -104,7 +107,13 @@ export function createWorkerCodeGraphAdapter(
         return unqueued + queued;
       },
     })),
+  queue: () => Promise<MergedGenerationQueue> = async () =>
+    (
+      await import('../code-graph/merged-generation-queue')
+    ).getDesktopGenerationQueue(),
 ): WorkerCodeGraphHandlers {
+  const reorders = new KeyedOutcomes<WorkerCodeGraphBuildQueue>();
+  const cancels = new KeyedOutcomes<WorkerCodeGraphBuildCancelResult>();
   let loading: Promise<WorkerCodeGraphHandlers> | undefined;
   const handlers = (): Promise<WorkerCodeGraphHandlers> =>
     (loading ??= load().then(
@@ -119,11 +128,7 @@ export function createWorkerCodeGraphAdapter(
     ));
   return {
     queries: {
-      'worker.codeGraph.buildQueue.get': async (params, context) =>
-        (await handlers()).queries['worker.codeGraph.buildQueue.get'](
-          params,
-          context,
-        ),
+      'worker.codeGraph.buildQueue.get': async () => (await queue()).queue(),
     },
     instructions: {
       'worker.codeGraph.build': (params, context) => {
@@ -141,15 +146,16 @@ export function createWorkerCodeGraphAdapter(
             )
           : inProcess();
       },
-      'worker.codeGraph.buildQueue.update': async (params, context) =>
-        (await handlers()).instructions['worker.codeGraph.buildQueue.update'](
-          params,
-          context,
+      'worker.codeGraph.buildQueue.update': (params, context) =>
+        reorders.run(context, params, async () =>
+          (await queue()).reorder(
+            params.expectedRevision,
+            params.orderedQueueItemIds,
+          ),
         ),
-      'worker.codeGraph.build.cancel': async (params, context) =>
-        (await handlers()).instructions['worker.codeGraph.build.cancel'](
-          params,
-          context,
+      'worker.codeGraph.build.cancel': (params, context) =>
+        cancels.run(context, params, async () =>
+          (await queue()).cancel(params.queueItemId),
         ),
       'worker.codeGraph.builds.cancel': async (params, context) =>
         (await handlers()).instructions['worker.codeGraph.builds.cancel'](

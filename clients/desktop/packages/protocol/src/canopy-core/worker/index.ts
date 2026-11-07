@@ -16,6 +16,8 @@ export * from './git-sync-writes';
 export * from './git-worktree-health';
 export * from './pipeline';
 export * from './pipeline-host-values';
+export * from './pipeline-owner-requests';
 export * from './registry';
 export * from './script';
 export * from './terminal';
+export * from './git-merge';

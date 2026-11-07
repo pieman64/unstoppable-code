@@ -14,6 +14,7 @@ import {
   PluginSection,
   StandaloneConfigsSection,
   StatusLabel,
+  Surface,
 } from '@canopy/ui-shared/components';
 import { mcpAuthStatusBadgeClass } from './mcp-card-helpers';
 
@@ -213,26 +214,28 @@ export function McpServerDetailsModal({
           )}
         </div>
 
-        <div className="rounded-lg border bg-secondary/30 px-4 py-3">
-          <McpConnectionFacts
-            source={
-              sourceInfo.context
-                ? `${sourceInfo.label} (${sourceInfo.context})`
-                : sourceInfo.label
-            }
-            pluginServerName={
-              server.source === 'plugin' ? server.pluginServerName : undefined
-            }
-            type={server.type === 'command' ? 'command' : 'http'}
-            url={httpUrl}
-            commandLine={commandLine ?? undefined}
-            oauth={
-              server.type === 'http' && definition
-                ? Boolean(definition.oauth)
-                : undefined
-            }
-          />
-        </div>
+        <Surface variant="group">
+          <div className="px-4 py-3">
+            <McpConnectionFacts
+              source={
+                sourceInfo.context
+                  ? `${sourceInfo.label} (${sourceInfo.context})`
+                  : sourceInfo.label
+              }
+              pluginServerName={
+                server.source === 'plugin' ? server.pluginServerName : undefined
+              }
+              type={server.type === 'command' ? 'command' : 'http'}
+              url={httpUrl}
+              commandLine={commandLine ?? undefined}
+              oauth={
+                server.type === 'http' && definition
+                  ? Boolean(definition.oauth)
+                  : undefined
+              }
+            />
+          </div>
+        </Surface>
 
         {server.source === 'plugin' && (
           <PluginSection

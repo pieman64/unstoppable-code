@@ -124,7 +124,7 @@ export async function probeMcpServerUsable(
 /**
  * Drives the inline MCP reconnect behind `AuthRecoveryCard`, reusing the
  * existing OAuth entry point (`mcp-servers:start-oauth-login`, the same call
- * `McpServersTab`'s Connect button makes) rather than introducing a second
+ * the MCP server editor's Connect button makes) rather than introducing a second
  * login flow (CAN-1814).
  */
 export function useMcpAuthRecovery(

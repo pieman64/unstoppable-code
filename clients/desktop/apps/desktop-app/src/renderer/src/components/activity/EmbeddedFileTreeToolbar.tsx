@@ -1,5 +1,6 @@
 import { FloatingMenu, HeaderActionButton } from '@canopy/ui-shared';
 import {
+  Surface,
   ActionMenuItems,
   ActionMenuRowStyle,
   type ActionMenuItem,
@@ -106,74 +107,76 @@ export function EmbeddedFileTreeToolbar({
     anchor.current?.focus({ preventScroll: true });
   };
   return (
-    <div
-      className="flex shrink-0 items-center justify-between px-2 py-1 ring-1 ring-inset ring-line-base"
-      data-testid="file-tree-toolbar"
-    >
-      <HeaderActionButton
-        iconOnly
-        tone={mode === 'diff' ? 'accent' : 'neutral'}
-        aria-label="Show changed files"
-        aria-pressed={mode === 'diff'}
-        onClick={() => onModeChange(mode === 'diff' ? 'file' : 'diff')}
+    <Surface variant="section" boundary="frame">
+      <div
+        className="flex shrink-0 items-center justify-between px-2 py-1"
+        data-testid="file-tree-toolbar"
       >
-        <ChangesIcon width={16} height={16} />
-      </HeaderActionButton>
-      <div className="flex items-center gap-0.5">
-        {mode === 'diff' && (
+        <HeaderActionButton
+          iconOnly
+          tone={mode === 'diff' ? 'accent' : 'neutral'}
+          aria-label="Show changed files"
+          aria-pressed={mode === 'diff'}
+          onClick={() => onModeChange(mode === 'diff' ? 'file' : 'diff')}
+        >
+          <ChangesIcon size="sm" />
+        </HeaderActionButton>
+        <div className="flex items-center gap-0.5">
+          {mode === 'diff' && (
+            <HeaderActionButton
+              iconOnly
+              tone={listView ? 'accent' : 'neutral'}
+              aria-label="List view"
+              aria-pressed={listView ?? false}
+              onClick={onToggleListView}
+            >
+              <DetailsIcon size="sm" />
+            </HeaderActionButton>
+          )}
+          {mode === 'diff' && filter}
           <HeaderActionButton
             iconOnly
-            tone={listView ? 'accent' : 'neutral'}
-            aria-label="List view"
-            aria-pressed={listView ?? false}
-            onClick={onToggleListView}
+            tone="neutral"
+            aria-label="Search files"
+            aria-expanded={searchOpen}
+            onClick={onToggleSearch}
+            data-testid="files-tree-search-toggle"
           >
-            <DetailsIcon width={16} height={16} />
+            <SearchIcon size={16} />
           </HeaderActionButton>
-        )}
-        {mode === 'diff' && filter}
-        <HeaderActionButton
-          iconOnly
-          tone="neutral"
-          aria-label="Search files"
-          aria-expanded={searchOpen}
-          onClick={onToggleSearch}
-          data-testid="files-tree-search-toggle"
+          <HeaderActionButton
+            iconOnly
+            tone="neutral"
+            aria-label="Jump to file"
+            onClick={onFocusFile}
+            disabled={focusDisabled}
+            data-testid="files-tree-jump-to-file"
+          >
+            <FocusSquareIcon size={16} />
+          </HeaderActionButton>
+          <HeaderActionButton
+            ref={anchor}
+            iconOnly
+            tone="neutral"
+            aria-label="File tree actions"
+            aria-expanded={open}
+            aria-haspopup="menu"
+            onClick={() => setOpen(!open)}
+          >
+            <OverflowIcon size="sm" />
+          </HeaderActionButton>
+        </div>
+        <FloatingMenu
+          open={open}
+          onOpenChange={setOpen}
+          anchorRef={anchor}
+          placement="bottom-right"
         >
-          <SearchIcon size={16} />
-        </HeaderActionButton>
-        <HeaderActionButton
-          iconOnly
-          tone="neutral"
-          aria-label="Jump to file"
-          onClick={onFocusFile}
-          disabled={focusDisabled}
-          data-testid="files-tree-jump-to-file"
-        >
-          <FocusSquareIcon size={16} />
-        </HeaderActionButton>
-        <HeaderActionButton
-          ref={anchor}
-          iconOnly
-          tone="neutral"
-          aria-label="File tree actions"
-          aria-expanded={open}
-          aria-haspopup="menu"
-          onClick={() => setOpen(!open)}
-        >
-          <OverflowIcon width={16} height={16} />
-        </HeaderActionButton>
+          <ActionMenuRowStyle>
+            <ActionMenuItems items={menuItems} onSelect={selectMenuItem} />
+          </ActionMenuRowStyle>
+        </FloatingMenu>
       </div>
-      <FloatingMenu
-        open={open}
-        onOpenChange={setOpen}
-        anchorRef={anchor}
-        placement="bottom-right"
-      >
-        <ActionMenuRowStyle>
-          <ActionMenuItems items={menuItems} onSelect={selectMenuItem} />
-        </ActionMenuRowStyle>
-      </FloatingMenu>
-    </div>
+    </Surface>
   );
 }

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { codexProfileDigest } from '@canopy/desktop-shared/node/codex-runtime/profile-digest-key';
 import { readFileSync, statSync } from 'node:fs';
 import type {
   EnvironmentConfigData,
@@ -279,9 +279,9 @@ export function resolveCodexRuntimeEnvironmentProfile(
     logicalWorkspaceEnvironmentId: `${request.runtime}:${resolved.environmentId ?? 'default'}`,
     ...(secretEntries.length > 0
       ? {
-          secretVersionFingerprint: createHash('sha256')
-            .update(JSON.stringify(secretEntries))
-            .digest('hex'),
+          secretVersionFingerprint: codexProfileDigest(
+            JSON.stringify(secretEntries),
+          ),
         }
       : {}),
   };

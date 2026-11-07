@@ -14,6 +14,7 @@ import { useMemoryErrorCopy } from './memory-error-copy';
 import { gateSummary } from './RetrievalPreview';
 import { FactCard } from './FactCard';
 import type { SettingsFailure } from '../errors';
+import { Surface } from '@canopy/ui-shared/components';
 
 interface GraphRetrievalPanelProps {
   orgId: string;
@@ -78,7 +79,7 @@ export function GraphRetrievalPanel({
   };
 
   return (
-    <div className="rounded-xl border bg-card p-4">
+    <Surface variant="card" padding="default">
       <form onSubmit={(event) => void submit(event)} className="flex gap-2">
         <SearchField
           value={query}
@@ -143,6 +144,6 @@ export function GraphRetrievalPanel({
           )}
         </div>
       )}
-    </div>
+    </Surface>
   );
 }

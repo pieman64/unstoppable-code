@@ -445,7 +445,7 @@ export function CoordinatorLabPage(): JSX.Element {
                 onClick={chime.toggle}
                 aria-pressed={chime.enabled && !chime.locked}
               >
-                <BellIcon width={14} height={14} aria-hidden={true} />
+                <BellIcon size="sm" aria-hidden={true} />
                 {chime.enabled
                   ? chime.locked
                     ? 'Turn on sound'
@@ -662,8 +662,7 @@ export function CoordinatorLabPage(): JSX.Element {
                       aria-label="Previous"
                     >
                       <ChevronRightIcon
-                        width={16}
-                        height={16}
+                        size="sm"
                         aria-hidden={true}
                         className="rotate-180"
                       />
@@ -679,11 +678,7 @@ export function CoordinatorLabPage(): JSX.Element {
                       onClick={() => step(1)}
                       aria-label="Next"
                     >
-                      <ChevronRightIcon
-                        width={16}
-                        height={16}
-                        aria-hidden={true}
-                      />
+                      <ChevronRightIcon size="sm" aria-hidden={true} />
                     </Button>
                   </Tooltip>
                 </div>
@@ -949,8 +944,7 @@ function StatusGlyph({
   if (isFailed(chat)) {
     return (
       <FailedIcon
-        width={14}
-        height={14}
+        size="sm"
         aria-label="Failed"
         className={OPERATIONAL_STATUS_COLORS.failed.foreground}
       />
@@ -958,18 +952,12 @@ function StatusGlyph({
   }
   if (group === 'needs') {
     return (
-      <RaisedHandIcon
-        width={14}
-        height={14}
-        aria-label="Needs you"
-        className="fg-warning"
-      />
+      <RaisedHandIcon size="sm" aria-label="Needs you" className="fg-warning" />
     );
   }
   return (
     <CircleCheckIcon
-      width={14}
-      height={14}
+      size="sm"
       aria-label="Done"
       className={OPERATIONAL_STATUS_COLORS.success.foreground}
     />
@@ -1066,7 +1054,7 @@ function ChatCard({
             onClick={onToggleReview}
             className="-ml-3"
           >
-            <ChevronRightIcon width={14} height={14} aria-hidden={true} />
+            <ChevronRightIcon size="sm" aria-hidden={true} />
             {reviewSummary(c, media)}
           </Button>
         </div>
@@ -1574,12 +1562,11 @@ function CompareSlider({
         <div className="absolute inset-y-0 -left-px w-0.5 bg-current fg-primary opacity-70" />
         <div className="absolute top-1/2 -left-4 flex size-8 -translate-y-1/2 items-center justify-center rounded-full bg-base fg-primary shadow-md ring-[length:var(--border-hairline)] ring-line-base">
           <ChevronRightIcon
-            width={12}
-            height={12}
+            size="sm"
             aria-hidden={true}
             className="rotate-180"
           />
-          <ChevronRightIcon width={12} height={12} aria-hidden={true} />
+          <ChevronRightIcon size="sm" aria-hidden={true} />
         </div>
       </div>
       <span className="pointer-events-none absolute left-3 top-3 rounded-full bg-base px-2 py-0.5 text-xs fg-secondary shadow-sm backdrop-blur">
@@ -1764,8 +1751,7 @@ function PictureViewer({
                 aria-label="Previous"
               >
                 <ChevronRightIcon
-                  width={14}
-                  height={14}
+                  size="sm"
                   aria-hidden={true}
                   className="rotate-180"
                 />
@@ -1779,7 +1765,7 @@ function PictureViewer({
                 onClick={() => go(1)}
                 aria-label="Next"
               >
-                <ChevronRightIcon width={14} height={14} aria-hidden={true} />
+                <ChevronRightIcon size="sm" aria-hidden={true} />
               </Button>
             </div>
           </>

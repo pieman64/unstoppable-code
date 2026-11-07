@@ -139,6 +139,7 @@ import type {
   DelegationFeedHooks,
 } from '@canopy/desktop-shared/node/delegation/projections';
 import path from 'node:path';
+import { stopDelegationForUser } from './user-stop';
 import type { BrowserWindow } from 'electron';
 import { BRAND } from '@canopy/brand/current';
 import { buildInjectedToolNamesForBrand } from '@canopy/protocol/brand';
@@ -161,6 +162,7 @@ import {
   legacyPrefixView,
 } from '@canopy/desktop-shared/node/delegation/record-v3';
 import { AgentRunnerRegistry } from '@canopy/desktop-shared/node/delegation/runner-registry';
+import { withSubagentWorkerRuns } from '../../agent-runs/subagent-worker-runs';
 import {
   FileDelegationStorage,
   FileManagedDelegationMessageStorage,
@@ -1294,65 +1296,75 @@ async function actorFor(
     registry.register({
       apiVersion: 1,
       registrationId: 'local-delegation-claude-v1',
-      adapter: createClaudeDelegationRunner({
-        available: runtime.available,
-        delegation: childDelegation,
-        ledger: childLedger,
-        transcriptPort,
-        prepare: (
-          context,
-        ): ReturnType<DelegationRouteRuntime['prepareClaude']> =>
-          runtime.prepareClaude(context),
-        reportError,
-      }),
+      adapter: withSubagentWorkerRuns(
+        createClaudeDelegationRunner({
+          available: runtime.available,
+          delegation: childDelegation,
+          ledger: childLedger,
+          transcriptPort,
+          prepare: (
+            context,
+          ): ReturnType<DelegationRouteRuntime['prepareClaude']> =>
+            runtime.prepareClaude(context),
+          reportError,
+        }),
+      ),
     });
     registry.register({
       apiVersion: 1,
       registrationId: 'local-delegation-codex-v1',
-      adapter: createCodexDelegationRunner({
-        available: runtime.available,
-        delegation: childDelegation,
-        ledger: childLedger,
-        transcriptPort,
-        prepare: (
-          context,
-        ): ReturnType<DelegationRouteRuntime['prepareCodex']> =>
-          runtime.prepareCodex(context),
-        reportError,
-      }),
+      adapter: withSubagentWorkerRuns(
+        createCodexDelegationRunner({
+          available: runtime.available,
+          delegation: childDelegation,
+          ledger: childLedger,
+          transcriptPort,
+          prepare: (
+            context,
+          ): ReturnType<DelegationRouteRuntime['prepareCodex']> =>
+            runtime.prepareCodex(context),
+          reportError,
+        }),
+      ),
     });
     registry.register({
       apiVersion: 1,
       registrationId: 'local-delegation-cursor-v1',
-      adapter: createCursorDelegationRunner({
-        available: runtime.available,
-        delegation: childDelegation,
-        transcriptPort,
-        prepare: (context) => runtime.prepareCursor(context),
-        reportError,
-      }),
+      adapter: withSubagentWorkerRuns(
+        createCursorDelegationRunner({
+          available: runtime.available,
+          delegation: childDelegation,
+          transcriptPort,
+          prepare: (context) => runtime.prepareCursor(context),
+          reportError,
+        }),
+      ),
     });
     registry.register({
       apiVersion: 1,
       registrationId: 'local-delegation-copilot-v1',
-      adapter: createCopilotDelegationRunner({
-        available: runtime.available,
-        delegation: childDelegation,
-        transcriptPort,
-        prepare: (context) => runtime.prepareCopilot(context),
-        reportError,
-      }),
+      adapter: withSubagentWorkerRuns(
+        createCopilotDelegationRunner({
+          available: runtime.available,
+          delegation: childDelegation,
+          transcriptPort,
+          prepare: (context) => runtime.prepareCopilot(context),
+          reportError,
+        }),
+      ),
     });
     registry.register({
       apiVersion: 1,
       registrationId: 'local-delegation-opencode-v1',
-      adapter: createOpenCodeDelegationRunner({
-        available: runtime.available,
-        delegation: childDelegation,
-        transcriptPort,
-        prepare: (context) => runtime.prepareOpenCode(context),
-        reportError,
-      }),
+      adapter: withSubagentWorkerRuns(
+        createOpenCodeDelegationRunner({
+          available: runtime.available,
+          delegation: childDelegation,
+          transcriptPort,
+          prepare: (context) => runtime.prepareOpenCode(context),
+          reportError,
+        }),
+      ),
     });
     const lifetime = managedDelegationLifetimeService.createOwner({
       storage: new FileDelegationStorage(directory),
@@ -3449,24 +3461,18 @@ async function retireDelegateWatchers(
 export async function stopManagedDelegationForUser(
   target: ManagedDelegationChatTarget,
   delegationId: string,
+  expectedRunGeneration?: number,
 ): Promise<AgentDelegationResult<AgentDelegationSnapshot>> {
   const resolved = await userStopContext(target);
   if (!resolved) return parentUnavailable();
-  const { broker, parent } = resolved;
-  const subtree = (): ReadonlySet<string> =>
-    new Set([
-      delegationId,
-      ...broker
-        .list(parent, { underDelegationId: delegationId })
-        .map((snapshot) => snapshot.delegationId),
-    ]);
-  const known = broker.inspect(parent, delegationId) !== undefined;
-  // Before the stop, so no task it ends wakes the subtree; after, for any
-  // watch registered while it was being stopped.
-  if (known) await retireDelegateWatchers(target, subtree());
-  const result = await broker.stop(parent, delegationId, 'user_cancelled');
-  if (result.ok) await retireDelegateWatchers(target, subtree());
-  return result;
+  return stopDelegationForUser({
+    broker: resolved.broker,
+    parent: resolved.parent,
+    delegationId,
+    ...(expectedRunGeneration !== undefined ? { expectedRunGeneration } : {}),
+    retireWatchers: (delegationIds) =>
+      retireDelegateWatchers(target, delegationIds),
+  });
 }
 
 /**

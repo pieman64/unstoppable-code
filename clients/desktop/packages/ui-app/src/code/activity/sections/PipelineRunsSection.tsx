@@ -14,6 +14,7 @@ import {
   type StatusBadgeVariant,
 } from '@canopy/ui-shared/components';
 import { computeDagTiers } from '@canopy/ui-shared/lib/dag-tiers';
+import { Surface } from '@canopy/ui-shared/components';
 
 interface RichPipelineRun extends PortalPipelineRunProjection {
   readonly progress?: { completedSteps: number; totalSteps: number };
@@ -134,38 +135,38 @@ function PipelineRunRow({
   const { tiers, jobs } = useMemo(() => buildDagInputs(run.jobs), [run.jobs]);
   const progress = run.progress;
   return (
-    <div
-      className={
-        active
-          ? 'rounded-lg border bg-fg-primary/[0.03] px-3 py-3'
-          : 'group/pipeline-run relative rounded-lg border bg-fg-primary/[0.015] px-3 py-2.5 transition-colors hover:bg-fg-primary/[0.03]'
-      }
+    <Surface
+      variant="group"
+      interactive={!active}
+      className={active ? undefined : 'group/pipeline-run relative'}
       data-testid={`pipeline-run-row-${run.localId ?? run.pipelineLocalId ?? run.pipelineName}`}
     >
-      <div className="flex items-center gap-2">
-        <StatusBadge
-          variant={statusVariant(run.status)}
-          muted={!active}
-          label={run.status || 'unknown'}
-        />
-      </div>
-      <div
-        className={`mt-1 truncate text-xs ${active ? 'font-medium fg-primary/80' : 'fg-secondary'}`}
-      >
-        {run.pipelineName ?? run.pipelineLocalId}
-      </div>
-      {active && progress && progress.totalSteps > 0 && (
-        <div
-          className="mt-1 text-2xs fg-secondary"
-          data-testid={`pipeline-run-progress-${run.localId ?? run.pipelineLocalId}`}
-        >
-          {progress.completedSteps}/{progress.totalSteps} steps complete
+      <div className={active ? 'p-3' : 'px-3 py-2.5'}>
+        <div className="flex items-center gap-2">
+          <StatusBadge
+            variant={statusVariant(run.status)}
+            muted={!active}
+            label={run.status || 'unknown'}
+          />
         </div>
-      )}
-      {tiers.length > 0 && (
-        <DagProgressBar tiers={tiers} jobs={jobs} muted={!active} />
-      )}
-    </div>
+        <div
+          className={`mt-1 truncate text-xs ${active ? 'font-medium fg-primary/80' : 'fg-secondary'}`}
+        >
+          {run.pipelineName ?? run.pipelineLocalId}
+        </div>
+        {active && progress && progress.totalSteps > 0 && (
+          <div
+            className="mt-1 text-2xs fg-secondary"
+            data-testid={`pipeline-run-progress-${run.localId ?? run.pipelineLocalId}`}
+          >
+            {progress.completedSteps}/{progress.totalSteps} steps complete
+          </div>
+        )}
+        {tiers.length > 0 && (
+          <DagProgressBar tiers={tiers} jobs={jobs} muted={!active} />
+        )}
+      </div>
+    </Surface>
   );
 }
 

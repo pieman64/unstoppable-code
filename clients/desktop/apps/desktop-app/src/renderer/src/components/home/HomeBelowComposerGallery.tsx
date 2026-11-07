@@ -84,7 +84,7 @@ export function HomeBelowComposerGallery(): JSX.Element {
                 iconOnly
                 aria-label="Dismiss"
               >
-                <CloseMediumIcon width={14} height={14} />
+                <CloseMediumIcon size="sm" />
               </Button>
             </SuggestionRowTrailing>
           </li>

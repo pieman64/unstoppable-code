@@ -28,6 +28,7 @@ import {
 } from '@canopy/ui-shared/lib';
 import {
   useAccountMcpSignIn,
+  accountMcpSignInTargetKey,
   type AccountMcpSignIn,
   type AccountMcpSignInTarget,
 } from '@/components/mcp/useAccountMcpSignIn';
@@ -98,6 +99,7 @@ function signInRows(
   connections: AccountConnections,
   accountEnabled: boolean,
   signIn: Pick<AccountMcpSignIn, 'pending' | 'waitsForCatalog'> & {
+    readonly pendingKeyForConnection: AccountMcpSignIn['actions']['pendingKeyForConnection'];
     readonly authorizing: ReadonlySet<string>;
   },
 ): HomeSignInRow[] {
@@ -125,6 +127,39 @@ function signInRows(
         : {}),
       server,
     } satisfies HomeSignInRow;
+    const target: AccountMcpSignInTarget = {
+      ...(connection ? { connection } : {}),
+      ...(server.curatedKey ? { curatedKey: server.curatedKey } : {}),
+      ...(connection?.configId
+        ? { configId: connection.configId }
+        : server.configId
+          ? { configId: server.configId }
+          : {}),
+    };
+    const targetKey = accountMcpSignInTargetKey(target);
+    const initiatingKey = connection
+      ? signIn.pendingKeyForConnection(connection)
+      : undefined;
+    const accountKey =
+      targetKey !== undefined && signIn.pending.has(targetKey)
+        ? targetKey
+        : (initiatingKey ?? targetKey);
+    const waiting = accountKey !== undefined && signIn.pending.has(accountKey);
+    // Inventory can name the ID before its details or the start have landed.
+    // Retain that already-owned flow without allowing a replacement Connect.
+    if (!connection && server.accountConnectionId && waiting)
+      return [
+        {
+          ...accountRow,
+          canConnect: true,
+          connectDisabled: true,
+          waitsForConnection: true,
+          connecting: true,
+          waitingForSignIn: signIn.authorizing.has(server.key),
+          accountKey,
+          target,
+        },
+      ];
     if (
       connection === undefined &&
       server.accountConnectionId !== undefined &&
@@ -148,7 +183,6 @@ function signInRows(
           unavailableReason: 'This MCP server is no longer available',
         },
       ];
-    const accountKey = connection?.serverKey ?? server.curatedKey;
     if (accountKey === undefined)
       return [
         {
@@ -158,23 +192,14 @@ function signInRows(
           opensSettings: true,
         },
       ];
-    const target: AccountMcpSignInTarget = {
-      ...(connection ? { connection } : {}),
-      ...(server.curatedKey ? { curatedKey: server.curatedKey } : {}),
-      ...(connection?.configId
-        ? { configId: connection.configId }
-        : server.configId
-          ? { configId: server.configId }
-          : {}),
-    };
-    const waiting = signIn.pending.has(accountKey);
     const waitsForCatalog = signIn.waitsForCatalog(target);
     return [
       {
         ...accountRow,
         canConnect: true,
         ...(waiting ? { connecting: true } : {}),
-        waitingForSignIn: signIn.authorizing.has(accountKey),
+        // The detected row survives binding a newly created connection ID.
+        waitingForSignIn: waiting && signIn.authorizing.has(server.key),
         ...(waiting || waitsForCatalog || connections.status !== 'loaded'
           ? { connectDisabled: true }
           : {}),
@@ -415,10 +440,12 @@ export function useSelectedMcpSignIn({
     [choice, detected.connectingKey, loadConnections, valid],
   );
   const { pending: signInPending, waitsForCatalog } = signIn;
+  const pendingKeyForConnection = signIn.actions.pendingKeyForConnection;
   const rows = useMemo(
     () =>
       signInRows(detected.servers, connections, accountEnabled, {
         pending: signInPending,
+        pendingKeyForConnection,
         waitsForCatalog,
         authorizing: accountAuthorizing,
       }),
@@ -427,6 +454,7 @@ export function useSelectedMcpSignIn({
       connections,
       detected.servers,
       signInPending,
+      pendingKeyForConnection,
       waitsForCatalog,
       accountAuthorizing,
     ],
@@ -454,8 +482,11 @@ export function useSelectedMcpSignIn({
       signInRef.current.stopObserving();
     }
     if (
-      Array.from(signInRef.current.pending).some(
-        (key) => !selectedKeys.has(key),
+      signInRef.current.pending.size > 0 &&
+      // Home permits one account flow at a time. Its initiating key or bound
+      // connection alias must still select a row, not every alias separately.
+      !Array.from(signInRef.current.pending).some((key) =>
+        selectedKeys.has(key),
       )
     )
       signInRef.current.stopObserving();
@@ -567,32 +598,27 @@ export function useSelectedMcpSignIn({
             throw new Error('This MCP server is no longer available');
           if (connection || server.curatedKey) {
             accountTarget.current = item.key;
-            signIn.connect(
-              {
-                ...(connection
-                  ? { connection, configId: connection.configId }
-                  : server.configId
-                    ? { configId: server.configId }
-                    : {}),
-                ...(server.curatedKey ? { curatedKey: server.curatedKey } : {}),
+            const target: AccountMcpSignInTarget = {
+              ...(connection
+                ? { connection, configId: connection.configId }
+                : server.configId
+                  ? { configId: server.configId }
+                  : {}),
+              ...(server.curatedKey ? { curatedKey: server.curatedKey } : {}),
+            };
+            signIn.connect(target, {
+              pendingKey: accountMcpSignInTargetKey(target),
+              onAuthorizing: (): void => {
+                if (valid(owner, attempt))
+                  setAccountAuthorizing(new Set([server.key]));
               },
-              {
-                onAuthorizing: (): void => {
-                  if (valid(owner, attempt))
-                    setAccountAuthorizing(
-                      new Set([
-                        connection?.serverKey ?? server.curatedKey ?? '',
-                      ]),
-                    );
-                },
-                onSettled: (): void => {
-                  if (valid(owner, attempt)) {
-                    accountTarget.current = null;
-                    setAccountAuthorizing(new Set());
-                  }
-                },
+              onSettled: (): void => {
+                if (valid(owner, attempt)) {
+                  accountTarget.current = null;
+                  setAccountAuthorizing(new Set());
+                }
               },
-            );
+            });
           } else {
             if (!latest.current.onSelectionsChange)
               throw new Error(
@@ -733,16 +759,24 @@ export function useSelectedMcpSignIn({
           role="status"
           className="fg-secondary"
           aria-label={
-            accountAuthorizing.has(accountKey)
+            row?.waitingForSignIn
               ? `Waiting for ${item.displayName} sign-in`
               : undefined
           }
         >
-          {accountAuthorizing.has(accountKey)
+          {row?.waitingForSignIn
             ? MCP_SIGN_IN_WAITING_LABEL
             : 'Opening sign-in…'}
         </span>
-        <Button variant="link" onClick={(): void => signIn.cancel(accountKey)}>
+        <Button
+          variant="link"
+          onClick={(): void =>
+            signIn.cancel(
+              accountKey,
+              row?.target?.connection?.id ?? row?.server.accountConnectionId,
+            )
+          }
+        >
           Cancel
         </Button>
       </span>

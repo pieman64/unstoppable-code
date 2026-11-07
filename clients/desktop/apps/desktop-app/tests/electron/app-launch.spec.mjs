@@ -24,7 +24,8 @@ test('launches the built Electron shell', async ({}, testInfo) => {
   expect(gates.isW5RecoveryEntryEnabled()).toBe(true);
   expect(isW5DaemonFlipCompiled()).toBe(false);
   expect(gates.isW5RecoveryAvailable()).toBe(false);
-  const { electronApp, userDataDir } = await launchCanopy();
+  const { electronApp, userDataDir, productMainEntryPath } =
+    await launchCanopy();
   const secureDir = `${userDataDir}-secure`;
   mkdirSync(secureDir, { recursive: true });
 
@@ -109,6 +110,47 @@ test('launches the built Electron shell', async ({}, testInfo) => {
         height: 900,
       });
     await expect(window.getByTestId('app-sidebar')).toBeVisible();
+    if (process.platform === 'darwin') {
+      // Compatibility detection must be safe before the macOS-26-only helper
+      // can load. Exercise the real preload/main path on an older host.
+      await electronApp.evaluate(() => {
+        const os = process.getBuiltinModule('os');
+        const childProcess = process.getBuiltinModule('child_process');
+        globalThis.__restoreVoiceHost = {
+          release: os.release,
+          execFile: childProcess.execFile,
+          executable: process.env.DICTATE_EXECUTABLE,
+        };
+        os.release = () => '24.6.0';
+        process.env.DICTATE_EXECUTABLE = process.execPath;
+        const execFile = childProcess.execFile;
+        childProcess.execFile = (file, ...args) => {
+          if (file === process.execPath) {
+            throw new Error('Unsupported macOS launched the dictation helper');
+          }
+          return execFile(file, ...args);
+        };
+      });
+      try {
+        const support = await window.evaluate(() =>
+          window.api.voice.recheckSupported(),
+        );
+        expect(support.supported).toBe(false);
+        expect(support.reason).toContain('macOS 26');
+      } finally {
+        await electronApp.evaluate(() => {
+          const original = globalThis.__restoreVoiceHost;
+          process.getBuiltinModule('os').release = original.release;
+          process.getBuiltinModule('child_process').execFile =
+            original.execFile;
+          if (original.executable === undefined)
+            delete process.env.DICTATE_EXECUTABLE;
+          else process.env.DICTATE_EXECUTABLE = original.executable;
+          delete globalThis.__restoreVoiceHost;
+        });
+        await window.evaluate(() => window.api.voice.recheckSupported());
+      }
+    }
     // Exercise w5-recovery:status and w5-recovery:prepare through the real
     // preload/main boundary. Exposure is compiled on after registration;
     // actual legacy W5 ownership must still hide entry and prevent intent.
@@ -190,6 +232,38 @@ test('launches the built Electron shell', async ({}, testInfo) => {
     const heading = homePage.getByTestId('home-heading');
     await expect(heading).toBeVisible();
     await expect(heading).not.toHaveText('');
+    // Main startup has called setMemorySyncEnabled with sync off, so no
+    // engine made a replica. The memory merge runner's Worker entry, built
+    // beside main, merges disjoint edits in Electron's runtime and answers a
+    // malformed request with a too_costly conflict.
+    expect(existsSync(path.join(userDataDir, 'memory-replicas'))).toBe(false);
+    const memoryMerges = await electronApp.evaluate(
+      async (_electron, workerPath) => {
+        const { Worker } = process.getBuiltinModule('node:worker_threads');
+        const merge = (workerData) =>
+          new Promise((resolve, reject) => {
+            const worker = new Worker(workerPath, { workerData });
+            worker.once('message', resolve);
+            worker.once('error', reject);
+          });
+        return {
+          merged: await merge({
+            base: 'a\nb\nc\n',
+            ours: 'A\nb\nc\n',
+            theirs: 'a\nb\nC\n',
+          }),
+          refused: await merge({ base: null, ours: 1, theirs: '' }),
+        };
+      },
+      path.join(
+        path.dirname(productMainEntryPath),
+        'memory-sync-merge-worker.js',
+      ),
+    );
+    expect(memoryMerges).toEqual({
+      merged: { merge: { kind: 'merged', content: 'A\nb\nC\n' } },
+      refused: { merge: { kind: 'conflict', reason: 'too_costly' } },
+    });
     // Hidden BrowserWindows still render and support visual evidence.
     await window.screenshot({ path: testInfo.outputPath('app-launch.png') });
   } finally {

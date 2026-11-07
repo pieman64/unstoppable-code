@@ -30,7 +30,6 @@ export type CreditsRecoveryTrigger =
 
 /** The way out the user picked. */
 export type CreditsRecoveryAction =
-  | 'drip_opt_in'
   | 'provider_sign_in'
   | 'account_sign_in'
   | 'credits_purchase'

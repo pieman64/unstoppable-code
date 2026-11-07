@@ -1,9 +1,10 @@
 import type { JSX } from 'react';
 import { AgentIcon } from '../../../../icons/AgentIcon';
+import type { AppIconProps } from '../../../../icons/AppIcons';
 
 export interface SubagentIconProps {
-  /** Glyph size in pixels. Defaults to 14. */
-  readonly size?: number;
+  /** A step of the icon scale. Defaults to `sm`. */
+  readonly size?: AppIconProps['size'];
   readonly className?: string;
 }
 
@@ -12,10 +13,8 @@ export interface SubagentIconProps {
  * subagent surface renders this component instead of choosing its own icon.
  */
 export function SubagentIcon({
-  size = 14,
+  size = 'sm',
   className,
 }: SubagentIconProps): JSX.Element {
-  return (
-    <AgentIcon width={size} height={size} aria-hidden className={className} />
-  );
+  return <AgentIcon size={size} aria-hidden className={className} />;
 }

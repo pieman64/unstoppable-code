@@ -48,6 +48,7 @@ import {
   installedShareStatusFact,
   type InstalledShareProvenanceOptions,
 } from './installed-share-provenance';
+import { Surface } from '@canopy/ui-shared/components';
 
 export { SKILL_MAIN_FILE } from '@canopy/ui-shared/lib';
 
@@ -472,7 +473,7 @@ export function SkillReadDetail({
       onClick={onEdit}
       data-testid="skill-read-detail-edit"
     >
-      <AppCatalogDocumentPencilIcon width="12" height="12" aria-hidden />
+      <AppCatalogDocumentPencilIcon size="sm" aria-hidden />
       Edit
     </Button>
   ) : null;
@@ -611,7 +612,7 @@ export function SkillReadDetail({
                   disabled={removePending}
                   data-testid="skill-read-detail-remove"
                 >
-                  <TrashIcon width={12} height={12} aria-hidden />
+                  <TrashIcon size="sm" aria-hidden />
                   {removeLabel}
                 </Button>
               )}
@@ -664,13 +665,15 @@ export function SkillReadDetail({
 
   const truncationNotice =
     contentTruncatedNotice !== undefined && contentTruncatedNotice !== '' ? (
-      <p
-        className="mb-4 rounded-lg border bg-secondary/50 px-4 py-3 text-s fg-secondary"
-        role="note"
-        data-testid="skill-read-detail-truncated"
-      >
-        {contentTruncatedNotice}
-      </p>
+      <Surface variant="group" className="mb-4">
+        <p
+          className="px-4 py-3 text-s fg-secondary"
+          role="note"
+          data-testid="skill-read-detail-truncated"
+        >
+          {contentTruncatedNotice}
+        </p>
+      </Surface>
     ) : null;
 
   const rootClass =
@@ -757,22 +760,27 @@ export function SkillReadDetail({
       />
       <div className="flex min-h-0 flex-1 gap-3 overflow-hidden">
         {showTree && (
-          <div className="w-56 shrink-0 overflow-y-auto rounded-lg border">
-            <SkillFileTree
-              files={files}
-              activePath={activeFile}
-              onSelectFile={openFile}
-              collapsed={collapsed}
-              onToggleDirectory={(path) =>
-                setCollapsed((previous) => {
-                  const next = new Set(previous);
-                  if (next.has(path)) next.delete(path);
-                  else next.add(path);
-                  return next;
-                })
-              }
-            />
-          </div>
+          <Surface
+            variant="outline"
+            className="flex w-56 shrink-0 overflow-hidden"
+          >
+            <div className="min-w-0 flex-1 overflow-y-auto">
+              <SkillFileTree
+                files={files}
+                activePath={activeFile}
+                onSelectFile={openFile}
+                collapsed={collapsed}
+                onToggleDirectory={(path) =>
+                  setCollapsed((previous) => {
+                    const next = new Set(previous);
+                    if (next.has(path)) next.delete(path);
+                    else next.add(path);
+                    return next;
+                  })
+                }
+              />
+            </div>
+          </Surface>
         )}
         {/* Skill files are file content: session replay keeps a placeholder
             for the open file and for the SKILL.md body. Related content after

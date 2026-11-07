@@ -208,6 +208,12 @@ function getBuildOptions(entryPoints) {
       '@canopy/protocol': join(root, 'packages', 'protocol', 'src'),
       '@canopy/agent-actions': join(root, 'packages', 'agent-actions', 'src'),
       '@canopy/plugin-interop': join(root, 'packages', 'plugin-interop', 'src'),
+      '@canopy/copilot-recipient': join(
+        root,
+        'packages',
+        'copilot-recipient',
+        'src',
+      ),
       '@canopy/code-graph': join(root, 'packages', 'code-graph', 'src'),
       '@canopy/desktop-shared': join(root, 'packages', 'desktop-shared', 'src'),
       '@canopy/ui-shared': join(root, 'packages', 'ui-shared', 'src'),

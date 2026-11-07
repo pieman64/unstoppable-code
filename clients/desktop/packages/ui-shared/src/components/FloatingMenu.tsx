@@ -98,6 +98,8 @@ export interface FloatingMenuProps extends Omit<
   readonly viewportPadding?: number;
   /** Optional intrinsic height cap applied before collision placement. */
   readonly heightLimit?: number;
+  /** Ordinary menus fit their longest row within shared minimum/maximum bounds. */
+  readonly sizing?: 'content' | 'custom';
   /** Keep multi-select menus open after activating an enabled row. */
   readonly closeOnSelect?: boolean;
   /**
@@ -445,6 +447,7 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
       gap = FLOATING_MENU_GAP,
       viewportPadding = FLOATING_MENU_VIEWPORT_PADDING,
       heightLimit,
+      sizing = 'content',
       closeOnSelect = true,
       nested = false,
       initialFocusRef,
@@ -1017,6 +1020,15 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
     const menu = (
       <DropdownMenuSurface
         {...props}
+        shell={
+          sizing === 'content' &&
+          interaction !== 'manual' &&
+          (props.shell === undefined || props.shell === 'menu') &&
+          props.role !== 'dialog' &&
+          props.role !== 'search'
+            ? 'content-menu'
+            : props.shell
+        }
         ref={setMenuRef}
         id={menuId}
         // Only the menu-family roles take an orientation. `role="dialog"`

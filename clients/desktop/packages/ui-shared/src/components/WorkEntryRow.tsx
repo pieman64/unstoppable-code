@@ -41,6 +41,7 @@ import {
 import { SidebarRowAge } from './SidebarRowAge';
 import { AgentStateGlyph, backgroundTasksLabel } from './AgentStateGlyph';
 import { ThinkingSpinner } from './ThinkingSpinner';
+import { ChoiceMark } from './Choice';
 import { SidebarPinMenuItem } from './SidebarPinMenuItem';
 import { SidebarPinnedBadge } from './SidebarPinnedBadge';
 import { Tooltip } from './Tooltip';
@@ -50,6 +51,7 @@ import {
   ArchiveIcon,
   CheckIcon,
   MoreHorizontalIcon,
+  ListChecks,
   PencilIcon,
   PinFilledIcon,
   PinIcon,
@@ -86,6 +88,8 @@ export const WORK_ENTRY_SELECTION_ROW_ATTR = 'data-worktree-selection-row';
  * entry, ends an active selection, and anchors Shift ranges on this row.
  */
 export interface WorkEntryRowMultiSelect {
+  readonly selectMode?: boolean;
+  readonly onSelectItem?: () => void;
   /** This row is in the selection: the open row's fill and an sr-only label. */
   readonly selected: boolean;
   /** The row can join the selection. */
@@ -132,6 +136,7 @@ export interface WorkEntryRowDragBinding {
 
 /** What a host needs to build the rows of a Work Entry's menu. */
 export interface WorkEntryRowMenuContext {
+  readonly onSelectItem?: () => void;
   /** Closes the menu. Call it before running the chosen command. */
   close: () => void;
   /**
@@ -454,12 +459,12 @@ function WorkEntryRowImpl({
   const dragPointerDown = dragBinding?.onPointerDown;
   const handlePointerDown = useCallback(
     (event: PointerEvent<HTMLDivElement>): void => {
-      if (!dragPointerDown) return;
+      if (!dragPointerDown || multiSelect?.selectMode) return;
       if (!isOwnTarget(event.target, event.currentTarget)) return;
       if (isInteractiveTarget(event.target, event.currentTarget)) return;
       dragPointerDown(event);
     },
-    [dragPointerDown],
+    [dragPointerDown, multiSelect?.selectMode],
   );
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
@@ -468,6 +473,10 @@ function WorkEntryRowImpl({
     if (isInteractiveTarget(event.target, event.currentTarget)) return;
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
+      if (multiSelect?.selectMode && multiSelect.selectable) {
+        multiSelect.onToggle();
+        return;
+      }
       // Opening from the keyboard moves the anchor like a plain click, so a
       // later Cmd-click never seeds a row that is no longer open.
       if (multiSelect !== undefined && !multiSelect.active) {
@@ -507,7 +516,12 @@ function WorkEntryRowImpl({
       onOpen?.();
       return;
     }
-    const intent = resolveSelectionClick(event, multiSelect);
+    const intent =
+      multiSelect.selectMode && multiSelect.selectable
+        ? event.shiftKey
+          ? 'range'
+          : 'toggle'
+        : resolveSelectionClick(event, multiSelect);
     if (intent === 'toggle' || intent === 'range') {
       event.preventDefault();
       if (intent === 'toggle') multiSelect.onToggle();
@@ -546,6 +560,9 @@ function WorkEntryRowImpl({
   const menuContext: WorkEntryRowMenuContext = {
     close: closeMenu,
     testIdFor,
+    onSelectItem: multiSelect?.selectable
+      ? multiSelect.onSelectItem
+      : undefined,
   };
   const intentHandlers = onIntent
     ? {
@@ -566,6 +583,7 @@ function WorkEntryRowImpl({
       style={dragBinding?.style}
       {...dragBinding?.attributes}
       role="button"
+      aria-pressed={multiSelect?.selectMode ? multiSelected : undefined}
       tabIndex={0}
       data-testid={testIdFor('')}
       data-standalone-chat-id={isPinnedCopy ? undefined : entryId}
@@ -580,6 +598,18 @@ function WorkEntryRowImpl({
         : {})}
       data-multiselected={multiSelected || undefined}
       onClick={handleClick}
+      onDoubleClick={(event): void => {
+        if (
+          isOwnTarget(event.target, event.currentTarget) &&
+          !isInteractiveTarget(event.target, event.currentTarget) &&
+          !event.shiftKey &&
+          !event.metaKey &&
+          !event.ctrlKey &&
+          !event.altKey &&
+          multiSelect?.selectable
+        )
+          multiSelect.onSelectItem?.();
+      }}
       onMouseDown={
         multiSelect === undefined
           ? undefined
@@ -602,19 +632,29 @@ function WorkEntryRowImpl({
       onKeyDown={handleKeyDown}
       className={`group group/sidebar-item relative flex ${touchTarget ? 'min-h-11' : 'h-8'} w-full cursor-default items-center gap-1.5 rounded-row px-1.5 py-0 text-left text-s transition-opacity ${
         dragBinding ? 'touch-none select-none' : ''
-      } ${multiSelected ? 'bg-muted fg-primary' : selected ? 'bg-muted fg-primary' : `fg-secondary hover:bg-subtle${menuOpen && marksRowWhileMenuOpen ? ' bg-subtle' : ''}`} ${
+      } ${multiSelected ? 'bg-muted fg-primary' : selected && !multiSelect?.active ? 'bg-muted fg-primary' : `fg-secondary hover:bg-subtle${menuOpen && marksRowWhileMenuOpen ? ' bg-subtle' : ''}`} ${
         removing ? 'pointer-events-none opacity-50' : ''
       } ${dragBinding?.isDragging === true ? 'opacity-50' : ''}`}
     >
       {multiSelected && <span className="sr-only">Selected</span>}
-      <WorkEntryRowLeadingSlot
-        done={isDone && !statusLeads}
-        status={leadingStatus}
-        backgroundTasks={backgroundTasks}
-        testIdFor={testIdFor}
-        onDotActivate={showUnreadPreview}
-        onDotBlur={hideUnreadPreview}
-      />
+      {multiSelect?.selectMode ? (
+        <span className="flex size-5 shrink-0 items-center justify-center">
+          <ChoiceMark
+            kind="checkbox"
+            checked={multiSelected}
+            disabled={!multiSelect.selectable}
+          />
+        </span>
+      ) : (
+        <WorkEntryRowLeadingSlot
+          done={isDone && !statusLeads}
+          status={leadingStatus}
+          backgroundTasks={backgroundTasks}
+          testIdFor={testIdFor}
+          onDotActivate={showUnreadPreview}
+          onDotBlur={hideUnreadPreview}
+        />
+      )}
       {/* Done titles keep full text color: the state lives in the leading
           checkmark, matching code-worktree rows. */}
       <p
@@ -1368,6 +1408,17 @@ export function WorkEntryRowMenuItems({
           onSelect={onNotificationChoice}
           testIdFor={menu.testIdFor}
         />
+      )}
+      {menu.onSelectItem && (
+        <DropdownMenuItem
+          onClick={run(menu.onSelectItem)}
+          data-testid={menu.testIdFor('-select-item')}
+        >
+          <DropdownMenuItemIcon>
+            <ListChecks />
+          </DropdownMenuItemIcon>
+          Select item
+        </DropdownMenuItem>
       )}
       {beforeRemoval}
       {/* Archive and Delete end the menu in their own group. */}

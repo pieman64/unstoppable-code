@@ -534,6 +534,7 @@ export class ChatSearchService {
    */
   private readonly syncedLiveScopes = new Set<string>();
   private broadcastTimer: ReturnType<typeof setTimeout> | null = null;
+  private indexRevision = 0;
   private initialScanPromise: Promise<void> | null = null;
   private activeScanPromise: Promise<void> | null = null;
   private activeScanSourceKeys: Set<string> | null = null;
@@ -592,6 +593,10 @@ export class ChatSearchService {
 
   async waitForInitialScan(): Promise<void> {
     await this.initialScanPromise;
+  }
+
+  getIndexRevision(): number {
+    return this.indexRevision;
   }
 
   async scanAllSources(): Promise<void> {
@@ -1382,18 +1387,69 @@ export class ChatSearchService {
     this.indexArchivedContainer(projectId, containerId);
   }
 
+  private async discardRemovedArchivedContainer(
+    projectId: string,
+    containerId: string,
+    generation: number,
+    error: unknown,
+  ): Promise<boolean> {
+    if (
+      this.closed ||
+      !this.isWorktreeGenerationCurrent(projectId, containerId, generation)
+    )
+      return true;
+    const fileKey = getArchivedContainerManifestPath(projectId, containerId);
+    if (
+      !isErrnoException(error) ||
+      error.code !== 'ENOENT' ||
+      (await safeFingerprint(fileKey))
+    )
+      return false;
+    // Removal can win the race before the lifecycle's search callback arrives.
+    // Only a missing manifest retires this disposable scope, never a missing
+    // transcript belonging to a still-present retained container.
+    if (
+      this.closed ||
+      !this.isWorktreeGenerationCurrent(projectId, containerId, generation)
+    )
+      return true;
+    const indexer = this.getIndexer();
+    await indexer.deleteArchivedContainerDocs(projectId, containerId);
+    await indexer.deleteSourceFile(fileKey);
+    this.scheduleUpdatedBroadcast();
+    return true;
+  }
+
   indexArchivedContainer(projectId: string, containerId: string): void {
     const generation = this.worktreeGeneration(projectId, containerId);
     const fileKey = getArchivedContainerManifestPath(projectId, containerId);
     this.activeScanSourceKeys?.add(fileKey);
     this.enqueue(`archived-container:${projectId}/${containerId}`, async () => {
-      const [manifest, summary, chats, archives, plans] = await Promise.all([
+      if (
+        this.closed ||
+        !this.isWorktreeGenerationCurrent(projectId, containerId, generation)
+      )
+        return;
+      const payload = await Promise.all([
         readArchivedContainerManifest(projectId, containerId),
         readArchivedSummaryForIndex(projectId, containerId),
         readArchivedContainerChats(projectId, containerId),
         readArchivedContainerChatArchives(projectId, containerId),
         readArchivedContainerTrackedPlans(projectId, containerId),
-      ]);
+      ]).catch(async (error: unknown) => {
+        if (
+          await this.discardRemovedArchivedContainer(
+            projectId,
+            containerId,
+            generation,
+            error,
+          )
+        )
+          return null;
+        throw error;
+      });
+      if (payload === null) return;
+      const [manifest, summary, chats, archives, plans] = payload;
       if (
         this.closed ||
         !this.isWorktreeGenerationCurrent(projectId, containerId, generation)
@@ -1517,6 +1573,7 @@ export class ChatSearchService {
         key.startsWith(`live:${projectId}/`) ||
         key.startsWith(`archive:${projectId}/`) ||
         key.startsWith(`plans:${projectId}/`) ||
+        key.startsWith(`archived-container:${projectId}/`) ||
         key.startsWith(`cowork-archive:${projectId}/`),
     );
     const indexer = this.getIndexer();
@@ -2950,7 +3007,19 @@ export class ChatSearchService {
       const manifest = await readArchivedContainerManifest(
         descriptor.projectId,
         descriptor.worktreeId,
-      );
+      ).catch(async (error: unknown) => {
+        if (
+          await this.discardRemovedArchivedContainer(
+            descriptor.projectId,
+            descriptor.worktreeId,
+            generation,
+            error,
+          )
+        )
+          return null;
+        throw error;
+      });
+      if (manifest === null) return;
       if (
         this.closed ||
         !this.isWorktreeGenerationCurrent(
@@ -3428,6 +3497,7 @@ export class ChatSearchService {
 
   private scheduleUpdatedBroadcast(): void {
     if (this.closed) return;
+    this.indexRevision += 1;
     if (this.broadcastTimer) clearTimeout(this.broadcastTimer);
     this.broadcastTimer = setTimeout(() => {
       this.broadcastTimer = null;

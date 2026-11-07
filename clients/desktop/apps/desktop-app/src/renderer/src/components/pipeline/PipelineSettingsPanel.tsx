@@ -209,7 +209,7 @@ export function PipelineSettingsPanel({
               onClick={onClose}
               aria-label="Close settings"
             >
-              <AppCatalogCloseIcon width="14" height="14" />
+              <AppCatalogCloseIcon size="sm" />
             </Button>
           </Tooltip>
         )}

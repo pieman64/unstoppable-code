@@ -1,6 +1,9 @@
-import type { JSX, SVGProps } from 'react';
-import { CheckIcon as AppCatalogCheckIcon } from './AppIcons';
+import type { JSX } from 'react';
+import {
+  CheckIcon as AppCatalogCheckIcon,
+  type AppIconProps,
+} from './AppIcons';
 
-export function CheckIcon(props: SVGProps<SVGSVGElement>): JSX.Element {
-  return <AppCatalogCheckIcon width="14" height="14" {...props} />;
+export function CheckIcon(props: AppIconProps): JSX.Element {
+  return <AppCatalogCheckIcon size="sm" {...props} />;
 }

@@ -64,6 +64,7 @@ import {
   type LedgerOpenError,
 } from './ledger-scope-rows';
 import { problemCopy } from './ledger-problem-copy';
+import { Divider } from '@canopy/ui-shared/components';
 
 /** Typing settles this long before the search runs. */
 const SEARCH_DEBOUNCE_MS = 250;
@@ -150,8 +151,11 @@ function PanelComposerRow({
   );
   if (shown && draft !== null) {
     return (
-      <div className="border-b border-line-base pb-3">
-        <LedgerComposer store={store} files={files} />
+      <div>
+        <div className="pb-3">
+          <LedgerComposer store={store} files={files} />
+        </div>
+        <Divider />
       </div>
     );
   }
@@ -448,16 +452,16 @@ export function LedgerPanelActivity({
   const unlistedCorrectionForms = useMemo(
     () =>
       unlisted.map((draft) => (
-        <div
-          key={`${draft.scopeKey}:${draft.entryId}`}
-          className="border-b border-line-base pb-3"
-        >
-          <LedgerComposer
-            store={draft.store}
-            correctionOf={draft.entryId}
-            files={files}
-            autoFocusContent={false}
-          />
+        <div key={`${draft.scopeKey}:${draft.entryId}`}>
+          <div className="pb-3">
+            <LedgerComposer
+              store={draft.store}
+              correctionOf={draft.entryId}
+              files={files}
+              autoFocusContent={false}
+            />
+          </div>
+          <Divider />
         </div>
       )),
     [files, unlisted],
@@ -476,7 +480,10 @@ export function LedgerPanelActivity({
         <PanelComposerRow store={store} files={files} personName={personName} />
         {unlistedCorrectionForms}
         {pendingOpen !== null && pendingOpen !== undefined && (
-          <div className="border-b border-line-base py-3">{pendingOpen}</div>
+          <div>
+            <div className="py-3">{pendingOpen}</div>
+            <Divider />
+          </div>
         )}
       </>
     ),

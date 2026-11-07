@@ -187,6 +187,8 @@ const DEFAULT_E2E_CLIENT_FEATURE_FLAGS = {
   // Terminals stay in the app; terminal acceptance opts in through Labs.
   'canopy-desktop-labs-daemon-terminals': 'offered',
   'canopy-desktop-labs-daemon-code-graph': 'offered',
+  // Scripts run in the app; the scripts acceptance opts in through Labs.
+  'canopy-desktop-labs-daemon-scripts': 'offered',
   // Chat automations save natively unless a spec opts in through Labs.
   'canopy-desktop-labs-chat-automation-pipelines': 'offered',
   // The Labs page experiments are `offered` (off until switched on) in

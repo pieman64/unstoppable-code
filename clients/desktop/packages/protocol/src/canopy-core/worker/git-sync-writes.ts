@@ -156,7 +156,7 @@ export type WorkerGitCommitErrorCode =
 export const WorkerGitCommitParamsSchema = z.strictObject({
   scope: WorkerGitCheckoutScopeSchema,
   message: z.string().min(1).max(100_000),
-  /** The paths to commit; absent commits what is staged. */
+  /** The paths to commit; absent stages and commits every change (`add -A`). */
   paths: z.array(z.string()).optional(),
   /** The commit `HEAD` must be at right before the commit. */
   expectedHeadSha: z.string(),
@@ -215,9 +215,8 @@ export const WorkerGitPushErrorSchema = CanopyErrorPayloadSchema.extend({
 });
 
 /**
- * Committing and pushing one checkout, keyed. Served by the web core only
- * (CAN-5714), so kept out of the composed registries, whose hosts would need
- * a handler.
+ * Committing and pushing one checkout, keyed. Served by the web core
+ * (CAN-5714), desktop dispatcher and daemon worker (CAN-5882).
  */
 export const WORKER_GIT_COMMIT_PUSH_INSTRUCTION_DEFINITIONS =
   defineCanopyInstructionRegistry('worker', {

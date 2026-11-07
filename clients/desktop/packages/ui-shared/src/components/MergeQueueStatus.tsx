@@ -254,7 +254,7 @@ const MergeQueueStatusTrigger = forwardRef<
       className={`${TRIGGER_BASE} ${tone.idle} ${open ? tone.open : ''}`}
     >
       {parts.glyph === 'merge' && (
-        <GitMergeQueueIcon className="h-4 w-4 shrink-0" />
+        <GitMergeQueueIcon size="sm" className="shrink-0" />
       )}
       {parts.glyph === 'spinner' && <SpinnerGlyph />}
       {parts.glyph === 'warning' && (

@@ -10,11 +10,15 @@
 /** The terminal host (CAN-5088); it loads the staged node-pty beside it. */
 export const DAEMON_TERMINAL_HOST_ENTRY = 'terminal-host.js';
 
+/** The pipeline host (CAN-5086), bundled from desktop-shared's executor. */
+export const DAEMON_PIPELINE_HOST_ENTRY = 'pipeline-host.js';
+
 export const DAEMON_EXECUTION_HOST_ENTRIES = Object.freeze([
   'code-graph-build-host.js',
   'code-graph-read-host.js',
   'code-graph-fingerprint-host.js',
   DAEMON_TERMINAL_HOST_ENTRY,
+  DAEMON_PIPELINE_HOST_ENTRY,
 ]);
 
 /**

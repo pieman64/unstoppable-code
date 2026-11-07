@@ -1,17 +1,17 @@
-import type { JSX, SVGProps } from 'react';
-import { SingleRepoWorkspaceIcon as AppCatalogSingleRepoWorkspaceIcon } from './AppIcons';
+import type { JSX } from 'react';
+import {
+  SingleRepoWorkspaceIcon as AppCatalogSingleRepoWorkspaceIcon,
+  type AppIconProps,
+} from './AppIcons';
 
 /**
  * Single-repo workspace badge glyph — compact filled folder used for
  * single-repo (git) workspaces. Monochrome; inherits `currentColor`.
  */
-export function SingleRepoWorkspaceIcon(
-  props: SVGProps<SVGSVGElement>,
-): JSX.Element {
+export function SingleRepoWorkspaceIcon(props: AppIconProps): JSX.Element {
   return (
     <AppCatalogSingleRepoWorkspaceIcon
-      width="14"
-      height="14"
+      size="sm"
       aria-hidden="true"
       {...props}
     />

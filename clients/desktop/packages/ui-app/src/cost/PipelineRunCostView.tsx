@@ -178,7 +178,7 @@ function AdvisorCostRow({
   return (
     <div
       data-testid="pipeline-run-cost-advisor"
-      className="flex w-full flex-col gap-1.5 rounded-md px-2 py-2 text-xs"
+      className="flex w-full flex-col gap-1.5 px-2 py-2 text-xs"
     >
       <span className="flex min-w-0 items-baseline gap-3">
         <span className="flex min-w-0 flex-1 flex-col">

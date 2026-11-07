@@ -31,6 +31,10 @@ import {
   WorkerPipelinePromptReferenceSchema,
   WorkerPipelineSendSettingsSchema,
 } from './pipeline-host-values';
+import {
+  WORKER_PIPELINE_OWNER_REQUEST_MEMBERS,
+  WorkerPipelineOwnerResultSchema,
+} from './pipeline-owner-requests';
 
 /*
  * `worker.pipeline.execution.*` (CAN-4140): start, status, cancel and bounded
@@ -571,12 +575,16 @@ export const WorkerPipelineHostActionRequestSchema = z.discriminatedUnion(
       messageId: id.optional(),
       replyTimeoutMinutes: z.number().positive().max(720),
     }),
+    ...WORKER_PIPELINE_OWNER_REQUEST_MEMBERS,
   ],
 );
 
 /**
  * One host step the worker raises for core to settle (`runs.using: host`).
  * `requestId` is the step's idempotency key; core keys its effects by it.
+ * Owner requests (`owner.*` actions, CAN-5095) use the same envelope; a call
+ * that is not about one step uses `jobId` and `stepId` `_run`, `attempt` and
+ * `iteration` 0.
  */
 export const WorkerPipelineHostRequestSchema = z.strictObject({
   requestId: hostRequestId,
@@ -612,6 +620,10 @@ export const WorkerPipelineHostResultSchema = z.discriminatedUnion('status', [
     outputs: hostOutputs,
     /** A message the step sent before it failed, such as a refused steer. */
     chatSend: WorkerPipelineChatSendRecordSchema.optional(),
+  }),
+  z.strictObject({
+    status: z.literal('owner'),
+    value: WorkerPipelineOwnerResultSchema,
   }),
 ]);
 

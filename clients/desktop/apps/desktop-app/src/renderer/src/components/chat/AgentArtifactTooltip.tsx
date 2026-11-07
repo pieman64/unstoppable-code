@@ -199,7 +199,7 @@ function PipelineTooltip({ receipt }: PipelineTooltipProps): JSX.Element {
   return (
     <>
       <Header
-        icon={<PipelineIcon width={14} height={14} />}
+        icon={<PipelineIcon size="sm" />}
         name={receipt.name}
         {...(receipt.description ? { description: receipt.description } : {})}
       />
@@ -263,7 +263,7 @@ function SkillTooltip({ receipt }: SkillTooltipProps): JSX.Element {
   return (
     <>
       <Header
-        icon={<SkillIcon width={14} height={14} />}
+        icon={<SkillIcon size="sm" />}
         name={receipt.name}
         {...(receipt.description ? { description: receipt.description } : {})}
       />
@@ -277,9 +277,9 @@ function SkillTooltip({ receipt }: SkillTooltipProps): JSX.Element {
           <Fact label="Owner">
             <span aria-hidden="true" className="fg-secondary">
               {receipt.owner?.type === 'organization' ? (
-                <BuildingIcon width={12} height={12} />
+                <BuildingIcon size="sm" />
               ) : (
-                <PersonIcon width={12} height={12} />
+                <PersonIcon size="sm" />
               )}
             </span>
             <span className="min-w-0 break-words">{owner}</span>
@@ -291,20 +291,15 @@ function SkillTooltip({ receipt }: SkillTooltipProps): JSX.Element {
 }
 
 function automationActionIcon(actionKind: string): JSX.Element {
-  if (actionKind.includes('pipeline'))
-    return <PipelineIcon width={12} height={12} />;
-  if (actionKind === 'app_advisor_prompt')
-    return <AppAdvisorIcon width={12} height={12} />;
-  return <ChatIcon width={12} height={12} />;
+  if (actionKind.includes('pipeline')) return <PipelineIcon size="sm" />;
+  if (actionKind === 'app_advisor_prompt') return <AppAdvisorIcon size="sm" />;
+  return <ChatIcon size="sm" />;
 }
 
 function AutomationTooltip({ receipt }: AutomationTooltipProps): JSX.Element {
   return (
     <>
-      <Header
-        icon={<AutomationsIcon width={14} height={14} />}
-        name={receipt.name}
-      />
+      <Header icon={<AutomationsIcon size="sm" />} name={receipt.name} />
       <Badges>
         {receipt.running ? (
           <StatusDotBadge tone="info">Running</StatusDotBadge>
@@ -314,15 +309,13 @@ function AutomationTooltip({ receipt }: AutomationTooltipProps): JSX.Element {
           </StatusDotBadge>
         )}
         {receipt.ifCommandConfigured ? (
-          <Badge icon={<CommandIcon width={10} height={10} />}>
-            If command
-          </Badge>
+          <Badge icon={<CommandIcon size="sm" />}>If command</Badge>
         ) : null}
       </Badges>
       <Facts>
         <Fact label="Schedule">
           <span aria-hidden="true" className="fg-secondary">
-            <ScheduleIcon width={12} height={12} />
+            <ScheduleIcon size="sm" />
           </span>
           <span className="min-w-0 break-words">{receipt.schedule}</span>
         </Fact>
@@ -362,9 +355,9 @@ function CapabilityTooltip({
       <Header
         icon={
           receipt.kind === 'agent' ? (
-            <AgentIcon width={14} height={14} />
+            <AgentIcon size="sm" />
           ) : (
-            <AutomationsIcon width={14} height={14} />
+            <AutomationsIcon size="sm" />
           )
         }
         name={receipt.name}

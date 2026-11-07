@@ -6,6 +6,7 @@ import {
   readWorkspaceDestructiveRecoveries,
 } from './w5-destructive-recovery';
 import { execFile } from 'node:child_process';
+import { assertArchiveWorktreeRemoval } from './archive-worktree-postconditions';
 import { createHash, randomUUID } from 'node:crypto';
 import type { Stats } from 'node:fs';
 import {
@@ -2272,8 +2273,26 @@ export async function prepareArchivedContainerTeardown(args: {
         branchDeletionMode: descriptor.teardown?.branchDeletionMode,
       };
     }
-    // A verified journal never authorizes touching a newly recreated
-    // canonical path. With no quarantine, teardown has already completed.
+    // CAN-5717: skipping the worker must not skip its removal postconditions.
+    // A verified descriptor is not evidence that Git actually unregistered the
+    // checkout. Retry cannot attribute a gitdir-less orphan, so never scan or
+    // delete administrative residue here, regardless of its contents.
+    for (const repository of descriptor.repositories) {
+      await assertArchiveWorktreeRemoval(
+        [
+          canonicalPath,
+          quarantinePath,
+          join(canonicalPath, repository.relativePath),
+          join(quarantinePath, repository.relativePath),
+        ],
+        await runGit(repository.referenceRepoPath, [
+          'worktree',
+          'list',
+          '--porcelain',
+          '-z',
+        ]),
+      );
+    }
     return {
       canonicalPath,
       quarantinePath,

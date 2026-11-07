@@ -13,6 +13,11 @@ import {
 } from '@canopy/desktop-shared/lib/send-approval-narrowing';
 import { mcpHttpAuthTargetKey } from '@canopy/desktop-shared/lib/mcp-http-auth';
 import type { AgentProvider, AgentSession, AgentSessionOptions } from './types';
+import type { InterfaceToolName } from '@canopy/protocol/canopy-core';
+import {
+  interfaceToolsSignature,
+  resolveSessionInterfaceTools,
+} from './interface-tool-binding';
 import {
   buildChatSessionKey,
   parseChatSessionKey as parseSessionKey,
@@ -21,11 +26,9 @@ import {
   getInheritedPluginDefaultsRevision,
   subscribePluginDefaultsRevision,
 } from '../plugins/plugin-defaults-revision';
-import type { CodexCompatibleInvocation } from './codex-session';
-import { sendToWindow } from '../lib/window-send';
+import { workerProviderRuntimeFor } from '../agent-runs/worker-provider-runtimes';
 import {
   APP_ADVISOR_PROJECT_ID,
-  IPC_CHANNELS,
   DEFAULT_CLAUDE_SESSION_IDLE_TIMEOUT_MINUTES,
   resolveKnownModel,
   getExecutionHarnessForModel,
@@ -37,7 +40,6 @@ import {
   type AssistantMode,
   type ChatActiveSessionInfo,
   type ChatContextUsageBreakdown,
-  type ChatIngestionLagEventData,
   type ChatSendMessageRequest,
   type ChatModel,
   type ChatTabPluginSelections,
@@ -63,7 +65,7 @@ import {
   stopAllOutputPolling,
 } from '../lib/bg-output-poller';
 import { emitSessionEndedBackgroundTaskNotification } from '../lib/session-ended-background-tasks';
-import { getObservabilityService } from '../observability';
+import { getExecutionObservabilityIngest } from '../observability/ingest';
 import { describeChatEventData } from '../lib/chat-event-description';
 import { wakeLockHolder, wakeLockHolderKey } from '@canopy/core-runtime';
 import { getWakeLockService } from '../power/wake-lock-service';
@@ -119,6 +121,7 @@ import {
 import { isE2eBuild } from '../lib/e2e-gate';
 import { notifySteeringEligibilityChanged } from './steering-eligibility-events';
 import { setAppliedApprovalReader } from '../approvals/live-approval-modes';
+import { assertAgentWorkerContext } from '../agent-runs/agent-worker-context';
 
 export { isAgentContinuationEvent } from '../lib/chat-turn-audit';
 
@@ -448,6 +451,8 @@ interface ActiveSession {
   assistantMode: AssistantMode;
   toolProfileHash: string;
   codeGraphToolsAdvertised: boolean;
+  /** Interface tools bound when the session was created (CAN-4131). */
+  interfaceTools?: readonly InterfaceToolName[];
   /**
    * The session rule list the session was created with. Providers check
    * approvals against this array and add the session's grants to it.
@@ -642,10 +647,10 @@ async function createProvider(
   providerType: AgentProviderType,
   getWindow: () => BrowserWindow | null,
 ): Promise<AgentProvider> {
-  if (harness === 'opencode') {
-    const { OpenCodeProvider } = await import('./opencode-session');
-    return new OpenCodeProvider();
-  }
+  // Harnesses with a worker-owned runtime construct their providers there
+  // (CAN-4116 Claude; CAN-4117 Codex).
+  const workerRuntime = await workerProviderRuntimeFor(harness);
+  if (workerRuntime) return workerRuntime.providerFor(providerType, getWindow);
   if (harness === 'copilot') {
     const { CopilotProvider } = await import('./copilot-session');
     return new CopilotProvider();
@@ -656,51 +661,7 @@ async function createProvider(
     const { CursorProvider } = await import('./cursor-session');
     return new CursorProvider();
   }
-  if (harness === 'codex') {
-    // Keep this local import lazy to break the session-manager ↔ codex-session
-    // cycle; the packaged Electron main build exercises this resolution path.
-    const { CodexProvider } = await import('./codex-session');
-    const emitIngestionLag = (
-      target: { projectId: string; worktreeId: string; chatId: string },
-      data: ChatIngestionLagEventData,
-    ): void => {
-      sendToWindow(getWindow(), IPC_CHANNELS.chatEvent, { ...target, data });
-    };
-    if (providerType === 'ollama') {
-      // Keep the Ollama adapter lazy with the Codex provider to preserve the
-      // same session-manager cycle break in packaged Electron main builds.
-      const { resolveCodexCompatibleOllamaInvocation } =
-        await import('../ollama/codex-compatible');
-      return new CodexProvider({
-        providerType: 'ollama',
-        emitIngestionLag,
-        prepareInvocation: async (
-          model: ChatModel | undefined,
-        ): Promise<CodexCompatibleInvocation> => {
-          const invocation = await resolveCodexCompatibleOllamaInvocation(
-            model,
-            {
-              ensureRunningReason: 'chat',
-              assertInstalled: true,
-            },
-          );
-          return {
-            runtimeModel: invocation.runtimeModel,
-            envOverride: invocation.envOverride,
-            codexConfig: invocation.codexConfig,
-          };
-        },
-      });
-    }
-    return new CodexProvider({ emitIngestionLag });
-  }
-  if (providerType === 'ollama') {
-    const { OllamaProvider } = await import('./ollama-provider');
-    return new OllamaProvider();
-  }
-
-  const { ClaudeCodeProvider } = await import('./claude-session');
-  return new ClaudeCodeProvider();
+  throw new Error(`No provider runtime serves the ${harness} harness.`);
 }
 
 async function ensureProviderAuthBaselineForSession(
@@ -749,7 +710,7 @@ function recordSessionDiagnostic(
   },
 ): void {
   const identifiers = parseSessionKey(key);
-  getObservabilityService().recordSessionDiagnostic({
+  getExecutionObservabilityIngest().recordSessionDiagnostic({
     version: 1,
     timestamp: new Date().toISOString(),
     kind: diagnostic.kind,
@@ -1193,6 +1154,7 @@ async function getOrCreateSessionImpl(
     providerType,
     workOwner,
   );
+  effectiveOpts.interfaceTools = matchContext.requestedInterfaceTools;
   if (
     effectiveOpts.requiredAccountProxyConnectionId &&
     ((providerType !== 'claude' && providerType !== 'codex') ||
@@ -1229,7 +1191,7 @@ async function getOrCreateSessionImpl(
       error: 'This model is blocked by your organization policy.',
       error_code: 'model_policy_blocked',
     });
-    getObservabilityService().recordSessionDiagnostic({
+    getExecutionObservabilityIngest().recordSessionDiagnostic({
       version: 1,
       timestamp: new Date().toISOString(),
       kind: 'model_policy_refused',
@@ -1326,6 +1288,7 @@ async function getOrCreateSessionImpl(
     created.onRemoved = lifecycle?.onRemoved;
     created.drainEventsBeforeRemoval = lifecycle?.drainEventsBeforeRemoval;
     created.aiCreditsRoutingSignature = matchContext.routingSignature;
+    created.interfaceTools = matchContext.requestedInterfaceTools;
     created.accountProxyRouted = accountProxyRouting === 'proxy';
     created.model = effectiveOpts.model;
     created.selectedModel = requestedSelectedModel;
@@ -1422,6 +1385,7 @@ export function getOrCreateSession(
     drainEventsBeforeRemoval?: () => Promise<void>;
   },
 ): Promise<AgentSession> {
+  assertAgentWorkerContext('getOrCreateSession');
   return withWorkspaceTargetRuntimeStartReservation(
     opts.projectId,
     opts.worktreeId,
@@ -1448,6 +1412,8 @@ interface SessionMatchContext {
   currentAuthGeneration: number;
   routingSignature: string;
   requestedWorkOwnerKey: string;
+  requestedInterfaceTools: readonly InterfaceToolName[];
+  requestedInterfaceToolsSignature: string;
 }
 
 interface ReadOnlySessionComparison {
@@ -1468,6 +1434,7 @@ function createSessionMatchContext(
   providerType: AgentProviderType,
   workOwner: WorkOwner | undefined,
 ): SessionMatchContext {
+  const requestedInterfaceTools = resolveSessionInterfaceTools(opts);
   return {
     providerType,
     requestedMode: opts.assistantMode ?? 'default',
@@ -1480,6 +1447,10 @@ function createSessionMatchContext(
       providerType,
     ),
     requestedWorkOwnerKey: workOwnerIdentityKey(workOwner),
+    requestedInterfaceTools,
+    requestedInterfaceToolsSignature: interfaceToolsSignature(
+      requestedInterfaceTools,
+    ),
   };
 }
 
@@ -1575,6 +1546,11 @@ function getSessionChangedOptionNames(
   comparisons.push(
     ['assistantMode', existing.assistantMode, context.requestedMode],
     ['toolProfile', existing.toolProfileHash, context.requestedToolProfileHash],
+    [
+      'interfaceTools',
+      interfaceToolsSignature(existing.interfaceTools),
+      context.requestedInterfaceToolsSignature,
+    ],
     ['authGeneration', existing.authGeneration, context.currentAuthGeneration],
     ['routing', existing.aiCreditsRoutingSignature, context.routingSignature],
   );
@@ -2007,7 +1983,7 @@ export function recordSessionAccountProxyRoute(
   const entry = sessions.get(key);
   if (entry) entry.accountProxyRouted = routed;
   // The open turn's audit entry was started from the creation-time decision.
-  getObservabilityService().setChatTurnAccountProxyRouted(key, routed);
+  getExecutionObservabilityIngest().setChatTurnAccountProxyRouted(key, routed);
 }
 
 /**
@@ -2140,13 +2116,17 @@ export function getActiveSessionCapabilityProfile(
   worktreeId: string,
   chatId: string,
 ):
-  | Pick<ActiveSession, 'assistantMode' | 'codeGraphToolsAdvertised'>
+  | Pick<
+      ActiveSession,
+      'assistantMode' | 'codeGraphToolsAdvertised' | 'interfaceTools'
+    >
   | undefined {
   const session = sessions.get(buildSessionKey(projectId, worktreeId, chatId));
   if (!session) return undefined;
   return {
     assistantMode: session.assistantMode,
     codeGraphToolsAdvertised: session.codeGraphToolsAdvertised,
+    interfaceTools: session.interfaceTools ?? [],
   };
 }
 
@@ -2251,7 +2231,9 @@ export async function destroySession(
           options?.suppressObservabilityInterrupt !== true &&
           !isSessionKeyReplaced(key, entry)
         ) {
-          getObservabilityService().interruptMatchingEntries(`chat:${key}`);
+          getExecutionObservabilityIngest().interruptMatchingEntries(
+            `chat:${key}`,
+          );
         }
       })
       .finally(finishRemoval)
@@ -2298,7 +2280,7 @@ export async function destroyWorktreeSessions(
     }
     await flushAndStopOutputPollingForSession(key);
     notifySessionEndedBackgroundTasks(key, entry);
-    getObservabilityService().interruptMatchingEntries(`chat:${key}`);
+    getExecutionObservabilityIngest().interruptMatchingEntries(`chat:${key}`);
     try {
       await drainEventsBeforeRemoval?.();
     } catch (err) {
@@ -2390,7 +2372,9 @@ export async function destroyAllSessions(
         entry.abortController.abort();
         await flushAndStopOutputPollingForSession(key);
         notifySessionEndedBackgroundTasks(key, entry);
-        getObservabilityService().interruptMatchingEntries(`chat:${key}`);
+        getExecutionObservabilityIngest().interruptMatchingEntries(
+          `chat:${key}`,
+        );
         await finishRemoval();
       }
     }),
@@ -2614,7 +2598,9 @@ export function pauseCodexSessionsForAuthentication(attemptId: string): {
         entry.abortController.abort();
         await flushAndStopOutputPollingForSession(key);
         notifySessionEndedBackgroundTasks(key, entry);
-        getObservabilityService().interruptMatchingEntries(`chat:${key}`);
+        getExecutionObservabilityIngest().interruptMatchingEntries(
+          `chat:${key}`,
+        );
         await entry.drainEventsBeforeRemoval?.();
         await detachSessionForTeardown(key, entry)();
       }),
@@ -2734,7 +2720,7 @@ async function destroySessionEntry(
     if (!replaced) await flushAndStopOutputPollingForSession(key);
     notifySessionEndedBackgroundTasks(key, entry);
     if (!replaced)
-      getObservabilityService().interruptMatchingEntries(`chat:${key}`);
+      getExecutionObservabilityIngest().interruptMatchingEntries(`chat:${key}`);
     await finishRemoval();
   }
 }

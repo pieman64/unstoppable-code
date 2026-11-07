@@ -162,7 +162,7 @@ export function FileLabelFilterDropdown({
             data-testid={`${testIdPrefix}-settings`}
           >
             <PickerMenuOptionLeading tone="secondary">
-              <SettingsIcon width={14} height={14} />
+              <SettingsIcon size="sm" />
             </PickerMenuOptionLeading>
             <PickerMenuOptionContent>
               <PickerMenuOptionLabel>Settings</PickerMenuOptionLabel>

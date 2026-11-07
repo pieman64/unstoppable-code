@@ -134,12 +134,26 @@ export function buildAppAdvisorDynamicToolSpecs(
      * call re-checks the gate. Defaults to false.
      */
     includeLedger?: boolean;
+    /**
+     * GetCurrentUiState is advertised only while the main window's interface
+     * lease serves it (CAN-4131). Defaults to true.
+     */
+    includeUiState?: boolean;
+    /**
+     * ShowFiles is advertised only while an interface lease serves it
+     * (CAN-4133). Defaults to true.
+     */
+    includeShowFiles?: boolean;
   } = {},
 ): DynamicToolSpec[] {
   return APP_ADVISOR_TOOL_ENTRIES.filter(
     (entry) =>
-      options.includeLedger === true ||
-      !isAppAdvisorLedgerToolKey(entry.canonicalKey),
+      (options.includeLedger === true ||
+        !isAppAdvisorLedgerToolKey(entry.canonicalKey)) &&
+      (options.includeUiState !== false ||
+        entry.canonicalKey !== 'get_current_ui_state') &&
+      (options.includeShowFiles !== false ||
+        entry.canonicalKey !== 'show_files'),
   ).map((entry) =>
     defineCodexFunctionToolSpec({
       name: entry.codexToolName,
@@ -152,7 +166,10 @@ export function buildAppAdvisorDynamicToolSpecs(
 export async function handleAppAdvisorDynamicToolCall(
   params: DynamicToolCallParams,
   runtime: AppAdvisorToolRuntime,
-  context?: Pick<AppAdvisorToolContext, 'signal' | 'ledgerRuntime'>,
+  context?: Pick<
+    AppAdvisorToolContext,
+    'signal' | 'ledgerRuntime' | 'interfaceTools'
+  >,
 ): Promise<DynamicToolCallResponse> {
   const canonicalKey = getCanonicalAppAdvisorToolKey(params.tool);
   if (!canonicalKey) {
@@ -174,6 +191,9 @@ export async function handleAppAdvisorDynamicToolCall(
     {
       toolUseId: `codex-${params.callId}`,
       ...(context?.signal ? { signal: context.signal } : {}),
+      ...(context?.interfaceTools
+        ? { interfaceTools: context.interfaceTools }
+        : {}),
       // Codex resends the same thread, turn and call IDs for one call, so a
       // Ledger key derived from them dedupes its retries and replays.
       ...(isAppAdvisorLedgerToolKey(canonicalKey)

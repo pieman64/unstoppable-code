@@ -1,6 +1,9 @@
-import type { JSX, SVGProps } from 'react';
-import { StorefrontIcon as AppCatalogStorefrontIcon } from './AppIcons';
+import type { JSX } from 'react';
+import {
+  StorefrontIcon as AppCatalogStorefrontIcon,
+  type AppIconProps,
+} from './AppIcons';
 
-export function StorefrontIcon(props: SVGProps<SVGSVGElement>): JSX.Element {
-  return <AppCatalogStorefrontIcon width="14" height="14" {...props} />;
+export function StorefrontIcon(props: AppIconProps): JSX.Element {
+  return <AppCatalogStorefrontIcon size="sm" {...props} />;
 }

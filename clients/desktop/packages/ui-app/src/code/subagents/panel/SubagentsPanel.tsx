@@ -1041,6 +1041,7 @@ export function SubagentsPanel({
         projection={projection}
         selectedId={selectedNodeId}
         columns={listColumns}
+        availableWidth={listWidth}
         collapsedIds={collapsedIds}
         onToggleCollapsed={toggleCollapsed}
         showWorkspaceDetails={showWorkspaceDetails}

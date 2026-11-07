@@ -11,6 +11,7 @@ import {
   useCallback,
   useImperativeHandle,
   useMemo,
+  useRef,
   type ClipboardEvent,
   type ForwardedRef,
   type JSX,
@@ -33,6 +34,7 @@ import {
   serializeEditorValue,
 } from './slate-utils';
 import { COMPOSER_DENSITY_CLASS_NAMES } from './composer-density';
+import { useTypeToComposer } from './type-to-composer';
 
 /**
  * Imperative handle exposed via `ref`. Hosts use this to drive the editor
@@ -66,6 +68,11 @@ export interface SlateEditorProps {
   editableClassName?: string;
   /** Test hook attached to the editable element. */
   dataTestId?: string;
+  /**
+   * Take printable keys pressed anywhere in the document while nothing else
+   * wants them. Set on a page's main chat composer, never on form fields.
+   */
+  typeToFocus?: boolean;
 }
 
 export const DEFAULT_CONTAINER_CLASS_NAME =
@@ -130,6 +137,7 @@ function SlateEditorInner(
     containerClassName,
     editableClassName,
     dataTestId,
+    typeToFocus = false,
   }: SlateEditorProps,
   ref: ForwardedRef<SlateEditorHandle>,
 ): JSX.Element {
@@ -150,6 +158,12 @@ function SlateEditorInner(
     }),
     [editor],
   );
+
+  const containerRef = useRef<HTMLDivElement>(null);
+  const focusThisEditor = useCallback((): void => {
+    focusEditor(editor);
+  }, [editor]);
+  useTypeToComposer(containerRef, focusThisEditor, typeToFocus);
 
   const renderElement = useCallback(renderEditorElement, []);
 
@@ -197,6 +211,7 @@ function SlateEditorInner(
 
   return (
     <div
+      ref={containerRef}
       className={containerClassName ?? DEFAULT_CONTAINER_CLASS_NAME}
       onMouseDown={handleMouseDown}
     >

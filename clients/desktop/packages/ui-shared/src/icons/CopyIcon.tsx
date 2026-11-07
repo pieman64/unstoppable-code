@@ -1,6 +1,6 @@
-import type { JSX, SVGProps } from 'react';
-import { CopyIcon as AppCatalogCopyIcon } from './AppIcons';
+import type { JSX } from 'react';
+import { CopyIcon as AppCatalogCopyIcon, type AppIconProps } from './AppIcons';
 
-export function CopyIcon(props: SVGProps<SVGSVGElement>): JSX.Element {
-  return <AppCatalogCopyIcon width="14" height="14" {...props} />;
+export function CopyIcon(props: AppIconProps): JSX.Element {
+  return <AppCatalogCopyIcon size="sm" {...props} />;
 }

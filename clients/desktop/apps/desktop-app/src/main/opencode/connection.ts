@@ -53,6 +53,12 @@ import {
 } from '../lib/preferences-store';
 import { getEnhancedEnv } from '../pipelines/config-paths';
 import { OpenCodeRuntimeInstaller } from './runtime-installer';
+import type { ProviderProcessSpawner } from '@canopy/desktop-shared/node/provider-process/spawn';
+import {
+  openCodeProcessOwner,
+  spawnOpenCodeProcessForWorkerRun,
+  type OpenCodeProcessOwner,
+} from '../agent-runs/opencode-worker-runtime';
 
 let generation = 0;
 let cached:
@@ -178,6 +184,8 @@ export interface ManagedOpenCodeRuntime {
     platform: string;
   };
   executable: string;
+  spawnProcess: ProviderProcessSpawner;
+  processOwner: OpenCodeProcessOwner;
   env: NodeJS.ProcessEnv;
   providerConfig: Record<string, unknown>;
   generation: number;
@@ -200,6 +208,7 @@ export async function openManagedOpenCodeRuntime(options: {
   if (connecting && options.requireEnabled !== false)
     throw new Error('OpenCode setup is still in progress.');
   const epoch = generation;
+  const processOwner = openCodeProcessOwner(options.executionKind);
   const abort = new AbortController();
   const signal = AbortSignal.any([options.signal, abort.signal]);
   let finish: () => void = () => undefined;
@@ -256,6 +265,8 @@ export async function openManagedOpenCodeRuntime(options: {
         platform: `${hostPlatformOperatingSystem()}-${process.arch}`,
       },
       executable,
+      spawnProcess: spawnOpenCodeProcessForWorkerRun,
+      processOwner,
       env: options.restrictedEnvironment
         ? buildDelegationCursorEnvironment(env)
         : env,

@@ -18,11 +18,14 @@ import {
   useDesktopFilesGuestGate,
   type DesktopFilesGuestGate,
 } from '@/hooks/useDesktopFilesGuestGate';
-import { HeaderActionButton } from '@canopy/ui-shared/components';
+import {
+  AttachmentDropZone,
+  AttachmentItemRow,
+  HeaderActionButton,
+} from '@canopy/ui-shared/components';
 import { useWorkspaceIsReadOnly } from '@/lib/workspace-access';
 import {
   AttachmentIcon as CentralAttachmentIcon,
-  DownloadIcon,
   FolderIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { AttachmentPreviewPopover } from '@/components/shared/AttachmentPreviewPopover';
@@ -53,18 +56,6 @@ import {
 } from './workspace-items-shared';
 
 const EMPTY_ATTACHMENTS: readonly WorkspaceAttachmentItem[] = [];
-
-export function AttachmentIcon(): JSX.Element {
-  return <CentralAttachmentIcon size={16} />;
-}
-
-function DropIcon(): JSX.Element {
-  return <DownloadIcon size={24} className="mb-2" />;
-}
-
-function RevealIcon(): JSX.Element {
-  return <FolderIcon size={12} />;
-}
 
 interface AttachmentRowProps {
   attachment: WorkspaceAttachmentItem;
@@ -111,55 +102,57 @@ function AttachmentRow({
   }, [attachment.absolutePath, projectId, worktreeId]);
 
   return (
-    <div
-      className="group relative rounded border bg-fg-primary/[0.02] transition-colors hover:border-fg-primary/10"
-      data-testid="workspace-attachments-item"
+    <AttachmentItemRow
+      testId="workspace-attachments-item"
       onMouseEnter={(event): void =>
         onMouseEnter(attachment.absolutePath, event.currentTarget)
       }
       onMouseLeave={onMouseLeave}
-    >
-      <div className="flex items-center gap-2 px-2 py-1.5">
+      filename={attachment.filename}
+      icon={
         <FileTypeIcon
           filename={attachment.filename}
           size={16}
           boxSize={14}
           className="shrink-0"
         />
-        <div className="flex min-w-0 flex-1 items-center gap-1.5">
-          <span className="truncate text-xs font-medium fg-primary">
-            {attachment.filename}
-          </span>
-        </div>
-      </div>
-      {!readOnly && (
-        <RowActionTray>
-          {del.confirming ? (
-            <InlineDeleteConfirm
-              onConfirm={del.confirm}
-              onCancel={del.cancel}
-              deleting={del.deleting}
-            />
-          ) : (
-            <>
-              <RowActionButton label="Mention in chat" onClick={handleMention}>
-                <MentionIcon />
-              </RowActionButton>
-              <RowActionButton label="Reveal in Finder" onClick={handleReveal}>
-                <RevealIcon />
-              </RowActionButton>
-              <RowActionButton
-                label="Delete attachment"
-                destructive
-                onClick={del.request}
-              >
-                <TrashIcon />
-              </RowActionButton>
-            </>
-          )}
-        </RowActionTray>
-      )}
-    </div>
+      }
+      actions={
+        readOnly ? undefined : (
+          <RowActionTray inRowOnTouch>
+            {del.confirming ? (
+              <InlineDeleteConfirm
+                onConfirm={del.confirm}
+                onCancel={del.cancel}
+                deleting={del.deleting}
+              />
+            ) : (
+              <>
+                <RowActionButton
+                  label="Mention in chat"
+                  onClick={handleMention}
+                >
+                  <MentionIcon />
+                </RowActionButton>
+                <RowActionButton
+                  label="Reveal in Finder"
+                  onClick={handleReveal}
+                >
+                  <FolderIcon size="sm" />
+                </RowActionButton>
+                <RowActionButton
+                  label="Delete attachment"
+                  destructive
+                  onClick={del.request}
+                >
+                  <TrashIcon />
+                </RowActionButton>
+              </>
+            )}
+          </RowActionTray>
+        )
+      }
+    />
   );
 }
 
@@ -214,7 +207,7 @@ export function AttachmentsSection({
   };
   return (
     <PanelSection
-      icon={<AttachmentIcon />}
+      icon={<CentralAttachmentIcon size="sm" />}
       title="Attachments"
       collapsedIconColor="muted"
       hasExpandableContent={gate.status === 'guest'}
@@ -421,7 +414,7 @@ function AuthenticatedAttachmentsSection({
 
   return (
     <PanelSection
-      icon={<AttachmentIcon />}
+      icon={<CentralAttachmentIcon size="sm" />}
       title="Attachments"
       subtitle={headerChrome.subtitle}
       collapsedIconColor={headerChrome.collapsedIconColor}
@@ -469,24 +462,15 @@ function AuthenticatedAttachmentsSection({
             })}
       >
         {isDraggingFiles ? (
-          <div
-            className="flex h-full min-h-28 flex-col items-center justify-center rounded border-2 border-dashed border-line-accent bg-accent-subtle py-8 text-center fg-accent"
-            data-testid="workspace-attachments-active-dropzone"
-          >
-            <DropIcon />
-            <p className="text-xs font-medium">Drop files to attach</p>
-          </div>
+          <AttachmentDropZone
+            active
+            testId="workspace-attachments-active-dropzone"
+          />
         ) : attachments.length === 0 ? (
-          <div
-            className="flex h-full min-h-28 items-center justify-center rounded border-2 border-dashed py-8 text-center"
-            data-testid="workspace-attachments-empty-dropzone"
-          >
-            <p className="text-xs fg-secondary/60">
-              {readOnly
-                ? 'No attachments'
-                : 'Drop files here or click + to add attachments'}
-            </p>
-          </div>
+          <AttachmentDropZone
+            emptyMessage={readOnly ? 'No attachments' : undefined}
+            testId="workspace-attachments-empty-dropzone"
+          />
         ) : (
           <div className="space-y-1">
             {attachments.map((attachment) => (

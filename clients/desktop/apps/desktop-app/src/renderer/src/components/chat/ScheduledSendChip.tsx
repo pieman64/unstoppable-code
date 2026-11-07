@@ -77,7 +77,7 @@ export function ScheduledSendChip({
           }
           className={`focus-ring flex h-8 items-center gap-1.5 rounded-full pl-2.5 pr-1 whitespace-nowrap disabled:cursor-default ${CAPSULE_TOUCH_FLOOR_CLASS}`}
         >
-          <ScheduleIcon width={16} height={16} className="shrink-0" />
+          <ScheduleIcon size="sm" className="shrink-0" />
           {error !== null
             ? compact
               ? null
@@ -94,7 +94,7 @@ export function ScheduledSendChip({
         data-testid="chat-input-scheduled-send-clear"
         className="focus-ring flex h-8 items-center rounded-full pl-1 pr-2.5"
       >
-        <CloseMediumIcon width={12} height={12} aria-hidden />
+        <CloseMediumIcon size="sm" aria-hidden />
       </button>
     </span>
   );

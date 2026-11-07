@@ -11,6 +11,7 @@ import {
   requireProviderForModel,
   isTerminalBackedInterfaceMode,
   isThinkingLevel,
+  modelConfigForProviderSupportsFastMode,
   resolveProviderModelConfig,
   resolveKnownModel,
   type AgentProviderType,
@@ -20,6 +21,8 @@ import {
   type ChatTabPluginSelections,
   type ChatCommandRequest,
   type ChatCommandOutcome,
+  type ChatCommandResult,
+  type ChatStateSnapshot,
   type PortalChatSendIdentity,
   type PortalChatComposerCommand,
   type PortalChatComposerLifecycleCommand,
@@ -74,11 +77,24 @@ import {
 } from '../../agents/agent-default-model';
 import { isCoworkWorkspace } from '../../lib/workspace-registry';
 import { requestPortalComposerCommand } from '../../ipc/portal-composer-command';
+import {
+  respondToChatQuestion,
+  type ChatQuestionResponse,
+} from '../../chat-questions/respond';
 import { isCursorRuntimeAvailable } from '../../cursor/runtime-availability';
 import { isOpenCodeRuntimeAvailable } from '../../opencode/runtime-availability';
 import type { PortalAdapterContext } from './types';
 import { readPortalSendModelConfigPatch } from './standalone-chat-adapter';
 import { queryPortalChatState } from './chat-state-query';
+import {
+  CoreChatLifecycleResultSchema,
+  CoreChatUpdateParamsSchema,
+} from '@canopy/protocol/canopy-core';
+import { CanopyOperationError } from '@canopy/core-runtime';
+import { getActiveDesktopRuntimeIfAccepting } from '../../canopy-runtime/desktop-runtime';
+import { getClaudeTerminalSessionService } from '../../integration/claude-terminal-session-service';
+import { logMainProcessWarn } from '../../lib/main-process-logging';
+import { LOCAL_DESKTOP_AUTHORITY_ID } from '../../canopy-runtime/desktop-runtime-identity';
 import { failServiceError, isRecord } from './validation';
 import { portalFileReferences } from '../portal-file-references';
 import { assertUntrustedChatInput } from '../../agent-messaging/untrusted-input';
@@ -1439,16 +1455,27 @@ async function dispatchCorrelatedChatCommand(
   context: PortalAdapterContext,
   chatCommand:
     | PortalChatComposerSetterCommand
-    | PortalChatQuestionMutationCommand
     | Extract<PortalChatComposerLifecycleCommand, { kind: 'branch' | 'share' }>,
 ): Promise<void> {
   const revisioned = toRevisionedCommand(chatCommand);
-  const requiresSessionOrchestration =
-    chatCommand.kind === 'model' ||
-    chatCommand.kind === 'thinking' ||
-    chatCommand.kind === 'plan' ||
-    chatCommand.kind === 'fast';
-  if (context.chatStatePort && revisioned && !requiresSessionOrchestration) {
+  if (
+    (chatCommand.kind === 'model' ||
+      chatCommand.kind === 'thinking' ||
+      chatCommand.kind === 'plan' ||
+      chatCommand.kind === 'fast') &&
+    (await portalSettingsUseCore(chatCommand, context))
+  ) {
+    await dispatchPortalSettingsThroughCore(command, context, chatCommand);
+    return;
+  }
+  if (
+    context.chatStatePort &&
+    revisioned &&
+    chatCommand.kind !== 'model' &&
+    chatCommand.kind !== 'thinking' &&
+    chatCommand.kind !== 'plan' &&
+    chatCommand.kind !== 'fast'
+  ) {
     await dispatchRevisionedChatCommand(
       command,
       context,
@@ -1461,14 +1488,6 @@ async function dispatchCorrelatedChatCommand(
     );
     return;
   }
-  if (context.origin && chatCommand.kind === 'answer_question') {
-    context.fail(
-      command,
-      'execution_failed',
-      'A trusted sender answer requires the canonical chat command service.',
-    );
-    return;
-  }
   const result = await requestPortalComposerCommand(
     { requestId: command.id, command: chatCommand },
     { getMainWindow: context.getWindow ?? ((): null => null) },
@@ -1478,6 +1497,227 @@ async function dispatchCorrelatedChatCommand(
     return;
   }
   context.fail(command, result.code, result.error, result.retryable);
+}
+
+/** The providers `core.chat.update`'s `chat.set_model` accepts. */
+const CORE_CHAT_MODEL_PROVIDERS = new Set<string>([
+  'claude',
+  'codex',
+  'ollama',
+  'cursor',
+  'opencode',
+]);
+
+type PortalSettingsCommand = Extract<
+  PortalChatComposerSetterCommand,
+  { kind: 'model' | 'thinking' | 'plan' | 'fast' }
+>;
+
+/**
+ * Whether a Portal model, thinking, plan or fast change runs through
+ * `core.chat.update` (CAN-4110 D7) rather than the renderer.
+ */
+async function portalSettingsUseCore(
+  command: PortalSettingsCommand,
+  context: PortalAdapterContext,
+): Promise<boolean> {
+  if (
+    !context.chatStatePort ||
+    !getActiveDesktopRuntimeIfAccepting() ||
+    command.projectId === APP_ADVISOR_PROJECT_ID ||
+    command.projectId === PIPELINE_EDITOR_PROJECT_ID
+  )
+    return false;
+  if (command.kind === 'model') {
+    const window = context.getWindow();
+    if (window && !window.isDestroyed()) return false;
+    const provider = getProviderForModel(command.model);
+    if (!provider || !CORE_CHAT_MODEL_PROVIDERS.has(provider)) return false;
+  }
+  let snapshot: ChatStateSnapshot;
+  try {
+    snapshot = await queryPortalChatState(context, {
+      projectId: command.projectId,
+      worktreeId: command.worktreeId,
+    });
+  } catch {
+    return false;
+  }
+  const tab = snapshot.tabsFile.tabs.find(
+    (candidate) => candidate.id === command.chatId,
+  );
+  if (!tab) return true;
+  // The renderer refuses these tabs, and settles a pending plan exit when plan
+  // mode turns off; neither happens behind core.chat.update.
+  if (tab.kind === 'file' || tab.readOnly === true) return false;
+  if (
+    command.kind === 'plan' &&
+    !command.planMode &&
+    (tab.pendingPlanExit !== undefined ||
+      tab.pendingPlanExitRequestId !== undefined ||
+      (Boolean(tab.trackedPlanId) && tab.trackedPlanReviewStatus === 'pending'))
+  )
+    return false;
+  const provider =
+    tab.providerType ??
+    (tab.model ? getProviderForModel(tab.model) : undefined);
+  // Only Codex tabs take a speed; the renderer ignores it for the others.
+  if (
+    command.kind === 'fast' &&
+    (!provider || !modelConfigForProviderSupportsFastMode(provider))
+  )
+    return false;
+  if (
+    isTerminalBackedInterfaceMode(tab.interfaceMode) &&
+    provider === 'claude'
+  ) {
+    // Without a window the core takes the change and main relaunches the
+    // terminal itself (CAN-5097); with one, visible panes relaunch at once.
+    const window = context.getWindow();
+    if (window && !window.isDestroyed()) return false;
+  }
+  return true;
+}
+
+function portalSettingsAction(command: PortalSettingsCommand): unknown {
+  switch (command.kind) {
+    case 'plan':
+      return {
+        type: 'chat.patch_tab_settings',
+        tabId: command.chatId,
+        patch: { planMode: command.planMode },
+      };
+    case 'thinking':
+      return {
+        type: 'chat.patch_tab_settings',
+        tabId: command.chatId,
+        patch: { modelConfig: { thinkingLevel: command.thinkingLevel } },
+      };
+    case 'fast':
+      return {
+        type: 'chat.patch_tab_settings',
+        tabId: command.chatId,
+        patch: { modelConfig: { fastMode: command.fastMode } },
+      };
+    case 'model':
+      return {
+        type: 'chat.set_model',
+        tabId: command.chatId,
+        model: command.model,
+        providerType: requireProviderForModel(command.model),
+        ...(command.executionHarness
+          ? { executionHarness: command.executionHarness }
+          : {}),
+      };
+  }
+}
+
+async function dispatchPortalSettingsThroughCore(
+  portalCommand: PortalCommandEnvelope,
+  context: PortalAdapterContext,
+  command: PortalSettingsCommand,
+): Promise<void> {
+  if (rejectUntrustedPortalChatInput(portalCommand, context)) return;
+  const runtime = getActiveDesktopRuntimeIfAccepting();
+  if (!runtime) {
+    context.fail(
+      portalCommand,
+      'execution_failed',
+      'The desktop app could not apply the composer change.',
+      true,
+    );
+    return;
+  }
+  const commandId = portalCommand.id;
+  let result: ReturnType<typeof CoreChatLifecycleResultSchema.parse>;
+  try {
+    result = CoreChatLifecycleResultSchema.parse(
+      await runtime.instruction(
+        'core.chat.update',
+        CoreChatUpdateParamsSchema.parse({
+          projectId: command.projectId,
+          worktreeId: command.worktreeId,
+          commandId,
+          origin: 'portal',
+          action: portalSettingsAction(command),
+          _meta: { idempotencyKey: commandId },
+        }),
+        {
+          caller: {
+            principalId: 'local-desktop-user',
+            clientInstanceId: 'portal-command',
+            authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+            interfaceKind: 'desktop',
+            grants: ['core.chat.write'],
+          },
+          metadata: { idempotencyKey: commandId },
+        },
+      ),
+    );
+  } catch (error) {
+    if (
+      error instanceof CanopyOperationError &&
+      error.payload.kind === 'invalid_argument'
+    ) {
+      context.fail(portalCommand, 'invalid_payload', error.payload.message);
+      return;
+    }
+    context.fail(
+      portalCommand,
+      'execution_failed',
+      'The desktop app could not apply the composer change.',
+      error instanceof CanopyOperationError &&
+        error.payload.kind === 'unavailable'
+        ? true
+        : undefined,
+    );
+    return;
+  }
+  switch (result.outcome) {
+    case 'applied':
+    case 'already_applied':
+      if (command.kind === 'thinking' || command.kind === 'model') {
+        const target = {
+          projectId: command.projectId,
+          worktreeId: command.worktreeId,
+          chatId: command.chatId,
+        };
+        try {
+          await getClaudeTerminalSessionService().restartForSettingsChange(
+            target,
+          );
+        } catch (error: unknown) {
+          logMainProcessWarn(
+            '[portal] Could not restart the Claude terminal after a settings change',
+            { error: error instanceof Error ? error.message : String(error) },
+          );
+        }
+      }
+      context.complete(portalCommand, { ok: true });
+      return;
+    case 'not_found':
+      context.fail(
+        portalCommand,
+        'not_found',
+        'The target chat is no longer available.',
+      );
+      return;
+    case 'conflict':
+      context.fail(
+        portalCommand,
+        'conflict',
+        result.reason ?? 'The chat changed. Try again.',
+        true,
+      );
+      return;
+    case 'rejected':
+      context.fail(
+        portalCommand,
+        'invalid_target',
+        result.reason ?? 'The composer change is not available for this chat.',
+      );
+      return;
+  }
 }
 
 function toRevisionedCommand(
@@ -1601,6 +1841,7 @@ async function dispatchRevisionedChatCommand(
       chatCommand.type === 'chat.edit_queued_message' ||
       chatCommand.type === 'chat.force_queued_message' ||
       chatCommand.type === 'chat.steer_queued_message' ||
+      chatCommand.type === 'chat.set_queued_message_edit_lock' ||
       chatCommand.type === 'chat.input_delivery_action');
   if (
     (target.projectId === APP_ADVISOR_PROJECT_ID && !advisorQueueCommand) ||
@@ -2261,6 +2502,101 @@ function isQuestionAnswers(value: unknown): value is McpQuestionAnswer[] {
   );
 }
 
+/**
+ * Portal answers and dismissals settle in the core (CAN-4128): through the
+ * same function as core.chat.question.respond, never through the renderer.
+ */
+async function settlePortalChatQuestion(
+  command: PortalCommandEnvelope,
+  context: PortalAdapterContext,
+  target: { projectId: string; worktreeId: string; chatId: string },
+  questionId: string,
+  response: ChatQuestionResponse,
+): Promise<void> {
+  if (rejectUntrustedPortalChatInput(command, context)) return;
+  if (
+    target.projectId === APP_ADVISOR_PROJECT_ID ||
+    target.projectId === PIPELINE_EDITOR_PROJECT_ID
+  ) {
+    context.fail(
+      command,
+      'invalid_payload',
+      'This embedded chat scope is not available through the portal.',
+    );
+    return;
+  }
+  const port = context.chatStatePort;
+  if (!port) {
+    context.fail(
+      command,
+      'execution_failed',
+      'The chat state service is temporarily unavailable.',
+      true,
+    );
+    return;
+  }
+  const dispatchChatCommand = context.dispatchChatCommand;
+  const outcome = await respondToChatQuestion({
+    scope: { projectId: target.projectId, worktreeId: target.worktreeId },
+    chatId: target.chatId,
+    questionId,
+    response,
+    commandId: command.id,
+    origin: 'portal',
+    port,
+    ...(response.kind === 'answer' && context.origin
+      ? { executionOptions: { agentSent: context.origin } }
+      : {}),
+    ...(dispatchChatCommand
+      ? {
+          dispatch: (request, options): Promise<ChatCommandResult> =>
+            options
+              ? dispatchChatCommand(request, options)
+              : dispatchChatCommand(request),
+        }
+      : {}),
+  });
+  switch (outcome.status) {
+    case 'applied':
+    case 'already_settled':
+      context.complete(command, outcome.result);
+      return;
+    case 'not_found':
+      context.fail(
+        command,
+        'not_found',
+        'The question is no longer awaiting a response.',
+      );
+      return;
+    case 'cancelled':
+      context.fail(
+        command,
+        'execution_failed',
+        'The question is no longer awaiting a response.',
+      );
+      return;
+    case 'invalid':
+      context.fail(command, 'execution_failed', outcome.message);
+      return;
+    case 'conflict':
+      context.fail(
+        command,
+        'conflict',
+        'The chat changed; read it again.',
+        true,
+      );
+      return;
+    case 'unavailable':
+      context.fail(
+        command,
+        'execution_failed',
+        'The chat state service is temporarily unavailable.',
+        true,
+      );
+      return;
+  }
+}
+
 export async function handlePortalChatAnswerQuestion(
   command: PortalCommandEnvelope<
     PortalCommandPayloadMap['portal.chat.answer_question']
@@ -2283,12 +2619,13 @@ export async function handlePortalChatAnswerQuestion(
     );
     return;
   }
-  await dispatchCorrelatedChatCommand(command, context, {
-    ...target,
-    kind: 'answer_question',
-    questionRequestId: command.payload.requestId,
-    answers: command.payload.answers,
-  });
+  await settlePortalChatQuestion(
+    command,
+    context,
+    target,
+    command.payload.requestId,
+    { kind: 'answer', answers: command.payload.answers },
+  );
 }
 
 export async function handlePortalChatDismissQuestion(
@@ -2312,11 +2649,13 @@ export async function handlePortalChatDismissQuestion(
     );
     return;
   }
-  await dispatchCorrelatedChatCommand(command, context, {
-    ...target,
-    kind: 'dismiss_question',
-    questionRequestId: command.payload.requestId,
-  });
+  await settlePortalChatQuestion(
+    command,
+    context,
+    target,
+    command.payload.requestId,
+    { kind: 'dismiss' },
+  );
 }
 
 export async function handlePortalChatSetModel(
@@ -2749,18 +3088,11 @@ export async function handlePortalChatQueueCancel(
 ): Promise<void> {
   const request = readQueueEntry(command, context);
   if (!request) return;
-  if (context.chatStatePort) {
-    await dispatchRevisionedChatCommand(command, context, request, {
-      type: 'chat.cancel_queued_message',
-      chatId: request.chatId,
-      queuedMessageId: request.entryId,
-    });
-    return;
-  }
-  const { getChatQueueService } =
-    await import('../../services/chat-queue-service');
-  await getChatQueueService().cancel(request, request.entryId);
-  context.complete(command, { ok: true });
+  await dispatchRevisionedChatCommand(command, context, request, {
+    type: 'chat.cancel_queued_message',
+    chatId: request.chatId,
+    queuedMessageId: request.entryId,
+  });
 }
 
 export async function handlePortalChatQueueEdit(
@@ -2780,24 +3112,12 @@ export async function handlePortalChatQueueEdit(
     context.fail(command, 'invalid_payload', 'Queue edit requires text.');
     return;
   }
-  const { getChatQueueService } =
-    await import('../../services/chat-queue-service');
-  const service = getChatQueueService();
-  if (context.chatStatePort) {
-    await dispatchRevisionedChatCommand(command, context, request, {
-      type: 'chat.edit_queued_message',
-      chatId: request.chatId,
-      queuedMessageId: request.entryId,
-      text: command.payload.text,
-    });
-    return;
-  }
-  await service.edit(
-    { ...request, text: command.payload.text },
-    undefined,
-    'preserve',
-  );
-  context.complete(command, { ok: true });
+  await dispatchRevisionedChatCommand(command, context, request, {
+    type: 'chat.edit_queued_message',
+    chatId: request.chatId,
+    queuedMessageId: request.entryId,
+    text: command.payload.text,
+  });
 }
 
 export async function handlePortalChatQueueForce(
@@ -2808,22 +3128,11 @@ export async function handlePortalChatQueueForce(
 ): Promise<void> {
   const request = readQueueEntry(command, context);
   if (!request) return;
-  if (context.chatStatePort) {
-    await dispatchRevisionedChatCommand(command, context, request, {
-      type: 'chat.force_queued_message',
-      chatId: request.chatId,
-      queuedMessageId: request.entryId,
-    });
-    return;
-  }
-  try {
-    const { getChatQueueService } =
-      await import('../../services/chat-queue-service');
-    await getChatQueueService().force(request, request.entryId);
-    context.complete(command, { ok: true });
-  } catch (error) {
-    failServiceError(command, context, error);
-  }
+  await dispatchRevisionedChatCommand(command, context, request, {
+    type: 'chat.force_queued_message',
+    chatId: request.chatId,
+    queuedMessageId: request.entryId,
+  });
 }
 
 export async function handlePortalChatQueueSteer(
@@ -2927,15 +3236,14 @@ export async function handlePortalChatQueueSetEditLock(
     );
     return;
   }
-  const { getChatQueueService } =
-    await import('../../services/chat-queue-service');
-  await getChatQueueService().setEditLock(
-    request,
-    request.entryId,
-    command.payload.locked,
-    command.payload.locked
-      ? (command.payload.acquisitionId ?? command.id)
-      : command.payload.releaseAcquisitionId,
-  );
-  context.complete(command, { ok: true });
+  const acquisition = command.payload.locked
+    ? (command.payload.acquisitionId ?? command.id)
+    : command.payload.releaseAcquisitionId;
+  await dispatchRevisionedChatCommand(command, context, request, {
+    type: 'chat.set_queued_message_edit_lock',
+    chatId: request.chatId,
+    queuedMessageId: request.entryId,
+    locked: command.payload.locked,
+    ...(acquisition !== undefined ? { acquisitionId: acquisition } : {}),
+  });
 }

@@ -58,7 +58,7 @@ export function SkillEditWithAIButton({
       aria-describedby={state.available ? undefined : reasonId}
       data-testid={dataTestId}
     >
-      <SparkleIcon width={12} height={12} aria-hidden />
+      <SparkleIcon size="sm" aria-hidden />
       {EDIT_WITH_AI_LABEL}
     </Button>
   );

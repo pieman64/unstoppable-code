@@ -85,13 +85,14 @@ import {
 } from '../lib/validation';
 import { assertWritableScope } from '../lib/read-only-scope';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
-import { deferredToolsReloadCoordinator } from '../deferred-tools/reload-coordinator';
-import { getChatSearchService } from '../chat-search/service';
-import { getChatStateService } from '../services/chat-state-service';
 import {
-  notifyLedgerSessionEnded,
-  registerLedgerChatArchivedSource,
-} from '../ledger/session-end-sweep-ports';
+  cancelArchivedChatDeferredToolsReload,
+  recordChatArchived,
+  recordChatRestored,
+  removeArchivedChatDelegateWatchers,
+} from '../lib/chat-archive-bookkeeping';
+import { getChatStateService } from '../services/chat-state-service';
+import { registerLedgerChatArchivedSource } from '../ledger/session-end-sweep-ports';
 import {
   ACCOUNT_MCP_REF_LOADER_WAIT,
   normalizeAccountMcpSelections,
@@ -588,26 +589,12 @@ export function registerChatPersistenceHandlers(
           ...(req.unread ? { unread: true } : {}),
         },
       );
-      // The archive is committed first. A quit before the intent write lands
-      // can lose this handback; startup completes every intent recorded after
-      // that accepted commit-to-intent window. Never await the sweep itself.
-      try {
-        await notifyLedgerSessionEnded({
-          target: { projectId: req.projectId, worktreeId: req.worktreeId },
-          actor: { kind: 'chat', originKey: req.tabId },
-          recipient: { kind: 'user' },
-          reason: 'chat_archived',
-          transitionKey: `chat-archive:${req.projectId}:${req.worktreeId}:${req.tabId}:${archivedAt}`,
-          transitionAt: archivedAt,
-        });
-      } catch {
-        // Ledger bookkeeping must never fail a committed archive.
-      }
-      getChatSearchService().worktreeChatArchived(
-        req.projectId,
-        req.worktreeId,
-        req.tabId,
-      );
+      const archivedChat = {
+        projectId: req.projectId,
+        worktreeId: req.worktreeId,
+        chatId: req.tabId,
+      };
+      await recordChatArchived(archivedChat, archivedAt);
 
       // Auto-archive keeps the session alive (`keepSession`) so a resumed turn
       // can still stream events and un-archive the chat. It must still clear
@@ -638,11 +625,7 @@ export function registerChatPersistenceHandlers(
         } catch {
           // Session-cause bookkeeping must never block chat archival.
         }
-        deferredToolsReloadCoordinator.cancelActiveReload(
-          scope,
-          'Deferred-tools reload was cancelled because the chat was archived.',
-        );
-        deferredToolsReloadCoordinator.unregisterResumeHandler(scope);
+        cancelArchivedChatDeferredToolsReload(archivedChat);
         if (shouldInterrupt) {
           await cancelChatTurn(scope);
           sendToWindowDetailed(getWindow(), IPC_CHANNELS.chatEvent, {
@@ -674,22 +657,7 @@ export function registerChatPersistenceHandlers(
           );
         }
 
-        // The archive stopped this chat's delegates; the watchers they created
-        // end with them. Best-effort for the same reason as the teardown above.
-        try {
-          // Defer the scheduler-backed watcher service until an archive needs
-          // it; importing chat persistence alone must not initialize it.
-          const { getAppAdvisorWatcherService } =
-            await import('../app-advisor/watchers');
-          await getAppAdvisorWatcherService().removeDelegateWatchersForChat(
-            scope,
-          );
-        } catch (error) {
-          logMainProcessError(
-            `[chatArchiveTab] Failed to remove delegate watchers for ${req.worktreeId}/${req.tabId}:`,
-            error,
-          );
-        }
+        await removeArchivedChatDelegateWatchers(archivedChat);
       }
 
       const now = Date.now();
@@ -773,9 +741,8 @@ export function registerChatPersistenceHandlers(
         throw new Error(result.reason ?? 'Archived chat could not be restored');
       }
 
-      getChatSearchService().worktreeChatRestored(
-        req.projectId,
-        req.worktreeId,
+      recordChatRestored(
+        { projectId: req.projectId, worktreeId: req.worktreeId },
         entry.tab,
       );
 

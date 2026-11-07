@@ -282,6 +282,7 @@ function createReadRepository(
     isCorrupt: (entry, keys) =>
       entry.record !== null && !verified(entry, entry.record, keys),
     holdPut: options.holdPut,
+    migrationIntent: options.migrationIntent,
     onPutRefused: options.onPutRefused,
     holdDelete: options.holdDelete,
     onDeleteRefused: options.onDeleteRefused,

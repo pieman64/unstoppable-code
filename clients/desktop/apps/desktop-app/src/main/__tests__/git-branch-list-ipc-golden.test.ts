@@ -16,9 +16,28 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { IpcMainInvokeEvent } from 'electron';
-import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import {
+  CANOPY_IN_PROCESS_WORKER_TARGET_ID,
+  decodeCanopyError,
+  encodeCanopyError,
+  WorkerGitBranchListParamsSchema,
+  type CanopyCallerDescriptor,
+  type WorkerGitBranchListParams,
+  type WorkerGitBranchListResult,
+} from '@canopy/protocol/canopy-core';
+import {
+  CanopyClientError,
+  type CanopyClientQueryOptions,
+} from '@canopy/core-client';
+import { CanopyOperationError } from '@canopy/core-runtime';
+import { createGitReadHost } from '@canopy/core-platform';
+import {
+  createRecordedWorkerGitHosts,
+  createWorkerGitBranchListHandlers,
+  type GitRepositoryRead,
+} from '@canopy/core-runtime/node/git';
+import {
+  APP_ADVISOR_PROJECT_ID,
   CODE_REVIEW_CHAT_PROJECT_ID,
   IPC_CHANNELS,
   PLAN_EXPLORE_CHAT_PROJECT_ID,
@@ -50,6 +69,17 @@ import {
   createDesktopRuntime,
   type DesktopCanopyDispatcher,
 } from '../canopy-runtime/desktop-runtime';
+import {
+  createDaemonGitRoute,
+  type DaemonGitRoute,
+  type DaemonGitRouteOptions,
+} from '../canopy-runtime/daemon-git-route';
+import { createElectronDaemonCallerLifetime } from '../canopy-runtime/electron-daemon-caller-lifetime';
+import { FakeSender } from '../canopy-runtime/__tests__/daemon-files-route-harness';
+import * as gitHelpers from '../lib/git';
+import * as defaultBranchHelpers from '../lib/git-default-branch';
+import * as freshnessStore from '../lib/git-default-branch-freshness';
+import { READ_ROUTE_TABLE } from '../canopy-runtime/daemon-read-route-guard';
 
 jest.setTimeout(120_000);
 
@@ -375,11 +405,29 @@ const desktopCaller: CanopyCallerDescriptor = {
 
 let runtime: DesktopCanopyDispatcher | undefined;
 
-function registerHandlers(): void {
-  runtime = createDesktopRuntime();
+function registerHandlers(
+  daemonGitRoute?: () => DaemonGitRoute,
+  unusedGit = false,
+): void {
+  const unused = (): never => {
+    throw new Error('The direct Git runtime was touched.');
+  };
+  runtime = createDesktopRuntime(
+    unusedGit
+      ? {
+          workerGitHost: {
+            authorityId: desktopCaller.authorityId,
+            resolveRepository: unused,
+            reads: unused,
+            now: unused,
+          },
+        }
+      : {},
+  );
   const accessors = {
     dispatcher: runtime,
     resolveCaller: (): CanopyCallerDescriptor => desktopCaller,
+    ...(daemonGitRoute && { daemonGitRoute }),
   };
   registerWorktreeHandlers(() => null, accessors);
   registerHomeSurfaceHandlers(accessors);
@@ -421,12 +469,14 @@ async function ipc(channel: string, request: unknown): Promise<Outcome> {
   const handler = mockHandlers.get(channel);
   if (!handler) throw new Error(`${channel} was not registered`);
   try {
-    const event: Partial<IpcMainInvokeEvent> = {};
+    const event = { sender: routeSender };
     return { result: await handler(event, request) };
   } catch (error) {
     return { error: describeError(error) };
   }
 }
+
+const routeSender = new FakeSender(1);
 
 function freshnessBytes(): string {
   return existsSync(freshnessPath) ? readFileSync(freshnessPath, 'utf8') : '';
@@ -672,5 +722,657 @@ describe('home:list-branch-targets', () => {
       expect(await branchTargets({ workspaceId })).toMatchSnapshot(
         JSON.stringify(workspaceId),
       );
+  });
+});
+
+// CAN-5501: the production adapter and IPC projections against the daemon's
+// recorded Git host and fixed-command runner. Only the connection is in memory.
+describe('daemon branch-list route equivalence', () => {
+  const authorityId = 'authority-can-5501';
+  const lifetime = createElectronDaemonCallerLifetime();
+  const connection = new AbortController();
+  const reads: GitRepositoryRead[] = [];
+  const queryOptions: Array<CanopyClientQueryOptions | undefined> = [];
+  const routes: DaemonGitRoute[] = [];
+  let gitHost: ReturnType<typeof createGitReadHost>;
+  let handlers: ReturnType<typeof createWorkerGitBranchListHandlers>;
+  let branchHost: ReturnType<typeof createRecordedWorkerGitHosts>['branchList'];
+  const query = jest.fn(
+    async (
+      _name: 'worker.git.branch.list',
+      params: WorkerGitBranchListParams,
+      options?: CanopyClientQueryOptions,
+    ) => {
+      queryOptions.push(options);
+      try {
+        return await handlers['worker.git.branch.list'](
+          WorkerGitBranchListParamsSchema.parse(params),
+          {
+            requestId: 'route-test',
+            caller: {
+              ...desktopCaller,
+              authorityId,
+              grants: ['worker.git.read'],
+            },
+            signal: options?.signal ?? new AbortController().signal,
+            metadata: options?.metadata ?? {},
+            ...(options?.execution && { execution: options.execution }),
+          },
+        );
+      } catch (error) {
+        if (!(error instanceof CanopyOperationError)) throw error;
+        throw new CanopyClientError(
+          decodeCanopyError(
+            JSON.parse(JSON.stringify(encodeCanopyError(error))),
+          ),
+        );
+      }
+    },
+  );
+  const hostContext = jest.fn(() => Promise.resolve({ authorityId }));
+  const connections = jest.fn(() => ({
+    get: (): Promise<{
+      client: { signal: AbortSignal; query: typeof query };
+    }> => Promise.resolve({ client: { signal: connection.signal, query } }),
+  }));
+  let executionSequence = 0;
+  const execution = jest.fn(() => ({
+    childEnvironment: {
+      GIT_TERMINAL_PROMPT: '0',
+      GCM_INTERACTIVE: 'never',
+      REQUEST: String(++executionSequence),
+      PATH: process.env.PATH ?? '',
+    },
+  }));
+  const routeFor = (
+    overrides: Partial<DaemonGitRouteOptions> = {},
+  ): DaemonGitRoute => {
+    const route = createDaemonGitRoute({
+      lifetime,
+      hostContext,
+      connections,
+      workspaceType: () => 'single-repo',
+      resolveWorktreeTargetIds: (projectId, worktreeId) => ({
+        projectId,
+        worktreeId,
+      }),
+      platform: 'darwin',
+      selectable: new Set(['git.branch.list']),
+      execution,
+      ...overrides,
+    });
+    routes.push(route);
+    return route;
+  };
+  const checkout: WorkerGitBranchListParams = {
+    scope: { workspaceId: REPAIR_WS, worktreeId: WORKTREE },
+    repository: { kind: 'checkout' },
+  };
+  const neverDirect = jest.fn(
+    (): Promise<never> =>
+      Promise.reject(new Error('Direct fallback was touched.')),
+  );
+  const list = (
+    route: DaemonGitRoute,
+    params = checkout,
+    caller = desktopCaller,
+  ): Promise<WorkerGitBranchListResult> =>
+    route.branchList(params, { caller }, { sender: routeSender }, neverDirect);
+
+  beforeAll(() => {
+    // The same fixtures and records as the unchanged IPC golden above.
+    gitHost = createGitReadHost({
+      os: process.platform === 'linux' ? 'linux' : 'darwin',
+      environment: process.env,
+      probeDirectory: dir,
+    });
+    const hosts = createRecordedWorkerGitHosts({
+      dataRoot: dataDir,
+      authorityId,
+      recordsTargetId: CANOPY_IN_PROCESS_WORKER_TARGET_ID,
+      os: process.platform,
+      arch: process.arch,
+      git: {
+        read: (read, cwd, invocation) => {
+          reads.push(read);
+          return gitHost.repository.readRepository({
+            read,
+            cwd,
+            signal: invocation.signal,
+            readSavedExecutablePath: () => Promise.resolve(''),
+            ...(invocation.environment && {
+              environment: invocation.environment,
+            }),
+          });
+        },
+        selectExecutable: (request) =>
+          gitHost.repository.selectExecutable({
+            ...request,
+            readSavedExecutablePath: () => Promise.resolve(''),
+          }),
+      },
+    });
+    branchHost = hosts.branchList;
+    handlers = createWorkerGitBranchListHandlers(branchHost);
+  });
+  afterAll(async () => {
+    routes.forEach((route) => route.dispose());
+    lifetime.disposeAll();
+    await gitHost.stop(new AbortController().signal);
+  });
+  beforeEach(() => {
+    query.mockClear();
+    hostContext.mockClear();
+    connections.mockClear();
+    execution.mockClear();
+    neverDirect.mockClear();
+    reads.length = 0;
+    queryOptions.length = 0;
+  });
+
+  it('preserves the repositoryUnavailable code through the L0 error codec', () => {
+    const error = new CanopyOperationError({
+      kind: 'failed_precondition',
+      code: 'worker.git.branch.repositoryUnavailable',
+      message: 'The workspace has no source repository.',
+      retry: { kind: 'never' },
+    });
+    const wire: unknown = JSON.parse(JSON.stringify(encodeCanopyError(error)));
+    expect(decodeCanopyError(wire)).toEqual(error.payload);
+    expect(
+      new CanopyOperationError(decodeCanopyError(wire)).runtimeCause,
+    ).toBeUndefined();
+  });
+
+  it('returns byte-identical checkout and reference IPC results without touching the direct runtime', async () => {
+    const cases = [
+      [
+        IPC_CHANNELS.worktreeListBranches,
+        { projectId: FRESH_WS, worktreeId: WORKTREE },
+      ],
+      [
+        IPC_CHANNELS.worktreeListBranches,
+        { projectId: MULTI_WS, worktreeId: WORKTREE },
+      ],
+      [
+        IPC_CHANNELS.worktreeListBranches,
+        {
+          projectId: MULTI_WS,
+          worktreeId: WORKTREE,
+          repoId: WORKSPACE_ROOT_REPO_ID,
+        },
+      ],
+      [
+        IPC_CHANNELS.worktreeListBranches,
+        { projectId: MULTI_WS, worktreeId: WORKTREE, repoId: 'member' },
+      ],
+      [IPC_CHANNELS.homeListBranchTargets, { workspaceId: FRESH_WS }],
+      [IPC_CHANNELS.homeListBranchTargets, { workspaceId: MULTI_WS }],
+    ] as const;
+    const direct: Outcome[] = [];
+    for (const [channel, request] of cases)
+      direct.push(await ipc(channel, request));
+    await runtime?.shutdown();
+    registerHandlers(() => routeFor(), true);
+    for (const [index, [channel, request]] of cases.entries())
+      expect(JSON.stringify(await ipc(channel, request))).toBe(
+        JSON.stringify(direct[index]),
+      );
+    expect(query).toHaveBeenCalledTimes(cases.length);
+    expect(reads.filter((read) => read.kind === 'remote-head')).toHaveLength(0);
+    expect(execution).toHaveBeenCalledTimes(cases.length);
+    expect(queryOptions[0]?.execution).not.toEqual(queryOptions[1]?.execution);
+    for (const [channel, request] of [
+      [IPC_CHANNELS.homeListBranchTargets, { workspaceId: MULTI_NO_SOURCE_WS }],
+      [IPC_CHANNELS.homeListBranchTargets, { workspaceId: COWORK_WS }],
+    ] as const)
+      expect(await ipc(channel, request)).toEqual({
+        result: { supported: false, branches: [], defaultBranch: null },
+      });
+  });
+
+  it('records one remote result and repairs origin/HEAD, then forwards the fresh hint without another write', async () => {
+    await seedFreshness(
+      repos[REPAIR_WS],
+      'release',
+      Date.now() - DEFAULT_BRANCH_FRESHNESS_TTL_MS - 60_000,
+    );
+    git(repos[REPAIR_WS], ['remote', 'set-head', 'origin', 'develop']);
+    const record = jest.spyOn(freshnessStore, 'recordGitDefaultBranch');
+    const repair = jest.spyOn(gitHelpers, 'setLocalRemoteHeadBranch');
+    try {
+      const route = routeFor();
+      const remote = await list(route);
+      expect(remote.defaultBranchSource).toBe('remote');
+      expect(remote.defaultBranch).toBe('main');
+      expect(record).toHaveBeenCalledTimes(1);
+      expect(repair).toHaveBeenCalledTimes(1);
+      expect(originHead(repos[REPAIR_WS])).toBe('refs/remotes/origin/main');
+      const before = freshnessBytes();
+      const hinted = await list(route);
+      expect(hinted).toEqual({ ...remote, defaultBranchSource: 'hint' });
+      expect(freshnessBytes()).toBe(before);
+      expect(record).toHaveBeenCalledTimes(1);
+      expect(repair).toHaveBeenCalledTimes(1);
+      expect(reads.filter((read) => read.kind === 'remote-head')).toHaveLength(
+        1,
+      );
+      expect(query.mock.calls[1]?.[1].defaultBranchHint?.defaultBranch).toBe(
+        'main',
+      );
+    } finally {
+      record.mockRestore();
+      repair.mockRestore();
+    }
+  });
+
+  it('keeps remote freshness attached to the identity observed before dispatch', async () => {
+    const repo = repos[REPAIR_WS];
+    const originUrl = git(repo, ['remote', 'get-url', 'origin']);
+    const identity = {
+      commonDir: realpathSync(join(repo, '.git')),
+      originUrl,
+    };
+    query.mockImplementationOnce(() => {
+      git(repo, ['remote', 'set-url', 'origin', origins[FRESH_WS]]);
+      return Promise.resolve({
+        branches: [],
+        defaultBranch: 'main',
+        defaultBranchSource: 'remote',
+      });
+    });
+    try {
+      await list(routeFor());
+      expect(
+        await freshnessStore.readGitDefaultBranchFreshness({
+          ...identity,
+          originUrl: origins[FRESH_WS],
+        }),
+      ).toBeNull();
+      expect(
+        await freshnessStore.readGitDefaultBranchFreshness(identity),
+      ).toMatchObject({
+        defaultBranch: 'main',
+      });
+      expect(neverDirect).not.toHaveBeenCalled();
+    } finally {
+      git(repo, ['remote', 'set-url', 'origin', originUrl]);
+    }
+  });
+
+  it.each(['caller', 'deadline'] as const)(
+    'drains accepted effects before success even when %s aborts during persistence',
+    async (source) => {
+      git(repos[REPAIR_WS], ['remote', 'set-head', 'origin', 'develop']);
+      query.mockResolvedValueOnce({
+        branches: [],
+        defaultBranch: 'main',
+        defaultBranchSource: 'remote',
+      });
+      const controller = new AbortController();
+      const deadline = new AbortController();
+      const timeout = jest
+        .spyOn(AbortSignal, 'timeout')
+        .mockReturnValue(deadline.signal);
+      const persist = freshnessStore.recordGitDefaultBranch;
+      const record = jest
+        .spyOn(freshnessStore, 'recordGitDefaultBranch')
+        .mockImplementation((input) => {
+          (source === 'caller' ? controller : deadline).abort();
+          return persist(input);
+        });
+      try {
+        const result = await routeFor().branchList(
+          checkout,
+          { caller: desktopCaller, signal: controller.signal },
+          { sender: routeSender },
+          neverDirect,
+        );
+        expect(result.defaultBranch).toBe('main');
+        expect(record).toHaveBeenCalledTimes(1);
+        expect(originHead(repos[REPAIR_WS])).toBe('refs/remotes/origin/main');
+        expect(neverDirect).not.toHaveBeenCalled();
+      } finally {
+        record.mockRestore();
+        timeout.mockRestore();
+      }
+    },
+  );
+
+  it('forwards only the identity-matched Electron hint, not a supplied hint', async () => {
+    const readHint = jest
+      .spyOn(defaultBranchHelpers, 'readDefaultBranchHint')
+      .mockResolvedValueOnce(null);
+    try {
+      await list(routeFor(), {
+        ...checkout,
+        defaultBranchHint: {
+          defaultBranch: 'unrelated-repository',
+          resolvedAt: new Date().toISOString(),
+        },
+      });
+      expect(query.mock.calls[0]?.[1].defaultBranchHint).toBeUndefined();
+    } finally {
+      readHint.mockRestore();
+    }
+  });
+
+  it('normalizes a legacy timestamp without changing hint selection or writing freshness', async () => {
+    const resolvedAt = new Date().toUTCString();
+    const readHint = jest
+      .spyOn(defaultBranchHelpers, 'readDefaultBranchHint')
+      .mockResolvedValueOnce({ defaultBranch: 'release', resolvedAt });
+    try {
+      const before = freshnessBytes();
+      const result = await list(routeFor());
+      expect(result.defaultBranchSource).toBe('hint');
+      expect(result.defaultBranch).toBe('release');
+      expect(query.mock.calls[0]?.[1].defaultBranchHint?.resolvedAt).toBe(
+        new Date(resolvedAt).toISOString(),
+      );
+      expect(reads.filter((read) => read.kind === 'remote-head')).toHaveLength(
+        0,
+      );
+      expect(freshnessBytes()).toBe(before);
+    } finally {
+      readHint.mockRestore();
+    }
+  });
+
+  it('keeps omitted hints additive, rejects malformed hints, and applies no effects to local or conventional results', async () => {
+    for (const [workspaceId, source] of [
+      [OFFLINE_WS, 'local-origin-head'],
+      [OFFLINE_STALE_WS, 'stale-hint'],
+      [OFFLINE_CONVENTIONAL_WS, 'conventional'],
+      [NO_ORIGIN_WS, null],
+    ] as const) {
+      const before = freshnessBytes();
+      const head = originHead(repos[workspaceId]);
+      const result = await list(routeFor(), {
+        scope: { workspaceId, worktreeId: WORKTREE },
+        repository: { kind: 'checkout' },
+      });
+      expect(result.defaultBranchSource).toBe(source);
+      expect(freshnessBytes()).toBe(before);
+      expect(originHead(repos[workspaceId])).toBe(head);
+    }
+    expect(WorkerGitBranchListParamsSchema.safeParse(checkout).success).toBe(
+      true,
+    );
+    for (const defaultBranchHint of [
+      {},
+      { defaultBranch: '', resolvedAt: 'bad' },
+      { defaultBranch: 'main', resolvedAt: 'bad' },
+    ])
+      expect(
+        WorkerGitBranchListParamsSchema.safeParse({
+          ...checkout,
+          defaultBranchHint,
+        }).success,
+      ).toBe(false);
+  });
+
+  it('uses the optional hint up to, but not including, its TTL boundary and rejects future freshness', async () => {
+    const now = Date.now();
+    const fixed = createWorkerGitBranchListHandlers({
+      ...branchHost,
+      now: () => now,
+    });
+    const context = {
+      requestId: 'hint-boundary',
+      caller: desktopCaller,
+      metadata: {},
+      signal: new AbortController().signal,
+    };
+    for (const [age, source] of [
+      [0, 'hint'],
+      [DEFAULT_BRANCH_FRESHNESS_TTL_MS - 1, 'hint'],
+      [DEFAULT_BRANCH_FRESHNESS_TTL_MS, 'remote'],
+      [-1, 'remote'],
+    ] as const) {
+      const result = await fixed['worker.git.branch.list'](
+        {
+          scope: { workspaceId: FRESH_WS },
+          repository: { kind: 'reference' },
+          defaultBranchHint: {
+            defaultBranch: 'release',
+            resolvedAt: new Date(now - age).toISOString(),
+          },
+        },
+        context,
+      );
+      expect(result.defaultBranchSource).toBe(source);
+      expect(result.defaultBranch).toBe(source === 'hint' ? 'release' : 'main');
+    }
+    const omitted = await fixed['worker.git.branch.list'](
+      { scope: { workspaceId: FRESH_WS }, repository: { kind: 'reference' } },
+      context,
+    );
+    expect(omitted.defaultBranchSource).toBe('remote');
+    expect(omitted.defaultBranch).toBe('main');
+    expect(reads.filter((read) => read.kind === 'remote-head')).toHaveLength(3);
+  });
+
+  it('refuses unresolved repositories before daemon contact rather than silently dropping effects', async () => {
+    await expect(
+      list(routeFor({ repositoryPath: () => Promise.resolve(null) })),
+    ).rejects.toMatchObject({
+      payload: { code: 'worker.git.branch.repositoryUnavailable' },
+    });
+    expect(hostContext).not.toHaveBeenCalled();
+    expect(connections).not.toHaveBeenCalled();
+    expect(neverDirect).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'unavailable',
+    'deadline_exceeded',
+    'capability_unavailable',
+    'invalid_argument',
+  ] as const)('keeps %s typed without fallback', async (kind) => {
+    const before = freshnessBytes();
+    const head = originHead(repos[REPAIR_WS]);
+    query.mockRejectedValueOnce(
+      new CanopyClientError({ kind, message: kind, retry: { kind: 'never' } }),
+    );
+    await expect(list(routeFor())).rejects.toMatchObject({ payload: { kind } });
+    expect(freshnessBytes()).toBe(before);
+    expect(originHead(repos[REPAIR_WS])).toBe(head);
+    expect(neverDirect).not.toHaveBeenCalled();
+  });
+
+  it('rejects a schema-skewed result and a host failure without fallback', async () => {
+    query.mockResolvedValueOnce(
+      Object.assign(
+        { branches: [], defaultBranch: null, defaultBranchSource: null },
+        { unexpected: true },
+      ),
+    );
+    await expect(list(routeFor())).rejects.toMatchObject({
+      payload: { kind: 'internal' },
+    });
+    await expect(
+      list(
+        routeFor({
+          hostContext: () => Promise.reject(new Error('host failed')),
+        }),
+      ),
+    ).rejects.toMatchObject({ payload: { kind: 'internal' } });
+    expect(neverDirect).not.toHaveBeenCalled();
+  });
+
+  it('keeps connection setup failure typed without contacting the query or falling back', async () => {
+    await expect(
+      list(
+        routeFor({
+          connections: () => ({
+            get: (): Promise<never> =>
+              Promise.reject(
+                new CanopyClientError({
+                  kind: 'unavailable',
+                  message: 'connection refused',
+                  retry: { kind: 'never' },
+                }),
+              ),
+          }),
+        }),
+      ),
+    ).rejects.toMatchObject({ payload: { kind: 'unavailable' } });
+    expect(query).not.toHaveBeenCalled();
+    expect(neverDirect).not.toHaveBeenCalled();
+  });
+
+  it('accepts an empty listing without writing freshness or origin/HEAD', async () => {
+    const empty = {
+      branches: [],
+      defaultBranch: null,
+      defaultBranchSource: null,
+    };
+    query.mockResolvedValueOnce(empty);
+    const before = freshnessBytes();
+    const head = originHead(repos[REPAIR_WS]);
+    expect(await list(routeFor())).toEqual(empty);
+    expect(freshnessBytes()).toBe(before);
+    expect(originHead(repos[REPAIR_WS])).toBe(head);
+    expect(neverDirect).not.toHaveBeenCalled();
+  });
+
+  it('cancels a pre-retired request before host context or connection creation', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      routeFor().branchList(
+        checkout,
+        { caller: desktopCaller, signal: controller.signal },
+        { sender: routeSender },
+        neverDirect,
+      ),
+    ).rejects.toMatchObject({ payload: { kind: 'cancelled' } });
+    expect(hostContext).not.toHaveBeenCalled();
+    expect(connections).not.toHaveBeenCalled();
+    expect(neverDirect).not.toHaveBeenCalled();
+  });
+
+  it('bounds a stalled query and never applies late effects or falls back', async () => {
+    const deadline = new AbortController();
+    const timeout = jest
+      .spyOn(AbortSignal, 'timeout')
+      .mockReturnValue(deadline.signal);
+    let reply:
+      | ((value: {
+          branches: [];
+          defaultBranch: string;
+          defaultBranchSource: 'remote';
+        }) => void)
+      | undefined;
+    query.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          reply = resolve;
+          deadline.abort();
+        }),
+    );
+    try {
+      await expect(
+        list(routeFor({ queryDeadlineMs: 1_000 })),
+      ).rejects.toMatchObject({ payload: { kind: 'deadline_exceeded' } });
+      expect(timeout).toHaveBeenCalledWith(1_000);
+      expect(query).toHaveBeenCalledTimes(1);
+      const before = freshnessBytes();
+      reply?.({
+        branches: [],
+        defaultBranch: 'release',
+        defaultBranchSource: 'remote',
+      });
+      await Promise.resolve();
+      expect(freshnessBytes()).toBe(before);
+      expect(neverDirect).not.toHaveBeenCalled();
+    } finally {
+      timeout.mockRestore();
+    }
+  });
+
+  it('keeps production, Windows, remote bridges, non-window and app-managed requests direct without lazy dependencies', async () => {
+    const direct = jest.fn(() =>
+      Promise.resolve({
+        branches: [],
+        defaultBranch: null,
+        defaultBranchSource: null,
+      }),
+    );
+    const cases: Array<{
+      options?: Partial<DaemonGitRouteOptions>;
+      params?: WorkerGitBranchListParams;
+      caller?: CanopyCallerDescriptor;
+    }> = [
+      { options: { selectable: undefined } },
+      { options: { platform: 'win32' } },
+      { caller: { ...desktopCaller, clientInstanceId: 'remote-bridge:1' } },
+      { caller: { ...desktopCaller, interfaceKind: 'portal' } },
+      {
+        caller: {
+          ...desktopCaller,
+          clientInstanceId: 'electron-web-contents:2',
+        },
+      },
+      ...[
+        APP_ADVISOR_PROJECT_ID,
+        CODE_REVIEW_CHAT_PROJECT_ID,
+        PLAN_EXPLORE_CHAT_PROJECT_ID,
+        SHARED_CONTAINER_VIEWER_PROJECT_ID,
+      ].map((workspaceId) => ({
+        params: { ...checkout, scope: { ...checkout.scope, workspaceId } },
+      })),
+      {
+        params: {
+          ...checkout,
+          scope: { ...checkout.scope, authorityId: 'other-authority' },
+        },
+      },
+      {
+        params: {
+          ...checkout,
+          scope: { ...checkout.scope, targetId: 'other-target' },
+        },
+      },
+    ];
+    for (const entry of cases)
+      await routeFor(entry.options).branchList(
+        entry.params ?? checkout,
+        { caller: entry.caller ?? desktopCaller },
+        { sender: routeSender },
+        direct,
+      );
+    expect(direct).toHaveBeenCalledTimes(cases.length);
+    expect(hostContext).not.toHaveBeenCalled();
+    expect(connections).not.toHaveBeenCalled();
+    expect(execution).not.toHaveBeenCalled();
+    // Linux is eligible; a selected query must reach the client.
+    await list(routeFor({ platform: 'linux' }));
+    expect(query).toHaveBeenCalledTimes(1);
+    for (const operation of [
+      'git.remote.get',
+      'git.worktree.health.get',
+      'git.executable.get',
+      'git.status.get',
+      'git.diff.get',
+    ] as const)
+      for (const disposition of Object.values(READ_ROUTE_TABLE[operation]))
+        expect(disposition.kind).toBe('blocked');
+  });
+
+  it('reports connection loss typed, without a direct retry', async () => {
+    query.mockImplementationOnce(() => {
+      connection.abort();
+      return Promise.reject(new Error('closed'));
+    });
+    await expect(list(routeFor())).rejects.toMatchObject({
+      payload: { kind: 'unavailable' },
+    });
+    await expect(list(routeFor())).rejects.toMatchObject({
+      payload: { kind: 'unavailable' },
+    });
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(neverDirect).not.toHaveBeenCalled();
   });
 });

@@ -88,6 +88,8 @@ export interface ComposerEditorProps {
   value?: Descendant[];
   onChange?: (value: Descendant[]) => void;
   disabled?: boolean;
+  /** See {@link SlateEditorProps.typeToFocus}. */
+  typeToFocus?: boolean;
   /**
    * Mount-time draft seed (plain text) for the uncontrolled mode. Used when a
    * host remounts the editor on a destination switch but wants the typed
@@ -188,6 +190,7 @@ function ComposerEditorInner(
     value: controlledValue,
     onChange,
     disabled = false,
+    typeToFocus,
     initialText,
     initialFileReferences,
     placeholder,
@@ -581,6 +584,7 @@ function ComposerEditorInner(
         containerClassName={containerClassName ?? densityClasses.container}
         editableClassName={editableClassName ?? densityClasses.editable}
         dataTestId={dataTestId}
+        typeToFocus={typeToFocus}
       />
     </div>
   );

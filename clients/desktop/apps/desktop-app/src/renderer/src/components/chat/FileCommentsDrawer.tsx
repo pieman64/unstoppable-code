@@ -140,7 +140,7 @@ export function FileCommentsDrawer({
                   ? `${thread.anchor.diff?.source ?? 'legacy'} · ${thread.anchor.side ?? 'file'} · ${referenceText}`
                   : referenceText,
               outdated: thread.anchorState === 'outdated',
-              icon: <CodeBracketsIcon width={12} height={12} />,
+              icon: <CodeBracketsIcon size="sm" />,
               iconLabel: `From ${origin}`,
               badge:
                 thread.anchor.view === 'diff' &&

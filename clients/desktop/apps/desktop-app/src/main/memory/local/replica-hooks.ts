@@ -3,13 +3,16 @@ import { join } from 'node:path';
 import {
   MEMORY_SYNC_LIMITS,
   MEMORY_SYNC_STATE_FILENAME,
+  type MemoryDocumentChange,
+  type MemoryUsageAggregate,
 } from '@canopy/protocol/memory-sync';
+import type { MemoryConsolidationResult } from '@canopy/memory-consolidation/run';
 import { isNodeError } from './memory-files';
 
 /*
- * How local note writes reach the memory sync outbox. The sync engine
- * installs these hooks; without them (every build until sync is on, and every
- * device-local scope) a note write is only a file write. They run inside the
+ * How local memory writes reach the memory sync engine. The engine installs
+ * these hooks; without them (every build until sync is on, and every
+ * device-local scope) a write is only a file write. Note hooks run inside the
  * writer's scope lock, before the file changes, so the queued operation and
  * the file can never disagree after a crash (design §10.2, §10.3).
  */
@@ -68,6 +71,61 @@ export class LocalMemoryNoteUnsyncableError extends Error {
   }
 }
 
+/** How a leased commit of a consolidation run ended. */
+export type LocalMemorySyncedCommitOutcome =
+  /** The cloud accepted it and the replica applied it. */
+  | 'committed'
+  /**
+   * Memory changed meanwhile (another commit, a consumed note, a use of a
+   * pruned topic): run again.
+   */
+  | 'changed'
+  /** The lease is gone: drop the output. */
+  | 'lost'
+  /** The cloud refused it as it is; the same output would be refused again. */
+  | 'refused';
+
+/**
+ * A note the cloud holds as pending, by the file key it is read from: its ID
+ * and, for an import, the hash of the body the cloud holds.
+ */
+export interface LocalMemorySyncedNote {
+  noteId: string;
+  contentHash: string | null;
+}
+
+/**
+ * A consolidation run of a synced replica, held under the scope's lease
+ * (design §11, §12.1). The run reads the replica as today; only its apply
+ * differs: the plan becomes document changes committed to the cloud.
+ */
+export interface LocalMemorySyncedConsolidation {
+  /** The notes and imports the cloud holds as pending: only these may be consumed. */
+  consumable: ReadonlyMap<string, LocalMemorySyncedNote>;
+  /** The same listing read again now, to check a run's inputs before it commits. */
+  listConsumable(): Promise<ReadonlyMap<string, LocalMemorySyncedNote>>;
+  /** The scope's usage across devices, from the lease grant (design §15). */
+  usage: MemoryUsageAggregate;
+  /** False once the lease is lost or past its hard cap. */
+  shouldContinue(): boolean;
+  commit(request: {
+    changes: MemoryDocumentChange[];
+    consumedNoteIds: string[];
+    /**
+     * The topics `changes` deletes as unused. The cloud refuses the commit
+     * (`changed`) when any was used after the usage aggregate was read.
+     */
+    prunedTopicPaths: string[];
+    model: { modelId: string; thinkingLevel?: string } | null;
+    inputHash: string | null;
+    /**
+     * Whether everything the run read is still as it read it, checked just
+     * before the commit is sent; false drops the run as `changed`.
+     */
+    inputsCurrent: () => Promise<boolean>;
+  }): Promise<LocalMemorySyncedCommitOutcome>;
+}
+
 export interface LocalMemoryReplicaHooks {
   /**
    * Front matter a note saved into `scopeDir` carries (its device), or null
@@ -98,8 +156,25 @@ export interface LocalMemoryReplicaHooks {
   settleNoteChanges(scopeDir: string): Promise<void>;
   /** Drops a queued new note whose file could not be written. */
   dropNoteChange(scopeDir: string, noteId: string): Promise<void>;
-  /** After the write and its lock: the engine pushes soon. */
+  /** After a note or document write and its lock: the engine syncs soon. */
   noteChanged(scopeDir: string): void;
+  /** Uses counted in `usage.json`, added to the scope's usage deltas. */
+  usageRecorded(
+    scopeDir: string,
+    counts: ReadonlyMap<string, number>,
+    usedAt: string,
+  ): void;
+  /**
+   * Runs `run` holding the scope's consolidation lease. Resolves `run`'s
+   * result, or a cancelled one when the lease cannot be taken now.
+   */
+  runSyncedConsolidation(
+    scopeDir: string,
+    reason: 'scheduled' | 'manual',
+    run: (
+      consolidation: LocalMemorySyncedConsolidation,
+    ) => Promise<MemoryConsolidationResult>,
+  ): Promise<MemoryConsolidationResult>;
 }
 
 let hooks: LocalMemoryReplicaHooks | null = null;
@@ -112,6 +187,25 @@ export function setLocalMemoryReplicaHooks(
 
 export function localMemoryReplicaHooks(): LocalMemoryReplicaHooks | null {
   return hooks;
+}
+
+/**
+ * Rejects a write into a synced replica that stopped syncing for the account
+ * it was resolved as (a sign-out, an account switch or sync turned off while
+ * the write waited for the lock): written now, the change would stay on this
+ * device without the engine that commits or sends it. `accountId` is null
+ * for device-local memory, which needs no check.
+ */
+export function assertReplicaStillSyncing(target: {
+  dir: string;
+  accountId: string | null;
+}): void {
+  if (
+    target.accountId !== null &&
+    hooks?.replicaAccountId(target.dir) !== target.accountId
+  ) {
+    throw new LocalMemoryReplicaUnavailableError();
+  }
 }
 
 /**

@@ -6,8 +6,15 @@ import {
   MEMORY_SYNC_PROTOCOL_VERSION,
   MEMORY_SYNC_ROUTES,
   MemoryChangesPageSchema,
+  MemoryCommitRequestSchema,
+  MemoryCommitResponseSchema,
   MemoryDeviceRegisterRequestSchema,
   MemoryDeviceRegisterResponseSchema,
+  MemoryLeaseAcquireRequestSchema,
+  MemoryLeaseAcquireResponseSchema,
+  MemoryLeaseReleaseRequestSchema,
+  MemoryLeaseRenewRequestSchema,
+  MemoryLeaseRenewResponseSchema,
   MemoryNotesPushRequestSchema,
   MemoryNotesPushResponseSchema,
   MemoryScopeResolveRequestSchema,
@@ -15,9 +22,14 @@ import {
   MemorySnapshotPageSchema,
   MemorySyncErrorResponseSchema,
   MemorySyncSettingsResponseSchema,
+  MemoryUsagePushRequestSchema,
   type MemoryChangesPage,
+  type MemoryCommitRequest,
+  type MemoryCommitResponse,
   type MemoryDeviceRegisterRequest,
   type MemoryDeviceRegisterResponse,
+  type MemoryLeaseAcquireResponse,
+  type MemoryLeaseFence,
   type MemoryNotesPushRequest,
   type MemoryNotesPushResponse,
   type MemoryScopeRef,
@@ -25,7 +37,7 @@ import {
   type MemorySyncErrorCode,
   type MemorySyncErrorResponse,
 } from '@canopy/protocol/memory-sync';
-import type { z } from 'zod';
+import { z } from 'zod';
 
 /*
  * The memory sync HTTP API (design §7) as the engine calls it. The host
@@ -216,7 +228,35 @@ export interface MemorySyncTransport {
     request: MemoryNotesPushRequest,
     signal?: AbortSignal,
   ): Promise<MemorySyncResult<MemoryNotesPushResponse>>;
+  acquireLease(
+    scopeId: string,
+    reason: z.output<typeof MemoryLeaseAcquireRequestSchema>['reason'],
+    signal?: AbortSignal,
+  ): Promise<MemorySyncResult<MemoryLeaseAcquireResponse>>;
+  renewLease(
+    scopeId: string,
+    fence: MemoryLeaseFence,
+    signal?: AbortSignal,
+  ): Promise<MemorySyncResult<z.output<typeof MemoryLeaseRenewResponseSchema>>>;
+  releaseLease(
+    scopeId: string,
+    request: z.output<typeof MemoryLeaseReleaseRequestSchema>,
+    signal?: AbortSignal,
+  ): Promise<MemorySyncResult<unknown>>;
+  commit(
+    scopeId: string,
+    request: MemoryCommitRequest,
+    signal?: AbortSignal,
+  ): Promise<MemorySyncResult<MemoryCommitResponse>>;
+  pushUsage(
+    scopeId: string,
+    request: z.output<typeof MemoryUsagePushRequestSchema>,
+    signal?: AbortSignal,
+  ): Promise<MemorySyncResult<unknown>>;
 }
+
+/** A 204 has no body; any 2xx answer is the acknowledgement. */
+const NoContentSchema = z.unknown();
 
 interface CallSpec<Response> {
   method: MemorySyncHttpRequest['method'];
@@ -382,6 +422,74 @@ export function createMemorySyncTransport(
           responseSchema: MemoryNotesPushResponseSchema,
           write: true,
           timeoutMs: LONG_TIMEOUT_MS,
+        },
+        signal,
+      ),
+    acquireLease: (scopeId, reason, signal) =>
+      call(
+        {
+          method: 'POST',
+          path: MEMORY_SYNC_ROUTES.leaseAcquire(scopeId),
+          body: { reason },
+          requestSchema: MemoryLeaseAcquireRequestSchema,
+          responseSchema: MemoryLeaseAcquireResponseSchema,
+          write: true,
+        },
+        signal,
+      ),
+    renewLease: (scopeId, fence, signal) =>
+      call(
+        {
+          method: 'POST',
+          path: MEMORY_SYNC_ROUTES.leaseRenew(scopeId),
+          body: fence,
+          requestSchema: MemoryLeaseRenewRequestSchema,
+          responseSchema: MemoryLeaseRenewResponseSchema,
+          write: true,
+          accept: (value) =>
+            value.lease.leaseId === fence.leaseId &&
+            value.lease.epoch === fence.epoch,
+        },
+        signal,
+      ),
+    releaseLease: (scopeId, request, signal) =>
+      call(
+        {
+          method: 'POST',
+          path: MEMORY_SYNC_ROUTES.leaseRelease(scopeId),
+          body: request,
+          requestSchema: MemoryLeaseReleaseRequestSchema,
+          responseSchema: NoContentSchema,
+          write: true,
+        },
+        signal,
+      ),
+    commit: (scopeId, request, signal) =>
+      call(
+        {
+          method: 'POST',
+          path: MEMORY_SYNC_ROUTES.commits(scopeId),
+          body: request,
+          requestSchema: MemoryCommitRequestSchema,
+          responseSchema: MemoryCommitResponseSchema,
+          write: true,
+          maxResponseBytes: MEMORY_SYNC_LIMITS.revisionEntryOverheadMaxBytes,
+          timeoutMs: LONG_TIMEOUT_MS,
+          accept: (value) =>
+            value.revision.commitId === request.commitId &&
+            value.revision.parentRevision === request.baseRevision,
+        },
+        signal,
+      ),
+    pushUsage: (scopeId, request, signal) =>
+      call(
+        {
+          method: 'POST',
+          path: MEMORY_SYNC_ROUTES.usage(scopeId),
+          body: request,
+          requestSchema: MemoryUsagePushRequestSchema,
+          responseSchema: NoContentSchema,
+          write: true,
         },
         signal,
       ),

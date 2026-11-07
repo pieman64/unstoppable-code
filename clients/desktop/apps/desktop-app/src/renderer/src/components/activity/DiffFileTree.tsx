@@ -210,16 +210,6 @@ function buildTree(
   return root;
 }
 
-function FolderIcon(): JSX.Element {
-  return (
-    <CentralFolderIcon
-      width={14}
-      height={14}
-      className="shrink-0 fg-secondary"
-    />
-  );
-}
-
 interface FolderRowProps {
   node: TreeNode;
   depth: number;
@@ -243,11 +233,11 @@ function FolderRow({
       style={{ paddingLeft: `${depth * 16 + 8}px` }}
     >
       {expanded ? (
-        <ChevronDownIcon width={12} height={12} />
+        <ChevronDownIcon size="sm" />
       ) : (
-        <ChevronRightIcon width={12} height={12} />
+        <ChevronRightIcon size="sm" />
       )}
-      <FolderIcon />
+      <CentralFolderIcon size="sm" className="shrink-0 fg-secondary" />
       <span className="whitespace-nowrap">{node.name}</span>
       {!expanded && (
         <span className="ml-auto shrink-0 pl-2 text-3xs fg-secondary">
@@ -332,7 +322,7 @@ function FileNodeRow({
               title={`${badge.annotations} annotation${badge.annotations === 1 ? '' : 's'}`}
               className="flex items-center gap-0.5 text-3xs fg-info"
             >
-              <InfoIcon width={9} height={9} />
+              <InfoIcon size="sm" />
               {badge.annotations}
             </span>
           )}
@@ -342,7 +332,7 @@ function FileNodeRow({
               title={`${badge.comments} open comment${badge.comments === 1 ? '' : 's'}`}
               className="flex items-center gap-0.5 text-3xs fg-accent"
             >
-              <MessageIcon width={9} height={9} />
+              <MessageIcon size="sm" />
               {badge.comments}
             </span>
           )}
@@ -697,7 +687,7 @@ export function DiffFileTree({
           onClick={onToggleCollapsed}
           aria-label="Expand file tree"
         >
-          <AppCatalogChevronRightMediumIcon width="16" height="16" />
+          <AppCatalogChevronRightMediumIcon size="sm" />
         </Button>
       </div>
     );
@@ -732,7 +722,7 @@ export function DiffFileTree({
               onClick={onToggleCollapsed}
               aria-label="Collapse file tree"
             >
-              <AppCatalogChevronLeftMediumIcon width="14" height="14" />
+              <AppCatalogChevronLeftMediumIcon size="sm" />
             </Button>
           </div>
         )}

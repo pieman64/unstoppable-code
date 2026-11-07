@@ -23,6 +23,8 @@ import {
   WorkerGitCheckoutScopeSchema,
   WorkerGitWorktreeHealthScopeSchema,
   type CanopyCallerDescriptor,
+  type WorkerGitBranchListParams,
+  type WorkerGitBranchListResult,
   type WorkerGitCheckoutScope,
   type WorkerGitRemoteGetResult,
 } from '@canopy/protocol/canopy-core';
@@ -75,6 +77,26 @@ import {
   type WorkerGitDispatcher,
   type WorkerGitWriteDispatcher,
 } from './worker-git-adapter';
+import type { DaemonGitRoute, DaemonGitRouteRequest } from './daemon-git-route';
+
+interface GitBranchListRouteRequest extends DaemonGitRouteRequest {
+  readonly route: DaemonGitRoute;
+}
+
+function queryBranchList(
+  dispatcher: WorkerGitDispatcher,
+  caller: CanopyCallerDescriptor,
+  params: WorkerGitBranchListParams,
+  routing: GitBranchListRouteRequest | undefined,
+  requestedParams: WorkerGitBranchListParams = params,
+): Promise<WorkerGitBranchListResult> {
+  const options = { caller: gitReadCaller(caller) };
+  const direct = (): Promise<WorkerGitBranchListResult> =>
+    queryGitBranchListWithEffects(dispatcher, params, options);
+  return routing
+    ? routing.route.branchList(requestedParams, options, routing, direct)
+    : direct();
+}
 
 /*
  * The `worker.git.*` projections behind `worktree:list-branches`,
@@ -109,6 +131,7 @@ export async function listWorktreeBranches(
   dispatcher: WorkerGitDispatcher,
   caller: CanopyCallerDescriptor,
   request: ListBranchesRequest,
+  routing?: GitBranchListRouteRequest,
 ): Promise<ListBranchesResponse> {
   validateId(request.projectId, 'projectId');
   validateId(request.worktreeId, 'worktreeId');
@@ -126,8 +149,9 @@ export async function listWorktreeBranches(
     });
   }
   try {
-    const result = await queryGitBranchListWithEffects(
+    const result = await queryBranchList(
       dispatcher,
+      caller,
       {
         scope: {
           workspaceId: target.projectId,
@@ -136,7 +160,15 @@ export async function listWorktreeBranches(
         },
         repository: { kind: 'checkout' },
       },
-      { caller: gitReadCaller(caller) },
+      routing,
+      {
+        scope: {
+          workspaceId: request.projectId,
+          worktreeId: request.worktreeId,
+          ...(repoId === undefined ? {} : { repoId }),
+        },
+        repository: { kind: 'checkout' },
+      },
     );
     return { branches: result.branches, defaultBranch: result.defaultBranch };
   } catch (error) {
@@ -148,16 +180,18 @@ export async function listHomeBranchTargets(
   dispatcher: WorkerGitDispatcher,
   caller: CanopyCallerDescriptor,
   request: HomeBranchTargetsRequest,
+  routing?: GitBranchListRouteRequest,
 ): Promise<HomeBranchTargetsResponse> {
   validateId(request.workspaceId, 'workspaceId');
   try {
-    const result = await queryGitBranchListWithEffects(
+    const result = await queryBranchList(
       dispatcher,
+      caller,
       {
         scope: { workspaceId: request.workspaceId },
         repository: { kind: 'reference' },
       },
-      { caller: gitReadCaller(caller) },
+      routing,
     );
     return {
       supported: true,

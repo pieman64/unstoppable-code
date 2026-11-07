@@ -17,7 +17,7 @@
  * tab remains available in the main window.
  */
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
-import { TabBar, Heading } from '@canopy/ui-shared/components';
+import { Heading, Surface, TabBar } from '@canopy/ui-shared/components';
 import { useEffect, useState, type JSX } from 'react';
 import type {
   AppAdvisorWorkspaceSettingsFile,
@@ -304,8 +304,9 @@ export function AppAdvisorSettingsModal({
 
         {activeTab === 'advanced' && (
           <div className="space-y-4">
-            <div
-              className="rounded-lg p-4 ring-1 ring-inset ring-line-base"
+            <Surface
+              variant="outline"
+              padding="default"
               data-testid="app-advisor-settings-retention"
             >
               <div data-testid="app-advisor-settings-retention-card">
@@ -359,7 +360,7 @@ export function AppAdvisorSettingsModal({
                   onDaysChange={setAutoArchiveDays}
                 />
               </div>
-            </div>
+            </Surface>
           </div>
         )}
       </div>

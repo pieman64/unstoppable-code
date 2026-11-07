@@ -731,4 +731,41 @@ describe('Claude Code terminal mode on the worker.terminal port (CAN-5097)', () 
       response.sessionKey,
     );
   });
+  it('a settings restart tears down only an idle live terminal', async () => {
+    const idle = createService();
+    await idle.launch(LAUNCH);
+    await idle.restartForSettingsChange(TARGET);
+    expect(mockEngine.kills).toContainEqual([
+      'terminal-1',
+      { signal: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL },
+    ]);
+
+    mockEngine.reset();
+    const busy = createService();
+    const response = await busy.launch(LAUNCH);
+    await busy.markHookState({
+      sessionKey: response.sessionKey,
+      hookEventName: 'UserPromptSubmit',
+      hookPayload: { prompt: 'long running task' },
+    });
+    await busy.restartForSettingsChange(TARGET);
+    expect(mockEngine.kills).toEqual([]);
+  });
+  it('a relaunch takes the thinking level the core committed (review fix)', async () => {
+    // core.chat.update commits thinking to modelConfig only (CAN-4110).
+    mockReadChatTabsFile.mockResolvedValue({
+      tabs: [
+        {
+          id: 'chat-1',
+          thinkingLevel: 'high',
+          modelConfig: { thinkingLevel: 'low' },
+        },
+      ],
+    });
+    await createService().launch(LAUNCH);
+
+    expect(mockBuildClaudeTerminalLaunchConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ thinkingLevel: 'low' }),
+    );
+  });
 });

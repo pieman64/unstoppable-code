@@ -41,6 +41,7 @@ import {
   createCodexRuntimeService,
   CodexCapabilityStore,
   CodexHttpMcpProxyService,
+  type CodexMcpLauncherCommand,
   type CodexStdioMcpLaunchRoute,
   type CodexRunTurnRequest,
   type CodexRuntimeService,
@@ -92,6 +93,7 @@ import {
 } from '../../types';
 import { isGatewayOnlyModel } from '../../lib/gateway-model-availability';
 import { buildCodexCompatibleOllamaConfig } from '../ollama';
+import { spawnProviderProcessDirect } from '../provider-process/spawn';
 
 export interface CliRuntimeArgs {
   /** Execution-only host injection; construction acquires no resources. */
@@ -170,7 +172,15 @@ function cliOrgModelPolicyActiveFallback(): Promise<boolean> {
   return Promise.resolve(false);
 }
 
+export class CodexMcpLauncherUnavailableError extends Error {
+  constructor() {
+    super('The Codex MCP launcher is not configured.');
+    this.name = 'CodexMcpLauncherUnavailableError';
+  }
+}
+
 let cliCodexRuntimeService: CodexRuntimeService | null = null;
+let cliCodexMcpLauncher: CodexMcpLauncherCommand | null = null;
 let cliHttpMcpProxyService: CodexHttpMcpProxyService | null = null;
 let cliCodexShutdownPromise: Promise<void> | null = null;
 const cliCodexCapabilityStore = new CodexCapabilityStore(getCanopyDataDir());
@@ -194,13 +204,27 @@ export function createCliStdioMcpServerConfig(
   };
 }
 
+/** Set once by the CLI before any command runs (CAN-4117). */
+export function configureCliCodexRuntime(options: {
+  mcpLauncher: CodexMcpLauncherCommand;
+}): void {
+  if (cliCodexRuntimeService) return;
+  cliCodexMcpLauncher = {
+    command: options.mcpLauncher.command,
+    args: [...options.mcpLauncher.args],
+  };
+}
+
 function getCliCodexRuntimeService(): CodexRuntimeService {
+  const mcpLauncher = cliCodexMcpLauncher;
+  if (!mcpLauncher) throw new CodexMcpLauncherUnavailableError();
   cliCodexCapabilityGcPromise ??= cliCodexCapabilityStore
     .collectGarbage()
     .then(() => undefined)
     .catch(() => undefined);
   cliCodexRuntimeService ??= createCodexRuntimeService({
     capabilityStore: cliCodexCapabilityStore,
+    mcpLauncher,
   });
   return cliCodexRuntimeService;
 }
@@ -886,6 +910,7 @@ async function runCliCursorPrompt(
       {
         launch,
         target,
+        spawner: spawnProviderProcessDirect,
         baseEnvironment: getEnhancedEnv({
           includeCanopySecrets: false,
           environment: false,

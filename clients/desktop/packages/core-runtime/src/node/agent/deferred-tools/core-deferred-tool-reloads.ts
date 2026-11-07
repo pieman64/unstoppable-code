@@ -53,6 +53,9 @@ export const DEFERRED_TOOL_RELOAD_MESSAGES = {
   operationCancelled:
     'Deferred-tools reload was cancelled through its operation.',
   closed: 'Deferred-tools reload stopped because the runtime closed.',
+  materializationFailed:
+    'The enabled items could not be materialized for this chat.',
+  entryUnavailable: 'An enabled item is unavailable to this chat: ',
 } as const;
 
 export type DeferredToolReloadState =
@@ -115,6 +118,8 @@ export interface DeferredToolReloadSettlement {
   readonly outcome: 'enable_failed' | 'resume_failed' | 'cancelled';
   readonly message: string;
   readonly userMessageId: string | null;
+  /** True when the reload reached `interrupting`; false when it failed after acknowledgement but before. */
+  readonly interrupted: boolean;
 }
 
 /** Desktop effects. Each method is called at most once per reload. */
@@ -137,11 +142,44 @@ export interface DeferredToolReloadHost<P> {
     input: DeferredToolReloadResumeInput,
     signal: AbortSignal,
   ): Promise<void>;
-  /** Settle a turn this reload interrupted and did not resume. Must be idempotent per request id; never throws to the core. */
+  /**
+   * Settle the turn of an acknowledged reload that did not resume. Called for
+   * every acknowledged reload that fails or is cancelled, interrupted or not;
+   * the host decides whether its provider's turn needs settling. Must be
+   * idempotent per request id; never throws to the core.
+   */
   settleInterruptedTurn(
     reload: DeferredToolReloadSnapshot<P>,
     settlement: DeferredToolReloadSettlement,
   ): Promise<void>;
+  /** The scope to materialize, or null when this chat is not materialized. Absent: the reload's own scope. */
+  materializationScope?(
+    reload: DeferredToolReloadSnapshot<P>,
+  ): DeferredToolReloadScope | null;
+}
+
+export interface DeferredToolReloadMaterializationOutcome {
+  readonly state: 'ready' | 'failed';
+  readonly materializationId: string;
+  readonly unavailable: readonly { readonly entryId: string }[];
+}
+
+/** Structurally satisfied by CoreCatalogMaterializations (CAN-4123 PR6). */
+export interface DeferredToolReloadMaterializer {
+  materialize(request: {
+    scope: DeferredToolReloadScope;
+    origin: OperationOrigin;
+    owner: OperationOwner;
+  }): Promise<DeferredToolReloadMaterializationOutcome>;
+}
+
+export interface DeferredToolReloadWaits {
+  opened(scope: DeferredToolReloadScope, waitId: string): void;
+  resolved(
+    scope: DeferredToolReloadScope,
+    waitId: string,
+    resolution: 'answered' | 'cancelled' | 'expired',
+  ): void;
 }
 
 export interface DeferredToolReloadRequest<P> {
@@ -150,6 +188,8 @@ export interface DeferredToolReloadRequest<P> {
   readonly payload: P;
   readonly origin: OperationOrigin;
   readonly owner: OperationOwner;
+  /** Catalog entry ids the reload enables (CAN-4123 D4); checked against the materialization. */
+  readonly enabledEntryIds?: readonly string[];
 }
 export type DeferredToolReloadAdmission =
   | {
@@ -175,6 +215,10 @@ export interface CoreDeferredToolReloadsOptions<P> {
   onError?: (error: unknown, context: string) => void;
   resultDeliveryMs?: number;
   activeStageMs?: number;
+  /** CAN-4115 wait seam; a throw is reported to onError and ignored. */
+  waits?: DeferredToolReloadWaits | null;
+  /** CAN-4123: checked once after enablement, before resume. */
+  materializations?: DeferredToolReloadMaterializer | null;
 }
 
 interface ReloadRecord<P> {
@@ -183,6 +227,9 @@ interface ReloadRecord<P> {
   readonly scope: DeferredToolReloadScope;
   readonly toolCallId: string;
   readonly payload: P;
+  readonly origin: OperationOrigin;
+  readonly owner: OperationOwner;
+  readonly enabledEntryIds: readonly string[];
   state: DeferredToolReloadState;
   acknowledged: boolean;
   display: DeferredToolReloadDisplay;
@@ -193,6 +240,7 @@ interface ReloadRecord<P> {
   capture: DeferredToolReloadCapture | null;
   materializationId: string | null;
   readonly settleCallbacks: Array<() => void>;
+  waitOpen: boolean;
 }
 
 const MAX_RECENT_SETTLED = 64;
@@ -280,6 +328,9 @@ export class CoreDeferredToolReloads<P> {
       scope: request.scope,
       toolCallId: request.toolCallId,
       payload: request.payload,
+      origin: request.origin,
+      owner: request.owner,
+      enabledEntryIds: request.enabledEntryIds ?? [],
       state: 'result_pending',
       acknowledged: false,
       display: 'unknown',
@@ -290,6 +341,7 @@ export class CoreDeferredToolReloads<P> {
       capture: null,
       materializationId: null,
       settleCallbacks: [],
+      waitOpen: false,
     };
     this.byScope.set(key, record);
     let operationId: string;
@@ -343,6 +395,10 @@ export class CoreDeferredToolReloads<P> {
     record.display = this.readDisplay();
     this.arm(record, this.activeStageMs);
     this.emit(record, { kind: 'state', state: 'result_pending' });
+    if (!record.settled) {
+      this.callWaits((waits) => waits.opened(record.scope, record.requestId));
+      record.waitOpen = true;
+    }
     if (!record.settled) void this.drive(record);
     return true;
   }
@@ -462,6 +518,7 @@ export class CoreDeferredToolReloads<P> {
 
     this.arm(record, this.activeStageMs);
     for (const state of ['ui_prepared', 'interrupting', 'enabling'] as const) {
+      if (state === 'interrupting') this.resolveWait(record, 'answered');
       this.advance(record, state);
       this.emit(record, { kind: 'state', state });
       if (!stillCurrent()) return;
@@ -484,6 +541,53 @@ export class CoreDeferredToolReloads<P> {
       return;
     }
     if (!stillCurrent()) return;
+
+    const { materializations } = this.options;
+    const materializationScope = host.materializationScope
+      ? host.materializationScope(this.snapshot(record))
+      : record.scope;
+    if (materializations && materializationScope) {
+      let outcome: DeferredToolReloadMaterializationOutcome;
+      try {
+        outcome = await materializations.materialize({
+          scope: materializationScope,
+          origin: record.origin,
+          owner: record.owner,
+        });
+      } catch {
+        if (stillCurrent())
+          this.settle(
+            record,
+            'enable_failed',
+            DEFERRED_TOOL_RELOAD_MESSAGES.materializationFailed,
+          );
+        return;
+      }
+      if (!stillCurrent()) return;
+      if (outcome.state === 'failed') {
+        this.settle(
+          record,
+          'enable_failed',
+          DEFERRED_TOOL_RELOAD_MESSAGES.materializationFailed,
+        );
+        return;
+      }
+      const unavailable = new Set(
+        outcome.unavailable.map((entry) => entry.entryId),
+      );
+      const missing = record.enabledEntryIds.find((entryId) =>
+        unavailable.has(entryId),
+      );
+      if (missing !== undefined) {
+        this.settle(
+          record,
+          'enable_failed',
+          DEFERRED_TOOL_RELOAD_MESSAGES.entryUnavailable + missing,
+        );
+        return;
+      }
+      record.materializationId = outcome.materializationId;
+    }
 
     const { userMessageId } = capture;
     if (userMessageId === null) {
@@ -531,13 +635,14 @@ export class CoreDeferredToolReloads<P> {
     record: ReloadRecord<P>,
     outcome: DeferredToolReloadFailure | 'completed',
     message = '',
-    options: { local?: boolean } = {},
+    options: { local?: boolean; byTimer?: boolean } = {},
   ): boolean {
     if (record.settled) return false;
     record.settled = true;
     record.timer?.cancel();
     record.timer = null;
     if (outcome !== 'completed') record.controller.abort();
+    this.resolveWait(record, options.byTimer ? 'expired' : 'cancelled');
     if (outcome === 'completed') record.state = 'completed';
 
     const lifecycle: DeferredToolReloadLifecycle =
@@ -569,16 +674,15 @@ export class CoreDeferredToolReloads<P> {
 
     if (options.local) return true;
 
-    if (
-      outcome !== 'completed' &&
-      (record.stageReached === 'interrupting' ||
-        record.stageReached === 'enabling' ||
-        record.stageReached === 'resuming')
-    ) {
+    if (outcome !== 'completed' && record.acknowledged) {
       const settlement: DeferredToolReloadSettlement = {
         outcome: outcome === 'rejected' ? 'enable_failed' : outcome,
         message,
         userMessageId: record.capture?.userMessageId ?? null,
+        interrupted:
+          record.stageReached === 'interrupting' ||
+          record.stageReached === 'enabling' ||
+          record.stageReached === 'resuming',
       };
       void this.options.host
         .settleInterruptedTurn(this.snapshot(record), settlement)
@@ -643,8 +747,30 @@ export class CoreDeferredToolReloads<P> {
         record,
         record.state === 'resuming' ? 'resume_failed' : 'enable_failed',
         DEFERRED_TOOL_RELOAD_MESSAGES.timedOut,
+        { byTimer: true },
       );
     }, delayMs);
+  }
+
+  private resolveWait(
+    record: ReloadRecord<P>,
+    resolution: 'answered' | 'cancelled' | 'expired',
+  ): void {
+    if (!record.waitOpen) return;
+    record.waitOpen = false;
+    this.callWaits((waits) =>
+      waits.resolved(record.scope, record.requestId, resolution),
+    );
+  }
+
+  private callWaits(call: (waits: DeferredToolReloadWaits) => void): void {
+    const { waits } = this.options;
+    if (!waits) return;
+    try {
+      call(waits);
+    } catch (error) {
+      this.report(error, 'deferred tools reload wait');
+    }
   }
 
   private advance(

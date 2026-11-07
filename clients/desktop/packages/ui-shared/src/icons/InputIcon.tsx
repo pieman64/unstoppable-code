@@ -1,6 +1,9 @@
-import type { JSX, SVGProps } from 'react';
-import { InputIcon as AppCatalogInputIcon } from './AppIcons';
+import type { JSX } from 'react';
+import {
+  InputIcon as AppCatalogInputIcon,
+  type AppIconProps,
+} from './AppIcons';
 
-export function InputIcon(props: SVGProps<SVGSVGElement>): JSX.Element {
-  return <AppCatalogInputIcon width="14" height="14" {...props} />;
+export function InputIcon(props: AppIconProps): JSX.Element {
+  return <AppCatalogInputIcon size="sm" {...props} />;
 }

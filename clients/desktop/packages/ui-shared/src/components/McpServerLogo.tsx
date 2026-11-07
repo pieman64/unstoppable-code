@@ -160,8 +160,7 @@ export function McpServerLogo({
           </span>
         ) : (
           <McpServerIcon
-            width={Math.round(size * 0.7)}
-            height={Math.round(size * 0.7)}
+            size={Math.round(size * 0.7) > 16 ? 'xl' : 'sm'}
             className="shrink-0 fg-secondary"
             data-testid={fallbackTestId}
           />

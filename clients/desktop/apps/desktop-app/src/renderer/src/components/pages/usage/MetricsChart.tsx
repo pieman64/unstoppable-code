@@ -13,6 +13,7 @@ import {
   ErrorState,
   Heading,
   SettingsSelect,
+  Surface,
 } from '@canopy/ui-shared/components';
 import { ChartErrorBoundary } from '@/components/shared/ChartErrorBoundary';
 import type { PickerOption, TabSpec } from './tab-specs';
@@ -304,8 +305,10 @@ export function MetricsChart({
       distBuckets.every((b) => b.sampleCount === 0));
 
   return (
-    <div
-      className="rounded-lg border bg-card p-4 flex flex-col gap-3"
+    <Surface
+      variant="card"
+      padding="default"
+      gap="item"
       data-testid={`usage-chart-${spec.id}`}
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -367,12 +370,14 @@ export function MetricsChart({
           </DelayedLoadingPlaceholder>
         </div>
       ) : empty ? (
-        <div
-          className="flex items-center justify-center rounded border border-dashed px-4 text-xs fg-secondary"
-          style={{ height: CHART_HEIGHT_PX }}
-        >
-          No activity recorded in this window.
-        </div>
+        <Surface variant="dashed" size="small">
+          <div
+            className="flex items-center justify-center px-4 text-xs fg-secondary"
+            style={{ height: CHART_HEIGHT_PX }}
+          >
+            No activity recorded in this window.
+          </div>
+        </Surface>
       ) : mode === 'counts' ? (
         <ChartErrorBoundary
           label={`${title} counts chart`}
@@ -470,6 +475,6 @@ export function MetricsChart({
           </ul>
         </div>
       )}
-    </div>
+    </Surface>
   );
 }

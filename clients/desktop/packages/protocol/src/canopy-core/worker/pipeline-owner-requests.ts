@@ -1,0 +1,249 @@
+import { z } from 'zod';
+
+import { canopyJsonValueSchemaWithin } from '../errors';
+
+/*
+ * Pipeline owner requests (CAN-5095): what a model step asks the core that
+ * owns its run while it runs, raised on worker.pipeline.hostRequests beside
+ * host steps. They name a step's harness, model and route session, never a
+ * key. Capabilities in an answer (route URLs, Ledger route tokens) return
+ * host-locally in _execution.pipelineOwnerValues, never here. `cwd` is a host
+ * path: only the core on the worker's own host settles owner requests.
+ */
+
+const id = z.string().min(1).max(512);
+const model = z.string().min(1).max(512);
+const routeSessionId = z.string().min(1).max(3072);
+const text = (max: number): z.ZodString => z.string().max(max);
+const harness = z.enum(['claude', 'codex']);
+const hostPath = z
+  .string()
+  .min(1)
+  .max(4096)
+  .refine((value) => !value.includes('\0'));
+
+export const WORKER_PIPELINE_OWNER_ACTIONS = [
+  'owner.model.invocation',
+  'owner.model.routing',
+  'owner.model.release',
+  'owner.model.policy',
+  'owner.model.policyRefusal',
+  'owner.ledger.open',
+  'owner.ledger.subprocessTools',
+  'owner.ledger.close',
+  'owner.ledger.codexTools',
+  'owner.ledger.codexToolAuthorize',
+  'owner.ledger.codexToolExecute',
+  'owner.ledger.codexToolsDispose',
+] as const;
+export type WorkerPipelineOwnerAction =
+  (typeof WORKER_PIPELINE_OWNER_ACTIONS)[number];
+
+/** The largest tool call or tool response that crosses, as UTF-8 JSON. */
+export const WORKER_PIPELINE_OWNER_TOOL_JSON_MAX_BYTES = 1024 * 1024;
+
+const toolJson = canopyJsonValueSchemaWithin(
+  WORKER_PIPELINE_OWNER_TOOL_JSON_MAX_BYTES,
+);
+const toolSpec = canopyJsonValueSchemaWithin(65_536);
+
+const routingContext = {
+  allowNoNativeAuthFallback: z.boolean().optional(),
+  checkpointProxyQuota: z.boolean().optional(),
+  requiredAccountProxyConnectionId: id.optional(),
+};
+
+/** Members added to WorkerPipelineHostActionRequestSchema's union. */
+export const WORKER_PIPELINE_OWNER_REQUEST_MEMBERS = [
+  z.strictObject({
+    action: z.literal('owner.model.invocation'),
+    harness,
+    model: model.optional(),
+    routeSessionId: routeSessionId.optional(),
+    ...routingContext,
+  }),
+  z.strictObject({
+    action: z.literal('owner.model.routing'),
+    provider: harness,
+    model: model.optional(),
+    routeSessionId: routeSessionId.optional(),
+    ...routingContext,
+  }),
+  z.strictObject({
+    action: z.literal('owner.model.release'),
+    routeSessionId,
+  }),
+  z
+    .strictObject({
+      action: z.literal('owner.model.policy'),
+      check: z.enum(['blocked', 'active']),
+      modelId: model.optional(),
+    })
+    .refine(
+      (value) => (value.check === 'blocked') === (value.modelId !== undefined),
+    ),
+  z.strictObject({
+    action: z.literal('owner.model.policyRefusal'),
+    modelId: model,
+  }),
+  z.strictObject({
+    action: z.literal('owner.ledger.open'),
+    pipelineId: id.optional(),
+    pipelineName: text(1024).optional(),
+    physicalJobId: id,
+    logicalJobId: id,
+    jobName: text(1024),
+    stepId: id,
+    stepName: text(1024),
+    attempt: z.number().int().min(0),
+    iteration: z.number().int().min(0),
+    resumedAgentSessionId: id.optional(),
+    predecessorAgentSessionId: id.optional(),
+    checkpointId: id.optional(),
+    harness,
+    model: model.optional(),
+    thinkingEffort: text(64).optional(),
+    permissionPreset: z.string().min(1).max(64),
+  }),
+  z.strictObject({
+    action: z.literal('owner.ledger.subprocessTools'),
+    attemptKey: id,
+    cwd: hostPath,
+  }),
+  z.strictObject({
+    action: z.literal('owner.ledger.close'),
+    attemptKey: id,
+    outcome: z.discriminatedUnion('kind', [
+      z.strictObject({ kind: z.literal('settled') }),
+      z.strictObject({
+        kind: z.literal('paused'),
+        checkpointId: id,
+        pausedAt: z.iso.datetime({ offset: true }),
+      }),
+    ]),
+  }),
+  z.strictObject({
+    action: z.literal('owner.ledger.codexTools'),
+    attemptKey: id,
+    cwd: hostPath,
+  }),
+  z.strictObject({
+    action: z.literal('owner.ledger.codexToolAuthorize'),
+    toolsKey: id,
+    threadId: id,
+    call: toolJson,
+  }),
+  z.strictObject({
+    action: z.literal('owner.ledger.codexToolExecute'),
+    toolsKey: id,
+    threadId: id,
+    call: toolJson,
+  }),
+  z.strictObject({
+    action: z.literal('owner.ledger.codexToolsDispose'),
+    toolsKey: id,
+  }),
+] as const;
+
+/** What core answers an owner request with, apart from host-local values. */
+export const WorkerPipelineOwnerResultSchema = z.discriminatedUnion('kind', [
+  z.strictObject({
+    kind: z.literal('model.invocation'),
+    source: z.string().min(1).max(64),
+    harness: z.string().min(1).max(64),
+    runtimeModel: z.string().max(512),
+    aiCreditsRouted: z.boolean(),
+    modelGatewayRouted: z.boolean(),
+    accountProxyRouted: z.boolean(),
+    accountProxyConnectionId: id.optional(),
+  }),
+  z.strictObject({
+    kind: z.literal('model.routing'),
+    override: z
+      .strictObject({
+        provider: harness,
+        model,
+        modelGatewayRouted: z.boolean(),
+        accountProxyRouted: z.boolean(),
+        accountProxyConnectionId: id.optional(),
+      })
+      .nullable(),
+  }),
+  z.strictObject({ kind: z.literal('model.release') }),
+  z.strictObject({ kind: z.literal('model.policy'), answer: z.boolean() }),
+  z.strictObject({ kind: z.literal('model.policyRefusal') }),
+  z.strictObject({
+    kind: z.literal('ledger.open'),
+    attempt: z
+      .strictObject({
+        attemptKey: id,
+        agentSessionId: id,
+        instructions: text(65_536),
+      })
+      .nullable(),
+  }),
+  z.strictObject({ kind: z.literal('ledger.subprocessTools') }),
+  z.strictObject({ kind: z.literal('ledger.close') }),
+  z.strictObject({
+    kind: z.literal('ledger.codexTools'),
+    tools: z
+      .strictObject({
+        toolsKey: id,
+        instructions: text(65_536),
+        specs: z.array(toolSpec).max(64),
+        allowedTools: z
+          .array(
+            z.strictObject({
+              namespace: z.string().max(256).nullable(),
+              tool: z.string().min(1).max(256),
+            }),
+          )
+          .max(64),
+        timeoutMs: z.number().int().positive().max(86_400_000).optional(),
+      })
+      .nullable(),
+  }),
+  z.strictObject({
+    kind: z.literal('ledger.codexToolAuthorize'),
+    authorized: z.boolean(),
+  }),
+  z.strictObject({
+    kind: z.literal('ledger.codexToolExecute'),
+    response: toolJson,
+  }),
+  z.strictObject({ kind: z.literal('ledger.codexToolsDispose') }),
+]);
+export type WorkerPipelineOwnerResult = z.output<
+  typeof WorkerPipelineOwnerResultSchema
+>;
+export type WorkerPipelineOwnerRequest = z.output<
+  (typeof WORKER_PIPELINE_OWNER_REQUEST_MEMBERS)[number]
+>;
+
+/** The result kind each owner action is answered with. */
+export const WORKER_PIPELINE_OWNER_RESULT_KIND: Readonly<
+  Record<WorkerPipelineOwnerAction, WorkerPipelineOwnerResult['kind']>
+> = Object.freeze({
+  'owner.model.invocation': 'model.invocation',
+  'owner.model.routing': 'model.routing',
+  'owner.model.release': 'model.release',
+  'owner.model.policy': 'model.policy',
+  'owner.model.policyRefusal': 'model.policyRefusal',
+  'owner.ledger.open': 'ledger.open',
+  'owner.ledger.subprocessTools': 'ledger.subprocessTools',
+  'owner.ledger.close': 'ledger.close',
+  'owner.ledger.codexTools': 'ledger.codexTools',
+  'owner.ledger.codexToolAuthorize': 'ledger.codexToolAuthorize',
+  'owner.ledger.codexToolExecute': 'ledger.codexToolExecute',
+  'owner.ledger.codexToolsDispose': 'ledger.codexToolsDispose',
+});
+
+const OWNER_ACTIONS: ReadonlySet<string> = new Set(
+  WORKER_PIPELINE_OWNER_ACTIONS,
+);
+
+export function isWorkerPipelineOwnerAction(
+  action: string,
+): action is WorkerPipelineOwnerAction {
+  return OWNER_ACTIONS.has(action);
+}

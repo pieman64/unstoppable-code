@@ -302,6 +302,27 @@ export interface CodexRunTurnRequest extends Omit<
   ) => Promise<Record<string, unknown>>;
 }
 
+/**
+ * Whether `value` has the fields {@link DynamicToolCallParams} declares, so a
+ * tool call that crossed a boundary can reach a {@link CodexHostToolPolicy}
+ * (CAN-5095).
+ */
+export function isDynamicToolCallParams(
+  value: unknown,
+): value is DynamicToolCallParams {
+  if (typeof value !== 'object' || value === null || Array.isArray(value))
+    return false;
+  const call: Record<string, unknown> = { ...value };
+  return (
+    typeof call.threadId === 'string' &&
+    typeof call.turnId === 'string' &&
+    typeof call.callId === 'string' &&
+    (call.namespace === null || typeof call.namespace === 'string') &&
+    typeof call.tool === 'string' &&
+    'arguments' in call
+  );
+}
+
 export interface CodexHostToolPolicy {
   readonly allowedTools: readonly {
     readonly namespace: string | null;

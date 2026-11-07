@@ -11,7 +11,7 @@ import {
 } from 'react';
 import {
   ComposerActionList,
-  FloatingMenu,
+  ComposerSuggestionMenu,
   type ComposerActionRow,
 } from '@canopy/ui-shared';
 import { TaskIcon, TerminalIcon } from '@canopy/ui-shared/icons/AppIcons';
@@ -109,26 +109,15 @@ export function ScriptTypeaheadMenu({
 
   const { setActiveIndex, setHoveredIndex, dismiss } = typeahead;
   return (
-    <FloatingMenu
+    <ComposerSuggestionMenu
       open={open}
-      onOpenChange={(next) => {
-        if (!next) dismiss();
-      }}
+      onDismiss={dismiss}
       anchorRef={anchorRef}
-      {...(boundaryRef ? { outsidePressBoundaryRef: boundaryRef } : {})}
-      {...(composerRef ? { outsidePressClickThroughRef: composerRef } : {})}
+      {...(boundaryRef ? { boundaryRef } : {})}
+      {...(composerRef ? { composerRef } : {})}
       {...(returnFocusRef ? { returnFocusRef } : {})}
-      placement="top-left"
-      interaction="manual"
-      role="dialog"
       aria-label="Scripts"
       data-testid={`${dataTestIdPrefix}-menu`}
-      data-chat-cancel-shortcut-ignore
-      motion="none"
-      className="flex w-[var(--floating-menu-anchor-width)] flex-col overflow-hidden"
-      // Composer-attached, like the + menu: the composer's 20px corners.
-      style={{ borderRadius: 'var(--radius-2xl)', paddingBlock: 0 }}
-      heightLimit={280}
     >
       <ComposerActionList
         rows={rows}
@@ -139,6 +128,6 @@ export function ScriptTypeaheadMenu({
         dataTestIdPrefix={dataTestIdPrefix}
         blockRowsFromReplay
       />
-    </FloatingMenu>
+    </ComposerSuggestionMenu>
   );
 }

@@ -3,3 +3,5 @@
  * opens it instead of with the first screen.
  */
 export * from './feedback/FeedbackDialog';
+export * from './feedback/FeedbackReportDialogEntry';
+export * from './feedback/ReportThisAction';

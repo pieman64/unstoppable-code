@@ -8,6 +8,7 @@ import {
   ThinkingSpinner,
 } from '@canopy/ui-shared/components';
 import { WarningIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { Surface } from '@canopy/ui-shared/components';
 
 /**
  * Base-branch drift (REG-3025, moved from the desktop `PrStatusBar`): the
@@ -102,23 +103,25 @@ export function AlignBaseBranchConfirmation({
           Update the locally tracked base branch to match the open pull request?
           This changes the worktree metadata and does not modify the PR.
         </p>
-        <ul className="flex flex-col gap-1.5 rounded-md border bg-secondary/30 p-3 text-xs">
-          {drifts.map((drift) => (
-            <li key={drift.repoId} className="min-w-0">
-              {drifts.length > 1 && (
-                <span className="mr-1 font-semibold">{drift.repoName}:</span>
-              )}
-              <span className="font-mono fg-secondary">
-                {drift.localBaseBranch}
-              </span>
-              <span className="px-1.5 fg-quaternary">→</span>
-              <span className="font-mono font-medium">
-                {drift.prBaseBranch}
-              </span>
-              <span className="ml-1 fg-tertiary">PR #{drift.prNumber}</span>
-            </li>
-          ))}
-        </ul>
+        <Surface variant="group" size="small" padding="compact">
+          <ul className="flex flex-col gap-1.5 text-xs">
+            {drifts.map((drift) => (
+              <li key={drift.repoId} className="min-w-0">
+                {drifts.length > 1 && (
+                  <span className="mr-1 font-semibold">{drift.repoName}:</span>
+                )}
+                <span className="font-mono fg-secondary">
+                  {drift.localBaseBranch}
+                </span>
+                <span className="px-1.5 fg-quaternary">→</span>
+                <span className="font-mono font-medium">
+                  {drift.prBaseBranch}
+                </span>
+                <span className="ml-1 fg-tertiary">PR #{drift.prNumber}</span>
+              </li>
+            ))}
+          </ul>
+        </Surface>
       </div>
       <div className="flex items-center justify-end gap-2 border-t p-4">
         {!pending && (

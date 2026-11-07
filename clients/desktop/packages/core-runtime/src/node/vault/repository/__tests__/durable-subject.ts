@@ -51,7 +51,12 @@ function routedStore(
       return store.state;
     },
     writeHeader: (draft) => store.writeHeader(draft),
-    recordIntent: (draft) => store.recordIntent(draft),
+    recordIntent: (draft, migration) => store.recordIntent(draft, migration),
+    setIntentRunning: (sequence, running) =>
+      store.setIntentRunning(sequence, running),
+    isIntentRunning: (sequence) => store.isIntentRunning(sequence),
+    readMigrationJournal: () => store.readMigrationJournal(),
+    writeMigrationJournal: (update) => store.writeMigrationJournal(update),
     commitEntry: (sequence, draft) =>
       routed(sequence, () => store.commitEntry(sequence, draft)),
     commitTombstone: (sequence, revision) =>

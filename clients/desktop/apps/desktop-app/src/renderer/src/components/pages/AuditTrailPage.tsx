@@ -40,7 +40,7 @@ import {
   auditTrailProviderSelection,
   type AuditTrailProvider,
 } from '@/lib/auditTrailFilters';
-import { AgentProviderIcon } from '@/lib/providerUi';
+import { ModelProviderIcon } from '@canopy/ui-shared/components';
 import { getModelCatalogProviderLabel } from '@canopy/ui-shared';
 import { TranscriptViewer } from '@/components/chat/TranscriptViewer';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
@@ -52,6 +52,7 @@ import {
   ErrorState,
   Heading,
   StatusLabel,
+  Surface,
 } from '@canopy/ui-shared/components';
 import { useContentSearch } from '@/hooks/useContentSearch';
 import { createDomSearchExecutor } from '@/lib/dom-search-highlight';
@@ -385,96 +386,91 @@ function AuditEntryCard({
 }: AuditEntryCardProps): JSX.Element {
   const costLabel = formatAuditCostLabel(entry);
   return (
-    <div
-      data-testid={`audit-entry-${entry.id}`}
-      className="rounded-xl border bg-card/60 px-4 py-4"
-    >
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="space-y-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <AgentProviderIcon
-              provider={entry.provider}
-              width={14}
-              height={14}
-            />
-            <span className="text-s font-semibold fg-primary">
-              {displayLabelForEntry(entry)}
-            </span>
-            <span className="rounded-full bg-secondary px-2 py-0.5 text-2xs fg-secondary">
-              {entry.provider}
-            </span>
-            {entry.chatMode === 'terminal' && (
-              <span
-                className="rounded-full bg-secondary px-2 py-0.5 text-2xs fg-secondary"
-                data-testid={`audit-chat-mode-badge-${entry.id}`}
-              >
-                Terminal
+    <Surface variant="group" data-testid={`audit-entry-${entry.id}`}>
+      <div className="px-4 py-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <ModelProviderIcon provider={entry.provider} size="sm" />
+              <span className="text-s font-semibold fg-primary">
+                {displayLabelForEntry(entry)}
               </span>
-            )}
-            <span
-              className={`rounded-full px-2 py-0.5 text-2xs ${statusBadgeClass(entry.status)}`}
-            >
-              {formatStatus(entry.status)}
-            </span>
-            {entry.aiCreditsRouted && !entry.modelGatewayRouted && (
-              <Badge
-                data-testid={`audit-ai-credits-badge-${entry.id}`}
-                title="This run's LLM traffic was routed through your AI Credits."
+              <span className="rounded-full bg-secondary px-2 py-0.5 text-2xs fg-secondary">
+                {entry.provider}
+              </span>
+              {entry.chatMode === 'terminal' && (
+                <span
+                  className="rounded-full bg-secondary px-2 py-0.5 text-2xs fg-secondary"
+                  data-testid={`audit-chat-mode-badge-${entry.id}`}
+                >
+                  Terminal
+                </span>
+              )}
+              <span
+                className={`rounded-full px-2 py-0.5 text-2xs ${statusBadgeClass(entry.status)}`}
               >
-                AI Credits
-              </Badge>
+                {formatStatus(entry.status)}
+              </span>
+              {entry.aiCreditsRouted && !entry.modelGatewayRouted && (
+                <Badge
+                  data-testid={`audit-ai-credits-badge-${entry.id}`}
+                  title="This run's LLM traffic was routed through your AI Credits."
+                >
+                  AI Credits
+                </Badge>
+              )}
+            </div>
+            <p className="text-xs fg-secondary">
+              {new Date(entry.startedAt).toLocaleString()}
+              {entry.model ? ` · ${entry.model}` : ''}
+              {entry.repoLabel ? ` · ${entry.repoLabel}` : ''}
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            {entry.hasTranscript && (
+              <Button
+                size="compact"
+                onClick={onOpenTranscript}
+                data-testid={`audit-transcript-button-${entry.id}`}
+              >
+                Transcript
+              </Button>
+            )}
+            {entry.linkTarget && (
+              <Button
+                size="compact"
+                onClick={onInspect}
+                data-testid={`audit-inspect-button-${entry.id}`}
+              >
+                <AppCatalogExternalIcon size="sm" />
+                Inspect
+              </Button>
             )}
           </div>
-          <p className="text-xs fg-secondary">
-            {new Date(entry.startedAt).toLocaleString()}
-            {entry.model ? ` · ${entry.model}` : ''}
-            {entry.repoLabel ? ` · ${entry.repoLabel}` : ''}
+        </div>
+
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-4 text-xs fg-secondary">
+          <div className="flex flex-wrap gap-4">
+            <AuditDuration entry={entry} />
+            <span>{entry.messageCount} messages</span>
+            <span>{entry.toolUseCount} tool uses</span>
+            <span>{entry.subAgentCount} sub-agents</span>
+            {costLabel !== null ? (
+              <span data-testid={`audit-cost-${entry.id}`}>{costLabel}</span>
+            ) : null}
+          </div>
+          <span data-testid={`audit-tokens-${entry.id}`}>
+            {formatMetric(entry)}
+          </span>
+        </div>
+
+        {entry.error && (
+          <p className="mt-3">
+            <StatusLabel size="s">{entry.error}</StatusLabel>
           </p>
-        </div>
-        <div className="flex items-center gap-3">
-          {entry.hasTranscript && (
-            <Button
-              size="compact"
-              onClick={onOpenTranscript}
-              data-testid={`audit-transcript-button-${entry.id}`}
-            >
-              Transcript
-            </Button>
-          )}
-          {entry.linkTarget && (
-            <Button
-              size="compact"
-              onClick={onInspect}
-              data-testid={`audit-inspect-button-${entry.id}`}
-            >
-              <AppCatalogExternalIcon width="14" height="14" />
-              Inspect
-            </Button>
-          )}
-        </div>
+        )}
       </div>
-
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-4 text-xs fg-secondary">
-        <div className="flex flex-wrap gap-4">
-          <AuditDuration entry={entry} />
-          <span>{entry.messageCount} messages</span>
-          <span>{entry.toolUseCount} tool uses</span>
-          <span>{entry.subAgentCount} sub-agents</span>
-          {costLabel !== null ? (
-            <span data-testid={`audit-cost-${entry.id}`}>{costLabel}</span>
-          ) : null}
-        </div>
-        <span data-testid={`audit-tokens-${entry.id}`}>
-          {formatMetric(entry)}
-        </span>
-      </div>
-
-      {entry.error && (
-        <p className="mt-3">
-          <StatusLabel size="s">{entry.error}</StatusLabel>
-        </p>
-      )}
-    </div>
+    </Surface>
   );
 }
 
@@ -1121,9 +1117,10 @@ export function AuditTrailPage(): JSX.Element {
                       </p>
                     </div>
                     {transcriptResponse.injectedPrompts.map((prompt, index) => (
-                      <div
+                      <Surface
                         key={`${prompt.kind}-${String(index)}`}
-                        className="rounded-lg border bg-base/80 p-3"
+                        variant="group"
+                        padding="compact"
                       >
                         <p className="text-xs font-medium fg-primary">
                           {prompt.kind === 'system_prompt_append'
@@ -1143,7 +1140,7 @@ export function AuditTrailPage(): JSX.Element {
                         >
                           {prompt.text}
                         </pre>
-                      </div>
+                      </Surface>
                     ))}
                   </div>
                 )}
@@ -1180,18 +1177,20 @@ export function AuditTrailPage(): JSX.Element {
                     {transcriptResponse.lines.join('\n')}
                   </pre>
                 ) : (
-                  <div className="rounded-lg bg-base/30 px-3 py-2">
-                    <TranscriptViewer
-                      transcriptKey={`audit:${transcriptDisplayEntry.id}`}
-                      lines={transcriptResponse.lines}
-                      providerHint={transcriptResponse.providerHint}
-                      closeOpenTurnAtEnd={
-                        transcriptDisplayEntry.status !== 'running'
-                      }
-                      emptyMessage="No transcript available."
-                      dataTestId="audit-transcript-rich"
-                    />
-                  </div>
+                  <Surface variant="group">
+                    <div className="px-3 py-2">
+                      <TranscriptViewer
+                        transcriptKey={`audit:${transcriptDisplayEntry.id}`}
+                        lines={transcriptResponse.lines}
+                        providerHint={transcriptResponse.providerHint}
+                        closeOpenTurnAtEnd={
+                          transcriptDisplayEntry.status !== 'running'
+                        }
+                        emptyMessage="No transcript available."
+                        dataTestId="audit-transcript-rich"
+                      />
+                    </div>
+                  </Surface>
                 )}
               </div>
             </div>

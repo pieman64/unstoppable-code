@@ -46,6 +46,7 @@ import {
   sortCostChats,
   sortCostRuns,
 } from './cost-scope-model';
+import { Divider } from '@canopy/ui-shared/components';
 
 export interface CostScopeViewProps {
   readonly client: CostClient;
@@ -431,10 +432,7 @@ function CostScopeViewContent({
                     })}
                     {unattachedVisible && view.unattached !== undefined ? (
                       <>
-                        <div
-                          role="separator"
-                          className="mx-2 my-1 border-t border-line-base"
-                        />
+                        <Divider className="mx-2 my-1" />
                         <CostRow
                           name="Not tied to a chat"
                           amountLabel={formatCostTotal(view.unattached)}

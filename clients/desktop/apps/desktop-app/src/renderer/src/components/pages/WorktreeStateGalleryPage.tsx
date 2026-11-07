@@ -1,4 +1,4 @@
-import { Button, Heading } from '@canopy/ui-shared/components';
+import { Button, Heading, Surface } from '@canopy/ui-shared/components';
 import {
   Fragment,
   useCallback,
@@ -360,9 +360,10 @@ function LeadingPriorityCard(): JSX.Element {
   const dividerIndex = entries.indexOf(NOT_PROMOTED_DIVIDER_ID);
 
   return (
-    <div
+    <Surface
       data-testid="leading-priority-list"
-      className="rounded-xl border bg-base p-4"
+      variant="inset"
+      padding="default"
     >
       <div className="flex items-start justify-between gap-4">
         <div>
@@ -410,13 +411,17 @@ function LeadingPriorityCard(): JSX.Element {
                 if (id === NOT_PROMOTED_DIVIDER_ID) {
                   return (
                     <SortablePriorityRow key={id} id={id}>
-                      <div
+                      <Surface
+                        variant="dashed"
+                        size="small"
+                        className="cursor-default"
                         data-testid="priority-not-promoted-divider"
-                        className="flex cursor-default items-center gap-2 rounded-md border border-dashed px-3 py-2 text-xs font-normal fg-secondary"
                       >
-                        <ChevronDownIcon className="h-4 w-4" />
-                        Not promoted (subtitle only)
-                      </div>
+                        <div className="flex items-center gap-2 px-3 py-2 text-xs font-normal fg-secondary">
+                          <ChevronDownIcon size="sm" />
+                          Not promoted (subtitle only)
+                        </div>
+                      </Surface>
                     </SortablePriorityRow>
                   );
                 }
@@ -452,7 +457,7 @@ function LeadingPriorityCard(): JSX.Element {
           </SortableContext>
         </DndContext>
       </div>
-    </div>
+    </Surface>
   );
 }
 
@@ -495,9 +500,10 @@ export function WorktreeStateGalleryPage(): JSX.Element {
 
           <LeadingPriorityCard />
 
-          <div
+          <Surface
             data-testid="state-color-legend"
-            className="rounded-xl border bg-base p-4"
+            variant="inset"
+            padding="default"
           >
             <Heading level={2} variant="title">
               Color legend
@@ -520,13 +526,14 @@ export function WorktreeStateGalleryPage(): JSX.Element {
                 </li>
               ))}
             </ul>
-          </div>
+          </Surface>
 
           {WORKTREE_STATE_GALLERY_SECTIONS.map((section) => (
-            <div
+            <Surface
               key={section.title}
               data-testid={`gallery-section-${sectionSlug(section.title)}`}
-              className="rounded-xl border bg-base p-4"
+              variant="inset"
+              padding="default"
             >
               <Heading level={2} variant="title">
                 {section.title}
@@ -549,7 +556,7 @@ export function WorktreeStateGalleryPage(): JSX.Element {
                   />
                 ))}
               </div>
-            </div>
+            </Surface>
           ))}
         </div>
       </div>

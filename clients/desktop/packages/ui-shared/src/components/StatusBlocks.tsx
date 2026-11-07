@@ -39,6 +39,7 @@ export function ErrorBanner({
   retrying = false,
   testId,
   details,
+  errorRecordingDisabled = false,
 }: {
   className?: string;
   error: string | null | undefined;
@@ -74,6 +75,11 @@ export function ErrorBanner({
    * action; the banner stays, so nothing blanks.
    */
   retrying?: boolean;
+  /**
+   * For a boundary's own fallback, whose caught error is already reported, so
+   * the crash does not also record as a surfaced banner.
+   */
+  errorRecordingDisabled?: boolean;
 }): JSX.Element | null {
   if (!error) return null;
   const retry = onRetry ? (
@@ -122,6 +128,8 @@ export function ErrorBanner({
         className={className}
         actions={actions}
         data-testid={testId}
+        errorRecordingChokePoint="banner"
+        errorRecordingDisabled={errorRecordingDisabled}
       >
         <span className={textClass}>{trimmed}</span>
       </Notice>
@@ -135,6 +143,8 @@ export function ErrorBanner({
       className={className}
       actions={actions}
       data-testid={testId}
+      errorRecordingChokePoint="banner"
+      errorRecordingDisabled={errorRecordingDisabled}
     >
       <span className={textClass}>{message}</span>
     </Notice>
@@ -173,6 +183,7 @@ export function ErrorState({
   testId,
   retryTestId,
   details,
+  secondaryAction,
 }: {
   /** One sentence: `Couldn't load workflows.` */
   message: ReactNode;
@@ -181,6 +192,8 @@ export function ErrorState({
    * `Copy details` action beside `Try again` that copies it for support.
    */
   details?: string;
+  /** A quiet action after `Try again`, which stays first and most prominent. */
+  secondaryAction?: ReactNode;
   /** Shows `Try again`. Omit when trying again can't fix it. */
   onRetry?: () => void;
   retrying?: boolean;
@@ -209,7 +222,7 @@ export function ErrorState({
           </span>
         }
         action={
-          onRetry || details ? (
+          onRetry || details || secondaryAction ? (
             <div className="flex items-center justify-center gap-2">
               {details ? <CopyDetailsButton details={details} /> : null}
               {onRetry ? (
@@ -224,6 +237,7 @@ export function ErrorState({
                   {TRY_AGAIN_LABEL}
                 </LoadingButton>
               ) : null}
+              {secondaryAction}
             </div>
           ) : undefined
         }

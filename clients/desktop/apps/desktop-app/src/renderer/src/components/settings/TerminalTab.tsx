@@ -37,6 +37,7 @@ import {
   Button,
   Notice,
   SettingsSelect,
+  Surface,
   ToggleSwitch,
 } from '@canopy/ui-shared/components';
 import {
@@ -465,9 +466,15 @@ export function TerminalTab(): JSX.Element {
               data-testid={`terminal-preset-${preset.id}`}
               className="flex min-h-10 items-center gap-3"
             >
-              <div className="flex min-h-8 min-w-8 shrink-0 items-center justify-center rounded-md bg-muted px-1 fg-secondary">
-                {presetIconPreview(preset)}
-              </div>
+              <Surface
+                variant="group"
+                size="small"
+                className="min-w-8 shrink-0"
+              >
+                <div className="flex items-center justify-center min-h-8 px-1 fg-secondary">
+                  {presetIconPreview(preset)}
+                </div>
+              </Surface>
               <div className="min-w-0 flex-1">
                 {/* The name flips the preset's switch; the command below stays
                     selectable text. */}

@@ -37,8 +37,7 @@ export function BranchNotRenamedWarning({
         <div className="flex items-start gap-3">
           <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-warning-subtle">
             <AppCatalogWarningIcon
-              width="18"
-              height="18"
+              size="xl"
               className="fg-warning"
               aria-hidden="true"
             />

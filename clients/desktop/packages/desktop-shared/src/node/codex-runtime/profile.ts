@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { codexProfileDigest } from './profile-digest-key';
 
 export type CodexSpawnEnvironmentPolicy = 'inherit' | 'restricted';
 
@@ -131,9 +132,7 @@ export function resolveCodexSpawnProfile(
         : (request.environment ?? {}),
     ).sort(([left], [right]) => left.localeCompare(right)),
   );
-  const environmentDigest = createHash('sha256')
-    .update(JSON.stringify(environment))
-    .digest('hex');
+  const environmentDigest = codexProfileDigest(JSON.stringify(environment));
   const identity = {
     ...(environmentPolicy === 'restricted' ? { environmentPolicy } : {}),
     binaryVersion: request.binaryVersion ?? 'bundled',

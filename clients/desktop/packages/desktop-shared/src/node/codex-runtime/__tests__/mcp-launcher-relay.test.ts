@@ -46,6 +46,7 @@ async function launchOnce(
   return { code, output: Buffer.concat(chunks).toString('utf8') };
 }
 
+// The launcher reaches the broker's launch route, /^\/launch\/([a-f0-9]{32}\.[a-f0-9]{48})$/.
 it('a launcher exit leaves the broker serving the next launch', async () => {
   if (!broker) throw new Error('broker missing');
   const route = await broker.registerRoute({

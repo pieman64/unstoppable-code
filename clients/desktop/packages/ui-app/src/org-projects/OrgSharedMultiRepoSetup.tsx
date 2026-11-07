@@ -24,7 +24,12 @@ import type {
   SharedMultiRepoEntryPoint,
   SharedMultiRepoSelection,
 } from '@canopy/protocol/org-projects';
-import { Button, Notice } from '@canopy/ui-shared/components';
+import {
+  Button,
+  LoadingSpinner,
+  Notice,
+  Stack,
+} from '@canopy/ui-shared/components';
 import { MultiRepoProjectSetupFields } from '@canopy/ui-shared/components/MultiRepoProjectSetupFields';
 
 export interface OrgSharedMultiRepoSetupProps {
@@ -142,6 +147,7 @@ function ConnectedSetup({
     }
   }, [state, selected.length, sources]);
   const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [catalogSettled, setCatalogSettled] = useState(false);
   const [navigationError, setNavigationError] = useState(false);
   const [opening, setOpening] = useState(false);
   const selectionKey = sources
@@ -178,6 +184,7 @@ function ConnectedSetup({
   }, [store]);
   const organizationId =
     state.preview?.organizationId ?? state.status?.organizationId;
+  const submitted = state.submitted !== null || state.status !== null;
   useEffect(() => {
     if (!organizationId) return;
     let current = true;
@@ -216,11 +223,35 @@ function ConnectedSetup({
               ? error.message
               : 'Couldn’t load organization projects.',
           );
+      })
+      .finally(() => {
+        if (current) setCatalogSettled(true);
       });
     return (): void => {
       current = false;
+      // Reset from the cleanup so the next read reports its own loading.
+      setCatalogSettled(false);
     };
   }, [client, organizationId]);
+  // Separate from the store's `busy`, which also covers submitting. The form
+  // is loading from its first render, before the first prepare has started.
+  const preparing = state.selection === null && !submitted;
+  const catalogLoading = organizationId !== undefined && !catalogSettled;
+  const preparationFailed =
+    !submitted &&
+    state.selection !== null &&
+    state.preview === null &&
+    !state.busy;
+  const errorMessage = preparationFailed
+    ? 'Couldn’t load repositories. Check your sign-in, then use Refresh repositories.'
+    : state.error === 'Enter a project name.' ||
+        state.error === 'Use at most 256 characters for the project name.'
+      ? state.error
+      : state.error || state.recoveryError || catalogError
+        ? submitted
+          ? 'Couldn’t update project setup. Try again.'
+          : 'Couldn’t load repositories or saved progress. Check your sign-in, then use Refresh repositories.'
+        : null;
   const attemptKey =
     state.submitted?.request.creationKey ?? state.status?.creationKey;
   const terminal =
@@ -234,7 +265,6 @@ function ConnectedSetup({
     }, 2000);
     return (): void => clearInterval(timer);
   }, [store, attemptKey, terminal]);
-  const submitted = state.submitted !== null || state.status !== null;
   useEffect(() => {
     if (submitted && state.status?.state !== 'ready') onSubmitted?.();
   }, [submitted, state.status?.state, onSubmitted]);
@@ -335,42 +365,52 @@ function ConnectedSetup({
     openedCreation.current = attemptKey;
     void Promise.resolve().then(open);
   }, [attemptKey, ready, onReady, open]);
+  const recentAttempts = state.recent.filter(
+    (attempt) => !organizationId || attempt.organizationId === organizationId,
+  );
   return (
-    <section className="space-y-4" data-testid="org-shared-multi-repo-setup">
+    <Stack
+      as="section"
+      gap="group"
+      className="min-h-0 min-w-0 flex-1 overflow-y-auto"
+      data-testid="org-shared-multi-repo-setup"
+    >
       <p className="text-s fg-secondary">
         Create a new project in {organizationName ?? 'the source organization'}.
         Your original projects and their work stay unchanged.
       </p>
       <p className="text-xs fg-secondary">Visibility: Organization</p>
-      <MultiRepoProjectSetupFields
-        name={state.name}
-        onNameChange={(name) => state.setName(name)}
-        options={options}
-        optionsLabel="Repositories"
-        onOpenRepository={openExternalUrl}
-        onToggle={(id) => {
-          if (submitted || state.busy) return;
-          const next = selected.includes(id)
-            ? selected.filter((value) => value !== id)
-            : [...selected, id];
-          setSelected(next);
-          void state.prepare({
-            mode:
-              mode === 'add-repositories' && next.length === 0
-                ? 'convert'
-                : mode,
-            selections: [
-              ...sources.map(({ kind, id }) => ({ kind, id })),
-              ...next.map(
-                (id): SharedMultiRepoSelection => ({ kind: 'project', id }),
-              ),
-            ],
-          });
-        }}
-        disabled={submitted || state.busy}
-        loading={state.busy}
-        error={state.error ?? state.recoveryError ?? catalogError}
-      />
+      <div className="flex min-h-52 min-w-0 flex-1 flex-col">
+        <MultiRepoProjectSetupFields
+          name={state.name}
+          onNameChange={(name) => state.setName(name)}
+          options={options}
+          optionsLabel="Repositories"
+          onOpenRepository={openExternalUrl}
+          onToggle={(id) => {
+            if (submitted || state.busy) return;
+            const next = selected.includes(id)
+              ? selected.filter((value) => value !== id)
+              : [...selected, id];
+            setSelected(next);
+            void state.prepare({
+              mode:
+                mode === 'add-repositories' && next.length === 0
+                  ? 'convert'
+                  : mode,
+              selections: [
+                ...sources.map(({ kind, id }) => ({ kind, id })),
+                ...next.map(
+                  (id): SharedMultiRepoSelection => ({ kind: 'project', id }),
+                ),
+              ],
+            });
+          }}
+          disabled={submitted || state.busy}
+          loading={state.busy || preparing || catalogLoading}
+        />
+      </div>
+      {errorMessage && <Notice intent="destructive">{errorMessage}</Notice>}
       {options.length > 0 && (
         <div className="space-y-1 text-s fg-secondary">
           <p>
@@ -394,10 +434,20 @@ function ConnectedSetup({
         </p>
       )}
       {submitted && (
-        <p role="status" className="text-s fg-secondary">
-          {state.status?.state === 'rejected'
-            ? refusalText(state.status.errorCode)
-            : statusText(state.status?.state)}
+        <p role="status" className="flex items-start gap-2 text-s fg-secondary">
+          {(state.status?.state === 'creating' ||
+            state.status?.state === 'created' ||
+            state.status?.state === 'setting-up') && (
+            <LoadingSpinner decorative className="mt-0.5 shrink-0" />
+          )}
+          <span>
+            {state.status?.state === 'rejected'
+              ? refusalText(state.status.errorCode)
+              : statusText(state.status?.state)}
+            {(state.status?.state === 'created' ||
+              state.status?.state === 'setting-up') &&
+              ' You can close this view while setup continues.'}
+          </span>
         </p>
       )}
       {navigationError && (
@@ -405,7 +455,7 @@ function ConnectedSetup({
           Your project is ready. Open it from Projects.
         </Notice>
       )}
-      <div className="flex flex-wrap gap-2">
+      <div className="flex shrink-0 flex-wrap gap-2">
         {onClose && (
           <Button size="compact" variant="secondary" onClick={onClose}>
             {submitted ? 'Close' : 'Cancel'}
@@ -471,33 +521,33 @@ function ConnectedSetup({
           </Button>
         )}
       </div>
-      {!submitted &&
-        state.recent
-          .filter(
-            (attempt) =>
-              !organizationId || attempt.organizationId === organizationId,
-          )
-          .map((attempt) => (
-            <div
-              key={attempt.creationKey}
-              className="space-y-1 text-s fg-secondary"
-            >
-              <p>
-                Recent shared project (
-                {new Date(attempt.updatedAt).toLocaleString()}):{' '}
-                {statusText(attempt.state)}
-              </p>
-              <Button
-                size="compact"
-                variant="secondary"
-                disabled={state.busy}
-                onClick={() => state.observe(attempt)}
+      {!submitted && recentAttempts.length > 0 && (
+        <div className="max-h-32 min-h-0 shrink-0 overflow-y-auto">
+          <Stack gap="group">
+            {recentAttempts.map((attempt) => (
+              <div
+                key={attempt.creationKey}
+                className="space-y-1 text-s fg-secondary"
               >
-                Check saved progress
-              </Button>
-            </div>
-          ))}
-    </section>
+                <p>
+                  Recent shared project (
+                  {new Date(attempt.updatedAt).toLocaleString()}):{' '}
+                  {statusText(attempt.state)}
+                </p>
+                <Button
+                  size="compact"
+                  variant="secondary"
+                  disabled={state.busy}
+                  onClick={() => state.observe(attempt)}
+                >
+                  Check saved progress
+                </Button>
+              </div>
+            ))}
+          </Stack>
+        </div>
+      )}
+    </Stack>
   );
 }
 

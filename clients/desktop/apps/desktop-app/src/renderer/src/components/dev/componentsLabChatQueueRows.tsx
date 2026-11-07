@@ -4,12 +4,13 @@ import {
   AgentSentMarker,
   Button,
   QueuedMessageActions,
-  QueuedMessageReason,
-  QueuedMessageRow,
-  QueuedMessageSettingsHeldWarning,
   type QueuedMessageActionsProps,
   type QueuedMessageAttachment,
+  QueuedMessageReason,
+  QueuedMessageRow,
   type QueuedMessageRowProps,
+  QueuedMessageSettingsHeldWarning,
+  Surface,
 } from '@canopy/ui-shared/components';
 import { ArrowUpIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
@@ -595,10 +596,12 @@ export function QueuedMessageActionsSpecimen(): JSX.Element {
             </BubbleFrame>
           </SpecimenCell>
           <SpecimenCell label="Nothing to show: no callbacks, renders nothing">
-            <div className="min-h-7 w-full rounded-md bg-secondary px-2 py-1 text-2xs fg-tertiary">
-              <QueuedMessageActions placement="corner" />
-              (empty)
-            </div>
+            <Surface variant="group" size="small" className="w-full">
+              <div className="min-h-7 px-2 py-1 text-2xs fg-tertiary">
+                <QueuedMessageActions placement="corner" />
+                (empty)
+              </div>
+            </Surface>
           </SpecimenCell>
         </SpecimenGrid>
       </SpecimenPanel>

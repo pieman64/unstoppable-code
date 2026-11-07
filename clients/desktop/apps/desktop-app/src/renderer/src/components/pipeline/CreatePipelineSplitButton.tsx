@@ -69,7 +69,7 @@ export function CreatePipelineSplitButton({
         data-testid={`${testIdPrefix}-menu`}
         className="flex items-center rounded-r-full pl-1.5 pr-2 transition-colors hover:opacity-90 focus-ring disabled:cursor-default disabled:opacity-70"
       >
-        <ChevronDownIcon width={16} height={16} aria-hidden="true" />
+        <ChevronDownIcon size="sm" aria-hidden="true" />
       </button>
       <FloatingMenu
         id={menuId}

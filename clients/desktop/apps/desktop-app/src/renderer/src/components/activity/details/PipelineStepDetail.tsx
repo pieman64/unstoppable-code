@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
-import { Notice } from '@canopy/ui-shared/components';
+import { Notice, Surface } from '@canopy/ui-shared/components';
 import type { AgentProviderType } from '@canopy/desktop-shared/types';
 import type {
   NormalizedStep,
@@ -497,28 +497,30 @@ export function PipelineStepDetail({
               Loading output…
             </div>
           ) : logViewMode === 'rich' && richTranscriptAvailable ? (
-            <div
-              ref={richContentRef}
-              className="min-h-40 overflow-auto rounded-lg bg-base/80 px-3 py-2"
-            >
-              <TranscriptViewer
-                transcriptKey={[
-                  executionId,
-                  jobId,
-                  stepDef.id,
-                  String(attempt),
-                  String(iteration),
-                ].join(':')}
-                lines={richSourceLines}
-                providerHint={stepResult?.agent_provider}
-                closeOpenTurnAtEnd={!isStepRunning}
-                emptyMessage={
-                  isStepRunning
-                    ? 'Waiting for agent output…'
-                    : 'No transcript available.'
-                }
-              />
-            </div>
+            <Surface variant="group" className="overflow-hidden">
+              <div
+                className="min-h-40 overflow-auto px-3 py-2"
+                ref={richContentRef}
+              >
+                <TranscriptViewer
+                  transcriptKey={[
+                    executionId,
+                    jobId,
+                    stepDef.id,
+                    String(attempt),
+                    String(iteration),
+                  ].join(':')}
+                  lines={richSourceLines}
+                  providerHint={stepResult?.agent_provider}
+                  closeOpenTurnAtEnd={!isStepRunning}
+                  emptyMessage={
+                    isStepRunning
+                      ? 'Waiting for agent output…'
+                      : 'No transcript available.'
+                  }
+                />
+              </div>
+            </Surface>
           ) : displayLines.length === 0 ? (
             <div className="flex min-h-40 items-center justify-center text-s fg-secondary">
               No output available.

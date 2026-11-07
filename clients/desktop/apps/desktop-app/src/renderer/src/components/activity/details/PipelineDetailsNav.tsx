@@ -26,10 +26,10 @@ import {
 import { pipelineStatusGlyphState } from '../utils';
 import { ChevronIcon } from '@canopy/ui-shared/icons';
 import { isPipelineDetailsDefinitionSelection } from './pipelineDetailTypes';
-import { FilterIcon } from '../../shared/icons/FilterIcon';
 import {
   FileIcon as AppCatalogFileIcon,
   BoardIcon as AppCatalogBoardIcon,
+  FilterIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 
 /**
@@ -90,28 +90,6 @@ function SelectionMarker(): JSX.Element {
 /** Selected and unselected row surfaces, shared by every selectable row. */
 const SELECTED_ROW_CLASS = 'bg-fg-primary/[0.04] font-semibold';
 const UNSELECTED_ROW_CLASS = 'hover:bg-fg-primary/[0.04]';
-
-function DefinitionIcon(): JSX.Element {
-  return (
-    <AppCatalogFileIcon
-      width="14"
-      height="14"
-      aria-hidden="true"
-      className="shrink-0"
-    />
-  );
-}
-
-function OverviewIcon(): JSX.Element {
-  return (
-    <AppCatalogBoardIcon
-      width="14"
-      height="14"
-      aria-hidden="true"
-      className="shrink-0"
-    />
-  );
-}
 
 export function PipelineDetailsNav({
   id,
@@ -178,7 +156,11 @@ export function PipelineDetailsNav({
         onClick={(): void => onSelect(null)}
         data-testid="pipeline-details-nav-summary"
       >
-        <OverviewIcon />
+        <AppCatalogBoardIcon
+          size="sm"
+          aria-hidden="true"
+          className="shrink-0"
+        />
         Summary
         {selected === null && <SelectionMarker />}
       </button>
@@ -193,7 +175,7 @@ export function PipelineDetailsNav({
           onClick={(): void => onSelect({ entry: 'cost' })}
           data-testid="pipeline-job-list-cost"
         >
-          <CostIcon width={14} height={14} className="shrink-0" />
+          <CostIcon size="sm" className="shrink-0" />
           <span className="min-w-0 flex-1">Cost</span>
           <span className="shrink-0 tabular-nums text-2xs fg-secondary">
             {costEntry.amount}
@@ -211,7 +193,7 @@ export function PipelineDetailsNav({
         onClick={(): void => onSelect({ entry: 'definition' })}
         data-testid="pipeline-job-list-definition"
       >
-        <DefinitionIcon />
+        <AppCatalogFileIcon size="sm" aria-hidden="true" className="shrink-0" />
         Definition used
         {definitionSelected && <SelectionMarker />}
       </button>
@@ -470,7 +452,11 @@ function PipelineStatusFilter({
         aria-expanded={open}
         aria-haspopup="true"
       >
-        <FilterIcon active={active} />
+        <FilterIcon
+          size="sm"
+          fill={active ? 'currentColor' : 'none'}
+          aria-hidden="true"
+        />
       </Button>
       <FloatingPickerMenu
         open={open}

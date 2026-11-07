@@ -19,6 +19,7 @@ import {
 } from './dayWeekLayout';
 import { NowIndicator } from './NowIndicator';
 import { RichHoverTooltip } from '@/components/shared/RichHoverTooltip';
+import { Surface } from '@canopy/ui-shared/components';
 
 const DAY_HEIGHT = 24 * HOUR_PX;
 const HOURS: readonly number[] = Array.from(
@@ -157,7 +158,7 @@ export function DayWeekTimeGrid({
   }, [groups, dayKeySignature]);
 
   return (
-    <div className="flex flex-col overflow-hidden rounded-lg border">
+    <Surface variant="outline" className="flex flex-col overflow-hidden">
       {/* Day headers */}
       <div className="flex border-b bg-fg-primary/[0.02]">
         <div className="w-14 shrink-0" />
@@ -229,6 +230,6 @@ export function DayWeekTimeGrid({
           })}
         </div>
       </div>
-    </div>
+    </Surface>
   );
 }

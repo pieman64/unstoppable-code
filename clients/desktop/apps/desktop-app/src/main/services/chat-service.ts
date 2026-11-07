@@ -1,5 +1,6 @@
 import { isPlanFileWrite } from '@canopy/protocol/plan-tool-input';
 import { latchFirstTaskSubmitted } from '../notifications/campaigns/activation-signals';
+import { requestAppAdvisorPresentation } from '../app-advisor/advisor-presentation';
 import {
   readAutoResumeMetadata,
   type AutoResumeMetadata,
@@ -3430,6 +3431,8 @@ async function sendWorktreeChatMessageNow(
         trustedAgentRequest,
       );
     }
+    // A terminal chat's prompt is typed by the App Advisor window's terminal,
+    // so that window is a precondition here, not just a presentation.
     await appAdvisorSurfaces?.ensureAppAdvisorWindow();
     if (implementsPlan) {
       const { MAX_TERMINAL_WRITE_BYTES, TerminalServiceError } =
@@ -3859,7 +3862,7 @@ async function sendWorktreeChatMessageNow(
     }
     return { ok: true, chatId };
   }
-  await appAdvisorSurfaces?.ensureAppAdvisorWindow();
+  requestAppAdvisorPresentation(appAdvisorSurfaces, 'queued_send');
   // A portal send is the user's own, so the new chat comes forward unless
   // the caller asked to keep the current tab. Chats nobody asked for (hooks,
   // scheduled automations) go through ChatStateService.ensureChatForTrustedSend,

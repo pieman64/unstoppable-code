@@ -58,8 +58,6 @@ const FIELD_FILL_CLASS: Record<SearchFieldSize, string> = {
   lg: 'bg-transparent',
 };
 
-const ICON_SIZE: Record<SearchFieldSize, number> = { sm: 14, md: 16, lg: 16 };
-
 /** Clear's glyph: 12px in a page search row's field, 14px elsewhere. */
 const CLEAR_ICON_SIZE: Record<SearchFieldSize, number> = {
   sm: 14,
@@ -221,8 +219,7 @@ export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(
           }}
         >
           <SearchIcon
-            width={ICON_SIZE[size]}
-            height={ICON_SIZE[size]}
+            size="sm"
             aria-hidden="true"
             className="pointer-events-none shrink-0 fg-quaternary"
           />
@@ -388,12 +385,7 @@ export function SearchEmptyState({
     <EmptyState
       testId={testId}
       icon={
-        <SearchXIcon
-          width={24}
-          height={24}
-          aria-hidden="true"
-          className="fg-tertiary"
-        />
+        <SearchXIcon size="xl" aria-hidden="true" className="fg-tertiary" />
       }
       title={<span className="text-pretty">{title}</span>}
       titleWeight="normal"

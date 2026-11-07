@@ -70,6 +70,8 @@ export interface OpenCodePromptHost {
     Pick<
       OpenCodeRuntimeOptions,
       | 'executable'
+      | 'spawnProcess'
+      | 'processOwner'
       | 'prefix'
       | 'env'
       | 'providerConfig'

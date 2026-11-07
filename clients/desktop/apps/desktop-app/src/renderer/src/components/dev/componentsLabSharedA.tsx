@@ -1,4 +1,10 @@
-import { useState, type ComponentProps, type JSX, type ReactNode } from 'react';
+import {
+  useRef,
+  useState,
+  type ComponentProps,
+  type JSX,
+  type ReactNode,
+} from 'react';
 import {
   ActionMenuItems,
   ActionMenuRowStyle,
@@ -11,8 +17,11 @@ import {
   ArchivedChatsCard,
   AutomationPipelineTargetFields,
   BackgroundServiceNotice,
+  DropdownMenuItemIcon,
+  DropdownMenuLinkItem,
   UnifiedTable,
-  DropdownMenuSurface,
+  Button,
+  FloatingMenu,
   type ActionMenuItem,
   type AppAdvisorProjectAgentAccessValue,
   type AutomationPipelineRunIn,
@@ -22,6 +31,7 @@ import {
   ArchiveIcon,
   CloseIcon,
   CopyIcon,
+  LoginIcon,
   PencilIcon,
   PinIcon,
   TrashIcon,
@@ -121,6 +131,36 @@ const GROUPED_MENU_ITEMS: readonly ActionMenuItem[] = [
   },
 ];
 
+function SpecimenMenu({
+  children,
+}: {
+  readonly children: ReactNode;
+}): JSX.Element {
+  const anchorRef = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  return (
+    <ActionMenuRowStyle>
+      <Button
+        ref={anchorRef}
+        size="compact"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={(): void => setOpen((current) => !current)}
+      >
+        Open menu
+      </Button>
+      <FloatingMenu
+        open={open}
+        onOpenChange={setOpen}
+        anchorRef={anchorRef}
+        className="w-64"
+      >
+        {children}
+      </FloatingMenu>
+    </ActionMenuRowStyle>
+  );
+}
+
 function MenuCell({
   label,
   items,
@@ -131,14 +171,12 @@ function MenuCell({
   const [last, setLast] = useState<string | null>(null);
   return (
     <SpecimenCell label={last ? `${label} · chose ${last}` : label}>
-      <ActionMenuRowStyle>
-        <DropdownMenuSurface className="w-64" role="menu">
-          <ActionMenuItems
-            items={items}
-            onSelect={(item): void => setLast(item.label)}
-          />
-        </DropdownMenuSurface>
-      </ActionMenuRowStyle>
+      <SpecimenMenu>
+        <ActionMenuItems
+          items={items}
+          onSelect={(item): void => setLast(item.label)}
+        />
+      </SpecimenMenu>
     </SpecimenCell>
   );
 }
@@ -147,6 +185,16 @@ function ActionMenuSheet(): JSX.Element {
   return (
     <SpecimenPanel title="ActionMenuItems">
       <SpecimenGrid min={260}>
+        <SpecimenCell label="DropdownMenuLinkItem: a row that navigates">
+          <SpecimenMenu>
+            <DropdownMenuLinkItem href="#components-lab">
+              <DropdownMenuItemIcon>
+                <LoginIcon />
+              </DropdownMenuItemIcon>
+              Sign in
+            </DropdownMenuLinkItem>
+          </SpecimenMenu>
+        </SpecimenCell>
         <MenuCell
           label="Icons, shortcut, busy, disabled, destructive, shared icon run"
           items={MENU_ITEMS}

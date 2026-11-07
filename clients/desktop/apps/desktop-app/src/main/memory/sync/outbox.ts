@@ -2,6 +2,8 @@ import { readFile, readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   MEMORY_SYNC_LIMITS,
+  MemoryNoteFileKeySchema,
+  isMemoryDocumentPath,
   memorySyncJsonBytes,
   type MemoryNote,
   type MemoryNoteOp,
@@ -99,6 +101,7 @@ async function readOutbox(
   if (file === null) throw new MemorySyncOutboxUnreadableError();
   let nextSeq = Math.max(
     file.nextSeq ?? 1,
+    (file.usageSent?.seq ?? 0) + 1,
     ...file.ops.map((entry) => (entry.seq ?? 0) + 1),
   );
   const seen = new Set<number>();
@@ -1050,4 +1053,124 @@ export async function readQueuedMemoryNoteOps(
   binding: MemoryReplicaBinding,
 ): Promise<readonly OutboxEntry[]> {
   return (await readOutbox(scopeDir, binding)).entries;
+}
+
+/**
+ * Adds uses to the scope's usage deltas (design §15), kept until the cloud
+ * acknowledges them. Pushes are at-least-once: a retried delta can only
+ * over-count, which makes pruning less likely.
+ */
+export function recordMemoryUsageDeltas(
+  scopeDir: string,
+  binding: MemoryReplicaBinding,
+  counts: ReadonlyMap<string, number>,
+  usedAt: string,
+): Promise<void> {
+  return withMemoryWriteLock(scopeDir, async () => {
+    const outbox = await readOutbox(scopeDir, binding);
+    const { usage } = outbox.file;
+    for (const [fileKey, uses] of counts) {
+      if (!isUsageFileKey(fileKey) || uses < 1) continue;
+      const known = usage[fileKey];
+      usage[fileKey] = {
+        ...known,
+        uses: (known?.uses ?? 0) + uses,
+        lastUsedAt:
+          known !== undefined && known.lastUsedAt > usedAt
+            ? known.lastUsedAt
+            : usedAt,
+      };
+    }
+    await writeOutbox(scopeDir, outbox);
+  });
+}
+
+function isUsageFileKey(fileKey: string): boolean {
+  return (
+    isMemoryDocumentPath(fileKey) ||
+    MemoryNoteFileKeySchema.safeParse(fileKey).success
+  );
+}
+
+export interface MemoryUsageDelta {
+  fileKey: string;
+  uses: number;
+  lastUsedAt: string;
+}
+
+function withoutUsageSent(file: MemorySyncOutboxFile): MemorySyncOutboxFile {
+  const next = { ...file };
+  delete next.usageSent;
+  return next;
+}
+
+/** One usage push, with the `seq` its answer settles. */
+export interface MemoryUsagePush {
+  readonly seq: number;
+  readonly deltas: readonly MemoryUsageDelta[];
+}
+
+/**
+ * The scope's next usage push, taken under the scope lock. One already sent
+ * and not yet answered goes again as it was; otherwise up to
+ * `usageDeltasMax` deltas move out of the counts into it, marked sent before
+ * the caller sends them, and uses counted from then on wait for the next.
+ */
+export function takeMemoryUsagePush(
+  scopeDir: string,
+  binding: MemoryReplicaBinding,
+): Promise<MemoryUsagePush | null> {
+  return withMemoryWriteLock(scopeDir, async () => {
+    const outbox = await readOutbox(scopeDir, binding);
+    const inFlight = outbox.file.usageSent;
+    if (inFlight !== undefined) {
+      const deltas = inFlight.deltas.filter(({ fileKey }) =>
+        isUsageFileKey(fileKey),
+      );
+      if (deltas.length > 0) return { seq: inFlight.seq, deltas };
+    }
+    const { usage } = outbox.file;
+    const deltas: MemoryUsageDelta[] = [];
+    for (const [fileKey, delta] of Object.entries(usage)) {
+      if (!isUsageFileKey(fileKey)) {
+        delete usage[fileKey];
+        continue;
+      }
+      if (deltas.length >= MEMORY_SYNC_LIMITS.usageDeltasMax) break;
+      const uses = Math.min(delta.uses, MEMORY_SYNC_LIMITS.usageDeltaUsesMax);
+      deltas.push({ fileKey, uses, lastUsedAt: delta.lastUsedAt });
+      if (delta.uses > uses)
+        usage[fileKey] = { ...delta, uses: delta.uses - uses };
+      else delete usage[fileKey];
+    }
+    const push = deltas.length > 0 ? { seq: outbox.nextSeq, deltas } : null;
+    if (push !== null) outbox.nextSeq += 1;
+    if (push !== null || inFlight !== undefined) {
+      const file = withoutUsageSent(outbox.file);
+      await writeOutbox(scopeDir, {
+        ...outbox,
+        file: push === null ? file : { ...file, usageSent: push },
+      });
+    }
+    return push;
+  });
+}
+
+/**
+ * Settles an answered usage push by its `seq`; uses counted while it was in
+ * flight stay for the next one.
+ */
+export function settleMemoryUsagePush(
+  scopeDir: string,
+  binding: MemoryReplicaBinding,
+  seq: number,
+): Promise<void> {
+  return withMemoryWriteLock(scopeDir, async () => {
+    const outbox = await readOutbox(scopeDir, binding);
+    if (outbox.file.usageSent?.seq !== seq) return;
+    await writeOutbox(scopeDir, {
+      ...outbox,
+      file: withoutUsageSent(outbox.file),
+    });
+  });
 }

@@ -111,7 +111,7 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     id: 'list-row',
     name: 'ListRow',
     group: 'Unified',
-    note: 'One full-width clickable row for every list: the sidebar row geometry, a 16px icon slot and quiet trailing text.',
+    note: 'One full-width row for every list, in three forms (press, link, static) and three sizes (28, 32, 40), with quiet trailing text and actions beside the press.',
     source: 'packages/ui-shared/src/components/ListRow.tsx',
     prs: [7076],
     Stage: ListRowStage,

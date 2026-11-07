@@ -836,7 +836,7 @@ export function MemoryPanel({
     {
       key: 'refresh',
       label: 'Refresh',
-      icon: <RefreshIcon width={14} height={14} />,
+      icon: <RefreshIcon size="sm" />,
       onSelect: refresh,
     },
     ...(client.rebuild === undefined
@@ -845,7 +845,7 @@ export function MemoryPanel({
           {
             key: 'rebuild',
             label: 'Rebuild memories…',
-            icon: <RerunIcon width={14} height={14} />,
+            icon: <RerunIcon size="sm" />,
             disabled: running || editing,
             onSelect: () => setConfirmingRebuild(true),
           },
@@ -855,7 +855,7 @@ export function MemoryPanel({
           {
             key: 'settings',
             label: 'Memory settings',
-            icon: <SettingsIcon width={14} height={14} />,
+            icon: <SettingsIcon size="sm" />,
             separatorBefore: true,
             onSelect: () => client.openSettings(),
           },
@@ -967,9 +967,9 @@ export function MemoryPanel({
           testId={searching ? 'memory-empty-search' : 'memory-empty-filters'}
           icon={
             searching ? (
-              <SearchIcon width={20} height={20} aria-hidden="true" />
+              <SearchIcon size="xl" aria-hidden="true" />
             ) : (
-              <ListFilterIcon width={20} height={20} aria-hidden="true" />
+              <ListFilterIcon size="xl" aria-hidden="true" />
             )
           }
           // The search text stays out of the title: it isn't covered by
@@ -1209,7 +1209,7 @@ export function MemoryPanel({
             onClick={closeDetail}
             data-testid="memory-detail-back"
           >
-            <BackIcon width={14} height={14} aria-hidden="true" />
+            <BackIcon size="sm" aria-hidden="true" />
           </Button>
           <span className="text-xs fg-tertiary">Memory</span>
         </div>
@@ -1264,7 +1264,7 @@ export function MemoryPanel({
                   onClick={() => void startEditing(entry)}
                   data-testid="memory-detail-edit"
                 >
-                  <PencilIcon width={14} height={14} aria-hidden="true" />
+                  <PencilIcon size="sm" aria-hidden="true" />
                   Edit
                 </Button>
                 {entry.file.kind !== 'index' && (
@@ -1275,7 +1275,7 @@ export function MemoryPanel({
                     onClick={() => void deleteEntry(entry)}
                     data-testid="memory-detail-delete"
                   >
-                    <TrashIcon width={14} height={14} aria-hidden="true" />
+                    <TrashIcon size="sm" aria-hidden="true" />
                     Delete
                   </Button>
                 )}

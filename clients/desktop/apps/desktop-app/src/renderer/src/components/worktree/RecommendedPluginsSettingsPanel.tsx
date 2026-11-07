@@ -3,6 +3,7 @@ import {
   DelayedLoadingPlaceholder,
   Heading,
   Skeleton,
+  Surface,
 } from '@canopy/ui-shared/components';
 import { useCallback, useEffect, useId, useState, type JSX } from 'react';
 import type {
@@ -151,12 +152,14 @@ function CompactRecommendationsStrip({
   const rowListId = useId();
   if (loadState.kind === 'error') {
     return (
-      <p
-        data-testid="recommended-plugins-strip"
-        className="shrink-0 truncate rounded-lg border px-3 py-1.5 text-xs fg-destructive-strong"
-      >
-        {loadState.message}
-      </p>
+      <Surface variant="outline" className="shrink-0">
+        <p
+          className="truncate px-3 py-1.5 text-xs fg-destructive-strong"
+          data-testid="recommended-plugins-strip"
+        >
+          {loadState.message}
+        </p>
+      </Surface>
     );
   }
   if (loadState.kind !== 'ready' || loadState.items.length === 0) {
@@ -167,9 +170,10 @@ function CompactRecommendationsStrip({
     (item) => !item.selectedByDefault,
   ).length;
   return (
-    <div
+    <Surface
       data-testid="recommended-plugins-strip"
-      className="shrink-0 rounded-lg border bg-secondary/30"
+      variant="group"
+      className="shrink-0"
     >
       <div className="flex min-w-0 items-center gap-2 px-3 py-1.5 text-xs fg-secondary">
         <span className="min-w-0 flex-1 truncate">
@@ -198,7 +202,7 @@ function CompactRecommendationsStrip({
           {renderRowList(loadState.items)}
         </div>
       )}
-    </div>
+    </Surface>
   );
 }
 
@@ -341,61 +345,63 @@ export function RecommendedPluginsSettingsPanel({
   );
 
   const renderRowList = (items: RecommendedPluginItem[]): JSX.Element => (
-    <ul className="divide-y rounded-lg border">
-      {items.map((item) => {
-        const state = rowState[item.key];
-        const action = pickPrimaryAction(item);
-        const status = describeRowStatus(item);
-        return (
-          <li key={item.key} className="flex items-start gap-3 p-3 text-xs">
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <span className="font-medium fg-primary">
-                  {item.displayName}
-                </span>
-                <span className="rounded-full border px-1.5 py-0.5 text-3xs fg-secondary">
-                  {item.kind === 'claude_plugin' ? 'plugin' : item.kind}
-                </span>
+    <Surface variant="outline">
+      <ul className="divide-y">
+        {items.map((item) => {
+          const state = rowState[item.key];
+          const action = pickPrimaryAction(item);
+          const status = describeRowStatus(item);
+          return (
+            <li key={item.key} className="flex items-start gap-3 p-3 text-xs">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium fg-primary">
+                    {item.displayName}
+                  </span>
+                  <span className="rounded-full border px-1.5 py-0.5 text-3xs fg-secondary">
+                    {item.kind === 'claude_plugin' ? 'plugin' : item.kind}
+                  </span>
+                </div>
+                <div className="mt-0.5 fg-secondary">{item.displaySource}</div>
+                <div
+                  className={`mt-1 text-2xs ${
+                    status.tone === 'positive'
+                      ? 'fg-success-strong'
+                      : status.tone === 'warn'
+                        ? 'fg-warning'
+                        : 'fg-secondary'
+                  }`}
+                >
+                  {status.label}
+                </div>
+                {item.installState === 'unavailable' && !item.optedOut && (
+                  <p className="mt-1 text-2xs fg-secondary">
+                    Install this manually from Plugins or Skills, then return
+                    here to select it by default.
+                  </p>
+                )}
+                {state?.error && (
+                  <p className="mt-1 text-2xs fg-destructive-strong">
+                    {state.error}
+                  </p>
+                )}
               </div>
-              <div className="mt-0.5 fg-secondary">{item.displaySource}</div>
-              <div
-                className={`mt-1 text-2xs ${
-                  status.tone === 'positive'
-                    ? 'fg-success-strong'
-                    : status.tone === 'warn'
-                      ? 'fg-warning'
-                      : 'fg-secondary'
-                }`}
-              >
-                {status.label}
-              </div>
-              {item.installState === 'unavailable' && !item.optedOut && (
-                <p className="mt-1 text-2xs fg-secondary">
-                  Install this manually from Plugins or Skills, then return here
-                  to select it by default.
-                </p>
+              {action && (
+                <Button
+                  size="compact"
+                  onClick={(): void => {
+                    void handleAction(item, action);
+                  }}
+                  disabled={state?.pending === true}
+                >
+                  {state?.pending ? 'Working…' : actionLabel(action)}
+                </Button>
               )}
-              {state?.error && (
-                <p className="mt-1 text-2xs fg-destructive-strong">
-                  {state.error}
-                </p>
-              )}
-            </div>
-            {action && (
-              <Button
-                size="compact"
-                onClick={(): void => {
-                  void handleAction(item, action);
-                }}
-                disabled={state?.pending === true}
-              >
-                {state?.pending ? 'Working…' : actionLabel(action)}
-              </Button>
-            )}
-          </li>
-        );
-      })}
-    </ul>
+            </li>
+          );
+        })}
+      </ul>
+    </Surface>
   );
 
   if (variant === 'compact') {
@@ -418,12 +424,14 @@ export function RecommendedPluginsSettingsPanel({
       return null;
     }
     return (
-      <div className="rounded-lg border p-3 space-y-2">
-        {headerCopy}
-        <p className="text-xs fg-secondary">
-          Select a worktree to inspect canopy.json recommendations.
-        </p>
-      </div>
+      <Surface variant="outline" padding="compact">
+        <div className="space-y-2">
+          {headerCopy}
+          <p className="text-xs fg-secondary">
+            Select a worktree to inspect canopy.json recommendations.
+          </p>
+        </div>
+      </Surface>
     );
   }
 
@@ -432,27 +440,31 @@ export function RecommendedPluginsSettingsPanel({
       return null;
     }
     return (
-      <div className="rounded-lg border p-3 space-y-2">
-        {headerCopy}
-        <DelayedLoadingPlaceholder slowNote="Still loading recommendations…">
-          <Skeleton
-            loading
-            label="Loading recommendations"
-            testId="recommended-plugins-loading"
-          >
-            {renderRowList(SAMPLE_ITEMS)}
-          </Skeleton>
-        </DelayedLoadingPlaceholder>
-      </div>
+      <Surface variant="outline" padding="compact">
+        <div className="space-y-2">
+          {headerCopy}
+          <DelayedLoadingPlaceholder slowNote="Still loading recommendations…">
+            <Skeleton
+              loading
+              label="Loading recommendations"
+              testId="recommended-plugins-loading"
+            >
+              {renderRowList(SAMPLE_ITEMS)}
+            </Skeleton>
+          </DelayedLoadingPlaceholder>
+        </div>
+      </Surface>
     );
   }
 
   if (loadState.kind === 'error') {
     return (
-      <div className="rounded-lg border p-3 space-y-2">
-        {headerCopy}
-        <p className="text-xs fg-destructive-strong">{loadState.message}</p>
-      </div>
+      <Surface variant="outline" padding="compact">
+        <div className="space-y-2">
+          {headerCopy}
+          <p className="text-xs fg-destructive-strong">{loadState.message}</p>
+        </div>
+      </Surface>
     );
   }
 
@@ -465,19 +477,23 @@ export function RecommendedPluginsSettingsPanel({
       return null;
     }
     return (
-      <div className="rounded-lg border p-3 space-y-2">
-        {headerCopy}
-        <p className="text-xs fg-secondary">
-          No recommended plugins are declared in the selected canopy.json.
-        </p>
-      </div>
+      <Surface variant="outline" padding="compact">
+        <div className="space-y-2">
+          {headerCopy}
+          <p className="text-xs fg-secondary">
+            No recommended plugins are declared in the selected canopy.json.
+          </p>
+        </div>
+      </Surface>
     );
   }
 
   return (
-    <div className="rounded-lg border p-3 space-y-2">
-      {headerCopy}
-      {renderRowList(loadState.items)}
-    </div>
+    <Surface variant="outline" padding="compact">
+      <div className="space-y-2">
+        {headerCopy}
+        {renderRowList(loadState.items)}
+      </div>
+    </Surface>
   );
 }

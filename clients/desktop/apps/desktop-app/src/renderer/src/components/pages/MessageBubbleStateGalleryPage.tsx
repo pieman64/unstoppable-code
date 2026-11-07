@@ -21,7 +21,7 @@ import {
   type QueuedGalleryState,
   type RecurringNoticeGalleryState,
 } from './messageBubbleStateGalleryData';
-import { Heading } from '@canopy/ui-shared/components';
+import { Heading, Surface } from '@canopy/ui-shared/components';
 
 /**
  * Dev-only reference page rendering the real chat message components
@@ -147,16 +147,17 @@ function GallerySection({
   children,
 }: GallerySectionProps): JSX.Element {
   return (
-    <div
+    <Surface
       data-testid={`bubble-gallery-section-${messageSectionSlug(title)}`}
-      className="rounded-xl border bg-base p-4"
+      variant="inset"
+      padding="default"
     >
       <Heading level={2} variant="title">
         {title}
       </Heading>
       <p className="mt-1 text-xs leading-relaxed fg-secondary">{description}</p>
       <div className="mt-4 flex flex-col gap-5">{children}</div>
-    </div>
+    </Surface>
   );
 }
 

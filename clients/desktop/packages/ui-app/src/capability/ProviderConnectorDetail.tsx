@@ -23,6 +23,7 @@ import {
 } from './mcpConnectionCopy';
 import { buildProviderConnectorRows } from './providerConnectorRows';
 import { CheckIcon as AppCatalogCheckIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { Surface } from '@canopy/ui-shared/components';
 
 const PROVIDER_LABEL: Record<ProviderConnectorProvider, string> =
   MCP_PROVIDER_CONNECTOR_LABELS;
@@ -118,16 +119,18 @@ export function ProviderConnectorDetail({
     providers.length === 0 ? (
       <EmptyStateRow title="No provider offers this connector yet" />
     ) : (
-      <ul className="divide-y overflow-hidden rounded-lg border">
-        {providers.map((entry) => (
-          <ProviderRow
-            key={entry.provider}
-            entry={entry}
-            busy={busy !== null}
-            onConnect={handleConnect}
-          />
-        ))}
-      </ul>
+      <Surface variant="outline" className="overflow-hidden">
+        <ul className="divide-y">
+          {providers.map((entry) => (
+            <ProviderRow
+              key={entry.provider}
+              entry={entry}
+              busy={busy !== null}
+              onConnect={handleConnect}
+            />
+          ))}
+        </ul>
+      </Surface>
     );
 
   // Trails the list: the user reads what to do, acts on it, and only then
@@ -261,7 +264,7 @@ function ProviderRow({
             title={`Served by ${entry.alternateRoute}`}
             className="inline-flex items-center gap-1.5 text-xs fg-success"
           >
-            <CheckIcon />
+            <AppCatalogCheckIcon size="sm" aria-hidden="true" />
             Already available
           </span>
           <Button
@@ -287,7 +290,7 @@ function ProviderRow({
       ) : entry.connected ? (
         <span className="flex items-center gap-2">
           <span className="inline-flex items-center gap-1.5 text-xs fg-success">
-            <CheckIcon />
+            <AppCatalogCheckIcon size="sm" aria-hidden="true" />
             Connected
           </span>
           <Button
@@ -331,8 +334,4 @@ function ProviderRow({
       )}
     </li>
   );
-}
-
-function CheckIcon(): JSX.Element {
-  return <AppCatalogCheckIcon width="12" height="12" aria-hidden="true" />;
 }

@@ -1,4 +1,4 @@
-import { Button } from '@canopy/ui-shared/components';
+import { Button, Surface } from '@canopy/ui-shared/components';
 import { type JSX } from 'react';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { DialogModal } from '../shared';
@@ -43,13 +43,15 @@ export function TeardownFailureDialog({
           </p>
         )}
         {error.output.trim() && (
-          <div
-            className={`${POSTHOG_REPLAY_BLOCK_CLASS} max-h-48 overflow-auto rounded-md border bg-secondary/30 p-3`}
-          >
-            <pre className="whitespace-pre-wrap break-words text-xs fg-secondary font-mono">
-              {error.output}
-            </pre>
-          </div>
+          <Surface variant="group" size="small" className="overflow-hidden">
+            <div
+              className={`max-h-48 overflow-auto p-3 ${POSTHOG_REPLAY_BLOCK_CLASS}`}
+            >
+              <pre className="whitespace-pre-wrap break-words text-xs fg-secondary font-mono">
+                {error.output}
+              </pre>
+            </div>
+          </Surface>
         )}
         <div className="flex items-center justify-end gap-2 pt-2">
           <Button size="compact" onClick={onCancel}>

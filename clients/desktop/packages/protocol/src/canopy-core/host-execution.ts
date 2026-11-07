@@ -1,6 +1,10 @@
 import { z } from 'zod';
 
-import { CanopyJsonValueSchema, type CanopyJsonValue } from './errors';
+import {
+  CanopyJsonValueSchema,
+  canopyJsonValueSchemaWithin,
+  type CanopyJsonValue,
+} from './errors';
 
 /**
  * The reserved request member that carries host execution input (CAN-5496).
@@ -17,7 +21,8 @@ export const CANOPY_HOST_EXECUTION_MEMBER = '_execution';
  * absent too: its change-set reads keep the daemon's own environment,
  * recorded debt (CAN-4729). The branch writes are idempotency `none`, so no
  * receipt or replay can run them again with a stale environment (CAN-4108,
- * CAN-5516).
+ * CAN-5516). `worker.script.execute` takes the run's complete environment
+ * (CAN-5087).
  */
 export const CANOPY_HOST_EXECUTION_OPERATIONS: ReadonlySet<string> = new Set([
   'worker.git.branch.list',
@@ -30,8 +35,16 @@ export const CANOPY_HOST_EXECUTION_OPERATIONS: ReadonlySet<string> = new Set([
   // CAN-5517: idempotency none, as the branch writes.
   'worker.git.fetch',
   'worker.git.pull',
+  // CAN-5882: keyed without retention until CAN-4733; no credentials forwarded.
+  'worker.git.commit',
+  'worker.git.push',
+  'worker.git.merge',
+  // CAN-5087: keyed, but `_execution` is outside params, so a keyed repeat joins the running execution and never runs it with another environment.
+  'worker.script.execute',
   // CAN-5086: a pipeline start carries its launch in pipelineLaunch; keyed, but a keyed replay never runs a launch again.
   'worker.pipeline.execution.start',
+  // CAN-5095: an owner request's answer carries its capabilities in pipelineOwnerValues.
+  'worker.pipeline.hostRequest.respond',
 ]);
 
 /** Bounds well below one 8 MiB frame and macOS `ARG_MAX`. */
@@ -212,10 +225,60 @@ export type WorkerPipelineHostLaunch = z.output<
   typeof WorkerPipelineHostLaunchSchema
 >;
 
+/** The operation whose `_execution` may carry pipeline owner values (CAN-5095). */
+export const CANOPY_PIPELINE_OWNER_VALUES_OPERATION =
+  'worker.pipeline.hostRequest.respond';
+
+/** The largest Codex provider block or MCP server map that crosses, as UTF-8 JSON. */
+export const WORKER_PIPELINE_OWNER_VALUES_JSON_MAX_BYTES = 256 * 1024;
+
+const ownerValueJson = canopyJsonValueSchemaWithin(
+  WORKER_PIPELINE_OWNER_VALUES_JSON_MAX_BYTES,
+);
+
+/**
+ * Capabilities core hands a model step host-locally (CAN-5095): a route's
+ * provider environment and Codex provider block, or a Ledger route. They
+ * never enter params, results, records or logs.
+ */
+export const WorkerPipelineOwnerValuesSchema = z.strictObject({
+  /** The owner request these answer; the respond's own requestId. */
+  requestId: z.string().min(1).max(3072),
+  env: CanopyChildEnvironmentSchema.optional(),
+  codexConfig: z
+    .record(z.string(), ownerValueJson)
+    .refine(
+      (value) =>
+        utf8ByteLength(JSON.stringify(value)) <=
+        WORKER_PIPELINE_OWNER_VALUES_JSON_MAX_BYTES,
+      'The Codex provider block exceeds its limit.',
+    )
+    .optional(),
+  ledgerSubprocessTools: z
+    .strictObject({
+      mcpServers: z
+        .record(z.string().min(1).max(256), ownerValueJson)
+        .refine((value) => Object.keys(value).length <= 64)
+        .refine(
+          (value) =>
+            utf8ByteLength(JSON.stringify(value)) <=
+            WORKER_PIPELINE_OWNER_VALUES_JSON_MAX_BYTES,
+        ),
+      allowedTools: z.array(z.string().min(1).max(512)).max(256),
+      secretValues: z.array(z.string().min(1).max(4096)).max(64),
+    })
+    .optional(),
+});
+export type WorkerPipelineOwnerValues = z.output<
+  typeof WorkerPipelineOwnerValuesSchema
+>;
+
 export const CanopyHostExecutionSchema = z.strictObject({
   childEnvironment: CanopyChildEnvironmentSchema,
   /** Only {@link CANOPY_PIPELINE_LAUNCH_OPERATION} accepts it. */
   pipelineLaunch: WorkerPipelineHostLaunchSchema.optional(),
+  /** Only {@link CANOPY_PIPELINE_OWNER_VALUES_OPERATION} accepts it. */
+  pipelineOwnerValues: WorkerPipelineOwnerValuesSchema.optional(),
 });
 
 export type CanopyHostExecution = z.output<typeof CanopyHostExecutionSchema>;

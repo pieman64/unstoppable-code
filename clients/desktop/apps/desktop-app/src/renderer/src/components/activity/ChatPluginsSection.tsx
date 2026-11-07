@@ -225,7 +225,7 @@ function UsedInvocableRow({
     <div ref={rowRef}>
       <ActivityItemRow
         dataTestId="chat-used-invocable-row"
-        icon={<SkillIcon width={16} height={16} aria-hidden="true" />}
+        icon={<SkillIcon size="sm" aria-hidden="true" />}
         labelTitle={target.entry.description || undefined}
         label={
           <span

@@ -11,10 +11,6 @@ import { useActivityStore } from '@/stores/activityStore';
 import { useChatStore } from '@/stores/chatStore';
 import { formatRelativeTime } from '@/lib/format';
 
-export function SummaryIcon(): JSX.Element {
-  return <CentralSummaryIcon size={16} />;
-}
-
 // eslint-disable-next-line react-refresh/only-export-components
 export function useSummaryHeaderChrome(scope?: {
   projectId: string;
@@ -75,7 +71,7 @@ export function SummarySection(): JSX.Element {
     return (
       <div data-testid={sectionTestId} className={sectionClassName}>
         <ActivitySection
-          icon={<SummaryIcon />}
+          icon={<CentralSummaryIcon size="sm" />}
           title="Summary"
           subtitle={headerChrome.subtitle}
           collapsedIconColor={headerChrome.collapsedIconColor}
@@ -105,7 +101,7 @@ export function SummarySection(): JSX.Element {
     return (
       <div data-testid={sectionTestId} className={sectionClassName}>
         <ActivitySection
-          icon={<SummaryIcon />}
+          icon={<CentralSummaryIcon size="sm" />}
           title="Summary"
           subtitle={headerChrome.subtitle}
           collapsedIconColor={headerChrome.collapsedIconColor}
@@ -118,7 +114,7 @@ export function SummarySection(): JSX.Element {
   return (
     <div data-testid={sectionTestId} className={sectionClassName}>
       <ActivitySection
-        icon={<SummaryIcon />}
+        icon={<CentralSummaryIcon size="sm" />}
         title="Summary"
         subtitle={headerChrome.subtitle}
         collapsedIconColor={headerChrome.collapsedIconColor}

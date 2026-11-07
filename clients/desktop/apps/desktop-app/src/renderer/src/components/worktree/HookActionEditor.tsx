@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type JSX,
+  type ReactNode,
 } from 'react';
 import {
   Button,
@@ -14,6 +15,7 @@ import {
   ListRow,
   SearchField,
   SettingsSelect,
+  Surface,
   TextArea,
   TextInput,
 } from '@canopy/ui-shared/components';
@@ -181,7 +183,7 @@ function PipelineRowIcon({ icon }: { icon?: string | null }): JSX.Element {
   if (icon) {
     return <span className="shrink-0 text-m">{icon}</span>;
   }
-  return <TriggerIcon className="h-4 w-4 shrink-0 fg-secondary" />;
+  return <TriggerIcon size="sm" className="shrink-0 fg-secondary" />;
 }
 
 function updateShellPlatform(
@@ -611,52 +613,54 @@ function PipelineActionFields({
           />
         )}
 
-        <div className="max-h-64 overflow-y-auto rounded-lg border bg-card/40">
-          {pipelineOptionsLoading ? (
-            <div className="flex items-center justify-center gap-2 py-6 text-xs fg-secondary">
-              <LoadingSpinner />
-              <span>Loading workflows…</span>
-            </div>
-          ) : pipelineOptions.length === 0 ? (
-            <div className="py-6 text-center text-xs fg-secondary">
-              No dispatch workflows found.
-            </div>
-          ) : filteredOptions.length === 0 ? (
-            <div className="py-6 text-center text-xs fg-secondary">
-              No workflows match your search.
-            </div>
-          ) : (
-            <div className="space-y-0.5 p-1">
-              {filteredOptions.map((option) => {
-                const isSelected =
-                  option.actionSource === action.source &&
-                  option.actionId === action.id;
-                const displayName = option.data.info.name || option.actionId;
-                return (
-                  <ListRow
-                    key={getPipelineOptionKey(option)}
-                    onClick={() => {
-                      void selectPipeline(option);
-                    }}
-                    selected={isSelected}
-                    aria-current={isSelected ? 'true' : undefined}
-                    icon={<PipelineRowIcon icon={option.data.info.icon} />}
-                    description={option.data.info.description || undefined}
-                    trailing={
-                      <span
-                        className={`rounded px-1.5 py-0.5 text-3xs font-medium leading-none ${PIPELINE_HOOK_SOURCE_BADGE_CLASS[option.actionSource]}`}
-                      >
-                        {PIPELINE_HOOK_SOURCE_LABELS[option.actionSource]}
-                      </span>
-                    }
-                  >
-                    {displayName}
-                  </ListRow>
-                );
-              })}
-            </div>
-          )}
-        </div>
+        <Surface variant="group" className="overflow-hidden">
+          <div className="max-h-64 overflow-y-auto">
+            {pipelineOptionsLoading ? (
+              <div className="flex items-center justify-center gap-2 py-6 text-xs fg-secondary">
+                <LoadingSpinner />
+                <span>Loading workflows…</span>
+              </div>
+            ) : pipelineOptions.length === 0 ? (
+              <div className="py-6 text-center text-xs fg-secondary">
+                No dispatch workflows found.
+              </div>
+            ) : filteredOptions.length === 0 ? (
+              <div className="py-6 text-center text-xs fg-secondary">
+                No workflows match your search.
+              </div>
+            ) : (
+              <div className="space-y-0.5 p-1">
+                {filteredOptions.map((option) => {
+                  const isSelected =
+                    option.actionSource === action.source &&
+                    option.actionId === action.id;
+                  const displayName = option.data.info.name || option.actionId;
+                  return (
+                    <ListRow
+                      key={getPipelineOptionKey(option)}
+                      onClick={() => {
+                        void selectPipeline(option);
+                      }}
+                      selected={isSelected}
+                      aria-current={isSelected ? 'true' : undefined}
+                      icon={<PipelineRowIcon icon={option.data.info.icon} />}
+                      description={option.data.info.description || undefined}
+                      trailing={
+                        <span
+                          className={`rounded px-1.5 py-0.5 text-3xs font-medium leading-none ${PIPELINE_HOOK_SOURCE_BADGE_CLASS[option.actionSource]}`}
+                        >
+                          {PIPELINE_HOOK_SOURCE_LABELS[option.actionSource]}
+                        </span>
+                      }
+                    >
+                      {displayName}
+                    </ListRow>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </Surface>
 
         {showMissingNotice && (
           <p className="text-2xs fg-warning">
@@ -684,7 +688,7 @@ function PipelineActionFields({
                 def.default,
               );
               return (
-                <div key={key} className="rounded-lg border bg-card/40 p-2">
+                <Surface key={key} variant="group" padding="tight">
                   <div className="grid gap-3 md:grid-cols-[minmax(0,16rem)_minmax(0,1fr)]">
                     <div className="flex min-w-0 flex-col">
                       <div className="flex flex-wrap items-center gap-1.5">
@@ -713,7 +717,7 @@ function PipelineActionFields({
                           aria-pressed={raw}
                           className="mt-2 self-start"
                         >
-                          <AppCatalogWorkflowIcon width="10" height="10" />
+                          <AppCatalogWorkflowIcon size="sm" />
                           {raw ? 'Use typed input' : 'Raw override'}
                         </Button>
                       )}
@@ -784,7 +788,7 @@ function PipelineActionFields({
                       </div>
                     )}
                   </div>
-                </div>
+                </Surface>
               );
             })}
           </div>
@@ -1113,6 +1117,55 @@ function HookActionFields(props: {
   );
 }
 
+/** One trigger's block: a hairline box in the stacked layout. */
+function TriggerFrame({
+  framed,
+  children,
+}: {
+  readonly framed: boolean;
+  readonly children: ReactNode;
+}): JSX.Element {
+  return framed ? (
+    <Surface variant="outline" padding="compact">
+      {children}
+    </Surface>
+  ) : (
+    <div className="space-y-3">{children}</div>
+  );
+}
+
+/** One action's box, tinted in both layouts. */
+function ActionFrame({
+  framed,
+  children,
+}: {
+  readonly framed: boolean;
+  readonly children: ReactNode;
+}): JSX.Element {
+  return (
+    <Surface variant="group" padding={framed ? 'compact' : undefined}>
+      {framed ? children : <div className="px-4 py-3">{children}</div>}
+    </Surface>
+  );
+}
+
+/** The add-action form: a dashed placeholder in the stacked layout. */
+function AddFormFrame({
+  framed,
+  children,
+}: {
+  readonly framed: boolean;
+  readonly children: ReactNode;
+}): JSX.Element {
+  return framed ? (
+    <Surface variant="dashed" padding="compact" data-testid="hook-add-form">
+      {children}
+    </Surface>
+  ) : (
+    <div data-testid="hook-add-form">{children}</div>
+  );
+}
+
 export function HookActionEditor(props: HookActionEditorProps): JSX.Element {
   const {
     hooks,
@@ -1199,10 +1252,7 @@ export function HookActionEditor(props: HookActionEditorProps): JSX.Element {
     }
 
     return (
-      <div
-        key={triggerName}
-        className={framed ? 'rounded-lg border p-3' : 'space-y-3'}
-      >
+      <TriggerFrame key={triggerName} framed={framed}>
         <div
           className={
             framed
@@ -1237,14 +1287,7 @@ export function HookActionEditor(props: HookActionEditorProps): JSX.Element {
         ) : (
           <div className="space-y-3">
             {actions.map((action, index) => (
-              <div
-                key={action.uiId}
-                className={
-                  framed
-                    ? 'rounded-lg border bg-card/40 p-3'
-                    : 'rounded-lg bg-secondary px-4 py-3 ring-[length:var(--border-hairline)] ring-line-base'
-                }
-              >
+              <ActionFrame key={action.uiId} framed={framed}>
                 <div className="mb-3 flex items-center justify-between gap-3">
                   <FormField label="Action type">
                     {(control) => (
@@ -1299,10 +1342,7 @@ export function HookActionEditor(props: HookActionEditorProps): JSX.Element {
                         }
                         aria-label="Move up"
                       >
-                        <AppCatalogChevronTopMediumIcon
-                          width="12"
-                          height="12"
-                        />
+                        <AppCatalogChevronTopMediumIcon size="sm" />
                       </Button>
                     )}
                     {index < actions.length - 1 && (
@@ -1322,10 +1362,7 @@ export function HookActionEditor(props: HookActionEditorProps): JSX.Element {
                         }
                         aria-label="Move down"
                       >
-                        <AppCatalogChevronDownMediumIcon
-                          width="12"
-                          height="12"
-                        />
+                        <AppCatalogChevronDownMediumIcon size="sm" />
                       </Button>
                     )}
                     <Button
@@ -1339,7 +1376,7 @@ export function HookActionEditor(props: HookActionEditorProps): JSX.Element {
                       }
                       aria-label="Remove action"
                     >
-                      <AppCatalogCloseIcon width="12" height="12" />
+                      <AppCatalogCloseIcon size="sm" />
                     </Button>
                   </div>
                 </div>
@@ -1364,11 +1401,11 @@ export function HookActionEditor(props: HookActionEditorProps): JSX.Element {
                   pipelineOptionsLoading={pipelineOptionsLoading}
                   pluginSelectionMode={pluginSelectionMode}
                 />
-              </div>
+              </ActionFrame>
             ))}
           </div>
         )}
-      </div>
+      </TriggerFrame>
     );
   };
 
@@ -1400,10 +1437,7 @@ export function HookActionEditor(props: HookActionEditorProps): JSX.Element {
         </Button>
       )}
       {showAddForm && (
-        <div
-          className={framed ? 'rounded-lg border border-dashed p-3' : ''}
-          data-testid="hook-add-form"
-        >
+        <AddFormFrame framed={framed}>
           {framed && (
             <p className="mb-2 text-s font-medium fg-primary">
               Add hook action
@@ -1497,7 +1531,7 @@ export function HookActionEditor(props: HookActionEditorProps): JSX.Element {
               Add action
             </Button>
           </div>
-        </div>
+        </AddFormFrame>
       )}
     </div>
   );

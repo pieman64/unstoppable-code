@@ -9,6 +9,7 @@ import {
   WORKFLOW_TRIGGER_LABELS,
   type WorkflowTriggerKind,
 } from './workflow-library-model';
+import { Surface } from '@canopy/ui-shared/components';
 
 /** A trigger a pipeline declares itself, in the Library's vocabulary. */
 export type PipelineStartKind = Extract<
@@ -90,12 +91,11 @@ function EmptyRow({
   readonly children: ReactNode;
 }): JSX.Element {
   return (
-    <p
-      className="rounded-lg border px-4 py-3 text-s fg-tertiary"
-      data-testid={testId}
-    >
-      {children}
-    </p>
+    <Surface variant="outline">
+      <p className="px-4 py-3 text-s fg-tertiary" data-testid={testId}>
+        {children}
+      </p>
+    </Surface>
   );
 }
 
@@ -117,8 +117,7 @@ function RowButton({
     >
       {children}
       <ChevronRightIcon
-        width={14}
-        height={14}
+        size="sm"
         aria-hidden="true"
         className="shrink-0 fg-tertiary"
       />
@@ -159,39 +158,38 @@ export function PipelineTriggers({
           ) : undefined
         }
       >
-        <ul
-          className="divide-y rounded-lg border"
-          data-testid="pipeline-trigger-starts"
-        >
-          {PIPELINE_START_KINDS.map((kind) => {
-            const on = starts.includes(kind);
-            return (
-              <li
-                key={kind}
-                className="flex items-center gap-4 px-4 py-3 text-s"
-                data-testid="pipeline-trigger-start"
-                data-trigger={kind}
-                data-on={String(on)}
-              >
-                <span
-                  className={`w-32 shrink-0 ${on ? 'fg-primary' : 'fg-tertiary'}`}
+        <Surface variant="outline">
+          <ul className="divide-y" data-testid="pipeline-trigger-starts">
+            {PIPELINE_START_KINDS.map((kind) => {
+              const on = starts.includes(kind);
+              return (
+                <li
+                  key={kind}
+                  className="flex items-center gap-4 px-4 py-3 text-s"
+                  data-testid="pipeline-trigger-start"
+                  data-trigger={kind}
+                  data-on={String(on)}
                 >
-                  {WORKFLOW_TRIGGER_LABELS[kind]}
-                </span>
-                <span className="min-w-0 flex-1 truncate fg-secondary">
-                  {PIPELINE_START_DESCRIPTIONS[kind]}
-                </span>
-                <span
-                  className={`w-10 shrink-0 text-xs ${on ? 'fg-secondary' : 'fg-tertiary'}`}
-                >
-                  {on ? 'On' : 'Off'}
-                </span>
-                {/* Lines On and Off up with the rows below, which end in a chevron. */}
-                <span className="w-3.5 shrink-0" aria-hidden="true" />
-              </li>
-            );
-          })}
-        </ul>
+                  <span
+                    className={`w-32 shrink-0 ${on ? 'fg-primary' : 'fg-tertiary'}`}
+                  >
+                    {WORKFLOW_TRIGGER_LABELS[kind]}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate fg-secondary">
+                    {PIPELINE_START_DESCRIPTIONS[kind]}
+                  </span>
+                  <span
+                    className={`w-10 shrink-0 text-xs ${on ? 'fg-secondary' : 'fg-tertiary'}`}
+                  >
+                    {on ? 'On' : 'Off'}
+                  </span>
+                  {/* Lines On and Off up with the rows below, which end in a chevron. */}
+                  <span className="w-3.5 shrink-0" aria-hidden="true" />
+                </li>
+              );
+            })}
+          </ul>
+        </Surface>
       </Section>
 
       <Section id="hooks" title="Hooks">
@@ -202,29 +200,28 @@ export function PipelineTriggers({
               : 'Hooks only run workflows with a Manual trigger.'}
           </EmptyRow>
         ) : (
-          <ul
-            className="divide-y rounded-lg border"
-            data-testid="pipeline-trigger-hooks"
-          >
-            {hooks.map((row) => (
-              <li key={row.key}>
-                <RowButton
-                  onClick={(): void => onOpenHook(row)}
-                  data-testid="pipeline-trigger-hook"
-                  data-hook-key={row.key}
-                >
-                  <span className="min-w-0 flex-1 truncate fg-primary">
-                    {row.eventLabel}
-                  </span>
-                  <span
-                    className={`min-w-0 flex-1 truncate fg-secondary ${REPLAY_MASK_CLASS}`}
+          <Surface variant="outline">
+            <ul className="divide-y" data-testid="pipeline-trigger-hooks">
+              {hooks.map((row) => (
+                <li key={row.key}>
+                  <RowButton
+                    onClick={(): void => onOpenHook(row)}
+                    data-testid="pipeline-trigger-hook"
+                    data-hook-key={row.key}
                   >
-                    {row.where}
-                  </span>
-                </RowButton>
-              </li>
-            ))}
-          </ul>
+                    <span className="min-w-0 flex-1 truncate fg-primary">
+                      {row.eventLabel}
+                    </span>
+                    <span
+                      className={`min-w-0 flex-1 truncate fg-secondary ${REPLAY_MASK_CLASS}`}
+                    >
+                      {row.where}
+                    </span>
+                  </RowButton>
+                </li>
+              ))}
+            </ul>
+          </Surface>
         )}
       </Section>
 
@@ -236,32 +233,31 @@ export function PipelineTriggers({
               : 'Automations only run workflows with a Manual trigger.'}
           </EmptyRow>
         ) : (
-          <ul
-            className="divide-y rounded-lg border"
-            data-testid="pipeline-trigger-automations"
-          >
-            {automations.map((row) => (
-              <li key={row.key}>
-                <RowButton
-                  onClick={(): void => onOpenAutomation(row)}
-                  data-testid="pipeline-trigger-automation"
-                  data-activity-id={row.key}
-                >
-                  <span
-                    className={`min-w-0 flex-1 truncate fg-primary ${REPLAY_MASK_CLASS}`}
+          <Surface variant="outline">
+            <ul className="divide-y" data-testid="pipeline-trigger-automations">
+              {automations.map((row) => (
+                <li key={row.key}>
+                  <RowButton
+                    onClick={(): void => onOpenAutomation(row)}
+                    data-testid="pipeline-trigger-automation"
+                    data-activity-id={row.key}
                   >
-                    {row.name}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate fg-secondary">
-                    {row.scheduleText}
-                  </span>
-                  <span className="w-10 shrink-0 text-xs fg-secondary">
-                    {row.enabled ? 'On' : 'Off'}
-                  </span>
-                </RowButton>
-              </li>
-            ))}
-          </ul>
+                    <span
+                      className={`min-w-0 flex-1 truncate fg-primary ${REPLAY_MASK_CLASS}`}
+                    >
+                      {row.name}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate fg-secondary">
+                      {row.scheduleText}
+                    </span>
+                    <span className="w-10 shrink-0 text-xs fg-secondary">
+                      {row.enabled ? 'On' : 'Off'}
+                    </span>
+                  </RowButton>
+                </li>
+              ))}
+            </ul>
+          </Surface>
         )}
       </Section>
     </div>

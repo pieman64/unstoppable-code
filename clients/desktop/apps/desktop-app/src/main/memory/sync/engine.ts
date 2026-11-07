@@ -1,10 +1,17 @@
 import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
+  MEMORY_CONSOLIDATION_PACKAGE_VERSION,
+  MEMORY_CONSOLIDATION_PROMPT_VERSION,
+} from '@canopy/memory-consolidation/version';
+import type { MemoryConsolidationResult } from '@canopy/memory-consolidation/run';
+import {
   MEMORY_SYNC_PROTOCOL_VERSION,
   MEMORY_SYNC_TIMINGS,
   checkMemoryChangesPage,
   type MemoryAccountPolicy,
+  type MemoryCommitRequest,
+  type MemoryCommitResponse,
   type MemoryDevicePlatformSchema,
   type MemoryDocument,
   type MemoryNoteRecord,
@@ -15,7 +22,13 @@ import {
 import type { z } from 'zod';
 import { withMemoryWriteLock } from '../local/edit-coordination';
 import { isMemoryMarkdownFileName, isNodeError } from '../local/memory-files';
+import { memoryNoteIdAt } from '../local/note-identity';
+import type {
+  LocalMemorySyncedCommitOutcome,
+  LocalMemorySyncedConsolidation,
+} from '../local/replica-hooks';
 import { createReplicaManifest } from '../local/scope-manifest';
+import { collectReplicaEdits } from './manual-edits';
 import {
   LocalMemoryScopeLockTimeoutError,
   acquireMemoryScopeLock,
@@ -25,8 +38,11 @@ import {
 import {
   finishMemoryLocalDeletes,
   readQueuedMemoryNoteOps,
+  recordMemoryUsageDeltas,
   settleMemoryPush,
+  settleMemoryUsagePush,
   takeMemoryPushBatch,
+  takeMemoryUsagePush,
 } from './outbox';
 import {
   initialMemorySyncState,
@@ -45,10 +61,16 @@ import type { MemoryReplicaRegistry } from './replica-registry';
 import {
   MemoryReplicaGapError,
   applyMemoryReplicaChanges,
+  applyMemoryReplicaCommit,
   applyMemoryReplicaSnapshot,
+  listConsumableNotes,
   type MemoryReplicaWriteOptions,
 } from './replica-writer';
-import type { MemorySyncFailure, MemorySyncTransport } from './transport';
+import type {
+  MemorySyncFailure,
+  MemorySyncResult,
+  MemorySyncTransport,
+} from './transport';
 
 /*
  * The desktop memory sync engine for one account (design §8–§10, §16). It
@@ -143,7 +165,9 @@ export interface MemorySyncProblem {
     | 'page_check'
     | 'replica_gap'
     | 'replica_unreadable'
+    | 'commit_refused'
     | 'push_refused'
+    | 'usage_refused'
     | 'snapshot_inconsistent'
     | 'pass_failed'
     | 'local_edit_unsettled'
@@ -172,7 +196,19 @@ export interface MemorySyncEngineOptions {
   onStatusChanged?: (status: MemorySyncEngineStatus) => void;
   /** A pull wrote into the scope's replica: what shows it should refresh. */
   onScopeChanged?: (scope: MemoryScopeRef) => void;
+  /**
+   * A consolidation run ended without a commit for a reason the next run may
+   * not meet (memory moved on, the lease was held or lost, the network): run
+   * the scope's consolidation again after `delayMs` (design §12.1 step 8).
+   */
+  requestConsolidation?: (scope: MemoryScopeRef, delayMs: number) => void;
   recordProblem?: (problem: MemorySyncProblem) => void;
+}
+
+/** How a leased consolidation ended, for the retry it may ask for. */
+interface ConsolidationEnd {
+  retry: boolean;
+  retryAfterMs?: number;
 }
 
 type PassOutcome =
@@ -180,6 +216,59 @@ type PassOutcome =
   | { kind: 'retry'; retryAfterMs?: number }
   | { kind: 'standby' }
   | { kind: 'halt'; state: MemorySyncEngineState; reason: string };
+
+interface LeaseRun {
+  lost: boolean;
+  committed: boolean;
+  /** Ended for a reason the next run may not meet: run again later. */
+  retry: boolean;
+  /** Released: no renewal may be scheduled any more. */
+  done: boolean;
+  renewal: MemorySyncTimer | null;
+}
+
+function leaseOutcome(
+  committed: boolean,
+  result: MemoryConsolidationResult | null,
+): Parameters<MemorySyncTransport['releaseLease']>[1]['outcome'] {
+  if (committed) return 'committed';
+  switch (result?.status) {
+    case 'clean':
+      return 'clean';
+    case 'failed':
+    case 'invalid-output':
+      return 'failed';
+    default:
+      return 'abandoned';
+  }
+}
+
+/** A failure another attempt may not meet. */
+function isTransient(failure: MemorySyncFailure): boolean {
+  return (
+    failure.kind === 'retry' ||
+    failure.kind === 'conflict' ||
+    failure.kind === 'snapshot' ||
+    failure.kind === 'register'
+  );
+}
+
+/**
+ * How long a consolidation that ended worth retrying waits before the next
+ * run: the idle debounce, doubled for each such run in a row, up to the
+ * per-scope interval, and never less than the server asked.
+ */
+function consolidationRetryDelay(
+  attempt: number,
+  retryAfterMs: number | undefined,
+): number {
+  const cap = MEMORY_SYNC_TIMINGS.consolidationMinIntervalMs;
+  const backoff = Math.min(
+    MEMORY_SYNC_TIMINGS.desktopIdleDebounceMs * 2 ** (attempt - 1),
+    cap,
+  );
+  return Math.max(backoff, Math.min(retryAfterMs ?? 0, cap));
+}
 
 const MAX_PAGES_PER_PASS = 1_000;
 const MAX_PUSHES_PER_PASS = 100;
@@ -258,6 +347,8 @@ export class MemorySyncEngine {
   private engineState: MemorySyncEngineState = 'starting';
   private reason: string | null = null;
   private lock: MemoryScopeLock | null = null;
+  /** The release of a lock a halt gave up, which `stop` waits for. */
+  private lockReleased: Promise<void> = Promise.resolve();
   private deviceSessionId: string | null = null;
   private settings: MemorySyncSettings | null = null;
   private policy: MemoryAccountPolicy | null = null;
@@ -273,7 +364,12 @@ export class MemorySyncEngine {
   private stopped = false;
   /** Stopped by the server (a newer client, another session): no more passes. */
   private halted = false;
+  /** A halt a leased run met, for the next pass to apply. */
+  private pendingHalt: PassOutcome | null = null;
+  private exclusiveTail: Promise<void> = Promise.resolve();
   private readonly scopeStatus = new Map<string, MemorySyncScopeStatus>();
+  /** Consolidation runs in a row that ended worth retrying, by scope key. */
+  private readonly consolidationRetries = new Map<string, number>();
 
   constructor(private readonly options: MemorySyncEngineOptions) {
     this.timing = { ...MEMORY_SYNC_ENGINE_TIMING, ...options.timing };
@@ -344,6 +440,7 @@ export class MemorySyncEngine {
     await this.running?.catch(() => undefined);
     await this.lock?.release().catch(() => undefined);
     this.lock = null;
+    await this.lockReleased;
     this.engineState = 'stopped';
     this.reason ??= 'stopped';
     this.emitStatus();
@@ -416,7 +513,7 @@ export class MemorySyncEngine {
     if (this.stopped || this.running !== null) {
       return this.running ?? Promise.resolve();
     }
-    this.running = this.pass(this.controller.signal)
+    this.running = this.exclusive(() => this.pass(this.controller.signal))
       .catch((error: unknown): PassOutcome => {
         if (error instanceof Error && error.name === 'AbortError') {
           return { kind: 'halt', state: 'stopped', reason: 'stopped' };
@@ -466,7 +563,8 @@ export class MemorySyncEngine {
             kind: 'stopped',
             code: outcome.reason,
           });
-          void this.lock?.release().catch(() => undefined);
+          this.lockReleased =
+            this.lock?.release().catch(() => undefined) ?? Promise.resolve();
           this.lock = null;
         }
         break;
@@ -532,6 +630,9 @@ export class MemorySyncEngine {
       return { kind: 'standby' };
     }
     this.checkAborted(signal);
+    const halt = this.pendingHalt;
+    this.pendingHalt = null;
+    if (halt !== null) return halt;
     if (this.deviceSessionId === null) {
       const registered = await this.register(signal);
       if (registered !== null) return registered;
@@ -621,6 +722,18 @@ export class MemorySyncEngine {
     }
   }
 
+  /**
+   * Settles a failure a leased run met outside a pass (a lease call, or its
+   * pull or commit) as a pass would: a lost registration is forgotten and a
+   * halt kept, and the pass asked for now registers again or halts.
+   */
+  private leaseRunFailure(failure: MemorySyncFailure): void {
+    const outcome = this.engineOutcome(failure);
+    if (outcome.kind === 'halt') this.pendingHalt = outcome;
+    else if (failure.kind !== 'register') return;
+    this.requestPull();
+  }
+
   private scopeDir(scope: MemoryScopeRef): string {
     return memoryReplicaScopeDir(
       this.options.replicasRoot,
@@ -690,6 +803,18 @@ export class MemorySyncEngine {
       onLocalChange: () => {
         this.requestPush();
       },
+      recordUsage: (counts, usedAt) => {
+        void recordMemoryUsageDeltas(dir, state.binding, counts, usedAt).catch(
+          (error: unknown) => {
+            this.options.recordProblem?.({
+              kind: 'pass_failed',
+              code: error instanceof Error ? error.name : 'usage',
+            });
+          },
+        );
+      },
+      runConsolidation: (reason, run) =>
+        this.runLeasedConsolidation(scope, reason, run),
     });
     return true;
   }
@@ -747,10 +872,444 @@ export class MemorySyncEngine {
       this.markNeedsFirstEnable(scope);
       return { kind: 'ok' };
     }
-    this.checkAborted(signal);
-    const pushed = await this.push(scope, signal);
+    const steps: Array<{
+      refusal: MemorySyncProblem['kind'];
+      run: () => Promise<MemorySyncFailure | null>;
+    }> = [
+      { refusal: 'commit_refused', run: () => this.commitEdits(scope, signal) },
+      { refusal: 'push_refused', run: () => this.push(scope, signal) },
+      { refusal: 'usage_refused', run: () => this.pushUsage(scope, signal) },
+    ];
+    // A refusal answers that one request: it is recorded and the next step
+    // still runs. Only a failure worth retrying or one about the whole scope
+    // or engine ends the pass here.
+    for (const step of steps) {
+      this.checkAborted(signal);
+      const failure = await step.run();
+      if (failure === null) continue;
+      if (failure.kind === 'refused') {
+        await this.recordRefusal(dir, step.refusal, failure.code);
+        continue;
+      }
+      await this.refreshScopeStatus(scope);
+      return this.scopeOutcome(scope, failure);
+    }
     await this.refreshScopeStatus(scope);
-    return pushed === null ? { kind: 'ok' } : this.scopeOutcome(scope, pushed);
+    return { kind: 'ok' };
+  }
+
+  private async recordRefusal(
+    dir: string,
+    kind: MemorySyncProblem['kind'],
+    code: string,
+  ): Promise<void> {
+    this.options.recordProblem?.({ kind, code });
+    await this.recordScopeError(dir, code);
+  }
+
+  /**
+   * Commits the replica's document edits as one `manual_edit` at its base
+   * (design §13.1). A compare-and-set loss pulls, which merges, and sends
+   * what is left once more.
+   */
+  private async commitEdits(
+    scope: MemoryScopeRef,
+    signal: AbortSignal,
+  ): Promise<MemorySyncFailure | null> {
+    const dir = this.scopeDir(scope);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const edits = await collectReplicaEdits(dir);
+      const [refused] = edits.refused;
+      if (refused !== undefined) {
+        await this.recordScopeError(dir, `document_${refused.reason}`);
+      }
+      if (edits.changes.length === 0 || !this.keeps(dir)) return null;
+      const state = await readMemorySyncState(dir);
+      if (state === undefined || state === null) return null;
+      const sent = await this.sendCommit(
+        scope,
+        state,
+        {
+          kind: 'manual_edit',
+          lease: null,
+          changes: edits.changes,
+          consumedNoteIds: [],
+          metadata: {
+            model: null,
+            promptVersion: null,
+            consolidationPackageVersion: null,
+            inputHash: null,
+          },
+        },
+        signal,
+      );
+      if (sent.ok) {
+        if (edits.deferred > 0) this.requestPush();
+        return null;
+      }
+      if (
+        sent.failure.kind !== 'conflict' ||
+        sent.failure.code !== 'memory_revision_conflict'
+      ) {
+        return sent.failure;
+      }
+      const pulled = await this.pull(scope, signal);
+      if (pulled !== null) return pulled;
+    }
+    return null;
+  }
+
+  /**
+   * Sends a commit, recording it as pending first so a crash is resolved by
+   * the next pull (design §12.1), and applies the accepted revision through
+   * the replica writer. A manual edit leaves the live documents as they are.
+   * An applied revision that wrote into the replica is reported as a scope
+   * change, as a pulled one is.
+   */
+  private async sendCommit(
+    scope: MemoryScopeRef,
+    state: MemorySyncStateFile,
+    body: Omit<MemoryCommitRequest, 'commitId' | 'baseRevision'>,
+    signal: AbortSignal,
+  ): Promise<MemorySyncResult<MemoryCommitResponse>> {
+    const dir = this.scopeDir(scope);
+    const request: MemoryCommitRequest = {
+      commitId: memoryNoteIdAt(this.now()),
+      baseRevision: state.baseRevision,
+      ...body,
+    };
+    await this.updateState(dir, {
+      pendingCommit: {
+        commitId: request.commitId,
+        kind: request.kind,
+        baseRevision: request.baseRevision,
+        startedAt: new Date(this.now()).toISOString(),
+      },
+    });
+    const result = await this.options.transport.commit(
+      state.binding.scopeId,
+      request,
+      signal,
+    );
+    if (result.ok) {
+      const applied = await applyMemoryReplicaCommit(
+        dir,
+        {
+          revision: result.value.revision,
+          changes: request.changes,
+          consumedNoteIds: request.consumedNoteIds,
+          keepLiveDocuments: request.kind === 'manual_edit',
+        },
+        this.writeOptions(),
+      );
+      if (applied.documentsChanged > 0 || request.consumedNoteIds.length > 0) {
+        this.options.onScopeChanged?.(scope);
+      }
+    } else if (result.failure.kind !== 'retry') {
+      // Refused: the commit did not land. A lost answer stays pending.
+      await this.updateState(dir, { pendingCommit: null });
+    }
+    return result;
+  }
+
+  /**
+   * Sends the scope's usage deltas (design §15) the way notes go: the push
+   * is taken and marked sent under the scope lock, sent again as it was
+   * until it is answered, and settled by its `seq`.
+   */
+  private async pushUsage(
+    scope: MemoryScopeRef,
+    signal: AbortSignal,
+  ): Promise<MemorySyncFailure | null> {
+    const dir = this.scopeDir(scope);
+    const state = await readMemorySyncState(dir);
+    if (state === undefined || state === null) return null;
+    const push = await takeMemoryUsagePush(dir, state.binding);
+    if (push === null) return null;
+    const result = await this.options.transport.pushUsage(
+      state.binding.scopeId,
+      { deltas: [...push.deltas] },
+      signal,
+    );
+    if (!result.ok) {
+      // Sent again as it is, a refused push would be refused forever and
+      // hold back every later use: drop it.
+      if (result.failure.kind === 'refused') {
+        await settleMemoryUsagePush(dir, state.binding, push.seq);
+      }
+      return result.failure;
+    }
+    await settleMemoryUsagePush(dir, state.binding, push.seq);
+    return null;
+  }
+
+  /**
+   * Runs a consolidation of a synced scope holding its lease (design §11,
+   * §12.1): pull to the head, take the lease (desktop first, D4a), settle
+   * the local deletes and edits cut short and pull again under it, as a pass
+   * does, renew it every 30 seconds while `run` generates, commit under its
+   * epoch, and release it. A lease held elsewhere or a base that moved
+   * cancels the run; nothing is applied unless the commit is accepted.
+   */
+  async runLeasedConsolidation(
+    scope: MemoryScopeRef,
+    reason: 'scheduled' | 'manual',
+    run: (
+      consolidation: LocalMemorySyncedConsolidation,
+    ) => Promise<MemoryConsolidationResult>,
+  ): Promise<MemoryConsolidationResult> {
+    const ended: ConsolidationEnd = { retry: false };
+    try {
+      return await this.leasedConsolidation(scope, reason, run, ended);
+    } catch (error) {
+      ended.retry = false;
+      throw error;
+    } finally {
+      this.afterConsolidation(scope, ended);
+    }
+  }
+
+  /**
+   * Asks the host for another run of a consolidation that ended worth
+   * retrying, waiting longer for each in a row; any other end starts over.
+   * Nothing is asked for a replica this engine no longer keeps.
+   */
+  private afterConsolidation(
+    scope: MemoryScopeRef,
+    ended: ConsolidationEnd,
+  ): void {
+    const key = memoryScopeKey(scope);
+    if (!ended.retry || !this.keeps(this.scopeDir(scope))) {
+      this.consolidationRetries.delete(key);
+      return;
+    }
+    const attempt = (this.consolidationRetries.get(key) ?? 0) + 1;
+    this.consolidationRetries.set(key, attempt);
+    this.options.requestConsolidation?.(
+      scope,
+      consolidationRetryDelay(attempt, ended.retryAfterMs),
+    );
+  }
+
+  private async leasedConsolidation(
+    scope: MemoryScopeRef,
+    reason: 'scheduled' | 'manual',
+    run: (
+      consolidation: LocalMemorySyncedConsolidation,
+    ) => Promise<MemoryConsolidationResult>,
+    ended: ConsolidationEnd,
+  ): Promise<MemoryConsolidationResult> {
+    const cancelled = (why: string): MemoryConsolidationResult => ({
+      status: 'cancelled',
+      reason: why,
+    });
+    const dir = this.scopeDir(scope);
+    const engine = await this.syncNow();
+    if (engine.state !== 'running') {
+      // Still starting: no pass has synced yet, each one failing for a
+      // reason worth retrying (the network, a registration). Any other state
+      // is one this process does not consolidate in.
+      ended.retry = engine.state === 'starting';
+      return cancelled('cancelled');
+    }
+    const state = await readMemorySyncState(dir);
+    if (
+      state === undefined ||
+      state === null ||
+      state.mode !== 'syncing' ||
+      state.binding.accountId !== this.options.accountId ||
+      !this.keeps(dir)
+    ) {
+      return cancelled('cancelled');
+    }
+    const { signal } = this.controller;
+    const scopeId = state.binding.scopeId;
+    const acquired = await this.options.transport.acquireLease(
+      scopeId,
+      reason,
+      signal,
+    );
+    if (!acquired.ok) {
+      this.leaseRunFailure(acquired.failure);
+      ended.retry = isTransient(acquired.failure);
+      const retryAfterMs =
+        'retryAfterMs' in acquired.failure
+          ? acquired.failure.retryAfterMs
+          : undefined;
+      if (retryAfterMs !== undefined) ended.retryAfterMs = retryAfterMs;
+      return cancelled(
+        acquired.failure.kind === 'retry' &&
+          acquired.failure.code === 'memory_lease_held'
+          ? 'already-running'
+          : 'cancelled',
+      );
+    }
+    const { lease } = acquired.value;
+    const fence = { leaseId: lease.leaseId, epoch: lease.epoch };
+    const maxUntil = Date.parse(lease.maxUntil);
+    const held: LeaseRun = {
+      lost: false,
+      committed: false,
+      retry: false,
+      done: false,
+      renewal: null,
+    };
+    const scheduleRenewal = (): void => {
+      if (held.done || held.lost || this.stopped) return;
+      held.renewal = this.setTimer(() => {
+        void this.options.transport
+          .renewLease(scopeId, fence, signal)
+          .then((renewed) => {
+            if (!renewed.ok) {
+              this.leaseRunFailure(renewed.failure);
+              if (renewed.failure.kind !== 'retry') {
+                held.lost = true;
+                held.retry = isTransient(renewed.failure);
+              }
+            }
+            scheduleRenewal();
+          });
+      }, MEMORY_SYNC_TIMINGS.leaseRenewIntervalMs);
+    };
+    let result: MemoryConsolidationResult | null = null;
+    try {
+      const pulled = await this.exclusive(async () => {
+        await this.finishLocalDeletes();
+        return this.pull(scope, signal);
+      });
+      if (pulled !== null) {
+        this.leaseRunFailure(pulled);
+        held.retry = isTransient(pulled);
+        return cancelled('cancelled');
+      }
+      if (
+        (await readMemorySyncState(dir))?.baseRevision !== lease.baseRevision
+      ) {
+        held.retry = true;
+        return cancelled('cancelled');
+      }
+      scheduleRenewal();
+      result = await run({
+        consumable: await listConsumableNotes(dir),
+        listConsumable: () => listConsumableNotes(dir),
+        usage: acquired.value.usage,
+        shouldContinue: () =>
+          !held.lost && this.keeps(dir) && this.now() < maxUntil,
+        commit: (request) =>
+          this.exclusive(() =>
+            this.commitConsolidation(
+              scope,
+              lease.baseRevision,
+              held,
+              request.inputsCurrent,
+              {
+                kind: 'consolidation',
+                lease: fence,
+                changes: request.changes,
+                consumedNoteIds: request.consumedNoteIds,
+                ...(request.prunedTopicPaths.length > 0
+                  ? { prunedTopicPaths: request.prunedTopicPaths }
+                  : {}),
+                metadata: {
+                  model: request.model,
+                  promptVersion: MEMORY_CONSOLIDATION_PROMPT_VERSION,
+                  consolidationPackageVersion:
+                    MEMORY_CONSOLIDATION_PACKAGE_VERSION,
+                  inputHash: request.inputHash,
+                },
+              },
+              maxUntil,
+              signal,
+            ),
+          ),
+      });
+      return result;
+    } finally {
+      ended.retry = held.retry && !held.committed;
+      held.done = true;
+      held.renewal?.cancel();
+      const released = await this.options.transport
+        .releaseLease(scopeId, {
+          ...fence,
+          outcome: leaseOutcome(held.committed, result),
+        })
+        .catch(() => null);
+      if (released !== null && !released.ok) {
+        this.leaseRunFailure(released.failure);
+      }
+      if (!held.committed) this.requestPull();
+    }
+  }
+
+  /**
+   * Commits a leased run's output, unless the lease is gone, the base moved,
+   * or something the run read changed meanwhile (`inputsCurrent`, checked
+   * here so no pass runs between it and the commit).
+   */
+  private async commitConsolidation(
+    scope: MemoryScopeRef,
+    leaseBase: number,
+    held: LeaseRun,
+    inputsCurrent: () => Promise<boolean>,
+    body: Omit<MemoryCommitRequest, 'commitId' | 'baseRevision'>,
+    maxUntil: number,
+    signal: AbortSignal,
+  ): Promise<LocalMemorySyncedCommitOutcome> {
+    const dir = this.scopeDir(scope);
+    if (held.lost || !this.keeps(dir) || this.now() >= maxUntil) return 'lost';
+    const current = await readMemorySyncState(dir);
+    if (
+      current === undefined ||
+      current === null ||
+      current.baseRevision !== leaseBase ||
+      !(await inputsCurrent())
+    ) {
+      held.retry = true;
+      return 'changed';
+    }
+    const sent = await this.sendCommit(scope, current, body, signal);
+    if (sent.ok) {
+      held.committed = true;
+      return 'committed';
+    }
+    this.leaseRunFailure(sent.failure);
+    if (
+      sent.failure.kind === 'conflict' &&
+      sent.failure.code.startsWith('memory_lease')
+    ) {
+      held.lost = true;
+      held.retry = true;
+      return 'lost';
+    }
+    if (sent.failure.kind === 'refused') {
+      await this.recordRefusal(dir, 'commit_refused', sent.failure.code);
+      return 'refused';
+    }
+    held.retry = isTransient(sent.failure);
+    return 'changed';
+  }
+
+  /**
+   * Whether this engine still keeps the replica at `dir`: it runs and the
+   * replica is registered for its account. An engine that stopped, or whose
+   * host unregistered its replicas, commits nothing more to them.
+   */
+  private keeps(dir: string): boolean {
+    return (
+      !this.stopped &&
+      this.options.registry.entryForDir(dir)?.accountId ===
+        this.options.accountId
+    );
+  }
+
+  /** Runs `section` alone among passes and commits. */
+  private exclusive<T>(section: () => Promise<T>): Promise<T> {
+    const next = this.exclusiveTail.then(section, section);
+    this.exclusiveTail = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
   }
 
   /** What a scope's failure means: scope modes here, the rest engine-wide. */
@@ -774,11 +1333,7 @@ export class MemorySyncEngine {
         await this.refreshScopeStatus(scope);
         return { kind: 'halt', state: 'paused', reason: failure.code };
       case 'refused':
-        this.options.recordProblem?.({
-          kind: 'push_refused',
-          code: failure.code,
-        });
-        await this.recordScopeError(dir, failure.code);
+        await this.recordRefusal(dir, 'push_refused', failure.code);
         await this.refreshScopeStatus(scope);
         return { kind: 'ok' };
       default:
@@ -908,7 +1463,14 @@ export class MemorySyncEngine {
           state.cursor,
           signal,
         );
-        if (step === 'done') return null;
+        if (step === 'done') {
+          // Caught up: a commit this replica sent and never saw land did
+          // not land (design §12.1); its run is gone.
+          if ((await readMemorySyncState(dir))?.pendingCommit != null) {
+            await this.updateState(dir, { pendingCommit: null });
+          }
+          return null;
+        }
         if (step !== 'more') return step;
         continue;
       }

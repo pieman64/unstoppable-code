@@ -36,6 +36,7 @@ import { readWorkspaceConfig } from '../lib/workspace-persistence';
 import { resolveWorkspaceReferenceRepoPath } from '../lib/workspace-reference-repo';
 import { buildFileIndexes } from '../services/files-service';
 import { listHomeBranchTargets } from '../canopy-runtime/worker-git-dispatch';
+import type { DaemonGitRoute } from '../canopy-runtime/daemon-git-route';
 import type { WorkerGitDispatcher } from '../canopy-runtime/worker-git-adapter';
 import type { DesktopIpcCallerResolver } from './file-tree';
 import { registerIpcHandler } from './register';
@@ -494,6 +495,7 @@ export async function handleConfigurationComposerAdvisorEnvironment(
 export function registerHomeSurfaceHandlers(runtime: {
   dispatcher: WorkerGitDispatcher;
   resolveCaller: DesktopIpcCallerResolver;
+  daemonGitRoute?: () => DaemonGitRoute;
 }): void {
   registerIpcHandler<
     [ConfigurationComposerAdvisorEnvironmentRequest],
@@ -509,6 +511,9 @@ export function registerHomeSurfaceHandlers(runtime: {
         runtime.dispatcher,
         runtime.resolveCaller(event),
         request,
+        runtime.daemonGitRoute
+          ? { route: runtime.daemonGitRoute(), sender: event.sender }
+          : undefined,
       ),
   );
   registerIpcHandler<

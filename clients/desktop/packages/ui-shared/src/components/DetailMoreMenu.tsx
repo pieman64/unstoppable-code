@@ -95,7 +95,7 @@ export function DetailMoreMenu({
             data-testid={triggerTestId}
             onClick={(): void => setOpen((current) => !current)}
           >
-            <MoreHorizontalIcon width={14} height={14} aria-hidden="true" />
+            <MoreHorizontalIcon size="sm" aria-hidden="true" />
           </Button>
         </Tooltip>
       </span>

@@ -395,8 +395,7 @@ export const ToolApprovalDock = memo(function ToolApprovalDock({
                 >
                   <AppCatalogChevronLeftMediumIcon
                     aria-hidden="true"
-                    width="14"
-                    height="14"
+                    size="sm"
                   />
                 </Button>
                 <Button
@@ -410,8 +409,7 @@ export const ToolApprovalDock = memo(function ToolApprovalDock({
                 >
                   <AppCatalogChevronRightMediumIcon
                     aria-hidden="true"
-                    width="14"
-                    height="14"
+                    size="sm"
                   />
                 </Button>
               </div>

@@ -17,6 +17,7 @@ import type { AccountMcpConnectionSummary } from '@canopy/desktop-shared/types/m
 import type { TryItSetupAction } from '@canopy/ui-shared/components';
 import {
   useAccountMcpSignIn,
+  accountMcpSignInTargetKey,
   type AccountMcpSignInTarget,
 } from '@/components/mcp/useAccountMcpSignIn';
 import type { DesktopTryItTarget } from '@/hooks/useTryItSignInContinuation';
@@ -251,11 +252,11 @@ export function useTryItSetup(input: UseTryItSetupInput): TryItSetup {
         return;
       // Enforced here as well as in presentation: no pane without both.
       const embedded = route === 'embedded' && embeddedAllowed;
-      const cancellationKey =
-        resolved.target.connection?.serverKey ?? resolved.target.curatedKey;
+      const cancellationKey = accountMcpSignInTargetKey(resolved.target);
       const attempt = {
         cancel: (): void => {
-          if (cancellationKey) signIn.cancel(cancellationKey);
+          if (cancellationKey)
+            signIn.cancel(cancellationKey, resolved.target.connection?.id);
         },
       };
       if (embedded && !useTryItSetupPaneStore.getState().reserve(attempt)) {
@@ -270,6 +271,7 @@ export function useTryItSetup(input: UseTryItSetupInput): TryItSetup {
       setPhase('active');
       const owned = (): boolean => attemptRef.current === attempt;
       signIn.connect(resolved.target, {
+        pendingKey: cancellationKey,
         ...(embedded ? { browser: 'embedded' as const } : {}),
         onAuthorizing: (embeddedUrl): void => {
           if (!owned() || !embedded) return;

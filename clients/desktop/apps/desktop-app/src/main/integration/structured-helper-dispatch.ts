@@ -34,7 +34,7 @@ import {
 import type { ClaudeTerminalPermission } from './claude-terminal-settings';
 import { READ_ONLY_TOOLS } from '@canopy/desktop-shared/builtin-actions/agent-prompt/logic';
 import { getEffectiveClaudeWorkerModePreferences } from '../lib/claude-tui-workers';
-import { getCodexRuntimeService } from '../codex/runtime-service';
+import { codexRuntimeForWorkerRun } from '../codex/runtime-service';
 import { isJsonValue } from '@canopy/desktop-shared/node/codex-runtime';
 import { resolveCodexMockAppServerOverride } from '@canopy/desktop-shared/node/e2e-mock-env';
 import { createHash } from 'node:crypto';
@@ -186,7 +186,7 @@ async function runCodexStructuredHelperAttempt<T>(
       : {}),
     ...(mock ? { mockProviderId: 'canopy-e2e' as const } : {}),
   } satisfies CodexSpawnProfileRequest;
-  const runtime = getCodexRuntimeService();
+  const runtime = codexRuntimeForWorkerRun('codexStructuredHelper');
   const events: unknown[] = [];
   let eventsFlushed = false;
   const flushEvents = async (): Promise<void> => {

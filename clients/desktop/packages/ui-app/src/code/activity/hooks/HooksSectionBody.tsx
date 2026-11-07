@@ -24,6 +24,8 @@ import {
 import { ChevronIcon } from '@canopy/ui-shared/icons';
 import { PAUSED_HOOK_LABEL_CLASSES } from '@canopy/ui-shared/lib';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
+import { Notice } from '@canopy/ui-shared/components/Notice';
+import { Surface } from '@canopy/ui-shared/components';
 
 export type HooksSectionTarget =
   | 'project'
@@ -285,20 +287,20 @@ function runIcon(entry: HooksSectionEntry): JSX.Element | null {
     return null;
   }
   if (type === 'chat') {
-    return <ChatIcon className="h-3 w-3" />;
+    return <ChatIcon size="sm" />;
   }
   if (type === 'pipeline') {
-    return <PipelineIcon className="h-3 w-3" />;
+    return <PipelineIcon size="sm" />;
   }
   return action.interactive ? (
     <TerminalBorderedIcon
-      className="h-3 w-3"
+      size="sm"
       data-testid="interactive-hook-command-icon"
       aria-hidden="true"
     />
   ) : (
     <TerminalIcon
-      className="h-3 w-3"
+      size="sm"
       data-testid="default-hook-command-icon"
       aria-hidden="true"
     />
@@ -407,12 +409,18 @@ export function HooksSectionBody({
                 {entry.hook.actions.map((action, index) => (
                   // Command and chat labels quote the command or prompt;
                   // pipeline labels name the pipeline and stay recorded.
-                  <pre
+                  <Surface
                     key={`${action.type}-${index}`}
-                    className={`${action.type === 'pipeline' ? '' : REPLAY_BLOCK_CLASS} max-h-20 overflow-auto whitespace-pre-wrap break-words rounded bg-base/80 px-2 py-1.5 font-mono text-2xs fg-secondary`}
+                    variant="group"
+                    size="small"
+                    className="overflow-hidden"
                   >
-                    {action.label}
-                  </pre>
+                    <pre
+                      className={`${action.type === 'pipeline' ? '' : REPLAY_BLOCK_CLASS} max-h-20 overflow-auto whitespace-pre-wrap break-words px-2 py-1.5 font-mono text-2xs fg-secondary`}
+                    >
+                      {action.label}
+                    </pre>
+                  </Surface>
                 ))}
               </div>
             }
@@ -423,52 +431,53 @@ export function HooksSectionBody({
       );
     }
     return (
-      <div
-        key={key}
-        className={
-          compact
-            ? `group flex ${COMPACT_ACTIVITY_ITEM_CLASS_NAME} pointer-coarse:gap-4`
-            : 'group flex w-full items-center gap-2 rounded-lg border bg-fg-primary/[0.03] px-2.5 py-2 text-left text-xs pointer-coarse:gap-4'
-        }
-        data-testid="activity-hooks-entry"
-      >
-        <span
-          className={`flex-1 ${compact ? 'min-w-0 truncate ' : 'font-medium '}${
-            entry.paused
-              ? PAUSED_HOOK_LABEL_CLASSES
-              : compact
-                ? 'fg-primary'
-                : 'fg-primary/80'
-          }`}
+      <BoxUnlessCompact key={key} compact={compact}>
+        <div
+          className={
+            compact
+              ? `group flex ${COMPACT_ACTIVITY_ITEM_CLASS_NAME} pointer-coarse:gap-4`
+              : 'group flex w-full items-center gap-2 px-2.5 py-2 text-left text-xs pointer-coarse:gap-4'
+          }
+          data-testid="activity-hooks-entry"
         >
-          {label}
-        </span>
-        {renderSourceInfoButton?.(entry, label)}
-        {renderWatcherButton?.(key)}
-        {onTogglePause && (
-          <PauseToggleButton
-            paused={entry.paused}
-            onClick={(): void => onTogglePause(key)}
-            label={entry.paused ? `Resume ${label}` : `Pause ${label}`}
-          />
-        )}
-        {onRun && (
-          <ExecutionActionButton
-            label="Run"
-            ariaLabel={
-              configuredInteractive
-                ? `Run ${label} in terminal`
-                : `Run ${label}`
-            }
-            variant="default"
-            disabled={entry.runDisabled}
-            onClick={(): void => setConfirmingKey(key)}
-            title={entry.runDisabledTitle}
-            dataTestId="activity-hooks-run"
-            icon={runIcon(entry)}
-          />
-        )}
-      </div>
+          <span
+            className={`flex-1 ${compact ? 'min-w-0 truncate ' : 'font-medium '}${
+              entry.paused
+                ? PAUSED_HOOK_LABEL_CLASSES
+                : compact
+                  ? 'fg-primary'
+                  : 'fg-primary/80'
+            }`}
+          >
+            {label}
+          </span>
+          {renderSourceInfoButton?.(entry, label)}
+          {renderWatcherButton?.(key)}
+          {onTogglePause && (
+            <PauseToggleButton
+              paused={entry.paused}
+              onClick={(): void => onTogglePause(key)}
+              label={entry.paused ? `Resume ${label}` : `Pause ${label}`}
+            />
+          )}
+          {onRun && (
+            <ExecutionActionButton
+              label="Run"
+              ariaLabel={
+                configuredInteractive
+                  ? `Run ${label} in terminal`
+                  : `Run ${label}`
+              }
+              variant="default"
+              disabled={entry.runDisabled}
+              onClick={(): void => setConfirmingKey(key)}
+              title={entry.runDisabledTitle}
+              dataTestId="activity-hooks-run"
+              icon={runIcon(entry)}
+            />
+          )}
+        </div>
+      </BoxUnlessCompact>
     );
   };
 
@@ -516,24 +525,30 @@ export function HooksSectionBody({
           );
         })}
         {unconfiguredWatchers.map((watcher) => (
-          <div
+          <BoxUnlessCompact
             key={`unconfigured-watch-${watcher.key}`}
-            className={
-              compact
-                ? `group flex ${COMPACT_ACTIVITY_ITEM_CLASS_NAME} pointer-coarse:gap-4`
-                : 'group flex w-full items-center gap-2 rounded-lg border bg-fg-primary/[0.03] px-2.5 py-2 text-left text-xs pointer-coarse:gap-4'
-            }
+            compact={compact}
           >
-            <span className="flex-1 font-medium fg-secondary">
-              {watcher.label}
-            </span>
-            {renderWatcherButton?.(watcher.key)}
-          </div>
+            <div
+              className={
+                compact
+                  ? `group flex ${COMPACT_ACTIVITY_ITEM_CLASS_NAME} pointer-coarse:gap-4`
+                  : 'group flex w-full items-center gap-2 px-2.5 py-2 text-left text-xs pointer-coarse:gap-4'
+              }
+            >
+              <span className="flex-1 font-medium fg-secondary">
+                {watcher.label}
+              </span>
+              {renderWatcherButton?.(watcher.key)}
+            </div>
+          </BoxUnlessCompact>
         ))}
       </div>
       {error !== null && (
-        <div className="mt-2.5 rounded-lg border border-fg-destructive-strong/20 bg-fg-destructive-strong/[0.06] px-2.5 py-2 text-xs fg-destructive-strong">
-          {error}
+        <div className="mt-2.5">
+          <Notice intent="destructive" role="none">
+            {error}
+          </Notice>
         </div>
       )}
       {completedRuns.length > 0 && (
@@ -569,5 +584,20 @@ export function HooksSectionBody({
         )}
       {sourceInfoModal}
     </div>
+  );
+}
+
+/** The grouped box a row sits in, except in the compact list, which has none. */
+function BoxUnlessCompact({
+  compact,
+  children,
+}: {
+  readonly compact: boolean;
+  readonly children: ReactNode;
+}): JSX.Element {
+  return compact ? (
+    <>{children}</>
+  ) : (
+    <Surface variant="group">{children}</Surface>
   );
 }

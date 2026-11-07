@@ -75,7 +75,7 @@ export function LedgerStatusGlyph({
   const Icon = STATUS_ICONS[status];
   return (
     <Icon
-      size={10}
+      size="sm"
       aria-hidden="true"
       data-testid="ledger-status-glyph"
       data-status={status}

@@ -317,6 +317,50 @@ it('the runtime serves worker.agent.turn.run and worker.agent.subagent.run besid
   }
 });
 
+it('the runtime serves worker.agent.provider.list from the worker.agent owner', async () => {
+  await runtime.shutdown();
+  operations = createCoreOperationAdapter({
+    ledgerPath: () => join(root, 'provider-ledger.sqlite'),
+  });
+  const inventory = {
+    providers: [
+      {
+        providerId: 'claude' as const,
+        name: 'Claude',
+        authState: 'ready' as const,
+        checkedAt: '2026-11-05T12:00:00.000Z',
+        models: [],
+        usageLimit: null,
+      },
+    ],
+  };
+  const fakeHost = {
+    authorityId: 'local-desktop',
+    targetId: 'in_process_worker',
+    list: jest.fn(() => Promise.resolve(inventory)),
+  };
+  runtime = createDesktopRuntime({
+    operationAdapter: operations,
+    shutdownTimeoutMs: 25,
+    workerAgentAdapter: createWorkerAgentAdapter({
+      providerHost: fakeHost,
+      sinkFor: () => null,
+    }),
+  });
+  await expect(
+    runtime.query(
+      'worker.agent.provider.list',
+      { scope: {}, probe: false },
+      { caller: { ...caller, grants: ['worker.agent.read'] } },
+    ),
+  ).resolves.toEqual({
+    authorityId: 'local-desktop',
+    targetId: 'in_process_worker',
+    probed: false,
+    ...inventory,
+  });
+});
+
 it('the desktop dispatcher serves core.chat.question.respond', async () => {
   expect(DESKTOP_INSTRUCTION_DEFINITIONS['core.chat.question.respond']).toBe(
     CORE_CHAT_QUESTION_INSTRUCTION_DEFINITIONS['core.chat.question.respond'],

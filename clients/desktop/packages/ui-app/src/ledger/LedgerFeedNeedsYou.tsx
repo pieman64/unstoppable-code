@@ -56,6 +56,7 @@ import {
   LedgerCloseIntentPrompt,
   type LedgerCloseIntentChoice,
 } from './ledger-close-intent';
+import { Surface } from '@canopy/ui-shared/components';
 
 type ActionResult =
   /** `needsChoice`: nothing was written yet; the close waits on `closeIntent`. */
@@ -133,18 +134,18 @@ function PlanPreview({ text }: { readonly text: string }): JSX.Element {
   }, [expanded, text]);
   return (
     <div className="flex min-w-0 flex-col items-start gap-1">
-      <div
-        ref={bodyRef}
-        data-testid="feed-needs-you-plan-text"
-        data-expanded={expanded ? 'true' : undefined}
-        className={`w-full rounded-md bg-subtle px-3 py-2 ${
-          expanded ? 'max-h-96 overflow-y-auto' : 'max-h-48 overflow-hidden'
-        } ${REPLAY_BLOCK_CLASS}`}
-      >
-        <div className={TRANSCRIPT_PROSE_CLASS}>
-          <Markdown options={LEDGER_ENTRY_MARKDOWN_OPTIONS}>{text}</Markdown>
+      <Surface variant="group" size="small" className="w-full overflow-hidden">
+        <div
+          ref={bodyRef}
+          data-testid="feed-needs-you-plan-text"
+          data-expanded={expanded ? 'true' : undefined}
+          className={`px-3 py-2 ${expanded ? 'max-h-96 overflow-y-auto' : 'max-h-48 overflow-hidden'} ${REPLAY_BLOCK_CLASS}`}
+        >
+          <div className={TRANSCRIPT_PROSE_CLASS}>
+            <Markdown options={LEDGER_ENTRY_MARKDOWN_OPTIONS}>{text}</Markdown>
+          </div>
         </div>
-      </div>
+      </Surface>
       {overflows || expanded ? (
         <Button
           type="button"

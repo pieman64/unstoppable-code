@@ -24,6 +24,7 @@ import { previewMemorySearch } from './api';
 import { useMemoryErrorCopy } from './memory-error-copy';
 import { FactCard } from './FactCard';
 import type { SettingsFailure } from '../errors';
+import { Surface } from '@canopy/ui-shared/components';
 
 interface RetrievalPreviewProps {
   orgId: string;
@@ -60,7 +61,7 @@ export function RetrievalPreview({
   const [preview, setPreview] = useState<ExplorerRetrievalPreview | null>(null);
   const requestSequence = useRef(0);
 
-  const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+  const submit = async (event: FormEvent<HTMLElement>): Promise<void> => {
     event.preventDefault();
     const effectiveQuery = usePrefix
       ? buildPreviewQuery(query, { repo, worktree })
@@ -88,9 +89,11 @@ export function RetrievalPreview({
 
   return (
     <div className="space-y-4">
-      <form
+      <Surface
+        as="form"
+        variant="card"
+        padding="default"
         onSubmit={(event) => void submit(event)}
-        className="rounded-xl border bg-card p-4"
       >
         <p className="text-xs fg-secondary">
           Runs the exact turn-time retrieval pipeline — calibration gate,
@@ -142,7 +145,7 @@ export function RetrievalPreview({
             />
           </div>
         )}
-      </form>
+      </Surface>
 
       <ErrorBanner className="" error={error?.copy} details={error?.details} />
 
@@ -194,18 +197,20 @@ export function RetrievalPreview({
                   dataTestId="retrieval-preview-copy-block"
                 />
               </div>
-              <pre
-                className={withPrivacyClass(
-                  'overflow-x-auto whitespace-pre-wrap rounded-lg bg-base p-3 font-mono text-xs fg-primary',
-                  blockClassName,
-                )}
-              >
-                {preview.renderedBlock}
-              </pre>
+              <Surface variant="inset" className="overflow-hidden">
+                <pre
+                  className={withPrivacyClass(
+                    'overflow-x-auto whitespace-pre-wrap p-3 font-mono text-xs fg-primary',
+                    blockClassName,
+                  )}
+                >
+                  {preview.renderedBlock}
+                </pre>
+              </Surface>
             </Disclosure>
           )}
 
-          <section className="rounded-xl border bg-card p-4">
+          <Surface as="section" variant="card" padding="default">
             <Heading level={3} variant="title">
               Diagnostics
             </Heading>
@@ -252,7 +257,7 @@ export function RetrievalPreview({
                 />
               </ValueRows>
             </div>
-          </section>
+          </Surface>
         </div>
       )}
     </div>

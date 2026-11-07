@@ -1,3 +1,4 @@
+import { createSecretProtectionServices } from './fixtures/authorized-native-loader';
 // Platform golden: drives PlatformSecretProtectionServices through the Windows adapter.
 // Injected native replies make refusal and cancellation deterministic; the win32
 // companion suite alone qualifies the real Credential Manager boundary.
@@ -7,10 +8,7 @@ import {
   type CredentialNative,
   type CredentialOperation,
 } from '../secret-protection/win32';
-import {
-  createSecretProtectionServices,
-  type SecretProtectionOptions,
-} from '../secret-protection';
+import { type SecretProtectionOptions } from '../secret-protection';
 
 const identity = {
   prefix: `canopy.vault.v1/canopy/dev/${'a'.repeat(64)}/`,

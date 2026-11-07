@@ -1,8 +1,9 @@
-import type { JSX, SVGProps } from 'react';
-import { DocumentSearchIcon as AppCatalogDocumentSearchIcon } from './AppIcons';
+import type { JSX } from 'react';
+import {
+  DocumentSearchIcon as AppCatalogDocumentSearchIcon,
+  type AppIconProps,
+} from './AppIcons';
 
-export function DocumentSearchIcon(
-  props: SVGProps<SVGSVGElement>,
-): JSX.Element {
-  return <AppCatalogDocumentSearchIcon width="14" height="14" {...props} />;
+export function DocumentSearchIcon(props: AppIconProps): JSX.Element {
+  return <AppCatalogDocumentSearchIcon size="sm" {...props} />;
 }

@@ -602,7 +602,7 @@ export function PanelGridSurface({
                 className="inline-flex fg-secondary"
                 data-testid="panel-tab-start-page"
               >
-                <LayoutDashboardIcon width={14} height={14} />
+                <LayoutDashboardIcon size="sm" />
               </span>
             )}
           </>

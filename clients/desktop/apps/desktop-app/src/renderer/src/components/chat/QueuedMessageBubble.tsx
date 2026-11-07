@@ -258,7 +258,7 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
               data-testid="scheduled-message-send-label"
               className="mb-1 flex items-center gap-1 text-xs fg-secondary"
             >
-              <ScheduleIcon width={11} height={11} className="shrink-0" />
+              <ScheduleIcon size="sm" className="shrink-0" />
               <span>
                 {scheduledLabel ? `Sends ${scheduledLabel}` : 'Scheduled'}
               </span>

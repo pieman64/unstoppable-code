@@ -184,7 +184,7 @@ export function SharePublishStatus({
           : {})}
         {...dataAttributes(view)}
       >
-        <DoneCheckIcon className="h-3.5 w-3.5 fg-success" aria-hidden="true" />
+        <DoneCheckIcon size="sm" className="fg-success" aria-hidden="true" />
         {PUBLISHED_LABEL}
       </span>
     );

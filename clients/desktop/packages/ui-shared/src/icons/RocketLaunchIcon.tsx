@@ -1,6 +1,9 @@
-import type { JSX, SVGProps } from 'react';
-import { RocketLaunchIcon as AppCatalogRocketLaunchIcon } from './AppIcons';
+import type { JSX } from 'react';
+import {
+  RocketLaunchIcon as AppCatalogRocketLaunchIcon,
+  type AppIconProps,
+} from './AppIcons';
 
-export function RocketLaunchIcon(props: SVGProps<SVGSVGElement>): JSX.Element {
-  return <AppCatalogRocketLaunchIcon width="14" height="14" {...props} />;
+export function RocketLaunchIcon(props: AppIconProps): JSX.Element {
+  return <AppCatalogRocketLaunchIcon size="sm" {...props} />;
 }

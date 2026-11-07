@@ -6,6 +6,7 @@ import {
 import { aiGatewayConnectionResultSchema } from '../model-gateway/discovery';
 import { z } from 'zod';
 import {
+  MODEL_GATEWAY_MAX_BASE_URL_LENGTH,
   isMemoryParticipationMember,
   isViewerDataSharingStatus,
   type MemoryParticipationMember,
@@ -639,12 +640,22 @@ export const ORGANIZATION_SETTINGS_OPERATIONS = {
     input: z.strictObject({
       ...organizationIdField,
       apiKey: z.string().min(1).max(4096),
+      /** The gateway the key was entered for; a different stored one refuses before the probe. */
+      expectedBaseUrl: z
+        .string()
+        .max(MODEL_GATEWAY_MAX_BASE_URL_LENGTH)
+        .optional(),
     }),
     result: cloudGatewayKeyStatusSchema,
     request: (input) => ({
       method: 'PUT',
       path: cloudGatewayKeyPath(input.organizationId),
-      body: { apiKey: input.apiKey },
+      body: {
+        apiKey: input.apiKey,
+        ...(input.expectedBaseUrl === undefined
+          ? {}
+          : { expectedBaseUrl: input.expectedBaseUrl }),
+      },
     }),
   }),
   'organization.settings.ai-gateway.cloud-key.remove': defineSettingsWrite({

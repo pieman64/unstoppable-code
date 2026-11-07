@@ -30,6 +30,7 @@ import {
 import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/generated/serde_json/JsonValue';
 import { isClaudeWorkerToolExposed } from '../integration/claude-worker-tool-exposure';
 import { isRecord } from './integration-http';
+import { hasInterfaceTool } from '../agents/interface-tool-binding';
 import type { CanopyInjectedToolTextResult } from '../canopy-tools/core';
 import {
   SET_AUTO_ARCHIVE_DESCRIPTION,
@@ -162,7 +163,7 @@ import {
   pipelineOpenJsonSchema,
   pipelineSetYamlJsonSchema,
 } from '../pipeline-editor/definitions';
-import type { CanopyWorktreeSessionRoute } from './http-proxy-service';
+import type { CanopyWorktreeSessionRoute } from './canopy-tool-router';
 
 /**
  * Stable display name for the bespoke code-review reply tool (formerly shared
@@ -706,6 +707,20 @@ export function getCanopyRouteTools(
         ? APP_ADVISOR_UI_MCP_TOOLS
         : APP_ADVISOR_MAIN_MCP_TOOLS.filter((tool) => {
             const key = getClaudeTerminalAppAdvisorToolKey(tool.name);
+            if (
+              key === 'get_current_ui_state' &&
+              !hasInterfaceTool(route.interfaceTools, 'ui.get_current_ui_state')
+            )
+              return false;
+            if (
+              key === 'show_files' &&
+              !hasInterfaceTool(route.interfaceTools, 'ui.show_files') &&
+              !hasInterfaceTool(
+                route.interfaceTools,
+                'ui.app_advisor.show_files',
+              )
+            )
+              return false;
             // The Ledger tools only for a session that passed the Ledger
             // exposure gate when it started.
             if (
@@ -742,6 +757,13 @@ export function getCanopyRouteTools(
     inputSchema: JsonValue;
   }> = baseTools
     .filter((tool) => {
+      if (
+        route.assistantMode !== 'app-advisor' &&
+        route.assistantMode !== 'pipeline-editor' &&
+        tool.name === CANOPY_INJECTED_TOOL_REGISTRY.show_files.displayName &&
+        !hasInterfaceTool(route.interfaceTools, 'ui.show_files')
+      )
+        return false;
       if (
         (tool.name === CANOPY_INJECTED_TOOL_REGISTRY.show_visual.displayName ||
           tool.name ===

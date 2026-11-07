@@ -5,7 +5,7 @@ import type {
 } from '@canopy/desktop-shared/types/pipeline';
 import { shouldPromoteAdvisor } from '@/lib/pipelineDetailsView';
 import { AgentAssistantIcon, ChevronIcon } from '@canopy/ui-shared/icons';
-import { Badge } from '@canopy/ui-shared/components';
+import { Badge, Surface } from '@canopy/ui-shared/components';
 import {
   PipelineFlowDiagram,
   type PipelineFlowSource,
@@ -60,10 +60,7 @@ function AdaptiveAdvisor({
   const headerHealth = advisorSnapshot?.latestReport?.health?.status;
 
   return (
-    <div
-      className="rounded-xl border bg-base"
-      data-testid="pipeline-summary-advisor"
-    >
+    <Surface variant="inset" data-testid="pipeline-summary-advisor">
       <div className="flex items-center gap-2 px-4 py-2.5">
         <button
           type="button"
@@ -73,7 +70,8 @@ function AdaptiveAdvisor({
           className="focus-ring -mx-1 flex flex-1 items-center gap-2 rounded-md px-1 py-0.5 text-left"
         >
           <AgentAssistantIcon
-            className="h-3.5 w-3.5 shrink-0 fg-info"
+            size="sm"
+            className="shrink-0 fg-info"
             aria-hidden="true"
           />
           <span className="text-s font-medium fg-primary">
@@ -107,7 +105,7 @@ function AdaptiveAdvisor({
           />
         </div>
       ) : null}
-    </div>
+    </Surface>
   );
 }
 
@@ -160,7 +158,7 @@ export function PipelineSummaryView({
           advisorStartError={advisorStartError}
         />
       )}
-      <div className="overflow-hidden rounded-xl border bg-base">
+      <Surface variant="inset" className="overflow-hidden">
         <div className="border-b px-4 py-2 text-xs font-medium fg-secondary">
           Flow
         </div>
@@ -171,7 +169,7 @@ export function PipelineSummaryView({
             onSelectStep={(jobId): void => onSelectJob(jobId)}
           />
         </div>
-      </div>
+      </Surface>
       {reportSlot}
     </div>
   );

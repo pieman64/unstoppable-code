@@ -24,13 +24,14 @@ import {
   Badge,
   type BadgeTone,
   Button,
+  Divider,
   EmptyState,
   ErrorState,
+  Heading,
+  PaneSheet,
   SegmentedControl,
   TextArea,
   ThinkingSpinner,
-  Heading,
-  PaneSheet,
 } from '@canopy/ui-shared/components';
 import { DiagramCenteredMessage } from './DiagramCenteredMessage';
 import type {
@@ -285,7 +286,7 @@ function SelectedEntityDetail({
           onClick={onClose}
           aria-label="Close entity detail"
         >
-          <AppCatalogCloseIcon width="14" height="14" />
+          <AppCatalogCloseIcon size="sm" />
         </Button>
       </div>
       {data.detail && (
@@ -388,48 +389,51 @@ function SelectedEntityDetail({
         </div>
       )}
       {onAddNodeComment && (
-        <div className="mt-3 border-t pt-2">
-          {composing ? (
-            <div className="flex flex-col gap-1.5">
-              <TextArea
-                aria-label="Comment"
-                value={body}
-                onChange={(e): void => setBody(e.target.value)}
-                placeholder="Comment on this entity…"
-                rows={3}
-                autoFocus
-                data-testid="plan-node-comment-input"
-              />
-              <div className="flex items-center justify-end gap-1.5">
-                <Button
-                  size="compact"
-                  onClick={(): void => {
-                    setComposing(false);
-                    setBody('');
-                  }}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  variant="primary"
-                  size="compact"
-                  onClick={handleSave}
-                  disabled={body.trim().length === 0}
-                  data-testid="plan-node-comment-save"
-                >
-                  Save comment
-                </Button>
+        <div className="mt-3">
+          <Divider />
+          <div className="pt-2">
+            {composing ? (
+              <div className="flex flex-col gap-1.5">
+                <TextArea
+                  aria-label="Comment"
+                  value={body}
+                  onChange={(e): void => setBody(e.target.value)}
+                  placeholder="Comment on this entity…"
+                  rows={3}
+                  autoFocus
+                  data-testid="plan-node-comment-input"
+                />
+                <div className="flex items-center justify-end gap-1.5">
+                  <Button
+                    size="compact"
+                    onClick={(): void => {
+                      setComposing(false);
+                      setBody('');
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="primary"
+                    size="compact"
+                    onClick={handleSave}
+                    disabled={body.trim().length === 0}
+                    data-testid="plan-node-comment-save"
+                  >
+                    Save comment
+                  </Button>
+                </div>
               </div>
-            </div>
-          ) : (
-            <Button
-              size="compact"
-              onClick={(): void => setComposing(true)}
-              data-testid="plan-node-add-comment"
-            >
-              + Add comment
-            </Button>
-          )}
+            ) : (
+              <Button
+                size="compact"
+                onClick={(): void => setComposing(true)}
+                data-testid="plan-node-add-comment"
+              >
+                + Add comment
+              </Button>
+            )}
+          </div>
         </div>
       )}
     </PaneSheet>

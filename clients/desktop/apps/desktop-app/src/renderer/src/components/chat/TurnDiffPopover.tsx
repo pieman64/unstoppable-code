@@ -10,6 +10,7 @@ import {
   DiffTurnUnavailableState,
   HeaderActionButton,
   RichHoverCard,
+  Surface,
 } from '@canopy/ui-shared/components';
 import {
   MaximizeIcon,
@@ -150,24 +151,30 @@ export const TurnDiffPopover = memo(function TurnDiffPopover({
           </span>
         </div>
 
-        <div className="diff-popover-compact flex min-h-0 flex-1 overflow-hidden rounded-md bg-base">
-          {treeRef ? (
-            <DiffContentView
-              oldValue={oldValue}
-              newValue={newValue}
-              viewMode="unified"
-              loading={loading}
-              truncated={truncated}
-              binary={binary}
-              imagePreview={imagePreview}
-              variant="compact"
-            />
-          ) : (
-            <DiffTurnUnavailableState
-              action={<p>Expand to see all branch changes for this file.</p>}
-            />
-          )}
-        </div>
+        <Surface
+          variant="group"
+          size="small"
+          className="min-h-0 flex-1 overflow-hidden flex flex-col"
+        >
+          <div className="flex diff-popover-compact min-h-0 flex-1">
+            {treeRef ? (
+              <DiffContentView
+                oldValue={oldValue}
+                newValue={newValue}
+                viewMode="unified"
+                loading={loading}
+                truncated={truncated}
+                binary={binary}
+                imagePreview={imagePreview}
+                variant="compact"
+              />
+            ) : (
+              <DiffTurnUnavailableState
+                action={<p>Expand to see all branch changes for this file.</p>}
+              />
+            )}
+          </div>
+        </Surface>
       </div>
     </RichHoverCard>
   );

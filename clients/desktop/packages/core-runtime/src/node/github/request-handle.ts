@@ -1,5 +1,8 @@
 import type {
   CorePullRequest,
+  CorePullRequestMergeQueueGetParams,
+  CorePullRequestMergeQueueGetResult,
+  CorePullRequestMergeParams,
   CorePullRequestState,
   GITHUB_STORED_CREDENTIAL_STATES,
   GITHUB_TOKEN_SOURCES,
@@ -116,6 +119,9 @@ export const GITHUB_REQUEST_ERROR_CODES = [
   'duplicate',
   // GitHub refused the base branch.
   'base_rejected',
+  'merge_queue_required',
+  'head_mismatch',
+  'not_mergeable',
 ] as const;
 
 export type GitHubRequestErrorCode =
@@ -147,6 +153,22 @@ export class GitHubRequestError extends Error {
   }
 }
 
+export interface GitHubMergePolicy {
+  readonly allowedStrategies: readonly CorePullRequestMergeParams['strategy'][];
+  readonly preferredStrategy: CorePullRequestMergeParams['strategy'];
+  readonly queueRequired: boolean;
+}
+
+export interface GitHubMergeResult {
+  /** The writer's verification read; null when only legacy verification succeeded. */
+  readonly projection?: GitHubPullRequestRecord | null;
+  readonly outcome: 'merged' | 'enqueued';
+  readonly newlyMerged?: boolean;
+  readonly mergeMethod: CorePullRequestMergeParams['strategy'];
+  readonly mergeCommitSha: string | null;
+  readonly queuePosition?: number | null;
+}
+
 /**
  * Results-only use of Canopy's GitHub credential (CAN-4109, after CAN-4960's
  * recipient handle). No member returns or accepts a token, header, client,
@@ -159,6 +181,21 @@ export class GitHubRequestError extends Error {
 export interface GitHubRequestHandle {
   /** Configured state only (CAN-3745 D-1); never proves GitHub accepts it. */
   describe(): Promise<GitHubCredentialDescription>;
+  getMergeQueue(
+    params: CorePullRequestMergeQueueGetParams,
+    options: GitHubCallOptions,
+  ): Promise<CorePullRequestMergeQueueGetResult>;
+  getMergePolicy(
+    ref: GitHubPullRequestRef,
+    options: GitHubCallOptions,
+  ): Promise<GitHubMergePolicy>;
+  /** Exact-head direct merge only; a queue-required base refuses, never enqueues. */
+  mergePullRequest(
+    ref: GitHubPullRequestRef,
+    input: Pick<CorePullRequestMergeParams, 'expectedHeadSha' | 'strategy'>,
+    /** Fresh policy read by this instruction, consumed once by the writer. */
+    policy: GitHubMergePolicy,
+  ): Promise<GitHubMergeResult>;
   /** One pull request with every check and review thread. */
   getPullRequest(
     ref: GitHubPullRequestRef,

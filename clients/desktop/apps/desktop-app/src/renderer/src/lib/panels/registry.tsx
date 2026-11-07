@@ -71,6 +71,7 @@ import {
   PlansIcon,
   SquarePlusIcon,
   TerminalIcon,
+  ChangeDiagramIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { AgentIcon } from '@canopy/ui-shared/icons';
 import { useShallow } from 'zustand/react/shallow';
@@ -82,7 +83,6 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
-import { DiagramIcon } from '@/components/icons/DiagramIcon';
 import {
   useChatStore,
   useChatTabRenderState,
@@ -485,7 +485,7 @@ function EmptyFileTabBody({
         className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 p-6 text-center"
         data-testid="file-tab-empty-state"
       >
-        <FolderIcon className="h-8 w-8 fg-secondary/60" />
+        <FolderIcon size="xl" className="fg-secondary/60" />
         <Heading level={3} variant="title">
           No file open
         </Heading>
@@ -1589,7 +1589,7 @@ export const DESKTOP_PANEL_DEFINITIONS: Readonly<
   'change-diagram': {
     kind: 'change-diagram',
     title: 'Change Diagram',
-    icon: <DiagramIcon />,
+    icon: <ChangeDiagramIcon size="sm" />,
     canPopOut: true,
     isWindowBound: false,
     singleton: true,
@@ -1677,7 +1677,7 @@ export const DESKTOP_PANEL_DEFINITIONS: Readonly<
     kind: 'plan-diagram',
     // Default title only; instance-bound tabs display "<plan title> (Diagram)".
     title: 'Plan diagram',
-    icon: <DiagramIcon />,
+    icon: <ChangeDiagramIcon size="sm" />,
     canPopOut: true,
     isWindowBound: false,
     singleton: SINGLETON_PANEL_KINDS.has('plan-diagram'),

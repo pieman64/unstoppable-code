@@ -5,9 +5,17 @@ import type {
   SpaceNotificationMenuState,
   WorktreeMenuItem,
 } from '@canopy/ui-shared/components';
-import { spaceNotificationMenuUnavailable } from '@canopy/ui-shared/components';
+import {
+  spaceNotificationMenuUnavailable,
+  spaceNotificationMenuChoices,
+  SpaceNotificationMenuRowIcon,
+  SPACE_NOTIFICATION_MENU_COPY,
+  spaceNotificationMenuStatus,
+} from '@canopy/ui-shared/components';
 import {
   ArchiveIcon,
+  BellIcon,
+  EyeOffIcon,
   PinIcon,
   TrashIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
@@ -136,6 +144,8 @@ export interface SidebarBulkNotificationState {
   readonly level: SpaceNotificationMenuLevel | 'mixed';
   /** Some row's saved choice is still being read. */
   readonly loading: boolean;
+  /** A failed save remains visible while keeping the last known choice. */
+  readonly failure?: string;
   /** Why the choices can't change right now: a row is read-only or saving. */
   readonly disabledReason?: string;
 }
@@ -187,11 +197,15 @@ function bulkNotificationState(
     (states.some((state) => state.status === 'saving')
       ? NOTIFICATION_SAVING_REASON
       : undefined);
+  const failure = states.find((state) => state.status === 'failed');
   const levels = new Set(states.map(notificationLevel));
   const [only] = levels;
   return {
     level: unknown || levels.size !== 1 || only === undefined ? 'mixed' : only,
     loading,
+    ...(failure
+      ? { failure: failure.failure ?? SPACE_NOTIFICATION_MENU_COPY.saveFailed }
+      : {}),
     ...(disabledReason === undefined ? {} : { disabledReason }),
   };
 }
@@ -309,6 +323,61 @@ export function deriveSelectionMenuItems(input: {
       icon: <PinIcon />,
       onSelect: () => onStateAction?.({ kind: 'pin', pinned }),
       testId: testIds?.bulkPin,
+    });
+  }
+  const notifications = input.stateActions?.notifications;
+  if (notifications && onStateAction) {
+    const state: SpaceNotificationMenuState = {
+      status: notifications.loading
+        ? 'loading'
+        : notifications.failure !== undefined
+          ? 'failed'
+          : 'ready',
+      failure: notifications.failure,
+      override: notifications.level === 'mixed' ? null : notifications.level,
+      selectionKnown: !notifications.loading,
+      disabledReason: notifications.disabledReason,
+    };
+    items.push({
+      key: 'bulk-notifications',
+      kind: 'submenu',
+      label: 'Notifications',
+      icon: <BellIcon />,
+      submenu: spaceNotificationMenuChoices(state).map((row, index, rows) => ({
+        key: `bulk-${row.key}`,
+        label: row.label,
+        icon: (
+          <SpaceNotificationMenuRowIcon
+            row={{
+              ...row,
+              checked: notifications.level !== 'mixed' && row.checked,
+            }}
+          />
+        ),
+        role: 'menuitemradio',
+        checked: notifications.level !== 'mixed' && row.checked,
+        busy: row.pending,
+        sectionStatus:
+          index === rows.length - 1
+            ? spaceNotificationMenuStatus(state)
+            : undefined,
+        disabled: row.disabled,
+        tooltip: row.description,
+        onSelect:
+          row.selectable || (notifications.level === 'mixed' && !row.disabled)
+            ? (): void =>
+                onStateAction({ kind: 'notifications', choice: row.choice })
+            : undefined,
+      })),
+    });
+  }
+  if (input.stateActions?.hide && onStateAction) {
+    items.push({
+      key: 'bulk-hide',
+      label: 'Hide',
+      icon: <EyeOffIcon />,
+      separatorBefore: items.length > 0,
+      onSelect: () => onStateAction({ kind: 'hide' }),
     });
   }
   // Archive and Delete start their own group.

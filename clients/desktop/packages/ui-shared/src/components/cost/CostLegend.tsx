@@ -4,6 +4,7 @@ import {
   formatCostShare,
   type CostSegment,
 } from './cost-format';
+import { Fact, FactList } from '../FactList';
 import { ValueRow, ValueRows } from '../settings/ValueRows';
 
 export interface CostLegendProps {
@@ -47,25 +48,24 @@ export function CostLegend({
 
   // A chart legend: one wrapping line under the bar it explains.
   return (
-    <dl data-testid={testId} className="flex flex-wrap gap-x-3 gap-y-1 text-xs">
+    <FactList
+      layout="inline"
+      rowGap="1"
+      columnGap="3"
+      labelTone="secondary"
+      dataTestId={testId}
+    >
       {visibleSegments.map((segment) => (
-        <div key={segment.key} className="flex items-center gap-1.5">
-          <span
-            aria-hidden="true"
-            className="size-2 shrink-0 rounded-xs"
-            style={{ backgroundColor: segment.color }}
-          />
-          <dt className="fg-secondary">{segment.label}</dt>
-          <dd className="tabular-nums fg-primary">
-            {formatCostAmount(segment.value)}
-          </dd>
-          {showShare ? (
-            <dd className="tabular-nums fg-tertiary">
-              {formatCostShare(segment.value, total)}
-            </dd>
-          ) : null}
-        </div>
+        <Fact
+          key={segment.key}
+          label={segment.label}
+          swatch={segment.color}
+          detail={showShare ? formatCostShare(segment.value, total) : undefined}
+          numeric
+        >
+          {formatCostAmount(segment.value)}
+        </Fact>
       ))}
-    </dl>
+    </FactList>
   );
 }

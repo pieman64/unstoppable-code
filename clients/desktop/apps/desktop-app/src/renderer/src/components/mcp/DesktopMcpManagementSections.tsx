@@ -26,7 +26,10 @@ import {
 } from '@canopy/ui-app/capability';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { withIpcErrorMessage } from '@/lib/ipcErrorMessage';
-import type { AccountMcpActions } from '@/hooks/useAccountMcpActions';
+import {
+  accountMcpConnectionKey,
+  type AccountMcpActions,
+} from '@/hooks/useAccountMcpActions';
 import {
   AccountMcpCredentialDialog,
   type AccountMcpCredentialKind,
@@ -44,6 +47,7 @@ import {
   promoteCustomMcpServer,
   requireCapturedMcpAccount,
 } from './mcpManagementOperations';
+import type { AccountMcpDetailSignIn } from './useAccountMcpActionRequests';
 import { ErrorBanner } from '@canopy/ui-shared/components';
 
 /** Host lifecycle stays here; both hosts render the same feature sections. */
@@ -53,12 +57,15 @@ export function DesktopMcpManagementSections({
   connection: givenConnection,
   row,
   actions,
+  accountSignIn,
   accountEnabled,
   busy,
   onChanged,
   onDeleted,
   onMoveToDevice,
   onBusyChange,
+  onActionStart,
+  registerErrorClearer,
   tools,
 }: {
   server: McpServerDataView | null;
@@ -66,12 +73,16 @@ export function DesktopMcpManagementSections({
   connection?: AccountMcpConnection;
   row?: McpServerIndexEntry;
   actions: AccountMcpActions;
+  /** The page's sign-in when it owns this connection's Connect and Cancel. */
+  accountSignIn?: AccountMcpDetailSignIn;
   accountEnabled: boolean;
   busy: boolean;
   onChanged: () => Promise<void>;
   onDeleted?: () => void;
   onMoveToDevice: (connection: AccountMcpConnection) => void;
   onBusyChange: (busy: boolean) => void;
+  onActionStart?: () => void;
+  registerErrorClearer?: (clear: () => void) => () => void;
   tools?: ReactNode;
 }): JSX.Element {
   const [linkedConnection, setLinkedConnection] =
@@ -109,6 +120,7 @@ export function DesktopMcpManagementSections({
   const operationRef = useRef(false);
   const [testing, setTesting] = useState(false);
   const [managing, setManaging] = useState(false);
+  const [pageConnecting, setPageConnecting] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [promotion, setPromotion] = useState<{ accountId: string } | null>(
     null,
@@ -121,6 +133,34 @@ export function DesktopMcpManagementSections({
   } | null>(null);
   const [accountId, setAccountId] = useState<string>();
   const [refreshError, setRefreshError] = useState('');
+  const rowErrorClearer = useRef<(() => void) | undefined>(undefined);
+  const registerRowErrorClearer = useCallback(
+    (clear: () => void): (() => void) => {
+      rowErrorClearer.current = clear;
+      return (): void => {
+        if (rowErrorClearer.current === clear)
+          rowErrorClearer.current = undefined;
+      };
+    },
+    [],
+  );
+  const clearLocalErrors = useRef((): void => undefined);
+  clearLocalErrors.current = (): void => {
+    setRefreshError('');
+    actions.clearError();
+    rowErrorClearer.current?.();
+  };
+  useEffect(
+    (): (() => void) | undefined =>
+      registerErrorClearer?.((): void => clearLocalErrors.current()),
+    [registerErrorClearer],
+  );
+  const clearErrors = (): void => {
+    clearLocalErrors.current();
+    if (onActionStart) onActionStart();
+    else if (connection)
+      accountSignIn?.clearError(accountMcpConnectionKey(connection));
+  };
   const deleteAccount = useRef<Promise<string | undefined>>(
     Promise.resolve(undefined),
   );
@@ -157,12 +197,20 @@ export function DesktopMcpManagementSections({
     onBusyChange(
       operating ||
         testing ||
-        managing ||
+        (managing && !pageConnecting) ||
         promotion !== null ||
         credential !== null,
     );
     return (): void => onBusyChange(false);
-  }, [credential, managing, onBusyChange, operating, promotion, testing]);
+  }, [
+    credential,
+    managing,
+    onBusyChange,
+    operating,
+    pageConnecting,
+    promotion,
+    testing,
+  ]);
   const provider =
     status?.handler === 'provider' ||
     server?.definition.httpAuthHandler === 'provider';
@@ -212,9 +260,7 @@ export function DesktopMcpManagementSections({
   };
   const accountAction: McpAction<() => Promise<void>> | undefined =
     connection &&
-    (connection.kind === 'CUSTOM' ||
-      connection.status === 'CONNECTED' ||
-      connection.status === 'PENDING')
+    (connection.kind === 'CUSTOM' || connection.status !== 'DISCONNECTED')
       ? cloudReason
         ? { available: false, reason: cloudReason }
         : {
@@ -222,41 +268,74 @@ export function DesktopMcpManagementSections({
             run: (): Promise<void> =>
               withIpcErrorMessage(async (): Promise<void> => {
                 if (!accountId) return;
-                await requireCapturedMcpAccount(accountId);
-                if (
-                  connection.status === 'CONNECTED' ||
-                  connection.status === 'PENDING'
-                )
-                  await actions.disconnect(connection.id);
-                else if (
-                  connection.kind === 'CUSTOM' &&
-                  connection.authMode === 'BEARER'
-                ) {
-                  setCredential({
-                    accountId,
-                    kind: 'bearer',
-                    promotion: false,
-                  });
-                } else
-                  await actions.connect(
-                    connection.serverKey,
-                    connection.configId,
-                    {
-                      expectedAccountId: accountId,
-                      onOAuthClientRequired: (clientSetup): void => {
-                        void loadSignedInAccountId().then((current): void => {
-                          if (mounted.current && current === accountId)
-                            setCredential({
-                              accountId,
-                              kind: 'oauth-client',
-                              promotion: false,
-                              clientSetup,
-                            });
-                        });
+                clearErrors();
+                const pageOwnedConnect =
+                  connection.status === 'DISCONNECTED' && accountSignIn;
+                // The placement row reports pending while validating identity.
+                // That must not reserve the detail key against its own start.
+                if (pageOwnedConnect) setPageConnecting(true);
+                else onBusyChange(true);
+                try {
+                  await requireCapturedMcpAccount(accountId);
+                  // Reconnect stays on the detail's primary; this slot ends a
+                  // connection that still holds or awaits a credential.
+                  if (
+                    connection.status === 'PENDING' &&
+                    accountSignIn?.isConnectingConnection(connection)
+                  )
+                    accountSignIn.cancel(accountMcpConnectionKey(connection));
+                  else if (
+                    connection.status === 'PENDING' &&
+                    actions.isConnectingConnection(connection)
+                  )
+                    await actions.cancel(
+                      actions.pendingKeyForConnection(connection) ??
+                        accountMcpConnectionKey(connection),
+                      connection.id,
+                    );
+                  else if (connection.status !== 'DISCONNECTED')
+                    await actions.disconnect(connection.id);
+                  else if (accountSignIn) {
+                    const started = accountSignIn.start(connection);
+                    if (started.kind === 'blocked')
+                      throw new Error(started.reason);
+                    if (started.kind === 'unsupported')
+                      throw new Error(started.message);
+                  } else if (
+                    connection.kind === 'CUSTOM' &&
+                    connection.authMode === 'BEARER'
+                  ) {
+                    setCredential({
+                      accountId,
+                      kind: 'bearer',
+                      promotion: false,
+                    });
+                  } else
+                    await actions.connect(
+                      connection.serverKey,
+                      connection.configId,
+                      {
+                        pendingKey: accountMcpConnectionKey(connection),
+                        expectedAccountId: accountId,
+                        onOAuthClientRequired: (clientSetup): void => {
+                          void loadSignedInAccountId().then((current): void => {
+                            if (mounted.current && current === accountId)
+                              setCredential({
+                                accountId,
+                                kind: 'oauth-client',
+                                promotion: false,
+                                clientSetup,
+                              });
+                          });
+                        },
                       },
-                    },
-                  );
-                await refresh();
+                    );
+                  await refresh();
+                } finally {
+                  if (pageOwnedConnect) {
+                    if (mounted.current) setPageConnecting(false);
+                  } else onBusyChange(false);
+                }
               }),
           }
       : undefined;
@@ -330,7 +409,8 @@ export function DesktopMcpManagementSections({
           account: accountAction
             ? {
                 label:
-                  connection?.status === 'CONNECTED'
+                  connection?.status === 'CONNECTED' ||
+                  connection?.status === 'REAUTH_REQUIRED'
                     ? 'Disconnect cloud account'
                     : connection?.status === 'PENDING'
                       ? 'Cancel connection'
@@ -349,7 +429,15 @@ export function DesktopMcpManagementSections({
                 : {
                     available: true,
                     run: (): Promise<void> => {
-                      if (accountId) setPromotion({ accountId });
+                      if (accountId) {
+                        if (row && accountSignIn?.isPending(row.id))
+                          return Promise.reject(
+                            new Error('Finish the current sign-in first.'),
+                          );
+                        onBusyChange(true);
+                        clearErrors();
+                        setPromotion({ accountId });
+                      }
                       return Promise.resolve();
                     },
                   }
@@ -406,6 +494,7 @@ export function DesktopMcpManagementSections({
             promotion !== null ||
             credential !== null,
           onPendingChange: setManaging,
+          registerErrorClearer: registerRowErrorClearer,
           onConfirmationChange: captureDeleteAccount,
         }}
         tools={tools}
@@ -418,6 +507,7 @@ export function DesktopMcpManagementSections({
           onClose={() => setPromotion(null)}
           onConfirm={(token): void => {
             if (operationRef.current) return;
+            clearErrors();
             operationRef.current = true;
             setOperating(true);
             const captured = promotion;
@@ -449,6 +539,7 @@ export function DesktopMcpManagementSections({
           onClose={() => setCredential(null)}
           onSubmit={(value): void => {
             if (operationRef.current) return;
+            clearErrors();
             operationRef.current = true;
             setOperating(true);
             const captured = credential;
@@ -461,7 +552,11 @@ export function DesktopMcpManagementSections({
                 await actions.connect(
                   connection.serverKey,
                   connection.configId,
-                  { ...value, expectedAccountId: captured.accountId },
+                  {
+                    ...value,
+                    pendingKey: accountMcpConnectionKey(connection),
+                    expectedAccountId: captured.accountId,
+                  },
                 );
                 await refresh();
               }

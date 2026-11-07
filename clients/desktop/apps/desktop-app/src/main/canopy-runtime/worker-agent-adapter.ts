@@ -4,32 +4,53 @@ import {
   type WorkerAgentHelperHandlers,
 } from '@canopy/core-runtime/node/agent/helpers';
 import {
+  createWorkerAgentSignInHandlers,
+  type SignInExecutionWorker,
+  type WorkerAgentSignInHandlers,
+} from '@canopy/core-runtime/node/agent/sign-in';
+import {
+  createWorkerAgentProviderHandlers,
+  type WorkerAgentProviderHandlers,
+  type WorkerAgentProviderHost,
+} from '@canopy/core-runtime/node/agent/providers';
+import {
   createWorkerAgentRunHandlers,
   type SubagentExecutionWorker,
   type TurnEventSink,
   type TurnExecutionWorker,
   type WorkerAgentRunHandlers,
 } from '@canopy/core-runtime/node/agent/turns';
+import { createDesktopProviderHost } from '../agent-providers/desktop-provider-host';
 
 export type WorkerAgentAdapter = {
+  queries: WorkerAgentProviderHandlers['queries'];
   instructions: WorkerAgentHelperHandlers['instructions'] &
-    WorkerAgentRunHandlers['instructions'];
+    WorkerAgentRunHandlers['instructions'] &
+    WorkerAgentSignInHandlers['instructions'];
 };
 
 // The helper and agent-run hosts import back into this runtime, so load them
 // at dispatch.
 export function createWorkerAgentAdapter(options: {
   loadHelpers?: () => Promise<HelperExecutionWorker>;
+  loadSignInWorker?: () => Promise<SignInExecutionWorker>;
   loadRuns?: () => Promise<{
     turns: TurnExecutionWorker;
     subagents: SubagentExecutionWorker;
   }>;
   sinkFor: (turnRunId: string) => TurnEventSink | null;
+  /** The provider list host (CAN-4121); defaults to the desktop host. */
+  providerHost?: WorkerAgentProviderHost;
 }): WorkerAgentAdapter {
   const loadHelpers =
     options.loadHelpers ??
     (async (): Promise<HelperExecutionWorker> =>
       (await import('../helper-runs/helper-worker-host')).desktopHelperWorker);
+  const loadSignInWorker =
+    options.loadSignInWorker ??
+    (async (): Promise<SignInExecutionWorker> =>
+      (await import('../sign-in-runs/sign-in-worker-host'))
+        .desktopSignInWorker);
   const loadRuns =
     options.loadRuns ??
     (async (): Promise<{
@@ -43,9 +64,14 @@ export function createWorkerAgentAdapter(options: {
       };
     });
   let loadingHelpers: Promise<WorkerAgentHelperHandlers> | undefined;
+  let loadingSignIn: Promise<WorkerAgentSignInHandlers> | undefined;
   let loadingRuns: Promise<WorkerAgentRunHandlers> | undefined;
   const helpers = (): Promise<WorkerAgentHelperHandlers> =>
     (loadingHelpers ??= loadHelpers().then(createWorkerAgentHelperHandlers));
+  const signIn = (): Promise<WorkerAgentSignInHandlers> =>
+    (loadingSignIn ??= loadSignInWorker().then(
+      createWorkerAgentSignInHandlers,
+    ));
   const runs = (): Promise<WorkerAgentRunHandlers> =>
     (loadingRuns ??= loadRuns().then(({ turns, subagents }) =>
       createWorkerAgentRunHandlers({
@@ -55,9 +81,17 @@ export function createWorkerAgentAdapter(options: {
       }),
     ));
   return {
+    queries: createWorkerAgentProviderHandlers(
+      options.providerHost ?? createDesktopProviderHost(),
+    ).queries,
     instructions: {
       'worker.agent.helper.run': async (params, context) =>
         (await helpers()).instructions['worker.agent.helper.run'](
+          params,
+          context,
+        ),
+      'worker.agent.signIn.run': async (params, context) =>
+        (await signIn()).instructions['worker.agent.signIn.run'](
           params,
           context,
         ),

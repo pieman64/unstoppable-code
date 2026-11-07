@@ -26,6 +26,7 @@ import {
   stripTerminalPresentationMarker,
 } from '@canopy/desktop-shared/lib/terminal-presentation';
 import { browserHandoffs } from '../browser/browser-handoffs';
+import { resolveSessionInterfaceTools } from '../agents/interface-tool-binding';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
@@ -120,7 +121,7 @@ import type {
   TerminalOutputEvent,
   TerminalRunningChangedEvent,
 } from '@canopy/desktop-shared/types';
-import { getObservabilityService } from '../observability';
+import { getExecutionObservabilityIngest } from '../observability/ingest';
 import { getDesktopIntegrationServer } from './desktop-integration-server';
 import {
   buildClaudeTerminalLaunchConfig,
@@ -377,6 +378,14 @@ export interface ClaudeTerminalSessionService {
     chatId: string,
     enabled: boolean,
   ): Promise<void>;
+  /**
+   * Tears down a chat's idle live terminal after a settings change made
+   * without a window (CAN-5097 D13), as the renderer's
+   * restartClaudeTerminalForSettingsChange does; the next send relaunches
+   * it with the new arguments. A running, stopping, exited or failed
+   * terminal is left alone, so the change applies at its next launch.
+   */
+  restartForSettingsChange(target: ChatLifecycleTarget): Promise<void>;
   setApprovalMode(
     projectId: string,
     worktreeId: string,
@@ -1110,6 +1119,24 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
     return this.records.get(runtimeKey(projectId, worktreeId, chatId))?.state;
   }
 
+  public async restartForSettingsChange(
+    target: ChatLifecycleTarget,
+  ): Promise<void> {
+    const record = this.records.get(
+      runtimeKey(target.projectId, target.worktreeId, target.chatId),
+    );
+    if (!record?.state.terminalId) return;
+    const { turnState } = record.state;
+    if (
+      turnState === 'running' ||
+      turnState === 'cleaning_up' ||
+      turnState === 'exited' ||
+      turnState === 'error'
+    )
+      return;
+    await this.cleanupRecord(record, 'settings-change');
+  }
+
   public async setPlanMode(
     projectId: string,
     worktreeId: string,
@@ -1322,6 +1349,9 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
         'Claude Code terminal chat not found.',
       );
     }
+    // core.chat.update commits thinking to modelConfig; the renderer keeps both.
+    const tabThinkingLevel =
+      tab.modelConfig?.thinkingLevel ?? tab.thinkingLevel;
     if (
       request.initialPromptIdempotencyKey &&
       isInputLedger(tab.inputDelivery) &&
@@ -1775,7 +1805,7 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
       };
       // The effort the CLI runs at (see buildClaudeTerminalLaunchConfig).
       const ledgerThinkingEffort = clampThinkingLevelForModel(
-        tab.thinkingLevel ?? 'high',
+        tabThinkingLevel ?? 'high',
         tab.model,
         'claude',
       );
@@ -1801,6 +1831,9 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
         worktreeId: request.worktreeId,
         chatId: request.chatId,
         assistantMode: appAdvisorMode ? 'app-advisor' : 'default',
+        interfaceTools: resolveSessionInterfaceTools({
+          assistantMode: appAdvisorMode ? 'app-advisor' : 'default',
+        }),
         cwd,
         sdkSessionId,
         providerType: 'claude',
@@ -1885,7 +1918,7 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
           planMode: record.planMode,
           approvalMode: approvalModeForLaunch,
           model: tab.model,
-          thinkingLevel: tab.thinkingLevel,
+          thinkingLevel: tabThinkingLevel,
           systemPromptAppend: joinSystemPromptSegments([
             appAdvisorMode
               ? APP_ADVISOR_SYSTEM_PROMPT
@@ -2447,7 +2480,7 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
           record.deferredToolsReloadContinuation.turnUserMessageId ??
           `msg-terminal-${randomUUID()}`;
         record.turnUsage = emptyTurnUsage();
-        getObservabilityService().recordInjectedPromptForOpenChatTurn(
+        getExecutionObservabilityIngest().recordInjectedPromptForOpenChatTurn(
           record.projectId,
           record.worktreeId,
           record.chatId,
@@ -2966,7 +2999,7 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
     record.auditTurnOpen = true;
     record.turnUsage = emptyTurnUsage();
     record.auditUserMessageId = `msg-terminal-${randomUUID()}`;
-    getObservabilityService().startChatTurn({
+    getExecutionObservabilityIngest().startChatTurn({
       projectId: record.projectId,
       worktreeId: record.worktreeId,
       chatId: record.chatId,
@@ -3122,7 +3155,7 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
     }
     record.auditTurnOpen = false;
     record.auditUserMessageId = undefined;
-    const observability = getObservabilityService();
+    const observability = getExecutionObservabilityIngest();
     // Synthesize the turn-final result event Canopy-native Claude turns get
     // from the SDK stream so token totals land on the audit entry.
     observability.observeChatEvent(
@@ -3325,7 +3358,7 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
     if (!record.auditTurnOpen) {
       return;
     }
-    const observability = getObservabilityService();
+    const observability = getExecutionObservabilityIngest();
     let importedEvents: unknown[] = Array.isArray(result.importedEvents)
       ? result.importedEvents
       : [];
@@ -4282,7 +4315,7 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
       elapsedMs?: number;
     } = {},
   ): void {
-    getObservabilityService().recordSessionDiagnostic({
+    getExecutionObservabilityIngest().recordSessionDiagnostic({
       version: 1,
       timestamp: new Date().toISOString(),
       kind,

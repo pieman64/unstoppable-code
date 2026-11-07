@@ -611,8 +611,7 @@ export function PullRequestSectionBody({
                     className="flex min-w-0 flex-1 items-center gap-1 text-xs font-medium fg-primary/80 transition-colors hover:fg-primary"
                   >
                     <AppCatalogChevronRightMediumIcon
-                      width="12"
-                      height="12"
+                      size="sm"
                       className={`flex-shrink-0 transition-transform ${expandedRepos.has(repo.repoId) ? 'rotate-90' : ''}`}
                     />
                     <span className="truncate">{repo.repoName}</span>
@@ -672,8 +671,7 @@ export function PullRequestSectionBody({
                   className="flex min-w-0 flex-1 items-center gap-1 text-xs font-medium fg-primary/80 transition-colors hover:fg-primary"
                 >
                   <AppCatalogChevronRightMediumIcon
-                    width="12"
-                    height="12"
+                    size="sm"
                     className={`flex-shrink-0 transition-transform ${expandedRepos.has(repo.repoId) ? 'rotate-90' : ''}`}
                   />
                   <span className="truncate">{repo.repoName}</span>

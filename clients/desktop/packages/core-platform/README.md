@@ -775,3 +775,24 @@ CAN-5517 adds six kinds for `worker.git.fetch` and `worker.git.pull`:
 contact `origin` and, like every effect, are never bounded or killed. Git's
 stderr is not read, so the recorded host classifies a failed rebase pull from
 the rebase state, the stash list and the status alone.
+
+CAN-5882 adds `head-sha`, `tracking-head-sha`, `stage-all`, `commit-message`
+and `push-head`. They run `rev-parse --verify`, `add -A`, `commit -m` and
+`push -u origin HEAD` only, without force or a child abort signal. Push takes
+the dispatch key, mints the daemon-owned GitHub authority's K3 `git-push`
+lease for `worker.git.push`, and spawns synchronously inside `lease.deliver`
+with the delivered `GH_TOKEN`. K10 refuses forwarded token, askpass and
+credential configuration authority; refusal is typed, never a token-forwarding
+fallback. Phase 2 authority and lease contracts are unchanged. Production has
+no grant or route for either instruction; CAN-4731 owns enablement, and
+CAN-4733 owns keyed retention and durable operation follow-up.
+
+CAN-5884 adds six fixed POSIX merge command kinds: worktree list/add/remove,
+merge --no-edit, merge --abort and rev-parse HEAD. Worktree paths come only
+from trusted host resolution or its unique temporary path and are absolute
+and NUL-free. Commands use the request's environment and never take a signal
+or timeout; conflict classification reads status before best-effort abort.
+Production grants and Electron routing remain unchanged.
+
+Together the branch, sync, commit/push and merge hosts expose 30 fixed command
+kinds; the daemon registers nine Git instructions without production grants.

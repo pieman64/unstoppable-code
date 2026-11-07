@@ -26,15 +26,6 @@ export function usePromptsHeaderChrome(
   });
 }
 
-/**
- * Same app document-pencil glyph the prompts registry entry uses
- * (`activity-sections.tsx`), so the card, its tab, and the empty action card
- * all read as "prompt document" rather than a terminal prompt.
- */
-export function PromptIcon(): JSX.Element {
-  return <EditBigIcon size={16} />;
-}
-
 export function PromptsSection({
   projectId,
   worktreeId,
@@ -45,7 +36,7 @@ export function PromptsSection({
       worktreeId={worktreeId}
       kind="prompt"
       title="Prompts"
-      icon={<PromptIcon />}
+      icon={<EditBigIcon size="sm" />}
       noun="prompt"
       mentionRepoName="Prompts"
       testIdPrefix="workspace-prompts"

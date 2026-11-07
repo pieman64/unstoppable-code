@@ -37,6 +37,13 @@ export type { CreateAppErrorOptions, ToAppErrorOptions } from './create';
 export { presentAppError, showsRawErrorDetail } from './display';
 export type { AppErrorDisplayPolicy, AppErrorPresentation } from './display';
 export { createAppErrorHandler } from './handler';
+export { surfacedErrorSource, createSurfacedErrorRecorder } from './surfaced';
+export type {
+  SurfacedErrorChokePoint,
+  SurfacedErrorInput,
+  SurfacedErrorRecorderOptions,
+  SurfacedErrorRecorder,
+} from './surfaced';
 export type {
   AppErrorRecord,
   AppErrorReport,

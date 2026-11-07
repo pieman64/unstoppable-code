@@ -231,8 +231,9 @@ export function SharedContainerSidebarSection({
             {SHARED_WITH_YOU_SECTION_LABEL}
           </span>
           <ChevronDownMediumIcon
+            size="sm"
             data-testid="sidebar-shared-with-me-chevron"
-            className={`h-4 w-4 shrink-0 fg-quaternary transition-[color,opacity] group-hover/shared-containers:fg-secondary group-hover/shared-containers:opacity-100 group-focus-within/shared-containers:fg-secondary group-focus-within/shared-containers:opacity-100 ${
+            className={`shrink-0 fg-quaternary transition-[color,opacity] group-hover/shared-containers:fg-secondary group-hover/shared-containers:opacity-100 group-focus-within/shared-containers:fg-secondary group-focus-within/shared-containers:opacity-100 ${
               expanded ? 'opacity-0' : '-rotate-90 opacity-100'
             }`}
           />

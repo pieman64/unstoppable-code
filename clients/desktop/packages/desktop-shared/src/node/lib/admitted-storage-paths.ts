@@ -41,11 +41,34 @@ const PIPELINE_DEFINITION_FILE =
   /^(?:index\.json|index\.json\.damaged-\d+|[a-z0-9_-]+\.yaml|\.project-share-links\.json)$/;
 const VAULT_DATABASE_FILE = /^vault\.sqlite(?:-wal|-shm)?$/;
 const GITHUB_CREDENTIAL_FENCE_FILE = 'github-pat-fence.json';
+const NATIVE_ARTIFACT_FILES = new Set([
+  'owner.json',
+  'core-secret-protection.node',
+]);
 const APPROVALS_FILE = 'approvals.json';
 const APPROVALS_ROOTS = ['workspaces', 'app-workspaces'];
 
 // macOS and Windows data roots are case-insensitive.
 const fold = (path: string): string => resolve(path).toLowerCase();
+
+function isNativeArtifactPath(
+  target: string,
+  dataRoot: string | null,
+): boolean {
+  const parent = dirname(target);
+  const root =
+    dataRoot === null ? null : fold(resolve(dataRoot, 'native-artifacts'));
+  const isRoot = (candidate: string): boolean =>
+    root === null
+      ? basename(candidate).toLowerCase() === 'native-artifacts'
+      : fold(candidate) === root;
+  return (
+    isRoot(target) ||
+    isRoot(parent) ||
+    (NATIVE_ARTIFACT_FILES.has(basename(target).toLowerCase()) &&
+      isRoot(dirname(parent)))
+  );
+}
 
 function dataRootFile(name: string): AdmittedStorageNamespace | undefined {
   return (
@@ -68,6 +91,7 @@ export function isAdmittedStorageCandidate(targetPath: string): boolean {
     dataRootFile(name) !== undefined ||
     name === APPROVALS_FILE ||
     name === GITHUB_CREDENTIAL_FENCE_FILE ||
+    isNativeArtifactPath(target, null) ||
     name === 'vault' ||
     (basename(dirname(target)).toLowerCase() === 'vault' &&
       VAULT_DATABASE_FILE.test(name)) ||
@@ -92,6 +116,8 @@ export function admittedStorageRowForPath(
   const parent = fold(dirname(target));
   const secureRoot =
     secureDataRoot === undefined && dataRoot === null ? null : secureDataRoot;
+  if (isNativeArtifactPath(target, dataRoot))
+    return 'daemon_native_artifact_snapshots';
   if (
     secureRoot !== undefined &&
     name === GITHUB_CREDENTIAL_FENCE_FILE &&

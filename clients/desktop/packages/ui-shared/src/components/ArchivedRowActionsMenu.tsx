@@ -105,7 +105,7 @@ export function ArchivedRowActionsMenu({
             setOpen((value) => !value);
           }}
         >
-          <MoreHorizontalIcon className="h-3 w-3" aria-hidden="true" />
+          <MoreHorizontalIcon size="sm" aria-hidden="true" />
         </Button>
       </span>
       <FloatingMenu

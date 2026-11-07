@@ -1,3 +1,4 @@
+import { ChoiceMark } from './Choice';
 import type {
   CSSProperties,
   FocusEvent,
@@ -191,6 +192,8 @@ export interface WorktreeRowDepthBadge {
  * and row menu; the row only shows that it is in one.
  */
 export interface WorktreeRowMultiSelect {
+  readonly selectMode?: boolean;
+  readonly selectable?: boolean;
   readonly selected: boolean;
 }
 
@@ -779,7 +782,7 @@ export function WorktreeRowPrimaryIndicator({
           testIdSuffix,
         )}
       >
-        <PlanMapIcon width={16} height={16} aria-hidden="true" />
+        <PlanMapIcon size="sm" aria-hidden="true" />
       </span>,
     );
   }
@@ -932,7 +935,7 @@ function WatcherStatusIndicator({
       onKeyDown={onKeyDown}
       data-testid={withTestIdSuffix('worktree-row-watchers', testIdSuffix)}
     >
-      <AppAdvisorWatcherIcon width={14} height={14} />
+      <AppAdvisorWatcherIcon size="sm" />
     </span>,
   );
 }
@@ -3164,7 +3167,13 @@ function WorktreeRowImpl(
             testIdSuffix,
           )}
         >
-          {focusedIndicator !== null ? (
+          {multiSelect?.selectMode ? (
+            <ChoiceMark
+              kind="checkbox"
+              checked={multiSelected}
+              disabled={multiSelect.selectable === false}
+            />
+          ) : focusedIndicator !== null ? (
             focusedIndicator
           ) : classicPausedPipelineShield || classicPipelineAttentionGlyph ? (
             withBadgeTooltip(
@@ -3211,7 +3220,7 @@ function WorktreeRowImpl(
                 <span
                   className={`inline-flex h-4 w-4 items-center justify-center ${pipelineGlyphColorClass(pipelineStatus ?? 'paused')}`}
                 >
-                  <PipelineIcon width={16} height={16} aria-hidden="true" />
+                  <PipelineIcon size="sm" aria-hidden="true" />
                 </span>
                 {classicDragOverlay}
               </span>,
@@ -3259,7 +3268,7 @@ function WorktreeRowImpl(
                     testIdSuffix,
                   )}
                 >
-                  <PipelineIcon width={16} height={16} aria-hidden="true" />
+                  <PipelineIcon size="sm" aria-hidden="true" />
                 </span>
                 {classicDragOverlay}
               </span>,
@@ -3288,7 +3297,7 @@ function WorktreeRowImpl(
                     which stays mouse-reachable (the leading slot does not
                     hide on hover). */}
                 <span className="inline-flex h-4 w-4 items-center justify-center fg-warning">
-                  <QuestionMarkIcon width={16} height={16} aria-hidden="true" />
+                  <QuestionMarkIcon size="sm" aria-hidden="true" />
                 </span>
                 {classicDragOverlay}
               </span>,
@@ -3315,7 +3324,7 @@ function WorktreeRowImpl(
                 {/* Explicit shield: uiStatus may have been won by unread /
                     working, so the shared indicator cannot be reused here. */}
                 <span className="inline-flex h-4 w-4 items-center justify-center fg-warning">
-                  <PlanMapIcon width={16} height={16} aria-hidden="true" />
+                  <PlanMapIcon size="sm" aria-hidden="true" />
                 </span>
                 {classicDragOverlay}
               </span>,
@@ -3352,7 +3361,7 @@ function WorktreeRowImpl(
                 data-split-status={splitStatus}
               >
                 <span className="inline-flex h-4 w-4 items-center justify-center">
-                  <SplitPrIcon width={16} height={16} aria-hidden="true" />
+                  <SplitPrIcon size="sm" aria-hidden="true" />
                 </span>
                 {classicDragOverlay}
               </span>
@@ -3377,11 +3386,7 @@ function WorktreeRowImpl(
                 )}
               >
                 <span className="inline-flex h-4 w-4 items-center justify-center fg-secondary">
-                  <AppAdvisorWatcherIcon
-                    width={16}
-                    height={16}
-                    aria-hidden="true"
-                  />
+                  <AppAdvisorWatcherIcon size="sm" aria-hidden="true" />
                 </span>
                 {classicDragOverlay}
               </span>,
@@ -3406,7 +3411,7 @@ function WorktreeRowImpl(
                 )}
               >
                 <span className="inline-flex h-4 w-4 items-center justify-center fg-secondary">
-                  <TimeFliesIcon width={16} height={16} aria-hidden="true" />
+                  <TimeFliesIcon size="sm" aria-hidden="true" />
                 </span>
                 {classicDragOverlay}
               </span>,
@@ -3433,7 +3438,7 @@ function WorktreeRowImpl(
                 <span
                   className={`inline-flex h-4 w-4 items-center justify-center ${OPERATIONAL_STATUS_COLORS.active.foreground}`}
                 >
-                  <RocketLaunchIcon width={16} height={16} aria-hidden="true" />
+                  <RocketLaunchIcon size="sm" aria-hidden="true" />
                 </span>
                 {classicDragOverlay}
               </span>,
@@ -3460,7 +3465,7 @@ function WorktreeRowImpl(
                 <span
                   className={`inline-flex h-4 w-4 items-center justify-center ${OPERATIONAL_STATUS_COLORS.active.foreground}`}
                 >
-                  <HookIcon width={16} height={16} aria-hidden="true" />
+                  <HookIcon size="sm" aria-hidden="true" />
                 </span>
                 {classicDragOverlay}
               </span>,
@@ -3488,7 +3493,7 @@ function WorktreeRowImpl(
                 data-terminal-status={terminalStatus}
               >
                 <span className="inline-flex h-4 w-4 items-center justify-center">
-                  <TerminalIcon width={16} height={16} aria-hidden="true" />
+                  <TerminalIcon size="sm" aria-hidden="true" />
                 </span>
                 {classicDragOverlay}
               </span>,
@@ -3514,7 +3519,7 @@ function WorktreeRowImpl(
                 )}
               >
                 <span className="inline-flex h-4 w-4 items-center justify-center">
-                  <GraphIcon width={16} height={16} aria-hidden="true" />
+                  <GraphIcon size="sm" aria-hidden="true" />
                 </span>
                 {classicDragOverlay}
               </span>
@@ -3958,7 +3963,7 @@ function WorktreeRowImpl(
                       testIdSuffix,
                     )}
                   >
-                    <AppAdvisorWatcherIcon width={12} height={12} />
+                    <AppAdvisorWatcherIcon size="sm" />
                   </span>,
                 )}
               {hasScheduledMessages &&
@@ -4235,7 +4240,15 @@ function WorktreeRowImpl(
               testIdSuffix,
             )}
           >
-            {leadingMetadataIndicator ?? dragHandleSlot}
+            {multiSelect?.selectMode ? (
+              <ChoiceMark
+                kind="checkbox"
+                checked={multiSelected}
+                disabled={multiSelect.selectable === false}
+              />
+            ) : (
+              (leadingMetadataIndicator ?? dragHandleSlot)
+            )}
           </div>
         )}
 
@@ -4465,11 +4478,11 @@ function WorktreeRowPreviewIndicators({
   if (row.hasPendingQuestion)
     add('question', 'Question waiting', <QuestionMarkIcon size={14} />);
   if (row.hasPendingToolApproval)
-    add('approval', 'Approval needed', <PlanMapIcon className="h-3.5 w-3.5" />);
+    add('approval', 'Approval needed', <PlanMapIcon size="sm" />);
   if (row.awaitingApproval)
-    add('plan', 'Review plan', <PlanMapIcon className="h-3.5 w-3.5" />);
+    add('plan', 'Review plan', <PlanMapIcon size="sm" />);
   else if (row.uiStatus === 'planning' && row.pipelineStatus !== 'paused')
-    add('planning', 'Planning', <PlanMapIcon className="h-3.5 w-3.5" />);
+    add('planning', 'Planning', <PlanMapIcon size="sm" />);
   if (row.setupPhase && row.setupPhase !== 'idle') {
     const labels: Record<Exclude<WorktreeSetupPhase, 'idle'>, string> = {
       'git-pending': 'Setting up',
@@ -4511,11 +4524,7 @@ function WorktreeRowPreviewIndicators({
       row.splitStatusMessage,
     );
   if (row.hasIdleWatcherChats)
-    add(
-      'watchers',
-      'Watchers active',
-      <AppAdvisorWatcherIcon className="h-3.5 w-3.5" />,
-    );
+    add('watchers', 'Watchers active', <AppAdvisorWatcherIcon size="sm" />);
   if (row.hasScheduledMessages)
     add('scheduled', 'Scheduled messages', <TimeFliesIcon size={14} />);
   if (row.isDiscovering)
@@ -4532,11 +4541,7 @@ function WorktreeRowPreviewIndicators({
     !row.lastKnownPrStatus &&
     (row.runtimeState === 'done' || row.uiStatus === 'done')
   )
-    add(
-      'done',
-      row.doneLabel ?? 'Done',
-      <DoneCheckIcon className="h-3.5 w-3.5" />,
-    );
+    add('done', row.doneLabel ?? 'Done', <DoneCheckIcon size="sm" />);
   if (row.runtimeState === 'archived')
     add('archived', 'Archived', <FolderIcon size={14} />);
   if (row.pinnedToTop) add('pinned', 'Pinned', <PinFilledIcon size={14} />);
@@ -4714,7 +4719,7 @@ function WorktreeRowPreviewCard({
                   className={`absolute -right-0.5 -bottom-0.5 inline-flex rounded-full bg-quaternary p-px ${STATUS_GLYPHS.done.ink}`}
                   data-testid="worktree-row-preview-pr-done"
                 >
-                  <DoneCheckIcon className="h-2 w-2" />
+                  <DoneCheckIcon size="sm" />
                 </span>
               )}
             </span>

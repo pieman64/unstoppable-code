@@ -5,7 +5,12 @@ import { useObservabilityStore } from '@/stores/observabilityStore';
 import { useObservabilityEntriesInterest } from '@/lib/chat-interest';
 import { useEarlyAccessTitle } from '@/lib/earlyAccessTitles';
 import { RefreshSpinner } from '@/components/shared/loading';
-import { Disclosure, ErrorBanner, Heading } from '@canopy/ui-shared/components';
+import {
+  Disclosure,
+  ErrorBanner,
+  Heading,
+  Surface,
+} from '@canopy/ui-shared/components';
 import type { TabSpec } from './tab-specs';
 import { HeadlineCardRow } from './HeadlineCardRow';
 import { MetricsChart } from './MetricsChart';
@@ -64,10 +69,7 @@ export function MetricsTab({
             variant="box"
             label={spec.notice.title}
             leadingIcon={
-              <InfoIcon
-                className="h-3.5 w-3.5 fg-secondary"
-                aria-hidden="true"
-              />
+              <InfoIcon size="sm" className="fg-secondary" aria-hidden="true" />
             }
             dataTestId={`usage-metrics-notice-${spec.id}`}
           >
@@ -77,10 +79,12 @@ export function MetricsTab({
       )}
       {error && <ErrorBanner error={error} className="" />}
       {summary === null ? (
-        <div className="flex items-center gap-2 rounded-xl border bg-card/60 px-4 py-3 text-s fg-secondary">
-          <RefreshSpinner spinning size={14} />
-          <span>Loading summary…</span>
-        </div>
+        <Surface variant="group">
+          <div className="flex items-center gap-2 px-4 py-3 text-s fg-secondary">
+            <RefreshSpinner spinning size="sm" />
+            <span>Loading summary…</span>
+          </div>
+        </Surface>
       ) : (
         <HeadlineCardRow specs={spec.cards} summary={summary} />
       )}

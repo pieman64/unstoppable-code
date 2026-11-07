@@ -43,7 +43,10 @@ import {
   CORE_WORKSPACE_RECORDS_QUERY_DEFINITIONS,
   WORKER_CODE_GRAPH_INSTRUCTION_DEFINITIONS,
   WORKER_CODE_GRAPH_READ_QUERY_DEFINITIONS,
+  WORKER_CODE_GRAPH_STREAM_DEFINITIONS,
   WORKER_QUERY_DEFINITIONS,
+  WORKER_SCRIPT_INSTRUCTION_DEFINITIONS,
+  WORKER_SCRIPT_STREAM_DEFINITIONS,
   WORKER_TERMINAL_INSTRUCTION_DEFINITIONS,
   WORKER_TERMINAL_SESSION_INSTRUCTION_DEFINITIONS,
   WORKER_TERMINAL_STREAM_DEFINITIONS,
@@ -74,6 +77,9 @@ export const ELECTRON_DAEMON_DEFINITIONS = {
       WORKER_QUERY_DEFINITIONS['worker.filesystem.search'],
     'worker.filesystem.link.resolve':
       WORKER_QUERY_DEFINITIONS['worker.filesystem.link.resolve'],
+    // CAN-5501: typed client only; production selects none and has no Git grant.
+    'worker.git.branch.list':
+      WORKER_QUERY_DEFINITIONS['worker.git.branch.list'],
     // W6g's record port (CAN-5528): served only by a W5 qualification daemon,
     // so production's manifest refuses each call capability_unavailable.
     ...CORE_WORKSPACE_RECORDS_QUERY_DEFINITIONS,
@@ -96,6 +102,21 @@ export const ELECTRON_DAEMON_DEFINITIONS = {
       WORKER_CODE_GRAPH_INSTRUCTION_DEFINITIONS[
         'worker.codeGraph.builds.cancel'
       ],
+    // The merged generation queue (CAN-5628).
+    'worker.codeGraph.buildQueue.update':
+      WORKER_CODE_GRAPH_INSTRUCTION_DEFINITIONS[
+        'worker.codeGraph.buildQueue.update'
+      ],
+    // The merged generation queue (CAN-5628).
+    'worker.codeGraph.build.cancel':
+      WORKER_CODE_GRAPH_INSTRUCTION_DEFINITIONS[
+        'worker.codeGraph.build.cancel'
+      ],
+    // Eligible local renderer script runs (CAN-5087).
+    'worker.script.execute':
+      WORKER_SCRIPT_INSTRUCTION_DEFINITIONS['worker.script.execute'],
+    'worker.script.execution.cancel':
+      WORKER_SCRIPT_INSTRUCTION_DEFINITIONS['worker.script.execution.cancel'],
   },
   streams: {
     'core.runtime.events':
@@ -105,10 +126,16 @@ export const ELECTRON_DAEMON_DEFINITIONS = {
     'core.events.subscribe':
       CORE_TRANSPORT_STREAM_DEFINITIONS['core.events.subscribe'],
     ...WORKER_TERMINAL_STREAM_DEFINITIONS,
+    ...WORKER_SCRIPT_STREAM_DEFINITIONS,
     // The daemon's execution status for the resource monitor (CAN-5690);
     // a daemon without it refuses the stream and the monitor goes on alone.
     'core.execution.status.events':
       CORE_EXECUTION_STREAMS['core.execution.status.events'],
+    // The merged generation queue (CAN-5628).
+    'worker.codeGraph.buildQueue.events':
+      WORKER_CODE_GRAPH_STREAM_DEFINITIONS[
+        'worker.codeGraph.buildQueue.events'
+      ],
   },
 };
 type D = typeof ELECTRON_DAEMON_DEFINITIONS;

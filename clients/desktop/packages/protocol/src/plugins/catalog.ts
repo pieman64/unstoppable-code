@@ -210,10 +210,11 @@ export interface PluginProviderSupport {
  * `MarketplacePluginEntry['source']` shape (which stays in
  * `packages/desktop-shared/src/types/plugins.ts` with the other Claude file
  * formats). The two must stay structurally identical.
+ * Historical marketplace objects can identify a repo without a URL or source tag.
  */
 export interface MarketplacePluginExternalSource {
-  source: string;
-  url: string;
+  source?: string;
+  url?: string;
   sha?: string;
 }
 

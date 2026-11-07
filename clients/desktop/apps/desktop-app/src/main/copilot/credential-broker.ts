@@ -5,7 +5,7 @@ import {
   DeviceFlowRefreshRejectedError,
   type DeviceFlowGrant,
 } from '@canopy/desktop-shared/node/copilot/device-flow';
-import type { CopilotRuntimeAuth } from '@canopy/desktop-shared/node/copilot/runtime-auth';
+import type { CopilotRuntimeAuth } from '@canopy/copilot-recipient/runtime-auth';
 import { sameCopilotAccount } from '@canopy/desktop-shared/node/copilot/auth';
 import type {
   CopilotCredential,

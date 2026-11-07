@@ -37,6 +37,7 @@ import {
 } from '@canopy/ui-shared/lib/replay-privacy';
 import { CapabilityGate } from '../capability/CapabilityGate';
 import { ruleCountLabel } from './repoRulesCopy';
+import { Surface } from '@canopy/ui-shared/components';
 
 /**
  * Review flow for using a project's Cursor rules in chats (CAN-2053): choose a
@@ -606,19 +607,21 @@ function RepoRulesReviewFlow({
                 label="Scanning Cursor rules"
                 testId="repo-rules-scanning-skeleton"
               >
-                <ul className="divide-y rounded-lg border">
-                  {SAMPLE_RULES.map((rule) => (
-                    <RuleRow
-                      key={rule.id}
-                      rule={rule}
-                      selected
-                      preview={null}
-                      disabled={false}
-                      onToggle={noop}
-                      onPreview={noop}
-                    />
-                  ))}
-                </ul>
+                <Surface variant="outline">
+                  <ul className="divide-y">
+                    {SAMPLE_RULES.map((rule) => (
+                      <RuleRow
+                        key={rule.id}
+                        rule={rule}
+                        selected
+                        preview={null}
+                        disabled={false}
+                        onToggle={noop}
+                        onPreview={noop}
+                      />
+                    ))}
+                  </ul>
+                </Surface>
               </Skeleton>
             </DelayedLoadingPlaceholder>
           </div>
@@ -957,21 +960,23 @@ function ReviewStep({
                 <span className={REPLAY_BLOCK_CLASS}>{repoId}</span>
               </Heading>
             ) : null}
-            <ul className="divide-y rounded-lg border">
-              {scan.proposals
-                .filter((rule) => rule.repoId === repoId)
-                .map((rule) => (
-                  <RuleRow
-                    key={rule.id}
-                    rule={rule}
-                    selected={overrides[rule.id] ?? rule.selected}
-                    preview={previews[rule.id] ?? null}
-                    disabled={disabled}
-                    onToggle={(next): void => onToggle(rule.id, next)}
-                    onPreview={(): void => onPreview(rule.id)}
-                  />
-                ))}
-            </ul>
+            <Surface variant="outline">
+              <ul className="divide-y">
+                {scan.proposals
+                  .filter((rule) => rule.repoId === repoId)
+                  .map((rule) => (
+                    <RuleRow
+                      key={rule.id}
+                      rule={rule}
+                      selected={overrides[rule.id] ?? rule.selected}
+                      preview={previews[rule.id] ?? null}
+                      disabled={disabled}
+                      onToggle={(next): void => onToggle(rule.id, next)}
+                      onPreview={(): void => onPreview(rule.id)}
+                    />
+                  ))}
+              </ul>
+            </Surface>
           </div>
         ))
       )}
@@ -1069,14 +1074,16 @@ const noop = (): void => undefined;
 /** A rule file's text, cut at the preview limit. */
 function RulePreviewText({ body }: { readonly body: string }): JSX.Element {
   return (
-    <pre
-      className={`max-h-64 overflow-auto whitespace-pre-wrap rounded bg-secondary p-2 font-mono text-xs fg-secondary ${REPLAY_BLOCK_CLASS}`}
-      data-testid="repo-rules-preview"
-    >
-      {body.length > PREVIEW_CHAR_LIMIT
-        ? `${body.slice(0, PREVIEW_CHAR_LIMIT)}\n…`
-        : body || '(empty)'}
-    </pre>
+    <Surface variant="group" size="small" className="overflow-hidden">
+      <pre
+        className={`max-h-64 overflow-auto whitespace-pre-wrap p-2 font-mono text-xs fg-secondary ${REPLAY_BLOCK_CLASS}`}
+        data-testid="repo-rules-preview"
+      >
+        {body.length > PREVIEW_CHAR_LIMIT
+          ? `${body.slice(0, PREVIEW_CHAR_LIMIT)}\n…`
+          : body || '(empty)'}
+      </pre>
+    </Surface>
   );
 }
 
@@ -1150,12 +1157,11 @@ function RuleRow({
           {rule.flags.length > 0 ? (
             <ul className="flex flex-wrap gap-1" aria-label="Notes">
               {rule.flags.map((flag) => (
-                <li
-                  key={flag}
-                  className="rounded bg-secondary px-1.5 py-0.5 text-xs fg-secondary"
-                >
-                  {FLAG_LABELS[flag]}
-                </li>
+                <Surface as="li" variant="group" size="small" key={flag}>
+                  <div className="px-1.5 py-0.5 text-xs fg-secondary">
+                    {FLAG_LABELS[flag]}
+                  </div>
+                </Surface>
               ))}
             </ul>
           ) : null}

@@ -412,6 +412,9 @@ importers:
       '@canopy/code-graph':
         specifier: workspace:*
         version: link:../../packages/code-graph
+      '@canopy/copilot-recipient':
+        specifier: workspace:*
+        version: link:../../packages/copilot-recipient
       '@canopy/core-client':
         specifier: workspace:*
         version: link:../../packages/core-client
@@ -574,6 +577,21 @@ importers:
         specifier: 4.3.6
         version: 4.3.6
 
+  packages/copilot-recipient:
+    dependencies:
+      '@canopy/agent-transcript':
+        specifier: workspace:*
+        version: link:../agent-transcript
+      '@canopy/core-platform':
+        specifier: workspace:*
+        version: link:../core-platform
+      '@canopy/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      '@github/copilot-sdk':
+        specifier: 1.0.15
+        version: 1.0.15
+
   packages/core-client:
     dependencies:
       '@canopy/core-transport':
@@ -643,6 +661,9 @@ importers:
       '@canopy/code-graph':
         specifier: workspace:*
         version: link:../code-graph
+      '@canopy/copilot-recipient':
+        specifier: workspace:*
+        version: link:../copilot-recipient
       '@canopy/core-platform':
         specifier: workspace:*
         version: link:../core-platform
@@ -703,6 +724,9 @@ importers:
       micromark-util-decode-string:
         specifier: 2.0.1
         version: 2.0.1
+      node-diff3:
+        specifier: 3.2.1
+        version: 3.2.1
 
   packages/pipeline-interop:
     dependencies:

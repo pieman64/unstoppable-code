@@ -50,7 +50,7 @@ export const CorePullRequestCheckSchema = z.strictObject({
 
 export type CorePullRequestCheck = z.output<typeof CorePullRequestCheckSchema>;
 
-/** The full pull-request projection every `core.pullRequest.*` read returns. */
+/** The full pull-request projection returned by get/list and PR writes. */
 export const CorePullRequestSchema = z.strictObject({
   pullRequestId: OpaqueIdSchema,
   integrationId: OpaqueIdSchema,
@@ -96,6 +96,7 @@ export const CorePullRequestListParamsSchema = z.strictObject({
   repositoryId: OpaqueIdSchema.nullable(),
   states: z.array(z.enum(CORE_PULL_REQUEST_STATES)),
   cursor: OpaqueIdSchema.nullable(),
+  query: z.string().min(1).max(100).optional(),
   limit: z.number().int().min(1).max(200),
 });
 
@@ -271,8 +272,8 @@ export const CORE_PULL_REQUEST_INSTRUCTION_DEFINITIONS =
   });
 
 /**
- * Pull request merge, served by the web core only (CAN-5714), so kept out of
- * the composed registries, whose hosts would need a handler.
+ * Composed for the web core (CAN-5714) and desktop dispatcher (CAN-4728).
+ * The packaged daemon does not register merge before GitHub enablement.
  */
 export const CORE_PULL_REQUEST_MERGE_INSTRUCTION_DEFINITIONS =
   defineCanopyInstructionRegistry('core', {

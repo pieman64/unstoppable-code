@@ -11,12 +11,14 @@ import {
 import { logMainProcessWarn } from '../../lib/main-process-logging';
 import { readPreferencesFile } from '../../lib/preferences-store';
 import { broadcastLocalMemoryChanged } from './change-events';
-import {
-  LOCAL_MEMORY_SYNCED_CONSOLIDATION_MESSAGE,
-  LOCAL_MEMORY_SYNCED_RESTORE_MESSAGE,
-} from '@canopy/protocol/local-memory';
+import { LOCAL_MEMORY_SYNCED_REBUILD_MESSAGE } from '@canopy/protocol/local-memory';
 import { localMemoryScopeDir } from './scope-resolver';
-import { isSyncedMemoryReplica } from './replica-hooks';
+import {
+  assertReplicaStillSyncing,
+  isSyncedMemoryReplica,
+  LocalMemoryReplicaUnavailableError,
+  localMemoryReplicaHooks,
+} from './replica-hooks';
 import {
   beginLocalMemoryConsolidationRun,
   endLocalMemoryConsolidationRun,
@@ -450,7 +452,10 @@ async function runConsolidationTask(
   request: LocalMemoryScopeRequest,
   scopeDir: string,
   helperModel: LocalMemoryHelperModel,
-  overrides: Pick<RunConsolidationOptions, 'snapshotBeforeWrite'> = {},
+  overrides: Pick<
+    RunConsolidationOptions,
+    'snapshotBeforeWrite' | 'leaseReason'
+  > = {},
 ): Promise<RunConsolidationResult> {
   // Keep the structured-helper/provider stack off Electron's startup import
   // path, matching consolidation-scheduler.ts: the task module is only
@@ -565,7 +570,9 @@ export async function runManualLocalMemoryConsolidation(
         const queued = await resolveQueuedRunModel(request);
         if ('refusal' in queued) return queued.refusal;
         return consolidationRunOutcome(
-          await runConsolidationTask(request, scopeDir, queued.helperModel),
+          await runConsolidationTask(request, scopeDir, queued.helperModel, {
+            leaseReason: 'manual',
+          }),
         );
       },
     });
@@ -621,7 +628,7 @@ export async function runManualLocalMemoryRebuild(
 ): Promise<LocalMemoryRebuildResult> {
   const scopeDir = scopeDirectory(request);
   if (await isSyncedMemoryReplica(scopeDir)) {
-    return rebuildResult('skipped', LOCAL_MEMORY_SYNCED_CONSOLIDATION_MESSAGE);
+    return rebuildResult('skipped', LOCAL_MEMORY_SYNCED_REBUILD_MESSAGE);
   }
   if (!beginLocalMemoryConsolidationRun(scopeDir, 'rebuild')) {
     return rebuildResult('skipped', 'already-running');
@@ -742,12 +749,20 @@ export async function restoreManualLocalMemorySnapshot(
     throw new Error('Choose a memory snapshot.');
   }
   const scopeDir = scopeDirectory(request);
-  if (await isSyncedMemoryReplica(scopeDir)) {
-    return {
-      status: 'skipped',
-      reason: LOCAL_MEMORY_SYNCED_RESTORE_MESSAGE,
-      previousSnapshotId: null,
-    };
+  const cancelled: LocalMemorySnapshotRestoreResponse = {
+    status: 'skipped',
+    reason: 'cancelled',
+    previousSnapshotId: null,
+  };
+  // A synced replica's restore is a manual edit its engine commits, so a
+  // replica no engine keeps now (signed out, another account) is left alone,
+  // also when that changes while the restore waits for the lock.
+  const target = {
+    dir: scopeDir,
+    accountId: localMemoryReplicaHooks()?.replicaAccountId(scopeDir) ?? null,
+  };
+  if (target.accountId === null && (await isSyncedMemoryReplica(scopeDir))) {
+    return cancelled;
   }
   if (!beginLocalMemoryConsolidationRun(scopeDir, 'restore')) {
     return {
@@ -757,10 +772,20 @@ export async function restoreManualLocalMemorySnapshot(
     };
   }
   try {
-    const { previousSnapshotId } = await restoreLocalMemorySnapshot(
-      scopeDir,
-      snapshotId,
-    );
+    let previousSnapshotId: string | null;
+    try {
+      ({ previousSnapshotId } = await restoreLocalMemorySnapshot(
+        scopeDir,
+        snapshotId,
+        () => assertReplicaStillSyncing(target),
+      ));
+    } catch (error) {
+      if (error instanceof LocalMemoryReplicaUnavailableError) return cancelled;
+      throw error;
+    }
+    // In a synced replica the restored documents are a manual edit against
+    // the base they were restored on (design §14.1).
+    localMemoryReplicaHooks()?.noteChanged(scopeDir);
     return { status: 'restored', previousSnapshotId };
   } finally {
     endLocalMemoryConsolidationRun(scopeDir);

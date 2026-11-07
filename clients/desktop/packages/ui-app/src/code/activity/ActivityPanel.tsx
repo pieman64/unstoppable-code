@@ -441,7 +441,7 @@ const ACTIVITY_SECTION_DESCRIPTORS: Record<
   },
   'mcp-servers': {
     title: 'MCP servers',
-    icon: <McpServerIcon width={16} height={16} />,
+    icon: <McpServerIcon size="sm" />,
     subtitle: (context): ReactNode =>
       mcpPanelCardSubtitle({
         loading: false,
@@ -523,7 +523,7 @@ const ACTIVITY_SECTION_DESCRIPTORS: Record<
   },
   scripts: {
     title: 'Scripts',
-    icon: <RocketLaunchIcon width={14} height={14} />,
+    icon: <RocketLaunchIcon size="sm" />,
     subtitle: (context): ReactNode => {
       const configured = new Set(
         selectWorktreeItems(

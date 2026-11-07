@@ -11,6 +11,7 @@ import {
   Heading,
 } from '@canopy/ui-shared/components';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
+import { Surface } from '@canopy/ui-shared/components';
 
 function MarketplaceSourceAddPluginPreview({
   plugin,
@@ -18,65 +19,67 @@ function MarketplaceSourceAddPluginPreview({
   readonly plugin: MarketplaceSourceAddPlugin;
 }): JSX.Element {
   return (
-    <div className="rounded-md border px-3 py-2">
-      <p className={`text-s font-medium fg-primary ${REPLAY_BLOCK_CLASS}`}>
-        {plugin.name}
-      </p>
-      {plugin.description && (
-        <p className={`text-xs fg-secondary ${REPLAY_BLOCK_CLASS}`}>
-          {plugin.description}
+    <Surface variant="outline" size="small">
+      <div className="px-3 py-2">
+        <p className={`text-s font-medium fg-primary ${REPLAY_BLOCK_CLASS}`}>
+          {plugin.name}
         </p>
-      )}
-      {(plugin.license !== null ||
-        plugin.sourceUrl !== null ||
-        plugin.securityAudit !== null) && (
-        <p
-          className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs fg-secondary"
-          data-testid="cloud-marketplace-plugin-provenance"
-        >
-          {plugin.license !== null && (
-            <span className={REPLAY_BLOCK_CLASS}>
-              License: {plugin.license}
-            </span>
-          )}
-          {plugin.sourceUrl !== null && (
-            <span className={REPLAY_BLOCK_CLASS}>
-              <ExternalTextLink href={plugin.sourceUrl} label="View source" />
-            </span>
-          )}
-          {plugin.securityAudit !== null && (
-            <SecurityAuditSummary
-              audit={plugin.securityAudit}
-              dataTestId="cloud-marketplace-plugin-security-audit"
-            />
-          )}
-        </p>
-      )}
-      {plugin.syncError && (
-        <p
-          className={`mt-1 ${REPLAY_BLOCK_CLASS}`}
-          data-testid="cloud-marketplace-plugin-error"
-        >
-          <StatusLabel size="xs">{plugin.syncError}</StatusLabel>
-        </p>
-      )}
-      {plugin.hooksStripped && (
-        <p
-          className="mt-1 text-xs fg-secondary"
-          data-testid="cloud-marketplace-plugin-warning"
-        >
-          Hooks will be omitted in cloud sessions.
-        </p>
-      )}
-      {plugin.mcpOnly && (
-        <p
-          className="mt-1 text-xs fg-secondary"
-          data-testid="cloud-marketplace-plugin-warning"
-        >
-          MCP-only plugins are not yet available in cloud sessions.
-        </p>
-      )}
-    </div>
+        {plugin.description && (
+          <p className={`text-xs fg-secondary ${REPLAY_BLOCK_CLASS}`}>
+            {plugin.description}
+          </p>
+        )}
+        {(plugin.license !== null ||
+          plugin.sourceUrl !== null ||
+          plugin.securityAudit !== null) && (
+          <p
+            className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs fg-secondary"
+            data-testid="cloud-marketplace-plugin-provenance"
+          >
+            {plugin.license !== null && (
+              <span className={REPLAY_BLOCK_CLASS}>
+                License: {plugin.license}
+              </span>
+            )}
+            {plugin.sourceUrl !== null && (
+              <span className={REPLAY_BLOCK_CLASS}>
+                <ExternalTextLink href={plugin.sourceUrl} label="View source" />
+              </span>
+            )}
+            {plugin.securityAudit !== null && (
+              <SecurityAuditSummary
+                audit={plugin.securityAudit}
+                dataTestId="cloud-marketplace-plugin-security-audit"
+              />
+            )}
+          </p>
+        )}
+        {plugin.syncError && (
+          <p
+            className={`mt-1 ${REPLAY_BLOCK_CLASS}`}
+            data-testid="cloud-marketplace-plugin-error"
+          >
+            <StatusLabel size="xs">{plugin.syncError}</StatusLabel>
+          </p>
+        )}
+        {plugin.hooksStripped && (
+          <p
+            className="mt-1 text-xs fg-secondary"
+            data-testid="cloud-marketplace-plugin-warning"
+          >
+            Hooks will be omitted in cloud sessions.
+          </p>
+        )}
+        {plugin.mcpOnly && (
+          <p
+            className="mt-1 text-xs fg-secondary"
+            data-testid="cloud-marketplace-plugin-warning"
+          >
+            MCP-only plugins are not yet available in cloud sessions.
+          </p>
+        )}
+      </div>
+    </Surface>
   );
 }
 

@@ -1,0 +1,38 @@
+{
+  "name": "@canopy/copilot-recipient",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Node-only Copilot runtime, turn and process ownership engine with host-owned authority and receipt storage.",
+  "license": "MIT",
+  "exports": {
+    "./capability-snapshot": "./src/capability-snapshot.ts",
+    "./events": "./src/events.ts",
+    "./mcp-server-name": "./src/mcp-server-name.ts",
+    "./node-module-loader": "./src/node-module-loader.ts",
+    "./process-ownership": "./src/process-ownership.ts",
+    "./process-receipts": "./src/process-receipts.ts",
+    "./receipt-storage": "./src/receipt-storage.ts",
+    "./runtime-auth": "./src/runtime-auth.ts",
+    "./runtime-environment": "./src/runtime-environment.ts",
+    "./runtime": "./src/runtime.ts",
+    "./session-policy": "./src/session-policy.ts",
+    "./setup-withdrawal": "./src/setup-withdrawal.ts",
+    "./text-redaction": "./src/text-redaction.ts",
+    "./tool-authorization": "./src/tool-authorization.ts",
+    "./tool-correlation": "./src/tool-correlation.ts",
+    "./tool-input": "./src/tool-input.ts",
+    "./tool-receipts": "./src/tool-receipts.ts",
+    "./tool-snapshot": "./src/tool-snapshot.ts",
+    "./turn-cleanup": "./src/turn-cleanup.ts",
+    "./turn-driver": "./src/turn-driver.ts",
+    "./local-host": "./src/local-host.ts",
+    "./local-driver": "./src/local-driver.ts",
+    "./local-channel": "./src/local-channel.ts"
+  },
+  "dependencies": {
+    "@canopy/agent-transcript": "workspace:*",
+    "@canopy/core-platform": "workspace:*",
+    "@canopy/protocol": "workspace:*",
+    "@github/copilot-sdk": "1.0.15"
+  }
+}

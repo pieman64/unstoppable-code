@@ -36,6 +36,7 @@ import { joinClassNames } from './join-class-names';
 import { useMembershipChangeFollowUp } from './membership-change';
 import { resolveJoinedOrganization } from './resolve-joined-organization';
 import type { SettingsFailure } from '../errors';
+import { Surface } from '@canopy/ui-shared/components';
 
 export type TeamPanelStatus = 'loading' | 'ready' | 'error';
 
@@ -236,64 +237,68 @@ export function TeamPanel({
             {invitations.map((invite) => {
               const busy = respondingId === invite.id;
               return (
-                <li
+                <Surface
+                  as="li"
+                  variant="outline"
+                  size="small"
                   key={invite.id}
                   data-testid="team-invitation-row"
-                  className="flex flex-wrap items-center justify-between gap-3 rounded-md border px-4 py-3"
                 >
-                  <div className="flex min-w-0 items-center gap-3">
-                    <span className="flex h-8 w-8 items-center justify-center rounded-full bg-secondary fg-secondary">
-                      <Mail size={14} />
-                    </span>
-                    <div className="min-w-0">
-                      <p className="truncate text-s font-medium fg-primary">
-                        {invite.organizationName}
-                      </p>
-                      <div className="mt-1 flex flex-wrap items-center gap-2">
-                        <StatusBadge variant="warning" label="Invited" />
-                        <TeamRoleBadge role={invite.role} />
-                        {invite.organizationTeamName && (
-                          <Badge>{invite.organizationTeamName}</Badge>
-                        )}
-                        <span
-                          className={joinClassNames(
-                            'text-xs fg-secondary',
-                            blockClassName,
+                  <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <span className="flex h-8 w-8 items-center justify-center rounded-full bg-secondary fg-secondary">
+                        <Mail size={14} />
+                      </span>
+                      <div className="min-w-0">
+                        <p className="truncate text-s font-medium fg-primary">
+                          {invite.organizationName}
+                        </p>
+                        <div className="mt-1 flex flex-wrap items-center gap-2">
+                          <StatusBadge variant="warning" label="Invited" />
+                          <TeamRoleBadge role={invite.role} />
+                          {invite.organizationTeamName && (
+                            <Badge>{invite.organizationTeamName}</Badge>
                           )}
-                        >
-                          from {invite.invitedByName}
-                        </span>
+                          <span
+                            className={joinClassNames(
+                              'text-xs fg-secondary',
+                              blockClassName,
+                            )}
+                          >
+                            from {invite.invitedByName}
+                          </span>
+                        </div>
                       </div>
                     </div>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="secondary"
+                        size="compact"
+                        onClick={() => void handleRespond(invite, 'accept')}
+                        disabled={busy}
+                        data-testid="team-invitation-accept"
+                      >
+                        <Check size={13} />
+                        {busy ? 'Joining…' : 'Accept'}
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        size="compact"
+                        onClick={() => setPendingDecline(invite)}
+                        disabled={busy}
+                        data-testid="team-invitation-decline"
+                      >
+                        <X size={13} />
+                        Decline
+                      </Button>
+                    </div>
+                    <OrgEnforcedConsentList
+                      className="mt-2 w-full basis-full"
+                      settings={invite.enforcedSettings}
+                      heading="Required organization settings:"
+                    />
                   </div>
-                  <div className="flex items-center gap-2">
-                    <Button
-                      variant="secondary"
-                      size="compact"
-                      onClick={() => void handleRespond(invite, 'accept')}
-                      disabled={busy}
-                      data-testid="team-invitation-accept"
-                    >
-                      <Check size={13} />
-                      {busy ? 'Joining…' : 'Accept'}
-                    </Button>
-                    <Button
-                      variant="secondary"
-                      size="compact"
-                      onClick={() => setPendingDecline(invite)}
-                      disabled={busy}
-                      data-testid="team-invitation-decline"
-                    >
-                      <X size={13} />
-                      Decline
-                    </Button>
-                  </div>
-                  <OrgEnforcedConsentList
-                    className="mt-2 w-full basis-full"
-                    settings={invite.enforcedSettings}
-                    heading="Required organization settings:"
-                  />
-                </li>
+                </Surface>
               );
             })}
           </ul>

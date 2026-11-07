@@ -15,6 +15,7 @@ import type { SharedPlanSummary } from '@canopy/protocol/plans';
 import { formatPlanDate } from '@canopy/protocol/settings/plan-display';
 import { fetchMemberSharedPlans } from './profile-api';
 import { useMemberPagedResource } from './use-member-paged-resource';
+import { Surface } from '@canopy/ui-shared/components';
 
 /** The fields a plan row shows. */
 type PlanRowItem = Pick<
@@ -131,15 +132,17 @@ export function ProfilePlansSection({
             onRetry={retry}
           />
         ) : (
-          <p
-            className={joinClassNames(
-              'rounded-xl border border-dashed px-4 py-12 text-center text-s fg-secondary',
-              blockClassName,
-            )}
-            data-testid="profile-plans-empty"
-          >
-            {memberName} hasn&apos;t shared any plans with this team yet.
-          </p>
+          <Surface variant="dashed">
+            <p
+              className={joinClassNames(
+                'px-4 py-12 text-center text-s fg-secondary',
+                blockClassName,
+              )}
+              data-testid="profile-plans-empty"
+            >
+              {memberName} hasn&apos;t shared any plans with this team yet.
+            </p>
+          </Surface>
         )}
       </div>
     );

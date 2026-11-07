@@ -30,6 +30,7 @@ export const REALTIME_EVENT_TYPES = [
   'credit.pool',
   'sharedcontainer.detail',
   'cloud.workspace',
+  'cloud.attention',
   'memory.scope',
   'project.lifecycle',
 ] as const satisfies readonly string[];
@@ -182,6 +183,28 @@ export interface CloudWorkspaceRealtimeSignal {
 
 export type RealtimeCloudWorkspaceEnvelope =
   RealtimeEventEnvelope<CloudWorkspaceRealtimeSignal>;
+
+/**
+ * A question or tool approval in one of the owner's cloud chats started
+ * (`requested`) or ended (`resolved`: answered, expired or cancelled)
+ * (CAN-5656). Sent only to the user the agent is waiting on. Identifiers
+ * only: the chat's own interactions read carries the request.
+ */
+export interface CloudAttentionRealtimeSignal {
+  /** External (uuid) id of the cloud workspace. */
+  workspaceId: string;
+  /** External (uuid) id of the chat. */
+  chatId: string;
+  /** Core interaction id, the one `respond` takes. */
+  interactionId: string;
+  kind: 'question' | 'approval';
+  state: 'requested' | 'resolved';
+  /** When an unanswered request expires (ISO 8601), on `requested` only. */
+  expiresAt: string | null;
+}
+
+export type RealtimeCloudAttentionEnvelope =
+  RealtimeEventEnvelope<CloudAttentionRealtimeSignal>;
 
 /**
  * Refetch-only signal that a cloud project the owner uses has a new lifecycle

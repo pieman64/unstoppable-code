@@ -198,14 +198,15 @@ try {
   if (prompt || mode === 'locked-never') await server.control('lock', 'locked');
   if (mode === 'prompt-reply-abort')
     await server.control('hold-prompt', 'holding-prompt');
-  const loaded = { exports: {} };
-  process.dlopen(loaded, product);
-  const native: unknown = loaded.exports;
+  const { prepareNativeQualification } =
+    await import('./native-vault-qualification');
+  const prepared = await prepareNativeQualification(product, root);
+  const native: unknown = prepared.native;
   assert.ok(isNative(native), 'Invalid controlled qualification addon.');
   const make = (): ReturnType<typeof createSecretProtectionServices> =>
     createSecretProtectionServices({
       os: 'linux',
-      nativePath: product,
+      preparedNative: prepared.capability,
       brandId: 'canopy',
       build: 'dev',
       authorityId: 'a'.repeat(64),

@@ -2,12 +2,15 @@ import type {
   PlatformSecretProtectionUnavailableReason,
   BrandReleaseFlavor,
 } from '@canopy/core-runtime';
+import type { PreparedNativeArtifact } from './authorization';
 import { isCanonicalWindowsSid } from '../local-authority';
 
 /** Trusted compiled identity only (V-3/V-6); never protocol or environment inputs. */
 export interface SecretProtectionOptions {
   readonly os: string;
-  readonly nativePath: string;
+  /** Compatibility input only; a pathname never authorizes a load. */
+  readonly nativePath?: string;
+  readonly preparedNative?: PreparedNativeArtifact;
   readonly brandId: string;
   /** Optional host application identity validation for the Windows candidate. */
   readonly applicationId?: string;

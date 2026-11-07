@@ -807,6 +807,7 @@ export function createExecutionProcessServices(
     function terminate(options?: {
       readonly mode?: PlatformStopMode;
       readonly signal?: AbortSignal;
+      readonly keepOutput?: boolean;
     }): Promise<void> {
       const mode = options?.mode ?? 'graceful';
       const signal = options?.signal;
@@ -815,8 +816,10 @@ export function createExecutionProcessServices(
       if (signal?.aborted)
         return Promise.resolve().then(() => signal.throwIfAborted());
       if (!exit) cancelled = true;
-      stdout.discard();
-      stderr.discard();
+      if (options?.keepOutput !== true) {
+        stdout.discard();
+        stderr.discard();
+      }
       if (released)
         return tree.lapsed
           ? Promise.reject(fail('unavailable', UNCONFIRMED))

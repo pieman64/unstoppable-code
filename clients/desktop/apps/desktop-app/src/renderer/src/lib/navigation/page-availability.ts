@@ -79,8 +79,8 @@ export function isPageFeatureFlagGateOpen(page: NavigationPage): boolean {
   return !flagGate || useFeatureFlagsStore.getState().isEnabled(flagGate.flag);
 }
 
-/** Settings aliases are valid navigation payloads but not pages to list. */
-const SETTINGS_ALIAS_PAGES: ReadonlySet<NavigationPage> =
+/** Compatibility aliases are valid navigation payloads but not pages to list. */
+const COMPATIBILITY_ALIAS_PAGES: ReadonlySet<NavigationPage> =
   new Set<NavigationPage>(['mcp-account-connections', 'environments']);
 
 export function getPageAvailability(page: NavigationPage): PageAvailability {
@@ -137,11 +137,11 @@ export function isPageAvailable(page: NavigationPage): boolean {
 
 /**
  * Every page that can be shown right now, in `NAVIGATION_PAGE_MAP` order.
- * Settings aliases are left out: they open Settings instead of a page.
+ * Compatibility aliases are left out: they open another destination instead.
  */
 export function listAvailablePages(): NavigationPage[] {
   return Object.values(NAVIGATION_PAGE_MAP).filter(
-    (page) => !SETTINGS_ALIAS_PAGES.has(page) && isPageAvailable(page),
+    (page) => !COMPATIBILITY_ALIAS_PAGES.has(page) && isPageAvailable(page),
   );
 }
 

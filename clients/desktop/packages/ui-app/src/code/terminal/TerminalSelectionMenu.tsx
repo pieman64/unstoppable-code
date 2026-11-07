@@ -91,11 +91,7 @@ export function TerminalSelectionMenu({
           onClick={handleCopyClick}
           aria-label={copied ? 'Copied' : 'Copy the selected terminal text'}
         >
-          {copied ? (
-            <CheckIcon className="h-3 w-3" />
-          ) : (
-            <CopyIcon className="h-3 w-3" />
-          )}
+          {copied ? <CheckIcon size="sm" /> : <CopyIcon size="sm" />}
           <span>Copy</span>
         </Button>
       </Tooltip>
@@ -109,7 +105,7 @@ export function TerminalSelectionMenu({
             onClick={handleAddToChatClick}
             shortcut={PLATFORM_MOD_LABEL}
           >
-            <ChatIcon className="h-3 w-3" />
+            <ChatIcon size="sm" />
             <span>Send to chat</span>
           </Button>
         </Tooltip>

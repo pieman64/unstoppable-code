@@ -45,6 +45,7 @@ import {
   PeopleIdCardIcon,
   CheckIcon as AppCatalogCheckIcon,
   StarIcon as AppCatalogStarIcon,
+  type IconSize,
 } from '../icons/AppIcons';
 import {
   DropdownMenuItem,
@@ -72,6 +73,7 @@ import {
   type PickerMenuSampleLabelWidth,
 } from './PickerMenu';
 import { Button } from './Button';
+import { Fact, FactList } from './FactList';
 import { RichHoverCard, RichHoverTooltip } from './RichHoverTooltip';
 import { SearchField } from './SearchField';
 import { Skeleton } from './Skeleton';
@@ -630,31 +632,27 @@ function ModelRowDetail({
         </p>
       ) : null}
       <div role="separator" className="my-1.5 h-px bg-current/10" />
-      <dl className="space-y-0.5">
+      <FactList
+        layout="spread"
+        size="2xs"
+        rowGap="0.5"
+        labelTone="inherit"
+        valueTone="inherit"
+      >
         {rows.map((row) => (
-          <div
-            key={row.label}
-            className="flex items-center justify-between gap-6 text-2xs leading-snug"
-          >
-            <dt className="shrink-0 opacity-70">{row.label}</dt>
-            <dd className="inline-flex min-w-0 items-center justify-end gap-1 text-right opacity-90">
-              {row.glyph ? (
-                <span
-                  aria-hidden="true"
-                  className="inline-flex h-3 w-3 shrink-0 items-center justify-center"
-                >
-                  <ModelProviderIcon
-                    provider={row.glyph}
-                    width={12}
-                    height={12}
-                  />
-                </span>
-              ) : null}
-              {row.value}
-            </dd>
-          </div>
+          <Fact key={row.label} label={row.label} fit="row">
+            {row.glyph ? (
+              <span
+                aria-hidden="true"
+                className="inline-flex h-3 w-3 shrink-0 items-center justify-center"
+              >
+                <ModelProviderIcon provider={row.glyph} size="xs" />
+              </span>
+            ) : null}
+            {row.value}
+          </Fact>
         ))}
-      </dl>
+      </FactList>
       {!usesAiCredits &&
       option.extraChargeOnly &&
       (option.source === 'claude' ||
@@ -1276,7 +1274,7 @@ export function ModelPickerMenu({
     const agents: CatalogSection = {
       key: 'agents',
       label: 'Agents',
-      icon: <PeopleIdCardIcon width={10} height={10} />,
+      icon: <PeopleIdCardIcon size="sm" />,
       options: catalog.filter((option) => option.kind === 'agent'),
       sortOrder: -1,
     };
@@ -1858,8 +1856,7 @@ export function ModelPickerMenu({
   const foldTriggerIcon = foldIconWhenTight;
   const triggerIcon = autoSelected ? (
     <AutoModelIcon
-      width={variant === 'capsule' ? 16 : 13}
-      height={variant === 'capsule' ? 16 : 13}
+      size="sm"
       className={
         foldTriggerIcon
           ? 'shrink-0 fg-secondary'
@@ -1888,8 +1885,7 @@ export function ModelPickerMenu({
     />
   ) : (
     <DotIcon
-      width={variant === 'capsule' ? 16 : 13}
-      height={variant === 'capsule' ? 16 : 13}
+      size="sm"
       className={
         foldTriggerIcon
           ? 'shrink-0 fg-secondary'
@@ -1996,8 +1992,7 @@ export function ModelPickerMenu({
               tone={autoSelected ? 'accent' : 'tertiary'}
             >
               <AutoModelIcon
-                width={16}
-                height={16}
+                size="sm"
                 data-testid={`${testIdPrefix}-option-auto-icon`}
               />
             </PickerMenuOptionLeading>
@@ -2013,8 +2008,7 @@ export function ModelPickerMenu({
               // The hint sits on the label's baseline, 1px under the row's
               // center; the 2px top margin moves the arrow's center there.
               <ArrowUpRightIcon
-                width={12}
-                height={12}
+                size="sm"
                 className="mt-0.5 shrink-0 fg-tertiary"
                 data-testid={`${testIdPrefix}-option-auto-action-icon`}
               />
@@ -2092,13 +2086,7 @@ export function ModelPickerMenu({
             }}
           >
             <PickerMenuOptionLeading tone="secondary">
-              <ModelProviderIcon
-                provider={harness.id}
-                central
-                size={16}
-                width={16}
-                height={16}
-              />
+              <ModelProviderIcon provider={harness.id} central size="md" />
             </PickerMenuOptionLeading>
             <PickerMenuOptionContent>
               <PickerMenuOptionLabel>{label}</PickerMenuOptionLabel>
@@ -2199,7 +2187,7 @@ export function ModelPickerMenu({
               data-testid={`${testIdPrefix}-experimental-cursor`}
               className="flex h-5 w-5 items-center justify-center rounded fg-secondary hover:fg-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1"
             >
-              <ExperimentIcon width={14} height={14} aria-hidden="true" />
+              <ExperimentIcon size="sm" aria-hidden="true" />
             </button>
           </Tooltip>
         ) : undefined
@@ -2212,9 +2200,7 @@ export function ModelPickerMenu({
             <ModelProviderIcon
               provider={sectionIconProvider(section.options[0])}
               central
-              size={12}
-              width={12}
-              height={12}
+              size="xs"
               exactSize
             />
           ) : undefined
@@ -2238,23 +2224,14 @@ export function ModelPickerMenu({
     const central = harnessTabs?.chrome === 'picker';
     const harness = modelHarnessTab(option);
     if (harness === 'other')
-      return (
-        <DotIcon
-          width={PICKER_ROW_GLYPH_SIZE}
-          height={PICKER_ROW_GLYPH_SIZE}
-          exactSize
-          aria-hidden="true"
-        />
-      );
+      return <DotIcon size="sm" exactSize aria-hidden="true" />;
     return harness === 'unstoppable' ? (
       harnessTabs?.brandIcon
     ) : (
       <ModelProviderIcon
         provider={harness}
         central={central}
-        size={PICKER_ROW_GLYPH_SIZE}
-        width={PICKER_ROW_GLYPH_SIZE}
-        height={PICKER_ROW_GLYPH_SIZE}
+        size="sm"
         exactSize
         aria-hidden="true"
       />
@@ -2457,9 +2434,7 @@ export function ModelPickerMenu({
         <ModelProviderIcon
           provider={vendor}
           central
-          size={16}
-          width={16}
-          height={16}
+          size="md"
           aria-hidden="true"
         />
       ) : credits ? (
@@ -2688,10 +2663,7 @@ export function ModelPickerMenu({
           id: 'favorites',
           label: 'Favorites',
           icon: (
-            <FavoriteStar
-              filled={activeHarnessTab === 'favorites'}
-              size={railIconSize}
-            />
+            <FavoriteStar filled={activeHarnessTab === 'favorites'} size="lg" />
           ),
           connected: true,
         },
@@ -2722,9 +2694,7 @@ export function ModelPickerMenu({
             <ModelProviderIcon
               provider={harness.id}
               central={pickerChrome}
-              size={railIconSize}
-              width={railIconSize}
-              height={railIconSize}
+              size="lg"
               exactSize
             />
           ),
@@ -2746,14 +2716,12 @@ export function ModelPickerMenu({
                 : getModelCatalogProviderLabel(id),
             icon:
               id === 'other' ? (
-                <DotIcon width={railIconSize} height={railIconSize} exactSize />
+                <DotIcon size="lg" exactSize />
               ) : (
                 <ModelProviderIcon
                   provider={id}
                   central={pickerChrome}
-                  size={railIconSize}
-                  width={railIconSize}
-                  height={railIconSize}
+                  size="lg"
                   exactSize
                 />
               ),
@@ -3075,7 +3043,7 @@ export function ModelPickerMenu({
                             : 'absolute right-1.5 top-1/2 -translate-y-1/2'
                         }
                       >
-                        <CloseMediumIcon width={16} height={16} />
+                        <CloseMediumIcon size="sm" />
                       </Button>
                     ) : null}
                     {autoToggle}
@@ -3176,9 +3144,7 @@ export function ModelPickerMenu({
                       <ModelProviderIcon
                         provider={activeRunnableHarness.id}
                         central={pickerChrome}
-                        size={24}
-                        width={24}
-                        height={24}
+                        size="2xl"
                       />
                     }
                     title={
@@ -3391,9 +3357,7 @@ export function ModelPickerMenu({
                               <ModelProviderIcon
                                 provider={harness.id}
                                 central
-                                size={12}
-                                width={12}
-                                height={12}
+                                size="xs"
                               />
                             }
                             iconTestId={`${testIdPrefix}-search-group-icon-${harness.id}`}
@@ -3646,26 +3610,20 @@ function CheckMark({
   readonly className?: string;
 }): JSX.Element {
   return (
-    <AppCatalogCheckIcon
-      width="12"
-      height="12"
-      className={className}
-      aria-hidden="true"
-    />
+    <AppCatalogCheckIcon size="sm" className={className} aria-hidden="true" />
   );
 }
 
 function FavoriteStar({
   filled = false,
-  size = PICKER_ROW_GLYPH_SIZE,
+  size = 'sm',
 }: {
   readonly filled?: boolean;
-  readonly size?: number;
+  readonly size?: IconSize;
 }): JSX.Element {
   return (
     <AppCatalogStarIcon
-      width={size}
-      height={size}
+      size={size}
       exactSize
       fill={filled ? 'currentColor' : 'none'}
       aria-hidden="true"
@@ -4039,8 +3997,7 @@ function ModelPickerOption({
               // The hint sits on the label's baseline, 1px under the row's
               // center; the 2px top margin moves the arrow's center there.
               <ArrowUpRightIcon
-                width={12}
-                height={12}
+                size="sm"
                 className="mt-0.5 shrink-0 fg-tertiary"
                 data-testid={`${testIdPrefix}-option-auto-action-icon`}
               />
@@ -4126,9 +4083,7 @@ function ModelPickerOption({
               <ModelProviderIcon
                 provider={staticHarness}
                 central
-                size={PICKER_ROW_GLYPH_SIZE}
-                width={PICKER_ROW_GLYPH_SIZE}
-                height={PICKER_ROW_GLYPH_SIZE}
+                size="sm"
                 exactSize
               />
             </span>
@@ -4166,9 +4121,7 @@ function ModelPickerOption({
                 <ModelProviderIcon
                   provider={shownHarness ?? option.provider}
                   central
-                  size={PICKER_ROW_GLYPH_SIZE}
-                  width={PICKER_ROW_GLYPH_SIZE}
-                  height={PICKER_ROW_GLYPH_SIZE}
+                  size="sm"
                   exactSize
                 />
               </span>
@@ -4179,11 +4132,7 @@ function ModelPickerOption({
                     : 'hidden group-hover/model-row:inline-flex group-focus-within/model-row:inline-flex [@media(hover:none)]:inline-flex'
                 }
               >
-                <MoreHorizontalIcon
-                  width={PICKER_ROW_GLYPH_SIZE}
-                  height={PICKER_ROW_GLYPH_SIZE}
-                  exactSize
-                />
+                <MoreHorizontalIcon size="sm" exactSize />
               </span>
             </button>
           ) : null}
@@ -4206,11 +4155,7 @@ function ModelPickerOption({
               }}
               className={`focus-ring absolute z-1 ${leadingFavorite && !harnessTrigger ? 'right-0.5' : 'right-7.5'} top-1/2 flex size-7 -translate-y-1/2 items-center justify-center ${MODEL_ROW_CONTROL_RADIUS_CLASS} fg-tertiary hover:bg-subtle hover:fg-primary group-hover/model-row:opacity-100 group-focus-within/model-row:opacity-100 [@media(hover:none)]:opacity-100 ${billingOpen || selected ? 'opacity-100' : 'opacity-0'}`}
             >
-              <MoreHorizontalIcon
-                width={PICKER_ROW_GLYPH_SIZE}
-                height={PICKER_ROW_GLYPH_SIZE}
-                exactSize
-              />
+              <MoreHorizontalIcon size="sm" exactSize />
             </button>
           ) : null}
           {/* The star sits against the row's triggers, its label and the rows
@@ -4278,13 +4223,7 @@ function ModelPickerOption({
                     aria-hidden="true"
                     className="flex size-4 shrink-0 items-center justify-center fg-tertiary"
                   >
-                    <ModelProviderIcon
-                      provider={harness}
-                      central
-                      size={16}
-                      width={16}
-                      height={16}
-                    />
+                    <ModelProviderIcon provider={harness} central size="md" />
                   </span>
                   <span className="min-w-0 flex-1">
                     {harness === 'claude'

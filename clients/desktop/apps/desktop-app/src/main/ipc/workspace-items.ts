@@ -1,22 +1,22 @@
 /**
  * Workspace items IPC — Notes/Prompts/Attachments for the shared activity
- * cards, with a storage adapter per workspace type:
+ * cards. Notes, prompts and attachment imports and lists are compatibility
+ * projections over `core.workspace.item.*` on the desktop dispatcher; the
+ * desktop host adapters keep the Cowork and Code stores (and their writers)
+ * unchanged:
  *
  * - Cowork workspaces keep the brand-managed subdirs under the cowork
- *   working folder (delegates to `../lib/standalone-workspace-files`), so
- *   existing cowork data needs no migration and the agent-facing folder
- *   layout stays valid.
+ *   working folder (`../lib/standalone-workspace-files`).
  * - Code workspaces store notes/prompts machine-locally under
  *   `{dataDir}/workspaces/{workspaceId}/notes|prompts/` with branch-origin
- *   tracking (delegates to `../lib/workspace-items`), and read attachments
- *   from the existing per-worktree attachment dirs (storage unchanged).
+ *   tracking (`../lib/workspace-items`), and keep attachments in the
+ *   per-worktree attachment dirs.
  *
  * The renderer is storage-agnostic: one `window.api.workspaceItems` surface.
  */
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
-  APP_ADVISOR_PROJECT_ID,
   IPC_CHANNELS,
   type WorkspaceAttachmentDeleteRequest,
   type WorkspaceAttachmentItem,
@@ -38,185 +38,140 @@ import {
   type WorkspacePromptSaveRequest,
   type WorkspacePromptsListRequest,
 } from '@canopy/desktop-shared/types';
-import { getCoworkManagedSubdir } from '@canopy/desktop-shared/node/lib/cowork-managed-dir';
-import { getAppAdvisorHomeDir, getCoworkWorkspaceRootDir } from '../lib/paths';
 import { resolveAgentAttachmentsDir } from '../lib/agent-attachments';
-import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
-import { logMainProcessWarn } from '../lib/main-process-logging';
 import { isWorkEntryWorkspace } from '../lib/workspace-registry';
-import {
-  deleteAttachment as deleteCoworkAttachment,
-  saveNote as saveCoworkNote,
-  savePrompt as saveCoworkPrompt,
-} from '../lib/standalone-workspace-files';
-import {
-  deleteWorkspaceNote,
-  deleteWorkspacePrompt,
-  saveWorkspaceNote,
-  saveWorkspacePrompt,
-} from '../lib/workspace-items';
+import { deleteAttachment as deleteCoworkAttachment } from '../lib/standalone-workspace-files';
 import { isPathInside } from '../lib/path-safety';
 import { readWorkspacePromptBodyByPath } from '../lib/workspace-prompt-mentions';
 import { chooseFilesForEvent } from '../lib/dialog-window';
 import { validateId } from '../lib/validation';
 import { assertWritableScope } from '../lib/read-only-scope';
 import {
-  removeSharedContainerScopeItemId,
-  replaceSharedContainerScopeItemId,
-} from '../shared-containers/file-scope-store';
-import { getSharedContainerPublishScheduler } from '../shared-containers/publish/scheduler';
-import {
-  listNotesForProject,
-  readNoteForProject,
-  listPromptsForProject,
-  readPromptForProject,
-} from '../services/workspace-items-service';
-import {
   importAttachmentsForIpc,
   listAttachmentsForIpc,
   workspaceItemsChannelScope,
   type WorkspaceItemsDispatcher,
 } from '../canopy-runtime/workspace-item-attachments-dispatch';
+import {
+  deleteTextItemForIpc,
+  listTextItemsForIpc,
+  readTextItemForIpc,
+  saveTextItemForIpc,
+} from '../canopy-runtime/workspace-item-notes-dispatch';
 import type { DesktopIpcCallerResolver } from './file-tree';
 import { registerIpcHandler } from './register';
 
-/** The dispatcher and caller resolver the attachment channels project onto. */
+/** The dispatcher and caller resolver the workspace item channels project onto. */
 export interface WorkspaceItemsIpcRuntime {
   dispatcher: WorkspaceItemsDispatcher;
   resolveCaller: DesktopIpcCallerResolver;
 }
 
-function scheduleWorkspaceItemPublication(projectId: string): void {
-  void getSharedContainerPublishScheduler()
-    .scheduleWorkspace(projectId)
-    .catch((error) =>
-      logMainProcessWarn(
-        '[shared-containers] failed to schedule workspace-item publication',
-        error,
-      ),
-    );
-}
-
-function workEntryHomeDir(projectId: string): string {
-  if (projectId === APP_ADVISOR_PROJECT_ID) {
-    return getAppAdvisorHomeDir();
-  }
-  return getCoworkWorkspaceRootDir(resolveCoworkWorkspaceId(projectId));
-}
-
-/**
- * A cowork note/prompt meta mapped onto the shared renderer item shape.
- * Cowork items never carry branch origins (there are no branches).
- */
-function coworkItemToWorkspaceItem(
-  meta: { id: string; title: string; createdAt: string; updatedAt: string },
-  dir: string,
-): WorkspaceNoteItem {
-  return {
-    id: meta.id,
-    title: meta.title,
-    absolutePath: join(dir, `${meta.id}.md`),
-    createdAt: meta.createdAt,
-    updatedAt: meta.updatedAt,
-  };
-}
-
 export function registerWorkspaceItemHandlers(
   runtime: WorkspaceItemsIpcRuntime,
 ): void {
+  // Notes and prompts: core.workspace.item.list, get, upsert and delete. Each
+  // handler reads its fields first, so a missing payload keeps its legacy
+  // TypeError.
   registerIpcHandler<[WorkspaceNotesListRequest], WorkspaceNoteItem[]>(
     IPC_CHANNELS.workspaceNotesList,
-    async (_event, req) => {
-      return listNotesForProject(req.projectId, req.worktreeId);
+    async (event, req) => {
+      const projectId = req.projectId;
+      const worktreeId = req.worktreeId;
+      return listTextItemsForIpc(
+        runtime.dispatcher,
+        runtime.resolveCaller(event),
+        'note',
+        projectId,
+        worktreeId,
+      );
     },
   );
 
   registerIpcHandler<[WorkspaceNoteReadRequest], WorkspaceNoteReadResponse>(
     IPC_CHANNELS.workspaceNotesRead,
-    async (_event, req) => {
-      return readNoteForProject(req.projectId, req.noteId, req.worktreeId);
+    async (event, req) => {
+      const projectId = req.projectId;
+      const noteId = req.noteId;
+      const worktreeId = req.worktreeId;
+      return readTextItemForIpc(
+        runtime.dispatcher,
+        runtime.resolveCaller(event),
+        'note',
+        projectId,
+        noteId,
+        worktreeId,
+      );
     },
   );
 
   registerIpcHandler<[WorkspaceNoteSaveRequest], WorkspaceNoteItem>(
     IPC_CHANNELS.workspaceNotesSave,
-    async (_event, req) => {
-      validateId(req.projectId, 'projectId');
-      assertWritableScope(req.projectId);
-      if (req.noteId !== undefined) validateId(req.noteId, 'noteId');
-      if (req.originWorktreeId !== undefined) {
-        validateId(req.originWorktreeId, 'originWorktreeId');
-      }
-      if (isWorkEntryWorkspace(req.projectId)) {
-        const dir = getCoworkManagedSubdir(
-          workEntryHomeDir(req.projectId),
-          'notes',
-        );
-        const meta = await saveCoworkNote(
-          req.projectId,
-          req.title,
-          req.content,
-          req.noteId,
-        );
-        return coworkItemToWorkspaceItem(meta, dir);
-      }
-      const note = await saveWorkspaceNote({
-        workspaceId: req.projectId,
-        ...(req.noteId !== undefined ? { noteId: req.noteId } : {}),
-        title: req.title,
-        content: req.content,
-        ...(req.originWorktreeId !== undefined
-          ? { originWorktreeId: req.originWorktreeId }
-          : {}),
-      });
-      if (req.noteId !== undefined) {
-        await replaceSharedContainerScopeItemId(
-          req.projectId,
-          'note',
-          req.noteId,
-          note.id,
-        );
-      }
-      scheduleWorkspaceItemPublication(req.projectId);
-      return note;
+    async (event, req) => {
+      const projectId = req.projectId;
+      const noteId = req.noteId;
+      const title = req.title;
+      const content = req.content;
+      const originWorktreeId = req.originWorktreeId;
+      return saveTextItemForIpc(
+        runtime.dispatcher,
+        runtime.resolveCaller(event),
+        'note',
+        {
+          projectId,
+          ...(noteId !== undefined ? { itemId: noteId } : {}),
+          title,
+          content,
+          ...(originWorktreeId !== undefined ? { originWorktreeId } : {}),
+        },
+      );
     },
   );
 
   registerIpcHandler<[WorkspaceNoteDeleteRequest], void>(
     IPC_CHANNELS.workspaceNotesDelete,
-    async (_event, req) => {
-      validateId(req.projectId, 'projectId');
-      assertWritableScope(req.projectId);
-      validateId(req.noteId, 'noteId');
-      if (isWorkEntryWorkspace(req.projectId)) {
-        const dir = getCoworkManagedSubdir(
-          workEntryHomeDir(req.projectId),
-          'notes',
-        );
-        const target = join(dir, `${req.noteId}.md`);
-        if (!isPathInside(dir, target)) {
-          throw new Error('Invalid note id');
-        }
-        await rm(target, { force: true });
-        return;
-      }
-      await deleteWorkspaceNote(req.projectId, req.noteId);
-      await removeSharedContainerScopeItemId(req.projectId, 'note', req.noteId);
-      scheduleWorkspaceItemPublication(req.projectId);
+    async (event, req) => {
+      const projectId = req.projectId;
+      const noteId = req.noteId;
+      await deleteTextItemForIpc(
+        runtime.dispatcher,
+        runtime.resolveCaller(event),
+        'note',
+        projectId,
+        noteId,
+      );
     },
   );
 
   registerIpcHandler<[WorkspacePromptsListRequest], WorkspacePromptItem[]>(
     IPC_CHANNELS.workspacePromptsList,
-    async (_event, req) => {
-      return listPromptsForProject(req.projectId, req.worktreeId);
+    async (event, req) => {
+      const projectId = req.projectId;
+      const worktreeId = req.worktreeId;
+      return listTextItemsForIpc(
+        runtime.dispatcher,
+        runtime.resolveCaller(event),
+        'prompt',
+        projectId,
+        worktreeId,
+      );
     },
   );
 
   registerIpcHandler<[WorkspacePromptReadRequest], WorkspacePromptReadResponse>(
     IPC_CHANNELS.workspacePromptsRead,
-    async (_event, req) => {
-      return readPromptForProject(req.projectId, req.promptId, req.worktreeId);
+    async (event, req) => {
+      const projectId = req.projectId;
+      const promptId = req.promptId;
+      const worktreeId = req.worktreeId;
+      return readTextItemForIpc(
+        runtime.dispatcher,
+        runtime.resolveCaller(event),
+        'prompt',
+        projectId,
+        promptId,
+        worktreeId,
+      );
     },
   );
 
@@ -225,8 +180,10 @@ export function registerWorkspaceItemHandlers(
     WorkspacePromptReadByPathResponse
   >(IPC_CHANNELS.workspacePromptsReadByPath, async (_event, req) => {
     validateId(req.projectId, 'projectId');
-    // Path validation + read live in the shared main lib so the portal send
-    // path's prompt-mention expansion enforces the exact same containment.
+    // shortcut: prompt-mention expansion reads by host path until provider
+    // prompt consumption moves to core (Phase 5 inventory debt). Path
+    // validation and the read live in the shared main lib so the portal send
+    // path's expansion enforces the exact same containment.
     return {
       content: await readWorkspacePromptBodyByPath(
         req.projectId,
@@ -237,73 +194,39 @@ export function registerWorkspaceItemHandlers(
 
   registerIpcHandler<[WorkspacePromptSaveRequest], WorkspacePromptItem>(
     IPC_CHANNELS.workspacePromptsSave,
-    async (_event, req) => {
-      validateId(req.projectId, 'projectId');
-      assertWritableScope(req.projectId);
-      if (req.promptId !== undefined) validateId(req.promptId, 'promptId');
-      if (req.originWorktreeId !== undefined) {
-        validateId(req.originWorktreeId, 'originWorktreeId');
-      }
-      if (isWorkEntryWorkspace(req.projectId)) {
-        const dir = getCoworkManagedSubdir(
-          workEntryHomeDir(req.projectId),
-          'prompts',
-        );
-        const meta = await saveCoworkPrompt(
-          req.projectId,
-          req.title,
-          req.content,
-          req.promptId,
-        );
-        return coworkItemToWorkspaceItem(meta, dir);
-      }
-      const prompt = await saveWorkspacePrompt({
-        workspaceId: req.projectId,
-        ...(req.promptId !== undefined ? { promptId: req.promptId } : {}),
-        title: req.title,
-        content: req.content,
-        ...(req.originWorktreeId !== undefined
-          ? { originWorktreeId: req.originWorktreeId }
-          : {}),
-      });
-      if (req.promptId !== undefined) {
-        await replaceSharedContainerScopeItemId(
-          req.projectId,
-          'prompt',
-          req.promptId,
-          prompt.id,
-        );
-      }
-      scheduleWorkspaceItemPublication(req.projectId);
-      return prompt;
+    async (event, req) => {
+      const projectId = req.projectId;
+      const promptId = req.promptId;
+      const title = req.title;
+      const content = req.content;
+      const originWorktreeId = req.originWorktreeId;
+      return saveTextItemForIpc(
+        runtime.dispatcher,
+        runtime.resolveCaller(event),
+        'prompt',
+        {
+          projectId,
+          ...(promptId !== undefined ? { itemId: promptId } : {}),
+          title,
+          content,
+          ...(originWorktreeId !== undefined ? { originWorktreeId } : {}),
+        },
+      );
     },
   );
 
   registerIpcHandler<[WorkspacePromptDeleteRequest], void>(
     IPC_CHANNELS.workspacePromptsDelete,
-    async (_event, req) => {
-      validateId(req.projectId, 'projectId');
-      assertWritableScope(req.projectId);
-      validateId(req.promptId, 'promptId');
-      if (isWorkEntryWorkspace(req.projectId)) {
-        const dir = getCoworkManagedSubdir(
-          workEntryHomeDir(req.projectId),
-          'prompts',
-        );
-        const target = join(dir, `${req.promptId}.md`);
-        if (!isPathInside(dir, target)) {
-          throw new Error('Invalid prompt id');
-        }
-        await rm(target, { force: true });
-        return;
-      }
-      await deleteWorkspacePrompt(req.projectId, req.promptId);
-      await removeSharedContainerScopeItemId(
-        req.projectId,
+    async (event, req) => {
+      const projectId = req.projectId;
+      const promptId = req.promptId;
+      await deleteTextItemForIpc(
+        runtime.dispatcher,
+        runtime.resolveCaller(event),
         'prompt',
-        req.promptId,
+        projectId,
+        promptId,
       );
-      scheduleWorkspaceItemPublication(req.projectId);
     },
   );
 

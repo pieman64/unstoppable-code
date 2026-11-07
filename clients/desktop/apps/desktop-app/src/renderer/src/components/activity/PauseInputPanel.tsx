@@ -272,7 +272,7 @@ export function PauseInputPanel({
       className="mb-4 rounded-lg border border-line-attention/30 bg-warning-subtle p-4"
     >
       <div className="flex items-center gap-2 fg-warning">
-        <InputIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
+        <InputIcon size="sm" className="shrink-0" aria-hidden="true" />
         <span className="text-s font-semibold">
           {pipelinePauseInputHeading(checkpoints.length)}
         </span>

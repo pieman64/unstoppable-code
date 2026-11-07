@@ -69,9 +69,6 @@ const TOOLTIP_LABEL = 'Change permissions';
 const COMPACT_TOOLTIP_PREFIX = 'Permissions';
 const MENU_ID = 'approval-mode-picker-menu';
 
-/** Same glyph size as the model and effort capsules beside it. */
-const ICON_SIZE = 16;
-
 export function ComposerAccessPicker<Value extends string>({
   options,
   mode,
@@ -151,7 +148,7 @@ export function ComposerAccessPicker<Value extends string>({
                 data-approval-mode={mode}
                 className={`inline-flex shrink-0 -translate-y-[var(--border-hairline)] ${selectedOption.className ?? 'fg-secondary'}`}
               >
-                <SelectedIcon width={ICON_SIZE} height={ICON_SIZE} />
+                <SelectedIcon size="sm" />
               </span>
             ) : (
               // The glyph folds away in a label-style compact row. `pr-1.5`
@@ -168,7 +165,7 @@ export function ComposerAccessPicker<Value extends string>({
                   // status-row glyphs.
                   className={`inline-flex shrink-0 -translate-y-[var(--border-hairline)] pr-1.5 ${selectedOption.className ?? 'fg-secondary'}`}
                 >
-                  <SelectedIcon width={ICON_SIZE} height={ICON_SIZE} />
+                  <SelectedIcon size="sm" />
                 </span>
               </FoldReveal>
             )}
@@ -229,8 +226,7 @@ export function ComposerAccessPicker<Value extends string>({
               <DropdownMenuItemIcon tone={entry.tone}>
                 <OptionIcon
                   data-testid={`approval-mode-option-icon-${option}`}
-                  width={ICON_SIZE}
-                  height={ICON_SIZE}
+                  size="sm"
                 />
               </DropdownMenuItemIcon>
               {/* The label keeps its text size's own 20px line (a 16px line
@@ -252,7 +248,7 @@ export function ComposerAccessPicker<Value extends string>({
                   data-testid={`approval-mode-option-check-${option}`}
                   className="ml-auto inline-flex h-4 w-4 shrink-0 items-center justify-center"
                 >
-                  <CheckIcon width={ICON_SIZE} height={ICON_SIZE} />
+                  <CheckIcon size="sm" />
                 </span>
               )}
             </DropdownMenuItem>

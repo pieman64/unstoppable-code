@@ -2,6 +2,10 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 
 import { CANOPY_SYSTEM_CLOCK, type CanopyDaemonClock } from '../daemon/leases';
 import {
+  migrationIdentityMismatch,
+  type MigrationProcessIdentity,
+} from './migration-platform';
+import {
   MIGRATION_HOST_FIELDS,
   MIGRATION_LAUNCHER_TRANSPORT,
   MIGRATION_SLOTS_AT_PIN,
@@ -48,6 +52,8 @@ export type MigrationChannelField =
   | 'channelId'
   | 'launcher.pid'
   | 'launcher.pidversion'
+  | 'launcher.os'
+  | 'launcher.identity'
   | 'launcherDigest'
   | 'source'
   | 'handle';
@@ -63,6 +69,10 @@ export type MigrationIssueRefusal =
   | 'second-source'
   | 'slot-busy'
   | 'source-unavailable'
+  | 'source:absent'
+  | 'source:malformed'
+  | 'source:unreadable'
+  | 'source:outcome_unknown'
   | 'source-generation-fenced'
   | 'ambiguity:during-issue';
 
@@ -111,6 +121,8 @@ export interface MigrationReleaseContext {
    * Call it synchronously at the release itself.
    */
   mayRelease(): boolean;
+  /** Revalidate after an await; never grants a second release. */
+  isCurrent(): boolean;
 }
 
 export type MigrationSessionOutcome<T> =
@@ -125,13 +137,17 @@ export type MigrationConsumeResult<T> =
     }
   | { readonly accepted: false; readonly reason: MigrationPresentationRefusal };
 
-export type MigrationDeclineReason = 'absent' | 'unreadable';
+export type MigrationDeclineReason =
+  | 'absent'
+  | 'malformed'
+  | 'unreadable'
+  | 'outcome_unknown';
 
 /** What the record binds; the challenge stays private to the registry. */
 export interface MigrationSessionBinding {
   readonly sessionId: string;
   readonly channelId: string;
-  readonly launcher: { readonly pid: number; readonly pidversion: number };
+  readonly launcher: MigrationProcessIdentity;
   readonly launcherDigest: string;
   readonly source: MigrationSourceIdentity;
   readonly slot: string;
@@ -284,9 +300,8 @@ function channelMismatch(
   const bound = record.binding;
   if (facts.transport !== MIGRATION_LAUNCHER_TRANSPORT) return 'transport';
   if (facts.channelId !== bound.channelId) return 'channelId';
-  if (facts.launcher.pid !== bound.launcher.pid) return 'launcher.pid';
-  if (facts.launcher.pidversion !== bound.launcher.pidversion)
-    return 'launcher.pidversion';
+  const identity = migrationIdentityMismatch(bound.launcher, facts.launcher);
+  if (identity !== null) return identity;
   if (facts.launcherDigest !== bound.launcherDigest) return 'launcherDigest';
   if (!sameMigrationSource(facts.source, bound.source)) return 'source';
   return handle === record.channel ? null : 'handle';
@@ -426,7 +441,14 @@ export function createMigrationSessionRegistry(
     read(() => admission.channel(handle))?.value ?? null;
 
   const releaseBlocker = (record: SessionRecord): string | null => {
-    if (channelFacts(record.channel) === null) return 'no-native-evidence';
+    const channelBlocker = (): string | null => {
+      const facts = channelFacts(record.channel);
+      if (facts === null) return 'no-native-evidence';
+      const field = channelMismatch(record, record.channel, facts);
+      return field === null ? null : `channel:${field}`;
+    };
+    const channel = channelBlocker();
+    if (channel !== null) return channel;
     const host = read(() => admission.host());
     if (host === null) return 'host-unavailable';
     const field = hostMismatch(record.binding.host, host.value);
@@ -434,14 +456,17 @@ export function createMigrationSessionRegistry(
     const generation = read(() => source.currentGeneration(record.key));
     if (generation?.value !== record.binding.sourceGeneration)
       return 'sourceGeneration';
-    return channelFacts(record.channel) === null ? 'no-native-evidence' : null;
+    return channelBlocker();
   };
 
   const releaseLatch =
     (record: SessionRecord): (() => boolean) =>
     (): boolean => {
       if (!releasable(record)) return false;
-      const blocker = releaseBlocker(record);
+      const blocker =
+        clock.now() >= record.binding.expiresAt
+          ? 'expired'
+          : releaseBlocker(record);
       if (blocker !== null) {
         record.releaseBlocked = true;
         note(record, `release-blocked:${blocker}`);
@@ -577,7 +602,10 @@ export function createMigrationSessionRegistry(
     if (generation === null) return 'source-unavailable';
     if (generation.value !== record.binding.sourceGeneration)
       return 'binding:sourceGeneration';
-    return channelFacts(record.channel) === null ? 'no-native-evidence' : null;
+    const finalFacts = channelFacts(record.channel);
+    if (finalFacts === null) return 'no-native-evidence';
+    const finalChannel = channelMismatch(record, record.channel, finalFacts);
+    return finalChannel === null ? null : `binding:channel:${finalChannel}`;
   };
 
   /** Single use: any failed presentation revokes the issued session. */
@@ -642,6 +670,15 @@ export function createMigrationSessionRegistry(
       generation: session.binding.sourceGeneration,
       operation: session.binding.operation,
       mayRelease: releaseLatch(session),
+      isCurrent: (): boolean => {
+        const valid = releaseBlocker(session) === null;
+        return (
+          valid &&
+          session.state === 'pending' &&
+          session.released &&
+          !session.flagged
+        );
+      },
     });
     let returned: unknown;
     try {

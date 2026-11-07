@@ -16,7 +16,7 @@ import { WorktreeStatusIndicator } from './WorktreeStatusIndicator';
 import { useTerminalActivityStore } from '@/stores/terminalActivityStore';
 import { useDragToScroll } from '@/hooks/useDragToScroll';
 import { EyeOffIcon } from '@canopy/ui-shared/icons';
-import { Disclosure } from '@canopy/ui-shared/components';
+import { Disclosure, Surface } from '@canopy/ui-shared/components';
 import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
 import { ProjectIcon } from '../shared/ProjectIcon';
 import {
@@ -240,45 +240,46 @@ export function WorktreeKanbanBoard({
     const backgroundTasks = adapterProps.backgroundTaskCounts?.get(wtKey) ?? 0;
 
     return (
-      <div
-        key={wtKey}
-        ref={isSelected ? scrollSelectedIntoView : null}
-        data-testid={`worktree-kanban-card-${wtKey}`}
-        className="cursor-pointer rounded-md border bg-base/40 p-1.5"
-        onClick={(): void =>
-          adapterProps.onSelectWorktree(project.id, worktree.id)
-        }
-        onDoubleClick={(): void =>
-          onWorktreeDoubleClick?.(project.id, worktree.id)
-        }
-      >
-        <div className="mb-1 flex items-center justify-between gap-2 px-1">
-          <ProjectChip project={project} />
-          <KanbanStatusIndicator
-            uiStatus={status}
-            projectId={project.id}
-            worktree={worktree}
-            isRunningSetup={isRunningSetup}
-            isTearingDown={isTearingDown}
-            isPendingGitSetup={isPendingGitSetup}
-            isStreaming={isStreaming}
-            backgroundTasks={backgroundTasks}
-          />
-        </div>
+      <Surface variant="group" size="small" key={wtKey}>
         <div
-          onClick={(event): void => {
-            event.stopPropagation();
-          }}
+          className="cursor-pointer p-1.5"
+          ref={isSelected ? scrollSelectedIntoView : null}
+          data-testid={`worktree-kanban-card-${wtKey}`}
+          onClick={(): void =>
+            adapterProps.onSelectWorktree(project.id, worktree.id)
+          }
+          onDoubleClick={(): void =>
+            onWorktreeDoubleClick?.(project.id, worktree.id)
+          }
         >
-          <WorktreeItemAdapter
-            {...adapterProps}
-            worktreeKey={wtKey}
-            project={project}
-            worktree={worktree}
-            displayMode="kanban"
-          />
+          <div className="mb-1 flex items-center justify-between gap-2 px-1">
+            <ProjectChip project={project} />
+            <KanbanStatusIndicator
+              uiStatus={status}
+              projectId={project.id}
+              worktree={worktree}
+              isRunningSetup={isRunningSetup}
+              isTearingDown={isTearingDown}
+              isPendingGitSetup={isPendingGitSetup}
+              isStreaming={isStreaming}
+              backgroundTasks={backgroundTasks}
+            />
+          </div>
+          <div
+            onClick={(event): void => {
+              event.stopPropagation();
+            }}
+          >
+            <WorktreeItemAdapter
+              {...adapterProps}
+              worktreeKey={wtKey}
+              project={project}
+              worktree={worktree}
+              displayMode="kanban"
+            />
+          </div>
         </div>
-      </div>
+      </Surface>
     );
   };
 
@@ -294,9 +295,12 @@ export function WorktreeKanbanBoard({
         const hiddenCards = hiddenBuckets[status];
         const hiddenExpanded = hiddenExpandedByStatus[status];
         return (
-          <section
+          <Surface
             key={status}
-            className="flex min-w-65 flex-1 shrink-0 flex-col rounded-md border bg-fg-primary/[0.02]"
+            as="section"
+            variant="group"
+            size="small"
+            className="flex flex-col min-w-65 flex-1 shrink-0"
             data-testid={`worktree-kanban-column-${status}`}
             aria-label={`${meta.label} column`}
           >
@@ -325,7 +329,7 @@ export function WorktreeKanbanBoard({
               {hiddenCards.length > 0 && (
                 <Disclosure
                   label={`Hidden ${WORKTREE_UNIT_LABEL_PLURAL}`}
-                  leadingIcon={<EyeOffIcon width={12} height={12} />}
+                  leadingIcon={<EyeOffIcon size="sm" />}
                   meta={hiddenCards.length}
                   open={hiddenExpanded}
                   onOpenChange={(next): void =>
@@ -343,7 +347,7 @@ export function WorktreeKanbanBoard({
                 </Disclosure>
               )}
             </div>
-          </section>
+          </Surface>
         );
       })}
     </div>

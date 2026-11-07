@@ -24,10 +24,6 @@ import type { PipelineExecutionActions } from '../usePipelineExecutionActions';
 import type { PipelineDetailDestination } from './pipelineDetailTypes';
 import { Button } from '@canopy/ui-shared/components';
 
-function ReportIcon(): JSX.Element {
-  return <AppCatalogFileIcon width="14" height="14" aria-hidden="true" />;
-}
-
 /**
  * Live run actions above the detail body: watchers, retry, start over,
  * debug, plan and report follow-ups, and cancel. Every command goes through
@@ -119,7 +115,7 @@ export function PipelineExecutionActionBar({
           onClick={() => void actions.retry(executionId)}
           disabled={isRetrying}
         >
-          <RetryIcon width={13} height={13} />
+          <RetryIcon size="sm" />
           {isRetrying ? 'Trying again…' : 'Try again'}
         </Button>
       )}
@@ -130,7 +126,7 @@ export function PipelineExecutionActionBar({
           onClick={() => void actions.rerun(executionId)}
           disabled={isRerunning}
         >
-          <RerunIcon width={13} height={13} />
+          <RerunIcon size="sm" />
           {isRerunning ? 'Starting over…' : 'Start over'}
         </Button>
       )}
@@ -145,7 +141,7 @@ export function PipelineExecutionActionBar({
           }}
           disabled={actions.debuggingFailureId !== null}
         >
-          <ChatIcon width={13} height={13} />
+          <ChatIcon size="sm" />
           {actions.debuggingFailureId === executionId ? 'Opening…' : 'Debug'}
         </Button>
       )}
@@ -161,7 +157,7 @@ export function PipelineExecutionActionBar({
               void actions.chatFollowUp(executionId);
             }}
           >
-            <ChatIcon width={13} height={13} />
+            <ChatIcon size="sm" />
             Chat
           </Button>
           <Button
@@ -172,7 +168,7 @@ export function PipelineExecutionActionBar({
               void actions.pipelineFollowUp(executionId);
             }}
           >
-            <PipelineIcon width={13} height={13} />
+            <PipelineIcon size="sm" />
             Workflow
           </Button>
           {canOpenTrackedPlan && (
@@ -184,7 +180,7 @@ export function PipelineExecutionActionBar({
                 void actions.openPlan(executionId);
               }}
             >
-              <PlanModeIcon width={13} height={13} />
+              <PlanModeIcon size="sm" />
               View plan
             </Button>
           )}
@@ -216,7 +212,7 @@ export function PipelineExecutionActionBar({
               actions.openReport(executionId);
             }}
           >
-            <ReportIcon />
+            <AppCatalogFileIcon size="sm" aria-hidden="true" />
             View report
           </Button>
         </div>

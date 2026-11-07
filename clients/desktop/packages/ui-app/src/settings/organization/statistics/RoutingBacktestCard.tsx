@@ -65,6 +65,7 @@ import {
   unavailableMessage,
   type RoutingBacktestCopy,
 } from './routing-backtest-display';
+import { Surface } from '@canopy/ui-shared/components';
 
 // The charts pull in recharts; load them only once a result renders, so the
 // pages that mount this card (Public profile, Statistics) stay chart-free
@@ -247,12 +248,10 @@ export function RoutingBacktestCard({
       : null);
 
   return (
-    <div
-      className={
-        variant === 'inset'
-          ? 'flex flex-col gap-4 rounded-lg bg-subtle p-4'
-          : 'flex flex-col gap-4 rounded-xl bg-card p-4 shadow-sm'
-      }
+    <Surface
+      variant={variant === 'inset' ? 'group' : 'raised'}
+      padding="default"
+      gap="group"
       data-testid="routing-backtest-card"
       data-variant={variant}
     >
@@ -326,7 +325,7 @@ export function RoutingBacktestCard({
           onStarted={handleStarted}
         />
       ) : null}
-    </div>
+    </Surface>
   );
 }
 

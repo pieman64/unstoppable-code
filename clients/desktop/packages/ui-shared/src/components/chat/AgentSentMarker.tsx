@@ -52,12 +52,7 @@ export const AgentSentMarker = memo(function AgentSentMarker({
       data-verified={agentSent.verified ? 'true' : 'false'}
       className={rowClass}
     >
-      <McpIcon
-        aria-hidden="true"
-        width={iconSize}
-        height={iconSize}
-        className="shrink-0"
-      />
+      <McpIcon aria-hidden="true" size="sm" className="shrink-0" />
       <span
         data-testid="agent-sent-marker-name"
         className="min-w-0 truncate"

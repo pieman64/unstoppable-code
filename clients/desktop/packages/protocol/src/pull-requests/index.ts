@@ -191,3 +191,11 @@ export function formatBranchAsTitle(branch: string): string {
   const words = stripped.replace(/[-_/]/g, ' ').trim();
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
+
+export {
+  normalizePullRequestTitleQuery,
+  scopePullRequestTitleQuery,
+  PullRequestTitleQueryError,
+  PR_TITLE_SEARCH_MAX_INPUT_LENGTH,
+  PR_TITLE_SEARCH_MAX_QUERY_LENGTH,
+} from './title-search';

@@ -1,18 +1,35 @@
-import { useState, type JSX, type ReactNode } from 'react';
+import {
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type JSX,
+  type ReactNode,
+} from 'react';
 import type { OpenCodeAccountSnapshot } from '@canopy/protocol/portal';
 import {
+  Button,
   ComposerDrawer,
+  ComposerSuggestionMenu,
   MarkdownCodeBlock,
   ModelUnlockPendingNotice,
   OnboardingTip,
   OpenCodeAccountCard,
   PageColumn,
-  PickList,
-  PipelineDispatchedTime,
   PickerMenuOptionLabel,
+  PickList,
+  PickListResults,
+  PipelineDispatchedTime,
+  PickerMenuTab,
+  PickerMenuTabList,
+  SearchField,
+  Surface,
+  pickListOptionId,
+  resolvePickListActiveKey,
+  usePickListKeys,
   type PageColumnWidth,
 } from '@canopy/ui-shared/components';
-import { SkillIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { CloseIcon, SkillIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
   FocusOnMount,
   SpecimenCell,
@@ -352,7 +369,7 @@ function PageColumnSample({
   readonly as?: 'main' | 'div' | 'section' | 'article';
 }): JSX.Element {
   return (
-    <div className="w-full overflow-hidden rounded-lg border border-dashed">
+    <Surface variant="dashed" className="w-full overflow-hidden">
       <PageColumn width={width} as={as === 'main' ? 'div' : as}>
         <section className="rounded-md bg-tertiary p-3 text-xs">
           Section one
@@ -361,7 +378,7 @@ function PageColumnSample({
           Section two, 32px below
         </section>
       </PageColumn>
-    </div>
+    </Surface>
   );
 }
 
@@ -442,6 +459,209 @@ function LivePickList(): JSX.Element {
         {picked ? `Picked: ${picked}` : 'Type, use the arrows, Enter or click.'}
       </p>
     </Frame>
+  );
+}
+
+const SECTIONED: readonly (Command & { readonly section: string })[] = [
+  { id: 'chat', label: 'Fix the checkout form', section: 'Chats' },
+  { id: 'chat-2', label: 'Refresh the sidebar list', section: 'Chats' },
+  { id: 'off', label: 'Archived chat', section: 'Chats' },
+  { id: 'setting', label: 'Appearance', section: 'Settings' },
+  { id: 'setting-2', label: 'Notifications', section: 'Settings' },
+];
+
+const isArchivedRow = (item: Command): boolean => item.id === 'off';
+const getSection = (item: (typeof SECTIONED)[number]): string => item.section;
+
+/** A host that owns its field, as a palette does. */
+function LivePickListResults(): JSX.Element {
+  const listId = useId();
+  const [query, setQuery] = useState('');
+  const [moved, setMoved] = useState<string | null>(null);
+  const [picked, setPicked] = useState<string | null>(null);
+  const rows = useMemo(
+    () =>
+      SECTIONED.filter((item) =>
+        item.label.toLowerCase().includes(query.trim().toLowerCase()),
+      ),
+    [query],
+  );
+  const keys = useMemo(
+    () => rows.filter((item) => !isArchivedRow(item)).map(getKey),
+    [rows],
+  );
+  const activeKey = resolvePickListActiveKey(keys, moved);
+  const handleKeys = usePickListKeys({
+    keys,
+    activeKey,
+    onActiveKeyChange: setMoved,
+    onPick: setPicked,
+  });
+  return (
+    <Frame>
+      <div className="p-1">
+        <SearchField
+          value={query}
+          onValueChange={(next): void => {
+            setQuery(next);
+            setMoved(null);
+          }}
+          onKeyDown={handleKeys}
+          placeholder="Search"
+          aria-label="Search"
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded={rows.length > 0}
+          aria-controls={listId}
+          aria-activedescendant={
+            activeKey === null ? undefined : pickListOptionId(listId, activeKey)
+          }
+        />
+      </div>
+      <div className="flex max-h-64 min-h-0 flex-col px-1 pb-1">
+        <PickListResults
+          items={rows}
+          getKey={getKey}
+          getLabel={getLabel}
+          getSection={getSection}
+          isItemDisabled={isArchivedRow}
+          onPick={(item): void => setPicked(item.id)}
+          listId={listId}
+          listLabel="Results"
+          activeKey={activeKey}
+          onActiveKeyChange={setMoved}
+          emptyLabel="Nothing matches."
+        />
+      </div>
+      <p className="px-3 py-2 text-2xs fg-tertiary">
+        {picked ? `Picked: ${picked}` : 'The field keeps focus.'}
+      </p>
+    </Frame>
+  );
+}
+
+function PickListTabs(): JSX.Element {
+  const [tab, setTab] = useState('branches');
+  return (
+    <PickerMenuTabList>
+      {['Branches', 'Worktrees'].map((label) => (
+        <PickerMenuTab
+          key={label}
+          active={tab === label.toLowerCase()}
+          onClick={(): void => setTab(label.toLowerCase())}
+        >
+          {label}
+        </PickerMenuTab>
+      ))}
+    </PickerMenuTabList>
+  );
+}
+
+/** PickListResults and the PickList slots built on it. */
+export function PickListResultsSpecimen(): JSX.Element {
+  return (
+    <div className="flex flex-col gap-6">
+      <SpecimenPanel title="A host's own field over the shared results">
+        <SpecimenGrid min={320}>
+          <SpecimenCell label="Live: sections, a disabled row the keyboard skips">
+            <LivePickListResults />
+          </SpecimenCell>
+        </SpecimenGrid>
+      </SpecimenPanel>
+      <SpecimenPanel title="PickList slots">
+        <SpecimenGrid min={320}>
+          <SpecimenCell label="A header between the search and the list">
+            <Frame>
+              <PickList
+                items={COMMANDS.slice(0, 3)}
+                getKey={getKey}
+                getLabel={getLabel}
+                onPick={noop}
+                header={<PickListTabs />}
+                searchLabel="Search branches"
+                listLabel="Branches"
+                emptyLabel="No branches match."
+                autoFocus={false}
+              />
+            </Frame>
+          </SpecimenCell>
+          <SpecimenCell label="A control beside each row, outside its option">
+            <Frame>
+              <PickList
+                items={COMMANDS.slice(0, 3)}
+                getKey={getKey}
+                getLabel={getLabel}
+                onPick={noop}
+                renderRowEnd={(item) => (
+                  <Button
+                    iconOnly
+                    variant="ghost"
+                    size="sm"
+                    aria-label={`Close ${item.label}`}
+                    onClick={noop}
+                  >
+                    <CloseIcon />
+                  </Button>
+                )}
+                searchLabel="Search tabs"
+                listLabel="Tabs"
+                emptyLabel="No tabs match."
+                autoFocus={false}
+              />
+            </Frame>
+          </SpecimenCell>
+          <SpecimenCell label="Default rows mark the current value">
+            <Frame>
+              <PickList
+                items={COMMANDS.slice(0, 3)}
+                getKey={getKey}
+                getLabel={getLabel}
+                onPick={noop}
+                selectedKey="open"
+                searchLabel="Search commands"
+                listLabel="Commands"
+                emptyLabel="No commands match."
+                autoFocus={false}
+              />
+            </Frame>
+          </SpecimenCell>
+        </SpecimenGrid>
+      </SpecimenPanel>
+    </div>
+  );
+}
+
+/** ComposerSuggestionMenu: floats above a sample composer without taking focus. */
+export function ComposerSuggestionMenuSpecimen(): JSX.Element {
+  const anchorRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  return (
+    <SpecimenPanel title="Above the composer, at its width">
+      <SpecimenCell label="Opens above the box; the button keeps focus" wide>
+        <div className="flex w-full max-w-md flex-col gap-3">
+          <div ref={anchorRef}>
+            <Surface variant="outline">
+              <span className="text-s fg-tertiary">A sample composer</span>
+            </Surface>
+          </div>
+          <div>
+            <Button variant="secondary" onClick={(): void => setOpen(!open)}>
+              {open ? 'Close the list' : 'Open the list'}
+            </Button>
+          </div>
+          <ComposerSuggestionMenu
+            open={open}
+            onDismiss={(): void => setOpen(false)}
+            anchorRef={anchorRef}
+            aria-label="Suggestions"
+          >
+            <p className="px-3 py-2 text-s fg-primary">
+              Suggestions go here, in the composer&apos;s 20px corners.
+            </p>
+          </ComposerSuggestionMenu>
+        </div>
+      </SpecimenCell>
+    </SpecimenPanel>
   );
 }
 

@@ -1,3 +1,5 @@
+import { WORKER_GIT_MERGE_INSTRUCTION_DEFINITIONS } from '@canopy/protocol/canopy-core';
+import { createWorkerGitMergeAdapter } from '../canopy-runtime/worker-git-merge-adapter';
 // CAN-4070 rule: captured on the unchanged GitHub IPC handlers before CAN-4109
 // serves them through core.pullRequest.* and core.integration.*. Real data
 // root, workspace records and Git checkouts with configured origins (origins
@@ -5,6 +7,7 @@
 // the shared pull-request read model, the boundaries the handlers reach.
 // Responses are recorded as JSON text, so key order is pinned too.
 import { execFileSync } from 'node:child_process';
+import { z } from 'zod';
 import {
   mkdirSync,
   mkdtempSync,
@@ -36,9 +39,15 @@ interface MockEnqueueCall {
 }
 const mockEnqueueCalls: MockEnqueueCall[] = [];
 const mockOctokit = {
-  pulls: { list: jest.fn(), update: jest.fn() },
+  pulls: {
+    list: jest.fn(),
+    update: jest.fn(),
+    get: jest.fn(),
+    merge: jest.fn(),
+  },
   graphql: jest.fn(),
-  repos: { listForAuthenticatedUser: jest.fn() },
+  repos: { listForAuthenticatedUser: jest.fn(), get: jest.fn() },
+  request: jest.fn(),
 };
 const mockEnqueue = jest.fn(
   (
@@ -55,7 +64,20 @@ jest.mock('../lib/github-client', () => ({
     enqueue: mockEnqueue,
   }),
 }));
-// No request reaches GitHub: the broker sends nothing (CAN-4109).
+const mockFetchRepoPrTrackingData = jest.fn();
+jest.mock('../lib/github-pr', () => ({
+  ...jest.requireActual<object>('../lib/github-pr'),
+  fetchRepoPrTrackingData: (...args: unknown[]): unknown =>
+    mockFetchRepoPrTrackingData(...args),
+}));
+jest.mock('../portal/portal-structural-sync', () => ({
+  schedulePortalStructuralSync: jest.fn(),
+}));
+jest.mock('../services/portal-pr-delta', () => ({
+  emitPrStatusDelta: jest.fn(),
+}));
+let mockQueueReadsEnabled = false;
+// No request reaches GitHub: queue tests run the broker callback on a fake client.
 jest.mock('../lib/github-broker', () => {
   const actual = jest.requireActual<{ getGitHubBroker: () => object }>(
     '../lib/github-broker',
@@ -66,10 +88,15 @@ jest.mock('../lib/github-broker', () => {
       new Proxy(actual.getGitHubBroker(), {
         get: (target, property): unknown => {
           if (property === 'execute')
-            return (): Promise<never> =>
-              Promise.reject(
+            return async (
+              read: (client: typeof mockOctokit) => Promise<{ data: unknown }>,
+            ): Promise<unknown> => {
+              if (mockQueueReadsEnabled)
+                return { kind: 'read', ...(await read(mockOctokit)) };
+              return Promise.reject(
                 new Error('The GitHub broker sends nothing here.'),
               );
+            };
           const value: unknown = Reflect.get(target, property);
           return typeof value === 'function' ? value.bind(target) : value;
         },
@@ -124,11 +151,19 @@ jest.mock('../ipc/preferences', () => ({
 import {
   CORE_INTEGRATION_QUERIES,
   CORE_PULL_REQUEST_INSTRUCTION_DEFINITIONS,
+  CORE_PULL_REQUEST_MERGE_INSTRUCTION_DEFINITIONS,
+  CORE_PULL_REQUEST_MERGE_QUEUE_QUERY_DEFINITIONS,
   CORE_PULL_REQUEST_QUERY_DEFINITIONS,
   WORKER_GIT_REMOTE_QUERY_DEFINITIONS,
   type CanopyCallerDescriptor,
+  type CorePullRequest,
+  type CorePullRequestListParams,
 } from '@canopy/protocol/canopy-core';
 import { createCanopyDispatcher } from '@canopy/core-runtime';
+import {
+  mintPullRequestId,
+  mintRepositoryId,
+} from '@canopy/core-runtime/node/github';
 import { createWorkerGitRemoteHandlers } from '@canopy/core-runtime/node/git';
 import { createCoreIntegrationAdapter } from '../canopy-runtime/core-integration-adapter';
 import { createCorePullRequestAdapter } from '../canopy-runtime/core-pull-request-adapter';
@@ -139,8 +174,18 @@ import {
   type DesktopIpcSender,
 } from '../canopy-runtime/desktop-ipc-caller';
 import { registerGitHubHandlers } from '../ipc/github';
+import { mergePrForRepo } from '../lib/github-pr';
+import type { GitHubPullRequestProjection } from '../lib/github-pr-read-model';
+import { resetGitHubMergeQueueReadModel } from '../lib/github-merge-queue-read-model';
+import {
+  getPrMergeProgress,
+  getPrMergeProgressFeed,
+  clearPrMergeTracking,
+} from '../services/pr-merge-progress';
+import type { PrStatusData } from '@canopy/desktop-shared/types/github';
 import { GitHubBrokerError } from '../lib/github-broker/errors';
 import { enqueueFastRefresh } from '../lib/github-poller';
+import * as gitReads from '../lib/git';
 import {
   __resetRepoSlugCacheForTests,
   invalidatePullRequestListingCache,
@@ -201,10 +246,15 @@ const dispatcher = createCanopyDispatcher({
   definitions: {
     queries: {
       ...CORE_PULL_REQUEST_QUERY_DEFINITIONS,
+      ...CORE_PULL_REQUEST_MERGE_QUEUE_QUERY_DEFINITIONS,
       ...CORE_INTEGRATION_QUERIES,
       ...WORKER_GIT_REMOTE_QUERY_DEFINITIONS,
     },
-    instructions: CORE_PULL_REQUEST_INSTRUCTION_DEFINITIONS,
+    instructions: {
+      ...CORE_PULL_REQUEST_INSTRUCTION_DEFINITIONS,
+      ...CORE_PULL_REQUEST_MERGE_INSTRUCTION_DEFINITIONS,
+      ...WORKER_GIT_MERGE_INSTRUCTION_DEFINITIONS,
+    },
     streams: {},
   },
   handlers: {
@@ -213,7 +263,10 @@ const dispatcher = createCanopyDispatcher({
       ...createCoreIntegrationAdapter().queries,
       ...createWorkerGitRemoteHandlers(desktopWorkerGitRemoteHost),
     },
-    instructions: pullRequestAdapter.instructions,
+    instructions: {
+      ...pullRequestAdapter.instructions,
+      ...createWorkerGitMergeAdapter(),
+    },
     streams: {},
   },
 });
@@ -246,11 +299,13 @@ async function rejection(
   throw new Error(`${channel} resolved`);
 }
 
+const mockWindowSend = jest.fn<void, [string, unknown]>();
+
 function registerHandlers(): void {
   const window = {
     isDestroyed: (): boolean => false,
     webContents: {
-      send: jest.fn(),
+      send: mockWindowSend,
       isDestroyed: (): boolean => false,
       isCrashed: (): boolean => false,
       mainFrame: { isDestroyed: (): boolean => false, detached: false },
@@ -351,6 +406,8 @@ afterAll(() => {
 beforeEach(() => {
   jest.clearAllMocks();
   mockEnqueueCalls.length = 0;
+  mockQueueReadsEnabled = false;
+  resetGitHubMergeQueueReadModel();
   // No canonical read reaches GitHub unless a test fakes it.
   mockReadGitHubPullRequestProjection.mockImplementation(() =>
     Promise.reject(new Error('not faked')),
@@ -576,6 +633,60 @@ describe('github:search-pull-requests', () => {
         },
       },
     ]);
+  });
+
+  it('shares concurrent normalized searches and cached results until expiry or credential reset', async () => {
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      mockOctokit.graphql.mockResolvedValue({
+        search: { nodes: [searchNode(1)] },
+      });
+      const request = { repoPath: repos.single, query: 'fix login' };
+      const [first, concurrent] = await Promise.all([
+        invoke(IPC_CHANNELS.githubSearchPullRequests, request),
+        invoke(IPC_CHANNELS.githubSearchPullRequests, {
+          ...request,
+          query: ' fix  "login" ',
+        }),
+      ]);
+      expect(concurrent).toBe(first);
+      expect(await invoke(IPC_CHANNELS.githubSearchPullRequests, request)).toBe(
+        first,
+      );
+      expect(mockOctokit.graphql).toHaveBeenCalledTimes(1);
+      clock.mockReturnValue(1_060_000);
+      await invoke(IPC_CHANNELS.githubSearchPullRequests, request);
+      expect(mockOctokit.graphql).toHaveBeenCalledTimes(2);
+      invalidatePullRequestListingCache();
+      await invoke(IPC_CHANNELS.githubSearchPullRequests, request);
+      expect(mockOctokit.graphql).toHaveBeenCalledTimes(3);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('bounds the path/query cache to 100 entries and does not cache failures', async () => {
+    mockOctokit.graphql.mockResolvedValue({ search: { nodes: [] } });
+    const request = { repoPath: repos.single, query: 'title-0' };
+    for (let index = 0; index < 101; index += 1)
+      await invoke(IPC_CHANNELS.githubSearchPullRequests, {
+        ...request,
+        query: `title-${index}`,
+      });
+    await invoke(IPC_CHANNELS.githubSearchPullRequests, {
+      ...request,
+      query: 'title-100',
+    });
+    expect(mockOctokit.graphql).toHaveBeenCalledTimes(101);
+    await invoke(IPC_CHANNELS.githubSearchPullRequests, request);
+    expect(mockOctokit.graphql).toHaveBeenCalledTimes(102);
+    mockOctokit.graphql.mockRejectedValueOnce(new Error('search failed'));
+    const failed = { ...request, query: 'failed' };
+    await expect(
+      handler(IPC_CHANNELS.githubSearchPullRequests)(IPC_EVENT, failed),
+    ).rejects.toThrow('search failed');
+    await invoke(IPC_CHANNELS.githubSearchPullRequests, failed);
+    expect(mockOctokit.graphql).toHaveBeenCalledTimes(104);
   });
 
   it.each<[string, unknown, string]>([
@@ -1254,6 +1365,134 @@ describe('github:update-pr-base-branch', () => {
   });
 });
 
+describe('canonical core.pullRequest.list title search', () => {
+  function params(): CorePullRequestListParams {
+    const repositoryId = mintRepositoryId({ workspaceId: 'golden-single' });
+    if (repositoryId === null) throw new Error('Cannot mint test repository');
+    return {
+      integrationId: 'github',
+      repositoryId,
+      states: ['open'],
+      cursor: null,
+      limit: 3,
+      query: 'fix login',
+    };
+  }
+  const reader: { caller: CanopyCallerDescriptor } = {
+    caller: { ...DESKTOP_IPC_CALLER, grants: ['core.pullRequest.read'] },
+  };
+
+  it('projects full matches in search order, bounded by limit and without a cursor', async () => {
+    mockOctokit.graphql.mockResolvedValue({
+      search: { nodes: [searchNode(4), searchNode(2)] },
+    });
+    mockReadGitHubPullRequestProjection.mockImplementation(
+      (ref: { owner: string; repo: string; number: number }) =>
+        Promise.resolve(readProjection(ref)),
+    );
+    const page = await dispatcher.query(
+      'core.pullRequest.list',
+      { ...params(), states: ['open'], limit: 1 },
+      reader,
+    );
+    expect(page.pullRequests.map((pull) => [pull.number, pull.title])).toEqual([
+      [4, 'Resolved 4'],
+    ]);
+    expect(page.nextCursor).toBeNull();
+    expect(mockReadGitHubPullRequestProjection).toHaveBeenCalledTimes(1);
+    const { options } = mockEnqueueCalls[0];
+    if (
+      typeof options !== 'object' ||
+      options === null ||
+      !('signal' in options)
+    ) {
+      throw new Error('Expected broker options with a signal');
+    }
+    expect(options.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it.each<Partial<CorePullRequestListParams>>([
+    { states: ['closed'] },
+    { states: ['open'], cursor: 'not-a-search-cursor' },
+  ])(
+    'refuses unsupported search scopes before searching (%s)',
+    async (filter) => {
+      await expect(
+        dispatcher.query(
+          'core.pullRequest.list',
+          { ...params(), ...filter },
+          reader,
+        ),
+      ).rejects.toMatchObject({ payload: { kind: 'capability_unavailable' } });
+      expect(mockOctokit.graphql).not.toHaveBeenCalled();
+    },
+  );
+
+  it('returns an empty page and refuses empty normalized text', async () => {
+    mockOctokit.graphql.mockResolvedValue({ search: { nodes: [] } });
+    expect(
+      await dispatcher.query(
+        'core.pullRequest.list',
+        { ...params(), states: ['open'] },
+        reader,
+      ),
+    ).toEqual({ pullRequests: [], nextCursor: null });
+    await expect(
+      dispatcher.query(
+        'core.pullRequest.list',
+        { ...params(), states: ['open'], query: '   ' },
+        reader,
+      ),
+    ).rejects.toMatchObject({
+      payload: { code: 'core.pullRequest.list.invalidFilter' },
+    });
+  });
+
+  it('refuses a repository-scoped query over the GitHub limit as invalid_argument', async () => {
+    git(repos.single, [
+      'remote',
+      'set-url',
+      'origin',
+      'git@github.com:golden-org/a-repository-with-a-long-name.git',
+    ]);
+    try {
+      await expect(
+        dispatcher.query(
+          'core.pullRequest.list',
+          {
+            ...params(),
+            query: 'x '.repeat(50).trim(),
+          },
+          reader,
+        ),
+      ).rejects.toMatchObject({
+        payload: {
+          kind: 'invalid_argument',
+          code: 'core.pullRequest.list.invalidFilter',
+        },
+      });
+      expect(
+        await rejection(IPC_CHANNELS.githubSearchPullRequests, {
+          repoPath: repos.single,
+          query: 'x '.repeat(50).trim(),
+        }),
+      ).toEqual({
+        name: 'Error',
+        message:
+          'Shorten the pull request search to fit the GitHub query limit.',
+      });
+      expect(mockEnqueue).not.toHaveBeenCalled();
+    } finally {
+      git(repos.single, [
+        'remote',
+        'set-url',
+        'origin',
+        'git@github.com:golden-org/golden-repo.git',
+      ]);
+    }
+  });
+});
+
 // Added with CAN-4109, after the goldens above: how the projected channels
 // reach the dispatcher. The responses stay the goldens' own.
 describe('projection through the desktop dispatcher', () => {
@@ -1296,6 +1535,82 @@ describe('projection through the desktop dispatcher', () => {
       senderFrame: mainFrame,
     };
   }
+
+  it('searches a recorded repository through core.pullRequest.list without extra GitHub reads', async () => {
+    mockOctokit.graphql.mockResolvedValue({
+      search: { nodes: [searchNode(1)] },
+    });
+    await invoke(IPC_CHANNELS.githubSearchPullRequests, {
+      repoPath: repos.single,
+      query: ' fix login ',
+    });
+    expect(query.mock.calls).toEqual([
+      [
+        'core.pullRequest.list',
+        {
+          integrationId: 'github',
+          repositoryId: MINTED_REPOSITORY_ID,
+          states: ['open'],
+          cursor: null,
+          limit: 20,
+          query: 'fix login',
+        },
+        pullRequestReader,
+      ],
+    ]);
+    expect(mockOctokit.graphql).toHaveBeenCalledTimes(1);
+    expect(mockOctokit.pulls.list).not.toHaveBeenCalled();
+  });
+
+  it('keeps cached picker searches free of origin reads while still dispatching', async () => {
+    const originRead = jest.spyOn(gitReads, 'getRemoteUrl');
+    try {
+      mockOctokit.graphql.mockResolvedValue({
+        search: { nodes: [searchNode(1)] },
+      });
+      const request = { repoPath: repos.single, query: 'fix' };
+      const first = await invoke(
+        IPC_CHANNELS.githubSearchPullRequests,
+        request,
+      );
+      expect(originRead).toHaveBeenCalledTimes(1);
+      expect(await invoke(IPC_CHANNELS.githubSearchPullRequests, request)).toBe(
+        first,
+      );
+      expect(originRead).toHaveBeenCalledTimes(1);
+      expect(query).toHaveBeenCalledTimes(2);
+      expect(mockOctokit.graphql).toHaveBeenCalledTimes(1);
+      expect(mockReadGitHubPullRequestProjection).not.toHaveBeenCalled();
+    } finally {
+      originRead.mockRestore();
+    }
+  });
+
+  it('keeps unrecorded searches on the capability-exception path', async () => {
+    mockOctokit.graphql.mockResolvedValue({ search: { nodes: [] } });
+    expect(
+      await invoke(IPC_CHANNELS.githubSearchPullRequests, {
+        repoPath: repos.untracked,
+        query: 'fix',
+      }),
+    ).toBe('{"pullRequests":[]}');
+    expect(query).not.toHaveBeenCalled();
+    expect(mockOctokit.graphql).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps legacy search rows even when they cannot form a canonical result', async () => {
+    const title = 'x'.repeat(1025);
+    mockOctokit.graphql.mockResolvedValue({
+      search: { nodes: [searchNode(1, { title })] },
+    });
+    expect(
+      await invoke(IPC_CHANNELS.githubSearchPullRequests, {
+        repoPath: repos.single,
+        query: 'fix',
+      }),
+    ).toContain(title);
+    expect(mockReadGitHubPullRequestProjection).not.toHaveBeenCalled();
+  });
 
   it('lists a recorded repository through core.pullRequest.list holding only core.pullRequest.read', async () => {
     mockOctokit.pulls.list.mockResolvedValue({ data: [restPullRequest(1)] });
@@ -1684,6 +1999,50 @@ describe('projection through the desktop dispatcher', () => {
       expect(mockOctokit.pulls.update).toHaveBeenCalledTimes(1);
     });
 
+    it.each(['revision conflict', 'read failure'])(
+      'refuses origin drift before the direct update after %s',
+      async (failure) => {
+        let reads = 0;
+        mockReadGitHubPullRequestProjection.mockImplementation(
+          (read: typeof ref) => {
+            reads += 1;
+            if (failure === 'read failure' || reads === 2) {
+              git(repos.single, [
+                'remote',
+                'set-url',
+                'origin',
+                'https://github.com/another/repository.git',
+              ]);
+              if (failure === 'read failure')
+                return Promise.reject(new Error('read unavailable'));
+            }
+            return Promise.resolve(
+              readProjection(
+                read,
+                reads === 1 ? '2026-10-31T00:00:00Z' : '2026-10-31T00:00:05Z',
+              ),
+            );
+          },
+        );
+        try {
+          await expect(
+            rejection(IPC_CHANNELS.githubUpdatePrBaseBranch, request),
+          ).resolves.toEqual({
+            name: 'Error',
+            message: 'PR state changed. Refresh and try again.',
+          });
+          expect(mockOctokit.pulls.update).not.toHaveBeenCalled();
+        } finally {
+          git(repos.single, [
+            'remote',
+            'set-url',
+            'origin',
+            'https://github.com/golden-org/golden-repo.git',
+          ]);
+        }
+      },
+    );
+
     it('sends a rejected update once and rethrows its error', async () => {
       const rejected = Object.assign(new Error('Validation Failed'), {
         name: 'HttpError',
@@ -1765,5 +2124,1085 @@ describe('remote control', () => {
         IPC_CHANNELS[key],
       );
     }
+  });
+});
+
+// CAN-4728 / CAN-4070: captured before production changes. The IPC flow,
+// writer, local merge FIFO and progress service are real; only GitHub and
+// background/Portal sinks are replaced. JSON text pins legacy key order.
+describe('github:merge-pr and progress equivalence (CAN-4728)', () => {
+  const head = 'a'.repeat(40);
+  const request = { projectId: 'golden-single', worktreeId: 'wt-merge' };
+  const status: PrStatusData = {
+    prNumber: 355,
+    prUrl: 'https://github.com/golden-org/golden-repo/pull/355',
+    headSha: head,
+    state: 'open',
+    title: 'Merge me',
+    checkStatus: 'passing',
+    checkDetails: [],
+    reviewStatus: 'approved',
+    reviewers: [],
+    hasConflicts: false,
+    mergeable: true,
+    mergeableState: 'clean',
+    commentCount: 0,
+    unresolvedReviewThreadCount: 0,
+    updatedAt: '2026-11-06T00:00:00Z',
+    baseRefName: 'main',
+  };
+  const verified =
+    '{"repoId":"__single_repo__","repoName":"single","prNumber":355,"prUrl":"https://github.com/golden-org/golden-repo/pull/355","mergeable":true,"usesMergeQueue":false,"startsAgentChat":false,"unresolvedReviewThreadCount":0}';
+
+  const mergeResponse = z.object({
+    mergedRepos: z.array(z.unknown()),
+    failedRepos: z.array(z.unknown()),
+    requiresUnresolvedConfirmation: z.array(z.unknown()),
+  });
+
+  async function invokeMergeResponse(): Promise<z.infer<typeof mergeResponse>> {
+    return mergeResponse.parse(
+      JSON.parse(await invoke(IPC_CHANNELS.githubMergePr, request)),
+    );
+  }
+
+  function mergeProjection(ref: {
+    owner: string;
+    repo: string;
+    number: number;
+  }): GitHubPullRequestProjection {
+    return {
+      view: {
+        ref,
+        url: status.prUrl,
+        title: status.title,
+        state:
+          mockOctokit.pulls.merge.mock.calls.length > 0 ? 'merged' : 'open',
+        isDraft: false,
+        baseBranch: 'main',
+        headBranch: 'main',
+        headRepository: 'golden-org/golden-repo',
+        headSha: head,
+        mergeable: 'mergeable',
+        reviewDecision: 'approved',
+        checks: {
+          state: 'success',
+          total: 0,
+          passed: 0,
+          failed: 0,
+          pending: 0,
+          failedNames: [],
+          available: true,
+        },
+        mergeQueue: { inQueue: false, position: null },
+        fetchedAt: status.updatedAt,
+      },
+      detail: {
+        title: status.title,
+        body: '',
+        baseSha: null,
+        updatedAt: status.updatedAt,
+        commentCount: 0,
+        checks: [],
+        checksAfter: null,
+        reviewThreadCount: 0,
+        unresolvedReviewThreadCount: 0,
+        reviewThreadsAfter: null,
+      },
+    };
+  }
+
+  function canonicalMerge(key: string): Promise<CorePullRequest> {
+    const pullRequestId = mintPullRequestId({
+      repository: { workspaceId: 'golden-single' },
+      github: { owner: 'golden-org', repo: 'golden-repo' },
+      number: 355,
+    });
+    if (pullRequestId === null) throw new Error('Invalid golden identity');
+    return dispatcher.instruction(
+      'core.pullRequest.merge',
+      {
+        pullRequestId,
+        expectedRevision: Date.parse(status.updatedAt),
+        expectedHeadSha: head,
+        strategy: 'merge',
+      },
+      {
+        caller: {
+          ...DESKTOP_IPC_CALLER,
+          grants: ['core.pullRequest.read', 'core.pullRequest.write'],
+        },
+        metadata: { idempotencyKey: key },
+      },
+    );
+  }
+
+  beforeAll(() => {
+    git(repos.single, [
+      '-c',
+      'user.name=Golden',
+      '-c',
+      'user.email=golden@example.test',
+      'commit',
+      '--allow-empty',
+      '-qm',
+      'fixture',
+    ]);
+  });
+  beforeEach(() => {
+    // CAN-4728 harness wiring: full read-model data for the new canonical
+    // preflight/projection, without changing any recorded IPC expectation.
+    mockReadGitHubPullRequestProjection.mockImplementation(
+      (ref: { owner: string; repo: string; number: number }) =>
+        Promise.resolve(mergeProjection(ref)),
+    );
+    clearPrMergeTracking(request.projectId, request.worktreeId);
+    mockedIsMultiRepoWorkspace.mockReturnValue(false);
+    mockedResolveWorktreeCwd.mockReturnValue(repos.single);
+    mockFetchRepoPrTrackingData.mockResolvedValue({
+      status,
+      remote: { owner: 'golden-org', repo: 'golden-repo' },
+      branchName: 'main',
+      snapshot: null,
+    });
+    mockOctokit.repos.get.mockResolvedValue({
+      data: { allow_merge_commit: true },
+    });
+    mockOctokit.graphql.mockResolvedValue({
+      repository: {
+        pullRequest: {
+          id: 'PR_355',
+          isMergeQueueEnabled: false,
+          isInMergeQueue: false,
+          mergeQueueEntry: null,
+        },
+      },
+    });
+    mockOctokit.pulls.merge.mockResolvedValue({
+      data: { merged: true, sha: 'b'.repeat(40) },
+    });
+    mockOctokit.pulls.get.mockResolvedValue({
+      data: {
+        merged: true,
+        merge_commit_sha: 'b'.repeat(40),
+        head: { sha: head },
+      },
+    });
+  });
+  afterEach(() => clearPrMergeTracking(request.projectId, request.worktreeId));
+
+  function phases(): unknown[] {
+    return mockWindowSend.mock.calls
+      .filter(([channel]) => channel === IPC_CHANNELS.githubMergePrProgress)
+      .map(([, event]) => z.object({ phase: z.string() }).parse(event).phase);
+  }
+
+  it('merges the verified head and preserves the progress lifecycle', async () => {
+    await expect(invoke(IPC_CHANNELS.githubMergePr, request)).resolves.toBe(
+      '{"dryRun":false,"verifiedRepos":[' +
+        verified +
+        '],"mergedRepos":[{"repoId":"__single_repo__","repoName":"single","prNumber":355,"prUrl":"https://github.com/golden-org/golden-repo/pull/355","mergeMethod":"merge","mergeCommitSha":"' +
+        'b'.repeat(40) +
+        '","status":"merged"}],"mergeQueueChats":[],"requiresUnresolvedConfirmation":[],"failedRepos":[]}',
+    );
+    expect(mockOctokit.pulls.merge).toHaveBeenCalledWith({
+      owner: 'golden-org',
+      repo: 'golden-repo',
+      pull_number: 355,
+      merge_method: 'merge',
+      sha: head,
+    });
+    expect(phases()).toEqual([
+      'queued',
+      'checking_mergeability',
+      'merging',
+      'done',
+      'refreshing_pr_status',
+      'done',
+    ]);
+    expect(getPrMergeProgress(request.projectId, request.worktreeId)).toEqual({
+      mergingPr: false,
+      mergePrPhase: null,
+    });
+    const feed = getPrMergeProgressFeed(request.projectId, request.worktreeId);
+    expect(feed?.currentPhase).toBe('done');
+    expect(feed?.steps).toEqual(expect.any(Array));
+  });
+
+  it('records the direct writer and dispatched GitHub request budgets', async () => {
+    await mergePrForRepo(repos.single, 355, head);
+    // Unchanged writer: settings, queue state, exact-head merge, verification.
+    expect(mockEnqueueCalls).toHaveLength(4);
+    expect(mockReadGitHubPullRequestProjection).not.toHaveBeenCalled();
+
+    jest.clearAllMocks();
+    mockEnqueueCalls.length = 0;
+    await invoke(IPC_CHANNELS.githubMergePr, request);
+    // Settings + queue are consumed by the writer, not fetched twice.
+    expect(mockEnqueueCalls).toHaveLength(3);
+    expect(mockOctokit.repos.get).toHaveBeenCalledTimes(1);
+    expect(mockOctokit.graphql).toHaveBeenCalledTimes(1);
+    expect(mockOctokit.pulls.merge).toHaveBeenCalledTimes(1);
+    expect(mockOctokit.pulls.get).not.toHaveBeenCalled();
+    // Revision/strategy discovery, fresh CAS preflight, then writer verification.
+    // The verification supplies the canonical result without another read.
+    expect(mockReadGitHubPullRequestProjection).toHaveBeenCalledTimes(3);
+    // Three broker calls plus three unpaginated projections, versus four legacy.
+    expect(
+      mockEnqueueCalls.length +
+        mockReadGitHubPullRequestProjection.mock.calls.length,
+    ).toBe(6);
+  });
+
+  it('uses the real request-use port for a five-request canonical merge', async () => {
+    await expect(canonicalMerge('port-budget')).resolves.toMatchObject({
+      state: 'merged',
+      headSha: head,
+    });
+    expect(mockEnqueueCalls).toHaveLength(3);
+    expect(mockReadGitHubPullRequestProjection).toHaveBeenCalledTimes(2);
+    expect(mockOctokit.repos.get).toHaveBeenCalledTimes(1);
+    expect(mockOctokit.graphql).toHaveBeenCalledTimes(1);
+    expect(mockOctokit.pulls.merge).toHaveBeenCalledTimes(1);
+    expect(mockOctokit.pulls.get).not.toHaveBeenCalled();
+  });
+
+  it('retains a production-port receipt after full verification fails, while legacy verification succeeds', async () => {
+    let failVerification = true;
+    mockReadGitHubPullRequestProjection.mockImplementation(
+      (ref: { owner: string; repo: string; number: number }) => {
+        if (failVerification && mockOctokit.pulls.merge.mock.calls.length > 0)
+          return Promise.reject(new Error('projection offline'));
+        return Promise.resolve(mergeProjection(ref));
+      },
+    );
+    await expect(canonicalMerge('port-verification')).rejects.toMatchObject({
+      payload: {
+        code: 'core.pullRequest.projectionUnavailable',
+        retry: { kind: 'same_idempotency_key' },
+      },
+    });
+    expect(mockOctokit.pulls.merge).toHaveBeenCalledTimes(1);
+    expect(mockOctokit.pulls.get).toHaveBeenCalledTimes(1);
+    failVerification = false;
+    await expect(canonicalMerge('port-verification')).resolves.toMatchObject({
+      state: 'merged',
+    });
+    expect(mockOctokit.pulls.merge).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps an open full verification on the canonical projection-failure path', async () => {
+    mockReadGitHubPullRequestProjection.mockImplementation(
+      (ref: { owner: string; repo: string; number: number }) => {
+        const projection = mergeProjection(ref);
+        projection.view.state = 'open';
+        return Promise.resolve(projection);
+      },
+    );
+    await expect(
+      canonicalMerge('port-stale-verification'),
+    ).rejects.toMatchObject({
+      payload: { code: 'core.pullRequest.projectionUnavailable' },
+    });
+    expect(mockOctokit.pulls.merge).toHaveBeenCalledTimes(1);
+    expect(mockOctokit.pulls.get).toHaveBeenCalledTimes(1);
+    mockReadGitHubPullRequestProjection.mockImplementation(
+      (ref: { owner: string; repo: string; number: number }) =>
+        Promise.resolve(mergeProjection(ref)),
+    );
+    await expect(
+      canonicalMerge('port-stale-verification'),
+    ).resolves.toMatchObject({
+      state: 'merged',
+    });
+    expect(mockOctokit.pulls.merge).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-reads the head between discovery and instruction and sends no mutation after it moves', async () => {
+    let reads = 0;
+    mockReadGitHubPullRequestProjection.mockImplementation(
+      (ref: { owner: string; repo: string; number: number }) => {
+        const projection = mergeProjection(ref);
+        reads += 1;
+        if (reads > 1) projection.view.headSha = 'c'.repeat(40);
+        return Promise.resolve(projection);
+      },
+    );
+    const result = await invokeMergeResponse();
+    expect(result.mergedRepos).toEqual([]);
+    expect(result.failedRepos).toEqual([
+      {
+        repoId: '__single_repo__',
+        repoName: 'single',
+        prNumber: 355,
+        error:
+          'Cannot retry the pull request merge because the PR head commit changed.',
+        status: 'failed',
+      },
+    ]);
+    expect(mockOctokit.pulls.merge).not.toHaveBeenCalled();
+  });
+
+  it('refuses an origin change while reading preflight without falling back to a different repository', async () => {
+    mockReadGitHubPullRequestProjection.mockImplementation(
+      (ref: { owner: string; repo: string; number: number }) => {
+        git(repos.single, [
+          'remote',
+          'set-url',
+          'origin',
+          'https://github.com/another/repository.git',
+        ]);
+        return Promise.resolve(mergeProjection(ref));
+      },
+    );
+    try {
+      const result = await invokeMergeResponse();
+      expect(result.mergedRepos).toEqual([]);
+      expect(result.failedRepos).toEqual([
+        {
+          repoId: '__single_repo__',
+          repoName: 'single',
+          prNumber: 355,
+          error: 'PR state changed. Refresh and try again.',
+          status: 'failed',
+        },
+      ]);
+      expect(mockOctokit.pulls.merge).not.toHaveBeenCalled();
+    } finally {
+      git(repos.single, [
+        'remote',
+        'set-url',
+        'origin',
+        'https://github.com/golden-org/golden-repo.git',
+      ]);
+    }
+  });
+
+  it.each(['queue required', 'discovery failure', 'precondition refusal'])(
+    'refuses origin drift before the %s compatibility fallback',
+    async (fallback) => {
+      if (fallback === 'queue required') {
+        mockOctokit.graphql.mockResolvedValue({
+          repository: {
+            pullRequest: {
+              id: 'PR_355',
+              isMergeQueueEnabled: true,
+              isInMergeQueue: false,
+              mergeQueueEntry: null,
+            },
+          },
+        });
+      }
+      let reads = 0;
+      mockReadGitHubPullRequestProjection.mockImplementation(
+        (ref: { owner: string; repo: string; number: number }) => {
+          reads += 1;
+          if (fallback === 'discovery failure' || reads === 2) {
+            git(repos.single, [
+              'remote',
+              'set-url',
+              'origin',
+              'https://github.com/another/repository.git',
+            ]);
+            if (fallback === 'discovery failure')
+              return Promise.reject(new Error('read unavailable'));
+          }
+          const projection = mergeProjection(ref);
+          if (fallback === 'precondition refusal' && reads === 2)
+            projection.view.isDraft = true;
+          return Promise.resolve(projection);
+        },
+      );
+      try {
+        const result = await invokeMergeResponse();
+        expect(result.mergedRepos).toEqual([]);
+        expect(result.failedRepos).toEqual([
+          {
+            repoId: '__single_repo__',
+            repoName: 'single',
+            prNumber: 355,
+            error: 'PR state changed. Refresh and try again.',
+            status: 'failed',
+          },
+        ]);
+        expect(mockOctokit.pulls.merge).not.toHaveBeenCalled();
+        expect(
+          mockOctokit.graphql.mock.calls.filter(([query]) =>
+            String(query).includes('enqueuePullRequest'),
+          ),
+        ).toEqual([]);
+      } finally {
+        git(repos.single, [
+          'remote',
+          'set-url',
+          'origin',
+          'https://github.com/golden-org/golden-repo.git',
+        ]);
+      }
+    },
+  );
+
+  it('refuses origin drift after a direct merge is rejected as queue-required', async () => {
+    mockOctokit.pulls.merge.mockImplementationOnce(() => {
+      git(repos.single, [
+        'remote',
+        'set-url',
+        'origin',
+        'https://github.com/another/repository.git',
+      ]);
+      return Promise.reject(
+        Object.assign(
+          new Error('Pull request must be merged through the merge queue'),
+          { status: 405 },
+        ),
+      );
+    });
+    try {
+      const result = await invokeMergeResponse();
+      expect(result.mergedRepos).toEqual([]);
+      expect(result.failedRepos).toEqual([
+        {
+          repoId: '__single_repo__',
+          repoName: 'single',
+          prNumber: 355,
+          error: 'PR state changed. Refresh and try again.',
+          status: 'failed',
+        },
+      ]);
+      expect(mockOctokit.pulls.merge).toHaveBeenCalledTimes(1);
+      expect(mockOctokit.pulls.merge).toHaveBeenCalledWith(
+        expect.objectContaining({
+          owner: 'golden-org',
+          repo: 'golden-repo',
+        }),
+      );
+      expect(
+        mockOctokit.graphql.mock.calls.filter(([query]) =>
+          String(query).includes('enqueuePullRequest'),
+        ),
+      ).toEqual([]);
+    } finally {
+      git(repos.single, [
+        'remote',
+        'set-url',
+        'origin',
+        'https://github.com/golden-org/golden-repo.git',
+      ]);
+    }
+  });
+
+  it.each([null, 'https://gitlab.com/golden-org/golden-repo.git'])(
+    'refuses a missing or unsupported bound origin (%s) before any GitHub use',
+    async (origin) => {
+      const originRead = jest
+        .spyOn(gitReads, 'getRemoteUrl')
+        .mockResolvedValueOnce(origin);
+      try {
+        await expect(
+          mergePrForRepo(repos.single, 355, head, {
+            verifiedRepository: { owner: 'golden-org', repo: 'golden-repo' },
+          }),
+        ).rejects.toThrow('PR state changed. Refresh and try again.');
+        expect(mockEnqueue).not.toHaveBeenCalled();
+      } finally {
+        originRead.mockRestore();
+      }
+    },
+  );
+
+  it('pins the bound writer even when origin drifts after its last local check', async () => {
+    mockOctokit.repos.get.mockImplementationOnce(() => {
+      git(repos.single, [
+        'remote',
+        'set-url',
+        'origin',
+        'https://github.com/another/repository.git',
+      ]);
+      return Promise.resolve({ data: { allow_merge_commit: true } });
+    });
+    try {
+      await expect(
+        mergePrForRepo(repos.single, 355, head, {
+          verifiedRepository: { owner: 'golden-org', repo: 'golden-repo' },
+        }),
+      ).resolves.toMatchObject({ outcome: 'merged' });
+      expect(mockOctokit.pulls.merge).toHaveBeenCalledWith(
+        expect.objectContaining({
+          owner: 'golden-org',
+          repo: 'golden-repo',
+          sha: head,
+        }),
+      );
+      expect(mockOctokit.graphql).toHaveBeenCalledWith(expect.any(String), {
+        owner: 'golden-org',
+        repo: 'golden-repo',
+        number: 355,
+      });
+    } finally {
+      git(repos.single, [
+        'remote',
+        'set-url',
+        'origin',
+        'https://github.com/golden-org/golden-repo.git',
+      ]);
+    }
+  });
+
+  it('keeps the unchanged-origin queue fallback byte for byte', async () => {
+    mockOctokit.graphql.mockImplementation((query: string) =>
+      Promise.resolve(
+        query.includes('enqueuePullRequest')
+          ? { enqueuePullRequest: { mergeQueueEntry: { position: 3 } } }
+          : {
+              repository: {
+                pullRequest: {
+                  id: 'PR_355',
+                  isMergeQueueEnabled: true,
+                  isInMergeQueue: false,
+                  mergeQueueEntry: null,
+                },
+              },
+            },
+      ),
+    );
+    await expect(invoke(IPC_CHANNELS.githubMergePr, request)).resolves.toBe(
+      '{"dryRun":false,"verifiedRepos":[' +
+        verified +
+        '],"mergedRepos":[{"repoId":"__single_repo__","repoName":"single","prNumber":355,"prUrl":"https://github.com/golden-org/golden-repo/pull/355","mergeMethod":"merge","mergeCommitSha":null,"status":"enqueued","queuePosition":3}],"mergeQueueChats":[],"requiresUnresolvedConfirmation":[],"failedRepos":[]}',
+    );
+    expect(mockOctokit.pulls.merge).not.toHaveBeenCalled();
+    expect(mockOctokit.graphql).toHaveBeenLastCalledWith(
+      expect.stringContaining('enqueuePullRequest'),
+      { pullRequestId: 'PR_355', expectedHeadOid: head },
+    );
+  });
+
+  it('keeps the captured IPC success when the full post-write projection is unavailable', async () => {
+    mockReadGitHubPullRequestProjection.mockImplementation(
+      (ref: { owner: string; repo: string; number: number }) => {
+        if (mockOctokit.pulls.merge.mock.calls.length > 0)
+          return Promise.reject(new Error('projection offline'));
+        return Promise.resolve(mergeProjection(ref));
+      },
+    );
+    await expect(invoke(IPC_CHANNELS.githubMergePr, request)).resolves.toBe(
+      '{"dryRun":false,"verifiedRepos":[' +
+        verified +
+        '],"mergedRepos":[{"repoId":"__single_repo__","repoName":"single","prNumber":355,"prUrl":"https://github.com/golden-org/golden-repo/pull/355","mergeMethod":"merge","mergeCommitSha":"' +
+        'b'.repeat(40) +
+        '","status":"merged"}],"mergeQueueChats":[],"requiresUnresolvedConfirmation":[],"failedRepos":[]}',
+    );
+    expect(mockOctokit.pulls.merge).toHaveBeenCalledTimes(1);
+    expect(mockOctokit.pulls.get).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains legacy enqueue when queue policy changes after preflight', async () => {
+    mockOctokit.pulls.merge.mockRejectedValue(
+      Object.assign(
+        new Error('Pull request must be merged through the merge queue'),
+        { status: 405 },
+      ),
+    );
+    mockOctokit.graphql
+      .mockResolvedValueOnce({
+        repository: {
+          pullRequest: {
+            id: 'PR_355',
+            isMergeQueueEnabled: false,
+            isInMergeQueue: false,
+            mergeQueueEntry: null,
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        repository: {
+          pullRequest: {
+            id: 'PR_355',
+            isMergeQueueEnabled: true,
+            isInMergeQueue: false,
+            mergeQueueEntry: null,
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        enqueuePullRequest: { mergeQueueEntry: { position: 3 } },
+      });
+    const result = await invokeMergeResponse();
+    expect(result.failedRepos).toEqual([]);
+    expect(result.mergedRepos).toEqual([
+      {
+        repoId: '__single_repo__',
+        repoName: 'single',
+        prNumber: 355,
+        prUrl: status.prUrl,
+        mergeMethod: 'merge',
+        mergeCommitSha: null,
+        status: 'enqueued',
+        queuePosition: 3,
+      },
+    ]);
+    expect(mockOctokit.pulls.merge).toHaveBeenCalledTimes(1);
+    expect(mockOctokit.graphql).toHaveBeenLastCalledWith(
+      expect.stringContaining('enqueuePullRequest'),
+      { pullRequestId: 'PR_355', expectedHeadOid: head },
+    );
+  });
+
+  it('dry-run verifies without mutations or progress', async () => {
+    await expect(
+      invoke(IPC_CHANNELS.githubMergePr, { ...request, dryRun: true }),
+    ).resolves.toBe(
+      '{"dryRun":true,"verifiedRepos":[' +
+        verified +
+        '],"mergedRepos":[],"mergeQueueChats":[],"requiresUnresolvedConfirmation":[],"failedRepos":[]}',
+    );
+    expect(mockOctokit.pulls.merge).not.toHaveBeenCalled();
+    expect(phases()).toEqual([]);
+  });
+
+  it('an empty selection stays a no-op', async () => {
+    mockFetchRepoPrTrackingData.mockResolvedValue({ status: null });
+    await expect(invoke(IPC_CHANNELS.githubMergePr, request)).resolves.toBe(
+      '{"dryRun":false,"verifiedRepos":[],"mergedRepos":[],"mergeQueueChats":[],"requiresUnresolvedConfirmation":[],"failedRepos":[]}',
+    );
+    expect(mockOctokit.pulls.merge).not.toHaveBeenCalled();
+    expect(
+      getPrMergeProgressFeed(request.projectId, request.worktreeId),
+    ).toBeUndefined();
+  });
+
+  it('requires explicit confirmation for unresolved review threads', async () => {
+    mockFetchRepoPrTrackingData.mockResolvedValue({
+      status: { ...status, unresolvedReviewThreadCount: 2 },
+    });
+    const result = await invokeMergeResponse();
+    expect(result.requiresUnresolvedConfirmation).toEqual([
+      {
+        repoId: '__single_repo__',
+        repoName: 'single',
+        prNumber: 355,
+        prUrl: status.prUrl,
+        unresolvedReviewThreadCount: 2,
+      },
+    ]);
+    expect(mockOctokit.pulls.merge).not.toHaveBeenCalled();
+    expect(phases()).toEqual(['queued', 'checking_mergeability']);
+  });
+
+  it.each([
+    [405, 'Pull request is not mergeable'],
+    [409, 'Base branch was modified'],
+    [409, 'Merge conflicts'],
+  ] satisfies [number, string][])(
+    'preserves terminal %s refusals after preflight for canonical and IPC callers',
+    async (statusCode, message) => {
+      const rejection = Object.assign(new Error(message), {
+        status: statusCode,
+      });
+      mockOctokit.pulls.merge.mockRejectedValue(rejection);
+      mockOctokit.pulls.get.mockResolvedValue({
+        data: {
+          state: 'open',
+          merged: false,
+          head: { sha: head },
+          mergeable_state: 'dirty',
+        },
+      });
+      mockReadGitHubPullRequestProjection.mockImplementation(
+        (ref: { owner: string; repo: string; number: number }) => {
+          const projection = mergeProjection(ref);
+          return Promise.resolve({
+            ...projection,
+            view: { ...projection.view, state: 'open' },
+          });
+        },
+      );
+      await expect(
+        canonicalMerge(`terminal-${statusCode}-${message}`),
+      ).rejects.toMatchObject({
+        payload: {
+          kind: 'failed_precondition',
+          code: 'core.pullRequest.merge.notMergeable',
+          retry: { kind: 'after_refresh', resource: 'pull-request' },
+        },
+        runtimeCause: rejection,
+      });
+      await expect(invoke(IPC_CHANNELS.githubMergePr, request)).resolves.toBe(
+        '{"dryRun":false,"verifiedRepos":[' +
+          verified +
+          '],"mergedRepos":[],"mergeQueueChats":[],"requiresUnresolvedConfirmation":[],"failedRepos":[{"repoId":"__single_repo__","repoName":"single","prNumber":355,"error":' +
+          JSON.stringify(message) +
+          ',"status":"failed"}]}',
+      );
+      expect(mockOctokit.pulls.merge).toHaveBeenCalledTimes(2);
+      expect(phases()).toEqual([
+        'queued',
+        'checking_mergeability',
+        'merging',
+        'error',
+      ]);
+    },
+  );
+
+  it('preserves a non-HTTP mergeability refusal returned as merged false', async () => {
+    const message = 'Pull request has merge conflicts';
+    mockOctokit.pulls.merge.mockResolvedValue({
+      data: { merged: false, message },
+    });
+    await expect(canonicalMerge('merged-false-conflict')).rejects.toMatchObject(
+      {
+        payload: {
+          kind: 'failed_precondition',
+          code: 'core.pullRequest.merge.notMergeable',
+          retry: { kind: 'after_refresh', resource: 'pull-request' },
+        },
+        runtimeCause: new Error(message),
+      },
+    );
+    expect(mockOctokit.pulls.merge).toHaveBeenCalledTimes(1);
+    expect(mockOctokit.pulls.get).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [405, 'Pull request is not mergeable'],
+    [409, 'Head sha does not match the expected head oid'],
+  ] satisfies [number, string][])(
+    'keeps queue-required refusals typed and legacy enqueue errors unchanged (%s)',
+    async (statusCode, message) => {
+      const rejection = Object.assign(new Error(message), {
+        status: statusCode,
+      });
+      mockOctokit.graphql.mockImplementation((query: string) => {
+        if (query.includes('enqueuePullRequest'))
+          return Promise.reject(rejection);
+        return Promise.resolve({
+          repository: {
+            pullRequest: {
+              id: 'PR_355',
+              isMergeQueueEnabled: true,
+              isInMergeQueue: false,
+              mergeQueueEntry: null,
+            },
+          },
+        });
+      });
+      await expect(
+        canonicalMerge(`queue-refusal-${statusCode}`),
+      ).rejects.toMatchObject({
+        payload: {
+          kind: 'failed_precondition',
+          code: 'core.pullRequest.merge.mergeQueueRequired',
+          retry: { kind: 'after_refresh', resource: 'pull-request' },
+        },
+      });
+      const result = await invokeMergeResponse();
+      expect(result.mergedRepos).toEqual([]);
+      expect(result.failedRepos).toEqual([
+        {
+          repoId: '__single_repo__',
+          repoName: 'single',
+          prNumber: 355,
+          error:
+            statusCode === 409
+              ? 'Cannot add the pull request to the merge queue because the PR head commit changed. Refresh and try again.'
+              : message,
+          status: 'failed',
+        },
+      ]);
+      expect(mockOctokit.pulls.merge).not.toHaveBeenCalled();
+      expect(
+        mockOctokit.graphql.mock.calls.filter(
+          ([query]: readonly unknown[]) =>
+            typeof query === 'string' && query.includes('enqueuePullRequest'),
+        ),
+      ).toHaveLength(1);
+    },
+  );
+
+  it('keeps the writer retrying transient mergeability before a successful merge', async () => {
+    mockOctokit.pulls.merge
+      .mockRejectedValueOnce(
+        Object.assign(new Error('Not mergeable'), { status: 405 }),
+      )
+      .mockResolvedValueOnce({ data: { merged: true, sha: 'b'.repeat(40) } });
+    mockOctokit.pulls.get.mockResolvedValueOnce({
+      data: {
+        state: 'open',
+        merged: false,
+        head: { sha: head },
+        mergeable_state: 'clean',
+      },
+    });
+    await expect(
+      mergePrForRepo(repos.single, 355, head, { retryDelaysMs: [0] }),
+    ).resolves.toMatchObject({
+      outcome: 'merged',
+      mergeCommitSha: 'b'.repeat(40),
+    });
+    expect(mockOctokit.pulls.merge).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the original terminal refusal when the writer exhausts its retries', async () => {
+    const rejection = Object.assign(new Error('Base branch was modified'), {
+      status: 409,
+    });
+    mockOctokit.pulls.merge.mockRejectedValue(rejection);
+    mockOctokit.pulls.get.mockResolvedValue({
+      data: {
+        state: 'open',
+        merged: false,
+        head: { sha: head },
+        mergeable_state: 'clean',
+      },
+    });
+    await expect(
+      mergePrForRepo(repos.single, 355, head, { retryDelaysMs: [0] }),
+    ).rejects.toBe(rejection);
+    expect(mockOctokit.pulls.merge).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports a moved head and does not retry its mutation', async () => {
+    const rejection = Object.assign(new Error('Head branch was modified'), {
+      status: 409,
+    });
+    mockOctokit.pulls.merge.mockRejectedValue(rejection);
+    mockOctokit.pulls.get.mockResolvedValue({
+      data: { state: 'open', merged: false, head: { sha: 'c'.repeat(40) } },
+    });
+    const result = await invokeMergeResponse();
+    expect(result.mergedRepos).toEqual([]);
+    expect(result.failedRepos).toEqual([
+      {
+        repoId: '__single_repo__',
+        repoName: 'single',
+        prNumber: 355,
+        error:
+          'Cannot retry the pull request merge because the PR head commit changed.',
+        status: 'failed',
+      },
+    ]);
+    expect(mockOctokit.pulls.merge).toHaveBeenCalledTimes(1);
+    expect(phases()).toEqual([
+      'queued',
+      'checking_mergeability',
+      'merging',
+      'error',
+    ]);
+    expect(
+      getPrMergeProgressFeed(request.projectId, request.worktreeId)
+        ?.currentPhase,
+    ).toBe('error');
+  });
+
+  it.each([
+    [{ allow_merge_commit: true }, 'merge'],
+    [{ allow_merge_commit: false, allow_squash_merge: true }, 'squash'],
+    [
+      {
+        allow_merge_commit: false,
+        allow_squash_merge: false,
+        allow_rebase_merge: true,
+      },
+      'rebase',
+    ],
+  ])(
+    'keeps the repository strategy preference %j',
+    async (settings, method) => {
+      mockOctokit.repos.get.mockResolvedValue({ data: settings });
+      const result = await mergePrForRepo(repos.single, 355, head);
+      expect(result).toEqual({
+        outcome: 'merged',
+        newlyMerged: true,
+        mergeMethod: method,
+        mergeCommitSha: 'b'.repeat(40),
+      });
+      expect(mockOctokit.pulls.merge).toHaveBeenCalledWith(
+        expect.objectContaining({ merge_method: method, sha: head }),
+      );
+    },
+  );
+
+  it('enqueues a queue-required base with the exact head instead of direct merging', async () => {
+    mockOctokit.graphql
+      .mockResolvedValueOnce({
+        repository: {
+          pullRequest: {
+            id: 'PR_355',
+            isMergeQueueEnabled: true,
+            isInMergeQueue: false,
+            mergeQueueEntry: null,
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        enqueuePullRequest: { mergeQueueEntry: { position: 3 } },
+      });
+    await expect(mergePrForRepo(repos.single, 355, head)).resolves.toEqual({
+      outcome: 'enqueued',
+      mergeMethod: 'merge',
+      mergeCommitSha: null,
+      queuePosition: 3,
+    });
+    expect(mockOctokit.graphql).toHaveBeenLastCalledWith(
+      expect.stringContaining('enqueuePullRequest'),
+      { pullRequestId: 'PR_355', expectedHeadOid: head },
+    );
+    expect(mockOctokit.pulls.merge).not.toHaveBeenCalled();
+  });
+
+  it('does not enqueue an existing queue entry again', async () => {
+    mockOctokit.graphql.mockResolvedValue({
+      repository: {
+        pullRequest: {
+          id: 'PR_355',
+          isMergeQueueEnabled: true,
+          isInMergeQueue: true,
+          mergeQueueEntry: { position: 2, state: 'QUEUED' },
+        },
+      },
+    });
+    await expect(mergePrForRepo(repos.single, 355, head)).resolves.toEqual({
+      outcome: 'enqueued',
+      mergeMethod: 'merge',
+      mergeCommitSha: null,
+      queuePosition: 2,
+    });
+    expect(mockOctokit.graphql).toHaveBeenCalledTimes(1);
+    expect(mockOctokit.pulls.merge).not.toHaveBeenCalled();
+  });
+
+  it('keeps an unreadable queue state on the direct merge path', async () => {
+    mockOctokit.graphql.mockRejectedValue(new Error('GraphQL not readable'));
+    await expect(mergePrForRepo(repos.single, 355, head)).resolves.toEqual({
+      outcome: 'merged',
+      newlyMerged: true,
+      mergeMethod: 'merge',
+      mergeCommitSha: 'b'.repeat(40),
+    });
+  });
+});
+
+describe('github:get-merge-queue equivalence (CAN-4728)', () => {
+  const request = { repository: 'Golden-Org/Golden-Repo', baseBranch: 'main' };
+  beforeEach(() => {
+    mockQueueReadsEnabled = true;
+    mockOctokit.request.mockResolvedValue({
+      status: 200,
+      headers: {},
+      data: { data: { repository: { mergeQueue: null } } },
+    });
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it('keeps the no-queue result byte for byte and uses broker GraphQL', async () => {
+    await expect(
+      invoke(IPC_CHANNELS.githubGetMergeQueue, request),
+    ).resolves.toBe('{"queue":null}');
+    expect(mockOctokit.request).toHaveBeenCalledWith(
+      'POST /graphql',
+      expect.objectContaining({
+        variables: { owner: 'Golden-Org', name: 'Golden-Repo', branch: 'main' },
+      }),
+    );
+  });
+
+  it('shares in-flight reads and the 20-second cache, including its boundary', async () => {
+    let now = 1_000;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+    await Promise.all([
+      invoke(IPC_CHANNELS.githubGetMergeQueue, request),
+      invoke(IPC_CHANNELS.githubGetMergeQueue, {
+        ...request,
+        repository: request.repository.toLowerCase(),
+      }),
+    ]);
+    expect(mockOctokit.request).toHaveBeenCalledTimes(1);
+    now += 20_000;
+    await invoke(IPC_CHANNELS.githubGetMergeQueue, request);
+    expect(mockOctokit.request).toHaveBeenCalledTimes(1);
+    now += 1;
+    await invoke(IPC_CHANNELS.githubGetMergeQueue, request);
+    expect(mockOctokit.request).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps unreadable errors distinct from an absent queue and does not cache failures', async () => {
+    const error = new GitHubBrokerError('not_authenticated', 'Not signed in');
+    mockOctokit.request.mockRejectedValueOnce(error);
+    await expect(
+      rejection(IPC_CHANNELS.githubGetMergeQueue, request),
+    ).resolves.toEqual({ name: error.name, message: error.message });
+    await expect(
+      invoke(IPC_CHANNELS.githubGetMergeQueue, request),
+    ).resolves.toBe('{"queue":null}');
+    expect(mockOctokit.request).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    { repository: '', baseBranch: 'main' },
+    { repository: 'a/b/c', baseBranch: 'main' },
+    { repository: 'a/b', baseBranch: '' },
+    { repository: 'a/b', baseBranch: '../main' },
+    { repository: 'a/b', baseBranch: 'x'.repeat(256) },
+  ])('rejects a malformed queue reference %j before GitHub', async (input) => {
+    await expect(
+      rejection(IPC_CHANNELS.githubGetMergeQueue, input),
+    ).resolves.toEqual({
+      name: 'GitHubBrokerError',
+      message: 'GitHub merge queue request was malformed.',
+    });
+    expect(mockOctokit.request).not.toHaveBeenCalled();
+  });
+
+  it('keeps sanitization, sorting, partial-page totals and timestamp output', async () => {
+    jest
+      .spyOn(Date.prototype, 'toISOString')
+      .mockReturnValue('2026-11-06T00:00:00.000Z');
+    mockOctokit.request.mockResolvedValue({
+      status: 200,
+      headers: {},
+      data: {
+        data: {
+          repository: {
+            mergeQueue: {
+              url: 'https://github.com/golden-org/golden-repo/queue/main',
+              configuration: { maximumEntriesToBuild: 2 },
+              entries: {
+                totalCount: 3,
+                nodes: [
+                  {
+                    position: 2,
+                    state: 'QUEUED',
+                    estimatedTimeToMerge: null,
+                    enqueuedAt: null,
+                    pullRequest: {
+                      number: 9,
+                      title: '  A\n title ',
+                      url: 'https://github.com/golden-org/golden-repo/pull/9',
+                      author: { login: 'octo' },
+                    },
+                  },
+                  {
+                    position: 1,
+                    state: 'UNKNOWN',
+                    pullRequest: {
+                      number: 8,
+                      title: 'Earlier',
+                      url: 'https://github.com/golden-org/golden-repo/pull/8',
+                      author: null,
+                    },
+                  },
+                  { position: -1, pullRequest: {} },
+                ],
+              },
+            },
+          },
+        },
+      },
+    });
+    await expect(
+      invoke(IPC_CHANNELS.githubGetMergeQueue, request),
+    ).resolves.toBe(
+      '{"queue":{"url":"https://github.com/golden-org/golden-repo/queue/main","baseBranch":"main","totalCount":3,"maximumEntriesToBuild":2,"entries":[{"position":1,"phase":"unknown","estimatedSecondsToMerge":null,"enqueuedAt":null,"pullRequest":{"number":8,"title":"Earlier","url":"https://github.com/golden-org/golden-repo/pull/8","author":null}},{"position":2,"phase":"queued","estimatedSecondsToMerge":null,"enqueuedAt":null,"pullRequest":{"number":9,"title":"A title","url":"https://github.com/golden-org/golden-repo/pull/9","author":"octo"}}],"fetchedAt":"2026-11-06T00:00:00.000Z"}}',
+    );
   });
 });

@@ -88,6 +88,8 @@ export interface ChatComposerProps {
   readonly placeholder?: string;
   /** Fully disable the composer (e.g. while the thread is loading). */
   readonly disabled?: boolean;
+  /** Take typing that starts outside the composer; for a page's main chat. */
+  readonly typeToFocus?: boolean;
   /**
    * Slash-command rows. Passing this (even empty) enables the slash menu; the
    * host owns discovery. The menu filters/inserts against the trigger query.
@@ -166,6 +168,7 @@ function ChatComposerContent({
   providerType,
   placeholder,
   disabled = false,
+  typeToFocus = false,
   slashCommands,
   slashDiscovering = false,
   slashTriggerCharacters,
@@ -321,7 +324,7 @@ function ChatComposerContent({
         activeTone: 'warning',
         title: planMode ? 'Disable plan mode' : 'Enable plan mode',
         ariaLabel: 'Toggle plan mode',
-        icon: <PlanModeIcon width={13} height={13} active={planMode} />,
+        icon: <PlanModeIcon size="sm" active={planMode} />,
         label: planMode ? 'Plan' : undefined,
         dataTestId: 'chat-composer-plan',
       }
@@ -394,6 +397,7 @@ function ChatComposerContent({
           containerClassName={CONTAINER_CLASS}
           editableClassName={EDITABLE_CLASS}
           dataTestId="chat-composer-input"
+          typeToFocus={typeToFocus}
         />
       </div>
       <div className="mt-1">

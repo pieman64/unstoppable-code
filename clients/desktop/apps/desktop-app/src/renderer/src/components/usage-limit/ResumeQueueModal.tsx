@@ -6,9 +6,10 @@ import {
   InterruptedSessionRow,
 } from '@canopy/ui-shared';
 import {
-  StatusGlyph,
   ErrorBanner,
+  StatusGlyph,
   StatusLabel,
+  Surface,
 } from '@canopy/ui-shared/components';
 import { ChevronRightIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
@@ -312,72 +313,76 @@ export function ResumeQueueModal(): JSX.Element | null {
           )}
           <ErrorBanner error={visibleError} className="" />
         </div>
-        <ol
-          className="mx-3 max-h-[45vh] overflow-y-auto rounded-xl bg-subtle px-3 [&>li+li]:border-t [&>li+li]:border-[var(--line-base)]"
-          aria-label="Sessions to resume"
-        >
-          {snapshot?.entries.map((entry) => (
-            <InterruptedSessionRow
-              as="li"
-              key={entry.id}
-              data-testid={`resume-queue-entry-${entry.id}`}
-              layout="queue"
-              leading={
-                <StatusGlyph
-                  state={resumeQueueEntryGlyphState(entry.status)}
-                  className="mt-0.75"
-                />
-              }
-              title={entry.title}
-              titleId={`resume-queue-entry-title-${entry.id}`}
-              replayMaskTitle
-              context={
-                <span data-testid="resume-queue-entry-identity">
-                  <span className={POSTHOG_REPLAY_MASK_CLASS}>
-                    {entry.workspaceName}
-                  </span>
-                  {` · ${entry.target.kind === 'pipeline' ? 'Workflow · ' : ''}${
-                    entry.providers?.length
-                      ? entry.providers
-                          .map(getModelCatalogProviderLabel)
-                          .join(', ')
-                      : 'Provider unavailable'
-                  }`}
-                </span>
-              }
-              trailing={
-                <div className="flex shrink-0 items-center gap-2 self-center">
-                  {entry.status === 'failed' ? (
-                    <StatusLabel size="xs">{labels[entry.status]}</StatusLabel>
-                  ) : (
-                    <span className="text-xs fg-tertiary">
-                      {labels[entry.status]}
+        <Surface variant="group" className="mx-3 overflow-hidden">
+          <ol
+            className="max-h-[45vh] overflow-y-auto px-3 [&>li+li]:border-t [&>li+li]:border-[var(--line-base)]"
+            aria-label="Sessions to resume"
+          >
+            {snapshot?.entries.map((entry) => (
+              <InterruptedSessionRow
+                as="li"
+                key={entry.id}
+                data-testid={`resume-queue-entry-${entry.id}`}
+                layout="queue"
+                leading={
+                  <StatusGlyph
+                    state={resumeQueueEntryGlyphState(entry.status)}
+                    className="mt-0.75"
+                  />
+                }
+                title={entry.title}
+                titleId={`resume-queue-entry-title-${entry.id}`}
+                replayMaskTitle
+                context={
+                  <span data-testid="resume-queue-entry-identity">
+                    <span className={POSTHOG_REPLAY_MASK_CLASS}>
+                      {entry.workspaceName}
                     </span>
-                  )}
-                  <Button
-                    variant="ghost-quiet"
-                    size="compact"
-                    data-testid={`resume-queue-entry-open-${entry.id}`}
-                    aria-describedby={`resume-queue-entry-title-${entry.id}`}
-                    disabled={pending}
-                    onClick={() => {
-                      void openEntry(entry);
-                    }}
-                  >
-                    {resumeQueueEntryDestinationLabel(entry)}
-                    <ChevronRightIcon size={12} aria-hidden />
-                  </Button>
-                </div>
-              }
-            >
-              {entry.error && (
-                <p className="mt-1 text-xs">
-                  <StatusLabel>{entry.error}</StatusLabel>
-                </p>
-              )}
-            </InterruptedSessionRow>
-          ))}
-        </ol>
+                    {` · ${entry.target.kind === 'pipeline' ? 'Workflow · ' : ''}${
+                      entry.providers?.length
+                        ? entry.providers
+                            .map(getModelCatalogProviderLabel)
+                            .join(', ')
+                        : 'Provider unavailable'
+                    }`}
+                  </span>
+                }
+                trailing={
+                  <div className="flex shrink-0 items-center gap-2 self-center">
+                    {entry.status === 'failed' ? (
+                      <StatusLabel size="xs">
+                        {labels[entry.status]}
+                      </StatusLabel>
+                    ) : (
+                      <span className="text-xs fg-tertiary">
+                        {labels[entry.status]}
+                      </span>
+                    )}
+                    <Button
+                      variant="ghost-quiet"
+                      size="compact"
+                      data-testid={`resume-queue-entry-open-${entry.id}`}
+                      aria-describedby={`resume-queue-entry-title-${entry.id}`}
+                      disabled={pending}
+                      onClick={() => {
+                        void openEntry(entry);
+                      }}
+                    >
+                      {resumeQueueEntryDestinationLabel(entry)}
+                      <ChevronRightIcon size={12} aria-hidden />
+                    </Button>
+                  </div>
+                }
+              >
+                {entry.error && (
+                  <p className="mt-1 text-xs">
+                    <StatusLabel>{entry.error}</StatusLabel>
+                  </p>
+                )}
+              </InterruptedSessionRow>
+            ))}
+          </ol>
+        </Surface>
       </div>
     </DialogModal>
   );

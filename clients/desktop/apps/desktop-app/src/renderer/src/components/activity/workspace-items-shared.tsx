@@ -89,7 +89,7 @@ export function ItemMetaInfo({
         onClick={(e): void => e.stopPropagation()}
         aria-label="Item details"
       >
-        <InfoIcon width={12} height={12} />
+        <InfoIcon size="sm" />
       </Button>
     </RichHoverTooltip>
   );

@@ -1,5 +1,5 @@
 import { useEffect, useState, type JSX } from 'react';
-import { EmptyStateRow } from '@canopy/ui-shared/components';
+import { EmptyStateRow, Surface } from '@canopy/ui-shared/components';
 import { formatTimingTimestamp } from '@/lib/pipelineTiming';
 import type {
   ExecutionState,
@@ -108,7 +108,7 @@ function AdvisorRunButton({
       onClick={onRun}
       data-testid="pipeline-detail-run-advisor"
     >
-      <AgentAssistantIcon className="h-3.5 w-3.5 fg-info" aria-hidden="true" />
+      <AgentAssistantIcon size="sm" className="fg-info" aria-hidden="true" />
       <span>{label}</span>
     </Button>
   );
@@ -149,7 +149,7 @@ function AdvisorRefreshButton({
           aria-label={refreshLabel}
           data-testid="pipeline-detail-refresh-advisor"
         >
-          <RefreshSpinner size={12} />
+          <RefreshSpinner size="sm" />
           <span>Refresh</span>
         </Button>
       ) : (
@@ -160,7 +160,7 @@ function AdvisorRefreshButton({
           aria-label={refreshLabel}
           data-testid="pipeline-detail-refresh-advisor"
         >
-          <RefreshSpinner size={12} />
+          <RefreshSpinner size="sm" />
         </Button>
       )}
     </Tooltip>
@@ -192,7 +192,7 @@ export function AdvisorCompactStatus({
       className="inline-flex items-center gap-1.5"
       data-testid="pipeline-detail-advisor-eta"
     >
-      <AgentAssistantIcon className="h-3.5 w-3.5 fg-info" aria-hidden="true" />
+      <AgentAssistantIcon size="sm" className="fg-info" aria-hidden="true" />
       <span>
         {formatAdvisorEtaForModal(snapshot, pipelineStatus, etaNowMs)}
       </span>
@@ -457,32 +457,36 @@ function AdvisorReportContent({
         ) : (
           <ul className="mt-1 space-y-2">
             {inefficiencies.map((item, index) => (
-              <li
+              <Surface
+                as="li"
+                variant="group"
+                size="small"
                 key={`${item.title}-${index}`}
-                className="rounded-md border bg-fg-primary/[0.03] px-3 py-2"
               >
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge tone={severityBadgeTone(item.severity)}>
-                    {severityLabelForModal(item.severity)}
-                  </Badge>
-                  <PipelineAdvisorMarkdownText className="text-s font-medium fg-primary/85">
-                    {item.title}
-                  </PipelineAdvisorMarkdownText>
-                </div>
-                <div className="mt-1 text-s fg-primary/80">
-                  <PipelineAdvisorMarkdownText>
-                    {item.evidence}
-                  </PipelineAdvisorMarkdownText>
-                </div>
-                {item.recommendation && (
-                  <div className="mt-1 text-s fg-primary/70">
-                    <span>Recommendation: </span>
-                    <PipelineAdvisorMarkdownText>
-                      {item.recommendation}
+                <div className="px-3 py-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge tone={severityBadgeTone(item.severity)}>
+                      {severityLabelForModal(item.severity)}
+                    </Badge>
+                    <PipelineAdvisorMarkdownText className="text-s font-medium fg-primary/85">
+                      {item.title}
                     </PipelineAdvisorMarkdownText>
                   </div>
-                )}
-              </li>
+                  <div className="mt-1 text-s fg-primary/80">
+                    <PipelineAdvisorMarkdownText>
+                      {item.evidence}
+                    </PipelineAdvisorMarkdownText>
+                  </div>
+                  {item.recommendation && (
+                    <div className="mt-1 text-s fg-primary/70">
+                      <span>Recommendation: </span>
+                      <PipelineAdvisorMarkdownText>
+                        {item.recommendation}
+                      </PipelineAdvisorMarkdownText>
+                    </div>
+                  )}
+                </div>
+              </Surface>
             ))}
           </ul>
         )}

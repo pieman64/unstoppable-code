@@ -4,10 +4,6 @@ import { Tooltip } from '@canopy/ui-shared';
 import { MaximizeIcon as AppCatalogMaximizeIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { Button, Disclosure } from '@canopy/ui-shared/components';
 
-function EnlargeIcon(): JSX.Element {
-  return <AppCatalogMaximizeIcon width="14" height="14" aria-hidden="true" />;
-}
-
 interface PipelineChildExecutionProps {
   child: ExecutionSummary;
   stepId: string;
@@ -54,7 +50,7 @@ export function PipelineChildExecution({
               aria-label={`Open ${child.pipeline_name} in full view`}
               data-testid={`pipeline-step-drill-${stepId}`}
             >
-              <EnlargeIcon />
+              <AppCatalogMaximizeIcon size="sm" aria-hidden="true" />
             </Button>
           </Tooltip>
         </div>

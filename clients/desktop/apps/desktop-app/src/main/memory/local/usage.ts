@@ -27,6 +27,7 @@ import { randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { isRecord } from '../../lib/type-guards';
 import { ensureOwnerOnlyDir } from './memory-files';
+import { localMemoryReplicaHooks } from './replica-hooks';
 import { memoryFileIdentity } from '@canopy/memory-consolidation/topic-identity';
 
 export interface MemoryUsageEntry {
@@ -313,6 +314,8 @@ function applyUsageCounts(
   counts: ReadonlyMap<string, number>,
   usedAt: string,
 ): Promise<void> {
+  // A synced replica also sends its uses to the cloud (design §15).
+  localMemoryReplicaHooks()?.usageRecorded(scopeDir, counts, usedAt);
   return enqueueUsageMutation(
     scopeDir,
     { createIfMissing: true },

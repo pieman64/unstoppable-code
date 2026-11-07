@@ -40,11 +40,22 @@ export function DesktopOrgSharedMultiRepoSetup({
   );
 }
 
+/**
+ * What an update of these sources must do: `legacy` updates in place, `shared`
+ * needs a new shared project, `pending` is still being read, and `unavailable`
+ * could not be read. Only `legacy` authorizes the mutating path.
+ */
+export type SharedMultiRepoRouting =
+  | 'legacy'
+  | 'shared'
+  | 'pending'
+  | 'unavailable';
+
 /** Unknown organization visibility never authorizes the legacy mutating path. */
 // eslint-disable-next-line react-refresh/only-export-components -- The hook and view share the same host boundary.
-export function useSharedMultiRepoRequired(
+export function useSharedMultiRepoRouting(
   workspaceIds: readonly string[],
-): boolean {
+): SharedMultiRepoRouting {
   const client = useOptionalCanopyClient();
   const projects = useProjectsStore((state) => state.projects);
   const context = useWorkspaceContextStore((state) => state.state.context);
@@ -57,7 +68,10 @@ export function useSharedMultiRepoRequired(
   const key = JSON.stringify(
     owners.map((owner) => [owner.organizationId, owner.projectId]),
   );
-  const [privateSelection, setPrivateSelection] = useState<string | null>(null);
+  const [classified, setClassified] = useState<{
+    readonly key: string;
+    readonly routing: 'legacy' | 'shared' | 'unavailable';
+  } | null>(null);
   useEffect(() => {
     if (owners.length === 0 || !client?.sharedMultiRepo) return;
     let current = true;
@@ -68,11 +82,11 @@ export function useSharedMultiRepoRequired(
       ).map((id) => port.catalog(id)),
     )
       .then((catalogs) => {
-        if (
-          !current ||
-          catalogs.some((catalog) => catalog.stale || catalog.error)
-        )
+        if (!current) return;
+        if (catalogs.some((catalog) => catalog.stale || catalog.error)) {
+          setClassified({ key, routing: 'unavailable' });
           return;
+        }
         const privateOnly = owners.every((owner) =>
           catalogs.some((catalog) =>
             catalog.projects.some(
@@ -86,21 +100,26 @@ export function useSharedMultiRepoRequired(
             ),
           ),
         );
-        setPrivateSelection(privateOnly ? key : null);
+        setClassified({ key, routing: privateOnly ? 'legacy' : 'shared' });
       })
       .catch(() => {
-        /* Retain the safe shared path when access cannot be checked. */
+        if (current) setClassified({ key, routing: 'unavailable' });
       });
     return (): void => {
       current = false;
+      // Reset from the cleanup so returning to these owners reads them afresh.
+      setClassified(null);
     };
     // The serialized owner identities own this read; unrelated worktree updates do not.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, key]);
+  if (sources.some((source) => source === undefined)) return 'unavailable';
   if (
     context.kind === 'organization' &&
     sources.some((source) => source && source.owner?.type !== 'organization')
   )
-    return true;
-  return owners.length > 0 && privateSelection !== key;
+    return 'shared';
+  if (owners.length === 0) return 'legacy';
+  if (!client?.sharedMultiRepo) return 'unavailable';
+  return classified?.key === key ? classified.routing : 'pending';
 }

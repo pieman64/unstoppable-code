@@ -4,3 +4,7 @@ export * from './revision';
 export * from './host';
 export * from './mutation-runs';
 export * from './handlers';
+export * from './skill-host';
+export * from './skill-handlers';
+export * from './materializations';
+export * from './worker-handlers';

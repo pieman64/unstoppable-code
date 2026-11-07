@@ -22,6 +22,7 @@ import {
   useLedgerFeedDraft,
   type LedgerFeedScopeOption,
 } from './LedgerFeedComposer';
+import { Divider } from '@canopy/ui-shared/components';
 
 const SEARCH_INPUT_MAX_LENGTH = 256;
 
@@ -145,15 +146,18 @@ export function FeedComposerRow({
 
   if (composing) {
     return (
-      <div className="border-b border-line-base pb-4">
-        <LedgerFeedComposer
-          store={store}
-          client={client}
-          scopeStore={scopeStore}
-          scopeHasDraft={scopeHasDraft}
-          addableScopes={addableScopes}
-          files={files}
-        />
+      <div>
+        <div className="pb-4">
+          <LedgerFeedComposer
+            store={store}
+            client={client}
+            scopeStore={scopeStore}
+            scopeHasDraft={scopeHasDraft}
+            addableScopes={addableScopes}
+            files={files}
+          />
+        </div>
+        <Divider />
       </div>
     );
   }

@@ -57,7 +57,7 @@ import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/canopy
 import type { ThreadStartParams } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/ThreadStartParams';
 import type { JsonValue } from '@canopy/desktop-shared/node/codex-runtime/generated/serde_json/JsonValue';
 import type { UserInput } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/UserInput';
-import { getCodexRuntimeService } from '../../codex/runtime-service';
+import { codexRuntimeForWorkerRun } from '../../codex/runtime-service';
 import { CodexDelegationProgress } from './codex-progress';
 import { ChildAppendQueue } from './child-append-queue';
 import { DelegationChildNormalizer } from './child-row-normalizers';
@@ -518,7 +518,11 @@ export function createCodexDelegationRunner(options: {
             'Ultra orchestration is unavailable in a managed delegated runner.',
           retryable: false,
         });
-      const runtime = (options.runtime ?? getCodexRuntimeService)();
+      const runtime = (
+        options.runtime ??
+        ((): CodexRuntimeService =>
+          codexRuntimeForWorkerRun('codexDelegationRunner'))
+      )();
       const currentConfig = await runtime
         .admin()
         .request('config/read', { cwd: context.request.cwd }, prepared.profile);

@@ -1,5 +1,6 @@
 import {
   CANOPY_PIPELINE_LAUNCH_OPERATION,
+  CANOPY_PIPELINE_OWNER_VALUES_OPERATION,
   CanopyCallerDescriptorSchema,
   CanopyHostExecutionSchema,
   CanopyStreamCursorSchema,
@@ -120,14 +121,22 @@ function hostExecutionFor(
   const parsed = CanopyHostExecutionSchema.safeParse(execution);
   if (!parsed.success)
     throw canopyInvalidArgumentError('Invalid host execution.');
-  const { pipelineLaunch } = parsed.data;
+  const { pipelineLaunch, pipelineOwnerValues } = parsed.data;
   if (pipelineLaunch !== undefined && name !== CANOPY_PIPELINE_LAUNCH_OPERATION)
     throw canopyInvalidArgumentError(
       'This operation does not accept a pipeline launch.',
     );
+  if (
+    pipelineOwnerValues !== undefined &&
+    name !== CANOPY_PIPELINE_OWNER_VALUES_OPERATION
+  )
+    throw canopyInvalidArgumentError(
+      'This operation does not accept pipeline owner values.',
+    );
   return Object.freeze({
     childEnvironment: Object.freeze({ ...parsed.data.childEnvironment }),
     ...(pipelineLaunch !== undefined && { pipelineLaunch }),
+    ...(pipelineOwnerValues !== undefined ? { pipelineOwnerValues } : {}),
   });
 }
 function retryForDefinition(

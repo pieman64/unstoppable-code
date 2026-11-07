@@ -28,6 +28,11 @@ import { getOllamaService } from '../ollama';
 import { readPreferencesFile } from './preferences';
 import { invalidateRendererRuntimePreferencesCache } from '../lib/preferences-store';
 import { registerIpcHandler } from './register';
+import type { DesktopIpcCallerResolver } from './file-tree';
+import {
+  getModelRegistryThroughWorker,
+  type WorkerAgentProviderDispatcher,
+} from '../agent-providers/model-registry-projection';
 import { retryAiGatewayModelCatalog } from '../ai-gateway-models/status';
 import {
   broadcastModelRegistryUpdated as broadcastSharedModelRegistryUpdated,
@@ -144,7 +149,11 @@ function resolveBrowsedOllamaExecutablePath(filePath: string): string {
 }
 
 export function registerModelRegistryHandlers(
-  getWindow?: () => BrowserWindow | null,
+  getWindow: (() => BrowserWindow | null) | undefined,
+  runtime: {
+    dispatcher: WorkerAgentProviderDispatcher;
+    resolveCaller: DesktopIpcCallerResolver;
+  },
 ): void {
   if (getWindow) {
     setModelRegistryBroadcastHandler((snapshot: ModelRegistrySnapshot) => {
@@ -158,9 +167,14 @@ export function registerModelRegistryHandlers(
     void buildModelRegistrySnapshot();
   });
 
-  registerIpcHandler(IPC_CHANNELS.modelRegistryGet, async () => {
+  registerIpcHandler(IPC_CHANNELS.modelRegistryGet, async (event) => {
     if (agentResourceContextEnabled()) await refreshAgentModelsFromStore();
-    return buildModelRegistrySnapshot();
+    // worker.agent.provider.list; the synchronous bootstrap listener above
+    // keeps the direct snapshot (CAN-4121 D13).
+    return getModelRegistryThroughWorker(
+      runtime.dispatcher,
+      runtime.resolveCaller(event),
+    );
   });
 
   // The outcome reaches the renderer through the registry broadcast that the

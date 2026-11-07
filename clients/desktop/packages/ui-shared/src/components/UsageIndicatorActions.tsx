@@ -70,8 +70,7 @@ export function UsageActionRow({
     >
       {label}
       <ChevronRightMediumIcon
-        width={16}
-        height={16}
+        size="sm"
         aria-hidden="true"
         className="shrink-0"
       />

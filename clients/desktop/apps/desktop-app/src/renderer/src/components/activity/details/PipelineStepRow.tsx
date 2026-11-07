@@ -7,7 +7,7 @@ import { MATRIX_JOB_ID_PREFIX } from '@canopy/desktop-shared/pipelines/matrix';
 import { isStepDefaultExpanded } from '@/lib/pipelineDetailsView';
 import type { SelectedStepSource } from '@/lib/pipelineAttemptTimeline';
 import { pipelineStatusBadge, pipelineStatusGlyphState } from '../utils';
-import { Badge, StatusGlyph } from '@canopy/ui-shared/components';
+import { Badge, StatusGlyph, Surface } from '@canopy/ui-shared/components';
 import { PipelineTimer } from '../PipelineTimer';
 import { ChevronIcon } from '@canopy/ui-shared/icons';
 import { PipelineStepDetail } from './PipelineStepDetail';
@@ -92,8 +92,9 @@ function PipelineStepRowComponent({
   }, [status]);
 
   return (
-    <div
-      className="overflow-hidden rounded-lg border bg-fg-primary/[0.02]"
+    <Surface
+      variant="group"
+      className="overflow-hidden"
       data-testid={
         jobId.startsWith(MATRIX_JOB_ID_PREFIX)
           ? `pipeline-step-${jobId}-${stepDef.id}`
@@ -166,7 +167,7 @@ function PipelineStepRowComponent({
           />
         </div>
       )}
-    </div>
+    </Surface>
   );
 }
 

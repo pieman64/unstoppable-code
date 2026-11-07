@@ -5,6 +5,7 @@ import type { RepoRulesStatus } from '@canopy/protocol/repo-rules';
 import { useCanopyClient } from '@canopy/app-state';
 import { Button, ErrorBanner, Heading } from '@canopy/ui-shared/components';
 import { CapabilityGate } from '../capability/CapabilityGate';
+import { Surface } from '@canopy/ui-shared/components';
 
 export interface RepoRulesStatusCardProps {
   readonly workspaceId: string;
@@ -165,8 +166,9 @@ function RepoRulesStatusCardBody({
     );
   }
   return (
-    <div
-      className="rounded-lg border p-4"
+    <Surface
+      variant="outline"
+      padding="default"
       data-testid="project-settings-repo-rules"
     >
       <Heading level={3} variant="title">
@@ -200,6 +202,6 @@ function RepoRulesStatusCardBody({
           </Button>
         ) : null}
       </div>
-    </div>
+    </Surface>
   );
 }

@@ -60,6 +60,17 @@ export const LABS_EXPERIMENTS: readonly LabsExperiment[] = [
     requiresEarlyAccess: false,
   },
   {
+    // CAN-5087: desktop only, macOS and Linux, so not in WEB_LABS_EXPERIMENTS.
+    id: 'daemon-scripts',
+    name: 'Background scripts',
+    description:
+      'Run scripts you start from the app in a separate background service on this computer. Turn it off to run the next script in the app.',
+    pages: [],
+    sidebarKeys: [],
+    flagKey: CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonScripts.key,
+    requiresEarlyAccess: false,
+  },
+  {
     // CAN-4551: desktop only, so not in WEB_LABS_EXPERIMENTS.
     id: 'chat-automation-pipelines',
     name: 'Chat automations as workflows',

@@ -86,7 +86,10 @@ export type CanopyInstructionDefinition<
   Grants,
   Params,
   Result
->;
+> & {
+  /** Local cancellation after send cannot prove the effect was stopped. Keyed instructions only. */
+  readonly abandonedRetry?: 'same_idempotency_key';
+};
 
 /** @deprecated Use CanopyInstructionDefinition. */
 export type CanopyCommandDefinition<
@@ -172,7 +175,8 @@ export function defineCanopyInstruction<
     Grants,
     Params,
     Result
-  >,
+  > &
+    Pick<CanopyInstructionDefinition, 'abandonedRetry'>,
 ): CanopyInstructionDefinition<Plane, Domain, Grants, Params, Result> {
   return { kind: 'instruction', ...definition };
 }
@@ -268,6 +272,16 @@ function assertDefinitionMatchesRegistry(
   }
   if (kind === 'query' && definition.idempotency !== 'inherent') {
     throw new Error(`query ${name} must be inherently idempotent`);
+  }
+  if (
+    definition.kind === 'instruction' &&
+    definition.abandonedRetry !== undefined &&
+    (definition.abandonedRetry !== 'same_idempotency_key' ||
+      definition.idempotency !== 'keyed')
+  ) {
+    throw new Error(
+      `instruction ${name} abandoned retry requires keyed idempotency`,
+    );
   }
   if (
     (registryPlane === 'core' && definition.placement === 'worker-only') ||

@@ -6,6 +6,8 @@ import {
   MODEL_PICKER_AUTO_REASONS,
   ModelPickerMenu,
   modelLibraryUnlockHint,
+  Notice,
+  noticeButtonClassName,
   modelLibraryUnlockLabel,
   resolveModelPickerRowCue,
   type ModelCatalog,
@@ -83,6 +85,15 @@ export interface PortalModelPickerProps {
     readonly creditsSufficient: ModelPickerRowFact;
   };
   readonly onSelect: (modelId: string, harness?: AgentExecutionHarness) => void;
+  /** Why the work owner's AI gateway models are missing, with where to fix it. */
+  readonly gatewayNotice?: {
+    /** The state in a few words, shown ahead of the message. */
+    readonly title: string;
+    readonly message: string;
+    /** Omitted when the viewer can't open the settings page. */
+    readonly href?: string;
+    readonly linkLabel?: string;
+  };
 }
 
 const CLAUDE_SORT_ORDER = 100;
@@ -168,6 +179,7 @@ export function PortalModelPicker({
   libraryAccess,
   rowReadiness,
   onSelect,
+  gatewayNotice,
 }: PortalModelPickerProps): JSX.Element {
   const unlockHint = modelLibraryUnlockHint(modelLibrary?.access);
   const unlockLabel = modelLibraryUnlockLabel(modelLibrary?.access);
@@ -312,13 +324,24 @@ export function PortalModelPicker({
    * with no vendor of their own belong under the brand, and the brand runtime
    * lives here, not in `@canopy/ui-shared` (CAN-2701).
    */
-  const vendorLabels = useMemo<Readonly<Record<string, string>>>(
-    () => ({
+  const vendorLabels = useMemo<Readonly<Record<string, string>>>(() => {
+    // One gateway's rows carry its name; several keep the generic heading.
+    const gatewayNames = new Set(
+      catalog.flatMap((option) =>
+        option.funding === 'org-gateway' && option.familyLabel
+          ? [option.familyLabel]
+          : [],
+      ),
+    );
+    const [gatewayName] = gatewayNames;
+    return {
       'ai-gateway': brandDisplayName ?? 'AI Credits',
-      [OWN_GATEWAY_VENDOR]: OWN_GATEWAY_LABEL,
-    }),
-    [brandDisplayName],
-  );
+      [OWN_GATEWAY_VENDOR]:
+        gatewayNames.size === 1 && gatewayName !== undefined
+          ? gatewayName
+          : OWN_GATEWAY_LABEL,
+    };
+  }, [brandDisplayName, catalog]);
   const selectedOption = useMemo(
     () =>
       menuCatalog.find((option) => option.id === selectedModelId) ??
@@ -627,6 +650,30 @@ export function PortalModelPicker({
       hideTriggerChevron={statusRow}
       compactTrigger={statusRow && compact}
       menuAlignRef={menuAlignRef}
+      {...(gatewayNotice
+        ? {
+            footer: (): JSX.Element => (
+              <Notice
+                intent="neutral"
+                role="none"
+                data-testid="portal-chat-model-gateway-notice"
+                title={gatewayNotice.title}
+                actions={
+                  gatewayNotice.href && gatewayNotice.linkLabel ? (
+                    <a
+                      href={gatewayNotice.href}
+                      className={noticeButtonClassName('secondary')}
+                    >
+                      {gatewayNotice.linkLabel}
+                    </a>
+                  ) : undefined
+                }
+              >
+                {gatewayNotice.message}
+              </Notice>
+            ),
+          }
+        : {})}
       {...(statusRow ? { menuAlignEdge: 'left' } : {})}
       {...(statusRow ? { triggerTooltip: triggerTooltip ?? null } : {})}
     />

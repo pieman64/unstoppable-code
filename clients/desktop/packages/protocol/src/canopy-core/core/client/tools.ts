@@ -49,6 +49,24 @@ export interface InterfaceToolCatalogEntry {
 }
 
 export const INTERFACE_TOOL_CATALOG = Object.freeze({
+  'ui.app_advisor.present': Object.freeze({
+    version: 1,
+    category: 'presentation',
+    surfaces: Object.freeze(['main'] as const),
+    deadlineMs: INTERFACE_TOOL_DEFAULT_DEADLINE_MS,
+    affectsCanonicalState: false,
+    description:
+      'Run one App Advisor navigation, panel or window action in the main window for the user.',
+  }),
+  'ui.app_advisor.show_files': Object.freeze({
+    version: 1,
+    category: 'presentation',
+    surfaces: Object.freeze(['app-advisor'] as const),
+    deadlineMs: INTERFACE_TOOL_DEFAULT_DEADLINE_MS,
+    affectsCanonicalState: false,
+    description:
+      "Open files in the App Advisor window's file panel for the user.",
+  }),
   'ui.show_files': Object.freeze({
     version: 1,
     category: 'presentation',

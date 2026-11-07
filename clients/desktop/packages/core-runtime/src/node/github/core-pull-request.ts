@@ -1,3 +1,4 @@
+import { isGitHubRepositoryName } from '@canopy/protocol/reference-previews';
 import {
   CORE_PULL_REQUEST_STATES,
   GITHUB_INTEGRATION_ID,
@@ -9,6 +10,10 @@ import {
   type CorePullRequestUpdateParams,
 } from '@canopy/protocol/canopy-core';
 import { CanopyOperationError } from '../../runtime/errors';
+import {
+  normalizePullRequestTitleQuery,
+  PullRequestTitleQueryError,
+} from '@canopy/protocol/pull-requests';
 import type { CanopyHandlerContext } from '../../runtime/types';
 import {
   createContinuations,
@@ -45,6 +50,16 @@ export type RecordedRepositoryAccess = 'read' | 'write';
  */
 export interface CorePullRequestHost {
   readonly github: GitHubRequestHandle;
+  /** Open-title search, bound by the trusted host; at most 20, no cursor. */
+  searchPullRequests?(
+    repository: RecordedRepositoryRef,
+    query: string,
+    limit: number,
+    signal: AbortSignal,
+  ): Promise<{
+    github: GitHubRepositoryRef;
+    records: readonly GitHubPullRequestRecord[];
+  }>;
   /**
    * The GitHub repository the recorded repository's `origin` names now, or
    * `null` when the record names no repository, `origin` is missing or not
@@ -68,6 +83,10 @@ export interface CorePullRequestHandlerOptions {
 }
 
 export interface CorePullRequestHandlers {
+  'core.pullRequest.mergeQueue.get': CanopyQueryHandler<
+    'core.pullRequest.mergeQueue.get',
+    CanopyHandlerContext
+  >;
   'core.pullRequest.get': CanopyQueryHandler<
     'core.pullRequest.get',
     CanopyHandlerContext
@@ -79,6 +98,10 @@ export interface CorePullRequestHandlers {
 }
 
 export interface CorePullRequestInstructionHandlers {
+  'core.pullRequest.merge': CanopyInstructionHandler<
+    'core.pullRequest.merge',
+    CanopyHandlerContext
+  >;
   'core.pullRequest.create': CanopyInstructionHandler<
     'core.pullRequest.create',
     CanopyHandlerContext
@@ -128,13 +151,16 @@ function repositoryUnavailable(): CanopyOperationError {
   });
 }
 
-function invalidFilter(message: string): CanopyOperationError {
-  return new CanopyOperationError({
-    kind: 'invalid_argument',
-    code: 'core.pullRequest.list.invalidFilter',
-    message,
-    retry: { kind: 'never' },
-  });
+function invalidFilter(message: string, cause?: unknown): CanopyOperationError {
+  return new CanopyOperationError(
+    {
+      kind: 'invalid_argument',
+      code: 'core.pullRequest.list.invalidFilter',
+      message,
+      retry: { kind: 'never' },
+    },
+    cause,
+  );
 }
 
 async function resolve(
@@ -219,6 +245,28 @@ export function createCorePullRequestHandlers(
 ): CorePullRequestHandlers {
   const continuations = createContinuations();
   return {
+    'core.pullRequest.mergeQueue.get': async (params, context) => {
+      const [owner = '', repo = '', extra] = params.repository.split('/');
+      if (
+        extra !== undefined ||
+        !isGitHubRepositoryName(owner.toLowerCase(), repo.toLowerCase()) ||
+        params.baseBranch.startsWith('-') ||
+        /[\s~^:?*[\\]/.test(params.baseBranch) ||
+        params.baseBranch.includes('..')
+      )
+        throw new CanopyOperationError({
+          kind: 'invalid_argument',
+          message: 'The merge queue reference is malformed.',
+          retry: { kind: 'never' },
+        });
+      try {
+        return await host.github.getMergeQueue(params, {
+          signal: context.signal,
+        });
+      } catch (error) {
+        throw gitHubFailure(error, FAILURE_CODES);
+      }
+    },
     'core.pullRequest.get': async ({ pullRequestId, refresh }, context) => {
       const identity = parsePullRequestId(pullRequestId);
       if (!identity) throw invalidId();
@@ -245,7 +293,7 @@ export function createCorePullRequestHandlers(
       });
     },
     'core.pullRequest.list': async (
-      { integrationId, repositoryId, states, cursor, limit },
+      { integrationId, repositoryId, states, cursor, limit, query },
       context,
     ): Promise<CorePullRequestListResult> => {
       if (integrationId !== null && integrationId !== GITHUB_INTEGRATION_ID)
@@ -266,10 +314,52 @@ export function createCorePullRequestHandlers(
         throw invalidFilter('Select at least one pull request state.');
       const repository = parseRepositoryId(repositoryId);
       if (!repository) throw invalidId();
-      const github = await resolve(host, repository);
       const selected = CORE_PULL_REQUEST_STATES.filter((state) =>
         states.includes(state),
       );
+      if (query !== undefined) {
+        try {
+          normalizePullRequestTitleQuery(query);
+        } catch (error) {
+          if (error instanceof PullRequestTitleQueryError)
+            throw invalidFilter(error.message, error);
+          throw error;
+        }
+        if (
+          !host.searchPullRequests ||
+          selected.length !== 1 ||
+          selected[0] !== 'open' ||
+          cursor !== null
+        )
+          throw new CanopyOperationError({
+            kind: 'capability_unavailable',
+            message:
+              'The host supports title search of open pull requests without a cursor only.',
+            retry: { kind: 'never' },
+          });
+        try {
+          const { github, records } = await host.searchPullRequests(
+            repository,
+            query,
+            Math.min(limit, 20),
+            context.signal,
+          );
+          return {
+            pullRequests: records.map((record) =>
+              project(
+                record,
+                pullRequestIds(repository, github, record.number),
+              ),
+            ),
+            nextCursor: null,
+          };
+        } catch (error) {
+          if (error instanceof PullRequestTitleQueryError)
+            throw invalidFilter(error.message, error);
+          throw gitHubFailure(error, LIST_FAILURE_CODES);
+        }
+      }
+      const github = await resolve(host, repository);
       // A continuation is GitHub's, for this repository as `origin` names it.
       const binding = JSON.stringify([
         repositoryId,
@@ -328,7 +418,11 @@ type CorePullRequestWriteCode =
   | 'core.pullRequest.create.headMissing'
   | 'core.pullRequest.create.headMismatch'
   | 'core.pullRequest.update.invalidPatch'
-  | 'core.pullRequest.update.revisionConflict';
+  | 'core.pullRequest.update.revisionConflict'
+  | 'core.pullRequest.merge.headMismatch'
+  | 'core.pullRequest.merge.revisionConflict'
+  | 'core.pullRequest.merge.notMergeable'
+  | 'core.pullRequest.merge.mergeQueueRequired';
 
 function integrationUnavailable(): CanopyOperationError {
   return new CanopyOperationError({
@@ -547,6 +641,180 @@ export function createCorePullRequestInstructionHandlers(
   };
 
   return {
+    'core.pullRequest.merge': async (params, context) => {
+      const identity = parsePullRequestId(params.pullRequestId);
+      if (!identity) throw invalidId();
+      const verification: { record?: GitHubPullRequestRecord | null } = {};
+      const written = await runKeyed(
+        {
+          principalId: context.caller.principalId,
+          operation: 'core.pullRequest.merge',
+          idempotencyKey: idempotencyKeyOf(context),
+        },
+        JSON.stringify([
+          params.pullRequestId,
+          params.expectedRevision,
+          params.expectedHeadSha,
+          params.strategy,
+        ]),
+        identity.repository,
+        async () => {
+          const github = await resolve(host, identity.repository, 'write');
+          if (!sameGitHubRepository(github, identity.github))
+            throw repositoryUnavailable();
+          const ref = { ...identity.github, number: identity.number };
+          let current: GitHubPullRequestRecord;
+          try {
+            current = await host.github.getPullRequest(ref, {
+              refresh: true,
+              signal: context.signal,
+            });
+          } catch (error) {
+            throw keyedGitHubFailure(error, FAILURE_CODES);
+          }
+          if (
+            current.headSha.toLowerCase() !==
+            params.expectedHeadSha.toLowerCase()
+          )
+            throw failure(
+              'conflict',
+              'core.pullRequest.merge.headMismatch',
+              'The pull request head changed.',
+              'pull-request',
+            );
+          // A lost answer is success even if GitHub changed updatedAt at merge time.
+          if (current.state === 'merged')
+            return { github, number: identity.number };
+          if (revisionOf(current) !== params.expectedRevision)
+            throw failure(
+              'conflict',
+              'core.pullRequest.merge.revisionConflict',
+              'The pull request changed since the expected revision.',
+              'pull-request',
+            );
+          let policy: Awaited<
+            ReturnType<GitHubRequestHandle['getMergePolicy']>
+          >;
+          try {
+            policy = await host.github.getMergePolicy(ref, {
+              signal: context.signal,
+            });
+          } catch (error) {
+            throw keyedGitHubFailure(error, FAILURE_CODES);
+          }
+          if (policy.queueRequired)
+            throw failure(
+              'failed_precondition',
+              'core.pullRequest.merge.mergeQueueRequired',
+              'The base branch requires a merge queue.',
+              'pull-request',
+            );
+          if (!policy.allowedStrategies.includes(params.strategy))
+            throw new CanopyOperationError({
+              kind: 'capability_unavailable',
+              message: 'The repository does not allow that merge strategy.',
+              retry: { kind: 'after_refresh', resource: 'pull-request' },
+            });
+          if (
+            current.state !== 'open' ||
+            current.draft ||
+            current.mergeable !== 'mergeable' ||
+            current.reviewDecision === 'changes_requested' ||
+            current.reviewDecision === 'review_required' ||
+            current.checks.some(
+              (check) =>
+                check.status !== 'completed' ||
+                (check.conclusion !== 'success' &&
+                  check.conclusion !== 'neutral' &&
+                  check.conclusion !== 'skipped'),
+            )
+          )
+            throw failure(
+              'failed_precondition',
+              'core.pullRequest.merge.notMergeable',
+              'The pull request is not mergeable.',
+              'pull-request',
+            );
+          // Reads above may yield while a workspace record or origin changes.
+          const writable = await resolve(host, identity.repository, 'write');
+          if (!sameGitHubRepository(writable, github))
+            throw repositoryUnavailable();
+          if (context.signal.aborted) throw notSent();
+          try {
+            const result = await host.github.mergePullRequest(
+              ref,
+              {
+                expectedHeadSha: params.expectedHeadSha,
+                strategy: params.strategy,
+              },
+              policy,
+            );
+            verification.record = result.projection;
+          } catch (error) {
+            if (
+              isGitHubRequestError(error, 'head_mismatch') ||
+              isGitHubRequestError(error, 'merge_queue_required') ||
+              isGitHubRequestError(error, 'not_mergeable')
+            ) {
+              const code =
+                error.code === 'head_mismatch'
+                  ? 'core.pullRequest.merge.headMismatch'
+                  : error.code === 'merge_queue_required'
+                    ? 'core.pullRequest.merge.mergeQueueRequired'
+                    : 'core.pullRequest.merge.notMergeable';
+              throw new CanopyOperationError(
+                {
+                  kind:
+                    error.code === 'head_mismatch'
+                      ? 'conflict'
+                      : 'failed_precondition',
+                  code,
+                  message:
+                    error.code === 'head_mismatch'
+                      ? 'The pull request head changed.'
+                      : 'GitHub refused the direct merge.',
+                  retry: { kind: 'after_refresh', resource: 'pull-request' },
+                },
+                error.cause,
+              );
+            }
+            throw keyedGitHubFailure(error, FAILURE_CODES);
+          }
+          return { github, number: identity.number };
+        },
+      );
+      if (verification.record === null)
+        throw new CanopyOperationError({
+          kind: 'unavailable',
+          code: 'core.pullRequest.projectionUnavailable',
+          message:
+            'GitHub applied the merge, but the pull request could not be read.',
+          retry: { kind: 'same_idempotency_key' },
+        });
+      const merged =
+        verification.record === undefined
+          ? await projectWritten(identity.repository, written, context)
+          : project(
+              verification.record,
+              pullRequestIds(
+                identity.repository,
+                written.github,
+                written.number,
+              ),
+            );
+      if (
+        merged.state !== 'merged' ||
+        merged.headSha.toLowerCase() !== params.expectedHeadSha.toLowerCase()
+      )
+        throw new CanopyOperationError({
+          kind: 'unavailable',
+          code: 'core.pullRequest.projectionUnavailable',
+          message:
+            'GitHub applied the merge, but its merged projection is not available yet.',
+          retry: { kind: 'same_idempotency_key' },
+        });
+      return merged;
+    },
     'core.pullRequest.create': async (params, context) => {
       if (params.integrationId !== GITHUB_INTEGRATION_ID)
         throw integrationUnavailable();

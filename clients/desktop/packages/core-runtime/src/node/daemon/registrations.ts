@@ -1,3 +1,4 @@
+import { APP_LEASE_STREAM_LIMIT, DEFAULT_LEASE_STREAM_LIMIT } from './limits';
 import { createHash } from 'node:crypto';
 import type {
   CoreClientCapabilitiesRegisterParamsSchema,
@@ -84,7 +85,7 @@ export function createCanopyLeaseRegistrations(leases: CanopyLeaseRegistry): {
   };
   const requireOwner = (
     connectionId: string,
-  ): { leaseId: string; group: Owned } => {
+  ): { leaseId: string; group: Owned; streamLimit: number } => {
     const lease = leases.lease(connectionId);
     if (!lease) throw missing();
     let group = owned.get(lease.leaseId);
@@ -97,7 +98,14 @@ export function createCanopyLeaseRegistrations(leases: CanopyLeaseRegistry): {
       };
       owned.set(lease.leaseId, group);
     }
-    return { leaseId: lease.leaseId, group };
+    return {
+      leaseId: lease.leaseId,
+      group,
+      streamLimit:
+        lease.interfaceKind === 'desktop'
+          ? APP_LEASE_STREAM_LIMIT
+          : DEFAULT_LEASE_STREAM_LIMIT,
+    };
   };
   const offEnd = leases.onEnd((lease, end) => {
     const group = owned.get(lease.leaseId);
@@ -122,8 +130,20 @@ export function createCanopyLeaseRegistrations(leases: CanopyLeaseRegistry): {
   const offChange = leases.onChange(() => {
     for (const [id, group] of Array.from(owned)) {
       const holder = leases.holder(id);
-      for (const stream of Array.from(group.streams))
+      const lease = holder === null ? null : leases.lease(holder);
+      const limit =
+        lease?.interfaceKind === 'desktop'
+          ? APP_LEASE_STREAM_LIMIT
+          : DEFAULT_LEASE_STREAM_LIMIT;
+      for (const [index, stream] of Array.from(group.streams).entries()) {
         if (stream.owner !== null && stream.owner !== holder) stop(stream);
+        // A resumed lease can change interface kind; retained slots must not
+        // bypass its new bound, even when the connection stays the same.
+        if (lease && index >= limit) {
+          group.streams.delete(stream);
+          stop(stream);
+        }
+      }
     }
   });
   return {
@@ -175,12 +195,12 @@ export function createCanopyLeaseRegistrations(leases: CanopyLeaseRegistry): {
       };
     },
     beginStream(connectionId, method, requestId): StreamRegistration {
-      const { leaseId, group } = requireOwner(connectionId);
+      const { leaseId, group, streamLimit } = requireOwner(connectionId);
       // Reopen one detached logical subscription; the new request owns its cursor and delivery handle.
       const retained = Array.from(group.streams).find(
         (stream) => stream.owner === null && stream.method === method,
       );
-      if (!retained && group.streams.size >= 32) throw exhausted();
+      if (!retained && group.streams.size >= streamLimit) throw exhausted();
       const stream: Stream = {
         method,
         requestId,

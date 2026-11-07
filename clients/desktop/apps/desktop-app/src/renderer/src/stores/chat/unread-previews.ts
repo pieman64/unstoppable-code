@@ -1,6 +1,5 @@
 // Module-level registries for unread-chat agent response previews and
 // App Advisor mirror provider-type hints.
-import { isOrchestratorLabel } from '@canopy/protocol';
 import { markdownToPlainText } from '@canopy/ui-shared/lib/markdown-plain-text';
 import { isRecord } from './utils';
 import { resolveTabProviderType } from './tab-utils';
@@ -15,14 +14,6 @@ const STALE_PREVIEW_LIMIT = 512;
 let stalePreviewCount = 0;
 
 const appAdvisorMirrorProviderTypes = new Map<string, AgentProviderType>();
-
-export function getUnreadChatLabel(chatTitle: string | undefined): string {
-  const trimmed = chatTitle?.trim();
-  if (!trimmed) return '';
-  const normalized = trimmed.toLowerCase();
-  if (normalized === 'new chat' || isOrchestratorLabel(normalized)) return '';
-  return `: ${trimmed}`;
-}
 
 /** One line of plain text: agent replies are Markdown, previews are not. */
 export function normalizeUnreadChatPreview(text: string): string | undefined {

@@ -2,6 +2,7 @@ import { applyCodexMultiAgentConfig } from '@canopy/desktop-shared/lib/codex-mul
 import { getAppAdvisorLedgerToolNames } from '@canopy/desktop-shared/lib/app-advisor-tools';
 import { randomUUID } from 'node:crypto';
 import { BRAND } from '@canopy/brand/current';
+import type { InterfaceToolName } from '@canopy/protocol/canopy-core';
 import type {
   ApprovalMode,
   AssistantMode,
@@ -97,6 +98,7 @@ export async function materializeCodexCapabilityTransition(input: {
   localMemoryEnabled: boolean;
   assistantMode?: AssistantMode;
   codeGraphToolsAdvertised?: boolean;
+  interfaceTools?: readonly InterfaceToolName[];
   /**
    * The chat's effective tool-approval mode, used to derive this
    * transitional thread's `approvalPolicy` / `sandbox`. No turn is ever run
@@ -223,6 +225,7 @@ export async function materializeCodexCapabilityTransition(input: {
         input.codeGraphToolsAdvertised ??
         (!cowork && isCodeGraphAvailableForWorkspace(input.projectId)),
       includeLedger: ledgerScope !== null,
+      interfaceTools: input.interfaceTools ?? [],
       toolSchemaProfile,
     });
     const snapshotId = createCodexCapabilitySnapshotId({

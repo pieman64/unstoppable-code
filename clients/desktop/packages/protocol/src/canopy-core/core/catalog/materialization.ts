@@ -58,11 +58,21 @@ export type CatalogMaterializationMcpServerDescriptor = z.output<
   typeof CatalogMaterializationMcpServerDescriptorSchema
 >;
 
-/** Closed union; CAN-4124 adds `skill`. */
+/** One skill to materialize (CAN-4124 D13). */
+export const CatalogMaterializationSkillDescriptorSchema = z.strictObject({
+  kind: z.literal('skill'),
+  entryId: z.string().min(1).max(512),
+  sourceId: z.string().min(1).max(512),
+  skillName: z.string().min(1).max(512),
+  skillRevision: z.string().regex(CATALOG_SHA256_PATTERN),
+});
+
+/** Closed union of plugins (CAN-4123), skills (CAN-4124) and MCP servers (CAN-4125). */
 export const CatalogMaterializationItemDescriptorSchema = z.discriminatedUnion(
   'kind',
   [
     CatalogMaterializationPluginDescriptorSchema,
+    CatalogMaterializationSkillDescriptorSchema,
     CatalogMaterializationMcpServerDescriptorSchema,
   ],
 );

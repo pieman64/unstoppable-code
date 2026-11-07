@@ -1,4 +1,4 @@
-import { Button } from '@canopy/ui-shared/components';
+import { Button, Surface } from '@canopy/ui-shared/components';
 import { useEffect, useMemo, useState, type JSX } from 'react';
 import { Checkbox } from '@canopy/ui-shared/components';
 import type { HookChatPluginDependencyItem } from '@canopy/desktop-shared/types';
@@ -356,59 +356,61 @@ export function HookChatPluginInstallDialog({
         {installable.length > 0 && (
           <div className="space-y-2">
             <div className="text-2xs font-medium fg-secondary">Installable</div>
-            <ul className="divide-y rounded-lg border">
-              {installable.map((item) => {
-                const status = statuses[item.key] ?? { state: 'idle' };
-                const isSelected = selected.has(item.key);
-                return (
-                  <li
-                    key={item.key}
-                    className="flex items-start gap-3 p-3 text-xs"
-                  >
-                    <Checkbox
-                      checked={isSelected}
-                      disabled={installing || status.state === 'success'}
-                      onChange={(): void => toggleSelected(item.key)}
-                      className="mt-0.5"
-                      aria-label={`Install ${item.displayName}`}
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium fg-primary">
-                          {item.displayName}
-                        </span>
-                        <span className="rounded-full border px-1.5 py-0.5 text-3xs fg-secondary">
-                          {item.kind}
-                        </span>
+            <Surface variant="outline">
+              <ul className="divide-y">
+                {installable.map((item) => {
+                  const status = statuses[item.key] ?? { state: 'idle' };
+                  const isSelected = selected.has(item.key);
+                  return (
+                    <li
+                      key={item.key}
+                      className="flex items-start gap-3 p-3 text-xs"
+                    >
+                      <Checkbox
+                        checked={isSelected}
+                        disabled={installing || status.state === 'success'}
+                        onChange={(): void => toggleSelected(item.key)}
+                        className="mt-0.5"
+                        aria-label={`Install ${item.displayName}`}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium fg-primary">
+                            {item.displayName}
+                          </span>
+                          <span className="rounded-full border px-1.5 py-0.5 text-3xs fg-secondary">
+                            {item.kind}
+                          </span>
+                        </div>
+                        <div className="mt-0.5 fg-secondary">
+                          {item.displaySource}
+                        </div>
+                        {describeUsage(item) && (
+                          <div className="mt-0.5 text-3xs fg-secondary/80">
+                            {describeUsage(item)}
+                          </div>
+                        )}
+                        {status.state === 'in-progress' && (
+                          <div className="mt-1 text-2xs fg-secondary">
+                            Installing…
+                          </div>
+                        )}
+                        {status.state === 'success' && (
+                          <div className="mt-1 text-2xs fg-success-strong">
+                            Installed
+                          </div>
+                        )}
+                        {status.state === 'error' && (
+                          <div className="mt-1 text-2xs fg-destructive-strong">
+                            {status.message}
+                          </div>
+                        )}
                       </div>
-                      <div className="mt-0.5 fg-secondary">
-                        {item.displaySource}
-                      </div>
-                      {describeUsage(item) && (
-                        <div className="mt-0.5 text-3xs fg-secondary/80">
-                          {describeUsage(item)}
-                        </div>
-                      )}
-                      {status.state === 'in-progress' && (
-                        <div className="mt-1 text-2xs fg-secondary">
-                          Installing…
-                        </div>
-                      )}
-                      {status.state === 'success' && (
-                        <div className="mt-1 text-2xs fg-success-strong">
-                          Installed
-                        </div>
-                      )}
-                      {status.state === 'error' && (
-                        <div className="mt-1 text-2xs fg-destructive-strong">
-                          {status.message}
-                        </div>
-                      )}
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
+                    </li>
+                  );
+                })}
+              </ul>
+            </Surface>
           </div>
         )}
 
@@ -417,28 +419,30 @@ export function HookChatPluginInstallDialog({
             <div className="text-2xs font-medium fg-secondary">
               Cannot install automatically
             </div>
-            <ul className="divide-y rounded-lg border">
-              {unavailable.map((item) => (
-                <li key={item.key} className="p-3 text-xs">
-                  <div className="flex items-center gap-2">
-                    <span className="font-medium fg-primary">
-                      {item.displayName}
-                    </span>
-                    <span className="rounded-full border px-1.5 py-0.5 text-3xs fg-secondary">
-                      {item.kind}
-                    </span>
-                  </div>
-                  <div className="mt-0.5 fg-secondary">
-                    {item.displaySource}
-                  </div>
-                  {describeUsage(item) && (
-                    <div className="mt-0.5 text-3xs fg-secondary/80">
-                      {describeUsage(item)}
+            <Surface variant="outline">
+              <ul className="divide-y">
+                {unavailable.map((item) => (
+                  <li key={item.key} className="p-3 text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium fg-primary">
+                        {item.displayName}
+                      </span>
+                      <span className="rounded-full border px-1.5 py-0.5 text-3xs fg-secondary">
+                        {item.kind}
+                      </span>
                     </div>
-                  )}
-                </li>
-              ))}
-            </ul>
+                    <div className="mt-0.5 fg-secondary">
+                      {item.displaySource}
+                    </div>
+                    {describeUsage(item) && (
+                      <div className="mt-0.5 text-3xs fg-secondary/80">
+                        {describeUsage(item)}
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </Surface>
             <p className="text-3xs fg-secondary">
               These references can&apos;t be installed from this dialog. Add
               them manually from the Plugins or Skills tab if you need them.

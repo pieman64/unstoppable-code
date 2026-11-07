@@ -5,6 +5,7 @@ import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import { seedWorktreeChat } from './seeders/index.mjs';
 
 // Golden: a Chat-mode send from the standalone Home page creates a worktree,
 // navigates to Code, and the message reaches the transcript.
@@ -116,4 +117,77 @@ test.describe('Home chat send', () => {
       await closeCanopy(electronApp, userDataDir);
     }
   });
+});
+
+// The worktree menu drives workspace:combine-worktree-with-existing-worktree.
+// Golden: composition must preserve the user's saved chat across a restart.
+test('combining repository worktrees opens a temporary destination and preserves its chat after restart', async () => {
+  test.setTimeout(60_000);
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-composition-'),
+  );
+  seedDemoWorkspaces({ userDataDir, apps: [DEMO_APP_ID, 'go-cli'] });
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: `demo-${DEMO_APP_ID}`,
+    worktreeId: 'demo-main',
+    tabs: [
+      {
+        id: 'saved-source-chat',
+        title: 'Saved source chat',
+        blocks: [
+          { type: 'text', text: 'Saved transcript survives composition.' },
+        ],
+      },
+    ],
+  });
+  let electronApp;
+  try {
+    ({ electronApp } = await launchCanopy({ userDataDir }));
+    let window = await electronApp.firstWindow();
+    await new CanopyAppDriver(window).waitForShell({ timeout: 30_000 });
+    const source = window.locator(
+      `[data-testid="worktree-row"][data-project-id="demo-${DEMO_APP_ID}"][data-worktree-id="demo-main"]`,
+    );
+    await source.click();
+    await source.click({ button: 'right' });
+    await window.getByTestId('worktree-actions-menu-add-repo').click();
+    const dialog = window.getByTestId('add-repo-to-worktree-modal');
+    await dialog
+      .getByTestId('add-repo-to-worktree-modal-pill-existing')
+      .click();
+    await dialog
+      .getByTestId('existing-worktree-picker-option-demo-go-cli-demo-main')
+      .click();
+    await dialog.getByTestId('add-repo-to-worktree-modal-submit').click();
+    await expect(dialog).toHaveCount(0, { timeout: 30_000 });
+    const destination = await window.evaluate(async () =>
+      (await window.api.loadProjects()).items.find(
+        (item) => item.type === 'multi-repo' && item.temporary,
+      ),
+    );
+    expect(destination).toBeDefined();
+    const destinationSelector = `[data-testid="worktree-row"][data-project-id="${destination.id}"]`;
+    await expect(
+      window.locator(`[data-sidebar-selected-item] ${destinationSelector}`),
+    ).toBeVisible();
+    await expect(
+      window
+        .getByText('Saved transcript survives composition.', { exact: true })
+        .first(),
+    ).toBeVisible();
+    await closeCanopy(electronApp, userDataDir, { keepUserData: true });
+    electronApp = undefined;
+    ({ electronApp } = await launchCanopy({ userDataDir }));
+    window = await electronApp.firstWindow();
+    await new CanopyAppDriver(window).waitForShell({ timeout: 30_000 });
+    await window.locator(destinationSelector).click();
+    await expect(
+      window
+        .getByText('Saved transcript survives composition.', { exact: true })
+        .first(),
+    ).toBeVisible();
+  } finally {
+    if (electronApp) await closeCanopy(electronApp, userDataDir);
+  }
 });

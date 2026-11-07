@@ -40,6 +40,7 @@ import {
   HookTriggerBadge,
   type PipelineHookTriggerSource,
 } from './PipelineQueuedCards';
+import { Surface } from '@canopy/ui-shared/components';
 
 export type PipelineRunStatus =
   | 'pending'
@@ -426,14 +427,6 @@ export function SubPipelineBadge({
   );
 }
 
-function ChatIcon(): JSX.Element {
-  return <AppCatalogMessageIcon width="14" height="14" />;
-}
-
-function ReportIcon(): JSX.Element {
-  return <AppCatalogFileIcon width="14" height="14" aria-hidden="true" />;
-}
-
 export function FollowUpButton({
   label,
   icon,
@@ -508,7 +501,7 @@ export function ActiveRunRow({
     executionState !== undefined &&
     !inputRequested;
   return (
-    <div className="rounded-lg border bg-fg-primary/[0.03] px-3 py-3 transition-colors hover:bg-fg-primary/[0.05]">
+    <Surface variant="group" interactive padding="compact">
       <div
         role="button"
         tabIndex={0}
@@ -549,7 +542,7 @@ export function ActiveRunRow({
             {summary.planId && onOpenPlan !== undefined ? (
               <ExecutionActionButton
                 label=""
-                icon={<PlanModeIcon width={13} height={13} />}
+                icon={<PlanModeIcon size="sm" />}
                 onClick={() => onOpenPlan(summary.id)}
                 dataTestId={`pipeline-run-plan-${summary.id}`}
                 ariaLabel="Open tracked plan"
@@ -559,7 +552,7 @@ export function ActiveRunRow({
               <ExecutionActionButton
                 label={resumingId === summary.id ? 'Resuming…' : 'Resume'}
                 ariaLabel={resumingId === summary.id ? 'Resuming…' : 'Resume'}
-                icon={<PauseResumeIcon paused size={13} />}
+                icon={<PauseResumeIcon paused size="sm" />}
                 variant="warning"
                 dataTestId={`pipeline-run-resume-${summary.id}`}
                 onClick={(): void => onResume(summary.id)}
@@ -589,7 +582,7 @@ export function ActiveRunRow({
         )}
       </div>
       {childrenSection}
-    </div>
+    </Surface>
   );
 }
 
@@ -675,177 +668,185 @@ export function CompletedRunRow({
     executionState?.status_reasons ?? summary.status_reasons,
   );
   return (
-    <div className="group/pipeline-run relative rounded-lg border bg-fg-primary/[0.015] px-3 py-2.5 transition-colors hover:bg-fg-primary/[0.03]">
-      {onToggleHidden && (
-        <div className="absolute right-2 top-2 z-10 opacity-0 transition-opacity group-hover/pipeline-run:opacity-100 focus-within:opacity-100">
-          <Button
-            type="button"
-            variant="ghost-overlay"
-            size="compact"
-            iconOnly
-            data-testid={`pipeline-run-toggle-hidden-${summary.id}`}
-            onClick={(event): void => {
-              event.stopPropagation();
-              onToggleHidden();
-            }}
-            aria-label={hidden ? 'Show workflow run' : 'Hide workflow run'}
-          >
-            {hidden ? <EyeIcon /> : <EyeOffIcon />}
-          </Button>
-        </div>
-      )}
-      <div
-        role="button"
-        tabIndex={0}
-        data-testid={`pipeline-run-card-${summary.id}`}
-        className="cursor-pointer"
-        onClick={onOpenDetail}
-        onKeyDown={(event): void => {
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            onOpenDetail();
-          }
-        }}
-      >
-        <div className="flex flex-wrap items-center gap-2">
-          <PipelineRunStatusPill status={summary.status} muted />
-          <PipelineDispatchedTime
-            startedAt={summary.started_at}
-            testId={`pipeline-run-dispatched-${summary.id}`}
-          />
-          <HookTriggerBadge triggerSource={hookTriggerSource} />
-          {summary.plan_modified === true && <PlanModifiedBadge />}
-          {renderAdvisorBadge?.(summary)}
-          {renderWatcherButton?.(summary)}
-        </div>
-        <div className="mt-1 truncate text-xs fg-secondary">
-          {summary.pipeline_name}
-        </div>
-        <RerunLineageLabel
-          summary={summary}
-          summaryLookup={summaryLookup}
-          onOpenSource={onOpenSource}
-        />
-        {executionState && (
-          <PipelineRunDagProgressBar
-            executionState={executionState}
-            muted
-            onJobClick={onJobClick}
-          />
-        )}
-        {(canResume ||
-          canRetry ||
-          canRerun ||
-          (onDebugFailure !== undefined && summary.status === 'failure')) && (
-          <div className="mt-3 flex flex-wrap gap-2">
-            {onDebugFailure !== undefined && summary.status === 'failure' && (
-              <ExecutionActionButton
-                label={debuggingFailureId === summary.id ? 'Opening…' : 'Debug'}
-                icon={<ChatIcon />}
-                onClick={() => onDebugFailure(summary.id)}
-                disabled={debuggingFailureId !== null}
-                dataTestId={`pipeline-run-debug-failure-${summary.id}`}
-                ariaLabel={`Debug failed workflow with ${ORCHESTRATOR_LABEL}`}
-              />
-            )}
-            {canResume && (
-              <ExecutionActionButton
-                label={pauseReasonLabel}
-                onClick={onResumePauseReason}
-                dataTestId={`pipeline-run-needs-input-${summary.id}`}
-                ariaLabel={`Open paused workflow run: ${pauseReasonLabel}`}
-                variant="warning"
-              />
-            )}
-            {canRetry && onRetry !== undefined && (
-              <ExecutionActionButton
-                label={retrying ? 'Trying again…' : 'Try again'}
-                icon={<RetryIcon width={13} height={13} />}
-                onClick={() => onRetry(summary.id)}
-                disabled={retrying || mutationPending}
-                dataTestId={`pipeline-run-retry-${summary.id}`}
-                ariaLabel="Try the workflow run again"
-                variant="warning"
-              />
-            )}
-            {canRerun && onRerun !== undefined && (
-              <ExecutionActionButton
-                label={rerunning ? 'Starting over…' : 'Start over'}
-                icon={<RerunIcon width={13} height={13} />}
-                onClick={() => onRerun(summary.id)}
-                disabled={rerunning || mutationPending || !rerunSupported}
-                dataTestId={`pipeline-run-rerun-${summary.id}`}
-                ariaLabel="Start workflow run over"
-                variant="destructive-chip"
-              />
-            )}
+    <Surface
+      variant="group"
+      interactive
+      className="group/pipeline-run relative"
+    >
+      <div className="px-3 py-2.5">
+        {onToggleHidden && (
+          <div className="absolute right-2 top-2 z-10 opacity-0 transition-opacity group-hover/pipeline-run:opacity-100 focus-within:opacity-100">
+            <Button
+              type="button"
+              variant="ghost-overlay"
+              size="compact"
+              iconOnly
+              data-testid={`pipeline-run-toggle-hidden-${summary.id}`}
+              onClick={(event): void => {
+                event.stopPropagation();
+                onToggleHidden();
+              }}
+              aria-label={hidden ? 'Show workflow run' : 'Hide workflow run'}
+            >
+              {hidden ? <EyeIcon /> : <EyeOffIcon />}
+            </Button>
           </div>
         )}
-        {(hasPlanActions || hasReportActions) && (
-          <div className="mt-3 flex flex-wrap gap-2">
-            {hasPlanActions && (
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-3xs font-medium fg-secondary/60">
-                  Plan
-                </span>
-                {onChatFollowUp !== undefined && (
-                  <FollowUpButton
-                    label={CHAT_UNIT_LABEL}
-                    icon={<ChatIcon />}
-                    onClick={() => onChatFollowUp(summary.id)}
-                    disabled={chatFollowUpDisabled}
-                    dataTestId={`pipeline-run-chat-follow-up-${summary.id}`}
-                  />
-                )}
-                {onPipelineFollowUp !== undefined && (
-                  <FollowUpButton
-                    label="Workflow"
-                    icon={<PipelineIcon />}
-                    onClick={() => onPipelineFollowUp(summary.id)}
-                    dataTestId={`pipeline-run-pipeline-follow-up-${summary.id}`}
-                  />
-                )}
-                {summary.planId && onOpenPlan !== undefined ? (
-                  <ExecutionActionButton
-                    label=""
-                    icon={<PlanModeIcon width={13} height={13} />}
-                    onClick={() => onOpenPlan(summary.id)}
-                    dataTestId={`pipeline-run-plan-${summary.id}`}
-                    ariaLabel="Open tracked plan"
-                  />
-                ) : null}
-              </div>
-            )}
-            {hasReportActions && (
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-3xs font-medium fg-secondary/60">
-                  Report
-                </span>
-                {onReportChatFollowUp !== undefined && (
-                  <FollowUpButton
-                    label={CHAT_UNIT_LABEL}
-                    icon={<ChatIcon />}
-                    onClick={() => onReportChatFollowUp(summary.id)}
-                    disabled={chatFollowUpDisabled}
-                    dataTestId={`pipeline-run-report-follow-up-${summary.id}`}
-                  />
-                )}
-                {onViewReport !== undefined && (
-                  <ExecutionActionButton
-                    label=""
-                    icon={<ReportIcon />}
-                    onClick={() => onViewReport(summary.id)}
-                    dataTestId={`pipeline-run-view-report-${summary.id}`}
-                    ariaLabel="View workflow report"
-                  />
-                )}
-              </div>
-            )}
+        <div
+          role="button"
+          tabIndex={0}
+          data-testid={`pipeline-run-card-${summary.id}`}
+          className="cursor-pointer"
+          onClick={onOpenDetail}
+          onKeyDown={(event): void => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              onOpenDetail();
+            }
+          }}
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <PipelineRunStatusPill status={summary.status} muted />
+            <PipelineDispatchedTime
+              startedAt={summary.started_at}
+              testId={`pipeline-run-dispatched-${summary.id}`}
+            />
+            <HookTriggerBadge triggerSource={hookTriggerSource} />
+            {summary.plan_modified === true && <PlanModifiedBadge />}
+            {renderAdvisorBadge?.(summary)}
+            {renderWatcherButton?.(summary)}
           </div>
-        )}
+          <div className="mt-1 truncate text-xs fg-secondary">
+            {summary.pipeline_name}
+          </div>
+          <RerunLineageLabel
+            summary={summary}
+            summaryLookup={summaryLookup}
+            onOpenSource={onOpenSource}
+          />
+          {executionState && (
+            <PipelineRunDagProgressBar
+              executionState={executionState}
+              muted
+              onJobClick={onJobClick}
+            />
+          )}
+          {(canResume ||
+            canRetry ||
+            canRerun ||
+            (onDebugFailure !== undefined && summary.status === 'failure')) && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {onDebugFailure !== undefined && summary.status === 'failure' && (
+                <ExecutionActionButton
+                  label={
+                    debuggingFailureId === summary.id ? 'Opening…' : 'Debug'
+                  }
+                  icon={<AppCatalogMessageIcon size="sm" />}
+                  onClick={() => onDebugFailure(summary.id)}
+                  disabled={debuggingFailureId !== null}
+                  dataTestId={`pipeline-run-debug-failure-${summary.id}`}
+                  ariaLabel={`Debug failed workflow with ${ORCHESTRATOR_LABEL}`}
+                />
+              )}
+              {canResume && (
+                <ExecutionActionButton
+                  label={pauseReasonLabel}
+                  onClick={onResumePauseReason}
+                  dataTestId={`pipeline-run-needs-input-${summary.id}`}
+                  ariaLabel={`Open paused workflow run: ${pauseReasonLabel}`}
+                  variant="warning"
+                />
+              )}
+              {canRetry && onRetry !== undefined && (
+                <ExecutionActionButton
+                  label={retrying ? 'Trying again…' : 'Try again'}
+                  icon={<RetryIcon size="sm" />}
+                  onClick={() => onRetry(summary.id)}
+                  disabled={retrying || mutationPending}
+                  dataTestId={`pipeline-run-retry-${summary.id}`}
+                  ariaLabel="Try the workflow run again"
+                  variant="warning"
+                />
+              )}
+              {canRerun && onRerun !== undefined && (
+                <ExecutionActionButton
+                  label={rerunning ? 'Starting over…' : 'Start over'}
+                  icon={<RerunIcon size="sm" />}
+                  onClick={() => onRerun(summary.id)}
+                  disabled={rerunning || mutationPending || !rerunSupported}
+                  dataTestId={`pipeline-run-rerun-${summary.id}`}
+                  ariaLabel="Start workflow run over"
+                  variant="destructive-chip"
+                />
+              )}
+            </div>
+          )}
+          {(hasPlanActions || hasReportActions) && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {hasPlanActions && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-3xs font-medium fg-secondary/60">
+                    Plan
+                  </span>
+                  {onChatFollowUp !== undefined && (
+                    <FollowUpButton
+                      label={CHAT_UNIT_LABEL}
+                      icon={<AppCatalogMessageIcon size="sm" />}
+                      onClick={() => onChatFollowUp(summary.id)}
+                      disabled={chatFollowUpDisabled}
+                      dataTestId={`pipeline-run-chat-follow-up-${summary.id}`}
+                    />
+                  )}
+                  {onPipelineFollowUp !== undefined && (
+                    <FollowUpButton
+                      label="Workflow"
+                      icon={<PipelineIcon />}
+                      onClick={() => onPipelineFollowUp(summary.id)}
+                      dataTestId={`pipeline-run-pipeline-follow-up-${summary.id}`}
+                    />
+                  )}
+                  {summary.planId && onOpenPlan !== undefined ? (
+                    <ExecutionActionButton
+                      label=""
+                      icon={<PlanModeIcon size="sm" />}
+                      onClick={() => onOpenPlan(summary.id)}
+                      dataTestId={`pipeline-run-plan-${summary.id}`}
+                      ariaLabel="Open tracked plan"
+                    />
+                  ) : null}
+                </div>
+              )}
+              {hasReportActions && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-3xs font-medium fg-secondary/60">
+                    Report
+                  </span>
+                  {onReportChatFollowUp !== undefined && (
+                    <FollowUpButton
+                      label={CHAT_UNIT_LABEL}
+                      icon={<AppCatalogMessageIcon size="sm" />}
+                      onClick={() => onReportChatFollowUp(summary.id)}
+                      disabled={chatFollowUpDisabled}
+                      dataTestId={`pipeline-run-report-follow-up-${summary.id}`}
+                    />
+                  )}
+                  {onViewReport !== undefined && (
+                    <ExecutionActionButton
+                      label=""
+                      icon={<AppCatalogFileIcon size="sm" aria-hidden="true" />}
+                      onClick={() => onViewReport(summary.id)}
+                      dataTestId={`pipeline-run-view-report-${summary.id}`}
+                      ariaLabel="View workflow report"
+                    />
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        {childrenSection}
       </div>
-      {childrenSection}
-    </div>
+    </Surface>
   );
 }
 

@@ -119,11 +119,7 @@ export function PipelineExecutionDetailModal({
       titleId={titleId}
       title={
         <span className="flex min-w-0 items-center gap-2">
-          <PipelineIcon
-            width={16}
-            height={16}
-            className="shrink-0 fg-secondary"
-          />
+          <PipelineIcon size="sm" className="shrink-0 fg-secondary" />
           <span className="truncate">{title}</span>
         </span>
       }

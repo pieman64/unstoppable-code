@@ -133,7 +133,7 @@ export function SubagentLineageDetails({
             {node.title}
           </span>
           <ChevronRightIcon
-            size={10}
+            size="sm"
             aria-hidden
             className="shrink-0 fg-quaternary"
           />

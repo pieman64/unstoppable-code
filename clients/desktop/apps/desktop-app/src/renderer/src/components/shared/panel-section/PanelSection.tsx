@@ -8,11 +8,12 @@ import {
 import { createPortal } from 'react-dom';
 import {
   ActivityActionCardButton,
+  type CollapsedIconColor as SharedCollapsedIconColor,
+  Divider,
   HeaderActionButton,
   type HeaderActionButtonTone,
   PanelSection as SharedPanelSection,
   PanelSectionHeaderActionSlotContext,
-  type CollapsedIconColor as SharedCollapsedIconColor,
   type PanelSectionHeaderProps,
 } from '@canopy/ui-shared/components';
 import { useSortableDragHandle } from './sortable-section-context';
@@ -153,11 +154,7 @@ export function PanelSection({
             />
           </div>
           {showBodyWithActionCard && (
-            <div
-              aria-hidden="true"
-              data-testid="action-card-divider"
-              className="h-[var(--default-border-width)] bg-line-tertiary"
-            />
+            <Divider aria-hidden data-testid="action-card-divider" />
           )}
           <div
             data-testid="action-card-body"

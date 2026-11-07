@@ -545,7 +545,9 @@ try {
       unregisterProcessOwner: (child) => ownedChildren.delete(child),
       recordDiagnostic: () => {},
     });
-    const service = createCodexRuntimeService();
+    const service = createCodexRuntimeService({
+      mcpLauncher: { command: 'unused-mcp-launcher', args: [] },
+    });
     const adminProfile = {
       environmentPolicy: 'restricted',
       includeCanopySecrets: false,

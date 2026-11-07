@@ -283,6 +283,7 @@ import {
   isAutomationsPanelVariant,
   isSessionBreakdownPanelInstance,
   isUsagePanelVariant,
+  CUSTOMIZE_LABEL,
   ORCHESTRATOR_LABEL,
   PANEL_KINDS,
 } from '@canopy/protocol';
@@ -14275,7 +14276,7 @@ async function routeAction(
               code: 'invalid_target',
               message:
                 refusal ??
-                'Open Account connections and choose an available server action.',
+                `Open MCP servers in ${CUSTOMIZE_LABEL} and choose an available server action.`,
             },
           };
     }

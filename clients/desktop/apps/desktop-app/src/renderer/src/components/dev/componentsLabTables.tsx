@@ -1,5 +1,6 @@
 import { useState, type JSX } from 'react';
 import {
+  Button,
   DataTable,
   DataTableBody,
   DataTableCell,
@@ -166,6 +167,42 @@ function SelectableRuns(): JSX.Element {
   );
 }
 
+/** A selectable row can also offer its named action as a button. */
+function RowsWithOwnControl(): JSX.Element {
+  const [selected, setSelected] = useState<string | null>(null);
+  return (
+    <DataTableFrame caption="Workflow runs, selected by their name">
+      <DataTableHead>
+        <DataTableHeaderCell>Workflow</DataTableHeaderCell>
+        <DataTableHeaderCell>Trigger</DataTableHeaderCell>
+      </DataTableHead>
+      <DataTableBody>
+        {RUNS.slice(0, 2).map((run) => {
+          const select = (): void => setSelected(run.name);
+          return (
+            <DataTableRow
+              key={run.name}
+              selected={selected === run.name}
+              onActivate={select}
+            >
+              <DataTableCell tone="primary">
+                <Button
+                  size="compact"
+                  aria-pressed={selected === run.name}
+                  onClick={select}
+                >
+                  {run.name}
+                </Button>
+              </DataTableCell>
+              <DataTableCell>{run.trigger}</DataTableCell>
+            </DataTableRow>
+          );
+        })}
+      </DataTableBody>
+    </DataTableFrame>
+  );
+}
+
 /** Grouped rows: a row header that spans its group, built from the parts. */
 function GroupedParts(): JSX.Element {
   return (
@@ -224,6 +261,9 @@ export function TablesSpecimen(): JSX.Element {
       </SpecimenPanel>
       <SpecimenPanel title="Rows that open: hover fill, focus, selected row, an actions column">
         <SelectableRuns />
+      </SpecimenPanel>
+      <SpecimenPanel title="Rows with no tab stop of their own: a button inside is the keyboard path">
+        <RowsWithOwnControl />
       </SpecimenPanel>
       <SpecimenPanel title="Empty and loading">
         <DataTable<RunRow>

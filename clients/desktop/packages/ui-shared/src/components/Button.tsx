@@ -106,7 +106,8 @@ type CapsuleButtonProps = CapsuleButtonBaseProps &
       }
     | {
         iconOnly?: false;
-        iconShape?: undefined;
+        /** Sidebar text actions share the nested corners of adjacent icons. */
+        iconShape?: 'default' | 'nested';
         /**
          * The keys that perform this action (`formatShortcut(id)`: `⌘P`,
          * `Ctrl P`), drawn inside the button after its label as one filled
@@ -435,9 +436,14 @@ export function buttonClassName({
   if (variant === 'link') return `${LINK_CLASS_NAME} ${className}`;
   const position = positionsItself(className) ? '' : 'relative ';
   const radiusClassName =
-    iconOnly && iconShape === 'nested'
+    iconShape === 'nested'
       ? nestedIconButtonRadiusClassName(size)
       : SIZE_RADIUS_CLASS_NAMES[size];
+  const contentSizeClassName = iconOnly
+    ? ICON_ONLY_SIZE_CLASS_NAMES[size]
+    : iconShape === 'nested' && size === 'compact'
+      ? 'px-2.5'
+      : LABEL_SIZE_CLASS_NAMES[size];
   const states = [
     quietWhenDisabled ? QUIET_DISABLED_INK_CLASS_NAME : DISABLED_INK_CLASS_NAME,
     groupHover ? GROUP_HOVER_CLASS_NAMES[variant] : '',
@@ -447,7 +453,7 @@ export function buttonClassName({
   ]
     .filter(Boolean)
     .join(' ');
-  return `${position}${BASE_CLASS_NAME} ${states} ${VARIANT_CLASS_NAMES[variant]} ${SIZE_CLASS_NAMES[size]} ${radiusClassName} ${iconOnly ? ICON_ONLY_SIZE_CLASS_NAMES[size] : LABEL_SIZE_CLASS_NAMES[size]} ${className}`;
+  return `${position}${BASE_CLASS_NAME} ${states} ${VARIANT_CLASS_NAMES[variant]} ${SIZE_CLASS_NAMES[size]} ${radiusClassName} ${contentSizeClassName} ${className}`;
 }
 
 /**

@@ -10,7 +10,7 @@ import {
   type ChatTabPluginSelections,
 } from '@canopy/desktop-shared/types';
 import { codexServiceTierForModelConfig } from '@canopy/desktop-shared/lib/codex-model-config';
-import { getObservabilityService } from '../observability';
+import { getExecutionObservabilityIngest } from '../observability/ingest';
 import type { RunWithOptionalHelperPluginsOptions } from './helper-plugin-resolution';
 
 export interface HelperAuditContext {
@@ -146,7 +146,7 @@ export function startObservedHelperTask(
     entry.aiCreditsRouted = true;
   }
 
-  getObservabilityService().startObservedTask(options.taskKey, entry);
+  getExecutionObservabilityIngest().startObservedTask(options.taskKey, entry);
 }
 
 /**
@@ -161,7 +161,9 @@ export function markObservedHelperTaskAiCreditsRouted(
 ): void {
   // The account proxy served it: no native account is credited (CAN-4030).
   if (accountProxyRouted) {
-    getObservabilityService().markObservedTaskAccountProxyRouted(taskKey);
+    getExecutionObservabilityIngest().markObservedTaskAccountProxyRouted(
+      taskKey,
+    );
   }
   // `aiCreditsRouted` is documented as absent on natively-authenticated runs,
   // so only persist the field when routing actually happened. Writing an
@@ -170,7 +172,7 @@ export function markObservedHelperTaskAiCreditsRouted(
   if (!aiCreditsRouted) {
     return;
   }
-  getObservabilityService().updateObservedTask(taskKey, {
+  getExecutionObservabilityIngest().updateObservedTask(taskKey, {
     aiCreditsRouted: true,
   });
 }
@@ -200,5 +202,10 @@ export function finalizeObservedHelperTask(
   error?: string,
   usage?: ObservedHelperUsage,
 ): void {
-  getObservabilityService().finalizeObservedTask(taskKey, status, error, usage);
+  getExecutionObservabilityIngest().finalizeObservedTask(
+    taskKey,
+    status,
+    error,
+    usage,
+  );
 }

@@ -28,6 +28,7 @@ import { formatDate } from '@canopy/ui-shared/lib';
 import { CopyTextButton } from './CopyTextButton';
 import { usePublicProfileEditor } from './use-public-profile-editor';
 import { SETTINGS_GROUP_CLASS } from '@canopy/ui-shared/components/settings/SettingsCard';
+import { Surface } from '@canopy/ui-shared/components';
 
 const KIND_LABELS: Record<ProfileArtifactPathKind, string> = {
   skills: 'Skill',
@@ -313,9 +314,15 @@ export function PublishedArtifactsManager(): JSX.Element {
               ) : (
                 <>
                   <p>This is exactly what will be public:</p>
-                  <pre className="max-h-64 overflow-auto rounded-md border bg-secondary p-3 text-xs fg-primary">
-                    {pending.detail ? previewBody(pending.detail) : '…'}
-                  </pre>
+                  <Surface
+                    variant="group"
+                    size="small"
+                    className="overflow-hidden"
+                  >
+                    <pre className="max-h-64 overflow-auto p-3 text-xs fg-primary">
+                      {pending.detail ? previewBody(pending.detail) : '…'}
+                    </pre>
+                  </Surface>
                 </>
               )}
             </div>
@@ -414,13 +421,12 @@ function AddWorkDialog({
       dataTestId="add-work-dialog"
     >
       {atLimit && (
-        <p
-          className="rounded-md border bg-secondary px-3 py-2 text-s fg-warning"
-          role="status"
-        >
-          You&apos;ve reached the {MAX_FEATURED_ARTIFACTS}-item limit. Remove
-          something from your profile to feature more.
-        </p>
+        <Surface variant="group" size="small">
+          <p className="px-3 py-2 text-s fg-warning" role="status">
+            You&apos;ve reached the {MAX_FEATURED_ARTIFACTS}-item limit. Remove
+            something from your profile to feature more.
+          </p>
+        </Surface>
       )}
       <TabBar
         items={PROFILE_ARTIFACT_PATH_KINDS.map((tabKind) => ({

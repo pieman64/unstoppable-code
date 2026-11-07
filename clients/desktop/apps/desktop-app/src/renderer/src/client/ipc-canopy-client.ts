@@ -43,6 +43,7 @@ import {
 } from '@canopy/desktop-shared/portal/runtime-chat-projection';
 import { isRecord } from '@canopy/desktop-shared/portal/persisted-chat-projection';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
+import { createDesktopFeedbackReportClient } from './feedback-report-client';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import { extractIpcErrorMessage, extractIpcErrorName } from '@/lib/errors';
 import { FileSaveConflictError } from '@canopy/app-core';
@@ -158,6 +159,10 @@ export function createDesktopCapabilities(
   hostedSettings: Pick<CanopyCapabilities, 'accountOrganizationSettings'> = {},
 ): CanopyCapabilities {
   return {
+    // Reporting eligibility is supplied by the account-aware recovery host.
+    // Keep the general client closed while the account is unresolved/guest.
+    feedbackReports: false,
+    feedbackDiagnostics: true,
     workspaceRecovery: true,
     sharedMultiRepo: true,
     githubConnection: true,
@@ -893,6 +898,8 @@ export class IpcCanopyClient implements CanopyClient {
   }
 
   readonly transcripts = ipcTranscriptReadClient;
+  readonly feedback = createDesktopFeedbackReportClient();
+
   readonly sharedMultiRepo: NonNullable<CanopyClient['sharedMultiRepo']> = {
     prepare: (params) => window.api.orgProjects.sharedMultiRepo.prepare(params),
     create: (params) => window.api.orgProjects.sharedMultiRepo.create(params),

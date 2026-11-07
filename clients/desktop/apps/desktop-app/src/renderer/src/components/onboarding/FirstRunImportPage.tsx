@@ -538,7 +538,7 @@ function ProjectsSection({
                 dataTestId="first-run-import-empty"
                 label={
                   <span className="inline-flex items-center gap-2">
-                    <FolderIcon className="h-4 w-4 shrink-0" aria-hidden />
+                    <FolderIcon size="sm" className="shrink-0" aria-hidden />
                     Add a project
                   </span>
                 }

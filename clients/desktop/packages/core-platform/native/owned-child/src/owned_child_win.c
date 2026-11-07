@@ -38,6 +38,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
@@ -45,6 +46,8 @@
 #include <node_api.h>
 
 #include "confined_read_win.h"
+#include "migration_image_win.h"
+#include "migration_fs_win.h"
 #include "recycle_item_win.h"
 
 // Windows 10 headers only define it for _WIN32_WINNT >= 0x0A00.
@@ -76,6 +79,8 @@ typedef struct record {
   uint64_t serial;
   HANDLE process;
   HANDLE job;
+  HANDLE channel;
+  bool channel_seen;
   DWORD pid;
   handle_state state;
   bool delivered;
@@ -151,6 +156,7 @@ static void close_pipes(record *item) {
 }
 
 static void close_record(record *item) {
+  if (item->channel) CloseHandle(item->channel);
   close_pipes(item);
   if (item->thread) CloseHandle(item->thread);
   if (item->process) CloseHandle(item->process);
@@ -595,14 +601,31 @@ static napi_value make_handle(napi_env env, instance *inst, record *item,
   return fail_undelivered(env, inst, item);
 }
 
-// spawn(executable, argv, envPairs, stdin) -> { handle, pid }. `stdin` must
-// be null: the launcher never hands a startup claim over on Windows.
-static napi_value spawn_child(napi_env env, napi_callback_info info) {
-  size_t argc = 4;
-  napi_value argv[4];
+static PSECURITY_DESCRIPTOR user_only_descriptor(void);
+static bool valid_nonce(const wchar_t *nonce);
+#define MIGRATION_NAME_CHARS 100
+
+static bool migration_name(wchar_t *name, DWORD pid, const wchar_t *nonce) {
+  return swprintf(name, MIGRATION_NAME_CHARS,
+                   L"\\\\.\\pipe\\canopy-migration-%lu-%ls",
+                   (unsigned long)pid, nonce) > 0;
+}
+
+static uint64_t creation_ticks(HANDLE process) {
+  FILETIME created, exited, kernel, user;
+  if (!GetProcessTimes(process, &created, &exited, &kernel, &user)) return 0;
+  return ((uint64_t)created.dwHighDateTime << 32) | created.dwLowDateTime;
+}
+
+// The header locates the channel, not admission evidence. Only stdin is
+// inherited; neither the server nor any process/job handle enters the child.
+static napi_value spawn_root(napi_env env, napi_callback_info info,
+                              bool with_channel) {
+  size_t argc = 5;
+  napi_value argv[5];
   void *data = NULL;
   if (napi_get_cb_info(env, info, &argc, argv, NULL, &data) != napi_ok ||
-      argc != 4 || !data) {
+      argc != (with_channel ? 5u : 4u) || !data) {
     throw_code(env, "ERR_OWNED_CHILD_ARGUMENT", "Owned child call is invalid.");
     return NULL;
   }
@@ -612,18 +635,77 @@ static napi_value spawn_child(napi_env env, napi_callback_info info) {
   wchar_t *executable = copy_string(env, argv[0]);
   wchar_t **args = copy_vector(env, argv[1], 1, MAX_VECTOR, &arg_count);
   wchar_t **environment = copy_vector(env, argv[2], 0, MAX_VECTOR, &env_count);
+  char input[4097];
+  size_t input_size = 0;
+  bool input_ok = stdin_type == napi_null;
+  if (stdin_type == napi_string)
+    input_ok = napi_get_value_string_utf8(env, argv[3], NULL, 0,
+                                          &input_size) == napi_ok &&
+               input_size <= 4096 &&
+               napi_get_value_string_utf8(env, argv[3], input, sizeof input,
+                                          &input_size) == napi_ok &&
+               strlen(input) == input_size;
+  wchar_t *nonce = with_channel ? copy_string(env, argv[4]) : NULL;
   bool valid = executable && fully_qualified(executable) && args &&
-               environment && stdin_type == napi_null;
+               environment && input_ok && (with_channel || stdin_type == napi_null) &&
+               (!with_channel || (nonce && valid_nonce(nonce)));
   wchar_t *line = valid ? command_line(args, arg_count) : NULL;
   wchar_t *block = valid ? environment_block(environment, env_count) : NULL;
   valid = line && block;
   record *item = valid ? calloc(1, sizeof *item) : NULL;
   HANDLE job = item ? create_job() : NULL;
-  HANDLE in = job ? open_nul(GENERIC_READ) : INVALID_HANDLE_VALUE;
+  HANDLE in = INVALID_HANDLE_VALUE, writer = NULL;
+  bool has_input = with_channel || stdin_type == napi_string;
+  if (job && has_input) {
+    SECURITY_ATTRIBUTES attributes = {(DWORD)sizeof attributes, NULL, TRUE};
+    if (!CreatePipe(&in, &writer, &attributes, 8192) ||
+        !SetHandleInformation(writer, HANDLE_FLAG_INHERIT, 0)) {
+      if (in != INVALID_HANDLE_VALUE) CloseHandle(in);
+      in = INVALID_HANDLE_VALUE;
+    }
+  } else if (job) in = open_nul(GENERIC_READ);
   HANDLE out = job ? open_nul(GENERIC_WRITE) : INVALID_HANDLE_VALUE;
+  HANDLE channel = NULL;
+  if (job && with_channel) {
+    wchar_t name[MIGRATION_NAME_CHARS];
+    PSECURITY_DESCRIPTOR descriptor = user_only_descriptor();
+    SECURITY_ATTRIBUTES attributes = {(DWORD)sizeof attributes, descriptor, FALSE};
+    if (descriptor && migration_name(name, GetCurrentProcessId(), nonce)) {
+      channel = CreateNamedPipeW(name,
+          PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
+          PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT |
+              PIPE_REJECT_REMOTE_CLIENTS,
+          1, PIPE_BUFFER, PIPE_BUFFER, 0, &attributes);
+      if (channel == INVALID_HANDLE_VALUE) channel = NULL;
+      if (channel) ConnectNamedPipe(channel, NULL);
+    }
+    LocalFree(descriptor);
+  }
+  bool handed = !has_input;
+  if (writer) {
+    DWORD written = 0;
+    handed = true;
+    if (with_channel) {
+      char header[160];
+      uint64_t ticks = creation_ticks(GetCurrentProcess());
+      int length = ticks ? sprintf_s(header, sizeof header,
+          "canopy-launcher-v1 %lu %llu %ls\n",
+          (unsigned long)GetCurrentProcessId(), (unsigned long long)ticks,
+          nonce) : -1;
+      handed = length > 0 && WriteFile(writer, header, (DWORD)length,
+                                       &written, NULL) && written == (DWORD)length;
+    }
+    if (handed && input_size)
+      handed = WriteFile(writer, input, (DWORD)input_size, &written, NULL) &&
+               written == (DWORD)input_size;
+    CloseHandle(writer);
+  }
+  SecureZeroMemory(input, sizeof input);
+  free(nonce);
   PROCESS_INFORMATION created;
   memset(&created, 0, sizeof created);
-  bool started = job && in != INVALID_HANDLE_VALUE &&
+  bool started = job && handed && (!with_channel || channel) &&
+                 in != INVALID_HANDLE_VALUE &&
                  out != INVALID_HANDLE_VALUE &&
                  create_root(executable, line, block, job, in, out, &created);
   if (in != INVALID_HANDLE_VALUE) CloseHandle(in);
@@ -634,6 +716,7 @@ static napi_value spawn_child(napi_env env, napi_callback_info info) {
   free(line);
   free(block);
   if (!started) {
+    if (channel) CloseHandle(channel);
     if (job) CloseHandle(job);
     free(item);
     throw_code(env, valid ? "ERR_OWNED_CHILD_SPAWN" : "ERR_OWNED_CHILD_ARGUMENT",
@@ -645,6 +728,7 @@ static napi_value spawn_child(napi_env env, napi_callback_info info) {
   item->serial = (uint64_t)InterlockedIncrement64(&next_serial);
   item->process = created.hProcess;
   item->job = job;
+  item->channel = channel;
   item->pid = created.dwProcessId;
   item->state = OWNED;
   item->next = inst->head;
@@ -656,6 +740,14 @@ static napi_value spawn_child(napi_env env, napi_callback_info info) {
   CloseHandle(created.hThread);
   if (!contained) return fail_undelivered(env, inst, item);
   return make_handle(env, inst, item, NULL);
+}
+
+static napi_value spawn_child(napi_env env, napi_callback_info info) {
+  return spawn_root(env, info, false);
+}
+
+static napi_value spawn_channel(napi_env env, napi_callback_info info) {
+  return spawn_root(env, info, true);
 }
 
 // observe(handle) -> { state: 'running' | 'lost' } | { state: 'exited', code, signal }
@@ -1045,6 +1137,313 @@ static napi_value resume_child(napi_env env, napi_callback_info info) {
   return make_bool(env, true);
 }
 
+// Windows connection custody is deliberately not Darwin audit evidence.
+// A connection PID identifies the opener, not every future writer after a
+// hostile same-user DuplicateHandle; W2 must not interpret it as the latter.
+typedef struct {
+  const instance *owner;
+  HANDLE pipe;
+  HANDLE process;
+  DWORD pid;
+  bool seen;
+} launcher_end;
+
+static const napi_type_tag LAUNCHER_TAG = {0x77696e6c61756e63ULL,
+                                           0x686572656e643031ULL};
+
+static void close_launcher(launcher_end *end) {
+  if (end->pipe) CloseHandle(end->pipe);
+  if (end->process) CloseHandle(end->process);
+  end->pipe = end->process = NULL;
+}
+
+static void finalize_launcher(napi_env env, void *data, void *hint) {
+  (void)env;
+  (void)hint;
+  close_launcher(data);
+  free(data);
+}
+
+static void throw_channel(napi_env env, const char *stage, DWORD win32) {
+  napi_value message, error, value;
+  napi_create_string_utf8(env, "Launcher channel is unavailable.", NAPI_AUTO_LENGTH, &message);
+  napi_create_error(env, NULL, message, &error);
+  napi_create_string_utf8(env, "ERR_OWNED_CHILD_CHANNEL", NAPI_AUTO_LENGTH, &value);
+  napi_set_named_property(env, error, "code", value);
+  napi_create_string_utf8(env, stage, NAPI_AUTO_LENGTH, &value);
+  napi_set_named_property(env, error, "stage", value);
+  napi_set_named_property(env, error, "win32", make_int(env, win32));
+  napi_throw(env, error);
+}
+
+// Client-side connection: identity comes from GetNamedPipeServerProcessId,
+// never from bytes received on the pipe. The opened process stays held.
+static napi_value connect_launcher(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value argv[3];
+  int64_t pid_value = 0;
+  DWORD pid = 0;
+  uint64_t ticks = 0;
+  void *data = NULL;
+  bool lossless = false;
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, &data) != napi_ok ||
+      argc != 3 || !data || napi_get_value_int64(env, argv[0], &pid_value) != napi_ok ||
+      pid_value <= 1 || pid_value > 0xffffffffLL || napi_get_value_bigint_uint64(env, argv[1], &ticks,
+                                               &lossless) != napi_ok ||
+      !lossless || !ticks) goto invalid;
+  pid = (DWORD)pid_value;
+  wchar_t *nonce = copy_string(env, argv[2]);
+  wchar_t name[MIGRATION_NAME_CHARS];
+  bool valid = nonce && valid_nonce(nonce) && migration_name(name, pid, nonce);
+  free(nonce);
+  if (!valid) goto invalid;
+  const char *stage = "allocation";
+  DWORD win32 = ERROR_NOT_ENOUGH_MEMORY;
+  launcher_end *end = calloc(1, sizeof *end);
+  if (!end) goto failed;
+  end->owner = data;
+  stage = "open";
+  end->pipe = CreateFileW(name, GENERIC_READ | GENERIC_WRITE, 0, NULL,
+                          OPEN_EXISTING, SECURITY_SQOS_PRESENT |
+                          SECURITY_IDENTIFICATION, NULL);
+  if (end->pipe == INVALID_HANDLE_VALUE) { end->pipe = NULL; goto native_failed; }
+  ULONG observed = 0;
+  stage = "server_pid";
+  if (!GetNamedPipeServerProcessId(end->pipe, &observed)) goto native_failed;
+  stage = "server_mismatch";
+  if (observed != pid) { win32 = ERROR_INVALID_DATA; goto cleanup; }
+  DWORD mode = PIPE_READMODE_BYTE | PIPE_NOWAIT;
+  stage = "mode";
+  if (!SetNamedPipeHandleState(end->pipe, &mode, NULL, NULL)) goto native_failed;
+  stage = "process";
+  end->process = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+                              FALSE, pid);
+  if (!end->process) goto native_failed;
+  stage = "creation_time";
+  if (creation_ticks(end->process) != ticks) { win32 = ERROR_INVALID_DATA; goto cleanup; }
+  stage = "process_exited";
+  if (WaitForSingleObject(end->process, 0) != WAIT_TIMEOUT) { win32 = ERROR_PROCESS_ABORTED; goto cleanup; }
+  end->pid = pid;
+  napi_value handle;
+  stage = "delivery";
+  win32 = ERROR_NOT_ENOUGH_MEMORY;
+  bool ok = napi_create_object(env, &handle) == napi_ok &&
+       napi_type_tag_object(env, handle, &LAUNCHER_TAG) == napi_ok &&
+       napi_wrap(env, handle, end, finalize_launcher, NULL, NULL) == napi_ok;
+  if (ok) return handle;
+  goto cleanup;
+native_failed:
+  win32 = GetLastError();
+cleanup:
+  close_launcher(end);
+  free(end);
+failed:
+  throw_channel(env, stage, win32);
+  return NULL;
+invalid:
+  throw_code(env, "ERR_OWNED_CHILD_ARGUMENT", "Owned child call is invalid.");
+  return NULL;
+}
+
+typedef struct {
+  HANDLE *pipe;
+  HANDLE process;
+  DWORD pid;
+  bool server;
+  bool *seen;
+  HANDLE *client_process;
+} channel_view;
+
+static bool channel_arg(napi_env env, napi_value handle, instance *inst,
+                         channel_view *view) {
+  bool tagged = false;
+  void *data = NULL;
+  if (napi_check_object_type_tag(env, handle, &LAUNCHER_TAG, &tagged) == napi_ok &&
+      tagged && napi_unwrap(env, handle, &data) == napi_ok && data) {
+    launcher_end *end = data;
+    if (end->owner != inst) {
+      throw_code(env, "ERR_OWNED_CHILD_HANDLE", "Owned child handle is invalid.");
+      return false;
+    }
+    view->pipe = &end->pipe;
+    view->process = end->process;
+    view->pid = end->pid;
+    view->server = false;
+    view->seen = &end->seen;
+    view->client_process = &end->process;
+    return true;
+  }
+  record *item = resolve_handle(env, inst, handle);
+  if (!item) return false;
+  view->pipe = &item->channel;
+  view->process = item->process;
+  view->pid = item->pid;
+  view->server = true;
+  view->seen = &item->channel_seen;
+  view->client_process = NULL;
+  return true;
+}
+
+// A client owns its retained launcher handle only while the channel is live.
+// The server's process handle belongs to the launch record, not the channel.
+static void retire_channel(channel_view *view) {
+  if (*view->pipe) CloseHandle(*view->pipe);
+  *view->pipe = NULL;
+  if (view->client_process && *view->client_process) {
+    CloseHandle(*view->client_process);
+    *view->client_process = NULL;
+    view->process = NULL;
+  }
+}
+
+// 0: waiting for the first connection, 1: exact peer, -1: retired.
+// A wrong first connector retires the name, never reconnects it.
+static int channel_connected(channel_view *view) {
+  if (!*view->pipe) return -1;
+  if (!view->process) goto retire;
+  // In nonblocking mode the listening transition is explicit. A PID query
+  // before a connection exists is not a peer observation.
+  if (view->server && !*view->seen) {
+    BOOL accepted = ConnectNamedPipe(*view->pipe, NULL);
+    DWORD error = accepted ? ERROR_SUCCESS : GetLastError();
+    if (error == ERROR_PIPE_LISTENING) {
+      if (WaitForSingleObject(view->process, 0) != WAIT_TIMEOUT) goto retire;
+      return 0;
+    }
+    // A client may write and close before the server's first poll.
+    if (error != ERROR_SUCCESS && error != ERROR_PIPE_CONNECTED &&
+        error != ERROR_NO_DATA) goto retire;
+  }
+  ULONG observed = 0;
+  BOOL ok = view->server
+      ? GetNamedPipeClientProcessId(*view->pipe, &observed)
+      : GetNamedPipeServerProcessId(*view->pipe, &observed);
+  if (!ok) {
+    DWORD error = GetLastError();
+    if (view->server && !*view->seen &&
+        (error == ERROR_PIPE_LISTENING || error == ERROR_PIPE_NOT_CONNECTED)) {
+      if (WaitForSingleObject(view->process, 0) != WAIT_TIMEOUT) goto retire;
+      return 0;
+    }
+    goto retire;
+  }
+  if (observed == view->pid &&
+      PeekNamedPipe(*view->pipe, NULL, 0, NULL, NULL, NULL)) {
+    *view->seen = true;
+    return 1;
+  }
+retire:
+  retire_channel(view);
+  return -1;
+}
+
+static napi_value channel_call(napi_env env, napi_callback_info info, int op) {
+  size_t argc = 2;
+  napi_value argv[2];
+  void *data = NULL;
+  channel_view view;
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, &data) != napi_ok ||
+      argc != (op < 2 ? 2u : 1u) || !data) {
+    throw_code(env, "ERR_OWNED_CHILD_ARGUMENT", "Owned child call is invalid.");
+    return NULL;
+  }
+  if (!channel_arg(env, argv[0], data, &view)) return NULL;
+  if (op == 3) {
+    retire_channel(&view);
+    return make_bool(env, true);
+  }
+  // Custody needs a live peer; EOF instead follows the pipe after queued bytes.
+  // A custody observation must not discard those bytes by retiring the pipe.
+  if ((op == 2 || op == 4) && (!view.process ||
+      WaitForSingleObject(view.process, 0) != WAIT_TIMEOUT))
+    return make_state(env, "refused");
+  int connected = channel_connected(&view);
+  if (op == 2) {
+    napi_value result = make_state(env, connected == 1 ? "connected" : "refused");
+    if (connected == 1) {
+      napi_value ticks;
+      uint64_t created = creation_ticks(view.process);
+      if (!created) return make_state(env, "refused");
+      napi_create_bigint_uint64(env, created, &ticks);
+      napi_set_named_property(env, result, "pid", make_int(env, view.pid));
+      napi_set_named_property(env, result, "creationTime", ticks);
+    }
+    return result;
+  }
+  if (op == 4) {
+    if (connected != 1) return make_null(env);
+    napi_value result = capture_migration_image(env, view.process, data), ticks, side;
+    napi_valuetype type;
+    if (napi_typeof(env, result, &type) != napi_ok || type != napi_object) return result;
+    bool is_null = false;
+    napi_value null_value = make_null(env);
+    napi_strict_equals(env, result, null_value, &is_null);
+    if (is_null) return result;
+    napi_create_bigint_uint64(env, creation_ticks(view.process), &ticks);
+    napi_set_named_property(env, result, "creationTime", ticks);
+    napi_set_named_property(env, result, "pid", make_int(env, view.pid));
+    napi_set_named_property(env, result, "localPid", make_int(env, GetCurrentProcessId()));
+    napi_set_named_property(env, result, "localParentPid", make_int(env, migration_parent_pid(GetCurrentProcess())));
+    napi_create_string_utf8(env, view.server ? "daemon" : "launcher", NAPI_AUTO_LENGTH, &side);
+    napi_set_named_property(env, result, "role", side);
+    return result;
+  }
+  DWORD count = 0;
+  if (op == 0) {
+    uint32_t max = 0;
+    if (napi_get_value_uint32(env, argv[1], &max) != napi_ok ||
+        !max || max > PIPE_BUFFER) goto argument;
+    if (connected < 0) return make_null(env);
+    char bytes[PIPE_BUFFER];
+    if (connected == 1 && !ReadFile(*view.pipe, bytes, max, &count, NULL)) {
+      DWORD error = GetLastError();
+      if (error != ERROR_NO_DATA && error != ERROR_PIPE_LISTENING) {
+        retire_channel(&view);
+        return make_null(env);
+      }
+    }
+    napi_value result;
+    napi_create_buffer_copy(env, count, bytes, NULL, &result);
+    return result;
+  }
+  napi_typedarray_type type;
+  size_t length = 0, offset = 0;
+  void *bytes = NULL;
+  napi_value buffer;
+  if (napi_get_typedarray_info(env, argv[1], &type, &length, &bytes, &buffer,
+                                &offset) != napi_ok ||
+      type != napi_uint8_array || length > PIPE_BUFFER) goto argument;
+  if (connected < 0) goto closed;
+  if (connected == 1 && length &&
+      !WriteFile(*view.pipe, bytes, (DWORD)length, &count, NULL)) {
+    goto closed;
+  }
+  return make_int(env, count);
+argument:
+  throw_code(env, "ERR_OWNED_CHILD_ARGUMENT", "Owned child call is invalid.");
+  return NULL;
+closed:
+  retire_channel(&view);
+  throw_code(env, "ERR_OWNED_CHILD_CHANNEL", "Launcher channel is unavailable.");
+  return NULL;
+}
+
+static napi_value channel_read(napi_env env, napi_callback_info info) {
+  return channel_call(env, info, 0);
+}
+static napi_value channel_write(napi_env env, napi_callback_info info) {
+  return channel_call(env, info, 1);
+}
+static napi_value channel_peer(napi_env env, napi_callback_info info) {
+  return channel_call(env, info, 2);
+}
+static napi_value channel_image(napi_env env, napi_callback_info info) {
+  return channel_call(env, info, 4);
+}
+static napi_value channel_close(napi_env env, napi_callback_info info) {
+  return channel_call(env, info, 3);
+}
+
 // Power (CAN-5066): keeps the system out of idle sleep while the argument
 // is true. ES_CONTINUOUS holds the state on this, the host's main thread,
 // until it is changed, and Windows drops it when the thread ends, so a
@@ -1069,8 +1468,16 @@ NAPI_MODULE_INIT() {
     throw_code(env, "ERR_OWNED_CHILD_LOAD", "Owned child support is unavailable.");
     return NULL;
   }
-  // No launcher-channel methods: spawnWithChannel stays Darwin-only.
   napi_property_descriptor methods[] = {
+      {"spawnChannel", NULL, spawn_channel, NULL, NULL, NULL, napi_enumerable, inst},
+      {"connectLauncher", NULL, connect_launcher, NULL, NULL, NULL, napi_enumerable, inst},
+      {"channelRead", NULL, channel_read, NULL, NULL, NULL, napi_enumerable, inst},
+      {"channelWrite", NULL, channel_write, NULL, NULL, NULL, napi_enumerable, inst},
+      {"channelPeer", NULL, channel_peer, NULL, NULL, NULL, napi_enumerable, inst},
+      {"channelImage", NULL, channel_image, NULL, NULL, NULL, napi_enumerable, inst},
+      {"imageCurrent", NULL, migration_image_current, NULL, NULL, NULL, napi_enumerable, inst},
+      {"imageClose", NULL, migration_image_close, NULL, NULL, NULL, napi_enumerable, inst},
+      {"channelClose", NULL, channel_close, NULL, NULL, NULL, napi_enumerable, inst},
       {"spawn", NULL, spawn_child, NULL, NULL, NULL, napi_enumerable, inst},
       {"launch", NULL, launch_child, NULL, NULL, NULL, napi_enumerable, inst},
       {"resume", NULL, resume_child, NULL, NULL, NULL, napi_enumerable, inst},
@@ -1086,6 +1493,7 @@ NAPI_MODULE_INIT() {
       {"setExecutionState", NULL, set_execution_state, NULL, NULL, NULL,
        napi_enumerable, NULL},
       // Stateless, so it is safe in any thread's env (the W5 worker's too).
+      {"migrationFilesystem", NULL, migration_filesystem, NULL, NULL, NULL, napi_enumerable, NULL},
       {"readConfinedFile", NULL, confined_read_file, NULL, NULL, NULL,
        napi_enumerable, NULL},
       {"recycleItem", NULL, recycle_item, NULL, NULL, NULL, napi_enumerable,

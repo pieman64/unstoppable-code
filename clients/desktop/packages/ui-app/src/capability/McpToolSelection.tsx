@@ -22,6 +22,7 @@ import {
   SettingsRowsRow,
   ToggleSwitch,
 } from '@canopy/ui-shared/components';
+import { Surface } from '@canopy/ui-shared/components';
 
 /** Show the filter once a list no longer fits at a glance. */
 const SEARCH_THRESHOLD = 8;
@@ -221,35 +222,39 @@ export function McpToolSelection({
         }
       />
       {!allTools && tools.status !== 'loaded' && (
-        <div
-          className="flex min-h-16 items-center justify-center gap-2 rounded-md ring-1 ring-inset ring-line-base p-3 text-s fg-secondary"
+        <Surface
+          variant="outline"
+          size="small"
+          padding="compact"
           data-testid={`${dataTestId}-status`}
         >
-          {tools.status === 'reauth_required' ? (
-            <Notice intent="attention">
-              Reconnect this server to choose its tools.
-            </Notice>
-          ) : tools.status === 'failed' ? (
-            <div className="flex w-full flex-col items-start gap-2">
-              <Notice intent="destructive">
-                Couldn’t load this server’s tools.
+          <div className="flex min-h-16 items-center justify-center gap-2 text-s fg-secondary">
+            {tools.status === 'reauth_required' ? (
+              <Notice intent="attention">
+                Reconnect this server to choose its tools.
               </Notice>
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={() => void load()}
-                data-testid={`${dataTestId}-retry`}
-              >
-                Try again
-              </Button>
-            </div>
-          ) : (
-            <>
-              <LoadingSpinner decorative />
-              Loading tools…
-            </>
-          )}
-        </div>
+            ) : tools.status === 'failed' ? (
+              <div className="flex w-full flex-col items-start gap-2">
+                <Notice intent="destructive">
+                  Couldn’t load this server’s tools.
+                </Notice>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => void load()}
+                  data-testid={`${dataTestId}-retry`}
+                >
+                  Try again
+                </Button>
+              </div>
+            ) : (
+              <>
+                <LoadingSpinner decorative />
+                Loading tools…
+              </>
+            )}
+          </div>
+        </Surface>
       )}
       {!allTools && tools.status === 'loaded' && (
         <div className="flex flex-col gap-2">
@@ -306,57 +311,63 @@ export function McpToolSelection({
                   </Button>
                 </div>
               </div>
-              <ul
-                className="flex max-h-72 flex-col overflow-y-auto rounded-md ring-1 ring-inset ring-line-base p-1"
-                data-testid={`${dataTestId}-list`}
+              <Surface
+                variant="outline"
+                size="small"
+                className="overflow-hidden"
               >
-                {visibleRows.map((row) => (
-                  <li key={row.name}>
-                    <div
-                      className="rounded-md px-2 py-1.5"
-                      data-testid={`${dataTestId}-tool`}
-                      data-tool-name={row.name}
-                    >
-                      {/* The whole row is the label: a click on its text toggles the tool. */}
-                      <ChoiceField
-                        checked={selection.has(row.name)}
-                        disabled={saving}
-                        onChange={(event) =>
-                          setMany([row.name], event.target.checked)
-                        }
-                        label={
-                          <span className="flex min-w-0 flex-col gap-0.5">
-                            <span className="truncate">
-                              {row.title ?? row.name}
-                            </span>
-                            {row.title && (
-                              <span className="truncate font-mono text-xs fg-tertiary">
-                                {row.name}
+                <ul
+                  className="flex max-h-72 flex-col overflow-y-auto p-1"
+                  data-testid={`${dataTestId}-list`}
+                >
+                  {visibleRows.map((row) => (
+                    <li key={row.name}>
+                      <div
+                        className="px-2 py-1.5"
+                        data-testid={`${dataTestId}-tool`}
+                        data-tool-name={row.name}
+                      >
+                        {/* The whole row is the label: a click on its text toggles the tool. */}
+                        <ChoiceField
+                          checked={selection.has(row.name)}
+                          disabled={saving}
+                          onChange={(event) =>
+                            setMany([row.name], event.target.checked)
+                          }
+                          label={
+                            <span className="flex min-w-0 flex-col gap-0.5">
+                              <span className="truncate">
+                                {row.title ?? row.name}
                               </span>
-                            )}
-                          </span>
-                        }
-                        description={
-                          row.missing ? (
-                            <span className="fg-warning">
-                              No longer offered by this server
+                              {row.title && (
+                                <span className="truncate font-mono text-xs fg-tertiary">
+                                  {row.name}
+                                </span>
+                              )}
                             </span>
-                          ) : row.description ? (
-                            <span className="block truncate">
-                              {row.description}
-                            </span>
-                          ) : undefined
-                        }
-                      />
-                    </div>
-                  </li>
-                ))}
-                {visibleRows.length === 0 && (
-                  <li className="px-2 py-1.5 text-s fg-secondary">
-                    No tools match.
-                  </li>
-                )}
-              </ul>
+                          }
+                          description={
+                            row.missing ? (
+                              <span className="fg-warning">
+                                No longer offered by this server
+                              </span>
+                            ) : row.description ? (
+                              <span className="block truncate">
+                                {row.description}
+                              </span>
+                            ) : undefined
+                          }
+                        />
+                      </div>
+                    </li>
+                  ))}
+                  {visibleRows.length === 0 && (
+                    <li className="px-2 py-1.5 text-s fg-secondary">
+                      No tools match.
+                    </li>
+                  )}
+                </ul>
+              </Surface>
               {enabledCount === 0 && (
                 <p className="text-xs fg-warning">
                   With no tools on, agents can’t use this server.

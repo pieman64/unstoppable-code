@@ -5,6 +5,7 @@ import type { ReactDiffViewerProps } from 'react-diff-viewer-continued';
 import {
   DiffBinaryState,
   DiffBoundNotice,
+  Divider,
   OverlayScrollArea,
 } from '@canopy/ui-shared/components';
 import { ChevronsUpDown } from '@canopy/ui-shared/icons/AppIcons';
@@ -189,7 +190,7 @@ function ImageDiffPreview({
         className={`${POSTHOG_REPLAY_BLOCK_CLASS} flex min-h-0 flex-1 overflow-hidden`}
       >
         <ImagePreviewPanel label="Previous" src={imagePreview.oldDataUrl} />
-        <div className="w-px shrink-0 bg-line-base" />
+        <Divider orientation="vertical" />
         <ImagePreviewPanel label="Current" src={imagePreview.newDataUrl} />
       </div>
     );

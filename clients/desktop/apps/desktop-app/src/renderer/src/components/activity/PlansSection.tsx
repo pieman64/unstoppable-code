@@ -72,10 +72,6 @@ import { Button } from '@canopy/ui-shared/components';
 const EMPTY_TRACKED_PLANS: TrackedPlanData[] = [];
 const EMPTY_DETECTED_PLANS: DetectedPlanEntry[] = [];
 
-export function PlansIcon(): JSX.Element {
-  return <PlanModeIcon />;
-}
-
 interface PlanCardProps {
   plan: TrackedPlanData;
   readOnly?: boolean;
@@ -229,7 +225,7 @@ function PlanCard({
             className="min-w-0 max-w-full"
           >
             <span className="inline-flex min-w-0 max-w-full items-center gap-1">
-              <PipelineIcon width={11} height={11} className="shrink-0" />
+              <PipelineIcon size="sm" className="shrink-0" />
               <span className="truncate">
                 {navigationExecution.pipeline_name}
               </span>
@@ -619,7 +615,7 @@ export function PlansSection(): JSX.Element {
     return (
       <div data-testid={sectionTestId} className={sectionClassName}>
         <ActivitySection
-          icon={<PlansIcon />}
+          icon={<PlanModeIcon />}
           title="Plans"
           subtitle={headerChrome.subtitle}
           collapsedIconColor={headerChrome.collapsedIconColor}
@@ -636,7 +632,7 @@ export function PlansSection(): JSX.Element {
       <>
         <div data-testid={sectionTestId} className={sectionClassName}>
           <ActivitySection
-            icon={<PlansIcon />}
+            icon={<PlanModeIcon />}
             title="Plans"
             subtitle={headerChrome.subtitle}
             collapsedIconColor={headerChrome.collapsedIconColor}
@@ -679,7 +675,7 @@ export function PlansSection(): JSX.Element {
     <>
       <div data-testid={sectionTestId} className={sectionClassName}>
         <ActivitySection
-          icon={<PlansIcon />}
+          icon={<PlanModeIcon />}
           title="Plans"
           subtitle={headerChrome.subtitle}
           collapsedIconColor={headerChrome.collapsedIconColor}

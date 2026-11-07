@@ -32,10 +32,7 @@ import {
   isPendingSubmission,
   truncateQuote,
 } from '@/components/plan-explore/usePlanComments';
-import {
-  MapIcon,
-  DiagramIcon,
-} from '@/components/plan-explore/plan-explore-icons';
+import { ChangeDiagramIcon, MapIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { CommentsTray } from '@/components/shared/CommentsTray';
 import {
   clampPlanExploreTrayHeight,
@@ -635,9 +632,9 @@ function PlanDocumentPanelImpl({
       text: referenceText,
       outdated: thread.anchorState === 'outdated',
       icon: fromDiagram ? (
-        <DiagramIcon width={12} height={12} />
+        <ChangeDiagramIcon size="sm" />
       ) : (
-        <MapIcon width={12} height={12} />
+        <MapIcon size="sm" />
       ),
       iconLabel: fromDiagram ? 'From diagram' : 'From plan document',
       // A general note has nothing to jump to; document/diagram anchors do.

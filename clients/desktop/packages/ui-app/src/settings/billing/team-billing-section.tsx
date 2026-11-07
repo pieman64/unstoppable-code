@@ -89,6 +89,7 @@ import {
   getOrgInvoices,
 } from '../organization/team-api';
 import type { SettingsFailure } from '../errors';
+import { Divider } from '@canopy/ui-shared/components';
 
 interface TeamBillingSectionProps {
   detail: OrganizationDetail;
@@ -719,35 +720,35 @@ function PaymentMethodSubcard({
   const canManage = isOwner && paymentsAvailable;
 
   const layout = (actions: ReactNode, after: ReactNode): JSX.Element => (
-    <div
-      className="border-b pb-4"
-      data-testid="team-billing-payment-method-card"
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-s font-medium fg-primary">Payment method</p>
-          {hasCard && card ? (
-            <p
-              className={withPrivacyClass(
-                'mt-1 text-s fg-primary',
-                blockClassName,
-              )}
-              data-testid="team-billing-card-summary"
-            >
-              {cardLabel(card)}
-              {card.expMonth !== null && card.expYear !== null
-                ? `, exp ${formatExpiry(card.expMonth, card.expYear)}`
-                : ''}
-            </p>
-          ) : (
-            <p className="mt-1 text-s fg-secondary">No card on file.</p>
-          )}
+    <div>
+      <div className="pb-4" data-testid="team-billing-payment-method-card">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-s font-medium fg-primary">Payment method</p>
+            {hasCard && card ? (
+              <p
+                className={withPrivacyClass(
+                  'mt-1 text-s fg-primary',
+                  blockClassName,
+                )}
+                data-testid="team-billing-card-summary"
+              >
+                {cardLabel(card)}
+                {card.expMonth !== null && card.expYear !== null
+                  ? `, exp ${formatExpiry(card.expMonth, card.expYear)}`
+                  : ''}
+              </p>
+            ) : (
+              <p className="mt-1 text-s fg-secondary">No card on file.</p>
+            )}
+          </div>
+
+          {actions}
         </div>
 
-        {actions}
+        {after}
       </div>
-
-      {after}
+      <Divider />
     </div>
   );
 

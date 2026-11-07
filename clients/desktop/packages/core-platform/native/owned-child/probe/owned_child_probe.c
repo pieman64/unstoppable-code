@@ -1,6 +1,6 @@
 // Test-only probe for the Windows owned-child suite; never staged or shipped.
-// Reports the calling process's immediate job, its members and its console,
-// and inspects or ends one process by PID only at a recorded creation time.
+// Reports the calling process's job, console and handle count, and inspects
+// or ends one process by PID only at a recorded creation time.
 #ifndef _WIN32
 #error "owned-child probe is Windows-only"
 #endif
@@ -74,6 +74,21 @@ static bool pid_arg(napi_env env, napi_callback_info info, size_t expected,
   *pid = (DWORD)value;
   if (rest && expected > 1) *rest = argv[1];
   return true;
+}
+
+static napi_value handle_count(napi_env env, napi_callback_info info) {
+  (void)info;
+  DWORD count = 0;
+  if (!GetProcessHandleCount(GetCurrentProcess(), &count)) {
+    DWORD error = GetLastError();
+    char message[96];
+    snprintf(message, sizeof message,
+             "probe: GetProcessHandleCount failed (Win32 %lu)",
+             (unsigned long)error);
+    napi_throw_error(env, NULL, message);
+    return NULL;
+  }
+  return make_number(env, count);
 }
 
 // jobInfo() -> { inJob, limitFlags, activeProcesses, totalProcesses,
@@ -199,6 +214,7 @@ static napi_value terminate(napi_env env, napi_callback_info info) {
 NAPI_MODULE_INIT() {
   napi_property_descriptor methods[] = {
       {"jobInfo", NULL, job_info, NULL, NULL, NULL, napi_enumerable, NULL},
+      {"handleCount", NULL, handle_count, NULL, NULL, NULL, napi_enumerable, NULL},
       {"inspect", NULL, inspect, NULL, NULL, NULL, napi_enumerable, NULL},
       {"terminate", NULL, terminate, NULL, NULL, NULL, napi_enumerable, NULL},
   };

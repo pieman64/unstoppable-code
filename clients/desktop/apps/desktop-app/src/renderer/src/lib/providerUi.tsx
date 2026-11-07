@@ -48,19 +48,6 @@ export function resolveChatTabProvider(
   return getProviderForModel(knownModel);
 }
 
-export function AgentProviderIcon({
-  provider,
-  central = false,
-  ...svgProps
-}: {
-  provider: UiAgentProvider;
-  central?: boolean;
-} & SVGProps<SVGSVGElement>): JSX.Element {
-  return (
-    <ModelProviderIcon provider={provider} central={central} {...svgProps} />
-  );
-}
-
 export function PlanSourceIcon({
   source,
   ...svgProps

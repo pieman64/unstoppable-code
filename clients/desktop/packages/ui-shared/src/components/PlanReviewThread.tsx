@@ -188,7 +188,7 @@ export function PlanReviewCommentActions({
           data-testid={editTestId}
           className="-my-1.5"
         >
-          <PencilIcon width={13} height={13} />
+          <PencilIcon size="sm" />
         </Button>
       </Tooltip>
       <Tooltip label="Delete unsubmitted comment">
@@ -201,7 +201,7 @@ export function PlanReviewCommentActions({
           data-testid={deleteTestId}
           className="-my-1.5"
         >
-          <TrashIcon width={13} height={13} />
+          <TrashIcon size="sm" />
         </Button>
       </Tooltip>
     </>
@@ -293,9 +293,9 @@ export function PlanReviewThread({
             className="-my-1.5 -ml-2"
           >
             {collapsed ? (
-              <ChevronRightIcon width={14} height={14} />
+              <ChevronRightIcon size="sm" />
             ) : (
-              <ChevronDownIcon width={14} height={14} />
+              <ChevronDownIcon size="sm" />
             )}
           </Button>
         )}

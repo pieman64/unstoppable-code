@@ -9,7 +9,7 @@ import type { TurnFeedbackRating } from '@canopy/protocol/turn-feedback';
 import { ThumbsDownIcon } from '../icons/ThumbsDownIcon';
 import { ThumbsUpIcon } from '../icons/ThumbsUpIcon';
 import { Button } from './Button';
-import { CLEAN_ICON_BUTTON_VARIANT, useCleanChatLook } from './chat-look';
+import { CLEAN_ICON_BUTTON_VARIANT } from './chat-look';
 import { DropdownMenuItem, DropdownMenuItemIcon } from './DropdownMenu';
 
 /**
@@ -59,10 +59,7 @@ export function TurnFeedbackControl({
     renderTooltip ? renderTooltip(node, label) : node;
 
   // Both looks use the turn's 28px quiet icon button: tertiary ink at rest,
-  // full ink while pressed, and a rating reads through the filled icon. The
-  // clean look takes the step icons' 14px glyph.
-  const clean = useCleanChatLook();
-  const iconSize = clean ? '14' : '13';
+  // full ink while pressed, and a rating reads through the filled icon.
   const upSelected = rating === 'up';
   const downSelected = rating === 'down';
 
@@ -126,8 +123,7 @@ export function TurnFeedbackControl({
           }}
         >
           <ThumbsUpIcon
-            width={iconSize}
-            height={iconSize}
+            size="sm"
             aria-hidden="true"
             {...(upSelected ? { fill: 'currentColor' } : {})}
           />
@@ -147,8 +143,7 @@ export function TurnFeedbackControl({
           }}
         >
           <ThumbsDownIcon
-            width={iconSize}
-            height={iconSize}
+            size="sm"
             aria-hidden="true"
             {...(downSelected ? { fill: 'currentColor' } : {})}
           />

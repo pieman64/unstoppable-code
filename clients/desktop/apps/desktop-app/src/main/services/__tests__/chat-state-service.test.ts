@@ -107,7 +107,11 @@ import * as agentAttachments from '../../lib/agent-attachments';
 import * as approvalModeResolution from '../../lib/approval-mode-resolution';
 import * as planPersistence from '../../lib/plan-persistence';
 import * as resolveWorktree from '../../lib/resolve-worktree';
-import { ChatQueueService, getChatQueueService } from '../chat-queue-service';
+import {
+  ChatQueueService,
+  getChatQueueService,
+  QUEUE_ENTRY_REVISION_CONFLICT_REASON,
+} from '../chat-queue-service';
 import type {
   ChatQueuePersistenceMutation,
   ChatQueueServiceDependencies,
@@ -4175,6 +4179,46 @@ describe('chat state service', () => {
     } finally {
       setChatStateCommandPort(null);
     }
+  });
+
+  it("returns the archive's archivedAt on the archive result and its replay (CAN-5848)", async () => {
+    const { target } = serviceWithRepository();
+    for (const tabId of ['chat-a', 'chat-b', 'chat-c'])
+      await target.command(
+        envelope(`create-${tabId}`, { type: 'chat.create_tab', tabId }),
+      );
+    const archive = envelope('archive-a', {
+      type: 'chat.archive_tab',
+      tabId: 'chat-a',
+    });
+    const archived = await target.command(archive);
+    const closed = await target.command(
+      envelope('close-many', {
+        type: 'chat.close_tabs',
+        targets: [
+          { tabId: 'chat-b', mode: 'archive' },
+          { tabId: 'chat-c', mode: 'archive' },
+        ],
+      }),
+    );
+    const { archives } = await target.getState(SCOPE);
+    const archivedAtOf = (chatId: string): string | undefined =>
+      archives.find((entry) => entry.chatId === chatId)?.archivedAt;
+
+    expect(archived).toMatchObject({
+      outcome: 'applied',
+      archivedAt: archivedAtOf('chat-a'),
+    });
+    expect(archivedAtOf('chat-a')).toEqual(expect.any(String));
+    expect(closed).toMatchObject({
+      outcome: 'applied',
+      archivedAt: archivedAtOf('chat-b'),
+    });
+    expect(archivedAtOf('chat-c')).toBe(archivedAtOf('chat-b'));
+    await expect(target.command(archive)).resolves.toMatchObject({
+      outcome: 'already_applied',
+      archivedAt: archivedAtOf('chat-a'),
+    });
   });
 
   it('keeps fork provenance, attachments and settings through core.chat.fork (CAN-4113)', async () => {
@@ -21742,6 +21786,281 @@ describe('chat state service', () => {
       expect(dispatched).toEqual([]);
     },
   );
+
+  describe('queued entry revisions (CAN-4112)', () => {
+    async function revisionFixture(): Promise<{
+      target: ChatStateService;
+      queue: ChatQueueService;
+    }> {
+      const target = serviceWithRepository().target;
+      await createChat(target);
+      // A running turn keeps the row queued; nothing drains here.
+      const queue = stateBackedQueue(target, async () => undefined, {
+        hasActiveProviderTurn: () => true,
+        createId: () => 'queue-1',
+        schedule: (_callback, delayMs) => {
+          const timer = setTimeout(() => undefined, delayMs);
+          timer.unref();
+          return timer;
+        },
+      });
+      mockedGetChatQueueService.mockReturnValue(queue);
+      await queue.submit(
+        {
+          ...SCOPE,
+          chatId: 'chat-1',
+          userMessageId: 'queued-user',
+          text: 'Original',
+        },
+        'desktop',
+      );
+      return { target, queue };
+    }
+
+    it('a stale queued message revision answers conflict through the chat command and keeps the row', async () => {
+      const { target, queue } = await revisionFixture();
+      try {
+        const result = await target.command(
+          envelope('stale-edit', {
+            type: 'chat.edit_queued_message',
+            chatId: 'chat-1',
+            queuedMessageId: 'queue-1',
+            text: 'Stale',
+            queuedMessageRevision: 5,
+          }),
+        );
+
+        expect(result).toMatchObject({
+          outcome: 'conflict',
+          reason: QUEUE_ENTRY_REVISION_CONFLICT_REASON,
+        });
+        const runtime = (await target.getState(SCOPE)).runtimeByChatId[
+          'chat-1'
+        ];
+        expect(
+          runtime?.queuedMessages?.find((row) => row.id === 'queue-1')?.request
+            .text,
+        ).toBe('Original');
+      } finally {
+        queue.resetForTests();
+      }
+    });
+
+    it('an edited revision survives a state reload', async () => {
+      const { target, queue } = await revisionFixture();
+      try {
+        await expect(
+          target.command(
+            envelope('fresh-edit', {
+              type: 'chat.edit_queued_message',
+              chatId: 'chat-1',
+              queuedMessageId: 'queue-1',
+              text: 'Updated',
+              queuedMessageRevision: 1,
+            }),
+          ),
+        ).resolves.toMatchObject({ outcome: 'applied' });
+
+        queue.resetForTests();
+        // A restarted service hydrates the durable queue on its next read.
+        Object.defineProperty(target, 'reconcileHostRuntime', { value: true });
+        const state = await target.getState(SCOPE);
+
+        expect(state.queue[0]?.queue[0]).toMatchObject({
+          id: 'queue-1',
+          text: 'Updated',
+          revision: 2,
+        });
+      } finally {
+        queue.resetForTests();
+      }
+    });
+
+    it('an edit lock through the chat command is idempotent for its acquisition and writes no receipt', async () => {
+      let idle = false;
+      const dispatched: string[] = [];
+      const target = serviceWithRepository().target;
+      await createChat(target);
+      const queue = stateBackedQueue(
+        target,
+        async (request) => {
+          dispatched.push(request.userMessageId);
+        },
+        {
+          hasActiveProviderTurn: () => !idle,
+          createId: () => 'queue-1',
+          schedule: (callback, delayMs) => {
+            const timer = setTimeout(callback, delayMs);
+            timer.unref();
+            return timer;
+          },
+        },
+      );
+      mockedGetChatQueueService.mockReturnValue(queue);
+      try {
+        await queue.submit(
+          {
+            ...SCOPE,
+            chatId: 'chat-1',
+            userMessageId: 'queued-user',
+            text: 'Original',
+          },
+          'desktop',
+        );
+        const lock = (
+          commandId: string,
+          locked: boolean,
+          acquisitionId: string,
+        ): ReturnType<ChatStateService['command']> =>
+          target.command(
+            envelope(commandId, {
+              type: 'chat.set_queued_message_edit_lock',
+              chatId: 'chat-1',
+              queuedMessageId: 'queue-1',
+              locked,
+              acquisitionId,
+            }),
+          );
+
+        await expect(lock('lock-1', true, 'a1')).resolves.toMatchObject({
+          outcome: 'applied',
+        });
+        await expect(lock('lock-2', true, 'a1')).resolves.toMatchObject({
+          outcome: 'applied',
+        });
+        await expect(
+          target.getCommandReceipt({ ...SCOPE, commandId: 'lock-1' }),
+        ).resolves.toBeNull();
+        await expect(
+          target.getCommandReceipt({ ...SCOPE, commandId: 'lock-2' }),
+        ).resolves.toBeNull();
+        await expect(lock('lock-3', true, 'a2')).resolves.toMatchObject({
+          outcome: 'rejected',
+          reason: 'This message is no longer available to edit.',
+        });
+
+        // The provider turn ends, so the host gate is idle.
+        idle = true;
+        queue.onTurnTerminal({ ...SCOPE, chatId: 'chat-1' }, 'complete');
+        await new Promise<void>((resolve) => setTimeout(resolve, 50));
+        expect(dispatched).toEqual([]);
+        await expect(lock('unlock-1', false, 'a1')).resolves.toMatchObject({
+          outcome: 'applied',
+        });
+        for (
+          let attempt = 0;
+          attempt < 100 && dispatched.length === 0;
+          attempt += 1
+        )
+          await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        expect(dispatched).toEqual(['queued-user']);
+      } finally {
+        queue.resetForTests();
+      }
+    });
+    it('a repeated edit lock waits for the first save and fails with it', async () => {
+      let failNextSave = false;
+      const target = serviceWithRepository().target;
+      await createChat(target);
+      const queue = stateBackedQueue(target, async () => undefined, {
+        hasActiveProviderTurn: () => true,
+        createId: () => 'queue-1',
+        persistRuntime: (...args) => {
+          if (failNextSave) {
+            failNextSave = false;
+            return Promise.reject(new Error('disk full'));
+          }
+          return target.reconcileHostQueue(...args);
+        },
+      });
+      mockedGetChatQueueService.mockReturnValue(queue);
+      try {
+        await queue.submit(
+          {
+            ...SCOPE,
+            chatId: 'chat-1',
+            userMessageId: 'queued-user',
+            text: 'Original',
+          },
+          'desktop',
+        );
+        const chat = { ...SCOPE, chatId: 'chat-1' };
+        failNextSave = true;
+        const first = queue.setEditLock(chat, 'queue-1', true, 'a1');
+        const repeat = queue.setEditLock(chat, 'queue-1', true, 'a1');
+
+        await expect(first).rejects.toThrow('disk full');
+        await expect(repeat).rejects.toThrow(
+          'This message is no longer available to edit.',
+        );
+        expect(
+          queue
+            .getWorktreeSnapshots(SCOPE.projectId, SCOPE.worktreeId)[0]
+            ?.queue.find((row) => row.id === 'queue-1')?.editLocked,
+        ).toBeFalsy();
+      } finally {
+        queue.resetForTests();
+      }
+    });
+
+    it.each([
+      [
+        'chat.cancel_queued_message',
+        (queuedMessageId: string): ChatCommand => ({
+          type: 'chat.cancel_queued_message',
+          chatId: 'chat-1',
+          queuedMessageId,
+          queuedMessageRevision: 1,
+        }),
+      ],
+      [
+        'chat.edit_queued_message',
+        (queuedMessageId: string): ChatCommand => ({
+          type: 'chat.edit_queued_message',
+          chatId: 'chat-1',
+          queuedMessageId,
+          text: 'Stale',
+          queuedMessageRevision: 1,
+        }),
+      ],
+    ])(
+      'a revision-guarded %s that reaches a retained terminal input answers conflict and changes nothing',
+      async (type, guardedCommand) => {
+        const validation = jest
+          .spyOn(senderContext, 'revalidateAgentSenderRequest')
+          .mockResolvedValue(undefined);
+        const target = serviceWithRepository().target;
+        await createChat(target);
+        const queue = stateBackedQueue(target, async () => undefined);
+        mockedGetChatQueueService.mockReturnValue(queue);
+        const singleton = jest
+          .spyOn(chatStateServiceModule, 'getChatStateService')
+          .mockReturnValue(target);
+        try {
+          const retained = reviewAgentRequest('retained-guarded');
+          await target.retainTrustedTerminalInput(retained);
+          const before = (await target.getState(SCOPE)).tabsFile.tabs[0]
+            .inputDelivery?.rows;
+
+          const result = await target.command(
+            envelope(`guarded-${type}`, guardedCommand(retained.userMessageId)),
+          );
+
+          expect(result).toMatchObject({
+            outcome: 'conflict',
+            reason: QUEUE_ENTRY_REVISION_CONFLICT_REASON,
+          });
+          expect(
+            (await target.getState(SCOPE)).tabsFile.tabs[0].inputDelivery?.rows,
+          ).toEqual(before);
+        } finally {
+          singleton.mockRestore();
+          queue.resetForTests();
+          validation.mockRestore();
+        }
+      },
+    );
+  });
 
   describe('a pipeline send with a per-turn override (D2)', () => {
     const sender = {

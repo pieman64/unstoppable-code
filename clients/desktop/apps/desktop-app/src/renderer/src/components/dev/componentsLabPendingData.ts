@@ -200,6 +200,13 @@ export const RATCHET_BACKLOG: readonly RatchetBacklog[] = [
     baseline: 'docs/design/legacy-tables.baseline.json',
   },
   {
+    family: 'Rows',
+    remaining: 76,
+    breakdown:
+      '46 raw buttons, 4 links, 5 clickable divs, 21 hover wrappers, across 60 files',
+    baseline: 'docs/design/legacy-rows.baseline.json',
+  },
+  {
     family: 'Avatars',
     remaining: 4,
     breakdown: '3 profile pictures, 1 local avatar, all on marketing pages',

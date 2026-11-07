@@ -22,7 +22,6 @@ import type {
   UpdateSharedSkillRequest,
   WriteRawSkillRequest,
 } from '@canopy/desktop-shared/types/skills';
-import type { IPCResult } from '@canopy/desktop-shared/types/pipeline';
 import type { IpcMainInvokeEvent } from 'electron';
 import { BrowserWindow } from 'electron';
 import {
@@ -43,6 +42,16 @@ import {
 import { registerIpcHandler } from '../ipc/register';
 import { refreshInvocableInventoryAfterMutation } from '../plugins/invocable-inventory-service';
 import * as service from './skill-service';
+import {
+  checkSkillUpdatesThroughCore,
+  fetchAvailableSkillsThroughCore,
+  installSkillsThroughCore,
+  listSkillFilesThroughCore,
+  readSkillFileThroughCore,
+  removeSkillThroughCore,
+  saveCustomSkillThroughCore,
+  updateSkillThroughCore,
+} from '../canopy-runtime/skill-catalog-dispatch';
 import { listDesktopPublisherSkills } from './publisher-marketplace';
 import {
   createSharedSkill,
@@ -84,17 +93,6 @@ export function registerSkillHandlers(): void {
   registerIpcHandler(SKILLS_CHANNELS.MARKETPLACE_LIST, () =>
     listDesktopPublisherSkills(),
   );
-  const refreshAfterSuccess = async <T>(
-    reason: string,
-    operation: () => Promise<IPCResult<T>> | IPCResult<T>,
-  ): Promise<IPCResult<T>> => {
-    const result = await operation();
-    if (result.success) {
-      refreshInvocableInventoryAfterMutation(reason);
-    }
-    return result;
-  };
-
   const progressFor = (
     event: IpcMainInvokeEvent,
   ): ((progress: SkillUpdateProgress) => void) => {
@@ -120,35 +118,25 @@ export function registerSkillHandlers(): void {
   });
   registerIpcHandler(
     SKILLS_CHANNELS.FETCH_AVAILABLE,
-    (_event, source: string) => service.fetchAvailable(source),
+    (_event, source: string) => fetchAvailableSkillsThroughCore(source),
   );
   registerIpcHandler(
     SKILLS_CHANNELS.INSTALL,
     (_event, source: string, skillNames: string[]) =>
-      refreshAfterSuccess('skills:install', () =>
-        service.installSkills(source, skillNames),
-      ),
+      installSkillsThroughCore(source, skillNames),
   );
   registerIpcHandler(
     SKILLS_CHANNELS.REMOVE,
-    async (_event, sourceId: string, skillName: string) => {
-      await assertStoredSkillContext(`${sourceId}/${skillName}`);
-      return refreshAfterSuccess('skills:remove', () =>
-        service.removeSkillForContext(sourceId, skillName),
-      );
-    },
+    (_event, sourceId: string, skillName: string) =>
+      removeSkillThroughCore(sourceId, skillName),
   );
   registerIpcHandler(
     SKILLS_CHANNELS.UPDATE,
-    async (_event, sourceId: string, skillName: string) => {
-      await assertStoredSkillContext(`${sourceId}/${skillName}`);
-      return refreshAfterSuccess('skills:update', () =>
-        service.updateSkill(sourceId, skillName),
-      );
-    },
+    (_event, sourceId: string, skillName: string) =>
+      updateSkillThroughCore(sourceId, skillName),
   );
   registerIpcHandler(SKILLS_CHANNELS.CHECK_UPDATES, (event) =>
-    service.checkUpdates(progressFor(event)),
+    checkSkillUpdatesThroughCore(progressFor(event)),
   );
   registerIpcHandler(
     SKILLS_CHANNELS.READ_CONTENT,
@@ -159,24 +147,18 @@ export function registerSkillHandlers(): void {
   );
   registerIpcHandler(
     SKILLS_CHANNELS.LIST_FILES,
-    async (_event, sourceId: string, skillName: string) => {
-      await assertStoredSkillContext(`${sourceId}/${skillName}`);
-      return service.listSkillFiles(sourceId, skillName);
-    },
+    (_event, sourceId: string, skillName: string) =>
+      listSkillFilesThroughCore(sourceId, skillName),
   );
   registerIpcHandler(
     SKILLS_CHANNELS.READ_FILE,
-    async (_event, sourceId: string, skillName: string, filePath: string) => {
-      await assertStoredSkillContext(`${sourceId}/${skillName}`);
-      return service.readSkillFile(sourceId, skillName, filePath);
-    },
+    (_event, sourceId: string, skillName: string, filePath: string) =>
+      readSkillFileThroughCore(sourceId, skillName, filePath),
   );
   registerIpcHandler(
     SKILLS_CHANNELS.SAVE_CUSTOM,
     (_event, payload: SaveCustomSkillRequest) =>
-      refreshAfterSuccess('skills:save-custom', () =>
-        service.saveCustomSkill(payload),
-      ),
+      saveCustomSkillThroughCore(payload),
   );
   registerIpcHandler(SKILLS_CHANNELS.READ_RAW, (_event, skillId: string) =>
     service.readRawSkill(skillId),

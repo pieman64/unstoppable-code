@@ -17,17 +17,17 @@
  * guest has ALREADY been given. On a conversion surface that is an argument
  * against converting. State it as what the account keeps giving them. (The
  * daily free AI Credits used to be that row in `DEFAULT_CLOUD_AUTH_BENEFITS`;
- * the row is gone because the drip is now opt-in, so signing in alone does not
- * deliver it.)
+ * the row is gone because free daily credits are no longer offered (CAN-4762
+ * onward), so signing in does not deliver them.)
  *
  * Third tone rule, and the expensive one: the perk named here must be something
  * the guest does not already have. An earlier version of the sign-in label
- * offered free Codex, which a guest can already get — the daily AI-credit drip
- * is opt-in on the same terms for guests and signed-in free accounts alike
- * (`dailyDripCapCredits`, off until the user turns it on),
- * `loadAiCreditsRoutingContext` has no guest exclusion, and the OpenAI forward
- * route admits on a funded ledger with no `isAnonymous` check. Signing in
- * neither grants the credits nor turns them on. A CTA that asks
+ * offered free Codex, which a guest can already get on any funded ledger
+ * (leftover or purchased credits) — `loadAiCreditsRoutingContext` has no guest
+ * exclusion, and the OpenAI forward route admits on a funded ledger with no
+ * `isAnonymous` check. Free daily credits are no longer offered to guests or
+ * signed-in free accounts (CAN-4762 onward), so signing in grants no credits
+ * either. A CTA that asks
  * for a signup in exchange for something the reader already has is worse than
  * a vague one. Check the gate before writing the promise.
  */
@@ -84,8 +84,8 @@ export const GUEST_WORK_PRESERVED: string = GUEST_WORK_PRESERVED_COPY;
  * reassuring that guest work is not at risk.
  *
  * It says nothing about free AI Credits. It used to claim "Your free AI Credits
- * already work", which stopped being true once the daily drip became opt-in
- * (off until the user turns it on), and per the second tone rule a perk the
+ * already work", which stopped being true once free daily credits were no
+ * longer offered (CAN-4762 onward), and per the second tone rule a perk the
  * guest already has is an argument against signing in anyway.
  */
 export const GUEST_UPGRADE_NUDGE_BODY: string =
@@ -104,9 +104,9 @@ export const GUEST_UPGRADE_NUDGE_BODY: string =
 // user can run right now.
 //
 // Per the third tone rule above: this must NOT offer free AI Credits as the
-// perk. Guests can turn on the same opt-in daily drip a signed-in account can,
-// so the thing the account actually unlocks here is the expensive hosted model
-// itself — say that.
+// perk. Free daily credits are no longer offered to guests or signed-in
+// accounts (CAN-4762 onward), so the thing the account actually unlocks here
+// is the expensive hosted model itself — say that.
 // ---------------------------------------------------------------------------
 
 /**

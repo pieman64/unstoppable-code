@@ -9,6 +9,7 @@ import {
   describeCodexSpeedAvailability,
   isDefinitiveCodexSpeedRejection,
   parseCodexSpeedCatalogModel,
+  readCodexWireContextWindow,
   type CodexSpeedAvailability,
   type CodexSpeedRejectionKind,
   type CodexSpeedRouteFacts,
@@ -165,6 +166,14 @@ const accountProxyCatalog: RouteCatalogState = {
   inFlight: null,
 };
 
+/** How long a catalog fetch waits for the window bounds before going on. */
+const CONTEXT_WINDOW_WAIT_MS = 2_000;
+/** The last bounds read, for a fetch whose own read is slow or failed. */
+let lastContextWindows: ReadonlyMap<
+  string,
+  ReturnType<typeof readCodexWireContextWindow>
+> = new Map();
+
 function collectPage(payload: unknown, result: FetchResult): string | null {
   if (!isRecord(payload) || !Array.isArray(payload.data)) {
     throw new Error('Codex model/list returned an invalid payload');
@@ -214,6 +223,13 @@ async function listAccountModels(): Promise<FetchResult> {
     );
     return result;
   }
+  // Bounded from the start of discovery, alongside `model/list`, so the
+  // optional bounds never push the required list past the fetch timeout; a
+  // later read still reaches the cache.
+  const contextWindows = withTimeout(
+    readAccountContextWindows(generation),
+    CONTEXT_WINDOW_WAIT_MS,
+  ).catch(() => undefined);
   const admin = getCodexRuntimeService().admin();
   // Rebind on every fetch: the admin profile anchor (and so its account
   // listener) can be evicted or replaced between fetches.
@@ -235,7 +251,65 @@ async function listAccountModels(): Promise<FetchResult> {
     if (!cursor) break;
   }
   result.truncated = cursor !== null;
+  const read = await contextWindows;
+  // A sign-in change during the read makes both its answer and the cache
+  // another account's; leave the bounds unknown instead.
+  const windows =
+    startedGeneration === generation
+      ? (read ?? lastContextWindows)
+      : new Map<string, ReturnType<typeof readCodexWireContextWindow>>();
+  mergeContextWindows(result.models, windows);
   return result;
+}
+
+function mergeContextWindows(
+  models: readonly CodexSpeedCatalogModel[],
+  windows: NonNullable<typeof lastContextWindows>,
+): void {
+  for (const model of models) {
+    const fields = windows.get(model.model) ?? windows.get(model.id);
+    if (fields) Object.assign(model, fields);
+  }
+}
+
+/**
+ * `model/list` omits context window bounds; the catalog Codex uses for this
+ * sign-in (`codex debug models`) has them. Never rejects: without it the
+ * windows stay unknown and the context window setting is unavailable.
+ */
+async function readAccountContextWindows(
+  startedGeneration: number,
+): Promise<typeof lastContextWindows | undefined> {
+  try {
+    const catalog = await getCodexRuntimeService().getAccountModelCatalog();
+    const entries =
+      isRecord(catalog) && Array.isArray(catalog.models) ? catalog.models : [];
+    const windows = new Map<
+      string,
+      ReturnType<typeof readCodexWireContextWindow>
+    >();
+    for (const entry of entries) {
+      if (isRecord(entry) && typeof entry.slug === 'string') {
+        windows.set(entry.slug, readCodexWireContextWindow(entry));
+      }
+    }
+    // A read from before a sign-in change never refills the cleared cache.
+    if (startedGeneration !== generation) return undefined;
+    lastContextWindows = windows;
+    // A read that outlasted the list's wait still reaches the cached
+    // catalog, so a pending context window resolves on the next turn.
+    const cached = currentEntry();
+    if (cached) {
+      mergeContextWindows(cached.models, windows);
+      broadcast();
+    }
+    return windows;
+  } catch (error) {
+    logMainProcessInfo('codex-speed: context window bounds unavailable', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
@@ -684,6 +758,8 @@ export function invalidateCodexSpeedCatalog(
   lastFetchedAt = null;
   inFlight = null;
   denials.clear();
+  // Another sign-in can have other bounds; never lend it the last ones.
+  lastContextWindows = new Map();
   releaseAccountSubscription();
   broadcast();
   scheduleRefresh();

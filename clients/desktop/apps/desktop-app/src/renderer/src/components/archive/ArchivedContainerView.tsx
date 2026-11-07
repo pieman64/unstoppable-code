@@ -65,6 +65,7 @@ import {
   Disclosure,
   ListRow,
   Markdown,
+  Surface,
   TabBar,
   TranscriptPagingControls,
 } from '@canopy/ui-shared/components';
@@ -750,13 +751,9 @@ export function ArchivedContainerView({
       {/* Header */}
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-2">
         {kind === 'worktree' ? (
-          <BranchIcon
-            width={14}
-            height={14}
-            className="shrink-0 fg-secondary"
-          />
+          <BranchIcon size="sm" className="shrink-0 fg-secondary" />
         ) : (
-          <ChatIcon width={14} height={14} className="shrink-0 fg-secondary" />
+          <ChatIcon size="sm" className="shrink-0 fg-secondary" />
         )}
         <span
           className={`${POSTHOG_REPLAY_MASK_CLASS} min-w-0 truncate text-s font-medium fg-primary`}
@@ -916,9 +913,9 @@ export function ArchivedContainerView({
             }`}
           >
             {locked ? (
-              <ArchiveIcon width={11} height={11} aria-hidden="true" />
+              <ArchiveIcon size="sm" aria-hidden="true" />
             ) : (
-              <TrashIcon width={11} height={11} aria-hidden="true" />
+              <TrashIcon size="sm" aria-hidden="true" />
             )}
             {locked
               ? `Archived ${formatDateOrEmpty(summary?.lockedAt)}`
@@ -959,9 +956,9 @@ export function ArchivedContainerView({
                 spinnerTone="secondary"
               />
             ) : locked ? (
-              <TrashIcon width={14} height={14} aria-hidden="true" />
+              <TrashIcon size="sm" aria-hidden="true" />
             ) : (
-              <ArchiveIcon width={14} height={14} aria-hidden="true" />
+              <ArchiveIcon size="sm" aria-hidden="true" />
             )}
             {locked ? 'Delete' : 'Archive'}
           </HeaderActionButton>
@@ -981,7 +978,7 @@ export function ArchivedContainerView({
             {archiveActions.restoring ? (
               <RunningActionIcon cancellationRequested spinnerTone="accent" />
             ) : (
-              <RefreshIcon width={14} height={14} aria-hidden="true" />
+              <RefreshIcon size="sm" aria-hidden="true" />
             )}
             {archiveActions.restoring
               ? 'Restoring…'
@@ -1004,7 +1001,7 @@ export function ArchivedContainerView({
               onClick={() => setConfirmingDeleteTarget(deleteTarget)}
               title="Delete permanently: remove this item and its retained history for good"
             >
-              <TrashPermanentlyIcon width={14} height={14} aria-hidden="true" />
+              <TrashPermanentlyIcon size="sm" aria-hidden="true" />
               Permanent
             </HeaderActionButton>
           )}
@@ -1014,7 +1011,7 @@ export function ArchivedContainerView({
             onClick={onClose}
             title="Back to Archived and deleted"
           >
-            <BackIcon width={14} height={14} aria-hidden="true" />
+            <BackIcon size="sm" aria-hidden="true" />
             Back
           </HeaderActionButton>
         </div>
@@ -1211,7 +1208,10 @@ export function ArchivedContainerView({
               </div>
               {/* Explicit-height flex column: ChatMessageList's scroller is
                   `absolute inset-0` and needs a resolved height. */}
-              <div className="mx-4 mb-4 flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border bg-base/60">
+              <Surface
+                variant="group"
+                className="flex flex-col mx-4 mb-4 min-h-0 flex-1 overflow-hidden"
+              >
                 {transcriptLoading ? (
                   <div className="flex flex-1 items-center justify-center">
                     <LoadingSpinner tone="secondary" />
@@ -1267,7 +1267,7 @@ export function ArchivedContainerView({
                       : 'Select a chat to view its transcript.'}
                   </div>
                 )}
-              </div>
+              </Surface>
             </div>
           </div>
         )
@@ -1398,16 +1398,21 @@ export function ArchivedContainerView({
                     </span>
                   </span>
                 </div>
-                <div
+                <Surface
+                  variant="group"
+                  className="mx-4 mb-4 min-h-0 flex-1 flex flex-col overflow-hidden"
                   data-testid="archived-plan-content"
-                  className={`${POSTHOG_REPLAY_BLOCK_CLASS} mx-4 mb-4 min-h-0 flex-1 overflow-y-auto rounded-xl border bg-base/60 p-4`}
                 >
-                  <div className="prose prose-sm [--tw-prose-body:var(--fg-primary)] dark:prose-invert max-w-none text-xs leading-5 fg-secondary prose-code:fg-success prose-code:before:content-none prose-code:after:content-none prose-headings:fg-primary/80 prose-strong:fg-primary/80">
-                    <Markdown options={PLAN_MARKDOWN_OPTIONS}>
-                      {stripPlanTitleLine(selectedPlan.content)}
-                    </Markdown>
+                  <div
+                    className={`overflow-y-auto p-4 min-h-0 flex-1 ${POSTHOG_REPLAY_BLOCK_CLASS}`}
+                  >
+                    <div className="prose prose-sm [--tw-prose-body:var(--fg-primary)] dark:prose-invert max-w-none text-xs leading-5 fg-secondary prose-code:fg-success prose-code:before:content-none prose-code:after:content-none prose-headings:fg-primary/80 prose-strong:fg-primary/80">
+                      <Markdown options={PLAN_MARKDOWN_OPTIONS}>
+                        {stripPlanTitleLine(selectedPlan.content)}
+                      </Markdown>
+                    </div>
                   </div>
-                </div>
+                </Surface>
               </>
             ) : (
               <div className="flex flex-1 items-center justify-center text-s fg-secondary">

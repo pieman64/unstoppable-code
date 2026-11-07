@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { readPluginCatalog, readPluginCacheIndex } from './catalog-read-health';
 import { getCanopyDataDir } from '../../canopy-paths';
 import { getBundledSkillDir } from '../../pipelines/config-paths';
 import type {
@@ -97,11 +98,14 @@ function safeCodexPluginName(name: string): string | null {
 }
 
 function readPluginsCache(): PluginsCache | null {
-  const cache = readJson<PluginsCache>(
-    path.join(getCanopyDataDir(), 'plugins-cache.json'),
+  const root = getCanopyDataDir();
+  const catalog = readPluginCatalog(path.join(root, 'plugins-cache.json'));
+  const index = readPluginCacheIndex(
+    path.join(root, 'plugin-cache-index.json'),
   );
-  return cache?.version === 2 && Array.isArray(cache.marketplaces)
-    ? cache
+  return catalog.state === 'valid' &&
+    (index.state === 'valid' || index.state === 'absent')
+    ? catalog.data
     : null;
 }
 
@@ -447,51 +451,6 @@ function resolveStandaloneMcpServers(
   return result;
 }
 
-function getPluginFacets(
-  plugin: PluginInfo,
-  marketplace: MarketplaceInfo,
-): PluginInfo['facets'] {
-  if (plugin.facets) {
-    return plugin.facets;
-  }
-
-  const legacy = plugin as PluginInfo & {
-    externalSource?: { url?: string; sha?: string } | null;
-    cachePath?: string | null;
-    cachedAt?: string | null;
-  };
-  const legacyInstallLocation =
-    legacy.cachePath ??
-    (plugin.sourcePath && !legacy.externalSource
-      ? path.resolve(marketplace.installLocation, plugin.sourcePath)
-      : '');
-
-  return {
-    claude: {
-      provider: 'claude',
-      mode: 'native',
-      name: plugin.name,
-      description: plugin.description ?? '',
-      version: plugin.version ?? '',
-      author: plugin.author ?? '',
-      category: plugin.category ?? '',
-      homepage: plugin.homepage ?? '',
-      installLocation: legacyInstallLocation,
-      sourcePath: plugin.sourcePath ?? '',
-      externalSource: legacy.externalSource?.url
-        ? {
-            source: 'github',
-            url: legacy.externalSource.url,
-            sha: legacy.externalSource.sha,
-          }
-        : undefined,
-      cachePath: legacy.cachePath ?? undefined,
-      cachedAt: legacy.cachedAt ?? undefined,
-      details: plugin.details,
-    },
-  };
-}
-
 function resolveFacetPath(
   plugin: PluginInfo,
   facet: NonNullable<PluginInfo['facets']['claude']>,
@@ -553,7 +512,7 @@ function resolvePluginSelection(
     return null;
   }
 
-  const facets = getPluginFacets(plugin, marketplace);
+  const facets = plugin.facets;
   const codexPurpose = purpose === 'codex-session';
 
   if (!codexPurpose) {

@@ -1,3 +1,6 @@
+import { prepareNativeQualification } from './fixtures/native-vault-qualification';
+import { readCredentialProfileDiagnostic } from './fixtures/credential-profile-diagnostics';
+import type { PreparedNativeArtifact } from '../secret-protection/authorization';
 import {
   execFile,
   execFileSync,
@@ -37,6 +40,8 @@ const fixtures = join(__dirname, 'fixtures');
 const run = promisify(execFile);
 const prefix = `w${randomUUID().replaceAll('-', '').slice(0, 20)}`;
 const authority = createHash('sha256').update(prefix).digest('hex');
+let preparedNative: PreparedNativeArtifact | undefined;
+let disposePreparation: (() => Promise<void>) | undefined;
 let directory = '',
   addon = '',
   principal = '',
@@ -120,7 +125,7 @@ const target = (name: string): string =>
 function port(sid = principal): PlatformSecretProtectionServices {
   return createSecretProtectionServices({
     os: 'win32',
-    nativePath: addon,
+    preparedNative,
     applicationId: 'com.canopy.dev',
     authorityId: authority,
     brandId: 'canopy',
@@ -224,6 +229,30 @@ windows(
         ],
         { cwd: root, stdio: 'pipe', timeout: 240_000 },
       );
+      const sea: unknown = JSON.parse(
+        execFileSync(
+          process.execPath,
+          [
+            join(root, 'scripts/lib/native-vault-sea-qualification.mjs'),
+            addon,
+            join(directory, 'renamed-sea'),
+          ],
+          { encoding: 'utf8', timeout: 120_000 },
+        )
+          .trim()
+          .split(/\r?\n/)
+          .at(-1) ?? '',
+      );
+      expect(sea).toMatchObject({
+        valid: { loads: 1 },
+        replaced: { loads: 0 },
+      });
+      ({ capability: preparedNative, dispose: disposePreparation } =
+        await prepareNativeQualification(
+          addon,
+          directory,
+          join(tmpdir(), 'canopy-native-vault-qualification'),
+        ));
       const loaded = { exports: {} };
       process.dlopen(loaded, aclFixturePath);
       if (!isFixture(loaded.exports))
@@ -260,6 +289,7 @@ windows(
       for (const handle of nativeHandles) releaseNative(handle);
       if (principal && addon)
         for (const name of slots) await port().deleteKeySlot({ name }, call());
+      await disposePreparation?.();
       if (directory)
         rmSync(directory, { recursive: true, force: true, maxRetries: 5 });
     });
@@ -701,10 +731,8 @@ windows(
           mode: 'create',
         }),
       ).toEqual({ kind: 'written' });
-      for (const file of [
-        'credential-child.ts',
-        'credential-profile-child.ps1',
-      ])
+      const files = ['credential-child.ts', 'credential-profile-child.ps1'];
+      for (const file of files)
         copyFileSync(join(fixtures, file), join(directory, file));
       // The runner's node.exe may live under an owner-only TEMP ancestor.
       const profileNode = join(directory, 'node.exe');
@@ -719,7 +747,9 @@ windows(
         `canopy-credential-${randomUUID()}`,
       );
       const stageCreated = join(directory, 'profile-stage-created');
+      const diagnosticReport = join(directory, 'profile-child-diagnostics.log');
       rmSync(stageCreated, { force: true });
+      rmSync(diagnosticReport, { force: true });
       writeFileSync(
         request,
         JSON.stringify({
@@ -732,8 +762,13 @@ windows(
         }),
       );
       const retained = holdNative(name);
+      const profileStarted = performance.now();
+      process.stderr.write(
+        `credential-profile launch:start utc=${new Date().toISOString()}\n`,
+      );
+      let profileStderr = '';
       try {
-        await run(
+        const { stderr } = await run(
           powershell(),
           psArgs('credential-profile.ps1', [
             '-Node',
@@ -751,6 +786,8 @@ windows(
           ]),
           { windowsHide: true, timeout: 45000, maxBuffer: 1 << 20 },
         );
+        profileStderr = stderr;
+        process.stderr.write(stderr);
         const receipt: unknown = JSON.parse(readFileSync(output, 'utf8'));
         expect(receipt).toMatchObject({
           challenge,
@@ -765,7 +802,36 @@ windows(
           directoryDenied: true,
           mutexDenied: true,
         });
+      } catch (error) {
+        const stderr: unknown =
+          typeof error === 'object' && error !== null
+            ? Reflect.get(error, 'stderr')
+            : undefined;
+        const diagnostics = [
+          typeof stderr === 'string' ? stderr : profileStderr,
+        ];
+        // A persists the report before deleting staging; timeout may bypass that finally.
+        if (existsSync(diagnosticReport))
+          diagnostics.push(
+            readCredentialProfileDiagnostic(diagnosticReport, 16384),
+          );
+        else if (existsSync(stageCreated))
+          for (const log of [
+            'profile-child-host.log',
+            'profile-child-ps.log',
+            'profile-child-node.log',
+          ])
+            diagnostics.push(readCredentialProfileDiagnostic(join(stage, log)));
+        else diagnostics.push('credential-profile staging-not-created');
+        // Jest reporters retain the thrown message even when stderr is buffered or omitted.
+        throw new Error(
+          `Independent credential profile failed.\n${diagnostics.join('\n')}`,
+          { cause: error },
+        );
       } finally {
+        process.stderr.write(
+          `credential-profile launch:finished elapsedMs=${Math.round(performance.now() - profileStarted)}\n`,
+        );
         releaseNative(retained);
         // execFile's timeout can kill PowerShell before its finally runs.
         // The marker is A-only and written only after exclusive protected creation.

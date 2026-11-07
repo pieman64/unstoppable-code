@@ -44,6 +44,7 @@ import { FactCardsSkeleton } from './FactCardsSkeleton';
 import { FactDetailDrawer } from './FactDetailDrawer';
 import { useMemoryErrorCopy } from './memory-error-copy';
 import { RetrievalPreview } from './RetrievalPreview';
+import { Surface } from '@canopy/ui-shared/components';
 
 interface FactCorpusViewProps {
   orgId: string;
@@ -383,7 +384,7 @@ export function FactCorpusView({
         <RetrievalPreview orgId={orgId} />
       ) : (
         <>
-          <div className="rounded-xl border bg-card p-4">
+          <Surface variant="card" padding="default">
             <form onSubmit={submitSearch} className="flex gap-2">
               <SearchField
                 value={query}
@@ -431,7 +432,7 @@ export function FactCorpusView({
                 aria-label="Created to"
               />
             </div>
-          </div>
+          </Surface>
 
           {error !== null && (
             <ErrorBanner
@@ -446,9 +447,11 @@ export function FactCorpusView({
               <FactCardsSkeleton layout="grid" />
             </DelayedLoadingPlaceholder>
           ) : facts.length === 0 ? (
-            <div className="rounded-xl border border-dashed py-16 text-center">
-              <p className="text-s fg-secondary">No matching memory facts.</p>
-            </div>
+            <Surface variant="dashed">
+              <div className="py-16 text-center">
+                <p className="text-s fg-secondary">No matching memory facts.</p>
+              </div>
+            </Surface>
           ) : (
             <div className="grid gap-3 lg:grid-cols-2">
               {facts.map((fact) => (

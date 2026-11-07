@@ -14,7 +14,14 @@ import {
   type AuthTerminalProvider,
 } from '@canopy/desktop-shared/types';
 import { sendToWindow } from '../lib/window-send';
-import { getAuthTerminalManager } from '../auth-terminal/manager';
+import {
+  getActiveSignInTerminalSessionId,
+  resizeSignInTerminal,
+  setSignInTerminalEventSender,
+  startSignInTerminal,
+  stopSignInTerminal,
+  writeSignInTerminal,
+} from '../sign-in-runs/sign-in-runs';
 import { registerIpcHandler } from './register';
 import type { ManagedOpenCodeRuntime } from '../opencode/connection';
 import {
@@ -75,9 +82,8 @@ async function refreshProviderAfterAuthTerminalExit(
 export function registerAuthTerminalHandlers(
   getWindow: () => BrowserWindow | null,
 ): void {
-  const manager = getAuthTerminalManager();
   const openCodeSessions = new Map<string, () => Promise<void>>();
-  manager.setEventSender((channel, payload): void => {
+  setSignInTerminalEventSender((channel, payload): void => {
     if (channel === IPC_CHANNELS.authTerminalExit && 'provider' in payload) {
       if (payload.provider === 'opencode') {
         const release = openCodeSessions.get(payload.sessionId);
@@ -131,7 +137,6 @@ export function registerAuthTerminalHandlers(
         throw new Error('Use the managed Codex sign-in flow.');
       if (
         provider !== 'claude' &&
-        provider !== 'codex' &&
         provider !== 'github' &&
         provider !== 'opencode'
       ) {
@@ -169,13 +174,13 @@ export function registerAuthTerminalHandlers(
         );
         try {
           runtime.signal.throwIfAborted();
-          const sessionId = manager.start(
+          const { sessionId } = await startSignInTerminal({
             provider,
-            request.cols,
-            request.rows,
-            runtime.executable,
-          );
-          const stop = (): void => manager.stop(sessionId);
+            cols: request.cols,
+            rows: request.rows,
+            verifiedOpenCodeExecutable: runtime.executable,
+          });
+          const stop = (): void => stopSignInTerminal(sessionId);
           const release = (): Promise<void> => {
             openCodeSessions.delete(sessionId);
             runtime.signal.removeEventListener('abort', stop);
@@ -183,7 +188,7 @@ export function registerAuthTerminalHandlers(
           };
           openCodeSessions.set(sessionId, release);
           runtime.signal.addEventListener('abort', stop, { once: true });
-          if (manager.getActiveSessionId() !== sessionId) await release();
+          if (getActiveSignInTerminalSessionId() !== sessionId) await release();
           else if (runtime.signal.aborted) stop();
           return { sessionId };
         } catch (error) {
@@ -203,11 +208,19 @@ export function registerAuthTerminalHandlers(
               'native_login',
               undefined,
               () =>
-                Promise.resolve(
-                  manager.start(request.provider, request.cols, request.rows),
-                ),
+                startSignInTerminal({
+                  provider,
+                  cols: request.cols,
+                  rows: request.rows,
+                }).then((started) => started.sessionId),
             )
-          : manager.start(request.provider, request.cols, request.rows);
+          : (
+              await startSignInTerminal({
+                provider,
+                cols: request.cols,
+                rows: request.rows,
+              })
+            ).sessionId;
       return { sessionId };
     },
   );
@@ -215,21 +228,21 @@ export function registerAuthTerminalHandlers(
   registerIpcHandler<[AuthTerminalWriteRequest], void>(
     IPC_CHANNELS.authTerminalWrite,
     (_event, request): void => {
-      manager.write(request.sessionId, request.data);
+      writeSignInTerminal(request.sessionId, request.data);
     },
   );
 
   registerIpcHandler<[AuthTerminalResizeRequest], void>(
     IPC_CHANNELS.authTerminalResize,
     (_event, request): void => {
-      manager.resize(request.sessionId, request.cols, request.rows);
+      resizeSignInTerminal(request.sessionId, request.cols, request.rows);
     },
   );
 
   registerIpcHandler<[AuthTerminalStopRequest], void>(
     IPC_CHANNELS.authTerminalStop,
     (_event, request): void => {
-      manager.stop(request.sessionId);
+      stopSignInTerminal(request.sessionId);
     },
   );
 }

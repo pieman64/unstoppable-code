@@ -14,8 +14,8 @@ import {
 import {
   DocumentPencilIcon,
   ShareIcon,
+  LinkIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
-import { Link as LinkIcon } from 'lucide-react';
 import { PipelineShareLabel } from './PipelineShareLabel';
 import { TriggerBadge } from './PipelineTriggerBadge';
 import { getTriggerMeta } from './pipeline-trigger-meta';
@@ -259,11 +259,7 @@ export function PipelineTableRow({
             disabled={toggling}
             testId={`pipeline-toggle-enabled-${pipeline.id}`}
           >
-            {enabled ? (
-              <EyeIcon width={14} height={14} />
-            ) : (
-              <EyeOffIcon width={14} height={14} />
-            )}
+            {enabled ? <EyeIcon size="sm" /> : <EyeOffIcon size="sm" />}
           </TableActionButton>
 
           {shareLink && (
@@ -278,9 +274,9 @@ export function PipelineTableRow({
               testId={`pipeline-copy-link-${pipeline.id}`}
             >
               {copied ? (
-                <CheckIcon width={14} height={14} />
+                <CheckIcon size="sm" />
               ) : (
-                <LinkIcon width={14} height={14} aria-hidden />
+                <LinkIcon size="sm" aria-hidden />
               )}
             </TableActionButton>
           )}
@@ -293,9 +289,9 @@ export function PipelineTableRow({
             testId={`pipeline-edit-${pipeline.id}`}
           >
             {isReadonly ? (
-              <DocumentSearchIcon width={14} height={14} />
+              <DocumentSearchIcon size="sm" />
             ) : (
-              <DocumentPencilIcon width={14} height={14} />
+              <DocumentPencilIcon size="sm" />
             )}
           </TableActionButton>
 
@@ -308,7 +304,7 @@ export function PipelineTableRow({
               disabled={sharePending}
               testId={`pipeline-share-${pipeline.id}`}
             >
-              <ShareIcon width={14} height={14} />
+              <ShareIcon size="sm" />
             </TableActionButton>
           )}
 
@@ -324,7 +320,7 @@ export function PipelineTableRow({
               disabled={busy}
               testId={`pipeline-duplicate-${pipeline.id}`}
             >
-              <CopyIcon width={14} height={14} />
+              <CopyIcon size="sm" />
             </TableActionButton>
           )}
 
@@ -344,7 +340,7 @@ export function PipelineTableRow({
               tone={confirmDelete ? 'destructive' : 'default'}
               testId={`pipeline-delete-${pipeline.id}`}
             >
-              <TrashIcon width={14} height={14} />
+              <TrashIcon size="sm" />
             </TableActionButton>
           )}
         </TableActionsCell>

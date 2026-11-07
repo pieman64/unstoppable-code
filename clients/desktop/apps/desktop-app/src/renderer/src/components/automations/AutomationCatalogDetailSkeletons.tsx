@@ -6,6 +6,7 @@ import {
   SettingsRowsSection,
   SettingsRowsValue,
   Skeleton,
+  Surface,
 } from '@canopy/ui-shared/components';
 import { McpServerLogo } from '../shared/McpServerLogo';
 
@@ -35,7 +36,7 @@ export function SharedAutomationDetailSkeleton(): JSX.Element {
       label="Loading automation"
       testId="shared-automation-detail-loading"
     >
-      <div className="flex flex-col gap-4 rounded-lg border bg-base p-4">
+      <Surface variant="inset" padding="default" gap="group">
         <div className="min-w-0">
           <Heading level={3} variant="section" truncate>
             {SAMPLE_NAME}
@@ -54,7 +55,7 @@ export function SharedAutomationDetailSkeleton(): JSX.Element {
             ))}
           </SettingsRowsGroup>
         </SettingsRowsSection>
-      </div>
+      </Surface>
     </Skeleton>
   );
 }

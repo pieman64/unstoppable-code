@@ -298,9 +298,9 @@ export function WatcherManagementButton({
               onClick={openModal}
               icon={
                 icon === 'bigtop' ? (
-                  <AppAdvisorWatcherIcon width={16} height={16} />
+                  <AppAdvisorWatcherIcon size="sm" />
                 ) : (
-                  <WatcherEyeIcon width={16} height={16} />
+                  <WatcherEyeIcon size="sm" />
                 )
               }
               {...(watchers.length > 1
@@ -333,9 +333,9 @@ export function WatcherManagementButton({
             }}
           >
             {icon === 'bigtop' ? (
-              <AppAdvisorWatcherIcon width={15} height={15} />
+              <AppAdvisorWatcherIcon size="sm" />
             ) : (
-              <WatcherEyeIcon width={15} height={15} />
+              <WatcherEyeIcon size="sm" />
             )}
             {watchers.length > 1 && (
               <span

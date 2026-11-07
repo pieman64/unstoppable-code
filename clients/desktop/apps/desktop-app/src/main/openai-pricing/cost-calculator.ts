@@ -20,6 +20,79 @@ export interface CodexObservedCostInput {
   billableToolCounts?: {
     openAiWebSearchCalls?: number;
   };
+  /**
+   * The part of `tokens` from requests whose own input passed the model's
+   * long-context threshold, summed per request as usage arrived. OpenAI
+   * bills the long-context rate per request, so when this is present only
+   * these tokens take it. Absent (entries recorded before the split, or
+   * paths that see only a total) falls back to comparing the summed input.
+   */
+  longContextTokens?: CodexObservedCostInput['tokens'];
+}
+
+type CodexTokenCounts = CodexObservedCostInput['tokens'];
+
+/** The model's long-context threshold, when the pricing payload has one. */
+export function codexLongContextThreshold(
+  model: string | undefined,
+  pricingState: OpenAiPricingCacheState,
+): number | undefined {
+  if (!model) return undefined;
+  return pricingState.payload?.models[model]?.longContext
+    ?.inputTokenThresholdExclusive;
+}
+
+function codexTokensUsd(
+  tokens: CodexTokenCounts,
+  model: OpenAiModelPricing,
+  longContext: OpenAiModelPricing['longContext'],
+): number {
+  const cachedInput = Math.max(0, tokens.cacheReadInputTokens);
+  const cacheCreationInput = Math.max(0, tokens.cacheCreationInputTokens);
+  const inputTokens = Math.max(0, tokens.input);
+  const outputTokens = Math.max(0, tokens.output);
+  const uncachedInput = Math.max(
+    0,
+    inputTokens - cachedInput - cacheCreationInput,
+  );
+
+  let inputRate = model.standard.input;
+  let cachedInputRate = model.standard.cachedInput;
+  let cacheWriteInputRate =
+    model.standard.cacheWriteInput ?? model.standard.input;
+  let outputRate = model.standard.output;
+  if (longContext) {
+    inputRate *= longContext.inputMultiplier;
+    cachedInputRate *= longContext.cachedInputMultiplier;
+    cacheWriteInputRate *=
+      longContext.cacheWriteInputMultiplier ?? longContext.inputMultiplier;
+    outputRate *= longContext.outputMultiplier;
+  }
+
+  return (
+    (uncachedInput * inputRate) / 1_000_000 +
+    (cacheCreationInput * cacheWriteInputRate) / 1_000_000 +
+    (cachedInput * cachedInputRate) / 1_000_000 +
+    (outputTokens * outputRate) / 1_000_000
+  );
+}
+
+function subtractCodexTokens(
+  total: CodexTokenCounts,
+  part: CodexTokenCounts,
+): CodexTokenCounts {
+  return {
+    input: Math.max(0, total.input - part.input),
+    output: Math.max(0, total.output - part.output),
+    cacheReadInputTokens: Math.max(
+      0,
+      total.cacheReadInputTokens - part.cacheReadInputTokens,
+    ),
+    cacheCreationInputTokens: Math.max(
+      0,
+      total.cacheCreationInputTokens - part.cacheCreationInputTokens,
+    ),
+  };
 }
 
 function unpriced(
@@ -181,41 +254,31 @@ export function computeCodexObservedCost(
     return unpriced('model_not_priced', input);
   }
 
-  const cachedInput = Math.max(0, input.tokens.cacheReadInputTokens);
-  const cacheCreationInput = Math.max(0, input.tokens.cacheCreationInputTokens);
   const inputTokens = Math.max(0, input.tokens.input);
   const outputTokens = Math.max(0, input.tokens.output);
-  const uncachedInput = Math.max(
-    0,
-    inputTokens - cachedInput - cacheCreationInput,
-  );
 
   const longContext = model.longContext;
+  const split = longContext ? input.longContextTokens : undefined;
   const longContextApplied =
     longContext !== undefined &&
-    inputTokens > longContext.inputTokenThresholdExclusive;
+    (split
+      ? split.input > 0
+      : inputTokens > longContext.inputTokenThresholdExclusive);
   const contextTier = longContextApplied ? 'long' : 'standard';
   const contextTierSource =
     longContext !== undefined ? 'pricing_payload_threshold' : 'not_applicable';
 
-  let inputRate = model.standard.input;
-  let cachedInputRate = model.standard.cachedInput;
-  let cacheWriteInputRate =
-    model.standard.cacheWriteInput ?? model.standard.input;
-  let outputRate = model.standard.output;
-  if (longContextApplied && longContext) {
-    inputRate *= longContext.inputMultiplier;
-    cachedInputRate *= longContext.cachedInputMultiplier;
-    cacheWriteInputRate *=
-      longContext.cacheWriteInputMultiplier ?? longContext.inputMultiplier;
-    outputRate *= longContext.outputMultiplier;
-  }
-
-  let tokenUsd =
-    (uncachedInput * inputRate) / 1_000_000 +
-    (cacheCreationInput * cacheWriteInputRate) / 1_000_000 +
-    (cachedInput * cachedInputRate) / 1_000_000 +
-    (outputTokens * outputRate) / 1_000_000;
+  let tokenUsd = split
+    ? codexTokensUsd(
+        subtractCodexTokens(input.tokens, split),
+        model,
+        undefined,
+      ) + codexTokensUsd(split, model, longContext)
+    : codexTokensUsd(
+        input.tokens,
+        model,
+        longContextApplied ? longContext : undefined,
+      );
   let pricingBasis: AgentObservedCost['pricingBasis'] = 'openai_api_standard';
   let fastModeMultiplierApplied: number | undefined;
 

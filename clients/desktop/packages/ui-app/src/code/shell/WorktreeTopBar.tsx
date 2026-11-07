@@ -277,7 +277,7 @@ export function WorktreeTopBar({
                     className="inline-flex h-5 w-5 shrink-0 items-center justify-center"
                     data-testid="worktree-top-badge-slot"
                   >
-                    {workspaceBadge ?? <BranchIcon width={14} height={14} />}
+                    {workspaceBadge ?? <BranchIcon size="sm" />}
                   </span>
                   <span
                     data-testid="worktree-top-branch"
@@ -293,7 +293,7 @@ export function WorktreeTopBar({
                   {baseBranchLabel != null && baseBranchLabel !== '' && (
                     <>
                       <span className="shrink-0 fg-secondary/50">
-                        <ChevronRightIcon width={12} height={12} />
+                        <ChevronRightIcon size="sm" />
                       </span>
                       {/* No disclosure caret: this summary is read-only (see
                           `statusContent`). Desktop swaps in `PrStatusBar`,
@@ -349,11 +349,7 @@ export function WorktreeTopBar({
                     className="electron-no-drag focus-ring flex items-center gap-1 rounded-md px-2 py-1 text-xs fg-secondary transition-colors hover:bg-fg-primary/[0.06] hover:fg-primary"
                   >
                     Open
-                    <ChevronDownIcon
-                      width={10}
-                      height={10}
-                      className="shrink-0"
-                    />
+                    <ChevronDownIcon size="sm" className="shrink-0" />
                   </button>
                 </div>
               )}
@@ -407,7 +403,7 @@ export function WorktreeTopBar({
                 title={
                   launchPending === true ? 'Launch in progress' : undefined
                 }
-                icon={<RocketLaunchIcon width={14} height={14} />}
+                icon={<RocketLaunchIcon size="sm" />}
               />
             )}
           </div>

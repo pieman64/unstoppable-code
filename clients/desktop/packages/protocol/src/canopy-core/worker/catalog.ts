@@ -60,6 +60,10 @@ export const WorkerCatalogEffectiveItemSchema = z.discriminatedUnion('kind', [
   }),
   z.strictObject({
     entryId: z.string().min(1).max(512),
+    kind: z.literal('skill'),
+  }),
+  z.strictObject({
+    entryId: z.string().min(1).max(512),
     kind: z.literal('mcp_server'),
     transport: z.enum(['stdio', 'http']),
   }),

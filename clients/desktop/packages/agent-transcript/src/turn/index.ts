@@ -251,6 +251,17 @@ function unionPausedDurationMs(
   return pausedMs;
 }
 
+/**
+ * The paused time an ended turn's `durationMs` was netted by: the union of
+ * its approval and question pause intervals inside the turn. Zero for a turn
+ * that has not ended.
+ */
+export function chatTurnPausedDurationMs(record: ChatTurnRecord): number {
+  return record.endedAtMs === undefined
+    ? 0
+    : unionPausedDurationMs(record, record.endedAtMs);
+}
+
 function finalizeCurrentTurn(
   state: ChatTurnState,
   endedAtMs: number,

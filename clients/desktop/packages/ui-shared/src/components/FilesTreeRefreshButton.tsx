@@ -35,11 +35,6 @@ const CENTRAL_ICON_CLASS_NAMES: Record<FilesTreeRefreshButtonDensity, string> =
     comfortable: 'h-4 w-4',
   };
 
-const CLASSIC_ICON_SIZES: Record<FilesTreeRefreshButtonDensity, number> = {
-  compact: 14,
-  comfortable: 16,
-};
-
 /**
  * The Files tab's refresh control, shared by the desktop Files tree and the
  * Portal and cloud Files tab. The glyph follows the host's icon style:
@@ -68,10 +63,7 @@ export function FilesTreeRefreshButton({
           className={`${CENTRAL_ICON_CLASS_NAMES[density]} ${spinning ? 'animate-spin' : ''}`}
         />
       ) : (
-        <RefreshSpinner
-          spinning={spinning}
-          size={CLASSIC_ICON_SIZES[density]}
-        />
+        <RefreshSpinner spinning={spinning} size="sm" />
       )}
     </Button>
   );

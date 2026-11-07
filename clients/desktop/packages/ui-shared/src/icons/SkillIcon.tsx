@@ -1,6 +1,9 @@
-import type { JSX, SVGProps } from 'react';
-import { SkillIcon as AppCatalogSkillIcon } from './AppIcons';
+import type { JSX } from 'react';
+import {
+  SkillIcon as AppCatalogSkillIcon,
+  type AppIconProps,
+} from './AppIcons';
 
-export function SkillIcon(props: SVGProps<SVGSVGElement>): JSX.Element {
-  return <AppCatalogSkillIcon width="14" height="14" {...props} />;
+export function SkillIcon(props: AppIconProps): JSX.Element {
+  return <AppCatalogSkillIcon size="sm" {...props} />;
 }

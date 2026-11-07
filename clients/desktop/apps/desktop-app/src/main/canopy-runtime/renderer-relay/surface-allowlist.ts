@@ -39,7 +39,11 @@ const SURFACE_NARROWING: Readonly<
   main: null,
   'app-advisor': {
     query: ['core.runtime.health.get'],
-    instruction: ['core.client.capabilities.register'],
+    instruction: [
+      'core.client.capabilities.register',
+      'core.client.tools.register',
+      'core.client.tools.unregister',
+    ],
     stream: ['core.runtime.events'],
   },
 };

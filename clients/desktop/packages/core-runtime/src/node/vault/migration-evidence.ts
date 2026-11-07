@@ -6,6 +6,21 @@
  * 1, and is never repeated (R-7). There is no LOCAL_PEERPID field.
  */
 
+import type {
+  MigrationLaunchChannel,
+  MigrationLinuxArtifact,
+  MigrationLinuxDestinationEvidence,
+  MigrationLinuxLauncherEvidence,
+  MigrationLinuxProcessIdentity,
+  MigrationPackageObservation,
+  MigrationPlatformPeer,
+  MigrationProcessIdentity,
+  MigrationWindowsArtifact,
+  MigrationWindowsDestinationEvidence,
+  MigrationWindowsLauncherEvidence,
+  MigrationWindowsProcessIdentity,
+} from './migration-platform';
+
 export interface MigrationProcessToken {
   readonly pid: number;
   readonly pidversion: number;
@@ -66,20 +81,21 @@ export interface MigrationDarwinDestinationEvidence {
   readonly peer: MigrationPeerCapture;
 }
 
-/**
- * Windows and Linux have no launch primitive at the pin (C-4), so they carry
- * nothing. VA-W and VA-L add their capture fields.
- */
+/** Legacy unavailable capture, retained for disabled host adapters. */
 export interface MigrationUnsupportedOsEvidence {
   readonly os: 'win32' | 'linux';
 }
 
 export type MigrationLauncherEvidence =
   | MigrationDarwinLauncherEvidence
+  | MigrationWindowsLauncherEvidence
+  | MigrationLinuxLauncherEvidence
   | MigrationUnsupportedOsEvidence;
 
 export type MigrationDestinationEvidence =
   | MigrationDarwinDestinationEvidence
+  | MigrationWindowsDestinationEvidence
+  | MigrationLinuxDestinationEvidence
   | MigrationUnsupportedOsEvidence;
 
 /** Code-signing value shapes; none admits a quote, so requirements stay literal. */
@@ -251,7 +267,8 @@ function socket(
 /** Unsupported-OS variants carry exactly `os`. */
 function unsupportedOs(copy: Fields): MigrationUnsupportedOsEvidence | null {
   const os = copy.os;
-  if (os !== 'win32' && os !== 'linux') return null;
+  if ((os !== 'win32' && os !== 'linux') || Object.keys(copy).length !== 1)
+    return null;
   exact(copy, ['os']);
   return Object.freeze({ os });
 }
@@ -273,6 +290,8 @@ export function readMigrationLauncherEvidence(
     const copy = plain(value);
     const other = unsupportedOs(copy);
     if (other !== null) return other;
+    if (copy.os === 'win32') return windowsLauncher(copy);
+    if (copy.os === 'linux') return linuxLauncher(copy);
     exact(copy, [
       'os',
       'launched',
@@ -303,6 +322,8 @@ export function readMigrationDestinationEvidence(
     const copy = plain(value);
     const other = unsupportedOs(copy);
     if (other !== null) return other;
+    if (copy.os === 'win32') return windowsDestination(copy);
+    if (copy.os === 'linux') return linuxDestination(copy);
     exact(copy, ['os', 'spawned', 'peer']);
     if (copy.os !== 'darwin') throw new MalformedEvidence();
     const spawned = fields(copy.spawned, ['pid', 'pidversion', 'unreaped']);
@@ -314,6 +335,263 @@ export function readMigrationDestinationEvidence(
       }),
       peer: peer(copy.peer),
     });
+  });
+}
+
+const SHA256 = /^sha256:[0-9a-f]{64}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
+const UINT64_MAX = 0xffff_ffff_ffff_ffffn;
+
+function observationText(value: unknown): string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > 256 ||
+    Array.from(value).some((char) => {
+      const code = char.charCodeAt(0);
+      return code < 32 || code === 127;
+    })
+  )
+    throw new MalformedEvidence();
+  return value;
+}
+
+function windowsIdentity(value: unknown): MigrationWindowsProcessIdentity {
+  const copy = fields(value, ['os', 'pid', 'creationTime']);
+  if (
+    copy.os !== 'win32' ||
+    typeof copy.creationTime !== 'bigint' ||
+    copy.creationTime <= 0n ||
+    copy.creationTime > UINT64_MAX
+  )
+    throw new MalformedEvidence();
+  return Object.freeze({
+    os: 'win32',
+    pid: integer(copy.pid, 1, UINT32_MAX),
+    creationTime: copy.creationTime,
+  });
+}
+
+function linuxIdentity(value: unknown): MigrationLinuxProcessIdentity {
+  const copy = fields(value, [
+    'os',
+    'pid',
+    'bootId',
+    'startTime',
+    'continuity',
+  ]);
+  const startTime = text(copy.startTime, DECIMAL, 20);
+  if (
+    copy.os !== 'linux' ||
+    BigInt(startTime) > UINT64_MAX ||
+    copy.continuity !== 'process-instance'
+  )
+    throw new MalformedEvidence();
+  return Object.freeze({
+    os: 'linux',
+    pid: integer(copy.pid, 1, UINT32_MAX),
+    bootId: text(copy.bootId, UUID),
+    startTime,
+    continuity: 'process-instance',
+  });
+}
+
+/** Host-only deep copy. Never converts a timestamp/start identity to a number. */
+export function readMigrationProcessIdentity(
+  value: unknown,
+): MigrationProcessIdentity | null {
+  return parse(() => {
+    const copy = plain(value);
+    if (copy.os === 'win32') return windowsIdentity(copy);
+    if (copy.os === 'linux') return linuxIdentity(copy);
+    exact(copy, ['os', 'pid', 'pidversion']);
+    if (copy.os !== 'darwin') throw new MalformedEvidence();
+    return Object.freeze({
+      os: 'darwin',
+      ...token({ pid: copy.pid, pidversion: copy.pidversion }),
+    });
+  });
+}
+
+function packageObservation(value: unknown): MigrationPackageObservation {
+  const copy = fields(value, [
+    'flavorId',
+    'secureMode',
+    'buildId',
+    'packageDigest',
+    'codeDigest',
+    'nativeDigest',
+    'updateEpoch',
+  ]);
+  return Object.freeze({
+    flavorId: text(copy.flavorId, IDENTIFIER, MAX_IDENTIFIER_CHARS),
+    secureMode: text(copy.secureMode, /^[a-z0-9][a-z0-9-]{0,31}$/),
+    buildId: text(copy.buildId, BUILD_ID),
+    packageDigest: text(copy.packageDigest, SHA256),
+    codeDigest: text(copy.codeDigest, SHA256),
+    nativeDigest: text(copy.nativeDigest, SHA256),
+    updateEpoch: observationText(copy.updateEpoch),
+  });
+}
+
+function windowsArtifact(value: unknown): MigrationWindowsArtifact {
+  const copy = fields(value, [
+    'executableDigest',
+    'role',
+    'signing',
+    'package',
+  ]);
+  const signer = fields(copy.signing, [
+    'publisher',
+    'certificateDigest',
+    'status',
+  ]);
+  return Object.freeze({
+    executableDigest: text(copy.executableDigest, SHA256),
+    role: oneOf(copy.role, ['electron-main', 'daemon', 'other'] as const),
+    signing: Object.freeze({
+      publisher: nullable(signer.publisher, observationText),
+      certificateDigest: nullable(signer.certificateDigest, (v) =>
+        text(v, SHA256),
+      ),
+      status: oneOf(signer.status, ['valid', 'invalid', 'unsigned'] as const),
+    }),
+    package: packageObservation(copy.package),
+  });
+}
+
+function linuxArtifact(value: unknown): MigrationLinuxArtifact {
+  const copy = fields(value, [
+    'executableDigest',
+    'role',
+    'installedPackage',
+    'package',
+  ]);
+  const installed = fields(copy.installedPackage, ['identity', 'status']);
+  return Object.freeze({
+    executableDigest: text(copy.executableDigest, SHA256),
+    role: oneOf(copy.role, ['electron-main', 'daemon', 'other'] as const),
+    installedPackage: Object.freeze({
+      identity: nullable(installed.identity, observationText),
+      status: oneOf(installed.status, [
+        'verified',
+        'invalid',
+        'unavailable',
+      ] as const),
+    }),
+    package: packageObservation(copy.package),
+  });
+}
+
+function platformPeer<I, A>(
+  value: unknown,
+  identity: (value: unknown) => I,
+  artifact: (value: unknown) => A,
+): MigrationPlatformPeer<I, A> {
+  const copy = plain(value);
+  if (copy.kind === 'peer-gone' || copy.kind === 'capture-failed') {
+    exact(copy, ['kind']);
+    return Object.freeze({ kind: copy.kind });
+  }
+  exact(copy, ['kind', 'identity', 'artifact']);
+  if (copy.kind !== 'captured') throw new MalformedEvidence();
+  return Object.freeze({
+    kind: 'captured',
+    identity: identity(copy.identity),
+    artifact: artifact(copy.artifact),
+  });
+}
+
+function launchChannel<K extends string>(
+  value: unknown,
+  kind: K,
+): MigrationLaunchChannel<K> {
+  const copy = fields(value, ['kind', 'nonInheritable', 'processCustody']);
+  if (copy.kind !== kind) throw new MalformedEvidence();
+  return Object.freeze({
+    kind,
+    nonInheritable: bool(copy.nonInheritable),
+    processCustody: oneOf(copy.processCustody, ['retained', 'lost'] as const),
+  });
+}
+
+const LAUNCHER_FIELDS = [
+  'os',
+  'launched',
+  'channel',
+  'startupParent',
+  'captureParent',
+  'peer',
+];
+
+function windowsLauncher(copy: Fields): MigrationWindowsLauncherEvidence {
+  exact(copy, LAUNCHER_FIELDS);
+  return Object.freeze({
+    os: 'win32',
+    launched: bool(copy.launched),
+    channel: launchChannel(copy.channel, 'named-pipe'),
+    startupParent: windowsIdentity(copy.startupParent),
+    captureParent: windowsIdentity(copy.captureParent),
+    peer: platformPeer(copy.peer, windowsIdentity, windowsArtifact),
+  });
+}
+
+function linuxLauncher(copy: Fields): MigrationLinuxLauncherEvidence {
+  exact(copy, LAUNCHER_FIELDS);
+  const channel = fields(copy.channel, [
+    'kind',
+    'nonInheritable',
+    'processCustody',
+    'peerPidfd',
+  ]);
+  const { peerPidfd, ...custody } = channel;
+  return Object.freeze({
+    os: 'linux',
+    launched: bool(copy.launched),
+    channel: Object.freeze({
+      ...launchChannel(custody, 'socketpair'),
+      peerPidfd: oneOf(peerPidfd, ['held', 'lost', 'unavailable'] as const),
+    }),
+    startupParent: linuxIdentity(copy.startupParent),
+    captureParent: linuxIdentity(copy.captureParent),
+    peer: platformPeer(copy.peer, linuxIdentity, linuxArtifact),
+  });
+}
+
+function spawned<I>(
+  value: unknown,
+  keys: readonly string[],
+  identity: (value: unknown) => I,
+): I & { readonly unreaped: boolean } {
+  const copy = fields(value, [...keys, 'unreaped']);
+  const { unreaped, ...process } = copy;
+  return Object.freeze({ ...identity(process), unreaped: bool(unreaped) });
+}
+
+function windowsDestination(copy: Fields): MigrationWindowsDestinationEvidence {
+  exact(copy, ['os', 'spawned', 'peer']);
+  return Object.freeze({
+    os: 'win32',
+    spawned: spawned(
+      copy.spawned,
+      ['os', 'pid', 'creationTime'],
+      windowsIdentity,
+    ),
+    peer: platformPeer(copy.peer, windowsIdentity, windowsArtifact),
+  });
+}
+
+function linuxDestination(copy: Fields): MigrationLinuxDestinationEvidence {
+  exact(copy, ['os', 'spawned', 'peer']);
+  return Object.freeze({
+    os: 'linux',
+    spawned: spawned(
+      copy.spawned,
+      ['os', 'pid', 'bootId', 'startTime', 'continuity'],
+      linuxIdentity,
+    ),
+    peer: platformPeer(copy.peer, linuxIdentity, linuxArtifact),
   });
 }
 

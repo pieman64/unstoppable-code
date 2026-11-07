@@ -33,6 +33,7 @@ import {
   SegmentedControl,
   type MermaidSaveDestination,
   StatusLabel,
+  Surface,
 } from '@canopy/ui-shared/components';
 import {
   REPLAY_BLOCK_CLASS,
@@ -504,59 +505,62 @@ function FileExternalChangeNotice({
       : 'This document changed';
 
   return (
-    <div ref={noticeRef} className="border-b px-3 py-2">
-      <Notice
-        intent="attention"
-        title="Document updated"
-        data-testid="file-external-change-notice"
-        detail={
-          change.error
-            ? `Couldn't load the latest version. ${change.error}`
-            : undefined
-        }
-        actions={
-          <>
-            {session.dirty && (
+    <Surface variant="section" boundary="bottom">
+      <div ref={noticeRef} className="px-3 py-2">
+        <Notice
+          intent="attention"
+          title="Document updated"
+          data-testid="file-external-change-notice"
+          detail={
+            change.error
+              ? `Couldn't load the latest version. ${change.error}`
+              : undefined
+          }
+          actions={
+            <>
+              {session.dirty && (
+                <NoticeButton
+                  data-testid="file-external-change-keep"
+                  disabled={change.reloading}
+                  onClick={(): void => {
+                    moveFocusFromNotice();
+                    dismissExternalChange(session.key);
+                  }}
+                >
+                  Keep my edits
+                </NoticeButton>
+              )}
               <NoticeButton
-                data-testid="file-external-change-keep"
-                disabled={change.reloading}
+                variant="primary"
+                data-testid="file-external-change-show-latest"
+                disabled={change.reloading || session.status === 'saving'}
                 onClick={(): void => {
-                  moveFocusFromNotice();
-                  dismissExternalChange(session.key);
+                  const ownedFocus =
+                    noticeRef.current?.contains(document.activeElement) ===
+                    true;
+                  void reloadFromDisk(session.key).then((applied) => {
+                    if (
+                      applied &&
+                      ownedFocus &&
+                      (document.activeElement === document.body ||
+                        noticeRef.current?.contains(document.activeElement))
+                    ) {
+                      focusFallbackRef.current?.focus();
+                    }
+                  });
                 }}
               >
-                Keep my edits
+                Show latest
               </NoticeButton>
-            )}
-            <NoticeButton
-              variant="primary"
-              data-testid="file-external-change-show-latest"
-              disabled={change.reloading || session.status === 'saving'}
-              onClick={(): void => {
-                const ownedFocus =
-                  noticeRef.current?.contains(document.activeElement) === true;
-                void reloadFromDisk(session.key).then((applied) => {
-                  if (
-                    applied &&
-                    ownedFocus &&
-                    (document.activeElement === document.body ||
-                      noticeRef.current?.contains(document.activeElement))
-                  ) {
-                    focusFallbackRef.current?.focus();
-                  }
-                });
-              }}
-            >
-              Show latest
-            </NoticeButton>
-          </>
-        }
-      >
-        {session.dirty
-          ? `${changedBy} while you have unsaved edits, and the changes can't be combined automatically. Show latest replaces your edits. Keep my edits keeps them.`
-          : `${changedBy}. Show latest loads the current version.`}
-      </Notice>
-    </div>
+            </>
+          }
+        >
+          {session.dirty
+            ? `${changedBy} while you have unsaved edits, and the changes can't be combined automatically. Show latest replaces your edits. Keep my edits keeps them.`
+            : `${changedBy}. Show latest loads the current version.`}
+        </Notice>
+      </div>
+    </Surface>
   );
 }
 
@@ -653,36 +657,38 @@ function FileSaveConflictNotice({
   };
 
   return (
-    <div ref={noticeRef} className="border-b px-3 py-2">
-      <Notice
-        intent="attention"
-        role="alert"
-        title="Not saved"
-        data-testid="file-save-conflict-notice"
-        detail={detail}
-        actions={
-          <>
-            <NoticeButton
-              data-testid="file-save-conflict-show-latest"
-              disabled={busy}
-              onClick={(): void => runAction(reloadFromDisk)}
-            >
-              {showLabel}
-            </NoticeButton>
-            <NoticeButton
-              variant="primary"
-              data-testid="file-save-conflict-save-mine"
-              disabled={busy}
-              onClick={(): void => runAction(overwriteWithEdits)}
-            >
-              Save my version
-            </NoticeButton>
-          </>
-        }
-      >
-        {message}
-      </Notice>
-    </div>
+    <Surface variant="section" boundary="bottom">
+      <div ref={noticeRef} className="px-3 py-2">
+        <Notice
+          intent="attention"
+          role="alert"
+          title="Not saved"
+          data-testid="file-save-conflict-notice"
+          detail={detail}
+          actions={
+            <>
+              <NoticeButton
+                data-testid="file-save-conflict-show-latest"
+                disabled={busy}
+                onClick={(): void => runAction(reloadFromDisk)}
+              >
+                {showLabel}
+              </NoticeButton>
+              <NoticeButton
+                variant="primary"
+                data-testid="file-save-conflict-save-mine"
+                disabled={busy}
+                onClick={(): void => runAction(overwriteWithEdits)}
+              >
+                Save my version
+              </NoticeButton>
+            </>
+          }
+        >
+          {message}
+        </Notice>
+      </div>
+    </Surface>
   );
 }
 
@@ -706,35 +712,37 @@ function FileReadOnlyHint({
   readonly onDismiss: () => void;
 }): JSX.Element {
   return (
-    <div
-      className="border-b px-3 py-2"
-      onKeyDown={(event): void => {
-        if (persistent || event.key !== 'Escape') return;
-        event.preventDefault();
-        onDismiss();
-      }}
-    >
-      <Notice
-        intent="neutral"
-        role={persistent ? 'none' : 'status'}
-        title={`${renderedName} is read-only.`}
-        data-testid="file-readonly-hint"
-        onDismiss={persistent ? undefined : onDismiss}
-        dismissLabel="Dismiss read-only notice"
-        dismissTestId="file-readonly-hint-dismiss"
-        actions={
-          <NoticeButton
-            variant="primary"
-            data-testid="file-readonly-hint-switch"
-            onClick={onSwitch}
-          >
-            {`Switch to ${rawLabel}`}
-          </NoticeButton>
-        }
+    <Surface variant="section" boundary="bottom">
+      <div
+        className="px-3 py-2"
+        onKeyDown={(event): void => {
+          if (persistent || event.key !== 'Escape') return;
+          event.preventDefault();
+          onDismiss();
+        }}
       >
-        {`Switch to ${rawLabel} to change the text.`}
-      </Notice>
-    </div>
+        <Notice
+          intent="neutral"
+          role={persistent ? 'none' : 'status'}
+          title={`${renderedName} is read-only.`}
+          data-testid="file-readonly-hint"
+          onDismiss={persistent ? undefined : onDismiss}
+          dismissLabel="Dismiss read-only notice"
+          dismissTestId="file-readonly-hint-dismiss"
+          actions={
+            <NoticeButton
+              variant="primary"
+              data-testid="file-readonly-hint-switch"
+              onClick={onSwitch}
+            >
+              {`Switch to ${rawLabel}`}
+            </NoticeButton>
+          }
+        >
+          {`Switch to ${rawLabel} to change the text.`}
+        </Notice>
+      </div>
+    </Surface>
   );
 }
 
@@ -761,22 +769,24 @@ function FileCombinableChangeNotice({
   }
   const attributed = Boolean(appName) && change.source === 'agent-edit';
   return (
-    <div className="border-b px-3 py-2">
-      <Notice
-        intent="neutral"
-        role="status"
-        title={
-          attributed
-            ? `${appName} updated this document while you were editing`
-            : 'This document was updated while you were editing'
-        }
-        data-testid="file-combinable-change-notice"
-      >
-        {attributed
-          ? `Save to combine your updates with ${appName}'s.`
-          : 'Save to combine your updates with the newer changes.'}
-      </Notice>
-    </div>
+    <Surface variant="section" boundary="bottom">
+      <div className="px-3 py-2">
+        <Notice
+          intent="neutral"
+          role="status"
+          title={
+            attributed
+              ? `${appName} updated this document while you were editing`
+              : 'This document was updated while you were editing'
+          }
+          data-testid="file-combinable-change-notice"
+        >
+          {attributed
+            ? `Save to combine your updates with ${appName}'s.`
+            : 'Save to combine your updates with the newer changes.'}
+        </Notice>
+      </div>
+    </Surface>
   );
 }
 
@@ -946,24 +956,26 @@ function FileCombinedSaveNotice({
 }): JSX.Element {
   const noticeRef = useRef<HTMLDivElement>(null);
   return (
-    <div ref={noticeRef} className="border-b px-3 py-2">
-      <Notice
-        intent="positive"
-        role="none"
-        title={COMBINED_SAVE_TITLE}
-        data-testid="file-combined-save-notice"
-        onDismiss={(): void => {
-          if (noticeRef.current?.contains(document.activeElement)) {
-            focusSaveOrHeader(focusFallbackRef);
-          }
-          confirmation.dismiss();
-        }}
-        dismissLabel="Dismiss saved notice"
-        dismissTestId="file-combined-save-notice-dismiss"
-      >
-        {confirmation.message}
-      </Notice>
-    </div>
+    <Surface variant="section" boundary="bottom">
+      <div ref={noticeRef} className="px-3 py-2">
+        <Notice
+          intent="positive"
+          role="none"
+          title={COMBINED_SAVE_TITLE}
+          data-testid="file-combined-save-notice"
+          onDismiss={(): void => {
+            if (noticeRef.current?.contains(document.activeElement)) {
+              focusSaveOrHeader(focusFallbackRef);
+            }
+            confirmation.dismiss();
+          }}
+          dismissLabel="Dismiss saved notice"
+          dismissTestId="file-combined-save-notice-dismiss"
+        >
+          {confirmation.message}
+        </Notice>
+      </div>
+    </Surface>
   );
 }
 
@@ -1109,11 +1121,14 @@ function FileImagePreview({
   }, [request, resolveImageSrc, retryGeneration]);
 
   return (
-    <div
+    <Surface
       ref={scrollBinding?.ref}
       onScroll={scrollBinding?.onScroll}
       data-testid="file-viewer-image-scroll"
-      className={`${REPLAY_BLOCK_CLASS} flex min-h-0 flex-1 items-center justify-center overflow-auto bg-fg-primary/[0.02] p-4`}
+      variant="well"
+      padding="default"
+      replay="block"
+      className="flex min-h-0 flex-1 items-center justify-center overflow-auto"
     >
       {state.status === 'loading' ? (
         <DelayedLoadingPlaceholder>
@@ -1129,7 +1144,7 @@ function FileImagePreview({
           className="max-h-full max-w-full object-contain"
         />
       )}
-    </div>
+    </Surface>
   );
 }
 
@@ -1160,7 +1175,11 @@ function FileVideoPreview({
     return (): void => observer.disconnect();
   }, []);
   return (
-    <div className="flex min-h-0 flex-1 items-center justify-center bg-fg-primary/[0.02] p-4">
+    <Surface
+      variant="well"
+      padding="default"
+      className="flex min-h-0 flex-1 items-center justify-center"
+    >
       <video
         ref={videoRef}
         src={src}
@@ -1175,7 +1194,7 @@ function FileVideoPreview({
         }}
         className="max-h-full max-w-full"
       />
-    </div>
+    </Surface>
   );
 }
 
@@ -1355,26 +1374,28 @@ function FileDocumentPreview({
     return body;
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="file-viewer">
-      <div
-        className="flex items-center gap-1 border-b px-3 py-1.5 text-xs"
-        data-testid="file-viewer-document-header"
-      >
-        {pathSlot !== null ? (
-          <div className="flex min-w-0 flex-1 items-center overflow-hidden">
-            {pathSlot}
-          </div>
-        ) : renderPathBreadcrumb === undefined ? (
-          <span className="min-w-0 flex-1 truncate fg-secondary">
-            {displayName}
-          </span>
-        ) : (
-          // Host-owned name: hold the flexible slot open so the actions stay
-          // on the trailing edge, exactly where every other header puts them.
-          <div className="min-w-0 flex-1" />
-        )}
-        {headerActions}
-        {trailingHeaderActions}
-      </div>
+      <Surface variant="section" boundary="bottom">
+        <div
+          className="flex items-center gap-1 px-3 py-1.5 text-xs"
+          data-testid="file-viewer-document-header"
+        >
+          {pathSlot !== null ? (
+            <div className="flex min-w-0 flex-1 items-center overflow-hidden">
+              {pathSlot}
+            </div>
+          ) : renderPathBreadcrumb === undefined ? (
+            <span className="min-w-0 flex-1 truncate fg-secondary">
+              {displayName}
+            </span>
+          ) : (
+            // Host-owned name: hold the flexible slot open so the actions stay
+            // on the trailing edge, exactly where every other header puts them.
+            <div className="min-w-0 flex-1" />
+          )}
+          {headerActions}
+          {trailingHeaderActions}
+        </div>
+      </Surface>
       {body}
     </div>
   );
@@ -1479,55 +1500,57 @@ export function FileViewer(props: FileViewerProps): JSX.Element {
       </div>
       {alternate && (
         <>
-          <div
-            ref={alternateHeaderRef}
-            tabIndex={-1}
-            className="flex items-center gap-1 px-3 py-1.5 text-xs outline-none ring-1 ring-inset ring-line-base"
-            data-testid="file-viewer-header"
-          >
-            <div className="min-w-0 flex-1 truncate fg-secondary">
-              {props.renderPathBreadcrumb?.(props.request.relativePath) ??
-                props.request.relativePath}
-              {session?.dirty === true && (
-                <span
-                  className="ml-1 fg-warning"
-                  data-testid="file-viewer-dirty"
-                >
-                  •
-                </span>
-              )}
-            </div>
-            {session && (
-              <FileStatusActions
-                session={session}
-                editable={editable}
-                savedContentNotice
-                focusFallbackRef={alternateHeaderRef}
-                onDiscard={() => discardEdits(key)}
-                onSave={() => {
-                  void saveFile(key);
-                }}
-              />
-            )}
-            {props.headerActions}
-            {session?.preview?.truncated !== true &&
-              (kind === 'markdown' ||
-                kind === 'html' ||
-                props.request.relativePath.toLowerCase().endsWith('.csv') ||
-                isNotebookPath(props.request.relativePath)) && (
-                <FileViewModeSelector
-                  value={null}
-                  renderedMode={
-                    props.request.relativePath.toLowerCase().endsWith('.csv')
-                      ? 'table'
-                      : 'preview'
-                  }
-                  rawLabel={resolveRawViewLabel(props.rawViewLabel, editable)}
-                  onChange={changeViewMode}
+          <Surface variant="section" boundary="frame">
+            <div
+              ref={alternateHeaderRef}
+              tabIndex={-1}
+              className="flex items-center gap-1 px-3 py-1.5 text-xs outline-none"
+              data-testid="file-viewer-header"
+            >
+              <div className="min-w-0 flex-1 truncate fg-secondary">
+                {props.renderPathBreadcrumb?.(props.request.relativePath) ??
+                  props.request.relativePath}
+                {session?.dirty === true && (
+                  <span
+                    className="ml-1 fg-warning"
+                    data-testid="file-viewer-dirty"
+                  >
+                    •
+                  </span>
+                )}
+              </div>
+              {session && (
+                <FileStatusActions
+                  session={session}
+                  editable={editable}
+                  savedContentNotice
+                  focusFallbackRef={alternateHeaderRef}
+                  onDiscard={() => discardEdits(key)}
+                  onSave={() => {
+                    void saveFile(key);
+                  }}
                 />
               )}
-            {props.trailingHeaderActions}
-          </div>
+              {props.headerActions}
+              {session?.preview?.truncated !== true &&
+                (kind === 'markdown' ||
+                  kind === 'html' ||
+                  props.request.relativePath.toLowerCase().endsWith('.csv') ||
+                  isNotebookPath(props.request.relativePath)) && (
+                  <FileViewModeSelector
+                    value={null}
+                    renderedMode={
+                      props.request.relativePath.toLowerCase().endsWith('.csv')
+                        ? 'table'
+                        : 'preview'
+                    }
+                    rawLabel={resolveRawViewLabel(props.rawViewLabel, editable)}
+                    onChange={changeViewMode}
+                  />
+                )}
+              {props.trailingHeaderActions}
+            </div>
+          </Surface>
           {session?.overlap ? (
             <FileOverlapNotice
               session={session}
@@ -1892,24 +1915,26 @@ function FileViewerBody({
     const imagePathSlot = renderPathBreadcrumb?.(request.relativePath) ?? null;
     return (
       <div className="flex h-full min-h-0 flex-col" data-testid="file-viewer">
-        <div
-          className="flex items-center gap-1 border-b px-3 py-1.5 text-xs"
-          data-testid="file-viewer-image-header"
-        >
-          {imagePathSlot !== null ? (
-            <div className="flex min-w-0 flex-1 items-center overflow-hidden">
-              {imagePathSlot}
-            </div>
-          ) : renderPathBreadcrumb === undefined ? (
-            <span className="min-w-0 flex-1 truncate fg-secondary">
-              {request.relativePath}
-            </span>
-          ) : (
-            <div className="min-w-0 flex-1" />
-          )}
-          {headerActions}
-          {trailingHeaderActions}
-        </div>
+        <Surface variant="section" boundary="bottom">
+          <div
+            className="flex items-center gap-1 px-3 py-1.5 text-xs"
+            data-testid="file-viewer-image-header"
+          >
+            {imagePathSlot !== null ? (
+              <div className="flex min-w-0 flex-1 items-center overflow-hidden">
+                {imagePathSlot}
+              </div>
+            ) : renderPathBreadcrumb === undefined ? (
+              <span className="min-w-0 flex-1 truncate fg-secondary">
+                {request.relativePath}
+              </span>
+            ) : (
+              <div className="min-w-0 flex-1" />
+            )}
+            {headerActions}
+            {trailingHeaderActions}
+          </div>
+        </Surface>
         {imagePreview}
       </div>
     );
@@ -1980,19 +2005,21 @@ function FileViewerBody({
     if (session.error?.includes('Binary files cannot be read') === true) {
       return (
         <div className="flex h-full min-h-0 flex-col" data-testid="file-viewer">
-          <div className="flex items-center gap-1 border-b px-3 py-1.5 text-xs">
-            {renderPathBreadcrumb ? (
-              <div className="flex min-w-0 flex-1 items-center overflow-hidden">
-                {renderPathBreadcrumb(request.relativePath)}
-              </div>
-            ) : (
-              <span className="min-w-0 flex-1 truncate fg-secondary">
-                {request.relativePath}
-              </span>
-            )}
-            {headerActions}
-            {trailingHeaderActions}
-          </div>
+          <Surface variant="section" boundary="bottom">
+            <div className="flex items-center gap-1 px-3 py-1.5 text-xs">
+              {renderPathBreadcrumb ? (
+                <div className="flex min-w-0 flex-1 items-center overflow-hidden">
+                  {renderPathBreadcrumb(request.relativePath)}
+                </div>
+              ) : (
+                <span className="min-w-0 flex-1 truncate fg-secondary">
+                  {request.relativePath}
+                </span>
+              )}
+              {headerActions}
+              {trailingHeaderActions}
+            </div>
+          </Surface>
           <div
             className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 p-6 text-center"
             data-testid="file-viewer-unsupported"
@@ -2275,89 +2302,91 @@ function FileViewerBody({
       header={
         <>
           {showHeaderRow && (
-            <div
-              ref={headerRowRef}
-              tabIndex={-1}
-              className="flex items-center gap-1 border-b px-3 py-1.5 text-xs outline-none"
-              data-testid="file-viewer-header"
-              onKeyDownCapture={(event): void => {
-                if (!guardRawActivationRef.current) return;
-                if (!keyFromHeaderDom(event)) return;
-                const activation = event.key === 'Enter' || event.key === ' ';
-                if (
-                  event.repeat &&
-                  (activation || event.key === guardedKeyRef.current)
-                ) {
-                  event.preventDefault();
-                  return;
-                }
-                if (!event.repeat && activation) {
-                  guardRawActivationRef.current = false;
-                  guardedKeyRef.current = null;
-                }
-              }}
-              onKeyUpCapture={(event): void => {
-                if (!keyFromHeaderDom(event)) return;
-                const revealingKey = guardedKeyRef.current === event.key;
-                if (revealingKey) guardedKeyRef.current = null;
-                if (
-                  revealingKey ||
-                  (guardRawActivationRef.current &&
-                    (event.key === 'Enter' || event.key === ' '))
-                ) {
-                  event.preventDefault();
-                }
-              }}
-              onKeyDown={(event): void => {
-                if (
-                  event.key === 'Escape' &&
-                  transientHintVisible &&
-                  event.target === rawSegment()
-                ) {
-                  event.preventDefault();
-                  dismissHint();
-                }
-              }}
-            >
-              {pathSlot !== null ? (
-                <div className="flex min-w-0 flex-1 items-center overflow-hidden">
-                  {pathSlot}
-                  {dirtyMarker}
-                </div>
-              ) : renderPathBreadcrumb === undefined ? (
-                <span className="min-w-0 flex-1 truncate fg-secondary">
-                  {preview.path}
-                  {dirtyMarker}
-                </span>
-              ) : (
-                // Host-owned name: the dirty dot is still the viewer's, so it
-                // stays anchored to the flexible slot.
-                <div className="flex min-w-0 flex-1 items-center overflow-hidden">
-                  {dirtyMarker}
-                </div>
-              )}
-              {!suppressStatusChrome && (
-                <FileStatusActions
-                  session={session}
-                  editable={editable}
-                  focusFallbackRef={headerRowRef}
-                  onDiscard={() => discardEdits(key)}
-                  onSave={() => {
-                    void saveFile(key);
-                  }}
-                />
-              )}
-              {headerActions}
-              {showToggle && (
-                <FileViewModeSelector
-                  value={effectiveViewMode}
-                  renderedMode={isCsv ? 'table' : 'preview'}
-                  rawLabel={rawLabel}
-                  onChange={onChangeViewMode}
-                />
-              )}
-              {trailingHeaderActions}
-            </div>
+            <Surface variant="section" boundary="bottom">
+              <div
+                ref={headerRowRef}
+                tabIndex={-1}
+                className="flex items-center gap-1 px-3 py-1.5 text-xs outline-none"
+                data-testid="file-viewer-header"
+                onKeyDownCapture={(event): void => {
+                  if (!guardRawActivationRef.current) return;
+                  if (!keyFromHeaderDom(event)) return;
+                  const activation = event.key === 'Enter' || event.key === ' ';
+                  if (
+                    event.repeat &&
+                    (activation || event.key === guardedKeyRef.current)
+                  ) {
+                    event.preventDefault();
+                    return;
+                  }
+                  if (!event.repeat && activation) {
+                    guardRawActivationRef.current = false;
+                    guardedKeyRef.current = null;
+                  }
+                }}
+                onKeyUpCapture={(event): void => {
+                  if (!keyFromHeaderDom(event)) return;
+                  const revealingKey = guardedKeyRef.current === event.key;
+                  if (revealingKey) guardedKeyRef.current = null;
+                  if (
+                    revealingKey ||
+                    (guardRawActivationRef.current &&
+                      (event.key === 'Enter' || event.key === ' '))
+                  ) {
+                    event.preventDefault();
+                  }
+                }}
+                onKeyDown={(event): void => {
+                  if (
+                    event.key === 'Escape' &&
+                    transientHintVisible &&
+                    event.target === rawSegment()
+                  ) {
+                    event.preventDefault();
+                    dismissHint();
+                  }
+                }}
+              >
+                {pathSlot !== null ? (
+                  <div className="flex min-w-0 flex-1 items-center overflow-hidden">
+                    {pathSlot}
+                    {dirtyMarker}
+                  </div>
+                ) : renderPathBreadcrumb === undefined ? (
+                  <span className="min-w-0 flex-1 truncate fg-secondary">
+                    {preview.path}
+                    {dirtyMarker}
+                  </span>
+                ) : (
+                  // Host-owned name: the dirty dot is still the viewer's, so it
+                  // stays anchored to the flexible slot.
+                  <div className="flex min-w-0 flex-1 items-center overflow-hidden">
+                    {dirtyMarker}
+                  </div>
+                )}
+                {!suppressStatusChrome && (
+                  <FileStatusActions
+                    session={session}
+                    editable={editable}
+                    focusFallbackRef={headerRowRef}
+                    onDiscard={() => discardEdits(key)}
+                    onSave={() => {
+                      void saveFile(key);
+                    }}
+                  />
+                )}
+                {headerActions}
+                {showToggle && (
+                  <FileViewModeSelector
+                    value={effectiveViewMode}
+                    renderedMode={isCsv ? 'table' : 'preview'}
+                    rawLabel={rawLabel}
+                    onChange={onChangeViewMode}
+                  />
+                )}
+                {trailingHeaderActions}
+              </div>
+            </Surface>
           )}
           {!suppressStatusChrome &&
             (session.overlap ? (
@@ -2406,21 +2435,33 @@ function FileViewerBody({
             />
           )}
           {showTruncationBanner && (
-            <div className="border-b bg-warning-subtle px-4 py-2 text-xs fg-warning">
-              {`File too large to edit. Showing the first ${formatByteBudget(previewByteBudget)}.`}
-            </div>
+            <Surface variant="section" boundary="bottom">
+              <div className="px-3 py-2">
+                <Notice
+                  intent="attention"
+                  role="none"
+                >{`File too large to edit. Showing the first ${formatByteBudget(previewByteBudget)}.`}</Notice>
+              </div>
+            </Surface>
           )}
           {notebookNotice !== null && (
-            <div
-              className={`border-b px-4 py-2 text-xs ${
-                preview.truncated
-                  ? 'bg-warning-subtle fg-warning'
-                  : 'fg-secondary'
-              }`}
+            <Surface
+              variant="section"
+              boundary="bottom"
               data-testid="file-notebook-notice"
             >
-              {notebookNotice}
-            </div>
+              {preview.truncated ? (
+                <div className="px-3 py-2">
+                  <Notice intent="attention" role="none">
+                    {notebookNotice}
+                  </Notice>
+                </div>
+              ) : (
+                <div className="px-4 py-2 text-xs fg-secondary">
+                  {notebookNotice}
+                </div>
+              )}
+            </Surface>
           )}
         </>
       }

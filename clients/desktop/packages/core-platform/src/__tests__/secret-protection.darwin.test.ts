@@ -116,7 +116,24 @@ darwinDescribe(
         ],
         60_000,
       );
-    }, 65_000);
+      const report: unknown = JSON.parse(
+        runChild(
+          [
+            'scripts/lib/native-vault-sea-qualification.mjs',
+            product,
+            path.join(directory, 'renamed-sea'),
+          ],
+          60_000,
+        )
+          .trim()
+          .split(/\r?\n/)
+          .at(-1) ?? '',
+      );
+      expect(report).toMatchObject({
+        valid: { loads: 1 },
+        replaced: { loads: 0 },
+      });
+    }, 125_000);
     afterAll(() => {
       try {
         if (cleanupPending) run('cleanup');

@@ -18,6 +18,7 @@ import {
   getElapsedSecond,
   getToolDisplayFamily,
   isAskUserQuestionToolName,
+  isToolDenial,
   portalAskUserQuestionRecordState,
   parseAskUserQuestionTexts,
   TurnFooterReveal,
@@ -404,13 +405,15 @@ function TurnGroupViewImpl({
     [complete, turnSettled, timerData, assistantMessages],
   );
   // Outcomes among the folded steps, matched with results anywhere in the
-  // turn. The Portal carries no safety receipt, so `blocked` is always 0.
+  // turn. The Portal carries no safety receipt, so a denial is recognized by
+  // its text, as the step line does.
   const outcomes = useMemo(
     () =>
       computePortalTurnOutcomes(
         lookup(turnGroup.intermediateMessageIds, messagesById),
         assistantMessages,
         outcomeEvidence,
+        isToolDenial,
       ),
     [
       turnGroup.intermediateMessageIds,
@@ -419,20 +422,24 @@ function TurnGroupViewImpl({
       outcomeEvidence,
     ],
   );
-  // The errored and interrupted steps behind `outcomes`, for the outcome
-  // tooltip; most turns have none, so nothing is collected for them.
+  // The blocked, errored and interrupted steps behind `outcomes`, for the
+  // outcome tooltip; most turns have none, so nothing is collected for them.
   const outcomeSteps = useMemo(
     () =>
-      outcomes.failed === 0 && outcomes.interrupted === 0
+      outcomes.blocked === 0 &&
+      outcomes.failed === 0 &&
+      outcomes.interrupted === 0
         ? []
         : orderTurnOutcomeSteps(
             getPortalTurnOutcomeSteps(
               lookup(turnGroup.intermediateMessageIds, messagesById),
               assistantMessages,
               outcomeEvidence,
+              isToolDenial,
             ),
           ),
     [
+      outcomes.blocked,
       outcomes.failed,
       outcomes.interrupted,
       turnGroup.intermediateMessageIds,

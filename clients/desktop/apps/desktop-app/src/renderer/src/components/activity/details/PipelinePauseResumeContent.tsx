@@ -242,8 +242,7 @@ function StatusReasonPanel({
                 onClick={() => void scheduleProvider(provider)}
               >
                 <ScheduleIcon
-                  width={14}
-                  height={14}
+                  size="sm"
                   aria-hidden="true"
                   className="shrink-0"
                 />

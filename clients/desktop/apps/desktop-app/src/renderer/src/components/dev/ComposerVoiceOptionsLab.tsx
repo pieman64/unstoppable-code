@@ -20,6 +20,7 @@ import {
   VOICE_TAKE_EDITOR_CONTAINER_CLASS,
 } from '@/components/chat/ComposerLayout';
 import { VoiceRecordingRow } from '@/components/chat/VoiceRecordingRow';
+import { Surface } from '@canopy/ui-shared/components';
 
 /**
  * Lab-only mock-ups of the composer while dictating, one per reference the
@@ -389,19 +390,24 @@ export function ComposerVoiceOptionsLab({
     <div className="flex min-h-0 flex-1 justify-center overflow-y-auto bg-secondary p-3">
       <div className="flex w-full flex-col gap-3" style={{ maxWidth: width }}>
         {OPTIONS.map((option) => (
-          <section
+          <Surface
+            as="section"
+            variant="group"
             key={option.id}
             data-testid={`voice-option-${option.id}`}
-            className="flex flex-col gap-3 rounded-lg bg-base px-4 py-4"
           >
-            <div className="flex flex-col gap-0.5 px-1">
-              <span className="text-s fg-primary">
-                {option.id} · {option.title}
-              </span>
-              <span className="text-xs fg-secondary">{option.description}</span>
+            <div className="flex flex-col gap-3 px-4 py-4">
+              <div className="flex flex-col gap-0.5 px-1">
+                <span className="text-s fg-primary">
+                  {option.id} · {option.title}
+                </span>
+                <span className="text-xs fg-secondary">
+                  {option.description}
+                </span>
+              </div>
+              {option.render()}
             </div>
-            {option.render()}
-          </section>
+          </Surface>
         ))}
       </div>
     </div>

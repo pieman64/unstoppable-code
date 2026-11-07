@@ -1,5 +1,7 @@
-import type { HTMLAttributes, JSX, ReactNode } from 'react';
+import type { HTMLAttributes, JSX, ReactNode, Ref } from 'react';
+import { createElement } from 'react';
 import { HAIRLINE_INSET_RING_CLASS } from '../lib/row-chips';
+import { REPLAY_BLOCK_CLASS, REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import {
   SPACE_ROLE_GAP_CLASS,
   type LayoutElement,
@@ -24,6 +26,10 @@ import {
  *   card (a code sample, a nested preview).
  * - `dashed`: a dashed line with no fill, for a drop zone or an empty
  *   placeholder that is waiting for something.
+ * - `pane`: a full-bleed page region, without rounded corners.
+ * - `well`: a full-bleed secondary region for a media preview.
+ * - `section`: an unfilled region attached to a pane. `boundary` supplies
+ *   the shared edge of headers, footers, toolbars and status regions.
  */
 export type SurfaceVariant =
   | 'outline'
@@ -31,11 +37,35 @@ export type SurfaceVariant =
   | 'card'
   | 'raised'
   | 'inset'
-  | 'dashed';
+  | 'dashed'
+  | 'pane'
+  | 'well'
+  | 'section';
+
+/** Attached boundaries between regions of a pane, without a rounded box. */
+export type SurfaceBoundary =
+  | 'none'
+  | 'top'
+  | 'bottom'
+  | 'start'
+  | 'end'
+  | 'block'
+  | 'frame';
+
+const SURFACE_BOUNDARY_CLASS: Readonly<Record<SurfaceBoundary, string>> = {
+  none: '',
+  top: 'border-t',
+  bottom: 'border-b',
+  start: 'border-s',
+  end: 'border-e',
+  block: 'border-y',
+  frame: `${HAIRLINE_INSET_RING_CLASS} ring-line-base`,
+};
 
 /**
  * The corner size. `small` gives every variant 8px corners, for a compact box
  * such as one row of a file list; `default` is the variant's own corner.
+ * Flat pane regions always retain square corners.
  */
 export type SurfaceSize = 'default' | 'small';
 
@@ -56,6 +86,9 @@ export const SURFACE_VARIANT_CLASS: Readonly<Record<SurfaceVariant, string>> = {
   raised: 'bg-card shadow-sm',
   inset: `bg-base ${HAIRLINE_INSET_RING_CLASS} ring-line-base`,
   dashed: 'border border-dashed border-line-secondary',
+  pane: 'bg-base',
+  well: 'bg-secondary',
+  section: '',
 };
 
 /**
@@ -76,6 +109,9 @@ export const SURFACE_RADIUS_CLASS: Readonly<Record<SurfaceVariant, string>> = {
   raised: 'rounded-xl',
   inset: 'rounded-md',
   dashed: 'rounded-lg',
+  pane: '',
+  well: '',
+  section: '',
 };
 
 /** The corners of a {@link SurfaceSize} `small` box. */
@@ -102,6 +138,11 @@ export interface SurfaceProps extends SurfaceAttributes {
   readonly variant: SurfaceVariant;
   /** The element to render; `div` by default. */
   readonly as?: LayoutElement;
+  readonly ref?: Ref<HTMLElement>;
+  /** Keep private content protected when its raw wrapper becomes a Surface. */
+  readonly replay?: 'block' | 'mask';
+  /** An attached pane boundary. Box variants already own their full edge. */
+  readonly boundary?: SurfaceBoundary;
   /** Corner size; see {@link SurfaceSize}. */
   readonly size?: SurfaceSize;
   /** Inner padding by role; `none` by default. */
@@ -132,6 +173,8 @@ export function surfaceClassName({
   gap,
   selected = false,
   interactive = false,
+  boundary = 'none',
+  replay,
   className,
 }: Pick<
   SurfaceProps,
@@ -141,16 +184,27 @@ export function surfaceClassName({
   | 'gap'
   | 'selected'
   | 'interactive'
+  | 'boundary'
+  | 'replay'
   | 'className'
 >): string {
   return [
     gap ? `flex flex-col ${SPACE_ROLE_GAP_CLASS[gap]}` : '',
-    size === 'small'
+    size === 'small' && SURFACE_RADIUS_CLASS[variant]
       ? SURFACE_SMALL_RADIUS_CLASS
       : SURFACE_RADIUS_CLASS[variant],
     selected ? SURFACE_SELECTED_CLASS : SURFACE_VARIANT_CLASS[variant],
+    (variant === 'pane' || variant === 'well' || variant === 'section') &&
+    !(boundary === 'frame' && selected)
+      ? SURFACE_BOUNDARY_CLASS[boundary]
+      : '',
     interactive ? SURFACE_INTERACTIVE_CLASS : '',
     SURFACE_PADDING_CLASS[padding],
+    replay === 'block'
+      ? REPLAY_BLOCK_CLASS
+      : replay === 'mask'
+        ? REPLAY_MASK_CLASS
+        : '',
     className ?? '',
   ]
     .filter(Boolean)
@@ -170,27 +224,31 @@ export function Surface({
   gap,
   selected,
   interactive,
+  boundary,
+  replay,
   className,
   children,
   ...rest
 }: SurfaceProps): JSX.Element {
-  return (
-    <Tag
-      {...rest}
-      data-surface={variant}
-      data-selected={selected ? '' : undefined}
-      className={surfaceClassName({
+  return createElement(
+    Tag,
+    {
+      ...rest,
+      'data-surface': variant,
+      'data-selected': selected ? '' : undefined,
+      className: surfaceClassName({
         variant,
         size,
         padding,
         gap,
         selected,
         interactive,
+        boundary,
+        replay,
         className,
-      })}
-    >
-      {children}
-    </Tag>
+      }),
+    },
+    children,
   );
 }
 

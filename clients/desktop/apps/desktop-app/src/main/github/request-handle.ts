@@ -1,9 +1,17 @@
 import {
   GitHubRequestError,
+  sameGitHubRepository,
   type GitHubPullRequestRecord,
   type GitHubRepositoryRecord,
   type GitHubRequestHandle,
+  type GitHubRepositoryRef,
 } from '@canopy/core-runtime/node/github';
+import { getGitHubMergeQueue } from '../lib/github-merge-queue-read-model';
+import {
+  classifyPrMergeError,
+  mergePrForRemote,
+  readGitHubPullRequestMergePolicy,
+} from '../lib/github-pr';
 import { describeGitHubCredential } from '../lib/github-auth';
 import {
   GitHubBrokerCredentialResetError,
@@ -15,9 +23,14 @@ import {
   readGitHubBranchHead,
   updateGitHubPullRequest,
 } from '../lib/github-pr-writes';
-import { listOpenPullRequestsForRepo } from '../lib/github-pr-listing';
+import {
+  listOpenPullRequestsForRepo,
+  searchOpenPullRequestsForRepo,
+  searchOpenPullRequestsForRepository,
+} from '../lib/github-pr-listing';
 import {
   getGitHubPullRequestStatus,
+  invalidateGitHubPullRequest,
   githubPullRequestDetailOf,
   isCompleteGitHubPullRequestDetail,
   listGitHubPullRequestProjections,
@@ -159,6 +172,45 @@ function repositoryRecord(access: GitHubRepoAccess): GitHubRepositoryRecord {
   };
 }
 
+/** Full records for canonical search; IPC captures only today's summary read. */
+export async function readPullRequestTitleSearch(
+  repoPath: string,
+  resolveRepository: () => Promise<GitHubRepositoryRef>,
+  query: string,
+  limit: number,
+  signal: AbortSignal,
+): Promise<{
+  github: GitHubRepositoryRef;
+  records: readonly GitHubPullRequestRecord[];
+}> {
+  return mapped(async () => {
+    const capture = currentGitHubProjection();
+    if (capture?.kind === 'search') {
+      capture.legacy = await searchOpenPullRequestsForRepo(repoPath, query);
+      throw projectionUnavailable();
+    }
+    // IPC's legacy cache resolves origin only on a miss. Canonical reads
+    // instead bind the repository before searching, without the path cache.
+    const repository = await resolveRepository();
+    const summaries = await searchOpenPullRequestsForRepository(
+      repository,
+      query,
+      signal,
+    );
+    const records = await Promise.all(
+      summaries
+        .slice(0, limit)
+        .map((summary) =>
+          handle.getPullRequest(
+            { ...repository, number: summary.number },
+            { refresh: false, signal },
+          ),
+        ),
+    );
+    return { github: repository, records };
+  });
+}
+
 /**
  * The desktop's only `GitHubRequestHandle`: today's secure store, broker,
  * shared pull-request read model and listings, behind results-only members.
@@ -168,17 +220,107 @@ function repositoryRecord(access: GitHubRepoAccess): GitHubRepositoryRecord {
  */
 const handle: GitHubRequestHandle = {
   describe: describeGitHubCredential,
+  getMergeQueue: (params) => mapped(() => getGitHubMergeQueue(params)),
+  getMergePolicy: (ref) =>
+    mapped(async () => {
+      const capture = currentGitHubProjection();
+      if (
+        capture?.kind === 'merge' &&
+        capture.policy &&
+        !capture.policyConsumed
+      ) {
+        capture.policyConsumed = true;
+        if (
+          capture.policyRead &&
+          capture.current &&
+          capture.policyRead.ref.number === ref.number &&
+          sameGitHubRepository(capture.policyRead.ref, ref) &&
+          capture.policyRead.record.headSha === capture.current.headSha &&
+          capture.policyRead.record.baseBranch === capture.current.baseBranch
+        )
+          return capture.policy;
+      }
+      return readGitHubPullRequestMergePolicy(ref);
+    }),
+  mergePullRequest: (ref, input, policy) =>
+    mapped(async () => {
+      const capture = currentGitHubProjection();
+      if (capture?.kind === 'merge') capture.mutationSent = true;
+      let projection: GitHubPullRequestRecord | null | undefined;
+      try {
+        const result = await mergePrForRemote(
+          ref,
+          ref.number,
+          input.expectedHeadSha,
+          {
+            strategy: input.strategy,
+            allowEnqueue: false,
+            policy,
+            verify: async () => {
+              invalidateGitHubPullRequest(ref);
+              try {
+                projection = pullRequestRecord(
+                  await readGitHubPullRequestProjection(ref, {
+                    refresh: true,
+                    caller: GET_CALLER,
+                  }),
+                );
+                return projection.state === 'merged' ? true : null;
+              } catch {
+                // Keep the legacy writer's verification and IPC result on a full-read failure.
+                projection = null;
+                return null;
+              }
+            },
+          },
+        );
+        if (capture?.kind === 'merge') capture.result = result;
+        return {
+          ...result,
+          ...(projection === undefined ? {} : { projection }),
+        };
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message ===
+            'Cannot retry the pull request merge because the PR head commit changed.'
+        )
+          throw new GitHubRequestError(
+            'head_mismatch',
+            'The pull request head changed.',
+            { cause: error },
+          );
+        if (classifyPrMergeError(error) !== null)
+          throw new GitHubRequestError(
+            'not_mergeable',
+            'GitHub refused the merge.',
+            { cause: error },
+          );
+        throw error;
+      } finally {
+        invalidateGitHubPullRequest(ref);
+      }
+    }),
   getPullRequest: (ref, options) =>
     mapped(async (): Promise<GitHubPullRequestRecord> => {
       const capture = currentGitHubProjection();
-      if (capture?.kind !== 'resolve')
-        return pullRequestRecord(
+      if (capture?.kind !== 'resolve') {
+        const record = pullRequestRecord(
           await readGitHubPullRequestProjection(ref, {
             refresh: options.refresh,
             caller: GET_CALLER,
             ...(options.signal ? { signal: options.signal } : {}),
           }),
         );
+        if (capture?.kind === 'merge') {
+          capture.current = record;
+          if (capture.policy === undefined) {
+            capture.policy = await readGitHubPullRequestMergePolicy(ref);
+            capture.policyRead = { ref, record };
+          }
+        }
+        return record;
+      }
       // The resolver's own read, exactly as before; its view is the legacy
       // answer. Its detail stands in only when that read listed everything.
       if (capture.resolvedRepoPath !== capture.repoPath)

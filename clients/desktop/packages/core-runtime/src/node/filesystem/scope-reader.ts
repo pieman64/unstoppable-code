@@ -24,6 +24,7 @@ import {
   buildSingleRepoRootCatalog,
   readRootVisibility,
   resolveCoworkWorkspaceRootName,
+  type AttachmentsRootSource,
   type FilesystemRootCatalog,
   type NamedRootPath,
 } from './root-catalog';
@@ -53,6 +54,8 @@ export type FilesystemReadOperation =
 
 export interface FilesystemScopeCatalog extends FilesystemRootCatalog {
   containerCreatedAt: string | null;
+  /** Host-private source, even while hidden from the visible catalog. */
+  attachmentSource: AttachmentsRootSource;
 }
 
 export function filesystemScopeError(
@@ -274,6 +277,7 @@ export async function readFilesystemScope(
       ? paths.resolve(value)
       : fail();
   let catalog: FilesystemRootCatalog;
+  let attachmentSource: AttachmentsRootSource;
   let containerCreatedAt: string | null = null;
   if (type === 'cowork') {
     const worktreeId = scope.worktreeId ?? 'home';
@@ -329,6 +333,7 @@ export async function readFilesystemScope(
     )
       fail();
     const managed = paths.join(home, dependencies.coworkManagedDirName);
+    attachmentSource = await attachments(paths.join(managed, 'attachments'));
     catalog = buildCoworkRootCatalog({
       workspace: {
         id: COWORK_WORKSPACE_FILE_ROOT_ID,
@@ -340,7 +345,7 @@ export async function readFilesystemScope(
       },
       notesPath: paths.join(managed, 'notes'),
       promptsPath: paths.join(managed, 'prompts'),
-      attachments: await attachments(paths.join(managed, 'attachments')),
+      attachments: attachmentSource,
     });
   } else {
     if (!scope.worktreeId) return fail();
@@ -360,7 +365,7 @@ export async function readFilesystemScope(
     )
       fail();
     const home = paths.join(base, 'worktrees', scope.worktreeId);
-    const attachmentSource = await attachments(
+    attachmentSource = await attachments(
       paths.join(base, 'attachments', scope.worktreeId),
     );
     if (type === 'single-repo') {
@@ -404,5 +409,5 @@ export async function readFilesystemScope(
   }
   if (scope.repoId !== undefined && !catalog.byId.has(scope.repoId))
     fail('notFound');
-  return { ...catalog, containerCreatedAt };
+  return { ...catalog, containerCreatedAt, attachmentSource };
 }

@@ -50,8 +50,7 @@ export function VariableInsertDropdown({
       >
         Insert variable
         <AppCatalogChevronDownMediumIcon
-          width="12"
-          height="12"
+          size="sm"
           className={`fg-secondary transition-transform ${open ? 'rotate-180' : ''}`}
         />
       </Button>

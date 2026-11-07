@@ -647,10 +647,10 @@ async function combineWorktreeWithWorkspaceAdmitted(
     throw new Error('Cannot add a project to itself');
   }
 
-  await assertLegacyCombineAllowed([
-    request.sourceWorkspaceId,
-    ...joinWorkspaceIds,
-  ]);
+  await assertLegacyCombineAllowed(
+    [request.sourceWorkspaceId, ...joinWorkspaceIds],
+    request.mode,
+  );
   const existingDestination = await findExistingAdhocDestination(
     request.sourceWorkspaceId,
     request.sourceWorktreeId,
@@ -760,7 +760,11 @@ async function combineWorktreeWithWorkspaceAdmitted(
   const destination = await resolveDestinationWorkspace(
     items,
     finalCandidates,
-    { beforeEffects: attempt?.beforeEffects, commit },
+    {
+      reuseOwner: sourceWorkspace.owner,
+      beforeEffects: attempt?.beforeEffects,
+      commit,
+    },
   );
   return handleTemporaryCombine(
     request,

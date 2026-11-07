@@ -373,12 +373,7 @@ function FloatingChatTitleMenu({
             >
               <span className="min-w-0 flex-1 truncate">{item.title}</span>
               {active ? (
-                <CheckIcon
-                  width={16}
-                  height={16}
-                  aria-hidden="true"
-                  className="shrink-0"
-                />
+                <CheckIcon size="sm" aria-hidden="true" className="shrink-0" />
               ) : (
                 <span className="shrink-0 text-xs fg-tertiary">
                   {item.timeLabel}

@@ -4,10 +4,7 @@ import {
   curatedMcpProviderOnly,
   type CuratedMcpServerEntry,
 } from '@canopy/protocol/mcp-catalog';
-import type {
-  AccountMcpConnection,
-  McpServerIndexEntry,
-} from '@canopy/desktop-shared/types/mcp-servers';
+import type { AccountMcpConnection } from '@canopy/desktop-shared/types/mcp-servers';
 import {
   mcpClientSetupCollectsClient,
   mcpClientSetupExplanation,
@@ -76,8 +73,8 @@ export function accountMcpCatalogConnectStep(
 }
 
 /**
- * Connect or Reconnect for an account server, shared by the MCP servers
- * settings and the Home sign-in strip: setup for a catalog server that needs
+ * Connect or Reconnect for an account server, shared by Customize's MCP
+ * servers and the Home sign-in strip: setup for a catalog server that needs
  * fields or an endpoint choice, a fresh token for a custom bearer connection,
  * and otherwise a start by server key. A connection keeps its own
  * configuration; without one the start uses `configId`, the selected
@@ -240,12 +237,4 @@ export function accountMcpClientPromptStep<C extends AccountMcpStepConnection>({
     kind: 'error',
     message: mcpConnectErrorMessage('client_credentials_required'),
   };
-}
-
-/** A cloud connection that still holds or awaits a credential to revoke. */
-export function accountMcpConnectionLive(
-  row: Pick<McpServerIndexEntry, 'accountConnection'>,
-): boolean {
-  const status = row.accountConnection?.status;
-  return status !== undefined && status !== 'DISCONNECTED';
 }

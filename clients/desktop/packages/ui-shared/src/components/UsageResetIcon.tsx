@@ -1,9 +1,12 @@
 import type { JSX } from 'react';
-import { ScheduleIcon as AppCatalogScheduleIcon } from '../icons/AppIcons';
+import {
+  ScheduleIcon as AppCatalogScheduleIcon,
+  type IconSize,
+} from '../icons/AppIcons';
 
 interface UsageResetIconProps {
-  /** Icon size in pixels for both width and height. Defaults to 14. */
-  size?: number;
+  /** A step of the icon scale. Defaults to `sm`. */
+  size?: IconSize;
   className?: string;
 }
 
@@ -13,14 +16,13 @@ interface UsageResetIconProps {
  * overlay so the two surfaces stay visually consistent.
  */
 export function UsageResetIcon({
-  size = 14,
+  size = 'sm',
   className = 'shrink-0',
 }: UsageResetIconProps): JSX.Element {
   return (
     <AppCatalogScheduleIcon
       aria-hidden="true"
-      width={size}
-      height={size}
+      size={size}
       className={className}
     />
   );

@@ -137,7 +137,7 @@ import {
   readCodexMcpToolEvidence,
   type CodexMcpToolEvidence,
 } from '@canopy/desktop-shared/node/codex-runtime';
-import { getCodexRuntimeService } from './runtime-service';
+import { codexRuntimeForWorkerRun } from './runtime-service';
 import type { ChatEventDrop } from '../lib/chat-event-drop-diagnostics';
 import {
   attachProviderRunEvent,
@@ -2925,7 +2925,9 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     this.onProcessExit = opts.onProcessExit;
     this.onProcessError = opts.onProcessError;
     this.onProcessRecovery = opts.onProcessRecovery;
-    this.connection = getCodexRuntimeService().attachInteractiveClient({
+    this.connection = codexRuntimeForWorkerRun(
+      'attachInteractiveClient',
+    ).attachInteractiveClient({
       profile: opts.spawnProfile ?? {
         ...(opts.extraEnv ? { environment: opts.extraEnv } : {}),
         ...(opts.configArgs ? { configArgs: opts.configArgs } : {}),

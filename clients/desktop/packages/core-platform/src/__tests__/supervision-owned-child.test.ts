@@ -1304,7 +1304,7 @@ describe('controlled native failures', () => {
       expect(b.native.stopGroup).toHaveBeenCalledTimes(1);
     });
 
-    it('keeps the launcher channel Darwin-only', async () => {
+    it('refuses a backend missing launcher-channel exports', async () => {
       const b = backend('win32');
       const error = await rejection(() =>
         b.services.spawnWithChannel(windowsRequest),
@@ -1372,18 +1372,60 @@ describe('controlled native failures', () => {
       expect(b.native.spawn).not.toHaveBeenCalled();
     });
 
-    it('keeps the launcher channel Darwin-only without loading the addon', async () => {
+    // L1 intentionally extends the native launch contract, not admission.
+    it('refuses missing channel exports without claiming ownership loss', async () => {
+      const b = backend('linux');
+      await expect(b.services.spawnWithChannel(request)).rejects.toMatchObject({
+        code: 'capability_unavailable',
+      });
+      expect(b.dlopen).toHaveBeenCalledTimes(1);
+      expect(b.native.spawn).not.toHaveBeenCalled();
+    });
+
+    it('uses the Linux channel export without falling back to ordinary spawn', async () => {
+      const b = backend('linux');
+      const spawnChannel = jest.fn(() => ({ handle: {}, pid: 101 }));
+      const channelClose = jest.fn();
+      Object.assign(b.native, {
+        spawnChannel,
+        channelRead: jest.fn(),
+        channelWrite: jest.fn(),
+        channelPeer: jest.fn(),
+        channelClose,
+      });
+      const { channel, child } = await b.services.spawnWithChannel(request);
+      expect(spawnChannel).toHaveBeenCalledWith(
+        '/controlled/child',
+        ['/controlled/child'],
+        [],
+        null,
+      );
+      expect(b.native.spawn).not.toHaveBeenCalled();
+      channel.close();
+      expect(channelClose).toHaveBeenCalledTimes(1);
+      const stopped = child.terminate();
+      await jest.advanceTimersByTimeAsync(20);
+      await stopped;
+    });
+
+    it('reports unavailable stale-sender pidfd facilities accurately with no fallback', async () => {
       const b = backend('linux');
       Object.assign(b.native, {
-        spawnChannel: jest.fn(),
+        spawnChannel: jest.fn(() => {
+          throw Object.assign(new Error('private kernel details'), {
+            code: 'ERR_OWNED_CHILD_CHANNEL_UNSUPPORTED',
+          });
+        }),
         channelRead: jest.fn(),
         channelWrite: jest.fn(),
         channelPeer: jest.fn(),
         channelClose: jest.fn(),
       });
-      const error = await rejection(() => b.services.spawnWithChannel(request));
-      expect(error).toEqual(typed('capability_unavailable'));
-      expect(b.dlopen).not.toHaveBeenCalled();
+      await expect(b.services.spawnWithChannel(request)).rejects.toMatchObject({
+        code: 'capability_unavailable',
+        message:
+          'Linux launcher channels require stale-sender pidfds and pidfs.',
+      });
       expect(b.native.spawn).not.toHaveBeenCalled();
     });
   });

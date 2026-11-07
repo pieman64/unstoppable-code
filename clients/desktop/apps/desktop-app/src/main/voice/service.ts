@@ -4,6 +4,7 @@ import {
   type ChildProcessWithoutNullStreams,
 } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { release } from 'node:os';
 import {
   getBundledDictateBinaryPath,
   getEnhancedEnv,
@@ -38,6 +39,12 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function isDictateMacOSVersionSupported(): boolean {
+  // Darwin 25 is macOS 26. Older hosts can fail in dyld before Swift's
+  // availability checks run, including in probe and authorization modes.
+  return Number(release().split('.')[0]) >= 25;
+}
+
 export class VoiceService {
   private activeSession: ActiveSession | null = null;
   private listeners = new Set<VoiceEventListener>();
@@ -59,6 +66,12 @@ export class VoiceService {
   async isSupported(): Promise<VoiceIsSupportedResponse> {
     if (!isVoiceDictationPlatform(process.platform)) {
       return UNSUPPORTED_VOICE_RESPONSE;
+    }
+    if (!isDictateMacOSVersionSupported()) {
+      return {
+        supported: false,
+        reason: 'Voice dictation needs macOS 26 or later.',
+      };
     }
     if (this.cachedSupport) {
       return this.cachedSupport;
@@ -82,6 +95,9 @@ export class VoiceService {
 
   async requestSpeechRecognitionAccess(): Promise<VoiceSpeechRecognitionAccess> {
     if (!isVoiceDictationPlatform(process.platform)) {
+      return 'unavailable';
+    }
+    if (!isDictateMacOSVersionSupported()) {
       return 'unavailable';
     }
     const binary = resolveBinary();

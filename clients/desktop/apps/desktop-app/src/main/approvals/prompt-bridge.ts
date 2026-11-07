@@ -9,7 +9,7 @@ import {
   sendToWindowDetailed,
   type SendableBrowserWindow,
 } from '../lib/window-send';
-import { getObservabilityService } from '../observability';
+import { getExecutionObservabilityIngest } from '../observability/ingest';
 import { getAttentionTracker } from '../services/attention-tracker';
 import { createPendingApproval, rejectApproval } from './pending-approvals';
 
@@ -91,7 +91,7 @@ export async function requestApprovalFromRenderer(options: {
       : undefined;
   timeout?.unref?.();
   options.onAwaitingUser?.();
-  getObservabilityService().pauseChatTurn(
+  getExecutionObservabilityIngest().pauseChatTurn(
     options.event.projectId,
     options.event.worktreeId,
     options.event.chatId,
@@ -116,7 +116,7 @@ export async function requestApprovalFromRenderer(options: {
     if (timeout) {
       clearTimeout(timeout);
     }
-    getObservabilityService().resumeChatTurn(
+    getExecutionObservabilityIngest().resumeChatTurn(
       options.event.projectId,
       options.event.worktreeId,
       options.event.chatId,

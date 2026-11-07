@@ -720,13 +720,25 @@ export class ForeignActivityCarryoverService {
       const snapshot = await getChatStateService().getState(chatTarget);
       let runtime = snapshot.runtimeByChatId[target.chatId];
       if (runtime?.queuedMessageIds.includes(target.operationId)) {
-        const { getChatQueueService } = await import('./chat-queue-service');
-        const result = await getChatQueueService().cancel(
-          chatTarget,
-          target.operationId,
-        );
-        if (result === 'busy') throw new Error(FOREIGN_ACTIVITY_BUSY_ERROR);
-        if (result === 'applied') return;
+        const { dispatchCanonicalChatCommand } = await import('../ipc/chat');
+        const receipt = await dispatchCanonicalChatCommand({
+          schemaVersion: 1,
+          commandId: randomUUID(),
+          projectId: chatTarget.projectId,
+          worktreeId: chatTarget.worktreeId,
+          command: {
+            type: 'chat.cancel_queued_message',
+            chatId: chatTarget.chatId,
+            queuedMessageId: target.operationId,
+          },
+        });
+        if (receipt.outcome === 'rejected')
+          throw new Error(FOREIGN_ACTIVITY_BUSY_ERROR);
+        if (
+          receipt.outcome === 'applied' ||
+          receipt.outcome === 'already_applied'
+        )
+          return;
         // Dispatch can move the queued message into an active turn during cancel.
         const latest = await getChatStateService().getState(chatTarget);
         runtime = latest.runtimeByChatId[target.chatId];

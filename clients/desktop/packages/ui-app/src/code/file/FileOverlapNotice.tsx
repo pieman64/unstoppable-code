@@ -600,7 +600,7 @@ export function FileOverlapNotice({
                 <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
                   <NoticeButton
                     aria-label={`Combine with AI${suffix}`}
-                    icon={<SparkleIcon width={12} height={12} />}
+                    icon={<SparkleIcon size="sm" />}
                     disabled={busy}
                     data-testid="file-overlap-ask-keep"
                     onClick={(): void =>

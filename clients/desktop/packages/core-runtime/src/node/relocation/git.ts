@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { constants } from 'node:fs';
 import {
+  copyFile,
   lstat,
   open,
   readFile,
@@ -15,6 +17,7 @@ import {
   join,
   relative,
   resolve,
+  sep,
 } from 'node:path';
 import {
   movedOwnedPath,
@@ -54,10 +57,20 @@ async function observe(
   git: RelocationGit,
   path: string,
 ): Promise<RelocationGitCheckout> {
-  const entry = (await git(path, ['worktree', 'list', '--porcelain', '-z']))
-    .split('\0\0')
-    .map((record) => record.split('\0'))
-    .find((fields) => fields.includes(`worktree ${path}`));
+  let entry: string[] | undefined;
+  for (const record of (
+    await git(path, ['worktree', 'list', '--porcelain', '-z'])
+  ).split('\0\0')) {
+    const fields = record.split('\0');
+    const listed = fields
+      .find((field) => field.startsWith('worktree '))
+      ?.slice(9);
+    if (
+      listed &&
+      (sep === '\\' ? (await realpath(listed)) === path : listed === path)
+    )
+      entry = fields;
+  }
   const head = entry?.find((field) => field.startsWith('HEAD '))?.slice(5);
   const branch = entry?.includes('detached')
     ? 'HEAD'
@@ -67,13 +80,15 @@ async function observe(
     throw new RelocationRefusedError('unreadable-git-checkout');
   return {
     path,
-    commonDirectory: (
-      await git(path, [
-        'rev-parse',
-        '--path-format=absolute',
-        '--git-common-dir',
-      ])
-    ).replace(/\r?\n$/, ''),
+    commonDirectory: await canonicalGitPath(
+      (
+        await git(path, [
+          'rev-parse',
+          '--path-format=absolute',
+          '--git-common-dir',
+        ])
+      ).replace(/\r?\n$/, ''),
+    ),
     head,
     branch,
     status: await git(path, [
@@ -89,6 +104,7 @@ async function observe(
 export async function prepareRelocationGit(
   git: RelocationGit,
   paths: readonly string[],
+  options: { readonly portableFilesystem?: boolean } = {},
 ): Promise<RelocationGitPlan> {
   const checkouts: RelocationGitCheckout[] = [];
   const backlinks = new Map<string, string>();
@@ -98,6 +114,35 @@ export async function prepareRelocationGit(
     const checkout = await observe(git, path);
     if ((await realpath(checkout.commonDirectory)) !== checkout.commonDirectory)
       throw new RelocationRefusedError('symlink-common-directory');
+    if (options.portableFilesystem) {
+      const configuration = await git(path, ['config', '--null', '--list']);
+      if (
+        configuration
+          .split('\0')
+          .some((record) =>
+            ['core.worktree', 'extensions.worktreeconfig'].includes(
+              record.split('\n')[0]?.toLowerCase() ?? '',
+            ),
+          )
+      )
+        throw new RelocationRefusedError('unsupported-git-worktree-config');
+      for (const unsupported of [
+        join(path, '.gitmodules'),
+        join(checkout.commonDirectory, 'modules'),
+        join(checkout.commonDirectory, 'config.worktree'),
+        join(checkout.commonDirectory, 'objects', 'info', 'alternates'),
+      ]) {
+        if (await present(unsupported))
+          throw new RelocationRefusedError('unsupported-git-layout');
+      }
+    }
+    if (
+      options.portableFilesystem &&
+      (await git(path, ['ls-files', '--stage', '-z']))
+        .split('\0')
+        .some((entry) => entry.startsWith('160000 '))
+    )
+      throw new RelocationRefusedError('unsupported-git-submodule');
     checkouts.push(checkout);
     const dotGit = join(path, '.git');
     const dotGitState = await lstat(dotGit);
@@ -105,11 +150,21 @@ export async function prepareRelocationGit(
       throw new RelocationRefusedError('symlink-git-directory');
     if (dotGitState.isFile()) {
       backlinks.set(dotGit, await readFile(dotGit, 'utf8'));
-      const gitDir = (
-        await git(path, ['rev-parse', '--absolute-git-dir'])
-      ).replace(/\r?\n$/, '');
+      const gitDir = await canonicalGitPath(
+        (await git(path, ['rev-parse', '--absolute-git-dir'])).replace(
+          /\r?\n$/,
+          '',
+        ),
+      );
+      if (options.portableFilesystem && gitDir === checkout.commonDirectory)
+        throw new RelocationRefusedError('unsupported-separate-git-directory');
       if ((await realpath(gitDir)) !== gitDir)
         throw new RelocationRefusedError('symlink-git-directory');
+      if (
+        options.portableFilesystem &&
+        (await present(join(gitDir, 'config.worktree')))
+      )
+        throw new RelocationRefusedError('unsupported-git-worktree-config');
       for (const file of ['gitdir', 'commondir']) {
         const target = join(gitDir, file);
         if (
@@ -131,13 +186,16 @@ export async function prepareRelocationGit(
       '--porcelain',
       '-z',
     ]);
+    const represented = new Set(checkouts.map((row) => row.path));
     for (const record of listed.split('\0\0')) {
       const fields = record.split('\0');
       if (fields.includes('bare')) continue;
       for (const field of fields) {
         if (
           field.startsWith('worktree ') &&
-          !checkouts.some((row) => row.path === field.slice(9))
+          !represented.has(
+            sep === '\\' ? await realpath(field.slice(9)) : field.slice(9),
+          )
         )
           throw new RelocationRefusedError('uninventoried-git-checkout');
       }
@@ -155,17 +213,31 @@ async function replaceBacklink(image: RelocationBacklink): Promise<void> {
     dirname(image.path),
     `.${basename(image.path)}.relocation-${randomUUID()}.tmp`,
   );
-  const handle = await open(temp, 'wx', (await lstat(image.path)).mode & 0o777);
+  // CopyFile preserves Windows attributes (notably Git's hidden .git files).
+  // CREATE_ALWAYS cannot overwrite hidden files; update only the private temp.
+  const windows = sep === '\\';
+  let temporaryOwned = false;
   try {
+    if (windows) {
+      await copyFile(image.path, temp, constants.COPYFILE_EXCL);
+      temporaryOwned = true;
+    }
+    const handle = await open(
+      temp,
+      windows ? 'r+' : 'wx',
+      (await lstat(image.path)).mode & 0o777,
+    );
+    temporaryOwned = true;
     try {
       await writeFile(handle, image.contents);
+      if (windows) await handle.truncate(Buffer.byteLength(image.contents));
       await handle.sync();
     } finally {
       await handle.close();
     }
     await rename(temp, image.path);
   } finally {
-    await rm(temp, { force: true });
+    if (temporaryOwned) await rm(temp, { force: true });
   }
 }
 
@@ -191,7 +263,9 @@ export async function repairRelocationGit(
     const text = image.contents.slice(prefix.length).replace(/\r?\n$/, '');
     if (!text || text.includes('\0'))
       throw new RelocationRefusedError('unreadable-git-backlink');
-    const target = resolve(dirname(image.path), text);
+    const resolvedTarget = resolveGitBacklink(dirname(image.path), text);
+    const target =
+      sep === '\\' ? await canonicalGitPath(resolvedTarget) : resolvedTarget;
     if (
       (name === 'gitdir' &&
         !isCheckout &&
@@ -205,7 +279,7 @@ export async function repairRelocationGit(
     const contents =
       finalPath === image.path && finalTarget === target
         ? image.contents
-        : `${prefix}${isAbsolute(text) ? finalTarget : relative(dirname(finalPath), finalTarget)}\n`;
+        : `${prefix}${gitBacklinkText(dirname(finalPath), finalTarget, isAbsolute(text))}\n`;
     const path = relocationWorkingPath(transition, workingRoot, finalPath);
     if (!(await lstat(path)).isFile() || (await realpath(path)) !== path)
       throw new RelocationRefusedError('symlink-backlink');
@@ -224,4 +298,45 @@ export async function repairRelocationGit(
     if ((await readFile(image.path, 'utf8')) !== image.contents)
       throw new RelocationRefusedError('git-verification-failed');
   }
+}
+
+async function present(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error) {
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      error.code === 'ENOENT'
+    )
+      return false;
+    throw error;
+  }
+}
+
+function resolveGitBacklink(parent: string, text: string): string {
+  // Drive-relative and device namespace names are not Git-owned path evidence.
+  if (sep === '\\' && (/^[A-Za-z]:(?![\\/])/.test(text) || /^[\\/]/.test(text)))
+    throw new RelocationRefusedError('noncanonical-git-backlink');
+  return resolve(parent, text);
+}
+
+/** Git accepts an absolute cross-drive target when relative() cannot express it. */
+export function gitBacklinkText(
+  parent: string,
+  target: string,
+  absolute: boolean,
+): string {
+  const value = absolute ? target : relative(parent, target);
+  return sep === '\\' ? value.replace(/\\/g, '/') : value;
+}
+
+async function canonicalGitPath(path: string): Promise<string> {
+  if (sep !== '\\') return path;
+  const canonical = await realpath(path);
+  if (relative(resolve(path), canonical) !== '')
+    throw new RelocationRefusedError('symlink-git-directory');
+  return canonical;
 }

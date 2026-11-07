@@ -1,13 +1,9 @@
-import type { JSX, SVGProps } from 'react';
-import { WatcherEyeIcon as AppCatalogWatcherEyeIcon } from './AppIcons';
+import type { JSX } from 'react';
+import {
+  WatcherEyeIcon as AppCatalogWatcherEyeIcon,
+  type AppIconProps,
+} from './AppIcons';
 
-export function WatcherEyeIcon(props: SVGProps<SVGSVGElement>): JSX.Element {
-  return (
-    <AppCatalogWatcherEyeIcon
-      width="16"
-      height="16"
-      aria-hidden="true"
-      {...props}
-    />
-  );
+export function WatcherEyeIcon(props: AppIconProps): JSX.Element {
+  return <AppCatalogWatcherEyeIcon size="sm" aria-hidden="true" {...props} />;
 }

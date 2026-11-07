@@ -418,11 +418,11 @@ export function PanelTabStyleProvider({
 
 function CloseGlyph(): JSX.Element {
   // 14px to match `.canopy-panel-tab-icon`, the slot it covers on hover.
-  return <CloseMediumIcon width={14} height={14} />;
+  return <CloseMediumIcon size="sm" />;
 }
 
 function PinGlyph(): JSX.Element {
-  return <PinIcon width={10} height={10} />;
+  return <PinIcon size="sm" />;
 }
 
 /**

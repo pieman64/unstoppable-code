@@ -1361,10 +1361,6 @@ function ShellLabel({
   );
 }
 
-function TaskIcon(): JSX.Element {
-  return <AppCatalogTaskIcon width="14" height="14" />;
-}
-
 function MutedSnippet({ children }: { children: ReactNode }): JSX.Element {
   const clean = useCleanChatLook();
   // Chat detail `detailed`: shrinks in the badge line and ends in "…".
@@ -3070,7 +3066,7 @@ const renderWebSearchRaw: ToolDisplayRenderer = (parsed, input) => {
 const renderTodoWrite: ToolDisplayRenderer = (parsed) => {
   const todos = Array.isArray(parsed.todos) ? parsed.todos : [];
   return {
-    icon: <TaskIcon />,
+    icon: <AppCatalogTaskIcon size="sm" />,
     label: (
       <>
         Update todos{' '}
@@ -3085,7 +3081,7 @@ const renderTodoWrite: ToolDisplayRenderer = (parsed) => {
 const renderTaskCreate: ToolDisplayRenderer = (parsed) => {
   const subject = asString(parsed.subject);
   return {
-    icon: <TaskIcon />,
+    icon: <AppCatalogTaskIcon size="sm" />,
     label: subject ? (
       <>
         Create task <CodeChunk>{subject}</CodeChunk>
@@ -3100,7 +3096,7 @@ const renderTaskUpdate: ToolDisplayRenderer = (parsed) => {
   const taskId = asString(parsed.taskId);
   const status = asString(parsed.status);
   return {
-    icon: <TaskIcon />,
+    icon: <AppCatalogTaskIcon size="sm" />,
     label: (
       <>
         Update task
@@ -3117,14 +3113,14 @@ const renderTaskUpdate: ToolDisplayRenderer = (parsed) => {
 };
 
 const renderTaskList: ToolDisplayRenderer = () => ({
-  icon: <TaskIcon />,
+  icon: <AppCatalogTaskIcon size="sm" />,
   label: 'List tasks',
 });
 
 const renderTaskGet: ToolDisplayRenderer = (parsed) => {
   const taskId = asString(parsed.taskId);
   return {
-    icon: <TaskIcon />,
+    icon: <AppCatalogTaskIcon size="sm" />,
     label: taskId ? (
       <>
         Get task <CodeChunk>#{taskId}</CodeChunk>

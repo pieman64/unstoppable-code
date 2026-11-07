@@ -60,7 +60,10 @@ import {
   shouldShowWorktreeMergedState,
 } from '@/lib/worktreeMergedState';
 import type { NoticeIntent } from '@canopy/ui-shared/components';
-import { toastStackLifetimeMs } from '@canopy/ui-shared/lib';
+import {
+  recordSurfacedError,
+  toastStackLifetimeMs,
+} from '@canopy/ui-shared/lib';
 import { create, type StoreApi } from 'zustand';
 import { requestLoadedChangedFilesRefresh } from './changedFilesRefreshRuntime';
 import {
@@ -4344,7 +4347,21 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
     const showInApp =
       entry.meta?.forceInApp === true || shouldShowInAppNotification(category);
     const scope = entry.meta?.notificationScope;
-    if (scope && !isScopedNotificationDeliverable(scope)) {
+    const deliverable = !scope || isScopedNotificationDeliverable(scope);
+    if (type === 'error') {
+      recordSurfacedError({
+        chokePoint: 'toast',
+        // Not the routing default above: a missing category stays visible.
+        identifier: meta?.category ?? 'uncategorized',
+        // Omitted when no popup shows, so nothing claims it was displayed.
+        ...(deliverable && showInApp ? { surface: 'toast' as const } : {}),
+        text: message,
+        // Every error toast is blocked from replay (toastMessageReplayClass);
+        // showing it locally does not clear it for export.
+        textIsSensitive: true,
+      });
+    }
+    if (!deliverable) {
       // Recording is unchanged: history keeps exactly what it would have
       // held, with no popup, timer, or native banner.
       if (showInApp) {

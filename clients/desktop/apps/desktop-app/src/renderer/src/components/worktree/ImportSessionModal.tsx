@@ -23,6 +23,7 @@ import {
   Notice,
   SearchField,
   Skeleton,
+  Surface,
 } from '@canopy/ui-shared/components';
 import { formatByteSize, formatDateTime } from '@canopy/ui-shared/lib';
 import { DialogModal } from '../shared';
@@ -79,13 +80,29 @@ function CloudExportRow({
   onDelete,
 }: CloudExportRowProps): JSX.Element {
   return (
-    <div
+    <Surface
+      variant="group"
+      padding="tight"
       data-testid={`import-session-cloud-row-${exportItem.id}`}
-      className="flex items-stretch gap-2 rounded-lg border bg-secondary/10 p-2"
     >
       <ListRow
+        size="lg"
         onClick={onInspect}
-        className="min-w-0 flex-1"
+        actions={
+          <Button
+            variant={confirmingDelete ? 'destructive' : 'ghost-destructive'}
+            size="compact"
+            data-testid={`import-session-cloud-delete-${exportItem.id}`}
+            onClick={onDelete}
+            disabled={deleting}
+          >
+            {deleting
+              ? 'Deleting…'
+              : confirmingDelete
+                ? 'Confirm delete'
+                : 'Delete'}
+          </Button>
+        }
         description={[
           formatDateTime(exportItem.createdAt),
           formatByteSize(exportItem.sizeBytes),
@@ -97,20 +114,7 @@ function CloudExportRow({
       >
         {exportItem.title}
       </ListRow>
-      <Button
-        variant={confirmingDelete ? 'destructive' : 'ghost-destructive'}
-        size="compact"
-        data-testid={`import-session-cloud-delete-${exportItem.id}`}
-        onClick={onDelete}
-        disabled={deleting}
-      >
-        {deleting
-          ? 'Deleting…'
-          : confirmingDelete
-            ? 'Confirm delete'
-            : 'Delete'}
-      </Button>
-    </div>
+    </Surface>
   );
 }
 
@@ -156,18 +160,22 @@ function RepoSummaryList({ repos }: RepoSummaryListProps): JSX.Element {
   return (
     <ul className="space-y-1 text-xs fg-secondary">
       {repos.map((repo, index) => (
-        <li
+        <Surface
+          as="li"
+          variant="group"
+          size="small"
           key={`${repo.remoteUrl ?? repo.name}-${index}`}
-          className="rounded-md bg-secondary/25 px-2.5 py-2"
         >
-          <div className="font-medium fg-primary">{repo.name}</div>
-          {repo.remoteUrl && (
-            <div className="mt-0.5 break-all">{repo.remoteUrl}</div>
-          )}
-          {repo.branchName && (
-            <div className="mt-0.5">Branch: {repo.branchName}</div>
-          )}
-        </li>
+          <div className="px-2.5 py-2">
+            <div className="font-medium fg-primary">{repo.name}</div>
+            {repo.remoteUrl && (
+              <div className="mt-0.5 break-all">{repo.remoteUrl}</div>
+            )}
+            {repo.branchName && (
+              <div className="mt-0.5">Branch: {repo.branchName}</div>
+            )}
+          </div>
+        </Surface>
       ))}
     </ul>
   );
@@ -452,11 +460,13 @@ export function ImportSessionModal({
                 </Skeleton>
               </DelayedLoadingPlaceholder>
             ) : exports.length === 0 ? (
-              <div className="rounded-lg border border-dashed px-4 py-8 text-center text-s fg-secondary">
-                {debouncedSearch
-                  ? 'No session exports match this search.'
-                  : 'No session exports are available for this account.'}
-              </div>
+              <Surface variant="dashed">
+                <div className="px-4 py-8 text-center text-s fg-secondary">
+                  {debouncedSearch
+                    ? 'No session exports match this search.'
+                    : 'No session exports are available for this account.'}
+                </div>
+              </Surface>
             ) : (
               <div className="space-y-2">
                 {exports.map((exportItem) => (
@@ -497,49 +507,53 @@ export function ImportSessionModal({
               className="grid gap-3 md:grid-cols-2"
               data-testid="import-session-bundle-summary"
             >
-              <section className="space-y-2 rounded-lg border bg-secondary/10 p-3">
-                <Heading level={3} variant="label">
-                  Exported session
-                </Heading>
-                <div className="text-s font-medium break-words">
-                  {inspection.manifestSummary.title}
+              <Surface as="section" variant="group" padding="compact">
+                <div className="space-y-2">
+                  <Heading level={3} variant="label">
+                    Exported session
+                  </Heading>
+                  <div className="text-s font-medium break-words">
+                    {inspection.manifestSummary.title}
+                  </div>
+                  <FactList columnGap="3" rowGap="1" labelTone="secondary">
+                    <Fact label="Provider">
+                      {formatProvider(inspection.manifestSummary.provider)}
+                    </Fact>
+                    <Fact label="Exported">
+                      {formatDateTime(inspection.manifestSummary.exportedAt)}
+                    </Fact>
+                    <Fact label="Project">
+                      {inspection.manifestSummary.workspaceType === 'multi-repo'
+                        ? 'Multi-repo'
+                        : inspection.manifestSummary.workspaceType === 'cowork'
+                          ? 'Cowork'
+                          : 'Single-repo'}
+                    </Fact>
+                  </FactList>
+                  <RepoSummaryList repos={inspection.manifestSummary.repos} />
                 </div>
-                <FactList columnGap="3" rowGap="1" labelTone="secondary">
-                  <Fact label="Provider">
-                    {formatProvider(inspection.manifestSummary.provider)}
-                  </Fact>
-                  <Fact label="Exported">
-                    {formatDateTime(inspection.manifestSummary.exportedAt)}
-                  </Fact>
-                  <Fact label="Project">
-                    {inspection.manifestSummary.workspaceType === 'multi-repo'
-                      ? 'Multi-repo'
-                      : inspection.manifestSummary.workspaceType === 'cowork'
-                        ? 'Cowork'
-                        : 'Single-repo'}
-                  </Fact>
-                </FactList>
-                <RepoSummaryList repos={inspection.manifestSummary.repos} />
-              </section>
+              </Surface>
 
-              <section className="space-y-2 rounded-lg border bg-secondary/10 p-3">
-                <Heading level={3} variant="label">
-                  Destination project
-                </Heading>
-                <div className="text-s font-medium break-words">
-                  {inspection.workspaceSummary.workspaceName}
+              <Surface as="section" variant="group" padding="compact">
+                <div className="space-y-2">
+                  <Heading level={3} variant="label">
+                    Destination project
+                  </Heading>
+                  <div className="text-s font-medium break-words">
+                    {inspection.workspaceSummary.workspaceName}
+                  </div>
+                  <div className="text-xs fg-secondary">
+                    {inspection.workspaceSummary.workspaceType === 'cowork'
+                      ? 'Cowork project'
+                      : `${inspection.workspaceSummary.repoCount} ${
+                          inspection.workspaceSummary.repoCount === 1
+                            ? 'repository'
+                            : 'repositories'
+                        }`}
+                  </div>
+                  <RepoSummaryList repos={inspection.workspaceSummary.repos} />
                 </div>
-                <div className="text-xs fg-secondary">
-                  {inspection.workspaceSummary.workspaceType === 'cowork'
-                    ? 'Cowork project'
-                    : `${inspection.workspaceSummary.repoCount} ${
-                        inspection.workspaceSummary.repoCount === 1
-                          ? 'repository'
-                          : 'repositories'
-                      }`}
-                </div>
-                <RepoSummaryList repos={inspection.workspaceSummary.repos} />
-              </section>
+              </Surface>
             </div>
 
             <Notice
@@ -602,62 +616,69 @@ export function ImportSessionModal({
             </div>
 
             {capabilityReadiness.length > 0 && (
-              <section
-                className="space-y-2 rounded-lg border bg-secondary/10 p-3"
+              <Surface
+                as="section"
+                variant="group"
+                padding="compact"
                 data-testid="import-session-capability-readiness"
               >
-                <Heading level={3} variant="title">
-                  Capabilities and setup
-                </Heading>
-                <ul className="space-y-1.5">
-                  {capabilityReadiness.map((capability) => (
-                    <li
-                      key={`${capability.kind}:${capability.name}`}
-                      className="text-xs"
-                    >
-                      <span className="fg-primary">{capability.name}</span>{' '}
-                      <span className="fg-secondary">
-                        {capability.kind === 'mcp' ? 'MCP server' : 'Plugin'} ·{' '}
-                        {capability.status === 'available'
-                          ? 'Available'
-                          : capability.installable
-                            ? 'Will be installed'
-                            : 'Needs setup'}
-                      </span>
-                      {capability.setupHint && (
-                        <span className="block fg-secondary">
-                          {capability.setupHint}
+                <div className="space-y-2">
+                  <Heading level={3} variant="title">
+                    Capabilities and setup
+                  </Heading>
+                  <ul className="space-y-1.5">
+                    {capabilityReadiness.map((capability) => (
+                      <li
+                        key={`${capability.kind}:${capability.name}`}
+                        className="text-xs"
+                      >
+                        <span className="fg-primary">{capability.name}</span>{' '}
+                        <span className="fg-secondary">
+                          {capability.kind === 'mcp' ? 'MCP server' : 'Plugin'}{' '}
+                          ·{' '}
+                          {capability.status === 'available'
+                            ? 'Available'
+                            : capability.installable
+                              ? 'Will be installed'
+                              : 'Needs setup'}
                         </span>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-                {capabilityReadiness.some(
-                  (capability) =>
-                    capability.status === 'missing' && capability.installable,
-                ) && (
-                  <ChoiceField
-                    checked={installMissingCapabilities}
-                    onChange={(event) =>
-                      setInstallMissingCapabilities(event.target.checked)
-                    }
-                    data-testid="import-session-install-missing"
-                    label="Install missing plugins with the session"
-                  />
-                )}
-                <p className="text-xs fg-secondary">
-                  Missing setup is reported but does not block import.
-                </p>
-              </section>
+                        {capability.setupHint && (
+                          <span className="block fg-secondary">
+                            {capability.setupHint}
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                  {capabilityReadiness.some(
+                    (capability) =>
+                      capability.status === 'missing' && capability.installable,
+                  ) && (
+                    <ChoiceField
+                      checked={installMissingCapabilities}
+                      onChange={(event) =>
+                        setInstallMissingCapabilities(event.target.checked)
+                      }
+                      data-testid="import-session-install-missing"
+                      label="Install missing plugins with the session"
+                    />
+                  )}
+                  <p className="text-xs fg-secondary">
+                    Missing setup is reported but does not block import.
+                  </p>
+                </div>
+              </Surface>
             )}
           </>
         )}
 
         {phase === 'importing' && (
-          <div className="flex items-center gap-2 rounded-lg border bg-secondary/20 p-3 text-xs fg-secondary">
-            <LoadingSpinner tone="accent" /> Creating the destination worktree,
-            applying changes, and restoring provider context…
-          </div>
+          <Surface variant="group" padding="compact">
+            <div className="flex items-center gap-2 text-xs fg-secondary">
+              <LoadingSpinner tone="accent" /> Creating the destination
+              worktree, applying changes, and restoring provider context…
+            </div>
+          </Surface>
         )}
 
         {phase === 'complete' && (

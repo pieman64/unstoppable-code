@@ -73,19 +73,12 @@ function buildDismissibleChip({
     activeTone: 'warning',
     ariaLabel: label,
     title: label,
-    icon: <PlanModeIcon width={16} height={16} active />,
+    icon: <PlanModeIcon size="sm" active />,
     ...(compact
       ? {}
       : {
           label: planModeChipLabel(readOnly),
-          trailing: (
-            <CloseMediumIcon
-              width={12}
-              height={12}
-              aria-hidden
-              data-plan-remove
-            />
-          ),
+          trailing: <CloseMediumIcon size="sm" aria-hidden data-plan-remove />,
         }),
     variant: 'capsule',
     dataTestId,
@@ -107,7 +100,7 @@ function buildToggleChip({
     activeTone: 'warning',
     title: active ? 'Disable plan mode' : 'Enable plan mode',
     ariaLabel: 'Toggle plan mode',
-    icon: <PlanModeIcon width={16} height={16} active={active} />,
+    icon: <PlanModeIcon size="sm" active={active} />,
     label: active ? planModeChipLabel(false) : undefined,
     ...(dataTestId === undefined ? {} : { dataTestId }),
   };

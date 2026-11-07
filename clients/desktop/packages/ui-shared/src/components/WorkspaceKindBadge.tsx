@@ -138,15 +138,13 @@ export function WorkspaceKindBadge({
         className={`flex items-center justify-center ${isTemporary ? 'fg-primary' : 'text-white'}`}
         style={kind === 'multi-repo' ? undefined : { transform: 'scale(0.75)' }}
       >
-        {kind === 'single-repo' && (
-          <SingleRepoWorkspaceIcon className="h-3 w-3" />
-        )}
-        {kind === 'cowork' && <CoworkWorkspaceIcon className="h-3 w-3" />}
+        {kind === 'single-repo' && <SingleRepoWorkspaceIcon size="sm" />}
+        {kind === 'cowork' && <CoworkWorkspaceIcon size="sm" />}
         {kind === 'multi-repo' &&
           (isTemporary ? (
             <MultiRepoIcon className={temporaryIconSize} />
           ) : (
-            <MultiRepoIcon className="h-3 w-3" />
+            <MultiRepoIcon size="sm" />
           ))}
       </span>
     </span>

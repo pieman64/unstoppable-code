@@ -3,6 +3,7 @@ import { Popover, Tooltip } from '@canopy/ui-shared';
 import {
   ChipSimpleIcon,
   ResourceMonitorIcon,
+  type IconSize,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { OPERATIONAL_STATUS_COLORS } from '@canopy/ui-shared/lib';
 import { useResourceMonitorStore } from '@/stores/resourceMonitorStore';
@@ -34,7 +35,7 @@ type Tone = 'ok' | 'warning' | 'critical' | 'loading' | 'error';
 
 interface ResourceDiagnosticsIconProps {
   tone?: Tone;
-  className?: string;
+  size?: IconSize;
   testId?: string;
 }
 
@@ -61,7 +62,7 @@ function toneClasses(tone: Tone): string {
 
 export function ResourceDiagnosticsIcon({
   tone = 'ok',
-  className = 'h-5 w-5',
+  size = 'xl',
   testId = 'sidebar-resource-diagnostics-icon',
 }: ResourceDiagnosticsIconProps): JSX.Element {
   const toneClassName =
@@ -75,7 +76,8 @@ export function ResourceDiagnosticsIcon({
 
   return (
     <ResourceMonitorIcon
-      className={`${className} ${toneClassName}`}
+      size={size}
+      className={toneClassName}
       aria-hidden="true"
       data-testid={testId}
     />
@@ -274,7 +276,7 @@ export function ResourceDiagnosticsPill({
                 <ResourceMonitorIcon size={14} />
               )
             ) : (
-              <ResourceDiagnosticsIcon tone={tone} className="h-4 w-4" />
+              <ResourceDiagnosticsIcon tone={tone} size="sm" />
             )}
           </span>
           <span

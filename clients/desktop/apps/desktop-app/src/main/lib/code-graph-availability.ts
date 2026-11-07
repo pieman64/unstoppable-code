@@ -97,16 +97,25 @@ export function reconcileCodeGraphAvailability(): Promise<void> {
     // Defer these heavy lifecycle modules and break their intentional cycle
     // back to this availability cache; Electron main resolves the local chunks
     // through the normal packaged main bundle path.
-    const [{ reconcileCodeGraphBuildAvailability }, scheduler, baseManager] =
-      await Promise.all([
-        import('../code-graph/build-runner'),
-        import('./code-graph-scheduler'),
-        import('./code-graph-base-manager'),
-      ]);
+    const [
+      { reconcileCodeGraphBuildAvailability },
+      scheduler,
+      baseManager,
+      daemonRoute,
+    ] = await Promise.all([
+      import('../code-graph/build-runner'),
+      import('./code-graph-scheduler'),
+      import('./code-graph-base-manager'),
+      import('../code-graph/daemon-code-graph-route'),
+    ]);
     await reconcileCodeGraphBuildAvailability(isCodeGraphAvailableForWorkspace);
     await Promise.all([
       scheduler.reconcileCodeGraphSchedulerAvailability(),
       baseManager.reconcileCodeGraphBaseAvailability(),
+      // The daemon never sees the flag, so its builds stop here (CAN-5840).
+      daemonRoute.cancelUnavailableDaemonCodeGraphBuilds(
+        isCodeGraphAvailableForWorkspace,
+      ),
     ]);
   });
   reconciliationQueue = reconciliation.catch(() => undefined);

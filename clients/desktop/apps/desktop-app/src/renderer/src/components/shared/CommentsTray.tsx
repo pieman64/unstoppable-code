@@ -271,8 +271,7 @@ export function CommentsTray<T>({
                 aria-expanded={!isCollapsed}
               >
                 <AppCatalogChevronTopMediumIcon
-                  width="14"
-                  height="14"
+                  size="sm"
                   className={`transition-transform ${isCollapsed ? '' : 'rotate-180'}`}
                 />
               </Button>

@@ -1,3 +1,10 @@
+import {
+  GitHubRequestError,
+  sameGitHubRepository,
+  type GitHubRepositoryRef,
+  type GitHubMergePolicy,
+  type GitHubPullRequestRef,
+} from '@canopy/core-runtime/node/github';
 import { mapWithConcurrency } from './concurrency';
 import { basename } from 'node:path';
 import type { RestEndpointMethodTypes } from '@octokit/rest';
@@ -533,7 +540,15 @@ interface RepoMergeMethodCapabilities {
 }
 
 interface MergePrForRepoOptions {
+  /** Pins compatibility fallbacks to the repository their dispatcher verified. */
+  verifiedRepository?: GitHubRepositoryRef;
   retryDelaysMs?: readonly number[];
+  strategy?: PrMergeMethod;
+  allowEnqueue?: false;
+  /** A direct canonical merge consumes the policy its handler just verified. */
+  policy?: GitHubMergePolicy;
+  /** Replaces the REST verification with the canonical full read, when available. */
+  verify?: () => Promise<boolean | null>;
 }
 
 interface PullMergeResponse {
@@ -614,11 +629,14 @@ function getErrorStatus(value: unknown): number | undefined {
   return typeof responseStatus === 'number' ? responseStatus : undefined;
 }
 
-function isRetryablePrMergeError(error: unknown): boolean {
+/** The writer's mergeability classes, also used by the desktop request handle. */
+export function classifyPrMergeError(
+  error: unknown,
+): 'conflict' | 'retryable' | null {
   const status = getErrorStatus(error);
   const text = collectErrorText(error).join('\n').toLowerCase();
   if (/\bmerge conflicts?\b/.test(text)) {
-    return false;
+    return 'conflict';
   }
   if (
     /\bnot mergeable\b/.test(text) ||
@@ -628,10 +646,14 @@ function isRetryablePrMergeError(error: unknown): boolean {
     /\btry the merge again\b/.test(text) ||
     /\bmerge commit cannot be cleanly created\b/.test(text)
   ) {
-    return true;
+    return 'retryable';
   }
 
-  return status === 405 || status === 409;
+  return status === 405 || status === 409 ? 'retryable' : null;
+}
+
+function isRetryablePrMergeError(error: unknown): boolean {
+  return classifyPrMergeError(error) === 'retryable';
 }
 
 function isDirtyMergeConflict(pr: {
@@ -1372,6 +1394,14 @@ export async function fetchRepoPrTrackingData(
     };
   }
 
+  return fetchRepoPrTrackingDataForRemote(remote, branchName, options);
+}
+
+async function fetchRepoPrTrackingDataForRemote(
+  remote: GitHubRepositoryRef,
+  branchName: string,
+  options?: PrTrackingReadOptions,
+): Promise<RepoPrTrackingData> {
   const client = withRequestPriority(
     getGitHubClient(),
     options?.priority ?? 'normal',
@@ -1898,22 +1928,38 @@ export async function fetchPrStatusForWorktree(
   };
 }
 
-export async function updatePrBaseBranchForRepo(
+async function resolvePullRequestWriteRepository(
   repoPath: string,
-  prNumber: number,
-  newBaseBranch: string,
-): Promise<{ prUrl: string }> {
+  verifiedRepository?: GitHubRepositoryRef,
+): Promise<GitHubRepositoryRef> {
   const remoteUrl = await getRemoteUrl(repoPath);
+  const checkout = remoteUrl ? parseGitHubRemote(remoteUrl) : null;
+  if (
+    verifiedRepository !== undefined &&
+    (checkout === null || !sameGitHubRepository(checkout, verifiedRepository))
+  )
+    throw new Error('PR state changed. Refresh and try again.');
   if (!remoteUrl) {
     throw new Error(`No remote URL found for repository at ${repoPath}`);
   }
-
-  const remote = parseGitHubRemote(remoteUrl);
-  if (!remote) {
+  if (!checkout) {
     throw new Error(
       `Could not parse GitHub remote URL: "${remoteUrl}" (repoPath: ${repoPath})`,
     );
   }
+  return verifiedRepository ?? checkout;
+}
+
+export async function updatePrBaseBranchForRepo(
+  repoPath: string,
+  prNumber: number,
+  newBaseBranch: string,
+  verifiedRepository?: GitHubRepositoryRef,
+): Promise<{ prUrl: string }> {
+  const remote = await resolvePullRequestWriteRepository(
+    repoPath,
+    verifiedRepository,
+  );
 
   const { url } = await updateGitHubPullRequest(
     { ...remote, number: prNumber },
@@ -2080,6 +2126,32 @@ export interface MergePrForRepoResult {
   queuePosition?: number | null;
 }
 
+export async function readGitHubPullRequestMergePolicy(
+  ref: GitHubPullRequestRef,
+): Promise<GitHubMergePolicy> {
+  const client = getGitHubClient();
+  const settings = await client.enqueue(
+    (octokit) => octokit.repos.get({ owner: ref.owner, repo: ref.repo }),
+    'high',
+    { operation: 'read', idempotency: 'safe' },
+  );
+  const capabilities = {
+    allowMergeCommit: settings.data.allow_merge_commit ?? true,
+    allowSquashMerge: settings.data.allow_squash_merge ?? true,
+    allowRebaseMerge: settings.data.allow_rebase_merge ?? true,
+  };
+  const allowedStrategies: GitHubMergePolicy['preferredStrategy'][] = [];
+  if (capabilities.allowMergeCommit) allowedStrategies.push('merge');
+  if (capabilities.allowSquashMerge) allowedStrategies.push('squash');
+  if (capabilities.allowRebaseMerge) allowedStrategies.push('rebase');
+  const queue = await fetchMergeQueueState(client, ref, ref.number);
+  return {
+    allowedStrategies,
+    preferredStrategy: pickRepoDefaultMergeMethod(capabilities),
+    queueRequired: queue?.queueRequired === true,
+  };
+}
+
 /**
  * Merge an open PR via the GitHub API using the repo's preferred merge method.
  * After the merge, re-fetches the PR and confirms GitHub reports it merged so
@@ -2096,17 +2168,10 @@ export async function mergePrForRepo(
   expectedHeadSha: string,
   options: MergePrForRepoOptions = {},
 ): Promise<MergePrForRepoResult> {
-  const remoteUrl = await getRemoteUrl(repoPath);
-  if (!remoteUrl) {
-    throw new Error(`No remote URL found for repository at ${repoPath}`);
-  }
-
-  const remote = parseGitHubRemote(remoteUrl);
-  if (!remote) {
-    throw new Error(
-      `Could not parse GitHub remote URL: "${remoteUrl}" (repoPath: ${repoPath})`,
-    );
-  }
+  const remote = await resolvePullRequestWriteRepository(
+    repoPath,
+    options.verifiedRepository,
+  );
 
   try {
     return await mergePrForRemote(remote, prNumber, expectedHeadSha, options);
@@ -2115,7 +2180,7 @@ export async function mergePrForRepo(
   }
 }
 
-async function mergePrForRemote(
+export async function mergePrForRemote(
   remote: { owner: string; repo: string },
   prNumber: number,
   expectedHeadSha: string,
@@ -2123,16 +2188,25 @@ async function mergePrForRemote(
 ): Promise<MergePrForRepoResult> {
   const client = getGitHubClient();
 
-  const repoSettings = await client.enqueue(
-    (octokit) => octokit.repos.get({ owner: remote.owner, repo: remote.repo }),
-    'high',
-    { operation: 'read', idempotency: 'safe' },
-  );
-  const mergeMethod = pickRepoDefaultMergeMethod({
-    allowMergeCommit: repoSettings.data.allow_merge_commit ?? true,
-    allowSquashMerge: repoSettings.data.allow_squash_merge ?? true,
-    allowRebaseMerge: repoSettings.data.allow_rebase_merge ?? true,
-  });
+  const policy = options.allowEnqueue === false ? options.policy : undefined;
+  const mergeMethod = policy
+    ? (options.strategy ?? policy.preferredStrategy)
+    : await (async (): Promise<PrMergeMethod> => {
+        const repoSettings = await client.enqueue(
+          (octokit) =>
+            octokit.repos.get({ owner: remote.owner, repo: remote.repo }),
+          'high',
+          { operation: 'read', idempotency: 'safe' },
+        );
+        return (
+          options.strategy ??
+          pickRepoDefaultMergeMethod({
+            allowMergeCommit: repoSettings.data.allow_merge_commit ?? true,
+            allowSquashMerge: repoSettings.data.allow_squash_merge ?? true,
+            allowRebaseMerge: repoSettings.data.allow_rebase_merge ?? true,
+          })
+        );
+      })();
 
   const enqueuedResult = (
     queuePosition: number | null,
@@ -2181,9 +2255,16 @@ async function mergePrForRemote(
     }
   };
 
-  const queueState = await fetchMergeQueueState(client, remote, prNumber);
-  if (queueState?.queueRequired) {
-    return enqueue(queueState);
+  const queueState = policy
+    ? null
+    : await fetchMergeQueueState(client, remote, prNumber);
+  if (policy?.queueRequired || queueState?.queueRequired) {
+    if (options.allowEnqueue === false)
+      throw new GitHubRequestError(
+        'merge_queue_required',
+        'The base branch requires a merge queue.',
+      );
+    if (queueState) return enqueue(queueState);
   }
 
   // The queue state was unknown or stale (a ruleset enabled after the read) and
@@ -2193,6 +2274,12 @@ async function mergePrForRemote(
   const enqueueAfterQueueRejection = async (
     mergeError: unknown,
   ): Promise<MergePrForRepoResult> => {
+    if (options.allowEnqueue === false)
+      throw new GitHubRequestError(
+        'merge_queue_required',
+        'The base branch requires a merge queue.',
+        { cause: mergeError },
+      );
     const latest = await fetchMergeQueueState(client, remote, prNumber);
     if (!latest) {
       throw mergeError;
@@ -2309,17 +2396,22 @@ async function mergePrForRemote(
     }
 
     // Verify GitHub now reports the PR as merged before we update Canopy tracking.
-    const verified = await client.enqueue(
-      (octokit) =>
-        octokit.pulls.get({
-          owner: remote.owner,
-          repo: remote.repo,
-          pull_number: prNumber,
-        }),
-      'high',
-      { operation: 'read', idempotency: 'safe' },
-    );
-    if (!verified.data.merged) {
+    const projection = await options.verify?.();
+    const merged =
+      projection ??
+      (
+        await client.enqueue(
+          (octokit) =>
+            octokit.pulls.get({
+              owner: remote.owner,
+              repo: remote.repo,
+              pull_number: prNumber,
+            }),
+          'high',
+          { operation: 'read', idempotency: 'safe' },
+        )
+      ).data.merged;
+    if (!merged) {
       throw new Error(
         'Merge request succeeded but GitHub still reports the PR as open.',
       );
@@ -2341,18 +2433,12 @@ export async function createPrForRepo(
   body: string,
   baseBranch: string,
   draft = false,
+  verifiedRepository?: GitHubRepositoryRef,
 ): Promise<{ prNumber: number; prUrl: string; created: boolean }> {
-  const remoteUrl = await getRemoteUrl(repoPath);
-  if (!remoteUrl) {
-    throw new Error(`No remote URL found for repository at ${repoPath}`);
-  }
-
-  const remote = parseGitHubRemote(remoteUrl);
-  if (!remote) {
-    throw new Error(
-      `Could not parse GitHub remote URL: "${remoteUrl}" (repoPath: ${repoPath})`,
-    );
-  }
+  const remote = await resolvePullRequestWriteRepository(
+    repoPath,
+    verifiedRepository,
+  );
 
   try {
     const { number, url } = await createGitHubPullRequest(remote, {
@@ -2369,9 +2455,19 @@ export async function createPrForRepo(
       throw error;
     }
 
-    const existing = await fetchRepoPrTrackingData(repoPath, branchName, {
-      priority: 'high',
-    }).catch(() => null);
+    // Refuse drift before reconciliation reads, and keep those reads bound
+    // across awaits just as the attempted create was.
+    const reconciliationRemote =
+      verifiedRepository === undefined
+        ? undefined
+        : await resolvePullRequestWriteRepository(repoPath, verifiedRepository);
+    const existing = await (
+      reconciliationRemote === undefined
+        ? fetchRepoPrTrackingData(repoPath, branchName, { priority: 'high' })
+        : fetchRepoPrTrackingDataForRemote(reconciliationRemote, branchName, {
+            priority: 'high',
+          })
+    ).catch(() => null);
     const prNumber = existing?.status?.prNumber;
     const prUrl = existing?.status?.prUrl;
     if (typeof prNumber === 'number' && typeof prUrl === 'string' && prUrl) {

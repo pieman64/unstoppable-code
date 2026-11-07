@@ -108,7 +108,7 @@ export function McpServersPanelCard({
   return (
     <>
       <PanelSection
-        icon={<McpServerIcon width={16} height={16} />}
+        icon={<McpServerIcon size="sm" />}
         title={sectionTitle}
         hasExpandableContent={
           servers.length > 0 || error !== null || warnings.length > 0

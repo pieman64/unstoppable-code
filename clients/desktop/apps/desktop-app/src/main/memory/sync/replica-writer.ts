@@ -5,9 +5,11 @@ import {
   compareMemoryChangeCursors,
   memoryDocumentIdentity,
   type MemoryChange,
+  type MemoryConflictReason,
   type MemoryDocument,
   type MemoryDocumentChange,
   type MemoryNoteRecord,
+  type MemoryRevisionRecord,
   type MemorySyncStateFile,
 } from '@canopy/protocol/memory-sync';
 import {
@@ -28,6 +30,7 @@ import {
   isMemoryMarkdownFileName,
   isNodeError,
   moveWithoutReplacing,
+  replaceMemoryFileIfUnchanged,
   writeMemoryFileAtomically,
   writeMemoryFileDurably,
 } from '../local/memory-files';
@@ -36,6 +39,11 @@ import {
   readMemoryNoteFrontMatter,
 } from '../local/note-identity';
 import { createLocalMemorySnapshot } from '../local/snapshots';
+import {
+  normalizeMemoryDocumentContent,
+  type MemoryDocumentMerge,
+} from '@canopy/memory-consolidation/document-merge';
+import { mergeMemoryDocumentOffMain } from './merge-runner';
 import { inboxNoteBody, renderPulledNote } from './note-records';
 import {
   readMemorySyncOutbox,
@@ -53,11 +61,12 @@ import { memorySyncPrivateDir } from './replica-layout';
  * already on disk is left alone, a document already holding the incoming
  * bytes is not rewritten, and a revision at or below the base is skipped.
  *
- * A document edited here and not yet committed is never lost: before a
- * pulled revision or a snapshot replaces, deletes or moves it aside, its
- * bytes are kept under `.sync/conflicts/` and the conflict is recorded
- * (CAN-5186 adds the three-way merge). Files a snapshot does not list are
- * moved to `.sync/displaced/`, never deleted, and only when their content is
+ * A document edited here and not yet committed is never lost: a pulled
+ * change that meets it is merged three ways against `.sync/base/` (design
+ * §13.2). A clean merge or a kept local edit stays live and is committed at
+ * the head; overlapping changes leave theirs live and keep ours under
+ * `.sync/conflicts/`. Files a snapshot does not list are moved to
+ * `.sync/displaced/`, never deleted, and only when their content is
  * preserved elsewhere (see `preservedElsewhere`): what only this device has
  * stays where it is.
  */
@@ -95,6 +104,8 @@ export interface MemoryReplicaApplyResult {
   notesWritten: number;
   notesRemoved: number;
   conflicts: number;
+  /** How each pulled change that met a local edit was resolved. */
+  merges: Record<MemoryDocumentMerge['kind'], number>;
 }
 
 interface LocalNote {
@@ -119,11 +130,13 @@ interface OutboxNotes {
   readable: boolean;
   held: Set<string>;
   retired: Set<string>;
+  /** Notes a delete or edit made here has not settled yet (`localDeletes`). */
+  unsettled: Set<string>;
 }
 
 /** A replica file a pull or a snapshot would move aside, remove or replace. */
 type ReplicaFile =
-  | { kind: 'document'; path: string; live: string }
+  | { kind: 'document'; path: string; live: string | null }
   | { kind: 'note'; noteId: string; local: LocalNote };
 
 type SnapshotKept = NonNullable<MemorySyncStateFile['snapshotKept']>;
@@ -136,6 +149,19 @@ const CONFLICTS_PREFIX = '.sync/conflicts/';
 /** Names tried for a pulled note before giving up. */
 const MAX_PULLED_NOTE_NAMES = 100;
 
+/**
+ * Times a live document another editor keeps saving is read and decided
+ * again before its save is left as it is, as a local edit.
+ */
+const MAX_LIVE_WRITE_ATTEMPTS = 5;
+
+/** The spelling a pulled put was decided on, as read, and whether it stays. */
+interface MergedSpelling {
+  spelling: string;
+  live: string | null;
+  kept: boolean;
+}
+
 /** A live note holds its file key; a pending import even while its file is gone. */
 function claimsFileKey(local: LocalNote): boolean {
   return !local.archived || local.pendingImport;
@@ -147,6 +173,7 @@ function emptyResult(): MemoryReplicaApplyResult {
     notesWritten: 0,
     notesRemoved: 0,
     conflicts: 0,
+    merges: { theirs: 0, ours: 0, same: 0, merged: 0, conflict: 0 },
   };
 }
 
@@ -184,14 +211,29 @@ async function markdownNames(directory: string): Promise<string[]> {
   }
 }
 
-async function removeMemoryFile(scopeDir: string, path: string): Promise<void> {
+/**
+ * Removes a replica file; with `unchanged`, only while it still holds right
+ * before the removal (see {@link replaceMemoryFileIfUnchanged}).
+ */
+async function removeMemoryFile(
+  scopeDir: string,
+  path: string,
+  unchanged?: () => Promise<boolean>,
+): Promise<boolean> {
   await assertMemoryPathContained(scopeDir, dirname(path));
   await assertMemoryScopeLockHeld();
+  if (unchanged !== undefined && !(await unchanged())) return false;
   try {
     await unlink(path);
   } catch (error) {
     if (!isNodeError(error, 'ENOENT')) throw error;
   }
+  return true;
+}
+
+/** Whether `path` still holds `expected`, null for no file. */
+function holds(path: string, expected: string | null): () => Promise<boolean> {
+  return async () => (await readTextOrNull(path)) === expected;
 }
 
 /**
@@ -345,6 +387,12 @@ class ReplicaApply {
   private displacedDir: string | null = null;
   /** What this replica last applied per document, as the changes go. */
   private readonly base: MemorySyncStateFile['baseDocuments'];
+  /**
+   * Applying this replica's own manual edit: the live documents already
+   * hold what was committed, or a newer edit made since, so only the base
+   * moves.
+   */
+  keepLiveDocuments = false;
   readonly result = emptyResult();
 
   constructor(
@@ -383,31 +431,39 @@ class ReplicaApply {
   }
 
   /**
-   * Keeps a document's uncommitted local bytes before they are replaced or
-   * removed: the copy is flushed to disk, then its conflict is recorded in
-   * `sync-state.json`, flushed too, since the copy is then the edit's only
-   * place and the record the only way to find it. A replayed pull keeps
-   * neither twice: an edit a recorded copy holds is kept already, and a copy
-   * cut short before its record is recorded rather than written again. A
-   * conflict file is never replaced.
+   * Records a conflict (design §13.2): theirs stays live, so every device
+   * injects the same memory, and ours is kept under `.sync/conflicts/`,
+   * named after the spelling it was found under, for the conflict view. The
+   * copy is flushed to disk, then the conflict is recorded in
+   * `sync-state.json`, flushed too, before the document is replaced or
+   * removed, since the copy is then the edit's only place and the record the
+   * only way to find it. A deleted ours is kept as an empty file. A replayed
+   * pull keeps neither twice: an edit a recorded copy holds is kept already,
+   * and a copy cut short before its record is recorded rather than written
+   * again. A conflict file is never replaced. `reason` tells the conflict
+   * view why the two were not merged.
    */
-  private async keepLocalEdit(
+  private async recordConflict(
     path: string,
-    live: string,
+    ours: string | null,
     theirsRevision: number,
+    reason: MemoryConflictReason,
     spelling = path,
   ): Promise<void> {
-    if (await this.recordedCopyHolds(path, live)) return;
+    const kept = ours ?? '';
+    if (await this.recordedCopyHolds(path, kept)) return;
     const at = this.options.now();
     const stem = spelling.slice(0, -'.md'.length);
     const oursFile =
-      (await this.unrecordedCopyOf(stem, live)) ??
-      (await this.writeConflictCopy(`${stem}.${timestampSlug(at)}`, live));
+      (await this.unrecordedCopyOf(stem, kept)) ??
+      (await this.writeConflictCopy(`${stem}.${timestampSlug(at)}`, kept));
     const conflict = {
       path,
       detectedAt: at.toISOString(),
       theirsRevision,
       oursFile: `${CONFLICTS_PREFIX}${oursFile}`,
+      reason,
+      ...(ours === null ? { oursDeleted: true } : {}),
     };
     await recordMemorySyncConflict(this.scopeDir, conflict);
     this.state.conflicts.push(conflict);
@@ -476,16 +532,33 @@ class ReplicaApply {
     }
   }
 
+  /**
+   * The base key of the document `path` names: its own spelling when this
+   * replica applied one, else another spelling of it, else `path`.
+   */
+  private basePathFor(path: string): string {
+    if (this.base[path] !== undefined) return path;
+    const identity = memoryDocumentIdentity(path);
+    return (
+      Object.keys(this.base).find(
+        (key) => memoryDocumentIdentity(key) === identity,
+      ) ?? path
+    );
+  }
+
   /** What this replica last applied under `path`, else another spelling. */
   private baseOf(
     path: string,
   ): MemorySyncStateFile['baseDocuments'][string] | undefined {
-    const identity = memoryDocumentIdentity(path);
-    return (
-      this.base[path] ??
-      Object.entries(this.base).find(
-        ([key]) => memoryDocumentIdentity(key) === identity,
-      )?.[1]
+    return this.base[this.basePathFor(path)];
+  }
+
+  /** The document as this replica last applied it; null when it had none. */
+  private async baseContent(path: string): Promise<string | null> {
+    const key = this.basePathFor(path);
+    if (this.base[key] === undefined) return null;
+    return readTextOrNull(
+      join(memorySyncPrivateDir(this.scopeDir, 'base'), key),
     );
   }
 
@@ -510,8 +583,11 @@ class ReplicaApply {
    * for a note the cloud removes by its ID (see {@link removeNote}).
    *
    * A document is when it holds the bytes this replica last applied, which
-   * `.sync/base/` and the cloud keep; other bytes are a local edit, kept
-   * under `.sync/conflicts/` first or left in place. A note is unless only
+   * `.sync/base/` and the cloud keep; other bytes are a local edit, merged
+   * with a pulled change, kept under `.sync/conflicts/` first or left in
+   * place. Line endings another editor changed are no edit, as committing
+   * normalizes them. One deleted here is a local edit when this replica
+   * applied it, and has nothing to lose otherwise. A note is unless only
    * this device has it: kept local-only, one the outbox may still hold, an
    * import staged here (imports are not pushed yet), or this device's own
    * note its organization withholds.
@@ -519,7 +595,12 @@ class ReplicaApply {
   private async preservedElsewhere(file: ReplicaFile): Promise<boolean> {
     if (file.kind === 'document') {
       const base = this.baseOf(file.path);
-      return base !== undefined && base.contentHash === sha256Hex(file.live);
+      if (file.live === null) return base === undefined;
+      return (
+        base !== undefined &&
+        base.contentHash ===
+          sha256Hex(normalizeMemoryDocumentContent(file.live))
+      );
     }
     const { noteId, local } = file;
     return !(
@@ -528,6 +609,89 @@ class ReplicaApply {
       (local.own && local.pendingImport) ||
       this.isWithheldHere(local)
     );
+  }
+
+  /** Whether the live document holds a local edit a change would lose. */
+  private async isLocalEdit(
+    path: string,
+    live: string | null,
+  ): Promise<boolean> {
+    return !(await this.preservedElsewhere({ kind: 'document', path, live }));
+  }
+
+  /**
+   * What the live document becomes when a pulled change meets a local edit
+   * (design §13.2): theirs, ours kept (it is committed again at the head),
+   * the merged text, or theirs with ours kept as a conflict. `spelling` is
+   * the one the live document was read under.
+   */
+  private async mergeLocalEdit(
+    path: string,
+    live: string | null,
+    theirs: string | null,
+    revision: number,
+    spelling: string = path,
+  ): Promise<{ keep: true } | { keep: false; content: string | null }> {
+    const merge = await mergeMemoryDocumentOffMain(
+      await this.baseContent(spelling),
+      live,
+      theirs,
+    );
+    this.result.merges[merge.kind] += 1;
+    switch (merge.kind) {
+      case 'ours':
+      case 'same':
+        return { keep: true };
+      case 'merged':
+        return { keep: false, content: merge.content };
+      case 'conflict':
+        await this.recordConflict(path, live, revision, merge.reason, spelling);
+        return { keep: false, content: theirs };
+      case 'theirs':
+        return { keep: false, content: theirs };
+    }
+  }
+
+  /**
+   * Replaces or removes the live document `path` while it still holds
+   * `expected`, the bytes the change was decided on: false, with nothing
+   * written, once another editor saved it meanwhile (the scope lock keeps
+   * only the app's writers out), so the caller decides again.
+   */
+  private async writeLive(
+    path: string,
+    expected: string | null,
+    content: string | null,
+  ): Promise<boolean> {
+    await this.beforeDocumentWrite();
+    const target = join(this.scopeDir, path);
+    const unchanged = holds(target, expected);
+    const written =
+      content === null
+        ? await removeMemoryFile(this.scopeDir, target, unchanged)
+        : await replaceMemoryFileIfUnchanged(
+            this.scopeDir,
+            target,
+            content,
+            unchanged,
+          );
+    if (written) this.result.documentsChanged += 1;
+    return written;
+  }
+
+  /**
+   * Moves a kept live document to the spelling a change pulled, where
+   * letter case tells files apart, so the replica and its base name it the
+   * same way.
+   */
+  private async respellLive(from: string, to: string): Promise<void> {
+    await this.beforeDocumentWrite();
+    await respellMemoryFile(
+      this.scopeDir,
+      join(this.scopeDir, from),
+      join(this.scopeDir, to),
+    );
+    this.result.documentsChanged += 1;
   }
 
   /** Forgets what was applied under every spelling of `path`. */
@@ -541,99 +705,203 @@ class ReplicaApply {
   }
 
   /**
+   * The live document `path` names and the spelling it was read under: its
+   * own, else, where letter case tells files apart, the spelling this
+   * replica last applied.
+   */
+  private async readLive(
+    path: string,
+  ): Promise<{ spelling: string; live: string | null }> {
+    const live = await readTextOrNull(join(this.scopeDir, path));
+    const prior = this.basePathFor(path);
+    if (live !== null || prior === path) return { spelling: path, live };
+    return {
+      spelling: prior,
+      live: await readTextOrNull(join(this.scopeDir, prior)),
+    };
+  }
+
+  /**
    * Leaves `path` the only spelling of its document in the replica and in
    * `.sync/base/`, after its bytes are written there: the file of a
    * case-insensitive file system takes its spelling, and a separate file
-   * under another spelling goes, its local edit kept first. A crash part way
-   * leaves the new bytes in place and the rest to the replayed page.
+   * under another spelling goes, its local edit kept as a conflict first.
+   * The spelling a change was merged from is not judged again, and stays
+   * when the merge kept it. Applying this replica's own manual edit removes
+   * only spellings that hold no edit. A crash part way leaves the new bytes
+   * in place and the rest to the replayed page.
    */
   private async settleSpellings(
     path: string,
     content: string,
     revision: number,
+    merged: MergedSpelling | null,
   ): Promise<void> {
     const baseDir = memorySyncPrivateDir(this.scopeDir, 'base');
     for (const root of [this.scopeDir, baseDir]) {
       const target = join(root, path);
+      const inReplica = root === this.scopeDir;
       for (const other of await otherSpellings(root, path)) {
         const source = join(root, other);
-        if (root === this.scopeDir) await this.beforeDocumentWrite();
+        if (inReplica && merged?.spelling === other && merged.kept) continue;
         if (await isSameFile(source, target)) {
+          if (inReplica && this.keepLiveDocuments) continue;
+          if (inReplica) await this.beforeDocumentWrite();
           await respellMemoryFile(this.scopeDir, source, target);
           continue;
         }
-        if (root === this.scopeDir) {
-          const live = await readTextOrNull(source);
-          if (
-            live !== null &&
-            live !== content &&
-            !(await this.preservedElsewhere({
-              kind: 'document',
-              path: other,
-              live,
-            }))
-          ) {
-            await this.keepLocalEdit(path, live, revision, other);
-          }
-          this.result.documentsChanged += 1;
+        if (inReplica) {
+          await this.removeSpelling(path, other, content, revision, merged);
+        } else {
+          await removeMemoryFile(this.scopeDir, source);
         }
-        await removeMemoryFile(this.scopeDir, source);
       }
     }
   }
 
+  /**
+   * Removes the separate file of another spelling of `path`, its local edit
+   * kept as a conflict first unless the merge took it in as it still is. A
+   * save another editor makes meanwhile is judged again, never removed
+   * unseen; one that keeps coming stays.
+   */
+  private async removeSpelling(
+    path: string,
+    other: string,
+    content: string,
+    revision: number,
+    merged: MergedSpelling | null,
+  ): Promise<void> {
+    const source = join(this.scopeDir, other);
+    for (let attempt = 0; attempt < MAX_LIVE_WRITE_ATTEMPTS; attempt += 1) {
+      const ours = await readTextOrNull(source);
+      if (ours === null) return;
+      const edited =
+        normalizeMemoryDocumentContent(ours) !== content &&
+        !(merged?.spelling === other && merged.live === ours) &&
+        (await this.isLocalEdit(other, ours));
+      if (edited && this.keepLiveDocuments) return;
+      await this.beforeDocumentWrite();
+      if (edited) {
+        await this.recordConflict(path, ours, revision, 'overlap', other);
+      }
+      if (await removeMemoryFile(this.scopeDir, source, holds(source, ours))) {
+        this.result.documentsChanged += 1;
+        return;
+      }
+    }
+  }
+
+  /**
+   * A put replaces the document of its identity: what a local edit merges
+   * to is written under the pulled spelling, which then becomes the only
+   * one.
+   */
   async putDocument(
     path: string,
     content: string,
     contentHash: string,
     revision: number,
   ): Promise<void> {
-    const target = join(this.scopeDir, path);
-    const live = await readTextOrNull(target);
-    if (live !== content) {
-      await this.beforeDocumentWrite();
-      if (
-        live !== null &&
-        !(await this.preservedElsewhere({ kind: 'document', path, live }))
-      ) {
-        await this.keepLocalEdit(path, live, revision);
-      }
-      await writeMemoryFileAtomically(this.scopeDir, target, content);
-      this.result.documentsChanged += 1;
-    }
+    const merged = this.keepLiveDocuments
+      ? null
+      : await this.putLive(path, content, revision);
     await writeMemoryFileAtomically(
       this.scopeDir,
       join(memorySyncPrivateDir(this.scopeDir, 'base'), path),
       content,
     );
-    await this.settleSpellings(path, content, revision);
+    await this.settleSpellings(path, content, revision, merged);
     this.forgetBase(path);
     const applied = { contentHash, changedInRevision: revision };
     this.state.baseDocuments[path] = applied;
     this.base[path] = applied;
   }
 
+  /**
+   * Makes the live document of `path` hold `content`, or what its local
+   * edit merges to with it, and returns the spelling that was decided on. A
+   * save another editor makes meanwhile is read and merged again, never
+   * replaced; one that keeps coming is left as a local edit.
+   */
+  private async putLive(
+    path: string,
+    content: string,
+    revision: number,
+  ): Promise<MergedSpelling | null> {
+    for (let attempt = 0; ; attempt += 1) {
+      const { spelling, live } = await this.readLive(path);
+      if (live === content && spelling === path) return null;
+      const next =
+        attempt >= MAX_LIVE_WRITE_ATTEMPTS
+          ? { keep: true as const }
+          : await this.decideLive(path, spelling, live, content, revision);
+      if (next.keep) {
+        if (live === null || spelling === path) {
+          return { spelling, live, kept: true };
+        }
+        await this.respellLive(spelling, path);
+        return { spelling: path, live, kept: true };
+      }
+      if (
+        (next.content === live && spelling === path) ||
+        (await this.writeLive(
+          path,
+          spelling === path ? live : null,
+          next.content,
+        ))
+      ) {
+        return { spelling, live, kept: false };
+      }
+    }
+  }
+
+  /** What a pulled change makes of the live document read under `spelling`. */
+  private async decideLive(
+    path: string,
+    spelling: string,
+    live: string | null,
+    theirs: string | null,
+    revision: number,
+  ): Promise<{ keep: true } | { keep: false; content: string | null }> {
+    if (!(await this.isLocalEdit(spelling, live))) {
+      return { keep: false, content: theirs };
+    }
+    return this.mergeLocalEdit(path, live, theirs, revision, spelling);
+  }
+
+  /**
+   * Removes one spelling of a document a pulled revision deleted, its local
+   * edit merged first; a save another editor makes meanwhile is merged
+   * again, and one that keeps coming stays.
+   */
+  private async deleteLive(
+    path: string,
+    spelling: string,
+    revision: number,
+  ): Promise<void> {
+    for (let attempt = 0; attempt < MAX_LIVE_WRITE_ATTEMPTS; attempt += 1) {
+      const live = await readTextOrNull(join(this.scopeDir, spelling));
+      if (live === null) return;
+      const next = await this.decideLive(path, spelling, live, null, revision);
+      if (next.keep || (await this.writeLive(spelling, live, next.content))) {
+        return;
+      }
+    }
+  }
+
   async deleteDocument(path: string, revision: number): Promise<void> {
     const baseDir = memorySyncPrivateDir(this.scopeDir, 'base');
-    for (const spelling of [
-      path,
-      ...(await otherSpellings(this.scopeDir, path)),
-    ]) {
-      const target = join(this.scopeDir, spelling);
-      const live = await readTextOrNull(target);
-      if (live === null) continue;
-      await this.beforeDocumentWrite();
-      if (
-        !(await this.preservedElsewhere({
-          kind: 'document',
-          path: spelling,
-          live,
-        }))
-      ) {
-        await this.keepLocalEdit(path, live, revision, spelling);
+    if (!this.keepLiveDocuments) {
+      const target = join(this.scopeDir, path);
+      for (const spelling of [
+        path,
+        ...(await otherSpellings(this.scopeDir, path)),
+      ]) {
+        const source = join(this.scopeDir, spelling);
+        if (spelling !== path && (await isSameFile(source, target))) continue;
+        await this.deleteLive(path, spelling, revision);
       }
-      await removeMemoryFile(this.scopeDir, target);
-      this.result.documentsChanged += 1;
     }
     for (const spelling of [path, ...(await otherSpellings(baseDir, path))]) {
       await removeMemoryFile(this.scopeDir, join(baseDir, spelling));
@@ -791,15 +1059,30 @@ class ReplicaApply {
    * Moves consumed notes into `.consolidated/`, as local consolidation does,
    * then stamps consumed imports in the ledger. The stamp also covers an
    * import a replayed page finds already moved, so an archive cut short
-   * between the move and the stamp completes.
+   * between the move and the stamp completes. This replica's own commit
+   * leaves a note it consumed alone while a delete or edit made here since
+   * is not settled, or while the last snapshot kept it for the outbox: the
+   * file is the change's to settle, and an edit's replacement is written
+   * over it rather than lost with it.
    */
-  async archiveNotes(noteIds: readonly string[]): Promise<void> {
+  async archiveNotes(
+    noteIds: readonly string[],
+    ownCommit = false,
+  ): Promise<void> {
     if (noteIds.length === 0) return;
     const notes = await this.noteIndex();
     const consumedImports = new Set<string>();
+    const changedHere = ownCommit
+      ? new Set([
+          ...(await this.outboxNoteIds()).unsettled,
+          ...(this.currentSnapshotKept()?.notes ?? []).map(
+            (entry) => entry.noteId,
+          ),
+        ])
+      : new Set<string>();
     for (const noteId of noteIds) {
       const local = notes.get(noteId);
-      if (local === undefined) continue;
+      if (local === undefined || changedHere.has(noteId)) continue;
       const imported = isImportFileKey(local.fileKey);
       if (imported && local.pendingImport) consumedImports.add(noteId);
       if (local.archived) continue;
@@ -837,14 +1120,26 @@ class ReplicaApply {
     change: Extract<MemoryChange, { kind: 'revision' }>,
   ): Promise<void> {
     const { revision } = change;
+    const pending = this.state.pendingCommit;
+    // A commit this replica sent and saw land: its run is resolved (§12.1).
+    const own = pending?.commitId === revision.commitId;
+    if (own) this.state.pendingCommit = null;
     if (revision.revision <= this.state.baseRevision) return;
     if (revision.parentRevision !== this.state.baseRevision) {
       throw new MemoryReplicaGapError('revision_gap');
     }
-    for (const documentChange of change.changes) {
-      await this.applyDocumentChange(documentChange, revision.revision);
+    // Its own manual edit, whose answer was lost, applies as an answered
+    // one does: the live documents hold it, or a newer edit made since.
+    const keepLive = this.keepLiveDocuments;
+    this.keepLiveDocuments ||= own && pending?.kind === 'manual_edit';
+    try {
+      for (const documentChange of change.changes) {
+        await this.applyDocumentChange(documentChange, revision.revision);
+      }
+    } finally {
+      this.keepLiveDocuments = keepLive;
     }
-    await this.archiveNotes(change.consumedNoteIds);
+    await this.archiveNotes(change.consumedNoteIds, own);
     this.state.baseRevision = revision.revision;
   }
 
@@ -903,7 +1198,9 @@ class ReplicaApply {
       });
       if (!preserved && this.baseOf(path) === undefined) continue;
       await this.beforeDocumentWrite();
-      if (!preserved) await this.keepLocalEdit(path, live, snapshot.revision);
+      if (!preserved) {
+        await this.recordConflict(path, live, snapshot.revision, 'overlap');
+      }
       await this.displace(path);
       await removeMemoryFile(
         this.scopeDir,
@@ -1122,6 +1419,9 @@ class ReplicaApply {
           ),
           ...(outbox?.localDeletes ?? []).map((pending) => pending.noteId),
         ]),
+        unsettled: new Set(
+          (outbox?.localDeletes ?? []).map((pending) => pending.noteId),
+        ),
         retired: new Set(
           ops.flatMap((op) => {
             if (op.op === 'tombstone') return [op.noteId];
@@ -1225,4 +1525,111 @@ export function applyMemoryReplicaChanges(
     });
     return apply.result;
   });
+}
+
+/**
+ * Applies a revision this replica committed itself, through the same steps
+ * as a pulled one, so the later feed entry for it is a no-op. For a manual
+ * edit the live documents are left as they are: they hold what was
+ * committed, or a newer edit that the next commit sends.
+ */
+export function applyMemoryReplicaCommit(
+  scopeDir: string,
+  commit: {
+    revision: MemoryRevisionRecord;
+    changes: readonly MemoryDocumentChange[];
+    consumedNoteIds: readonly string[];
+    keepLiveDocuments: boolean;
+  },
+  options: MemoryReplicaWriteOptions,
+): Promise<MemoryReplicaApplyResult> {
+  return withMemoryWriteLock(scopeDir, async () => {
+    const state = await readBoundState(scopeDir);
+    const apply = new ReplicaApply(scopeDir, state, options);
+    apply.keepLiveDocuments = commit.keepLiveDocuments;
+    await apply.applyRevision({
+      kind: 'revision',
+      seq: '0',
+      revision: commit.revision,
+      changes: [...commit.changes],
+      consumedNoteIds: [...commit.consumedNoteIds],
+    });
+    await writeMemorySyncState(scopeDir, state);
+    return apply.result;
+  });
+}
+
+/**
+ * A note a leased consolidation may consume, by the file key it is read
+ * from: its ID and, for an import, the hash of the body the cloud holds
+ * (an inbox note carries its ID in its own content).
+ */
+export interface MemoryConsumableNote {
+  noteId: string;
+  contentHash: string | null;
+}
+
+/**
+ * The notes a leased consolidation may consume: those the cloud holds as
+ * pending. A note still queued for sync, kept on this device only, deleted
+ * or edited here and not settled yet, one the last snapshot kept for the
+ * outbox (the cloud may have consolidated it before that snapshot), or an
+ * import this device staged and never sent is left for a later run (the
+ * cloud refuses to consume a note it does not hold). While the outbox cannot be read, any note of this
+ * device's may still be queued, as a snapshot assumes too. Only a pending
+ * import claims its staged path, as in {@link indexImports}.
+ */
+export async function listConsumableNotes(
+  scopeDir: string,
+): Promise<Map<string, MemoryConsumableNote>> {
+  const state = await readBoundState(scopeDir);
+  const outbox = await readMemorySyncOutbox(scopeDir, state.binding);
+  const held = new Set([
+    ...state.localOnlyNoteIds,
+    ...(outbox?.ops ?? []).flatMap((entry) =>
+      entry.op.op === 'tombstone'
+        ? [entry.op.noteId]
+        : [
+            entry.op.note.noteId,
+            ...(entry.op.note.supersedes === undefined
+              ? []
+              : [entry.op.note.supersedes]),
+          ],
+    ),
+    ...(outbox?.localDeletes ?? []).map((pending) => pending.noteId),
+    ...(state.snapshotKept?.cursor === state.cursor
+      ? state.snapshotKept.notes.map((entry) => entry.noteId)
+      : []),
+  ]);
+  const notes = new Map<string, MemoryConsumableNote>();
+  for (const [noteId, local] of await indexLocalNotes(
+    scopeDir,
+    state.deviceId,
+  )) {
+    if (
+      !local.archived &&
+      local.fileKey.startsWith('inbox/') &&
+      !held.has(noteId) &&
+      (outbox !== null || !local.own)
+    ) {
+      notes.set(local.fileKey, { noteId, contentHash: null });
+    }
+  }
+  const imports = await readImportState(scopeDir);
+  for (const [source, entry] of Object.entries(imports.sources)) {
+    if (
+      source.startsWith(IMPORT_SYNC_SOURCE_PREFIX) &&
+      isLiveImportEntry(entry) &&
+      entry.consolidatedAt === undefined &&
+      entry.noteId !== undefined &&
+      !held.has(entry.noteId) &&
+      (await exists(join(scopeDir, entry.stagedAs)))
+    ) {
+      notes.set(entry.stagedAs, {
+        noteId: entry.noteId,
+        contentHash: entry.fileHash,
+      });
+    }
+  }
+  return notes;
 }

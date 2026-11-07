@@ -88,12 +88,23 @@ export const CoreChatMessageSendParamsSchema = ChatCommandBaseSchema.extend({
     },
   );
 
+/** A queued entry's revision as the caller last read it (CAN-4112). */
+const EntryRevisionSchema = z
+  .number()
+  .int()
+  .min(1)
+  .max(Number.MAX_SAFE_INTEGER);
+
 export const CoreChatQueueEntryCancelParamsSchema =
-  ChatCommandBaseSchema.extend({ entryId: IdentifierSchema });
+  ChatCommandBaseSchema.extend({
+    entryId: IdentifierSchema,
+    entryRevision: EntryRevisionSchema.optional(),
+  });
 
 export const CoreChatQueueEntryUpdateParamsSchema =
   ChatCommandBaseSchema.extend({
     entryId: IdentifierSchema,
+    entryRevision: EntryRevisionSchema.optional(),
     mutation: z.discriminatedUnion('kind', [
       z.strictObject({
         kind: z.literal('edit'),
@@ -105,11 +116,21 @@ export const CoreChatQueueEntryUpdateParamsSchema =
         kind: z.literal('move'),
         beforeEntryId: IdentifierSchema.nullable(),
       }),
+      z.strictObject({
+        kind: z.literal('lock'),
+        /** true holds the entry for editing; false releases it. */
+        locked: z.boolean(),
+        /** The holder's acquisition; an unlock names the acquisition it releases. */
+        acquisitionId: IdentifierSchema.optional(),
+      }),
     ]),
   });
 
 export const CoreChatQueueEntryForceParamsSchema = ChatCommandBaseSchema.extend(
-  { entryId: IdentifierSchema },
+  {
+    entryId: IdentifierSchema,
+    entryRevision: EntryRevisionSchema.optional(),
+  },
 );
 
 export const CoreChatTurnCancelParamsSchema = z.strictObject({

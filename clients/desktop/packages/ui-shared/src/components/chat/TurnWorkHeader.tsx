@@ -270,10 +270,12 @@ export const TurnWorkHeader = forwardRef<
   // hairline to close yet, so it shows the working spinner and no hairline.
   // Its words are one polite status node whether they read setup or
   // "Starting…", so the hand-off is announced once; the setup clock sits
-  // outside that node and is silent.
+  // outside that node and is silent. A foldable header is one control: its
+  // toggle stretches over the whole row, under the outcome and the actions.
+  const foldable = !starting && expandable;
   return (
     <div
-      className="px-3 pt-2 pb-1"
+      className={`px-3 pt-2 pb-1${foldable ? ' relative' : ''}`}
       data-testid={dataTestId}
       data-turn-header={state}
     >
@@ -322,7 +324,8 @@ export const TurnWorkHeader = forwardRef<
             </span>
           }
           detail={detail}
-          expandable={!starting && expandable}
+          expandable={foldable}
+          stretched={foldable}
           isOpen={isOpen}
           onToggle={onToggle}
           revealScope="turn"
@@ -330,8 +333,9 @@ export const TurnWorkHeader = forwardRef<
           chevronAtRest
         />
         {outcome != null ? (
+          // 6px after the chevron, as a step row's detail sits after its words.
           <span
-            className={`flex min-w-0 items-center ${STEP_ROW_TEXT_CLASS}`}
+            className={`relative -ml-0.5 flex min-w-0 items-center ${STEP_ROW_TEXT_CLASS}`}
             data-turn-work-header-outcome=""
           >
             {outcome}
@@ -339,7 +343,7 @@ export const TurnWorkHeader = forwardRef<
         ) : null}
         {trailing != null ? (
           <span
-            className="ml-auto flex flex-shrink-0 items-center gap-0.5"
+            className="relative ml-auto flex flex-shrink-0 items-center gap-0.5"
             data-testid="turn-work-header-actions"
           >
             {trailing}

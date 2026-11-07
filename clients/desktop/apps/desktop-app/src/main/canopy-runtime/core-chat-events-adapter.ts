@@ -1,8 +1,9 @@
 import { readMcpActivationRecord } from '@canopy/protocol/mcp-servers';
 import {
   CANOPY_STREAM_DEFINITIONS,
+  type CanopyErrorPayload,
   type CanopyStreamCursor,
-  type CanopyStreamHandlerMap,
+  type CanopyStreamItem,
 } from '@canopy/protocol/canopy-core';
 import type {
   ChatStateChangedEvent,
@@ -11,13 +12,17 @@ import type {
   PersistedChatMessage,
   PersistedChatBlock,
 } from '@canopy/desktop-shared/types';
-import type { CanopyHandlerContext } from '@canopy/core-runtime';
+import type {
+  CanopyDispatcherStreamHandlerMap,
+  CanopyHandlerContext,
+} from '@canopy/core-runtime';
 import { projectChatRuntime } from '../services/chat-state-projection';
+import type { ChatEventReplayLog } from './chat-event-replay-log';
 
 const LIVE_WINDOW = 128;
 const MAX_CURSOR_ALIASES = 128;
 type EventsHandler = Pick<
-  CanopyStreamHandlerMap<CanopyHandlerContext>,
+  CanopyDispatcherStreamHandlerMap<typeof CANOPY_STREAM_DEFINITIONS>,
   'core.chat.events'
 >;
 
@@ -143,6 +148,20 @@ function projectEvent(event: ChatStateChangedEvent): object {
   };
 }
 
+const OPEN_SNAPSHOT_MESSAGE =
+  'Read a chat snapshot before reopening the event stream.';
+const LIVE_SNAPSHOT_MESSAGE =
+  'The chat event stream lost its place. Read a chat snapshot.';
+
+function snapshotRequired(message: string): CanopyErrorPayload {
+  return {
+    kind: 'failed_precondition',
+    code: 'core.chat.snapshotRequired',
+    message,
+    retry: { kind: 'after_refresh', resource: 'core.chat.snapshot.get' },
+  };
+}
+
 export function createCoreChatEventsAdapter(
   getPort: () => ChatStateCommandPort | null,
   // Runs before emit so synchronous (onFrame) consumers can resolve the event;
@@ -151,6 +170,7 @@ export function createCoreChatEventsAdapter(
     event: ChatStateChangedEvent,
     context: CanopyHandlerContext,
   ) => ((cursor: CanopyStreamCursor | null) => void) | void,
+  replay: ChatEventReplayLog,
 ): { handlers: EventsHandler; closeLegacy: () => void } {
   const history: Array<{
     cursors: Array<{
@@ -165,6 +185,80 @@ export function createCoreChatEventsAdapter(
   let legacyStrandedUnsubscribe: (() => void) | undefined;
   let legacyClosed = false;
   const legacyBacklog: ChatStateChangedEvent[] = [];
+  const portable = new WeakMap<
+    ChatStateChangedEvent,
+    CanopyStreamItem<'core.chat.events'> | null
+  >();
+  const portableItem = (
+    event: ChatStateChangedEvent,
+  ): CanopyStreamItem<'core.chat.events'> | null => {
+    const memo = portable.get(event);
+    if (memo !== undefined) return memo;
+    const parsed = CANOPY_STREAM_DEFINITIONS['core.chat.events'].item.safeParse(
+      projectEvent(event),
+    );
+    const item = parsed.success ? parsed.data : null;
+    portable.set(event, item);
+    return item;
+  };
+  const openScoped = (
+    scope: { projectId: string; worktreeId: string },
+    cursor: CanopyStreamCursor | null,
+    sink: Parameters<EventsHandler['core.chat.events']>[2],
+  ): Promise<() => void> => {
+    if (!replay.attach()) throw new Error('Chat state service is unavailable.');
+    const resumed = replay.resume(scope, cursor);
+    if (resumed.kind === 'snapshot_required') {
+      sink.end('error', snapshotRequired(OPEN_SNAPSHOT_MESSAGE));
+      return Promise.resolve((): void => undefined);
+    }
+    const epoch = resumed.epoch;
+    let position = cursor ? cursor.sequence : null;
+    let ended = false;
+    let unlisten = (): void => undefined;
+    const endLost = (): void => {
+      if (ended) return;
+      ended = true;
+      unlisten();
+      sink.end('error', snapshotRequired(LIVE_SNAPSHOT_MESSAGE));
+    };
+    const deliver = (event: ChatStateChangedEvent): void => {
+      if (ended) return;
+      if (position !== null && event.revision <= position) return;
+      if (position !== null && event.baseRevision > position) return endLost();
+      const item = portableItem(event);
+      if (!item) return endLost();
+      // Before emitting: onFrame runs synchronously and may publish the next batch.
+      position = event.revision;
+      if (
+        sink.emitAt({ daemonEpoch: epoch, sequence: event.revision }, item) ===
+        null
+      ) {
+        ended = true;
+        unlisten();
+      }
+    };
+    // Follow before replaying: a batch published from a replayed frame's
+    // callback waits behind the replay instead of bypassing this stream.
+    let replaying = true;
+    const pending: ChatStateChangedEvent[] = [];
+    unlisten = replay.follow(scope, {
+      event: (event, eventEpoch) => {
+        if (eventEpoch !== epoch) endLost();
+        else if (replaying) pending.push(event);
+        else deliver(event);
+      },
+      reset: endLost,
+    });
+    for (const event of resumed.events) deliver(event);
+    for (let index = 0; index < pending.length; index += 1)
+      deliver(pending[index]);
+    replaying = false;
+    return Promise.resolve((): void => {
+      ended = true;
+      unlisten();
+    });
+  };
   return {
     closeLegacy: (): void => {
       legacyClosed = true;
@@ -177,18 +271,13 @@ export function createCoreChatEventsAdapter(
     },
     handlers: {
       'core.chat.events': (params, context, sink): Promise<() => void> => {
+        if (params.scope !== 'all')
+          return openScoped(params.scope, params.cursor ?? null, sink);
         const port = getPort();
         if (!port) throw new Error('Chat state service is unavailable.');
         const legacy =
           context.caller.clientInstanceId === 'electron-main-chat-push';
-        const scopeKey =
-          params.scope === 'all'
-            ? 'all'
-            : JSON.stringify([params.scope.projectId, params.scope.worktreeId]);
-        const matchesScope = (event: ChatStateChangedEvent): boolean =>
-          params.scope === 'all' ||
-          (event.projectId === params.scope.projectId &&
-            event.worktreeId === params.scope.worktreeId);
+        const scopeKey = 'all';
         if (legacy) {
           legacyStrandedUnsubscribe?.();
           legacyStrandedUnsubscribe = undefined;
@@ -226,7 +315,6 @@ export function createCoreChatEventsAdapter(
             history.push({ cursors: [], event });
             if (history.length > LIVE_WINDOW) history.shift();
           }
-          if (!matchesScope(event)) return;
           if (replaying) pending.push(event);
           else if (deliver(event) === null && legacy) legacyBacklog.push(event);
         });
@@ -242,19 +330,9 @@ export function createCoreChatEventsAdapter(
             ),
           );
           if (index < 0) {
-            sink.end('error', {
-              kind: 'failed_precondition',
-              code: 'core.chat.snapshotRequired',
-              message:
-                'Read a chat snapshot before reopening the event stream.',
-              retry: {
-                kind: 'after_refresh',
-                resource: 'core.chat.snapshot.get',
-              },
-            });
+            sink.end('error', snapshotRequired(OPEN_SNAPSHOT_MESSAGE));
           } else {
-            for (const entry of history.slice(index + 1))
-              if (matchesScope(entry.event)) deliver(entry.event);
+            for (const entry of history.slice(index + 1)) deliver(entry.event);
           }
         }
         replaying = false;

@@ -119,6 +119,8 @@ import { readClaudeEnabledPlugins } from '../plugins/claude-enabled-plugins';
 import { loadMarketplacesCacheOnly } from '../plugins/plugin-service';
 import { refreshInvocableInventoryAfterMutation } from '../plugins/invocable-inventory-service';
 import { verifyCursorVersion } from '../cursor/approval-check';
+import type { CursorProviderProcess } from '@canopy/desktop-shared/node/cursor/runtime-process';
+import { spawnProviderProcess } from '../agent-runs/provider-process-host';
 import { CursorForkContext } from '../cursor/fork-context';
 import { getWorktreeDataDir } from '../lib/paths';
 import { resolveWorktreeTargetIds } from '../lib/resolve-worktree';
@@ -579,7 +581,12 @@ export class CursorProvider implements AgentProvider {
         // Packaged Electron disables RunAsNode. The managed archive's verified
         // Node executable runs approval hooks without starting another app.
         const hookRuntime = join(dirname(launch.command), target.hookRuntime);
-        await verifyCursorVersion(launch, env, abort.signal);
+        // CAN-4118: the CLI and its probe are children of the provider process host.
+        const providerProcess: CursorProviderProcess = {
+          spawner: spawnProviderProcess,
+          owner: { kind: 'turn', id: currentTurn ?? randomUUID() },
+        };
+        await verifyCursorVersion(providerProcess, launch, env, abort.signal);
         abort.signal.throwIfAborted();
         const currentApproval = createApprovalSession({
           sessionKey: key,
@@ -790,6 +797,7 @@ export class CursorProvider implements AgentProvider {
             text:
               managedDelegation?.applyPolicyGuidance(promptText) ?? promptText,
             launch,
+            providerProcess,
             env,
             hookRuntime,
             profileDir: profile,
@@ -901,6 +909,7 @@ export class CursorProvider implements AgentProvider {
                   projectId: opts.projectId,
                   worktreeId: opts.worktreeId,
                   chatId: opts.chatId,
+                  interfaceTools: opts.interfaceTools ?? [],
                   assistantMode,
                   ...(opts.projectId === CODE_REVIEW_CHAT_PROJECT_ID
                     ? { isCodeReview: true }

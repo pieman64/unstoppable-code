@@ -57,7 +57,7 @@ import {
 import { spawnManagedTerminal } from '../services/terminal-service';
 import type { WorkerTerminalEvent } from '@canopy/core-runtime/node/terminal';
 import { workerTerminal } from '../terminal/worker-terminal';
-import { getObservabilityService } from '../observability';
+import { getExecutionObservabilityIngest } from '../observability/ingest';
 import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
 import { getCachedClaudeAuthStatusObserved } from '../auth/provider-auth-state';
 import {
@@ -1274,7 +1274,7 @@ export class DefaultClaudeWorkerSessionService {
       linkTarget: record.card.linkTarget,
     };
     record.taskKey = `worker:${record.workerId}`;
-    getObservabilityService().startObservedTask(record.taskKey, entry);
+    getExecutionObservabilityIngest().startObservedTask(record.taskKey, entry);
   }
 
   private settle(
@@ -1335,7 +1335,7 @@ export class DefaultClaudeWorkerSessionService {
       text,
     );
     if (record.taskKey) {
-      getObservabilityService().finalizeObservedTask(
+      getExecutionObservabilityIngest().finalizeObservedTask(
         record.taskKey,
         status === 'success'
           ? 'success'

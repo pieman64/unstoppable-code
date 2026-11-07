@@ -10,7 +10,7 @@ import {
   type CalendarEvent,
   type CalendarEventGroup,
 } from './calendarEvents';
-import { ListRow } from '@canopy/ui-shared/components';
+import { ListRow, Surface } from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 
 interface ScheduleAgendaProps {
@@ -71,17 +71,24 @@ export function ScheduleAgenda({
 }: ScheduleAgendaProps): JSX.Element {
   if (groups.length === 0) {
     return (
-      <div className="rounded-lg border border-dashed px-3 py-10 text-center text-s fg-secondary">
-        {isAnchoredToday
-          ? 'No upcoming triggers in the next 30 days.'
-          : 'No triggers in this range.'}
-      </div>
+      <Surface variant="dashed">
+        <div className="px-3 py-10 text-center text-s fg-secondary">
+          {isAnchoredToday
+            ? 'No upcoming triggers in the next 30 days.'
+            : 'No triggers in this range.'}
+        </div>
+      </Surface>
     );
   }
 
   const days = groupByDay(groups);
   return (
-    <div className="flex flex-col gap-4 overflow-hidden rounded-lg border p-3">
+    <Surface
+      variant="outline"
+      padding="compact"
+      gap="group"
+      className="overflow-hidden"
+    >
       {days.map((agendaDay) => (
         <div key={agendaDay.day.getTime()} className="flex flex-col gap-1">
           <div className="flex items-baseline gap-2 border-b pb-1">
@@ -149,6 +156,6 @@ export function ScheduleAgenda({
           })}
         </div>
       ))}
-    </div>
+    </Surface>
   );
 }

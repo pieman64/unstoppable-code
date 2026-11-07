@@ -1,19 +1,18 @@
 import type { JSX } from 'react';
-import { ArchiveIcon, TrashIcon } from '../icons/AppIcons';
+import { ArchiveIcon, TrashIcon, type IconSize } from '../icons/AppIcons';
 import type { ArchivedContainerState } from '../lib/archived-state';
 
 export function ArchivedStateIcon({
   state,
-  size = 14,
+  size = 'sm',
 }: {
   state: ArchivedContainerState;
-  size?: number;
+  size?: IconSize;
 }): JSX.Element {
   const Icon = state === 'archived' ? ArchiveIcon : TrashIcon;
   return (
     <Icon
-      width={size}
-      height={size}
+      size={size}
       aria-hidden="true"
       className={
         state === 'archived'

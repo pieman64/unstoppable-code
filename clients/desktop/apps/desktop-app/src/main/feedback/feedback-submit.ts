@@ -1,13 +1,32 @@
+import { createHash, randomUUID } from 'node:crypto';
+import {
+  encodeFeedbackReportError,
+  FEEDBACK_OUTCOME_UNKNOWN_CODE,
+  FeedbackOutcomeUnknownError,
+  FeedbackReferenceIdSchema,
+  FeedbackReportSubmissionSchema,
+  FeedbackSubmissionConflictError,
+  type FeedbackReportErrorWire,
+  type FeedbackReportTelemetry,
+} from '@canopy/protocol/feedback-report';
+import {
+  withFeedbackDiagnostics,
+  releaseFeedbackDiagnostics,
+} from './feedback-snapshots';
+import { buildFeedbackPrepareRequest } from './feedback-scope';
 import { readFile, rm } from 'node:fs/promises';
 import {
   FEEDBACK_REPORT_TYPES,
-  type FeedbackArea,
   type FeedbackContextSnapshot,
-  type FeedbackPrepareRequest,
   type FeedbackSubmitRequest,
   type FeedbackSubmitResponse,
 } from '@canopy/desktop-shared/types';
-import { requestCanopyCloudJson } from '../canopy-cloud/client';
+import {
+  CanopyCloudClientError,
+  requestCanopyCloudJson,
+  resolveCanopyCloudCredentialContext,
+  type CanopyCloudCredentialContext,
+} from '../canopy-cloud/client';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import {
   cleanupStaleTemporaryFeedbackBundles,
@@ -40,6 +59,9 @@ interface FeedbackReportCreatePayload {
   // with `validateFeedbackReportBody` in apps/web.
   attachDiagnostics: boolean;
   diagnosticsSizeBytes?: number;
+  error?: FeedbackReportErrorWire;
+  telemetry?: FeedbackReportTelemetry;
+  submissionId?: string;
 }
 
 interface FeedbackReportCreateResponse {
@@ -48,6 +70,8 @@ interface FeedbackReportCreateResponse {
   // renderer/user. The backend also returns an issue identifier/URL, but we
   // deliberately do not read or forward them to avoid leaking internal details.
   reportId: string;
+  referenceId?: string;
+  diagnosticsStatus?: FeedbackSubmitResponse['diagnosticsStatus'];
   uploadUrl?: string;
   filePath?: string;
 }
@@ -68,21 +92,106 @@ interface FeedbackAttachmentCommitResponse {
  * Diagnostics upload/attachment is best-effort: a failure there does not fail
  * the submission because the issue has already been filed.
  */
-export async function submitFeedback(
+const inFlight = new Map<
+  string,
+  { fingerprint: string; promise: Promise<FeedbackSubmitResponse> }
+>();
+
+export function submitFeedback(
   request: FeedbackSubmitRequest,
+  options?: {
+    owner: string;
+    exact?: boolean;
+    validateOwner?: () => Promise<void>;
+  },
+): Promise<FeedbackSubmitResponse> {
+  const parsed = FeedbackReportSubmissionSchema.parse(request);
+  if (options?.exact && !parsed.submissionId)
+    throw new Error('A submission ID is required.');
+  if (
+    options?.exact &&
+    parsed.includeDiagnostics &&
+    !parsed.diagnosticsSnapshotId
+  )
+    throw new Error('Prepare a diagnostics preview before sending.');
+  const key =
+    parsed.submissionId && options
+      ? `${options.owner}:${parsed.submissionId}`
+      : undefined;
+  const fingerprint = createHash('sha256')
+    .update(JSON.stringify(parsed))
+    .digest('hex');
+  const existing = key ? inFlight.get(key) : undefined;
+  if (existing) {
+    if (existing.fingerprint !== fingerprint)
+      throw new FeedbackSubmissionConflictError();
+    return existing.promise;
+  }
+  if (key && inFlight.size >= 100)
+    throw new Error('Too many feedback submissions are pending.');
+  const promise =
+    parsed.includeDiagnostics && parsed.diagnosticsSnapshotId
+      ? withFeedbackDiagnostics(
+          options?.owner ?? '',
+          parsed.diagnosticsSnapshotId,
+          async (path, metadata) => {
+            const result = await submitPreparedFeedback(
+              parsed,
+              { path, sizeBytes: metadata.sizeBytes },
+              options?.validateOwner,
+            );
+            if (result.diagnosticsStatus === 'attached')
+              await releaseFeedbackDiagnostics(
+                options?.owner ?? '',
+                parsed.diagnosticsSnapshotId ?? '',
+              );
+            return result;
+          },
+          {
+            context: parsed.context,
+            ...(parsed.error ? { error: parsed.error } : {}),
+          },
+        )
+      : submitPreparedFeedback(parsed, undefined, options?.validateOwner);
+  if (key) {
+    inFlight.set(key, { fingerprint, promise });
+    void promise.then(
+      (result) => {
+        if (
+          result.diagnosticsStatus === 'unavailable' ||
+          result.diagnosticsStatus === 'pending'
+        )
+          inFlight.delete(key);
+        else {
+          const timer = setTimeout(() => inFlight.delete(key), 30 * 60 * 1000);
+          timer.unref();
+        }
+      },
+      () => inFlight.delete(key),
+    );
+  }
+  return promise;
+}
+
+async function submitPreparedFeedback(
+  request: FeedbackSubmitRequest,
+  snapshot?: { path: string; sizeBytes: number },
+  validateOwner?: () => Promise<void>,
 ): Promise<FeedbackSubmitResponse> {
   validateSubmitRequest(request);
 
+  await validateOwner?.();
+  const credentialContext = await resolveCanopyCloudCredentialContext();
   const description = request.description.trim();
   const title = request.title?.trim();
 
-  let bundlePath: string | undefined;
-  let bundleSizeBytes: number | undefined;
-  if (request.includeDiagnostics) {
+  let bundlePath = snapshot?.path;
+  let bundleSizeBytes = snapshot?.sizeBytes;
+  if (request.includeDiagnostics && !snapshot) {
     // The sweep is deliberately best-effort even if a host adapter fails.
     await cleanupStaleTemporaryFeedbackBundles().catch(() => undefined);
     try {
-      const prepareRequest = buildPrepareRequest(request, description);
+      const prepareRequest = buildFeedbackPrepareRequest(request, description);
       let bundle = await prepareFeedbackBundle(prepareRequest, {
         destination: 'temp',
       });
@@ -107,6 +216,11 @@ export async function submitFeedback(
   try {
     const createPayload: FeedbackReportCreatePayload = {
       type: request.type,
+      submissionId: request.submissionId ?? randomUUID(),
+      ...(request.error
+        ? { error: encodeFeedbackReportError(request.error) }
+        : {}),
+      ...(request.telemetry ? { telemetry: request.telemetry } : {}),
       description,
       context: request.context,
       attachDiagnostics: request.includeDiagnostics && bundlePath !== undefined,
@@ -120,29 +234,72 @@ export async function submitFeedback(
       FEEDBACK_REPORTS_PATH,
       {
         method: 'POST',
+        credentialContext,
+        beforeRequest: validateOwner,
         body: JSON.stringify(createPayload),
       },
-    );
+    ).catch(throwSubmissionFailure);
 
+    // A 2xx without the existing filing acknowledgement may have created the
+    // issue. Keep this intent available for recovery instead of claiming success.
+    if (
+      !created ||
+      typeof created.reportId !== 'string' ||
+      created.reportId.trim().length === 0
+    )
+      throw new FeedbackOutcomeUnknownError();
+
+    let diagnosticsStatus =
+      created.diagnosticsStatus ??
+      (request.includeDiagnostics ? 'unavailable' : 'not-requested');
     if (
       bundlePath !== undefined &&
       created.uploadUrl !== undefined &&
       created.filePath !== undefined
     ) {
-      await uploadAndCommitDiagnostics({
+      diagnosticsStatus = await uploadAndCommitDiagnostics({
         bundlePath,
+        credentialContext,
+        validateOwner,
         uploadUrl: created.uploadUrl,
         filePath: created.filePath,
         reportId: created.reportId,
       });
     }
 
-    return { submitted: true };
+    // The issue is filed; an unreadable reference is simply not shown.
+    const referenceId = FeedbackReferenceIdSchema.safeParse(
+      created.referenceId,
+    );
+    return {
+      submitted: true,
+      diagnosticsStatus,
+      ...(referenceId.success ? { referenceId: referenceId.data } : {}),
+    };
   } finally {
-    if (bundlePath !== undefined) {
+    if (bundlePath !== undefined && !snapshot) {
       await discardTemporaryBundle(bundlePath);
     }
   }
+}
+
+/**
+ * Names the two failures the form acts on, matching the web adapter. They cross
+ * IPC and the remote tunnel as `name: message` strings; the server's prose does
+ * not identify them.
+ */
+function throwSubmissionFailure(error: unknown): never {
+  if (error instanceof CanopyCloudClientError) {
+    // A lost response may still have filed the report.
+    if (
+      error.serverCode === FEEDBACK_OUTCOME_UNKNOWN_CODE ||
+      error.code === 'network-error' ||
+      error.code === 'invalid-response'
+    )
+      throw new FeedbackOutcomeUnknownError();
+    if (error.status === 409) throw new FeedbackSubmissionConflictError();
+  }
+  throw error;
 }
 
 async function discardTemporaryBundle(bundlePath: string): Promise<void> {
@@ -155,11 +312,14 @@ async function discardTemporaryBundle(bundlePath: string): Promise<void> {
 
 async function uploadAndCommitDiagnostics(params: {
   bundlePath: string;
+  credentialContext: CanopyCloudCredentialContext;
+  validateOwner?: () => Promise<void>;
   uploadUrl: string;
   filePath: string;
   reportId: string;
-}): Promise<void> {
+}): Promise<'attached' | 'unavailable'> {
   try {
+    await params.validateOwner?.();
     const bytes = await readFile(params.bundlePath);
     const uploadResponse = await fetch(params.uploadUrl, {
       method: 'PUT',
@@ -169,21 +329,23 @@ async function uploadAndCommitDiagnostics(params: {
       },
       body: bytes,
     });
-    if (!uploadResponse.ok) {
-      return;
-    }
-    await requestCanopyCloudJson<FeedbackAttachmentCommitResponse>(
-      FEEDBACK_ATTACHMENT_COMMIT_PATH,
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          reportId: params.reportId,
-          filePath: params.filePath,
-        }),
-      },
-    );
+    if (!uploadResponse.ok) return 'unavailable';
+    const committed =
+      await requestCanopyCloudJson<FeedbackAttachmentCommitResponse>(
+        FEEDBACK_ATTACHMENT_COMMIT_PATH,
+        {
+          method: 'POST',
+          credentialContext: params.credentialContext,
+          beforeRequest: params.validateOwner,
+          body: JSON.stringify({
+            reportId: params.reportId,
+            filePath: params.filePath,
+          }),
+        },
+      );
+    return committed.ok ? 'attached' : 'unavailable';
   } catch {
-    // Diagnostics attachment is best-effort — the issue is already filed.
+    return 'unavailable';
   }
 }
 
@@ -197,75 +359,6 @@ function validateSubmitRequest(request: FeedbackSubmitRequest): void {
   ) {
     throw new Error('Feedback description is required');
   }
-}
-
-/**
- * Maps the auto-captured UI context onto a {@link FeedbackPrepareRequest} so the
- * existing diagnostics collectors run unchanged. The mapping is best-effort:
- * core diagnostics are always included regardless of the resolved area.
- */
-function buildPrepareRequest(
-  request: FeedbackSubmitRequest,
-  description: string,
-): FeedbackPrepareRequest {
-  const context = request.context;
-  const area = mapContextToArea(context);
-
-  if (
-    area === 'worktrees' &&
-    isNonEmptyString(context.workspaceId) &&
-    isNonEmptyString(context.worktreeId)
-  ) {
-    return {
-      description,
-      area,
-      workspaceSelections: [
-        {
-          workspaceId: context.workspaceId,
-          worktreeIds: [context.worktreeId],
-        },
-      ],
-      includeChatDetails: true,
-    };
-  }
-
-  if (area === 'chat' && isNonEmptyString(context.chatProjectId)) {
-    return {
-      description,
-      area,
-      chatProjectIds: [context.chatProjectId],
-      includeChatDetails: true,
-    };
-  }
-
-  return { description, area };
-}
-
-function mapContextToArea(context: FeedbackContextSnapshot): FeedbackArea {
-  switch (context.activePage) {
-    case 'pipelines':
-    case 'workflows-library':
-      return 'pipelines';
-    case 'plugins':
-      return 'plugins';
-    case 'audit':
-    case 'audit-trail':
-      return 'audit-trail';
-    case 'usage':
-      return 'usage';
-    case 'settings':
-      return 'settings';
-    case 'chat':
-      return 'chat';
-    case 'main':
-      return isNonEmptyString(context.worktreeId) ? 'worktrees' : 'overview';
-    default:
-      return 'overview';
-  }
-}
-
-function isNonEmptyString(value: string | undefined): value is string {
-  return typeof value === 'string' && value.length > 0;
 }
 
 function preparationFailureCategory(error: unknown): string {

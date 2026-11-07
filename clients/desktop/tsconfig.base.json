@@ -93,6 +93,9 @@
       "@canopy/core-transport/*": [
         "./packages/core-transport/src/*"
       ],
+      "@canopy/copilot-recipient/*": [
+        "./packages/copilot-recipient/src/*"
+      ],
       "@canopy/code-graph": [
         "./packages/code-graph/src/index.ts"
       ],

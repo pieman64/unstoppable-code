@@ -31,8 +31,11 @@ import {
 } from '../posthog-routes';
 import {
   APP_ERROR_POSTHOG_EVENT,
+  buildFeedbackReportTelemetry,
+  type AppErrorTelemetrySessions,
   buildAppErrorPostHogProperties,
 } from '../app-error-telemetry';
+import type { FeedbackReportTelemetry } from '@canopy/protocol/feedback-report';
 import {
   createAppErrorHandler,
   type AppErrorHandler,
@@ -81,6 +84,7 @@ let reportPostHogFeatureFlagEvaluation: FeatureFlagReporter | undefined;
 let reportPostHogOperation: OperationReporter | undefined;
 let reportPostHogAppError: AppErrorReporter | undefined;
 let reportPostHogException: ExceptionReporter | undefined;
+let posthogAppErrorSession: AppErrorTelemetrySessions['posthog'];
 let isPostHogOperationStartEligible: (() => boolean) | undefined;
 /** Bounds operations that finish while the SDK is still initializing. */
 const MAX_PENDING_POSTHOG_OPERATIONS = 50;
@@ -117,6 +121,7 @@ async function initializePostHogClient(
   let disposed = false;
   let unsubscribe: (() => void) | undefined;
   let unloadInstalled = false;
+  let appErrorSession: AppErrorTelemetrySessions['posthog'];
   let posthog: PostHog | undefined;
   let account: PostHogAccountTracker | undefined;
   const eligibleStart = (): boolean =>
@@ -196,6 +201,8 @@ async function initializePostHogClient(
       window.removeEventListener('unload', disposeOnUnload);
       unloadInstalled = false;
     }
+    if (posthogAppErrorSession === appErrorSession)
+      posthogAppErrorSession = undefined;
     screenTracker?.dispose();
     if (reportPostHogFeatureFlagEvaluation === reportEvaluation)
       reportPostHogFeatureFlagEvaluation = undefined;
@@ -370,6 +377,20 @@ async function initializePostHogClient(
       (listener) => activeSession.onAdopted(listener),
     );
     activeSession.start();
+    if (!disposed) {
+      const sdk = posthog;
+      const activeController = controller;
+      appErrorSession = {
+        getSessionId: (): unknown =>
+          activeSession.allowsCapture() &&
+          activeController.allowsEvent(APP_ERROR_POSTHOG_EVENT)
+            ? sdk.get_session_id()
+            : undefined,
+        isRecording: (): unknown => sdk.sessionRecordingStarted(),
+        getReplayUrl: (): unknown => sdk.get_session_replay_url(),
+      };
+      posthogAppErrorSession = appErrorSession;
+    }
     if (options.posthogRoutes) {
       const sdk = posthog;
       screenTracker = createPostHogScreenTracker({
@@ -513,6 +534,14 @@ export function addClientFeatureFlagEvaluation(
   safelyInvoke(() => reportPostHogFeatureFlagEvaluation?.(key, value));
 }
 
+const appErrorSessions: AppErrorTelemetrySessions = {
+  posthog: {
+    getSessionId: () => posthogAppErrorSession?.getSessionId(),
+    isRecording: () => posthogAppErrorSession?.isRecording(),
+    getReplayUrl: () => posthogAppErrorSession?.getReplayUrl(),
+  },
+};
+
 const captureAppErrorInPostHog: AppErrorSink = (record) => {
   reportPostHogAppError?.({
     event: APP_ERROR_POSTHOG_EVENT,
@@ -547,7 +576,19 @@ export function reportClientAppError(
   value: unknown,
   options?: AppErrorReportOptions,
 ): AppErrorReport | undefined {
-  return getClientAppErrorHandler().report(value, options);
+  try {
+    return getClientAppErrorHandler().report(value, options);
+  } catch (error) {
+    // Recovery must survive unavailable configuration, clocks or randomness.
+    // Do not recursively report a failure of the reporting infrastructure.
+    captureClientInstrumentationError(error);
+    return undefined;
+  }
+}
+
+/** Validated session links for an error caught right now. */
+export function readClientErrorTelemetry(): FeedbackReportTelemetry {
+  return buildFeedbackReportTelemetry(appErrorSessions);
 }
 
 /** Flushes pending summaries; the next use reads current configuration. */

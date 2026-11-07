@@ -75,11 +75,14 @@ const REFRESH_CODES: ReadonlySet<string | undefined> = new Set([
 export function CloudChatsKeySection({
   organizationId,
   baseUrl,
+  revision,
   onAvailabilityChange,
 }: {
   readonly organizationId: string;
   /** Re-reads the status when the gateway address changes. */
   readonly baseUrl?: string;
+  /** Re-reads the status after a key is saved elsewhere on the page. */
+  readonly revision?: number;
   readonly onAvailabilityChange?: (available: boolean) => void;
 }): JSX.Element | null {
   const client = useSettingsClient();
@@ -129,7 +132,7 @@ export function CloudChatsKeySection({
     return (): void => {
       cancelled = true;
     };
-  }, [client, errorCopy, organizationId, baseUrl, reads]);
+  }, [client, errorCopy, organizationId, baseUrl, revision, reads]);
 
   const run = async (
     action: 'save' | 'remove',
@@ -170,6 +173,7 @@ export function CloudChatsKeySection({
       client.write('organization.settings.ai-gateway.cloud-key.save', {
         organizationId,
         apiKey,
+        ...(baseUrl === undefined ? {} : { expectedBaseUrl: baseUrl }),
       }),
     );
   };

@@ -31,8 +31,9 @@ import {
   NoticeList,
   NoticeListItem,
   StatusBadge,
-  TextLinkButton,
   type StatusBadgeVariant,
+  Surface,
+  TextLinkButton,
 } from '@canopy/ui-shared/components';
 import { formatByteSize, formatDateTime } from '@canopy/ui-shared/lib';
 import { brandText } from '@/lib/brand';
@@ -295,21 +296,27 @@ export function OllamaModelCard({
             <ModelMetadataBlock title="Seed messages">
               <div className="space-y-2">
                 {model.show.messages.map((message, index) => (
-                  <div
+                  <Surface
+                    variant="group"
+                    size="small"
+                    padding="tight"
                     key={`${message.role}-${String(index)}`}
-                    className="rounded-md bg-base p-2 fg-secondary"
                   >
-                    <div className="mb-1 font-medium fg-primary">
-                      {message.role}
-                      {message.toolName ? ` (${message.toolName})` : ''}
-                    </div>
-                    <div className="whitespace-pre-wrap">{message.content}</div>
-                    {message.thinking && (
-                      <div className="mt-2 whitespace-pre-wrap fg-tertiary">
-                        Thinking: {message.thinking}
+                    <div className="fg-secondary">
+                      <div className="mb-1 font-medium fg-primary">
+                        {message.role}
+                        {message.toolName ? ` (${message.toolName})` : ''}
                       </div>
-                    )}
-                  </div>
+                      <div className="whitespace-pre-wrap">
+                        {message.content}
+                      </div>
+                      {message.thinking && (
+                        <div className="mt-2 whitespace-pre-wrap fg-tertiary">
+                          Thinking: {message.thinking}
+                        </div>
+                      )}
+                    </div>
+                  </Surface>
                 ))}
               </div>
             </ModelMetadataBlock>

@@ -45,11 +45,6 @@ export interface ProviderModelAvailability {
    * Selection stays optimistic; a picker cue treats this as unknown (CAN-5213).
    */
   creditsInconclusive?: boolean;
-  /**
-   * The free daily credits preference from the same read; `undefined` is
-   * unknown. Only an explicit `false` may offer turning them on.
-   */
-  dailyCreditsEnabled?: boolean;
 }
 
 export type ProviderAvailability = Record<
@@ -98,9 +93,6 @@ export function useProviderAvailability(
         nativeAuthInconclusive,
         creditsLoading: credits.loading,
         creditsInconclusive: credits.inconclusive || credits.stale === true,
-        ...(credits.dailyDripEnabled === undefined
-          ? {}
-          : { dailyCreditsEnabled: credits.dailyDripEnabled }),
         selectable: authenticated || creditsEligible || loading,
       };
     };
@@ -160,6 +152,5 @@ export function useProviderAvailability(
     credits.loading,
     credits.inconclusive,
     credits.stale,
-    credits.dailyDripEnabled,
   ]);
 }

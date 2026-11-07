@@ -292,10 +292,10 @@ export function registerPluginHandlers(): void {
   };
 
   registerIpcHandler(PLUGINS_CHANNELS.LOAD, (event) =>
-    service.loadMarketplaces(progressFor(event)),
+    service.loadMarketplacesForPresentation(progressFor(event)),
   );
   registerIpcHandler(PLUGINS_CHANNELS.LOAD_CACHE_ONLY, () =>
-    service.loadMarketplacesCacheOnly(),
+    service.loadMarketplacesForPresentation(undefined, true),
   );
   // `providerUpdates` is caller-supplied rather than pinned to 'always'.
   // This channel has several renderer callers and not all are user gestures -

@@ -28,6 +28,11 @@ export const CORE_CATALOG_MUTATION_KINDS = [
   'core.catalog.source.delete',
   'core.catalog.source.refresh',
   'core.catalog.plugin.install',
+  'core.catalog.skill.install',
+  'core.catalog.skill.update',
+  'core.catalog.skill.remove',
+  'core.catalog.skill.custom.save',
+  'core.catalog.skill.updates.check',
 ] as const;
 export type CoreCatalogMutationKind =
   (typeof CORE_CATALOG_MUTATION_KINDS)[number];

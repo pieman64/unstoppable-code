@@ -6,7 +6,7 @@ import {
   ChevronLeftMediumIcon as AppCatalogChevronLeftMediumIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { type JSX, type ReactNode } from 'react';
-import { InlineTextInput } from '@canopy/ui-shared/components';
+import { Divider, InlineTextInput } from '@canopy/ui-shared/components';
 import type { ActivePanel, MainView } from '../../hooks/usePipelineEditor';
 import { Tooltip } from '@canopy/ui-shared';
 import {
@@ -130,7 +130,7 @@ export function PipelineSettingsToggle({
       pressed={open}
       label="Workflow settings"
       tooltip="Workflow settings"
-      icon={<AppCatalogSettingsIcon width="16" height="16" />}
+      icon={<AppCatalogSettingsIcon size="sm" />}
       onClick={onToggle}
       testId="pipeline-editor-settings-toggle"
     />
@@ -163,7 +163,7 @@ export function PipelineHistoryControls({
           disabled={!canUndo}
           aria-label="Undo"
         >
-          <AppCatalogRevertIcon width="16" height="16" />
+          <AppCatalogRevertIcon size="sm" />
         </Button>
       </Tooltip>
       <Tooltip label={`Redo (${modKey}+Shift+Z)`}>
@@ -175,7 +175,7 @@ export function PipelineHistoryControls({
           disabled={!canRedo}
           aria-label="Redo"
         >
-          <AppCatalogRedoIcon width="16" height="16" />
+          <AppCatalogRedoIcon size="sm" />
         </Button>
       </Tooltip>
     </>
@@ -216,7 +216,7 @@ export function PipelineToolbar({
         data-testid="pipeline-editor-back"
         aria-label="Back"
       >
-        <AppCatalogChevronLeftMediumIcon width="18" height="18" />
+        <AppCatalogChevronLeftMediumIcon size="xl" />
       </Button>
 
       {/* Pipeline name (inline editable, or static label when readonly) */}
@@ -275,14 +275,16 @@ export function PipelineToolbar({
           share a snapshot copy. */}
       {onShare && (
         <Button size="compact" onClick={onShare} data-testid="pipeline-share">
-          <ShareIcon width={13} height={13} />
+          <ShareIcon size="sm" />
           Share
         </Button>
       )}
 
       {!readonly && (
         <>
-          <div className="w-px h-5 bg-line-base" />
+          <div className="flex h-5">
+            <Divider orientation="vertical" />
+          </div>
 
           {/* Undo/Redo (hidden in raw mode — textarea has native undo) */}
           {mainView !== 'raw' && (

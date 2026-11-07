@@ -416,7 +416,7 @@ describe('core.chat.events desktop stream', () => {
         blocks: [{ type: 'text', text: 'final content' }],
       },
     });
-    expect(frame.cursor).toMatchObject({ sequence: 1 });
+    expect(frame.cursor).toMatchObject({ sequence: 41 });
 
     opened.close();
     await runtime.shutdown();

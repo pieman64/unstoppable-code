@@ -36,6 +36,7 @@ import {
   type ElectronDaemonClient,
 } from './electron-daemon-host';
 import { getElectronDaemonHealth } from './electron-daemon-health';
+import { getDaemonCodeGraphQueue } from './daemon-code-graph-queue';
 import { getDaemonExecutionStatus } from './daemon-execution-status';
 import type { WorkspaceCommitEventBinding } from './workspace-commit-events';
 
@@ -443,5 +444,6 @@ export async function disposeElectronDaemonConnections(): Promise<void> {
     ?.then((binding) => binding.close())
     .catch(() => undefined);
   getDaemonExecutionStatus().close();
+  getDaemonCodeGraphQueue().close();
   await connections?.dispose();
 }

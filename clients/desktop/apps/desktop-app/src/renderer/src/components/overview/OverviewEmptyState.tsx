@@ -7,7 +7,7 @@ import {
   PlusIcon as AppCatalogPlusIcon,
   MessageIcon as AppCatalogMessageIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
-import { Heading } from '@canopy/ui-shared/components';
+import { Heading, Surface } from '@canopy/ui-shared/components';
 
 interface OverviewEmptyStateProps {
   onCreateWorkspace: () => void;
@@ -47,52 +47,52 @@ export function OverviewEmptyState({
 
         <div className="mt-8 grid grid-cols-1 gap-4 text-left sm:grid-cols-2">
           {/* Code / workspace on-ramp */}
-          <section className="flex flex-col gap-3 rounded-lg border bg-card p-5">
-            <div className="flex items-center gap-2 fg-primary">
-              <AppCatalogBranchIcon width="16" height="16" aria-hidden="true" />
-              <Heading level={2} variant="title">
-                {WORKTREE_LABEL}
-              </Heading>
+          <Surface as="section" variant="card">
+            <div className="flex flex-col gap-3 p-5">
+              <div className="flex items-center gap-2 fg-primary">
+                <AppCatalogBranchIcon size="sm" aria-hidden="true" />
+                <Heading level={2} variant="title">
+                  {WORKTREE_LABEL}
+                </Heading>
+              </div>
+              <p className="flex-1 text-xs fg-secondary">
+                Create an isolated worktree and put agents to work on your
+                repository.
+              </p>
+              <Button
+                variant="primary"
+                onClick={onCreateWorkspace}
+                data-testid="overview-empty-create-workspace"
+              >
+                <AppCatalogPlusIcon size="sm" aria-hidden="true" />
+                Create a project
+              </Button>
             </div>
-            <p className="flex-1 text-xs fg-secondary">
-              Create an isolated worktree and put agents to work on your
-              repository.
-            </p>
-            <Button
-              variant="primary"
-              onClick={onCreateWorkspace}
-              data-testid="overview-empty-create-workspace"
-            >
-              <AppCatalogPlusIcon width="14" height="14" aria-hidden="true" />
-              Create a project
-            </Button>
-          </section>
+          </Surface>
 
           {/* Cowork / chat on-ramp */}
-          <section className="flex flex-col gap-3 rounded-lg border bg-card p-5">
-            <div className="flex items-center gap-2 fg-primary">
-              <AppCatalogMessageIcon
-                width="16"
-                height="16"
-                aria-hidden="true"
-              />
-              <Heading level={2} variant="title">
-                {CHAT_LABEL}
-              </Heading>
+          <Surface as="section" variant="card">
+            <div className="flex flex-col gap-3 p-5">
+              <div className="flex items-center gap-2 fg-primary">
+                <AppCatalogMessageIcon size="sm" aria-hidden="true" />
+                <Heading level={2} variant="title">
+                  {CHAT_LABEL}
+                </Heading>
+              </div>
+              <p className="flex-1 text-xs fg-secondary">
+                Chat with an agent without a repo — brainstorm, plan, or ask a
+                question.
+              </p>
+              <Button
+                variant="secondary"
+                onClick={onStartChat}
+                data-testid="overview-empty-start-chat"
+              >
+                <AppCatalogPlusIcon size="sm" aria-hidden="true" />
+                New {CHAT_UNIT_LABEL}
+              </Button>
             </div>
-            <p className="flex-1 text-xs fg-secondary">
-              Chat with an agent without a repo — brainstorm, plan, or ask a
-              question.
-            </p>
-            <Button
-              variant="secondary"
-              onClick={onStartChat}
-              data-testid="overview-empty-start-chat"
-            >
-              <AppCatalogPlusIcon width="14" height="14" aria-hidden="true" />
-              New {CHAT_UNIT_LABEL}
-            </Button>
-          </section>
+          </Surface>
         </div>
       </div>
     </div>

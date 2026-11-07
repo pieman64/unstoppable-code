@@ -5,6 +5,7 @@ import { useSettingsSearchParams } from '../host';
 import { DigestPreferencesSection } from './digest-preferences-section';
 import { InstallUpdateEmailsSection } from './install-update-emails-section';
 import { PushPreferencesSection } from './push-preferences-section';
+import { Notice } from '@canopy/ui-shared/components/Notice';
 
 /**
  * `/account/notifications`: how the product reaches out to the viewer. Hosts
@@ -30,23 +31,18 @@ export function NotificationsPage(): JSX.Element {
       data-testid="account-notifications-page"
     >
       {unsubscribed && (
-        <p
-          role="status"
-          className="rounded-lg border border-line-accent bg-accent px-4 py-3 text-s fg-primary"
-          data-testid="digest-unsubscribed-notice"
-        >
+        <Notice intent="neutral" data-testid="digest-unsubscribed-notice">
           You have been unsubscribed. You can turn work digests back on below at
           any time.
-        </p>
+        </Notice>
       )}
       {installUpdatesNotice && (
-        <p
-          role="status"
-          className="rounded-lg border border-line-accent bg-accent px-4 py-3 text-s fg-primary"
+        <Notice
+          intent="neutral"
           data-testid="install-updates-unsubscribed-notice"
         >
           {installUpdatesNotice}
-        </p>
+        </Notice>
       )}
       <DigestPreferencesSection />
       <InstallUpdateEmailsSection />

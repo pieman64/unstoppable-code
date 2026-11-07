@@ -79,7 +79,7 @@ import type {
 
 /**
  * Routing of Files reads through the local core daemon (CAN-4305, CAN-5509),
- * always selected for eligible local Files requests.
+ * selected per platform for eligible local Files requests.
  *
  * Only the Files IPC handlers mark a request as routable; every other caller
  * of the same operations keeps the direct desktop reader. The backend is
@@ -109,19 +109,32 @@ export type DaemonFilesOperation =
 export type FilesRouteObservedOperation = DaemonFilesOperation;
 
 /**
- * Production selection: the reads that may leave with a plan. File, search
- * and link joined roots and directory in CAN-5556; the read-route table still
- * keeps them direct on Windows (CAN-4732). Listed literally, so a new read
- * never becomes selectable by accident.
+ * Per-platform production selection: reads that may leave with a plan.
+ * Windows qualification (CAN-4732) must not enable production routes;
+ * Files read enablement requires a separate code change (CAN-4729).
+ * Listed literally, so a new read never becomes selectable by accident.
  */
-export const DAEMON_FILES_PRODUCTION_SELECTION: ReadonlySet<DaemonFilesOperation> =
-  new Set<DaemonFilesOperation>([
+export const DAEMON_FILES_PRODUCTION_SELECTION: Readonly<
+  Record<ReadRoutePlatform, ReadonlySet<DaemonFilesOperation>>
+> = {
+  darwin: new Set<DaemonFilesOperation>([
     'roots',
     'directory',
     'file',
     'search',
     'link',
-  ]);
+  ]),
+  win32: new Set<DaemonFilesOperation>(['roots', 'directory']),
+  linux: new Set<DaemonFilesOperation>([
+    'roots',
+    'directory',
+    'file',
+    'search',
+    'link',
+  ]),
+};
+
+const NO_PRODUCTION_SELECTION: ReadonlySet<DaemonFilesOperation> = new Set();
 
 export interface DaemonFilesRouteSender extends CallerLifetimeSender {
   readonly id: number;
@@ -508,7 +521,11 @@ export function createDaemonFilesRoute(
     options.platform !== undefined
       ? options.platform
       : resolveReadRoutePlatform();
-  const selectable = options.selectable ?? DAEMON_FILES_PRODUCTION_SELECTION;
+  const selectable =
+    options.selectable ??
+    (platform === null
+      ? NO_PRODUCTION_SELECTION
+      : DAEMON_FILES_PRODUCTION_SELECTION[platform]);
   const reachability = options.reachability ?? UNOBSERVED_REACHABILITY;
   const evidence = createRouteEvidence();
   let requestSequence = 0;

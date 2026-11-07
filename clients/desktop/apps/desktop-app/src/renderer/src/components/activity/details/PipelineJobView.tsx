@@ -1,5 +1,10 @@
 import { memo, useState, type JSX } from 'react';
-import { EmptyState, ErrorBanner, Heading } from '@canopy/ui-shared/components';
+import {
+  EmptyState,
+  ErrorBanner,
+  Heading,
+  Surface,
+} from '@canopy/ui-shared/components';
 import type {
   ExecutionState,
   ExecutionSummary,
@@ -123,7 +128,7 @@ function PipelineJobViewComponent({
       canRetryFailedMatrixVariants(state.status, group, state.jobs);
     return (
       <div className="space-y-4" data-testid={`pipeline-matrix-view-${jobId}`}>
-        <div className="rounded-xl border bg-base p-4">
+        <Surface variant="inset" padding="default">
           <div className="flex items-center gap-2">
             <Heading level={2} variant="section">
               {logicalJob.name}
@@ -201,77 +206,79 @@ function PipelineJobViewComponent({
             </div>
           ) : null}
           <ErrorBanner error={matrixError} className="mt-2" />
-        </div>
-        <div className="max-h-96 space-y-1 overflow-y-auto rounded-xl border bg-base p-2">
-          {group.variant_job_ids.map((variantJobId) => {
-            const definition = state.job_definitions[variantJobId];
-            const result = state.jobs[variantJobId];
-            return (
-              <div key={variantJobId} className="flex items-center">
-                <ListRow
-                  className="min-w-0 flex-1"
-                  onClick={() => onSelectMatrixVariant?.(variantJobId)}
-                  trailing={
-                    <>
-                      {JSON.stringify(definition.matrix?.values ?? {})} ·{' '}
-                      {result.status}
-                    </>
-                  }
-                >
-                  {definition.name}
-                </ListRow>
-                {archived ? null : !isSettledJobStatus(result.status) ? (
-                  <Button
-                    variant="ghost-destructive"
-                    size="compact"
-                    className="ml-2"
-                    disabled={matrixBusy}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void runMatrixAction(
-                        () =>
-                          cancelMatrixVariant({
-                            executionId,
-                            jobId,
-                            variantJobId,
-                          }),
-                        'Failed to cancel matrix variant',
-                      );
-                    }}
+        </Surface>
+        <Surface variant="inset" className="overflow-hidden">
+          <div className="max-h-96 space-y-1 overflow-y-auto p-2">
+            {group.variant_job_ids.map((variantJobId) => {
+              const definition = state.job_definitions[variantJobId];
+              const result = state.jobs[variantJobId];
+              return (
+                <div key={variantJobId} className="flex items-center">
+                  <ListRow
+                    className="min-w-0 flex-1"
+                    onClick={() => onSelectMatrixVariant?.(variantJobId)}
+                    trailing={
+                      <>
+                        {JSON.stringify(definition.matrix?.values ?? {})} ·{' '}
+                        {result.status}
+                      </>
+                    }
                   >
-                    Cancel variant
-                  </Button>
-                ) : canRetryMatrixJob(state.status, group) &&
-                  canRetryMatrixVariant({
-                    job_id: variantJobId,
-                    status: result.status,
-                  }) ? (
-                  <Button
-                    variant="ghost"
-                    size="compact"
-                    className="ml-2"
-                    disabled={matrixBusy}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void runMatrixAction(
-                        () =>
-                          retryMatrixJob({
-                            executionId,
-                            jobId,
-                            mode: 'variants',
-                            variantJobIds: [variantJobId],
-                          }),
-                        'Failed to retry matrix variant',
-                      );
-                    }}
-                  >
-                    Try variant again
-                  </Button>
-                ) : null}
-              </div>
-            );
-          })}
-        </div>
+                    {definition.name}
+                  </ListRow>
+                  {archived ? null : !isSettledJobStatus(result.status) ? (
+                    <Button
+                      variant="ghost-destructive"
+                      size="compact"
+                      className="ml-2"
+                      disabled={matrixBusy}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void runMatrixAction(
+                          () =>
+                            cancelMatrixVariant({
+                              executionId,
+                              jobId,
+                              variantJobId,
+                            }),
+                          'Failed to cancel matrix variant',
+                        );
+                      }}
+                    >
+                      Cancel variant
+                    </Button>
+                  ) : canRetryMatrixJob(state.status, group) &&
+                    canRetryMatrixVariant({
+                      job_id: variantJobId,
+                      status: result.status,
+                    }) ? (
+                    <Button
+                      variant="ghost"
+                      size="compact"
+                      className="ml-2"
+                      disabled={matrixBusy}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void runMatrixAction(
+                          () =>
+                            retryMatrixJob({
+                              executionId,
+                              jobId,
+                              mode: 'variants',
+                              variantJobIds: [variantJobId],
+                            }),
+                          'Failed to retry matrix variant',
+                        );
+                      }}
+                    >
+                      Try variant again
+                    </Button>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        </Surface>
       </div>
     );
   }
@@ -298,7 +305,7 @@ function PipelineJobViewComponent({
       className="space-y-4"
       data-testid={`pipeline-job-view-${displayJobId}`}
     >
-      <div className="rounded-xl border bg-base p-4">
+      <Surface variant="inset" padding="default">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -333,17 +340,19 @@ function PipelineJobViewComponent({
           </div>
         ) : null}
 
-        <div className="mt-3 rounded-md border bg-fg-primary/[0.03] p-2.5">
-          <TimingSummaryGrid
-            identity={`job:${executionId}:${displayJobId}:current`}
-            kind="job"
-            status={jobStatus}
-            startedAt={jobResult?.started_at}
-            completedAt={jobResult?.completed_at}
-            compact
-          />
-        </div>
-      </div>
+        <Surface variant="group" size="small" className="mt-3">
+          <div className="p-2.5">
+            <TimingSummaryGrid
+              identity={`job:${executionId}:${displayJobId}:current`}
+              kind="job"
+              status={jobStatus}
+              startedAt={jobResult?.started_at}
+              completedAt={jobResult?.completed_at}
+              compact
+            />
+          </div>
+        </Surface>
+      </Surface>
 
       {!hasStartedSteps ? (
         <EmptyState title="No steps have started for this job yet." />

@@ -82,6 +82,11 @@ export interface PendingOrganizationInvitationsOptions {
   readonly client: AccountOrganizationSettingsClient | null;
   /** The signed-in, non-guest account; `null` reads and shows nothing. */
   readonly accountKey: string | null;
+  /** An authenticated first list for this account; only used on mount. */
+  readonly initialSnapshot?: {
+    readonly accountKey: string;
+    readonly items: readonly IncomingTeamInvitation[];
+  };
   /**
    * Changes once per completed host account refresh, including one that
    * left memberships unchanged. Not read on mount.
@@ -155,13 +160,26 @@ function createScope(
 export function usePendingOrganizationInvitations({
   client,
   accountKey,
+  initialSnapshot,
   refreshSignal,
   readMemberships,
   onAccepted,
   onReview,
   reconcileAccount,
 }: PendingOrganizationInvitationsOptions): SidebarContextInvitations {
-  const scopeRef = useRef<Scope | null>(null);
+  // A server-provided list must be visible on the first paint. Bind it to the
+  // same account/client scope as later reads, so an account swap hides it.
+  const [initialState] = useState(() => {
+    const scope =
+      client !== null &&
+      accountKey !== null &&
+      initialSnapshot?.accountKey === accountKey
+        ? createScope(client, accountKey)
+        : null;
+    return { scope, items: scope ? (initialSnapshot?.items ?? EMPTY) : EMPTY };
+  });
+  const initialActivation = useRef(true);
+  const scopeRef = useRef<Scope | null>(initialState.scope);
   const callbacks = useRef({
     readMemberships,
     onAccepted,
@@ -179,7 +197,10 @@ export function usePendingOrganizationInvitations({
 
   const [list, setList] = useState<
     ScopedState<readonly IncomingTeamInvitation[]>
-  >({ scope: null, value: EMPTY });
+  >({
+    scope: initialState.scope,
+    value: initialState.items,
+  });
   const [pending, setPending] = useState<
     ScopedState<SidebarContextInvitations['pending']>
   >({ scope: null, value: null });
@@ -222,15 +243,20 @@ export function usePendingOrganizationInvitations({
       scopeRef.current = null;
       return undefined;
     }
-    const scope = createScope(client, accountKey);
+    const seeded = initialActivation.current ? initialState.scope : null;
+    initialActivation.current = false;
+    const scope =
+      seeded?.client === client && seeded.accountKey === accountKey
+        ? seeded
+        : createScope(client, accountKey);
     scopeRef.current = scope;
-    void read(scope);
+    if (scope !== seeded) void read(scope);
     return (): void => {
       scope.abort.abort();
       scope.followUp?.abort();
       if (scopeRef.current === scope) scopeRef.current = null;
     };
-  }, [accountKey, client, read]);
+  }, [accountKey, client, initialState.scope, read]);
 
   // A host refresh after mount; the activation read covers the first value.
   const lastSignal = useRef(refreshSignal);

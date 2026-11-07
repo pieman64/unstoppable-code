@@ -1,3 +1,13 @@
+import type {
+  FeedbackReportContext,
+  FeedbackReportError,
+  FeedbackReportSubmission,
+  FeedbackReportResult,
+  FeedbackDiagnosticsSnapshot,
+  FeedbackDiagnosticsEntryContent,
+} from '@canopy/protocol/feedback-report';
+export { FEEDBACK_REPORT_TYPES } from '@canopy/protocol/feedback-report';
+export type { FeedbackReportType } from '@canopy/protocol/feedback-report';
 import type { SecretInputApprovalPrompt } from '@canopy/protocol/approvals';
 import type { CanopyAccountResponse } from '@canopy/protocol/canopy-server';
 import type { W5RecoveryApi } from '@canopy/protocol/portal';
@@ -221,6 +231,10 @@ import {
   readCodexSpeedRecord,
   type CodexSpeed,
 } from './lib/codex-speed';
+import {
+  isCodexContextWindowSetting,
+  type CodexContextWindowSetting,
+} from './lib/codex-context-window';
 import type { CodexSpeedApi } from './types/codex-speed-capabilities';
 import type { OverlayLayerApi } from './types/overlay-layer';
 import type { RemoteControlApi } from './types/remote-control';
@@ -363,7 +377,6 @@ import type {
 import type {
   BillingPresentation,
   DailyCreditDripPreference,
-  DailyCreditDripPreferenceSaveResult,
   DesktopBillingDeepLink,
   EntitlementSource,
 } from '@canopy/protocol/billing';
@@ -2464,13 +2477,6 @@ export interface NativeAiCreditsAvailability {
   /** Native pricing page URL (`{cloudBaseUrl}/pricing`) for the uncovered CTA. */
   pricingUrl: string;
   /**
-   * Whether the user opted in to the daily free-credit drip, passed through
-   * from `AiCreditsBalance.dailyDripEnabled`. `undefined` (older server, or no
-   * balance read) means unknown; only an explicit `false` offers "Turn on free
-   * daily credits" in the `needs-credits` recovery.
-   */
-  dailyDripEnabled?: boolean;
-  /**
    * The read could not be completed, so every flag above is a DEFAULT rather
    * than an observation.
    *
@@ -2521,16 +2527,16 @@ export interface CloudDigestPreferencesState {
 }
 
 /**
- * Result of {@link CanopyApi.loadCloudDailyCreditDrip} — the connected cloud
- * account's daily free-credit drip opt-in, read from
- * `GET /api/v1/ai-credits/daily-drip`. Never throws across IPC.
+ * Result of the tunneled `settings:load-daily-credit-drip` channel — the
+ * connected cloud account's daily free-credit drip opt-in, read from
+ * `GET /api/v1/ai-credits/daily-drip`. Never throws across IPC. Kept only so
+ * older remote controllers can still call this host until CAN-4773 removes the
+ * channel.
  *
  * `available` is false when no cloud credential is connected or the server
- * does not offer the route (404 from an older web deploy, 401/403): hide every
- * drip opt-in surface. `resolved` is false on a transient failure (offline,
- * 5xx, malformed body) so callers neither show the onboarding card nor flip a
- * toggle on fabricated data. `preference` is a placeholder (opted out,
- * undecided, default cap) unless both flags are true.
+ * does not offer the route (404, 401/403). `resolved` is false on a transient
+ * failure (offline, 5xx, malformed body). `preference` is a placeholder (opted
+ * out, undecided, default cap) unless both flags are true.
  */
 export interface CloudDailyCreditDripState {
   available: boolean;
@@ -2538,7 +2544,10 @@ export interface CloudDailyCreditDripState {
   preference: DailyCreditDripPreference;
 }
 
-/** Payload of {@link CanopyApi.saveCloudDailyCreditDrip}. */
+/**
+ * Payload of the tunneled `settings:save-daily-credit-drip` channel, kept for
+ * older remote controllers until CAN-4773.
+ */
 export interface SaveDailyCreditDripRequest {
   enabled: boolean;
 }
@@ -2984,6 +2993,7 @@ export interface FeedbackWorkspaceSelection {
  *   filesystem use.
  */
 export interface FeedbackPrepareRequest {
+  error?: FeedbackReportError;
   description: string;
   area: FeedbackArea;
   workspaceSelections?: FeedbackWorkspaceSelection[];
@@ -3010,10 +3020,6 @@ export interface FeedbackPrepareResponse {
  * a distinct label on the created Linear issue. "Feedback" is the branding;
  * bug reporting is one mode of it.
  */
-export const FEEDBACK_REPORT_TYPES = ['bug', 'idea'] as const;
-
-export type FeedbackReportType = (typeof FEEDBACK_REPORT_TYPES)[number];
-
 /**
  * Slim, serializable subset of the renderer's current-UI-state snapshot that is
  * attached to a feedback report so the triaging team knows where the user was
@@ -3021,21 +3027,7 @@ export type FeedbackReportType = (typeof FEEDBACK_REPORT_TYPES)[number];
  * renderer includes whatever it can resolve from
  * `useCurrentUiStateStore.getState().envelope.snapshot`.
  */
-export interface FeedbackContextSnapshot {
-  /** The active page/area the user was on (e.g. `main`, `pipelines`). */
-  activePage?: string;
-  workspaceId?: string;
-  workspaceName?: string;
-  worktreeId?: string;
-  worktreeName?: string;
-  /** The active standalone chat project id, when the user is in chat. */
-  chatProjectId?: string;
-  chatId?: string;
-  provider?: string;
-  model?: string;
-  appVersion?: string;
-  platform?: string;
-}
+export type FeedbackContextSnapshot = FeedbackReportContext;
 
 /**
  * Request shape for `IPC_CHANNELS.feedbackSubmit`.
@@ -3048,13 +3040,11 @@ export interface FeedbackContextSnapshot {
  * - `includeDiagnostics` controls whether the diagnostics zip is built,
  *   uploaded, and attached to the created Linear issue.
  */
-export interface FeedbackSubmitRequest {
-  type: FeedbackReportType;
-  description: string;
-  title?: string;
-  context: FeedbackContextSnapshot;
-  includeDiagnostics: boolean;
-}
+export type FeedbackSubmitRequest = FeedbackReportSubmission;
+export type FeedbackDiagnosticsPrepareRequest = {
+  context: FeedbackReportContext;
+  error?: FeedbackReportError;
+};
 
 /**
  * Response shape for `IPC_CHANNELS.feedbackSubmit`. Returned once the report has
@@ -3066,7 +3056,7 @@ export interface FeedbackSubmitRequest {
  * into an internal issue tracker, so surfacing that identifier/link to the user
  * would leak internal details. The renderer only needs to know it succeeded.
  */
-export interface FeedbackSubmitResponse {
+export interface FeedbackSubmitResponse extends FeedbackReportResult {
   submitted: true;
 }
 
@@ -5981,6 +5971,11 @@ export interface AgentModelConfig {
    * the speed (true → Fast, false → Regular).
    */
   fastMode?: boolean;
+  /**
+   * Requested Codex context window. Absent uses the provider default, then
+   * the model's own window (`lib/codex-context-window.ts`).
+   */
+  contextWindow?: CodexContextWindowSetting;
 }
 
 export interface ResolvedAgentModelConfig {
@@ -5989,6 +5984,8 @@ export interface ResolvedAgentModelConfig {
   speed: CodexSpeed;
   /** Derived projection: `speed === 'fast'`. */
   fastMode: boolean;
+  /** Requested Codex context window; absent means the model's own. */
+  contextWindow?: CodexContextWindowSetting;
 }
 
 /**
@@ -8774,6 +8771,9 @@ export function normalizeAgentModelConfig(
     // Legacy read: an invalid or missing speed falls back to the boolean.
     config.fastMode = value.fastMode;
   }
+  if (isCodexContextWindowSetting(value.contextWindow)) {
+    config.contextWindow = value.contextWindow;
+  }
 
   return Object.keys(config).length > 0 ? config : undefined;
 }
@@ -8815,8 +8815,17 @@ export function resolveProviderModelConfig(
   const speed = modelConfigForProviderSupportsFastMode(provider)
     ? requestedSpeed
     : DEFAULT_CODEX_SPEED;
+  const contextWindow =
+    provider === 'codex'
+      ? (selectedConfig?.contextWindow ?? defaultConfig?.contextWindow)
+      : undefined;
 
-  return { thinkingLevel, speed, fastMode: codexSpeedFastMode(speed) };
+  return {
+    thinkingLevel,
+    speed,
+    fastMode: codexSpeedFastMode(speed),
+    ...(contextWindow !== undefined ? { contextWindow } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -11507,6 +11516,8 @@ export interface HostQueuedMessageView {
   inputMode?: 'typed' | 'voice';
   origin: ChatQueueOrigin;
   enqueuedAtMs: number;
+  /** The entry's revision (CAN-4112); send it back as the queue command's revision. */
+  revision?: number;
   turnPhase?: ChatTurnPhase;
   editLocked?: boolean;
   /**
@@ -13219,6 +13230,8 @@ export interface PersistedHostQueuedMessage {
   admitting?: true;
   /** Trusted host-owned billing constraint; never accepted from a send DTO. */
   requiredAccountProxyConnectionId?: string;
+  /** Queued entry revision (CAN-4112): absent means 1; each committed edit adds 1. */
+  revision?: number;
 }
 
 export interface ChatRuntimeState {
@@ -13443,6 +13456,8 @@ export interface PersistedCommandReceipt {
   entityId?: string;
   messageId?: string;
   reason?: string;
+  /** The `archivedAt` of the archive entries an archiving command wrote. */
+  archivedAt?: string;
   portalSend?: PortalChatSendIdentity;
   /**
    * Host-only acceptance facts for a trusted agent send, so a replayed or
@@ -13725,6 +13740,8 @@ export type ChatCommand =
       fileReferences?: FileReference[];
       attachmentPaths?: string[];
       attachmentPromptContexts?: ChatAttachmentPromptContext[];
+      /** The entry revision the caller read (CAN-4112). */
+      queuedMessageRevision?: number;
     }
   | {
       /** Places the queued entry before `beforeQueuedMessageId`; null moves it to the tail. */
@@ -13732,16 +13749,22 @@ export type ChatCommand =
       chatId: string;
       queuedMessageId: string;
       beforeQueuedMessageId: string | null;
+      /** The entry revision the caller read (CAN-4112). */
+      queuedMessageRevision?: number;
     }
   | {
       type: 'chat.cancel_queued_message';
       chatId: string;
       queuedMessageId: string;
+      /** The entry revision the caller read (CAN-4112). */
+      queuedMessageRevision?: number;
     }
   | {
       type: 'chat.force_queued_message';
       chatId: string;
       queuedMessageId: string;
+      /** The entry revision the caller read (CAN-4112). */
+      queuedMessageRevision?: number;
     }
   | {
       type: 'chat.steer_queued_message';
@@ -13749,6 +13772,19 @@ export type ChatCommand =
       queuedMessageId: string;
       /** Main-only: the steering agent; IPC and Portal never accept it. */
       agentSteeringActor?: ChatAgentSentInfo['sender'];
+      /** The entry revision the caller read (CAN-4112). */
+      queuedMessageRevision?: number;
+    }
+  | {
+      /** Hold or release a queued message for editing (CAN-4112). */
+      type: 'chat.set_queued_message_edit_lock';
+      chatId: string;
+      queuedMessageId: string;
+      locked: boolean;
+      /** The holder's acquisition; an unlock names the acquisition it releases. */
+      acquisitionId?: string;
+      /** The entry revision the caller read. */
+      queuedMessageRevision?: number;
     }
   | {
       type: 'chat.input_delivery_action';
@@ -13836,6 +13872,8 @@ export interface ChatCommandResult {
   reason?: string;
   entityId?: string;
   messageId?: string;
+  /** The `archivedAt` of the archive entries an archiving command wrote. */
+  archivedAt?: string;
 }
 
 export type ChatStateChange =
@@ -21653,6 +21691,22 @@ export interface CanopyApi {
    * identifier and URL. Rejects on any failure that prevents the issue from
    * being created.
    */
+  prepareFeedbackDiagnostics: (
+    request: FeedbackDiagnosticsPrepareRequest,
+  ) => Promise<FeedbackDiagnosticsSnapshot>;
+  readFeedbackDiagnosticsEntry: (
+    snapshotId: string,
+    entryPath: string,
+  ) => Promise<FeedbackDiagnosticsEntryContent>;
+  saveFeedbackDiagnostics: (snapshotId: string) => Promise<void>;
+  releaseFeedbackDiagnostics: (snapshotId: string) => Promise<void>;
+  submitFeedbackReport: (
+    request: FeedbackSubmitRequest,
+  ) => Promise<FeedbackSubmitResponse>;
+  feedbackDiagnosticsCapabilities: () => Promise<{
+    snapshots: true;
+    version: 1;
+  }>;
   submitFeedback: (
     request: FeedbackSubmitRequest,
   ) => Promise<FeedbackSubmitResponse>;
@@ -21819,24 +21873,6 @@ export interface CanopyApi {
     scope: AiCreditsScopeRequest | undefined,
     onChanged: (credentialsChanged?: boolean) => void,
   ) => () => void;
-  /**
-   * Load the connected cloud account's daily free-credit drip opt-in. Never
-   * throws; see {@link CloudDailyCreditDripState} for the available/resolved
-   * semantics. Works for guest and signed-in credentials alike.
-   */
-  loadCloudDailyCreditDrip: () => Promise<CloudDailyCreditDripState>;
-  /**
-   * Save the daily free-credit drip choice (either way, which also marks the
-   * user as decided). Enabling grants today's drip server-side before this
-   * resolves. Rejects when the save did not happen (no credential, route
-   * unavailable, network/server failure, or an invalid payload), so callers can
-   * roll back optimistic state. On success main has already cleared its
-   * AI-credits routing cache; renderers must still refresh their own balance
-   * caches. `balanceCredits` is null when the post-save balance read failed.
-   */
-  saveCloudDailyCreditDrip: (
-    request: SaveDailyCreditDripRequest,
-  ) => Promise<DailyCreditDripPreferenceSaveResult>;
   /** Read published notes for a stable version through the connected account. */
   loadCloudReleaseNotes: (
     version: string,
@@ -22806,9 +22842,9 @@ export interface AppAdvisorUiStateSnapshot {
     available: boolean;
     loading: boolean;
     setupOpen: boolean;
-    /** The account details modal (enabled tools editor) is open. */
+    /** The open Customize detail belongs to an account MCP row. */
     detailsOpen: boolean;
-    /** Visible row whose account details are open. */
+    /** That row's account connection id when it has one, otherwise its row id. */
     detailsRowId?: string;
     /** The "Move to your cloud account" confirmation is open. */
     promoteDialogOpen?: boolean;
@@ -23370,6 +23406,8 @@ export interface AppAdvisorUiStateSnapshot {
     loading?: boolean;
     submitting?: boolean;
     errorVisible?: boolean;
+    /** Shared setup replaced the picker, by request or an Update's routing. */
+    sharedSetupVisible?: boolean;
   };
   /**
    * Sanitized state for the worktree removal confirmation. Reported by the
@@ -26353,6 +26391,11 @@ export type AppAdvisorRendererToolRequest =
       expectedUiRevision?: number;
       originChatTabId?: string;
       hostSend?: 'start_branched_agent';
+      /**
+       * CAN-4133: set when the call arrived through the ui.app_advisor.present
+       * interface tool. The renderer runs only presentation actions for it.
+       */
+      interfaceToolCall?: true;
     }
   | {
       kind: 'ask_user_question';
@@ -27747,16 +27790,15 @@ export type PortalChatQuestionMutationCommand = PortalChatComposerTarget &
   );
 
 /**
- * Correlated main → renderer request. Carries a persistent composer setter, a
- * portal-originated question mutation (answer/dismiss), or a branch lifecycle
- * command; each expects a renderer result. Lifecycle create/close/fork stay
+ * Correlated main → renderer request. Carries a persistent composer setter or
+ * a branch lifecycle command; each expects a renderer result. Question answers
+ * and dismissals settle in the core (CAN-4128). Lifecycle create/close/fork stay
  * one-way (see {@link PortalChatComposerRendererRequest}).
  */
 export interface PortalChatComposerSetterRequest {
   requestId: string;
   command:
     | PortalChatComposerSetterCommand
-    | PortalChatQuestionMutationCommand
     | Extract<PortalChatComposerLifecycleCommand, { kind: 'branch' | 'share' }>;
 }
 
@@ -29090,6 +29132,12 @@ export const IPC_CHANNELS = {
   settingsRefreshCanopyCloudEnforcedSettings:
     'settings:refresh-canopy-cloud-enforced-settings',
   settingsSearchLinearIssues: 'settings:search-linear-issues',
+  feedbackDiagnosticsPrepare: 'feedback:diagnostics-prepare',
+  feedbackDiagnosticsRead: 'feedback:diagnostics-read',
+  feedbackDiagnosticsSave: 'feedback:diagnostics-save',
+  feedbackDiagnosticsRelease: 'feedback:diagnostics-release',
+  feedbackReportSubmit: 'feedback:report-submit',
+  feedbackDiagnosticsCapabilities: 'feedback:diagnostics-capabilities',
   feedbackPrepare: 'feedback:prepare',
   feedbackSubmit: 'feedback:submit',
   turnFeedbackRate: 'turn-feedback:rate',

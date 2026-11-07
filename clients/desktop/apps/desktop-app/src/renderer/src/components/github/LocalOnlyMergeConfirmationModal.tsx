@@ -2,6 +2,7 @@ import { memo, useCallback, type JSX } from 'react';
 import type { RepoBranchInfo } from '@canopy/desktop-shared/types';
 import { Button } from '@canopy/ui-shared';
 import { DialogModal } from '@/components/shared/DialogModal';
+import { Surface } from '@canopy/ui-shared/components';
 
 interface LocalOnlyMergeConfirmationModalProps {
   /**
@@ -41,16 +42,18 @@ export const LocalOnlyMergeConfirmationModal = memo(
             These local-only repos will be merged into their default branch. The
             worktree branch will not be deleted.
           </p>
-          <ul className="flex flex-col gap-1 rounded-md border bg-secondary/30 p-3 font-mono text-xs">
-            {candidates.map((repo) => (
-              <li key={repo.repoId} className="truncate fg-primary/80">
-                <span className="font-semibold">{repo.repoName}</span>:{' '}
-                <span>{repo.branch}</span>
-                <span className="px-1 fg-secondary">{'->'}</span>
-                <span>{repo.baseBranch ?? '(default)'}</span>
-              </li>
-            ))}
-          </ul>
+          <Surface variant="group" size="small" padding="compact">
+            <ul className="flex flex-col gap-1 font-mono text-xs">
+              {candidates.map((repo) => (
+                <li key={repo.repoId} className="truncate fg-primary/80">
+                  <span className="font-semibold">{repo.repoName}</span>:{' '}
+                  <span>{repo.branch}</span>
+                  <span className="px-1 fg-secondary">{'->'}</span>
+                  <span>{repo.baseBranch ?? '(default)'}</span>
+                </li>
+              ))}
+            </ul>
+          </Surface>
         </div>
         <div className="flex items-center justify-end gap-2 border-t p-4">
           <Button

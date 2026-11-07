@@ -26,6 +26,7 @@ import {
   type RuntimeOperationOwner,
 } from './operation-registry';
 import { runtimeProfileInstalls } from './runtime-profile-manifest';
+import { scopeForwardedIdempotency } from './peer-scoped-idempotency';
 import {
   createInProcessWorkerBinding,
   localWorkerTransportOf,
@@ -128,6 +129,11 @@ export interface CreateRuntimeProfileGraphOptions {
     readonly modules: readonly SupervisedWorkerModule[];
     readonly worker: SupervisedLocalWorker;
   };
+  /**
+   * Forwarded worker instructions whose idempotency keys are scoped to the
+   * interface caller before they cross the worker binding (CAN-5629).
+   */
+  peerScopedIdempotency?: ReadonlySet<string>;
 }
 
 /** A worker module served by a supervised worker process: its name and operations. */
@@ -279,6 +285,20 @@ function createWorkerRuntime(
   };
 }
 
+/** A binding's forwarders with the opted-in instructions' keys scoped per caller. */
+function scopedForwarders(
+  forwarders: RuntimeModuleHandlers,
+  options: CreateRuntimeProfileGraphOptions,
+): RuntimeModuleHandlers {
+  return {
+    ...forwarders,
+    instructions: scopeForwardedIdempotency(
+      forwarders.instructions,
+      options.peerScopedIdempotency ?? new Set(),
+    ),
+  };
+}
+
 /**
  * Bundled worker modules run on a worker dispatcher behind the binding; the
  * core dispatcher holds only the binding's forwarders for their operations.
@@ -292,7 +312,7 @@ function bindBundledWorker(options: CreateRuntimeProfileGraphOptions): {
   const { supervisedWorker } = options;
   if (supervisedWorker)
     return {
-      handlers: supervisedWorker.worker.forwarders,
+      handlers: scopedForwarders(supervisedWorker.worker.forwarders, options),
       worker: null,
       transport: supervisedWorker.worker.transport,
       close: () => undefined,
@@ -329,7 +349,7 @@ function bindBundledWorker(options: CreateRuntimeProfileGraphOptions): {
     receipts,
   });
   return {
-    handlers: binding.forwarders,
+    handlers: scopedForwarders(binding.forwarders, options),
     worker,
     transport: localWorkerTransportOf(binding, definitions.instructions),
     close: () => binding.close(),
@@ -349,7 +369,10 @@ function supervisedModules(
     throw new Error(`Runtime profile ${profile} cannot supervise a worker`);
   if (options.modules.some(({ plane }) => plane === 'worker'))
     throw new Error('A supervised worker hosts every worker module');
-  const { forwarders } = supervisedWorker.worker;
+  const forwarders = scopedForwarders(
+    supervisedWorker.worker.forwarders,
+    options,
+  );
   const routes = <T>(
     from: Readonly<Record<string, T>>,
     names: Readonly<Record<string, unknown>>,

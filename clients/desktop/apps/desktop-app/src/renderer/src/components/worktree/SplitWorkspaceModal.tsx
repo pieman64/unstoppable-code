@@ -1,4 +1,4 @@
-import { Heading } from '@canopy/ui-shared/components';
+import { Heading, Surface } from '@canopy/ui-shared/components';
 import { Button } from '@canopy/ui-shared/components';
 import {
   useCallback,
@@ -48,7 +48,7 @@ interface SplitWorkspaceModalProps {
 
 /** Paperclip glyph for the root attachments counter (no AppIcons export). */
 function AttachmentGlyph(): JSX.Element {
-  return <AppCatalogAttachmentIcon className="h-3.5 w-3.5" aria-hidden />;
+  return <AppCatalogAttachmentIcon size="sm" aria-hidden />;
 }
 
 /** Duplicate titles ("New Chat") get occurrence-suffixed React keys. */
@@ -90,7 +90,7 @@ function ItemListContent({
                 className="shrink-0 fg-secondary"
                 data-testid="split-workspace-modal-tooltip-archived"
               >
-                <ArchiveIcon className="h-3 w-3" />
+                <ArchiveIcon size="sm" />
               </span>
             )}
             <span className="truncate">{entry.title}</span>
@@ -190,7 +190,7 @@ function SelectionToggleButton({
         data-testid={testId}
         data-selected={selected ? 'true' : 'false'}
       >
-        <Icon className="h-4 w-4" />
+        <Icon size="sm" />
       </Button>
     </ActionTooltip>
   );
@@ -517,86 +517,88 @@ export function SplitWorkspaceModal({
         </p>
 
         {repos.length === 0 ? (
-          <div
-            className="rounded-xl border bg-secondary/10 p-4"
+          <Surface
+            variant="group"
+            padding="default"
             data-testid="split-workspace-modal-empty"
           >
             <Heading level={3} variant="title">
               No repos to split
             </Heading>
-          </div>
+          </Surface>
         ) : (
           <div className="space-y-2">
             {rootPresent && root && (
-              <div
-                className="flex items-center justify-between gap-3 rounded-xl border bg-secondary/10 px-3 py-2"
-                data-testid="split-workspace-modal-root"
-              >
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="truncate text-s font-medium fg-primary">
-                      Project root
-                    </span>
-                    <span className="inline-flex shrink-0 items-center gap-2">
-                      <ItemCounter
-                        icon={<ChatIcon className="h-3.5 w-3.5" />}
-                        heading="Chats"
-                        summary={root.chats}
-                        testId="split-workspace-modal-root-chats"
-                      />
-                      <ItemCounter
-                        icon={<PipelineIcon className="h-3.5 w-3.5" />}
-                        heading="Workflow runs"
-                        summary={root.pipelines}
-                        testId="split-workspace-modal-root-pipelines"
-                      />
-                      <ItemCounter
-                        icon={<PlansIcon className="h-3.5 w-3.5" />}
-                        heading="Plans"
-                        summary={root.plans}
-                        testId="split-workspace-modal-root-plans"
-                      />
-                      <ItemCounter
-                        icon={<AttachmentGlyph />}
-                        heading="Attachments"
-                        summary={root.attachments}
-                        testId="split-workspace-modal-root-attachments"
-                      />
-                    </span>
+              <Surface variant="group" data-testid="split-workspace-modal-root">
+                <div className="flex items-center justify-between gap-3 px-3 py-2">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate text-s font-medium fg-primary">
+                        Project root
+                      </span>
+                      <span className="inline-flex shrink-0 items-center gap-2">
+                        <ItemCounter
+                          icon={<ChatIcon size="sm" />}
+                          heading="Chats"
+                          summary={root.chats}
+                          testId="split-workspace-modal-root-chats"
+                        />
+                        <ItemCounter
+                          icon={<PipelineIcon size="sm" />}
+                          heading="Workflow runs"
+                          summary={root.pipelines}
+                          testId="split-workspace-modal-root-pipelines"
+                        />
+                        <ItemCounter
+                          icon={<PlansIcon size="sm" />}
+                          heading="Plans"
+                          summary={root.plans}
+                          testId="split-workspace-modal-root-plans"
+                        />
+                        <ItemCounter
+                          icon={<AttachmentGlyph />}
+                          heading="Attachments"
+                          summary={root.attachments}
+                          testId="split-workspace-modal-root-attachments"
+                        />
+                      </span>
+                    </div>
+                    <div
+                      className="truncate text-xs fg-secondary"
+                      data-testid="split-workspace-modal-root-destination"
+                    >
+                      {rootSelection === 'archive'
+                        ? 'Archives the project root contents as an archived entry'
+                        : 'Project root contents are deleted permanently'}
+                    </div>
                   </div>
-                  <div
-                    className="truncate text-xs fg-secondary"
-                    data-testid="split-workspace-modal-root-destination"
-                  >
-                    {rootSelection === 'archive'
-                      ? 'Archives the project root contents as an archived entry'
-                      : 'Project root contents are deleted permanently'}
-                  </div>
+                  <Surface variant="outline" className="shrink-0 inline-block">
+                    <div className="inline-flex items-center gap-1 p-1">
+                      <SelectionToggleButton
+                        kind="archive"
+                        selected={rootSelection === 'archive'}
+                        onSelect={() => setRootSelection('archive')}
+                        tooltipTitle="Archive"
+                        tooltipDescription={
+                          root.canArchive
+                            ? 'Keep the project root contents as an archived entry'
+                            : 'Archive retention is disabled for this project'
+                        }
+                        testId="split-workspace-modal-root-archive"
+                        disabled={!root.canArchive}
+                      />
+                      <SelectionToggleButton
+                        kind="delete"
+                        selected={rootSelection === 'delete'}
+                        onSelect={() => setRootSelection('delete')}
+                        tooltipTitle="Delete"
+                        tooltipDescription="Delete the project root contents permanently"
+                        testId="split-workspace-modal-root-delete"
+                      />
+                    </div>
+                  </Surface>
                 </div>
-                <div className="inline-flex shrink-0 items-center gap-1 rounded-lg border p-1">
-                  <SelectionToggleButton
-                    kind="archive"
-                    selected={rootSelection === 'archive'}
-                    onSelect={() => setRootSelection('archive')}
-                    tooltipTitle="Archive"
-                    tooltipDescription={
-                      root.canArchive
-                        ? 'Keep the project root contents as an archived entry'
-                        : 'Archive retention is disabled for this project'
-                    }
-                    testId="split-workspace-modal-root-archive"
-                    disabled={!root.canArchive}
-                  />
-                  <SelectionToggleButton
-                    kind="delete"
-                    selected={rootSelection === 'delete'}
-                    onSelect={() => setRootSelection('delete')}
-                    tooltipTitle="Delete"
-                    tooltipDescription="Delete the project root contents permanently"
-                    testId="split-workspace-modal-root-delete"
-                  />
-                </div>
-              </div>
+              </Surface>
             )}
             {repos.map((repo) => {
               const selection = selectionOf(repo.id);
@@ -606,94 +608,101 @@ export function SplitWorkspaceModal({
                 repoPreview?.destinationWorkspaceName ?? repo.name;
               const repoStats = repoStatsById.get(repo.id);
               return (
-                <div
+                <Surface
+                  variant="group"
                   key={repo.id}
-                  className="flex items-center justify-between gap-3 rounded-xl border bg-secondary/10 px-3 py-2"
                   data-testid={`split-workspace-modal-repo-${repo.id}`}
                 >
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="truncate text-s font-medium fg-primary">
-                        {repo.name}
-                      </span>
-                      {repoStats && (
-                        <span
-                          className="shrink-0"
-                          data-testid={`split-workspace-modal-repo-${repo.id}-diff`}
-                        >
-                          <DiffBadge compact stats={repoStats} />
+                  <div className="flex items-center justify-between gap-3 px-3 py-2">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-s font-medium fg-primary">
+                          {repo.name}
                         </span>
-                      )}
-                      {repoPreview && (
-                        <span className="inline-flex shrink-0 items-center gap-2">
-                          <ItemCounter
-                            icon={<ChatIcon className="h-3.5 w-3.5" />}
-                            heading="Chats"
-                            summary={repoPreview.chats}
-                            testId={`split-workspace-modal-repo-${repo.id}-chats`}
-                          />
-                          <ItemCounter
-                            icon={<PipelineIcon className="h-3.5 w-3.5" />}
-                            heading="Workflow runs"
-                            summary={repoPreview.pipelines}
-                            testId={`split-workspace-modal-repo-${repo.id}-pipelines`}
-                          />
-                          <ItemCounter
-                            icon={<PlansIcon className="h-3.5 w-3.5" />}
-                            heading="Plans"
-                            summary={repoPreview.plans}
-                            testId={`split-workspace-modal-repo-${repo.id}-plans`}
-                          />
-                        </span>
-                      )}
-                    </div>
-                    <div
-                      className="truncate text-xs fg-secondary"
-                      data-testid={`split-workspace-modal-repo-${repo.id}-destination`}
-                    >
-                      {!repoPreview ? (
-                        <span className="inline-flex items-center gap-1.5">
-                          <RefreshSpinner spinning size={12} />
-                          Resolving destination project…
-                        </span>
-                      ) : selection === 'split' ? (
-                        repoPreview.destinationWorkspaceId ? (
-                          `Moves to project "${destinationName}"`
+                        {repoStats && (
+                          <span
+                            className="shrink-0"
+                            data-testid={`split-workspace-modal-repo-${repo.id}-diff`}
+                          >
+                            <DiffBadge compact stats={repoStats} />
+                          </span>
+                        )}
+                        {repoPreview && (
+                          <span className="inline-flex shrink-0 items-center gap-2">
+                            <ItemCounter
+                              icon={<ChatIcon size="sm" />}
+                              heading="Chats"
+                              summary={repoPreview.chats}
+                              testId={`split-workspace-modal-repo-${repo.id}-chats`}
+                            />
+                            <ItemCounter
+                              icon={<PipelineIcon size="sm" />}
+                              heading="Workflow runs"
+                              summary={repoPreview.pipelines}
+                              testId={`split-workspace-modal-repo-${repo.id}-pipelines`}
+                            />
+                            <ItemCounter
+                              icon={<PlansIcon size="sm" />}
+                              heading="Plans"
+                              summary={repoPreview.plans}
+                              testId={`split-workspace-modal-repo-${repo.id}-plans`}
+                            />
+                          </span>
+                        )}
+                      </div>
+                      <div
+                        className="truncate text-xs fg-secondary"
+                        data-testid={`split-workspace-modal-repo-${repo.id}-destination`}
+                      >
+                        {!repoPreview ? (
+                          <span className="inline-flex items-center gap-1.5">
+                            <RefreshSpinner spinning size="sm" />
+                            Resolving destination project…
+                          </span>
+                        ) : selection === 'split' ? (
+                          repoPreview.destinationWorkspaceId ? (
+                            `Moves to project "${destinationName}"`
+                          ) : (
+                            `Creates project "${destinationName}"`
+                          )
+                        ) : removalMode === 'archive' ? (
+                          `Archives in project "${destinationName}"`
                         ) : (
-                          `Creates project "${destinationName}"`
-                        )
-                      ) : removalMode === 'archive' ? (
-                        `Archives in project "${destinationName}"`
-                      ) : (
-                        'Deleted permanently'
-                      )}
+                          'Deleted permanently'
+                        )}
+                      </div>
                     </div>
+                    <Surface
+                      variant="outline"
+                      className="shrink-0 inline-block"
+                    >
+                      <div className="inline-flex items-center gap-1 p-1">
+                        <SelectionToggleButton
+                          kind="split"
+                          selected={selection === 'split'}
+                          onSelect={() => setSelection(repo.id, 'split')}
+                          tooltipTitle="Split"
+                          tooltipDescription={`Move to its own worktree in "${destinationName}"`}
+                          testId={`split-workspace-modal-repo-${repo.id}-split`}
+                        />
+                        <SelectionToggleButton
+                          kind={removalMode}
+                          selected={selection === 'remove'}
+                          onSelect={() => setSelection(repo.id, 'remove')}
+                          tooltipTitle={
+                            removalMode === 'archive' ? 'Archive' : 'Delete'
+                          }
+                          tooltipDescription={
+                            removalMode === 'archive'
+                              ? `Archive in project "${destinationName}"`
+                              : 'Delete this repo checkout permanently'
+                          }
+                          testId={`split-workspace-modal-repo-${repo.id}-remove`}
+                        />
+                      </div>
+                    </Surface>
                   </div>
-                  <div className="inline-flex shrink-0 items-center gap-1 rounded-lg border p-1">
-                    <SelectionToggleButton
-                      kind="split"
-                      selected={selection === 'split'}
-                      onSelect={() => setSelection(repo.id, 'split')}
-                      tooltipTitle="Split"
-                      tooltipDescription={`Move to its own worktree in "${destinationName}"`}
-                      testId={`split-workspace-modal-repo-${repo.id}-split`}
-                    />
-                    <SelectionToggleButton
-                      kind={removalMode}
-                      selected={selection === 'remove'}
-                      onSelect={() => setSelection(repo.id, 'remove')}
-                      tooltipTitle={
-                        removalMode === 'archive' ? 'Archive' : 'Delete'
-                      }
-                      tooltipDescription={
-                        removalMode === 'archive'
-                          ? `Archive in project "${destinationName}"`
-                          : 'Delete this repo checkout permanently'
-                      }
-                      testId={`split-workspace-modal-repo-${repo.id}-remove`}
-                    />
-                  </div>
-                </div>
+                </Surface>
               );
             })}
           </div>
@@ -711,7 +720,7 @@ export function SplitWorkspaceModal({
               className="mr-auto inline-flex items-center gap-1.5 text-xs fg-secondary"
               data-testid="split-workspace-modal-loading"
             >
-              <RefreshSpinner spinning size={12} />
+              <RefreshSpinner spinning size="sm" />
               Loading destination projects…
             </span>
           )}

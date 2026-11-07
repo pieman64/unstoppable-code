@@ -11,11 +11,11 @@ import {
 //
 // The match starts at the key itself, never at its first prefix, so each run
 // of word characters and dashes is tried once instead of once per prefix. The
-// key must end its run (the lookahead) and must follow a word boundary, or
-// `_`-joined prefixes that start at one (the lookbehind; a dash is a word
-// boundary). The prefixes are left in the text as they were.
+// key must end its run (the lookahead) and must have no letter or digit just
+// before it (the lookbehind), so it also follows a doubled separator
+// (`ci__password`). The prefixes are left in the text as they were.
 const MEMORY_SECRET_ASSIGNMENT_RULE = new RegExp(
-  `(?=(?:${SECRET_ASSIGNMENT_KEYS_SOURCE})["']?[^\\S\\n]*[=:])(?<=(?:^|\\W)(?:[a-z0-9]+_)*)(${SECRET_ASSIGNMENT_KEYS_SOURCE})(["']?[^\\S\\n]*[=:]+[^\\S\\n]*)([^\\n]+)`,
+  `(?=(?:${SECRET_ASSIGNMENT_KEYS_SOURCE})["']?[^\\S\\n]*[=:])(?<![a-z0-9])(${SECRET_ASSIGNMENT_KEYS_SOURCE})(["']?[^\\S\\n]*[=:]+[^\\S\\n]*)([^\\n]+)`,
   'gi',
 );
 

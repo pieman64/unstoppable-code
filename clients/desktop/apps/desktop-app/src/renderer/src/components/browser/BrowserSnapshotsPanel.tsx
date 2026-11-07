@@ -7,7 +7,7 @@ import {
 } from '@/stores/browserStore';
 import { stageBrowserScreenshot } from '@/lib/browserChatStaging';
 import { Button, Tooltip } from '@canopy/ui-shared';
-import { EmptyState } from '@canopy/ui-shared/components';
+import { EmptyState, Surface } from '@canopy/ui-shared/components';
 
 interface BrowserSnapshotsPanelProps {
   browserId: string;
@@ -43,50 +43,57 @@ export function BrowserSnapshotsPanel({
     <div className="min-h-0 flex-1 overflow-auto p-2">
       <ul className="flex flex-col gap-2">
         {[...snapshots].reverse().map((entry) => (
-          <li
+          <Surface
+            as="li"
+            variant="outline"
+            size="small"
+            padding="tight"
             key={entry.id}
-            className="flex items-center gap-2 rounded border p-2"
           >
-            {entry.dataUrl && (
-              <img
-                src={entry.dataUrl}
-                alt={entry.filename}
-                className="h-12 w-16 shrink-0 rounded object-cover"
-              />
-            )}
-            <span
-              className="min-w-0 flex-1 truncate font-mono text-2xs"
-              title={entry.filename}
-            >
-              {entry.filename}
-            </span>
-            {entry.attachmentPath &&
-              (entry.attached ? (
-                <span className="shrink-0 text-2xs fg-secondary">Attached</span>
-              ) : (
+            <div className="flex items-center gap-2">
+              {entry.dataUrl && (
+                <img
+                  src={entry.dataUrl}
+                  alt={entry.filename}
+                  className="h-12 w-16 shrink-0 rounded object-cover"
+                />
+              )}
+              <span
+                className="min-w-0 flex-1 truncate font-mono text-2xs"
+                title={entry.filename}
+              >
+                {entry.filename}
+              </span>
+              {entry.attachmentPath &&
+                (entry.attached ? (
+                  <span className="shrink-0 text-2xs fg-secondary">
+                    Attached
+                  </span>
+                ) : (
+                  <Button
+                    variant="ghost-quiet"
+                    size="compact"
+                    onClick={(): void => {
+                      void handleAttach(entry);
+                    }}
+                  >
+                    <ChatIcon size="sm" />
+                    <span>{CHAT_UNIT_LABEL}</span>
+                  </Button>
+                ))}
+              <Tooltip label="Delete snapshot">
                 <Button
                   variant="ghost-quiet"
                   size="compact"
-                  onClick={(): void => {
-                    void handleAttach(entry);
-                  }}
+                  iconOnly
+                  onClick={(): void => removeScreenshot(browserId, entry.id)}
+                  aria-label="Delete snapshot"
                 >
-                  <ChatIcon width={12} height={12} />
-                  <span>{CHAT_UNIT_LABEL}</span>
+                  <TrashIcon size="sm" />
                 </Button>
-              ))}
-            <Tooltip label="Delete snapshot">
-              <Button
-                variant="ghost-quiet"
-                size="compact"
-                iconOnly
-                onClick={(): void => removeScreenshot(browserId, entry.id)}
-                aria-label="Delete snapshot"
-              >
-                <TrashIcon width={13} height={13} />
-              </Button>
-            </Tooltip>
-          </li>
+              </Tooltip>
+            </div>
+          </Surface>
         ))}
       </ul>
     </div>

@@ -645,10 +645,10 @@ const results = memoized(() => {
       z.object({
         type: z.literal('success'),
         // Recorded boundary exception: stored lines are served as written, and
-        // provider payloads in them name files by host path. Only the desktop
-        // host, which wrote them, reads them today. CAN-5096 projects the paths
-        // when it makes the transcript producers portable, before any remote
-        // client reads transcripts (see the CAN-4137 inventory).
+        // provider payloads in them name files by host path. Only this host's
+        // own user reads them, on this host or by remote control of it.
+        // CAN-5092 projects the paths before any other client reads
+        // transcripts (CAN-5096 N1).
         lines: z.array(z.string()),
         providerHint: ObservabilityAuditProviderSchema.optional(),
         truncation: z.object({

@@ -1,6 +1,8 @@
 import {
-  CANOPY_QUERY_DEFINITIONS,
   CANOPY_STREAM_DEFINITIONS,
+  CORE_CLIENT_TOOL_INSTRUCTION_DEFINITIONS,
+  CORE_CLIENT_TOOLS_REGISTER,
+  CORE_CLIENT_TOOLS_UNREGISTER,
   CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
   composeCanopyInstructionRegistries,
   composeCanopyQueryRegistries,
@@ -16,8 +18,11 @@ import {
 } from '@canopy/core-runtime';
 import type { CanopyFramedConnection } from '@canopy/core-transport/types';
 import { DESKTOP_INSTRUCTION_DEFINITIONS } from '../desktop-instruction-definitions';
+import { DESKTOP_QUERY_DEFINITIONS } from '../desktop-query-definitions';
 
 export const CAPABILITIES_REGISTER = 'core.client.capabilities.register';
+export const TOOLS_REGISTER = CORE_CLIENT_TOOLS_REGISTER;
+export const TOOLS_UNREGISTER = CORE_CLIENT_TOOLS_UNREGISTER;
 
 export interface RelayDefinitions {
   readonly queries: CanopyQueryDefinitionMap;
@@ -32,7 +37,7 @@ export interface RelayDefinitions {
  */
 export const RELAY_DEFINITIONS: RelayDefinitions = {
   queries: composeCanopyQueryRegistries(
-    CANOPY_QUERY_DEFINITIONS,
+    DESKTOP_QUERY_DEFINITIONS,
     CANOPY_RUNTIME_QUERY_DEFINITIONS,
   ),
   instructions: composeCanopyInstructionRegistries(
@@ -40,6 +45,7 @@ export const RELAY_DEFINITIONS: RelayDefinitions = {
     {
       [CAPABILITIES_REGISTER]:
         CORE_TRANSPORT_INSTRUCTION_DEFINITIONS[CAPABILITIES_REGISTER],
+      ...CORE_CLIENT_TOOL_INSTRUCTION_DEFINITIONS,
     },
   ),
   streams: composeCanopyStreamRegistries(
@@ -61,5 +67,7 @@ export interface RelayBindingConnection extends CanopyFramedConnection {
 /** Opens one authenticated framed connection bound to `caller`. */
 export type RelayBindingProvider = (input: {
   caller: CanopyCallerDescriptor;
+  /** The WebContents this connection serves; set by the relay host, never by the renderer. */
+  webContentsId: number;
   signal: AbortSignal;
 }) => Promise<RelayBindingConnection>;

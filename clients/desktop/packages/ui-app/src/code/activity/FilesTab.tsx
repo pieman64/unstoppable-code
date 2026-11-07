@@ -40,6 +40,7 @@ import type {
   PortalFileTreeNode,
 } from '@canopy/protocol/portal';
 import {
+  Surface,
   FileRootGroupRow,
   FileTreeRow,
   SearchField,
@@ -395,7 +396,7 @@ export function FilesTab({
                 onMentionInChat?.(target.relativePath);
               }}
             >
-              <MentionIcon width={11} height={11} />
+              <MentionIcon size="sm" />
             </button>
           </Tooltip>
         )}
@@ -414,7 +415,7 @@ export function FilesTab({
                 onDownloadFile?.(target.relativePath);
               }}
             >
-              <DownloadIcon width={11} height={11} aria-hidden="true" />
+              <DownloadIcon size="sm" aria-hidden="true" />
             </button>
           </Tooltip>
         )}
@@ -688,104 +689,110 @@ export function FilesTab({
     mutations !== undefined ||
     search !== undefined ||
     onReload !== undefined ? (
-      <div className="flex items-center gap-1 border-b px-2 py-1.5">
-        <span className="mr-auto text-2xs font-medium fg-secondary">Files</span>
-        {mutations !== undefined && (
-          <>
-            <Tooltip label="New file">
+      <Surface variant="section" boundary="bottom">
+        <div className="flex items-center gap-1 px-2 py-1.5">
+          <span className="mr-auto text-2xs font-medium fg-secondary">
+            Files
+          </span>
+          {mutations !== undefined && (
+            <>
+              <Tooltip label="New file">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="compact"
+                  iconOnly
+                  aria-label="New file"
+                  data-testid="files-tree-new-file"
+                  disabled={!mutable(dir) || mutations.busy}
+                  onClick={(): void => beginCreate('create-file', dir)}
+                >
+                  <NewFileIcon size="sm" />
+                </Button>
+              </Tooltip>
+              <Tooltip label="New folder">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="compact"
+                  iconOnly
+                  aria-label="New folder"
+                  data-testid="files-tree-new-folder"
+                  disabled={!mutable(dir) || mutations.busy}
+                  onClick={(): void => beginCreate('create-directory', dir)}
+                >
+                  <NewFolderIcon size="sm" />
+                </Button>
+              </Tooltip>
+            </>
+          )}
+          {search !== undefined && (
+            <Tooltip label="Search files">
               <Button
                 type="button"
                 variant="ghost"
                 size="compact"
                 iconOnly
-                aria-label="New file"
-                data-testid="files-tree-new-file"
-                disabled={!mutable(dir) || mutations.busy}
-                onClick={(): void => beginCreate('create-file', dir)}
+                aria-label="Search files"
+                data-testid="files-tree-search-toggle"
+                aria-expanded={searchOpen}
+                onClick={(): void => {
+                  if (searchOpen) closeSearch();
+                  else setSearchOpen(true);
+                }}
               >
-                <NewFileIcon className="h-4 w-4" />
+                <SearchFilesIcon size="sm" />
               </Button>
             </Tooltip>
-            <Tooltip label="New folder">
-              <Button
-                type="button"
-                variant="ghost"
-                size="compact"
-                iconOnly
-                aria-label="New folder"
-                data-testid="files-tree-new-folder"
-                disabled={!mutable(dir) || mutations.busy}
-                onClick={(): void => beginCreate('create-directory', dir)}
-              >
-                <NewFolderIcon className="h-4 w-4" />
-              </Button>
-            </Tooltip>
-          </>
-        )}
-        {search !== undefined && (
-          <Tooltip label="Search files">
-            <Button
-              type="button"
-              variant="ghost"
-              size="compact"
-              iconOnly
-              aria-label="Search files"
-              data-testid="files-tree-search-toggle"
-              aria-expanded={searchOpen}
-              onClick={(): void => {
-                if (searchOpen) closeSearch();
-                else setSearchOpen(true);
-              }}
-            >
-              <SearchFilesIcon className="h-4 w-4" />
-            </Button>
-          </Tooltip>
-        )}
-        {onReload !== undefined && (
-          <FilesTreeRefreshButton
-            onClick={onReload}
-            disabled={reloading || mutations?.busy}
-            spinning={reloading || mutations?.busy}
-          />
-        )}
-      </div>
+          )}
+          {onReload !== undefined && (
+            <FilesTreeRefreshButton
+              onClick={onReload}
+              disabled={reloading || mutations?.busy}
+              spinning={reloading || mutations?.busy}
+            />
+          )}
+        </div>
+      </Surface>
     ) : null;
   const searchTray = searchOpen ? (
-    <div
-      data-testid="files-tree-search"
-      className="flex items-center gap-1.5 border-b px-2 py-1.5"
-    >
-      <SearchField
-        ref={searchInputRef}
-        className="flex-1"
-        data-testid="files-tree-search-input"
-        aria-label="Filter files"
-        placeholder="Filter files…"
-        value={searchQuery}
-        onValueChange={setSearchQuery}
-        onKeyDown={(event): void => {
-          // Escape closes the tray (and clears it), as on desktop.
-          if (event.key === 'Escape') {
-            event.preventDefault();
-            event.stopPropagation();
-            closeSearch();
-          }
-        }}
-        clearLabel="Clear search"
-        clearTestId="files-tree-search-clear"
-      />
-      <Button
-        type="button"
-        variant="ghost"
-        size="compact"
-        iconOnly
-        aria-label="Close search"
-        data-testid="files-tree-search-close"
-        onClick={closeSearch}
+    <Surface variant="section" boundary="bottom">
+      <div
+        data-testid="files-tree-search"
+        className="flex items-center gap-1.5 px-2 py-1.5"
       >
-        <CloseIcon size="xs" aria-hidden="true" />
-      </Button>
-    </div>
+        <SearchField
+          ref={searchInputRef}
+          className="flex-1"
+          data-testid="files-tree-search-input"
+          aria-label="Filter files"
+          placeholder="Filter files…"
+          value={searchQuery}
+          onValueChange={setSearchQuery}
+          onKeyDown={(event): void => {
+            // Escape closes the tray (and clears it), as on desktop.
+            if (event.key === 'Escape') {
+              event.preventDefault();
+              event.stopPropagation();
+              closeSearch();
+            }
+          }}
+          clearLabel="Clear search"
+          clearTestId="files-tree-search-clear"
+        />
+        <Button
+          type="button"
+          variant="ghost"
+          size="compact"
+          iconOnly
+          aria-label="Close search"
+          data-testid="files-tree-search-close"
+          onClick={closeSearch}
+        >
+          <CloseIcon size="xs" aria-hidden="true" />
+        </Button>
+      </div>
+    </Surface>
   ) : null;
   const searchBody = (
     <>
@@ -896,53 +903,57 @@ export function FilesTab({
 
   const rootSwitcher =
     roots && roots.length > 1 && onSelectRoot ? (
-      <div
-        className="flex flex-wrap gap-1.5 border-b px-3 py-2"
-        data-testid="activity-files-roots"
-      >
-        {rootGroups.primary.map(renderRootChip)}
-        {rootGroups.appManaged.length > 0 && (
-          <>
-            <FileRootGroupRow
-              label={appManagedRootsLabel ?? ''}
-              expanded={managedRootsExpanded}
-              controlsId={managedRootsGroupId}
-              onToggle={toggleManagedRoots}
-              nodeId="group-app-managed"
-              presentation="switcher"
-              dataTestId="activity-files-root-group"
-            />
-            <div
-              id={managedRootsGroupId}
-              role="group"
-              aria-label={appManagedRootsLabel}
-              className="contents"
-            >
-              {managedRootsExpanded &&
-                rootGroups.appManaged.map(renderRootChip)}
-            </div>
-          </>
-        )}
-      </div>
+      <Surface variant="section" boundary="bottom">
+        <div
+          className="flex flex-wrap gap-1.5 px-3 py-2"
+          data-testid="activity-files-roots"
+        >
+          {rootGroups.primary.map(renderRootChip)}
+          {rootGroups.appManaged.length > 0 && (
+            <>
+              <FileRootGroupRow
+                label={appManagedRootsLabel ?? ''}
+                expanded={managedRootsExpanded}
+                controlsId={managedRootsGroupId}
+                onToggle={toggleManagedRoots}
+                nodeId="group-app-managed"
+                presentation="switcher"
+                dataTestId="activity-files-root-group"
+              />
+              <div
+                id={managedRootsGroupId}
+                role="group"
+                aria-label={appManagedRootsLabel}
+                className="contents"
+              >
+                {managedRootsExpanded &&
+                  rootGroups.appManaged.map(renderRootChip)}
+              </div>
+            </>
+          )}
+        </div>
+      </Surface>
     ) : null;
 
   const breadcrumb =
     dir.length > 0 && onOpenDirectory ? (
-      <div
-        className="flex items-center gap-1 border-b px-3 py-1.5 text-2xs"
-        data-testid="activity-files-breadcrumb"
-      >
-        <Button
-          type="button"
-          variant="secondary"
-          size="compact"
-          onClick={(): void => onOpenDirectory(parentDir)}
-          aria-label="Up one directory"
+      <Surface variant="section" boundary="bottom">
+        <div
+          className="flex items-center gap-1 px-3 py-1.5 text-2xs"
+          data-testid="activity-files-breadcrumb"
         >
-          ../
-        </Button>
-        <span className="truncate fg-primary/80">{dir}</span>
-      </div>
+          <Button
+            type="button"
+            variant="secondary"
+            size="compact"
+            onClick={(): void => onOpenDirectory(parentDir)}
+            aria-label="Up one directory"
+          >
+            ../
+          </Button>
+          <span className="truncate fg-primary/80">{dir}</span>
+        </div>
+      </Surface>
     ) : null;
 
   const downloadErrorNode =
@@ -962,18 +973,22 @@ export function FilesTab({
       {breadcrumb}
       {downloadErrorNode}
       {downloadNotice !== undefined && (
-        <div
-          className="border-b px-3 py-1 text-2xs fg-secondary"
-          data-testid="activity-files-download-notice"
-        >
-          {downloadNotice}
-        </div>
+        <Surface variant="section" boundary="bottom">
+          <div
+            className="px-3 py-1 text-2xs fg-secondary"
+            data-testid="activity-files-download-notice"
+          >
+            {downloadNotice}
+          </div>
+        </Surface>
       )}
       {statusBar}
       {truncated && (
-        <div className="border-b px-3 py-1 text-2xs fg-secondary">
-          Showing first 2000 entries
-        </div>
+        <Surface variant="section" boundary="bottom">
+          <div className="px-3 py-1 text-2xs fg-secondary">
+            Showing first 2000 entries
+          </div>
+        </Surface>
       )}
       <div
         className="min-h-0 flex-1 overflow-auto py-1"

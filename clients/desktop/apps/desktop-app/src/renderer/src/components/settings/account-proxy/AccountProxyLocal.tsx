@@ -256,7 +256,7 @@ export function AccountProxyLocalConnection({
           dataTestId="account-proxy-local-connection"
           label={
             <span className="inline-flex items-center gap-2">
-              <DeviceBackendIcon width={16} height={16} aria-hidden />
+              <DeviceBackendIcon size="sm" aria-hidden />
               On this device
               <ProviderStatusDot tone={DOT_TONE[local.phase]} />
             </span>
@@ -404,11 +404,7 @@ function PendingSignInRow({
       dataTestId="account-proxy-sign-in"
       label={
         <span className="inline-flex items-center gap-2">
-          <ModelProviderIcon
-            provider={pending.provider}
-            width={16}
-            height={16}
-          />
+          <ModelProviderIcon provider={pending.provider} size="md" />
           {label}
         </span>
       }
@@ -558,11 +554,7 @@ export function AccountProxyAddAccount({
                     }}
                   >
                     <DropdownMenuItemIcon>
-                      <ModelProviderIcon
-                        provider={provider}
-                        width={16}
-                        height={16}
-                      />
+                      <ModelProviderIcon provider={provider} size="md" />
                     </DropdownMenuItemIcon>
                     {accountProxyProviderLabel(provider)}
                   </DropdownMenuItem>

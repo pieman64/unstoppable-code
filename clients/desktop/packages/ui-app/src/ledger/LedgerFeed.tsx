@@ -93,6 +93,7 @@ import {
   ledgerGlobalContextLabel,
 } from './ledger-global-labels';
 import type { LedgerFeedScopeOption } from './LedgerFeedComposer';
+import { Divider } from '@canopy/ui-shared/components';
 
 /** Typing settles this long before the search runs. */
 const SEARCH_DEBOUNCE_MS = 250;
@@ -1013,17 +1014,17 @@ export function LedgerFeed({
     return (
       <>
         {unlisted.map((draft) => (
-          <div
-            key={`${draft.scopeKey}:${draft.entryId}`}
-            className="border-b border-line-base pb-4"
-          >
-            <LedgerComposer
-              store={draft.store}
-              correctionOf={draft.entryId}
-              files={files}
-              autoFocusContent={false}
-              onSaved={onCorrectionSaved}
-            />
+          <div key={`${draft.scopeKey}:${draft.entryId}`}>
+            <div className="pb-4">
+              <LedgerComposer
+                store={draft.store}
+                correctionOf={draft.entryId}
+                files={files}
+                autoFocusContent={false}
+                onSaved={onCorrectionSaved}
+              />
+            </div>
+            <Divider />
           </div>
         ))}
       </>
@@ -1056,7 +1057,10 @@ export function LedgerFeed({
           )}
         {correctionFallback}
         {pendingOpen !== null && pendingOpen !== undefined && (
-          <div className="border-b border-line-base py-3">{pendingOpen}</div>
+          <div>
+            <div className="py-3">{pendingOpen}</div>
+            <Divider />
+          </div>
         )}
       </>
     ),

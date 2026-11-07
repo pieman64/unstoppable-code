@@ -1,4 +1,11 @@
-import { memo, useId, useMemo, type JSX, type MouseEvent } from 'react';
+import {
+  memo,
+  useId,
+  useMemo,
+  type JSX,
+  type MouseEvent,
+  type ReactNode,
+} from 'react';
 import type {
   SubagentNode,
   SubagentSkipEdgeNode,
@@ -10,6 +17,14 @@ import {
   ArrowUpRightIcon,
   ChevronDownMediumIcon,
 } from '../../../../icons/AppIcons';
+import {
+  DataTableBody,
+  DataTableCell,
+  DataTableFrame,
+  DataTableHead,
+  DataTableHeaderCell,
+  DataTableRow,
+} from '../../../DataTable';
 import { formatSubagentElapsed } from '../common/subagent-format';
 import { SubagentChangesLabel } from '../common/SubagentChangesLabel';
 import { SubagentHarnessMark } from '../common/SubagentHarnessMark';
@@ -58,33 +73,24 @@ export type SubagentsListColumns =
   | 'compact'
   | 'minimal';
 
-/**
- * CSS grid template for a D9 column set. Task takes the remaining width; the
- * other columns are fixed so rows line up, and Changes is left out when no
- * listed task has changes to show.
- */
-export function subagentsListGrid(
-  columns: SubagentsListColumns,
-  showChanges: boolean,
-): string {
-  switch (columns) {
-    case 'full':
-      return showChanges
-        ? 'grid grid-cols-[minmax(0,1fr)_7.5rem_7rem_4.5rem_5.5rem_2.5rem_1.75rem] items-center gap-x-2'
-        : 'grid grid-cols-[minmax(0,1fr)_7.5rem_7rem_4.5rem_2.5rem_1.75rem] items-center gap-x-2';
-    case 'no-workspace':
-      return 'grid grid-cols-[minmax(0,1fr)_7.5rem_7rem_2.5rem_1.75rem] items-center gap-x-2';
-    case 'compact':
-      return 'grid grid-cols-[minmax(0,1fr)_minmax(0,6.5rem)_auto_1.75rem] items-center gap-x-2';
-    case 'minimal':
-      return 'grid grid-cols-[minmax(0,1fr)_auto_1.75rem] items-center gap-x-2';
-  }
-}
-
 /** Whether a column set has the Model column. */
 function hasModelColumn(columns: SubagentsListColumns): boolean {
   return columns === 'full' || columns === 'no-workspace';
 }
+
+/**
+ * Column widths for `layout="fixed"`, including each cell's 24px side
+ * inset. Task takes the remaining width.
+ */
+const COLUMN_WIDTH = {
+  status: '9rem',
+  compactStatus: '8rem',
+  model: '8.5rem',
+  workspace: '6rem',
+  changes: '7rem',
+  time: '4.75rem',
+  open: '3.25rem',
+} as const;
 
 /** Props for the header row that names the visible list columns. */
 export interface SubagentsListHeaderProps {
@@ -100,28 +106,41 @@ export function SubagentsListHeader({
   showChanges,
 }: SubagentsListHeaderProps): JSX.Element {
   return (
-    <div
-      role="row"
-      className={`${subagentsListGrid(columns, showChanges)} h-8 shrink-0 border-b px-3 text-2xs fg-tertiary`}
-    >
-      <span role="columnheader">{SUBAGENTS_COLUMN_TASK}</span>
+    <DataTableHead sticky>
+      <DataTableHeaderCell>{SUBAGENTS_COLUMN_TASK}</DataTableHeaderCell>
       {columns !== 'minimal' ? (
-        <span role="columnheader">{SUBAGENTS_COLUMN_STATUS}</span>
+        <DataTableHeaderCell
+          width={
+            columns === 'compact'
+              ? COLUMN_WIDTH.compactStatus
+              : COLUMN_WIDTH.status
+          }
+        >
+          {SUBAGENTS_COLUMN_STATUS}
+        </DataTableHeaderCell>
       ) : null}
       {hasModelColumn(columns) ? (
-        <span role="columnheader">{SUBAGENTS_COLUMN_MODEL}</span>
+        <DataTableHeaderCell width={COLUMN_WIDTH.model}>
+          {SUBAGENTS_COLUMN_MODEL}
+        </DataTableHeaderCell>
       ) : null}
       {columns === 'full' ? (
-        <span role="columnheader">{SUBAGENTS_COLUMN_WORKSPACE}</span>
+        <DataTableHeaderCell width={COLUMN_WIDTH.workspace}>
+          {SUBAGENTS_COLUMN_WORKSPACE}
+        </DataTableHeaderCell>
       ) : null}
       {columns === 'full' && showChanges ? (
-        <span role="columnheader">{SUBAGENTS_COLUMN_CHANGES}</span>
+        <DataTableHeaderCell width={COLUMN_WIDTH.changes}>
+          {SUBAGENTS_COLUMN_CHANGES}
+        </DataTableHeaderCell>
       ) : null}
-      <span role="columnheader" className="text-right">
+      <DataTableHeaderCell align="right" width={COLUMN_WIDTH.time}>
         {SUBAGENTS_COLUMN_TIME}
-      </span>
-      <span role="columnheader" aria-label={SUBAGENT_OPEN_CHAT_LABEL} />
-    </div>
+      </DataTableHeaderCell>
+      <DataTableHeaderCell width={COLUMN_WIDTH.open} labelHidden>
+        {SUBAGENT_OPEN_CHAT_LABEL}
+      </DataTableHeaderCell>
+    </DataTableHead>
   );
 }
 
@@ -193,6 +212,15 @@ function Indent({
   );
 }
 
+/** The Task cell: its indent, toggle, mark and title on one line. */
+function TaskCell({ children }: { readonly children: ReactNode }): JSX.Element {
+  return (
+    <DataTableCell overflow="truncate" tone="primary">
+      <span className="flex min-w-0 items-center gap-1.5">{children}</span>
+    </DataTableCell>
+  );
+}
+
 /** Memoized list row, with capped indentation and a direct-open action. */
 export const SubagentsListRow = memo(function SubagentsListRow({
   node,
@@ -222,14 +250,12 @@ export const SubagentsListRow = memo(function SubagentsListRow({
   };
 
   return (
-    <div
-      role="row"
+    <DataTableRow
       data-testid={`subagents-list-row-${node.id}`}
-      aria-selected={selected}
-      onClick={(): void => onSelect(node)}
-      className={`${subagentsListGrid(columns, showChanges)} h-9 shrink-0 rounded-md px-3 text-xs ${selected ? 'bg-secondary' : 'hover:bg-subtle'}`}
+      selected={selected}
+      onActivate={(): void => onSelect(node)}
     >
-      <span role="gridcell" className="flex min-w-0 items-center gap-1.5">
+      <TaskCell>
         <Indent depth={depth} absoluteDepth={absoluteDepth} />
         {hasChildren && onToggleCollapsed ? (
           <button
@@ -244,8 +270,9 @@ export const SubagentsListRow = memo(function SubagentsListRow({
             className="focus-ring inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm fg-secondary hover:fg-primary"
           >
             <ChevronDownMediumIcon
+              size="sm"
               aria-hidden
-              className={`h-4 w-4 transition-[rotate] ${collapsed ? '-rotate-90' : 'rotate-0'}`}
+              className={`transition-[rotate] ${collapsed ? '-rotate-90' : 'rotate-0'}`}
             />
             <span id={toggleLabelId} className="sr-only">
               {subagentsToggleRowLabel(collapsed)}
@@ -277,33 +304,31 @@ export const SubagentsListRow = memo(function SubagentsListRow({
             {subagentViaLabel(via)}
           </span>
         ) : null}
-      </span>
+      </TaskCell>
       {columns !== 'minimal' ? (
-        <span
-          role="gridcell"
-          className={`truncate ${subagentStatusInk(node.status)}`}
-        >
-          {subagentStatusDetail(node)}
-        </span>
+        <DataTableCell overflow="truncate">
+          <span className={subagentStatusInk(node.status)}>
+            {subagentStatusDetail(node)}
+          </span>
+        </DataTableCell>
       ) : null}
       {hasModelColumn(columns) ? (
-        <span
-          role="gridcell"
-          className="flex min-w-0 items-center gap-1.5 fg-secondary"
-        >
-          <SubagentHarnessMark harnessId={node.harnessId} />
-          <span className="truncate">{node.modelLabel ?? ''}</span>
-        </span>
+        <DataTableCell overflow="truncate">
+          <span className="flex min-w-0 items-center gap-1.5">
+            <SubagentHarnessMark harnessId={node.harnessId} />
+            <span className="truncate">{node.modelLabel ?? ''}</span>
+          </span>
+        </DataTableCell>
       ) : null}
       {columns === 'full' ? (
-        <span role="gridcell" className="truncate fg-secondary">
+        <DataTableCell overflow="truncate">
           {showWorkspace ? (workspace ?? '') : ''}
-        </span>
+        </DataTableCell>
       ) : null}
       {columns === 'full' && showChanges ? (
-        <span role="gridcell" className="truncate text-2xs">
+        <DataTableCell overflow="truncate">
           {showWorkspaceDetails && changeTotals ? (
-            <span className="inline-flex items-center gap-1">
+            <span className="inline-flex items-center gap-1 text-2xs">
               <SubagentChangesLabel
                 additions={changeTotals.additions}
                 deletions={changeTotals.deletions}
@@ -313,31 +338,28 @@ export const SubagentsListRow = memo(function SubagentsListRow({
               </span>
             </span>
           ) : null}
-        </span>
+        </DataTableCell>
       ) : null}
-      <span
-        role="gridcell"
-        className="whitespace-nowrap text-right tabular-nums fg-tertiary"
-      >
+      <DataTableCell align="right" tone="tertiary">
         {formatSubagentElapsed(node, now)}
-      </span>
-      {isSubagentChatKind(node.kind) ? (
-        <button
-          type="button"
-          aria-labelledby={`${openLabelId} ${titleId}`}
-          data-testid={`subagents-list-open-${node.id}`}
-          onClick={openChat}
-          className="focus-ring inline-flex h-6 w-6 items-center justify-center rounded-md fg-tertiary hover:bg-secondary hover:fg-primary"
-        >
-          <ArrowUpRightIcon size={14} aria-hidden />
-          <span id={openLabelId} className="sr-only">
-            {SUBAGENTS_OPEN_ROW_LABEL}
-          </span>
-        </button>
-      ) : (
-        <span role="gridcell" />
-      )}
-    </div>
+      </DataTableCell>
+      <DataTableCell align="right">
+        {isSubagentChatKind(node.kind) ? (
+          <button
+            type="button"
+            aria-labelledby={`${openLabelId} ${titleId}`}
+            data-testid={`subagents-list-open-${node.id}`}
+            onClick={openChat}
+            className="focus-ring inline-flex h-6 w-6 items-center justify-center rounded-md fg-tertiary hover:bg-secondary hover:fg-primary"
+          >
+            <ArrowUpRightIcon size={14} aria-hidden />
+            <span id={openLabelId} className="sr-only">
+              {SUBAGENTS_OPEN_ROW_LABEL}
+            </span>
+          </button>
+        ) : null}
+      </DataTableCell>
+    </DataTableRow>
   );
 });
 
@@ -380,8 +402,9 @@ function WorkflowGroupToggle({
       className="focus-ring inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm fg-secondary hover:fg-primary"
     >
       <ChevronDownMediumIcon
+        size="sm"
         aria-hidden
-        className={`h-4 w-4 transition-[rotate] ${collapsed ? '-rotate-90' : 'rotate-0'}`}
+        className={`transition-[rotate] ${collapsed ? '-rotate-90' : 'rotate-0'}`}
       />
       <span id={labelId} className="sr-only">
         {subagentsToggleRowLabel(collapsed)}
@@ -435,14 +458,12 @@ function SubagentWorkflowRunListRow({
     onOpenWorkflow?.(node);
   };
   return (
-    <div
-      role="row"
+    <DataTableRow
       data-testid={`subagents-list-row-${node.id}`}
-      aria-selected={selected}
-      onClick={(): void => onSelect(node)}
-      className={`${subagentsListGrid(columns, showChanges)} h-9 shrink-0 rounded-md px-3 text-xs ${selected ? 'bg-secondary' : 'hover:bg-subtle'}`}
+      selected={selected}
+      onActivate={(): void => onSelect(node)}
     >
-      <span role="gridcell" className="flex min-w-0 items-center gap-1.5">
+      <TaskCell>
         <Indent depth={depth} absoluteDepth={absoluteDepth} />
         {hasChildren && onToggleCollapsed ? (
           <WorkflowGroupToggle
@@ -474,41 +495,44 @@ function SubagentWorkflowRunListRow({
             </span>
           ) : null}
         </button>
-        <span className="min-w-0 shrink-0 truncate text-2xs fg-tertiary">
+        <span
+          className={`min-w-0 truncate text-2xs fg-tertiary ${
+            columns === 'minimal' || columns === 'compact'
+              ? 'flex-1'
+              : 'shrink-0'
+          }`}
+        >
           {subagentWorkflowRunProgressNote(tree, node)}
         </span>
-      </span>
+      </TaskCell>
       {columns !== 'minimal' ? (
-        <span role="gridcell" className="truncate">
+        <DataTableCell overflow="truncate">
           <SubagentWorkflowRunStatusText tree={tree} run={node} short />
-        </span>
+        </DataTableCell>
       ) : null}
-      {hasModelColumn(columns) ? <span role="gridcell" /> : null}
-      {columns === 'full' ? <span role="gridcell" /> : null}
-      {columns === 'full' && showChanges ? <span role="gridcell" /> : null}
-      <span
-        role="gridcell"
-        className="whitespace-nowrap text-right tabular-nums fg-tertiary"
-      >
+      {hasModelColumn(columns) ? <DataTableCell /> : null}
+      {columns === 'full' ? <DataTableCell /> : null}
+      {columns === 'full' && showChanges ? <DataTableCell /> : null}
+      <DataTableCell align="right" tone="tertiary">
         {formatSubagentElapsed(node, now)}
-      </span>
-      {onOpenWorkflow ? (
-        <button
-          type="button"
-          aria-labelledby={`${openLabelId} ${titleId}`}
-          data-testid={`subagents-list-open-${node.id}`}
-          onClick={openWorkflow}
-          className="focus-ring inline-flex h-6 w-6 items-center justify-center rounded-md fg-tertiary hover:bg-secondary hover:fg-primary"
-        >
-          <ArrowUpRightIcon size={14} aria-hidden />
-          <span id={openLabelId} className="sr-only">
-            {SUBAGENT_OPEN_WORKFLOW_LABEL}
-          </span>
-        </button>
-      ) : (
-        <span role="gridcell" />
-      )}
-    </div>
+      </DataTableCell>
+      <DataTableCell align="right">
+        {onOpenWorkflow ? (
+          <button
+            type="button"
+            aria-labelledby={`${openLabelId} ${titleId}`}
+            data-testid={`subagents-list-open-${node.id}`}
+            onClick={openWorkflow}
+            className="focus-ring inline-flex h-6 w-6 items-center justify-center rounded-md fg-tertiary hover:bg-secondary hover:fg-primary"
+          >
+            <ArrowUpRightIcon size={14} aria-hidden />
+            <span id={openLabelId} className="sr-only">
+              {SUBAGENT_OPEN_WORKFLOW_LABEL}
+            </span>
+          </button>
+        ) : null}
+      </DataTableCell>
+    </DataTableRow>
   );
 }
 
@@ -525,12 +549,8 @@ function SubagentWorkflowPhaseListRow({
 }: WorkflowGroupRowProps & { readonly tree: SubagentTree }): JSX.Element {
   const titleId = useId();
   return (
-    <div
-      role="row"
-      data-testid={`subagents-list-row-${node.id}`}
-      className={`${subagentsListGrid(columns, showChanges)} h-9 shrink-0 rounded-md px-3 text-xs`}
-    >
-      <span role="gridcell" className="flex min-w-0 items-center gap-1.5">
+    <DataTableRow data-testid={`subagents-list-row-${node.id}`}>
+      <TaskCell>
         <Indent depth={depth} absoluteDepth={absoluteDepth} />
         {hasChildren && onToggleCollapsed ? (
           <WorkflowGroupToggle
@@ -556,18 +576,18 @@ function SubagentWorkflowPhaseListRow({
             , <SubagentWorkflowPhaseCountText tree={tree} phase={node} />
           </span>
         ) : null}
-      </span>
+      </TaskCell>
       {columns !== 'minimal' ? (
-        <span role="gridcell" className="truncate">
+        <DataTableCell overflow="truncate">
           <SubagentWorkflowPhaseCountText tree={tree} phase={node} />
-        </span>
+        </DataTableCell>
       ) : null}
-      {hasModelColumn(columns) ? <span role="gridcell" /> : null}
-      {columns === 'full' ? <span role="gridcell" /> : null}
-      {columns === 'full' && showChanges ? <span role="gridcell" /> : null}
-      <span role="gridcell" />
-      <span role="gridcell" />
-    </div>
+      {hasModelColumn(columns) ? <DataTableCell /> : null}
+      {columns === 'full' ? <DataTableCell /> : null}
+      {columns === 'full' && showChanges ? <DataTableCell /> : null}
+      <DataTableCell />
+      <DataTableCell />
+    </DataTableRow>
   );
 }
 
@@ -581,6 +601,8 @@ export interface SubagentsListProps {
   readonly selectedId: string | null;
   /** Which columns are available at this width. */
   readonly columns: SubagentsListColumns;
+  /** Measured list width, including the wrapper inset, when available. */
+  readonly availableWidth?: number;
   /** Tasks whose children are hidden. */
   readonly collapsedIds?: ReadonlySet<string>;
   /** Shows or hides a task's children; parents get a toggle when set. */
@@ -676,7 +698,8 @@ export function SubagentsList({
   tree,
   projection,
   selectedId,
-  columns,
+  columns: requestedColumns,
+  availableWidth,
   collapsedIds = NO_COLLAPSED_IDS,
   onToggleCollapsed,
   showWorkspaceDetails,
@@ -704,76 +727,88 @@ export function SubagentsList({
     Array.from(changeTotalsById.values()).some(
       (totals) => totals !== undefined,
     );
+  // Changes adds 112px of fixed cells. Delay the full layout by that much
+  // beyond the 760px no-Changes breakpoint so nested titles and workflow
+  // progress retain the same room. Keep Workspace when Changes is absent.
+  const columns =
+    requestedColumns === 'full' &&
+    showChanges &&
+    availableWidth !== undefined &&
+    availableWidth < 872
+      ? 'no-workspace'
+      : requestedColumns;
   return (
-    <div
-      role="grid"
-      aria-label={SUBAGENTS_LIST_LABEL}
-      data-testid="subagents-list"
-      className="flex min-h-0 flex-1 flex-col"
-    >
-      <SubagentsListHeader columns={columns} showChanges={showChanges} />
-      <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-auto p-1.5">
-        {entries.map((entry) => {
-          const node = entry.node;
-          const groupToggle = projection ? undefined : onToggleCollapsed;
-          if (node.kind === 'workflow-run') {
+    <div className="flex min-h-0 flex-1 flex-col p-1.5">
+      <DataTableFrame
+        caption={SUBAGENTS_LIST_LABEL}
+        layout="fixed"
+        fill
+        testId="subagents-list"
+      >
+        <SubagentsListHeader columns={columns} showChanges={showChanges} />
+        <DataTableBody>
+          {entries.map((entry) => {
+            const node = entry.node;
+            const groupToggle = projection ? undefined : onToggleCollapsed;
+            if (node.kind === 'workflow-run') {
+              return (
+                <SubagentWorkflowRunListRow
+                  key={node.id}
+                  tree={tree}
+                  node={node}
+                  depth={entry.depth}
+                  absoluteDepth={node.depth}
+                  hasChildren={entry.hasChildren}
+                  selected={node.id === selectedId}
+                  columns={columns}
+                  showChanges={showChanges}
+                  collapsed={!projection && collapsedIds.has(node.id)}
+                  onToggleCollapsed={groupToggle}
+                  now={now}
+                  onSelect={onSelectNode}
+                  onOpenWorkflow={onOpenWorkflow}
+                />
+              );
+            }
+            if (node.kind === 'workflow-phase') {
+              return (
+                <SubagentWorkflowPhaseListRow
+                  key={node.id}
+                  tree={tree}
+                  node={node}
+                  depth={entry.depth}
+                  absoluteDepth={node.depth}
+                  hasChildren={entry.hasChildren}
+                  columns={columns}
+                  showChanges={showChanges}
+                  collapsed={!projection && collapsedIds.has(node.id)}
+                  onToggleCollapsed={groupToggle}
+                />
+              );
+            }
             return (
-              <SubagentWorkflowRunListRow
+              <SubagentsListRow
                 key={node.id}
-                tree={tree}
                 node={node}
                 depth={entry.depth}
                 absoluteDepth={node.depth}
                 hasChildren={entry.hasChildren}
                 selected={node.id === selectedId}
+                via={entry.via}
                 columns={columns}
                 showChanges={showChanges}
-                collapsed={!projection && collapsedIds.has(node.id)}
-                onToggleCollapsed={groupToggle}
+                collapsed={collapsedIds.has(node.id)}
+                onToggleCollapsed={onToggleCollapsed}
+                showWorkspaceDetails={showWorkspaceDetails}
+                changeTotals={changeTotalsById.get(node.id)}
                 now={now}
                 onSelect={onSelectNode}
-                onOpenWorkflow={onOpenWorkflow}
+                onOpenChat={onOpenChat}
               />
             );
-          }
-          if (node.kind === 'workflow-phase') {
-            return (
-              <SubagentWorkflowPhaseListRow
-                key={node.id}
-                tree={tree}
-                node={node}
-                depth={entry.depth}
-                absoluteDepth={node.depth}
-                hasChildren={entry.hasChildren}
-                columns={columns}
-                showChanges={showChanges}
-                collapsed={!projection && collapsedIds.has(node.id)}
-                onToggleCollapsed={groupToggle}
-              />
-            );
-          }
-          return (
-            <SubagentsListRow
-              key={node.id}
-              node={node}
-              depth={entry.depth}
-              absoluteDepth={node.depth}
-              hasChildren={entry.hasChildren}
-              selected={node.id === selectedId}
-              via={entry.via}
-              columns={columns}
-              showChanges={showChanges}
-              collapsed={collapsedIds.has(node.id)}
-              onToggleCollapsed={onToggleCollapsed}
-              showWorkspaceDetails={showWorkspaceDetails}
-              changeTotals={changeTotalsById.get(node.id)}
-              now={now}
-              onSelect={onSelectNode}
-              onOpenChat={onOpenChat}
-            />
-          );
-        })}
-      </div>
+          })}
+        </DataTableBody>
+      </DataTableFrame>
     </div>
   );
 }

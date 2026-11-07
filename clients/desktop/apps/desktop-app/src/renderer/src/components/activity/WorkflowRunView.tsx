@@ -1,8 +1,9 @@
 import { useEffect, useState, type JSX } from 'react';
 import {
   AgentBlockCard,
-  Markdown,
   EmptyStateRow,
+  Markdown,
+  Surface,
 } from '@canopy/ui-shared/components';
 import type {
   WorkflowAgentProgress,
@@ -139,14 +140,16 @@ function WorkflowAgentBlock({
       subBlocks={
         <>
           {agent.promptPreview && (
-            <div className="rounded border bg-fg-primary/[0.02] px-2.5 py-1.5">
-              <div className="mb-1 text-3xs font-medium fg-secondary/80">
-                Prompt
+            <Surface variant="group" size="small">
+              <div className="px-2.5 py-1.5">
+                <div className="mb-1 text-3xs font-medium fg-secondary/80">
+                  Prompt
+                </div>
+                <div className="max-h-32 overflow-auto whitespace-pre-wrap text-2xs fg-secondary">
+                  {agent.promptPreview}
+                </div>
               </div>
-              <div className="max-h-32 overflow-auto whitespace-pre-wrap text-2xs fg-secondary">
-                {agent.promptPreview}
-              </div>
-            </div>
+            </Surface>
           )}
           <WorkflowAgentTranscript
             agentId={agent.agentId}
@@ -272,11 +275,13 @@ export function WorkflowRunView({
       {run.result && (
         <div>
           <div className="mb-1 text-xs font-medium fg-secondary">Result</div>
-          <div
-            className={`${POSTHOG_REPLAY_BLOCK_CLASS} prose prose-sm dark:prose-invert max-w-none break-words rounded-lg border bg-base px-3 py-2`}
-          >
-            <Markdown>{run.result}</Markdown>
-          </div>
+          <Surface variant="inset" className="max-w-none">
+            <div
+              className={`prose prose-sm dark:prose-invert break-words px-3 py-2 ${POSTHOG_REPLAY_BLOCK_CLASS}`}
+            >
+              <Markdown>{run.result}</Markdown>
+            </div>
+          </Surface>
         </div>
       )}
     </div>

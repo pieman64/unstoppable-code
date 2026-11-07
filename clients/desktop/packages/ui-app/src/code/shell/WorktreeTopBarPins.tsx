@@ -56,7 +56,7 @@ function PinGlyph({ pin }: { pin: WorktreeTopBarPinnedAction }): JSX.Element {
   return pin.running || pin.pending === true ? (
     <LoadingSpinner decorative className="shrink-0" />
   ) : (
-    <PlayIcon width={14} height={14} className="shrink-0" aria-hidden="true" />
+    <PlayIcon size="sm" className="shrink-0" aria-hidden="true" />
   );
 }
 

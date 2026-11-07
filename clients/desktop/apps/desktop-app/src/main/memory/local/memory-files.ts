@@ -246,6 +246,37 @@ export async function writeMemoryFileAtomically(
   content: string | Buffer,
   times?: MemoryFileTimes,
 ): Promise<void> {
+  await replaceThroughTempFile(scopeDir, filePath, content, times);
+}
+
+/**
+ * {@link writeMemoryFileAtomically} while `unchanged` still holds right
+ * before the rename; false, with nothing replaced, once it does not. The
+ * scope lock keeps the app's writers out, not another editor: checked last,
+ * a save that editor makes while the caller decided what to write is kept.
+ */
+export function replaceMemoryFileIfUnchanged(
+  scopeDir: string,
+  filePath: string,
+  content: string,
+  unchanged: () => Promise<boolean>,
+): Promise<boolean> {
+  return replaceThroughTempFile(
+    scopeDir,
+    filePath,
+    content,
+    undefined,
+    unchanged,
+  );
+}
+
+async function replaceThroughTempFile(
+  scopeDir: string,
+  filePath: string,
+  content: string | Buffer,
+  times?: MemoryFileTimes,
+  unchanged?: () => Promise<boolean>,
+): Promise<boolean> {
   const directory = dirname(filePath);
   await ensureOwnerOnlyMemoryDir(scopeDir, directory);
   const temporaryPath = memoryWriteTempPath(directory);
@@ -258,7 +289,12 @@ export async function writeMemoryFileAtomically(
     if (times) await utimes(temporaryPath, times.atime, times.mtime);
     await assertMemoryPathContained(scopeDir, directory);
     await assertMemoryScopeLockHeld();
+    if (unchanged !== undefined && !(await unchanged())) {
+      await unlink(temporaryPath).catch(() => undefined);
+      return false;
+    }
     await rename(temporaryPath, filePath);
+    return true;
   } catch (error) {
     await unlink(temporaryPath).catch(() => undefined);
     throw error;

@@ -15,6 +15,8 @@ export const SKILLS_CHANNELS = {
   UPDATE: 'skills:update',
   CHECK_UPDATES: 'skills:check-updates',
   UPDATE_PROGRESS: 'skills:update-progress',
+  /** Main to renderer: an agent changed local skills in Electron main. */
+  CHANGED: 'skills:changed',
   READ_CONTENT: 'skills:read-content',
   LIST_FILES: 'skills:list-files',
   READ_FILE: 'skills:read-file',

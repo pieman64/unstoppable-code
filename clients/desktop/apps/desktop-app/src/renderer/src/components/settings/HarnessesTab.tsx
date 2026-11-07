@@ -57,7 +57,7 @@ import {
   MoreHorizontalIcon,
   RevertIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
-import { AgentProviderIcon } from '@/lib/providerUi';
+import { ModelProviderIcon } from '@canopy/ui-shared/components';
 import { getProviderLabel } from '@/lib/providerLabels';
 import { BrandLogo } from '@/components/BrandLogo';
 import { brandText } from '@/lib/brand';
@@ -152,7 +152,7 @@ function buildGroups(
       key: 'ollama',
       label: getProviderLabel('ollama'),
       icon: (
-        <AgentProviderIcon provider="ollama" central width={10} height={10} />
+        <ModelProviderIcon provider="ollama" central width={10} height={10} />
       ),
       showHeader: true,
       rows: bySource('ollama'),
@@ -545,7 +545,7 @@ function HarnessColumn({
       }`}
     >
       <div className="mb-2 flex items-center gap-2 px-2">
-        <AgentProviderIcon provider={harness} central width={14} height={14} />
+        <ModelProviderIcon provider={harness} central size="sm" />
         <Heading level={2} variant="title" id={headingId}>
           {harnessLabel(harness)}
         </Heading>

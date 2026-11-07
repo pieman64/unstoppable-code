@@ -215,7 +215,7 @@ export function buildComposerOverflowMenuItems({
   if (canUsePlanMode) {
     items.push({
       key: 'plan',
-      icon: <PlanModeIcon width={15} height={15} active={effectivePlanMode} />,
+      icon: <PlanModeIcon size="sm" active={effectivePlanMode} />,
       label: 'Plan mode',
       stateLabel: effectivePlanMode ? 'On' : 'Off',
       active: effectivePlanMode,
@@ -228,7 +228,7 @@ export function buildComposerOverflowMenuItems({
   if (supportsFastMode) {
     items.push({
       key: 'fast',
-      icon: <FastModeIcon width={15} height={15} active={effectiveFastMode} />,
+      icon: <FastModeIcon size="sm" active={effectiveFastMode} />,
       label: 'Fast mode',
       stateLabel: effectiveFastMode ? 'On' : 'Off',
       active: effectiveFastMode,

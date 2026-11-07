@@ -1,6 +1,14 @@
 'use client';
 
-import { useId, useState, type JSX, type ReactNode } from 'react';
+import {
+  forwardRef,
+  useId,
+  useState,
+  type ButtonHTMLAttributes,
+  type HTMLAttributes,
+  type JSX,
+  type ReactNode,
+} from 'react';
 import {
   ChevronDownMediumIcon,
   ChevronRightMediumIcon,
@@ -172,5 +180,202 @@ export function Disclosure({
         </div>
       ) : null}
     </div>
+  );
+}
+
+export interface RailSectionHeaderFrameProps extends Omit<
+  HTMLAttributes<HTMLDivElement>,
+  'children'
+> {
+  readonly label: string;
+  readonly resting?: boolean;
+  readonly sticky?: boolean;
+  readonly belowChats?: boolean;
+  readonly kind: 'projects' | 'chats';
+  readonly actions?: ReactNode;
+  readonly expanded?: boolean;
+  readonly returnToRows?: boolean;
+  readonly touchTargets?: boolean;
+  /** A host's sticky Chats band includes padding above the 32px label. */
+  readonly labelSetsHeight?: boolean;
+  readonly chevronTestId?: string;
+  readonly toggleProps?: ButtonHTMLAttributes<HTMLButtonElement> &
+    Record<`data-${string}`, string | undefined>;
+}
+
+/** The production Projects and Chats header, including disclosure geometry. */
+export const RailSectionHeaderFrame = forwardRef<
+  HTMLDivElement,
+  RailSectionHeaderFrameProps
+>(function RailSectionHeaderFrame(
+  {
+    label,
+    kind,
+    resting = false,
+    sticky = true,
+    belowChats = false,
+    actions,
+    expanded,
+    returnToRows = false,
+    touchTargets = false,
+    labelSetsHeight = false,
+    chevronTestId,
+    toggleProps,
+    className = '',
+    ...attributes
+  },
+  ref,
+): JSX.Element {
+  const projects = kind === 'projects';
+  const height = touchTargets ? 'min-h-11' : 'h-8';
+  const labelContent = (
+    <span
+      className={
+        projects
+          ? 'shrink-0 translate-y-0.5 whitespace-nowrap'
+          : 'min-w-0 truncate'
+      }
+    >
+      {label}
+    </span>
+  );
+  return (
+    <div
+      {...attributes}
+      ref={ref}
+      className={`group/rail-section group/section flex min-w-0 items-center gap-1 bg-sidebar px-1 ${projects ? 'sidebar-sticky-header group/workspaces z-10 shrink-0' : 'group/chats'} ${resting ? '' : 'group/sidebar-item'} ${sticky ? 'sticky' : ''} ${projects ? (belowChats ? (touchTargets ? 'top-11' : 'top-8') : 'top-0') : labelSetsHeight ? 'z-40 pt-3' : 'top-0 z-20'} ${labelSetsHeight ? '' : height} ${className}`}
+    >
+      {toggleProps ? (
+        <button
+          type="button"
+          {...toggleProps}
+          aria-expanded={returnToRows ? undefined : expanded}
+          className={`focus-ring flex min-w-0 flex-1 items-center gap-1 rounded px-1 text-left text-s font-normal fg-quaternary transition-colors hover:fg-secondary group-focus-within/rail-section:fg-secondary ${height}`}
+        >
+          {labelContent}
+          <ChevronDownMediumIcon
+            data-testid={chevronTestId}
+            size="md"
+            className={`shrink-0 ${projects ? 'translate-y-0.5 ' : ''}transition-[transform,opacity] group-hover/rail-section:opacity-100 group-focus-within/rail-section:opacity-100 ${
+              returnToRows
+                ? 'rotate-180 opacity-100'
+                : expanded === false
+                  ? '-rotate-90 opacity-100'
+                  : 'opacity-0'
+            }`}
+          />
+        </button>
+      ) : (
+        <span
+          className={`flex min-w-0 flex-1 items-center px-1 text-s font-normal fg-quaternary ${height}`}
+        >
+          {labelContent}
+        </span>
+      )}
+      {actions}
+    </div>
+  );
+});
+
+export interface NativeDisclosureProps extends Pick<
+  DisclosureProps,
+  | 'label'
+  | 'children'
+  | 'variant'
+  | 'hint'
+  | 'meta'
+  | 'leadingIcon'
+  | 'defaultOpen'
+  | 'dataTestId'
+  | 'toggleTestId'
+  | 'className'
+> {
+  /** A quiet explanation below the label that stays visible while closed. */
+  readonly description?: ReactNode;
+  readonly [attribute: `data-${string}`]: string | undefined;
+}
+
+/**
+ * The native disclosure for public server-rendered content. Its summary and
+ * body are present in the initial HTML and toggle without JavaScript. The
+ * browser owns the open state; the existing Disclosure recipes own its look.
+ */
+export function NativeDisclosure({
+  label,
+  children,
+  variant = 'inline',
+  hint,
+  meta,
+  leadingIcon,
+  defaultOpen = false,
+  dataTestId = 'native-disclosure',
+  toggleTestId,
+  className = '',
+  description,
+  ...dataAttributes
+}: NativeDisclosureProps): JSX.Element {
+  const rotation =
+    variant === 'inline'
+      ? '[&[open]>summary>[data-disclosure-chevron]]:rotate-90'
+      : '[&[open]>summary>[data-disclosure-chevron]]:rotate-180';
+  const chevron = (
+    <span
+      aria-hidden="true"
+      data-disclosure-chevron=""
+      className={`${CHEVRON_SLOT_CLASS} ${CHEVRON_CLASS}`}
+    >
+      {variant === 'inline' ? (
+        <ChevronRightMediumIcon size="md" aria-hidden="true" />
+      ) : (
+        <ChevronDownMediumIcon
+          size="md"
+          aria-hidden="true"
+          className="fg-secondary"
+        />
+      )}
+    </span>
+  );
+  return (
+    <details
+      {...dataAttributes}
+      open={defaultOpen}
+      data-testid={dataTestId}
+      className={`${ROOT_CLASS[variant]} ${rotation} [&[open]>summary_[data-disclosure-hint]]:hidden ${className}`}
+    >
+      <summary
+        data-testid={toggleTestId ?? `${dataTestId}-toggle`}
+        className={`${TOGGLE_CLASS[variant]} list-none [&::-webkit-details-marker]:hidden`}
+      >
+        {variant === 'inline' ? chevron : null}
+        {leadingIcon ? (
+          <span aria-hidden="true" className="flex shrink-0 items-center">
+            {leadingIcon}
+          </span>
+        ) : null}
+        <span className={variant === 'box' ? 'min-w-0 flex-1' : 'min-w-0'}>
+          {label}
+          {hint ? (
+            <span data-disclosure-hint="" className="font-normal fg-tertiary">
+              {' · '}
+              {hint}
+            </span>
+          ) : null}
+          {description ? (
+            <span className="mt-0.5 block text-xs font-normal text-pretty fg-secondary">
+              {description}
+            </span>
+          ) : null}
+        </span>
+        {meta ? (
+          <span className="shrink-0 text-xs font-normal fg-tertiary">
+            {meta}
+          </span>
+        ) : null}
+        {variant === 'box' ? chevron : null}
+      </summary>
+      <div className={BODY_CLASS[variant]} data-testid={`${dataTestId}-body`}>
+        {children}
+      </div>
+    </details>
   );
 }

@@ -122,8 +122,12 @@ describe('core chat command router', () => {
       'chat.send_message',
       'chat.set_approval_mode',
       'chat.set_model',
+      'chat.set_queued_message_edit_lock',
       'chat.steer_queued_message',
     ]);
+    expect(
+      CHAT_COMMAND_ROUTES['chat.set_queued_message_edit_lock']?.instruction,
+    ).toBe('core.chat.queue.entry.update');
     expect(CHAT_COMMAND_ROUTES['chat.set_approval_mode']?.instruction).toBe(
       'core.chat.update',
     );
@@ -307,7 +311,7 @@ describe('core chat command router', () => {
     expect(command).toHaveBeenCalledWith(request);
   });
 
-  it('keeps unrouted commands on the command port', async () => {
+  it('keeps unrouted chat:command IPC commands on the command port', async () => {
     const { port, command } = makePort();
     const instruction = jest.fn();
     const request = {
@@ -1023,10 +1027,10 @@ describe('core chat command router', () => {
     expect(instruction).not.toHaveBeenCalled();
   });
 
-  it('accepts direct canonical model-selection fields', async () => {
+  it('refuses main-only model-selection fields on direct canonical calls', async () => {
     const { port, command } = makePort();
     const adapter = createCoreChatCommandAdapter(() => port);
-    await adapter.instructions['core.chat.update']({
+    const update = adapter.instructions['core.chat.update']({
       projectId: 'project',
       worktreeId: 'worktree',
       commandId: 'model-selection',
@@ -1040,10 +1044,10 @@ describe('core chat command router', () => {
         autoRoutedMessageId: 'message',
       },
     });
-    expect(command.mock.calls[0]?.[0].command).toMatchObject({
-      preserveModelSelectionMode: true,
-      autoRoutedMessageId: 'message',
+    await expect(update).rejects.toMatchObject({
+      payload: { kind: 'invalid_argument' },
     });
+    expect(command).not.toHaveBeenCalled();
   });
 
   it('accepts schema-valid main-only settings fields on direct canonical calls', async () => {

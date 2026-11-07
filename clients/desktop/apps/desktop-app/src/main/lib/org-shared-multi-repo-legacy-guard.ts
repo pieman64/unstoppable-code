@@ -1,4 +1,5 @@
 import type { OrgProjectSummary } from '@canopy/protocol/org-projects';
+import type { AdhocMultiRepoMode } from '@canopy/desktop-shared/types';
 import { getOrgProjectCatalogService } from '../services/org-project-catalog-service';
 import { readAllSidebarItemsSnapshot } from './sidebar-items';
 import { readWorkspaceOwnership } from './workspace-persistence';
@@ -21,9 +22,14 @@ export function legacyOrganizationCombineAllowed(
   );
 }
 
-/** Old clients must refuse shared sources before conversion, worktree or tab effects. */
+/**
+ * Updates must refuse shared sources before conversion, worktree or tab effects.
+ * Temporary composition leaves the source project definition unchanged; its
+ * destination creation and organization auto-conversion still have effects.
+ */
 export async function assertLegacyCombineAllowed(
   workspaceIds: readonly string[],
+  mode: AdhocMultiRepoMode,
 ): Promise<void> {
   const snapshot = await readAllSidebarItemsSnapshot();
   if (snapshot.authority !== 'ok' && snapshot.authority !== 'absent')
@@ -36,6 +42,7 @@ export async function assertLegacyCombineAllowed(
     const ownership = await readWorkspaceOwnership(id);
     if (ownership.authority !== 'ok')
       throw new Error('Project ownership could not be checked');
+    if (mode === 'temporary') continue;
     const owner = ownership.owner;
     if (owner) {
       const catalog = await getOrgProjectCatalogService().refresh(

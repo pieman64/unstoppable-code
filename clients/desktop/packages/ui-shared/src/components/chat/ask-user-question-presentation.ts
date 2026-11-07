@@ -138,11 +138,15 @@ function settledStatus(result: AskUserQuestionResultEvidence): {
  * 4. A dismissed record settles without a spinner.
  * 5. An unanswered record with no result owns the prompt.
  * 6. Any remaining result renders generically.
- * 7. Otherwise the question is still being prepared.
+ * 7. Otherwise the question is still being prepared, unless its message has
+ *    stopped streaming (`live === false`): then it settles. A cloud harness
+ *    turn never streams the question's result (the runner hands it back to
+ *    the harness), so it would otherwise stay "preparing" forever.
  */
 export function resolveAskUserQuestionPresentation<TRecord>(
   result: AskUserQuestionResultEvidence,
   record: AskUserQuestionRecordState<TRecord>,
+  live?: boolean,
 ): AskUserQuestionPresentation<TRecord> {
   if (result.kind === 'error') return { kind: 'result' };
   if (result.kind === 'answers' && result.answers.length > 0) {
@@ -162,8 +166,11 @@ export function resolveAskUserQuestionPresentation<TRecord>(
     return { kind: 'settled', ...settledStatus(result) };
   }
   if (result.kind === 'none') {
-    return record.kind === 'unanswered'
-      ? { kind: 'awaiting', record: record.record }
+    if (record.kind === 'unanswered') {
+      return { kind: 'awaiting', record: record.record };
+    }
+    return live === false
+      ? { kind: 'settled', ...settledStatus(result) }
       : { kind: 'preparing' };
   }
   return { kind: 'result' };

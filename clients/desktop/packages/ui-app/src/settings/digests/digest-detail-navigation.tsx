@@ -1,5 +1,6 @@
 import type { JSX } from 'react';
 import { SettingsLink } from '../host';
+import { Surface } from '@canopy/ui-shared/components/Surface';
 
 export { digestNeighbors } from './digest-neighbors';
 
@@ -15,32 +16,45 @@ export function DigestDetailNavigation({
   settingsHref,
 }: DigestDetailNavigationProps): JSX.Element {
   return (
-    <nav
-      className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-3 text-xs"
+    <Surface
+      as="nav"
+      variant="card"
+      padding="compact"
       aria-label="Digest navigation"
       data-testid="digest-detail-navigation"
     >
-      <div className="flex gap-3">
-        {olderHref ? (
-          <SettingsLink href={olderHref} className="fg-accent hover:underline">
-            ← Older
+      <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
+        <div className="flex gap-3">
+          {olderHref ? (
+            <SettingsLink
+              href={olderHref}
+              className="fg-accent hover:underline"
+            >
+              ← Older
+            </SettingsLink>
+          ) : (
+            <span className="fg-secondary">← Older</span>
+          )}
+          {newerHref ? (
+            <SettingsLink
+              href={newerHref}
+              className="fg-accent hover:underline"
+            >
+              Newer →
+            </SettingsLink>
+          ) : (
+            <span className="fg-secondary">Newer →</span>
+          )}
+        </div>
+        {settingsHref && (
+          <SettingsLink
+            href={settingsHref}
+            className="fg-accent hover:underline"
+          >
+            Digest cadence settings
           </SettingsLink>
-        ) : (
-          <span className="fg-secondary">← Older</span>
-        )}
-        {newerHref ? (
-          <SettingsLink href={newerHref} className="fg-accent hover:underline">
-            Newer →
-          </SettingsLink>
-        ) : (
-          <span className="fg-secondary">Newer →</span>
         )}
       </div>
-      {settingsHref && (
-        <SettingsLink href={settingsHref} className="fg-accent hover:underline">
-          Digest cadence settings
-        </SettingsLink>
-      )}
-    </nav>
+    </Surface>
   );
 }

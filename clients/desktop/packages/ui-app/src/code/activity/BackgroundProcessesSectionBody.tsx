@@ -14,6 +14,7 @@ import {
 import { WorkflowIcon } from '@canopy/ui-shared/icons';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { TaskStopAction } from './TaskStopAction';
+import { Surface } from '@canopy/ui-shared/components';
 
 export interface BackgroundProcessesSectionBodyProps {
   readonly tasks: readonly BackgroundTask[];
@@ -103,7 +104,7 @@ export function BackgroundProcessesSectionBody({
   }
 
   const handleKeyDown = (
-    event: KeyboardEvent<HTMLDivElement>,
+    event: KeyboardEvent<HTMLElement>,
     process: BackgroundTask,
   ): void => {
     if (event.key === 'Enter' || event.key === ' ') {
@@ -116,69 +117,74 @@ export function BackgroundProcessesSectionBody({
     <div className="space-y-2" data-testid="activity-bg-body">
       {/* Active processes */}
       {activeProcesses.map((process) => (
-        <div
+        <Surface
+          variant="group"
+          interactive
+          padding="compact"
+          className="cursor-pointer"
           key={process.id}
           role="button"
           tabIndex={0}
-          className="cursor-pointer space-y-3 rounded-lg border bg-fg-primary/[0.03] px-3 py-3 transition-colors hover:bg-fg-primary/[0.05]"
           onClick={(): void => onOpenDetail(process)}
           onKeyDown={(event): void => handleKeyDown(event, process)}
           data-testid="activity-bg-item"
         >
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                {process.kind === 'workflow' && (
-                  <span className="flex-shrink-0 fg-special">
-                    <WorkflowIcon />
+          <div className="space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  {process.kind === 'workflow' && (
+                    <span className="flex-shrink-0 fg-special">
+                      <WorkflowIcon />
+                    </span>
+                  )}
+                  <span className="text-xs font-medium fg-secondary">
+                    {process.kind}
                   </span>
-                )}
-                <span className="text-xs font-medium fg-secondary">
-                  {process.kind}
-                </span>
-                <span
-                  className={`rounded-full px-2 py-1 text-3xs font-medium ${getStatusClassName(process.status)}`}
-                >
-                  {process.status}
-                </span>
-              </div>
-              {/* Descriptions fall back to the command or prompt, and
+                  <span
+                    className={`rounded-full px-2 py-1 text-3xs font-medium ${getStatusClassName(process.status)}`}
+                  >
+                    {process.status}
+                  </span>
+                </div>
+                {/* Descriptions fall back to the command or prompt, and
                   summaries quote agent output, so replay blocks them. */}
-              <div
-                className={`${REPLAY_BLOCK_CLASS} mt-1 truncate text-xs font-medium fg-primary/80`}
-              >
-                {process.title}
-              </div>
-              {process.lastDescription &&
-                process.lastDescription !== process.title && (
+                <div
+                  className={`${REPLAY_BLOCK_CLASS} mt-1 truncate text-xs font-medium fg-primary/80`}
+                >
+                  {process.title}
+                </div>
+                {process.lastDescription &&
+                  process.lastDescription !== process.title && (
+                    <div
+                      className={`${REPLAY_BLOCK_CLASS} mt-1 truncate text-xs fg-secondary`}
+                    >
+                      {process.lastDescription}
+                    </div>
+                  )}
+                {process.summary && (
                   <div
                     className={`${REPLAY_BLOCK_CLASS} mt-1 truncate text-xs fg-secondary`}
                   >
-                    {process.lastDescription}
+                    {process.summary}
                   </div>
                 )}
-              {process.summary && (
-                <div
-                  className={`${REPLAY_BLOCK_CLASS} mt-1 truncate text-xs fg-secondary`}
-                >
-                  {process.summary}
-                </div>
+              </div>
+
+              {stopTarget && process.canStop && (
+                <RowStop
+                  task={process}
+                  stopTarget={stopTarget}
+                  onStopError={onStopError}
+                />
               )}
             </div>
 
-            {stopTarget && process.canStop && (
-              <RowStop
-                task={process}
-                stopTarget={stopTarget}
-                onStopError={onStopError}
-              />
+            {process.kind !== 'workflow' && (
+              <AnsiOutput lines={process.outputLines} className="max-h-44" />
             )}
           </div>
-
-          {process.kind !== 'workflow' && (
-            <AnsiOutput lines={process.outputLines} className="max-h-44" />
-          )}
-        </div>
+        </Surface>
       ))}
 
       {/* Stopped processes (collapsible) */}
@@ -193,34 +199,38 @@ export function BackgroundProcessesSectionBody({
           >
             <div className="space-y-1.5">
               {stoppedProcesses.map((process) => (
-                <div
+                <Surface
+                  variant="group"
+                  interactive
+                  className="cursor-pointer overflow-hidden"
                   key={process.id}
                   role="button"
                   tabIndex={0}
-                  className="cursor-pointer overflow-hidden rounded-lg border bg-fg-primary/[0.015] px-3 py-2.5 transition-colors hover:bg-fg-primary/[0.03]"
                   onClick={(): void => onOpenDetail(process)}
                   onKeyDown={(event): void => handleKeyDown(event, process)}
                   data-testid="activity-bg-item"
                 >
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-medium fg-secondary/60">
-                      {process.kind}
-                    </span>
-                    <span
-                      className={`rounded-full px-2 py-0.5 text-3xs font-medium ${getMutedStatusClassName(process.status)}`}
-                    >
-                      {process.status}
-                    </span>
-                  </div>
-                  <div className="mt-1 truncate text-xs fg-secondary">
-                    {process.title}
-                  </div>
-                  {process.summary && (
-                    <div className="mt-0.5 truncate text-xs fg-secondary/60">
-                      {process.summary}
+                  <div className="px-3 py-2.5">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-medium fg-secondary/60">
+                        {process.kind}
+                      </span>
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-3xs font-medium ${getMutedStatusClassName(process.status)}`}
+                      >
+                        {process.status}
+                      </span>
                     </div>
-                  )}
-                </div>
+                    <div className="mt-1 truncate text-xs fg-secondary">
+                      {process.title}
+                    </div>
+                    {process.summary && (
+                      <div className="mt-0.5 truncate text-xs fg-secondary/60">
+                        {process.summary}
+                      </div>
+                    )}
+                  </div>
+                </Surface>
               ))}
             </div>
           </Disclosure>

@@ -29,6 +29,7 @@ import {
 } from './PipelineRunDetailModel';
 import { PipelineRunPauseForm } from './PipelineRunPauseForm';
 import { PipelineRunStepTree } from './PipelineRunStepTree';
+import { Surface } from '@canopy/ui-shared/components';
 
 export interface PipelineRunDetailLog {
   /**
@@ -228,16 +229,21 @@ export function PipelineRunDetail({
         // the complaint. On a phone this is a true single column: the tree on
         // top, capped with its own scroller, and the log taking the rest.
         <div className="flex min-h-0 flex-1 flex-col gap-3 md:flex-row">
-          <div
-            className="max-h-[32vh] shrink-0 overflow-y-auto rounded-lg ring-1 ring-line-base md:max-h-none md:w-72"
-            data-testid="pipeline-run-detail-steps"
+          <Surface
+            variant="outline"
+            className="flex shrink-0 overflow-hidden md:w-72"
           >
-            <PipelineRunStepTree
-              groups={groups}
-              selected={selectedStep}
-              onSelect={onSelectStep}
-            />
-          </div>
+            <div
+              className="max-h-[32vh] min-w-0 flex-1 overflow-y-auto md:max-h-none"
+              data-testid="pipeline-run-detail-steps"
+            >
+              <PipelineRunStepTree
+                groups={groups}
+                selected={selectedStep}
+                onSelect={onSelectStep}
+              />
+            </div>
+          </Surface>
           <div
             className="flex min-h-0 min-w-0 flex-1 flex-col"
             // `portal-*` testids are preserved verbatim from the inline

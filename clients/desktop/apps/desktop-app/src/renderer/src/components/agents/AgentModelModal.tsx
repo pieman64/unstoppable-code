@@ -25,6 +25,7 @@ import {
   FORM_FIELD_DESCRIPTION_CLASS,
   FORM_FIELD_LABEL_CLASS,
   FormField,
+  Surface,
   TextArea,
   TextInput,
   Tooltip,
@@ -449,23 +450,26 @@ export function AgentModelModal({
           */}
           {!inheritsDefaultModel && (
             <>
-              <div
-                className="mt-1 inline-flex self-start rounded-lg border bg-base px-2 py-1"
+              <Surface
+                variant="inset"
+                className="mt-1 self-start inline-block"
                 data-testid="agent-model-base-model"
               >
-                <ModelPicker
-                  currentModel={baseModel}
-                  disabled={submitting}
-                  hideAgents
-                  browserLayout="harnesses"
-                  allowCursor
-                  allowOpenCode
-                  allowCopilot
-                  placeholderLabel="Select a base model…"
-                  onModelChange={handleBaseModelChange}
-                  triggerTooltip="Model this agent is built on"
-                />
-              </div>
+                <div className="inline-flex px-2 py-1">
+                  <ModelPicker
+                    currentModel={baseModel}
+                    disabled={submitting}
+                    hideAgents
+                    browserLayout="harnesses"
+                    allowCursor
+                    allowOpenCode
+                    allowCopilot
+                    placeholderLabel="Select a base model…"
+                    onModelChange={handleBaseModelChange}
+                    triggerTooltip="Model this agent is built on"
+                  />
+                </div>
+              </Surface>
               <p className={FORM_FIELD_DESCRIPTION_CLASS}>
                 Choose a provider model, including Cursor. Custom agents cannot
                 be used as a base model.
@@ -516,7 +520,7 @@ export function AgentModelModal({
             data-testid="agent-model-plugins"
             aria-label="Plugins"
           >
-            <PluginsIcon width={13} height={13} />
+            <PluginsIcon size="sm" />
             <span>Plugins</span>
           </Button>
 

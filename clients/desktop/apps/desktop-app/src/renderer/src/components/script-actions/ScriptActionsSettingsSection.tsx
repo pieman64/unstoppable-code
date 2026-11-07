@@ -2,7 +2,7 @@ import type { JSX } from 'react';
 import { ScriptActionsReview } from '@canopy/ui-app/script-actions';
 import { useChatStore } from '@/stores/chatStore';
 import { useDesktopScriptActionsReviewProps } from './desktopScriptActions';
-import { Heading } from '@canopy/ui-shared/components';
+import { Heading, Surface } from '@canopy/ui-shared/components';
 
 interface ScriptActionsSettingsSectionProps {
   readonly projectId: string;
@@ -21,36 +21,55 @@ export function ScriptActionsSettingsSection({
   fallbackWorktreeId,
   surface = 'card',
 }: ScriptActionsSettingsSectionProps): JSX.Element {
-  const frame = surface === 'card' ? 'rounded-lg border p-3' : '';
   const reviewProps = useDesktopScriptActionsReviewProps();
   const selected = useChatStore((state) => state.selectedWorktree);
   const worktreeId =
     selected !== null && selected.projectId === projectId
       ? selected.worktreeId
       : fallbackWorktreeId;
+  const noWorktreeNote = (
+    <p className="text-xs fg-secondary">
+      Open a worktree in this project to review the scripts found in it.
+    </p>
+  );
   if (worktreeId === undefined)
-    return (
-      <section
-        className={`space-y-1 ${frame}`}
+    return surface === 'card' ? (
+      <Surface
+        as="section"
+        variant="outline"
+        padding="compact"
+        gap="tight"
         data-testid="script-actions-settings-no-worktree"
       >
-        {surface === 'card' && (
-          <Heading level={3} variant="title">
-            Detected scripts
-          </Heading>
-        )}
-        <p className="text-xs fg-secondary">
-          Open a worktree in this project to review the scripts found in it.
-        </p>
+        <Heading level={3} variant="title">
+          Detected scripts
+        </Heading>
+        {noWorktreeNote}
+      </Surface>
+    ) : (
+      <section
+        className="space-y-1"
+        data-testid="script-actions-settings-no-worktree"
+      >
+        {noWorktreeNote}
       </section>
     );
-  return (
-    <div className={frame} data-testid="script-actions-settings">
-      <ScriptActionsReview
-        {...reviewProps}
-        projectId={projectId}
-        worktreeId={worktreeId}
-      />
-    </div>
+  const review = (
+    <ScriptActionsReview
+      {...reviewProps}
+      projectId={projectId}
+      worktreeId={worktreeId}
+    />
+  );
+  return surface === 'card' ? (
+    <Surface
+      variant="outline"
+      padding="compact"
+      data-testid="script-actions-settings"
+    >
+      {review}
+    </Surface>
+  ) : (
+    <div data-testid="script-actions-settings">{review}</div>
   );
 }

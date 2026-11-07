@@ -143,6 +143,8 @@ export interface ExecutionAccountingLimits {
   readonly memoryGuardEnabled: boolean;
   readonly warningMemoryBytes: number;
   readonly criticalMemoryBytes: number;
+  /** Chat-turn cap (CAN-4115); null or absent means no cap. */
+  readonly maxActiveChatTurns?: number | null;
 }
 
 /** Held admission for one start; release it once the work holds a lease. */
@@ -185,6 +187,26 @@ export class ExecutionAdmissionError extends Error {
     );
     this.name = 'ExecutionAdmissionError';
     this.family = family;
+    this.reason = reason;
+    this.maxActive = maxActive;
+  }
+}
+
+export type ChatTurnAdmissionRefusal = 'limit' | 'memory';
+
+/** Chat-turn admission refused at the cap or under critical memory (CAN-4115). */
+export class ChatTurnAdmissionError extends Error {
+  readonly code = 'resource-guard-blocked';
+  readonly reason: ChatTurnAdmissionRefusal;
+  readonly maxActive: number | null;
+
+  constructor(reason: ChatTurnAdmissionRefusal, maxActive: number | null) {
+    super(
+      reason === 'limit'
+        ? `Already running ${String(maxActive)} chat turns.`
+        : 'Memory pressure refuses another chat turn.',
+    );
+    this.name = 'ChatTurnAdmissionError';
     this.reason = reason;
     this.maxActive = maxActive;
   }

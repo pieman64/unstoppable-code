@@ -56,6 +56,12 @@ export interface CatalogPluginTarget {
   install: 'managed' | 'external' | 'none';
 }
 
+/** What an install did for each requested provider. */
+export interface CatalogPluginInstallOutcome {
+  installed: ('claude' | 'codex')[];
+  failed: ('claude' | 'codex')[];
+}
+
 export interface CoreCatalogHost {
   snapshot(): Promise<CatalogSnapshotRead>;
   /** Throws CatalogSelectionNotFoundError or CatalogSelectionUnavailableError. */
@@ -91,7 +97,7 @@ export interface CoreCatalogHost {
   installPlugin(
     target: CatalogPluginTarget,
     providers: readonly ('claude' | 'codex')[],
-  ): Promise<void>;
+  ): Promise<CatalogPluginInstallOutcome>;
 }
 
 function defineCause(error: Error, cause: unknown): void {

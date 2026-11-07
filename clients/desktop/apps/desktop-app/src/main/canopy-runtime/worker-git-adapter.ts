@@ -179,7 +179,7 @@ function checkedId(validate: () => void): void {
   }
 }
 
-async function resolveRepository({
+export async function resolveRepository({
   scope,
   repository,
 }: WorkerGitBranchListParams): Promise<string | null> {

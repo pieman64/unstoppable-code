@@ -12,13 +12,18 @@ import {
   MODEL_GATEWAY_MAX_MODELS,
   type ModelGatewayModel,
 } from '@canopy/protocol/canopy-server';
-import { useSettingsAiGatewayConnectionKey, useSettingsPrivacy } from '../host';
+import {
+  useSettingsAiGatewayConnectionKey,
+  useSettingsClient,
+  useSettingsPrivacy,
+} from '../host';
 import { useSettingsErrorCopy } from '../errors';
 import { AddGatewayModelForm } from './gateway-model-list';
 import { GatewayModelChecklist, suggestModels } from './AiGatewaySetup';
-import type {
-  AiGatewayEditorAdapter,
-  AiGatewayEditorConfig,
+import {
+  keepKeyForCloudChats,
+  type AiGatewayEditorAdapter,
+  type AiGatewayEditorConfig,
 } from './ai-gateway-adapter';
 import {
   AI_GATEWAY_ERROR_SCOPE,
@@ -59,6 +64,7 @@ export function AiGatewayRefreshDialog({
 }: AiGatewayRefreshDialogProps): JSX.Element {
   const errorCopy = useSettingsErrorCopy(AI_GATEWAY_ERROR_SCOPE);
   const { maskClassName } = useSettingsPrivacy();
+  const client = useSettingsClient();
   const keepsKeys = useSettingsAiGatewayConnectionKey() !== undefined;
   const [apiKey, setApiKey] = useState('');
   const [state, setState] = useState<RefreshState>({ kind: 'idle' });
@@ -90,6 +96,17 @@ export function AiGatewayRefreshDialog({
       }
       setApiKey('');
       if (key && keepsKeys) onKeySaved();
+      else if (key) {
+        // Still loading and locked, so a second Connect can't race this save.
+        await keepKeyForCloudChats(
+          client,
+          adapter.organizationId,
+          key,
+          config.baseUrl,
+        );
+        onKeySaved();
+        if (attempt !== attemptRef.current) return;
+      }
       const suggestions = suggestModels(
         result.models,
         config.models,

@@ -7,7 +7,7 @@ import {
 } from '@canopy/desktop-shared/types';
 import type { MemorySearchFact } from '@canopy/protocol/memory';
 import { normalizeOrgMemoryTurn } from '@canopy/desktop-shared/lib/org-memory';
-import { getObservabilityService } from '../observability';
+import { getExecutionObservabilityIngest } from '../observability/ingest';
 import { completePersistedTabTurnTimers, writeChatTabsFile } from './chat-tabs';
 import { readChatTabsFile } from './chat-tabs-reader';
 import { enqueueChatTabMutation } from './chat-tab-mutation-queue';
@@ -234,7 +234,7 @@ export async function emitChatDispatchFailure(args: {
   errorMessage: string;
   getWindow: () => BrowserWindow | null;
 }): Promise<void> {
-  getObservabilityService().completeChatTurn(
+  getExecutionObservabilityIngest().completeChatTurn(
     args.projectId,
     args.worktreeId,
     args.chatId,

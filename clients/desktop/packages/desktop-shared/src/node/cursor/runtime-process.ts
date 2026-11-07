@@ -1,6 +1,18 @@
 import { spawn } from 'node:child_process';
+import { dirname } from 'node:path';
+import type {
+  ProviderProcess,
+  ProviderProcessOwner,
+  ProviderProcessSpawner,
+} from '../provider-process/spawn';
 import { terminateProcessTree } from './process-tree';
 import type { CursorLaunch } from './runtime-launch';
+
+/** How a Cursor caller starts its children (CAN-4118). */
+export interface CursorProviderProcess {
+  readonly spawner: ProviderProcessSpawner;
+  readonly owner: ProviderProcessOwner;
+}
 
 /** Bounded Cursor setup command; cancellation always drains its owned process group. */
 export function runCursorRuntimeCommand(
@@ -155,6 +167,7 @@ export interface CursorVersionProbeDiagnostic {
  * app, the desktop app itself for the CLI, which reuses that installation.
  */
 export async function verifyCursorRuntimeVersion(
+  providerProcess: CursorProviderProcess,
   launch: CursorLaunch,
   env: NodeJS.ProcessEnv,
   signal: AbortSignal,
@@ -196,42 +209,29 @@ export async function verifyCursorRuntimeVersion(
       // without registering an abort listener or starting any process.
       function abort(): void {
         failure = 'cancelled';
-        terminateProcessTree(child.pid, 'SIGKILL');
+        void child.stop({ graceMs: 0 });
       }
       if (signal.aborted) {
         finish('cancelled');
         return;
       }
-      let child: ReturnType<typeof spawn>;
-      try {
-        child = spawn(
-          launch.command,
-          [...launch.prefix, '--disable-auto-update', '--version'],
-          {
-            env,
-            detached: process.platform !== 'win32',
-            windowsHide: true,
-            stdio: ['ignore', 'pipe', 'ignore'],
-          },
-        );
-      } catch (error) {
-        if (
-          error instanceof Error &&
-          'code' in error &&
-          typeof error.code === 'string'
-        )
-          errorCode = error.code;
-        finish('spawn-error');
-        return;
-      }
+      const child: ProviderProcess = providerProcess.spawner({
+        command: launch.command,
+        args: [...launch.prefix, '--disable-auto-update', '--version'],
+        cwd: dirname(launch.command),
+        env,
+        owner: providerProcess.owner,
+      });
+      child.stdin.end();
+      child.stderr.resume();
       let stdout = '';
       const stop = (outcome: 'timeout' | 'output-limit'): void => {
         failure ??= outcome;
-        terminateProcessTree(child.pid, 'SIGKILL');
+        void child.stop({ graceMs: 0 });
       };
       timeout = setTimeout(() => stop('timeout'), timeoutMs);
       signal.addEventListener('abort', abort, { once: true });
-      child.stdout?.on('data', (chunk: Buffer): void => {
+      child.stdout.on('data', (chunk: Buffer): void => {
         if (failure) return;
         if (Buffer.byteLength(stdout) + chunk.length > 16_384) {
           stop('output-limit');

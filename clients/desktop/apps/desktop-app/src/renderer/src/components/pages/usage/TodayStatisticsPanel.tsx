@@ -14,6 +14,7 @@ import {
   Notice,
   SegmentedControl,
   type SegmentedControlOption,
+  Surface,
 } from '@canopy/ui-shared/components';
 import { useFlipBox } from '@canopy/ui-shared/lib';
 import { formatDurationMs, formatNumber } from './format';
@@ -123,7 +124,7 @@ function StatTile({
   accent: string;
 }): JSX.Element {
   return (
-    <div className="rounded-lg border bg-card p-4">
+    <Surface variant="card" padding="default">
       <div className="flex items-center justify-between gap-3">
         <div className="text-xs font-medium fg-secondary">{label}</div>
         <span
@@ -134,7 +135,7 @@ function StatTile({
       </div>
       <div className="mt-3 text-2xl font-semibold fg-primary">{value}</div>
       <div className="mt-1 text-xs fg-secondary">{detail}</div>
-    </div>
+    </Surface>
   );
 }
 
@@ -359,11 +360,11 @@ export function TodayStatisticsPanel(): JSX.Element {
       {error ? (
         <Notice intent="destructive">{error}</Notice>
       ) : data === null ? (
-        <div className="rounded-lg border bg-card p-6">
+        <Surface variant="card" padding="roomy">
           <DelayedLoadingPlaceholder slowNote="Still loading today…">
             <CenteredLoadingSpinner />
           </DelayedLoadingPlaceholder>
-        </div>
+        </Surface>
       ) : (
         <>
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
@@ -396,7 +397,7 @@ export function TodayStatisticsPanel(): JSX.Element {
           </div>
 
           <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
-            <div className="rounded-lg border bg-card p-4">
+            <Surface variant="card" padding="default">
               <div
                 className="mx-auto grid h-48 w-48 place-items-center rounded-full"
                 style={{ background: gradient }}
@@ -429,9 +430,9 @@ export function TodayStatisticsPanel(): JSX.Element {
                   </div>
                 ))}
               </div>
-            </div>
+            </Surface>
 
-            <div className="rounded-lg border bg-card p-4">
+            <Surface variant="card" padding="default">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <Heading level={3} variant="title">
                   Detail Explorer
@@ -447,9 +448,11 @@ export function TodayStatisticsPanel(): JSX.Element {
               </div>
               <div className="mt-4 space-y-3">
                 {activeRows.length === 0 ? (
-                  <div className="rounded border border-dashed px-4 py-8 text-center text-s fg-secondary">
-                    Nothing recorded here today.
-                  </div>
+                  <Surface variant="dashed" size="small">
+                    <div className="px-4 py-8 text-center text-s fg-secondary">
+                      Nothing recorded here today.
+                    </div>
+                  </Surface>
                 ) : (
                   activeRows
                     .slice(0, 8)
@@ -464,7 +467,7 @@ export function TodayStatisticsPanel(): JSX.Element {
                     ))
                 )}
               </div>
-            </div>
+            </Surface>
           </div>
           {historyTruncated ? (
             <Notice intent="attention" role="none">

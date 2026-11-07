@@ -1,5 +1,5 @@
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
-import { getObservabilityService } from '../observability';
+import { getExecutionObservabilityIngest } from '../observability/ingest';
 import { recordBackgroundProcessChatEvent } from '../portal/background-process-tracker';
 import { logMainProcessError } from './main-process-logging';
 import { sendToAllWindows } from './window-send';
@@ -101,7 +101,7 @@ export function emitSessionEndedBackgroundTaskNotification(
   const data = buildSessionEndedTaskNotification(task, copy);
 
   try {
-    void getObservabilityService()
+    void getExecutionObservabilityIngest()
       .appendFinalizedChatTranscriptRecord(
         target.projectId,
         target.worktreeId,

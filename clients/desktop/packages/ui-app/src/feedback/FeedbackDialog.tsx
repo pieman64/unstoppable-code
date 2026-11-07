@@ -1,10 +1,16 @@
 'use client';
 
-import { type JSX, type ReactNode, useState } from 'react';
+import { type JSX, type ReactNode, useEffect, useRef, useState } from 'react';
+import {
+  FeedbackReferenceIdSchema,
+  MAX_FEEDBACK_DESCRIPTION_LENGTH,
+  MAX_FEEDBACK_TITLE_LENGTH,
+  type FeedbackReportResult,
+} from '@canopy/protocol/feedback-report';
 import {
   Button,
+  CopyButton,
   DialogFormField,
-  DialogModal,
   LoadingSpinner,
   SegmentedControl,
   TextArea,
@@ -12,12 +18,16 @@ import {
   Notice,
 } from '@canopy/ui-shared/components';
 
+import { FeedbackDialogShell } from './FeedbackDialogShell';
+import { FeedbackSubmissionHeldError } from './feedback-submission-held-error';
+
+export { FeedbackSubmissionHeldError } from './feedback-submission-held-error';
+
 /**
- * The feedback form the desktop app's Feedback modal renders, extracted so the
- * web portal opens the same dialog from its account row. The form owns type,
- * description, optional title, submitting/error/success state and the footer;
- * hosts own submission (desktop: IPC plus diagnostics, web: the feedback
- * reports API) and may add an attachments block and error-time actions.
+ * The feedback form `FeedbackReportDialog` renders on desktop and web. The form
+ * owns type, description, optional title, submitting/error/success state and
+ * the footer; its host owns submission and may add an attachments block and
+ * error-time actions.
  */
 export type FeedbackDialogReportType = 'bug' | 'idea';
 
@@ -29,8 +39,20 @@ export interface FeedbackDialogSubmission {
 
 export interface FeedbackDialogProps {
   readonly appName: string;
-  readonly onSubmit: (submission: FeedbackDialogSubmission) => Promise<void>;
+  /**
+   * `error` reports a failure the person just hit: the type is fixed to bug,
+   * and the only question is what they were trying to do.
+   */
+  readonly mode?: 'feedback' | 'error';
+  /** Resolving means the report was filed; its reference ID shows after. */
+  readonly onSubmit: (
+    submission: FeedbackDialogSubmission,
+  ) => Promise<FeedbackReportResult | void>;
   readonly onClose: () => void;
+  /** Blocks Submit while the host waits on an explicit choice in its block. */
+  readonly submitBlocked?: boolean;
+  /** A host note under the confirmation (diagnostics delivery). */
+  readonly successDetail?: ReactNode;
   /** Host block explaining what else is sent (desktop: context + diagnostics). */
   readonly attachments?: ReactNode;
   /** Host actions rendered inside the error notice (desktop: save diagnostics). */
@@ -39,6 +61,8 @@ export interface FeedbackDialogProps {
   readonly note?: ReactNode;
   /** Lets a host learn what the user typed (desktop's diagnostics fallback). */
   readonly onDescriptionChange?: (description: string) => void;
+  /** The current fields, for inspection/export before submission. */
+  readonly onDraftChange?: (draft: FeedbackDialogSubmission) => void;
   /**
    * Seeds the report type. Defaults to `idea` (CAN-2682: a suggestion should
    * not have to correct a bug-first form). Hosts opening this FROM a failure
@@ -68,66 +92,119 @@ function descriptionPlaceholder(type: FeedbackDialogReportType): string {
 
 export function FeedbackDialog({
   appName,
+  mode = 'feedback',
   onSubmit,
   onClose,
+  submitBlocked = false,
+  successDetail,
   attachments,
   errorActions,
   note,
   onDescriptionChange,
+  onDraftChange,
   initialReportType,
 }: FeedbackDialogProps): JSX.Element {
+  const errorMode = mode === 'error';
   const [type, setType] = useState<FeedbackDialogReportType>(
-    initialReportType ?? 'idea',
+    errorMode ? 'bug' : (initialReportType ?? 'idea'),
   );
   const [description, setDescription] = useState('');
   const [title, setTitle] = useState('');
+  useEffect(() => {
+    onDraftChange?.({
+      type,
+      description: description.trim(),
+      ...(title.trim() ? { title: title.trim() } : {}),
+    });
+  }, [type, description, title, onDraftChange]);
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [referenceId, setReferenceId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const canSubmit = description.trim().length > 0 && !submitting;
+  // A second click can land before `submitting` renders.
+  const submitInFlight = useRef(false);
+  const canSubmit =
+    description.trim().length > 0 && !submitting && !submitBlocked;
 
   async function handleSubmit(): Promise<void> {
-    if (!canSubmit) return;
+    if (!canSubmit || submitInFlight.current) return;
     const trimmedTitle = title.trim();
+    const trimmedDescription = description.trim();
+    if (trimmedDescription.length > MAX_FEEDBACK_DESCRIPTION_LENGTH) {
+      setError(
+        `Keep this under ${MAX_FEEDBACK_DESCRIPTION_LENGTH.toLocaleString('en-US')} characters.`,
+      );
+      return;
+    }
+    if (trimmedTitle.length > MAX_FEEDBACK_TITLE_LENGTH) {
+      setError(
+        `Keep the title under ${MAX_FEEDBACK_TITLE_LENGTH.toLocaleString('en-US')} characters.`,
+      );
+      return;
+    }
+    submitInFlight.current = true;
     setSubmitting(true);
     setError(null);
     try {
-      await onSubmit({
+      const result = await onSubmit({
         type,
-        description: description.trim(),
+        description: trimmedDescription,
         ...(trimmedTitle.length > 0 ? { title: trimmedTitle } : {}),
       });
+      // An older server may acknowledge without one; never invent an ID.
+      const reference = FeedbackReferenceIdSchema.safeParse(
+        result ? result.referenceId : undefined,
+      );
+      setReferenceId(reference.success ? reference.data : null);
       setSubmitted(true);
     } catch (err: unknown) {
-      setError(
-        err instanceof Error && err.message.length > 0
-          ? err.message
-          : SUBMIT_ERROR_FALLBACK,
-      );
+      if (!(err instanceof FeedbackSubmissionHeldError)) {
+        setError(
+          err instanceof Error && err.message.length > 0
+            ? err.message
+            : SUBMIT_ERROR_FALLBACK,
+        );
+      }
     } finally {
+      submitInFlight.current = false;
       setSubmitting(false);
     }
   }
 
   return (
-    <DialogModal
-      inset="flush"
+    <FeedbackDialogShell
+      appName={appName}
+      errorMode={errorMode}
       onClose={onClose}
-      title="Feedback"
-      subtitle={`Ideas, bugs, anything that felt off — they all go to the ${appName} team.`}
-      maxWidth="lg"
-      scrollableBody={false}
-      dataTestId="feedback-modal"
     >
       {submitted ? (
         <>
-          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+          <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-6 py-4">
             <p
               className="text-s fg-primary"
               data-testid="feedback-modal-success"
             >
-              Thanks — your feedback is with the {appName} team.
+              Thanks — your {errorMode ? 'report' : 'feedback'} is with the{' '}
+              {appName} team.
             </p>
+            {referenceId !== null && (
+              <div
+                className="flex items-center gap-2 text-xs fg-secondary"
+                data-testid="feedback-modal-reference"
+              >
+                <span>Reference</span>
+                <span className="font-mono" data-selectable>
+                  {referenceId}
+                </span>
+                <CopyButton
+                  value={referenceId}
+                  ariaLabel="Copy reference"
+                  title="Copy reference"
+                  dataTestId="feedback-modal-reference-copy"
+                />
+              </div>
+            )}
+            {successDetail}
           </div>
           <div
             className="flex items-center justify-end border-t px-6 py-3"
@@ -156,25 +233,30 @@ export function FeedbackDialog({
             className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-4"
             data-testid="feedback-modal-body"
           >
-            <div className="space-y-1.5">
-              <span className={FIELD_LABEL_CLASSNAME}>Type</span>
-              <SegmentedControl
-                label="Feedback type"
-                shape="capsule"
-                width="content"
-                value={type}
-                options={REPORT_TYPE_OPTIONS.map((option) => ({
-                  value: option.value,
-                  label: option.label,
-                  dataTestId: `feedback-modal-type-${option.value}`,
-                }))}
-                onChange={setType}
-              />
-            </div>
+            {errorMode ? null : (
+              <div className="space-y-1.5">
+                <span className={FIELD_LABEL_CLASSNAME}>Type</span>
+                <SegmentedControl
+                  label="Feedback type"
+                  shape="capsule"
+                  width="content"
+                  value={type}
+                  options={REPORT_TYPE_OPTIONS.map((option) => ({
+                    value: option.value,
+                    label: option.label,
+                    dataTestId: `feedback-modal-type-${option.value}`,
+                  }))}
+                  onChange={setType}
+                />
+              </div>
+            )}
 
             <DialogFormField
-              label="Description"
+              label={errorMode ? 'What were you trying to do?' : 'Description'}
               htmlFor="feedback-modal-description"
+              {...(errorMode
+                ? { description: 'Needed to send the report.' }
+                : {})}
             >
               <TextArea
                 id="feedback-modal-description"
@@ -185,24 +267,28 @@ export function FeedbackDialog({
                   onDescriptionChange?.(event.target.value);
                   setError(null);
                 }}
-                placeholder={descriptionPlaceholder(type)}
+                {...(errorMode
+                  ? {}
+                  : { placeholder: descriptionPlaceholder(type) })}
                 rows={5}
               />
             </DialogFormField>
 
-            <DialogFormField
-              label="Title (optional)"
-              htmlFor="feedback-modal-title"
-            >
-              <TextInput
-                id="feedback-modal-title"
-                type="text"
-                data-testid="feedback-modal-title"
-                value={title}
-                onChange={(event): void => setTitle(event.target.value)}
-                placeholder="Summarized from your description if left blank"
-              />
-            </DialogFormField>
+            {errorMode ? null : (
+              <DialogFormField
+                label="Title (optional)"
+                htmlFor="feedback-modal-title"
+              >
+                <TextInput
+                  id="feedback-modal-title"
+                  type="text"
+                  data-testid="feedback-modal-title"
+                  value={title}
+                  onChange={(event): void => setTitle(event.target.value)}
+                  placeholder="Summarized from your description if left blank"
+                />
+              </DialogFormField>
+            )}
 
             {attachments}
 
@@ -250,6 +336,6 @@ export function FeedbackDialog({
           </div>
         </form>
       )}
-    </DialogModal>
+    </FeedbackDialogShell>
   );
 }

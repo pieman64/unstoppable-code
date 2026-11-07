@@ -240,7 +240,7 @@ export async function executeLoadDeferredTools(
     return { text: jsonText(baseResult) };
   }
 
-  const intent = deferredToolsReloadCoordinator.createIntent({
+  const admission = await deferredToolsReloadCoordinator.request({
     scope: runtime.scope,
     toolCallId,
     providerType: runtime.providerType,
@@ -249,7 +249,11 @@ export async function executeLoadDeferredTools(
     additions,
     enabledResources: willEnable,
   });
-  if (!intent.accepted) {
+  if (!admission.accepted) {
+    const message =
+      admission.reason === 'reload_in_progress'
+        ? 'Another deferred-tools reload is already in progress for this chat.'
+        : 'Deferred tools cannot reload this chat right now. Continue with the tools you have.';
     return {
       text: jsonText({
         status: 'error',
@@ -259,8 +263,7 @@ export async function executeLoadDeferredTools(
           ...willEnable.map((item) => ({
             ref: item.ref,
             code: 'reload_in_progress' as const,
-            message:
-              'Another deferred-tools reload is already in progress for this chat.',
+            message,
           })),
         ],
       } satisfies LoadDeferredToolsResult),
@@ -273,7 +276,7 @@ export async function executeLoadDeferredTools(
     // tool result carries this receipt back after durable transcript delivery.
     text: jsonText({
       ...baseResult,
-      ...(provider === 'opencode' ? { requestId: intent.requestId } : {}),
+      ...(provider === 'opencode' ? { requestId: admission.requestId } : {}),
     }),
   };
 }

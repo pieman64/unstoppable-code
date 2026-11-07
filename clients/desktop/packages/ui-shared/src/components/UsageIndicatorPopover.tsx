@@ -43,6 +43,38 @@ function isEmptyUsage(usage: UsageIndicatorUsage): boolean {
   );
 }
 
+/**
+ * The context meter with a tick where long-context pricing starts, when the
+ * window reaches past it. Not a fill: a 1px tick 2px proud of the track.
+ */
+function ThresholdMeter({
+  children,
+  thresholdTokens,
+  windowTokens,
+}: {
+  children: ReactNode;
+  thresholdTokens: number | undefined;
+  windowTokens: number;
+}): JSX.Element {
+  if (
+    thresholdTokens === undefined ||
+    windowTokens <= 0 ||
+    thresholdTokens >= windowTokens
+  ) {
+    return <>{children}</>;
+  }
+  return (
+    <div className="relative" data-testid="usage-indicator-long-context-mark">
+      {children}
+      <span
+        aria-hidden="true"
+        className="absolute -top-0.5 h-2.5 w-px bg-fg-primary"
+        style={{ left: `${(thresholdTokens / windowTokens) * 100}%` }}
+      />
+    </div>
+  );
+}
+
 function PopoverDivider(): JSX.Element {
   // `border-*` color utilities are inert (CAN-2734); paint the hairline: one
   // device pixel in the quietest line role, with 16px of room either side
@@ -221,6 +253,8 @@ export default function UsagePopover({
   contextBreakdown,
   costPreview,
   hideCost = false,
+  contextWindowControl,
+  longContextThresholdTokens,
   onClose,
   anchorRef,
   alignRef,
@@ -238,6 +272,8 @@ export default function UsagePopover({
   contextBreakdown?: UsageIndicatorContextBreakdown;
   costPreview?: ReactNode;
   hideCost?: boolean;
+  contextWindowControl?: ReactNode;
+  longContextThresholdTokens?: number;
   /** Escape, a press outside, or Tab closes the popover. */
   onClose: () => void;
   anchorRef: RefObject<HTMLDivElement | null>;
@@ -330,6 +366,9 @@ export default function UsagePopover({
       placement="top-right"
       gap={alignRef ? COMPOSER_ROW_MENU_GAP : POPOVER_GAP}
       interaction="manual"
+      // The context window control is operated from the keyboard too, so
+      // Tab cycles inside the popover instead of closing it.
+      {...(contextWindowControl && !responseUsage ? { trapFocus: true } : {})}
       openOnArrowKeys={false}
       role="dialog"
       aria-label="Usage"
@@ -451,7 +490,12 @@ export default function UsagePopover({
                 {formatTokenCount(usage.contextTokens)}
               </span>
             </div>
-            <UsageMeter percentage={0} label="Context window used" />
+            <ThresholdMeter
+              thresholdTokens={longContextThresholdTokens}
+              windowTokens={usage.contextWindow}
+            >
+              <UsageMeter percentage={0} label="Context window used" />
+            </ThresholdMeter>
           </div>
         )}
         {showContextWindow && (
@@ -479,11 +523,19 @@ export default function UsagePopover({
                 <UsageDisclosureChevron open={detailsOpen} />
               </span>
             </button>
-            {contextBreakdown ? (
-              <ContextBreakdownMeter breakdown={contextBreakdown} />
-            ) : (
-              <UsageMeter percentage={percentage} label="Context window used" />
-            )}
+            <ThresholdMeter
+              thresholdTokens={longContextThresholdTokens}
+              windowTokens={contextBreakdown?.maxTokens ?? usage.contextWindow}
+            >
+              {contextBreakdown ? (
+                <ContextBreakdownMeter breakdown={contextBreakdown} />
+              ) : (
+                <UsageMeter
+                  percentage={percentage}
+                  label="Context window used"
+                />
+              )}
+            </ThresholdMeter>
           </div>
         )}
         {!showContextWindow && costRow}
@@ -548,6 +600,12 @@ export default function UsagePopover({
         {/* Cost follows Context and whatever Context expands, so each
             row's details stay attached to it. */}
         {showContextWindow && costRow}
+        {contextWindowControl && !responseUsage && (
+          <>
+            <PopoverDivider />
+            {contextWindowControl}
+          </>
+        )}
         {accountUsage && (
           <>
             <PopoverDivider />

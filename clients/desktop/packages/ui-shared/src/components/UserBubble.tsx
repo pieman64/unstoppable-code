@@ -5,7 +5,6 @@ import {
   type ReactNode,
 } from 'react';
 import {
-  BUBBLE_ACTION_GLYPH_PX,
   BUBBLE_INDICATOR_BADGE_CLASS,
   BUBBLE_INFO_SURFACE_CLASS,
   BUBBLE_MUTED_SURFACE_CLASS,
@@ -294,11 +293,7 @@ export function UserBubble({
               aria-label="Revert this turn"
               data-testid="reset-to-point-button"
             >
-              <AppCatalogRevertIcon
-                width={BUBBLE_ACTION_GLYPH_PX}
-                height={BUBBLE_ACTION_GLYPH_PX}
-                aria-hidden="true"
-              />
+              <AppCatalogRevertIcon size="sm" aria-hidden="true" />
             </Button>
           </Tooltip>
         )}

@@ -222,7 +222,15 @@ try {
     provider.stdin.end('disposable-qualification-only\n');
     await ready;
   }
-  const native = load(productPath);
+  const { prepareNativeQualification } =
+    await import('./native-vault-qualification');
+  const prepared = await prepareNativeQualification(productPath, root);
+  const candidate = prepared.native;
+  assert.ok(
+    isNative(candidate),
+    'Invalid authorized native qualification addon.',
+  );
+  const native: Native = candidate;
   const fixture = load(fixturePath);
   assert.equal(native.fixture, false);
   assert.equal(fixture.fixture, true);
@@ -234,6 +242,8 @@ try {
     createSecretProtectionServices({
       os: 'linux',
       nativePath,
+      preparedNative:
+        nativePath === productPath ? prepared.capability : undefined,
       brandId,
       build,
       authorityId: 'a'.repeat(64),

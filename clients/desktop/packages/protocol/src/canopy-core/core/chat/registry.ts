@@ -71,6 +71,7 @@ import {
   CoreChatSendReceiptResultSchema,
   CoreChatSendReceiptErrorSchema,
 } from './send-receipt';
+import { CORE_CHAT_TRANSFER_QUERY_DEFINITIONS } from './transfer';
 
 export const CORE_CHAT_INSTRUCTION_DEFINITIONS =
   defineCanopyInstructionRegistry('core', {
@@ -241,6 +242,8 @@ export const CORE_CHAT_QUERY_DEFINITIONS = defineCanopyQueryRegistry('core', {
     result: CoreChatVisualReadResultSchema,
     error: CoreChatVisualReadErrorSchema,
   }),
+  'core.chat.transfer.list':
+    CORE_CHAT_TRANSFER_QUERY_DEFINITIONS['core.chat.transfer.list'],
 });
 
 export const CORE_CHAT_STREAM_DEFINITIONS = defineCanopyStreamRegistry('core', {

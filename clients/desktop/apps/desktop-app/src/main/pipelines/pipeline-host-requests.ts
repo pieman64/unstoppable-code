@@ -298,6 +298,9 @@ function toHostRequest(
       const { action, ...inputs } = request;
       return { action, inputs };
     }
+    default:
+      // Pipeline owner requests (CAN-5095) are not host steps.
+      return null;
   }
 }
 

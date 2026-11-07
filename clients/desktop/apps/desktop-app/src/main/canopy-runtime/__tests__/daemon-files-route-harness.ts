@@ -531,7 +531,7 @@ export async function createRouteHarness(
   const dataRoot = join(base, 'data');
   await mkdir(dataRoot, { recursive: true, mode: 0o700 });
   const displayRoot = join(base, 'display');
-  await symlink(dataRoot, displayRoot);
+  await symlink(dataRoot, displayRoot, 'dir');
   await seedFilesystemRecords(dataRoot);
   const previousDataDir = process.env.CANOPY_DATA_DIR;
   process.env.CANOPY_DATA_DIR = displayRoot;

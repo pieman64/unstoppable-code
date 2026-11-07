@@ -92,6 +92,15 @@ function failure(
   return { ok: false, code, message: MESSAGES[code], ...details };
 }
 
+/** Resolves a portable gitdir file relative to its checkout. */
+export function parseGitDirectoryFile(
+  raw: string,
+  repoPath: string,
+): string | null {
+  const value = /^gitdir:\s*(.+)\s*$/m.exec(raw)?.[1];
+  return value ? (isAbsolute(value) ? value : resolve(repoPath, value)) : null;
+}
+
 async function inspectGitMetadata(
   sources: WorktreeHealthSources,
   repoPath: string,
@@ -106,11 +115,8 @@ async function inspectGitMetadata(
     return failure('invalid-git-worktree', { shouldConfirmWithGit: true });
 
   const raw = await sources.readText(dotGitPath).catch(() => '');
-  const gitDirValue = /^gitdir:\s*(.+)\s*$/m.exec(raw)?.[1];
-  if (!gitDirValue) return failure('invalid-git-worktree');
-  const gitDir = isAbsolute(gitDirValue)
-    ? gitDirValue
-    : resolve(repoPath, gitDirValue);
+  const gitDir = parseGitDirectoryFile(raw, repoPath);
+  if (!gitDir) return failure('invalid-git-worktree');
   const gitDirStat = await sources.stat(gitDir).catch(() => null);
   if (!gitDirStat)
     return failure('invalid-git-worktree', {

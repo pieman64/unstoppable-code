@@ -10,6 +10,7 @@ import {
 } from '@/hooks/useWindowsGitRequirement';
 import { isCanopyCloudConnected } from '@/lib/canopy-cloud';
 import { localPlatform } from '@/lib/local-platform';
+import { bridgeMainSkillsChanged } from '@/lib/skillsChanged';
 import {
   openCloudAccountSettings,
   openIntegrationSettings,
@@ -41,7 +42,6 @@ import {
   type PortalChatComposerLifecycleCommand,
   type PortalChatComposerRendererRequest,
   type PortalChatComposerSetterRequest,
-  type PortalChatQuestionMutationCommand,
   type PreferencesLoadResult,
   type WorktreeChatBadgesSummary,
 } from '@canopy/desktop-shared/types';
@@ -1051,92 +1051,10 @@ function App(): JSX.Element {
       }
     };
 
-    // Portal-originated interactive AskUserQuestion answer/dismissal. Shares the
-    // correlated setter channel but drives the renderer-owned answer/dismiss
-    // path (the same `window.api.chat.*` a desktop click uses) with a durable
-    // persistence flush before the command is acknowledged. `questionRequestId`
-    // is the authoritative correlation key; `projectId`/`worktreeId`/`chatId`
-    // must all match the awaiting pending question, so a stale/mistargeted
-    // command can never resolve a different prompt.
-    const applyQuestionMutation = async (
-      command: PortalChatQuestionMutationCommand,
-      requestId: string,
-    ): Promise<void> => {
-      const { projectId, worktreeId, chatId, questionRequestId } = command;
-      try {
-        await useChatStore.getState().loadTabsForTarget(projectId, worktreeId);
-        const pending =
-          useChatStore.getState().pendingQuestions[questionRequestId];
-        const scopeMatches =
-          pending !== undefined &&
-          pending.projectId === projectId &&
-          pending.worktreeId === worktreeId &&
-          pending.chatId === chatId;
-
-        if (command.kind === 'dismiss_question') {
-          // An already-removed entry is an idempotent completed no-op.
-          if (pending === undefined) {
-            await completeSetterRequest({ requestId, ok: true });
-            return;
-          }
-          if (!scopeMatches) {
-            await completeSetterRequest({
-              requestId,
-              ok: false,
-              code: 'not_found',
-              error: 'The question is no longer awaiting a response.',
-              retryable: false,
-            });
-            return;
-          }
-          await useChatStore
-            .getState()
-            .dismissMcpQuestionAndWait(questionRequestId);
-          await completeSetterRequest({ requestId, ok: true });
-          return;
-        }
-
-        // answer_question. An unknown or scope-mismatched request must never
-        // touch another prompt — reject as not_found.
-        if (!scopeMatches) {
-          await completeSetterRequest({
-            requestId,
-            ok: false,
-            code: 'not_found',
-            error: 'The question is no longer awaiting a response.',
-            retryable: false,
-          });
-          return;
-        }
-        // `answerMcpQuestionAndWait` short-circuits an already-answered entry as
-        // an idempotent success without re-invoking the provider waiter, and
-        // otherwise awaits the answer action and the durable persistence flush.
-        await useChatStore
-          .getState()
-          .answerMcpQuestionAndWait(questionRequestId, command.answers);
-        await completeSetterRequest({ requestId, ok: true });
-      } catch {
-        await completeSetterRequest({
-          requestId,
-          ok: false,
-          code: 'execution_failed',
-          error: 'The desktop app could not apply your response.',
-          retryable: false,
-        });
-      }
-    };
-
     const applySetterRequest = async (
       request: PortalChatComposerSetterRequest,
     ): Promise<void> => {
       const { command, requestId } = request;
-      if (
-        command.kind === 'answer_question' ||
-        command.kind === 'dismiss_question'
-      ) {
-        await applyQuestionMutation(command, requestId);
-        return;
-      }
       if (command.kind === 'branch') {
         // Must remain comfortably below main's COMPOSER_COMMAND_ACK_TIMEOUT_MS
         // so the renderer can settle the correlated request first.
@@ -1822,6 +1740,14 @@ function App(): JSX.Element {
   // payloads only after startup unlock, so this mount-time subscription is
   // always attached before the first delivery. Parked in the navigation
   // store until the shared-entity landing surface consumes it.
+  // Agent skill actions run in Electron main; re-announce them so open
+  // skill inventories (the Plugins page among them) refresh.
+  useEffect(() => {
+    const skills = window.skills;
+    if (typeof skills?.onChanged !== 'function') return undefined;
+    return bridgeMainSkillsChanged((listener) => skills.onChanged(listener));
+  }, []);
+
   useEffect(() => {
     return window.api.onDeepLinkShareOpen((event) => {
       useNavigationStore.getState().openShareInstall(event, 'deep-link');
@@ -2109,7 +2035,7 @@ function App(): JSX.Element {
               toggles the block, which is safe only while every blocked page
               is one users never see here (the internal galleries, and the
               aliases `mcp-account-connections` and `environments`, which
-              open Settings instead). A
+              open another destination instead). A
               user-facing `blocked` page must carry the block on its own root,
               which mounts with its content. */}
           <main

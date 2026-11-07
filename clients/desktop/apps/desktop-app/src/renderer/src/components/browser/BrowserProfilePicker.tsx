@@ -1,4 +1,4 @@
-import { Heading } from '@canopy/ui-shared/components';
+import { Divider, Heading } from '@canopy/ui-shared/components';
 import {
   useCallback,
   useEffect,
@@ -354,56 +354,63 @@ export function BrowserProfilePicker({
           {/* Stacked rather than a justify-between row: at this width the
                 button wraps, and a wrapped `justify-between` child lands
                 inset by its own padding instead of on the popover's edge. */}
-          <div className="flex flex-col items-start gap-0.5 border-t pt-3">
-            <p className="min-w-0 text-xs fg-secondary">
-              New-tab default: <span className="fg-primary">{defaultName}</span>
-            </p>
-            {defaultChangesProfile && (
-              <Button
-                variant="ghost"
-                size="sm"
-                data-testid="browser-profile-set-default"
-                disabled={busy || !slot}
-                className="-ml-2.5"
-                onClick={() =>
-                  slot &&
-                  void run(async () => {
-                    setSlot(
-                      await window.api.browser.profiles.setDefault({
-                        ...scope,
-                        operationId: crypto.randomUUID(),
-                        incarnationId: slot.incarnationId,
-                        expectedMetadataRevision: slot.metadataRevision,
-                        selection,
-                      }),
-                    );
-                    setNotice(
-                      'Default updated for new tabs in this task. Existing tabs keep their profiles.',
-                    );
-                  })
-                }
-              >
-                Use selected for new tabs
-              </Button>
-            )}
+          <div>
+            <Divider />
+            <div className="flex flex-col items-start gap-0.5 pt-3">
+              <p className="min-w-0 text-xs fg-secondary">
+                New-tab default:{' '}
+                <span className="fg-primary">{defaultName}</span>
+              </p>
+              {defaultChangesProfile && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  data-testid="browser-profile-set-default"
+                  disabled={busy || !slot}
+                  className="-ml-2.5"
+                  onClick={() =>
+                    slot &&
+                    void run(async () => {
+                      setSlot(
+                        await window.api.browser.profiles.setDefault({
+                          ...scope,
+                          operationId: crypto.randomUUID(),
+                          incarnationId: slot.incarnationId,
+                          expectedMetadataRevision: slot.metadataRevision,
+                          selection,
+                        }),
+                      );
+                      setNotice(
+                        'Default updated for new tabs in this task. Existing tabs keep their profiles.',
+                      );
+                    })
+                  }
+                >
+                  Use selected for new tabs
+                </Button>
+              )}
+            </div>
           </div>
           {/* Everything above acts on this tab; this leaves for the page
                 that owns profiles themselves (create, rename, permissions,
                 stored data), so it sits below its own rule. */}
-          <div className="border-t pt-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              data-testid="browser-profile-open-settings"
-              className="-ml-2.5"
-              onClick={() => {
-                setOpen(false);
-                useNavigationStore.getState().openSettings('browser');
-              }}
-            >
-              <SettingsIcon className="shrink-0" />
-              Settings
-            </Button>
+          <div>
+            <Divider />
+            <div className="pt-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                data-testid="browser-profile-open-settings"
+                className="-ml-2.5"
+                onClick={() => {
+                  setOpen(false);
+                  useNavigationStore.getState().openSettings('browser');
+                }}
+              >
+                <SettingsIcon className="shrink-0" />
+                Settings
+              </Button>
+            </div>
           </div>
           {busy && (
             <Notice intent="neutral" title="Applying profile">

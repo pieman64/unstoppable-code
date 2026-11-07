@@ -48,9 +48,9 @@ export interface ChatComposerPlusItemsOptions {
 }
 
 const CHAT_INTERFACE_MODE_ICONS: Record<ChatInterfaceMode, JSX.Element> = {
-  canopy: <ChatIcon width={16} height={16} />,
-  auto: <AutoIcon width={16} height={16} />,
-  'claude-code': <TerminalBorderedIcon width={16} height={16} />,
+  canopy: <ChatIcon size="sm" />,
+  auto: <AutoIcon size="sm" />,
+  'claude-code': <TerminalBorderedIcon size="sm" />,
 };
 
 /** The chat composer's own rows in the + menu, after the attachment rows. */
@@ -65,7 +65,7 @@ export function buildChatComposerPlusItems({
     {
       id: 'plugins',
       label: 'Plugins',
-      icon: <PluginsIcon width={16} height={16} />,
+      icon: <PluginsIcon size="sm" />,
       onSelect: onOpenPlugins,
       ariaChecked: hasPluginSelections,
       dataTestId: 'chat-plugins-button',
@@ -77,7 +77,7 @@ export function buildChatComposerPlusItems({
       label: plan.readOnly ? 'Read-only mode' : 'Plan mode',
       description: plan.on ? 'Turn off' : 'Turn on',
       value: plan.on ? 'On' : undefined,
-      icon: <PlanModeIcon width={16} height={16} active={plan.on} />,
+      icon: <PlanModeIcon size="sm" active={plan.on} />,
       onSelect: plan.onToggle,
       disabled: plan.disabled,
       selected: false,
@@ -89,7 +89,7 @@ export function buildChatComposerPlusItems({
     items.push({
       id: 'schedule',
       label: 'Schedule message',
-      icon: <ScheduleIcon width={16} height={16} />,
+      icon: <ScheduleIcon size="sm" />,
       onSelect: onSchedule,
       dataTestId: 'chat-input-schedule-button',
     });
@@ -135,7 +135,7 @@ export function buildPlanReadyChip({
     activeTone: 'warning',
     ariaLabel: 'Plan ready, review it',
     title: 'Review the plan',
-    icon: <PlanModeIcon width={16} height={16} active />,
+    icon: <PlanModeIcon size="sm" active />,
     ...(compact ? {} : { label: 'Plan ready' }),
     variant: 'capsule',
     dataTestId: 'chat-input-plan-ready-chip',
@@ -218,7 +218,7 @@ export function buildFastModeChip({
       // difference; the stroke scales up by 16/15 to keep the composer's
       // rendered weight.
       <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center">
-        <FastModeIcon size={15} active={on} />
+        <FastModeIcon size="sm" active={on} />
       </span>
     ),
     // The label folds in and out with the toggle, and away in compact rows.

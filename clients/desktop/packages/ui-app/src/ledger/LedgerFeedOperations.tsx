@@ -91,6 +91,7 @@ import {
   type LedgerScopeNames,
   type LedgerScopeNamesFor,
 } from './ledger-work-path';
+import { Surface } from '@canopy/ui-shared/components';
 
 export interface LedgerFeedOperationsProps {
   readonly store: LedgerFeedWorkStore;
@@ -418,47 +419,51 @@ function TreeEntryRow({
   // The details sit under the title, past the chevron.
   const details = (
     <div className="pl-5">
-      <div
+      <Surface
+        variant="group"
+        size="small"
+        className="min-w-0"
         data-testid="feed-operations-tree-details"
-        className="flex min-w-0 flex-col items-start gap-2 rounded-md bg-subtle px-3 py-2"
       >
-        {entry.content.trim() === '' ? null : (
-          <div className={`w-full min-w-0 ${REPLAY_BLOCK_CLASS}`}>
-            <LedgerEntryMarkdown
-              content={entry.content}
-              density="panel"
-              data-testid="feed-operations-tree-content"
-            />
-          </div>
-        )}
-        <p className="text-2xs fg-tertiary">
-          <span className={ownerReplayClass(entry.owner)}>
-            Owner: {ownerName(entry.owner, actors, personActorId, personName)}
-          </span>
-          {' · '}
-          <span className={ownerReplayClass(entry.author)}>
-            Added by{' '}
-            {ownerName(entry.author, actors, personActorId, personName)}
-          </span>
-          {' · '}
-          {/* "Just now" is the only capitalized form; it sits mid-sentence. */}
-          Updated {updated === 'Just now' ? 'just now' : updated}
-        </p>
-        {onOpenEntry === undefined ? null : (
-          <Button
-            type="button"
-            size="sm"
-            variant="secondary"
-            data-testid="feed-operations-tree-open-entry"
-            onClick={(event): void => {
-              event.stopPropagation();
-              onOpenEntry(scope, entry.entryId);
-            }}
-          >
-            Open entry
-          </Button>
-        )}
-      </div>
+        <div className="flex flex-col items-start gap-2 px-3 py-2">
+          {entry.content.trim() === '' ? null : (
+            <div className={`w-full min-w-0 ${REPLAY_BLOCK_CLASS}`}>
+              <LedgerEntryMarkdown
+                content={entry.content}
+                density="panel"
+                data-testid="feed-operations-tree-content"
+              />
+            </div>
+          )}
+          <p className="text-2xs fg-tertiary">
+            <span className={ownerReplayClass(entry.owner)}>
+              Owner: {ownerName(entry.owner, actors, personActorId, personName)}
+            </span>
+            {' · '}
+            <span className={ownerReplayClass(entry.author)}>
+              Added by{' '}
+              {ownerName(entry.author, actors, personActorId, personName)}
+            </span>
+            {' · '}
+            {/* "Just now" is the only capitalized form; it sits mid-sentence. */}
+            Updated {updated === 'Just now' ? 'just now' : updated}
+          </p>
+          {onOpenEntry === undefined ? null : (
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              data-testid="feed-operations-tree-open-entry"
+              onClick={(event): void => {
+                event.stopPropagation();
+                onOpenEntry(scope, entry.entryId);
+              }}
+            >
+              Open entry
+            </Button>
+          )}
+        </div>
+      </Surface>
     </div>
   );
   // The task opens in place to its details and to the tasks under it.

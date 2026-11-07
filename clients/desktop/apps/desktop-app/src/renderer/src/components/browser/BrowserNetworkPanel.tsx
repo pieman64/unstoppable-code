@@ -178,7 +178,7 @@ export function BrowserNetworkPanel({
                         void stageBrowserNetworkEntry(entry);
                       }}
                     >
-                      <ChatIcon width={12} height={12} />
+                      <ChatIcon size="sm" />
                       <span>{CHAT_UNIT_LABEL}</span>
                     </Button>
                   </div>

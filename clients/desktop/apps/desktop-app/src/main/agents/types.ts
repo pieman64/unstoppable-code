@@ -1,5 +1,6 @@
 import type { MaterializedCapabilityOverlay } from '@canopy/desktop-shared/node/delegation/agent-artifacts';
 import type { ManagedDelegationMode } from '@canopy/protocol/delegation/discovery';
+import type { InterfaceToolName } from '@canopy/protocol/canopy-core';
 import type { BrowserWindow } from 'electron';
 import type {
   ChatInputAdmission,
@@ -20,6 +21,7 @@ import type {
   ClaudeForkToolResult,
   CodexSpeed,
 } from '@canopy/desktop-shared/types';
+import type { CodexContextWindowSetting } from '@canopy/desktop-shared/lib/codex-context-window';
 import type { AppAdvisorToolRuntime } from '../app-advisor/runtime';
 import type { PipelineEditorToolRuntime } from '../pipeline-editor/runtime';
 import type { PipelinePackageCapabilityOverlay } from '@canopy/desktop-shared/types/pipeline';
@@ -104,6 +106,11 @@ export interface AgentSessionOptions {
   toolProfileHash?: string;
   /** Code Graph tool advertisement captured for this logical chat session. */
   codeGraphToolsAdvertised?: boolean;
+  /**
+   * Interface tools bound when the session was created (CAN-4131). Set by the
+   * session manager, never by callers; absent means none.
+   */
+  interfaceTools?: readonly InterfaceToolName[];
   appAdvisorRuntime?: AppAdvisorToolRuntime;
   pipelineEditorRuntime?: PipelineEditorToolRuntime;
   /**
@@ -240,6 +247,13 @@ export interface AgentSession {
   setFastMode?(enabled: boolean): Promise<void>;
   /** @deprecated Use setSpeed. */
   setCodexFastMode?(enabled: boolean): Promise<void>;
+  /**
+   * Apply a chat's resolved Codex context window before its next turn. A
+   * change reloads the thread, since Codex reads the window only at load.
+   */
+  setContextWindow?(
+    setting: CodexContextWindowSetting | undefined,
+  ): Promise<void>;
   setCodexProposalMode?(mode: 'optional' | 'required'): Promise<void>;
   setCodexAppServerIdleTimeoutMinutes?(minutes: number): Promise<void>;
   setRtkEnabled?(enabled: boolean): Promise<void>;

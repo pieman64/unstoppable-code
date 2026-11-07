@@ -931,9 +931,11 @@ async function inspectWorktreeDiscard(
 
   let verifyAtDiscard: WorktreeDiscardDescription['verifyAtDiscard'];
   if (unfinished) {
-    // Source admission (CAN-5158) refuses that redo before it resumes.
+    // Source admission (CAN-5158) and owned-path guards can refuse that redo.
+    // CAN-5717 admission alone must not hide an existing discard escape hatch.
     if (
       canResumeInterruptedArchive(unfinished) &&
+      (await areOwnedPathsUnreplaced(unfinished).catch(() => false)) &&
       !causes.includes('source-gone')
     )
       return refuse('retry-available', described, 'remove-worktree');

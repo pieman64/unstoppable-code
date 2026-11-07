@@ -10,6 +10,7 @@ import {
   formatNumber,
   formatStartingDate,
 } from './format';
+import { Surface } from '@canopy/ui-shared/components';
 
 function pickValue(
   spec: HeadlineCardSpec,
@@ -55,25 +56,24 @@ export function HeadlineCard({
         : 'fg-secondary';
   const testId = `usage-headline-card-${spec.key}`;
   return (
-    <div
-      className="rounded-xl border bg-card/60 p-3 text-s"
-      data-testid={testId}
-    >
-      <div className="flex items-baseline justify-between gap-2">
-        <div className="text-xs fg-secondary">{spec.title}</div>
-        <div className={`text-xs ${trendColor}`}>{trend.text}</div>
+    <Surface variant="group" padding="compact" data-testid={testId}>
+      <div className="text-s">
+        <div className="flex items-baseline justify-between gap-2">
+          <div className="text-xs fg-secondary">{spec.title}</div>
+          <div className={`text-xs ${trendColor}`}>{trend.text}</div>
+        </div>
+        <div
+          className="mt-1 text-lg font-semibold fg-primary"
+          data-testid={`${testId}-value`}
+        >
+          {formatHeadlineValue(spec, last7d)}
+        </div>
+        {spec.unit && <div className="text-2xs fg-secondary">{spec.unit}</div>}
+        <div className="mt-1 text-2xs fg-secondary">
+          All time: {formatHeadlineValue(spec, allTime)} · since{' '}
+          {formatStartingDate(earliestEventAt)}
+        </div>
       </div>
-      <div
-        className="mt-1 text-lg font-semibold fg-primary"
-        data-testid={`${testId}-value`}
-      >
-        {formatHeadlineValue(spec, last7d)}
-      </div>
-      {spec.unit && <div className="text-2xs fg-secondary">{spec.unit}</div>}
-      <div className="mt-1 text-2xs fg-secondary">
-        All time: {formatHeadlineValue(spec, allTime)} · since{' '}
-        {formatStartingDate(earliestEventAt)}
-      </div>
-    </div>
+    </Surface>
   );
 }

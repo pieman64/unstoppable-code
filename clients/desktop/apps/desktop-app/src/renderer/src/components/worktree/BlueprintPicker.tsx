@@ -1,7 +1,11 @@
 import { useState, type JSX } from 'react';
 import type { DesktopBlueprintCatalogEntry } from '@canopy/desktop-shared/types';
 import { WORKSPACE_TEMPLATE_SHARE_LABEL_LOWER } from '@canopy/protocol';
-import { Button, StartingPointChip } from '@canopy/ui-shared/components';
+import {
+  Button,
+  StartingPointChip,
+  Surface,
+} from '@canopy/ui-shared/components';
 import type { WorkspaceTemplateShareSummary } from '@canopy/protocol';
 import { FormSectionHeading } from './FormSectionHeading';
 
@@ -163,30 +167,33 @@ export function BlueprintPicker({
             )
           )}
           {selectedExternalId !== null && selectedRequirements.length > 0 && (
-            <div
-              className="mt-3 rounded-lg bg-secondary/30 px-3 py-2"
+            <Surface
+              variant="group"
+              className="mt-3"
               data-testid="add-workspace-blueprint-requirements"
             >
-              <p className="text-xs font-medium fg-primary">
-                Set up after creating
-              </p>
-              <ul className="mt-1 space-y-1">
-                {selectedRequirements.map((requirement) => (
-                  <li
-                    key={`${requirement.kind}:${requirement.id}`}
-                    className="text-xs fg-secondary"
-                  >
-                    <span className="fg-primary">
-                      {requirement.displayName}
-                    </span>{' '}
-                    — {requirement.setupHint}
-                  </li>
-                ))}
-              </ul>
-              <p className="mt-1.5 text-xs fg-secondary">
-                {`Missing setup won’t stop this ${WORKSPACE_TEMPLATE_SHARE_LABEL_LOWER} from being added.`}
-              </p>
-            </div>
+              <div className="px-3 py-2">
+                <p className="text-xs font-medium fg-primary">
+                  Set up after creating
+                </p>
+                <ul className="mt-1 space-y-1">
+                  {selectedRequirements.map((requirement) => (
+                    <li
+                      key={`${requirement.kind}:${requirement.id}`}
+                      className="text-xs fg-secondary"
+                    >
+                      <span className="fg-primary">
+                        {requirement.displayName}
+                      </span>{' '}
+                      — {requirement.setupHint}
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-1.5 text-xs fg-secondary">
+                  {`Missing setup won’t stop this ${WORKSPACE_TEMPLATE_SHARE_LABEL_LOWER} from being added.`}
+                </p>
+              </div>
+            </Surface>
           )}
         </>
       )}

@@ -60,6 +60,7 @@ import {
   McpServerHealthSection,
   type McpServerHealthSectionProps,
 } from './McpServerManagement';
+import { Surface } from '@canopy/ui-shared/components';
 
 /** The health a plugin's MCP server row shows, read from the host's device index. */
 export type PluginDetailMcpHealthTarget = Pick<
@@ -378,8 +379,10 @@ function BuiltInInstallPanel({
   const installingOnly = (provider: PluginProvider): boolean =>
     installing?.length === 1 && installing[0] === provider;
   return (
-    <section
-      className="rounded-lg border p-4"
+    <Surface
+      as="section"
+      variant="outline"
+      padding="default"
       data-testid="built-in-install-panel"
     >
       <Heading level={3} variant="title">
@@ -389,40 +392,44 @@ function BuiltInInstallPanel({
         This plugin is available inside {brandName}. Install it to Claude or
         Codex to use it directly outside {brandName}.
       </p>
-      <div className="mt-3 divide-y rounded-md border">
-        {visibleRows.map((row) => (
-          <div
-            key={row.provider}
-            className="flex flex-wrap items-center justify-between gap-3 px-3 py-2"
-            data-testid={`built-in-install-row-${row.provider}`}
-          >
-            <div className="min-w-0">
-              <p className="text-s fg-primary">{providerLabel(row.provider)}</p>
-              <p
-                className="text-xs fg-secondary"
-                data-testid={`built-in-install-status-${row.provider}`}
-              >
-                {row.statusText}
-              </p>
+      <Surface variant="outline" size="small" className="mt-3">
+        <div className="divide-y">
+          {visibleRows.map((row) => (
+            <div
+              key={row.provider}
+              className="flex flex-wrap items-center justify-between gap-3 px-3 py-2"
+              data-testid={`built-in-install-row-${row.provider}`}
+            >
+              <div className="min-w-0">
+                <p className="text-s fg-primary">
+                  {providerLabel(row.provider)}
+                </p>
+                <p
+                  className="text-xs fg-secondary"
+                  data-testid={`built-in-install-status-${row.provider}`}
+                >
+                  {row.statusText}
+                </p>
+              </div>
+              {row.available && (
+                <Button
+                  type="button"
+                  size="compact"
+                  onClick={() => void install([row.provider])}
+                  disabled={installing !== null}
+                  data-testid={`built-in-install-button-${row.provider}`}
+                >
+                  {installingOnly(row.provider)
+                    ? `Installing to ${providerLabel(row.provider)}…`
+                    : row.installed
+                      ? `Reinstall in ${providerLabel(row.provider)}`
+                      : `Install to ${providerLabel(row.provider)}`}
+                </Button>
+              )}
             </div>
-            {row.available && (
-              <Button
-                type="button"
-                size="compact"
-                onClick={() => void install([row.provider])}
-                disabled={installing !== null}
-                data-testid={`built-in-install-button-${row.provider}`}
-              >
-                {installingOnly(row.provider)
-                  ? `Installing to ${providerLabel(row.provider)}…`
-                  : row.installed
-                    ? `Reinstall in ${providerLabel(row.provider)}`
-                    : `Install to ${providerLabel(row.provider)}`}
-              </Button>
-            )}
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      </Surface>
       {message?.tone === 'success' ? (
         <p
           className="mt-3 text-xs fg-secondary"
@@ -438,7 +445,7 @@ function BuiltInInstallPanel({
           testId="built-in-install-message"
         />
       )}
-    </section>
+    </Surface>
   );
 }
 
@@ -554,32 +561,34 @@ export function PluginDetailHost({
       />
       <ErrorBanner className="mt-2" error={compatError || compatibilityError} />
       {plugin.providerSupport.codex === 'compat' && onToggleCodexCompat && (
-        <div className="mt-4 flex items-center justify-between gap-4 rounded-lg ring-[length:var(--border-hairline)] ring-line-base bg-secondary/30 px-4 py-3">
-          <div className="pr-3">
-            <p className="text-xs font-medium fg-primary">
-              Codex compatibility mode
-            </p>
-            <p className="text-xs fg-secondary">
-              When off, this Claude plugin is not used under Codex.
-            </p>
+        <Surface variant="group" className="mt-4">
+          <div className="flex items-center justify-between gap-4 px-4 py-3">
+            <div className="pr-3">
+              <p className="text-xs font-medium fg-primary">
+                Codex compatibility mode
+              </p>
+              <p className="text-xs fg-secondary">
+                When off, this Claude plugin is not used under Codex.
+              </p>
+            </div>
+            <ToggleSwitch
+              label="Codex compatibility mode"
+              checked={plugin.codexCompatDisabled !== true}
+              disabled={compatBusy}
+              onChange={() => {
+                setCompatBusy(true);
+                setCompatError('');
+                void onToggleCodexCompat(plugin.codexCompatDisabled !== true)
+                  .then((updated) => onPluginUpdated?.(updated))
+                  .catch((toggleFailure: unknown) =>
+                    setCompatError(errorMessage(toggleFailure)),
+                  )
+                  .finally(() => setCompatBusy(false));
+              }}
+              dataTestId="plugin-detail-codex-compat-disable-toggle"
+            />
           </div>
-          <ToggleSwitch
-            label="Codex compatibility mode"
-            checked={plugin.codexCompatDisabled !== true}
-            disabled={compatBusy}
-            onChange={() => {
-              setCompatBusy(true);
-              setCompatError('');
-              void onToggleCodexCompat(plugin.codexCompatDisabled !== true)
-                .then((updated) => onPluginUpdated?.(updated))
-                .catch((toggleFailure: unknown) =>
-                  setCompatError(errorMessage(toggleFailure)),
-                )
-                .finally(() => setCompatBusy(false));
-            }}
-            dataTestId="plugin-detail-codex-compat-disable-toggle"
-          />
-        </div>
+        </Surface>
       )}
     </>
   );
@@ -683,40 +692,42 @@ export function PluginDetailHost({
         <BuiltInInstallPanel state={builtIn} brandName={brandName} />
       )}
       {plugin.externalSource && (
-        <div className="min-w-0 rounded-lg ring-[length:var(--border-hairline)] ring-line-base bg-secondary/30 px-4 py-3">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="min-w-0 flex-1">
-              <FactList
-                columnGap="2"
-                rowGap="1"
-                labelTone="secondary"
-                valueTone="secondary"
-              >
-                <Fact label="Source" fit="truncate">
-                  <a
-                    href={
-                      typeof plugin.externalSource === 'string'
+        <Surface variant="group" className="min-w-0">
+          <div className="px-4 py-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <FactList
+                  columnGap="2"
+                  rowGap="1"
+                  labelTone="secondary"
+                  valueTone="secondary"
+                >
+                  <Fact label="Source" fit="truncate">
+                    <a
+                      href={
+                        typeof plugin.externalSource === 'string'
+                          ? plugin.externalSource
+                          : plugin.externalSource.url
+                      }
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="focus-ring rounded fg-secondary hover:fg-primary hover:underline"
+                    >
+                      {typeof plugin.externalSource === 'string'
                         ? plugin.externalSource
-                        : plugin.externalSource.url
-                    }
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="focus-ring rounded fg-secondary hover:fg-primary hover:underline"
-                  >
-                    {typeof plugin.externalSource === 'string'
-                      ? plugin.externalSource
-                      : plugin.externalSource.url}
-                  </a>
-                </Fact>
-                {plugin.cachedAt && (
-                  <Fact label="Last fetched">
-                    {formatDate(plugin.cachedAt)}
+                        : plugin.externalSource.url}
+                    </a>
                   </Fact>
-                )}
-              </FactList>
+                  {plugin.cachedAt && (
+                    <Fact label="Last fetched">
+                      {formatDate(plugin.cachedAt)}
+                    </Fact>
+                  )}
+                </FactList>
+              </div>
             </div>
           </div>
-        </div>
+        </Surface>
       )}
       {!showInstallPrompt && !installing && installError && (
         // Update runs from the ⋯ menu, which closes on select, so its failure
@@ -767,14 +778,16 @@ export function PluginDetailHost({
   return (
     <div data-testid="plugin-detail-host">
       {truncated && (
-        <p
-          role="note"
-          data-testid="plugin-detail-truncated"
-          className="mb-4 rounded-lg border bg-secondary/50 px-4 py-3 text-s fg-secondary"
-        >
-          Some content was truncated. Open this plugin in {brandName} for the
-          full detail.
-        </p>
+        <Surface variant="group" className="mb-4">
+          <p
+            role="note"
+            data-testid="plugin-detail-truncated"
+            className="px-4 py-3 text-s fg-secondary"
+          >
+            Some content was truncated. Open this plugin in {brandName} for the
+            full detail.
+          </p>
+        </Surface>
       )}
       <PluginDetailContent
         plugin={plugin}

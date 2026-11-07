@@ -61,6 +61,7 @@ import {
   type PortalPluginCatalog,
   type PortalPluginCatalogUnifiedEntry,
 } from '@canopy/protocol/portal';
+import { Divider } from '@canopy/ui-shared/components';
 /** What the picker says inline once a marketplace was added. */
 export interface AddMarketplaceConfirmation {
   message: string;
@@ -1055,7 +1056,7 @@ const PortalPluginsPickerContent = memo(function PortalPluginsPickerContent({
       {hideTrigger ? null : (
         <ChatComposerToolbarChip
           variant="capsule"
-          icon={<PluginsIcon width={16} height={16} />}
+          icon={<PluginsIcon size="sm" />}
           label="Plugins"
           labelClassName="hidden lg:inline"
           trailing={
@@ -1148,32 +1149,38 @@ const PortalPluginsPickerContent = memo(function PortalPluginsPickerContent({
               </Notice>
             )}
             {cloudScope && marketplacesEnabled && addMarketplace && (
-              <div className="mt-3 flex justify-start border-t pt-3">
-                <Button
-                  size="compact"
-                  onClick={() => {
-                    setMarketplaceAdded(null);
-                    setMarketplaceDialogOpen(true);
-                  }}
-                  data-testid="portal-plugins-add-marketplace"
-                >
-                  Add marketplace
-                </Button>
+              <div className="mt-3">
+                <Divider />
+                <div className="flex justify-start pt-3">
+                  <Button
+                    size="compact"
+                    onClick={() => {
+                      setMarketplaceAdded(null);
+                      setMarketplaceDialogOpen(true);
+                    }}
+                    data-testid="portal-plugins-add-marketplace"
+                  >
+                    Add marketplace
+                  </Button>
+                </div>
               </div>
             )}
             {deferredTools && (
-              <div className="mt-3 flex flex-col gap-2 border-t pt-3">
-                <DeferredPluginsControl
-                  allowed={allowed}
-                  disabled={saving}
-                  onChange={setDraftAllowed}
-                />
-                {saveError && (
-                  <ErrorBanner
-                    className=""
-                    error="Couldn't save plugin settings. Try again."
+              <div className="mt-3">
+                <Divider />
+                <div className="flex flex-col gap-2 pt-3">
+                  <DeferredPluginsControl
+                    allowed={allowed}
+                    disabled={saving}
+                    onChange={setDraftAllowed}
                   />
-                )}
+                  {saveError && (
+                    <ErrorBanner
+                      className=""
+                      error="Couldn't save plugin settings. Try again."
+                    />
+                  )}
+                </div>
               </div>
             )}
             {!loading && !catalog && (

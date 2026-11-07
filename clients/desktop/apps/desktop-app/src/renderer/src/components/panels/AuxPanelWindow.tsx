@@ -647,7 +647,7 @@ export function AuxPanelWindow({
                 usePanelWindowsStore.getState().mergeBack(auxWindowId);
               }}
             >
-              <AppCatalogRevertIcon width="12" height="12" aria-hidden="true" />
+              <AppCatalogRevertIcon size="sm" aria-hidden="true" />
               Move back
             </Button>
           </Tooltip>

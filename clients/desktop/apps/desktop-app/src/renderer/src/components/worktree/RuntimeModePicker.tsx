@@ -100,7 +100,7 @@ export function RuntimeModePicker({
                 : 'fg-secondary hover:fg-primary'
             } ${disabled ? 'cursor-not-allowed opacity-60' : ''}`}
           >
-            <Icon width="12" height="12" aria-hidden="true" />
+            <Icon size="sm" aria-hidden="true" />
             {label}
           </button>
         );

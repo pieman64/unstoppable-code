@@ -1,6 +1,6 @@
 import { type JSX, useState } from 'react';
 import type { PipelineScalar } from '@canopy/desktop-shared/types/pipeline';
-import { TextArea } from '@canopy/ui-shared/components';
+import { Surface, TextArea } from '@canopy/ui-shared/components';
 import { TextField } from './TextField';
 import { EnlargeValueModal } from './EnlargeValueModal';
 import { ActionTooltip } from '@/components/shared/ActionTooltip';
@@ -129,93 +129,92 @@ export function KeyValueEditor({
       {entries.map(([key, val]) => {
         const valType = detectType(val);
         return (
-          <div
-            key={key}
-            className="rounded-md border bg-secondary/30 p-2 space-y-2"
-          >
-            {/* Row 1: key name + type button + enlarge button + delete */}
-            <div className="flex gap-2 items-center">
-              <TextField
-                value={key}
-                onChange={(e) => updateKey(key, e.target.value)}
-                placeholder="Key"
-                className="flex-1"
-                disabled={readonly}
-              />
-              {!stringOnly && !readonly && (
-                <ActionTooltip
-                  title={`Type: ${valType}`}
-                  description="Select to cycle"
-                >
-                  <Button
-                    size="compact"
-                    onClick={() => cycleType(key)}
-                    aria-label={`Type: ${valType}. Select to cycle`}
+          <Surface variant="group" size="small" padding="tight" key={key}>
+            <div className="space-y-2">
+              {/* Row 1: key name + type button + enlarge button + delete */}
+              <div className="flex gap-2 items-center">
+                <TextField
+                  value={key}
+                  onChange={(e) => updateKey(key, e.target.value)}
+                  placeholder="Key"
+                  className="flex-1"
+                  disabled={readonly}
+                />
+                {!stringOnly && !readonly && (
+                  <ActionTooltip
+                    title={`Type: ${valType}`}
+                    description="Select to cycle"
                   >
-                    {TYPE_LABELS[valType]}
-                  </Button>
-                </ActionTooltip>
-              )}
-              {!readonly && (
-                <Tooltip label="Edit in expanded view">
+                    <Button
+                      size="compact"
+                      onClick={() => cycleType(key)}
+                      aria-label={`Type: ${valType}. Select to cycle`}
+                    >
+                      {TYPE_LABELS[valType]}
+                    </Button>
+                  </ActionTooltip>
+                )}
+                {!readonly && (
+                  <Tooltip label="Edit in expanded view">
+                    <Button
+                      variant="ghost"
+                      size="compact"
+                      iconOnly
+                      onClick={() => setEnlargeKey(key)}
+                      aria-label="Edit in expanded view"
+                    >
+                      <AppCatalogMaximizeIcon size="sm" />
+                    </Button>
+                  </Tooltip>
+                )}
+                {!readonly && (
                   <Button
                     variant="ghost"
                     size="compact"
                     iconOnly
-                    onClick={() => setEnlargeKey(key)}
-                    aria-label="Edit in expanded view"
+                    onClick={() => removeEntry(key)}
+                    aria-label={`Remove ${key}`}
                   >
-                    <AppCatalogMaximizeIcon width="14" height="14" />
+                    <AppCatalogCloseIcon size="sm" />
                   </Button>
-                </Tooltip>
-              )}
-              {!readonly && (
-                <Button
-                  variant="ghost"
-                  size="compact"
-                  iconOnly
-                  onClick={() => removeEntry(key)}
-                  aria-label={`Remove ${key}`}
-                >
-                  <AppCatalogCloseIcon width="14" height="14" />
-                </Button>
-              )}
-            </div>
+                )}
+              </div>
 
-            {/* Row 2: value input (full width) */}
-            <div>
-              {!stringOnly && valType === 'boolean' ? (
-                <SegmentedControl
-                  label={`Value for ${key}`}
-                  value={val ? 'true' : 'false'}
-                  options={BOOLEAN_OPTIONS}
-                  onChange={(next): void =>
-                    setBooleanValue(key, next === 'true')
-                  }
-                  disabled={readonly}
-                  width="fill"
-                />
-              ) : valType === 'number' ? (
-                <TextField
-                  value={String(val)}
-                  onChange={(e) => updateValue(key, e.target.value)}
-                  placeholder="Value"
-                  type="number"
-                  disabled={readonly}
-                />
-              ) : (
-                <TextArea
-                  mono
-                  aria-label={`Value for ${key}`}
-                  value={String(val)}
-                  onChange={(e) => updateValue(key, e.target.value)}
-                  placeholder="Value"
-                  rows={2}
-                  disabled={readonly}
-                />
-              )}
+              {/* Row 2: value input (full width) */}
+              <div>
+                {!stringOnly && valType === 'boolean' ? (
+                  <SegmentedControl
+                    label={`Value for ${key}`}
+                    value={val ? 'true' : 'false'}
+                    options={BOOLEAN_OPTIONS}
+                    onChange={(next): void =>
+                      setBooleanValue(key, next === 'true')
+                    }
+                    disabled={readonly}
+                    width="fill"
+                  />
+                ) : valType === 'number' ? (
+                  <TextField
+                    value={String(val)}
+                    onChange={(e) => updateValue(key, e.target.value)}
+                    placeholder="Value"
+                    type="number"
+                    disabled={readonly}
+                  />
+                ) : (
+                  <TextArea
+                    mono
+                    aria-label={`Value for ${key}`}
+                    value={String(val)}
+                    onChange={(e) => updateValue(key, e.target.value)}
+                    placeholder="Value"
+                    rows={2}
+                    disabled={readonly}
+                  />
+                )}
+              </div>
             </div>
-          </div>
+          </Surface>
         );
       })}
       {!readonly && (

@@ -11,7 +11,7 @@ import {
 import { CheckIcon } from '../../icons/CheckIcon';
 import { CopyIcon } from '../../icons/CopyIcon';
 import { Button } from '../Button';
-import { CLEAN_ICON_BUTTON_VARIANT, useCleanChatLook } from '../chat-look';
+import { CLEAN_ICON_BUTTON_VARIANT } from '../chat-look';
 import { CopyStatusRegion, useAnnouncedCopy } from '../copy-feedback';
 import { Tooltip } from '../Tooltip';
 import { ComposerIconButton } from './ComposerIconButton';
@@ -110,7 +110,6 @@ function PlanCopyActionControl({
   compact = false,
   write,
 }: PlanCopyActionProps): JSX.Element {
-  const clean = useCleanChatLook();
   const reasonId = useId();
   const { copied, failed, announcement, copy } = useAnnouncedCopy({
     failureAnnouncement: COPY_PLAN_FAILED,
@@ -152,7 +151,6 @@ function PlanCopyActionControl({
   const control = renderPlanCopyControl({
     appearance,
     compact,
-    clean,
     copied,
     buttonProps,
   });
@@ -189,11 +187,11 @@ interface PlanCopyButtonProps {
   readonly 'data-state': string;
 }
 
-function planCopyGlyph(copied: boolean, px: number): ReactNode {
+function planCopyGlyph(copied: boolean): ReactNode {
   return copied ? (
-    <CheckIcon width={px} height={px} aria-hidden="true" />
+    <CheckIcon size="sm" aria-hidden="true" />
   ) : (
-    <CopyIcon width={px} height={px} aria-hidden="true" />
+    <CopyIcon size="sm" aria-hidden="true" />
   );
 }
 
@@ -201,13 +199,11 @@ function planCopyGlyph(copied: boolean, px: number): ReactNode {
 function renderPlanCopyControl({
   appearance,
   compact,
-  clean,
   copied,
   buttonProps,
 }: {
   readonly appearance: PlanCopyAppearance;
   readonly compact: boolean;
-  readonly clean: boolean;
   readonly copied: boolean;
   readonly buttonProps: PlanCopyButtonProps;
 }): JSX.Element {
@@ -224,31 +220,31 @@ function renderPlanCopyControl({
           iconOnly
           {...buttonProps}
         >
-          {planCopyGlyph(copied, clean ? 14 : 13)}
+          {planCopyGlyph(copied)}
         </Button>
       );
     case 'composer':
       return (
         <ComposerIconButton capsule autoWidth tone="strong" {...buttonProps}>
-          {planCopyGlyph(copied, 14)}
+          {planCopyGlyph(copied)}
           <span>{visibleLabel}</span>
         </ComposerIconButton>
       );
     case 'card':
       return (
         <Button size="compact" variant="secondary" {...buttonProps}>
-          {planCopyGlyph(copied, 13)}
+          {planCopyGlyph(copied)}
           {visibleLabel}
         </Button>
       );
     case 'control':
       return compact ? (
         <Button size="compact" variant="secondary" iconOnly {...buttonProps}>
-          {planCopyGlyph(copied, 16)}
+          {planCopyGlyph(copied)}
         </Button>
       ) : (
         <Button size="compact" variant="secondary" {...buttonProps}>
-          {planCopyGlyph(copied, 16)}
+          {planCopyGlyph(copied)}
           {visibleLabel}
         </Button>
       );

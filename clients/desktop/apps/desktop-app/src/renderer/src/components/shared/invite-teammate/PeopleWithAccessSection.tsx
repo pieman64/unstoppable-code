@@ -1,4 +1,4 @@
-import { Heading } from '@canopy/ui-shared/components';
+import { Divider, Heading } from '@canopy/ui-shared/components';
 import type { JSX } from 'react';
 import type { SharedContainerPublicationState } from '@canopy/desktop-shared/types';
 import type {
@@ -101,9 +101,9 @@ export function PeopleWithAccessSection({
         rather than one more field of the invite form above it.
       */}
       {separated && (
-        <div
-          aria-hidden="true"
-          className="mb-4 h-[var(--border-hairline)] bg-line-base"
+        <Divider
+          className="mb-4"
+          aria-hidden
           data-testid="shared-container-invite-people-divider"
         />
       )}

@@ -74,7 +74,7 @@ export function ChatWatcherButton({
             data-attention=""
             className="focus-ring canopy-small-icon-stroke inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded-full px-2 text-xs fg-info transition-colors hover:bg-info-subtle"
           >
-            <WatcherEyeIcon width={14} height={14} aria-hidden="true" />
+            <WatcherEyeIcon size="sm" aria-hidden="true" />
             <span data-testid={`chat-watcher-button-${chatId}-count`}>
               {watchers.length}
             </span>
@@ -88,7 +88,7 @@ export function ChatWatcherButton({
             aria-label="Watch this chat"
             data-testid={`chat-watcher-button-${chatId}`}
           >
-            <WatcherEyeIcon width={14} height={14} aria-hidden="true" />
+            <WatcherEyeIcon size="sm" aria-hidden="true" />
           </Button>
         )}
       </Tooltip>
@@ -122,7 +122,7 @@ export function ChatWatcherButton({
         data-attention={hasWatchers ? '' : undefined}
         className={buttonClasses}
       >
-        <WatcherEyeIcon width={13} height={13} aria-hidden="true" />
+        <WatcherEyeIcon size="sm" aria-hidden="true" />
         {hasWatchers && (
           <span
             data-testid={`chat-watcher-button-${chatId}-count`}

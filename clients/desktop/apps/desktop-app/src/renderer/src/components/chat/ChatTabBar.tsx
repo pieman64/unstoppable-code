@@ -41,7 +41,8 @@ import {
 import { resolveOverallDefault } from '@canopy/desktop-shared/types';
 import { ThinkingSpinner } from '../shared/loading/spinners/ThinkingSpinner';
 import { FileTypeIcon } from '../shared/file-icons';
-import { AgentProviderIcon, resolveChatTabProvider } from '@/lib/providerUi';
+import { resolveChatTabProvider } from '@/lib/providerUi';
+import { ModelProviderIcon } from '@canopy/ui-shared/components';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { formatFileReferencePath } from '@/lib/file-reference-paths';
 import { TabContextMenu, type TabContextMenuItem } from './TabContextMenu';
@@ -620,21 +621,19 @@ export const ChatTabBar = memo(function ChatTabBar({
       />
     ) : awaitingApproval ? (
       <PlanModeIcon
-        width={12}
-        height={12}
+        size="sm"
         className={`shrink-0 ${OPERATIONAL_STATUS_COLORS.unread.foreground}`}
       />
     ) : provider !== undefined ? (
-      <AgentProviderIcon
+      <ModelProviderIcon
         provider={provider}
-        width={12}
-        height={12}
-        className={`shrink-0 ${tab.unread ? OPERATIONAL_STATUS_COLORS.unread.foreground : 'fg-secondary'}`}
+        size="xs"
+        tone={tab.unread ? 'unread' : 'secondary'}
+        className="shrink-0"
       />
     ) : (
       <ChatIcon
-        width={12}
-        height={12}
+        size="sm"
         className={`shrink-0 ${tab.unread ? OPERATIONAL_STATUS_COLORS.unread.foreground : 'fg-secondary'}`}
       />
     );
@@ -729,19 +728,17 @@ export const ChatTabBar = memo(function ChatTabBar({
       />
     ) : awaitingApproval ? (
       <PlanModeIcon
-        width={14}
-        height={14}
+        size="sm"
         className={`shrink-0 ${OPERATIONAL_STATUS_COLORS.unread.foreground}`}
       />
     ) : provider !== undefined ? (
-      <AgentProviderIcon
+      <ModelProviderIcon
         provider={provider}
-        width={14}
-        height={14}
+        size="sm"
         className="shrink-0 fg-secondary"
       />
     ) : (
-      <ChatIcon width={14} height={14} className="shrink-0 fg-secondary" />
+      <ChatIcon size="sm" className="shrink-0 fg-secondary" />
     );
     const hoverLabel = isFileTab
       ? tab.filePath

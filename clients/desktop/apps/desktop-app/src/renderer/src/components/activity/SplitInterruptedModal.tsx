@@ -1,6 +1,6 @@
 import { type JSX } from 'react';
 import { DialogModal } from '@/components/shared/DialogModal';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, Surface } from '@canopy/ui-shared/components';
 
 export interface SplitInterruptedModalProps {
   worktreeId: string;
@@ -51,14 +51,16 @@ export function SplitInterruptedModal({
             : ''}
           .
         </p>
-        <p
-          data-testid="split-interrupted-resume-note"
-          className="rounded-md border bg-fg-primary/[0.03] px-3 py-2 text-xs fg-secondary"
-        >
-          Resuming after a restart re-plans the split. Unchanged plans resume
-          from where they left off; if you change the plan, discard the split
-          state and start over instead.
-        </p>
+        <Surface variant="group" size="small">
+          <p
+            className="px-3 py-2 text-xs fg-secondary"
+            data-testid="split-interrupted-resume-note"
+          >
+            Resuming after a restart re-plans the split. Unchanged plans resume
+            from where they left off; if you change the plan, discard the split
+            state and start over instead.
+          </p>
+        </Surface>
       </div>
 
       <div className="flex flex-wrap items-center justify-end gap-2 border-t px-6 py-3">

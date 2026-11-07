@@ -114,7 +114,7 @@ function BackgroundItemRow({
       ? COST_NOT_PRICED_LABEL
       : formatCostAmount(row.usd);
   return (
-    <li className="flex items-baseline gap-3 rounded-md px-2 py-1 text-xs">
+    <li className="flex items-baseline gap-3 px-2 py-1 text-xs">
       <span className="fg-primary">{BACKGROUND_KIND_LABELS[row.kind]}</span>
       <span className="tabular-nums fg-tertiary">
         {plural(row.runCount, 'run', 'runs')}
@@ -758,7 +758,7 @@ function ChatStateMarker({
   if (view.chat.state === 'archived') {
     return (
       <span className="flex shrink-0 items-center gap-1 text-xs fg-secondary">
-        <ArchivedStateIcon state="archived" size={14} />
+        <ArchivedStateIcon state="archived" size="sm" />
         Archived
       </span>
     );

@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { Button, Notice, NoticeButton } from '@canopy/ui-shared/components';
+import {
+  Button,
+  Notice,
+  NoticeButton,
+  Surface,
+} from '@canopy/ui-shared/components';
 import {
   GitPullRequestIcon,
   SplitPrIcon,
@@ -164,50 +169,55 @@ function SplitProgressOverlay({
   onDismiss: () => void;
 }): JSX.Element {
   return (
-    <div
+    <Surface
+      variant="group"
+      size="small"
+      padding="compact"
+      className="mt-3"
       data-testid="split-progress"
-      className="mt-3 space-y-2 rounded-md border bg-base/40 p-3"
     >
-      <SplitProgressChecklist view={view} />
-      <div className="flex flex-wrap gap-2">
-        {isSplitting && (
-          <Button
-            size="compact"
-            onClick={onCancel}
-            data-testid="split-progress-cancel"
-          >
-            Cancel
-          </Button>
-        )}
-        {view.terminal === 'error' && canRetry && (
-          <Button
-            size="compact"
-            onClick={onRetry}
-            data-testid="split-progress-retry"
-          >
-            Try again
-          </Button>
-        )}
-        {view.terminal === 'error' && canEditPlan && (
-          <Button
-            size="compact"
-            onClick={onEditPlan}
-            data-testid="split-progress-edit-plan"
-          >
-            Edit plan
-          </Button>
-        )}
-        {(view.terminal === 'error' || view.terminal === 'cancelled') && (
-          <Button
-            size="compact"
-            onClick={onDismiss}
-            data-testid="split-progress-dismiss"
-          >
-            Dismiss
-          </Button>
-        )}
+      <div className="space-y-2">
+        <SplitProgressChecklist view={view} />
+        <div className="flex flex-wrap gap-2">
+          {isSplitting && (
+            <Button
+              size="compact"
+              onClick={onCancel}
+              data-testid="split-progress-cancel"
+            >
+              Cancel
+            </Button>
+          )}
+          {view.terminal === 'error' && canRetry && (
+            <Button
+              size="compact"
+              onClick={onRetry}
+              data-testid="split-progress-retry"
+            >
+              Try again
+            </Button>
+          )}
+          {view.terminal === 'error' && canEditPlan && (
+            <Button
+              size="compact"
+              onClick={onEditPlan}
+              data-testid="split-progress-edit-plan"
+            >
+              Edit plan
+            </Button>
+          )}
+          {(view.terminal === 'error' || view.terminal === 'cancelled') && (
+            <Button
+              size="compact"
+              onClick={onDismiss}
+              data-testid="split-progress-dismiss"
+            >
+              Dismiss
+            </Button>
+          )}
+        </div>
       </div>
-    </div>
+    </Surface>
   );
 }
 
@@ -225,47 +235,52 @@ function SplitResultView({
   onDiscard: () => void;
 }): JSX.Element {
   return (
-    <div
+    <Surface
+      variant="group"
+      size="small"
+      padding="compact"
+      className="mt-3"
       data-testid="split-result"
-      className="mt-3 space-y-2 rounded-md border bg-base/40 p-3"
     >
-      <SplitResultSummary map={map} />
-      {(map.status === 'failed' || map.status === 'cancelled') && (
-        <div className="space-y-1.5">
-          {canResume ? (
-            <Button
-              size="compact"
-              onClick={onResume}
-              data-testid="split-result-resume"
-            >
-              Resume split
-            </Button>
-          ) : (
-            <>
-              <p className="text-2xs fg-secondary">
-                Resuming needs the reviewed plan, which is no longer available.
-                Plan a new split to continue.
-              </p>
+      <div className="space-y-2">
+        <SplitResultSummary map={map} />
+        {(map.status === 'failed' || map.status === 'cancelled') && (
+          <div className="space-y-1.5">
+            {canResume ? (
               <Button
                 size="compact"
-                onClick={onPlanNewSplit}
-                data-testid="split-result-replan"
+                onClick={onResume}
+                data-testid="split-result-resume"
               >
-                Plan new split
+                Resume split
               </Button>
-            </>
-          )}
-          <Button
-            variant="ghost-destructive"
-            size="compact"
-            onClick={onDiscard}
-            data-testid="split-pr-discard"
-          >
-            Discard split state
-          </Button>
-        </div>
-      )}
-    </div>
+            ) : (
+              <>
+                <p className="text-2xs fg-secondary">
+                  Resuming needs the reviewed plan, which is no longer
+                  available. Plan a new split to continue.
+                </p>
+                <Button
+                  size="compact"
+                  onClick={onPlanNewSplit}
+                  data-testid="split-result-replan"
+                >
+                  Plan new split
+                </Button>
+              </>
+            )}
+            <Button
+              variant="ghost-destructive"
+              size="compact"
+              onClick={onDiscard}
+              data-testid="split-pr-discard"
+            >
+              Discard split state
+            </Button>
+          </div>
+        )}
+      </div>
+    </Surface>
   );
 }
 
@@ -282,31 +297,35 @@ function SplitDiscardArtifacts({
   const hasArtifacts =
     artifacts.branches.length > 0 || artifacts.prNumbers.length > 0;
   return (
-    <div
+    <Surface
+      variant="group"
+      size="small"
+      padding="tight"
       data-testid="split-pr-discard-artifacts"
-      className="space-y-1 rounded-md border bg-base/40 p-2 text-2xs fg-secondary"
     >
-      <p className="fg-primary/80">Split state discarded.</p>
-      {hasArtifacts ? (
-        <>
-          <p>
-            These artifacts were left behind and can be cleaned up manually:
-          </p>
-          {artifacts.branches.length > 0 && (
-            <p className="break-words">
-              Branches: {artifacts.branches.join(', ')}
+      <div className="space-y-1 text-2xs fg-secondary">
+        <p className="fg-primary/80">Split state discarded.</p>
+        {hasArtifacts ? (
+          <>
+            <p>
+              These artifacts were left behind and can be cleaned up manually:
             </p>
-          )}
-          {artifacts.prNumbers.length > 0 && (
-            <p className="break-words">
-              PRs: {artifacts.prNumbers.map((n) => `#${n}`).join(', ')}
-            </p>
-          )}
-        </>
-      ) : (
-        <p>No branches or PRs were created yet — nothing to clean up.</p>
-      )}
-    </div>
+            {artifacts.branches.length > 0 && (
+              <p className="break-words">
+                Branches: {artifacts.branches.join(', ')}
+              </p>
+            )}
+            {artifacts.prNumbers.length > 0 && (
+              <p className="break-words">
+                PRs: {artifacts.prNumbers.map((n) => `#${n}`).join(', ')}
+              </p>
+            )}
+          </>
+        ) : (
+          <p>No branches or PRs were created yet — nothing to clean up.</p>
+        )}
+      </div>
+    </Surface>
   );
 }
 
@@ -909,7 +928,7 @@ export function PullRequestSection({
                   .join('\n')}
               >
                 <Button size="compact" disabled data-testid="split-pr-button">
-                  <SplitPrIcon className="h-3.5 w-3.5" />
+                  <SplitPrIcon size="sm" />
                   Split PR
                   {splitLineCount !== undefined
                     ? ` (${splitLineCount.toLocaleString()} changed lines)`
@@ -922,7 +941,7 @@ export function PullRequestSection({
                 onClick={() => openSplitPreflight(projectId, worktreeId)}
                 data-testid="split-pr-button"
               >
-                <SplitPrIcon className="h-3.5 w-3.5" />
+                <SplitPrIcon size="sm" />
                 Split PR
                 {splitLineCount !== undefined
                   ? ` (${splitLineCount.toLocaleString()} changed lines)`

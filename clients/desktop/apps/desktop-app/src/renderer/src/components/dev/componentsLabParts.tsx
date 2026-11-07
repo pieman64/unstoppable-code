@@ -1,4 +1,4 @@
-import { Heading } from '@canopy/ui-shared/components';
+import { Heading, Surface } from '@canopy/ui-shared/components';
 import { useEffect, useRef, type JSX, type ReactNode } from 'react';
 
 /**
@@ -21,9 +21,9 @@ export function SpecimenPanel({
           {title}
         </Heading>
       ) : null}
-      <div className="flex flex-col gap-4 rounded-lg bg-secondary p-4">
+      <Surface variant="group" padding="default" gap="group">
         {children}
-      </div>
+      </Surface>
     </div>
   );
 }

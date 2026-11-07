@@ -495,11 +495,12 @@ export interface DeferredToolsReloadEvent {
    * `{ sourceId, skillName }` / `{ marketplaceId, pluginName }` /
    * `{ serverId, configId }` selection. The coordinator (which computed them
    * from the live catalog during Load) sends them here on the reload's initial
-   * lifecycle event; the renderer echoes them back on
-   * {@link DeferredToolsReloadBeginRequest.additions} for validation. Absent on
-   * terminal-outcome events.
+   * lifecycle event; the renderer mirrors them into its tab state when the
+   * reload resumes. Absent on terminal-outcome events.
    */
   additions?: DeferredToolsReloadAdditions;
   /** Present on `kind: 'outcome'` (failure) lifecycles. */
   error?: DeferredToolsReloadError;
+  /** On `resuming`: the provider session id the continuation resumes. */
+  sdkSessionId?: string;
 }

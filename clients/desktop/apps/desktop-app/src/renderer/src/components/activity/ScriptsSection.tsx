@@ -11,6 +11,7 @@ import {
   DialogModal,
   LoadingSpinner,
   SourceInfoButton,
+  Surface,
 } from '@canopy/ui-shared/components';
 import { RocketLaunchIcon } from '@canopy/ui-shared/icons';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
@@ -258,65 +259,70 @@ function WorkspaceLifecycleInfoModal({
         {!loading && items.length > 0 && (
           <div className="space-y-3">
             {items.map((item, index) => (
-              <div
+              <Surface
+                variant="group"
+                padding="compact"
                 key={`${item.entry.script.scriptKey}-${index}`}
-                className="rounded-lg border bg-fg-primary/[0.02] p-3 text-xs"
               >
-                <div className="mb-2 flex items-center justify-between gap-3">
-                  <span className="font-medium fg-primary/80">
-                    <span className="mr-1.5 fg-secondary/60">{index + 1}.</span>
-                    {item.entry.script.label}
-                  </span>
-                  <span className="shrink-0 text-3xs font-medium fg-secondary/60">
-                    {item.entry.script.target === 'workspace-root'
-                      ? 'Project'
-                      : (item.entry.script.repoName ?? 'Repo')}
-                  </span>
-                </div>
-                {item.error && (
-                  <div className="text-2xs fg-destructive-strong">
-                    {item.error}
+                <div className="text-xs">
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <span className="font-medium fg-primary/80">
+                      <span className="mr-1.5 fg-secondary/60">
+                        {index + 1}.
+                      </span>
+                      {item.entry.script.label}
+                    </span>
+                    <span className="shrink-0 text-3xs font-medium fg-secondary/60">
+                      {item.entry.script.target === 'workspace-root'
+                        ? 'Project'
+                        : (item.entry.script.repoName ?? 'Repo')}
+                    </span>
                   </div>
-                )}
-                {item.info && (
-                  <div className="space-y-1.5">
-                    {item.info.layers.map((layer) => (
-                      <div
-                        key={layer.sourceKey}
-                        className={`rounded border px-2 py-1.5 ${
-                          layer.status === 'active'
-                            ? 'border-line-positive bg-success/[0.05]'
-                            : 'bg-base/50'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span
-                            className={
-                              layer.status === 'active'
-                                ? 'font-medium fg-success-strong'
-                                : 'fg-secondary'
-                            }
-                          >
-                            {layer.sourceLabel}
-                          </span>
-                          <span
-                            className={`text-3xs font-medium ${getSourceLayerStatusColor(layer.status)}`}
-                          >
-                            {getSourceLayerStatusLabel(layer.status)}
-                          </span>
+                  {item.error && (
+                    <div className="text-2xs fg-destructive-strong">
+                      {item.error}
+                    </div>
+                  )}
+                  {item.info && (
+                    <div className="space-y-1.5">
+                      {item.info.layers.map((layer) => (
+                        <div
+                          key={layer.sourceKey}
+                          className={`rounded border px-2 py-1.5 ${
+                            layer.status === 'active'
+                              ? 'border-line-positive bg-success/[0.05]'
+                              : 'bg-base/50'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span
+                              className={
+                                layer.status === 'active'
+                                  ? 'font-medium fg-success-strong'
+                                  : 'fg-secondary'
+                              }
+                            >
+                              {layer.sourceLabel}
+                            </span>
+                            <span
+                              className={`text-3xs font-medium ${getSourceLayerStatusColor(layer.status)}`}
+                            >
+                              {getSourceLayerStatusLabel(layer.status)}
+                            </span>
+                          </div>
+                          {layer.command !== null && (
+                            <pre
+                              className={`${POSTHOG_REPLAY_BLOCK_CLASS} mt-1 max-h-14 overflow-auto whitespace-pre-wrap break-words rounded bg-base/80 px-2 py-1 font-mono text-2xs fg-secondary`}
+                            >
+                              {layer.command}
+                            </pre>
+                          )}
                         </div>
-                        {layer.command !== null && (
-                          <pre
-                            className={`${POSTHOG_REPLAY_BLOCK_CLASS} mt-1 max-h-14 overflow-auto whitespace-pre-wrap break-words rounded bg-base/80 px-2 py-1 font-mono text-2xs fg-secondary`}
-                          >
-                            {layer.command}
-                          </pre>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </Surface>
             ))}
           </div>
         )}
@@ -404,7 +410,7 @@ export function ScriptsSection({
   const { supplementaryContent, ...bodyProps } = scriptsSection;
   return (
     <ActivitySection
-      icon={<RocketLaunchIcon width="14" height="14" />}
+      icon={<RocketLaunchIcon size="sm" />}
       title="Scripts"
       subtitle={headerChrome.subtitle}
       collapsedIconColor={headerChrome.collapsedIconColor}

@@ -602,7 +602,7 @@ function SharedContainerTopBar({
           onClick={onFork}
           className="shrink-0"
         >
-          <CopyIcon width={14} height={14} aria-hidden="true" />
+          <CopyIcon size="sm" aria-hidden="true" />
           Make a copy
         </Button>
       )}

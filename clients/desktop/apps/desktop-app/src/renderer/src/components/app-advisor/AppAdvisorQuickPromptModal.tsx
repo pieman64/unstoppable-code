@@ -80,7 +80,7 @@ export function AppAdvisorQuickPromptModal({
           className="flex items-center gap-2"
           data-testid="app-advisor-quick-prompt-header"
         >
-          <AppAdvisorIcon className="h-4 w-4 fg-primary" />
+          <AppAdvisorIcon size="sm" className="fg-primary" />
           {ORCHESTRATOR_LABEL}
         </span>
       }

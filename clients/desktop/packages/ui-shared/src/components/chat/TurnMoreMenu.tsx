@@ -53,7 +53,7 @@ export function TurnMoreMenu({
             onOpenChange(!open);
           }}
         >
-          <MoreHorizontalIcon width="14" height="14" aria-hidden="true" />
+          <MoreHorizontalIcon size="sm" aria-hidden="true" />
         </Button>
       </Tooltip>
       <FloatingMenu

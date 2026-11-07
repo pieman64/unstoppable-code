@@ -7,6 +7,7 @@ import {
 } from '@canopy/ui-shared';
 import type { SubagentChangeTotals } from '@canopy/ui-shared/components';
 import { SpecimenCell, SpecimenPanel } from './componentsLabParts';
+import { Surface } from '@canopy/ui-shared/components';
 
 const NOW = Date.UTC(2026, 9, 30, 12, 0, 0);
 const MINUTE = 60_000;
@@ -178,7 +179,7 @@ function ListDemo({
     () => new Set(),
   );
   return (
-    <div className="flex w-full flex-col overflow-hidden rounded-lg border bg-base">
+    <Surface variant="inset" className="flex flex-col w-full overflow-hidden">
       <SubagentsList
         tree={tree}
         selectedId={selectedId}
@@ -203,7 +204,7 @@ function ListDemo({
         onOpenChat={noop}
         onOpenWorkflow={noop}
       />
-    </div>
+    </Surface>
   );
 }
 

@@ -64,7 +64,7 @@ export function CustomizeWorkflowRowControls({
         testId={`customize-workflow-run-${entry.id}`}
         onClick={onRun}
       >
-        <PlayIcon width={14} height={14} aria-hidden="true" />
+        <PlayIcon size="sm" aria-hidden="true" />
       </TableActionButton>
     );
   }

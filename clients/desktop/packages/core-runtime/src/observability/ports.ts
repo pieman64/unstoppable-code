@@ -201,6 +201,18 @@ export interface AgentObservabilityHostTypes {
   sessionDiagnostic: unknown;
 }
 
+/** The canonical turn reducer's record of an ended chat turn (CAN-5096). */
+export interface CanonicalChatTurnDuration {
+  /** The canonical turn id. */
+  turnId: string;
+  /** The user message the turn's start bound, when it bound one. */
+  userMessageId?: string;
+  /** Active time: wall or provider-reported time net of `pausedMs`. */
+  durationMs: number;
+  /** The union of the turn's approval and question pauses. */
+  pausedMs: number;
+}
+
 /**
  * What chat turns, managed subagents, helper calls and their transcripts
  * write through (CAN-5096). Like `ExecutionObservabilityIngest`, producers
@@ -227,6 +239,16 @@ export interface AgentObservabilityIngest<
   ): void;
   pauseChatTurn(projectId: string, worktreeId: string, chatId: string): void;
   resumeChatTurn(projectId: string, worktreeId: string, chatId: string): void;
+  /**
+   * The canonical duration of a chat turn that just ended. Applies to the
+   * open entry of that turn only; ignored once the entry has finalized.
+   */
+  recordCanonicalTurnDuration(
+    projectId: string,
+    worktreeId: string,
+    chatId: string,
+    turn: CanonicalChatTurnDuration,
+  ): void;
   recordInjectedPromptForOpenChatTurn(
     projectId: string,
     worktreeId: string,
@@ -244,6 +266,12 @@ export interface AgentObservabilityIngest<
   endClaudeQuery(queryId: string): void;
   seedTranscript(key: string, seed: T['transcriptSeed']): void;
   appendTranscriptRecord(key: string, payload: unknown): void;
+  /** One provider stream event of an observed helper task. */
+  observeClaudeEvent(
+    key: string,
+    data: Record<string, unknown>,
+    provider: 'claude' | 'ollama' | 'copilot' | 'opencode',
+  ): void;
   appendFinalizedChatTranscriptRecord(
     projectId: string,
     worktreeId: string,

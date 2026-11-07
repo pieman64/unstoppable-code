@@ -7,7 +7,7 @@ import {
   HEADER_STATE_GALLERY_PROJECT_ID,
 } from './headerStateGalleryData';
 import { useSeededHeaderGalleryState } from './headerStateGallerySeed';
-import { Heading } from '@canopy/ui-shared/components';
+import { Heading, Surface } from '@canopy/ui-shared/components';
 
 /**
  * Personal reference page for the worktree header, reachable from the sidebar
@@ -75,17 +75,18 @@ export function HeaderGalleryRow({
 }): JSX.Element {
   return (
     <div
-      className="overflow-hidden rounded-lg border"
       style={width === undefined ? undefined : { width: `${width}px` }}
       data-testid={`header-state-row-${worktreeId}`}
     >
-      <WorktreeTopBar
-        projectId={HEADER_STATE_GALLERY_PROJECT_ID}
-        worktreeId={worktreeId}
-        viewMode="list"
-        viewModeReady
-        pinnedActions={pinnedActions}
-      />
+      <Surface variant="outline" className="overflow-hidden">
+        <WorktreeTopBar
+          projectId={HEADER_STATE_GALLERY_PROJECT_ID}
+          worktreeId={worktreeId}
+          viewMode="list"
+          viewModeReady
+          pinnedActions={pinnedActions}
+        />
+      </Surface>
     </div>
   );
 }

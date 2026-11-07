@@ -9,7 +9,7 @@ import {
   hasManifestRepos,
   readCanopyJson,
 } from './canopy-json';
-import { getWorkspaceWorktreeRootRepoDir } from './paths';
+import { getWorkspaceDir, getWorkspaceWorktreeRootRepoDir } from './paths';
 import { resolveProjectReferenceRepoPath } from './project-reference-repo';
 import { readWorkspaceConfig } from './workspace-persistence';
 import { resolveWorkspaceReferenceRepoPath } from './workspace-reference-repo';
@@ -25,6 +25,17 @@ export async function computeWorkspaceDriftIssues(
   worktreeId?: string,
 ): Promise<WorkspaceDriftReport> {
   const config = await readWorkspaceConfig(workspaceId);
+  // Local combinations have no source-controlled root manifest to drift from.
+  if (config.type === 'multi-repo' && !config.sourceRepoPath) {
+    const targetRepoPath = worktreeId
+      ? getWorkspaceWorktreeRootRepoDir(workspaceId, worktreeId)
+      : getWorkspaceDir(workspaceId);
+    return {
+      issues: [],
+      targetRepoPath,
+      targetCanopyJsonPath: getCanopyJsonPath(targetRepoPath),
+    };
+  }
   const targetRepoPath = await getWorkspaceDriftTargetRepoPath(
     config,
     workspaceId,

@@ -2045,7 +2045,7 @@ function nonEmptyString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
-function normalizeAgentChatAddress(
+export function normalizeAgentChatAddress(
   value: unknown,
 ): PipelineAgentChatAddress | undefined {
   if (!isRecord(value)) return undefined;
@@ -2058,7 +2058,7 @@ function normalizeAgentChatAddress(
 }
 
 /** Drop a persisted initiator that does not match a known shape. */
-function normalizeExecutionInitiator(
+export function normalizeExecutionInitiator(
   value: unknown,
 ): PipelineExecutionInitiator | undefined {
   if (!isRecord(value)) return undefined;
@@ -2137,7 +2137,7 @@ function normalizeRerunContext(
   return undefined;
 }
 
-function normalizeCuratedPipelineSource(
+export function normalizeCuratedPipelineSource(
   value: unknown,
 ): CuratedPipelineExecutionSource | undefined {
   if (
@@ -2160,7 +2160,7 @@ function normalizeCuratedPipelineSource(
   };
 }
 
-function normalizeSharedPipelineSource(
+export function normalizeSharedPipelineSource(
   value: unknown,
 ): SharedPipelineExecutionSource | undefined {
   if (!isRecord(value)) {

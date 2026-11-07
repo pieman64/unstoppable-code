@@ -19,6 +19,7 @@ import {
   OrganizationMemoryLayout,
 } from './OrganizationMemoryLayout';
 import { SourceTranscriptView } from './SourceTranscriptView';
+import { Surface } from '@canopy/ui-shared/components';
 
 /** A plain transcript the loading skeleton measures: two short messages. */
 const SAMPLE_TRANSCRIPT: ExplorerSourceTranscript = {
@@ -195,9 +196,11 @@ function FactSourceTranscript({
   }
   if (selected.transcript === null) {
     return (
-      <div className="rounded-xl border border-dashed py-16 text-center text-s fg-secondary">
-        No transcript source is attached to this fact.
-      </div>
+      <Surface variant="dashed">
+        <div className="py-16 text-center text-s fg-secondary">
+          No transcript source is attached to this fact.
+        </div>
+      </Surface>
     );
   }
   return <SourceTranscriptView transcript={selected.transcript} />;

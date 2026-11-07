@@ -111,11 +111,7 @@ export function ChatPreviewPopover({
               <div className="flex items-center gap-1.5 text-xs">
                 <span className="inline-flex shrink-0 items-center">
                   {row.isPlan ? (
-                    <PlanModeIcon
-                      width={12}
-                      height={12}
-                      className="fg-secondary"
-                    />
+                    <PlanModeIcon size="sm" className="fg-secondary" />
                   ) : (
                     <ChatPreviewProviderIcon providerType={row.providerType} />
                   )}

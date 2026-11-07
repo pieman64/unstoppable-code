@@ -106,7 +106,7 @@ export function PrMergeWarningDialog({
               data-testid="pr-merge-warning-triage"
               className="self-start"
             >
-              <ChatIcon className="h-3.5 w-3.5" />
+              <ChatIcon size="sm" />
               Triage review comments
             </Button>
           </Tooltip>
@@ -121,7 +121,7 @@ export function PrMergeWarningDialog({
             {isTriaging ? (
               <ThinkingSpinner tone="primary" quiet />
             ) : (
-              <ChatIcon className="h-3.5 w-3.5" />
+              <ChatIcon size="sm" />
             )}
             {isTriaging ? 'Starting…' : 'Triage review comments'}
           </Button>

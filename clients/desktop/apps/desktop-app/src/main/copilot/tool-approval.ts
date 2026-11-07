@@ -1,8 +1,8 @@
 import {
   copilotNativeOperations,
   isCopilotShellControl,
-} from '@canopy/desktop-shared/node/copilot/tool-input';
-import type { CopilotPreToolInput } from '@canopy/desktop-shared/node/copilot/session-policy';
+} from '@canopy/copilot-recipient/tool-input';
+import type { CopilotPreToolInput } from '@canopy/copilot-recipient/session-policy';
 import type {
   ApprovalOutcome,
   ApprovalSessionHandle,

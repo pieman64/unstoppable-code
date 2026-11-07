@@ -1,0 +1,980 @@
+/**
+ * CAN-5087 flag-forced-on golden: the real `script:run` and `script:stop`
+ * IPC handlers, desktop dispatcher, CoreScriptRuns, worker.script adapter and
+ * route, with the `daemon-scripts` experiment on, over a daemon double: a
+ * second script worker behind the real handlers and output stream. The real
+ * daemon is covered by script-conformance.
+ */
+import type * as CorePlatform from '@canopy/core-platform';
+
+const mockGet = jest.fn<Promise<{ client: unknown }>, [unknown, unknown]>();
+let mockDataRoot = '';
+jest.mock('../../canopy-runtime/electron-daemon-access', () => ({
+  getElectronDaemonConnections: (): unknown => ({
+    get: (caller: unknown, signal: unknown) => mockGet(caller, signal),
+  }),
+  getElectronDaemonFilesContext: (): Promise<unknown> =>
+    Promise.resolve({ authorityId: 'local', canonicalDataRoot: mockDataRoot }),
+}));
+const mockNoteFallback = jest.fn();
+jest.mock('../../canopy-runtime/electron-daemon-health', () => ({
+  getElectronDaemonHealth: (): unknown => ({
+    setConsumerEnabled: (): void => undefined,
+    isLatched: (): boolean => false,
+    noteFallback: (...args: unknown[]): void => {
+      mockNoteFallback(...args);
+    },
+  }),
+}));
+let mockPlatform = 'darwin';
+jest.mock('@canopy/core-platform', () => ({
+  ...jest.requireActual<typeof CorePlatform>('@canopy/core-platform'),
+  hostPlatformOperatingSystem: (): string => mockPlatform,
+}));
+let mockExperiment = true;
+jest.mock('../../services/labs-experiments-runtime', () => ({
+  getLabsExperimentsService: (): unknown => ({
+    getSnapshot: (): unknown => ({
+      ready: true,
+      experiments: [{ id: 'daemon-scripts', enabled: mockExperiment }],
+    }),
+  }),
+}));
+let mockBridge = false;
+jest.mock('../../remote-control/host/bridge-window', () => ({
+  resolveRemoteBridgeSender: (): unknown => (mockBridge ? {} : null),
+}));
+let mockProjectPath = '';
+jest.mock('../../lib/sidebar-items', () => ({
+  readAllSidebarItems: (): Promise<unknown> =>
+    Promise.resolve({
+      items: [
+        {
+          id: 'project',
+          type: 'single-repo',
+          name: 'project',
+          repoPath: mockProjectPath,
+          worktrees: [{ id: 'task' }],
+          scripts: {
+            echo: 'printf \'one\\ntwo\\n\'; printf \'%s %s\' "$SECRET_KEY" "$GH_TOKEN" > /dev/null',
+            long: 'sleep 30',
+            slow: "sleep 0.5; printf 'done\\n'",
+            interactive: { command: 'echo hi', interactive: true },
+          },
+        },
+      ],
+    }),
+}));
+jest.mock('../../lib/user-environment-store', () => ({
+  readEnvironmentConfig: jest.fn(),
+}));
+jest.mock('../../lib/github-pat-env', () => ({
+  readGitHubPatForExecution: jest.fn(),
+}));
+jest.mock('../../lib/linear-auth', () => ({ resolveLinearToken: jest.fn() }));
+jest.mock('../../resource-monitor', () => ({
+  getResourceMonitorService: (): unknown => ({
+    registerProcess: (): unknown => ({ unregister: (): void => undefined }),
+  }),
+}));
+
+import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { mkdir, rename, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { BrowserWindow, ipcMain, type IpcMainInvokeEvent } from 'electron';
+import {
+  createPlatformEndpointServices,
+  hostPlatformServices,
+} from '@canopy/core-platform';
+import { readFilesystemScope } from '@canopy/core-runtime/node';
+import { refusingExecutionSecretSource } from '@canopy/core-runtime/node/execution-secrets';
+import { executionSecretFingerprints } from '@canopy/core-runtime/node/execution-secrets';
+import {
+  createWorkerScriptHandlers,
+  createWorkerScriptStreamHandlers,
+  ScriptExecutionWorker,
+  scriptContextDirectory,
+  scriptContextUnavailableError,
+  scriptRunFileStem,
+  type ScriptChildProcess,
+  type ScriptExecutionPlace,
+  type ScriptRunWriter,
+  type ScriptRunWriterState,
+} from '@canopy/core-runtime/node/script/execution';
+import type {
+  CanopyHostExecution,
+  WorkerScriptExecuteParams,
+  WorkerScriptExecutionOutputItem,
+} from '@canopy/protocol/canopy-core';
+import {
+  IPC_CHANNELS,
+  type ScriptRunResponse,
+} from '@canopy/desktop-shared/types';
+import { resetResolvedCanopyDataDirForTests } from '@canopy/desktop-shared/canopy-paths';
+import { createDefaultEnvironmentConfig } from '@canopy/desktop-shared/lib/user-environment';
+import { registerSecretsEnvInjector } from '@canopy/desktop-shared/pipelines/config-paths';
+import {
+  createCoreOperationAdapter,
+  type CoreOperationAdapter,
+} from '../../canopy-runtime/core-operation-adapter';
+import {
+  createDesktopRuntime,
+  type DesktopCanopyDispatcher,
+} from '../../canopy-runtime/desktop-runtime';
+import { createWorkerScriptAdapter } from '../../canopy-runtime/worker-script-adapter';
+import { markUnreachable } from '../../canopy-runtime/electron-daemon-connection';
+import { getDaemonScopeResolver } from '../../canopy-runtime/daemon-scope-resolver';
+import { registerScriptHandlers } from '../../ipc/scripts';
+import { readEnvironmentConfig } from '../user-environment-store';
+import { readGitHubPatForExecution } from '../github-pat-env';
+import {
+  initializeUserEnvironmentRuntime,
+  invalidateUserEnvironmentInjectionCache,
+} from '../user-environment-runtime';
+import { resolveScriptRunDir } from '../paths';
+import {
+  desktopScriptWorker,
+  drainWorktreeShellScripts,
+  listTrackedShellScripts,
+} from '../script-runner';
+import { isDaemonScriptRunEligible } from '../daemon-script-route-context';
+import { withWorkspaceTargetArchiveDrain } from '../workspace-target-exclusion';
+
+const describePosix = process.platform === 'win32' ? describe.skip : describe;
+jest.setTimeout(60_000);
+
+const canaries = ['secret-canary-env-5087', 'secret-canary-pat-5087'];
+const handlers = new Map<string, Parameters<typeof ipcMain.handle>[1]>();
+const originalEnv = process.env;
+let runtime: DesktopCanopyDispatcher;
+let operations: CoreOperationAdapter;
+let dispatched: WorkerScriptExecuteParams[];
+let main: BrowserWindow;
+let double: DaemonDouble;
+
+interface DaemonCall {
+  readonly name: string;
+  readonly params: unknown;
+  readonly execution: CanopyHostExecution | undefined;
+  readonly idempotencyKey: string | undefined;
+}
+
+interface DaemonDouble {
+  readonly calls: DaemonCall[];
+  spawns: number;
+  client: unknown;
+  /** Awaited before each output stream opens; a rejection refuses it. */
+  openGate?: () => Promise<void>;
+}
+
+function nodeChild(
+  command: string,
+  args: string[],
+  options: { cwd: string; env: NodeJS.ProcessEnv | undefined },
+): ScriptChildProcess {
+  const child = spawn(command, args, {
+    cwd: options.cwd,
+    env: options.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: true,
+  });
+  return {
+    get pid(): number | undefined {
+      return child.pid;
+    },
+    stdout: child.stdout && {
+      onData: (listener): void => {
+        child.stdout?.on('data', listener);
+      },
+      destroy: (): void => {
+        child.stdout?.destroy();
+      },
+    },
+    stderr: child.stderr && {
+      onData: (listener): void => {
+        child.stderr?.on('data', listener);
+      },
+      destroy: (): void => {
+        child.stderr?.destroy();
+      },
+    },
+    onError: (listener): void => {
+      child.on('error', listener);
+    },
+    onClose: (listener): void => {
+      child.on('close', listener);
+    },
+    killGroup: (signal): void => {
+      try {
+        if (child.pid !== undefined) process.kill(-child.pid, signal);
+      } catch {
+        // Already gone.
+      }
+    },
+  };
+}
+
+/** The daemon double: a second worker writing where Electron main writes. */
+function createDaemonDouble(): DaemonDouble {
+  const { supervision } = hostPlatformServices(
+    createPlatformEndpointServices('darwin'),
+  );
+  const calls: DaemonCall[] = [];
+  const state: DaemonDouble = { calls, spawns: 0, client: undefined };
+  const worker = new ScriptExecutionWorker({
+    secrets: refusingExecutionSecretSource,
+    authorityId: 'local',
+    platform: (): string => process.platform,
+    findExecutable: (name): string | null => {
+      for (const dir of ['/bin', '/usr/bin'])
+        try {
+          readFileSync(join(dir, name));
+          return join(dir, name);
+        } catch {
+          // Next directory.
+        }
+      return null;
+    },
+    windowsGitBash: (): null => null,
+    cmdCommandLine: (script): string => script,
+    loginShell: (): string => '/bin/sh',
+    comSpec: (): undefined => undefined,
+    prepareLaunch: (command, args): { command: string; args: string[] } => ({
+      command,
+      args,
+    }),
+    lowerPriority: (): void => undefined,
+    spawn: (command, args, options): ScriptChildProcess => {
+      state.spawns += 1;
+      return nodeChild(command, args, options);
+    },
+    drainOwnedProcess: (pid, isOwned): Promise<void> => {
+      try {
+        if (isOwned()) process.kill(-pid, 'SIGKILL');
+      } catch {
+        // Already gone.
+      }
+      return Promise.resolve();
+    },
+    logPaths: {
+      runDir: (projectId, worktreeId): string =>
+        resolveScriptRunDir(projectId, worktreeId),
+      fileStem: scriptRunFileStem,
+    },
+    logFiles: {
+      writeFileAtomically: async (file, text): Promise<void> => {
+        await mkdir(dirname(file), { recursive: true });
+        const temp = `${file}.${randomUUID()}.tmp`;
+        await writeFile(temp, text, 'utf8');
+        await rename(temp, file);
+      },
+    },
+    writerFence: {
+      self: async (): Promise<ScriptRunWriter | null> => {
+        const found = await supervision.inspectProcess({ pid: process.pid });
+        return found.state === 'running'
+          ? { pid: process.pid, startIdentity: found.startIdentity }
+          : null;
+      },
+      inspect: async (writer): Promise<ScriptRunWriterState> => {
+        const found = await supervision.inspectProcess({ pid: writer.pid });
+        if (found.state === 'running')
+          return found.startIdentity === writer.startIdentity
+            ? 'running'
+            : 'gone';
+        return found.state === 'absent' ? 'gone' : 'unverifiable';
+      },
+    },
+    resolvePlace: async (
+      scope,
+      context,
+      _secrets,
+      execution,
+    ): Promise<ScriptExecutionPlace> => {
+      const { workspaceId, worktreeId } = scope;
+      if (workspaceId === undefined || worktreeId === undefined)
+        throw scriptContextUnavailableError();
+      const workspaceScope = { workspaceId, worktreeId };
+      const catalog = await readFilesystemScope(
+        workspaceScope,
+        await (
+          await getDaemonScopeResolver()
+        )(workspaceScope, 'roots'),
+        'roots',
+      );
+      const cwd = scriptContextDirectory(catalog, workspaceScope, context);
+      if (cwd === null) throw scriptContextUnavailableError();
+      return { cwd, env: { ...execution?.childEnvironment } };
+    },
+  });
+  const scripts = createWorkerScriptHandlers(worker, { detached: true });
+  const streams = createWorkerScriptStreamHandlers(worker);
+  const context = (options: {
+    readonly metadata?: { readonly idempotencyKey?: string };
+    readonly execution?: CanopyHostExecution;
+  }): Parameters<
+    (typeof scripts.instructions)['worker.script.execute']
+  >[1] => ({
+    requestId: randomUUID(),
+    caller: {
+      principalId: 'local-desktop-user',
+      clientInstanceId: 'electron-main:scripts',
+      authorityId: 'local',
+      interfaceKind: 'desktop',
+      grants: ['worker.script.execute', 'worker.script.read'],
+    },
+    metadata: { idempotencyKey: options.metadata?.idempotencyKey },
+    signal: new AbortController().signal,
+    ...(options.execution && { execution: options.execution }),
+  });
+  state.client = {
+    signal: new AbortController().signal,
+    instruction: (
+      name: string,
+      params: unknown,
+      options: {
+        readonly metadata?: { readonly idempotencyKey?: string };
+        readonly execution?: CanopyHostExecution;
+      } = {},
+    ): Promise<unknown> => {
+      calls.push({
+        name,
+        params,
+        execution: options.execution,
+        idempotencyKey: options.metadata?.idempotencyKey,
+      });
+      if (name === 'worker.script.execute')
+        return Promise.resolve(
+          scripts.instructions['worker.script.execute'](
+            params as WorkerScriptExecuteParams,
+            context(options),
+          ),
+        );
+      if (name === 'worker.script.execution.cancel')
+        return Promise.resolve(
+          scripts.instructions['worker.script.execution.cancel'](
+            params as Parameters<
+              (typeof scripts.instructions)['worker.script.execution.cancel']
+            >[0],
+            context(options),
+          ),
+        );
+      return Promise.reject(new Error(`Unexpected ${name}`));
+    },
+    openStream: async (name: string, params: unknown): Promise<unknown> => {
+      calls.push({
+        name,
+        params,
+        execution: undefined,
+        idempotencyKey: undefined,
+      });
+      await state.openGate?.();
+      const pending: unknown[] = [];
+      const listeners = new Set<(frame: unknown) => void>();
+      const deliver = (frame: unknown): void => {
+        if (listeners.size === 0) pending.push(frame);
+        else listeners.forEach((listener) => listener(frame));
+      };
+      let sequence = 0;
+      const cleanup = await streams['worker.script.execution.output'](
+        params as Parameters<
+          (typeof streams)['worker.script.execution.output']
+        >[0],
+        context({}),
+        {
+          buffered: () => 0,
+          emit: (item: WorkerScriptExecutionOutputItem) => {
+            sequence += 1;
+            deliver({ kind: 'item', item });
+            return { daemonEpoch: 'double', sequence };
+          },
+          emitAt: () => null,
+          end: (outcome) => deliver({ kind: 'end', outcome, error: null }),
+          endAt: (_cursor, outcome) =>
+            deliver({ kind: 'end', outcome, error: null }),
+        },
+      );
+      return {
+        onFrame: (listener: (frame: unknown) => void): (() => void) => {
+          listeners.add(listener);
+          pending.splice(0).forEach((frame) => listener(frame));
+          return (): void => {
+            listeners.delete(listener);
+          };
+        },
+        close: (): void => cleanup(),
+      };
+    },
+  };
+  return state;
+}
+
+function invoke(
+  channel: string,
+  request: unknown,
+  window: BrowserWindow | null = main,
+): Promise<unknown> {
+  const handler = handlers.get(channel);
+  if (!handler) throw new Error(`Missing IPC handler ${channel}`);
+  const event = {
+    sender: window?.webContents ?? new BrowserWindow().webContents,
+    senderFrame: null,
+    frameId: 1,
+    processId: 1,
+    type: 'frame',
+    preventDefault: (): void => undefined,
+    defaultPrevented: false,
+  } satisfies IpcMainInvokeEvent;
+  return Promise.resolve().then((): unknown => handler(event, request));
+}
+
+function runRequest(scriptName: string): unknown {
+  return {
+    target: 'project',
+    projectId: 'project',
+    worktreeId: 'task',
+    scriptName,
+  };
+}
+
+function runDirFiles(): string[] {
+  try {
+    return readdirSync(resolveScriptRunDir('project', 'task'));
+  } catch {
+    return [];
+  }
+}
+
+function seed(root: string): void {
+  const write = (file: string, value: unknown): void => {
+    mkdirSync(dirname(join(root, file)), { recursive: true });
+    writeFileSync(join(root, file), JSON.stringify(value));
+  };
+  write('workspaces/index.json', {
+    version: 1,
+    workspaces: [
+      { id: 'project', name: 'project', type: 'single-repo', color: '#fff' },
+    ],
+  });
+  write('workspaces/project/workspace.json', {
+    version: 1,
+    type: 'single-repo',
+    repos: [],
+  });
+  write('workspaces/project/worktrees.json', {
+    version: 1,
+    worktrees: [{ id: 'task', branchName: 'topic', createdAt: 'now' }],
+  });
+  mkdirSync(join(root, 'workspaces/project/worktrees/task'), {
+    recursive: true,
+  });
+}
+
+function scanLedger(root: string): void {
+  for (const name of readdirSync(join(root, 'ledger'))) {
+    const bytes = readFileSync(join(root, 'ledger', name));
+    for (const canary of canaries)
+      expect(bytes.includes(Buffer.from(canary))).toBe(false);
+  }
+}
+
+let root = '';
+
+beforeAll(() => {
+  // One data root for the file: the daemon scope resolver is built once.
+  root = realpathSync(mkdtempSync(join(tmpdir(), 'daemon-script-route-')));
+  mockDataRoot = root;
+  mockProjectPath = join(root, 'workspaces/project/worktrees/task');
+  mkdirSync(join(root, 'home'));
+  seed(root);
+  jest.spyOn(ipcMain, 'handle').mockImplementation((channel, handler) => {
+    handlers.set(channel, handler);
+  });
+});
+
+beforeEach(() => {
+  mockPlatform = 'darwin';
+  mockExperiment = true;
+  mockBridge = false;
+  mockNoteFallback.mockReset();
+  mkdirSync(join(root, 'ledger'));
+  process.env = {
+    NODE_ENV: 'test',
+    HOME: join(root, 'home'),
+    USER: 'fixture',
+    PATH: originalEnv.PATH,
+    SHELL: '/bin/sh',
+    TMPDIR: originalEnv.TMPDIR,
+    CANOPY_DATA_DIR: root,
+  };
+  resetResolvedCanopyDataDirForTests();
+  const now = '2026-11-05T00:00:00.000Z';
+  const config = createDefaultEnvironmentConfig(now);
+  config.environments.push({
+    id: 'secrets',
+    name: 'Secrets',
+    parentId: null,
+    isDefault: false,
+    uiMode: 'key-value',
+    createdAt: now,
+    updatedAt: now,
+    variables: [{ key: 'SECRET_KEY', value: canaries[0], secret: true }],
+  });
+  config.globalRuntimes.canopy = 'secrets';
+  jest
+    .mocked(readEnvironmentConfig)
+    .mockResolvedValue({ data: config, encryptionAvailable: true });
+  jest.mocked(readGitHubPatForExecution).mockReturnValue(canaries[1]);
+  invalidateUserEnvironmentInjectionCache();
+  initializeUserEnvironmentRuntime();
+  registerSecretsEnvInjector(() => ({ GH_TOKEN: canaries[1] }));
+  double = createDaemonDouble();
+  mockGet.mockReset();
+  mockGet.mockResolvedValue({ client: double.client });
+  operations = createCoreOperationAdapter({
+    ledgerPath: (): string => join(root, 'ledger', 'operations.sqlite'),
+  });
+  dispatched = [];
+  const adapter = createWorkerScriptAdapter();
+  const execute = adapter.instructions['worker.script.execute'];
+  adapter.instructions['worker.script.execute'] = (
+    params,
+    context,
+  ): ReturnType<typeof execute> => {
+    dispatched.push(params);
+    return execute(params, context);
+  };
+  runtime = createDesktopRuntime({
+    operationAdapter: operations,
+    workerScriptAdapter: adapter,
+    shutdownTimeoutMs: 25,
+  });
+  main = new BrowserWindow();
+  registerScriptHandlers(
+    {
+      dispatcher: runtime,
+      resolveCaller: () => ({
+        principalId: 'local-desktop-user',
+        clientInstanceId: 'renderer',
+        authorityId: 'local',
+        interfaceKind: 'desktop',
+        grants: [],
+      }),
+    },
+    {
+      getMainWindow: () => main,
+      getAppAdvisorWindow: () => null,
+    },
+  );
+});
+
+afterEach(async () => {
+  try {
+    await drainWorktreeShellScripts('project', 'task').catch(() => undefined);
+    await runtime.shutdown();
+    scanLedger(root);
+  } finally {
+    registerSecretsEnvInjector(null);
+    invalidateUserEnvironmentInjectionCache();
+    process.env = originalEnv;
+    resetResolvedCanopyDataDirForTests();
+    rmSync(join(root, 'ledger'), { recursive: true, force: true });
+    rmSync(join(root, 'workspaces/project/script-runs'), {
+      recursive: true,
+      force: true,
+    });
+  }
+});
+
+afterAll(() => {
+  jest.restoreAllMocks();
+  rmSync(root, { recursive: true, force: true });
+});
+
+function executes(): DaemonCall[] {
+  return double.calls.filter(({ name }) => name === 'worker.script.execute');
+}
+
+describePosix('daemon script route (CAN-5087)', () => {
+  it.each(['darwin', 'linux'])(
+    "routes a local window's run on macOS and Linux (%s)",
+    async (platform) => {
+      mockPlatform = platform;
+      const local = jest.spyOn(desktopScriptWorker, 'execute');
+      const send = jest.spyOn(main.webContents, 'send');
+      const relayOf = desktopScriptWorker.relay.bind(desktopScriptWorker);
+      const truncated: boolean[] = [];
+      const relays = jest
+        .spyOn(desktopScriptWorker, 'relay')
+        .mockImplementation((executionId) => {
+          const inner = relayOf(executionId);
+          return {
+            ...inner,
+            finished: (outcome): void => {
+              truncated.push(outcome.outputTruncated);
+              inner.finished(outcome);
+            },
+          };
+        });
+      let seen = false;
+      const response = invoke(IPC_CHANNELS.scriptRun, runRequest('slow'));
+      for (let attempt = 0; attempt < 100 && !seen; attempt += 1) {
+        seen = listTrackedShellScripts().some(({ scriptKey }) =>
+          scriptKey.endsWith('slow'),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(seen).toBe(true);
+      const result = (await response) as ScriptRunResponse;
+      expect(result.success).toBe(true);
+      expect(double.spawns).toBe(1);
+      expect(local).not.toHaveBeenCalled();
+      const output = send.mock.calls.filter(
+        ([channel]) => channel === IPC_CHANNELS.scriptOutput,
+      );
+      expect(JSON.stringify(output)).toContain('done');
+      // The stream ended with the run, so none of its output is missing.
+      expect(truncated).toEqual([false]);
+      relays.mockRestore();
+      const [parent] = (
+        await operations.service.list({ kinds: ['core.script.run'], limit: 10 })
+      ).items;
+      expect(parent?.status).toBe('completed');
+      if (!parent) throw new Error('Missing operation');
+      expect(
+        await runtime.localWorker.listDelegations(parent.operationId),
+      ).toHaveLength(1);
+      local.mockRestore();
+    },
+  );
+
+  it.each([
+    [
+      'keeps Windows runs in process',
+      (): void => void (mockPlatform = 'win32'),
+    ],
+    [
+      'keeps remote-bridge runs in process',
+      (): void => void (mockBridge = true),
+    ],
+  ])('%s', async (_name, arrange) => {
+    arrange();
+    await invoke(IPC_CHANNELS.scriptRun, runRequest('echo')).catch(
+      () => undefined,
+    );
+    expect(double.calls).toEqual([]);
+  });
+
+  it('keeps Portal runs in process', async () => {
+    const { runScript } = await import('../../services/scripts-service');
+    const result = await runScript({
+      target: 'project',
+      projectId: 'project',
+      worktreeId: 'task',
+      scriptName: 'echo',
+    });
+    expect(result.success).toBe(true);
+    expect(double.calls).toEqual([]);
+  });
+
+  it('keeps interactive, background, shared-container and automation-home runs in process', async () => {
+    const base: WorkerScriptExecuteParams = {
+      scope: { workspaceId: 'project', worktreeId: 'task' },
+      executionId: randomUUID(),
+      context: { kind: 'project' },
+      command: 'echo',
+      shellStartup: 'interactive',
+      timeoutMs: null,
+      priority: 'normal',
+      record: {
+        script: {
+          scriptKey: 'k',
+          scriptName: 'k',
+          label: 'k',
+          command: 'echo',
+          lifecycle: 'custom',
+          target: 'project',
+        },
+        invocation: 'manual-run',
+      },
+    };
+    expect(isDaemonScriptRunEligible(base)).toBe(true);
+    expect(isDaemonScriptRunEligible({ ...base, terminal: {} })).toBe(false);
+    expect(isDaemonScriptRunEligible({ ...base, priority: 'background' })).toBe(
+      false,
+    );
+    expect(
+      isDaemonScriptRunEligible({
+        ...base,
+        context: { kind: 'shared-container', repoId: 'r', environmentKeys: [] },
+      }),
+    ).toBe(false);
+    expect(
+      isDaemonScriptRunEligible({
+        ...base,
+        context: { kind: 'automation-home' },
+      }),
+    ).toBe(false);
+    await invoke(IPC_CHANNELS.scriptRun, runRequest('interactive')).catch(
+      () => undefined,
+    );
+    expect(executes()).toEqual([]);
+  });
+
+  it('sends the complete environment and no secret binding', async () => {
+    const result = (await invoke(
+      IPC_CHANNELS.scriptRun,
+      runRequest('echo'),
+    )) as ScriptRunResponse;
+    expect(result.success).toBe(true);
+    const [call] = executes();
+    if (!call) throw new Error('Missing daemon run');
+    expect(call.params).not.toHaveProperty('secrets');
+    expect(call.execution?.childEnvironment).toMatchObject({
+      SECRET_KEY: canaries[0],
+      GH_TOKEN: canaries[1],
+    });
+    const [original] = dispatched;
+    expect(original?.secrets?.length).toBeGreaterThan(0);
+    const [parent] = (
+      await operations.service.list({ kinds: ['core.script.run'], limit: 10 })
+    ).items;
+    if (!parent) throw new Error('Missing operation');
+    const [delegation] = await runtime.localWorker.listDelegations(
+      parent.operationId,
+    );
+    expect(delegation?.secrets).toEqual(
+      executionSecretFingerprints(original?.secrets),
+    );
+  });
+
+  it('turning the experiment off runs the next run in process with nothing repaired', async () => {
+    await invoke(IPC_CHANNELS.scriptRun, runRequest('echo'));
+    expect(executes()).toHaveLength(1);
+    mockExperiment = false;
+    const result = (await invoke(
+      IPC_CHANNELS.scriptRun,
+      runRequest('echo'),
+    )) as ScriptRunResponse;
+    expect(result.success).toBe(true);
+    expect(executes()).toHaveLength(1);
+    const files = runDirFiles();
+    expect(files.filter((name) => name.endsWith('.json'))).toHaveLength(1);
+    expect(files.filter((name) => name.endsWith('.log'))).toHaveLength(1);
+    expect(files.some((name) => name.includes('.unreadable-'))).toBe(false);
+    const meta: unknown = JSON.parse(
+      readFileSync(
+        join(
+          resolveScriptRunDir('project', 'task'),
+          files.find((name) => name.endsWith('.json')) ?? '',
+        ),
+        'utf8',
+      ),
+    );
+    expect(meta).toMatchObject({
+      status: 'success',
+      instanceId: desktopScriptWorker.logs.instanceId,
+    });
+  });
+
+  it('refuses a run whose worktree starts archiving while it waits for the daemon', async () => {
+    const pending: Array<() => void> = [];
+    mockGet.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          pending.push((): void => resolve({ client: double.client }));
+        }),
+    );
+    const response = invoke(IPC_CHANNELS.scriptRun, runRequest('echo')).then(
+      (value) => ({ ok: true, value }),
+      (error: unknown) => ({ ok: false, value: error }),
+    );
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      if (mockGet.mock.calls.length > 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(mockGet).toHaveBeenCalled();
+    // The archive stays open until the run has settled.
+    let settled = false;
+    const drain = withWorkspaceTargetArchiveDrain(
+      'project',
+      'task',
+      async (): Promise<void> => {
+        while (!settled)
+          await new Promise((resolve) => setTimeout(resolve, 10));
+      },
+    );
+    mockGet.mockResolvedValue({ client: double.client });
+    pending.splice(0).forEach((release) => release());
+    const outcome = await response;
+    settled = true;
+    await drain;
+    expect(
+      outcome.ok
+        ? (outcome.value as ScriptRunResponse).success
+        : String(outcome.value),
+    ).not.toBe(true);
+    expect(executes()).toEqual([]);
+    expect(double.spawns).toBe(0);
+  });
+
+  it('an unreachable daemon runs in process and notes the fallback', async () => {
+    mockGet.mockRejectedValue(
+      markUnreachable(new Error('down'), 'connection_lost'),
+    );
+    const result = (await invoke(
+      IPC_CHANNELS.scriptRun,
+      runRequest('echo'),
+    )) as ScriptRunResponse;
+    expect(result.success).toBe(true);
+    expect(double.spawns).toBe(0);
+    expect(mockNoteFallback).toHaveBeenCalledWith('scripts', 'connection_lost');
+  });
+
+  it('a renderer stop cancels the daemon run', async () => {
+    const response = invoke(IPC_CHANNELS.scriptRun, runRequest('long'));
+    let tracked = listTrackedShellScripts();
+    for (let attempt = 0; attempt < 100 && tracked.length === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      tracked = listTrackedShellScripts();
+    }
+    const [run] = tracked;
+    if (!run) throw new Error('The run never started.');
+    await invoke(IPC_CHANNELS.scriptStop, {
+      projectId: 'project',
+      worktreeId: 'task',
+      scriptKey: run.scriptKey,
+    });
+    const result = (await response) as ScriptRunResponse;
+    expect(result.success).toBe(false);
+    const cancel = double.calls.find(
+      ({ name }) => name === 'worker.script.execution.cancel',
+    );
+    expect(cancel?.params).toMatchObject({ executionId: run.runId });
+  });
+
+  it('worktree removal leaves the daemon alone without a live daemon run', async () => {
+    const dir = resolveScriptRunDir('project', 'task');
+    mkdirSync(dir, { recursive: true });
+    const now = new Date().toISOString();
+    writeFileSync(
+      join(dir, `${scriptRunFileStem('finished')}.json`),
+      JSON.stringify({
+        version: 1,
+        runId: randomUUID(),
+        script: {
+          scriptKey: 'finished',
+          scriptName: 'finished',
+          label: 'Finished',
+          command: 'true',
+          lifecycle: 'custom',
+          target: 'project',
+        },
+        invocation: 'manual-run',
+        status: 'success',
+        startedAt: now,
+        updatedAt: now,
+        completedAt: now,
+        exitCode: 0,
+        timedOut: false,
+        durationMs: 1,
+        instanceId: 'app-instance',
+      }),
+    );
+    await drainWorktreeShellScripts('project', 'task');
+    expect(double.calls).toEqual([]);
+    expect(mockGet).not.toHaveBeenCalled();
+  });
+
+  it('a drain while the daemon refuses the run leaves nothing running in process', async () => {
+    let refuse = (): void => undefined;
+    double.openGate = (): Promise<void> =>
+      new Promise((_resolve, reject) => {
+        refuse = (): void => reject(new Error('refused'));
+      });
+    const local = jest.spyOn(desktopScriptWorker, 'execute');
+    const response = invoke(IPC_CHANNELS.scriptRun, runRequest('echo'));
+    for (
+      let attempt = 0;
+      attempt < 100 &&
+      !double.calls.some(
+        ({ name }) => name === 'worker.script.execution.output',
+      );
+      attempt += 1
+    )
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    const drained = drainWorktreeShellScripts('project', 'task');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    refuse();
+    await drained;
+    await response.catch(() => undefined);
+    expect(local).not.toHaveBeenCalled();
+    local.mockRestore();
+  });
+
+  it('worktree removal drains a daemon run it did not route', async () => {
+    const { supervision } = hostPlatformServices(
+      createPlatformEndpointServices('darwin'),
+    );
+    const sleeper = spawn('sleep', ['30'], { stdio: 'ignore' });
+    try {
+      const pid = sleeper.pid;
+      if (pid === undefined) throw new Error('No sleeper.');
+      const found = await supervision.inspectProcess({ pid });
+      if (found.state !== 'running') throw new Error('Sleeper not running.');
+      const executionId = randomUUID();
+      const dir = resolveScriptRunDir('project', 'task');
+      mkdirSync(dir, { recursive: true });
+      const now = new Date().toISOString();
+      writeFileSync(
+        join(dir, `${scriptRunFileStem('foreign')}.json`),
+        JSON.stringify({
+          version: 1,
+          runId: executionId,
+          script: {
+            scriptKey: 'foreign',
+            scriptName: 'foreign',
+            label: 'Foreign',
+            command: 'sleep 30',
+            lifecycle: 'custom',
+            target: 'project',
+          },
+          invocation: 'manual-run',
+          status: 'running',
+          startedAt: now,
+          updatedAt: now,
+          exitCode: null,
+          timedOut: false,
+          durationMs: 0,
+          instanceId: 'daemon-instance',
+          writer: { pid, startIdentity: found.startIdentity },
+        }),
+      );
+      await drainWorktreeShellScripts('project', 'task');
+      const cancels = double.calls.filter(
+        ({ name }) => name === 'worker.script.execution.cancel',
+      );
+      // By script key: older daemon runs of the key that its run log no
+      // longer lists stop too.
+      expect(cancels.map(({ params }) => params)).toEqual([
+        {
+          scope: { workspaceId: 'project', worktreeId: 'task' },
+          scriptKey: 'foreign',
+        },
+      ]);
+    } finally {
+      sleeper.kill('SIGKILL');
+    }
+  });
+});

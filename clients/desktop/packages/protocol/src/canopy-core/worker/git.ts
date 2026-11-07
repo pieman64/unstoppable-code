@@ -51,6 +51,13 @@ export type WorkerGitRepositorySelector = z.output<
 export const WorkerGitBranchListParamsSchema = z.strictObject({
   scope: CanopyWorkspaceScopeSchema,
   repository: WorkerGitRepositorySelectorSchema,
+  /** Advisory remote knowledge; never authorizes repository access or writes. */
+  defaultBranchHint: z
+    .strictObject({
+      defaultBranch: z.string().min(1),
+      resolvedAt: z.iso.datetime(),
+    })
+    .optional(),
 });
 
 export type WorkerGitBranchListParams = z.output<

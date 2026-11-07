@@ -1,5 +1,5 @@
 import { memo, useEffect, useState, type JSX } from 'react';
-import { ErrorBanner } from '@canopy/ui-shared/components';
+import { ErrorBanner, Surface } from '@canopy/ui-shared/components';
 import {
   CheckCircle2,
   MessageSquare,
@@ -351,9 +351,11 @@ function MemoryUsedDialogImpl({
           tune what gets recalled.
         </p>
         {memory.facts.map((fact, index) => (
-          <section
+          <Surface
             key={`${fact.factId ?? fact.sourceTurnIds.join(':')}:${index}`}
-            className="rounded-lg border bg-secondary/20 p-3"
+            as="section"
+            variant="group"
+            padding="compact"
           >
             <p
               className={`${POSTHOG_REPLAY_BLOCK_CLASS} whitespace-pre-wrap text-s fg-primary`}
@@ -385,7 +387,7 @@ function MemoryUsedDialogImpl({
                 factId={fact.factId}
               />
             ) : null}
-          </section>
+          </Surface>
         ))}
       </div>
     </DialogModal>

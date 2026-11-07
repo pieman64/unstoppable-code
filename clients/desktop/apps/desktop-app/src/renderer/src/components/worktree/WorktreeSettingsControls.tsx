@@ -1,4 +1,4 @@
-import { Heading } from '@canopy/ui-shared/components';
+import { Heading, Surface } from '@canopy/ui-shared/components';
 import {
   Button,
   RichHoverTooltip,
@@ -38,9 +38,7 @@ import { workspaceHealthIssueClassName } from './workspace-health-styles';
 
 export type SettingsScope = 'source' | 'local';
 
-export const SCRIPT_SETTINGS_ICON: ReactNode = (
-  <RocketLaunchIcon width="14" height="14" />
-);
+export const SCRIPT_SETTINGS_ICON: ReactNode = <RocketLaunchIcon size="sm" />;
 
 export const HOOK_SETTINGS_ICON: ReactNode = (
   <AppCatalogLink width="14" height="14" />
@@ -171,39 +169,45 @@ export function WorkspaceHealthIssuesBlock({
   }
   return (
     <>
-      <div className="rounded-lg border bg-secondary/20 p-4 text-s">
-        <div className="font-medium fg-primary">Project health</div>
-        <div className="mt-1 text-xs fg-secondary">
-          {brandText.appName} compares this project&apos;s tracked state against
-          the evaluated <code>canopy.json</code>.
+      <Surface variant="group" padding="default">
+        <div className="text-s">
+          <div className="font-medium fg-primary">Project health</div>
+          <div className="mt-1 text-xs fg-secondary">
+            {brandText.appName} compares this project&apos;s tracked state
+            against the evaluated <code>canopy.json</code>.
+          </div>
+          {driftWorktree && (
+            <div className="mt-3 text-xs fg-secondary">
+              Worktree{' '}
+              <span className="font-medium fg-primary">{driftWorktree.id}</span>{' '}
+              · Branch{' '}
+              <span className="font-medium fg-primary">
+                {driftWorktree.branchName}
+              </span>
+            </div>
+          )}
+          {healthData.driftTargetPath && (
+            <div className="mt-2 break-all text-xs fg-secondary">
+              {healthData.driftTargetPath}
+            </div>
+          )}
         </div>
-        {driftWorktree && (
-          <div className="mt-3 text-xs fg-secondary">
-            Worktree{' '}
-            <span className="font-medium fg-primary">{driftWorktree.id}</span> ·
-            Branch{' '}
-            <span className="font-medium fg-primary">
-              {driftWorktree.branchName}
-            </span>
-          </div>
-        )}
-        {healthData.driftTargetPath && (
-          <div className="mt-2 break-all text-xs fg-secondary">
-            {healthData.driftTargetPath}
-          </div>
-        )}
-      </div>
+      </Surface>
       <div className="space-y-2">
         {healthData.driftIssues.map((issue) => (
-          <div
+          <Surface
+            variant="outline"
             key={`${issue.code}-${issue.repoId ?? 'workspace'}`}
-            className={`rounded-lg border px-3 py-2 text-xs ${workspaceHealthIssueClassName(issue.blocking)}`}
           >
-            <div className="font-medium">
-              {issue.blocking ? 'Blocking issue' : 'Warning'}
+            <div
+              className={`px-3 py-2 text-xs ${workspaceHealthIssueClassName(issue.blocking)}`}
+            >
+              <div className="font-medium">
+                {issue.blocking ? 'Blocking issue' : 'Warning'}
+              </div>
+              <div className="mt-1">{issue.message}</div>
             </div>
-            <div className="mt-1">{issue.message}</div>
-          </div>
+          </Surface>
         ))}
       </div>
     </>
@@ -265,7 +269,7 @@ export function SourceWorktreePicker({
           variant="field"
           className="max-w-72"
         >
-          <BranchIcon width={16} height={16} className="shrink-0" />
+          <BranchIcon size="sm" className="shrink-0" />
           <span className="min-w-0 flex-1 truncate">
             {selectedWorktreeId
               ? (selected?.branchName ?? selectedWorktreeId)
@@ -345,7 +349,7 @@ export function SourceWorktreePicker({
           iconOnly
           aria-label="Project configuration help"
         >
-          <AppCatalogQuestionMarkIcon width="14" height="14" />
+          <AppCatalogQuestionMarkIcon size="sm" />
         </Button>
       </RichHoverTooltip>
     </div>
@@ -416,7 +420,7 @@ export function AddToWorktreeActionControls({
             data-testid="add-to-existing-worktree-trigger"
             className="focus-ring rounded-r-md border-l border-fg-emphasis/20 bg-info px-2 py-1.5 fg-emphasis disabled:opacity-60"
           >
-            <AppCatalogChevronDownMediumIcon width="12" height="12" />
+            <AppCatalogChevronDownMediumIcon size="sm" />
           </button>
         )}
       </div>
@@ -480,7 +484,7 @@ export function SettingsDirectoryCard({
 }: SettingsDirectoryCardProps): JSX.Element {
   const dirPath = path.replace(/\/+$/, '');
   return (
-    <div className="rounded-lg border p-4">
+    <Surface variant="outline" padding="default">
       <div className="flex items-center justify-between gap-2">
         <Heading level={3} variant="title">
           Directory
@@ -498,7 +502,7 @@ export function SettingsDirectoryCard({
       >
         {`\u200E${dirPath}`}
       </p>
-    </div>
+    </Surface>
   );
 }
 
@@ -518,7 +522,7 @@ export function AlwaysShowWorkspaceCard({
   workspaceKind = 'code',
 }: AlwaysShowWorkspaceCardProps): JSX.Element {
   return (
-    <div className="rounded-lg border p-4">
+    <Surface variant="outline" padding="default">
       <div className="flex items-center justify-between">
         <div>
           <Heading level={3} variant="title">
@@ -535,7 +539,7 @@ export function AlwaysShowWorkspaceCard({
           label="Always show project"
         />
       </div>
-    </div>
+    </Surface>
   );
 }
 

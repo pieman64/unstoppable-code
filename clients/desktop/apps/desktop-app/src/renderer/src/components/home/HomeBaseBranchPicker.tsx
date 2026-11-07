@@ -413,9 +413,9 @@ export function HomeBaseBranchPicker(): JSX.Element | null {
               data-icon={selectedIconKind}
             >
               {selectedIconKind === 'pr' ? (
-                <GitPullRequestIcon width={16} height={16} />
+                <GitPullRequestIcon size="sm" />
               ) : (
-                <BranchIcon width={16} height={16} />
+                <BranchIcon size="sm" />
               )}
             </span>
             <span className="min-w-0 flex-1 truncate fg-primary">

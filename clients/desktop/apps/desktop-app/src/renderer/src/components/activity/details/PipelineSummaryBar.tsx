@@ -4,7 +4,13 @@ import { formatTimingTimestamp } from '@/lib/pipelineTiming';
 import { buildEventInputs } from '@/lib/pipelineDetailsView';
 import { ChevronIcon, HookIcon } from '@canopy/ui-shared/icons';
 import { PipelineTimer } from '../PipelineTimer';
-import { Badge, Fact, FactList } from '@canopy/ui-shared/components';
+import {
+  Badge,
+  Divider,
+  Fact,
+  FactList,
+  Surface,
+} from '@canopy/ui-shared/components';
 import { pipelineStatusBadge } from '../utils';
 import { KeyValueTable } from './PipelineStepDetailParts';
 import { Button } from '@canopy/ui-shared/components';
@@ -73,10 +79,12 @@ export function PipelineSummaryBar({
     state.plan_hash_before !== state.plan_hash_after;
 
   return (
-    <div
+    <Surface
       // A container, so the facts reflow with the width the bar is given (a
       // narrow panel, a rail, a zoomed window), not the window's width.
-      className="@container rounded-xl border bg-fg-primary/[0.02] p-4"
+      variant="group"
+      padding="default"
+      className="@container"
       data-testid="pipeline-summary-bar"
     >
       <div
@@ -126,46 +134,49 @@ export function PipelineSummaryBar({
       </Button>
 
       {expanded && (
-        <div className="mt-3 border-t pt-3">
-          <FactList
-            layout="stacked"
-            size="s"
-            rowGap="3"
-            labelTone="secondary"
-            dataTestId="pipeline-summary-details"
-          >
-            <Fact label="Trigger">{state.event_name ?? 'unknown'}</Fact>
-            <Fact label="Working directory" mono>
-              {state.cwd}
-            </Fact>
-            {hookTrigger && (
-              <Fact label="Triggered by hook" fit="inline">
-                <HookIcon width={13} height={13} className="fg-secondary/80" />
-                <span>
-                  {hookTrigger.hook_label} ·{' '}
-                  {formatTimingTimestamp(hookTrigger.triggered_at)}
-                </span>
+        <div className="mt-3">
+          <Divider />
+          <div className="pt-3">
+            <FactList
+              layout="stacked"
+              size="s"
+              rowGap="3"
+              labelTone="secondary"
+              dataTestId="pipeline-summary-details"
+            >
+              <Fact label="Trigger">{state.event_name ?? 'unknown'}</Fact>
+              <Fact label="Working directory" mono>
+                {state.cwd}
               </Fact>
-            )}
-            {state.pipeline_snapshot.description && (
-              <Fact label="Description">
-                {state.pipeline_snapshot.description}
+              {hookTrigger && (
+                <Fact label="Triggered by hook" fit="inline">
+                  <HookIcon size="sm" className="fg-secondary/80" />
+                  <span>
+                    {hookTrigger.hook_label} ·{' '}
+                    {formatTimingTimestamp(hookTrigger.triggered_at)}
+                  </span>
+                </Fact>
+              )}
+              {state.pipeline_snapshot.description && (
+                <Fact label="Description">
+                  {state.pipeline_snapshot.description}
+                </Fact>
+              )}
+              <Fact label="Workflow ID" mono>
+                {state.pipeline_id}
               </Fact>
-            )}
-            <Fact label="Workflow ID" mono>
-              {state.pipeline_id}
-            </Fact>
-            <Fact label="Execution ID" mono>
-              {state.id}
-            </Fact>
-            {eventInputEntries.length > 0 && (
-              <Fact label="Event inputs">
-                <KeyValueTable values={eventInputs} />
+              <Fact label="Execution ID" mono>
+                {state.id}
               </Fact>
-            )}
-          </FactList>
+              {eventInputEntries.length > 0 && (
+                <Fact label="Event inputs">
+                  <KeyValueTable values={eventInputs} />
+                </Fact>
+              )}
+            </FactList>
+          </div>
         </div>
       )}
-    </div>
+    </Surface>
   );
 }

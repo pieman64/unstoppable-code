@@ -1,13 +1,6 @@
 import type { JSX, ReactNode } from 'react';
 import { Button } from '@canopy/ui-shared/components';
-import {
-  DragHandleIcon as AppCatalogDragHandleIcon,
-  CloseIcon as AppCatalogCloseIcon,
-} from '@canopy/ui-shared/icons/AppIcons';
-
-export function PipelineDragHandleIcon(): JSX.Element {
-  return <AppCatalogDragHandleIcon width="14" height="14" />;
-}
+import { CloseIcon as AppCatalogCloseIcon } from '@canopy/ui-shared/icons/AppIcons';
 
 export function PipelineDetailPanelShell({
   title,
@@ -29,7 +22,7 @@ export function PipelineDetailPanelShell({
           onClick={onClose}
           aria-label="Close"
         >
-          <AppCatalogCloseIcon width="16" height="16" />
+          <AppCatalogCloseIcon size="sm" />
         </Button>
       </div>
 

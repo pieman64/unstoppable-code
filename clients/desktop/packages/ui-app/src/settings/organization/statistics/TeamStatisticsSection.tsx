@@ -86,6 +86,7 @@ import {
   tokenBucketTotal,
 } from './format';
 import type { SettingsFailure } from '../../errors';
+import { Surface } from '@canopy/ui-shared/components';
 
 // recharts loads with the chart chunk, after the statistics shell renders.
 const LazyStackedTimeSeriesChart = lazy(() =>
@@ -562,12 +563,14 @@ export function TeamStatisticsSection({
       />
 
       {awaitingTeamSelection ? (
-        <p
-          className="rounded-lg border border-dashed px-4 py-12 text-center text-s fg-secondary"
-          data-testid="usage-select-team"
-        >
-          Select a team to view its usage.
-        </p>
+        <Surface variant="dashed">
+          <p
+            className="px-4 py-12 text-center text-s fg-secondary"
+            data-testid="usage-select-team"
+          >
+            Select a team to view its usage.
+          </p>
+        </Surface>
       ) : loading && !usage ? (
         <div data-testid="usage-loading">
           <DelayedLoadingPlaceholder>
@@ -575,12 +578,14 @@ export function TeamStatisticsSection({
           </DelayedLoadingPlaceholder>
         </div>
       ) : error ? null : !usage ? (
-        <p
-          className="rounded-lg border border-dashed px-4 py-12 text-center text-s fg-secondary"
-          data-testid="usage-empty"
-        >
-          No usage data available for this selection.
-        </p>
+        <Surface variant="dashed">
+          <p
+            className="px-4 py-12 text-center text-s fg-secondary"
+            data-testid="usage-empty"
+          >
+            No usage data available for this selection.
+          </p>
+        </Surface>
       ) : (
         <TabContent
           tab={activeTab}
@@ -1932,7 +1937,7 @@ function Panel({
   testId,
 }: PanelProps): JSX.Element {
   return (
-    <div className="rounded-xl bg-card p-4 shadow-sm" data-testid={testId}>
+    <Surface variant="raised" padding="default" data-testid={testId}>
       <div className="mb-3 flex items-center justify-between gap-2">
         <div className="flex flex-col gap-0.5">
           <Heading level={3} variant="title">
@@ -1943,6 +1948,6 @@ function Panel({
         {action}
       </div>
       {children}
-    </div>
+    </Surface>
   );
 }

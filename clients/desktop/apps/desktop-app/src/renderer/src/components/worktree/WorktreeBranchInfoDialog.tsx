@@ -47,6 +47,7 @@ import {
   FieldError,
   Notice,
   NoticeButton,
+  Surface,
   TabBar,
   TextInput,
 } from '@canopy/ui-shared/components';
@@ -238,25 +239,24 @@ function ProjectPipelineRows({
   return (
     <div className="space-y-1.5">
       {pipelines.map((p) => (
-        <div
-          key={p.id}
-          className="flex items-center gap-3 rounded-lg border px-3 py-2"
-        >
-          <span className="shrink-0 text-m">{p.icon || '⚡'}</span>
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-s font-medium fg-primary">
-              {p.name}
-            </div>
-            {p.description && (
-              <div className="truncate text-xs fg-secondary">
-                {p.description}
+        <Surface variant="outline" key={p.id}>
+          <div className="flex items-center gap-3 px-3 py-2">
+            <span className="shrink-0 text-m">{p.icon || '⚡'}</span>
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-s font-medium fg-primary">
+                {p.name}
               </div>
-            )}
+              {p.description && (
+                <div className="truncate text-xs fg-secondary">
+                  {p.description}
+                </div>
+              )}
+            </div>
+            <Button size="compact" onClick={() => onView(p)}>
+              View
+            </Button>
           </div>
-          <Button size="compact" onClick={() => onView(p)}>
-            View
-          </Button>
-        </div>
+        </Surface>
       ))}
     </div>
   );
@@ -323,10 +323,7 @@ function BranchInfoTabs({
       items={tabs.map((tab) => ({
         id: tab,
         label: BRANCH_INFO_TAB_LABELS[tab],
-        icon:
-          tab === 'code-graph' ? (
-            <GraphIcon width={12} height={12} />
-          ) : undefined,
+        icon: tab === 'code-graph' ? <GraphIcon size="sm" /> : undefined,
       }))}
       value={active}
       onChange={(next): void => onChange(next)}
@@ -676,90 +673,92 @@ function RepoBranchRow({
   });
 
   return (
-    <div className="rounded-lg border px-3 py-2">
-      <div className="flex min-w-0 items-center justify-between gap-2">
-        <span
-          className="shrink-0 text-s font-medium fg-primary"
-          title={rb.repoName}
-        >
-          {rb.repoName}
-        </span>
-        <span className="flex min-w-0 items-center gap-1.5">
-          {repoHasChanges && (
-            <span className="inline-flex items-center gap-1 text-xs font-semibold tabular-nums">
-              <span className="fg-success">+{rb.insertions}</span>
-              <span className="fg-destructive">-{rb.deletions}</span>
-            </span>
-          )}
-          {!isRenamingThis && (
-            <BranchActionButtons
-              branch={rb.branch}
-              copyKey={rb.repoId}
-              copiedBranch={copiedBranch}
-              disabled={branchMutationsDisabled}
-              onSwitchBranchClick={onSwitchBranchClick}
-              onRenameClick={onRenameClick}
-              onCopyClick={onCopyClick}
-            />
-          )}
-        </span>
-      </div>
-      {!isRenamingThis && (
-        <div className="mt-1 flex items-center gap-2">
-          <span className="text-3xs fg-secondary">base:</span>
-          <div className="min-w-0 flex-1">
-            <BaseBranchDropdown
+    <Surface variant="outline">
+      <div className="px-3 py-2">
+        <div className="flex min-w-0 items-center justify-between gap-2">
+          <span
+            className="shrink-0 text-s font-medium fg-primary"
+            title={rb.repoName}
+          >
+            {rb.repoName}
+          </span>
+          <span className="flex min-w-0 items-center gap-1.5">
+            {repoHasChanges && (
+              <span className="inline-flex items-center gap-1 text-xs font-semibold tabular-nums">
+                <span className="fg-success">+{rb.insertions}</span>
+                <span className="fg-destructive">-{rb.deletions}</span>
+              </span>
+            )}
+            {!isRenamingThis && (
+              <BranchActionButtons
+                branch={rb.branch}
+                copyKey={rb.repoId}
+                copiedBranch={copiedBranch}
+                disabled={branchMutationsDisabled}
+                onSwitchBranchClick={onSwitchBranchClick}
+                onRenameClick={onRenameClick}
+                onCopyClick={onCopyClick}
+              />
+            )}
+          </span>
+        </div>
+        {!isRenamingThis && (
+          <div className="mt-1 flex items-center gap-2">
+            <span className="text-3xs fg-secondary">base:</span>
+            <div className="min-w-0 flex-1">
+              <BaseBranchDropdown
+                projectId={projectId}
+                worktreeId={worktreeId}
+                repoId={rb.repoId}
+                currentValue={rb.baseBranch ?? null}
+                disabled={branchMutationsDisabled}
+                onChange={onBaseBranchChange}
+              />
+            </div>
+            {baseBranchProvenance && (
+              <span
+                className={`shrink-0 text-3xs ${baseBranchProvenance.className}`}
+              >
+                {baseBranchProvenance.label}
+              </span>
+            )}
+          </div>
+        )}
+        {!isRenamingThis && pickerOpen && (
+          <div className="mt-1">
+            <BranchPicker
               projectId={projectId}
               worktreeId={worktreeId}
               repoId={rb.repoId}
-              currentValue={rb.baseBranch ?? null}
-              disabled={branchMutationsDisabled}
-              onChange={onBaseBranchChange}
+              currentBranch={rb.branch}
+              baseBranch={rb.baseBranch}
+              onBranchSwitched={onBranchSwitched}
+              onBranchCreated={onBranchCreated}
+              onClose={onClosePicker}
             />
           </div>
-          {baseBranchProvenance && (
-            <span
-              className={`shrink-0 text-3xs ${baseBranchProvenance.className}`}
-            >
-              {baseBranchProvenance.label}
-            </span>
-          )}
-        </div>
-      )}
-      {!isRenamingThis && pickerOpen && (
-        <div className="mt-1">
-          <BranchPicker
-            projectId={projectId}
-            worktreeId={worktreeId}
-            repoId={rb.repoId}
-            currentBranch={rb.branch}
-            baseBranch={rb.baseBranch}
-            onBranchSwitched={onBranchSwitched}
-            onBranchCreated={onBranchCreated}
-            onClose={onClosePicker}
-          />
-        </div>
-      )}
-      {isRenamingThis && (
-        <div className="mt-2">
-          <BranchRenameForm
-            inputRef={renameInputRef}
-            value={renameValue}
-            onChange={onRenameChange}
-            loading={renameLoading}
-            error={renameError}
-            submitLabel="Save"
-            ariaLabel="New branch name"
-            onSubmit={onRenameSubmit}
-            onCancel={onRenameCancel}
-            confirmRemote={renameConfirmRemote}
-            warningMessage="This branch has already been pushed to remote. Renaming will only change the local branch name — the old remote branch and any associated PRs will still exist."
-            warningConfirmLabel="Rename anyway"
-            onWarningConfirm={onRenameWarningConfirm}
-          />
-        </div>
-      )}
-    </div>
+        )}
+        {isRenamingThis && (
+          <div className="mt-2">
+            <BranchRenameForm
+              inputRef={renameInputRef}
+              value={renameValue}
+              onChange={onRenameChange}
+              loading={renameLoading}
+              error={renameError}
+              submitLabel="Save"
+              ariaLabel="New branch name"
+              onSubmit={onRenameSubmit}
+              onCancel={onRenameCancel}
+              confirmRemote={renameConfirmRemote}
+              warningMessage="This branch has already been pushed to remote. Renaming will only change the local branch name — the old remote branch and any associated PRs will still exist."
+              warningConfirmLabel="Rename anyway"
+              onWarningConfirm={onRenameWarningConfirm}
+            />
+          </div>
+        )}
+      </div>
+    </Surface>
   );
 }
 
@@ -1401,15 +1400,18 @@ export function WorktreeBranchInfoDialog({
     />
   );
   const branchSetupNotice = branchMutationsDisabled ? (
-    <div
-      className="mb-2 rounded-lg border bg-fg-primary/5 px-3 py-2"
+    <Surface
+      variant="group"
+      className="mb-2"
       data-testid="branch-setup-pending-notice"
     >
-      <p className="text-xs font-medium fg-primary">Setting up worktree</p>
-      <p className="mt-0.5 text-xs fg-secondary">
-        Branch changes will be available when setup finishes.
-      </p>
-    </div>
+      <div className="px-3 py-2">
+        <p className="text-xs font-medium fg-primary">Setting up worktree</p>
+        <p className="mt-0.5 text-xs fg-secondary">
+          Branch changes will be available when setup finishes.
+        </p>
+      </div>
+    </Surface>
   ) : null;
 
   if (!isMultiRepo) {
@@ -1490,62 +1492,69 @@ export function WorktreeBranchInfoDialog({
               />
             ) : (
               <div>
-                <div className="flex items-center justify-between gap-2 rounded-lg border px-3 py-2">
-                  <BranchActionButtons
-                    branch={worktree.branchName}
-                    copyKey="single"
-                    copiedBranch={copiedBranch}
-                    disabled={branchMutationsDisabled}
-                    onSwitchBranchClick={() =>
-                      setBranchPickerOpen(
-                        branchPickerOpen === 'single' ? null : 'single',
-                      )
-                    }
-                    onRenameClick={() =>
-                      startRename('single', worktree.branchName)
-                    }
-                    onCopyClick={(e) =>
-                      handleCopyBranch('single', worktree.branchName, e)
-                    }
-                  />
-                </div>
-                <div className="mt-2 rounded-lg border px-3 py-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-3xs font-medium fg-secondary">
-                      Base branch
-                    </span>
-                    {displayBaseBranchProvenance && (
-                      <span
-                        className={`text-3xs ${displayBaseBranchProvenance.className}`}
-                        data-testid="base-branch-provenance-badge"
-                      >
-                        {displayBaseBranchProvenance.label}
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-1">
-                    <BaseBranchDropdown
-                      projectId={projectId}
-                      worktreeId={worktree.id}
-                      currentValue={displayBaseBranch}
+                <Surface variant="outline">
+                  <div className="flex items-center justify-between gap-2 px-3 py-2">
+                    <BranchActionButtons
+                      branch={worktree.branchName}
+                      copyKey="single"
+                      copiedBranch={copiedBranch}
                       disabled={branchMutationsDisabled}
-                      onChange={(branchName, presence) => {
-                        void (async (): Promise<void> => {
-                          await useProjectsStore
-                            .getState()
-                            .setTrackedBaseBranch(
-                              projectId,
-                              worktree.id,
-                              branchName,
-                              undefined,
-                              presence,
-                            );
-                          await refreshWorktreeActivity(projectId, worktree.id);
-                        })();
-                      }}
+                      onSwitchBranchClick={() =>
+                        setBranchPickerOpen(
+                          branchPickerOpen === 'single' ? null : 'single',
+                        )
+                      }
+                      onRenameClick={() =>
+                        startRename('single', worktree.branchName)
+                      }
+                      onCopyClick={(e) =>
+                        handleCopyBranch('single', worktree.branchName, e)
+                      }
                     />
                   </div>
-                </div>
+                </Surface>
+                <Surface variant="outline" className="mt-2">
+                  <div className="px-3 py-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-3xs font-medium fg-secondary">
+                        Base branch
+                      </span>
+                      {displayBaseBranchProvenance && (
+                        <span
+                          className={`text-3xs ${displayBaseBranchProvenance.className}`}
+                          data-testid="base-branch-provenance-badge"
+                        >
+                          {displayBaseBranchProvenance.label}
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-1">
+                      <BaseBranchDropdown
+                        projectId={projectId}
+                        worktreeId={worktree.id}
+                        currentValue={displayBaseBranch}
+                        disabled={branchMutationsDisabled}
+                        onChange={(branchName, presence) => {
+                          void (async (): Promise<void> => {
+                            await useProjectsStore
+                              .getState()
+                              .setTrackedBaseBranch(
+                                projectId,
+                                worktree.id,
+                                branchName,
+                                undefined,
+                                presence,
+                              );
+                            await refreshWorktreeActivity(
+                              projectId,
+                              worktree.id,
+                            );
+                          })();
+                        }}
+                      />
+                    </div>
+                  </div>
+                </Surface>
                 {branchPickerOpen === 'single' && (
                   <div className="mt-1">
                     <BranchPicker

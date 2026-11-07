@@ -48,6 +48,7 @@ import type {
   PreferencesData,
   WorktreeChatBadgesSummary,
 } from '@canopy/desktop-shared/types';
+import type { CodexContextWindowSetting } from '@canopy/desktop-shared/lib/codex-context-window';
 import type {
   TurnFeedbackRating,
   TurnFeedbackReason,
@@ -284,6 +285,15 @@ export interface ChatModelsSlice {
   setSpeed: (
     speed: CodexSpeed,
     target?: { projectId: string; worktreeId: string; chatId: string },
+  ) => Promise<void>;
+  /**
+   * Choose a Codex chat's context window. Shows it optimistically, so a
+   * message sent before main echoes the patch already carries it, then
+   * commits `modelConfig.contextWindow` through `chat.patch_tab_settings`.
+   */
+  setContextWindow: (
+    contextWindow: CodexContextWindowSetting,
+    target: { projectId: string; worktreeId: string; chatId: string },
   ) => Promise<void>;
   /**
    * Legacy boolean adapter: `true` requests Fast and `false` Regular,

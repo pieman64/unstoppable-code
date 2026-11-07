@@ -1,0 +1,124 @@
+/** @jest-environment jsdom */
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import type {
+  AppAdvisorRendererToolRequest,
+  AppAdvisorRendererToolResponse,
+} from '@canopy/desktop-shared/types';
+
+const mockDispatchAppAction = jest.fn(
+  (): Promise<{ ok: true }> => Promise.resolve({ ok: true }),
+);
+jest.mock('@/lib/app-actions/dispatcher', () => ({
+  dispatchAppAction: (): Promise<{ ok: true }> => mockDispatchAppAction(),
+}));
+jest.mock('@/client/interface-tools-client', () => ({
+  registerInterfaceTools: (): Promise<void> => Promise.resolve(),
+  unregisterAllInterfaceTools: (): Promise<void> => Promise.resolve(),
+}));
+
+jest.mock('@/stores/appAdvisorStore', () => ({
+  useAppAdvisorStore: { getState: (): object => ({}) },
+}));
+jest.mock('@/stores/currentUiStateStore', () => ({
+  useCurrentUiStateStore: {
+    getState: (): object => ({
+      recomputeEnvelope: (): void => undefined,
+      getEnvelope: (): null => null,
+    }),
+  },
+}));
+jest.mock('@/lib/show-files', () => ({
+  showFilesInRenderer: jest.fn(),
+}));
+jest.mock('@/lib/turn-file-viewer', () => ({
+  onTurnFileViewerClosed: (): (() => void) => () => undefined,
+  revealTurnFileTarget: jest.fn(),
+}));
+
+import { AppAdvisorMainRuntimeBridge } from '../AppAdvisorRuntimeBridge';
+
+let root: Root;
+let container: HTMLDivElement;
+let emit: (request: AppAdvisorRendererToolRequest) => void = () => undefined;
+const completed: AppAdvisorRendererToolResponse[] = [];
+
+beforeEach(async () => {
+  completed.length = 0;
+  mockDispatchAppAction.mockClear();
+  Object.defineProperty(window, 'api', {
+    configurable: true,
+    value: {
+      appAdvisor: {
+        onToolRequest: (
+          listener: (request: AppAdvisorRendererToolRequest) => void,
+        ): (() => void) => {
+          emit = listener;
+          return () => undefined;
+        },
+        completeToolRequest: (
+          response: AppAdvisorRendererToolResponse,
+        ): Promise<void> => {
+          completed.push(response);
+          return Promise.resolve();
+        },
+      },
+    },
+  });
+  container = document.createElement('div');
+  root = createRoot(container);
+  await act(async () => {
+    root.render(<AppAdvisorMainRuntimeBridge />);
+    await Promise.resolve();
+  });
+});
+afterEach(() => {
+  act(() => root.unmount());
+});
+
+async function deliver(request: AppAdvisorRendererToolRequest): Promise<void> {
+  await act(async () => {
+    emit(request);
+    for (let tick = 0; tick < 10 && completed.length === 0; tick += 1)
+      await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+describe('App Advisor bridge presentation guard (CAN-4133)', () => {
+  it('the bridge refuses a non-presentation action that arrives through the lease', async () => {
+    await deliver({
+      kind: 'dispatch_action',
+      requestId: 'call-1',
+      action: { type: 'pipeline.create', name: 'Nightly' },
+      originWorktreeId: 'global',
+      interfaceToolCall: true,
+    });
+
+    expect(completed).toEqual([
+      {
+        requestId: 'call-1',
+        ok: false,
+        error: {
+          code: 'unsupported_action',
+          message:
+            'Only navigation, panel and window actions run through this tool.',
+        },
+      },
+    ]);
+    expect(mockDispatchAppAction).not.toHaveBeenCalled();
+  });
+
+  it('a legacy delivery without the flag is unchanged', async () => {
+    await deliver({
+      kind: 'dispatch_action',
+      requestId: 'call-2',
+      action: { type: 'pipeline.create', name: 'Nightly' },
+      originWorktreeId: 'global',
+    });
+
+    expect(mockDispatchAppAction).toHaveBeenCalledTimes(1);
+    expect(completed).toEqual([
+      expect.objectContaining({ requestId: 'call-2', ok: true }),
+    ]);
+  });
+});

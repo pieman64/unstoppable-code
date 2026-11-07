@@ -62,7 +62,7 @@ export function EmptyTrashDialog({
               data-testid={`archived-overview-empty-trash-item-${item.id}`}
               className={`flex items-center gap-2 rounded px-2 py-1 text-xs ${itemTone === 'quiet' ? 'fg-primary/80' : 'fg-primary'}`}
             >
-              <ArchivedStateIcon state="deleted" size={12} />
+              <ArchivedStateIcon state="deleted" size="sm" />
               <span className={`${REPLAY_MASK_CLASS} min-w-0 flex-1 truncate`}>
                 {item.name}
               </span>
@@ -86,7 +86,7 @@ export function EmptyTrashDialog({
             disabled={busy || count === 0}
             data-testid="archived-overview-empty-trash-confirm"
           >
-            <TrashPermanentlyIcon width={14} height={14} aria-hidden="true" />
+            <TrashPermanentlyIcon size="sm" aria-hidden="true" />
             {busy ? 'Deleting…' : `Delete ${count} ${itemWord} permanently`}
           </HeaderActionButton>
         </div>

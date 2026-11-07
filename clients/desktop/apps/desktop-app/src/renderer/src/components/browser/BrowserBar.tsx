@@ -19,7 +19,7 @@ import {
   SunIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { BrowserDownloadsButton } from './BrowserDownloadsButton';
-import { Button, TextInput } from '@canopy/ui-shared/components';
+import { Button, Surface, TextInput } from '@canopy/ui-shared/components';
 
 interface BrowserBarProps {
   browserId: string;
@@ -146,7 +146,11 @@ export function BrowserBar({
             <ExternalIcon size={14} />
           </IconButton>
 
-          <div className="mx-0.5 flex shrink-0 items-center rounded border">
+          <Surface
+            variant="outline"
+            size="small"
+            className="flex items-center mx-0.5 shrink-0"
+          >
             <IconButton
               onClick={(): void => handleTheme('light')}
               label="Use light theme"
@@ -161,7 +165,7 @@ export function BrowserBar({
             >
               <MoonIcon size={14} />
             </IconButton>
-          </div>
+          </Surface>
 
           {!isMcpOAuthBrowserScope(snapshot.projectId, snapshot.worktreeId) && (
             <>

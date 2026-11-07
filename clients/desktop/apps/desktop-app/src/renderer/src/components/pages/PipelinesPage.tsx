@@ -748,7 +748,7 @@ export function PipelinesPage({
           aria-pressed={chatPanelVisible}
           data-testid="pipeline-chat-toggle"
         >
-          <ChatIcon width={14} height={14} aria-hidden="true" />
+          <ChatIcon size="sm" aria-hidden="true" />
         </Button>
       </Tooltip>
     </span>

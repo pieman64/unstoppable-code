@@ -9,6 +9,7 @@ import { listGitBranches, type GitBranchListSources } from './branch-list';
 import {
   selectGitDefaultBranch,
   type GitDefaultBranchFacts,
+  type GitDefaultBranchHint,
 } from './default-branch';
 import {
   assertWorkerGitServedSelection,
@@ -135,13 +136,21 @@ export function createWorkerGitBranchListHandlers<Repository>(
           retry: { kind: 'never' },
         });
       const reads = host.reads(repository, context);
+      // Hints affect only read-only selection; host scope and grants still apply.
+      const facts =
+        params.defaultBranchHint === undefined
+          ? reads.defaultBranchFacts
+          : {
+              ...reads.defaultBranchFacts,
+              readHint: (): Promise<GitDefaultBranchHint | null> =>
+                Promise.resolve(params.defaultBranchHint ?? null),
+            };
       const now = host.now();
       const listed = await listGitBranches(
         {
           readBranchRefs: reads.readBranchRefs,
           readWorktreeList: reads.readWorktreeList,
-          resolveDefaultBranch: () =>
-            selectGitDefaultBranch(reads.defaultBranchFacts, { now }),
+          resolveDefaultBranch: () => selectGitDefaultBranch(facts, { now }),
         },
         (selection) => selection.defaultBranch,
       );

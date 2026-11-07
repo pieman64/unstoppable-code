@@ -25,10 +25,11 @@ import {
   getCodeGraphSourceBuildState,
   isCodeGraphSummaryRepairActive,
   requestCodeGraphSummaryRepair,
-  setCodeGraphGenerationQueueListener,
 } from '../code-graph/build-runner';
+import { getDesktopGenerationQueue } from '../code-graph/merged-generation-queue';
 import {
   buildCodeGraphThroughWorker,
+  generationQueueSnapshot,
   readGenerationQueue,
   reorderGenerationQueue,
   type WorkerCodeGraphDispatcher,
@@ -47,7 +48,11 @@ import {
   type CodeGraphReadAnswer,
 } from '../code-graph/graph-reads';
 import { repairWorkspaceBaseCodeGraphSummary } from '../code-graph/graph-builds';
-import { withDaemonCodeGraphRoute } from '../code-graph/daemon-code-graph-route-context';
+import {
+  isOwnRendererSender,
+  withDaemonCodeGraphRoute,
+  type DaemonCodeGraphSenderSurface,
+} from '../code-graph/daemon-code-graph-route-context';
 import {
   combinedCodeGraphBuildState,
   selectDaemonCodeGraph,
@@ -66,6 +71,7 @@ import {
 } from '../lib/code-graph-scheduler';
 import { readAllSidebarItems } from '../lib/sidebar-items';
 import { sendToWindow } from '../lib/window-send';
+import { rendererContentsOf } from '../lib/renderer-surface';
 import { validateId } from '../lib/validation';
 import { registerIpcHandler } from './register';
 
@@ -660,6 +666,8 @@ async function safeSummaryRequest(
   }
 }
 
+let unsubscribeQueueBroadcast: (() => void) | undefined;
+
 function broadcastQueue(snapshot: CodeGraphGenerationQueueSnapshot): void {
   const safeSnapshot = isCodeGraphFeatureEnabled()
     ? snapshot
@@ -671,6 +679,18 @@ function broadcastQueue(snapshot: CodeGraphGenerationQueueSnapshot): void {
       safeSnapshot,
     );
   }
+}
+
+/** The renderer page a window stands for: itself, or the view it hosts. */
+function rendererSurfaceOf(
+  window: BrowserWindow | null,
+): DaemonCodeGraphSenderSurface | null {
+  if (window === null || window.isDestroyed()) return null;
+  const renderer = rendererContentsOf(window.webContents);
+  return {
+    isDestroyed: (): boolean => renderer.isDestroyed(),
+    webContents: renderer,
+  };
 }
 
 export function registerCodeGraphHandlers(
@@ -686,7 +706,11 @@ export function registerCodeGraphHandlers(
     getAppAdvisorWindow: () => null,
   },
 ): void {
-  setCodeGraphGenerationQueueListener(broadcastQueue);
+  // Registration replaces the broadcast, as the scheduler's one listener did.
+  unsubscribeQueueBroadcast?.();
+  unsubscribeQueueBroadcast = getDesktopGenerationQueue().subscribe((queue) =>
+    broadcastQueue(generationQueueSnapshot(queue)),
+  );
 
   // CAN-5089: only this app's own windows may build or read in the daemon;
   // the remote-control bridge and Portal keep Electron main's graph hosts.
@@ -697,12 +721,11 @@ export function registerCodeGraphHandlers(
       event !== null &&
       event !== undefined &&
       resolveRemoteBridgeSender(event.sender) === null &&
-      [windows.getMainWindow(), windows.getAppAdvisorWindow()].some(
-        (window) =>
-          window !== null &&
-          window.webContents === event.sender &&
-          !window.isDestroyed(),
-      ),
+      // App Advisor's page may be a view its window hosts (CAN-5870).
+      isOwnRendererSender(event.sender, [
+        rendererSurfaceOf(windows.getMainWindow()),
+        rendererSurfaceOf(windows.getAppAdvisorWindow()),
+      ]),
   });
 
   registerIpcHandler(IPC_CHANNELS.codeGraphGetWorktreeSummary, (event, raw) =>
@@ -758,7 +781,12 @@ export function registerCodeGraphHandlers(
         return await loadWorktreeSummary(request, daemon);
       } catch (error) {
         const code = workerBuildRefusal(error);
-        if (code === 'worker.codeGraph.unavailable') {
+        if (
+          code === 'worker.codeGraph.unavailable' ||
+          // Cancelled because Code Graph turned off, as in process (CAN-5840).
+          (code === 'worker.codeGraph.buildCanceled' &&
+            !isCodeGraphAvailableForWorkspace(request.workspaceId))
+        ) {
           return ipcError('unavailable', CODE_GRAPH_UNAVAILABLE_MESSAGE);
         }
         if (code === 'worker.codeGraph.buildTimedOut') {

@@ -394,6 +394,11 @@ function getLedgerGuestRebinder(): LedgerGuestRebinder {
   guestRebinder ??= createLedgerGuestRebinder({
     journal: createLedgerGuestRebindJournal(
       createLedgerLifecycleIntentFile(getLedgerGuestRebindIntentsPath()),
+      {
+        onJournalFailure: (detail): void => {
+          recordLedgerSyncDiagnostic({ code: 'rebind_failed', detail });
+        },
+      },
     ),
     databaseExists: ledgerDatabaseExists,
     rebind: async ({ fromAccountId, toAccountId }): Promise<void> => {

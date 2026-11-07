@@ -50,6 +50,7 @@ export {
 export type {
   AgentObservabilityHostTypes,
   AgentObservabilityIngest,
+  CanonicalChatTurnDuration,
   ExecutionObservabilityIngest,
   ObservabilityAccountProvider,
   ObservabilityBillingAccountKind,

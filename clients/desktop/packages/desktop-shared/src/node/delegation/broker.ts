@@ -1034,6 +1034,8 @@ interface RuntimeRun {
   readonly controller: AbortController;
   readonly lease: AgentRunnerLease;
   readonly started: Promise<NativeRunHandle>;
+  /** The run generation this native run executes. */
+  readonly runGeneration: number;
   handle?: NativeRunHandle;
   stopping?: Promise<void>;
   cleanup?: Promise<void>;
@@ -6017,11 +6019,17 @@ export class AgentDelegationBroker {
   /**
    * Stops a delegation and its whole subtree. The target records `reason`
    * and its descendants `ancestor_stopped`, each with who stopped it.
+   * With `expectedRunGeneration`, the stop is bound to that generation of the
+   * target and to each descendant's generation when the stop began: a
+   * delegation already on another generation is left as it is and the stop
+   * answers its snapshot, and every effect after a wait is skipped once that
+   * delegation's generation has moved (CAN-5867).
    */
   async stop(
     parent: DelegationParentContext,
     id: string,
     reason: DelegationStopReason = 'user_cancelled',
+    options: { readonly expectedRunGeneration?: number } = {},
   ): Promise<AgentDelegationResult<AgentDelegationSnapshot>> {
     if (!this.validParent(parent))
       return failure(
@@ -6032,9 +6040,22 @@ export class AgentDelegationBroker {
     if (!record || !this.canAccess(parent, record)) return notDescendant();
     if (this.receiptQuarantine.isQuarantined(id))
       return this.receiptUnavailable();
+    const bound = options.expectedRunGeneration !== undefined;
+    if (bound && record.state.runGeneration !== options.expectedRunGeneration) {
+      const current = this.inspect(parent, id);
+      return current
+        ? { ok: true, value: current }
+        : failure('runtime_error', 'The cancellation result is unavailable.');
+    }
     const causes = subtreeStopCauses(parent, record, reason);
     const descendants = Array.from(this.records.values()).filter((child) =>
       this.descendantOf(child, id),
+    );
+    const generations = new Map(
+      [record, ...descendants].map((child) => [
+        child,
+        child.state.runGeneration,
+      ]),
     );
     for (const child of [record, ...descendants]) {
       this.stoppedGenerations.add(
@@ -6060,6 +6081,8 @@ export class AgentDelegationBroker {
           parent,
           child,
           child === record ? causes.target : causes.descendant,
+          false,
+          bound ? generations.get(child) : undefined,
         ),
       ),
     );
@@ -6081,10 +6104,24 @@ export class AgentDelegationBroker {
     record: StoredDelegation,
     cause: DelegationStopCause,
     trustedOwnership = false,
+    expectedRunGeneration?: number,
   ): Promise<AgentDelegationResult<AgentDelegationSnapshot>> {
     const id = record.state.delegationId;
     if (this.receiptQuarantine.isQuarantined(id))
       return this.receiptUnavailable();
+    const project = (): AgentDelegationResult<AgentDelegationSnapshot> => {
+      const retained = trustedOwnership ? this.records.get(id) : undefined;
+      const result = retained
+        ? this.projectLive(retained)
+        : this.inspect(parent, id);
+      return result
+        ? { ok: true, value: result }
+        : failure('runtime_error', 'The child result is unavailable.');
+    };
+    const moved = (): boolean =>
+      expectedRunGeneration !== undefined &&
+      this.records.get(id)?.state.runGeneration !== expectedRunGeneration;
+    if (moved()) return project();
     const preparing = this.pending.get(record.callKey);
     if (preparing) {
       claimStop(preparing, cause);
@@ -6104,13 +6141,17 @@ export class AgentDelegationBroker {
     this.notify(parent);
     try {
       await this.preparations.get(record.callKey);
+      if (moved()) return project();
       abortWorkspaceCommands();
-      await this.stopRun(id, cause.reason, false, cause);
+      await this.stopRun(id, cause.reason, false, cause, expectedRunGeneration);
       await Promise.allSettled(
         Array.from(this.workspaceCommands.get(id) ?? []),
       );
+      if (moved()) return project();
       await this.update(id, (current) =>
-        current.state.approvalPending === undefined
+        current.state.approvalPending === undefined ||
+        (expectedRunGeneration !== undefined &&
+          current.state.runGeneration !== expectedRunGeneration)
           ? current
           : {
               ...current,
@@ -6122,13 +6163,7 @@ export class AgentDelegationBroker {
           'runtime_error',
           'The child was stopped but delivery suppression could not be confirmed.',
         );
-      const retained = trustedOwnership ? this.records.get(id) : undefined;
-      const result = retained
-        ? this.projectLive(retained)
-        : this.inspect(parent, id);
-      return result
-        ? { ok: true, value: result }
-        : failure('runtime_error', 'The child result is unavailable.');
+      return project();
     } catch {
       return failure('runtime_error', 'The child stop could not be confirmed.');
     }
@@ -6885,6 +6920,7 @@ export class AgentDelegationBroker {
         controller,
         lease,
         started,
+        runGeneration: record.state.runGeneration,
         ...(slot ? { admission: slot } : {}),
       };
       this.pending.delete(callKey);
@@ -7146,9 +7182,15 @@ export class AgentDelegationBroker {
     reason: DelegationStopReason,
     interrupted = false,
     cause?: DelegationStopCause,
+    expectedRunGeneration?: number,
   ): Promise<void> {
     const run = this.runs.get(id);
     if (!run) return;
+    if (
+      expectedRunGeneration !== undefined &&
+      run.runGeneration !== expectedRunGeneration
+    )
+      return;
     if (this.receiptQuarantine.isQuarantined(id)) {
       this.abortQuarantinedWork(id);
       await this.cleanup(id, run);
@@ -7160,33 +7202,10 @@ export class AgentDelegationBroker {
     else run.stopReason ??= reason;
     const effectiveReason = run.stopReason ?? reason;
     run.controller.abort();
-    run.stopping = (async (): Promise<void> => {
-      let handle: NativeRunHandle;
-      try {
-        handle = await run.started;
-      } catch {
-        if (interrupted) await this.finishInterrupted(id);
-        else
-          await this.finishWithoutRun(
-            id,
-            effectiveReason === 'deadline_exceeded'
-              ? 'deadline_exceeded'
-              : 'cancelled',
-            effectiveReason,
-            undefined,
-            run.stopCause,
-          );
-        await this.cleanup(id, run);
-        return;
-      }
-      run.handle = handle;
-      this.checkReceiptQuarantine(id);
-      const stopped = await run.lease.adapter.stop(handle, effectiveReason);
-      if (!stopped.stopped) {
-        await this.markUncertain(id);
-        throw new Error('Native child stop was not confirmed');
-      }
-      if (interrupted) await this.finishInterrupted(id);
+    // A bound stop settles only its generation: a continuation that started
+    // while the native stop was pending keeps its own state (CAN-5867).
+    const settle = async (): Promise<void> => {
+      if (interrupted) await this.finishInterrupted(id, expectedRunGeneration);
       else
         await this.finishWithoutRun(
           id,
@@ -7196,7 +7215,27 @@ export class AgentDelegationBroker {
           effectiveReason,
           undefined,
           run.stopCause,
+          expectedRunGeneration,
         );
+    };
+    run.stopping = (async (): Promise<void> => {
+      let handle: NativeRunHandle;
+      try {
+        handle = await run.started;
+      } catch {
+        await settle();
+        await this.cleanup(id, run);
+        return;
+      }
+      run.handle = handle;
+      this.checkReceiptQuarantine(id);
+      const stopped = await run.lease.adapter.stop(handle, effectiveReason);
+      if (!stopped.stopped) {
+        // A bound stop leaves a generation that has moved on untouched.
+        await this.markUncertain(id, expectedRunGeneration);
+        throw new Error('Native child stop was not confirmed');
+      }
+      await settle();
       await this.cleanup(id, run);
     })().catch((error: unknown) => {
       run.stopping = undefined;
@@ -7243,9 +7282,11 @@ export class AgentDelegationBroker {
     stopReason?: DelegationStopReason,
     preparationError?: AgentDelegationError,
     stopCause?: DelegationStopCause,
+    runGeneration?: number,
   ): Promise<void> {
     const record = this.records.get(id);
     if (!record || isDelegationTerminal(record.state.status)) return;
+    let settled = true;
     // An attributed stop always settles cancelled.
     const status =
       stopReason &&
@@ -7254,6 +7295,14 @@ export class AgentDelegationBroker {
         ? 'cancelled'
         : requestedStatus;
     await this.update(id, (current) => {
+      // Compared in the write itself, after any queued continuation commits.
+      if (
+        runGeneration !== undefined &&
+        current.state.runGeneration !== runGeneration
+      ) {
+        settled = false;
+        return current;
+      }
       const terminalState = reduceDelegationEvent(current.state, {
         delegationId: id,
         runGeneration: current.state.runGeneration,
@@ -7280,26 +7329,34 @@ export class AgentDelegationBroker {
           : terminalState,
       };
     });
-    await this.journals.get(id)?.settle(status);
+    if (settled) await this.journals.get(id)?.settle(status);
   }
 
-  private async finishInterrupted(id: string): Promise<void> {
+  private async finishInterrupted(
+    id: string,
+    runGeneration?: number,
+  ): Promise<void> {
     const record = this.records.get(id);
     if (!record || isDelegationTerminal(record.state.status)) return;
-    await this.update(id, (current) => ({
-      ...current,
-      interruptedGeneration: current.state.runGeneration,
-      state: {
-        ...current.state,
-        status: 'interrupted',
-        finishedAt: Date.now(),
-        sequence: current.state.sequence + 1,
-        error: undefined,
-        stopReason: undefined,
-        cancelledByUser: undefined,
-        stoppedBy: undefined,
-      },
-    }));
+    await this.update(id, (current) =>
+      runGeneration !== undefined &&
+      current.state.runGeneration !== runGeneration
+        ? current
+        : {
+            ...current,
+            interruptedGeneration: current.state.runGeneration,
+            state: {
+              ...current.state,
+              status: 'interrupted',
+              finishedAt: Date.now(),
+              sequence: current.state.sequence + 1,
+              error: undefined,
+              stopReason: undefined,
+              cancelledByUser: undefined,
+              stoppedBy: undefined,
+            },
+          },
+    );
   }
 
   private cleanup(id: string, run: RuntimeRun): Promise<void> {
@@ -7381,9 +7438,15 @@ export class AgentDelegationBroker {
     });
   }
 
-  private async markUncertain(id: string): Promise<void> {
+  /** With `runGeneration`, a record that has moved to another one is left as it is. */
+  private async markUncertain(
+    id: string,
+    runGeneration?: number,
+  ): Promise<void> {
     await this.update(id, (record) =>
-      isDelegationTerminal(record.state.status)
+      isDelegationTerminal(record.state.status) ||
+      (runGeneration !== undefined &&
+        record.state.runGeneration !== runGeneration)
         ? record
         : {
             ...record,

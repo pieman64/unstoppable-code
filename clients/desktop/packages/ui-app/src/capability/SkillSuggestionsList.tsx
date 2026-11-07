@@ -7,6 +7,7 @@ import {
 } from '@canopy/ui-shared/lib/replay-privacy';
 import { CapabilityGate } from './CapabilityGate';
 import { SKILL_SUGGESTION_COPY } from './SkillSuggestionBanner';
+import { Surface } from '@canopy/ui-shared/components';
 
 /** One open suggestion as the list shows it; hosts map their own shape. */
 export interface SkillSuggestionListItem {
@@ -46,8 +47,11 @@ function SkillSuggestionRow({
   const dismissId = useId();
   const hasExamples = suggestion.examples.length > 0;
   return (
-    <li
-      className="flex flex-col gap-2 rounded-lg bg-secondary/30 p-3 ring-[length:var(--border-hairline)] ring-line-base"
+    <Surface
+      as="li"
+      variant="group"
+      padding="compact"
+      gap="inline"
       data-testid="skill-suggestions-row"
       data-suggestion-id={suggestion.id}
       data-suggestion-kind={suggestion.kind}
@@ -138,18 +142,22 @@ function SkillSuggestionRow({
               data-testid="skill-suggestions-row-examples"
             >
               {suggestion.examples.map((example, index) => (
-                <li
+                <Surface
+                  as="li"
+                  variant="group"
+                  size="small"
                   key={String(index)}
-                  className="whitespace-pre-wrap break-words rounded-md bg-secondary px-2 py-1 text-xs fg-secondary"
                 >
-                  {example}
-                </li>
+                  <div className="whitespace-pre-wrap break-words px-2 py-1 text-xs fg-secondary">
+                    {example}
+                  </div>
+                </Surface>
               ))}
             </ul>
           ) : null}
         </div>
       ) : null}
-    </li>
+    </Surface>
   );
 }
 

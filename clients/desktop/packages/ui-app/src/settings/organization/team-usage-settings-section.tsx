@@ -60,6 +60,7 @@ import {
   updateUsageStatsMinRole,
 } from './team-api';
 import type { SettingsFailure } from '../errors';
+import { Surface } from '@canopy/ui-shared/components';
 
 const USAGE_SETTINGS_ERROR_SCOPE = 'settings.organization.usage-settings';
 
@@ -563,7 +564,7 @@ function EnforcedSettingsCard({
         ) : null}
 
         {enforcing && coverageResolved ? (
-          <div className="mt-4 overflow-hidden rounded-lg border">
+          <Surface variant="outline" className="mt-4 overflow-hidden">
             <ul className="flex flex-col gap-4 p-4">
               {DATA_SHARING_SCOPE_ORDER.map((key) => (
                 <DataSharingScopeRow
@@ -578,7 +579,7 @@ function EnforcedSettingsCard({
                 />
               ))}
             </ul>
-          </div>
+          </Surface>
         ) : null}
 
         <div className="mt-4">
@@ -665,7 +666,7 @@ function DataSharingScopesSkeleton({ orgId }: { orgId: string }): JSX.Element {
       testId="settings-skeleton-form"
       className="w-full"
     >
-      <div className="overflow-hidden rounded-lg border">
+      <Surface variant="outline" className="overflow-hidden">
         <ul className="flex flex-col gap-4 p-4">
           {SAMPLE_SCOPES.map((scope) => (
             <DataSharingScopeRow
@@ -680,7 +681,7 @@ function DataSharingScopesSkeleton({ orgId }: { orgId: string }): JSX.Element {
             />
           ))}
         </ul>
-      </div>
+      </Surface>
     </Skeleton>
   );
 }

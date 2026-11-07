@@ -1,10 +1,12 @@
 import type { JSX } from 'react';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import {
+  Button,
   Divider,
   Inline,
   Stack,
   Surface,
+  type SurfaceBoundary,
   type SurfacePadding,
   type SurfaceVariant,
 } from '@canopy/ui-shared/components';
@@ -29,6 +31,16 @@ const PADDINGS: readonly { padding: SurfacePadding; px: number }[] = [
   { padding: 'compact', px: 12 },
   { padding: 'default', px: 16 },
   { padding: 'roomy', px: 24 },
+];
+
+const BOUNDARIES: readonly SurfaceBoundary[] = [
+  'none',
+  'top',
+  'bottom',
+  'start',
+  'end',
+  'block',
+  'frame',
 ];
 
 function Sample({ title }: { readonly title: string }): JSX.Element {
@@ -189,6 +201,61 @@ export function SurfacesSpecimen(): JSX.Element {
               <Divider orientation="vertical" />
               <span className="text-s fg-primary">develop</span>
             </Inline>
+          </SpecimenCell>
+        </SpecimenGrid>
+      </SpecimenPanel>
+      <SpecimenPanel title="Flat panes and attached boundaries">
+        <SpecimenGrid min={260}>
+          <SpecimenCell label="Pane: header and footer stay flush" wide>
+            <Surface variant="pane" className="w-full">
+              <Surface variant="section" boundary="bottom">
+                <div className="px-4 py-3">
+                  <Sample title="File preview" />
+                </div>
+              </Surface>
+              <Surface variant="well" padding="default">
+                <span className="text-xs fg-secondary">Preview content</span>
+              </Surface>
+              <Surface variant="section" boundary="top">
+                <div className="px-4 py-3">
+                  <Sample title="Read only" />
+                </div>
+              </Surface>
+            </Surface>
+          </SpecimenCell>
+          <SpecimenCell label="Attached boundaries preserve keyboard focus">
+            <Surface variant="section" boundary="bottom" className="w-full">
+              <Button variant="secondary" size="compact" className="w-full">
+                Focus the pane action
+              </Button>
+            </Surface>
+          </SpecimenCell>
+        </SpecimenGrid>
+      </SpecimenPanel>
+      <SpecimenPanel title="Pane boundaries, including the selected frame">
+        <SpecimenGrid min={180}>
+          {BOUNDARIES.map((boundary) => (
+            <SpecimenCell key={boundary} label={boundary}>
+              <Surface
+                variant="section"
+                boundary={boundary}
+                padding="compact"
+                className="w-full"
+              >
+                <Sample title="Pane region" />
+              </Surface>
+            </SpecimenCell>
+          ))}
+          <SpecimenCell label="Selected frame">
+            <Surface
+              variant="section"
+              boundary="frame"
+              selected
+              padding="compact"
+              className="w-full"
+            >
+              <Sample title="Selected region" />
+            </Surface>
           </SpecimenCell>
         </SpecimenGrid>
       </SpecimenPanel>

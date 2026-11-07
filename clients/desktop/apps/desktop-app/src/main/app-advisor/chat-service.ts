@@ -20,6 +20,11 @@ import {
   isOwnedDelegationEvent,
   parkBehindWake,
 } from '../agents/session-event-router';
+import {
+  beginChatTurnRun,
+  deferredReloadEventNamespace,
+  type ChatTurnRunHandle,
+} from '../agent-runs/turn-runs';
 import type { BrowserWindow } from 'electron';
 import {
   APP_ADVISOR_PROJECT_ID,
@@ -67,7 +72,7 @@ import {
   isSessionAiCreditsRouted,
 } from '../agents/session-manager';
 import { sendToWindowDetailed } from '../lib/window-send';
-import { getObservabilityService } from '../observability';
+import { getExecutionObservabilityIngest } from '../observability/ingest';
 import {
   getChatTurnAuditStatus,
   isRootTerminalChatEventData,
@@ -306,7 +311,7 @@ function sendAppAdvisorChatEvent(
   }
 
   if (!mainDelivery.delivered && !appAdvisorDelivery.delivered) {
-    getObservabilityService().recordSessionDiagnostic({
+    getExecutionObservabilityIngest().recordSessionDiagnostic({
       version: 1,
       timestamp: new Date().toISOString(),
       kind: 'chat_event_undelivered',
@@ -436,6 +441,7 @@ export async function dispatchAppAdvisorChatMessage(
   });
   const resourceGuard =
     await getResourceMonitorService().reserveChatTurnStart();
+  let advisorTurnRun: ChatTurnRunHandle | undefined;
   try {
     const deferredToolsReloadEnabledResources =
       request.deferredToolsReloadEnabledResources;
@@ -782,432 +788,468 @@ export async function dispatchAppAdvisorChatMessage(
       request.chatId,
       turnApproval.chatApprovalMode,
     );
-    const session = await getOrCreateRoutedSession(
-      {
-        cwd,
-        projectId: request.projectId,
+    const turnRun = await beginChatTurnRun({
+      scope: {
+        workspaceId: request.projectId,
         worktreeId: request.worktreeId,
         chatId: request.chatId,
-        planMode: false,
-        approvalMode: turnApproval.approvalMode,
-        sessionApprovalRules: turnApproval.sessionApprovalRules,
-        thinkingLevel: modelConfig.thinkingLevel,
-        modelConfig,
-        model,
-        selectedModel,
-        // A provider's session id is meaningless to the other one, and
-        // `getOrCreateSession` has no provider-change guard — see
-        // `worktree-chat-turn.ts`.
-        ...(laneSubstitutedProviderType || switchesActiveSessionProvider
-          ? {}
-          : {
-              sdkSessionId: request.sdkSessionId,
-              // An independent fork (StartForkedAgent) must branch the source
-              // Claude session rather than resume it, as on the worktree path.
-              ...(request.claudeForkSession ? { claudeForkSession: true } : {}),
-              ...(request.claudeForkSession && request.claudeForkResumeAt
-                ? { claudeForkResumeAt: request.claudeForkResumeAt }
-                : {}),
-              ...(request.claudeForkSession &&
-              request.claudeForkResumeAt &&
-              request.claudeForkToolResults?.length
-                ? { claudeForkToolResults: request.claudeForkToolResults }
-                : {}),
-            }),
-        ...(request.claudeForkStartsFresh
-          ? { claudeForkStartsFresh: true }
-          : {}),
-        pluginSelections,
-        deferredToolsAllowed,
-        systemPromptAppend:
-          runtime.systemPromptAppend ?? APP_ADVISOR_SYSTEM_PROMPT,
-        globalInstructionsBlock,
-        globalInstructionsSnapshot: resumingProviderSession
-          ? globalInstructionsBlock
-          : undefined,
-        providerType,
-        executionHarness,
-        codexAppServerIdleTimeoutMinutes:
-          preferences.codexAppServerIdleTimeoutMinutes,
-        codexMultiAgentEnabled: preferences.codexMultiAgentAppAdvisorEnabled,
-        codexMaxConcurrentSubagents: preferences.codexMaxConcurrentSubagents,
-        // Claude and Cursor both rewrite shell commands through the bundled
-        // RTK hook; Codex has no rewrite seam.
-        rtkEnabled:
-          executionHarness === 'claude' ||
-          executionHarness === 'cursor' ||
-          executionHarness === 'copilot' ||
-          executionHarness === 'opencode'
-            ? preferences.rtkEnabled
-            : false,
-        assistantMode: 'app-advisor',
-        toolProfileHash,
-        appAdvisorRuntime,
       },
-      (data: unknown, markPersistenceSettled?: () => void): Promise<void> => {
-        const receiptClassification = classifyProviderRunEvent(data, {
+      turnId: executionUserMessageId,
+      eventNamespace: request.deferredToolsReloadRequestId
+        ? deferredReloadEventNamespace(request.deferredToolsReloadRequestId)
+        : 'initial',
+      providerId: providerType,
+      model: model ?? null,
+      initiationSource: request.initiationSource ?? 'user',
+      settleOn: 'root-terminal',
+      codexRootThreadId,
+    });
+    advisorTurnRun = turnRun;
+    const session = await turnRun.execute(() =>
+      getOrCreateRoutedSession(
+        {
+          cwd,
           projectId: request.projectId,
           worktreeId: request.worktreeId,
           chatId: request.chatId,
-        });
-        const isLateAtReceipt = receiptClassification.kind !== 'ordinary';
-        // Router acceptance metadata is held against the original routed event.
-        // A deferred-tools continuation clone below cannot carry that metadata.
-        const turnRootAcceptance = getTurnRootAcceptance(data);
-        if (!isLateAtReceipt) {
-          codexRootThreadId = readCodexRootThreadId(data) ?? codexRootThreadId;
-        }
-        const occurredAt = new Date(Date.now()).toISOString();
-        let pickupObservation:
-          | Promise<AdvisorChatObservation | undefined>
-          | undefined;
-        if (
-          isRecord(data) &&
-          data.type === 'canopy_input_delivery' &&
-          data.phase === 'picked-up' &&
-          data.startsTurn === true &&
-          data.turnRootAccepted !== false &&
-          typeof data.userMessageId === 'string'
-        ) {
-          pickupObservation =
-            inputObservations.get(data.userMessageId) ??
-            captureAdvisorChatObservation(request, data.userMessageId);
-          inputObservations.set(data.userMessageId, pickupObservation);
-        }
-        const forkSessionId =
-          !isLateAtReceipt && request.claudeForkSession
-            ? claudeForkSessionIdFromInit(data)
-            : null;
-        if (forkSessionId) {
-          void consumePersistedClaudeForkSessionMarker({
-            workspaceId: request.projectId,
-            worktreeId: request.worktreeId,
-            chatId: request.chatId,
-            sessionId: forkSessionId,
-          }).catch(() => undefined);
-        }
-        // Capture the terminal's role before queued persistence. The reload
-        // coordinator can finish starting the continuation while this event
-        // waits for disk, but the old terminal must still keep its timer open.
-        const preservePortalTimerForDeferredReload =
-          !isLateAtReceipt &&
-          isTerminalRuntimeChatEvent(data) &&
-          deferredToolsReloadCoordinator.hasActiveReload({
-            projectId: request.projectId,
-            worktreeId: request.worktreeId,
-            chatId: request.chatId,
-          });
-        const providerEvent =
-          isDeferredToolsReloadContinuation &&
-          !continuationSettled &&
-          isRecord(data) &&
-          !isLateAtReceipt
-            ? copyProviderRunProvenance(data, {
-                ...data,
-                canopy_turn_revival: true,
-              })
-            : data;
-        if (
-          !isLateAtReceipt &&
-          isDeferredToolsReloadContinuation &&
-          isRootTerminalChatEventData(data, codexRootThreadId)
-        ) {
-          continuationSettled = true;
-        }
-        const eventData = isRecord(providerEvent) ? providerEvent : null;
-        const isStartingPickup = Boolean(
-          eventData &&
-          eventData.type === 'canopy_input_delivery' &&
-          eventData.phase === 'picked-up' &&
-          eventData.startsTurn === true &&
-          typeof eventData.userMessageId === 'string',
-        );
-        // At receipt, before the commit tail: a cancel still awaiting its
-        // lookup must already see that a newer turn began.
-        if (isStartingPickup) bumpPortalTurnEpoch(request.chatId);
-        const sequence = eventSequence;
-        eventSequence += 1;
-        eventCommitTail = eventCommitTail
-          .then(async () => {
-            const providerRunClassification = classifyProviderRunEvent(
-              providerEvent,
-              {
+          planMode: false,
+          approvalMode: turnApproval.approvalMode,
+          sessionApprovalRules: turnApproval.sessionApprovalRules,
+          thinkingLevel: modelConfig.thinkingLevel,
+          modelConfig,
+          model,
+          selectedModel,
+          // A provider's session id is meaningless to the other one, and
+          // `getOrCreateSession` has no provider-change guard — see
+          // `worktree-chat-turn.ts`.
+          ...(laneSubstitutedProviderType || switchesActiveSessionProvider
+            ? {}
+            : {
+                sdkSessionId: request.sdkSessionId,
+                // An independent fork (StartForkedAgent) must branch the source
+                // Claude session rather than resume it, as on the worktree path.
+                ...(request.claudeForkSession
+                  ? { claudeForkSession: true }
+                  : {}),
+                ...(request.claudeForkSession && request.claudeForkResumeAt
+                  ? { claudeForkResumeAt: request.claudeForkResumeAt }
+                  : {}),
+                ...(request.claudeForkSession &&
+                request.claudeForkResumeAt &&
+                request.claudeForkToolResults?.length
+                  ? { claudeForkToolResults: request.claudeForkToolResults }
+                  : {}),
+              }),
+          ...(request.claudeForkStartsFresh
+            ? { claudeForkStartsFresh: true }
+            : {}),
+          pluginSelections,
+          deferredToolsAllowed,
+          systemPromptAppend:
+            runtime.systemPromptAppend ?? APP_ADVISOR_SYSTEM_PROMPT,
+          globalInstructionsBlock,
+          globalInstructionsSnapshot: resumingProviderSession
+            ? globalInstructionsBlock
+            : undefined,
+          providerType,
+          executionHarness,
+          codexAppServerIdleTimeoutMinutes:
+            preferences.codexAppServerIdleTimeoutMinutes,
+          codexMultiAgentEnabled: preferences.codexMultiAgentAppAdvisorEnabled,
+          codexMaxConcurrentSubagents: preferences.codexMaxConcurrentSubagents,
+          // Claude and Cursor both rewrite shell commands through the bundled
+          // RTK hook; Codex has no rewrite seam.
+          rtkEnabled:
+            executionHarness === 'claude' ||
+            executionHarness === 'cursor' ||
+            executionHarness === 'copilot' ||
+            executionHarness === 'opencode'
+              ? preferences.rtkEnabled
+              : false,
+          assistantMode: 'app-advisor',
+          toolProfileHash,
+          appAdvisorRuntime,
+        },
+        turnRun.observe(
+          (
+            data: unknown,
+            markPersistenceSettled?: () => void,
+          ): Promise<void> => {
+            const receiptClassification = classifyProviderRunEvent(data, {
+              projectId: request.projectId,
+              worktreeId: request.worktreeId,
+              chatId: request.chatId,
+            });
+            const isLateAtReceipt = receiptClassification.kind !== 'ordinary';
+            // Router acceptance metadata is held against the original routed event.
+            // A deferred-tools continuation clone below cannot carry that metadata.
+            const turnRootAcceptance = getTurnRootAcceptance(data);
+            if (!isLateAtReceipt) {
+              codexRootThreadId =
+                readCodexRootThreadId(data) ?? codexRootThreadId;
+            }
+            const occurredAt = new Date(Date.now()).toISOString();
+            let pickupObservation:
+              | Promise<AdvisorChatObservation | undefined>
+              | undefined;
+            if (
+              isRecord(data) &&
+              data.type === 'canopy_input_delivery' &&
+              data.phase === 'picked-up' &&
+              data.startsTurn === true &&
+              data.turnRootAccepted !== false &&
+              typeof data.userMessageId === 'string'
+            ) {
+              pickupObservation =
+                inputObservations.get(data.userMessageId) ??
+                captureAdvisorChatObservation(request, data.userMessageId);
+              inputObservations.set(data.userMessageId, pickupObservation);
+            }
+            const forkSessionId =
+              !isLateAtReceipt && request.claudeForkSession
+                ? claudeForkSessionIdFromInit(data)
+                : null;
+            if (forkSessionId) {
+              void consumePersistedClaudeForkSessionMarker({
+                workspaceId: request.projectId,
+                worktreeId: request.worktreeId,
+                chatId: request.chatId,
+                sessionId: forkSessionId,
+              }).catch(() => undefined);
+            }
+            // Capture the terminal's role before queued persistence. The reload
+            // coordinator can finish starting the continuation while this event
+            // waits for disk, but the old terminal must still keep its timer open.
+            const preservePortalTimerForDeferredReload =
+              !isLateAtReceipt &&
+              isTerminalRuntimeChatEvent(data) &&
+              deferredToolsReloadCoordinator.hasActiveReload({
                 projectId: request.projectId,
                 worktreeId: request.worktreeId,
                 chatId: request.chatId,
-              },
+              });
+            const providerEvent =
+              isDeferredToolsReloadContinuation &&
+              !continuationSettled &&
+              isRecord(data) &&
+              !isLateAtReceipt
+                ? copyProviderRunProvenance(data, {
+                    ...data,
+                    canopy_turn_revival: true,
+                  })
+                : data;
+            if (
+              !isLateAtReceipt &&
+              isDeferredToolsReloadContinuation &&
+              isRootTerminalChatEventData(data, codexRootThreadId)
+            ) {
+              continuationSettled = true;
+            }
+            const eventData = isRecord(providerEvent) ? providerEvent : null;
+            const isStartingPickup = Boolean(
+              eventData &&
+              eventData.type === 'canopy_input_delivery' &&
+              eventData.phase === 'picked-up' &&
+              eventData.startsTurn === true &&
+              typeof eventData.userMessageId === 'string',
             );
-            if (providerRunClassification.kind === 'reject') {
-              const descriptor = getProviderRunDescriptor(providerEvent);
-              recordChatEventDropped({
-                projectId: request.projectId,
-                worktreeId: request.worktreeId,
-                chatId: request.chatId,
-                providerType,
-                gate: 'canonical_admission_rejected',
-                reason: providerRunClassification.reason,
-                data: providerEvent,
-                turnUserMessageId:
-                  descriptor?.executionUserMessageId ?? executionUserMessageId,
-              });
-              markPersistenceSettled?.();
-              return;
-            }
-            if (providerRunClassification.kind === 'transcript_only') {
-              await chatStateService.ingestProviderEventWithResult({
-                projectId: request.projectId,
-                worktreeId: request.worktreeId,
-                chatId: request.chatId,
-                data: providerEvent,
-                mutationId: request.deferredToolsReloadRequestId
-                  ? `${request.chatId}:${request.userMessageId}:deferred-reload:${request.deferredToolsReloadRequestId}:provider:${sequence}`
-                  : `${request.chatId}:${request.userMessageId}:provider:${sequence}`,
-                providerType,
-                turnUserMessageId:
-                  providerRunClassification.run.executionUserMessageId,
-              });
-              markPersistenceSettled?.();
-              return;
-            }
-            const taggedRootId =
-              eventData &&
-              typeof eventData.canopy_turn_user_message_id === 'string'
-                ? eventData.canopy_turn_user_message_id
-                : undefined;
-            const isIdleStatusEvent =
-              eventData?.type === 'system' &&
-              eventData.subtype === 'status' &&
-              eventData.status === 'idle';
-            // A delegate's snapshot keeps the tag of the turn that started
-            // it, so it is delivered even when that root was rejected.
-            if (
-              taggedRootId &&
-              rejectedTurnRoots.has(taggedRootId) &&
-              !isStartingPickup &&
-              !isOwnedDelegationEvent(eventData)
-            ) {
-              const rejectedLease = rejectedTurnRoots.get(taggedRootId);
-              if (
-                rejectedLease &&
-                isRootTerminalChatEventData(eventData, codexRootThreadId)
-              ) {
-                // Retry cleanup only with the exact rejected lease. A newer
-                // same-id acceptance has a different epoch and is untouched.
-                getChatQueueService().rollbackTurnRevival(
-                  request,
-                  rejectedLease,
+            // At receipt, before the commit tail: a cancel still awaiting its
+            // lookup must already see that a newer turn began.
+            if (isStartingPickup) bumpPortalTurnEpoch(request.chatId);
+            const sequence = eventSequence;
+            eventSequence += 1;
+            eventCommitTail = eventCommitTail
+              .then(async () => {
+                const providerRunClassification = classifyProviderRunEvent(
+                  providerEvent,
+                  {
+                    projectId: request.projectId,
+                    worktreeId: request.worktreeId,
+                    chatId: request.chatId,
+                  },
                 );
-              }
-              if (isIdleStatusEvent) {
-                // Idle is lifecycle-only for a rejected root. Session activity
-                // listeners also reconcile, but wake reconciliation here when
-                // this tagged provider frame is the only idle signal.
-                getChatQueueService().reconcileSessionActivity();
-              }
-              markPersistenceSettled?.();
-              return;
-            }
-
-            const ingestResult =
-              await chatStateService.ingestProviderEventWithResult({
-                projectId: request.projectId,
-                worktreeId: request.worktreeId,
-                chatId: request.chatId,
-                data: providerEvent,
-                mutationId: request.deferredToolsReloadRequestId
-                  ? `${request.chatId}:${request.userMessageId}:deferred-reload:${request.deferredToolsReloadRequestId}:provider:${sequence}`
-                  : `${request.chatId}:${request.userMessageId}:provider:${sequence}`,
-                providerType,
-                turnUserMessageId: executionUserMessageId,
-              });
-            markPersistenceSettled?.();
-            if (
-              isStartingPickup &&
-              eventData &&
-              typeof eventData.userMessageId === 'string' &&
-              turnRootAcceptance?.accepted === true &&
-              turnRootAcceptance.lease
-            ) {
-              const pickupRootId = eventData.userMessageId;
-              const isCurrentExecutionRoot =
-                pickupRootId === executionUserMessageId;
-              if (
-                ingestResult.pickup === 'accepted' ||
-                ingestResult.pickup === 'already-accepted'
-              ) {
-                const confirmed = getChatQueueService().confirmTurnRevival(
-                  request,
-                  turnRootAcceptance.lease,
-                );
-                if (confirmed) {
-                  if (!isCurrentExecutionRoot) {
-                    executionUserMessageId = pickupRootId;
-                  }
-                  rejectedTurnRoots.delete(pickupRootId);
-                  observation = await pickupObservation;
-                  if (observation)
-                    advisorChatObservations.set(request.chatId, observation);
-                } else if (!isCurrentExecutionRoot) {
-                  getChatQueueService().rollbackTurnRevival(
-                    request,
-                    turnRootAcceptance.lease,
-                  );
-                  if (!rejectedTurnRoots.has(pickupRootId)) {
-                    rejectedTurnRoots.set(
-                      pickupRootId,
-                      turnRootAcceptance.lease,
+                if (providerRunClassification.kind === 'reject') {
+                  const descriptor = getProviderRunDescriptor(providerEvent);
+                  recordChatEventDropped({
+                    projectId: request.projectId,
+                    worktreeId: request.worktreeId,
+                    chatId: request.chatId,
+                    providerType,
+                    gate: 'canonical_admission_rejected',
+                    reason: providerRunClassification.reason,
+                    data: providerEvent,
+                    turnUserMessageId:
+                      descriptor?.executionUserMessageId ??
+                      executionUserMessageId,
+                  });
+                  markPersistenceSettled?.();
+                  return;
+                }
+                if (providerRunClassification.kind === 'transcript_only') {
+                  await chatStateService.ingestProviderEventWithResult({
+                    projectId: request.projectId,
+                    worktreeId: request.worktreeId,
+                    chatId: request.chatId,
+                    data: providerEvent,
+                    mutationId: request.deferredToolsReloadRequestId
+                      ? `${request.chatId}:${request.userMessageId}:deferred-reload:${request.deferredToolsReloadRequestId}:provider:${sequence}`
+                      : `${request.chatId}:${request.userMessageId}:provider:${sequence}`,
+                    providerType,
+                    turnUserMessageId:
+                      providerRunClassification.run.executionUserMessageId,
+                  });
+                  markPersistenceSettled?.();
+                  return;
+                }
+                const taggedRootId =
+                  eventData &&
+                  typeof eventData.canopy_turn_user_message_id === 'string'
+                    ? eventData.canopy_turn_user_message_id
+                    : undefined;
+                const isIdleStatusEvent =
+                  eventData?.type === 'system' &&
+                  eventData.subtype === 'status' &&
+                  eventData.status === 'idle';
+                // A delegate's snapshot keeps the tag of the turn that started
+                // it, so it is delivered even when that root was rejected.
+                if (
+                  taggedRootId &&
+                  rejectedTurnRoots.has(taggedRootId) &&
+                  !isStartingPickup &&
+                  !isOwnedDelegationEvent(eventData)
+                ) {
+                  const rejectedLease = rejectedTurnRoots.get(taggedRootId);
+                  if (
+                    rejectedLease &&
+                    isRootTerminalChatEventData(eventData, codexRootThreadId)
+                  ) {
+                    // Retry cleanup only with the exact rejected lease. A newer
+                    // same-id acceptance has a different epoch and is untouched.
+                    getChatQueueService().rollbackTurnRevival(
+                      request,
+                      rejectedLease,
                     );
                   }
-                } else {
-                  getChatQueueService().rollbackTurnRevival(
-                    request,
-                    turnRootAcceptance.lease,
-                  );
+                  if (isIdleStatusEvent) {
+                    // Idle is lifecycle-only for a rejected root. Session activity
+                    // listeners also reconcile, but wake reconciliation here when
+                    // this tagged provider frame is the only idle signal.
+                    getChatQueueService().reconcileSessionActivity();
+                  }
+                  markPersistenceSettled?.();
+                  return;
                 }
-              } else if (!isCurrentExecutionRoot) {
-                getChatQueueService().rollbackTurnRevival(
-                  request,
-                  turnRootAcceptance.lease,
-                );
-                if (!rejectedTurnRoots.has(pickupRootId)) {
-                  rejectedTurnRoots.set(pickupRootId, turnRootAcceptance.lease);
+
+                const ingestResult =
+                  await chatStateService.ingestProviderEventWithResult({
+                    projectId: request.projectId,
+                    worktreeId: request.worktreeId,
+                    chatId: request.chatId,
+                    data: providerEvent,
+                    mutationId: request.deferredToolsReloadRequestId
+                      ? `${request.chatId}:${request.userMessageId}:deferred-reload:${request.deferredToolsReloadRequestId}:provider:${sequence}`
+                      : `${request.chatId}:${request.userMessageId}:provider:${sequence}`,
+                    providerType,
+                    turnUserMessageId: executionUserMessageId,
+                  });
+                markPersistenceSettled?.();
+                if (
+                  isStartingPickup &&
+                  eventData &&
+                  typeof eventData.userMessageId === 'string' &&
+                  turnRootAcceptance?.accepted === true &&
+                  turnRootAcceptance.lease
+                ) {
+                  const pickupRootId = eventData.userMessageId;
+                  const isCurrentExecutionRoot =
+                    pickupRootId === executionUserMessageId;
+                  if (
+                    ingestResult.pickup === 'accepted' ||
+                    ingestResult.pickup === 'already-accepted'
+                  ) {
+                    const confirmed = getChatQueueService().confirmTurnRevival(
+                      request,
+                      turnRootAcceptance.lease,
+                    );
+                    if (confirmed) {
+                      if (!isCurrentExecutionRoot) {
+                        executionUserMessageId = pickupRootId;
+                      }
+                      rejectedTurnRoots.delete(pickupRootId);
+                      observation = await pickupObservation;
+                      if (observation)
+                        advisorChatObservations.set(
+                          request.chatId,
+                          observation,
+                        );
+                    } else if (!isCurrentExecutionRoot) {
+                      getChatQueueService().rollbackTurnRevival(
+                        request,
+                        turnRootAcceptance.lease,
+                      );
+                      if (!rejectedTurnRoots.has(pickupRootId)) {
+                        rejectedTurnRoots.set(
+                          pickupRootId,
+                          turnRootAcceptance.lease,
+                        );
+                      }
+                    } else {
+                      getChatQueueService().rollbackTurnRevival(
+                        request,
+                        turnRootAcceptance.lease,
+                      );
+                    }
+                  } else if (!isCurrentExecutionRoot) {
+                    getChatQueueService().rollbackTurnRevival(
+                      request,
+                      turnRootAcceptance.lease,
+                    );
+                    if (!rejectedTurnRoots.has(pickupRootId)) {
+                      rejectedTurnRoots.set(
+                        pickupRootId,
+                        turnRootAcceptance.lease,
+                      );
+                    }
+                  }
                 }
-              }
-            }
-            // A router refusal remains a false-stamped presentation event even
-            // when canonical pickup observation rejects it. Other rejected
-            // provider events must not be observed or delivered.
-            const routerRefusal =
-              isStartingPickup && turnRootAcceptance?.accepted === false;
-            if (ingestResult.outcome === 'not-applied' && !routerRefusal) {
-              return;
-            }
-            getObservabilityService().observeChatEvent(
-              request.projectId,
-              request.worktreeId,
-              request.chatId,
-              providerEvent,
-            );
-            sendAppAdvisorChatEvent(
-              options.getMainWindow,
-              options.getAppAdvisorWindow,
-              request.projectId,
-              request.worktreeId,
-              request.chatId,
-              providerEvent,
-              {
-                providerType,
-                model,
-                // Same synthetic-id convention as the worktree portal path
-                // so provider events without their own message id still land
-                // on a stable per-turn assistant row.
-                fallbackMessageId: `${executionUserMessageId}:assistant`,
-              },
-            );
-            if (
-              eventData &&
-              isRootTerminalChatEventData(eventData, codexRootThreadId)
-            ) {
-              if (preservePortalTimerForDeferredReload) {
-                return;
-              }
-              const status = getChatTurnAuditStatus(eventData);
-              getChatQueueService().onTurnTerminal(
-                request,
-                status === 'success'
-                  ? 'complete'
-                  : status === 'failure'
-                    ? 'error'
-                    : 'cancelled',
-                executionUserMessageId,
-              );
-              const error =
-                eventData.type === 'error'
-                  ? typeof eventData.error === 'string'
-                    ? eventData.error
-                    : 'Unknown error'
-                  : eventData.is_error === true &&
-                      typeof eventData.result === 'string'
-                    ? eventData.result
-                    : undefined;
-              clearPresentationTurn(
-                presentationChatKey(presentationOrigin),
-                executionUserMessageId,
-              );
-              getObservabilityService().completeChatTurn(
-                request.projectId,
-                request.worktreeId,
-                request.chatId,
-                status,
-                error,
-              );
-              // Resolve the root here, inside the ordered commit stream. A
-              // pickup queued before this terminal must win, but a later
-              // pickup must not steal this terminal while disk is blocked.
-              const terminalObservation = observation;
-              if (
-                ingestResult.outcome === 'applied' &&
-                terminalObservation &&
-                terminalObservation.sourceInputId === executionUserMessageId &&
-                !settledInputs.has(executionUserMessageId)
-              ) {
-                settledInputs.add(executionUserMessageId);
-                const hasVisibleOutput = await hasCanonicalTurnVisibleOutput(
-                  request,
-                  executionUserMessageId,
+                // A router refusal remains a false-stamped presentation event even
+                // when canonical pickup observation rejects it. Other rejected
+                // provider events must not be observed or delivered.
+                const routerRefusal =
+                  isStartingPickup && turnRootAcceptance?.accepted === false;
+                if (ingestResult.outcome === 'not-applied' && !routerRefusal) {
+                  return;
+                }
+                getExecutionObservabilityIngest().observeChatEvent(
+                  request.projectId,
+                  request.worktreeId,
+                  request.chatId,
+                  providerEvent,
                 );
-                await getAppAdvisorWatcherService().handleCanonicalChatTerminalEvent(
+                sendAppAdvisorChatEvent(
+                  options.getMainWindow,
+                  options.getAppAdvisorWindow,
+                  request.projectId,
+                  request.worktreeId,
+                  request.chatId,
+                  providerEvent,
                   {
-                    kind: 'terminal',
-                    eventId: `canonical-chat:${stableHash(terminalObservation.address)}:${executionUserMessageId}:terminal`,
-                    ...terminalObservation,
-                    occurredAt,
-                    observedAt: new Date(Date.now()).toISOString(),
-                    disposition: getCanonicalChatTerminalDisposition(
-                      eventData,
-                      status,
-                      hasVisibleOutput,
-                    ),
+                    providerType,
+                    model,
+                    // Same synthetic-id convention as the worktree portal path
+                    // so provider events without their own message id still land
+                    // on a stable per-turn assistant row.
+                    fallbackMessageId: `${executionUserMessageId}:assistant`,
                   },
                 );
                 if (
-                  advisorChatObservations.get(request.chatId) ===
-                  terminalObservation
+                  eventData &&
+                  isRootTerminalChatEventData(eventData, codexRootThreadId)
                 ) {
-                  advisorChatObservations.delete(request.chatId);
+                  if (preservePortalTimerForDeferredReload) {
+                    return;
+                  }
+                  const status = getChatTurnAuditStatus(eventData);
+                  getChatQueueService().onTurnTerminal(
+                    request,
+                    status === 'success'
+                      ? 'complete'
+                      : status === 'failure'
+                        ? 'error'
+                        : 'cancelled',
+                    executionUserMessageId,
+                  );
+                  const error =
+                    eventData.type === 'error'
+                      ? typeof eventData.error === 'string'
+                        ? eventData.error
+                        : 'Unknown error'
+                      : eventData.is_error === true &&
+                          typeof eventData.result === 'string'
+                        ? eventData.result
+                        : undefined;
+                  clearPresentationTurn(
+                    presentationChatKey(presentationOrigin),
+                    executionUserMessageId,
+                  );
+                  getExecutionObservabilityIngest().completeChatTurn(
+                    request.projectId,
+                    request.worktreeId,
+                    request.chatId,
+                    status,
+                    error,
+                  );
+                  // Resolve the root here, inside the ordered commit stream. A
+                  // pickup queued before this terminal must win, but a later
+                  // pickup must not steal this terminal while disk is blocked.
+                  const terminalObservation = observation;
+                  if (
+                    ingestResult.outcome === 'applied' &&
+                    terminalObservation &&
+                    terminalObservation.sourceInputId ===
+                      executionUserMessageId &&
+                    !settledInputs.has(executionUserMessageId)
+                  ) {
+                    settledInputs.add(executionUserMessageId);
+                    const hasVisibleOutput =
+                      await hasCanonicalTurnVisibleOutput(
+                        request,
+                        executionUserMessageId,
+                      );
+                    await getAppAdvisorWatcherService().handleCanonicalChatTerminalEvent(
+                      {
+                        kind: 'terminal',
+                        eventId: `canonical-chat:${stableHash(terminalObservation.address)}:${executionUserMessageId}:terminal`,
+                        ...terminalObservation,
+                        occurredAt,
+                        observedAt: new Date(Date.now()).toISOString(),
+                        disposition: getCanonicalChatTerminalDisposition(
+                          eventData,
+                          status,
+                          hasVisibleOutput,
+                        ),
+                      },
+                    );
+                    if (
+                      advisorChatObservations.get(request.chatId) ===
+                      terminalObservation
+                    ) {
+                      advisorChatObservations.delete(request.chatId);
+                    }
+                  }
                 }
+              })
+              .catch((error: unknown) => {
+                markPersistenceSettled?.();
+                logMainProcessError(
+                  `Failed to durably commit App Advisor event for ${request.worktreeId}/${request.chatId}`,
+                  error,
+                );
+              });
+            return eventCommitTail;
+          },
+        ),
+        () => options.getAppAdvisorWindow() ?? options.getMainWindow(),
+        {
+          turnUserMessageId: executionUserMessageId,
+          // An admitted dispatch is a pending destination, so a wake already
+          // running keeps its output (as on the worktree path).
+          ...(options.authorization
+            ? {
+                dispatchOwner: options.authorization.dispatchOwner,
+                operationEpoch: options.authorization.operationEpoch,
               }
-            }
-          })
-          .catch((error: unknown) => {
-            markPersistenceSettled?.();
-            logMainProcessError(
-              `Failed to durably commit App Advisor event for ${request.worktreeId}/${request.chatId}`,
-              error,
+            : {}),
+          acceptTurnRoot: async (turnUserMessageId) => {
+            await eventCommitTail;
+            return getChatQueueService().acceptTurnRevival(
+              request,
+              turnUserMessageId,
             );
-          });
-        return eventCommitTail;
-      },
-      () => options.getAppAdvisorWindow() ?? options.getMainWindow(),
-      {
-        turnUserMessageId: executionUserMessageId,
-        // An admitted dispatch is a pending destination, so a wake already
-        // running keeps its output (as on the worktree path).
-        ...(options.authorization
-          ? {
-              dispatchOwner: options.authorization.dispatchOwner,
-              operationEpoch: options.authorization.operationEpoch,
-            }
-          : {}),
-        acceptTurnRoot: async (turnUserMessageId) => {
-          await eventCommitTail;
-          return getChatQueueService().acceptTurnRevival(
-            request,
-            turnUserMessageId,
-          );
+          },
+          drainEventsBeforeRemoval: () => eventCommitTail,
         },
-        drainEventsBeforeRemoval: () => eventCommitTail,
-      },
+      ),
     );
     const toolApprovalSession = session;
     const authoritativeGlobalInstructionsSnapshot =
@@ -1325,6 +1367,7 @@ export async function dispatchAppAdvisorChatMessage(
     // receive Ultra fast rejects the send here instead of running at another
     // speed; the in-session admission runs again right before `turn/start`.
     await applyAgentSessionCodexSpeed(session, modelConfig.speed);
+    await session.setContextWindow?.(modelConfig.contextWindow);
     // A wake that started while the prompt was prepared keeps the foreground,
     // and the prompt parks behind it (contracts §3), before its audit turn.
     // A wake needs an earlier turn on this session, as on the worktree path.
@@ -1336,7 +1379,7 @@ export async function dispatchAppAdvisorChatMessage(
     if (parkedEarly) await parkBehindWake(request, parkedEarly);
 
     if (deferredToolsReloadEnabledResources) {
-      getObservabilityService().recordInjectedPromptForOpenChatTurn(
+      getExecutionObservabilityIngest().recordInjectedPromptForOpenChatTurn(
         request.projectId,
         request.worktreeId,
         request.chatId,
@@ -1351,7 +1394,7 @@ export async function dispatchAppAdvisorChatMessage(
         },
       );
     } else {
-      getObservabilityService().startChatTurn({
+      getExecutionObservabilityIngest().startChatTurn({
         projectId: request.projectId,
         worktreeId: request.worktreeId,
         chatId: request.chatId,
@@ -1405,7 +1448,7 @@ export async function dispatchAppAdvisorChatMessage(
     const parked = parkingOwner && wakeParkingOutcome(parkingOwner);
     if (parked) {
       if (!deferredToolsReloadEnabledResources)
-        getObservabilityService().completeChatTurn(
+        getExecutionObservabilityIngest().completeChatTurn(
           request.projectId,
           request.worktreeId,
           request.chatId,
@@ -1528,6 +1571,7 @@ export async function dispatchAppAdvisorChatMessage(
     );
     await session.setApprovalMode(liveApprovalAuthority.approvalMode);
     options.admissionSignal?.throwIfAborted();
+    turnRun.signal.throwIfAborted();
     // The destination activates at the send for every provider: a Claude
     // start carries no binding receipt, and a Codex start forks from it.
     if (options.authorization)
@@ -1543,17 +1587,20 @@ export async function dispatchAppAdvisorChatMessage(
       presentationSource,
     );
     try {
-      session.sendMessage(providerSubmittedText, {
-        userMessageId: request.userMessageId,
-        ...(executionHarness === 'opencode' && request.attachmentPaths?.length
-          ? {
-              attachments: {
-                baseDir: attachmentBaseDir,
-                paths: [...request.attachmentPaths],
-              },
-            }
-          : {}),
-      });
+      turnRun.executeSync(() =>
+        session.sendMessage(providerSubmittedText, {
+          userMessageId: request.userMessageId,
+          ...(executionHarness === 'opencode' && request.attachmentPaths?.length
+            ? {
+                attachments: {
+                  baseDir: attachmentBaseDir,
+                  paths: [...request.attachmentPaths],
+                },
+              }
+            : {}),
+        }),
+      );
+      turnRun.accepted();
     } catch (error) {
       clearPresentationTurn(
         presentationChatKey(presentationOrigin),
@@ -1570,6 +1617,9 @@ export async function dispatchAppAdvisorChatMessage(
     }
     options.onTurnAccepted?.();
     return 'dispatched';
+  } catch (error) {
+    advisorTurnRun?.abandon(error);
+    throw error;
   } finally {
     resourceGuard.release();
   }

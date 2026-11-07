@@ -12,10 +12,16 @@ import {
   type RefObject,
 } from 'react';
 import {
+  CodexContextWindowControl,
   UsageIndicator as SharedUsageIndicator,
   createOpenCodeUsageResponse,
   type UsageIndicatorContextBreakdown,
 } from '@canopy/ui-shared/components';
+import {
+  CODEX_LONG_CONTEXT_THRESHOLD,
+  type CodexContextWindowSetting,
+} from '@canopy/desktop-shared/lib/codex-context-window';
+import { useCodexContextWindowControl } from './useCodexContextWindowControl';
 import { useCostChatSummaryStore } from '@canopy/ui-app/cost';
 import { UsageCostPreviewRow } from '@canopy/ui-shared/components/cost';
 import type { CostScopeRef } from '@canopy/protocol/cost-view';
@@ -99,6 +105,8 @@ interface UsageIndicatorProps {
   aiCreditsBilled?: boolean;
   /** True while the chat's turn runs; its end re-reads a charged balance. */
   turnActive?: boolean;
+  /** The Codex chat's own context window choice; absent uses the default. */
+  contextWindowSetting?: CodexContextWindowSetting;
 }
 
 const NO_CREDIT_TARGET: ComposerAiCreditsTarget = {};
@@ -123,6 +131,7 @@ export function UsageIndicator({
   creditTarget,
   aiCreditsBilled = false,
   turnActive = false,
+  contextWindowSetting,
 }: UsageIndicatorProps): JSX.Element {
   useSyncExternalStore(
     subscribeRendererModelFacts,
@@ -171,10 +180,20 @@ export function UsageIndicator({
   const cursor = !isCopilot && (isCursor ?? isCursorModel(usageModel ?? ''));
   // Only a Claude session reports what fills its window; Codex, Cursor and
   // Copilot report totals.
-  const { breakdown: contextBreakdown, onOpenChange: onContextOpenChange } =
+  const { breakdown: claudeBreakdown, onOpenChange: onContextOpenChange } =
     useContextBreakdown(
       isCodex || cursor || isCopilot || opencode ? undefined : contextTarget,
     );
+  // Codex reports totals; its autocompact buffer and the context window
+  // control come from the window and the model's catalog bounds.
+  const codexChat = isCodex && !cursor && !isCopilot && !opencode;
+  const codexContextWindow = useCodexContextWindowControl({
+    chat: codexChat ? contextTarget : undefined,
+    setting: contextWindowSetting,
+    usedTokens: usage?.contextTokens ?? 0,
+    reportedWindowTokens: usage?.contextWindow ?? 0,
+  });
+  const contextBreakdown = claudeBreakdown ?? codexContextWindow.breakdown;
   // A reserved chat scope, such as the Pipeline Assistant's, keeps no cost
   // and has no panel grid to show a breakdown in.
   const costTarget =
@@ -298,6 +317,19 @@ export function UsageIndicator({
       hideCost={costHidden}
       {...(!opencode && !costHidden ? { onSeeDetails } : {})}
       {...(contextBreakdown ? { contextBreakdown } : {})}
+      {...(codexContextWindow.control
+        ? {
+            contextWindowControl: (
+              <CodexContextWindowControl
+                state={codexContextWindow.control.state}
+                onSelect={codexContextWindow.control.onSelect}
+              />
+            ),
+          }
+        : {})}
+      {...(codexChat
+        ? { longContextThresholdTokens: CODEX_LONG_CONTEXT_THRESHOLD }
+        : {})}
       {...(contextTarget !== undefined &&
       costPreview !== undefined &&
       !costHidden

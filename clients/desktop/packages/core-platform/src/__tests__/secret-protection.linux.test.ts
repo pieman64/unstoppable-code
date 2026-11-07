@@ -55,6 +55,24 @@ linuxDescribe(
           stdio: ['ignore', 'pipe', 'pipe'],
         },
       );
+      const sea: unknown = JSON.parse(
+        execFileSync(
+          process.execPath,
+          [
+            'scripts/lib/native-vault-sea-qualification.mjs',
+            product,
+            path.join(directory, 'renamed-sea'),
+          ],
+          { cwd: root, encoding: 'utf8', timeout: 90_000 },
+        )
+          .trim()
+          .split(/\r?\n/)
+          .at(-1) ?? '',
+      );
+      expect(sea).toMatchObject({
+        valid: { loads: 1 },
+        replaced: { loads: 0 },
+      });
       controlled = path.join(directory, 'controlled-service');
       const flags = execFileSync(
         '/usr/bin/pkg-config',
@@ -78,7 +96,7 @@ linuxDescribe(
         ],
         { timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] },
       );
-    }, 80_000);
+    }, 170_000);
     afterAll(() => {
       if (directory) rmSync(directory, { recursive: true, force: true });
     });

@@ -234,7 +234,18 @@ function isTurnPreparationCancelled(
 }
 
 export type ChatQueueTerminalStatus = 'complete' | 'error' | 'cancelled';
-export type ChatQueueMutationResult = 'applied' | 'not_found' | 'busy';
+export type ChatQueueMutationResult =
+  | 'applied'
+  | 'not_found'
+  | 'busy'
+  | 'conflict';
+/** Receipt reason for a stale entry revision (CAN-4112). */
+export const QUEUE_ENTRY_REVISION_CONFLICT_REASON =
+  'The queued message has changed. Read the queue again and retry.';
+export interface ChatQueueEntryGuard {
+  /** The revision the caller read; absent skips the check. */
+  readonly entryRevision?: number;
+}
 
 /** Ownership token for the queue side of an accepted provider-turn revival. */
 export interface ChatQueueRevivalLease {
@@ -1035,6 +1046,16 @@ function steerBlockedByCapabilityChange(
   );
 }
 
+function isStaleEntry(
+  message: HostQueuedMessage,
+  guard?: ChatQueueEntryGuard,
+): boolean {
+  return (
+    guard?.entryRevision !== undefined &&
+    (message.revision ?? 1) !== guard.entryRevision
+  );
+}
+
 function queuedMessageView(
   message: HostQueuedMessage,
   entry: ChatQueueEntry,
@@ -1066,6 +1087,7 @@ function queuedMessageView(
       : {}),
     origin: message.origin,
     enqueuedAtMs: message.enqueuedAtMs,
+    revision: message.revision ?? 1,
     turnPhase,
     ...(entry.creditHold
       ? {
@@ -1425,6 +1447,10 @@ export class ChatQueueService {
   private readonly committedMessageFallbackRetries = new Map<string, number>();
   private readonly editLockAttempts = new WeakMap<HostQueuedMessage, symbol>();
   private readonly editLockOwners = new WeakMap<HostQueuedMessage, string>();
+  private readonly editLockSaves = new WeakMap<
+    HostQueuedMessage,
+    Promise<void>
+  >();
   private readonly activeInputHydrations = new Map<string, number>();
   private readonly generatedSubmissions = new Map<string, Promise<void>>();
   private readonly inputRestorations = new Map<string, Promise<void>>();
@@ -4186,6 +4212,7 @@ export class ChatQueueService {
     request: ChatQueueEditRequest,
     commandResult?: ChatQueueCommandResult,
     attachmentMode: 'replace' | 'preserve' = 'replace',
+    guard?: ChatQueueEntryGuard,
   ): Promise<ChatQueueMutationResult> {
     const entry = this.entries.get(chatQueueKey(request));
     const message = entry?.queue.find(
@@ -4194,9 +4221,13 @@ export class ChatQueueService {
     if (!entry || !message) {
       // Existing-channel terminal-local edits are canonical input policy, not IPC policy.
       const { getChatStateService } = await import('./chat-state-service');
-      return getChatStateService().editRetainedTerminalAgentInput(request);
+      return getChatStateService().editRetainedTerminalAgentInput(
+        request,
+        guard,
+      );
     }
     if (entry.recoveryInFlight) return 'busy';
+    if (isStaleEntry(message, guard)) return 'conflict';
     const previousRequest = message.request;
     const previousWatcherParts = message.watcherParts;
     const previousWatcherConsolidationBoundary =
@@ -4205,6 +4236,8 @@ export class ChatQueueService {
     const { asyncQuestionId: _asyncQuestionId, ...editableRequest } =
       message.request;
     void _asyncQuestionId;
+    const previousRevision = message.revision;
+    message.revision = (message.revision ?? 1) + 1;
     message.request = {
       ...editableRequest,
       text: request.text,
@@ -4231,6 +4264,8 @@ export class ChatQueueService {
       if (persistence) await persistence;
     } catch (error) {
       message.request = previousRequest;
+      if (previousRevision === undefined) delete message.revision;
+      else message.revision = previousRevision;
       if (previousWatcherParts) message.watcherParts = previousWatcherParts;
       else delete message.watcherParts;
       if (previousWatcherConsolidationBoundary) {
@@ -4270,6 +4305,7 @@ export class ChatQueueService {
     entryId: string,
     beforeEntryId: string | null,
     commandResult?: ChatQueueCommandResult,
+    guard?: ChatQueueEntryGuard,
   ): Promise<ChatQueueMutationResult> {
     const entry = this.entries.get(chatQueueKey(target));
     const isPublic = (message: HostQueuedMessage): boolean =>
@@ -4296,6 +4332,7 @@ export class ChatQueueService {
       entry.queue.some((candidate) => candidate.editLocked === true)
     )
       return 'busy';
+    if (isStaleEntry(message, guard)) return 'conflict';
     const previousOrder = entry.queue.map((candidate) => candidate.id);
     if (anchor !== message) {
       const reordered = entry.queue.filter(
@@ -4349,6 +4386,7 @@ export class ChatQueueService {
     target: ChatQueueTarget,
     entryId: string,
     commandResult?: ChatQueueCommandResult,
+    guard?: ChatQueueEntryGuard,
   ): Promise<ChatQueueMutationResult> {
     const entry = this.entries.get(chatQueueKey(target));
     const index =
@@ -4358,9 +4396,12 @@ export class ChatQueueService {
       return getChatStateService().cancelRetainedTerminalAgentInput(
         target,
         entryId,
+        guard,
       );
     }
     if (entry.recoveryInFlight) return 'busy';
+    const queued = entry.queue[index];
+    if (queued && isStaleEntry(queued, guard)) return 'conflict';
     const [message] = entry.queue.splice(index, 1);
     if (!message) return 'not_found';
     entry.cancelsInFlight = (entry.cancelsInFlight ?? 0) + 1;
@@ -4395,6 +4436,7 @@ export class ChatQueueService {
     target: ChatQueueTarget,
     entryId: string,
     commandResult?: ChatQueueCommandResult,
+    guard?: ChatQueueEntryGuard,
   ): Promise<ChatQueueMutationResult> {
     const entry = this.entries.get(chatQueueKey(target));
     if (!entry) return 'not_found';
@@ -4442,6 +4484,7 @@ export class ChatQueueService {
     entry.recoveryInFlight = true;
     const wait = this.beginRecoveryWait(entry, 'chat_queue.force');
     try {
+      if (isStaleEntry(message, guard)) return 'conflict';
       // Cancel a genuinely active provider turn BEFORE removing the row: if
       // cancel rejects, the queued message stays intact and the turn gate is
       // untouched, instead of the row being lost and turnActive wedged true.
@@ -4755,6 +4798,7 @@ export class ChatQueueService {
     target: ChatQueueTarget,
     entryId: string,
     receipt: ChatQueueCommandResult,
+    guard?: ChatQueueEntryGuard,
   ): Promise<ChatQueueMutationResult> {
     const entry = this.entries.get(chatQueueKey(target));
     const index =
@@ -4789,6 +4833,7 @@ export class ChatQueueService {
       !canSteerQueuedMessage(entry, message, this.getTurnPhase(target, entry))
     )
       return 'busy';
+    if (isStaleEntry(message, guard)) return 'conflict';
     entry.recoveryInFlight = true;
     const wait = this.beginRecoveryWait(entry, 'chat_queue.steer_queued');
     entry.queue.splice(current, 1);
@@ -5107,6 +5152,7 @@ export class ChatQueueService {
       atHead?: boolean;
       ordinaryOnly?: boolean;
       creditRefused?: boolean;
+      revision?: number;
     },
   ): void {
     assertValidQueueDispatchOptions({ requiredAccountProxyConnectionId });
@@ -5135,6 +5181,11 @@ export class ChatQueueService {
         ...(requiredAccountProxyConnectionId !== undefined
           ? { requiredAccountProxyConnectionId }
           : {}),
+        ...(options?.revision !== undefined &&
+        Number.isSafeInteger(options.revision) &&
+        options.revision > 1
+          ? { revision: options.revision }
+          : {}),
       },
       options?.atHead ? 0 : undefined,
     );
@@ -5150,24 +5201,42 @@ export class ChatQueueService {
     entryId: string,
     locked: boolean,
     acquisitionId?: string,
-  ): Promise<void> {
+    guard?: ChatQueueEntryGuard,
+  ): Promise<ChatQueueMutationResult> {
     const entry = this.entries.get(chatQueueKey(target));
     const message = entry?.queue.find((candidate) => candidate.id === entryId);
     if (!entry || !message) {
       if (locked)
         throw new Error('This message is no longer available to edit.');
-      return;
+      return 'applied';
     }
     if (
       !locked &&
       acquisitionId !== undefined &&
       this.editLockOwners.get(message) !== acquisitionId
     )
-      return;
+      return 'applied';
     if (entry.recoveryInFlight)
       throw new Error('Another message operation is in progress');
-    if (locked && message.editLocked)
+    if (locked && isStaleEntry(message, guard)) return 'conflict';
+    if (locked && message.editLocked) {
+      // Repeating a lock is safe for the acquisition that holds it (CAN-4112).
+      if (
+        acquisitionId !== undefined &&
+        this.editLockOwners.get(message) === acquisitionId
+      ) {
+        // A repeat answers only once the original acquisition is saved.
+        await this.editLockSaves.get(message)?.catch(() => undefined);
+        if (
+          this.entries.get(chatQueueKey(target)) === entry &&
+          entry.queue.includes(message) &&
+          message.editLocked &&
+          this.editLockOwners.get(message) === acquisitionId
+        )
+          return 'applied';
+      }
       throw new Error('This message is no longer available to edit.');
+    }
     const attempt = Symbol(entryId);
     if (locked && acquisitionId !== undefined)
       this.editLockOwners.set(message, acquisitionId);
@@ -5182,6 +5251,7 @@ export class ChatQueueService {
     }
     try {
       const persistence = this.broadcast(target, entry);
+      if (locked && persistence) this.editLockSaves.set(message, persistence);
       if (persistence) await persistence;
     } catch (error) {
       if (locked && this.editLockAttempts.get(message) === attempt) {
@@ -5220,6 +5290,7 @@ export class ChatQueueService {
       await this.drain(target, entry);
     }
     if (!locked) this.markSteeringEligibility(entry);
+    return 'applied';
   }
 
   private consolidateNextWatcherRow(
@@ -7336,6 +7407,7 @@ export class ChatQueueService {
           origin,
           enqueuedAtMs,
           requiredAccountProxyConnectionId,
+          revision: rowRevision,
         }) => ({
           id,
           request,
@@ -7343,6 +7415,9 @@ export class ChatQueueService {
           enqueuedAtMs,
           ...(requiredAccountProxyConnectionId !== undefined
             ? { requiredAccountProxyConnectionId }
+            : {}),
+          ...(rowRevision !== undefined && rowRevision > 1
+            ? { revision: rowRevision }
             : {}),
           ...(entry.authenticationPause
             ? { authenticationAttemptId: entry.authenticationPause }
@@ -7361,6 +7436,10 @@ export class ChatQueueService {
                   requiredAccountProxyConnectionId:
                     entry.dispatching.requiredAccountProxyConnectionId,
                 }
+              : {}),
+            ...(entry.dispatching.revision !== undefined &&
+            entry.dispatching.revision > 1
+              ? { revision: entry.dispatching.revision }
               : {}),
             ...(entry.authenticationPause
               ? { authenticationAttemptId: entry.authenticationPause }

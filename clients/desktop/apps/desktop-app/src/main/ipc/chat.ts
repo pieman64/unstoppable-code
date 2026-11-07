@@ -18,12 +18,15 @@ import {
   getTurnRootAcceptance,
   isOwnedDelegationEvent,
 } from '../agents/session-event-router';
-import { withEffectiveAiCreditsRouting } from '../agents/effective-ai-credits-routing';
-import { randomUUID } from 'node:crypto';
 import {
-  logMainProcessError,
-  logMainProcessWarn,
-} from '../lib/main-process-logging';
+  beginChatTurnRun,
+  deferredReloadEventNamespace,
+  type ChatTurnRunHandle,
+} from '../agent-runs/turn-runs';
+import { withEffectiveAiCreditsRouting } from '../agents/effective-ai-credits-routing';
+import { requestAppAdvisorPresentation } from '../app-advisor/advisor-presentation';
+import { randomUUID } from 'node:crypto';
+import { logMainProcessError } from '../lib/main-process-logging';
 import { isModelBlockedByStoredPolicy } from '../lib/model-policy-state';
 import type { BrowserWindow, IpcMainInvokeEvent } from 'electron';
 import { BRAND } from '@canopy/brand/current';
@@ -77,7 +80,6 @@ import {
   codexSpeedFromFastMode,
   CodexSpeedUnsupportedError,
   isCodexSpeed,
-  withCodexSpeed,
 } from '@canopy/desktop-shared/lib/codex-speed';
 import {
   appendUserOverallPreferencesBlock,
@@ -198,12 +200,28 @@ import { reservePromptBindingSlot } from '../services/chat-turn-binding-slots';
 import {
   createChatCommandDispatchOptions,
   dispatchTrustedChatCommand,
+  setCoreChatSettingsHost,
 } from '../canopy-runtime/core-chat-command-adapter';
+import type {
+  CoreChatModelChange,
+  CoreChatSettingsTarget,
+} from '../canopy-runtime/core-chat-command-adapter';
+import {
+  createCoreChatSettingsHost,
+  isModelChangeSuperseded,
+} from '../services/chat-settings-host';
+import type { ChatSettingsLiveEffects } from '../services/chat-settings-host';
+import {
+  CoreChatLifecycleResultSchema,
+  CoreChatUpdateParamsSchema,
+} from '@canopy/protocol/canopy-core';
+import { CanopyOperationError } from '@canopy/core-runtime';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
 import type { DesktopCanopyRuntimeAccessors } from './index';
 import type {
   ChatCommandRequest,
   ChatCommandResult,
+  ChatStateCommandPort,
 } from '@canopy/desktop-shared/types';
 
 import { approvePlanExit, denyPlanExit } from '../mcp/plan-pending-requests';
@@ -232,7 +250,7 @@ import {
   readCodexRootThreadId,
 } from '../lib/chat-turn-audit';
 import { sendToWindow, sendToWindowDetailed } from '../lib/window-send';
-import { getObservabilityService } from '../observability';
+import { getExecutionObservabilityIngest } from '../observability/ingest';
 import {
   buildExistingTabDispatchOptions,
   dispatchLocalWorktreeChatMessage,
@@ -365,10 +383,16 @@ import {
   getEffectiveClaudeChatModePreferences,
   getPersistedClaudeChatInterfaceMode,
 } from '../lib/claude-tui-chats';
+import {
+  projectQueueCancel,
+  projectQueueEdit,
+  projectQueueEditLock,
+  projectQueueForce,
+} from './chat-queue-projections';
 
 let chatCommandRuntime: DesktopCanopyRuntimeAccessors | undefined;
 
-function dispatchCanonicalChatCommand(
+export function dispatchCanonicalChatCommand(
   request: ChatCommandRequest,
 ): Promise<ChatCommandResult> {
   if (!chatCommandRuntime) return getChatStateService().command(request);
@@ -595,7 +619,7 @@ function recordUndeliveredChatEventDiagnostic(options: {
         ({}) satisfies PersistedChatDispatchMetadata,
     )
     .then((persistedMetadata) => {
-      getObservabilityService().recordSessionDiagnostic({
+      getExecutionObservabilityIngest().recordSessionDiagnostic({
         version: 1,
         timestamp,
         kind: 'chat_event_undelivered',
@@ -791,6 +815,163 @@ async function commitCanonicalTabSettings(
   }
 }
 
+/** Dispatches a client-style settings update through `core.chat.update` (CAN-4110 D3). */
+async function updateChatSettingsThroughCore(
+  target: CoreChatSettingsTarget,
+  patch: ChatTabSettingsPatch,
+): Promise<ChatCommandResult> {
+  const { projectId, worktreeId, chatId } = target;
+  const commandId = `settings-${randomUUID()}`;
+  let result: ChatCommandResult;
+  if (chatCommandRuntime) {
+    try {
+      result = CoreChatLifecycleResultSchema.parse(
+        await chatCommandRuntime.dispatcher.instruction(
+          'core.chat.update',
+          CoreChatUpdateParamsSchema.parse({
+            projectId,
+            worktreeId,
+            commandId,
+            action: { type: 'chat.patch_tab_settings', tabId: chatId, patch },
+            _meta: { idempotencyKey: commandId },
+          }),
+          {
+            caller: {
+              principalId: 'local-desktop-user',
+              clientInstanceId: 'desktop-main-chat',
+              authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+              interfaceKind: 'desktop',
+              grants: ['core.chat.write'],
+            },
+            metadata: { idempotencyKey: commandId },
+          },
+        ),
+      );
+    } catch (error) {
+      if (
+        error instanceof CanopyOperationError &&
+        error.runtimeCause instanceof Error
+      )
+        throw error.runtimeCause;
+      throw error;
+    }
+  } else {
+    result = await createInstalledChatSettingsHost().applySettings(
+      {
+        commandId,
+        target,
+        ...(patch.planMode === undefined || patch.planMode === null
+          ? {}
+          : { planMode: patch.planMode }),
+        ...(patch.modelConfig?.thinkingLevel === undefined
+          ? {}
+          : { thinkingLevel: patch.modelConfig.thinkingLevel }),
+        ...(patch.modelConfig?.speed === undefined
+          ? {}
+          : { speed: patch.modelConfig.speed }),
+      },
+      getChatStateService(),
+    );
+  }
+  if (
+    result.outcome !== 'applied' &&
+    result.outcome !== 'already_applied' &&
+    result.outcome !== 'not_found'
+  ) {
+    throw new Error(
+      `Canonical settings patch was ${result.outcome}: ${result.reason ?? 'unknown reason'}`,
+    );
+  }
+  return result;
+}
+
+/** The post-commit effects of the plan, thinking and Codex speed setters. */
+function chatSettingsLiveEffects(): ChatSettingsLiveEffects {
+  return {
+    planMode: async ({ projectId, worktreeId, chatId }, enabled) => {
+      updateQueuedHookChatPlanMode({ projectId, worktreeId, chatId, enabled });
+      await getClaudeTerminalSessionService().setPlanMode(
+        projectId,
+        worktreeId,
+        chatId,
+        enabled,
+      );
+      const session = getSession(projectId, worktreeId, chatId);
+      if (session) {
+        if (!sessionHasActiveTurnOrNativeWork(projectId, worktreeId, chatId)) {
+          await session.setPlanMode(enabled);
+        }
+        if (!isCoworkWorkspace(projectId)) {
+          markSessionForNextTurnRecreation(
+            projectId,
+            worktreeId,
+            chatId,
+            'plan',
+          );
+        }
+      }
+      getChatQueueService().refreshRestartHold({
+        projectId,
+        worktreeId,
+        chatId,
+      });
+    },
+    thinkingLevel: async ({ projectId, worktreeId, chatId }, level) => {
+      updateQueuedHookChatThinkingLevel({
+        projectId,
+        worktreeId,
+        chatId,
+        level,
+      });
+      const session = getSession(projectId, worktreeId, chatId);
+      if (
+        session &&
+        !sessionHasActiveTurnOrNativeWork(projectId, worktreeId, chatId)
+      ) {
+        await session.setThinkingLevel(level);
+      }
+    },
+    speed: async ({ projectId, worktreeId, chatId }, speed) => {
+      updateQueuedHookChatCodexFastMode({
+        projectId,
+        worktreeId,
+        chatId,
+        enabled: codexSpeedFastMode(speed),
+        speed,
+      });
+      const session = getSession(projectId, worktreeId, chatId);
+      if (session) {
+        try {
+          await applyAgentSessionCodexSpeed(session, speed);
+        } catch (error) {
+          // The durable choice is kept; the next send's admission reports
+          // that this session cannot run the requested speed.
+          if (!(error instanceof CodexSpeedUnsupportedError)) throw error;
+        }
+      }
+    },
+  };
+}
+
+let chatSettingsWindow: () => BrowserWindow | null = () => null;
+
+function createInstalledChatSettingsHost(): ReturnType<
+  typeof createCoreChatSettingsHost
+> {
+  return createCoreChatSettingsHost({
+    withChatSettingsLock: (target, work) =>
+      withModelChangeLock(
+        buildSessionKey(target.projectId, target.worktreeId, target.chatId),
+        work,
+      ),
+    readTab: (target) =>
+      readCanonicalChatTab(target.projectId, target.worktreeId, target.chatId),
+    effects: chatSettingsLiveEffects(),
+    changeModel: (change, port) =>
+      changeChatModelThroughCore(change, port, chatSettingsWindow),
+  });
+}
+
 /**
  * Persist a chat's plugin selections and restart or recreate its provider
  * session so the next turn runs with them. Shared by the plugin picker IPC
@@ -972,6 +1153,7 @@ export async function applyChatPluginSelectionsUpdate(
                   assistantMode: capabilityProfile.assistantMode,
                   codeGraphToolsAdvertised:
                     capabilityProfile.codeGraphToolsAdvertised,
+                  interfaceTools: capabilityProfile.interfaceTools,
                 }
               : {}),
           });
@@ -1238,6 +1420,15 @@ async function commitCanonicalApprovalMode(
   }
 }
 
+interface CoreModelChangeCommit {
+  commandId: string;
+  commit: (request: ChatCommandRequest) => Promise<ChatCommandResult>;
+  expectedRevision?: number;
+  expectedTabRevision?: number;
+  origin?: 'desktop' | 'portal';
+  onCommitted: (result: ChatCommandResult) => void;
+}
+
 async function commitCanonicalModelChange(
   projectId: string,
   worktreeId: string,
@@ -1249,12 +1440,20 @@ async function commitCanonicalModelChange(
   providerType = requireProviderForModel(model),
   preserveModelSelectionMode = false,
   autoRoutedMessageId?: string,
-): Promise<void> {
-  const result = await dispatchCanonicalChatCommand({
+  core?: CoreModelChangeCommit,
+): Promise<ChatCommandResult> {
+  const request: ChatCommandRequest = {
     schemaVersion: 1,
-    commandId: `model-${randomUUID()}`,
+    commandId: core?.commandId ?? `model-${randomUUID()}`,
     projectId,
     worktreeId,
+    ...(core?.expectedRevision === undefined
+      ? {}
+      : { expectedRevision: core.expectedRevision }),
+    ...(core?.expectedTabRevision === undefined
+      ? {}
+      : { expectedTabRevision: core.expectedTabRevision }),
+    ...(core?.origin === undefined ? {} : { origin: core.origin }),
     command: {
       type: 'chat.set_model',
       tabId: chatId,
@@ -1268,7 +1467,13 @@ async function commitCanonicalModelChange(
         : {}),
       ...(autoRoutedMessageId ? { autoRoutedMessageId } : {}),
     },
-  });
+  };
+  if (core) {
+    const result = await core.commit(request);
+    core.onCommitted(result);
+    return result;
+  }
+  const result = await dispatchCanonicalChatCommand(request);
   if (
     result.outcome !== 'applied' &&
     result.outcome !== 'already_applied' &&
@@ -1278,16 +1483,7 @@ async function commitCanonicalModelChange(
       `Canonical model change was ${result.outcome}: ${result.reason ?? 'unknown reason'}`,
     );
   }
-}
-
-/** Read the canonical tab's modelConfig so partial toggles merge over it. */
-async function readCanonicalTabModelConfig(
-  projectId: string,
-  worktreeId: string,
-  chatId: string,
-): Promise<AgentModelConfig | undefined> {
-  return (await readCanonicalChatTab(projectId, worktreeId, chatId))
-    ?.modelConfig;
+  return result;
 }
 
 async function readCanonicalChatTab(
@@ -1517,12 +1713,67 @@ export async function changeChatModel(
     preserveModelSelectionMode?: boolean;
     /** Main-only: stamp this user message with the model Auto picked. */
     autoRoutedMessageId?: string;
+    core?: CoreModelChangeCommit;
   } = {},
 ): Promise<boolean> {
   assertWritableScope(req.projectId);
   return withModelChangeLock(
     buildSessionKey(req.projectId, req.worktreeId, req.chatId),
     () => changeChatModelLocked(req, getWindow, options),
+  );
+}
+
+/** `core.chat.update`'s model route (CAN-4110 D5): the picker's checks and effects under the caller's command id. */
+export async function changeChatModelThroughCore(
+  change: CoreChatModelChange,
+  port: ChatStateCommandPort,
+  getWindow: () => BrowserWindow | null,
+): Promise<ChatCommandResult> {
+  const { projectId, worktreeId, chatId } = change.target;
+  let committed: ChatCommandResult | undefined;
+  await changeChatModel(
+    {
+      projectId,
+      worktreeId,
+      chatId,
+      model: change.model,
+      ...(change.executionHarness === undefined
+        ? {}
+        : { executionHarness: change.executionHarness }),
+      ...(change.notice === undefined ? {} : { notice: change.notice }),
+    },
+    getWindow,
+    {
+      core: {
+        commandId: change.commandId,
+        commit: (request) => port.command(request),
+        ...(change.expectedRevision === undefined
+          ? {}
+          : { expectedRevision: change.expectedRevision }),
+        ...(change.expectedTabRevision === undefined
+          ? {}
+          : { expectedTabRevision: change.expectedTabRevision }),
+        ...(change.origin === undefined ? {} : { origin: change.origin }),
+        onCommitted: (result) => {
+          committed = result;
+        },
+      },
+    },
+  );
+  if (committed) return committed;
+  return {
+    commandId: change.commandId,
+    revision: (await port.getState({ projectId, worktreeId })).revision,
+    outcome: 'rejected',
+    reason: 'The model is not available for this chat.',
+  };
+}
+
+function chatTabHasStarted(tab: PersistedChatTab): boolean {
+  return (
+    (tab.transcript?.messageCount ??
+      tab.transcript?.committedMessageCount ??
+      tab.messages.length) > 0
   );
 }
 
@@ -1533,6 +1784,7 @@ async function changeChatModelLocked(
     interfaceModeOverride?: ChatInterfaceMode | null;
     preserveModelSelectionMode?: boolean;
     autoRoutedMessageId?: string;
+    core?: CoreModelChangeCommit;
   },
 ): Promise<boolean> {
   const requestedModel = await materializeInheritingAgentModel(
@@ -1558,6 +1810,16 @@ async function changeChatModelLocked(
   );
   if (!selectedHarness || !supportsChatHarnessChoice(model, selectedHarness))
     return false;
+  const lockedHarness =
+    req.lockedHarness ??
+    (options.core && previousTab && chatTabHasStarted(previousTab)
+      ? (previousTab.executionHarness ??
+        inferLegacyExecutionHarness({
+          model: previousTab.model,
+          providerType: previousTab.providerType,
+          hasStarted: true,
+        }))
+      : undefined);
   if (
     ((selectedHarness === 'copilot' || selectedHarness === 'opencode') &&
       (req.projectId === PIPELINE_EDITOR_PROJECT_ID ||
@@ -1605,7 +1867,7 @@ async function changeChatModelLocked(
     // indistinguishable on the wire from "unknown model" or "provider
     // change not allowed" below. Record the same `model_policy_refused`
     // session diagnostic the session gate and the pipeline runtime emit.
-    getObservabilityService().recordSessionDiagnostic({
+    getExecutionObservabilityIngest().recordSessionDiagnostic({
       version: 1,
       timestamp: new Date().toISOString(),
       kind: 'model_policy_refused',
@@ -1628,7 +1890,7 @@ async function changeChatModelLocked(
       req.worktreeId,
       req.chatId,
       model,
-      req.lockedHarness,
+      lockedHarness,
       selectedHarness,
     )
   ) {
@@ -1640,7 +1902,7 @@ async function changeChatModelLocked(
   const settings = previousTab
     ? await normalizeCanonicalModelSelection(req, previousTab, model, options)
     : undefined;
-  await commitCanonicalModelChange(
+  const committed = await commitCanonicalModelChange(
     req.projectId,
     req.worktreeId,
     req.chatId,
@@ -1651,7 +1913,20 @@ async function changeChatModelLocked(
     selectedProviderType,
     options.preserveModelSelectionMode === true,
     options.autoRoutedMessageId,
+    options.core,
   );
+  if (options.core) {
+    if (committed.outcome === 'conflict' || committed.outcome === 'rejected')
+      return false;
+    if (
+      committed.outcome === 'already_applied' &&
+      isModelChangeSuperseded(
+        await readCanonicalChatTab(req.projectId, req.worktreeId, req.chatId),
+        model,
+      )
+    )
+      return true;
+  }
   await updateQueuedHookChatModel({
     projectId: req.projectId,
     worktreeId: req.worktreeId,
@@ -1947,6 +2222,8 @@ export function registerChatHandlers(
 ): void {
   chatCommandRuntime = runtime;
   const getWindow = accessors.getMainWindow;
+  chatSettingsWindow = getWindow;
+  setCoreChatSettingsHost(createInstalledChatSettingsHost());
   setWorktreeChatWindowAccessor(getWindow);
   deferredToolsReloadCoordinator.subscribe((event) => {
     holdDispatchForDeferredReload(getChatQueueService(), event);
@@ -2181,20 +2458,12 @@ export function registerChatHandlers(
         chatId,
         requestedApprovalMode,
       );
-      if (req.hiddenContext?.kind === 'canopy-watcher-event') {
-        // A watcher's turn runs whether or not the App Advisor window can
-        // load. The window only presents the turn, so open it without waiting.
-        void Promise.resolve()
-          .then(() => accessors.ensureAppAdvisorWindow())
-          .catch((error: unknown) => {
-            logMainProcessWarn(
-              'Opening the App Advisor window for a watcher turn failed',
-              error,
-            );
-          });
-      } else {
-        await accessors.ensureAppAdvisorWindow();
-      }
+      requestAppAdvisorPresentation(
+        accessors,
+        req.hiddenContext?.kind === 'canopy-watcher-event'
+          ? 'watcher_turn'
+          : 'user_send',
+      );
       const disposition = await dispatchAppAdvisorChatMessage(
         { ...req, approvalMode },
         {
@@ -2490,6 +2759,7 @@ export function registerChatHandlers(
         clientChatId: clampId(chatId, MAX_TELEMETRY_CLIENT_ID_LENGTH),
       });
       let resourceGuard: ResourceGuardReservation | undefined;
+      let coworkTurnRun: ChatTurnRunHandle | undefined;
       try {
         resourceGuard =
           await getResourceMonitorService().reserveChatTurnStart();
@@ -2709,7 +2979,7 @@ export function registerChatHandlers(
           data: unknown,
           occurredAt: string,
         ): void => {
-          getObservabilityService().observeChatEvent(
+          getExecutionObservabilityIngest().observeChatEvent(
             projectId,
             worktreeId,
             chatId,
@@ -2773,7 +3043,7 @@ export function registerChatHandlers(
                     typeof eventData.result === 'string'
                   ? eventData.result
                   : undefined;
-            getObservabilityService().completeChatTurn(
+            getExecutionObservabilityIngest().completeChatTurn(
               projectId,
               worktreeId,
               chatId,
@@ -2979,21 +3249,34 @@ export function registerChatHandlers(
             });
           return sessionEventCommitTail;
         };
-        const session = await getOrCreateRoutedSession(
-          sessionOptions,
-          handleSessionEvent,
-          getWindow,
-          {
-            turnUserMessageId: userMessageId,
-            acceptTurnRoot: async (turnUserMessageId) => {
-              await sessionEventCommitTail;
-              return getChatQueueService().acceptTurnRevival(
-                { projectId, worktreeId, chatId },
-                turnUserMessageId,
-              );
+        const turnRun = await beginChatTurnRun({
+          scope: { workspaceId: projectId, worktreeId, chatId },
+          turnId: userMessageId,
+          eventNamespace: 'initial',
+          providerId: sessionOptions.providerType,
+          model: sessionOptions.model ?? null,
+          initiationSource: 'user',
+          settleOn: 'root-terminal',
+          codexRootThreadId,
+        });
+        coworkTurnRun = turnRun;
+        const session = await turnRun.execute(() =>
+          getOrCreateRoutedSession(
+            sessionOptions,
+            turnRun.observe(handleSessionEvent),
+            getWindow,
+            {
+              turnUserMessageId: userMessageId,
+              acceptTurnRoot: async (turnUserMessageId) => {
+                await sessionEventCommitTail;
+                return getChatQueueService().acceptTurnRevival(
+                  { projectId, worktreeId, chatId },
+                  turnUserMessageId,
+                );
+              },
+              drainEventsBeforeRemoval: () => sessionEventCommitTail,
             },
-            drainEventsBeforeRemoval: () => sessionEventCommitTail,
-          },
+          ),
         );
         const authoritativeGlobalInstructionsSnapshot =
           getSessionGlobalInstructionsSnapshot(projectId, worktreeId, chatId) ??
@@ -3024,6 +3307,7 @@ export function registerChatHandlers(
               );
             if (!admission)
               throw new Error('The reload could not continue this chat.');
+            let resumedTurnRun: ChatTurnRunHandle | undefined;
             try {
               request.signal.throwIfAborted();
               const resumedRuntime = model
@@ -3063,50 +3347,67 @@ export function registerChatHandlers(
                 chatId,
                 resumedAuthority.chatApprovalMode,
               );
-              const resumedSession = await getOrCreateRoutedSession(
+              const continuationSession = claudeContinuationSession(
+                sessionOptions,
                 {
-                  ...sessionOptions,
-                  approvalMode: resumedAuthority.approvalMode,
-                  sessionApprovalRules: resumedAuthority.sessionApprovalRules,
-                  model: resumedRuntime?.runtimeModel ?? runtimeModel,
-                  ...claudeContinuationSession(sessionOptions, {
-                    requestedSessionId: request.sdkSessionId,
-                    providerSessionId,
-                  }),
-                  pluginSelections: resumedPluginSelections,
-                  systemPromptAppend:
-                    resumedRuntime?.systemPromptAppend ??
-                    runtime?.systemPromptAppend ??
-                    systemPromptAppend,
-                  providerType: resumedProviderType,
-                  codexAppServerIdleTimeoutMinutes:
-                    resumedProviderType === 'codex'
-                      ? preferences?.codexAppServerIdleTimeoutMinutes
-                      : undefined,
-                  codexMaxConcurrentSubagents:
-                    resumedProviderType === 'codex'
-                      ? preferences?.codexMaxConcurrentSubagents
-                      : undefined,
-                  codexMultiAgentEnabled:
-                    resumedProviderType === 'codex'
-                      ? preferences?.codexMultiAgentStandaloneChatsEnabled
-                      : undefined,
-                },
-                handleSessionEvent,
-                getWindow,
-                {
-                  turnUserMessageId: userMessageId,
-                  acceptTurnRoot: async (turnUserMessageId) => {
-                    await sessionEventCommitTail;
-                    return getChatQueueService().acceptTurnRevival(
-                      { projectId, worktreeId, chatId },
-                      turnUserMessageId,
-                    );
-                  },
-                  drainEventsBeforeRemoval: () => sessionEventCommitTail,
+                  requestedSessionId: request.sdkSessionId,
+                  providerSessionId,
                 },
               );
-              getObservabilityService().recordInjectedPromptForOpenChatTurn(
+              const turnRun = await beginChatTurnRun({
+                scope: { workspaceId: projectId, worktreeId, chatId },
+                turnId: request.userMessageId,
+                eventNamespace: deferredReloadEventNamespace(request.requestId),
+                providerId: resumedProviderType,
+                model: resumedRuntime?.runtimeModel ?? runtimeModel ?? null,
+                initiationSource: 'user',
+                settleOn: 'root-terminal',
+                codexRootThreadId: continuationSession.sdkSessionId,
+              });
+              resumedTurnRun = turnRun;
+              const resumedSession = await turnRun.execute(() =>
+                getOrCreateRoutedSession(
+                  {
+                    ...sessionOptions,
+                    approvalMode: resumedAuthority.approvalMode,
+                    sessionApprovalRules: resumedAuthority.sessionApprovalRules,
+                    model: resumedRuntime?.runtimeModel ?? runtimeModel,
+                    ...continuationSession,
+                    pluginSelections: resumedPluginSelections,
+                    systemPromptAppend:
+                      resumedRuntime?.systemPromptAppend ??
+                      runtime?.systemPromptAppend ??
+                      systemPromptAppend,
+                    providerType: resumedProviderType,
+                    codexAppServerIdleTimeoutMinutes:
+                      resumedProviderType === 'codex'
+                        ? preferences?.codexAppServerIdleTimeoutMinutes
+                        : undefined,
+                    codexMaxConcurrentSubagents:
+                      resumedProviderType === 'codex'
+                        ? preferences?.codexMaxConcurrentSubagents
+                        : undefined,
+                    codexMultiAgentEnabled:
+                      resumedProviderType === 'codex'
+                        ? preferences?.codexMultiAgentStandaloneChatsEnabled
+                        : undefined,
+                  },
+                  turnRun.observe(handleSessionEvent),
+                  getWindow,
+                  {
+                    turnUserMessageId: userMessageId,
+                    acceptTurnRoot: async (turnUserMessageId) => {
+                      await sessionEventCommitTail;
+                      return getChatQueueService().acceptTurnRevival(
+                        { projectId, worktreeId, chatId },
+                        turnUserMessageId,
+                      );
+                    },
+                    drainEventsBeforeRemoval: () => sessionEventCommitTail,
+                  },
+                ),
+              );
+              getExecutionObservabilityIngest().recordInjectedPromptForOpenChatTurn(
                 projectId,
                 worktreeId,
                 chatId,
@@ -3169,6 +3470,7 @@ export function registerChatHandlers(
               await resumedSession.setApprovalMode(
                 liveResumedAuthority.approvalMode,
               );
+              turnRun.signal.throwIfAborted();
               consumeDispatchAuthorization(admission.authorization, {
                 projectId,
                 worktreeId,
@@ -3179,10 +3481,14 @@ export function registerChatHandlers(
                 { projectId, worktreeId, chatId },
                 request.userMessageId,
               );
-              resumedSession.sendMessage(request.continuationText, {
-                userMessageId: request.userMessageId,
-              });
+              turnRun.executeSync(() =>
+                resumedSession.sendMessage(request.continuationText, {
+                  userMessageId: request.userMessageId,
+                }),
+              );
+              turnRun.accepted();
             } catch (error) {
+              resumedTurnRun?.abandon(error);
               admission.release();
               throw error;
             }
@@ -3214,7 +3520,7 @@ export function registerChatHandlers(
           hiddenContext?.text,
           joinHiddenBlocks(memory?.renderedBlock, localMemory?.renderedBlock),
         );
-        getObservabilityService().startChatTurn({
+        getExecutionObservabilityIngest().startChatTurn({
           projectId,
           worktreeId,
           chatId,
@@ -3289,6 +3595,7 @@ export function registerChatHandlers(
           );
         }
         await applyAgentSessionCodexSpeed(session, effectiveModelConfig.speed);
+        await session.setContextWindow?.(effectiveModelConfig.contextWindow);
 
         enqueuePortalEvent(
           createPortalEvent('portal.chat.event', {
@@ -3317,28 +3624,32 @@ export function registerChatHandlers(
         }
         const dispatchStartedAt = Date.now();
         try {
+          turnRun.signal.throwIfAborted();
           reservePromptBindingSlot(
             { projectId, worktreeId, chatId },
             userMessageId,
           );
-          session.sendMessage(submittedText, {
-            userMessageId,
-            ...(effectiveExecutionHarness === 'opencode' &&
-            !req.hiddenContext &&
-            attachmentPaths &&
-            attachmentPaths.length > 0
-              ? {
-                  attachments: {
-                    baseDir: getCoworkManagedSubdir(cwd, 'attachments'),
-                    paths: [...attachmentPaths],
-                  },
-                }
-              : {}),
-            countsTowardSkillUsage:
-              (validatedInitiationSource === 'user' ||
-                validatedInitiationSource === 'portal') &&
-              !req.hiddenContext,
-          });
+          turnRun.executeSync(() =>
+            session.sendMessage(submittedText, {
+              userMessageId,
+              ...(effectiveExecutionHarness === 'opencode' &&
+              !req.hiddenContext &&
+              attachmentPaths &&
+              attachmentPaths.length > 0
+                ? {
+                    attachments: {
+                      baseDir: getCoworkManagedSubdir(cwd, 'attachments'),
+                      paths: [...attachmentPaths],
+                    },
+                  }
+                : {}),
+              countsTowardSkillUsage:
+                (validatedInitiationSource === 'user' ||
+                  validatedInitiationSource === 'portal') &&
+                !req.hiddenContext,
+            }),
+          );
+          turnRun.accepted();
         } catch (error) {
           if (memory?.facts.length && memory.searchId) {
             memoryDeliveryTracker.ackDropped(
@@ -3434,6 +3745,9 @@ export function registerChatHandlers(
           { projectId, worktreeId, chatId },
           { onlyIfDetectedBefore: dispatchStartedAt },
         );
+      } catch (error) {
+        coworkTurnRun?.abandon(error);
+        throw error;
       } finally {
         memoryDeliveryTracker.noteDispatchExit();
         resourceGuard?.release();
@@ -3749,7 +4063,7 @@ export function registerChatHandlers(
       validateId(request.worktreeId, 'worktreeId');
       validateId(request.chatId, 'chatId');
       validateId(request.entryId, 'entryId');
-      await getChatQueueService().edit(request);
+      await projectQueueEdit(request, dispatchCanonicalChatCommand);
     },
   );
 
@@ -3761,7 +4075,7 @@ export function registerChatHandlers(
       validateId(request.worktreeId, 'worktreeId');
       validateId(request.chatId, 'chatId');
       validateId(request.entryId, 'entryId');
-      await getChatQueueService().cancel(request, request.entryId);
+      await projectQueueCancel(request, dispatchCanonicalChatCommand);
     },
   );
 
@@ -3773,7 +4087,7 @@ export function registerChatHandlers(
       validateId(request.worktreeId, 'worktreeId');
       validateId(request.chatId, 'chatId');
       validateId(request.entryId, 'entryId');
-      await getChatQueueService().force(request, request.entryId);
+      await projectQueueForce(request, dispatchCanonicalChatCommand);
     },
   );
 
@@ -3785,11 +4099,7 @@ export function registerChatHandlers(
       validateId(request.worktreeId, 'worktreeId');
       validateId(request.chatId, 'chatId');
       validateId(request.entryId, 'entryId');
-      await getChatQueueService().setEditLock(
-        request,
-        request.entryId,
-        request.locked,
-      );
+      await projectQueueEditLock(request, dispatchCanonicalChatCommand);
     },
   );
 
@@ -3984,7 +4294,7 @@ export function registerChatHandlers(
         ...(workOwner ? { workOwner: await workOwner } : {}),
         observabilityTaskKey: taskKey,
       });
-      getObservabilityService().finalizeObservedTask(
+      getExecutionObservabilityIngest().finalizeObservedTask(
         taskKey,
         'success',
         undefined,
@@ -3995,7 +4305,7 @@ export function registerChatHandlers(
       // A model-policy refusal is finalized inside the helper before throwing.
       // Finalization is idempotent, so this apparent second finalize is a no-op
       // for that path and remains necessary for all other failures.
-      getObservabilityService().finalizeObservedTask(
+      getExecutionObservabilityIngest().finalizeObservedTask(
         taskKey,
         'failure',
         error instanceof Error ? error.message : String(error),
@@ -4113,49 +4423,7 @@ export function registerChatHandlers(
     IPC_CHANNELS.planModeToggle,
     async (_event, req) => {
       assertWritableScope(req.projectId);
-      await commitCanonicalTabSettings(
-        req.projectId,
-        req.worktreeId,
-        req.chatId,
-        { planMode: req.enabled },
-      );
-      updateQueuedHookChatPlanMode({
-        projectId: req.projectId,
-        worktreeId: req.worktreeId,
-        chatId: req.chatId,
-        enabled: req.enabled,
-      });
-      await getClaudeTerminalSessionService().setPlanMode(
-        req.projectId,
-        req.worktreeId,
-        req.chatId,
-        req.enabled,
-      );
-      const session = getSession(req.projectId, req.worktreeId, req.chatId);
-      if (session) {
-        if (
-          !sessionHasActiveTurnOrNativeWork(
-            req.projectId,
-            req.worktreeId,
-            req.chatId,
-          )
-        ) {
-          await session.setPlanMode(req.enabled);
-        }
-        if (!isCoworkWorkspace(req.projectId)) {
-          markSessionForNextTurnRecreation(
-            req.projectId,
-            req.worktreeId,
-            req.chatId,
-            'plan',
-          );
-        }
-      }
-      getChatQueueService().refreshRestartHold({
-        projectId: req.projectId,
-        worktreeId: req.worktreeId,
-        chatId: req.chatId,
-      });
+      await updateChatSettingsThroughCore(req, { planMode: req.enabled });
     },
   );
 
@@ -4542,42 +4810,9 @@ export function registerChatHandlers(
       if (req.enabled !== codexSpeedFastMode(speed)) {
         throw new Error('Codex fast mode enabled contradicts the speed');
       }
-      // Read-modify-write of the whole modelConfig: serialize it per chat so
-      // quick toggles commit in the order they were made, not the order their
-      // reads finish.
-      await withModelChangeLock(
-        buildSessionKey(req.projectId, req.worktreeId, req.chatId),
-        async () => {
-          const currentModelConfig = await readCanonicalTabModelConfig(
-            req.projectId,
-            req.worktreeId,
-            req.chatId,
-          );
-          await commitCanonicalTabSettings(
-            req.projectId,
-            req.worktreeId,
-            req.chatId,
-            { modelConfig: withCodexSpeed(currentModelConfig, speed) },
-          );
-        },
-      );
-      updateQueuedHookChatCodexFastMode({
-        projectId: req.projectId,
-        worktreeId: req.worktreeId,
-        chatId: req.chatId,
-        enabled: req.enabled,
-        ...(req.speed === undefined ? {} : { speed }),
+      await updateChatSettingsThroughCore(req, {
+        modelConfig: { speed, fastMode: codexSpeedFastMode(speed) },
       });
-      const session = getSession(req.projectId, req.worktreeId, req.chatId);
-      if (session) {
-        try {
-          await applyAgentSessionCodexSpeed(session, speed);
-        } catch (error) {
-          // The durable choice is kept; the next send's admission reports
-          // that this session cannot run the requested speed.
-          if (!(error instanceof CodexSpeedUnsupportedError)) throw error;
-        }
-      }
     },
   );
 
@@ -4585,41 +4820,9 @@ export function registerChatHandlers(
     IPC_CHANNELS.thinkingLevelToggle,
     async (_event, req) => {
       assertWritableScope(req.projectId);
-      await withModelChangeLock(
-        buildSessionKey(req.projectId, req.worktreeId, req.chatId),
-        async () => {
-          const currentModelConfig = await readCanonicalTabModelConfig(
-            req.projectId,
-            req.worktreeId,
-            req.chatId,
-          );
-          await commitCanonicalTabSettings(
-            req.projectId,
-            req.worktreeId,
-            req.chatId,
-            {
-              modelConfig: { ...currentModelConfig, thinkingLevel: req.level },
-            },
-          );
-        },
-      );
-      updateQueuedHookChatThinkingLevel({
-        projectId: req.projectId,
-        worktreeId: req.worktreeId,
-        chatId: req.chatId,
-        level: req.level,
+      await updateChatSettingsThroughCore(req, {
+        modelConfig: { thinkingLevel: req.level },
       });
-      const session = getSession(req.projectId, req.worktreeId, req.chatId);
-      if (
-        session &&
-        !sessionHasActiveTurnOrNativeWork(
-          req.projectId,
-          req.worktreeId,
-          req.chatId,
-        )
-      ) {
-        await session.setThinkingLevel(req.level);
-      }
     },
   );
 

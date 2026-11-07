@@ -5,6 +5,7 @@ import {
 import { codexSpeedConnectionStates } from '@/hooks/useCodexSpeedControl';
 import { useCodexSpeedRoute } from '@/hooks/useCodexSpeedRoute';
 import { useChatStore } from '@/stores/chatStore';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import {
   type CodexSpeed,
   DEFAULT_CODEX_SPEED,
@@ -12,6 +13,10 @@ import {
   readCodexSpeedRecord,
   withCodexSpeed,
 } from '@canopy/desktop-shared/lib/codex-speed';
+import {
+  CODEX_LONG_CONTEXT_THRESHOLD,
+  type CodexContextWindowSetting,
+} from '@canopy/desktop-shared/lib/codex-context-window';
 import type { PreferencesData } from '@canopy/desktop-shared/types';
 import { DEFAULT_CODEX_APP_SERVER_IDLE_TIMEOUT_MINUTES } from '@canopy/desktop-shared/types';
 import type { ReadCodexSpeedRouteRequest } from '@canopy/desktop-shared/types/codex-speed-capabilities';
@@ -36,6 +41,7 @@ import {
   ChoiceList,
   ChoiceListRow,
   Notice,
+  NoticeButton,
   TextLinkButton,
   ToggleSwitch,
 } from '@canopy/ui-shared/components';
@@ -192,6 +198,121 @@ function CodexDefaultSpeed({
     </SettingsSection>
   );
 }
+type DefaultContextWindow = Exclude<CodexContextWindowSetting, number>;
+
+/** The saved default, as one of the three presets Settings offers. */
+function readDefaultContextWindow(
+  prefs: PreferencesData,
+): DefaultContextWindow {
+  const saved = prefs.providerModelConfigDefaults?.codex?.contextWindow;
+  return typeof saved === 'string' ? saved : 'model-default';
+}
+
+const CONTEXT_WINDOW_THRESHOLD_LABEL = `${String(
+  CODEX_LONG_CONTEXT_THRESHOLD / 1000,
+)}k`;
+
+const DEFAULT_CONTEXT_WINDOW_CHOICES: readonly {
+  readonly value: DefaultContextWindow;
+  readonly label: string;
+  readonly trailing: string;
+}[] = [
+  {
+    value: 'model-default',
+    label: 'Model default',
+    trailing: 'Varies by model',
+  },
+  {
+    value: 'standard-pricing',
+    label: `Up to ${CONTEXT_WINDOW_THRESHOLD_LABEL}`,
+    trailing: 'Standard pricing',
+  },
+  { value: 'maximum', label: 'Maximum', trailing: 'Largest each model allows' },
+];
+
+/**
+ * The Codex-wide context window for chats. Presets rather than a number:
+ * the same number means different things on different models. Delegated
+ * agents and pipeline steps always use each model's own window.
+ */
+function CodexDefaultContextWindow({
+  value,
+  onChange,
+}: {
+  value: DefaultContextWindow;
+  onChange: (value: DefaultContextWindow) => void;
+}): JSX.Element {
+  const labelId = useId();
+  const capabilities = useCodexSpeedCapabilities({ enabled: true });
+  // Models whose own default already passes the long-context threshold.
+  const aboveThreshold = (capabilities.catalog?.models ?? [])
+    .filter(
+      (model) =>
+        model.hidden !== true &&
+        (model.contextWindow ?? 0) > CODEX_LONG_CONTEXT_THRESHOLD,
+    )
+    .map((model) => model.displayName ?? model.model);
+  const firstAbove = aboveThreshold[0];
+  return (
+    <SettingsSection
+      title="Context window"
+      description={`Applies to chats. Delegated agents and pipeline steps use each model's default. Each chat can change it for its next message. Above ${CONTEXT_WINDOW_THRESHOLD_LABEL}, each request costs 2× for input and 1.5× for output; on a ChatGPT plan, those requests use your limits faster.`}
+    >
+      {value === 'model-default' && firstAbove !== undefined ? (
+        <Notice
+          intent="attention"
+          data-testid="settings-codex-context-window-notice"
+          title={
+            aboveThreshold.length === 1
+              ? `${firstAbove} starts above ${CONTEXT_WINDOW_THRESHOLD_LABEL}`
+              : `${aboveThreshold.slice(0, -1).join(', ')} and ${aboveThreshold[aboveThreshold.length - 1] ?? ''} start above ${CONTEXT_WINDOW_THRESHOLD_LABEL}`
+          }
+          actions={
+            <NoticeButton
+              variant="secondary"
+              onClick={(): void => onChange('standard-pricing')}
+            >
+              Use up to {CONTEXT_WINDOW_THRESHOLD_LABEL}
+            </NoticeButton>
+          }
+        >
+          Long chats on{' '}
+          {aboveThreshold.length === 1 ? 'this model' : 'these models'} go past{' '}
+          {CONTEXT_WINDOW_THRESHOLD_LABEL} and cost more.
+        </Notice>
+      ) : null}
+      <SettingsGroup>
+        <SettingsRow
+          label="Default context window"
+          labelId={labelId}
+          description="The window new Codex chats use. Models that can't go larger keep their own."
+        >
+          <ChoiceList
+            kind="radio"
+            aria-label="Default context window"
+            data-testid="settings-codex-context-window-default"
+          >
+            {DEFAULT_CONTEXT_WINDOW_CHOICES.map((choice) => (
+              <ChoiceListRow
+                key={choice.value}
+                kind="radio"
+                name="settings-codex-default-context-window"
+                value={choice.value}
+                selected={value === choice.value}
+                onClick={(): void => onChange(choice.value)}
+                data-testid={`settings-codex-context-window-${choice.value}`}
+                trailing={choice.trailing}
+              >
+                {choice.label}
+              </ChoiceListRow>
+            ))}
+          </ChoiceList>
+        </SettingsRow>
+      </SettingsGroup>
+    </SettingsSection>
+  );
+}
+
 interface CodexSubagentLimitProps {
   value: number | null;
   onSave: (value: number | null) => void;
@@ -392,6 +513,37 @@ export function CodexTab(): JSX.Element {
     [prefs],
   );
 
+  const saveDefaultContextWindow = useCallback(
+    (contextWindow: DefaultContextWindow): void => {
+      if (!prefs) return;
+      const previous = prefs;
+      const nextProviderDefaults = {
+        ...(prefs.providerModelConfigDefaults ?? {}),
+        codex: { ...prefs.providerModelConfigDefaults?.codex, contextWindow },
+      };
+      setPrefs({ ...prefs, providerModelConfigDefaults: nextProviderDefaults });
+      useChatStore.getState().applyModelConfigDefaults(nextProviderDefaults);
+      setSaveError(null);
+      void window.api
+        .savePreferences({ providerModelConfigDefaults: nextProviderDefaults })
+        .then((normalized: PreferencesData) => {
+          setPrefs(normalized);
+          useChatStore
+            .getState()
+            .applyModelConfigDefaults(normalized.providerModelConfigDefaults);
+        })
+        .catch((error: unknown) => {
+          reportClientAppError(error, { surface: 'inline' });
+          setPrefs(previous);
+          useChatStore
+            .getState()
+            .applyModelConfigDefaults(previous.providerModelConfigDefaults);
+          setSaveError('Could not save Codex settings.');
+        });
+    },
+    [prefs],
+  );
+
   const saveDefaultSpeed = useCallback(
     (speed: CodexSpeed): void => {
       if (!prefs) return;
@@ -458,6 +610,11 @@ export function CodexTab(): JSX.Element {
       <CodexDefaultSpeed
         speed={readDefaultSpeed(prefs)}
         onChange={saveDefaultSpeed}
+      />
+
+      <CodexDefaultContextWindow
+        value={readDefaultContextWindow(prefs)}
+        onChange={saveDefaultContextWindow}
       />
 
       <SettingsSection title="App server">

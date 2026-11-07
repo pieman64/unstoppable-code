@@ -11,7 +11,11 @@ import type {
 } from '@canopy/desktop-shared/types/pipeline';
 import { PipelineTimer } from '../PipelineTimer';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
-import { Disclosure, SegmentedControl } from '@canopy/ui-shared/components';
+import {
+  Disclosure,
+  SegmentedControl,
+  Surface,
+} from '@canopy/ui-shared/components';
 
 /**
  * Shared step-detail building blocks for the pipeline execution details modal.
@@ -50,8 +54,9 @@ export function KeyValueTable({
   // breaks per character. From 20rem the key and value share a row, with the
   // value column always wider than a short value.
   return (
-    <div
-      className="@container overflow-hidden rounded-lg border bg-base"
+    <Surface
+      variant="inset"
+      className="@container overflow-hidden"
       data-testid="pipeline-key-value-table"
     >
       {entries.map(([key, value], index) => {
@@ -76,7 +81,7 @@ export function KeyValueTable({
           </div>
         );
       })}
-    </div>
+    </Surface>
   );
 }
 
@@ -158,7 +163,7 @@ export function ShellCommandContent({
       : templateRun;
 
   return (
-    <div className="overflow-hidden rounded-lg border bg-base">
+    <Surface variant="inset" className="overflow-hidden">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2">
         <div className="text-2xs font-medium fg-secondary">Shell</div>
         <div className="flex items-center gap-2">
@@ -184,7 +189,7 @@ export function ShellCommandContent({
       >
         {command}
       </pre>
-    </div>
+    </Surface>
   );
 }
 
@@ -302,7 +307,7 @@ export function TimingSummaryCard({
   source?: PipelineTimingSource;
 }): JSX.Element {
   return (
-    <div className="rounded-lg border bg-fg-primary/[0.03] p-3">
+    <Surface variant="group" padding="compact">
       <div className="mb-2 text-2xs font-medium fg-secondary">{title}</div>
       <TimingSummaryGrid
         identity={identity}
@@ -312,6 +317,6 @@ export function TimingSummaryCard({
         completedAt={completedAt}
         source={source}
       />
-    </div>
+    </Surface>
   );
 }

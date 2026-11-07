@@ -10,6 +10,7 @@ import {
   ApprovalAutoIcon,
   ShieldAccessIcon,
   type AppIcon,
+  type IconSize,
 } from '@canopy/ui-shared/icons/AppIcons';
 import {
   APPROVAL_MODES,
@@ -57,19 +58,17 @@ const APPROVAL_MODE_ICON_TONES: Record<ApprovalMode, DropdownMenuItemIconTone> =
 
 export interface ApprovalModeGlyphProps {
   mode: ApprovalMode;
-  width: number;
-  height: number;
+  size: IconSize;
 }
 
 export function ApprovalModeGlyph({
   mode,
-  width,
-  height,
+  size,
 }: ApprovalModeGlyphProps): JSX.Element {
   const Icon = APPROVAL_MODE_ICONS[mode];
   return (
     <span className={`inline-flex ${APPROVAL_MODE_COLOR_CLASSES[mode]}`}>
-      <Icon width={width} height={height} />
+      <Icon size={size} />
     </span>
   );
 }

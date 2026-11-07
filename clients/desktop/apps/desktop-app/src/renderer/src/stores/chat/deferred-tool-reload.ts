@@ -1,30 +1,29 @@
 // ---------------------------------------------------------------------------
 // Deferred Skills, Plugins, and MCP Tooling — renderer reload store.
 //
-// This is the renderer's half of the deferred-tools reload lifecycle (the
-// backend coordinator owns the other half). When an agent's LoadDeferredTools
-// call enables at least one already-installed skill / plugin / MCP server
-// mid-turn, the backend interrupts the originating provider turn and resumes it
-// with a hidden `<system_instruction>` continuation. This module makes those
-// two provider segments read as ONE continuous logical UX turn and makes the
-// renderer the authoritative writer that merges the newly enabled selections
-// into the originating tab.
+// The core drives the deferred-tools reload lifecycle in Electron main
+// (CAN-4127). When an agent's LoadDeferredTools call enables at least one
+// already-installed skill / plugin / MCP server mid-turn, main interrupts the
+// originating provider turn, enables the selections and resumes it with a
+// hidden `<system_instruction>` continuation. This module only reflects that
+// lifecycle so the two provider segments read as ONE continuous logical UX
+// turn: it marks the tab, mirrors the merged selections into renderer state
+// when the reload resumes, and presents failures for scopes main does not
+// commit for.
 //
 // Boundary: this module is transport-agnostic and store-agnostic. It contains
-// the pure merge/predicate/copy helpers plus an event-driven controller that
-// drives the handshake through an injected {@link DeferredToolsReloadStoreSurface}.
-// The chat store implements that surface (marker writes, timer/streaming
-// reducers, `chat.updatePlugins`) and owns the IPC subscription. Keeping the
-// orchestration behind the surface lets it be unit-tested without the whole
-// store.
+// the pure predicate helpers plus an event-driven controller that reflects
+// events through an injected {@link DeferredToolsReloadStoreSurface}. The chat
+// store implements that surface (marker writes, timer/streaming reducers) and
+// owns the IPC subscription.
 //
 // Continuous-UX invariants this module upholds (frontend completion contract):
 //   - no second visible user message and no second turn timer (the resumed
 //     segment reuses the original logical user message id);
 //   - the intermediate internal cancellation never closes the timer, clears
 //     streaming, or appears as the final result;
-//   - newly enabled selections are merged ADDITIVELY into the ORIGINATING tab
-//     only (never removed, never leaked to another tab);
+//   - newly enabled selections are mirrored ADDITIVELY into the ORIGINATING
+//     tab only (never removed, never leaked to another tab);
 //   - App Advisor sentinel tabs are written only by the App Advisor renderer.
 // ---------------------------------------------------------------------------
 
@@ -32,25 +31,18 @@ import type {
   AgentProviderType,
   ChatInterfaceMode,
   ChatTabPluginSelections,
-  ChatUpdatePluginsRequest,
-  ChatUpdatePluginsResponse,
   DeferredToolsReloadAck,
   DeferredToolsReloadAdditions,
-  DeferredToolsReloadBeginRequest,
   DeferredToolsReloadCancelRequest,
   DeferredToolsReloadEvent,
-  DeferredToolsReloadFinishRequest,
   DeferredToolsReloadLifecycle,
-  DeferredToolsReloadResumeSettings,
   DeferredToolsReloadScopeKey,
 } from '@canopy/desktop-shared/types';
 import {
   DEFERRED_TOOLS_ENABLE_FAILURE_MESSAGE,
   DEFERRED_TOOLS_RESUME_FAILURE_MESSAGE,
-  buildDeferredToolsReloadContinuation,
   isTerminalDeferredToolsReloadLifecycle,
 } from '@canopy/desktop-shared/types';
-import { mergeChatPluginSelections } from '@/lib/chatPluginSelections';
 import { isUserCancellationTerminal } from './turn-events';
 import type { ChatTab } from './types';
 
@@ -70,25 +62,6 @@ export {
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Additively merge the reload's typed additions into a tab's current plugin
- * selections. Delegates to {@link mergeChatPluginSelections} so Collections,
- * the required Pipeline Assistant skill, MCP HTTP auth preferences, and every
- * unrelated selection already on `base` are preserved — merge is additive only,
- * nothing is ever removed.
- */
-export function mergeDeferredToolsReloadAdditions(
-  base: ChatTabPluginSelections,
-  additions: DeferredToolsReloadAdditions,
-): ChatTabPluginSelections {
-  return mergeChatPluginSelections(base, {
-    collectionIds: [],
-    skillRefs: additions.skillRefs,
-    pluginRefs: additions.pluginRefs,
-    mcpServerRefs: additions.mcpServerRefs,
-  });
-}
 
 /** True when a deferred-tools reload is currently in progress for `tab`. */
 export function isDeferredToolsReloadActive(tab: ChatTab): boolean {
@@ -118,80 +91,53 @@ export function isInternalDeferredToolsReloadInterruption(
   return isUserCancellationTerminal(data);
 }
 
-/**
- * Return the fixed hidden `<system_instruction>` continuation. Enabled resource
- * identities are carried separately in structured transcript metadata.
- */
-export function buildDeferredToolsReloadContinuationText(): string {
-  return buildDeferredToolsReloadContinuation();
-}
-
 // ---------------------------------------------------------------------------
 // Store surface (implemented by chatStore)
 // ---------------------------------------------------------------------------
 
-/** The subset of `window.api.chat` the reload controller drives. */
+/** The subset of `window.api.chat` the reload controller calls. */
 export interface DeferredToolsReloadChatApi {
-  beginDeferredToolsReload(
-    req: DeferredToolsReloadBeginRequest,
-  ): Promise<DeferredToolsReloadAck>;
-  finishDeferredToolsReload(
-    req: DeferredToolsReloadFinishRequest,
-  ): Promise<DeferredToolsReloadAck>;
   cancelDeferredToolsReload(
     req: DeferredToolsReloadCancelRequest,
   ): Promise<DeferredToolsReloadAck>;
-  updatePlugins(
-    req: ChatUpdatePluginsRequest,
-  ): Promise<ChatUpdatePluginsResponse>;
 }
 
-/**
- * Snapshot the controller captures when it marks a tab reload-in-progress. The
- * resume inputs (`sdkSessionId` especially) are read BEFORE `chat.updatePlugins`
- * destroys the active provider session so the backend can recreate + resume it.
- */
+/** Snapshot the controller captures when it marks a tab reload-in-progress. */
 export interface DeferredToolsReloadTabPreparation {
-  /** The tab's current selections, used as the base for the additive merge. */
+  /** The tab's current selections. */
   baseSelections: ChatTabPluginSelections;
-  /** Persisted provider session id captured before `updatePlugins` teardown. */
   sdkSessionId?: string;
   providerType?: AgentProviderType;
   interfaceMode?: ChatInterfaceMode;
-  /**
-   * The original logical user message id of the open turn, reused for the
-   * hidden continuation so no second user bubble is created. Undefined only if
-   * no open turn could be located (defensive).
-   */
+  /** The original logical user message id of the open turn, when found. */
   userMessageId?: string;
 }
 
 /**
  * The store operations the reload controller needs. The chat store implements
  * these against its zustand state, enforcing the sentinel single-writer policy
- * and keeping every mutation immutable + persisted.
+ * and keeping every mutation immutable.
  */
 export interface DeferredToolsReloadStoreSurface {
   api: DeferredToolsReloadChatApi;
   /**
    * Enforce the single-writer policy and mark the target tab reload-in-progress
-   * atomically. Returns the captured resume inputs, or `null` when this
-   * renderer must NOT write the tab (App Advisor read-only mirror), the tab no
-   * longer exists, or a different reload is already in progress on it.
+   * atomically. Returns the captured tab state, or `null` when this renderer
+   * must NOT write the tab (App Advisor read-only mirror), the tab no longer
+   * exists, or a different reload is already in progress on it.
    */
   beginReloadOnTab(
     event: DeferredToolsReloadEvent,
   ): DeferredToolsReloadTabPreparation | null;
   /**
-   * Additively merge `additions` into the tab's selections, persist the tab,
-   * and return the merged selections (to pass to `updatePlugins` + resume).
-   * Returns `null` if the tab vanished.
+   * Mirror the additive merge into this renderer's tab state and return the
+   * merged selections. Returns `null` if the tab vanished.
    */
   mergeSelectionsOnTab(
     scope: DeferredToolsReloadScopeKey,
     additions: DeferredToolsReloadAdditions,
   ): ChatTabPluginSelections | null;
-  /** Apply the thread id atomically committed by a Codex materialization. */
+  /** Apply the provider session id the continuation resumes. */
   applyCommittedSessionId(
     scope: DeferredToolsReloadScopeKey,
     sdkSessionId: string,
@@ -208,11 +154,11 @@ export interface DeferredToolsReloadStoreSurface {
     requestId: string,
     lifecycle: DeferredToolsReloadLifecycle,
   ): void;
+  /** Whether main commits this scope's chat state (it then commits failure copy). */
+  isRevisionedScope(scope: DeferredToolsReloadScopeKey): boolean;
   /**
-   * Clear the reload marker without any failure copy. Used on success
-   * (`completed`) and on normal cancellation / rejection — the resumed turn
-   * settles through the normal terminal path. No-op if the tab's marker no
-   * longer matches `requestId`.
+   * Clear the reload marker without any failure copy. No-op if the tab's
+   * marker no longer matches `requestId`.
    */
   clearReloadOnTab(scope: DeferredToolsReloadScopeKey, requestId: string): void;
   /**
@@ -231,13 +177,9 @@ export interface DeferredToolsReloadStoreSurface {
 // Controller
 // ---------------------------------------------------------------------------
 
-type FailureKind = 'enable' | 'resume';
-
 interface ReloadRegistryEntry {
-  /** Set when the user hits Stop mid-flight; the drive loop bails after aborts. */
-  aborted: boolean;
-  /** Set once a terminal (success/failure/cancel) has been applied. */
   settled: boolean;
+  providerType?: AgentProviderType;
 }
 
 export interface DeferredToolsReloadController {
@@ -259,27 +201,9 @@ export interface DeferredToolsReloadController {
 export function createDeferredToolsReloadController(
   surface: DeferredToolsReloadStoreSurface,
 ): DeferredToolsReloadController {
-  // Keyed by the globally-unique reload request id so duplicate begin events
-  // are ignored and terminal handling is idempotent.
+  // Keyed by the globally-unique reload request id so duplicate events are
+  // ignored and terminal handling is idempotent.
   const registry = new Map<string, ReloadRegistryEntry>();
-
-  function settleFailure(
-    scope: DeferredToolsReloadScopeKey,
-    requestId: string,
-    entry: ReloadRegistryEntry,
-    kind: FailureKind,
-  ): void {
-    if (entry.settled) return;
-    entry.settled = true;
-    registry.delete(requestId);
-    surface.failReloadOnTab(
-      scope,
-      requestId,
-      kind === 'enable'
-        ? DEFERRED_TOOLS_ENABLE_FAILURE_MESSAGE
-        : DEFERRED_TOOLS_RESUME_FAILURE_MESSAGE,
-    );
-  }
 
   function safeCancelCoordinator(
     scope: DeferredToolsReloadScopeKey,
@@ -290,167 +214,36 @@ export function createDeferredToolsReloadController(
     void surface.api
       .cancelDeferredToolsReload({ scope, requestId, toolCallId, reason })
       .catch(() => {
-        // Best-effort: the coordinator also fails the reload on its own timers.
+        // Best-effort: the core also fails the reload on its own timers.
       });
-  }
-
-  async function drive(
-    event: DeferredToolsReloadEvent,
-    prep: DeferredToolsReloadTabPreparation,
-    entry: ReloadRegistryEntry,
-  ): Promise<void> {
-    const { scope, requestId, toolCallId } = event;
-    const additions = event.additions;
-    let enablementCompleted = false;
-    if (!additions) {
-      settleFailure(scope, requestId, entry, 'enable');
-      safeCancelCoordinator(
-        scope,
-        requestId,
-        toolCallId,
-        'Deferred-tools reload event did not include additions.',
-      );
-      return;
-    }
-
-    try {
-      // 1. Begin: hand the coordinator the additions the renderer will write.
-      const beginAck = await surface.api.beginDeferredToolsReload({
-        scope,
-        requestId,
-        toolCallId,
-        additions,
-        enabledResources: event.enabledResources ?? [],
-      });
-      if (entry.aborted) return;
-      if (!beginAck.accepted) {
-        settleFailure(scope, requestId, entry, 'enable');
-        return;
-      }
-
-      // 2. Merge + persist the additive selections (authoritative write).
-      const merged = surface.mergeSelectionsOnTab(scope, additions);
-      if (entry.aborted) return;
-      if (!merged) {
-        settleFailure(scope, requestId, entry, 'enable');
-        safeCancelCoordinator(scope, requestId, toolCallId, 'enable_failed');
-        return;
-      }
-
-      // 3. `updatePlugins` — destroys the active session so the backend can
-      //    recreate it with the merged selections (sdkSessionId was captured in
-      //    `prep`, before this call, so the recreated session resumes history).
-      let updateResponse: ChatUpdatePluginsResponse;
-      try {
-        updateResponse = await surface.api.updatePlugins({
-          projectId: scope.projectId,
-          worktreeId: scope.worktreeId,
-          chatId: scope.chatId,
-          pluginSelections: merged,
-          materializeCodexThread: prep.providerType === 'codex',
-          ...(prep.providerType === 'codex' && prep.sdkSessionId
-            ? { expectedCurrentThreadId: prep.sdkSessionId }
-            : {}),
-        });
-        if (updateResponse.sdkSessionId) {
-          surface.applyCommittedSessionId(scope, updateResponse.sdkSessionId);
-        }
-      } catch {
-        if (entry.aborted) return;
-        settleFailure(scope, requestId, entry, 'enable');
-        safeCancelCoordinator(scope, requestId, toolCallId, 'enable_failed');
-        return;
-      }
-      if (entry.aborted) return;
-      enablementCompleted = true;
-
-      // Rebuild the tab's discovered skill/command list using the newly
-      // persisted selections. This keeps the slash menu in sync with the
-      // plugin picker without requiring a manual refresh.
-      surface.refreshDiscovery(scope, merged, prep.providerType);
-
-      // 4. Finish: hand the backend the resume settings + reused user message
-      //    id + hidden continuation so it can resume the interrupted turn.
-      if (!prep.userMessageId) {
-        settleFailure(scope, requestId, entry, 'resume');
-        safeCancelCoordinator(scope, requestId, toolCallId, 'resume_failed');
-        return;
-      }
-      const resume: DeferredToolsReloadResumeSettings = {
-        sdkSessionId: updateResponse.sdkSessionId ?? prep.sdkSessionId,
-        providerType: prep.providerType,
-        interfaceMode: prep.interfaceMode,
-        pluginSelections: merged,
-      };
-      const finishAck = await surface.api.finishDeferredToolsReload({
-        scope,
-        requestId,
-        toolCallId,
-        userMessageId: prep.userMessageId,
-        resume,
-        continuationText: buildDeferredToolsReloadContinuationText(),
-      });
-      if (entry.aborted) return;
-      if (!finishAck.accepted) {
-        // Selections are already persisted/enabled; only the resume failed.
-        settleFailure(scope, requestId, entry, 'resume');
-        return;
-      }
-
-      // Success: leave the marker in place until a terminal lifecycle event
-      // (`completed` / an outcome) arrives, so the tab stays streaming across
-      // the session gap and the intermediate cancellation stays ignored.
-    } catch {
-      if (entry.aborted) return;
-      const phase = enablementCompleted ? 'resume' : 'enable';
-      settleFailure(scope, requestId, entry, phase);
-      safeCancelCoordinator(scope, requestId, toolCallId, `${phase}_failed`);
-    }
   }
 
   function handleTerminal(event: DeferredToolsReloadEvent): void {
     const { scope, requestId, lifecycle } = event;
-    const entry = registry.get(requestId);
-    const alreadySettled = entry?.settled === true;
-
-    if (lifecycle.kind === 'outcome') {
-      switch (lifecycle.outcome) {
-        case 'enable_failed':
-          if (!alreadySettled) {
-            surface.failReloadOnTab(
-              scope,
-              requestId,
-              DEFERRED_TOOLS_ENABLE_FAILURE_MESSAGE,
-            );
-          }
-          break;
-        case 'resume_failed':
-          if (!alreadySettled) {
-            surface.failReloadOnTab(
-              scope,
-              requestId,
-              DEFERRED_TOOLS_RESUME_FAILURE_MESSAGE,
-            );
-          }
-          break;
-        // `cancelled` (user Stop) and `rejected` use the normal cancellation
-        // presentation — just clear the marker, no failure copy.
-        case 'cancelled':
-        case 'rejected':
-          surface.clearReloadOnTab(scope, requestId);
-          break;
-      }
+    if (
+      lifecycle.kind === 'outcome' &&
+      (lifecycle.outcome === 'enable_failed' ||
+        lifecycle.outcome === 'resume_failed')
+    ) {
+      // Main commits the failure copy for revisioned scopes (CAN-4127).
+      if (surface.isRevisionedScope(scope))
+        surface.clearReloadOnTab(scope, requestId);
+      else
+        surface.failReloadOnTab(
+          scope,
+          requestId,
+          lifecycle.outcome === 'enable_failed'
+            ? DEFERRED_TOOLS_ENABLE_FAILURE_MESSAGE
+            : DEFERRED_TOOLS_RESUME_FAILURE_MESSAGE,
+        );
     } else {
-      // `completed` — the resumed provider's own final result closes the timer
-      // through the normal terminal path; here we just clear the marker.
+      // `cancelled`, `rejected` and `completed`: the turn settles through the
+      // normal terminal path; here we just clear the marker.
       surface.clearReloadOnTab(scope, requestId);
     }
-
-    if (entry) {
-      entry.settled = true;
-      entry.aborted = true;
-      registry.delete(requestId);
-    }
+    const entry = registry.get(requestId);
+    if (entry) entry.settled = true;
+    registry.delete(requestId);
   }
 
   return {
@@ -460,38 +253,40 @@ export function createDeferredToolsReloadController(
         return;
       }
 
-      const existing = registry.get(event.requestId);
-      if (existing) {
-        // Already driving this reload; just reflect the lifecycle progress.
+      let entry = registry.get(event.requestId);
+      if (entry) {
         surface.updateReloadLifecycle(
           event.scope,
           event.requestId,
           event.lifecycle,
         );
-        return;
+      } else {
+        if (event.additions === undefined) return;
+        // A renderer that first sees a reload at a later stage (it reloaded
+        // mid-reload) marks the tab the same way.
+        const prep = surface.beginReloadOnTab(event);
+        if (!prep) return;
+        entry = { settled: false, providerType: prep.providerType };
+        registry.set(event.requestId, entry);
       }
 
-      // A reload cannot proceed without the typed additions to merge.
-      if (event.additions === undefined) {
-        return;
+      if (
+        event.lifecycle.kind === 'state' &&
+        event.lifecycle.state === 'resuming'
+      ) {
+        const merged = event.additions
+          ? surface.mergeSelectionsOnTab(event.scope, event.additions)
+          : null;
+        if (event.sdkSessionId)
+          surface.applyCommittedSessionId(event.scope, event.sdkSessionId);
+        if (merged)
+          surface.refreshDiscovery(event.scope, merged, entry.providerType);
       }
-
-      const prep = surface.beginReloadOnTab(event);
-      if (!prep) {
-        // App Advisor read-only mirror, missing tab, or a conflicting reload —
-        // this renderer is not the authoritative writer, so ignore the event.
-        return;
-      }
-
-      const entry: ReloadRegistryEntry = { aborted: false, settled: false };
-      registry.set(event.requestId, entry);
-      void drive(event, prep, entry);
     },
 
     cancel(scope, marker, reason): void {
       const entry = registry.get(marker.requestId);
       if (entry) {
-        entry.aborted = true;
         entry.settled = true;
         registry.delete(marker.requestId);
       }

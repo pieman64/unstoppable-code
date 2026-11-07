@@ -1,6 +1,6 @@
-import type { JSX, SVGProps } from 'react';
-import { ChatIcon as AppCatalogChatIcon } from './AppIcons';
+import type { JSX } from 'react';
+import { ChatIcon as AppCatalogChatIcon, type AppIconProps } from './AppIcons';
 
-export function ChatIcon(props: SVGProps<SVGSVGElement>): JSX.Element {
-  return <AppCatalogChatIcon width="14" height="14" {...props} />;
+export function ChatIcon(props: AppIconProps): JSX.Element {
+  return <AppCatalogChatIcon size="sm" {...props} />;
 }

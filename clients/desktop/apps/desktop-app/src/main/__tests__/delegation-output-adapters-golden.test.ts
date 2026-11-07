@@ -66,6 +66,7 @@ import {
   success as cursorSuccess,
 } from './helpers/delegation-runner-fixtures/cursor';
 import { request as openCodeRequest } from './helpers/delegation-runner-fixtures/opencode';
+import { runInAgentWorker } from '../agent-runs/agent-worker-context';
 
 const FIXTURE_DIRECTORY = path.join(
   __dirname,
@@ -813,6 +814,10 @@ async function openCodeDelivery(
   mockOpenCodeRuntime.mockResolvedValue({
     runtimeIdentity: { version: 'golden', platform: 'test' },
     executable: '/usr/bin/node',
+    spawnProcess: () => {
+      throw new Error('The golden mocks the OpenCode turn driver.');
+    },
+    processOwner: { kind: 'subagent', id: 'golden-opencode' },
     env: { PATH: '/usr/bin' },
     providerConfig: {},
     generation: 1,
@@ -837,10 +842,14 @@ async function openCodeDelivery(
   const terminal = new Promise<void>((resolve) => {
     finish = resolve;
   });
-  const handle = await runner.start(runRequest, ({ event }) => {
-    if (event.type === 'terminal') finish();
-    return Promise.resolve();
-  });
+  const handle = await runInAgentWorker(
+    { kind: 'subagent', runId: 'golden-opencode' },
+    () =>
+      runner.start(runRequest, ({ event }) => {
+        if (event.type === 'terminal') finish();
+        return Promise.resolve();
+      }),
+  );
   await terminal;
   await runner.close(handle);
   if (!delivery) throw new Error('OpenCode adapter did not deliver output');
@@ -1094,6 +1103,12 @@ beforeEach(() => {
 
 afterEach(() => {
   jest.restoreAllMocks();
+});
+
+// The OpenCode runner loads its execution runtime lazily (CAN-4120); load it
+// before the timed cases so module setup stays outside their timeout.
+beforeAll(async () => {
+  await import('../opencode/execution-runtime');
 });
 
 afterAll(() => {

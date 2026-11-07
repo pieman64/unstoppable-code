@@ -1,6 +1,9 @@
-import type { JSX, SVGProps } from 'react';
-import { FolderIcon as AppCatalogFolderIcon } from './AppIcons';
+import type { JSX } from 'react';
+import {
+  FolderIcon as AppCatalogFolderIcon,
+  type AppIconProps,
+} from './AppIcons';
 
-export function FolderIcon(props: SVGProps<SVGSVGElement>): JSX.Element {
-  return <AppCatalogFolderIcon width="14" height="14" {...props} />;
+export function FolderIcon(props: AppIconProps): JSX.Element {
+  return <AppCatalogFolderIcon size="sm" {...props} />;
 }

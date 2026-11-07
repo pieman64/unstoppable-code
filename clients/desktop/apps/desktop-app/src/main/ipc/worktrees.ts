@@ -55,6 +55,7 @@ import { scheduleBranchNaming } from '../lib/worktree-chat-turn';
 import { validateAbsolutePath, validateId } from '../lib/validation';
 import { assertWritableScope } from '../lib/read-only-scope';
 import { registerIpcHandler } from './register';
+import type { DaemonGitRoute } from '../canopy-runtime/daemon-git-route';
 import {
   archiveWorktree,
   checkWorktreeRemovalAdmission,
@@ -153,6 +154,7 @@ export function registerWorktreeHandlers(
       WorkerGitWriteDispatcher &
       Pick<DesktopCanopyDispatcher, 'instruction'>;
     resolveCaller: DesktopIpcCallerResolver;
+    daemonGitRoute?: () => DaemonGitRoute;
   },
 ): void {
   const guardedCommands = (
@@ -623,6 +625,9 @@ export function registerWorktreeHandlers(
         runtime.dispatcher,
         runtime.resolveCaller(event),
         request,
+        runtime.daemonGitRoute
+          ? { route: runtime.daemonGitRoute(), sender: event.sender }
+          : undefined,
       ),
   );
 

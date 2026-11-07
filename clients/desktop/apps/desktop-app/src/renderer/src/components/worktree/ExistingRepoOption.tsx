@@ -43,7 +43,7 @@ export function ExistingRepoOption({
             data-testid="workspace-settings-existing-repo-reason"
             tabIndex={0}
           >
-            <InfoIcon width={12} height={12} />
+            <InfoIcon size="sm" />
           </span>
         </Tooltip>
       )}

@@ -33,7 +33,6 @@ export {
 export {
   SubagentsList,
   SubagentsListRow,
-  subagentsListGrid,
   type SubagentsListColumns,
   type SubagentsListEntry,
   type SubagentsListProps,

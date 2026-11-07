@@ -11,11 +11,15 @@ import {
   CoreScriptDevServerPatternSchema,
   MAX_SCRIPT_TIMEOUT_SECONDS,
 } from '../script-values';
+import { CanopyQueryRequestMetadataSchema } from '../common';
 import {
+  CanopyStreamEndSchema,
   defineCanopyInstruction,
   defineCanopyInstructionRegistry,
   defineCanopyQuery,
   defineCanopyQueryRegistry,
+  defineCanopyStream,
+  defineCanopyStreamRegistry,
 } from '../definitions';
 import {
   CanopyErrorPayloadSchema,
@@ -35,6 +39,7 @@ export const WORKER_SCRIPT_ERROR_CODES = [
   'worker.script.contextUnavailable',
   'worker.script.executionInProgress',
   'worker.script.idempotencyKeyReused',
+  'worker.script.placementUnreachable',
   ...WORKER_EXECUTION_SECRET_ERROR_CODES,
 ] as const;
 
@@ -289,6 +294,54 @@ export const WorkerScriptInstructionErrorSchema =
     retry: CanopyKeyedRetryDirectiveSchema,
   });
 
+/** Streamed lines are cut to this many characters; the run log keeps them whole. */
+export const WORKER_SCRIPT_OUTPUT_LINE_MAX_LENGTH = 8_192;
+export const WORKER_SCRIPT_OUTPUT_ITEM_MAX_LINES = 500;
+
+export const WorkerScriptExecutionOutputParamsSchema = z.strictObject({
+  scope: WorkerScriptScopeSchema,
+  executionId: id,
+  /** Wait up to 60 s for a run that has not begun; without it, end at once. */
+  awaitStart: z.boolean().optional(),
+  /** The stream doesn't resume; a subscription starts at the next line. */
+  cursor: z.null().optional(),
+  _meta: CanopyQueryRequestMetadataSchema.optional(),
+});
+export type WorkerScriptExecutionOutputParams = z.output<
+  typeof WorkerScriptExecutionOutputParamsSchema
+>;
+
+export const WorkerScriptExecutionOutputOpenResultSchema = z.strictObject({
+  subscriptionId: id,
+  acceptedCursor: z.null(),
+});
+
+/** `started` and `gap` are never dropped; `lines` may be, and the next `gap` counts them. */
+export const WorkerScriptExecutionOutputItemSchema = z.discriminatedUnion(
+  'kind',
+  [
+    z.strictObject({ kind: z.literal('started') }),
+    z.strictObject({
+      kind: z.literal('lines'),
+      lines: z
+        .array(z.string().max(WORKER_SCRIPT_OUTPUT_LINE_MAX_LENGTH))
+        .min(1)
+        .max(WORKER_SCRIPT_OUTPUT_ITEM_MAX_LINES),
+      /** A line was cut to the maximum length. */
+      truncated: z.boolean(),
+    }),
+    z.strictObject({ kind: z.literal('gap'), droppedLines: z.int().min(1) }),
+  ],
+);
+export type WorkerScriptExecutionOutputItem = z.output<
+  typeof WorkerScriptExecutionOutputItemSchema
+>;
+
+export const WorkerScriptExecutionOutputEndSchema =
+  CanopyStreamEndSchema.extend({
+    error: WorkerScriptQueryErrorSchema.nullable(),
+  });
+
 export const WORKER_SCRIPT_QUERY_DEFINITIONS = defineCanopyQueryRegistry(
   'worker',
   {
@@ -342,3 +395,23 @@ export const WORKER_SCRIPT_INSTRUCTION_DEFINITIONS =
       error: WorkerScriptInstructionErrorSchema,
     }),
   });
+
+/** Not spread into the worker registry: only hosts that serve remote runs compose it (CAN-5087). */
+export const WORKER_SCRIPT_STREAM_DEFINITIONS = defineCanopyStreamRegistry(
+  'worker',
+  {
+    'worker.script.execution.output': defineCanopyStream({
+      plane: 'worker',
+      domain: 'script',
+      version: 1,
+      placement: 'target-selectable',
+      idempotency: 'inherent',
+      requiredGrants: [WORKER_SCRIPT_GRANTS.read],
+      params: WorkerScriptExecutionOutputParamsSchema,
+      openResult: WorkerScriptExecutionOutputOpenResultSchema,
+      item: WorkerScriptExecutionOutputItemSchema,
+      end: WorkerScriptExecutionOutputEndSchema,
+      error: WorkerScriptQueryErrorSchema,
+    }),
+  },
+);

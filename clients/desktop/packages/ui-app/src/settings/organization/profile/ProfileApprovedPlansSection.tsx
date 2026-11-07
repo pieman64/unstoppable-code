@@ -15,6 +15,7 @@ import type { ApprovedPlanSummary } from '@canopy/protocol/plans';
 import { formatApprovedPlanMeta } from '@canopy/protocol/settings/plan-display';
 import { fetchMemberApprovedPlans } from './profile-api';
 import { useMemberPagedResource } from './use-member-paged-resource';
+import { Surface } from '@canopy/ui-shared/components';
 
 /** Plain sample rows the loading skeleton measures. */
 const SAMPLE_APPROVED_PLANS: readonly ApprovedPlanSummary[] = [
@@ -132,15 +133,17 @@ export function ProfileApprovedPlansSection({
             onRetry={retry}
           />
         ) : (
-          <p
-            className={joinClassNames(
-              'rounded-xl border border-dashed px-4 py-12 text-center text-s fg-secondary',
-              blockClassName,
-            )}
-            data-testid="profile-approved-plans-empty"
-          >
-            {memberName} hasn&apos;t started implementing any plans yet.
-          </p>
+          <Surface variant="dashed">
+            <p
+              className={joinClassNames(
+                'px-4 py-12 text-center text-s fg-secondary',
+                blockClassName,
+              )}
+              data-testid="profile-approved-plans-empty"
+            >
+              {memberName} hasn&apos;t started implementing any plans yet.
+            </p>
+          </Surface>
         )}
       </div>
     );

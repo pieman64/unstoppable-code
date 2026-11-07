@@ -15,6 +15,17 @@ export const STORAGE_OWNERSHIP = [
     ]
   },
   {
+    "id": "daemon_native_artifact_snapshots",
+    "transitionOwner": "daemon",
+    "currentWriters": [],
+    "schemaVersion": 1,
+    "backupPolicy": "none",
+    "workPackage": "W2",
+    "admittedWriters": [
+      "packages/core-platform/src/secret-protection/authorization.ts"
+    ]
+  },
+  {
     "id": "daemon_runtime_descriptor",
     "transitionOwner": "daemon",
     "currentWriters": [

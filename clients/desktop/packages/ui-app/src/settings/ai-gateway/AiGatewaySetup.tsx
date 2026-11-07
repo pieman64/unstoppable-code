@@ -23,12 +23,17 @@ import {
   type AiGatewayConnectionResult,
   type DiscoveredGatewayModel,
 } from '@canopy/protocol/model-gateway/discovery';
-import { useSettingsAiGatewayConnectionKey, useSettingsPrivacy } from '../host';
+import {
+  useSettingsAiGatewayConnectionKey,
+  useSettingsClient,
+  useSettingsPrivacy,
+} from '../host';
 import { useSettingsErrorCopy, type SettingsFailure } from '../errors';
 import { joinClassNames } from '../organization/settings/join-class-names';
 import { AddGatewayModelForm } from './gateway-model-list';
 import {
   ABSENT_GATEWAY_REVISION,
+  keepKeyForCloudChats,
   type AiGatewayEditorAdapter,
   type AiGatewayEditorConfig,
 } from './ai-gateway-adapter';
@@ -77,6 +82,7 @@ export function AiGatewaySetup({
 }: AiGatewaySetupProps): JSX.Element {
   const errorCopy = useSettingsErrorCopy(AI_GATEWAY_ERROR_SCOPE);
   const { maskClassName } = useSettingsPrivacy();
+  const client = useSettingsClient();
   const KeyRow = useSettingsAiGatewayConnectionKey();
   const keepsKeys = KeyRow !== undefined;
   const statusId = useId();
@@ -99,6 +105,9 @@ export function AiGatewaySetup({
   const attemptRef = useRef(0);
   const connectingRef = useRef(false);
   const savingRef = useRef(false);
+  // The key that connected, kept until Save: the server takes a cloud chats
+  // key only for a stored gateway.
+  const cloudKeyRef = useRef('');
   useEffect(
     () => (): void => {
       attemptRef.current += 1;
@@ -148,8 +157,9 @@ export function AiGatewaySetup({
       return;
     }
     // The key has done its job: stored on a host that keeps keys, and
-    // discarded everywhere else.
+    // elsewhere held only until Save keeps it for cloud chats.
     setApiKey('');
+    cloudKeyRef.current = keepsKeys ? '' : typedKey;
     const existing = current?.models ?? [];
     const suggestions = suggestModels(
       result.models,
@@ -272,6 +282,14 @@ export function AiGatewaySetup({
         },
         current?.revision ?? ABSENT_GATEWAY_REVISION,
       );
+      // Before `onSaved`, so Cloud chats reads the key as saved when it mounts.
+      if (cloudKeyRef.current && saved.baseUrl)
+        await keepKeyForCloudChats(
+          client,
+          adapter.organizationId,
+          cloudKeyRef.current,
+          saved.baseUrl,
+        );
       if (attempt === attemptRef.current) onSaved(saved);
     } catch (err) {
       if (attempt !== attemptRef.current) return;

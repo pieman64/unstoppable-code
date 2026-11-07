@@ -67,15 +67,6 @@ export type PortalChatToolFamily =
 
 type IconComponent = ComponentType<SVGProps<SVGSVGElement>>;
 
-/**
- * Thin wrapper that adapts {@link PlanModeIcon} (whose props add an optional
- * `active` flag) to the registry's plain `SVGProps<SVGSVGElement>` icon
- * contract without a cast.
- */
-function PlanFamilyIcon(props: SVGProps<SVGSVGElement>): JSX.Element {
-  return <PlanModeIcon {...props} />;
-}
-
 interface ToolFamilyEntry {
   Icon: IconComponent;
   label: string;
@@ -85,7 +76,7 @@ const TOOL_FAMILY_REGISTRY: Record<PortalChatToolFamily, ToolFamilyEntry> = {
   read: { Icon: DocumentIcon, label: 'Read' },
   edit: { Icon: DocumentPencilIcon, label: 'Edit' },
   write: { Icon: DocumentPencilIcon, label: 'Write' },
-  plan: { Icon: PlanFamilyIcon, label: 'Plan' },
+  plan: { Icon: PlanModeIcon, label: 'Plan' },
   bash: { Icon: TerminalIcon, label: 'Bash' },
   grep: { Icon: DocumentSearchIcon, label: 'Grep' },
   glob: { Icon: MagnifyingGlassIcon, label: 'Glob' },

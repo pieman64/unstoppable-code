@@ -22,6 +22,7 @@ import {
   type PivotedSeries,
   seriesColor,
 } from './format';
+import { Surface } from '@canopy/ui-shared/components';
 
 interface StackedTimeSeriesChartProps {
   series: PivotedSeries;
@@ -407,11 +408,10 @@ export function PairedCategoryBarChart({
 
 function EmptyChart({ label }: { label: string }): JSX.Element {
   return (
-    <div
-      className="flex h-48 w-full items-center justify-center rounded-lg border border-dashed text-s fg-secondary"
-      data-testid="chart-empty"
-    >
-      {label}
-    </div>
+    <Surface variant="dashed" className="w-full" data-testid="chart-empty">
+      <div className="flex h-48 items-center justify-center text-s fg-secondary">
+        {label}
+      </div>
+    </Surface>
   );
 }

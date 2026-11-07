@@ -14,6 +14,7 @@ import {
   Checkbox,
   ChoiceList,
   ChoiceListRow,
+  DateField,
   DialogFormField,
   DialogModal,
   FieldError,
@@ -28,17 +29,17 @@ import {
   Radio,
   SearchField,
   SegmentedControl,
-  DateField,
   Select,
+  type SelectOption,
   SettingsSelect,
   SortDropdown,
+  Surface,
   TextArea,
   TextInput,
-  ThinkingLevelControl,
-  ToggleSwitch,
-  type SelectOption,
   type TextInputDensity,
   type TextInputProps,
+  ThinkingLevelControl,
+  ToggleSwitch,
 } from '@canopy/ui-shared/components';
 import {
   THINKING_LEVELS as CANONICAL_THINKING_LEVELS,
@@ -1554,12 +1555,12 @@ function PlaygroundCard({
   readonly children: ReactNode;
 }): JSX.Element {
   return (
-    <section className="flex flex-col gap-3 rounded-xl border p-4">
+    <Surface as="section" variant="outline" padding="default" gap="item">
       <Heading level={2} variant="title">
         {title}
       </Heading>
       {children}
-    </section>
+    </Surface>
   );
 }
 

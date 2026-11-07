@@ -42,6 +42,9 @@ function build(
       definitions,
       handlers: {
         queries: {
+          'worker.agent.provider.list': (): never => {
+            throw new Error('Not exercised.');
+          },
           'worker.filesystem.roots.list': handler,
           'worker.filesystem.directory.list': () => ({ entries: [] }),
           'worker.filesystem.file.read': (): never => {

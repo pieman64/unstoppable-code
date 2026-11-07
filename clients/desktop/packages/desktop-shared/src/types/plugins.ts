@@ -153,7 +153,7 @@ export interface MarketplacePluginEntry {
   displayName?: string;
   description?: string;
   version?: string;
-  source: string | { source: string; url: string; sha?: string };
+  source: string | { source?: string; url?: string; sha?: string };
   category?: string;
   author?: { name: string; email?: string };
   homepage?: string;
@@ -184,11 +184,9 @@ export interface PluginManifest {
  * Lifecycle / migration rules:
  * - Version 1 cache (the previous shape) can be read only as stale input.
  * - Version 2 is the only written format.
- * - Initial load may fast-migrate v1 rows into Claude-only native facets so the
- *   marketplace list can render from cache without provider revalidation.
- * - Fast migration must mark Codex status invalid / unchecked because v1 lacked
- *   Codex facet information; a user refresh performs the full Claude/Codex
- *   provider recheck and writes authoritative v2 data.
+ * - V1 rows may be projected for presentation only, without persisting V2
+ *   or authorizing execution. A dedicated refresh revalidates provider data
+ *   before writing authoritative V2. Facet-less V2 is damaged, not legacy.
  */
 export interface PluginsCache {
   version: 2;
@@ -222,7 +220,7 @@ export interface PluginInfoV1 {
   sourcePath: string;
   marketplaceId: string;
   details: PluginDetails | null;
-  externalSource: { url: string; sha?: string } | null;
+  externalSource: { url?: string; sha?: string } | null;
   cachePath: string | null;
   cachedAt: string | null;
 }

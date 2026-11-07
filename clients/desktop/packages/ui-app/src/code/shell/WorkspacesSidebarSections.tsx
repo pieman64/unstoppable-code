@@ -2149,6 +2149,7 @@ export function WorkspacesSidebarSections({
         sortable:
           pinnedSurface === undefined &&
           canSortWorktree(worktree) &&
+          worktreeMultiSelect?.selectModeFor(workspace.localId) !== true &&
           !rowHidden,
         worktreeRemoval: rowCapabilities.worktreeRemoval,
         itemGroupMenuItems,
@@ -2199,6 +2200,18 @@ export function WorkspacesSidebarSections({
             ? { [SIDEBAR_SELECTION_ROW_ATTR]: pinnedSurface ? '' : rowKey }
             : {})}
           variant="bare"
+          role={
+            !pinnedSurface &&
+            worktreeMultiSelect?.selectModeFor(workspace.localId)
+              ? 'checkbox'
+              : undefined
+          }
+          aria-checked={
+            !pinnedSurface &&
+            worktreeMultiSelect?.selectModeFor(workspace.localId)
+              ? multiSelection?.isSelected(rowKey)
+              : undefined
+          }
           // The frame owns keyboard activation; the shared row owns pointer
           // intent. Ignore focus on nested status/menu controls.
           onFocus={
@@ -2239,14 +2252,20 @@ export function WorkspacesSidebarSections({
                   // extends the bulk selection, without navigating, selecting
                   // text, or opening a new tab. A plain click navigates,
                   // clears the selection, and anchors Shift ranges here.
-                  const intent = resolveSelectionClick(
-                    event,
-                    {
-                      selectable: rowSelectable,
-                      active: multiSelection?.active === true,
-                    },
-                    isMacPlatform(),
-                  );
+                  const intent =
+                    rowSelectable &&
+                    worktreeMultiSelect?.selectModeFor(workspace.localId)
+                      ? event.shiftKey
+                        ? 'range'
+                        : 'toggle'
+                      : resolveSelectionClick(
+                          event,
+                          {
+                            selectable: rowSelectable,
+                            active: multiSelection?.active === true,
+                          },
+                          isMacPlatform(),
+                        );
                   if (intent === 'toggle' || intent === 'range') {
                     event.preventDefault();
                     toggleRowSelection(intent === 'range');
@@ -2262,6 +2281,24 @@ export function WorkspacesSidebarSections({
                   onSelectWorktree(workspace.localId, worktree.localId);
                 }
           }
+          onDoubleClick={(event): void => {
+            if (
+              pinnedSurface ||
+              !rowSelectable ||
+              event.shiftKey ||
+              event.metaKey ||
+              event.ctrlKey ||
+              event.altKey
+            )
+              return;
+            if (
+              !(event.target instanceof Element) ||
+              !event.currentTarget.contains(event.target) ||
+              event.target.closest('button, a, input, [role="menu"]')
+            )
+              return;
+            worktreeMultiSelect?.onSelectItem?.(rowKey);
+          }}
           onMouseDown={
             multiSelection === undefined || removalInProgress || !rowSelectable
               ? undefined
@@ -2385,11 +2422,16 @@ export function WorkspacesSidebarSections({
               // badges and indicators), as desktop's legacy copies did, so a
               // bare id still resolves to the one in-flow row (CAN-3127).
               testIdSuffix: pinnedSurface ? `-${pinnedSurface}` : undefined,
-              selected: rowSelected,
+              selected: rowSelected && multiSelection?.active !== true,
               ...(multiSelection !== undefined
                 ? {
                     multiSelect: {
-                      selected: multiSelection.isSelected(rowKey),
+                      selected:
+                        !pinnedSurface && multiSelection.isSelected(rowKey),
+                      selectMode:
+                        !pinnedSurface &&
+                        worktreeMultiSelect?.selectModeFor(workspace.localId),
+                      selectable: rowSelectable,
                     },
                   }
                 : {}),
@@ -3207,7 +3249,7 @@ export function WorkspacesSidebarSections({
                         aria-expanded={archivedIsExpanded}
                       >
                         <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
-                          <ArchiveIcon width={16} height={16} />
+                          <ArchiveIcon size="sm" />
                         </span>
                         <span className="inline-flex min-w-0 items-center gap-1">
                           <span className="truncate">
@@ -3299,7 +3341,7 @@ export function WorkspacesSidebarSections({
                                       )
                                     }
                                   >
-                                    <RefreshIcon width={16} height={16} />
+                                    <RefreshIcon size="sm" />
                                   </Button>
                                 ) : null}
                                 {!renderArchivedActions && onDeleteArchived && (

@@ -18,6 +18,7 @@ import {
 import type { BackgroundTaskHostActions } from './background-tasks-section';
 import { backgroundTaskStopAccessibleLabel } from './BackgroundProcessesSectionBody';
 import { TaskStopAction } from './TaskStopAction';
+import { Surface } from '@canopy/ui-shared/components';
 
 const MAX_DETAIL_OUTPUT_LINES = 5000;
 
@@ -296,11 +297,13 @@ export function BackgroundTaskDetailModal({
         {detail?.command && (
           <div className="mb-4">
             <div className="mb-1 text-xs font-medium fg-secondary">Command</div>
-            <div
-              className={`${REPLAY_BLOCK_CLASS} overflow-auto rounded-lg border bg-base px-3 py-2 font-mono text-xs leading-5 fg-secondary`}
-            >
-              {detail.command}
-            </div>
+            <Surface variant="inset" className="overflow-hidden">
+              <div
+                className={`${REPLAY_BLOCK_CLASS} overflow-auto px-3 py-2 font-mono text-xs leading-5 fg-secondary`}
+              >
+                {detail.command}
+              </div>
+            </Surface>
           </div>
         )}
 
@@ -308,11 +311,13 @@ export function BackgroundTaskDetailModal({
         {detail?.prompt && (
           <div className="mb-4">
             <div className="mb-1 text-xs font-medium fg-secondary">Prompt</div>
-            <div
-              className={`${REPLAY_BLOCK_CLASS} max-h-32 overflow-auto rounded-lg border bg-base px-3 py-2 text-s fg-secondary`}
-            >
-              {detail.prompt}
-            </div>
+            <Surface variant="inset" className="overflow-hidden">
+              <div
+                className={`${REPLAY_BLOCK_CLASS} max-h-32 overflow-auto px-3 py-2 text-s fg-secondary`}
+              >
+                {detail.prompt}
+              </div>
+            </Surface>
           </div>
         )}
 
@@ -363,13 +368,17 @@ export function BackgroundTaskDetailModal({
               className="mb-2"
             />
             {loading ? (
-              <div className="flex flex-1 items-center justify-center rounded-lg border bg-base py-8 text-s fg-secondary">
-                Loading output…
-              </div>
+              <Surface variant="inset" className="flex flex-1">
+                <div className="flex flex-1 items-center justify-center py-8 text-s fg-secondary">
+                  Loading output…
+                </div>
+              </Surface>
             ) : shownLines.length === 0 ? (
-              <div className="flex flex-1 items-center justify-center rounded-lg border bg-base py-8 text-s fg-secondary">
-                No output available
-              </div>
+              <Surface variant="inset" className="flex flex-1">
+                <div className="flex flex-1 items-center justify-center py-8 text-s fg-secondary">
+                  No output available
+                </div>
+              </Surface>
             ) : (
               <AnsiOutput
                 lines={shownLines}

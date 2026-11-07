@@ -24,8 +24,8 @@ export interface NativeTrashOptions {
  * The native Trash backend for `os`, for a host to pass as
  * `PlatformHostOptions.trash`: `trashItemAtURL` through osascript on darwin,
  * the owned-child addon's `IFileOperation` recycle on win32, and `gio trash`
- * on linux. Nothing loads or starts until the first request. No host
- * composes it yet; `createPlatformServices` never does on its own.
+ * on linux. Nothing loads or starts until the first request. Hosts opt in;
+ * `createPlatformServices` never composes it on its own.
  */
 export function createNativeTrashServices(
   os: PlatformOperatingSystem,

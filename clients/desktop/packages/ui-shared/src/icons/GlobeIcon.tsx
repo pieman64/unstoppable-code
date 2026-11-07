@@ -1,6 +1,9 @@
-import type { JSX, SVGProps } from 'react';
-import { GlobeIcon as AppCatalogGlobeIcon } from './AppIcons';
+import type { JSX } from 'react';
+import {
+  GlobeIcon as AppCatalogGlobeIcon,
+  type AppIconProps,
+} from './AppIcons';
 
-export function GlobeIcon(props: SVGProps<SVGSVGElement>): JSX.Element {
-  return <AppCatalogGlobeIcon width="14" height="14" {...props} />;
+export function GlobeIcon(props: AppIconProps): JSX.Element {
+  return <AppCatalogGlobeIcon size="sm" {...props} />;
 }

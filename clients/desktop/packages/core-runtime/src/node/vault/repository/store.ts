@@ -7,6 +7,7 @@ import type {
   PlatformServices,
 } from '../../../platform/platform-services';
 import { readSealedBox } from './aes-gcm';
+import { isLiveMigrationIntent } from './migration-intent';
 import { VAULT_RECORD_FORMAT } from './record-format';
 import {
   checkpointWal,
@@ -99,13 +100,30 @@ export interface VaultStoreOpenOptions {
   readonly faults?: VaultStoreFaults;
 }
 
+/** Internal authenticated journal CAS; bytes are validated by migration-storage. */
+export interface VaultMigrationUpdate {
+  readonly expected: string | null;
+  readonly next: string;
+}
+
+const MIGRATION_KEY = 'copilot_migration_v1';
+const MIGRATION_MARKER = 'copilot_migration_format';
+
 export interface VaultStore {
   /** Null until `writeHeader` commits; a store without one holds no record. */
   readonly header: VaultStoredHeader | null;
   readonly state: 'open' | 'faulted' | 'closed';
   /** Only into an empty store, once its key slot exists (Q4c item 7). */
   writeHeader(draft: VaultHeaderDraft): VaultStoreWrite<VaultStoredHeader>;
-  recordIntent(draft: VaultIntentDraft): VaultStoreWrite<VaultStoredIntent>;
+  recordIntent(
+    draft: VaultIntentDraft,
+    migration?: VaultMigrationUpdate,
+  ): VaultStoreWrite<VaultStoredIntent>;
+  /** Balanced begin/end fence; concurrent retries share the same intent. */
+  setIntentRunning(sequence: number, running: boolean): void;
+  isIntentRunning(sequence: number): boolean;
+  readMigrationJournal(): string | null;
+  writeMigrationJournal(update: VaultMigrationUpdate): VaultStoreWrite<void>;
   /** Writes the revision and settles its pending put intent. */
   commitEntry(
     sequence: number,
@@ -432,6 +450,34 @@ function createVaultStore(
     return row ? decodeEntry(row) : null;
   }
 
+  const runningIntents = new Map<number, number>();
+
+  function readMigrationJournal(): string | null {
+    const rows = readable()
+      .prepare('SELECT key, value FROM vault_meta WHERE key IN (?, ?)')
+      .all(MIGRATION_KEY, MIGRATION_MARKER);
+    if (rows.length === 0) return null;
+    const journal = rows.find((row) => row.key === MIGRATION_KEY)?.value;
+    const marker = rows.find((row) => row.key === MIGRATION_MARKER)?.value;
+    if (rows.length !== 2 || marker !== '1' || typeof journal !== 'string')
+      throw new Error('Migration metadata is unavailable.');
+    return journal;
+  }
+
+  function updateMigration(update: VaultMigrationUpdate): boolean {
+    if (header === null || readMigrationJournal() !== update.expected)
+      return false;
+    if (typeof update.next !== 'string' || update.next.length > 1_048_576)
+      throw new TypeError('Invalid migration metadata.');
+    db.prepare(
+      'INSERT OR REPLACE INTO vault_meta (key, value) VALUES (?, ?)',
+    ).run(MIGRATION_KEY, update.next);
+    db.prepare(
+      'INSERT OR IGNORE INTO vault_meta (key, value) VALUES (?, ?)',
+    ).run(MIGRATION_MARKER, '1');
+    return true;
+  }
+
   return {
     get header(): VaultStoredHeader | null {
       return header;
@@ -476,12 +522,56 @@ function createVaultStore(
       return result;
     },
 
-    recordIntent(draft): VaultStoreWrite<VaultStoredIntent> {
+    setIntentRunning(sequence, running): void {
+      const count = (runningIntents.get(sequence) ?? 0) + (running ? 1 : -1);
+      if (count > 0) runningIntents.set(sequence, count);
+      else runningIntents.delete(sequence);
+    },
+    isIntentRunning: (sequence) => runningIntents.has(sequence),
+    readMigrationJournal,
+    writeMigrationJournal(update): VaultStoreWrite<void> {
+      return write(() => (updateMigration(update) ? undefined : REFUSED));
+    },
+
+    recordIntent(draft, migration): VaultStoreWrite<VaultStoredIntent> {
       const intent = snapshotIntent(draft);
       const idempotencyKey = storedText(intent.idempotencyKey);
       const entryId = storedText(intent.entryId);
       return write((): VaultStoredIntent | typeof REFUSED => {
         if (header === null) return REFUSED;
+        // A migration import binds its minted ID in the same intent transaction.
+        if (migration !== undefined) {
+          if (
+            intent.kind !== 'put' ||
+            intent.family !== 'copilot-account' ||
+            intent.expectedRevision !== null ||
+            !updateMigration(migration)
+          )
+            return REFUSED;
+          if (
+            db
+              .prepare('SELECT 1 FROM vault_entries WHERE family = ?')
+              .get(intent.family) ||
+            db
+              .prepare('SELECT * FROM vault_intents ORDER BY sequence')
+              .all()
+              .map(decodeIntent)
+              .some(
+                (item, _index, intents) =>
+                  item.family === intent.family &&
+                  isLiveMigrationIntent(item, intents, (sequence) =>
+                    runningIntents.has(sequence),
+                  ),
+              )
+          )
+            return REFUSED;
+        }
+        if (
+          intent.family === 'copilot-account' &&
+          intent.idempotencyKey.startsWith('copilot-migration:') &&
+          migration === undefined
+        )
+          return REFUSED;
         const recordedAt = now();
         const { lastInsertRowid } = db
           .prepare(

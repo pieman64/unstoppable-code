@@ -1,13 +1,9 @@
-import type { JSX, SVGProps } from 'react';
-import { CognitionIcon as AppCatalogCognitionIcon } from './AppIcons';
+import type { JSX } from 'react';
+import {
+  CognitionIcon as AppCatalogCognitionIcon,
+  type AppIconProps,
+} from './AppIcons';
 
-export function CognitionIcon(props: SVGProps<SVGSVGElement>): JSX.Element {
-  return (
-    <AppCatalogCognitionIcon
-      width="16"
-      height="16"
-      aria-hidden="true"
-      {...props}
-    />
-  );
+export function CognitionIcon(props: AppIconProps): JSX.Element {
+  return <AppCatalogCognitionIcon size="sm" aria-hidden="true" {...props} />;
 }

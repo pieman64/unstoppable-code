@@ -2,6 +2,7 @@ import type { JSX, ReactNode } from 'react';
 import type { AccountSettingsPage } from '@canopy/protocol/settings';
 import {
   DelayedLoadingPlaceholder,
+  Divider,
   NoticeShapeProvider,
   Skeleton,
   ToggleSwitch,
@@ -182,10 +183,8 @@ function NotificationsPageDeviceSettings(): JSX.Element {
                 <InAppNotificationRows settings={settings} />
               </DeviceCardRows>
             </div>
-            <div
-              className="border-t"
-              data-testid="account-device-card-os-notifications"
-            >
+            <div data-testid="account-device-card-os-notifications">
+              <Divider />
               <DeviceCardRows>
                 <OsNotificationRows settings={settings} />
               </DeviceCardRows>
@@ -239,7 +238,8 @@ function IntegrationsPageDeviceSettings(): JSX.Element {
             <ProviderAuthPanel provider="github" layout="row" />
           </DeviceCardRows>
         </div>
-        <div className="border-t" data-testid="account-device-card-linear">
+        <div data-testid="account-device-card-linear">
+          <Divider />
           <DeviceCardRows>
             <LinearKeyRow />
           </DeviceCardRows>

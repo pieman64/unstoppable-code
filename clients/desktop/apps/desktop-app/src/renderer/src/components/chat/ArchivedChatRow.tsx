@@ -6,7 +6,7 @@ import {
 import { CHAT_UNIT_LABEL } from '@canopy/protocol';
 import { Tooltip } from '@canopy/ui-shared';
 import { SummaryIcon, UnarchiveIcon } from '@canopy/ui-shared/icons/AppIcons';
-import { AgentProviderIcon } from '@/lib/providerUi';
+import { ModelProviderIcon } from '@canopy/ui-shared/components';
 import { getArchivedChatDisplayLabel } from '@/components/standalone-chat/chat-label';
 import { LoadingSpinner } from '../shared/loading/spinners/LoadingSpinner';
 import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
@@ -94,11 +94,7 @@ export function ArchivedChatRow({
         className={`shrink-0 ${summary.unread ? 'text-amber-400' : 'fg-secondary'}`}
       >
         {summary.providerType ? (
-          <AgentProviderIcon
-            provider={summary.providerType}
-            width={14}
-            height={14}
-          />
+          <ModelProviderIcon provider={summary.providerType} size="sm" />
         ) : (
           <span
             aria-hidden="true"

@@ -15,6 +15,7 @@ import {
   type AppAdvisorBrowserAction,
   type AppAdvisorClaudeMdLoadResponse,
   type AppAdvisorClaudeMdSaveRequest,
+  type AppAdvisorRendererToolCancellation,
   type AppAdvisorRendererToolRequest,
   type AppAdvisorRendererToolResponse,
   type AppAdvisorSettingsLoadResponse,
@@ -58,6 +59,11 @@ import {
 import { registerIpcHandler } from './register';
 import { setLatestAppAdvisorWindowUiState } from '../app-advisor/window-ui-state';
 import { isRecord } from '../lib/type-guards';
+import type {
+  InterfaceToolOutcome,
+  InterfaceToolPayload,
+} from '@canopy/core-runtime/node/client';
+import { getSessionInterfaceToolRegistry } from '../agents/interface-tool-binding';
 
 export { getLatestAppAdvisorWindowUiState } from '../app-advisor/window-ui-state';
 
@@ -135,6 +141,87 @@ export function setRendererToolSurfaceRouter(
     | null,
 ): void {
   rendererToolRouter = router;
+}
+
+export function routeRendererToolRequest(
+  request: AppAdvisorRendererToolRequest,
+): RemoteAppAdvisorWindowHost | null {
+  return rendererToolRouter?.(request) ?? null;
+}
+
+function isRendererToolResponse(
+  reply: InterfaceToolPayload,
+): reply is InterfaceToolPayload & AppAdvisorRendererToolResponse {
+  const { error } = reply;
+  return (
+    typeof reply.requestId === 'string' &&
+    typeof reply.ok === 'boolean' &&
+    (error === undefined ||
+      (typeof error === 'object' && error !== null && !Array.isArray(error)))
+  );
+}
+
+/** CAN-4131: today's response shapes for a lease-bound call's outcome. */
+export function interfaceToolOutcomeToRendererResponse(
+  outcome: InterfaceToolOutcome,
+  request: AppAdvisorRendererToolRequest,
+): AppAdvisorRendererToolResponse {
+  const invalid: AppAdvisorRendererToolResponse = {
+    requestId: request.requestId,
+    ok: false,
+    error: {
+      code: 'execution_failed',
+      message: 'The window returned an invalid result.',
+      retryable: false,
+    },
+  };
+  if (outcome.ok)
+    return isRendererToolResponse(outcome.reply)
+      ? { ...outcome.reply, requestId: request.requestId }
+      : invalid;
+  switch (outcome.error.kind) {
+    case 'capability_unavailable':
+    case 'unavailable':
+    case 'resource_exhausted':
+      return surfaceUnavailableResponse(request);
+    case 'deadline_exceeded':
+      return timeoutResponse(request.requestId);
+    case 'cancelled':
+      return cancelledResponse(request.requestId);
+    default:
+      return invalid;
+  }
+}
+
+let interfaceToolReplyHandler:
+  | ((
+      senderWebContentsId: number,
+      response: unknown,
+    ) => 'claimed' | 'not_claimed')
+  | null = null;
+/** CAN-4131: replies to lease-delivered calls are claimed before the legacy settle. */
+export function setInterfaceToolReplyHandler(
+  handler: typeof interfaceToolReplyHandler,
+): void {
+  interfaceToolReplyHandler = handler;
+}
+/** CAN-4131: deliver one lease-bound call to its renderer. */
+export function sendInterfaceToolRequest(
+  webContents: WebContents,
+  request: AppAdvisorRendererToolRequest,
+): boolean {
+  if (webContents.isDestroyed()) return false;
+  webContents.send(IPC_CHANNELS.appAdvisorToolRequest, request);
+  return true;
+}
+/** CAN-4131: tell a renderer a lease-bound call ended without its reply. */
+export function sendInterfaceToolCancellation(
+  webContents: WebContents,
+  cancellation: AppAdvisorRendererToolCancellation,
+): boolean {
+  if (webContents.isDestroyed()) return false;
+  webContents.send(IPC_CHANNELS.appAdvisorToolRequestCancelled, cancellation);
+  return true;
 }
 
 /**
@@ -674,7 +761,9 @@ function requireWorkspaceOperations(
   return operations;
 }
 
-function timeoutResponse(requestId: string): AppAdvisorRendererToolResponse {
+export function timeoutResponse(
+  requestId: string,
+): AppAdvisorRendererToolResponse {
   return {
     requestId,
     ok: false,
@@ -687,7 +776,7 @@ function timeoutResponse(requestId: string): AppAdvisorRendererToolResponse {
   };
 }
 
-function surfaceUnavailableResponse(
+export function surfaceUnavailableResponse(
   request: AppAdvisorRendererToolRequest,
 ): AppAdvisorRendererToolResponse {
   return {
@@ -704,7 +793,9 @@ function surfaceUnavailableResponse(
   };
 }
 
-function cancelledResponse(requestId: string): AppAdvisorRendererToolResponse {
+export function cancelledResponse(
+  requestId: string,
+): AppAdvisorRendererToolResponse {
   return {
     requestId,
     ok: false,
@@ -1257,6 +1348,44 @@ export async function requestCurrentAppAdvisorUiState(
 }
 
 /**
+ * CAN-4131: GetCurrentUiState for an App Advisor session. Served by the main
+ * window's interface lease; a chat driven from another computer keeps the
+ * routed path; an unbound session gets the fallback state without a call.
+ */
+export async function requestCurrentAppAdvisorUiStateThroughLease(input: {
+  scope: { workspaceId: string; worktreeId: string; chatId: string };
+  originChatTabId: string;
+  bound: boolean;
+  remoteFallbackSurfaces: AppAdvisorRendererToolSurfaces;
+  signal?: AbortSignal;
+}): Promise<AppAdvisorUiStateEnvelope> {
+  const request: AppAdvisorRendererToolRequest = {
+    kind: 'get_current_ui_state',
+    requestId: randomUUID(),
+    originChatTabId: input.originChatTabId,
+  };
+  if (routeRendererToolRequest(request) !== null)
+    return requestCurrentAppAdvisorUiState(
+      input.remoteFallbackSurfaces,
+      input.originChatTabId,
+    );
+  const registry = getSessionInterfaceToolRegistry();
+  if (!input.bound || !registry) return createFallbackUiState();
+  const outcome = await registry.invoke({
+    toolName: 'ui.get_current_ui_state',
+    input: { originChatTabId: input.originChatTabId },
+    scope: input.scope,
+    ...(input.signal ? { signal: input.signal } : {}),
+  });
+  const response = interfaceToolOutcomeToRendererResponse(outcome, request);
+  if (response.ok && response.uiState) {
+    setLatestAppAdvisorUiState(response.uiState);
+    return response.uiState;
+  }
+  return createFallbackUiState();
+}
+
+/**
  * Sends pending questions again to an App Advisor window whose page just
  * (re)loaded: this computer's own, or, given `remote`, a controlling
  * computer's window for the questions routed to it.
@@ -1416,6 +1545,8 @@ export function registerAppAdvisorHandlers(
       if (!remoteWindowHostForSender?.(event.sender)) {
         setLatestAppAdvisorUiState(response.uiState);
       }
+      if (interfaceToolReplyHandler?.(event.sender.id, response) === 'claimed')
+        return;
       // Late/unknown responses must not replace an existing settlement: a
       // renderer dismissal racing a portal answer (CAN-2565) would otherwise
       // overwrite the answer duplicate lookups replay. A late response still

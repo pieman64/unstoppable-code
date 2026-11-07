@@ -55,6 +55,7 @@ import { TeamLapsedState } from './team-lapsed-state';
 import { useInviteSeatCharge } from './invite-seat-charge';
 import { useOrganizationSettingsSlots } from './organization-settings-slots';
 import { useMembershipChangeFollowUp } from './membership-change';
+import { Surface } from '@canopy/ui-shared/components';
 
 /**
  * Why an org's tabs are blocked, when they are (CAN-2311). `null` is the normal
@@ -479,13 +480,15 @@ export function TeamPage({
             personal={personal}
           />
         ) : (
-          <p
-            className="rounded-xl border border-dashed px-4 py-12 text-center text-s fg-secondary"
-            data-testid="team-statistics-forbidden"
-          >
-            You don&apos;t have permission to view usage statistics for this
-            organization.
-          </p>
+          <Surface variant="dashed">
+            <p
+              className="px-4 py-12 text-center text-s fg-secondary"
+              data-testid="team-statistics-forbidden"
+            >
+              You don&apos;t have permission to view usage statistics for this
+              organization.
+            </p>
+          </Surface>
         );
       case 'members':
         return (

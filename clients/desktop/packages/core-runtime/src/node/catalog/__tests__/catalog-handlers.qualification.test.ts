@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,6 +12,7 @@ import {
   type CatalogEntry,
   type CatalogSelectionRefs,
 } from '@canopy/protocol/canopy-core';
+import { stableStringify } from '@canopy/protocol/plans';
 import { createCanopyDispatcher } from '../../../runtime/dispatcher';
 import { OperationService } from '../../operations';
 import { OperationLedger } from '../../operations/ledger';
@@ -19,6 +21,7 @@ import {
   CatalogSelectionUnavailableError,
   catalogContentRevision,
   createCoreCatalogHandlers,
+  type CatalogPluginInstallOutcome,
   type CatalogPluginTarget,
   type CatalogRefreshOutcome,
   type CatalogRefreshPlan,
@@ -97,10 +100,13 @@ class MemoryCatalogHost implements CoreCatalogHost {
     pluginName: 'a',
     install: 'external',
   };
+  readonly refreshPlans: CatalogRefreshPlan[] = [];
   readError: Error | null = null;
   snapshotFailures = 0;
   listSourcesError: Error | null = null;
   refreshGate: Promise<void> = Promise.resolve();
+  refreshFails = false;
+  installOutcome: CatalogPluginInstallOutcome | null = null;
   readonly calls = {
     replaceGlobalSelection: 0,
     replaceWorkspaceSelection: [] as Parameters<
@@ -188,8 +194,12 @@ class MemoryCatalogHost implements CoreCatalogHost {
     plan: CatalogRefreshPlan,
   ): Promise<CatalogRefreshOutcome> {
     this.calls.refreshSources += 1;
+    this.refreshPlans.push(plan);
     await this.refreshGate;
-    return { refreshed: [...plan.updateSourceIds], failed: [] };
+    const ids = [...plan.updateSourceIds, ...plan.scanOnlySourceIds];
+    return this.refreshFails
+      ? { refreshed: [], failed: ids }
+      : { refreshed: ids, failed: [] };
   }
 
   findPlugin(entryId: string): Promise<CatalogPluginTarget | null> {
@@ -198,9 +208,14 @@ class MemoryCatalogHost implements CoreCatalogHost {
     );
   }
 
-  installPlugin(): Promise<void> {
+  installPlugin(
+    _target: CatalogPluginTarget,
+    providers: readonly ('claude' | 'codex')[],
+  ): Promise<CatalogPluginInstallOutcome> {
     this.calls.installPlugin += 1;
-    return Promise.resolve();
+    return Promise.resolve(
+      this.installOutcome ?? { installed: [...providers], failed: [] },
+    );
   }
 }
 
@@ -534,6 +549,84 @@ describe('core.catalog handlers (CAN-4123)', () => {
     expect(items).toHaveLength(1);
   });
 
+  it('replays a refresh of all sources after a source was added', async () => {
+    const dispatcher = compose();
+    const refreshAll = (): Promise<{
+      operationId: string;
+      acceptedSources: string[];
+    }> =>
+      dispatcher.instruction(
+        'core.catalog.source.refresh',
+        {
+          sourceIds: 'all',
+          providers: ['claude', 'codex'],
+          mode: 'update_then_scan',
+          _meta: keyed('all'),
+        },
+        { caller: writer, metadata: keyed('all') },
+      );
+
+    const ack = await refreshAll();
+    expect(ack.acceptedSources).toEqual(['git-source']);
+    await operations.waitForTerminal(ack.operationId);
+    host.sources = [
+      ...host.sources,
+      { ...host.sources[0], sourceId: 'added-source' },
+    ];
+
+    await expect(refreshAll()).resolves.toEqual(ack);
+    expect(host.calls.refreshSources).toBe(1);
+    expect(host.refreshPlans[0]).toMatchObject({
+      all: true,
+      updateSourceIds: ['git-source'],
+    });
+
+    host.sources = Array.from({ length: 101 }, (_, index) => ({
+      ...host.sources[0],
+      sourceId: `source-${index}`,
+    }));
+    await expect(
+      dispatcher.instruction(
+        'core.catalog.source.refresh',
+        {
+          sourceIds: 'all',
+          providers: ['claude', 'codex'],
+          mode: 'update_then_scan',
+          _meta: keyed('too-many'),
+        },
+        { caller: writer, metadata: keyed('too-many') },
+      ),
+    ).rejects.toMatchObject({
+      payload: {
+        kind: 'resource_exhausted',
+        code: 'core.catalog.refreshTooLarge',
+      },
+    });
+    expect(host.calls.refreshSources).toBe(1);
+  });
+
+  it('fails a scan-only refresh when every requested source failed', async () => {
+    const dispatcher = compose();
+    host.refreshFails = true;
+    const ack = await dispatcher.instruction(
+      'core.catalog.source.refresh',
+      {
+        sourceIds: ['git-source'],
+        providers: ['claude', 'codex'],
+        mode: 'scan',
+        _meta: keyed('scan'),
+      },
+      { caller: writer, metadata: keyed('scan') },
+    );
+    expect(ack.scanOnlySources).toEqual(['git-source']);
+    const record = await operations.waitForTerminal(ack.operationId);
+    expect(record.status).toBe('failed');
+    expect(record.error).toMatchObject({
+      kind: 'unavailable',
+      code: 'core.catalog.refreshUnavailable',
+    });
+  });
+
   it('installs a plugin once per key and refuses what cannot be installed', async () => {
     const dispatcher = compose();
     await expect(
@@ -556,11 +649,86 @@ describe('core.catalog handlers (CAN-4123)', () => {
         { entryId: 'plugin:m/a', providers: ['claude'], _meta: keyed('k2') },
         { caller: writer, metadata: keyed('k2') },
       );
+    const installed = {
+      entryId: 'plugin:m/a',
+      providers: ['claude'],
+      installedProviders: ['claude'],
+      failedProviders: [],
+    };
     await expect(Promise.all([install(), install()])).resolves.toEqual([
-      { entryId: 'plugin:m/a', providers: ['claude'] },
-      { entryId: 'plugin:m/a', providers: ['claude'] },
+      installed,
+      installed,
     ]);
     expect(host.calls.installPlugin).toBe(1);
+  });
+
+  it('reports a partial install with the providers that installed and failed', async () => {
+    const dispatcher = compose();
+    host.pluginTarget = { ...host.pluginTarget, install: 'managed' };
+    host.installOutcome = { installed: ['claude'], failed: ['codex'] };
+    const install = (key: string): Promise<unknown> =>
+      dispatcher.instruction(
+        'core.catalog.plugin.install',
+        {
+          entryId: 'plugin:m/a',
+          providers: ['codex', 'claude'],
+          _meta: keyed(key),
+        },
+        { caller: writer, metadata: keyed(key) },
+      );
+    const partial = {
+      entryId: 'plugin:m/a',
+      providers: ['claude', 'codex'],
+      installedProviders: ['claude'],
+      failedProviders: ['codex'],
+    };
+    await expect(install('partial')).resolves.toEqual(partial);
+    await expect(install('partial')).resolves.toEqual(partial);
+    expect(host.calls.installPlugin).toBe(1);
+
+    host.installOutcome = { installed: [], failed: [] };
+    await expect(install('none')).rejects.toMatchObject({
+      payload: {
+        kind: 'unavailable',
+        code: 'core.catalog.pluginInstallFailed',
+      },
+    });
+  });
+
+  it('replays an install receipt recorded before provider outcomes', async () => {
+    const dispatcher = compose();
+    const params = { entryId: 'plugin:m/a', providers: ['claude'] };
+    const admitted = await operations.admit({
+      kind: 'core.catalog.plugin.install',
+      status: 'running',
+      receipt: {
+        caller: 'core.catalog:p',
+        idempotencyKey: 'old',
+        fingerprint: createHash('sha256')
+          .update(stableStringify(params), 'utf8')
+          .digest('hex'),
+      },
+      origin: { kind: 'client', sourceId: 'c' },
+      owner: { kind: 'principal', id: 'p' },
+      scope: {},
+    });
+    await operations.finish(admitted.operation.operationId, {
+      status: 'completed',
+      outcome: params,
+    });
+
+    await expect(
+      dispatcher.instruction(
+        'core.catalog.plugin.install',
+        { ...params, providers: ['claude'], _meta: keyed('old') },
+        { caller: writer, metadata: keyed('old') },
+      ),
+    ).resolves.toEqual({
+      ...params,
+      installedProviders: ['claude'],
+      failedProviders: [],
+    });
+    expect(host.calls.installPlugin).toBe(0);
   });
 
   it('refuses calls without their grant', async () => {

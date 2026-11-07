@@ -7,6 +7,7 @@ import {
   ListRow,
   SearchEmptyState,
   SearchField,
+  Surface,
   Tooltip,
 } from '@canopy/ui-shared/components';
 import { ChevronDownIcon, ChevronRightIcon } from '@canopy/ui-shared/icons';
@@ -186,102 +187,107 @@ export function ExistingWorktreePicker({
               })}
         />
       ) : (
-        <ul
-          className="max-h-[32vh] space-y-1 overflow-y-auto rounded-lg border bg-base p-1"
-          data-testid="existing-worktree-picker-list"
-        >
-          {filteredGroups.map((group) => {
-            const isCollapsed = collapsedWorkspaceIds.has(group.workspaceId);
-            const subtitle = describeWorkspaceSubtitle({
-              isMultiRepo: group.isMultiRepo,
-              repoCount: group.repoCount,
-              temporary: group.temporary,
-            });
-            return (
-              <li key={group.workspaceId}>
-                <ListRow
-                  onClick={() => toggleWorkspaceCollapsed(group.workspaceId)}
-                  aria-expanded={!isCollapsed}
-                  data-testid={`existing-worktree-picker-group-${group.workspaceId}`}
-                  icon={
-                    <WorkspaceBadgeIcon
-                      isMultiRepo={group.isMultiRepo}
-                      temporary={group.temporary}
-                      color={group.color}
-                      name={group.workspaceName}
-                      repoPath={group.repoPath}
-                    />
-                  }
-                  trailing={
-                    <span className="flex items-center gap-2">
-                      {subtitle && <span>{subtitle}</span>}
-                      {isCollapsed ? (
-                        <ChevronRightIcon className="shrink-0 fg-secondary" />
-                      ) : (
-                        <ChevronDownIcon className="shrink-0 fg-secondary" />
-                      )}
-                    </span>
-                  }
-                >
-                  {group.workspaceName}
-                </ListRow>
-                {!isCollapsed && (
-                  <ul className="space-y-0.5 pl-3">
-                    {group.candidates.map((candidate) => {
-                      const disabledReason =
-                        getCandidateDisabledReason(candidate);
-                      const candidateStats =
-                        diffStats[
-                          getWorktreeRecordKey(
-                            candidate.workspaceId,
-                            candidate.worktreeId,
-                          )
-                        ];
-                      // Match the main worktree list: hide the badge entirely when
-                      // there are no line changes instead of showing "+0 -0".
-                      const hasLineChanges =
-                        candidateStats !== undefined &&
-                        candidateStats.insertions + candidateStats.deletions >
-                          0;
-                      const isSelected =
-                        selected !== null &&
-                        selected.workspaceId === candidate.workspaceId &&
-                        selected.worktreeId === candidate.worktreeId;
-                      const rowButton = (
-                        <ListRow
-                          onClick={() => onSelect(candidate)}
-                          disabled={disabledReason !== null}
-                          selected={isSelected}
-                          data-testid={`existing-worktree-picker-option-${candidate.workspaceId}-${candidate.worktreeId}`}
-                          aria-pressed={isSelected}
-                          description={candidate.worktreeId}
-                          trailing={
-                            hasLineChanges ? (
-                              <DiffBadge stats={candidateStats} compact />
-                            ) : undefined
-                          }
-                        >
-                          {getDisplayName(candidate.branchName)}
-                        </ListRow>
-                      );
-                      return (
-                        <li key={candidate.worktreeId}>
-                          {disabledReason !== null ? (
-                            <Tooltip label={disabledReason} className="w-full">
-                              {rowButton}
-                            </Tooltip>
-                          ) : (
-                            rowButton
-                          )}
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-              </li>
-            );
-          })}
-        </ul>
+        <Surface variant="inset" className="overflow-hidden">
+          <ul
+            className="max-h-[32vh] space-y-1 overflow-y-auto p-1"
+            data-testid="existing-worktree-picker-list"
+          >
+            {filteredGroups.map((group) => {
+              const isCollapsed = collapsedWorkspaceIds.has(group.workspaceId);
+              const subtitle = describeWorkspaceSubtitle({
+                isMultiRepo: group.isMultiRepo,
+                repoCount: group.repoCount,
+                temporary: group.temporary,
+              });
+              return (
+                <li key={group.workspaceId}>
+                  <ListRow
+                    onClick={() => toggleWorkspaceCollapsed(group.workspaceId)}
+                    aria-expanded={!isCollapsed}
+                    data-testid={`existing-worktree-picker-group-${group.workspaceId}`}
+                    icon={
+                      <WorkspaceBadgeIcon
+                        isMultiRepo={group.isMultiRepo}
+                        temporary={group.temporary}
+                        color={group.color}
+                        name={group.workspaceName}
+                        repoPath={group.repoPath}
+                      />
+                    }
+                    trailing={
+                      <span className="flex items-center gap-2">
+                        {subtitle && <span>{subtitle}</span>}
+                        {isCollapsed ? (
+                          <ChevronRightIcon className="shrink-0 fg-secondary" />
+                        ) : (
+                          <ChevronDownIcon className="shrink-0 fg-secondary" />
+                        )}
+                      </span>
+                    }
+                  >
+                    {group.workspaceName}
+                  </ListRow>
+                  {!isCollapsed && (
+                    <ul className="space-y-0.5 pl-3">
+                      {group.candidates.map((candidate) => {
+                        const disabledReason =
+                          getCandidateDisabledReason(candidate);
+                        const candidateStats =
+                          diffStats[
+                            getWorktreeRecordKey(
+                              candidate.workspaceId,
+                              candidate.worktreeId,
+                            )
+                          ];
+                        // Match the main worktree list: hide the badge entirely when
+                        // there are no line changes instead of showing "+0 -0".
+                        const hasLineChanges =
+                          candidateStats !== undefined &&
+                          candidateStats.insertions + candidateStats.deletions >
+                            0;
+                        const isSelected =
+                          selected !== null &&
+                          selected.workspaceId === candidate.workspaceId &&
+                          selected.worktreeId === candidate.worktreeId;
+                        const rowButton = (
+                          <ListRow
+                            onClick={() => onSelect(candidate)}
+                            disabled={disabledReason !== null}
+                            selected={isSelected}
+                            data-testid={`existing-worktree-picker-option-${candidate.workspaceId}-${candidate.worktreeId}`}
+                            aria-pressed={isSelected}
+                            description={candidate.worktreeId}
+                            trailing={
+                              hasLineChanges ? (
+                                <DiffBadge stats={candidateStats} compact />
+                              ) : undefined
+                            }
+                          >
+                            {getDisplayName(candidate.branchName)}
+                          </ListRow>
+                        );
+                        return (
+                          <li key={candidate.worktreeId}>
+                            {disabledReason !== null ? (
+                              <Tooltip
+                                label={disabledReason}
+                                className="w-full"
+                              >
+                                {rowButton}
+                              </Tooltip>
+                            ) : (
+                              rowButton
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </Surface>
       )}
     </div>
   );

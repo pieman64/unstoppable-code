@@ -5,6 +5,7 @@ import {
   ExecutionActionButton,
   type ExecutionActionButtonVariant,
 } from '@canopy/ui-shared/components';
+import { Surface } from '@canopy/ui-shared/components';
 
 /** One read-only row: a label, an optional status chip, and optional detail. */
 export interface ActivityListItem {
@@ -84,41 +85,45 @@ export function ItemListSection({
   return (
     <ul className="m-0 list-none space-y-1.5 p-0" data-testid={dataTestId}>
       {items.map((item) => (
-        <li
+        <Surface
+          as="li"
+          variant="group"
+          className="group"
           key={item.key}
-          className="group flex items-center gap-2 rounded-lg border bg-fg-primary/[0.03] px-2.5 py-2 text-left text-xs"
           data-testid={item.dataTestId}
         >
-          <div className="min-w-0 flex-1">
-            <p
-              className={`truncate font-medium ${
-                item.labelClassName ?? 'fg-primary/80'
-              }`}
-              title={item.label}
-            >
-              {item.label}
-            </p>
-            {item.detail && (
-              <p className="truncate text-2xs fg-secondary">{item.detail}</p>
+          <div className="flex items-center gap-2 px-2.5 py-2 text-left text-xs">
+            <div className="min-w-0 flex-1">
+              <p
+                className={`truncate font-medium ${
+                  item.labelClassName ?? 'fg-primary/80'
+                }`}
+                title={item.label}
+              >
+                {item.label}
+              </p>
+              {item.detail && (
+                <p className="truncate text-2xs fg-secondary">{item.detail}</p>
+              )}
+            </div>
+            {item.status && (
+              <span
+                className={`shrink-0 rounded px-1.5 py-0.5 text-3xs ${statusToneClass(item.status)}`}
+              >
+                {item.status}
+              </span>
+            )}
+            {item.actionLabel && item.onAction && (
+              <ExecutionActionButton
+                label={item.actionLabel}
+                ariaLabel={`${item.actionLabel} ${item.label}`}
+                variant={item.actionVariant ?? 'default'}
+                disabled={item.actionDisabled}
+                onClick={item.onAction}
+              />
             )}
           </div>
-          {item.status && (
-            <span
-              className={`shrink-0 rounded px-1.5 py-0.5 text-3xs ${statusToneClass(item.status)}`}
-            >
-              {item.status}
-            </span>
-          )}
-          {item.actionLabel && item.onAction && (
-            <ExecutionActionButton
-              label={item.actionLabel}
-              ariaLabel={`${item.actionLabel} ${item.label}`}
-              variant={item.actionVariant ?? 'default'}
-              disabled={item.actionDisabled}
-              onClick={item.onAction}
-            />
-          )}
-        </li>
+        </Surface>
       ))}
     </ul>
   );

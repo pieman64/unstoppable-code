@@ -224,8 +224,9 @@ export function SidebarItemGroupHeader({
       >
         <span className={SIDEBAR_ROW_LEADING_SLOT_CLASSNAME}>
           <ChevronDownMediumIcon
+            size="sm"
             aria-hidden="true"
-            className={`h-4 w-4 shrink-0 ${group.collapsed ? '-rotate-90' : ''}`}
+            className={`shrink-0 ${group.collapsed ? '-rotate-90' : ''}`}
           />
         </span>
         <span

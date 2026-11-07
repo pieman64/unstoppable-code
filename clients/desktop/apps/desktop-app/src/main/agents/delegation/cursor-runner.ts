@@ -21,6 +21,7 @@ import type {
   DelegationTranscriptPort,
 } from '@canopy/desktop-shared/node/delegation/transcript-port';
 import { isJsonValue } from '@canopy/desktop-shared/node/codex-runtime';
+import type { CursorProviderProcess } from '@canopy/desktop-shared/node/cursor/runtime-process';
 import type { CursorTurnGates } from '@canopy/desktop-shared/node/cursor/turn-driver';
 import {
   readToolPath,
@@ -147,7 +148,21 @@ export function createCursorDelegationRunner(options: {
       // unrelated delegation callers do not eagerly load the ESM-only SDK.
       const { verifyCursorVersion } =
         await import('../../cursor/approval-check');
-      await verifyCursorVersion(managed.launch, managed.env, context.signal);
+      const { spawnProviderProcess } =
+        await import('../../agent-runs/provider-process-host');
+      const providerProcess: CursorProviderProcess = {
+        spawner: spawnProviderProcess,
+        owner: {
+          kind: 'subagent',
+          id: `${request.delegationId}:${request.runGeneration}`,
+        },
+      };
+      await verifyCursorVersion(
+        providerProcess,
+        managed.launch,
+        managed.env,
+        context.signal,
+      );
       const notices: string[] = [];
       const warnings: string[] = [];
       const projection = buildCursorCapabilityProjection(
@@ -227,6 +242,7 @@ export function createCursorDelegationRunner(options: {
             cwd: prepared.tools.cwd,
             text: `Managed delegated task:\n${request.task.prompt}`,
             launch: managed.launch,
+            providerProcess,
             env: buildDelegationCursorEnvironment(managed.env),
             hookRuntime: path.join(
               path.dirname(managed.launch.command),

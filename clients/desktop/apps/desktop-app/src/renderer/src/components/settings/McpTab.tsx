@@ -1,4 +1,3 @@
-import { McpServersTab } from '../pages/McpServersTab';
 import { DesktopMcpSettingsSection } from './hosted/DesktopMcpSettingsSection';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
@@ -297,27 +296,13 @@ export function McpTab(): JSX.Element {
     errorMessage !== null ? errorDetails : proxyStateError;
 
   return (
-    <SettingsPage
-      title="MCP servers"
-      // The account connections panel is a server table; without it the page
-      // is two short forms that read best at the default measure.
-      dataTestId="settings-tab-mcp"
-    >
+    <SettingsPage title="MCP servers" dataTestId="settings-tab-mcp">
       {loading && (
         <span className="sr-only" role="status">
           Loading
         </span>
       )}
       <DesktopMcpSettingsSection />
-      {accountConnectionsEnabled && (
-        <SettingsSection
-          title="Account connections"
-          headingId="settings-mcp-account-connections-heading"
-          dataTestId="settings-mcp-account-connections"
-        >
-          <McpServersTab accountPanel />
-        </SettingsSection>
-      )}
 
       <SettingsSection
         title={MCP_HTTP_AUTH_HEADING}

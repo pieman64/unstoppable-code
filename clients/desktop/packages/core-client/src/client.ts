@@ -495,6 +495,19 @@ class ClientSession {
       return Promise.reject(local(deadlineExceeded()));
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
+      // Opted-in keyed instructions may commit after local cancellation.
+      const sameKeyOnAbandon =
+        spec.definition?.kind === 'instruction' &&
+        spec.definition.idempotency === 'keyed' &&
+        spec.definition.abandonedRetry === 'same_idempotency_key';
+      const interrupted = (error: CanopyClientError): CanopyClientError =>
+        error.payload.kind === 'cancelled' && sameKeyOnAbandon
+          ? clientError(
+              'unavailable',
+              'The response was abandoned; the operation may have completed. Retry with the same idempotency key.',
+              { kind: 'same_idempotency_key' },
+            )
+          : local(error);
       let releaseDeadline = (): void => {};
       const release = (): void => {
         releaseDeadline();
@@ -507,7 +520,7 @@ class ClientSession {
         release();
         reject(error);
       };
-      const onAbort = (): void => abandon(cancelled());
+      const onAbort = (): void => abandon(interrupted(cancelled()));
       // Registered before sending, so no reply can outrun its call.
       this.pending.set(id, {
         respond: (response) => {
@@ -520,7 +533,7 @@ class ClientSession {
         },
         fail: (error) => {
           release();
-          reject(local(error));
+          reject(interrupted(error));
         },
       });
       spec.signal?.addEventListener('abort', onAbort, { once: true });
@@ -536,9 +549,14 @@ class ClientSession {
           params,
         })
         .catch((error: unknown) => {
+          const failure = toCanopyClientError(error);
+          // A cancelled send may have delivered the request before failing.
+          // Keep its id routable so a late reply cannot poison the session.
+          if (sameKeyOnAbandon && failure.payload.kind === 'cancelled')
+            return abandon(interrupted(failure));
           if (!this.pending.delete(id)) return;
           release();
-          reject(local(toCanopyClientError(error)));
+          reject(local(failure));
         });
     });
   }

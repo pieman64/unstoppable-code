@@ -104,7 +104,7 @@ export const CatalogSourceUpsertResultSchema = CatalogSourceSchema;
 export const CatalogSourceDeleteParamsSchema = z.strictObject({
   sourceId: IdSchema,
   providers: ProvidersSchema,
-  expectedRevision: z.number().int().min(0),
+  expectedRevision: z.number().int().min(0).nullable(),
   _meta: KeyedMetaSchema,
 });
 export const CatalogSourceDeleteResultSchema = z.strictObject({
@@ -116,13 +116,20 @@ export const CatalogSourceDeleteResultSchema = z.strictObject({
   alreadyAbsent: z.boolean(),
 });
 
+/** The most sources one refresh names; `'all'` over more is refused (CAN-5866). */
+export const CATALOG_REFRESH_MAX_SOURCES = 100;
+
 export const CatalogSourceRefreshParamsSchema = z.strictObject({
-  sourceIds: z
-    .array(IdSchema)
-    .min(1)
-    .max(100)
-    .refine(unique, 'Duplicate source')
-    .meta({ uniqueItems: true }),
+  /** `'all'` names every registered source, read when the request is admitted (CAN-5866). */
+  sourceIds: z.union([
+    z.literal('all'),
+    z
+      .array(IdSchema)
+      .min(1)
+      .max(CATALOG_REFRESH_MAX_SOURCES)
+      .refine(unique, 'Duplicate source')
+      .meta({ uniqueItems: true }),
+  ]),
   providers: ProvidersSchema,
   mode: z.enum(['scan', 'update_then_scan']),
   _meta: KeyedMetaSchema,
@@ -144,9 +151,17 @@ export const CatalogPluginInstallParamsSchema = z.strictObject({
   providers: ProvidersSchema,
   _meta: KeyedMetaSchema,
 });
+const ProviderListSchema = z
+  .array(ProviderSchema)
+  .refine(unique, 'Duplicate provider')
+  .meta({ uniqueItems: true });
+
+/** `providers` is the request's; the two lists split it by outcome (CAN-5859). */
 export const CatalogPluginInstallResultSchema = z.strictObject({
   entryId: IdSchema,
   providers: z.array(ProviderSchema),
+  installedProviders: ProviderListSchema,
+  failedProviders: ProviderListSchema,
 });
 
 export const CORE_CATALOG_SOURCE_CODES = {
@@ -168,6 +183,7 @@ export const CORE_CATALOG_SOURCE_CODES = {
     'core.catalog.sourceBusy',
     'core.catalog.sourceProviderRejected',
     'core.catalog.refreshUnavailable',
+    'core.catalog.refreshTooLarge',
   ],
   install: [
     'core.catalog.pluginNotFound',

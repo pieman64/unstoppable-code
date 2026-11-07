@@ -25,6 +25,7 @@ import {
 } from '@canopy/ui-shared/icons/AppIcons';
 
 import { DrawerRowPresentationContext } from './activity/background-tray/drawer-presentation';
+import { Divider } from '@canopy/ui-shared/components';
 
 export interface ComposerWorkDrawerSections {
   readonly needsYou: ReactNode;
@@ -287,10 +288,7 @@ export function ComposerWorkDrawer({
                 {section('Watching', watching, sections?.watching)}
               </div>
             </OverlayScrollArea>
-            <div
-              aria-hidden="true"
-              className="-mx-1 mb-1 border-t border-line-tertiary"
-            />
+            <Divider aria-hidden className="-mx-1 mb-1" />
           </DrawerReveal>
           <button
             ref={toggleRef}
@@ -323,11 +321,9 @@ export function ComposerWorkDrawer({
                     className="inline-flex items-center gap-2.5 whitespace-nowrap"
                   >
                     {index > 0 && (
-                      <span
-                        aria-hidden="true"
-                        className="h-3 border-l border-line-primary"
-                        style={{ borderLeftWidth: 1 }}
-                      />
+                      <span aria-hidden="true" className="flex h-3">
+                        <Divider aria-hidden orientation="vertical" />
+                      </span>
                     )}
                     <span className="inline-flex items-center gap-1.5">
                       {label}

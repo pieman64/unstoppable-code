@@ -320,7 +320,7 @@ export function PanelTabListButton({
                         className="canopy-panel-tab-list-check"
                         data-testid={`panel-tab-list-check-${tab.panelId}`}
                       >
-                        <CheckIcon width={14} height={14} />
+                        <CheckIcon size="sm" />
                       </span>
                     ) : null}
                     {renderTrailing ? (
@@ -343,7 +343,7 @@ export function PanelTabListButton({
                           onCloseTab(groupId, tab.panelId);
                         }}
                       >
-                        <CloseMediumIcon width={14} height={14} />
+                        <CloseMediumIcon size="sm" />
                       </button>
                     ) : null}
                   </span>

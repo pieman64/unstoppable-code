@@ -20,6 +20,7 @@ import {
   CoreSubagentRuns,
   createWorkerAgentRunHandlers,
   type CoreSubagentBeginRequest,
+  type SubagentNativeStopTarget,
 } from '..';
 
 const caller: CanopyCallerDescriptor = {
@@ -35,15 +36,22 @@ const scope = { workspaceId: 'ws', worktreeId: 'wt', chatId: 'chat' };
 function compose(
   ledgerPath: string,
   onError: (error: unknown, context: string) => void = () => undefined,
+  native: {
+    stopNative?: (target: SubagentNativeStopTarget) => Promise<void>;
+    holdSubagents?: boolean;
+  } = {},
 ): {
   operations: OperationService;
   turns: CoreChatTurnRuns;
   subagents: CoreSubagentRuns;
   finishTurn(result: WorkerAgentTurnRunResult): void;
+  endSubagent(status: 'completed' | 'cancelled'): void;
   close(): void;
 } {
   const runsRef: { current: CoreChatTurnRuns | null } = { current: null };
   let finishTurn: (result: WorkerAgentTurnRunResult) => void = () => undefined;
+  let endSubagent: (status: 'completed' | 'cancelled') => void = () =>
+    undefined;
   const receipts = createWorkerExecutorReceipts(instructions);
   const handlers = createWorkerAgentRunHandlers({
     turns: {
@@ -54,10 +62,15 @@ function compose(
     },
     subagents: {
       run: (params) =>
-        Promise.resolve({
-          subagentRunId: params.subagentRunId,
-          status: 'completed',
-        }),
+        native.holdSubagents
+          ? new Promise((resolve) => {
+              endSubagent = (status): void =>
+                resolve({ subagentRunId: params.subagentRunId, status });
+            })
+          : Promise.resolve({
+              subagentRunId: params.subagentRunId,
+              status: 'completed',
+            }),
     },
     sinkFor: (id) => runsRef.current?.sinkFor(id) ?? null,
   });
@@ -87,8 +100,14 @@ function compose(
   return {
     operations,
     turns,
-    subagents: new CoreSubagentRuns({ operations, localWorker, onError }),
+    subagents: new CoreSubagentRuns({
+      operations,
+      localWorker,
+      onError,
+      ...(native.stopNative ? { stopNative: native.stopNative } : {}),
+    }),
     finishTurn: (result) => finishTurn(result),
+    endSubagent: (status) => endSubagent(status),
     close: (): void => {
       operations.close();
       void dispatcher.shutdown();
@@ -208,4 +227,102 @@ it('a stopping lineage parent keeps the subagent run inside its cancellation', a
   } finally {
     h.close();
   }
+});
+
+describe('native stop (CAN-4112)', () => {
+  const cancel = { reason: 'Stop', requestedBy: 'test' };
+
+  async function workerChildRunning(
+    operations: OperationService,
+  ): Promise<void> {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const { items } = await operations.list({
+        kinds: ['worker.agent.subagent.run'],
+        limit: 10,
+      });
+      if (items[0]?.status === 'running') return;
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error('The worker subagent run never started.');
+  }
+
+  it('core.operation.cancel stops the delegated run once', async () => {
+    const stopNative = jest.fn(() => Promise.resolve());
+    const h = compose(join(root, 'ledger.sqlite'), undefined, {
+      stopNative,
+      holdSubagents: true,
+    });
+    try {
+      const run = await h.subagents.begin(subagent(null));
+      await workerChildRunning(h.operations);
+
+      const first = await h.operations.cancel(run.ref.operationId, cancel);
+      const second = await h.operations.cancel(run.ref.operationId, cancel);
+
+      expect(stopNative).toHaveBeenCalledTimes(1);
+      expect(stopNative).toHaveBeenCalledWith({
+        subagentRunId: 'sub',
+        delegationId: 'delegation',
+        runGeneration: 1,
+        scope,
+      });
+      expect(first.outcome).toBe('requested');
+      expect(second.outcome).toBe('requested');
+      h.endSubagent('cancelled');
+      expect(await run.settled).toMatchObject({ status: 'cancelled' });
+    } finally {
+      h.close();
+    }
+  });
+
+  it('a refused stop refuses the cancel and keeps the run running', async () => {
+    const onError = jest.fn();
+    const stopNative = jest
+      .fn<Promise<void>, [SubagentNativeStopTarget]>()
+      .mockRejectedValueOnce(new Error('broker refused'))
+      .mockResolvedValue(undefined);
+    const h = compose(join(root, 'ledger.sqlite'), onError, {
+      stopNative,
+      holdSubagents: true,
+    });
+    try {
+      const run = await h.subagents.begin(subagent(null));
+      await workerChildRunning(h.operations);
+
+      const refused = await h.operations
+        .cancel(run.ref.operationId, cancel)
+        .then(
+          () => null,
+          (error: unknown) => error,
+        );
+      expect(refused).toBeInstanceOf(OperationLedgerRefusedError);
+      expect(refused).toMatchObject({ refusal: 'invalid-state' });
+      expect(onError).toHaveBeenCalledWith(
+        expect.anything(),
+        'subagent native stop',
+      );
+      expect(await h.operations.get(run.ref.operationId)).toMatchObject({
+        status: 'running',
+        cancellation: null,
+      });
+      const children = await h.operations.list({
+        kinds: ['worker.agent.subagent.run'],
+        limit: 10,
+      });
+      expect(children.items).toHaveLength(1);
+      expect(children.items[0]).toMatchObject({
+        status: 'running',
+        cancellation: null,
+      });
+
+      await expect(
+        h.operations.cancel(run.ref.operationId, cancel),
+      ).resolves.toMatchObject({ outcome: 'requested' });
+      expect(stopNative).toHaveBeenCalledTimes(2);
+      h.endSubagent('cancelled');
+      expect(await run.settled).toMatchObject({ status: 'cancelled' });
+    } finally {
+      h.close();
+    }
+  });
 });

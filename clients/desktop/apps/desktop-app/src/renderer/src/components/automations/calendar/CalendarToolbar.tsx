@@ -51,7 +51,7 @@ export function CalendarToolbar({
           aria-label="Previous"
           data-testid="automations-calendar-prev"
         >
-          <ChevronRightIcon width={16} height={16} className="-scale-x-100" />
+          <ChevronRightIcon size="sm" className="-scale-x-100" />
         </Button>
         <Button
           variant="ghost"
@@ -61,7 +61,7 @@ export function CalendarToolbar({
           aria-label="Next"
           data-testid="automations-calendar-next"
         >
-          <ChevronRightIcon width={16} height={16} />
+          <ChevronRightIcon size="sm" />
         </Button>
       </div>
       <Heading

@@ -1,3 +1,4 @@
+import { SidebarChatsSectionMenuItems } from '@canopy/ui-shared/components';
 import {
   noteChatIntent,
   endChatIntent,
@@ -689,49 +690,26 @@ function DesktopChatsSectionMenuItems({
 }): JSX.Element | null {
   if (!item) return null;
   return (
-    <>
-      <SidebarSortMenuItems
-        mode={item.itemSortMode}
-        testIdPrefix="workspace-item-sort"
-        label={`Sort ${CHAT_UNIT_LABEL_PLURAL.toLowerCase()} by`}
-        onSelect={(mode) => {
-          void useProjectsStore
-            .getState()
-            .setWorkspaceItemSortMode(item.id, mode);
-        }}
-        divider={false}
-        dividerAfter
-      />
-      <ActionMenuRowStyle>
-        <DropdownMenuItem
-          data-testid="workspace-share-template-menu-item"
-          onClick={() => {
-            useNavigationStore.getState().openWorkspaceSettingsModal({
-              workspaceId: item.id,
-              initialTab: 'share',
-            });
-          }}
-        >
-          <DropdownMenuItemIcon>
-            <ShareIcon />
-          </DropdownMenuItemIcon>
-          <span className="truncate">Share template</span>
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          data-testid="workspace-import-session-menu-item"
-          onClick={() => {
-            useCloudConnectGateStore.getState().requestConnect({}, () => {
-              openImportSessionModal(item.id);
-            });
-          }}
-        >
-          <DropdownMenuItemIcon>
-            <DownloadIcon />
-          </DropdownMenuItemIcon>
-          <span className="truncate">Import session…</span>
-        </DropdownMenuItem>
-      </ActionMenuRowStyle>
-    </>
+    <SidebarChatsSectionMenuItems
+      mode={item.itemSortMode}
+      sortLabel={`Sort ${CHAT_UNIT_LABEL_PLURAL.toLowerCase()} by`}
+      onSort={(mode): void => {
+        void useProjectsStore
+          .getState()
+          .setWorkspaceItemSortMode(item.id, mode);
+      }}
+      onShare={(): void => {
+        useNavigationStore.getState().openWorkspaceSettingsModal({
+          workspaceId: item.id,
+          initialTab: 'share',
+        });
+      }}
+      onImport={(): void => {
+        useCloudConnectGateStore
+          .getState()
+          .requestConnect({}, () => openImportSessionModal(item.id));
+      }}
+    />
   );
 }
 

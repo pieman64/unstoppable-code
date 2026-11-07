@@ -1,4 +1,9 @@
 import {
+  FeedbackSessionIdSchema,
+  validatedPostHogReplayUrl,
+  type FeedbackReportTelemetry,
+} from '@canopy/protocol/feedback-report';
+import {
   AppErrorSchema,
   AppErrorSurfaceSchema,
   type AppErrorRecord,
@@ -7,6 +12,29 @@ import { sanitizeInstrumentationContext } from './privacy';
 import type { DesktopInstrumentationContext } from './types';
 
 export const APP_ERROR_POSTHOG_EVENT = 'app:operation_fail';
+
+/** Host adapters supply SDK accessors, never caller context or identity URLs. */
+export interface AppErrorTelemetrySessions {
+  datadog?: { getSessionId(): unknown };
+  posthog?: {
+    getSessionId(): unknown;
+    isRecording(): unknown;
+    getReplayUrl(): unknown;
+  };
+}
+
+function read(getter: () => unknown): unknown {
+  try {
+    return getter();
+  } catch {
+    return undefined;
+  }
+}
+
+function sessionId(value: unknown): string | undefined {
+  const parsed = FeedbackSessionIdSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+}
 
 function metadata(record: AppErrorRecord): DesktopInstrumentationContext {
   const error = AppErrorSchema.parse(record.error);
@@ -36,6 +64,7 @@ function metadata(record: AppErrorRecord): DesktopInstrumentationContext {
     error_code: error.code,
     error_reference_id: error.referenceId,
     ...(surface === undefined ? {} : { error_surface: surface }),
+    ...(error.source === undefined ? {} : { error_source: error.source }),
     ...(error.recovery === undefined ? {} : { recovery_kind: error.recovery }),
     error_repeat_count: record.occurrenceCount,
     is_repeat_summary: record.isRepeatSummary,
@@ -48,4 +77,32 @@ export function buildAppErrorPostHogProperties(
   record: AppErrorRecord,
 ): DesktopInstrumentationContext {
   return sanitizeInstrumentationContext(metadata(record)) ?? {};
+}
+
+/**
+ * Validated session links for one error occurrence. Read when the error is
+ * caught so a later session never claims it; a replay URL needs a recording.
+ */
+export function buildFeedbackReportTelemetry(
+  sessions: AppErrorTelemetrySessions = {},
+): FeedbackReportTelemetry {
+  const datadogSessionId = sessionId(
+    read(() => sessions.datadog?.getSessionId()),
+  );
+  const posthogSessionId = sessionId(
+    read(() => sessions.posthog?.getSessionId()),
+  );
+  const posthogReplayUrl =
+    posthogSessionId !== undefined &&
+    read(() => sessions.posthog?.isRecording()) === true
+      ? validatedPostHogReplayUrl(
+          read(() => sessions.posthog?.getReplayUrl()),
+          posthogSessionId,
+        )
+      : undefined;
+  return {
+    ...(datadogSessionId === undefined ? {} : { datadogSessionId }),
+    ...(posthogSessionId === undefined ? {} : { posthogSessionId }),
+    ...(posthogReplayUrl === undefined ? {} : { posthogReplayUrl }),
+  };
 }

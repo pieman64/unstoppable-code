@@ -1,5 +1,8 @@
-import type { JSX, SVGProps } from 'react';
-import { AppAdvisorWatcherIcon as AppCatalogAppAdvisorWatcherIcon } from './AppIcons';
+import type { JSX } from 'react';
+import {
+  AppAdvisorWatcherIcon as AppCatalogAppAdvisorWatcherIcon,
+  type AppIconProps,
+} from './AppIcons';
 
 /**
  * App Advisor watcher icon converted from the provided
@@ -7,15 +10,8 @@ import { AppAdvisorWatcherIcon as AppCatalogAppAdvisorWatcherIcon } from './AppI
  * Visible paths use `currentColor`, so the composer indicator can apply its
  * blue active treatment without importing the source SVG at runtime.
  */
-export function AppAdvisorWatcherIcon(
-  props: SVGProps<SVGSVGElement>,
-): JSX.Element {
+export function AppAdvisorWatcherIcon(props: AppIconProps): JSX.Element {
   return (
-    <AppCatalogAppAdvisorWatcherIcon
-      width="14"
-      height="14"
-      aria-hidden="true"
-      {...props}
-    />
+    <AppCatalogAppAdvisorWatcherIcon size="sm" aria-hidden="true" {...props} />
   );
 }

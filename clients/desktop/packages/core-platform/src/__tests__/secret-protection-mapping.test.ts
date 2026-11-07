@@ -1,13 +1,11 @@
+import { createSecretProtectionServices } from './fixtures/authorized-native-loader';
 import type { PlatformSecretProtectionServices } from '@canopy/core-runtime';
 import {
   createDarwinSecretProtection,
   type KeychainNative,
   type NativeOperation,
 } from '../secret-protection/darwin';
-import {
-  createSecretProtectionServices,
-  type SecretProtectionOptions,
-} from '../secret-protection';
+import { type SecretProtectionOptions } from '../secret-protection';
 import {
   createLinuxSecretProtection,
   type SecretServiceNative,

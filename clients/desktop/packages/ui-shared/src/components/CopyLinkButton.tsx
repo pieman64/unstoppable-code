@@ -9,9 +9,6 @@ import { useCopyToClipboard } from './copy-to-clipboard';
 /** How long the `Copied` confirmation stays before the label returns. */
 export const COPY_LINK_CONFIRMATION_MS = 2000;
 
-/** Glyph size inside a notice action, matching its 13px label. */
-const NOTICE_GLYPH_PX = 14;
-
 /**
  * Where the control sits. `button` is the quiet ghost button of a dialog
  * footer; `notice` is the standard notice/toast action (`NoticeButton`), for
@@ -75,11 +72,7 @@ function NoticeCopyLinkButton({
     [copy, url],
   );
 
-  const glyph = copied ? (
-    <CheckIcon width={NOTICE_GLYPH_PX} height={NOTICE_GLYPH_PX} />
-  ) : (
-    <CopyIcon width={NOTICE_GLYPH_PX} height={NOTICE_GLYPH_PX} />
-  );
+  const glyph = copied ? <CheckIcon size="sm" /> : <CopyIcon size="sm" />;
 
   return (
     <>

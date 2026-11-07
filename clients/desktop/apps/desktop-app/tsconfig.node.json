@@ -39,6 +39,7 @@
     { "path": "../../packages/desktop-shared" },
     { "path": "../../packages/desktop-instrumentation" },
     { "path": "../../packages/ui-shared" },
-    { "path": "../../packages/ui-app" }
+    { "path": "../../packages/ui-app" },
+    { "path": "../../packages/copilot-recipient" }
   ]
 }

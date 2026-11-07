@@ -101,7 +101,7 @@ export type ModelRecovery =
   /**
    * CAN-4028 — a SIGNED-IN account that has not made a card purchase picked a
    * model Canopy would pay for that is not on the allowlist. A purchase is the
-   * missing thing, and specifically a purchase: the daily free credits are
+   * missing thing, and specifically a purchase: leftover free credits are
    * spendable and still do not unlock the library, so this must never resolve
    * through the `needs-credits` coverage path, which treats any spendable
    * balance as the problem solved.
@@ -596,9 +596,10 @@ export function resolveModelRowGate(input: ModelRowGateInput): ModelRowGate {
   // when the model is gateway-routable. Optimistic while the probe is loading.
   if (isGatewayOnlyModel(model) || requireCredits) {
     // CAN-3026 — checked BEFORE `gatewayLoading`/`creditsEligible`, so a FUNDED
-    // guest (one who opted in to the daily drip) cannot resolve `available`
+    // guest (one holding leftover free credits) cannot resolve `available`
     // first. A gateway-only model is always billed by Canopy. The same order
-    // keeps a signed-in non-payer's drip credits from clearing the lock.
+    // keeps a signed-in non-payer's leftover free credits from clearing the
+    // lock.
     if (libraryRecovery !== undefined) {
       return { kind: 'recoverable', recovery: libraryRecovery };
     }

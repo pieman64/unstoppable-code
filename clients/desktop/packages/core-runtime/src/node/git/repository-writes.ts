@@ -3,8 +3,9 @@ import type { GitChildEnvironment } from './repository-reads';
 /**
  * The fixed commands the `worker.git` mutations run through a Git write host,
  * beyond the read host's repository reads. Each names one command; nothing
- * else is expressible. Values are branch names, start points and object IDs,
- * never paths or options.
+ * else is expressible. Values are branch names, start points, object IDs,
+ * commit messages and a host-local credential audience key, never argv.
+ * Merge-worktree paths come only from trusted host resolution.
  */
 export type GitRepositoryWrite =
   /** `status --porcelain --untracked-files=normal` */
@@ -47,7 +48,14 @@ export type GitRepositoryWrite =
       readonly branch: string;
       readonly tip: string;
     }
-  | GitRepositorySyncWrite;
+  | GitRepositorySyncWrite
+  | { readonly kind: 'head-sha' }
+  | { readonly kind: 'tracking-head-sha'; readonly branch: string }
+  | { readonly kind: 'stage-all' }
+  | { readonly kind: 'commit-message'; readonly message: string }
+  /** The key binds the daemon's recipient lease to this dispatch. */
+  | { readonly kind: 'push-head'; readonly key: string }
+  | GitRepositoryMergeWrite;
 
 /**
  * The fixed commands `worker.git.fetch` and `worker.git.pull` run (CAN-5517).
@@ -124,3 +132,16 @@ export interface GitRepositoryWritePort {
     environment?: GitChildEnvironment,
   ): Promise<GitRepositoryWriteOutput>;
 }
+
+/** CAN-5884: fixed local-base merge commands; all run without a signal or timeout. */
+export type GitRepositoryMergeWrite =
+  | { readonly kind: 'merge-worktree-list' }
+  | {
+      readonly kind: 'merge-worktree-add';
+      readonly path: string;
+      readonly branch: string;
+    }
+  | { readonly kind: 'merge-worktree-remove'; readonly path: string }
+  | { readonly kind: 'merge-local'; readonly branch: string }
+  | { readonly kind: 'merge-abort' }
+  | { readonly kind: 'merge-head' };

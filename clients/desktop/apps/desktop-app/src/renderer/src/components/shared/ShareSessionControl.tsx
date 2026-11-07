@@ -272,7 +272,7 @@ export function ShareSessionControl({
           data-testid={resolvedTestId}
           data-shared={isShared ? 'true' : 'false'}
         >
-          <ShareIcon width={12} height={12} />
+          <ShareIcon size="sm" />
         </Button>
       </ActionTooltip>
 

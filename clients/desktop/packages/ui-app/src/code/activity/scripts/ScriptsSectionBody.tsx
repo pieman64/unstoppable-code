@@ -22,6 +22,8 @@ import {
 import { ChevronIcon } from '@canopy/ui-shared/icons';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { ScriptOutputModal } from './ScriptOutputModal';
+import { Divider, Surface } from '@canopy/ui-shared/components';
+import { Notice } from '@canopy/ui-shared/components/Notice';
 
 export type ScriptsSectionLifecycle = 'setup' | 'launch' | 'teardown';
 export type ScriptsSectionTarget =
@@ -380,11 +382,17 @@ export function ScriptsSectionBody({
             details={
               entry.script.command ? (
                 // Script command lines can carry arguments and secrets.
-                <pre
-                  className={`${REPLAY_BLOCK_CLASS} max-h-20 overflow-auto whitespace-pre-wrap break-words rounded bg-base/80 px-2 py-1.5 font-mono text-2xs fg-secondary`}
+                <Surface
+                  variant="group"
+                  size="small"
+                  className="overflow-hidden"
                 >
-                  {entry.script.command}
-                </pre>
+                  <pre
+                    className={`${REPLAY_BLOCK_CLASS} max-h-20 overflow-auto whitespace-pre-wrap break-words px-2 py-1.5 font-mono text-2xs fg-secondary`}
+                  >
+                    {entry.script.command}
+                  </pre>
+                </Surface>
               ) : undefined
             }
             onConfirm={(): void => runEntry(entry)}
@@ -419,15 +427,13 @@ export function ScriptsSectionBody({
             icon={
               entry.script.interactive ? (
                 <TerminalBorderedIcon
-                  width="12"
-                  height="12"
+                  size="sm"
                   data-testid="interactive-script-icon"
                   aria-hidden="true"
                 />
               ) : (
                 <TerminalIcon
-                  width="12"
-                  height="12"
+                  size="sm"
                   data-testid="default-script-icon"
                   aria-hidden="true"
                 />
@@ -464,68 +470,69 @@ export function ScriptsSectionBody({
               details.length > 0 &&
               (expandedLifecycles.has(group.lifecycle) || running);
             return (
-              <div
+              <BoxUnlessCompact
                 key={group.entry.script.scriptKey}
-                className={
-                  compact
-                    ? 'group text-xs'
-                    : 'group rounded-lg border bg-fg-primary/[0.03] text-xs'
-                }
-                data-testid="activity-scripts-entry"
+                compact={compact}
               >
                 <div
-                  className={
-                    compact
-                      ? `flex ${COMPACT_ACTIVITY_ITEM_CLASS_NAME}`
-                      : 'flex items-center gap-2 px-2.5 py-2'
-                  }
+                  className="group text-xs"
+                  data-testid="activity-scripts-entry"
                 >
-                  {details.length > 0 && (
-                    <HeaderActionButton
-                      iconOnly
-                      onClick={(): void =>
-                        setExpandedLifecycles((previous) =>
-                          toggle(previous, group.lifecycle),
-                        )
-                      }
-                      aria-expanded={expanded}
-                      aria-label={`${expanded ? 'Collapse' : 'Expand'} project ${group.lifecycle} scripts`}
-                      // The 28px control overhangs the row's text line
-                      // rather than growing it.
-                      className="-my-1.5"
-                    >
-                      <ChevronIcon open={expanded} />
-                    </HeaderActionButton>
-                  )}
-                  <span
-                    className={`min-w-0 flex-1 truncate ${compact ? 'fg-primary' : 'font-medium fg-primary/80'}`}
-                  >
-                    {group.entry.script.label}
-                  </span>
-                  {renderWorkspaceLifecycleInfoButton?.(group)}
-                  {onRun && (
-                    <ExecutionActionButton
-                      label="Run"
-                      ariaLabel={`Run ${group.entry.script.label}`}
-                      variant="default"
-                      onClick={(): void => runEntry(group.entry)}
-                      disabled={group.entry.runDisabled}
-                      dataTestId="activity-scripts-run"
-                    />
-                  )}
-                </div>
-                {expanded && (
                   <div
                     className={
-                      compact ? 'pl-4' : 'space-y-1 border-t px-2.5 py-2'
+                      compact
+                        ? `flex ${COMPACT_ACTIVITY_ITEM_CLASS_NAME}`
+                        : 'flex items-center gap-2 px-2.5 py-2'
                     }
                   >
-                    {details.map((entry) =>
-                      renderEntry(entry, entry.script.displayName),
+                    {details.length > 0 && (
+                      <HeaderActionButton
+                        iconOnly
+                        onClick={(): void =>
+                          setExpandedLifecycles((previous) =>
+                            toggle(previous, group.lifecycle),
+                          )
+                        }
+                        aria-expanded={expanded}
+                        aria-label={`${expanded ? 'Collapse' : 'Expand'} project ${group.lifecycle} scripts`}
+                        // The 28px control overhangs the row's text line
+                        // rather than growing it.
+                        className="-my-1.5"
+                      >
+                        <ChevronIcon open={expanded} />
+                      </HeaderActionButton>
+                    )}
+                    <span
+                      className={`min-w-0 flex-1 truncate ${compact ? 'fg-primary' : 'font-medium fg-primary/80'}`}
+                    >
+                      {group.entry.script.label}
+                    </span>
+                    {renderWorkspaceLifecycleInfoButton?.(group)}
+                    {onRun && (
+                      <ExecutionActionButton
+                        label="Run"
+                        ariaLabel={`Run ${group.entry.script.label}`}
+                        variant="default"
+                        onClick={(): void => runEntry(group.entry)}
+                        disabled={group.entry.runDisabled}
+                        dataTestId="activity-scripts-run"
+                      />
                     )}
                   </div>
-                )}
-              </div>
+                  {expanded && (
+                    <>
+                      {compact ? null : <Divider />}
+                      <div
+                        className={compact ? 'pl-4' : 'space-y-1 px-2.5 py-2'}
+                      >
+                        {details.map((entry) =>
+                          renderEntry(entry, entry.script.displayName),
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
+              </BoxUnlessCompact>
             );
           }
           const { group } = row;
@@ -567,8 +574,10 @@ export function ScriptsSectionBody({
         })}
       </div>
       {error !== null && (
-        <div className="mt-2.5 rounded-lg border border-fg-destructive-strong/20 bg-fg-destructive-strong/[0.06] px-2.5 py-2 text-xs fg-destructive-strong">
-          {error}
+        <div className="mt-2.5">
+          <Notice intent="destructive" role="none">
+            {error}
+          </Notice>
         </div>
       )}
       {completedRuns.length > 0 && (
@@ -648,5 +657,20 @@ export function ScriptsSectionBody({
             : undefined,
         )}
     </div>
+  );
+}
+
+/** The grouped box a row sits in, except in the compact list, which has none. */
+function BoxUnlessCompact({
+  compact,
+  children,
+}: {
+  readonly compact: boolean;
+  readonly children: ReactNode;
+}): JSX.Element {
+  return compact ? (
+    <>{children}</>
+  ) : (
+    <Surface variant="group">{children}</Surface>
   );
 }

@@ -17,12 +17,13 @@ import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/post
 import {
   Button,
   DialogFormField,
+  EmptyStateRow,
+  ErrorBanner,
   HeaderActionButton,
   ListRow,
   Markdown,
   markdownOptions,
-  EmptyStateRow,
-  ErrorBanner,
+  Surface,
   TextArea,
   TextInput,
 } from '@canopy/ui-shared/components';
@@ -44,7 +45,6 @@ import {
   MentionIcon,
   PlusIcon,
   RowActionButton,
-  RowActionTray,
   TrashIcon,
   useInlineDelete,
 } from './workspace-items-shared';
@@ -267,14 +267,18 @@ function ItemRow({
   }, [item.absolutePath, item.title, kind, mentionRepoName]);
 
   return (
-    <div
-      className="group relative rounded border bg-fg-primary/[0.02] transition-colors hover:border-fg-primary/10"
+    <Surface
+      variant="group"
+      size="small"
+      className="group relative"
       data-testid={`${testIdPrefix}-item`}
     >
-      <ListRow onClick={(): void => onView(item)}>{item.title}</ListRow>
-      {!readOnly && (
-        <RowActionTray>
-          {del.confirming ? (
+      <ListRow
+        onClick={(): void => onView(item)}
+        // The trash button unmounts into the confirmation, taking focus with it.
+        actionsReveal={!del.confirming}
+        actions={
+          readOnly ? undefined : del.confirming ? (
             <InlineDeleteConfirm
               onConfirm={del.confirm}
               onCancel={del.cancel}
@@ -294,10 +298,12 @@ function ItemRow({
                 <TrashIcon />
               </RowActionButton>
             </>
-          )}
-        </RowActionTray>
-      )}
-    </div>
+          )
+        }
+      >
+        {item.title}
+      </ListRow>
+    </Surface>
   );
 }
 

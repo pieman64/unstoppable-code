@@ -1,6 +1,6 @@
 import type { SessionConfig } from '@github/copilot-sdk';
 import { cursorCanopyMcpServerNames } from '@canopy/desktop-shared/lib/cursor-mcp-tool-call';
-import { COPILOT_BUILTIN_MCP_SERVERS } from '@canopy/desktop-shared/node/copilot/session-policy';
+import { COPILOT_BUILTIN_MCP_SERVERS } from '@canopy/copilot-recipient/session-policy';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 
 function record(value: unknown): value is Record<string, unknown> {

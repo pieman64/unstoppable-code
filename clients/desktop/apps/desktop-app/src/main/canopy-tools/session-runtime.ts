@@ -24,7 +24,7 @@ import {
   sendToWindowDetailed,
   type SendableBrowserWindow,
 } from '../lib/window-send';
-import { getObservabilityService } from '../observability';
+import { getExecutionObservabilityIngest } from '../observability/ingest';
 import { getAttentionTracker } from '../services/attention-tracker';
 import {
   clearAskUserRequestCancellation,
@@ -473,7 +473,7 @@ export async function requestAnswersFromRenderer(options: {
       payload,
     );
     if (!delivery.delivered) {
-      getObservabilityService().recordSessionDiagnostic({
+      getExecutionObservabilityIngest().recordSessionDiagnostic({
         version: 1,
         timestamp: new Date().toISOString(),
         kind: 'ask_user_request_undelivered',
@@ -487,7 +487,7 @@ export async function requestAnswersFromRenderer(options: {
       });
     }
     options.onAwaitingUser?.();
-    getObservabilityService().pauseChatTurn(
+    getExecutionObservabilityIngest().pauseChatTurn(
       options.projectId,
       options.worktreeId,
       options.chatId,
@@ -511,7 +511,7 @@ export async function requestAnswersFromRenderer(options: {
       return await pendingAnswers;
     } finally {
       if (!cancelled) await consumePending().catch(() => undefined);
-      getObservabilityService().resumeChatTurn(
+      getExecutionObservabilityIngest().resumeChatTurn(
         options.projectId,
         options.worktreeId,
         options.chatId,

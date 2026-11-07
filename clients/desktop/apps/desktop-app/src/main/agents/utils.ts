@@ -42,7 +42,7 @@ import { SHORT_CHAT_TITLE_SYSTEM_PROMPT } from '@canopy/protocol/generated-names
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 import { mkdir } from 'node:fs/promises';
 import type { AccountProxyQuotaWait } from '../account-proxy/quota-wait';
-import { getCodexRuntimeService } from '../codex/runtime-service';
+import { codexRuntimeForWorkerRun } from '../codex/runtime-service';
 import {
   admitCodexSpeed,
   reportCodexSpeedTurnFailure,
@@ -57,7 +57,7 @@ import {
   readPreferencesFile,
 } from '../lib/preferences-store';
 import { resolveCodexRuntimeEnvironmentProfile } from '../lib/user-environment-runtime';
-import type { ObservabilityService } from '../observability/service';
+import type { DesktopExecutionObservabilityIngest } from '../observability/ingest';
 import type { HelperInvocation } from '../ollama/helper-invocation';
 import {
   resolveHelperInvocation,
@@ -97,8 +97,6 @@ const HANDOFF_SUMMARY_SYSTEM_PROMPT =
   'You are summarizing a chat conversation that will be handed off to a new session. Create a concise summary that gives the receiving assistant full context to continue. Include: key decisions made, current state of work, pending tasks, relevant file paths, and important code changes. Frame this as a briefing for picking up exactly where the last session left off.';
 
 export const HANDOFF_SUMMARY_MODEL = DEFAULT_HANDOFF_SUMMARY_MODEL;
-
-type ObservabilityServiceType = ObservabilityService;
 
 function resolveAgentEnvironment(
   workspaceId: string | undefined,
@@ -148,7 +146,7 @@ async function runBackgroundTextWorker(options: {
           ? options.observabilityTaskKey
           : undefined;
       const observabilityService = queryId
-        ? await loadObservabilityService()
+        ? await loadObservabilityIngest()
         : undefined;
       if (queryId && observabilityService) {
         observabilityService.beginClaudeQuery(
@@ -252,9 +250,10 @@ export function buildSummaryHelperEnv(
   return { ...baseEnv, ...override };
 }
 
-async function loadObservabilityService(): Promise<ObservabilityServiceType> {
-  const { getObservabilityService } = await import('../observability');
-  return getObservabilityService();
+async function loadObservabilityIngest(): Promise<DesktopExecutionObservabilityIngest> {
+  const { getExecutionObservabilityIngest } =
+    await import('../observability/ingest');
+  return getExecutionObservabilityIngest();
 }
 
 /**
@@ -341,7 +340,7 @@ async function recordSummaryPolicyRefusal(
     return;
   }
 
-  const observabilityService = await loadObservabilityService();
+  const observabilityService = await loadObservabilityIngest();
   observabilityService.finalizeObservedTask(
     taskKey,
     'failure',
@@ -362,7 +361,7 @@ async function seedHelperTranscript(
     return;
   }
 
-  const observabilityService = await loadObservabilityService();
+  const observabilityService = await loadObservabilityIngest();
   observabilityService.seedTranscript(taskKey, {
     provider: options.provider,
     originalText: options.originalText,
@@ -383,7 +382,7 @@ async function appendHelperTranscriptEvent(
     return;
   }
 
-  const observabilityService = await loadObservabilityService();
+  const observabilityService = await loadObservabilityIngest();
   observabilityService.appendTranscriptRecord(taskKey, event);
 }
 
@@ -419,7 +418,7 @@ async function appendProviderHelperTranscriptEvent(
     return;
   }
 
-  const observabilityService = await loadObservabilityService();
+  const observabilityService = await loadObservabilityIngest();
   observabilityService.observeClaudeEvent(taskKey, event, provider);
 }
 
@@ -430,7 +429,7 @@ async function updateHelperRetryMetadata(
   if (!taskKey) {
     return;
   }
-  const observabilityService = await loadObservabilityService();
+  const observabilityService = await loadObservabilityIngest();
   observabilityService.updateObservedTask(taskKey, patch);
 }
 
@@ -561,7 +560,7 @@ async function runObservedClaudeQuery(
   assertHelperWorkerContext('runObservedClaudeQuery');
   const observabilityService =
     queryId && provider === 'claude'
-      ? await loadObservabilityService()
+      ? await loadObservabilityIngest()
       : undefined;
   if (queryId && provider === 'claude' && observabilityService) {
     observabilityService.beginClaudeQuery(
@@ -871,7 +870,9 @@ async function runCodexHelperText(
       model: effectiveModel,
       runAttempt: async (captureEvent) => {
         const continuing = handle !== undefined;
-        handle ??= await getCodexRuntimeService().startThread({
+        handle ??= await codexRuntimeForWorkerRun(
+          'runCodexHelperText',
+        ).startThread({
           params: {
             ...params,
             ...(reportOnlyParams ?? { sandbox: 'read-only' as const }),
@@ -1287,7 +1288,7 @@ ${conversationText}`;
           );
         }
         if (options?.observabilityTaskKey) {
-          const observabilityService = await loadObservabilityService();
+          const observabilityService = await loadObservabilityIngest();
           observabilityService.updateObservedTask(
             options.observabilityTaskKey,
             {

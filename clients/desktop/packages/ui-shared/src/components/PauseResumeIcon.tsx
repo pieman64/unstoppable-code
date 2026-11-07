@@ -1,11 +1,16 @@
-import type { JSX, SVGProps } from 'react';
-import { PauseIcon, PlayIcon } from '../icons/AppIcons';
+import type { JSX } from 'react';
+import {
+  PauseIcon,
+  PlayIcon,
+  type AppIconProps,
+  type IconSize,
+} from '../icons/AppIcons';
 
-export interface PauseResumeIconProps extends SVGProps<SVGSVGElement> {
+export interface PauseResumeIconProps extends AppIconProps {
   /** When true renders the play (resume) glyph; otherwise the pause glyph. */
   paused: boolean;
-  /** Icon size in pixels. Defaults to 14. */
-  size?: number;
+  /** A step of the icon scale. Defaults to `sm`. */
+  size?: IconSize;
 }
 
 /**
@@ -14,7 +19,7 @@ export interface PauseResumeIconProps extends SVGProps<SVGSVGElement> {
  */
 export function PauseResumeIcon({
   paused,
-  size = 16,
+  size = 'sm',
   ...rest
 }: PauseResumeIconProps): JSX.Element {
   const Icon = paused ? PlayIcon : PauseIcon;

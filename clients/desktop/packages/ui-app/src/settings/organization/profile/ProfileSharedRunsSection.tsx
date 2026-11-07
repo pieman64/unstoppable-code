@@ -16,6 +16,7 @@ import { formatPlanDate } from '@canopy/protocol/settings/plan-display';
 import { formatCostUsd } from '../feed-format';
 import { fetchMemberSharedRuns } from './profile-api';
 import { useMemberPagedResource } from './use-member-paged-resource';
+import { Surface } from '@canopy/ui-shared/components';
 
 /** Plain sample rows the loading skeleton measures. */
 const SAMPLE_RUNS: readonly SharedRunSummary[] = [
@@ -148,15 +149,17 @@ export function ProfileSharedRunsSection({
             onRetry={retry}
           />
         ) : (
-          <p
-            className={joinClassNames(
-              'rounded-xl border border-dashed px-4 py-12 text-center text-s fg-secondary',
-              blockClassName,
-            )}
-            data-testid="profile-sessions-empty"
-          >
-            {memberName} hasn&apos;t shared any sessions with this team yet.
-          </p>
+          <Surface variant="dashed">
+            <p
+              className={joinClassNames(
+                'px-4 py-12 text-center text-s fg-secondary',
+                blockClassName,
+              )}
+              data-testid="profile-sessions-empty"
+            >
+              {memberName} hasn&apos;t shared any sessions with this team yet.
+            </p>
+          </Surface>
         )}
       </div>
     );

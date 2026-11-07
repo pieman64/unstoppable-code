@@ -49,7 +49,7 @@ export function WatcherFollowUpButton({
           data-testid={`${dataTestId}-trigger`}
           data-has-instruction={hasInstruction ? 'true' : 'false'}
         >
-          <Icon width={15} height={15} aria-hidden="true" />
+          <Icon size="sm" aria-hidden="true" />
         </Button>
       </Tooltip>
 

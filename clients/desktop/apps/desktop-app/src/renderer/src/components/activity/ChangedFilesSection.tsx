@@ -26,7 +26,10 @@ import type {
   FileTreeRoot,
 } from '@canopy/desktop-shared/types';
 import { Button, HeaderActionButton } from '@canopy/ui-shared/components';
-import { ChangesIcon } from '@canopy/ui-shared/icons/AppIcons';
+import {
+  ChangesIcon,
+  ChangeDiagramIcon,
+} from '@canopy/ui-shared/icons/AppIcons';
 import {
   useActivitySectionChrome,
   type CollapsedIconColor,
@@ -36,7 +39,6 @@ import {
   useChangedFileLabelFilter,
   type ChangedFileLabelFilter,
 } from '@/hooks/useChangedFileLabelFilter';
-import { DiagramIcon } from '@/components/icons/DiagramIcon';
 import { useActivityStore } from '@/stores/activityStore';
 import { useChatStore } from '@/stores/chatStore';
 import { openFileInDiff } from '@/lib/panels/open-file-diff';
@@ -319,7 +321,7 @@ export function ChangedFilesSection({
                     onReviewChanges();
                   }}
                 >
-                  <DiagramIcon size={16} />
+                  <ChangeDiagramIcon size="sm" />
                 </HeaderActionButton>
               )}
             </div>
@@ -693,7 +695,7 @@ export function useChangedFilesSectionHostModel({
               handleReviewChanges();
             }}
           >
-            <DiagramIcon size={16} />
+            <ChangeDiagramIcon size="sm" />
           </HeaderActionButton>
         </div>
       )

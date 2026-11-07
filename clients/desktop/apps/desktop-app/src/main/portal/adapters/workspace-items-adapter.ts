@@ -17,12 +17,10 @@ import type {
   PortalWorkspaceItemsListAttachmentsResult,
 } from '@canopy/desktop-shared/types';
 import {
-  listNotesForProject,
-  readNoteForProject,
-  listPromptsForProject,
-  readPromptForProject,
-} from '../../services/workspace-items-service';
-import { listPortalWorkspaceAttachments } from '../portal-workspace-reads';
+  listPortalWorkspaceAttachments,
+  listPortalWorkspaceTextItems,
+  readPortalWorkspaceTextItem,
+} from '../portal-workspace-reads';
 import { logMainProcessWarn } from '../../lib/main-process-logging';
 import type { PortalAdapterContext } from './types';
 import { failServiceError, isRecord } from './validation';
@@ -92,7 +90,11 @@ export async function handlePortalWorkspaceItemsListNotes(
     return;
   }
   try {
-    const value = await listNotesForProject(command.payload.projectId);
+    // core.workspace.item.list
+    const value = await listPortalWorkspaceTextItems(
+      'note',
+      command.payload.projectId,
+    );
     const result = fitListResult(
       value.map(projectWorkspaceItem),
       (rows, truncated): PortalWorkspaceItemsListNotesResult => ({
@@ -127,7 +129,9 @@ export async function handlePortalWorkspaceItemsReadNote(
     return;
   }
   try {
-    const value = await readNoteForProject(
+    // core.workspace.item.get
+    const value = await readPortalWorkspaceTextItem(
+      'note',
       command.payload.projectId,
       command.payload.noteId,
     );
@@ -178,7 +182,11 @@ export async function handlePortalWorkspaceItemsListPrompts(
     return;
   }
   try {
-    const value = await listPromptsForProject(command.payload.projectId);
+    // core.workspace.item.list
+    const value = await listPortalWorkspaceTextItems(
+      'prompt',
+      command.payload.projectId,
+    );
     const result = fitListResult(
       value.map(projectWorkspaceItem),
       (rows, truncated): PortalWorkspaceItemsListPromptsResult => ({
@@ -213,7 +221,9 @@ export async function handlePortalWorkspaceItemsReadPrompt(
     return;
   }
   try {
-    const value = await readPromptForProject(
+    // core.workspace.item.get
+    const value = await readPortalWorkspaceTextItem(
+      'prompt',
       command.payload.projectId,
       command.payload.promptId,
     );

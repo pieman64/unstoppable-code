@@ -36,6 +36,7 @@ import {
   type DigestShareUpdateResult,
 } from './digest-api';
 import { joinClassNames } from './digest-class-names';
+import { Divider } from '@canopy/ui-shared/components';
 
 export interface DigestShareControlsProps {
   /**
@@ -579,86 +580,89 @@ export function DigestShareControls({
           )}
 
           {showAudiences && (
-            <div
-              className="flex flex-col gap-2 border-t pt-3"
-              data-testid="digest-profile-audiences"
-            >
-              <div>
-                <p className="text-s font-medium fg-primary">
-                  Organization profiles
-                </p>
-                <p className="mt-0.5 text-xs fg-secondary">
-                  Turn on an organization to let its current members open this
-                  from your member profile.
-                </p>
-              </div>
-              {/*
+            <div>
+              <Divider />
+              <div
+                className="flex flex-col gap-2 pt-3"
+                data-testid="digest-profile-audiences"
+              >
+                <div>
+                  <p className="text-s font-medium fg-primary">
+                    Organization profiles
+                  </p>
+                  <p className="mt-0.5 text-xs fg-secondary">
+                    Turn on an organization to let its current members open this
+                    from your member profile.
+                  </p>
+                </div>
+                {/*
                 Bounded height rather than growing with the membership list: a
                 user in a dozen organizations would otherwise push the
                 popover's own controls past the viewport edge with no way back.
               */}
-              <ul className="-mr-1 flex max-h-40 flex-col gap-2 overflow-y-auto pr-1">
-                {audiences.map((audience) => (
-                  <li
-                    key={audience.organizationId}
-                    className="flex items-center justify-between gap-4"
-                  >
-                    <span className="min-w-0 truncate text-s fg-primary">
-                      {audience.organizationName}
-                      {audience.lapsed && (
-                        <span
-                          className="block truncate text-xs fg-secondary"
-                          id={`digest-profile-audience-lapsed-${audience.organizationId}`}
-                          data-testid={`digest-profile-audience-lapsed-${audience.organizationId}`}
-                        >
-                          {audience.featured
-                            ? 'Members cannot open this while the subscription is inactive'
-                            : 'Unavailable while the subscription is inactive'}
-                        </span>
-                      )}
-                    </span>
-                    <ToggleSwitch
-                      // Ties the lapse explanation to the control it explains.
-                      // Without it a screen-reader user meets a disabled toggle
-                      // whose `aria-label` says nothing about why, and the
-                      // reason is only available as unassociated adjacent text.
-                      // `aria-describedby` on a disabled native button is
-                      // still announced by major screen readers, so this does
-                      // reach the user.
-                      describedBy={
-                        audience.lapsed
-                          ? `digest-profile-audience-lapsed-${audience.organizationId}`
-                          : undefined
-                      }
-                      // Every audience toggle is disabled while ANY mutation is
-                      // in flight, so two overlapping requests cannot resolve
-                      // out of order into a state neither press asked for.
-                      //
-                      // A lapsed org disables only the OFF→ON direction. The
-                      // server rejects granting into an org whose members
-                      // cannot read the result, but revocation stays available
-                      // in both layers — an owner must never be stuck unable to
-                      // withdraw a grant because someone else's billing failed.
-                      disabled={
-                        saving || (audience.lapsed && !audience.featured)
-                      }
-                      checked={audience.featured}
-                      label={`Share on your ${audience.organizationName} profile`}
-                      onChange={(): void => requestToggleFeature(audience)}
-                      dataTestId={`digest-profile-audience-toggle-${audience.organizationId}`}
-                    />
-                  </li>
-                ))}
-              </ul>
-              {/*
+                <ul className="-mr-1 flex max-h-40 flex-col gap-2 overflow-y-auto pr-1">
+                  {audiences.map((audience) => (
+                    <li
+                      key={audience.organizationId}
+                      className="flex items-center justify-between gap-4"
+                    >
+                      <span className="min-w-0 truncate text-s fg-primary">
+                        {audience.organizationName}
+                        {audience.lapsed && (
+                          <span
+                            className="block truncate text-xs fg-secondary"
+                            id={`digest-profile-audience-lapsed-${audience.organizationId}`}
+                            data-testid={`digest-profile-audience-lapsed-${audience.organizationId}`}
+                          >
+                            {audience.featured
+                              ? 'Members cannot open this while the subscription is inactive'
+                              : 'Unavailable while the subscription is inactive'}
+                          </span>
+                        )}
+                      </span>
+                      <ToggleSwitch
+                        // Ties the lapse explanation to the control it explains.
+                        // Without it a screen-reader user meets a disabled toggle
+                        // whose `aria-label` says nothing about why, and the
+                        // reason is only available as unassociated adjacent text.
+                        // `aria-describedby` on a disabled native button is
+                        // still announced by major screen readers, so this does
+                        // reach the user.
+                        describedBy={
+                          audience.lapsed
+                            ? `digest-profile-audience-lapsed-${audience.organizationId}`
+                            : undefined
+                        }
+                        // Every audience toggle is disabled while ANY mutation is
+                        // in flight, so two overlapping requests cannot resolve
+                        // out of order into a state neither press asked for.
+                        //
+                        // A lapsed org disables only the OFF→ON direction. The
+                        // server rejects granting into an org whose members
+                        // cannot read the result, but revocation stays available
+                        // in both layers — an owner must never be stuck unable to
+                        // withdraw a grant because someone else's billing failed.
+                        disabled={
+                          saving || (audience.lapsed && !audience.featured)
+                        }
+                        checked={audience.featured}
+                        label={`Share on your ${audience.organizationName} profile`}
+                        onChange={(): void => requestToggleFeature(audience)}
+                        dataTestId={`digest-profile-audience-toggle-${audience.organizationId}`}
+                      />
+                    </li>
+                  ))}
+                </ul>
+                {/*
                 Stated up front, not only in the confirmation: a personal digest
                 is assembled from the user's work, which is not necessarily the
                 selected org's work.
               */}
-              <p className="text-xs fg-secondary">
-                Personal digests can include work from outside the selected
-                organization.
-              </p>
+                <p className="text-xs fg-secondary">
+                  Personal digests can include work from outside the selected
+                  organization.
+                </p>
+              </div>
             </div>
           )}
 

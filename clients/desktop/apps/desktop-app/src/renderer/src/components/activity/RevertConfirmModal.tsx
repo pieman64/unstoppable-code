@@ -7,6 +7,7 @@ import {
   Button,
   ConfirmDialog,
   ErrorState,
+  Surface,
 } from '@canopy/ui-shared/components';
 import { DiffContentView } from './DiffContentView';
 
@@ -126,23 +127,25 @@ export function RevertConfirmModal({
           {previewExpanded ? 'Hide changes' : 'Show changes'}
         </Button>
       </div>
-      <div
-        className={`mt-2 max-h-60 overflow-auto rounded-lg border ${previewExpanded ? '' : 'hidden'}`}
-      >
-        {previewError ? (
-          <ErrorState space="panel" message={previewError} />
-        ) : (
-          <DiffContentView
-            oldValue={previewData?.oldValue ?? ''}
-            newValue={previewData?.newValue ?? ''}
-            viewMode="unified"
-            loading={previewLoading}
-            truncated={previewData?.truncated ?? false}
-            binary={previewData?.binary ?? false}
-            imagePreview={previewData?.imagePreview}
-          />
-        )}
-      </div>
+      <Surface variant="outline" className="mt-2 overflow-hidden">
+        <div
+          className={`max-h-60 overflow-auto ${previewExpanded ? '' : 'hidden'}`}
+        >
+          {previewError ? (
+            <ErrorState space="panel" message={previewError} />
+          ) : (
+            <DiffContentView
+              oldValue={previewData?.oldValue ?? ''}
+              newValue={previewData?.newValue ?? ''}
+              viewMode="unified"
+              loading={previewLoading}
+              truncated={previewData?.truncated ?? false}
+              binary={previewData?.binary ?? false}
+              imagePreview={previewData?.imagePreview}
+            />
+          )}
+        </div>
+      </Surface>
     </ConfirmDialog>
   );
 }

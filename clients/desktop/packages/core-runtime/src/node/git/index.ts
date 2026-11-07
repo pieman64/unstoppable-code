@@ -19,3 +19,7 @@ export * from './worker-git-remote-get';
 export * from './worker-git-worktree-health';
 export * from './worktree-health';
 export * from './github-credential-lease';
+export * from './worker-git-commit-push';
+export * from './recorded-worker-git-commit-push-host';
+export * from './merge-writes';
+export * from './worker-git-merge';

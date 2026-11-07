@@ -44,6 +44,7 @@ import {
   type OrgModelCatalogEntry,
 } from './team-api';
 import type { SettingsFailure } from '../errors';
+import { Badge } from '@canopy/ui-shared/components/Badge';
 
 const MODEL_POLICY_ERROR_SCOPE = 'settings.organization.model-policy';
 
@@ -423,12 +424,13 @@ function ModelPolicyCard({
             </p>
           </div>
           {showList && pendingReviewIds.length > 0 ? (
-            <span
-              className="shrink-0 rounded-full bg-warning-subtle px-2 py-0.5 text-xs font-medium fg-warning"
+            <Badge
+              tone="warning"
+              className="shrink-0"
               data-testid="model-policy-pending-review-count"
             >
               {pendingReviewIds.length} new
-            </span>
+            </Badge>
           ) : null}
         </div>
       </div>
@@ -802,12 +804,13 @@ function ModelPolicyRow({
         <p className="flex items-center gap-2 text-s font-medium fg-primary">
           <span className="truncate">{model.label}</span>
           {pendingReview ? (
-            <span
-              className="shrink-0 rounded-full bg-warning-subtle px-1.5 py-0.5 text-xs font-medium fg-warning"
+            <Badge
+              tone="warning"
+              className="shrink-0"
               data-testid={`model-policy-new-badge-${model.id}`}
             >
               New
-            </span>
+            </Badge>
           ) : null}
         </p>
         {model.description ? (

@@ -676,8 +676,9 @@ export function SidebarWorkspacesSection({
                     {WORKSPACE_LABEL_PLURAL}
                   </span>
                   <ChevronDownMediumIcon
+                    size="sm"
                     data-testid="sidebar-workspaces-chevron"
-                    className={`h-4 w-4 shrink-0 fg-quaternary transition-[color,opacity] group-hover/workspaces:fg-secondary group-hover/workspaces:opacity-100 group-focus-within/workspaces:fg-secondary group-focus-within/workspaces:opacity-100 ${
+                    className={`shrink-0 fg-quaternary transition-[color,opacity] group-hover/workspaces:fg-secondary group-hover/workspaces:opacity-100 group-focus-within/workspaces:fg-secondary group-focus-within/workspaces:opacity-100 ${
                       collapsed ? '-rotate-90 opacity-100' : 'opacity-0'
                     }`}
                   />
@@ -962,8 +963,9 @@ export function SidebarWorkspacesSection({
                   Hidden
                 </span>
                 <ChevronDownMediumIcon
+                  size="sm"
                   data-testid="sidebar-hidden-workspaces-chevron"
-                  className={`h-4 w-4 shrink-0 fg-quaternary transition-[color,opacity] group-hover/hidden-workspaces:fg-secondary group-hover/hidden-workspaces:opacity-100 group-focus-within/hidden-workspaces:fg-secondary group-focus-within/hidden-workspaces:opacity-100 ${
+                  className={`shrink-0 fg-quaternary transition-[color,opacity] group-hover/hidden-workspaces:fg-secondary group-hover/hidden-workspaces:opacity-100 group-focus-within/hidden-workspaces:fg-secondary group-focus-within/hidden-workspaces:opacity-100 ${
                     hiddenExpanded ? 'opacity-0' : '-rotate-90 opacity-100'
                   }`}
                 />

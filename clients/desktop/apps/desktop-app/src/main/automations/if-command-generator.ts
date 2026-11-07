@@ -20,7 +20,7 @@ import {
   finalizeObservedHelperTask,
   startObservedHelperTask,
 } from '../lib/helper-observed-task';
-import { getObservabilityService } from '../observability';
+import { getExecutionObservabilityIngest } from '../observability/ingest';
 import { readLocalMemoryEnabledPreference } from '../lib/preferences-store';
 import {
   codexStructuredHelperRunner,
@@ -123,7 +123,7 @@ function seedTranscript(
   submittedText: string,
   prompt: string,
 ): void {
-  getObservabilityService().seedTranscript(taskKey, {
+  getExecutionObservabilityIngest().seedTranscript(taskKey, {
     provider,
     originalText,
     submittedText,
@@ -133,7 +133,7 @@ function seedTranscript(
 }
 
 function appendTranscriptEvent(taskKey: string, event: unknown): void {
-  getObservabilityService().appendTranscriptRecord(taskKey, event);
+  getExecutionObservabilityIngest().appendTranscriptRecord(taskKey, event);
 }
 
 function ifCommandTranscriptObserver(
@@ -144,9 +144,13 @@ function ifCommandTranscriptObserver(
     appendEvent: (event: unknown): void =>
       appendTranscriptEvent(taskKey, event),
     markAttempt: (attempt: number): void =>
-      getObservabilityService().updateObservedTask(taskKey, { attempt }),
+      getExecutionObservabilityIngest().updateObservedTask(taskKey, {
+        attempt,
+      }),
     markSessionId: (sdkSessionId: string): void =>
-      getObservabilityService().updateObservedTask(taskKey, { sdkSessionId }),
+      getExecutionObservabilityIngest().updateObservedTask(taskKey, {
+        sdkSessionId,
+      }),
   };
 }
 

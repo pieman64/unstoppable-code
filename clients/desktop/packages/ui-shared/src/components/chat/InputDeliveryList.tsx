@@ -373,7 +373,7 @@ const InputDeliveryRow = memo(function InputDeliveryRow({
                       disabled={busy}
                       onClick={() => void act('cancel')}
                     >
-                      <TrashIcon width={14} height={14} aria-hidden="true" />
+                      <TrashIcon size="sm" aria-hidden="true" />
                     </Button>
                   )}
                   {row.state === 'cancelled' && (
@@ -387,7 +387,7 @@ const InputDeliveryRow = memo(function InputDeliveryRow({
                         disabled={busy}
                         onClick={() => void act('dismiss')}
                       >
-                        <TrashIcon width={14} height={14} aria-hidden="true" />
+                        <TrashIcon size="sm" aria-hidden="true" />
                       </Button>
                     </Tooltip>
                   )}
@@ -405,7 +405,7 @@ const InputDeliveryRow = memo(function InputDeliveryRow({
                       disabled={busy}
                       onClick={() => void act('dismiss')}
                     >
-                      <TrashIcon width={14} height={14} aria-hidden="true" />
+                      <TrashIcon size="sm" aria-hidden="true" />
                     </Button>
                   </Tooltip>
                 </div>

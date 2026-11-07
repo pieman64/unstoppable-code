@@ -8,13 +8,25 @@ import { isAbsolute, normalize, resolve } from 'node:path';
 import type { BrowserWindow } from 'electron';
 import type {
   AppAdvisorRendererToolRequest,
+  AppAdvisorRendererToolResponse,
   ShowFilesChatOrigin,
   ShowFileRequest,
+  ShowFilesRendererRequest,
   ShowFilesRendererResult,
   ShowFilesWorkspaceTarget,
 } from '@canopy/desktop-shared/types';
-import { requestAppAdvisorRendererTool } from '../ipc/app-advisor';
+import {
+  interfaceToolOutcomeToRendererResponse,
+  requestAppAdvisorRendererTool,
+  routeRendererToolRequest,
+  surfaceUnavailableResponse,
+} from '../ipc/app-advisor';
 import type { AppAdvisorRendererToolSurfaces } from '../ipc/app-advisor';
+import { getSessionInterfaceToolRegistry } from '../agents/interface-tool-binding';
+import {
+  canopyJsonValueSchemaWithin,
+  INTERFACE_TOOL_INPUT_MAX_BYTES,
+} from '@canopy/protocol/canopy-core';
 
 function normalizeFiles(
   files: ShowFileRequest[],
@@ -147,19 +159,31 @@ function resultFrom(value: unknown): ShowFilesRendererResult {
   };
 }
 
-export async function requestShowFiles(
-  input: {
-    intent?: 'user' | 'agent';
-    files: ShowFileRequest[];
-    target: ShowFilesWorkspaceTarget;
-    origin: ShowFilesChatOrigin;
-    cwd?: string;
-    reuseBrowserId?: string;
-    focusReturnId?: string;
-  },
-  surfaces: AppAdvisorRendererToolSurfaces,
-  options?: { followChatDriver?: boolean },
-): Promise<ShowFilesRendererResult> {
+export interface RequestShowFilesInput {
+  intent?: 'user' | 'agent';
+  files: ShowFileRequest[];
+  target: ShowFilesWorkspaceTarget;
+  origin: ShowFilesChatOrigin;
+  cwd?: string;
+  reuseBrowserId?: string;
+  focusReturnId?: string;
+}
+
+type ShowFilesPolicyFields = ReturnType<typeof showFilesPresentationPolicy>;
+
+const showFilesPayloadSchema = canopyJsonValueSchemaWithin(
+  INTERFACE_TOOL_INPUT_MAX_BYTES,
+);
+
+type PreparedShowFiles =
+  | { kind: 'deferred'; result: ShowFilesRendererResult }
+  | {
+      kind: 'present';
+      policy: ShowFilesPolicyFields;
+      payload: ShowFilesRendererRequest;
+    };
+
+function prepareShowFiles(input: RequestShowFilesInput): PreparedShowFiles {
   // Resolve once before any await. A later scheduled turn must never lend its
   // provenance to this request (or borrow a preceding human turn's identity).
   const turn = capturePresentationTurn(input.origin);
@@ -174,23 +198,26 @@ export async function requestShowFiles(
   const files = normalizeFiles(input.files, input.cwd);
   if (policy.presentation === 'deferred') {
     return {
-      ...policy,
-      opened: 0,
-      failed: 0,
-      activated: false,
-      deferred: files.length,
-      files: files.map((file) => ({
-        path: file.path,
-        ok: true,
-        opened: false,
+      kind: 'deferred',
+      result: {
+        ...policy,
+        opened: 0,
+        failed: 0,
         activated: false,
-        deferred: true,
-      })),
+        deferred: files.length,
+        files: files.map((file) => ({
+          path: file.path,
+          ok: true,
+          opened: false,
+          activated: false,
+          deferred: true,
+        })),
+      },
     };
   }
-  const request: AppAdvisorRendererToolRequest = {
-    kind: 'show_files',
-    requestId: randomUUID(),
+  return {
+    kind: 'present',
+    policy,
     payload: {
       files,
       intent: input.intent ?? 'agent',
@@ -201,15 +228,108 @@ export async function requestShowFiles(
       ...(input.reuseBrowserId ? { reuseBrowserId: input.reuseBrowserId } : {}),
     },
   };
-  const response = await (options
-    ? requestAppAdvisorRendererTool(request, surfaces, options)
-    : requestAppAdvisorRendererTool(request, surfaces));
+}
+
+function presentedResult(
+  policy: ShowFilesPolicyFields,
+  response: AppAdvisorRendererToolResponse,
+): ShowFilesRendererResult {
   if (!response.result) {
     throw new Error(
       response.error?.message ?? 'Unable to open requested files.',
     );
   }
   return { ...policy, ...resultFrom(response.result) };
+}
+
+async function showFilesThroughWindow(
+  policy: ShowFilesPolicyFields,
+  request: AppAdvisorRendererToolRequest,
+  surfaces: AppAdvisorRendererToolSurfaces,
+  options?: { followChatDriver?: boolean },
+): Promise<ShowFilesRendererResult> {
+  const response = await (options
+    ? requestAppAdvisorRendererTool(request, surfaces, options)
+    : requestAppAdvisorRendererTool(request, surfaces));
+  return presentedResult(policy, response);
+}
+
+export async function requestShowFiles(
+  input: RequestShowFilesInput,
+  surfaces: AppAdvisorRendererToolSurfaces,
+  options?: { followChatDriver?: boolean },
+): Promise<ShowFilesRendererResult> {
+  const prepared = prepareShowFiles(input);
+  if (prepared.kind === 'deferred') return prepared.result;
+  return showFilesThroughWindow(
+    prepared.policy,
+    { kind: 'show_files', requestId: randomUUID(), payload: prepared.payload },
+    surfaces,
+    options,
+  );
+}
+
+/**
+ * CAN-4131: ShowFiles for a chat whose session bound `ui.show_files`. The
+ * main window's interface lease serves it; no window accessor is called.
+ * A chat driven from another computer keeps today's routed path (D10).
+ */
+export function requestShowFilesThroughLease(
+  input: RequestShowFilesInput,
+  remoteFallbackSurfaces: AppAdvisorRendererToolSurfaces,
+  options?: { signal?: AbortSignal },
+): Promise<ShowFilesRendererResult> {
+  return requestShowFilesThroughInterfaceTool(
+    'ui.show_files',
+    input,
+    remoteFallbackSurfaces,
+    options,
+  );
+}
+
+/** CAN-4133: as {@link requestShowFilesThroughLease}, through the named ShowFiles tool. */
+export async function requestShowFilesThroughInterfaceTool(
+  toolName: 'ui.show_files' | 'ui.app_advisor.show_files',
+  input: RequestShowFilesInput,
+  remoteFallbackSurfaces: AppAdvisorRendererToolSurfaces,
+  options?: { signal?: AbortSignal },
+): Promise<ShowFilesRendererResult> {
+  const prepared = prepareShowFiles(input);
+  if (prepared.kind === 'deferred') return prepared.result;
+  const request: AppAdvisorRendererToolRequest = {
+    kind: 'show_files',
+    requestId: randomUUID(),
+    payload: prepared.payload,
+  };
+  if (routeRendererToolRequest(request) !== null)
+    return showFilesThroughWindow(
+      prepared.policy,
+      request,
+      remoteFallbackSurfaces,
+    );
+  const registry = getSessionInterfaceToolRegistry();
+  if (!registry)
+    return presentedResult(
+      prepared.policy,
+      surfaceUnavailableResponse(request),
+    );
+  const serialized: unknown = JSON.parse(JSON.stringify(prepared.payload));
+  const payload = showFilesPayloadSchema.safeParse(serialized);
+  if (!payload.success) throw new Error('Unable to open requested files.');
+  const outcome = await registry.invoke({
+    toolName,
+    input: { payload: payload.data },
+    scope: {
+      workspaceId: input.origin.projectId,
+      worktreeId: input.origin.worktreeId,
+      chatId: input.origin.chatTabId,
+    },
+    ...(options?.signal ? { signal: options.signal } : {}),
+  });
+  return presentedResult(
+    prepared.policy,
+    interfaceToolOutcomeToRendererResponse(outcome, request),
+  );
 }
 
 export function mainWindowOnlyToolSurfaces(

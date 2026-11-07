@@ -32,6 +32,7 @@ import {
   FormField,
   SegmentedControl,
   SettingsSelect,
+  Surface,
   TextArea,
   TextInput,
 } from '@canopy/ui-shared/components';
@@ -755,155 +756,168 @@ function DevServerPatternsSection({
   };
 
   return (
-    <div className="space-y-2 rounded-lg border p-3">
-      <div>
-        <p className="text-xs font-medium fg-primary">Dev server patterns</p>
-        <p className="mt-1 text-2xs fg-secondary">
-          Optional regex patterns. The first capture group, or the full match,
-          must be an http(s) URL. Patterns are checked in order, and the first
-          match labels the detected URL.
-        </p>
-        <p className="mt-1 text-2xs fg-secondary">
-          In {brandText.shortName} opens links in the Browser tab. URLs blocked
-          by the Browser settings open externally.
-        </p>
-        <p className="mt-1 text-2xs fg-secondary">
-          Auto open opens each detected URL once per script run.
-        </p>
-      </div>
-      {list.length === 0 ? (
-        <p className="text-2xs fg-secondary">No dev server patterns</p>
-      ) : (
-        <ul className="space-y-2">
-          {list.map((row, index) => {
-            const trimmed = row.pattern.trim();
-            const regexInvalid =
-              trimmed.length > 0 && !isRegexParseable(trimmed);
-            const patternTooLong =
-              trimmed.length > MAX_SCRIPT_DEV_SERVER_PATTERN_LENGTH;
-            const labelTooLong =
-              row.label.trim().length > MAX_SCRIPT_DEV_SERVER_LABEL_LENGTH;
-            const patternError = regexInvalid
-              ? 'Invalid regex'
-              : patternTooLong
-                ? `Pattern is too long (max ${MAX_SCRIPT_DEV_SERVER_PATTERN_LENGTH} characters)`
+    <Surface variant="outline" padding="compact">
+      <div className="space-y-2">
+        <div>
+          <p className="text-xs font-medium fg-primary">Dev server patterns</p>
+          <p className="mt-1 text-2xs fg-secondary">
+            Optional regex patterns. The first capture group, or the full match,
+            must be an http(s) URL. Patterns are checked in order, and the first
+            match labels the detected URL.
+          </p>
+          <p className="mt-1 text-2xs fg-secondary">
+            In {brandText.shortName} opens links in the Browser tab. URLs
+            blocked by the Browser settings open externally.
+          </p>
+          <p className="mt-1 text-2xs fg-secondary">
+            Auto open opens each detected URL once per script run.
+          </p>
+        </div>
+        {list.length === 0 ? (
+          <p className="text-2xs fg-secondary">No dev server patterns</p>
+        ) : (
+          <ul className="space-y-2">
+            {list.map((row, index) => {
+              const trimmed = row.pattern.trim();
+              const regexInvalid =
+                trimmed.length > 0 && !isRegexParseable(trimmed);
+              const patternTooLong =
+                trimmed.length > MAX_SCRIPT_DEV_SERVER_PATTERN_LENGTH;
+              const labelTooLong =
+                row.label.trim().length > MAX_SCRIPT_DEV_SERVER_LABEL_LENGTH;
+              const patternError = regexInvalid
+                ? 'Invalid regex'
+                : patternTooLong
+                  ? `Pattern is too long (max ${MAX_SCRIPT_DEV_SERVER_PATTERN_LENGTH} characters)`
+                  : undefined;
+              const labelError = labelTooLong
+                ? `Label is too long (max ${MAX_SCRIPT_DEV_SERVER_LABEL_LENGTH} characters)`
                 : undefined;
-            const labelError = labelTooLong
-              ? `Label is too long (max ${MAX_SCRIPT_DEV_SERVER_LABEL_LENGTH} characters)`
-              : undefined;
-            const isFirst = index === 0;
-            const isLast = index === list.length - 1;
-            return (
-              <li key={row.id} className="space-y-1.5 rounded border p-2">
-                <div className="grid gap-2 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_auto]">
-                  <FormField label="Pattern" error={patternError}>
-                    {(control) => (
-                      <TextInput
-                        {...control}
-                        density="settings"
-                        mono
-                        type="text"
-                        value={row.pattern}
-                        onChange={(event) =>
-                          updateRow(index, { pattern: event.target.value })
+              const isFirst = index === 0;
+              const isLast = index === list.length - 1;
+              return (
+                <Surface
+                  as="li"
+                  variant="outline"
+                  size="small"
+                  padding="tight"
+                  key={row.id}
+                >
+                  <div className="space-y-1.5">
+                    <div className="grid gap-2 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_auto]">
+                      <FormField label="Pattern" error={patternError}>
+                        {(control) => (
+                          <TextInput
+                            {...control}
+                            density="settings"
+                            mono
+                            type="text"
+                            value={row.pattern}
+                            onChange={(event) =>
+                              updateRow(index, { pattern: event.target.value })
+                            }
+                            placeholder={'https?://localhost:\\d+\\S*'}
+                            maxLength={MAX_SCRIPT_DEV_SERVER_PATTERN_LENGTH}
+                          />
+                        )}
+                      </FormField>
+                      <FormField label="Label" error={labelError}>
+                        {(control) => (
+                          <TextInput
+                            {...control}
+                            density="settings"
+                            type="text"
+                            value={row.label}
+                            onChange={(event) =>
+                              updateRow(index, { label: event.target.value })
+                            }
+                            placeholder="Web app"
+                            maxLength={MAX_SCRIPT_DEV_SERVER_LABEL_LENGTH}
+                          />
+                        )}
+                      </FormField>
+                      <div className="flex items-start gap-1 md:pt-6">
+                        <Button
+                          variant="ghost"
+                          size="compact"
+                          iconOnly
+                          onClick={(): void => moveRow(index, -1)}
+                          disabled={isFirst}
+                          aria-label="Move dev server pattern up"
+                        >
+                          ↑
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="compact"
+                          iconOnly
+                          onClick={(): void => moveRow(index, 1)}
+                          disabled={isLast}
+                          aria-label="Move dev server pattern down"
+                        >
+                          ↓
+                        </Button>
+                        <Button
+                          variant="ghost-destructive"
+                          size="compact"
+                          onClick={(): void => removeRow(index)}
+                        >
+                          Remove
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-2xs fg-secondary">Open</span>
+                      <SegmentedControl<'in-app' | 'external'>
+                        label="Open target"
+                        value={row.openTarget ?? null}
+                        width="content"
+                        shape="capsule"
+                        options={[
+                          {
+                            value: 'in-app',
+                            label: `In ${brandText.shortName}`,
+                          },
+                          { value: 'external', label: 'External' },
+                        ]}
+                        onChange={(openTarget): void =>
+                          updateRow(index, { openTarget })
                         }
-                        placeholder={'https?://localhost:\\d+\\S*'}
-                        maxLength={MAX_SCRIPT_DEV_SERVER_PATTERN_LENGTH}
                       />
-                    )}
-                  </FormField>
-                  <FormField label="Label" error={labelError}>
-                    {(control) => (
-                      <TextInput
-                        {...control}
-                        density="settings"
-                        type="text"
-                        value={row.label}
-                        onChange={(event) =>
-                          updateRow(index, { label: event.target.value })
-                        }
-                        placeholder="Web app"
-                        maxLength={MAX_SCRIPT_DEV_SERVER_LABEL_LENGTH}
-                      />
-                    )}
-                  </FormField>
-                  <div className="flex items-start gap-1 md:pt-6">
-                    <Button
-                      variant="ghost"
-                      size="compact"
-                      iconOnly
-                      onClick={(): void => moveRow(index, -1)}
-                      disabled={isFirst}
-                      aria-label="Move dev server pattern up"
-                    >
-                      ↑
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="compact"
-                      iconOnly
-                      onClick={(): void => moveRow(index, 1)}
-                      disabled={isLast}
-                      aria-label="Move dev server pattern down"
-                    >
-                      ↓
-                    </Button>
-                    <Button
-                      variant="ghost-destructive"
-                      size="compact"
-                      onClick={(): void => removeRow(index)}
-                    >
-                      Remove
-                    </Button>
+                      <div className="ml-auto flex items-center gap-2">
+                        <span className="text-2xs fg-secondary">Auto open</span>
+                        <ToggleSwitch
+                          label="Auto open detected URL"
+                          checked={row.autoOpen === true}
+                          onChange={(autoOpen): void =>
+                            updateRow(index, { autoOpen })
+                          }
+                          dataTestId="dev-server-pattern-auto-open"
+                        />
+                      </div>
+                    </div>
                   </div>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-2xs fg-secondary">Open</span>
-                  <SegmentedControl<'in-app' | 'external'>
-                    label="Open target"
-                    value={row.openTarget ?? null}
-                    width="content"
-                    shape="capsule"
-                    options={[
-                      { value: 'in-app', label: `In ${brandText.shortName}` },
-                      { value: 'external', label: 'External' },
-                    ]}
-                    onChange={(openTarget): void =>
-                      updateRow(index, { openTarget })
-                    }
-                  />
-                  <div className="ml-auto flex items-center gap-2">
-                    <span className="text-2xs fg-secondary">Auto open</span>
-                    <ToggleSwitch
-                      label="Auto open detected URL"
-                      checked={row.autoOpen === true}
-                      onChange={(autoOpen): void =>
-                        updateRow(index, { autoOpen })
-                      }
-                      dataTestId="dev-server-pattern-auto-open"
-                    />
-                  </div>
-                </div>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-      <div className="flex items-center gap-2">
-        <Button
-          size="compact"
-          onClick={addRow}
-          disabled={atCap}
-          aria-disabled={atCap || undefined}
-        >
-          Add pattern
-        </Button>
-        {atCap && (
-          <span className="text-2xs fg-secondary">
-            Maximum {MAX_SCRIPT_DEV_SERVER_PATTERNS} patterns
-          </span>
+                </Surface>
+              );
+            })}
+          </ul>
         )}
+        <div className="flex items-center gap-2">
+          <Button
+            size="compact"
+            onClick={addRow}
+            disabled={atCap}
+            aria-disabled={atCap || undefined}
+          >
+            Add pattern
+          </Button>
+          {atCap && (
+            <span className="text-2xs fg-secondary">
+              Maximum {MAX_SCRIPT_DEV_SERVER_PATTERNS} patterns
+            </span>
+          )}
+        </div>
       </div>
-    </div>
+    </Surface>
   );
 }

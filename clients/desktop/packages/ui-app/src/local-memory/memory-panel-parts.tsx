@@ -252,7 +252,7 @@ export function MemoryMoreMenu({
             setOpen((value) => !value);
           }}
         >
-          <MoreHorizontalIcon width={14} height={14} aria-hidden="true" />
+          <MoreHorizontalIcon size="sm" aria-hidden="true" />
         </Button>
       ) : (
         <Button
@@ -266,7 +266,7 @@ export function MemoryMoreMenu({
           data-testid={testId}
           onClick={() => setOpen((value) => !value)}
         >
-          <MoreHorizontalIcon width={14} height={14} aria-hidden="true" />
+          <MoreHorizontalIcon size="sm" aria-hidden="true" />
         </Button>
       )}
       <FloatingMenu
@@ -303,13 +303,13 @@ export function rowMenuItems(handlers: {
     {
       key: 'edit',
       label: 'Edit',
-      icon: <PencilIcon width={14} height={14} />,
+      icon: <PencilIcon size="sm" />,
       onSelect: handlers.onEdit,
     },
     {
       key: 'copy',
       label: 'Copy text',
-      icon: <CopyIcon width={14} height={14} />,
+      icon: <CopyIcon size="sm" />,
       onSelect: handlers.onCopy,
     },
     ...(onDelete
@@ -317,7 +317,7 @@ export function rowMenuItems(handlers: {
           {
             key: 'delete',
             label: 'Delete',
-            icon: <TrashIcon width={14} height={14} />,
+            icon: <TrashIcon size="sm" />,
             tone: 'destructive' as const,
             separatorBefore: true,
             onSelect: onDelete,
@@ -357,8 +357,7 @@ export const MemoryRow = forwardRef<HTMLButtonElement, MemoryRowProps>(
           data-testid="memory-row-open"
         >
           <Icon
-            width={14}
-            height={14}
+            size="sm"
             aria-hidden="true"
             className="mt-0.5 shrink-0 fg-tertiary"
           />

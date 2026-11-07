@@ -246,7 +246,7 @@ export const AttachmentPreviewPopover = memo(function AttachmentPreviewPopover({
       {/* Footer */}
       <div className="flex shrink-0 border-t px-2 py-1.5">
         <Button variant="ghost" size="compact" onClick={handleOpen}>
-          <FileIcon width={12} height={12} />
+          <FileIcon size="sm" />
           Open
         </Button>
       </div>

@@ -1,4 +1,12 @@
-import { useEffect, useId, useMemo, useRef, useState, type JSX } from 'react';
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type JSX,
+  type ReactNode,
+} from 'react';
 import type { ProjectStartPage } from '@canopy/protocol/start-page';
 import type { HomeDiscoveryTarget } from '@canopy/desktop-shared/types';
 import {
@@ -13,12 +21,12 @@ import {
   SettingsRowsRow,
   TextInput,
 } from '@canopy/ui-shared';
-import { HAIRLINE_INSET_RING_CLASS } from '@canopy/ui-shared/lib';
 import { searchFiles, type FileSearchResult } from '@/lib/fuzzySearch';
 import {
   isHttpStartPageUrl,
   startPageLabel,
 } from '@/lib/start-page/project-start-page';
+import { Surface } from '@canopy/ui-shared/components';
 
 export type StartPageSettingValue = ProjectStartPage | null | undefined;
 
@@ -53,6 +61,29 @@ function choiceFor(
   if (value === undefined && allowUseTeamSetting) return 'team';
   if (!value) return 'chat';
   return value.kind;
+}
+
+/** One settings row in the `row` layout; a hairline card in a dialog of cards. */
+function StartPageFrame({
+  layout,
+  children,
+}: {
+  readonly layout: StartPageSettingControlProps['layout'];
+  readonly children: ReactNode;
+}): JSX.Element {
+  return layout === 'row' ? (
+    <div className="flex flex-col" data-testid="start-page-setting">
+      {children}
+    </div>
+  ) : (
+    <Surface
+      variant="outline"
+      padding="default"
+      data-testid="start-page-setting"
+    >
+      {children}
+    </Surface>
+  );
 }
 
 export function StartPageSettingControl({
@@ -157,10 +188,7 @@ export function StartPageSettingControl({
     : ['chat', 'file', 'url'];
 
   return (
-    <div
-      className={layout === 'row' ? 'flex flex-col' : 'rounded-lg border p-4'}
-      data-testid="start-page-setting"
-    >
+    <StartPageFrame layout={layout}>
       {/* One settings row in both layouts: the label and its explanation
           leading, the 144px dropdown trailing. The card frames that row for
           a dialog of cards. */}
@@ -235,24 +263,24 @@ export function StartPageSettingControl({
             placeholder="Find a file"
           />
           {files.length > 0 && (
-            <div
-              className={`max-h-44 overflow-y-auto rounded-lg p-1 ${HAIRLINE_INSET_RING_CLASS} ring-line-base`}
-            >
-              {files.map((file) => (
-                <PickerMenuOption
-                  key={`${file.repoId}:${file.relativePath}`}
-                  onClick={() => chooseFile(file)}
-                >
-                  <PickerMenuOptionContent>
-                    <PickerMenuOptionLabel>
-                      {projectType === 'multi-repo'
-                        ? `${file.repoName} / ${file.relativePath}`
-                        : file.relativePath}
-                    </PickerMenuOptionLabel>
-                  </PickerMenuOptionContent>
-                </PickerMenuOption>
-              ))}
-            </div>
+            <Surface variant="outline" className="overflow-hidden">
+              <div className="max-h-44 overflow-y-auto p-1">
+                {files.map((file) => (
+                  <PickerMenuOption
+                    key={`${file.repoId}:${file.relativePath}`}
+                    onClick={() => chooseFile(file)}
+                  >
+                    <PickerMenuOptionContent>
+                      <PickerMenuOptionLabel>
+                        {projectType === 'multi-repo'
+                          ? `${file.repoName} / ${file.relativePath}`
+                          : file.relativePath}
+                      </PickerMenuOptionLabel>
+                    </PickerMenuOptionContent>
+                  </PickerMenuOption>
+                ))}
+              </div>
+            </Surface>
           )}
           {(loadFailed || !selectedFileExists) && (
             <p className="text-xs fg-warning">File not found</p>
@@ -293,6 +321,6 @@ export function StartPageSettingControl({
           Opens to: {startPageLabel(value)}
         </p>
       )}
-    </div>
+    </StartPageFrame>
   );
 }

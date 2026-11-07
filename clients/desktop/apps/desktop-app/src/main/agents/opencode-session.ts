@@ -1,5 +1,6 @@
 import { isWatchDelegatesCompatibilityName } from '@canopy/desktop-shared/node/delegation/watch-delegates-tombstone';
-import { openOpenCodeExecutionRuntime } from '../opencode/execution-runtime';
+import { openOpenCodeExecutionForWorkerRun } from '../agent-runs/opencode-worker-runtime';
+import { assertAgentWorkerContext } from '../agent-runs/agent-worker-context';
 import { resolveSessionAiCreditsAttribution } from './ai-credits-routing';
 import { resolveGatewayModelEntry } from '@canopy/desktop-shared/lib/gateway-model-availability';
 import {
@@ -27,7 +28,7 @@ import { managedDelegationEnabled } from './delegation/gate';
 import type { ManagedDelegationSession } from './delegation/service';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { openCodeToolDisplay } from '@canopy/desktop-shared/node/opencode/tool-display';
-import { copilotMcpCallIdentity } from '@canopy/desktop-shared/node/copilot/tool-correlation';
+import { copilotMcpCallIdentity } from '@canopy/copilot-recipient/tool-correlation';
 import { APP_ADVISOR_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/app-advisor-tools';
 import { runRtkRewrite } from '@canopy/desktop-shared/node/rtk/rewrite';
 import {
@@ -122,6 +123,7 @@ export class OpenCodeProvider implements AgentProvider {
     onEvent: (event: unknown) => void | Promise<void>,
     getWindow: () => BrowserWindow | null,
   ): AgentSession {
+    assertAgentWorkerContext('OpenCodeProvider.createSession');
     const key = buildSessionKey(opts.projectId, opts.worktreeId, opts.chatId);
     const lifecycleScope = {
       projectId: opts.projectId,
@@ -270,14 +272,17 @@ export class OpenCodeProvider implements AgentProvider {
           'OpenCode is not available for this assistant surface.',
         );
       const proxy = getMcpHttpProxyService();
-      const runtime = await openOpenCodeExecutionRuntime({
-        model: turnModel,
-        sessionId: key,
-        cwd: opts.cwd,
-        signal: abort.signal,
-        workspaceId: opts.projectId,
-        attribution: () => resolveSessionAiCreditsAttribution(opts),
-      });
+      const runtime = await openOpenCodeExecutionForWorkerRun(
+        'opencodeSessionTurn',
+        {
+          model: turnModel,
+          sessionId: key,
+          cwd: opts.cwd,
+          signal: abort.signal,
+          workspaceId: opts.projectId,
+          attribution: () => resolveSessionAiCreditsAttribution(opts),
+        },
+      );
       const turnEmit = (event: Record<string, unknown>): void | Promise<void> =>
         emit(event, userMessageId);
       const closeTurn = async (): Promise<void> => {
@@ -557,6 +562,7 @@ export class OpenCodeProvider implements AgentProvider {
           projectId: opts.projectId,
           worktreeId: opts.worktreeId,
           chatId: opts.chatId,
+          interfaceTools: opts.interfaceTools ?? [],
           assistantMode: opts.assistantMode,
           ...(serverMode === 'app-advisor'
             ? { appAdvisorRuntime: opts.appAdvisorRuntime }

@@ -1,10 +1,17 @@
 import {
-  constants,
+  FeedbackBundleBuilder,
+  MAX_FILE_BYTES,
+  normalizeZipPath,
+  isPathWithinRoot,
+  safeLstat,
+} from './feedback-archive';
+export { MAX_FILE_BYTES } from './feedback-archive';
+import { FeedbackReportErrorSchema } from '@canopy/protocol/feedback-report';
+import {
   createReadStream,
   type Dirent,
-  type Stats,
   type ReadStream,
-  type WriteStream,
+  type Stats,
 } from 'node:fs';
 import {
   lstat,
@@ -26,18 +33,9 @@ import {
   type,
   version,
 } from 'node:os';
-import {
-  basename,
-  dirname,
-  join,
-  posix,
-  relative,
-  resolve,
-  sep,
-} from 'node:path';
+import { dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
-import { Readable } from 'node:stream';
-import { finished, pipeline } from 'node:stream/promises';
+import { finished } from 'node:stream/promises';
 import { app } from 'electron';
 import { BRAND } from '@canopy/brand/current';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
@@ -48,7 +46,6 @@ import {
   readMinidumpExecutablePath,
   type CrashDumpClassification,
 } from '@canopy/desktop-instrumentation/electron/main';
-import { ZipFile } from 'yazl';
 import {
   COWORK_HOME_WORKTREE_ID,
   FEEDBACK_AREAS,
@@ -107,7 +104,6 @@ import { flushMainProcessLogging } from '../lib/main-process-logging';
 import type { MainLogFlushResult } from '../lib/async-main-log-sink';
 import { listCrashDumpFiles } from '../observability/crash-dump-sweep';
 
-export const MAX_FILE_BYTES = 25 * 1024 * 1024;
 const MAX_OUTPUT_FILENAME_ATTEMPTS = 100;
 const FEEDBACK_VERSION = 1;
 const MAIN_LOG_FEEDBACK_FLUSH_TIMEOUT_MS = 1000;
@@ -125,17 +121,6 @@ const CRASH_DUMP_FEEDBACK_MAX_TOTAL_BYTES = 48 * 1024 * 1024;
 const CRASH_DUMP_BUNDLE_KEEP_REASONS: ReadonlySet<
   CrashDumpClassification['reason']
 > = new Set(['not_node', 'app_bundle', 'inside_app_root']);
-const SENSITIVE_TOP_LEVEL_ZIP_PARTS: ReadonlySet<string> = new Set<string>([
-  'secure',
-  'repos',
-  'plugin-cache',
-  'chat-plugins',
-  'attachments',
-]);
-const SENSITIVE_ANY_DEPTH_ZIP_PARTS: ReadonlySet<string> = new Set<string>([
-  'artifacts',
-  'foreign-activity-ledger.json',
-]);
 /**
  * Which audit event types contribute a transcript sidecar to a worktree-scoped
  * feedback bundle, and which to a chat-scoped one.
@@ -216,64 +201,6 @@ const TRANSCRIPT_WORKTREE_EVENTS: ReadonlySet<AgentAuditEventType> =
 const TRANSCRIPT_CHAT_EVENTS: ReadonlySet<AgentAuditEventType> =
   includedTranscriptEvents(TRANSCRIPT_CHAT_EVENT_INCLUSION);
 
-type SkippedReason =
-  | 'missing'
-  | 'symlink'
-  | 'too-large'
-  | 'inaccessible'
-  | 'out-of-root'
-  | 'policy-excluded';
-
-interface SkippedFile {
-  path: string;
-  reason: SkippedReason;
-}
-
-interface FeedbackManifest {
-  version: 1;
-  preparedAt: string;
-  description: string;
-  area: FeedbackArea;
-  workspaceSelections: FeedbackWorkspaceSelection[];
-  chatProjectIds: string[];
-  includeChatDetails: boolean;
-  includePipelineExecutions: boolean;
-  app: {
-    version: string;
-    runtimeMode: 'dev' | 'prod';
-    platform: NodeJS.Platform;
-    arch: string;
-    electron: string | undefined;
-    node: string;
-  };
-  machine: {
-    hostname: string;
-    osType: string;
-    osRelease: string;
-    osVersion: string;
-    totalMemoryBytes: number;
-    cpuCount: number;
-  };
-  modelHarnessAssignments: {
-    persistenceSchemaVersion: 1;
-    revision: number;
-    assignments: Record<
-      string,
-      {
-        source: string;
-        harness: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode';
-        defaultHarness: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode';
-        configurable: boolean;
-        overridden: boolean;
-      }
-    >;
-  };
-  /** Present only when the bundle holds crash dumps. */
-  crashDumps?: FeedbackCrashDumpsSummary;
-  includedFiles: string[];
-  skippedFiles: SkippedFile[];
-}
-
 interface FeedbackCrashDumpsSummary {
   included: number;
   sidecarPath: string;
@@ -294,23 +221,11 @@ interface NormalizedFeedbackRequest {
   includePipelineExecutions: boolean;
 }
 
-interface AddFileOptions {
-  sourceRoot: string;
-  allowChatContent?: boolean;
-  allowTranscript?: boolean;
-  excludedZipPathPrefixes?: readonly string[];
-}
-
 interface ReservedFeedbackOutput {
   filename: string;
   outputPath: string;
   fileHandle: FileHandle;
 }
-
-type LstatResult =
-  | { status: 'ok'; stats: Stats }
-  | { status: 'missing' }
-  | { status: 'inaccessible' };
 
 interface PipelineExecutionSnapshot {
   id: string;
@@ -361,383 +276,6 @@ interface PipelineExecutionSummarySnapshot {
   trigger_source?: unknown;
 }
 
-type StaticFeedbackManifest = Omit<
-  FeedbackManifest,
-  'includedFiles' | 'skippedFiles'
->;
-type BundleEntry =
-  | { kind: 'buffer'; path: string; bytes: Buffer; stats?: Stats }
-  | {
-      kind: 'file';
-      path: string;
-      source: string;
-      sourceRoot: string;
-      stats: Stats;
-    };
-
-class FeedbackBundleBuilder {
-  private readonly entries: BundleEntry[] = [];
-  private manifest: StaticFeedbackManifest | undefined;
-  private state: 'collecting' | 'writing' | 'succeeded' | 'failed' =
-    'collecting';
-  private readonly included = new Set<string>();
-  private readonly reserved = new Set<string>();
-  private readonly skipped: SkippedFile[] = [];
-
-  includedFiles(): string[] {
-    return Array.from(this.included).sort();
-  }
-
-  isIncluded(zipPath: string): boolean {
-    return this.included.has(zipPath);
-  }
-
-  skippedFiles(): SkippedFile[] {
-    return [...this.skipped];
-  }
-
-  async addFileIfSafe(
-    sourcePath: string,
-    zipPath: string,
-    options: AddFileOptions,
-  ): Promise<void> {
-    this.assertCollecting();
-    const normalizedZipPath = normalizeZipPath(zipPath);
-    if (normalizedZipPath === null) {
-      this.recordSkipped(zipPath, 'out-of-root');
-      return;
-    }
-    if (!isPathWithinRoot(sourcePath, options.sourceRoot)) {
-      this.recordSkipped(normalizedZipPath, 'out-of-root');
-      return;
-    }
-    if (!isAllowedZipPath(normalizedZipPath, options)) {
-      this.recordSkipped(normalizedZipPath, 'policy-excluded');
-      return;
-    }
-    if (!this.reservePath(normalizedZipPath)) {
-      return;
-    }
-
-    const fileStatResult = await safeLstat(sourcePath);
-    if (fileStatResult.status === 'inaccessible') {
-      this.releasePath(normalizedZipPath);
-      this.recordSkipped(normalizedZipPath, 'inaccessible');
-      return;
-    }
-    if (fileStatResult.status === 'missing') {
-      this.releasePath(normalizedZipPath);
-      this.recordSkipped(normalizedZipPath, 'missing');
-      return;
-    }
-    const fileStat = fileStatResult.stats;
-    if (fileStat.isSymbolicLink()) {
-      this.releasePath(normalizedZipPath);
-      this.recordSkipped(normalizedZipPath, 'symlink');
-      return;
-    }
-    if (!fileStat.isFile()) {
-      this.releasePath(normalizedZipPath);
-      return;
-    }
-    if (fileStat.size > MAX_FILE_BYTES) {
-      this.releasePath(normalizedZipPath);
-      this.recordSkipped(normalizedZipPath, 'too-large');
-      return;
-    }
-
-    this.entries.push(
-      fileStat.size === 0
-        ? {
-            kind: 'buffer',
-            path: normalizedZipPath,
-            bytes: Buffer.alloc(0),
-            stats: fileStat,
-          }
-        : {
-            kind: 'file',
-            path: normalizedZipPath,
-            source: sourcePath,
-            sourceRoot: options.sourceRoot,
-            stats: fileStat,
-          },
-    );
-    this.included.add(normalizedZipPath);
-  }
-
-  async addDirectoryIfSafe(
-    sourceDir: string,
-    zipDir: string,
-    options: AddFileOptions,
-  ): Promise<void> {
-    this.assertCollecting();
-    const normalizedZipDir = normalizeZipPath(zipDir);
-    if (normalizedZipDir === null) {
-      this.recordSkipped(zipDir, 'out-of-root');
-      return;
-    }
-    if (!isPathWithinRoot(sourceDir, options.sourceRoot)) {
-      this.recordSkipped(normalizedZipDir, 'out-of-root');
-      return;
-    }
-    if (!isAllowedZipPath(normalizedZipDir, options)) {
-      this.recordSkipped(normalizedZipDir, 'policy-excluded');
-      return;
-    }
-    if (!this.reservePath(normalizedZipDir)) {
-      return;
-    }
-
-    const dirStatResult = await safeLstat(sourceDir);
-    if (dirStatResult.status === 'inaccessible') {
-      this.releasePath(normalizedZipDir);
-      this.recordSkipped(normalizedZipDir, 'inaccessible');
-      return;
-    }
-    if (dirStatResult.status === 'missing') {
-      this.releasePath(normalizedZipDir);
-      this.recordSkipped(normalizedZipDir, 'missing');
-      return;
-    }
-    const dirStat = dirStatResult.stats;
-    if (dirStat.isSymbolicLink()) {
-      this.releasePath(normalizedZipDir);
-      this.recordSkipped(normalizedZipDir, 'symlink');
-      return;
-    }
-    if (!dirStat.isDirectory()) {
-      this.releasePath(normalizedZipDir);
-      return;
-    }
-
-    let entries: Dirent<string>[];
-    try {
-      entries = await readdir(sourceDir, { withFileTypes: true });
-    } catch {
-      this.releasePath(normalizedZipDir);
-      this.recordSkipped(normalizedZipDir, 'inaccessible');
-      return;
-    }
-
-    await Promise.all(
-      entries.map(async (entry) => {
-        const childSource = join(sourceDir, entry.name);
-        const childZipPath = posix.join(normalizedZipDir, entry.name);
-        if (entry.isSymbolicLink()) {
-          this.recordSkipped(childZipPath, 'symlink');
-          return;
-        }
-        if (entry.isDirectory()) {
-          await this.addDirectoryIfSafe(childSource, childZipPath, options);
-          return;
-        }
-        if (entry.isFile()) {
-          await this.addFileIfSafe(childSource, childZipPath, options);
-        }
-      }),
-    );
-  }
-
-  addManifest(manifest: StaticFeedbackManifest): void {
-    this.assertCollecting();
-    this.manifest = manifest;
-  }
-
-  addGeneratedJson(zipPath: string, value: unknown): void {
-    this.assertCollecting();
-    const normalizedZipPath = normalizeZipPath(zipPath);
-    if (normalizedZipPath === null) {
-      this.recordSkipped(zipPath, 'out-of-root');
-      return;
-    }
-    if (!isAllowedZipPath(normalizedZipPath, { sourceRoot: '' })) {
-      this.recordSkipped(normalizedZipPath, 'policy-excluded');
-      return;
-    }
-    if (!this.reservePath(normalizedZipPath)) {
-      return;
-    }
-    this.entries.push({
-      kind: 'buffer',
-      path: normalizedZipPath,
-      bytes: Buffer.from(`${JSON.stringify(value, null, 2)}\n`, 'utf8'),
-    });
-    this.included.add(normalizedZipPath);
-  }
-
-  async writeTo(fileHandle: FileHandle): Promise<void> {
-    this.assertCollecting();
-    this.state = 'writing';
-    const zip = new ZipFile();
-    const controller = new AbortController();
-    const sources = new Set<ReadStream>();
-    const pending = new Set<Promise<void>>();
-    let previousClosed = Promise.resolve();
-    let firstError: Error | undefined;
-    let output: WriteStream | undefined;
-    let outputClosed = Promise.resolve();
-    const fail = (error: unknown): void => {
-      if (firstError !== undefined) return;
-      firstError =
-        error instanceof Error ? error : new Error('Feedback archive failed');
-      this.state = 'failed';
-      controller.abort();
-      output?.destroy();
-      for (const source of Array.from(sources)) source.destroy();
-    };
-    // Lazy entry registration can start a producer immediately. All error
-    // listeners and the observed pipeline must exist before the first entry.
-    zip.on('error', fail);
-    let streamDone: Promise<void> = Promise.resolve();
-    try {
-      // eslint-disable-next-line admitted-writers/no-unadmitted-write -- streams into the reserved feedback zip, never preferences; remove when the bundle stops naming preferences.
-      output = fileHandle.createWriteStream({ autoClose: true });
-      output.on('error', fail);
-      outputClosed = new Promise<void>((resolveClosed) => {
-        output?.once('close', resolveClosed);
-      });
-      streamDone = pipeline(zip.outputStream, output, {
-        signal: controller.signal,
-      }).catch(fail);
-      for (const entry of this.entries) {
-        if (firstError !== undefined) break;
-        if (entry.kind === 'buffer') {
-          zip.addBuffer(
-            entry.bytes,
-            entry.path,
-            entry.stats === undefined
-              ? undefined
-              : {
-                  mtime: entry.stats.mtime,
-                  mode: entry.stats.mode,
-                },
-          );
-          continue;
-        }
-        zip.addReadStreamLazy(
-          entry.path,
-          { mtime: entry.stats.mtime, mode: entry.stats.mode },
-          (callback) => {
-            let settled = false;
-            const settle = (error: Error | null, source: Readable): void => {
-              if (settled) return;
-              settled = true;
-              callback(error, source);
-            };
-            const task = (async (): Promise<void> => {
-              // yazl sequences data, not asynchronous descriptor closure. Await
-              // the preceding source's close before opening another descriptor.
-              await previousClosed;
-              if (firstError !== undefined) {
-                settle(firstError, Readable.from([]));
-                return;
-              }
-              const opened = await openFeedbackSource(entry, controller.signal);
-              if (opened.status === 'skipped') {
-                this.included.delete(entry.path);
-                this.recordSkipped(entry.path, opened.reason);
-                settle(null, Readable.from([]));
-                return;
-              }
-              const handle = opened.handle;
-              if (firstError !== undefined) {
-                await closeFileHandle(handle);
-                settle(firstError, Readable.from([]));
-                return;
-              }
-              let source: ReadStream;
-              try {
-                source = handle.createReadStream({
-                  start: 0,
-                  end: entry.stats.size - 1,
-                  autoClose: true,
-                });
-              } catch (error) {
-                await closeFileHandle(handle);
-                throw error;
-              }
-              sources.add(source);
-              // Retain the listener even after close: late secondary errors must
-              // remain handled and must never replace the original failure.
-              source.on('error', fail);
-              previousClosed = new Promise<void>((resolveClosed) => {
-                source.once('close', () => {
-                  sources.delete(source);
-                  resolveClosed();
-                });
-              });
-              settle(null, source);
-            })().catch((error: unknown) => {
-              fail(error);
-              settle(
-                firstError ?? new Error('Feedback source failed'),
-                Readable.from([]),
-              );
-            });
-            pending.add(task);
-            void task.finally(() => pending.delete(task));
-          },
-        );
-      }
-      if (firstError === undefined) {
-        zip.addReadStreamLazy('feedback.json', (callback) => {
-          let settled = false;
-          try {
-            if (this.manifest === undefined)
-              throw new Error('Feedback manifest is required');
-            const manifest: FeedbackManifest = {
-              ...this.manifest,
-              includedFiles: this.includedFiles(),
-              skippedFiles: this.skippedFiles(),
-            };
-            const bytes = Buffer.from(
-              `${JSON.stringify(manifest, null, 2)}\n`,
-              'utf8',
-            );
-            settled = true;
-            callback(null, Readable.from([bytes]));
-          } catch (error) {
-            fail(error);
-            if (!settled) callback(firstError, Readable.from([]));
-          }
-        });
-        zip.end();
-      }
-    } catch (error) {
-      fail(error);
-    }
-    await streamDone;
-    // Aborting settles the destination independently of source opens. Wait
-    // for those opens to transfer or close their handles before deletion.
-    await Promise.all(pending);
-    await previousClosed;
-    await outputClosed;
-    if (firstError !== undefined) throw firstError;
-    this.state = 'succeeded';
-  }
-
-  private assertCollecting(): void {
-    if (this.state !== 'collecting')
-      throw new Error('Feedback builder is single-use');
-  }
-
-  recordSkipped(path: string, reason: SkippedReason): void {
-    this.skipped.push({ path, reason });
-  }
-
-  private reservePath(path: string): boolean {
-    if (this.reserved.has(path)) {
-      return false;
-    }
-    this.reserved.add(path);
-    return true;
-  }
-
-  private releasePath(path: string): void {
-    this.reserved.delete(path);
-  }
-}
-
 /**
  * Where the produced diagnostics zip should be written.
  * - `downloads`: the user's Downloads directory (the offline export path).
@@ -747,9 +285,12 @@ class FeedbackBundleBuilder {
 export type FeedbackBundleDestination = 'downloads' | 'temp';
 
 export interface PrepareFeedbackBundleOptions {
+  /** Snapshots keep editable answers outside their immutable archive. */
+  allowEmptyDescription?: boolean;
+  bounded?: boolean;
   destination?: FeedbackBundleDestination;
-  /** Defaults to true. Submit turns it off when dumps would push the bundle
-   * past the upload limit. */
+  /** Defaults to true. Snapshot preparation or legacy submit turns it off
+   * when dumps would push the bundle past its size limit. */
   includeCrashDumps?: boolean;
 }
 
@@ -759,10 +300,20 @@ export async function prepareFeedbackBundle(
 ): Promise<FeedbackPrepareResponse> {
   const destination: FeedbackBundleDestination =
     options?.destination ?? 'downloads';
-  const normalized = normalizeRequest(request);
+  const description = request.description.trim();
+  if (!options?.allowEmptyDescription && description.length === 0)
+    throw new Error('Feedback description is required');
+  const normalized: NormalizedFeedbackRequest = {
+    description,
+    ...normalizeScope(request),
+  };
+  const reportError =
+    request.error === undefined
+      ? undefined
+      : FeedbackReportErrorSchema.parse(request.error);
   const preparedAtDate = new Date();
   const preparedAt = preparedAtDate.toISOString();
-  const builder = new FeedbackBundleBuilder();
+  const builder = new FeedbackBundleBuilder(options?.bounded);
   let reservedOutput: ReservedFeedbackOutput | null = null;
 
   try {
@@ -773,6 +324,7 @@ export async function prepareFeedbackBundle(
     );
     const harnessSnapshot = getModelHarnessAssignmentSnapshot();
     builder.addManifest({
+      ...(reportError ? { error: reportError } : {}),
       version: FEEDBACK_VERSION,
       preparedAt,
       description: normalized.description,
@@ -819,7 +371,7 @@ export async function prepareFeedbackBundle(
     });
     reservedOutput = await reserveFeedbackOutput(preparedAtDate, destination);
     try {
-      await builder.writeTo(reservedOutput.fileHandle);
+      await builder.writeTo(reservedOutput.fileHandle, options?.bounded);
     } finally {
       await closeFileHandle(reservedOutput.fileHandle);
     }
@@ -885,84 +437,6 @@ export async function cleanupStaleTemporaryFeedbackBundles(): Promise<void> {
   }
 }
 
-async function openFeedbackSource(
-  entry: Extract<BundleEntry, { kind: 'file' }>,
-  signal: AbortSignal,
-): Promise<
-  | { status: 'opened'; handle: FileHandle }
-  | { status: 'skipped'; reason: SkippedReason }
-> {
-  let handle: FileHandle | undefined;
-  try {
-    // Reject symlinks at every component below the trusted root, including the
-    // root itself. realpath also checks containment; O_NOFOLLOW protects the
-    // final component on platforms that support it. Node has no portable
-    // openat traversal, so concurrent ancestor substitution is not atomic.
-    if (await feedbackSourceHasSymlink(entry))
-      return { status: 'skipped', reason: 'symlink' };
-    const root = await realpath(entry.sourceRoot);
-    if (!isPathWithinRoot(await realpath(entry.source), root))
-      return { status: 'skipped', reason: 'out-of-root' };
-    const before = await lstat(entry.source);
-    if (!before.isFile())
-      throw new Error('Feedback source is not a regular file');
-    signal.throwIfAborted();
-    // eslint-disable-next-line admitted-writers/no-unadmitted-write -- opens a bundle source such as preferences O_RDONLY to copy it into the zip; remove when the bundle stops naming preferences.
-    handle = await open(
-      entry.source,
-      constants.O_RDONLY |
-        (constants.O_NOFOLLOW ?? 0) |
-        (constants.O_NONBLOCK ?? 0),
-    );
-    const opened = await handle.stat();
-    if (
-      !opened.isFile() ||
-      before.dev !== opened.dev ||
-      before.ino !== opened.ino
-    ) {
-      throw new Error('Feedback source changed identity during open');
-    }
-    if (await feedbackSourceHasSymlink(entry)) {
-      await closeFileHandle(handle);
-      return { status: 'skipped', reason: 'symlink' };
-    }
-    const after = await lstat(entry.source);
-    if (
-      !after.isFile() ||
-      after.dev !== opened.dev ||
-      after.ino !== opened.ino ||
-      !isPathWithinRoot(await realpath(entry.source), root)
-    ) {
-      throw new Error('Feedback source changed during validation');
-    }
-    return { status: 'opened', handle };
-  } catch (error) {
-    if (handle !== undefined) await closeFileHandle(handle);
-    const code = getErrorCode(error);
-    if (code === 'ENOENT' || code === 'ENOTDIR')
-      return { status: 'skipped', reason: 'missing' };
-    if (code === 'EACCES' || code === 'EPERM')
-      return { status: 'skipped', reason: 'inaccessible' };
-    if (code === 'ELOOP') return { status: 'skipped', reason: 'symlink' };
-    throw error;
-  }
-}
-
-async function feedbackSourceHasSymlink(
-  entry: Extract<BundleEntry, { kind: 'file' }>,
-): Promise<boolean> {
-  const parts = relative(
-    resolve(entry.sourceRoot),
-    resolve(entry.source),
-  ).split(sep);
-  let path = resolve(entry.sourceRoot);
-  for (const part of ['', ...parts]) {
-    if (part !== '') path = join(path, part);
-    if ((await lstat(path)).isSymbolicLink()) return true;
-  }
-  return false;
-}
-
 async function reserveFeedbackOutput(
   preparedAtDate: Date,
   destination: FeedbackBundleDestination,
@@ -977,7 +451,7 @@ async function reserveFeedbackOutput(
     const outputPath = join(outputDir, filename);
     try {
       // eslint-disable-next-line admitted-writers/no-unadmitted-write -- reserves a new feedback zip; remove when the bundle stops naming preferences.
-      const fileHandle = await open(outputPath, 'wx');
+      const fileHandle = await open(outputPath, 'wx', 0o600);
       if (destination === 'temp') activeTemporaryOutputs.add(outputPath);
       return { filename, outputPath, fileHandle };
     } catch (error) {
@@ -1015,13 +489,9 @@ async function closeFileHandle(fileHandle: FileHandle): Promise<void> {
   }
 }
 
-function normalizeRequest(
-  request: FeedbackPrepareRequest,
-): NormalizedFeedbackRequest {
-  const description = request.description.trim();
-  if (description.length === 0) {
-    throw new Error('Feedback description is required');
-  }
+function normalizeScope(
+  request: Omit<FeedbackPrepareRequest, 'description'>,
+): Omit<NormalizedFeedbackRequest, 'description'> {
   if (!FEEDBACK_AREAS.includes(request.area)) {
     throw new Error(`Invalid feedback area: ${request.area}`);
   }
@@ -1050,7 +520,6 @@ function normalizeRequest(
     (request.includePipelineExecutions ?? false);
 
   return {
-    description,
     area: request.area,
     workspaceSelections: scopedWorkspaceSelections,
     chatProjectIds: scopedChatProjectIds,
@@ -1069,6 +538,7 @@ async function collectFeedbackFiles(
   const crashDumps = includeDumps
     ? await includeCrashDumps(builder)
     : undefined;
+  if (!includeDumps) builder.recordSkipped(CRASH_DUMPS_ZIP_DIR, 'too-large');
   if (request.area === 'pipelines') {
     await includePipelineDiagnostics(builder);
   }
@@ -2583,78 +2053,6 @@ function toZipPath(pathValue: string): string {
   return pathValue.split(sep).join(posix.sep);
 }
 
-function normalizeZipPath(zipPath: string): string | null {
-  const normalized = posix.normalize(zipPath.split('\\').join('/'));
-  if (
-    normalized.length === 0 ||
-    normalized === '.' ||
-    normalized.startsWith('/') ||
-    normalized === '..' ||
-    normalized.startsWith('../') ||
-    normalized.includes('/../')
-  ) {
-    return null;
-  }
-  return normalized;
-}
-
-function isPathWithinRoot(sourcePath: string, sourceRoot: string): boolean {
-  const resolvedPath = resolve(sourcePath);
-  const resolvedRoot = resolve(sourceRoot);
-  return (
-    resolvedPath === resolvedRoot ||
-    resolvedPath.startsWith(`${resolvedRoot}${sep}`)
-  );
-}
-
-function isAllowedZipPath(zipPath: string, options: AddFileOptions): boolean {
-  if (
-    options.excludedZipPathPrefixes?.some(
-      (prefix) => zipPath === prefix || zipPath.startsWith(`${prefix}/`),
-    )
-  )
-    return false;
-  const parts = zipPath.split('/');
-  const firstPart = parts[0];
-  if (firstPart !== undefined && SENSITIVE_TOP_LEVEL_ZIP_PARTS.has(firstPart)) {
-    return false;
-  }
-  if (parts.some((part) => SENSITIVE_ANY_DEPTH_ZIP_PARTS.has(part))) {
-    return false;
-  }
-  if (basename(zipPath) === 'mcp-oauth-tokens.json') {
-    return false;
-  }
-  if (
-    (basename(zipPath) === 'conversation.json' ||
-      basename(zipPath) === 'chat-tabs.json' ||
-      parts.includes('chat-storage-v2') ||
-      parts.includes('chat-storage-manifests')) &&
-    options.allowChatContent !== true
-  ) {
-    return false;
-  }
-  if (
-    (zipPath === 'agent-observability/transcripts' ||
-      zipPath.startsWith('agent-observability/transcripts/')) &&
-    options.allowTranscript !== true
-  ) {
-    return false;
-  }
-  return !isSqlitePath(zipPath);
-}
-
-function isSqlitePath(zipPath: string): boolean {
-  return (
-    zipPath.endsWith('.sqlite') ||
-    zipPath.endsWith('.sqlite-shm') ||
-    zipPath.endsWith('.sqlite-wal') ||
-    zipPath.endsWith('.db') ||
-    zipPath.endsWith('.db-shm') ||
-    zipPath.endsWith('.db-wal')
-  );
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -2700,18 +2098,6 @@ function setRecordValue(
 ): void {
   if (value !== undefined) {
     record[key] = value;
-  }
-}
-
-async function safeLstat(sourcePath: string): Promise<LstatResult> {
-  try {
-    return { status: 'ok', stats: await lstat(sourcePath) };
-  } catch (error) {
-    const code = getErrorCode(error);
-    if (code === 'ENOENT' || code === 'ENOTDIR') {
-      return { status: 'missing' };
-    }
-    return { status: 'inaccessible' };
   }
 }
 

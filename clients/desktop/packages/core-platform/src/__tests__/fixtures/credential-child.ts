@@ -1,5 +1,6 @@
 // Test-only: operates exclusively on the unique synthetic targets supplied by the golden.
-import { readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
 import { createInterface } from 'node:readline';
@@ -13,13 +14,27 @@ function string(value: unknown): string {
   if (typeof value !== 'string') throw new Error('Invalid fixture input.');
   return value;
 }
-const addon: unknown = createRequire(import.meta.url)(string(process.argv[2]));
 const request: unknown = JSON.parse(
   readFileSync(string(process.argv[3]), 'utf8'),
 );
+const mode = string(field(request, 'mode'));
+const profileStarted = performance.now();
+function profileStage(stage: string): void {
+  if (mode !== 'profile') return;
+  try {
+    appendFileSync(
+      join(dirname(string(process.argv[3])), 'profile-child-node.log'),
+      `credential-profile-node stage=${stage} elapsedMs=${Math.round(performance.now() - profileStarted)}\n`,
+    );
+  } catch {
+    process.stderr.write('credential-profile-node diagnostic-write-refused\n');
+  }
+}
+profileStage('addon-load:start');
+const addon: unknown = createRequire(import.meta.url)(string(process.argv[2]));
+profileStage('addon-load:done');
 const sid = string(process.argv[4] || field(request, 'principal'));
 const target = string(field(request, 'target'));
-const mode = string(field(request, 'mode'));
 const mutex = `Global\\canopy.vault.v1.${createHash('sha256')
   .update(JSON.stringify([sid, target]))
   .digest('hex')}`;
@@ -38,10 +53,13 @@ async function run(
   name = target,
   material = new Uint8Array(),
 ): Promise<Reply> {
+  const stage = name === target ? op : `control-${op}`;
+  profileStage(`${stage}:start`);
   const raw: unknown = await Promise.resolve(
     method('run', op, name, mutex, material, sid, signal),
   );
   const code = string(field(raw, 'code'));
+  profileStage(`${stage}:done code=${code}`);
   const bytes = field(raw, 'material');
   if (!(bytes instanceof Uint8Array)) return { code };
   try {
@@ -100,6 +118,7 @@ async function main(): Promise<void> {
     receipt.sameDelete = await run('delete');
     receipt.controlDelete = await run('delete', control);
   }
+  profileStage('vault-probe:start');
   const vaultFile = field(request, 'vaultFile');
   if (typeof vaultFile === 'string') {
     try {
@@ -110,8 +129,11 @@ async function main(): Promise<void> {
       receipt.directoryDenied = code === 'EACCES' || code === 'EPERM';
     }
   }
+  profileStage('vault-probe:done');
   // Synthetic bytes only: no session/user/profile facts in the receipt.
+  profileStage('receipt:start');
   writeFileSync(string(field(request, 'output')), JSON.stringify(receipt));
+  profileStage('receipt:done');
 }
 main().then(
   () => {

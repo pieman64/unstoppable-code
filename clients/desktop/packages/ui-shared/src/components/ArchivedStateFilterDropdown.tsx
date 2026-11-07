@@ -114,7 +114,7 @@ export function ArchivedStateFilterDropdown({
             >
               <PickerMenuOptionCheck selected={isVisible} reserveSpace />
               <PickerMenuOptionLeading tone="secondary">
-                <Icon width={14} height={14} aria-hidden="true" />
+                <Icon size="sm" aria-hidden="true" />
               </PickerMenuOptionLeading>
               <PickerMenuOptionContent>
                 <PickerMenuOptionLabel>

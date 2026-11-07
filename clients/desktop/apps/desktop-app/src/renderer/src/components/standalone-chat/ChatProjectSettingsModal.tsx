@@ -13,6 +13,7 @@ import {
   InstructionsEditor,
   Notice,
   NoticeButton,
+  Surface,
 } from '@canopy/ui-shared/components';
 import { offerLifecycleJournalQuarantine } from '@canopy/app-state';
 import {
@@ -628,12 +629,14 @@ export function ChatProjectSettingsModal({
               )}
             </FormField>
 
-            <div className="rounded-lg border bg-secondary/20 px-3 py-3">
-              <div className="text-xs font-medium fg-secondary">Created</div>
-              <div className="mt-1 text-s fg-primary">
-                {new Date(currentProject.createdAt).toLocaleString()}
+            <Surface variant="group">
+              <div className="px-3 py-3">
+                <div className="text-xs font-medium fg-secondary">Created</div>
+                <div className="mt-1 text-s fg-primary">
+                  {new Date(currentProject.createdAt).toLocaleString()}
+                </div>
               </div>
-            </div>
+            </Surface>
 
             <AlwaysShowWorkspaceCard
               checked={alwaysShow}
@@ -662,8 +665,9 @@ export function ChatProjectSettingsModal({
               />
             )}
 
-            <div
-              className="rounded-lg border p-4"
+            <Surface
+              variant="outline"
+              padding="default"
               data-testid="chat-project-settings-retention"
             >
               <div data-testid="chat-project-settings-retention-card">
@@ -719,7 +723,7 @@ export function ChatProjectSettingsModal({
                   textSize="s"
                 />
               </div>
-            </div>
+            </Surface>
           </div>
         )}
 
@@ -833,7 +837,7 @@ export function ChatProjectSettingsModal({
           ))}
 
         {activeTab === 'danger' && !isDefaultProject && (
-          <div className="rounded-lg border border-line-destructive/30 p-4">
+          <Surface variant="outline" padding="default">
             <Heading level={3} variant="title" tone="destructive">
               {dangerTabCopy.title}
             </Heading>
@@ -841,14 +845,16 @@ export function ChatProjectSettingsModal({
               {dangerTabCopy.description}
             </p>
 
-            <div className="mt-4 rounded-lg border border-line-destructive/20 px-3 py-2">
-              <div className="text-s fg-primary">
-                {dangerTabCopy.deletePermanentlyLabel}
+            <Surface variant="outline" className="mt-4">
+              <div className="px-3 py-2">
+                <div className="text-s fg-primary">
+                  {dangerTabCopy.deletePermanentlyLabel}
+                </div>
+                <div className="text-xs fg-secondary">
+                  {dangerTabCopy.deletePermanentlyDescription}
+                </div>
               </div>
-              <div className="text-xs fg-secondary">
-                {dangerTabCopy.deletePermanentlyDescription}
-              </div>
-            </div>
+            </Surface>
 
             {!confirmingDelete ? (
               <Button
@@ -879,7 +885,7 @@ export function ChatProjectSettingsModal({
                 </Button>
               </div>
             )}
-          </div>
+          </Surface>
         )}
       </div>
 

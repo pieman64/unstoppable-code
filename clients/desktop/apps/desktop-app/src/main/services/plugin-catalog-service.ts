@@ -25,10 +25,12 @@ import type { CollectionSaveGuard } from '../collections/collection-store';
 import {
   resourceContextSnapshot,
   assertResourceContextSnapshot,
+  resourceAccountSnapshot,
 } from '../lib/resource-context';
+import { notifyDesktopInventoryChanged } from './desktop-inventory-sync-signals';
 import { skillResourceContextEnabled } from '../skills/resource-lanes';
+import { SkillServiceResultError } from '../canopy-runtime/core-skill-catalog-host';
 import {
-  assertStoredSkillContext,
   annotateSharedSkillInstalls,
   filterPersonalStoredSkills,
   filterStoredSkillContexts,
@@ -156,6 +158,25 @@ export async function buildPluginCatalog(): Promise<PortalPluginCatalog> {
   };
 }
 
+/**
+ * The picker catalog for core reads (CAN-4123): the same lists as
+ * buildPluginCatalog, with plugins read from the cache only. Never refreshes
+ * providers and never seeds curated defaults.
+ */
+export async function buildCachedPluginCatalog(): Promise<PortalPluginCatalog> {
+  const [collections, plugins, mcpServers] = await Promise.all([
+    readCatalogCollections(),
+    readCachedCatalogPlugins(),
+    readCatalogMcpServers(),
+  ]);
+  return {
+    collections,
+    skills: await readCatalogSkills(),
+    plugins,
+    mcpServers,
+  };
+}
+
 async function readCatalogCollections(): Promise<
   PortalPluginCatalogCollection[]
 > {
@@ -198,6 +219,41 @@ async function readCatalogSkills(): Promise<PortalPluginCatalogSkill[]> {
 async function readCatalogPlugins(): Promise<PortalPluginCatalogPlugin[]> {
   try {
     const result = await loadMarketplaces();
+    if (!result.success || !result.data) {
+      return [];
+    }
+    const rows: PortalPluginCatalogPlugin[] = [];
+    for (const marketplace of result.data.marketplaces) {
+      for (const plugin of marketplace.plugins) {
+        rows.push({
+          marketplaceId: plugin.marketplaceId,
+          pluginName: plugin.name,
+          name: plugin.name,
+          description: plugin.description ?? '',
+          marketplaceName: marketplace.name,
+          // Mirror the desktop chat Plugins-modal selectability rule
+          // (`pluginSelectorScope.ts` → `getUnsupportedReason`), which gates on
+          // provider support only. `codexCompatDisabled` gates real
+          // invocability elsewhere but is intentionally NOT applied here so the
+          // portal picker stays visually consistent with the desktop picker.
+          claudeSupported: plugin.providerSupport.claude === 'native',
+          codexSupported: plugin.providerSupport.codex !== 'none',
+        });
+      }
+    }
+    return rows;
+  } catch {
+    return [];
+  }
+}
+
+async function readCachedCatalogPlugins(): Promise<
+  PortalPluginCatalogPlugin[]
+> {
+  try {
+    const { loadMarketplacesCacheOnly } =
+      await import('../plugins/plugin-service');
+    const result = await loadMarketplacesCacheOnly();
     if (!result.success || !result.data) {
       return [];
     }
@@ -1044,22 +1100,25 @@ export async function readPortalSkill(
       'Skill identifiers must not contain path separators.',
     );
   }
-  const { readSkillContent } = await import('../skills/skill-service');
-  await assertStoredSkillContext(`${sourceId}/${skillName}`);
-  const result = readSkillContent(sourceId, skillName);
-  if (!result.success || !result.data) {
-    throw codedError(
-      'not_found',
-      result.success
-        ? 'Skill content unavailable.'
-        : result.error || 'Skill not found.',
-    );
+  let content: {
+    frontmatter: Record<string, unknown>;
+    body: string;
+    truncated: boolean;
+  };
+  try {
+    const { readSkillContentThroughCore } =
+      await import('../canopy-runtime/skill-catalog-dispatch');
+    content = await readSkillContentThroughCore(sourceId, skillName);
+  } catch (error) {
+    if (error instanceof SkillServiceResultError)
+      throw codedError('not_found', error.message);
+    throw error;
   }
-  const { body, truncated } = truncateBody(result.data.body);
+  const { body, truncated } = truncateBody(content.body);
   return fitMarkdownContentToBudget({
-    frontmatter: result.data.frontmatter,
+    frontmatter: content.frontmatter,
     body,
-    truncated,
+    truncated: truncated || content.truncated,
   });
 }
 
@@ -1225,15 +1284,7 @@ export async function listPortalMcpServers(): Promise<PortalMcpListServersResult
   // Reuse the desktop's provider read without holding cached inventory behind
   // its CLI health checks. Only completed link facts cross the boundary;
   // CLI diagnostics, install URLs and host paths stay local.
-  const providerConnectors = (await readPortalProviderConnectors()).map(
-    ({ provider, connectors }) => ({
-      provider,
-      connectors: connectors.map(({ displayName, connected }) => ({
-        displayName,
-        connected,
-      })),
-    }),
-  );
+  const providerConnectors = await readPortalProviderConnectors();
   const statuses = servers.length ? await readPortalMcpStatuses() : [];
   const shareResolver = servers.some(
     (server) => server.curatedKey !== undefined,
@@ -1260,28 +1311,132 @@ export async function listPortalMcpServers(): Promise<PortalMcpListServersResult
   );
 }
 
-// A timed-out Portal read must not start another CLI discovery while the first
-// is still pending. Keep only that request, not a stale provider-status cache.
-let portalProviderDiscovery:
-  | ReturnType<typeof listAdvertisedProviderConnectors>
-  | undefined;
+type PortalProviderFacts = NonNullable<
+  PortalMcpListServersResult['providerConnectors']
+>;
 
-async function readPortalProviderConnectors(): Promise<
-  Awaited<ReturnType<typeof listAdvertisedProviderConnectors>>
-> {
-  const request = (portalProviderDiscovery ??=
-    listAdvertisedProviderConnectors()
-      .catch(() => [])
-      .finally(() => {
-        portalProviderDiscovery = undefined;
-      }));
+interface PortalProviderDiscovery {
+  request: Promise<PortalProviderFacts>;
+  timedOutProjection?: string;
+}
+
+interface PortalProviderContext {
+  scope: string;
+  facts: PortalProviderFacts;
+  pending?: PortalProviderDiscovery;
+}
+
+let portalProviderContext: PortalProviderContext | undefined;
+
+/** Use existing observed auth boundaries; never probe or read credentials. */
+async function portalProviderScope(): Promise<string> {
+  const account = await resourceAccountSnapshot();
+  const { peekProviderAccountIdentity } =
+    await import('../auth/provider-auth-state');
+  return JSON.stringify([
+    account,
+    peekProviderAccountIdentity('claude')?.providerAccountKey ?? null,
+    peekProviderAccountIdentity('codex')?.providerAccountKey ?? null,
+    process.env.CODEX_HOME ?? null,
+  ]);
+}
+
+/** Preserve boundary-visible distinctions, ignoring irrelevant list ordering. */
+function portalProviderProjection(facts: PortalProviderFacts): string {
+  return JSON.stringify(
+    facts
+      .map(({ provider, connectors }) =>
+        JSON.stringify([
+          provider,
+          connectors
+            .map(({ displayName, connected }) =>
+              JSON.stringify([displayName, connected]),
+            )
+            .sort(),
+        ]),
+      )
+      .sort(),
+  );
+}
+
+async function settlePortalProviderDiscovery(
+  context: PortalProviderContext,
+  discovery: PortalProviderDiscovery,
+  facts: PortalProviderFacts,
+): Promise<PortalProviderFacts> {
+  const scope = await portalProviderScope();
+  if (portalProviderContext !== context || context.scope !== scope) return [];
+  context.facts = facts;
+  if (
+    discovery.timedOutProjection !== undefined &&
+    discovery.timedOutProjection !== portalProviderProjection(facts)
+  )
+    notifyDesktopInventoryChanged(['mcp_servers']);
+  return facts;
+}
+
+async function readPortalProviderConnectors(): Promise<PortalProviderFacts> {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<[]>((resolve): void => {
-    timer = setTimeout((): void => resolve([]), 250);
-    timer.unref?.();
-  });
+  let context = portalProviderContext;
   try {
-    return await Promise.race([request, timeout]);
+    const scope = await portalProviderScope();
+    if (portalProviderContext?.scope !== scope)
+      portalProviderContext = { scope, facts: [] };
+    context = portalProviderContext;
+    const currentContext = context;
+    if (!context.pending) {
+      const discovery: PortalProviderDiscovery = {
+        request: listAdvertisedProviderConnectors()
+          .then(
+            (rows) =>
+              settlePortalProviderDiscovery(
+                currentContext,
+                discovery,
+                rows.map(({ provider, connectors }) => ({
+                  provider,
+                  connectors: connectors.map(({ displayName, connected }) => ({
+                    displayName,
+                    connected,
+                  })),
+                })),
+              ),
+            // A rejected discovery clears held facts, rather than retaining
+            // a stale connected state. This is still an optional-read failure.
+            () => {
+              currentContext.facts = [];
+              return settlePortalProviderDiscovery(
+                currentContext,
+                discovery,
+                [],
+              );
+            },
+          )
+          .finally(() => {
+            if (currentContext.pending === discovery)
+              currentContext.pending = undefined;
+          }),
+      };
+      context.pending = discovery;
+    }
+    const discovery = context.pending;
+    const timeout = new Promise<PortalProviderFacts>((resolve): void => {
+      timer = setTimeout((): void => {
+        discovery.timedOutProjection ??= portalProviderProjection(
+          currentContext.facts,
+        );
+        resolve(currentContext.facts);
+      }, 250);
+      timer.unref?.();
+    });
+    const facts = await Promise.race([discovery.request, timeout]);
+    const currentScope = await portalProviderScope();
+    return portalProviderContext === context && scope === currentScope
+      ? facts
+      : [];
+  } catch {
+    // An unavailable context cannot authorize retained optional facts.
+    if (portalProviderContext === context) portalProviderContext = undefined;
+    return [];
   } finally {
     clearTimeout(timer);
   }
@@ -2178,8 +2333,15 @@ function marketplaceMutationResult(
  */
 const inFlightPortalInstalls = new Map<
   string,
-  Promise<PortalPluginMutationResult>
+  Promise<PortalPluginInstallOutcome>
 >();
+
+/** A Portal install's row and which requested providers it installed (CAN-5859). */
+export interface PortalPluginInstallOutcome {
+  result: PortalPluginMutationResult;
+  installedProviders: PluginProvider[];
+  failedProviders: PluginProvider[];
+}
 
 function portalInstallDedupeKey(
   kind: 'builtin' | 'external',
@@ -2197,8 +2359,8 @@ function portalInstallDedupeKey(
 
 function dedupePortalInstall(
   key: string,
-  operation: () => Promise<PortalPluginMutationResult>,
-): Promise<PortalPluginMutationResult> {
+  operation: () => Promise<PortalPluginInstallOutcome>,
+): Promise<PortalPluginInstallOutcome> {
   const existing = inFlightPortalInstalls.get(key);
   if (existing !== undefined) {
     return existing;
@@ -2227,6 +2389,21 @@ export async function installPortalBuiltInPlugin(
   pluginName: string,
   providers: PluginProvider[],
 ): Promise<PortalPluginMutationResult> {
+  return (
+    await installPortalBuiltInPluginWithOutcomes(
+      marketplaceId,
+      pluginName,
+      providers,
+    )
+  ).result;
+}
+
+/** {@link installPortalBuiltInPlugin}, also naming the providers that installed and failed. */
+export async function installPortalBuiltInPluginWithOutcomes(
+  marketplaceId: string,
+  pluginName: string,
+  providers: PluginProvider[],
+): Promise<PortalPluginInstallOutcome> {
   requirePlainId(marketplaceId, 'marketplace id');
   requirePlainId(pluginName, 'plugin name');
   // Dedupe OUTSIDE the serialization chain: a duplicate must not consume a
@@ -2255,7 +2432,13 @@ export async function installPortalBuiltInPlugin(
           marketplaceId,
           pluginName,
         );
-        return { plugin: toPluginRow(data.plugin) };
+        const installed = (provider: PluginProvider): boolean =>
+          data.providerOutcomes[provider]?.installed === true;
+        return {
+          result: { plugin: toPluginRow(data.plugin) },
+          installedProviders: providers.filter(installed),
+          failedProviders: providers.filter((provider) => !installed(provider)),
+        };
       }),
   );
 }
@@ -2278,7 +2461,7 @@ export async function installPortalExternalPlugin(
 ): Promise<PortalPluginMutationResult> {
   requirePlainId(marketplaceId, 'marketplace id');
   requirePlainId(pluginName, 'plugin name');
-  return dedupePortalInstall(
+  const { result } = await dedupePortalInstall(
     portalInstallDedupeKey('external', marketplaceId, pluginName),
     () =>
       runSerializedPluginMutation(async () => {
@@ -2321,9 +2504,14 @@ export async function installPortalExternalPlugin(
         // external install would overlap this refresh's locked cache read/write.
         // Failure of the refresh alone must not fail an install that succeeded.
         await service.refreshMarketplaces().catch(() => undefined);
-        return { plugin: toPluginRow(data) };
+        return {
+          result: { plugin: toPluginRow(data) },
+          installedProviders: ['claude'],
+          failedProviders: [],
+        };
       }),
   );
+  return result;
 }
 
 /**
@@ -2448,6 +2636,28 @@ export async function startPortalMarketplacesRefresh(): Promise<void> {
       service.refreshMarketplaces(undefined, { providerUpdates: 'always' }),
     ),
   ).catch(() => undefined);
+}
+
+/** The `portal.plugins.install_*` result for a plugin, read from the cache (a replayed core install). */
+export async function readPortalPluginMutationResult(
+  marketplaceId: string,
+  pluginName: string,
+): Promise<PortalPluginMutationResult> {
+  const { plugin } = await findCachedPlugin(marketplaceId, pluginName);
+  return { plugin: toPluginRow(plugin) };
+}
+
+/** The `portal.marketplace.add/update` result for a marketplace, read from the cache. */
+export async function readPortalMarketplaceMutationResult(
+  marketplaceId: string,
+): Promise<PortalMarketplaceMutationResult> {
+  const { marketplaces } = await readCachedMarketplaces();
+  const row = marketplaces.find(
+    (marketplace) => marketplace.id === marketplaceId,
+  );
+  if (!row)
+    throw codedError('not_found', `Marketplace "${marketplaceId}" not found.`);
+  return marketplaceMutationResult(row);
 }
 
 /**

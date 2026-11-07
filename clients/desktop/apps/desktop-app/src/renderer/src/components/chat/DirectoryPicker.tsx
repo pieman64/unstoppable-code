@@ -103,14 +103,10 @@ export function DirectoryPicker({
 
   const triggerContents = (
     <>
-      <FolderIcon width={capsule ? 16 : 13} height={capsule ? 16 : 13} />
+      <FolderIcon size="sm" />
       {!hideLabel && <span className="truncate">{currentName}</span>}
       {!disabled && (
-        <ChevronDownMediumIcon
-          width={capsule ? 12 : 8}
-          height={capsule ? 12 : 8}
-          className={capsule ? '' : 'ml-0.5'}
-        />
+        <ChevronDownMediumIcon size="sm" className={capsule ? '' : 'ml-0.5'} />
       )}
     </>
   );
@@ -147,11 +143,7 @@ export function DirectoryPicker({
             {...triggerProps}
           >
             {/* The model picker's glyph: secondary ink, 6px before the name. */}
-            <FolderIcon
-              width={16}
-              height={16}
-              className="mr-0.5 shrink-0 fg-secondary"
-            />
+            <FolderIcon size="sm" className="mr-0.5 shrink-0 fg-secondary" />
             <span className="min-w-0 truncate fg-primary">{currentName}</span>
           </PickerTrigger>
         ) : capsule ? (

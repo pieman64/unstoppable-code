@@ -13,21 +13,26 @@ import {
   ZaiIcon,
 } from '../icons/AppIcons';
 import { ClaudeLogo, CodexLogo, CursorLogo, OllamaLogo } from '../icons';
+import { ICON_SIZE_PX, isIconSize, type IconSize } from '../icons/icon-size';
+import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
 
 export interface ModelProviderIconProps extends SVGProps<SVGSVGElement> {
   provider: string;
   /** Use the compact glyphs instead of the full provider marks. */
   central?: boolean;
   /**
-   * Compact glyphs size from `size`. `width` and `height` only affect the
-   * full provider marks.
+   * A step of the icon scale sizes every mark and glyph, by its pixels as
+   * `width` and `height`. A number sizes the compact glyphs only; `width`
+   * and `height` then affect the full provider marks.
    */
-  size?: number;
+  size?: IconSize | number;
   /**
    * Renders compact glyphs at exactly `size`, skipping the Lucide 14px /
    * 20px tiers, so they match brand marks in a one-size surface.
    */
   exactSize?: boolean;
+  /** Host state ink; full provider marks keep their own artwork. */
+  tone?: 'inherit' | 'secondary' | 'unread';
 }
 
 /** Canonical provider-to-glyph dispatch shared by every model surface. */
@@ -36,8 +41,26 @@ export function ModelProviderIcon({
   central = false,
   size,
   exactSize = false,
-  ...svgProps
+  tone = 'inherit',
+  ...restProps
 }: ModelProviderIconProps): JSX.Element | null {
+  const toneClassName =
+    tone === 'unread'
+      ? OPERATIONAL_STATUS_COLORS.unread.foreground
+      : tone === 'secondary'
+        ? 'fg-secondary'
+        : undefined;
+  const themedProps = toneClassName
+    ? {
+        ...restProps,
+        className: restProps.className
+          ? `${restProps.className} ${toneClassName}`
+          : toneClassName,
+      }
+    : restProps;
+  const svgProps = isIconSize(size)
+    ? { width: ICON_SIZE_PX[size], height: ICON_SIZE_PX[size], ...themedProps }
+    : themedProps;
   const centralProps = {
     ...svgProps,
     ...(size === undefined ? {} : { size }),

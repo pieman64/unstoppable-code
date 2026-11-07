@@ -263,8 +263,6 @@ function hookActionsSummary(actions: EditableHookAction[] | null): string {
   return parts.join(', ');
 }
 
-const NAV_ICON_SIZE = 16;
-
 const PAGE_COPY: Record<
   ProjectSettingsPageId,
   { readonly label: string; readonly description: string }
@@ -305,19 +303,13 @@ const PAGE_COPY: Record<
 };
 
 const PAGE_ICONS: Record<ProjectSettingsPageId, ReactNode> = {
-  general: <SettingsIcon width={NAV_ICON_SIZE} height={NAV_ICON_SIZE} />,
-  scripts: (
-    <TerminalBorderedIcon width={NAV_ICON_SIZE} height={NAV_ICON_SIZE} />
-  ),
-  plans: <PlanModeIcon width={NAV_ICON_SIZE} height={NAV_ICON_SIZE} />,
-  plugins: <PluginsIcon width={NAV_ICON_SIZE} height={NAV_ICON_SIZE} />,
-  environment: (
-    <CodeBracketsIcon width={NAV_ICON_SIZE} height={NAV_ICON_SIZE} />
-  ),
-  'start-page': (
-    <LayoutWindowIcon width={NAV_ICON_SIZE} height={NAV_ICON_SIZE} />
-  ),
-  'code-graph': <GraphIcon width={NAV_ICON_SIZE} height={NAV_ICON_SIZE} />,
+  general: <SettingsIcon size="sm" />,
+  scripts: <TerminalBorderedIcon size="sm" />,
+  plans: <PlanModeIcon size="sm" />,
+  plugins: <PluginsIcon size="sm" />,
+  environment: <CodeBracketsIcon size="sm" />,
+  'start-page': <LayoutWindowIcon size="sm" />,
+  'code-graph': <GraphIcon size="sm" />,
 };
 
 const PAGE_ORDER: readonly ProjectSettingsPageId[] = [
@@ -2199,8 +2191,8 @@ export function ProjectSettingsModal({
               project.owner?.type === 'organization' ? (
                 // An organization project stays single-repo (CAN-3546).
                 <span data-testid="project-settings-convert-org-note">
-                  Use the worktree ⋯ → Add repository menu to create a shared
-                  multi-repo project.
+                  To create a shared multi-repo project, use worktree ⋯ → Add
+                  repository, then Create shared project instead.
                 </span>
               ) : project.worktrees.length > 0 ? (
                 `Track several repositories as one project. Remove the ${project.worktrees.length} ${project.worktrees.length === 1 ? 'worktree' : 'worktrees'} first.`

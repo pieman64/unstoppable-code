@@ -14,6 +14,7 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import {
   listW5HostPeers,
@@ -24,11 +25,11 @@ import {
   encodeMaintenanceRecord,
 } from '@canopy/desktop-shared/node/w5-host-cohort/records';
 import { tmpdir } from 'node:os';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
 import { LedgerRepository } from '@canopy/desktop-shared/node/ledger';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import canopy from '../../../../../../brands/canopy/brand.json';
 import unstoppableCode from '../../../../../../brands/unstoppable-code/brand.json';
 import {
@@ -110,6 +111,22 @@ posixFilesystem('offline filesystem transaction', () => {
   let recover: jest.Mock<Promise<void>, [string]>;
   let repairs: InternalRootRepairs;
   const apply = { apply: true, declareInternal: true };
+  let filesystemOptions: { ownedChildPath?: string } = {};
+  let nativeBuild: string | undefined;
+  beforeAll(() => {
+    if (process.platform !== 'linux') return;
+    nativeBuild = mkdtempSync(join(tmpdir(), 'migration-native-'));
+    const ownedChildPath = join(nativeBuild, 'core-owned-child.node');
+    execFileSync(
+      process.execPath,
+      [resolve('scripts/build-owned-child.mjs'), '--out', ownedChildPath],
+      { stdio: 'pipe' },
+    );
+    filesystemOptions = { ownedChildPath };
+  }, 60_000);
+  afterAll(() => {
+    if (nativeBuild) rmSync(nativeBuild, { recursive: true, force: true });
+  });
   beforeEach(async () => {
     const temporary = await realpath(tmpdir());
     // Include the longest predecessor and the endpoint's temporary bind name.
@@ -126,6 +143,7 @@ posixFilesystem('offline filesystem transaction', () => {
     identity = internalRootIdentity(home, canopy);
     recover = jest.fn<Promise<void>, [string]>(() => Promise.resolve());
     worker = createInternalRootMigrationWorker({
+      ...filesystemOptions,
       recoverW5: recover,
       cloneTree: portableClone,
       proveCold: () => Promise.resolve(),
@@ -505,6 +523,7 @@ posixFilesystem('offline filesystem transaction', () => {
         log.close();
       }
       worker = createInternalRootMigrationWorker({
+        ...filesystemOptions,
         cloneTree: portableClone,
         recoverW5: async (root, qualification): Promise<void> => {
           expect(root).toBe(identity.source);
@@ -1078,6 +1097,7 @@ posixFilesystem('offline filesystem transaction', () => {
     await source();
     const qualifications: InternalRootColdRecovery[] = [];
     worker = createInternalRootMigrationWorker({
+      ...filesystemOptions,
       cloneTree: portableClone,
       proveCold: () => Promise.resolve(),
       recoverW5: async (root, qualification): Promise<void> => {
@@ -1459,6 +1479,7 @@ posixFilesystem('offline filesystem transaction', () => {
         join(identity.source, 'w5', `commit-log.sqlite${suffix}`),
       );
       worker = createInternalRootMigrationWorker({
+        ...filesystemOptions,
         cloneTree: portableClone,
         proveCold: () => Promise.resolve(),
         recoverW5: async (root, qualification): Promise<void> => {
@@ -1579,6 +1600,7 @@ posixFilesystem('offline filesystem transaction', () => {
     if (state === 'commit-conflict') await writeFile(index, conflict);
     const entry = join(__dirname, '../../w5-commit-log/commit-log-worker.ts');
     worker = createInternalRootMigrationWorker({
+      ...filesystemOptions,
       cloneTree: portableClone,
       recoverW5: async (root, qualification): Promise<void> => {
         await settleInternalRootW5(root, entry, qualification);
@@ -1624,6 +1646,7 @@ posixFilesystem('offline filesystem transaction', () => {
     await writeFile(index, before);
     W5CommitLog.open(join(identity.source, 'w5', 'commit-log.sqlite')).close();
     worker = createInternalRootMigrationWorker({
+      ...filesystemOptions,
       cloneTree: portableClone,
       proveCold: () => Promise.resolve(),
       recoverW5: async (root, qualification): Promise<void> => {
@@ -2202,6 +2225,7 @@ posixFilesystem('offline filesystem transaction', () => {
   test('a source change during clone refuses before publication', async () => {
     await source();
     worker = createInternalRootMigrationWorker({
+      ...filesystemOptions,
       recoverW5: recover,
       proveCold: () => Promise.resolve(),
       cloneTree: async (from, to): Promise<void> => {
@@ -2218,6 +2242,7 @@ posixFilesystem('offline filesystem transaction', () => {
     await source();
     let attempts = 0;
     worker = createInternalRootMigrationWorker({
+      ...filesystemOptions,
       recoverW5: recover,
       proveCold: () => Promise.resolve(),
       cloneTree: async (from, to): Promise<void> => {
@@ -2321,6 +2346,7 @@ posixFilesystem('offline filesystem transaction', () => {
       }
       await expect(run()).rejects.toThrow('staging power loss');
       worker = createInternalRootMigrationWorker({
+        ...filesystemOptions,
         recoverW5: recover,
         cloneTree: portableClone,
         proveCold: () => Promise.resolve(),
@@ -2356,6 +2382,7 @@ posixFilesystem('offline filesystem transaction', () => {
   test('clone failure is actionable, leaves settled source and never publishes', async () => {
     await source();
     worker = createInternalRootMigrationWorker({
+      ...filesystemOptions,
       recoverW5: recover,
       proveCold: () => Promise.resolve(),
       cloneTree: (): Promise<void> =>
@@ -2450,6 +2477,7 @@ posixFilesystem('offline filesystem transaction', () => {
     await expect(
       migrateInternalRoot(
         createInternalRootMigrationWorker({
+          ...filesystemOptions,
           cloneTree: portableClone,
           proveCold: () => Promise.resolve(),
           recoverW5: async (root, qualification): Promise<void> => {

@@ -37,6 +37,7 @@ import { installBrandDefaultTheme, installUiZoomMetrics } from '@/lib/theme';
 import { installWindowCornerRadius } from '@/lib/windowCornerRadius';
 import { RootErrorBoundary } from './components/shared/RootErrorBoundary';
 import { installRendererErrorLogging } from './lib/renderer-error-logging';
+import { installSurfacedErrorRecording } from '@/lib/surfaced-error-recording';
 import {
   disposeClaudeTerminalSubscriptions,
   initClaudeTerminalSubscriptions,
@@ -202,6 +203,7 @@ function installRendererRuntime(): void {
     .getState()
     .subscribe({ isTabInOwnerScope: isChatTabInScopingContext });
   const uninstallRendererErrorLogging = installRendererErrorLogging();
+  const uninstallSurfacedErrorRecording = installSurfacedErrorRecording();
   // Register the Claude Code terminal IPC subscriptions exactly once for the
   // lifetime of the renderer. The disposer is wired into the HMR dispose hook
   // so hot-reloaded modules don't double-subscribe (see store implementation).
@@ -210,6 +212,8 @@ function installRendererRuntime(): void {
   import.meta.hot?.dispose(() => {
     unsubscribeFromModelRegistry();
     uninstallRendererErrorLogging();
+    // Before instrumentation goes away, with the recorder's dedupe cache.
+    uninstallSurfacedErrorRecording();
     disposeClaudeTerminalSubscriptions();
     disposeTerminalActivitySubscriptions();
     disposePostHogInstrumentationClient();

@@ -193,7 +193,9 @@ export function NestedMenuFlyout({
     const view = triggerRef.current?.ownerDocument.defaultView;
     if (!row || !view) return;
     setSide(
-      row.right + ANCHOR_INSET_PX + menuWidthPx <=
+      row.right +
+        ANCHOR_INSET_PX +
+        (menuRef.current?.offsetWidth ?? menuWidthPx) <=
         view.innerWidth - FLOATING_MENU_VIEWPORT_PADDING
         ? 'right'
         : 'left',
@@ -283,6 +285,7 @@ export function NestedMenuFlyout({
           open
           nested
           closeOnSelect={closeOnSelect}
+          sizing={menuWidth === 'parent' ? 'custom' : 'content'}
           focusOnOpen={focusOnOpen}
           onOpenChange={(nextOpen): void => {
             if (!nextOpen) setOpen(false);
@@ -304,9 +307,7 @@ export function NestedMenuFlyout({
           data-testid={menuTestId}
           aria-label={label}
           className={
-            menuWidth === 'parent'
-              ? 'w-64 max-w-[calc(100vw-16px)]'
-              : 'w-56 max-w-[calc(100vw-16px)]'
+            menuWidth === 'parent' ? 'w-64 max-w-[calc(100vw-16px)]' : ''
           }
         >
           {children}

@@ -11,6 +11,7 @@ import {
 } from '@canopy/protocol/canopy-core';
 import { CanopyOperationError } from '@canopy/core-runtime';
 import {
+  mergeBranchIntoLocalBase,
   fetchOrigin,
   pullBranchFastForward,
   pullBranchRebase,
@@ -28,6 +29,11 @@ import {
   pullForLegacyIpc,
   type WorkerGitSyncDispatcher,
 } from './worker-git-sync-adapter';
+
+import {
+  mergeForLegacyIpc,
+  type WorkerGitMergeDispatcher,
+} from './worker-git-merge-adapter';
 
 /*
  * The `worker.git.fetch` and `worker.git.pull` projections behind
@@ -87,7 +93,7 @@ function borrowedWorktree(request: {
  * validators or the scope refuse (an unsafe member directory name,
  * identifiers longer than the scope carries, as CAN-5136).
  */
-function syncScope(
+export function syncScope(
   request: { readonly projectId: string; readonly worktreeId: string },
   entry: GitSyncRepository,
 ): WorkerGitCheckoutScope | null {
@@ -178,6 +184,32 @@ export async function pullWorktreeRepository(
     await pullForLegacyIpc(
       dispatcher,
       { scope, branch: pull.branch, strategy: pull.strategy },
+      { caller: gitWriteCaller(caller) },
+    );
+  } catch (error) {
+    throw hostError(error);
+  }
+}
+
+/** Local-only merge uses the same checkout projection and legacy-scope debt as pull. */
+export async function mergeWorktreeRepository(
+  dispatcher: WorkerGitMergeDispatcher,
+  caller: CanopyCallerDescriptor,
+  request: { readonly projectId: string; readonly worktreeId: string },
+  entry: GitSyncRepository,
+  merge: { readonly sourceBranch: string; readonly baseBranch: string },
+): Promise<string> {
+  const scope = syncScope(request, entry);
+  if (scope === null)
+    return mergeBranchIntoLocalBase(
+      entry.repoPath,
+      merge.sourceBranch,
+      merge.baseBranch,
+    );
+  try {
+    return await mergeForLegacyIpc(
+      dispatcher,
+      { scope, ...merge },
       { caller: gitWriteCaller(caller) },
     );
   } catch (error) {

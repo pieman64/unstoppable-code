@@ -5,8 +5,8 @@ import type {
 } from '@canopy/desktop-shared/types';
 import {
   normalizePullRequestTitleQuery,
-  PR_TITLE_SEARCH_MAX_QUERY_LENGTH,
-} from '@canopy/desktop-shared/lib/pull-request-search';
+  scopePullRequestTitleQuery,
+} from '@canopy/protocol/pull-requests';
 import { validateAbsolutePath } from './validation';
 import { getRemoteUrl } from './git';
 import { getGitHubClient } from './github-client';
@@ -260,22 +260,11 @@ function mapSearchPullRequest(
 }
 
 async function fetchSearchPullRequests(
-  repoPath: string,
+  remote: { owner: string; repo: string },
   normalizedQuery: string,
+  signal?: AbortSignal,
 ): Promise<PullRequestSummary[]> {
-  // Use the same origin-resolution path as the initial list, without its TTL cache.
-  const remote = await resolveGitHubOrigin(repoPath);
-  if (!remote) {
-    throw new Error(
-      'This repository has no GitHub origin remote, so pull requests cannot be searched.',
-    );
-  }
-  const q = `repo:${remote.owner}/${remote.repo} is:pr is:open in:title ${normalizedQuery}`;
-  if (q.length > PR_TITLE_SEARCH_MAX_QUERY_LENGTH) {
-    throw new Error(
-      'Shorten the pull request search to fit the GitHub query limit.',
-    );
-  }
+  const q = scopePullRequestTitleQuery(remote, normalizedQuery);
   const response = await getGitHubClient().enqueue(
     (octokit) => octokit.graphql<unknown>(PR_PICKER_SEARCH_QUERY, { q }),
     'high',
@@ -284,6 +273,7 @@ async function fetchSearchPullRequests(
       idempotency: 'safe',
       resource: 'graphql',
       caller: 'pr-picker-search',
+      ...(signal ? { signal } : {}),
     },
   );
   // Octokit normally throws on GraphQL errors. Also reject malformed/partial
@@ -307,6 +297,19 @@ async function fetchSearchPullRequests(
     .slice(0, 20);
 }
 
+/** Canonical search binds the GitHub repository, not the legacy path cache. */
+export async function searchOpenPullRequestsForRepository(
+  repository: { owner: string; repo: string },
+  query: string,
+  signal?: AbortSignal,
+): Promise<PullRequestSummary[]> {
+  return fetchSearchPullRequests(
+    repository,
+    normalizePullRequestTitleQuery(query),
+    signal,
+  );
+}
+
 /** Bounded title search, separate from the initial 50-row listing cache. */
 export async function searchOpenPullRequestsForRepo(
   repoPath: unknown,
@@ -324,7 +327,14 @@ export async function searchOpenPullRequestsForRepo(
   if (pending) return pending;
 
   const generation = cacheGeneration;
-  const lookup = fetchSearchPullRequests(repoPath, normalizedQuery)
+  const lookup = resolveGitHubOrigin(repoPath)
+    .then((remote) => {
+      if (!remote)
+        throw new Error(
+          'This repository has no GitHub origin remote, so pull requests cannot be searched.',
+        );
+      return fetchSearchPullRequests(remote, normalizedQuery);
+    })
     .then((data): PullRequestSummary[] => {
       if (generation === cacheGeneration) {
         searchCache.delete(key);

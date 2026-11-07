@@ -39,6 +39,14 @@ export interface CodexSpeedCatalogModel {
   isDefault?: boolean;
   /** Reasoning efforts the model supports, in the runtime's own ids. */
   reasoningEfforts?: string[];
+  /** Codex catalog `context_window`: the window used without an override. */
+  contextWindow?: number;
+  /** Codex catalog `max_context_window`: the largest accepted override. */
+  maxContextWindow?: number;
+  /** Codex catalog `auto_compact_token_limit`, when the catalog fixes one. */
+  autoCompactTokenLimit?: number;
+  /** Codex catalog `effective_context_window_percent`: the usable share. */
+  effectiveContextWindowPercent?: number;
 }
 
 /** A temporary, expiring denial learned from a definitive tier rejection. */

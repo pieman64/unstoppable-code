@@ -2,14 +2,15 @@ import { type JSX, type ReactNode, useCallback, useRef, useState } from 'react';
 import type { SharedContainerLinkAudience } from '@canopy/protocol/shared-containers';
 import {
   ActionMenuRowStyle,
+  Divider,
   DropdownMenuItem,
   DropdownMenuItemIcon,
+  ErrorBanner,
   FloatingMenu,
+  Heading,
   PickerTrigger,
   PickerTriggerChevron,
-  ErrorBanner,
   Tooltip,
-  Heading,
 } from '@canopy/ui-shared/components';
 import {
   BuildingIcon,
@@ -182,12 +183,7 @@ export function LinkSharingSection({
 
   return (
     <section className="space-y-2" data-testid={TEST_ID}>
-      {separated && (
-        <div
-          aria-hidden="true"
-          className="mb-4 h-[var(--border-hairline)] bg-line-base"
-        />
-      )}
+      {separated && <Divider className="mb-4" aria-hidden />}
       <div className="flex min-w-0 items-center justify-between gap-3">
         <Heading level={3} variant="title">
           {LINK_SHARING_LABEL}
@@ -209,7 +205,7 @@ export function LinkSharingSection({
                   onClick={() => setMoreOpen((open) => !open)}
                   data-testid={`${TEST_ID}-more`}
                 >
-                  <MoreHorizontalIcon width={16} height={16} />
+                  <MoreHorizontalIcon size="sm" />
                 </Button>
               </Tooltip>
               <FloatingMenu

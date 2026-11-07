@@ -1,12 +1,3 @@
-import {
-  EXPERIMENT_ACTION_TYPES,
-  INSTALLED_ITEM_ACTION_TYPES,
-  PIPELINES_ACTION_TYPES,
-  SETTINGS_ACTION_TYPES,
-  TRANSCRIPT_READ_ACTION_TYPES,
-} from '@canopy/agent-actions';
-import { APP_ADVISOR_ACTION_CATALOG } from './app-advisor-actions';
-
 /*
  * CAN-4133: where each App Advisor DispatchAction type runs. `core` runs in
  * Electron main through the action router and never reaches a renderer;
@@ -90,21 +81,6 @@ export type AppAdvisorActionDisposition =
       readonly access: 'write';
       readonly grants: readonly AppAdvisorActionGrant[];
     };
-
-/** Every type DispatchAction accepts: the catalog, transcript reads and the shared-engine families. Sorted, unique. */
-export const APP_ADVISOR_DISPATCH_ACTION_TYPES: readonly string[] =
-  Object.freeze(
-    [
-      ...new Set([
-        ...APP_ADVISOR_ACTION_CATALOG.map((entry) => entry.type),
-        ...TRANSCRIPT_READ_ACTION_TYPES,
-        ...INSTALLED_ITEM_ACTION_TYPES,
-        ...EXPERIMENT_ACTION_TYPES,
-        ...SETTINGS_ACTION_TYPES,
-        ...PIPELINES_ACTION_TYPES,
-      ]),
-    ].sort(),
-  );
 
 export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
   Record<string, AppAdvisorActionDisposition>

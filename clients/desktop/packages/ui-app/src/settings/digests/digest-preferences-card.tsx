@@ -31,6 +31,7 @@ import {
   updateDigestPreferences,
   type DigestOwner,
 } from './digest-api';
+import { Divider } from '@canopy/ui-shared/components';
 
 const SAVE_ACTION = 'save digest settings';
 const SAVE_ERROR_COPY = `Couldn't ${SAVE_ACTION}. Try again.`;
@@ -319,7 +320,12 @@ export function DigestPreferencesCard({
         })}
       </ul>
 
-      {footer ? <div className="border-t py-3">{footer}</div> : null}
+      {footer ? (
+        <div>
+          <Divider />
+          <div className="py-3">{footer}</div>
+        </div>
+      ) : null}
     </SettingsCard>
   );
 }

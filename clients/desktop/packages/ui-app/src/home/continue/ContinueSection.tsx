@@ -337,7 +337,7 @@ export function ContinueSection({
                 data-testid="home-interrupted-sessions-dismiss"
                 onClick={interrupted.onDismiss}
               >
-                <CloseMediumIcon width={14} height={14} />
+                <CloseMediumIcon size="sm" />
               </Button>
             </SuggestionRowTrailing>
           </li>

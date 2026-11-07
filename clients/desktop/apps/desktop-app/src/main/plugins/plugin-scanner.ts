@@ -15,13 +15,6 @@ import { safeReadJson, safeReadText } from '../lib/fs-utils';
 import { parseFrontmatter } from '../lib/frontmatter';
 import { canonicalPathInside } from './plugin-members';
 
-interface Frontmatter {
-  name?: string;
-  description?: string;
-  'user-invocable'?: boolean;
-  'disable-model-invocation'?: boolean;
-}
-
 export type PluginManifestKind = 'claude' | 'codex';
 
 interface ScanPluginDetailsOptions {
@@ -99,10 +92,24 @@ function normalizeManifestForScanning(
   };
 }
 
-function normalizePaths(value: string | string[] | undefined): string[] {
-  if (!value) return [];
-  if (typeof value === 'string') return [value];
-  return value;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function stringArray(value: unknown): string[] | undefined {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === 'string')
+    : undefined;
+}
+
+function normalizePaths(value: unknown): string[] {
+  if (typeof value === 'string') return value ? [value] : [];
+  return stringArray(value) ?? [];
+}
+
+function readFrontmatter(content: string): Record<string, unknown> {
+  const value = parseFrontmatter<unknown>(content);
+  return isRecord(value) ? value : {};
 }
 
 /** The plugin dir with links resolved: member paths are measured from it. */
@@ -141,14 +148,14 @@ function scanSkills(
       const content = safeReadText(skillMd);
       if (!content) continue;
 
-      const fm = parseFrontmatter<Frontmatter>(content);
+      const fm = readFrontmatter(content);
       // Use frontmatter name, or fall back to directory name
-      const name = fm?.name || entry || null;
+      const name = (typeof fm.name === 'string' && fm.name) || entry || null;
       if (!name) continue;
 
       results.push({
         name,
-        description: fm?.description || '',
+        description: typeof fm.description === 'string' ? fm.description : '',
         path: path.relative(realPluginDir, skillDir),
         ...(typeof fm?.['user-invocable'] === 'boolean'
           ? { userInvocable: fm['user-invocable'] }
@@ -202,15 +209,17 @@ function scanMarkdownDir(
       const content = safeReadText(mdFile);
       if (!content) continue;
 
-      const fm = parseFrontmatter<Frontmatter>(content);
+      const fm = readFrontmatter(content);
       // Use frontmatter name, or fall back to filename without extension
       const name =
-        fm?.name || path.basename(mdFile, path.extname(mdFile)) || null;
+        (typeof fm.name === 'string' && fm.name) ||
+        path.basename(mdFile, path.extname(mdFile)) ||
+        null;
       if (!name) continue;
 
       results.push({
         name,
-        description: fm?.description || '',
+        description: typeof fm.description === 'string' ? fm.description : '',
         filePath: path.relative(realPluginDir, mdFile),
       });
     }
@@ -244,20 +253,17 @@ function flattenHooksConfig(config: Record<string, unknown>): PluginHookInfo[] {
   const results: PluginHookInfo[] = [];
 
   // config.hooks is an object keyed by event name, or config itself is
-  const hooks =
-    config.hooks && typeof config.hooks === 'object'
-      ? (config.hooks as Record<string, unknown>)
-      : config;
+  const hooks = isRecord(config.hooks) ? config.hooks : config;
 
   for (const [event, entries] of Object.entries(hooks)) {
     if (!Array.isArray(entries)) continue;
-    for (const entry of entries as Record<string, unknown>[]) {
-      if (!entry || typeof entry !== 'object') continue;
-      const hooksList = Array.isArray(entry.hooks)
-        ? (entry.hooks as Record<string, unknown>[])
+    for (const entry of entries) {
+      if (!isRecord(entry)) continue;
+      const hooksList: unknown[] = Array.isArray(entry.hooks)
+        ? entry.hooks
         : [entry];
       for (const hook of hooksList) {
-        if (!hook || typeof hook !== 'object') continue;
+        if (!isRecord(hook)) continue;
         const h = hook;
         const e = entry;
         results.push({
@@ -323,14 +329,11 @@ function extractMcpServers(
   config: Record<string, unknown>,
 ): PluginMcpServerInfo[] {
   const results: PluginMcpServerInfo[] = [];
-  const servers =
-    config.mcpServers && typeof config.mcpServers === 'object'
-      ? (config.mcpServers as Record<string, unknown>)
-      : config;
+  const servers = isRecord(config.mcpServers) ? config.mcpServers : config;
 
   for (const [name, def] of Object.entries(servers)) {
-    if (!def || typeof def !== 'object') continue;
-    const d = def as Record<string, unknown>;
+    if (!isRecord(def)) continue;
+    const d = def;
 
     // HTTP-type servers use url instead of command
     if (d.type === 'http' && typeof d.url === 'string') {
@@ -344,7 +347,7 @@ function extractMcpServers(
         name,
         type: 'command',
         command: d.command,
-        args: Array.isArray(d.args) ? (d.args as string[]) : undefined,
+        args: stringArray(d.args),
       });
     }
   }
@@ -404,21 +407,21 @@ function extractLspServers(
   const results: PluginLspServerInfo[] = [];
 
   for (const [name, def] of Object.entries(config)) {
-    if (!def || typeof def !== 'object') continue;
-    const d = def as Record<string, unknown>;
+    if (!isRecord(def)) continue;
+    const d = def;
     if (typeof d.command !== 'string') continue;
 
     let languages: string[] | undefined;
-    if (d.extensionToLanguage && typeof d.extensionToLanguage === 'object') {
+    if (isRecord(d.extensionToLanguage)) {
       languages = Array.from(
-        new Set(Object.values(d.extensionToLanguage as Record<string, string>)),
+        new Set(stringArray(Object.values(d.extensionToLanguage))),
       );
     }
 
     results.push({
       name,
       command: d.command,
-      args: Array.isArray(d.args) ? (d.args as string[]) : undefined,
+      args: stringArray(d.args),
       languages,
     });
   }

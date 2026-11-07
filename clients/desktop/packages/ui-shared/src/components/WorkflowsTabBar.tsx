@@ -12,9 +12,9 @@ import {
 import { TabBar, type TabBarChangeSource, type TabBarItem } from './TabBar';
 
 const TAB_ICONS: Readonly<Record<WorkflowsTabId, JSX.Element>> = {
-  workflows: <PlayCircleIcon width={14} height={14} />,
-  'workflows-schedule': <ScheduleIcon width={14} height={14} />,
-  'workflows-library': <BulletListIcon width={14} height={14} />,
+  workflows: <PlayCircleIcon size="sm" />,
+  'workflows-schedule': <ScheduleIcon size="sm" />,
+  'workflows-library': <BulletListIcon size="sm" />,
 };
 
 /** How the user picked a tab. */

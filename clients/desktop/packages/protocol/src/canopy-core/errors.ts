@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { utf8ByteLength } from './core/ledger/text';
 import { CanopyOperationCodeSchema } from './names';
 
 export const CANOPY_ERROR_KINDS = [
@@ -67,10 +68,21 @@ const MAX_DETAILS_DEPTH = 16;
 const MAX_DETAILS_COLLECTION_SIZE = 1_000;
 const MAX_DETAILS_SERIALIZED_LENGTH = 32_768;
 
+interface JsonValueLimits {
+  readonly depth: number;
+  readonly collectionSize: number;
+}
+
+const DETAILS_LIMITS: JsonValueLimits = {
+  depth: MAX_DETAILS_DEPTH,
+  collectionSize: MAX_DETAILS_COLLECTION_SIZE,
+};
+
 function isJsonValue(
   value: unknown,
   depth: number,
   ancestors: Set<object>,
+  limits: JsonValueLimits = DETAILS_LIMITS,
 ): value is CanopyJsonValue {
   if (value === null) return true;
   if (
@@ -80,15 +92,15 @@ function isJsonValue(
   ) {
     return true;
   }
-  if (typeof value !== 'object' || depth >= MAX_DETAILS_DEPTH) return false;
+  if (typeof value !== 'object' || depth >= limits.depth) return false;
   if (ancestors.has(value)) return false;
 
   ancestors.add(value);
   try {
     if (Array.isArray(value)) {
       return (
-        value.length <= MAX_DETAILS_COLLECTION_SIZE &&
-        value.every((entry) => isJsonValue(entry, depth + 1, ancestors))
+        value.length <= limits.collectionSize &&
+        value.every((entry) => isJsonValue(entry, depth + 1, ancestors, limits))
       );
     }
 
@@ -97,7 +109,7 @@ function isJsonValue(
 
     const keys = Object.getOwnPropertyNames(value);
     const symbolKeys = Object.getOwnPropertySymbols(value);
-    if (keys.length > MAX_DETAILS_COLLECTION_SIZE || symbolKeys.length !== 0) {
+    if (keys.length > limits.collectionSize || symbolKeys.length !== 0) {
       return false;
     }
 
@@ -108,7 +120,7 @@ function isJsonValue(
         !descriptor.enumerable ||
         descriptor.get !== undefined ||
         descriptor.set !== undefined ||
-        !isJsonValue(descriptor.value, depth + 1, ancestors)
+        !isJsonValue(descriptor.value, depth + 1, ancestors, limits)
       ) {
         return false;
       }
@@ -130,10 +142,56 @@ export function isBoundedCanopyJsonValue(
   }
 }
 
-export const CanopyJsonValueSchema = z.custom<CanopyJsonValue>(
-  isBoundedCanopyJsonValue,
-  'Expected bounded JSON-safe data',
+/**
+ * Marks the schemas the protocol catalog renders as a JSON value, so its
+ * generators map {@link canopyJsonValueSchemaWithin} schemas as they map
+ * {@link CanopyJsonValueSchema}.
+ */
+export const CANOPY_JSON_VALUE_SCHEMA_MARKER = Symbol.for('canopy.jsonValue');
+
+function markJsonValueSchema<T extends object>(schema: T): T {
+  Object.defineProperty(schema, CANOPY_JSON_VALUE_SCHEMA_MARKER, {
+    value: true,
+  });
+  return schema;
+}
+
+export const CanopyJsonValueSchema = markJsonValueSchema(
+  z.custom<CanopyJsonValue>(
+    isBoundedCanopyJsonValue,
+    'Expected bounded JSON-safe data',
+  ),
 );
+
+/** Nesting a byte-bounded JSON value may reach (CAN-5095). */
+const BYTE_BOUNDED_LIMITS: JsonValueLimits = {
+  depth: 64,
+  collectionSize: Number.POSITIVE_INFINITY,
+};
+
+/**
+ * JSON-safe data of at most `maxBytes` as UTF-8 JSON, for payloads larger
+ * than {@link CanopyJsonValueSchema} admits, such as tool calls (CAN-5095).
+ */
+export function canopyJsonValueSchemaWithin(
+  maxBytes: number,
+): z.ZodCustom<CanopyJsonValue> {
+  return markJsonValueSchema(
+    z.custom<CanopyJsonValue>((value) => {
+      if (!isJsonValue(value, 0, new Set(), BYTE_BOUNDED_LIMITS)) return false;
+      try {
+        const serialized = JSON.stringify(value);
+        // UTF-8 never takes fewer bytes than UTF-16 code units.
+        return (
+          serialized.length <= maxBytes &&
+          utf8ByteLength(serialized) <= maxBytes
+        );
+      } catch {
+        return false;
+      }
+    }, 'Expected bounded JSON-safe data'),
+  );
+}
 
 export const CanopyErrorPayloadSchema = z.strictObject({
   kind: CanopyErrorKindSchema,

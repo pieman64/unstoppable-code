@@ -11,7 +11,7 @@ import {
   getExecutionRunDurationMs,
   logicalJobIdForPhysicalJob,
 } from '@canopy/desktop-shared/node/pipelines/executor';
-import { getObservabilityService } from '../observability';
+import { getExecutionObservabilityIngest } from '../observability/ingest';
 import { emitPipelineRunCompletion } from '../lib/pipeline-run-completion-emitter';
 import { resolveAction } from './action-resolver';
 
@@ -332,7 +332,7 @@ export function recordPipelineUsageEvent(event: ExecutionEvent): void {
     hidden: state.hidden,
   };
 
-  getObservabilityService().recordUsageMetricEvent(usageEvent);
+  getExecutionObservabilityIngest().recordUsageMetricEvent(usageEvent);
   if (!isStarted && state.worktree_id) {
     emitPipelineRunCompletion({
       projectId: state.project_id,

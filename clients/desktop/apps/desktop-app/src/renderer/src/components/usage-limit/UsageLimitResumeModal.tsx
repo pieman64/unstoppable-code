@@ -1660,8 +1660,7 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
                                 <span className="flex min-w-0 items-center gap-2 fg-secondary">
                                   <AppCatalogBranchIcon
                                     aria-hidden="true"
-                                    width="12"
-                                    height="12"
+                                    size="sm"
                                     className="shrink-0 opacity-70"
                                   />
                                   <span

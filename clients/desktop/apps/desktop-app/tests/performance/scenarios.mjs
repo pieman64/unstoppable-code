@@ -813,9 +813,33 @@ export async function clearComposerDraft(
   await expect(async () => {
     await composer.fill('');
     await expect
-      .poll(async () => (await composer.textContent()) ?? '', {
-        timeout: 1_000,
-      })
+      .poll(
+        async () =>
+          composer.evaluate((editor) => {
+            const walker = editor.ownerDocument.createTreeWalker(
+              editor,
+              NodeFilter.SHOW_TEXT,
+            );
+            let draft = '';
+            for (
+              let node = walker.nextNode();
+              node !== null;
+              node = walker.nextNode()
+            ) {
+              if (
+                node.parentElement?.closest(
+                  '[data-slate-placeholder], [data-slate-zero-width]',
+                )
+              )
+                continue;
+              draft += node.nodeValue ?? '';
+            }
+            return draft;
+          }),
+        {
+          timeout: 1_000,
+        },
+      )
       .not.toContain(marker);
   }).toPass({ timeout: timeoutMs });
 }

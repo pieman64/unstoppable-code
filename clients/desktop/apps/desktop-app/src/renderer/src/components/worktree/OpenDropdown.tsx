@@ -29,6 +29,7 @@ import { pt } from '@/lib/platform-text';
 import { uiText } from '@/lib/ui-text';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { selectPreferredOpenApp } from './openInAppSelection';
+import { Divider } from '@canopy/ui-shared/components';
 
 interface OpenDropdownProps {
   projectId: string;
@@ -142,10 +143,7 @@ export function OpenDropdown({
                 />
               </button>
             </Tooltip>
-            <span
-              aria-hidden="true"
-              className="my-1.5 w-px shrink-0 bg-line-base"
-            />
+            <Divider orientation="vertical" className="my-1.5" aria-hidden />
           </>
         )}
         <Tooltip label="Open in…" className="items-stretch" suppressed={open}>

@@ -10,6 +10,7 @@ packages:
   - packages/core-platform
   - packages/core-transport
   - packages/core-client
+  - packages/copilot-recipient
   - packages/code-graph
   - packages/desktop-shared
   - packages/desktop-instrumentation

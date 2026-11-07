@@ -1,4 +1,4 @@
-import { Heading } from '@canopy/ui-shared/components';
+import { Divider, Heading, Surface } from '@canopy/ui-shared/components';
 import { Button } from '@canopy/ui-shared/components';
 import { useEffect, useMemo, type JSX } from 'react';
 import { useShallow } from 'zustand/react/shallow';
@@ -62,7 +62,7 @@ function StepRail({ active }: { active: WorkflowStep }): JSX.Element {
               {STEP_LABELS[step]}
             </span>
             {index < STEP_ORDER.length - 1 && (
-              <span className="mx-1 h-px w-6 bg-line-base" aria-hidden="true" />
+              <Divider className="mx-1 w-6" aria-hidden />
             )}
           </li>
         );
@@ -283,9 +283,14 @@ export function SplitWorkflowView({
             </div>
 
             {splitResult !== undefined && (
-              <div className="min-w-0 rounded-md border bg-base/40 p-3">
+              <Surface
+                variant="group"
+                size="small"
+                padding="compact"
+                className="min-w-0"
+              >
                 <SplitResultSummary map={splitResult} />
-              </div>
+              </Surface>
             )}
 
             {splitResult !== undefined && splitResult.children.length > 0 && (

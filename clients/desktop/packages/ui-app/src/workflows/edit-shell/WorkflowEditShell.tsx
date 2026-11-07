@@ -419,7 +419,7 @@ export function WorkflowEditShell({
     'run',
     onRun,
     'secondary',
-    <PlayIcon width={14} height={14} aria-hidden="true" />,
+    <PlayIcon size="sm" aria-hidden="true" />,
   );
   const shareState = plan.actions.share;
   const share =
@@ -449,7 +449,7 @@ export function WorkflowEditShell({
       data-testid="workflow-edit-assistant"
       onClick={assistant.onToggle}
     >
-      <ChatIcon width={14} height={14} aria-hidden="true" />
+      <ChatIcon size="sm" aria-hidden="true" />
       Assistant
     </Button>
   ) : null;

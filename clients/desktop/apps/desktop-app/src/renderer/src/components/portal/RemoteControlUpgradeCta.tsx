@@ -2,6 +2,7 @@ import type { JSX } from 'react';
 import { REMOTE_CONTROL_LABEL } from '@canopy/protocol';
 import { orgsWithoutActivePlanClause } from '@canopy/ui-shared/lib/org-lapse-sentence';
 import { Button } from '@/components/shared/Button';
+import { Surface } from '@canopy/ui-shared/components';
 
 interface RemoteControlUpgradeCtaProps {
   /**
@@ -152,30 +153,35 @@ export function RemoteControlUpgradeCta({
       ' Ask an organization owner to renew, or upgrade your own plan.';
   const lapsedMessage = `${requirement} and ${orgsWithoutActivePlanClause(lapsedOrgNames)} to cover it.${action}`;
   return (
-    <div
-      className={`flex flex-col gap-2 rounded-lg border bg-secondary/40 p-3 sm:flex-row sm:items-center sm:justify-between ${className}`}
+    <Surface
+      variant="group"
+      padding="compact"
       data-testid="canopy-portal-upgrade-cta"
     >
-      {lapsed ? (
-        <p
-          className="text-s fg-secondary"
-          data-testid="canopy-portal-upgrade-cta-lapsed-copy"
-        >
-          {lapsedMessage}
-        </p>
-      ) : (
-        <p className="text-s fg-secondary">
-          {REMOTE_CONTROL_LABEL} is included with the Pro and Business plans.
-        </p>
-      )}
-      <Button
-        variant="primary"
-        size="compact"
-        onClick={onUpgrade}
-        data-testid="canopy-portal-upgrade-cta-button"
+      <div
+        className={`flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between ${className}`}
       >
-        {namedPlan ? `Get ${namedPlan}` : 'Upgrade to unlock'}
-      </Button>
-    </div>
+        {lapsed ? (
+          <p
+            className="text-s fg-secondary"
+            data-testid="canopy-portal-upgrade-cta-lapsed-copy"
+          >
+            {lapsedMessage}
+          </p>
+        ) : (
+          <p className="text-s fg-secondary">
+            {REMOTE_CONTROL_LABEL} is included with the Pro and Business plans.
+          </p>
+        )}
+        <Button
+          variant="primary"
+          size="compact"
+          onClick={onUpgrade}
+          data-testid="canopy-portal-upgrade-cta-button"
+        >
+          {namedPlan ? `Get ${namedPlan}` : 'Upgrade to unlock'}
+        </Button>
+      </div>
+    </Surface>
   );
 }

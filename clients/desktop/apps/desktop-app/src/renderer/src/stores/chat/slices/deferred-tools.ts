@@ -3,9 +3,9 @@ import type {
   ChatTabPluginSelections,
   DeferredToolsReloadScopeKey,
 } from '@canopy/desktop-shared/types';
+import { mergeDeferredToolsReloadAdditions } from '@canopy/desktop-shared/lib/chat-plugin-selections-merge';
 import {
   createDeferredToolsReloadController,
-  mergeDeferredToolsReloadAdditions,
   type DeferredToolsReloadController,
   type DeferredToolsReloadStoreSurface,
   type DeferredToolsReloadTabPreparation,
@@ -24,7 +24,6 @@ import {
 import {
   isReadOnlyAppAdvisorMirrorTarget,
   isSentinelWriteAllowed,
-  withRequiredPluginSelectionsForTarget,
 } from '../surface';
 import type { ChatTab, WorktreeChatState } from '../types';
 import type { ChatDeferredToolsSlice, ChatState } from '../state';
@@ -73,14 +72,11 @@ export const createDeferredToolsSlice: StateCreator<
 
   const buildSurface = (): DeferredToolsReloadStoreSurface => ({
     api: {
-      beginDeferredToolsReload: (req) =>
-        window.api.chat.beginDeferredToolsReload(req),
-      finishDeferredToolsReload: (req) =>
-        window.api.chat.finishDeferredToolsReload(req),
       cancelDeferredToolsReload: (req) =>
         window.api.chat.cancelDeferredToolsReload(req),
-      updatePlugins: (req) => window.api.chat.updatePlugins(req),
     },
+    isRevisionedScope: (scope): boolean =>
+      isScopeRevisionedLive(get(), scope.projectId, scope.worktreeId),
     beginReloadOnTab: (event): DeferredToolsReloadTabPreparation | null => {
       const { scope } = event;
       const writeAllowed = isSentinelWriteAllowed(
@@ -159,16 +155,11 @@ export const createDeferredToolsSlice: StateCreator<
       const wc = get().worktreeChats[key];
       const tab = wc?.tabs.find((candidate) => candidate.id === scope.chatId);
       if (!wc || !tab || tab.kind === 'file') return null;
-      const additive = mergeDeferredToolsReloadAdditions(
-        tab.pluginSelections ?? createEmptySelections(),
+      const merged = mergeDeferredToolsReloadAdditions(
+        tab.pluginSelections,
         additions,
+        scope,
       );
-      const merged =
-        withRequiredPluginSelectionsForTarget(
-          scope.projectId,
-          scope.worktreeId,
-          additive,
-        ) ?? additive;
       set((state) => {
         const current = state.worktreeChats[key];
         if (!current) return state;

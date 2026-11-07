@@ -367,7 +367,7 @@ export function ArchivedContainersOverviewPage({
             onClick={onClose}
             title="Back to the project"
           >
-            <BackIcon width={14} height={14} aria-hidden="true" />
+            <BackIcon size="sm" aria-hidden="true" />
             Back
           </HeaderActionButton>
           <div className="flex min-w-0 flex-col">
@@ -445,11 +445,7 @@ export function ArchivedContainersOverviewPage({
                     spinnerTone="destructive"
                   />
                 ) : (
-                  <TrashPermanentlyIcon
-                    width={14}
-                    height={14}
-                    aria-hidden="true"
-                  />
+                  <TrashPermanentlyIcon size="sm" aria-hidden="true" />
                 )}
                 Empty trash
                 {emptyTrashProgress !== null && (

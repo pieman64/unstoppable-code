@@ -19,10 +19,13 @@ import {
 import {
   runInGitHubProjection,
   type PullRequestWriteCapture,
+  type PullRequestMergeCapture,
 } from '../github/projection-capture';
 import { getRemoteUrl, resolveRefSha } from '../lib/git';
 import {
   createPrForRepo,
+  mergePrForRepo,
+  type MergePrForRepoResult,
   parseGitHubRemote,
   updatePrBaseBranchForRepo,
 } from '../lib/github-pr';
@@ -75,14 +78,20 @@ export type PullRequestCreateStep = (
 const STATE_CHANGED = 'PR state changed. Refresh and try again.';
 
 /** Today's direct create; the Portal's `create_auto` keeps it (Phase 6). */
-export const createPullRequestDirectly: PullRequestCreateStep = (input) =>
-  createPrForRepo(
+export function createPullRequestDirectly(
+  input: PullRequestCreateStepInput,
+  verifiedRepository?: GitHubRepositoryRef,
+): Promise<PullRequestCreateStepResult> {
+  return createPrForRepo(
     input.repoPath,
     input.headBranch,
     input.title,
     input.body,
     input.baseBranch,
+    false,
+    verifiedRepository,
   );
+}
 
 interface RecordedCheckout {
   readonly repository: RecordedRepositoryRef;
@@ -202,7 +211,7 @@ export function dispatchedPullRequestCreate(
       params === null ||
       !CorePullRequestCreateParamsSchema.safeParse(params).success
     )
-      return createPullRequestDirectly(input);
+      return createPullRequestDirectly(input, binding?.github);
     const caller = withGrant(resolveCaller(), CORE_PULL_REQUEST_GRANTS.write);
     const capture: PullRequestWriteCapture = { kind: 'write' };
     try {
@@ -227,7 +236,7 @@ export function dispatchedPullRequestCreate(
         !capture.mutationSent &&
         hasCode(error, 'core.pullRequest.repositoryUnavailable')
       )
-        return createPullRequestDirectly(input);
+        return createPullRequestDirectly(input, binding?.github);
       throw hostError(error);
     }
     if (!capture.written)
@@ -260,17 +269,18 @@ export async function updatePullRequestBaseForIpc(
 ): Promise<{ prUrl: string }> {
   // First, so an untracked sender is refused on the direct path too.
   const caller = resolveCaller();
-  const direct = (): Promise<{ prUrl: string }> =>
-    updatePrBaseBranchForRepo(
-      input.repoPath,
-      input.prNumber,
-      input.newBaseBranch,
-    );
   const binding = await recordedCheckout(
     input.projectId,
     input.repoId,
     input.repoPath,
   );
+  const direct = (): Promise<{ prUrl: string }> =>
+    updatePrBaseBranchForRepo(
+      input.repoPath,
+      input.prNumber,
+      input.newBaseBranch,
+      binding?.github,
+    );
   const pullRequestId =
     binding === null
       ? null
@@ -321,4 +331,109 @@ export async function updatePullRequestBaseForIpc(
   if (!capture.written)
     throw new Error('Pull request update projection was not captured.');
   return { prUrl: capture.written.url };
+}
+
+export interface PullRequestMergeStepInput {
+  readonly projectId: string;
+  readonly repoId: string | undefined;
+  readonly repoPath: string;
+  readonly prNumber: number;
+  readonly expectedHeadSha: string;
+}
+
+export type PullRequestMergeStep = (
+  input: PullRequestMergeStepInput,
+) => Promise<MergePrForRepoResult>;
+
+/** Portal and unrepresentable legacy requests retain this bounded compatibility path. */
+export function mergePullRequestDirectly(
+  input: PullRequestMergeStepInput,
+  verifiedRepository?: GitHubRepositoryRef,
+): Promise<MergePrForRepoResult> {
+  return mergePrForRepo(input.repoPath, input.prNumber, input.expectedHeadSha, {
+    verifiedRepository,
+  });
+}
+
+/**
+ * The IPC payload has neither revision nor strategy. Read both in the host's
+ * projection context; a pre-send contract gap retains legacy behavior (CAN-5886).
+ * Once the writer starts it is never invoked again by this projection.
+ */
+export function dispatchedPullRequestMerge(
+  dispatcher: CorePullRequestDispatcher,
+  resolveCaller: LazyCaller,
+): PullRequestMergeStep {
+  return async (input) => {
+    const caller = resolveCaller();
+    const binding = await recordedCheckout(
+      input.projectId,
+      input.repoId,
+      input.repoPath,
+    );
+    const pullRequestId =
+      binding === null
+        ? null
+        : mintPullRequestId({
+            repository: binding.repository,
+            github: binding.github,
+            number: input.prNumber,
+          });
+    if (pullRequestId === null)
+      return mergePullRequestDirectly(input, binding?.github);
+    const capture: PullRequestMergeCapture = { kind: 'merge' };
+    try {
+      await runInGitHubProjection(capture, async () => {
+        const current = await dispatcher.query(
+          'core.pullRequest.get',
+          { pullRequestId, refresh: true },
+          { caller: withGrant(caller, CORE_PULL_REQUEST_GRANTS.read) },
+        );
+        if (capture.policy === undefined)
+          throw new Error('Merge policy projection was not captured.');
+        await dispatcher.instruction(
+          'core.pullRequest.merge',
+          {
+            pullRequestId,
+            expectedRevision: current.revision,
+            expectedHeadSha: input.expectedHeadSha,
+            strategy: capture.policy.preferredStrategy,
+          },
+          {
+            caller: withGrant(caller, CORE_PULL_REQUEST_GRANTS.write),
+            metadata: { idempotencyKey: randomUUID() },
+          },
+        );
+      });
+    } catch (error) {
+      if (capture.result) return capture.result;
+      if (refusedCaller(error)) throw hostError(error);
+      if (hasCode(error, 'core.pullRequest.merge.headMismatch'))
+        throw new Error(
+          'Cannot retry the pull request merge because the PR head commit changed.',
+        );
+      if (
+        hasCode(
+          error,
+          'core.pullRequest.merge.revisionConflict',
+          'core.pullRequest.repositoryUnavailable',
+        )
+      )
+        throw new Error(STATE_CHANGED);
+      // A typed queue-required refusal proves no direct merge landed, even
+      // when a ruleset changed after preflight. Legacy enqueue stays CAN-5886.
+      if (hasCode(error, 'core.pullRequest.merge.mergeQueueRequired'))
+        return mergePullRequestDirectly(input, binding?.github);
+      if (capture.mutationSent) throw hostError(error);
+      return mergePullRequestDirectly(input, binding?.github);
+    }
+    if (capture.result) return capture.result;
+    // A canonical already-merged replay does not run the writer again.
+    return {
+      outcome: 'merged',
+      newlyMerged: false,
+      mergeMethod: capture.policy?.preferredStrategy ?? 'merge',
+      mergeCommitSha: null,
+    };
+  };
 }

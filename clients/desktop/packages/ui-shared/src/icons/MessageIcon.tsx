@@ -1,6 +1,9 @@
-import type { JSX, SVGProps } from 'react';
-import { MessageIcon as AppCatalogMessageIcon } from './AppIcons';
+import type { JSX } from 'react';
+import {
+  MessageIcon as AppCatalogMessageIcon,
+  type AppIconProps,
+} from './AppIcons';
 
-export function MessageIcon(props: SVGProps<SVGSVGElement>): JSX.Element {
-  return <AppCatalogMessageIcon width="14" height="14" {...props} />;
+export function MessageIcon(props: AppIconProps): JSX.Element {
+  return <AppCatalogMessageIcon size="sm" {...props} />;
 }

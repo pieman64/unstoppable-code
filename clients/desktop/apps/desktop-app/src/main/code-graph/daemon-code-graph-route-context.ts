@@ -20,6 +20,25 @@ export interface DaemonCodeGraphRoute {
 
 const routes = new AsyncLocalStorage<DaemonCodeGraphRoute>();
 
+/** A renderer page main can match a caller against: a window, or the view it hosts. */
+export interface DaemonCodeGraphSenderSurface {
+  isDestroyed(): boolean;
+  readonly webContents: unknown;
+}
+
+/** Whether `sender` is the live renderer of one of this app's own surfaces. */
+export function isOwnRendererSender(
+  sender: unknown,
+  surfaces: readonly (DaemonCodeGraphSenderSurface | null)[],
+): boolean {
+  return surfaces.some(
+    (surface) =>
+      surface !== null &&
+      surface.webContents === sender &&
+      !surface.isDestroyed(),
+  );
+}
+
 /** Runs `work` with the daemon route open when `selected`. */
 export async function withDaemonCodeGraphRoute<T>(
   selected: boolean,

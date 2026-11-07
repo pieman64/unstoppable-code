@@ -4,6 +4,7 @@ import {
   type RedeemedExecutionSecrets,
 } from '../../execution-secrets';
 import type {
+  CanopyHostExecution,
   CanopyInstructionHandler,
   CanopyQueryHandler,
   WorkerScriptContext,
@@ -15,14 +16,19 @@ import type {
   WorkerScriptExecutionGetResult,
   WorkerScriptExecutionListParams,
   WorkerScriptExecutionListResult,
+  WorkerScriptScope,
 } from '@canopy/protocol/canopy-core';
 
 import { KeyedOutcomes } from '../../operations/keyed-outcomes';
 
-import { CanopyOperationError } from '../../../runtime/errors';
+import {
+  CanopyOperationError,
+  canopyUnavailableError,
+} from '../../../runtime/errors';
 import type { CanopyHandlerContext } from '../../../runtime/types';
 import type { RunLogFiles } from './run-log-files';
 import {
+  MAX_SCRIPT_OUTPUT_BYTES,
   runScriptProcess,
   type RunScriptProcessOptions,
   type ScriptProcessHost,
@@ -74,6 +80,7 @@ export interface ScriptExecutionWorkerHost
     scope: WorkerScriptExecuteParams['scope'],
     context: WorkerScriptContext,
     secrets: RedeemedExecutionSecrets,
+    execution: CanopyHostExecution | undefined,
   ): Promise<ScriptExecutionPlace>;
   /**
    * This worker's `worker.terminal` port, for runs that need a terminal
@@ -93,6 +100,30 @@ export interface ScriptExecutionObserver {
   onLines?(lines: string[]): void;
   onData?(chunk: Buffer, stream: 'stdout' | 'stderr'): void;
   onFinished?(result: ScriptProcessOutcome): void;
+}
+
+export interface ScriptExecuteOptions {
+  /** Already redeemed by the caller; `params.secrets` is then not redeemed again. */
+  readonly secrets?: RedeemedExecutionSecrets;
+  /** The request's host execution (CAN-5496), passed to `resolvePlace`. */
+  readonly execution?: CanopyHostExecution;
+  /** Lines reach observers that subscribe after it starts: a run served over the protocol. */
+  readonly relayLines?: boolean;
+}
+
+/** Notifies a run's in-process observers of a run another host executes (CAN-5087). */
+export interface ScriptExecutionRelay {
+  processStarted(): void;
+  lines(lines: string[]): void;
+  finished(outcome: ScriptProcessOutcome): void;
+}
+
+/** `starting`: dispatched, its process not yet started. */
+export type ScriptExecutionState = 'absent' | 'starting' | 'running';
+
+export interface WorkerScriptHandlerOptions {
+  /** The run outlives its request: only a cancel, its timeout or the host's stop ends it (the daemon). */
+  readonly detached?: boolean;
 }
 
 export function scriptContextUnavailableError(): CanopyOperationError {
@@ -164,7 +195,17 @@ export class ScriptExecutionWorker {
   readonly registry = new ScriptRunRegistry();
   readonly logs: ScriptRunLogStore;
   private readonly observers = new Map<string, Set<ScriptExecutionObserver>>();
+  private readonly inFlight = new Set<Promise<WorkerScriptExecuteResult>>();
+  /** Every executing run's stop, from its acceptance on. */
+  private readonly stops = new Map<string, AbortController>();
+  private stopping = false;
   private readonly executing = new Set<string>();
+  /** Every executing run whose process has not started, recorded or not. */
+  private readonly unstarted = new Set<string>();
+  private readonly executingScopes = new Map<
+    string,
+    WorkerScriptExecuteParams['scope']
+  >();
   /**
    * Logged runs between their dispatch and their process's start, so a stop
    * in that window cancels them before anything is spawned.
@@ -250,6 +291,40 @@ export class ScriptExecutionWorker {
     );
   }
 
+  /** Whether a run with this execution id executes here, in this worktree. */
+  executionState(
+    executionId: string,
+    scope: WorkerScriptScope,
+  ): ScriptExecutionState {
+    const executing = this.executingScopes.get(executionId);
+    if (
+      !this.executing.has(executionId) ||
+      executing?.workspaceId !== scope.workspaceId ||
+      executing.worktreeId !== scope.worktreeId
+    )
+      return 'absent';
+    return this.unstarted.has(executionId) ? 'starting' : 'running';
+  }
+
+  /** The observers of a run another host executes. */
+  relay(executionId: string): ScriptExecutionRelay {
+    return {
+      processStarted: (): void =>
+        this.notify(executionId, (observer) => observer.onProcessStarted?.()),
+      lines: (lines): void =>
+        this.notify(executionId, (observer) => observer.onLines?.(lines)),
+      finished: (outcome): void =>
+        this.notify(executionId, (observer) => observer.onFinished?.(outcome)),
+    };
+  }
+
+  assertServedScope(scope: {
+    readonly authorityId?: string;
+    readonly targetId?: string;
+  }): void {
+    this.assertServed(scope);
+  }
+
   private assertServed(scope: {
     readonly authorityId?: string;
     readonly targetId?: string;
@@ -266,9 +341,39 @@ export class ScriptExecutionWorker {
       });
   }
 
-  async execute(
+  execute(
     params: WorkerScriptExecuteParams,
     signal?: AbortSignal,
+    options: ScriptExecuteOptions = {},
+  ): Promise<WorkerScriptExecuteResult> {
+    if (this.stopping)
+      return Promise.reject(
+        canopyUnavailableError('This worker is stopping and runs no scripts.'),
+      );
+    const run = this.run(params, signal, options);
+    this.inFlight.add(run);
+    const done = (): void => {
+      this.inFlight.delete(run);
+    };
+    void run.then(done, done);
+    return run;
+  }
+
+  /**
+   * The host's stop: refuses new runs, stops every executing run, started or
+   * not, and resolves once each has ended with its run log written.
+   */
+  async stop(): Promise<void> {
+    this.stopping = true;
+    this.stops.forEach((stop) => stop.abort());
+    await this.registry.drainAll();
+    await Promise.allSettled(Array.from(this.inFlight));
+  }
+
+  private async run(
+    params: WorkerScriptExecuteParams,
+    signal: AbortSignal | undefined,
+    options: ScriptExecuteOptions,
   ): Promise<WorkerScriptExecuteResult> {
     this.assertServed(params.scope);
     if (params.terminal && !this.host.terminals)
@@ -276,7 +381,10 @@ export class ScriptExecutionWorker {
     const { executionId, scope, record } = params;
     if (this.executing.has(executionId)) throw executionInProgressError();
     this.executing.add(executionId);
+    this.unstarted.add(executionId);
+    this.executingScopes.set(executionId, scope);
     const stop = new AbortController();
+    this.stops.set(executionId, stop);
     const forward = (): void => stop.abort();
     if (signal?.aborted) stop.abort();
     else signal?.addEventListener('abort', forward, { once: true });
@@ -298,12 +406,15 @@ export class ScriptExecutionWorker {
       });
     let result: WorkerScriptExecuteResult | null = null;
     try {
-      result = await this.start(params, stop.signal);
+      result = await this.start(params, stop.signal, options);
       return result;
     } finally {
       signal?.removeEventListener('abort', forward);
       this.starting.delete(executionId);
+      this.unstarted.delete(executionId);
       this.executing.delete(executionId);
+      this.executingScopes.delete(executionId);
+      this.stops.delete(executionId);
       settle.done(result);
     }
   }
@@ -311,15 +422,23 @@ export class ScriptExecutionWorker {
   private async start(
     params: WorkerScriptExecuteParams,
     signal: AbortSignal,
+    options: ScriptExecuteOptions,
   ): Promise<WorkerScriptExecuteResult> {
     const { executionId, scope, record } = params;
-    const secrets = await redeemExecutionSecrets(
-      this.host.secrets,
-      { operation: 'worker.script.execute', key: executionId },
-      params.secrets,
-      signal,
+    const secrets =
+      options.secrets ??
+      (await redeemExecutionSecrets(
+        this.host.secrets,
+        { operation: 'worker.script.execute', key: executionId },
+        params.secrets,
+        signal,
+      ));
+    const place = await this.host.resolvePlace(
+      scope,
+      params.context,
+      secrets,
+      options.execution,
     );
-    const place = await this.host.resolvePlace(scope, params.context, secrets);
     const projectId = scope.workspaceId;
     const worktreeId = scope.worktreeId;
     const logged =
@@ -362,10 +481,13 @@ export class ScriptExecutionWorker {
       this.notify(executionId, (observer) => observer.onFinished?.(outcome));
       return toExecuteResult(executionId, outcome, recorded);
     }
-    // Lines are buffered only for a run log or a line observer: an If
-    // Command gate reads raw output and keeps its own cap.
+    // Lines are buffered only for a run log, a run an output stream can
+    // join, or a line observer: an If Command gate reads raw output and
+    // keeps its own cap.
     const onChunk =
-      ref !== null || this.observesLines(executionId)
+      ref !== null ||
+      options.relayLines === true ||
+      this.observesLines(executionId)
         ? (lines: string[]): void => {
             const logRef = ref;
             if (logRef)
@@ -378,6 +500,7 @@ export class ScriptExecutionWorker {
     const onProcessStarted = (): void => {
       // The registry reaches it from here on.
       this.starting.delete(executionId);
+      this.unstarted.delete(executionId);
       this.notify(executionId, (observer) => observer.onProcessStarted?.());
     };
     const tracking = logged
@@ -419,6 +542,11 @@ export class ScriptExecutionWorker {
             backgroundPriority: params.priority === 'background',
             signal,
             ...(onChunk ? { onChunk } : {}),
+            // A run log keeps whole lines to its own budget; a relay keeps
+            // no more of a line than the output cap.
+            ...(onChunk && ref === null
+              ? { maxLineLength: MAX_SCRIPT_OUTPUT_BYTES }
+              : {}),
             onData: (chunk, stream): void => {
               this.notify(executionId, (observer) =>
                 observer.onData?.(chunk, stream),
@@ -571,6 +699,7 @@ export interface WorkerScriptHandlers {
 /** The `worker.script.*` handlers over one worker's script execution. */
 export function createWorkerScriptHandlers(
   worker: ScriptExecutionWorker,
+  options: WorkerScriptHandlerOptions = {},
 ): WorkerScriptHandlers {
   const executions = new KeyedOutcomes<WorkerScriptExecuteResult>({
     reusedError: idempotencyKeyReusedError,
@@ -584,11 +713,19 @@ export function createWorkerScriptHandlers(
       'worker.script.execution.list': (params) => worker.list(params),
     },
     instructions: {
-      // The run belongs to the request that started it: its abort (a
-      // cancelled dispatch, or the caller's cancellation) stops the process.
+      // The run belongs to the request that started it unless the host
+      // detaches it (the daemon, CAN-5087): its abort (a cancelled dispatch,
+      // or the caller's cancellation) stops the process.
       'worker.script.execute': (params, context) =>
         executions.run(context, params, () =>
-          worker.execute(params, context.signal),
+          worker.execute(
+            params,
+            options.detached === true ? undefined : context.signal,
+            {
+              relayLines: true,
+              ...(context.execution ? { execution: context.execution } : {}),
+            },
+          ),
         ),
       'worker.script.execution.cancel': (params, context) =>
         cancellations.run(context, params, () => worker.cancel(params)),

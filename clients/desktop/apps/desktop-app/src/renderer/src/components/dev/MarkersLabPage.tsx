@@ -1,18 +1,19 @@
 import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react';
 import {
   Badge,
-  Button,
-  Chip,
-  Count,
-  Dot,
-  Heading,
-  StatusGlyph,
   type BadgeSize,
   type BadgeTone,
+  Button,
+  Chip,
   type ChipForcedState,
+  Count,
   type CountTone,
+  Dot,
   type DotTone,
+  Heading,
+  StatusGlyph,
   type StatusGlyphSize,
+  Surface,
 } from '@canopy/ui-shared/components';
 import { STATUS_GLYPH_STATES } from '@canopy/ui-shared/lib';
 import {
@@ -103,9 +104,9 @@ function Panel({
       <Heading level={2} variant="section">
         {title}
       </Heading>
-      <div className="flex flex-col gap-3 rounded-lg bg-secondary p-4">
+      <Surface variant="group" padding="default" gap="item">
         {children}
-      </div>
+      </Surface>
     </section>
   );
 }
@@ -346,7 +347,7 @@ export function ContextSection(): JSX.Element {
   return (
     <Panel id="context" title="In context">
       <span className="text-xs font-medium fg-secondary">Schema diagram</span>
-      <div className="w-full max-w-90 rounded-md bg-card">
+      <Surface variant="group" size="small" className="w-full max-w-90">
         <div className="border-b px-3 py-1.5 text-xs font-medium fg-primary">
           users
         </div>
@@ -368,20 +369,20 @@ export function ContextSection(): JSX.Element {
             changed
           </Badge>
         </ContextRow>
-      </div>
+      </Surface>
 
       <span className="text-xs font-medium fg-secondary">Settings</span>
-      <div className="w-full max-w-160 rounded-md bg-card">
+      <Surface variant="group" size="small" className="w-full max-w-160">
         <ContextRow label="Linear plugin">
           <Badge tone="info">Update available</Badge>
         </ContextRow>
         <ContextRow label="Model alias: fast">
           <Badge>Customized</Badge>
         </ContextRow>
-      </div>
+      </Surface>
 
       <span className="text-xs font-medium fg-secondary">Cloud sync</span>
-      <div className="w-full max-w-160 rounded-md bg-card">
+      <Surface variant="group" size="small" className="w-full max-w-160">
         <ContextRow label="Cloud sync">
           <Dot tone="success" />
           <span className="text-xs fg-secondary">Connected</span>
@@ -390,10 +391,15 @@ export function ContextSection(): JSX.Element {
           <Dot tone="danger" />
           <span className="text-xs fg-secondary">Offline</span>
         </ContextRow>
-      </div>
+      </Surface>
 
       <span className="text-xs font-medium fg-secondary">Composer</span>
-      <div className="flex w-full max-w-160 flex-col gap-2 rounded-xl bg-card p-3">
+      <Surface
+        variant="group"
+        padding="compact"
+        gap="inline"
+        className="w-full max-w-160"
+      >
         <div className="flex flex-wrap gap-1.5">
           <Chip icon={FileIcon} onClick={noop} onRemove={noop}>
             README.md
@@ -409,7 +415,7 @@ export function ContextSection(): JSX.Element {
             Plan
           </Chip>
         </div>
-      </div>
+      </Surface>
     </Panel>
   );
 }

@@ -125,7 +125,10 @@ export interface SidebarBulkBinding<
 }
 
 /** One row's selection menu state, for hosts that build their own menu. */
+export type SidebarSelectionSection = 'projects' | 'chats';
+
 export interface SidebarRowSelectionMenu {
+  readonly onSelectItem?: () => void;
   readonly multiSelected: boolean;
   readonly toggle: () => void;
   /**
@@ -147,6 +150,9 @@ export interface SidebarRowSelectionMenu {
 
 /** What a list binds to its rows. */
 export interface SidebarRowMultiSelect {
+  readonly selectMode: boolean;
+  readonly selectModeFor: (listId: string) => boolean;
+  readonly onSelectItem?: (key: string) => void;
   readonly selection: SidebarRowSelection;
   /** Stable per list; an unmounting list reports no rows. */
   readonly onRowsChange: (rows: SidebarSelectionRows) => void;
@@ -167,6 +173,13 @@ export interface SidebarRowMultiSelect {
 }
 
 export interface SidebarBulk {
+  readonly selectionMode: SidebarSelectionSection | undefined;
+  readonly selectionCount: number;
+  readonly toolbarItems: readonly WorktreeMenuItem[];
+  readonly enterSection: (section: SidebarSelectionSection) => void;
+  readonly exitSelection: () => void;
+  readonly toggleSection: (section: SidebarSelectionSection) => void;
+  readonly allInSectionSelected: (section: SidebarSelectionSection) => boolean;
   /** Memoized per list id while the selection and batch are unchanged. */
   readonly bindingFor: (listId: string) => SidebarRowMultiSelect;
   /**
@@ -231,6 +244,8 @@ function sameRows(a: SidebarSelectionRows, b: SidebarSelectionRows): boolean {
  */
 export function useSidebarSelectionRows(): {
   readonly rows: SidebarSelectionRows;
+  readonly chatsListId?: string;
+  readonly enableSelectMode?: boolean;
   readonly reporterFor: (
     listId: string,
   ) => (rows: SidebarSelectionRows) => void;
@@ -321,6 +336,8 @@ function bindingCovering(
  */
 export function useSidebarBulk(input: {
   readonly rows: SidebarSelectionRows;
+  readonly chatsListId?: string;
+  readonly enableSelectMode?: boolean;
   readonly reporterFor: (
     listId: string,
   ) => (rows: SidebarSelectionRows) => void;
@@ -407,8 +424,101 @@ export function useSidebarBulk(input: {
     }
     return filtered;
   }, [rows, enabledKinds, queuedKeys]);
-  const selection = useSidebarRowSelection(selectableRows);
   const [dialog, setDialog] = useState<BulkDialogState | null>(null);
+  const rawSelection = useSidebarRowSelection(selectableRows);
+  const [selectionMode, setSelectionMode] = useState<SidebarSelectionSection>();
+  const clearRows = rawSelection.clear;
+  const exitSelection = useCallback((): void => {
+    setSelectionMode(undefined);
+    clearRows();
+  }, [clearRows]);
+  const selection = useMemo(
+    () => ({
+      ...rawSelection,
+      clear: exitSelection,
+      anchor: (listId: string, key: string): void => {
+        if (
+          selectionMode !== undefined &&
+          selectionMode !==
+            (listId === input.chatsListId ? 'chats' : 'projects')
+        )
+          setSelectionMode(undefined);
+        rawSelection.anchor(listId, key);
+      },
+      toggle: (listId: string, key: string): void => {
+        if (selectionMode !== undefined)
+          setSelectionMode(listId === input.chatsListId ? 'chats' : 'projects');
+        rawSelection.toggle(listId, key);
+      },
+      selectRange: (listId: string, key: string): void => {
+        if (selectionMode !== undefined)
+          setSelectionMode(listId === input.chatsListId ? 'chats' : 'projects');
+        rawSelection.selectRange(listId, key);
+      },
+    }),
+    [rawSelection, exitSelection, selectionMode, input.chatsListId],
+  );
+  const sectionForList = (listId: string): SidebarSelectionSection =>
+    listId === input.chatsListId ? 'chats' : 'projects';
+  const enterSection = (section: SidebarSelectionSection): void => {
+    rawSelection.clear();
+    setSelectionMode(section);
+  };
+  const enterItem = (listId: string, key: string): void => {
+    // Replace, rather than toggle: the open row must not seed a second pick.
+    const owner =
+      [...selectableRows].find(([, rows]) =>
+        rows.some((row) => row.key === key),
+      )?.[0] ?? listId;
+    rawSelection.anchor(owner, key);
+    rawSelection.replace([key]);
+    setSelectionMode(sectionForList(owner));
+  };
+  useEffect(() => {
+    if (selectionMode === undefined || typeof document === 'undefined') return;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape' || event.defaultPrevented || dialog !== null)
+        return;
+      if (
+        event.target instanceof Element &&
+        event.target.closest(
+          '[role="menu"], [role="dialog"], [role="alertdialog"]',
+        )
+      )
+        return;
+      exitSelection();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return (): void => document.removeEventListener('keydown', onKeyDown);
+  }, [selectionMode, exitSelection, dialog]);
+  const sectionRows = (
+    section: SidebarSelectionSection,
+  ): SidebarSelectionRow[] =>
+    [...selectableRows].flatMap(([id, rows]) =>
+      sectionForList(id) === section
+        ? rows.filter((row) => row.selectable)
+        : [],
+    );
+  const rowsForSectionSelection = (
+    section: SidebarSelectionSection,
+  ): SidebarSelectionRow[] => {
+    const rows = sectionRows(section);
+    const kind = selection.kind ?? rows[0]?.kind;
+    return rows.filter((row) => row.kind === kind);
+  };
+  const allInSectionSelected = (section: SidebarSelectionSection): boolean => {
+    const rows = rowsForSectionSelection(section);
+    return (
+      rows.length > 0 && rows.every((row) => selection.isSelected(row.key))
+    );
+  };
+  const toggleSection = (section: SidebarSelectionSection): void => {
+    if (allInSectionSelected(section)) rawSelection.clear();
+    else
+      rawSelection.replace(
+        rowsForSectionSelection(section).map((row) => row.key),
+      );
+  };
 
   /** The live binding a dialog captured, by the kind it captured. */
   const dialogBindingFor = (
@@ -466,7 +576,7 @@ export function useSidebarBulk(input: {
   // A selection's menu reads each row's state; ask the host for any it
   // hasn't loaded, once each time the selection changes.
   const requestKeys =
-    selection.count >= 2 && selectionBinding?.requestRowState !== undefined
+    selection.count >= 1 && selectionBinding?.requestRowState !== undefined
       ? orderedSelectedKeys.join('\n')
       : '';
   const selectionBindingRef = useRef(selectionBinding);
@@ -684,7 +794,9 @@ export function useSidebarBulk(input: {
   // (a chat tab, an editor) still counts.
   const clearSelection = selection.clear;
   const listensOutside =
-    selectionBinding?.enabled === true && selection.active && dialog === null;
+    (selectionMode !== undefined ||
+      (selectionBinding?.enabled === true && selection.active)) &&
+    dialog === null;
   useEffect(() => {
     if (!listensOutside || typeof document === 'undefined') return undefined;
     const onPointerDown = (event: PointerEvent): void => {
@@ -815,12 +927,25 @@ export function useSidebarBulk(input: {
     if (binding?.enabled !== true) return undefined;
     const multiSelected = selection.isSelected(key);
     const toggle = (): void => selection.toggle(listId, key);
-    if (!multiSelected || selection.count < 2 || binding !== selectionBinding) {
-      return { multiSelected, toggle };
+    if (
+      !multiSelected ||
+      selection.count < (selectionMode === undefined ? 2 : 1) ||
+      binding !== selectionBinding
+    ) {
+      return {
+        multiSelected,
+        toggle,
+        onSelectItem: input.enableSelectMode
+          ? () => enterItem(listId, key)
+          : undefined,
+      };
     }
     return {
       multiSelected,
       toggle,
+      onSelectItem: input.enableSelectMode
+        ? () => enterItem(listId, key)
+        : undefined,
       bulk: {
         count: selection.count,
         ...selectionMenuFor(binding),
@@ -839,6 +964,9 @@ export function useSidebarBulk(input: {
   rowMenuForRef.current = rowMenuFor;
   const cacheDeps: readonly unknown[] = [
     selection,
+    selectionMode,
+    input.chatsListId,
+    input.enableSelectMode,
     selectableRows,
     queuedKeysKey,
     reporterFor,
@@ -865,6 +993,11 @@ export function useSidebarBulk(input: {
       rowMenuForRef.current(listId, key);
     const built: SidebarRowMultiSelect = {
       selection,
+      selectMode: selectionMode === sectionForList(listId),
+      selectModeFor: (id) => selectionMode === sectionForList(id),
+      onSelectItem: input.enableSelectMode
+        ? (key) => menuFor(key)?.onSelectItem?.()
+        : undefined,
       onRowsChange: reporterFor(listId),
       escapeClears: true,
       isRemoving: (key) => removing.has(key),
@@ -895,6 +1028,20 @@ export function useSidebarBulk(input: {
   };
 
   return {
+    selectionMode,
+    selectionCount: selection.count,
+    toolbarItems:
+      selectionBinding === undefined
+        ? []
+        : deriveSelectionMenuItems({
+            ...selectionMenuFor(selectionBinding),
+            onStateAction: runStateAction,
+            onBulkRemoval: openBatch,
+          }),
+    enterSection,
+    exitSelection,
+    toggleSection,
+    allInSectionSelected,
     bindingFor,
     isQueuedForRemoval,
     queuedRemovalFor,

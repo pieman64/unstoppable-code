@@ -28,7 +28,7 @@ import {
   readPrMergeQueueSnapshot,
 } from '@canopy/desktop-shared/lib/pr-merge-queue';
 import { getGitHubPrStateDir, getWorktreeDataDir } from './paths';
-import { getObservabilityService } from '../observability';
+import { getExecutionObservabilityIngest } from '../observability/ingest';
 import { logMainProcessWarn } from './main-process-logging';
 
 const PROJECT_REPO_STORAGE_KEY = 'project-root';
@@ -1780,7 +1780,7 @@ function recordWorktreePrMergedUsageEvent(args: {
 }): void {
   const timestamp = new Date().toISOString();
   const repoScope = getUsageRepoScopeFromStorageKey(args);
-  getObservabilityService().recordUsageMetricEvent({
+  getExecutionObservabilityIngest().recordUsageMetricEvent({
     version: 1,
     id: `worktree-pr-merged:${args.projectId}/${args.worktreeId}:${repoScope.repoId}:${String(args.snapshot.pr.number)}`,
     type: 'worktree_pr_merged',

@@ -689,8 +689,7 @@ function ComposerInstance({
       label: 'Plan mode',
       icon: (
         <PlanModeIcon
-          width={16}
-          height={16}
+          size="sm"
           active={value.planMode ?? effectivePlanMode ?? false}
         />
       ),
@@ -893,8 +892,7 @@ function ComposerInstance({
           title="Plan mode"
           icon={
             <PlanModeIcon
-              width={16}
-              height={16}
+              size="sm"
               active={value.planMode ?? effectivePlanMode ?? false}
             />
           }

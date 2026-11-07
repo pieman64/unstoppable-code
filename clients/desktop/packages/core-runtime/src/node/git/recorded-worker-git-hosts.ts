@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
 import { lstat, readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import type {
@@ -24,6 +26,7 @@ import {
   readWorktreeList,
   type WorkspaceFileRead,
 } from '../workspace/read-formats';
+import { parseGitWorktreeListPorcelain } from './branch-list';
 import {
   GitBranchWriteInterrupted,
   parseGitCheckedOutBranches,
@@ -51,6 +54,9 @@ import {
   type WorkerGitBranchListHost,
 } from './worker-git-branch-list';
 import type { WorkerGitBranchWriteHost } from './worker-git-branch-writes';
+import { createRecordedWorkerGitCommitPushHost } from './recorded-worker-git-commit-push-host';
+import type { WorkerGitCommitPushHost } from './worker-git-commit-push';
+import type { WorkerGitMergeHost } from './worker-git-merge';
 import { createRecordedWorkerGitSyncHost } from './recorded-worker-git-sync-host';
 import type { WorkerGitSyncWriteHost } from './worker-git-sync-writes';
 import type {
@@ -118,6 +124,8 @@ export interface RecordedWorkerGitHosts {
   readonly branchWrite: WorkerGitBranchWriteHost<RecordedGitRepository, string>;
   /** `worker.git.fetch` and `worker.git.pull`, on the branch writes' checkouts. */
   readonly syncWrite: WorkerGitSyncWriteHost<RecordedGitRepository>;
+  readonly commitPush: WorkerGitCommitPushHost<RecordedGitRepository>;
+  readonly mergeWrite: WorkerGitMergeHost<RecordedGitRepository>;
   readonly remote: WorkerGitRemoteHost<string>;
   readonly worktreeHealth: WorkerGitWorktreeHealthHost<RecordedGitWorktree>;
   readonly executable: WorkerGitExecutableHost;
@@ -966,6 +974,70 @@ export function createRecordedWorkerGitHosts(
     },
   };
 
+  const mergeWrite: WorkerGitMergeHost<RecordedGitRepository> = {
+    authorityId,
+    resolveCheckout: (scope, context) =>
+      branchWrite.resolveCheckout(scope, context),
+    port: (checkout, context) => {
+      const invocation = invocationOf(context);
+      const commands = (cwd: string): ReturnType<typeof writeCommands> =>
+        writeCommands(cwd, invocation);
+      return {
+        currentBranch: async () =>
+          (
+            await commands(checkout.path).succeeded({ kind: 'current-branch' })
+          ).trim(),
+        repositoryRoot: async () => {
+          const root = await interruptibleListing(invocation.signal, () =>
+            recordedRoot(checkout.path, checkout.recorded, invocation),
+          );
+          if (root === null) throw unresolved();
+          return root;
+        },
+        localBranchExists: (root, branch) =>
+          commands(root).probe({ kind: 'local-branch', branch }),
+        baseWorktree: async (root, branch) => {
+          const output = await commands(root).succeeded({
+            kind: 'merge-worktree-list',
+          });
+          return (
+            parseGitWorktreeListPorcelain(output).find(
+              (entry) => entry.branchName === branch,
+            )?.worktreePath ?? null
+          );
+        },
+        temporaryWorktree: () => join(tmpdir(), `git-merge-${randomUUID()}`),
+        addWorktree: (root, path, branch) =>
+          commands(root).unlessCancelled({
+            kind: 'merge-worktree-add',
+            path,
+            branch,
+          }),
+        isDirty: async (path) =>
+          (await commands(path).succeeded({ kind: 'status' })).trim().length >
+          0,
+        merge: (path, branch) =>
+          commands(path).unlessCancelled({ kind: 'merge-local', branch }),
+        hasUnmergedPaths: async (path) =>
+          (await commands(path).succeeded({ kind: 'porcelain-status' }))
+            .split('\n')
+            .some((line) => /^(U[UADM]|[ADM]U|DD|AA)/.test(line)),
+        // Cleanup must run after cancellation, too.
+        abort: async (path) => {
+          await commands(path).succeeded({ kind: 'merge-abort' });
+        },
+        head: async (path) =>
+          (await commands(path).succeeded({ kind: 'merge-head' })).trim(),
+        removeWorktree: async (root, path) => {
+          await commands(root).succeeded({
+            kind: 'merge-worktree-remove',
+            path,
+          });
+        },
+      };
+    },
+  };
+
   const syncWrite = createRecordedWorkerGitSyncHost({
     authorityId,
     resolveCheckout: (scope, context) =>
@@ -978,6 +1050,13 @@ export function createRecordedWorkerGitHosts(
     branchList,
     branchWrite,
     syncWrite,
+    commitPush: createRecordedWorkerGitCommitPushHost({
+      authorityId,
+      writes,
+      resolveCheckout: (scope, context) =>
+        branchWrite.resolveCheckout(scope, context),
+    }),
+    mergeWrite,
     remote,
     worktreeHealth,
     executable,

@@ -2,7 +2,7 @@ import type { JSX } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { Step } from '@canopy/desktop-shared/types/pipeline';
-import { PipelineDragHandleIcon } from './PipelinePanelPrimitives';
+import { DragHandleIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { Button } from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { CloseIcon as AppCatalogCloseIcon } from '@canopy/ui-shared/icons/AppIcons';
@@ -95,7 +95,7 @@ export function StepCard({
           className="shrink-0 cursor-grab active:cursor-grabbing p-0.5 fg-secondary hover:fg-primary touch-none"
           onClick={(e): void => e.stopPropagation()}
         >
-          <PipelineDragHandleIcon />
+          <DragHandleIcon size="sm" />
         </button>
       )}
 
@@ -129,7 +129,7 @@ export function StepCard({
           }}
           aria-label="Delete step"
         >
-          <AppCatalogCloseIcon width="14" height="14" />
+          <AppCatalogCloseIcon size="sm" />
         </Button>
       )}
     </div>

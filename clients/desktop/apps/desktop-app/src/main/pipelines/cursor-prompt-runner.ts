@@ -14,6 +14,7 @@ import {
 } from '../cursor/connection';
 import { isCursorHarnessEnabled } from '../cursor/feature-flag';
 import { cursorConnectionStatus } from '../cursor/runtime-status';
+import { spawnProviderProcess } from '../agent-runs/provider-process-host';
 
 const CONNECT_MESSAGE = 'Connect Cursor in Settings to run this step.';
 
@@ -127,6 +128,7 @@ export async function runCursorPipelinePrompt(
       {
         launch: managed.launch,
         target: managed.target,
+        spawner: spawnProviderProcess,
         baseEnvironment: cursorBaseEnvironment({
           runtime: 'pipeline',
           ...(request.projectId ? { workspaceId: request.projectId } : {}),

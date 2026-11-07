@@ -175,7 +175,7 @@ export const UserBubble = memo(function UserBubble({
   const leading =
     message.inputMode === 'voice' ? (
       <span title="Dictated with voice" aria-label="Dictated with voice">
-        <MicIcon width={10} height={10} />
+        <MicIcon size="sm" />
       </span>
     ) : undefined;
   // Only an input the provider consumed inside a running turn is steering. A

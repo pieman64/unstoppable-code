@@ -38,6 +38,7 @@ import {
   GitPullRequestIcon,
   InfoIcon,
   LabelIcon,
+  ListChecks,
   MoreHorizontalIcon,
   PencilIcon,
   PinIcon,
@@ -165,6 +166,7 @@ export interface WorktreeMenuCapabilities {
 }
 
 export interface WorktreeMenuCallbacks {
+  readonly onSelectItemRequested?: () => void;
   readonly onSetLabelRequested?: () => void;
   readonly onBranchInfoRequested?: () => void;
   readonly onDebugInfoRequested?: () => void;
@@ -541,6 +543,14 @@ export function deriveWorktreeMenuItems(
     });
   }
   items.push(...deriveNotificationItems(context, callbacks, items.length > 0));
+  if (callbacks.onSelectItemRequested) {
+    items.push({
+      key: 'toggle-selection',
+      label: 'Select item',
+      icon: <ListChecks />,
+      onSelect: callbacks.onSelectItemRequested,
+    });
+  }
   if (callbacks.onToggleHiddenRequested) {
     items.push({
       key: 'toggle-hidden',

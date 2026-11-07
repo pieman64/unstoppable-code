@@ -57,11 +57,7 @@ export function PlanSourceMark({
       className={`inline-flex shrink-0 items-center justify-center rounded-sm border border-sky-500/40 bg-sky-500/10 ${className ?? ''}`}
       style={{ width: size, height: size }}
     >
-      <AppCatalogCheckIcon
-        width={Math.round(size * 0.6)}
-        height={Math.round(size * 0.6)}
-        className="text-sky-400"
-      />
+      <AppCatalogCheckIcon size="sm" className="text-sky-400" />
     </span>
   );
 }

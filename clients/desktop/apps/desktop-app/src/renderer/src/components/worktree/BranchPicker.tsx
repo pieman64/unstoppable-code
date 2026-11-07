@@ -310,7 +310,7 @@ export function BranchPicker({
                 setView('create');
                 setCreateError(null);
               }}
-              icon={<AppCatalogPlusIcon width="16" height="16" />}
+              icon={<AppCatalogPlusIcon size="sm" />}
             >
               New branch…
             </ListRow>
@@ -331,7 +331,7 @@ export function BranchPicker({
               }}
               aria-label="Back to branch list"
             >
-              <AppCatalogChevronLeftMediumIcon width="14" height="14" />
+              <AppCatalogChevronLeftMediumIcon size="sm" />
             </Button>
             <span className="text-xs font-semibold fg-primary">
               Create new branch

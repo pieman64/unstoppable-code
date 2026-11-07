@@ -60,7 +60,7 @@ function CostRowMarker({
   if (archived) {
     return (
       <span className="inline-flex shrink-0 items-center">
-        <ArchivedStateIcon state="archived" size={14} />
+        <ArchivedStateIcon state="archived" size="sm" />
         <span id={labelId} className="sr-only">
           Archived
         </span>

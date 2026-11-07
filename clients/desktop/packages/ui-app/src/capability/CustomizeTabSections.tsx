@@ -70,6 +70,7 @@ import {
   type PluginsDiscoverySection,
   type PluginsDiscoverySectionId,
   type UnifiedPluginEntry,
+  type InstalledEntryStatusState,
 } from '@canopy/ui-shared/lib';
 import {
   buildCustomizeTabModel,
@@ -165,6 +166,8 @@ export interface CustomizeTabSectionsProps {
   readonly onConnectEntry?: (entry: UnifiedPluginEntry) => void;
   readonly onOpenEntryId?: (entryId: string) => void;
   readonly entryShareStates?: MarketplaceEntryShareStates;
+  /** Plugin shares eligible for Shared by me on the MCP servers tab. */
+  readonly mcpSharedEntryIds?: ReadonlySet<string>;
   readonly entryStatus?: PluginsEntryStatusBinding;
   /** Narrows Installed; ignored on tabs whose rows carry no status. */
   readonly installedStatusFilter?: InstalledItemStatus;
@@ -305,6 +308,23 @@ interface PendingRemoval {
   readonly scope: string | undefined;
 }
 
+/** Why an MCP row's Remove is off; loading or unknown states give no reason. */
+function mcpRemoveDisabledReason(
+  entry: UnifiedPluginEntry,
+  state: InstalledEntryStatusState | undefined,
+  removalAvailable: boolean,
+): string | undefined {
+  if (
+    (entry.connection ?? entry.aggregateConnection)?.provider === true ||
+    state?.kind === 'fixed'
+  )
+    return MCP_MANAGEMENT_REASONS.provider;
+  if (state?.kind === 'read-only') return state.reason;
+  if (state?.kind === 'ready' && !state.item.removable && state.item.reason)
+    return state.item.reason;
+  return removalAvailable ? undefined : MCP_MANAGEMENT_REASONS.desktopOnly;
+}
+
 const DEFAULT_UNAVAILABLE: CustomizeInstalledUnavailableCopy = {
   title: 'Installed items aren’t available here',
   body: 'Browse is still available. Installed items show up once this device can read them.',
@@ -339,6 +359,7 @@ export function CustomizeTabSections(
     onConnectEntry,
     onOpenEntryId,
     entryShareStates,
+    mcpSharedEntryIds,
     entryStatus,
     installedStatusFilter,
     installedStatusInventory,
@@ -496,6 +517,7 @@ export function CustomizeTabSections(
         suggestedNames,
         agentsAvailable,
         projectTemplatesAvailable,
+        mcpSharedEntryIds,
       }),
     [
       tab,
@@ -515,6 +537,7 @@ export function CustomizeTabSections(
       suggestedNames,
       agentsAvailable,
       projectTemplatesAvailable,
+      mcpSharedEntryIds,
     ],
   );
 
@@ -988,7 +1011,9 @@ export function CustomizeTabSections(
           disabledReason:
             share?.status === 'blocked'
               ? share.reason
-              : MARKETPLACE_SHARE_BLOCKED_REASONS.standaloneMcp,
+              : entry.ref.type === 'mcp-server'
+                ? MARKETPLACE_SHARE_BLOCKED_REASONS.standaloneMcp
+                : MARKETPLACE_SHARE_BLOCKED_REASONS.unavailable,
           onSelect: () => undefined,
         });
       if (
@@ -1032,9 +1057,11 @@ export function CustomizeTabSections(
           disabled: !chooseTarget,
           disabledReason: chooseTarget
             ? undefined
-            : state?.kind === 'read-only'
-              ? state.reason
-              : MCP_MANAGEMENT_REASONS.noTarget,
+            : mcpRemoveDisabledReason(
+                entry,
+                state,
+                entryStatus?.onUninstall !== undefined,
+              ),
           onSelect: () => {
             if (chooseTarget) onSelectEntry(entry);
           },
@@ -1067,6 +1094,7 @@ export function CustomizeTabSections(
       onEditEntry,
       removalMenuItem,
       entryStatus?.states,
+      entryStatus?.onUninstall,
     ],
   );
 
@@ -1180,7 +1208,7 @@ export function CustomizeTabSections(
             aria-busy={updating}
             onClick={() => void updateOne(entry)}
           >
-            <DownloadIcon width={14} height={14} aria-hidden="true" />
+            <DownloadIcon size="sm" aria-hidden="true" />
           </Button>
         </Tooltip>
       );

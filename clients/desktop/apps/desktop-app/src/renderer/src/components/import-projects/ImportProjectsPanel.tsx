@@ -23,6 +23,7 @@ import {
   ErrorBanner,
   ProgressBar,
   StatusPill,
+  Surface,
 } from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { LoadingSpinner } from '@/components/shared/loading/spinners/LoadingSpinner';
@@ -676,26 +677,30 @@ export function ImportProjectsPanel({
           {results.map((result) => {
             const detail = resultDetail(result);
             return (
-              <li
+              <Surface
+                as="li"
+                variant="group"
+                size="small"
                 key={result.candidateId}
-                className="rounded-md bg-secondary/25 px-3 py-2"
                 data-testid={`import-projects-result-${result.candidateId}`}
                 data-status={result.status}
               >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="min-w-0 truncate text-s font-medium fg-primary">
-                    {result.displayName}
-                  </span>
-                  <span
-                    className={`shrink-0 text-xs font-medium ${resultTone(result)}`}
-                  >
-                    {resultLabel(result)}
-                  </span>
+                <div className="px-3 py-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="min-w-0 truncate text-s font-medium fg-primary">
+                      {result.displayName}
+                    </span>
+                    <span
+                      className={`shrink-0 text-xs font-medium ${resultTone(result)}`}
+                    >
+                      {resultLabel(result)}
+                    </span>
+                  </div>
+                  {detail && (
+                    <p className="mt-0.5 text-xs fg-secondary">{detail}</p>
+                  )}
                 </div>
-                {detail && (
-                  <p className="mt-0.5 text-xs fg-secondary">{detail}</p>
-                )}
-              </li>
+              </Surface>
             );
           })}
         </ul>
@@ -716,49 +721,52 @@ export function ImportProjectsPanel({
           }}
         />
         {detectedPlugins.length > 0 && (
-          <div
-            className="rounded-md border px-3 py-2"
+          <Surface
+            variant="outline"
+            size="small"
             data-testid="import-projects-plugins"
           >
-            <p className="text-s fg-primary">
-              {detectedPlugins.length === 1
-                ? `1 plugin from ${detectedPlugins[0]?.providers.map(providerName).join(' and ')} is not on your plugin list yet.`
-                : `${detectedPlugins.length} plugins installed in Claude or Codex are not on your plugin list yet.`}
-            </p>
-            <p className="mt-0.5 text-xs fg-secondary">
-              Adding them keeps your preferred plugins in one place. Plugins
-              that need sign-in ask for it in {CUSTOMIZE_LABEL}.
-            </p>
-            <div className="mt-2 flex items-center gap-2">
-              <Button
-                size="sm"
-                variant="secondary"
-                disabled={pluginsBusy || pluginsAdded}
-                onClick={(): void => {
-                  void addDetectedPlugins(detectedPlugins);
-                }}
-                data-testid="import-projects-add-plugins"
-              >
-                {pluginsAdded ? 'Plugins added' : 'Add plugins'}
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={(): void => {
-                  useNavigationStore.getState().navigate('plugins');
-                  finishFlow();
-                }}
-                data-testid="import-projects-open-plugins"
-              >
-                Set up plugins
-              </Button>
+            <div className="px-3 py-2">
+              <p className="text-s fg-primary">
+                {detectedPlugins.length === 1
+                  ? `1 plugin from ${detectedPlugins[0]?.providers.map(providerName).join(' and ')} is not on your plugin list yet.`
+                  : `${detectedPlugins.length} plugins installed in Claude or Codex are not on your plugin list yet.`}
+              </p>
+              <p className="mt-0.5 text-xs fg-secondary">
+                Adding them keeps your preferred plugins in one place. Plugins
+                that need sign-in ask for it in {CUSTOMIZE_LABEL}.
+              </p>
+              <div className="mt-2 flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={pluginsBusy || pluginsAdded}
+                  onClick={(): void => {
+                    void addDetectedPlugins(detectedPlugins);
+                  }}
+                  data-testid="import-projects-add-plugins"
+                >
+                  {pluginsAdded ? 'Plugins added' : 'Add plugins'}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={(): void => {
+                    useNavigationStore.getState().navigate('plugins');
+                    finishFlow();
+                  }}
+                  data-testid="import-projects-open-plugins"
+                >
+                  Set up plugins
+                </Button>
+              </div>
+              <ErrorBanner
+                className="mt-2"
+                error={pluginsError}
+                testId="import-projects-plugins-error"
+              />
             </div>
-            <ErrorBanner
-              className="mt-2"
-              error={pluginsError}
-              testId="import-projects-plugins-error"
-            />
-          </div>
+          </Surface>
         )}
         <div className="flex items-center justify-end gap-2">
           {retryable.length > 0 && (
@@ -787,14 +795,17 @@ export function ImportProjectsPanel({
   return (
     <div className={wrapperClass} data-testid="import-projects-choose">
       {scopingContext?.kind === 'organization' && (
-        <div
+        <Surface
+          variant="group"
+          size="small"
           role="note"
           data-testid="import-projects-personal-notice"
-          className="rounded-md border bg-secondary/20 px-3 py-2 text-xs fg-secondary"
         >
-          Imported projects are Personal. You’ll switch to Personal after
-          they’re added.
-        </div>
+          <div className="px-3 py-2 text-xs fg-secondary">
+            Imported projects are Personal. You’ll switch to Personal after
+            they’re added.
+          </div>
+        </Surface>
       )}
       {nothingToImport ? (
         <div className="space-y-2" data-testid="import-projects-empty">
@@ -898,115 +909,114 @@ export function ImportProjectsPanel({
                 ]
               : [];
             return (
-              <li
+              <Surface
+                as="li"
                 key={candidate.id}
-                className={`rounded-md border px-3 py-2 ${
-                  // Inset so the accent ring stays inside the row: the list
-                  // scrolls, and an outside ring is clipped at its edges.
-                  checked
-                    ? 'ring-1 ring-inset ring-line-accent bg-accent/5'
-                    : ''
-                } ${eligibleRow ? '' : 'opacity-70'}`}
+                variant="outline"
+                size="small"
+                selected={checked}
                 data-testid={`import-projects-row-${candidate.id}`}
                 data-status={candidate.status}
                 data-kind={candidate.kind}
               >
-                <div className="flex items-start gap-3">
-                  <Checkbox
-                    className="mt-0.5"
-                    checked={checked}
-                    disabled={!eligibleRow}
-                    onChange={(): void => toggleSelected(candidate.id)}
-                    aria-label={`Import ${candidate.displayName}`}
-                    data-testid={`import-projects-row-checkbox-${candidate.id}`}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span
-                        className="truncate text-s font-medium fg-primary"
-                        data-testid={`import-projects-row-name-${candidate.id}`}
-                      >
-                        {candidate.displayName}
-                      </span>
-                      {candidate.providers.map((provider) => (
-                        <StatusPill
-                          key={provider}
-                          tone="secondary"
-                          data-testid={`import-projects-provider-${provider}`}
+                <div className={`px-3 py-2 ${eligibleRow ? '' : 'opacity-70'}`}>
+                  <div className="flex items-start gap-3">
+                    <Checkbox
+                      className="mt-0.5"
+                      checked={checked}
+                      disabled={!eligibleRow}
+                      onChange={(): void => toggleSelected(candidate.id)}
+                      aria-label={`Import ${candidate.displayName}`}
+                      data-testid={`import-projects-row-checkbox-${candidate.id}`}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className="truncate text-s font-medium fg-primary"
+                          data-testid={`import-projects-row-name-${candidate.id}`}
                         >
-                          {providerName(provider)}
-                        </StatusPill>
-                      ))}
-                      {candidate.providers.length === 0 && (
-                        <StatusPill tone="secondary">Folder</StatusPill>
-                      )}
-                      <span className="ml-auto shrink-0">
-                        {statusPill(candidate)}
-                      </span>
-                    </div>
-                    <p
-                      className="truncate text-xs fg-tertiary"
-                      title={candidate.rootPath}
-                    >
-                      {candidate.rootPath}
-                    </p>
-                    {chatTitles && (
-                      // Session titles fall back to the first prompt's text.
+                          {candidate.displayName}
+                        </span>
+                        {candidate.providers.map((provider) => (
+                          <StatusPill
+                            key={provider}
+                            tone="secondary"
+                            data-testid={`import-projects-provider-${provider}`}
+                          >
+                            {providerName(provider)}
+                          </StatusPill>
+                        ))}
+                        {candidate.providers.length === 0 && (
+                          <StatusPill tone="secondary">Folder</StatusPill>
+                        )}
+                        <span className="ml-auto shrink-0">
+                          {statusPill(candidate)}
+                        </span>
+                      </div>
                       <p
-                        className={`truncate text-xs fg-secondary ${POSTHOG_REPLAY_BLOCK_CLASS}`}
-                        title={chatTitles}
-                        data-testid={`import-projects-row-chat-titles-${candidate.id}`}
+                        className="truncate text-xs fg-tertiary"
+                        title={candidate.rootPath}
                       >
-                        {chatTitles}
+                        {candidate.rootPath}
                       </p>
-                    )}
-                    <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs fg-secondary">
-                      <span>{kindLabel}</span>
-                      {pickedFolder && <span>{PLAIN_FOLDER_DETAIL}</span>}
-                      {pickedFolder && contained && (
-                        <span
-                          data-testid={`import-projects-row-contains-${candidate.id}`}
+                      {chatTitles && (
+                        // Session titles fall back to the first prompt's text.
+                        <p
+                          className={`truncate text-xs fg-secondary ${POSTHOG_REPLAY_BLOCK_CLASS}`}
+                          title={chatTitles}
+                          data-testid={`import-projects-row-chat-titles-${candidate.id}`}
                         >
-                          {contained}
-                        </span>
+                          {chatTitles}
+                        </p>
                       )}
-                      {candidate.sessionCount > 0 && (
-                        <span>{chatCountLabel(candidate.sessionCount)}</span>
-                      )}
-                      {relative && <span>Last used {relative}</span>}
-                      {candidate.linkedWorktreePaths.length > 0 && (
-                        <span>
-                          {candidate.linkedWorktreePaths.length === 1
-                            ? '1 linked worktree'
-                            : `${candidate.linkedWorktreePaths.length} linked worktrees`}
-                        </span>
-                      )}
-                      {candidate.importableSessionCount > 0 && (
-                        <ChoiceField
-                          label={`Import ${chatCountLabel(candidate.importableSessionCount)}`}
-                          checked={selection.chats.has(candidate.id)}
-                          disabled={!checked}
-                          onChange={(): void => toggleChats(candidate.id)}
-                          data-testid={`import-projects-row-chats-${candidate.id}`}
-                        />
-                      )}
-                      {candidate.statusReason && (
-                        <span
-                          className="fg-tertiary"
-                          data-testid="import-projects-row-reason"
-                        >
-                          {candidate.statusReason}
-                        </span>
+                      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs fg-secondary">
+                        <span>{kindLabel}</span>
+                        {pickedFolder && <span>{PLAIN_FOLDER_DETAIL}</span>}
+                        {pickedFolder && contained && (
+                          <span
+                            data-testid={`import-projects-row-contains-${candidate.id}`}
+                          >
+                            {contained}
+                          </span>
+                        )}
+                        {candidate.sessionCount > 0 && (
+                          <span>{chatCountLabel(candidate.sessionCount)}</span>
+                        )}
+                        {relative && <span>Last used {relative}</span>}
+                        {candidate.linkedWorktreePaths.length > 0 && (
+                          <span>
+                            {candidate.linkedWorktreePaths.length === 1
+                              ? '1 linked worktree'
+                              : `${candidate.linkedWorktreePaths.length} linked worktrees`}
+                          </span>
+                        )}
+                        {candidate.importableSessionCount > 0 && (
+                          <ChoiceField
+                            label={`Import ${chatCountLabel(candidate.importableSessionCount)}`}
+                            checked={selection.chats.has(candidate.id)}
+                            disabled={!checked}
+                            onChange={(): void => toggleChats(candidate.id)}
+                            data-testid={`import-projects-row-chats-${candidate.id}`}
+                          />
+                        )}
+                        {candidate.statusReason && (
+                          <span
+                            className="fg-tertiary"
+                            data-testid="import-projects-row-reason"
+                          >
+                            {candidate.statusReason}
+                          </span>
+                        )}
+                      </div>
+                      {scanNotes.length > 0 && (
+                        <p className="mt-0.5 text-xs fg-tertiary">
+                          {scanNotes.map((note) => `${note}.`).join(' ')}
+                        </p>
                       )}
                     </div>
-                    {scanNotes.length > 0 && (
-                      <p className="mt-0.5 text-xs fg-tertiary">
-                        {scanNotes.map((note) => `${note}.`).join(' ')}
-                      </p>
-                    )}
                   </div>
                 </div>
-              </li>
+              </Surface>
             );
           })}
         </ul>

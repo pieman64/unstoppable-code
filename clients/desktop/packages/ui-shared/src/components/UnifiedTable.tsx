@@ -155,8 +155,8 @@ function SourceOptionIcon({
   icon: UnifiedTableSourceOption['icon'];
   renderAppLogo?: () => ReactNode;
 }): JSX.Element {
-  if (icon === 'repo') return <RepoIcon width={12} height={12} />;
-  if (icon === 'marketplace') return <StorefrontIcon width={12} height={12} />;
+  if (icon === 'repo') return <RepoIcon size="sm" />;
+  if (icon === 'marketplace') return <StorefrontIcon size="sm" />;
   if (icon === 'codex') return <CodexLogo width={12} height={12} />;
   if (icon === 'mixed') {
     return (
@@ -167,9 +167,7 @@ function SourceOptionIcon({
     );
   }
   if (icon === 'app') {
-    return (
-      <>{renderAppLogo?.() ?? <StorefrontIcon width={12} height={12} />}</>
-    );
+    return <>{renderAppLogo?.() ?? <StorefrontIcon size="sm" />}</>;
   }
   return <ClaudeLogo width={12} height={12} />;
 }
@@ -313,8 +311,8 @@ function KindIcon({
   row: UnifiedTableRow;
   renderMcpLogo?: (row: UnifiedTableRow) => ReactNode;
 }): JSX.Element {
-  if (row.kind === 'skill') return <SkillIcon width={14} height={14} />;
-  if (row.kind === 'plugin') return <PluginsIcon width={14} height={14} />;
+  if (row.kind === 'skill') return <SkillIcon size="sm" />;
+  if (row.kind === 'plugin') return <PluginsIcon size="sm" />;
   if (row.kind === 'collection') return <BundleIcon size={14} />;
   if (row.kind === 'mcp' && renderMcpLogo) return <>{renderMcpLogo(row)}</>;
   return (
@@ -349,17 +347,16 @@ function SourceIcon({
     );
   }
   const testId = `source-icon-${icon}`;
-  if (icon === 'repo')
-    return <RepoIcon width={12} height={12} data-testid={testId} />;
+  if (icon === 'repo') return <RepoIcon size="sm" data-testid={testId} />;
   if (icon === 'marketplace')
-    return <StorefrontIcon width={12} height={12} data-testid={testId} />;
+    return <StorefrontIcon size="sm" data-testid={testId} />;
   if (icon === 'claude')
     return <ClaudeLogo width={12} height={12} data-testid={testId} />;
   if (icon === 'codex')
     return <CodexLogo width={12} height={12} data-testid={testId} />;
   return (
     <span data-testid={testId}>
-      {renderAppLogo?.() ?? <StorefrontIcon width={12} height={12} />}
+      {renderAppLogo?.() ?? <StorefrontIcon size="sm" />}
     </span>
   );
 }

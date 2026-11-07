@@ -1,4 +1,3 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -37,8 +36,9 @@ import {
 } from './hook-transport';
 import { encodeCursorProjectDir } from './project-dir';
 import { rewriteCursorShellInput } from './rtk-rewrite';
+import type { ProviderProcess } from '../provider-process/spawn';
 import type { CursorLaunch } from './runtime-launch';
-import { stopCursorProcessGroup } from './runtime-process';
+import type { CursorProviderProcess } from './runtime-process';
 import { createCursorUsageHook, CURSOR_USAGE_HOOK_SCRIPT } from './usage-hook';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -262,6 +262,8 @@ export interface CursorTurnRequest {
   cwd: string;
   text: string;
   launch: CursorLaunch;
+  /** How this turn starts its CLI child (CAN-4118). Electron main passes the provider process host. */
+  providerProcess: CursorProviderProcess;
   env: NodeJS.ProcessEnv;
   /** Verified Node executable used for hook scripts (see `target.hookRuntime`). */
   hookRuntime: string;
@@ -324,8 +326,7 @@ export async function runCursorTurn(
   host: CursorTurnHost,
 ): Promise<CursorTurnResult> {
   let sessionId = request.sessionId;
-  let child: ChildProcessWithoutNullStreams | undefined;
-  let childClosed: Promise<void> | undefined;
+  let child: ProviderProcess | undefined;
   let closePromise: Promise<void> | undefined;
   let client: AcpClient | undefined;
   let hook: CursorHookTransport | undefined;
@@ -430,9 +431,7 @@ export async function runCursorTurn(
     signal: abort.signal,
   };
   function closeChild(): Promise<void> {
-    closePromise ??= child
-      ? stopCursorProcessGroup(child.pid, childClosed)
-      : Promise.resolve();
+    closePromise ??= child ? child.stop() : Promise.resolve();
     return closePromise;
   }
   const revoke = (): void => {
@@ -597,33 +596,28 @@ export async function runCursorTurn(
       { mode: 0o600 },
     );
     abort.signal.throwIfAborted();
-    child = spawn(
-      request.launch.command,
-      [...request.launch.prefix, '--disable-auto-update', '--trust', 'acp'],
-      {
-        cwd: request.cwd,
-        env: { ...request.env, CURSOR_DATA_DIR: request.profileDir },
-        // Windows has no process groups; the tree is reclaimed by taskkill.
-        detached: process.platform !== 'win32',
-        // Electron main is a GUI process on Windows; without this the
-        // console-subsystem node.exe flashes a console window each turn.
-        windowsHide: true,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      },
-    );
+    child = request.providerProcess.spawner({
+      command: request.launch.command,
+      args: [
+        ...request.launch.prefix,
+        '--disable-auto-update',
+        '--trust',
+        'acp',
+      ],
+      cwd: request.cwd,
+      env: { ...request.env, CURSOR_DATA_DIR: request.profileDir },
+      owner: request.providerProcess.owner,
+    });
     child.stderr.resume();
-    childClosed = new Promise<void>((resolveClosed) => {
-      child?.once('close', () => resolveClosed());
-      child?.once('error', (error: Error) => {
-        // Record WHY before aborting. The abort controller below is the
-        // driver's own composite, so deriving `cancelled` from it alone
-        // turns a runtime failure the driver discovered (a missing or
-        // unexecutable binary) into a user cancellation — which is
-        // terminal for `max_retries` and produces no failure
-        // classification. Only the caller's `request.signal` may cancel.
-        childFailure ??= error;
-        abort.abort();
-      });
+    child.once('error', (error: Error) => {
+      // Record WHY before aborting. The abort controller below is the
+      // driver's own composite, so deriving `cancelled` from it alone
+      // turns a runtime failure the driver discovered (a missing or
+      // unexecutable binary) into a user cancellation — which is
+      // terminal for `max_retries` and produces no failure
+      // classification. Only the caller's `request.signal` may cancel.
+      childFailure ??= error;
+      abort.abort();
     });
     let loading = true;
     let submittingPrompt = false;
@@ -887,7 +881,7 @@ export async function runCursorTurn(
       // No prompt deadline by default: like Claude and Codex chat, an
       // interactive turn runs until Cursor finishes, the user presses Stop,
       // or the process exits. Stop is not deadline-dependent: `revoke`
-      // disposes the client and stopCursorProcessGroup reaps the CLI
+      // disposes the client and the child's stop() reaps the CLI
       // (SIGTERM, then SIGKILL after 1.5s), so a CLI that ignores
       // session/cancel cannot hold the turn. Pipeline turns pass an explicit
       // `promptTimeoutMs` bounded by `timeout_minutes` instead.

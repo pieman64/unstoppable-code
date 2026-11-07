@@ -1,6 +1,7 @@
 import type { JSX } from 'react';
 import { Button } from '@canopy/ui-shared/components';
 import { CloseIcon } from '@canopy/ui-shared/icons';
+import { Surface } from '@canopy/ui-shared/components';
 
 export interface PendingAttachmentChip {
   localId: string;
@@ -25,38 +26,41 @@ export function PendingAttachmentRow({
       data-testid="portal-pending-attachments"
     >
       {attachments.map((attachment) => (
-        <div
+        <Surface
+          variant="outline"
+          className="max-w-64 shrink-0"
           key={attachment.localId}
-          className="flex max-w-64 shrink-0 items-center gap-2 rounded-lg border py-0.5 pl-2.5 pr-0.5 text-xs"
           data-state={attachment.state}
           title={attachment.error ?? attachment.filename}
         >
-          {attachment.state === 'uploading' ? (
-            <span
-              className="h-3 w-3 animate-spin rounded-full border-2 border-fg-secondary border-t-transparent"
-              aria-label="Uploading"
-            />
-          ) : null}
-          <span className="truncate">{attachment.filename}</span>
-          {attachment.state === 'error' ? (
+          <div className="flex items-center gap-2 py-0.5 pl-2.5 pr-0.5 text-xs">
+            {attachment.state === 'uploading' ? (
+              <span
+                className="h-3 w-3 animate-spin rounded-full border-2 border-fg-secondary border-t-transparent"
+                aria-label="Uploading"
+              />
+            ) : null}
+            <span className="truncate">{attachment.filename}</span>
+            {attachment.state === 'error' ? (
+              <Button
+                variant="link"
+                onClick={(): void => onRetry(attachment.localId)}
+                aria-label={`Try again for ${attachment.filename}`}
+              >
+                Try again
+              </Button>
+            ) : null}
             <Button
-              variant="link"
-              onClick={(): void => onRetry(attachment.localId)}
-              aria-label={`Try again for ${attachment.filename}`}
+              variant="ghost"
+              size="compact"
+              iconOnly
+              onClick={(): void => onRemove(attachment.localId)}
+              aria-label={`Remove ${attachment.filename}`}
             >
-              Try again
+              <CloseIcon size={14} aria-hidden />
             </Button>
-          ) : null}
-          <Button
-            variant="ghost"
-            size="compact"
-            iconOnly
-            onClick={(): void => onRemove(attachment.localId)}
-            aria-label={`Remove ${attachment.filename}`}
-          >
-            <CloseIcon size={14} aria-hidden />
-          </Button>
-        </div>
+          </div>
+        </Surface>
       ))}
     </div>
   );

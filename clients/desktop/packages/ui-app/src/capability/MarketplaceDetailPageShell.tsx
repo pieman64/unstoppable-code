@@ -204,11 +204,7 @@ export function MarketplaceDetailPageShell({
               onClick={onNavigateBack}
               data-testid="plugins-entry-detail-back"
             >
-              <AppCatalogChevronLeftMediumIcon
-                width="12"
-                height="12"
-                aria-hidden
-              />
+              <AppCatalogChevronLeftMediumIcon size="sm" aria-hidden />
               Back
             </Button>
           ) : (

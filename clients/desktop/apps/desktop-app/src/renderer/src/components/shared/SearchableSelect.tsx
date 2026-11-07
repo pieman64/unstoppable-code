@@ -121,11 +121,7 @@ export function SearchableSelect({
               )}
             </span>
           </span>
-          <ChevronDownIcon
-            width={12}
-            height={12}
-            className="shrink-0 fg-secondary"
-          />
+          <ChevronDownIcon size="sm" className="shrink-0 fg-secondary" />
         </button>
       </Tooltip>
       <FloatingPickerMenu

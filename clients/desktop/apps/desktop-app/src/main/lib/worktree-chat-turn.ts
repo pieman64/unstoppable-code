@@ -84,10 +84,8 @@ import {
   appendUserOverallPreferencesBlock,
   buildUserOverallPreferencesBlock,
 } from '@canopy/desktop-shared/lib/global-instructions';
-import type {
-  ObservabilityService,
-  SessionDiagnosticRecord,
-} from '../observability/service';
+import type { DesktopExecutionObservabilityIngest } from '../observability/ingest';
+import type { SessionDiagnosticRecord } from '../observability/service';
 import type { PipelinePackageCapabilityOverlay } from '@canopy/desktop-shared/types/pipeline';
 import type {
   ChatQueueService,
@@ -307,7 +305,7 @@ export function clearActiveTurnUserMessageId(
   clearPresentationTurn(key, activeTurnUserMessageIds.get(key));
   activeTurnUserMessageIds.delete(key);
 }
-type ObservabilityServiceType = ObservabilityService;
+type ObservabilityIngestType = DesktopExecutionObservabilityIngest;
 
 /** The canonical turn id a wake's root result carries (turn-state phase 40f). */
 function getEventWakeTurnId(data: unknown): string | undefined {
@@ -441,7 +439,7 @@ function recordUndeliveredWorktreeEvent(options: {
   const eventMetadata = getDiagnosticEventMetadata(options.data);
   const timestamp = new Date().toISOString();
   void Promise.all([
-    loadObservabilityService(),
+    loadObservabilityIngest(),
     readPersistedChatDispatchMetadata(
       options.projectId,
       options.worktreeId,
@@ -505,10 +503,11 @@ function recordUndeliveredWorktreeEvent(options: {
     .catch(() => {});
 }
 
-async function loadObservabilityService(): Promise<ObservabilityServiceType> {
+async function loadObservabilityIngest(): Promise<ObservabilityIngestType> {
   // Observability instruments this turn path, so eager loading would cycle.
-  const { getObservabilityService } = await import('../observability');
-  return getObservabilityService();
+  const { getExecutionObservabilityIngest } =
+    await import('../observability/ingest');
+  return getExecutionObservabilityIngest();
 }
 
 async function generateWorktreeChatSummary(
@@ -626,7 +625,7 @@ export function scheduleChatSummary(options: ScheduleChatSummaryOptions): void {
           prefs.summaryThinkingLevel,
           prefs.providerModelConfigDefaults,
         );
-        const observabilityService = await loadObservabilityService();
+        const observabilityService = await loadObservabilityIngest();
         const hasBoundWorkOwner = Object.prototype.hasOwnProperty.call(
           options,
           'workOwner',
@@ -850,7 +849,7 @@ export function scheduleBranchNaming(
 ): void {
   const taskKeyScope = options.chatId ?? 'task-ready';
   const branchTaskKey = `helper:branch-naming:${options.projectId}/${options.worktreeId}/${taskKeyScope}:${Date.now()}`;
-  const observabilityServicePromise = loadObservabilityService();
+  const observabilityServicePromise = loadObservabilityIngest();
   void enqueueBackgroundHelperTask({
     priority: BACKGROUND_HELPER_PRIORITIES.branchNaming,
     task: async (): Promise<void> => {
@@ -2054,7 +2053,7 @@ async function dispatchHeldWorktreeChatTurn<
     );
     const observabilityServicePromise = turnDispatchTiming.measure(
       'observability',
-      loadObservabilityService,
+      loadObservabilityIngest,
     );
     const isCoworkChat = isCoworkWorkspace(options.projectId);
     const isLegacyStandalone = options.projectId === STANDALONE_CHAT_PROJECT_ID;
@@ -3715,6 +3714,7 @@ async function dispatchHeldWorktreeChatTurn<
         );
       }
       await applyAgentSessionCodexSpeed(session, effectiveModelConfig.speed);
+      await session.setContextWindow?.(effectiveModelConfig.contextWindow);
     });
 
     if (!isCoworkChat && !options.hiddenDeferredContinuation) {

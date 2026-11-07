@@ -7,6 +7,10 @@ import {
   type MigrationEvidenceStore,
   type MigrationPeerCapture,
 } from './migration-evidence';
+import type {
+  MigrationDaemonExpectation,
+  MigrationLauncherExpectation,
+} from './migration-platform';
 import {
   MIGRATION_HOST_FIELDS,
   MIGRATION_LAUNCHER_TRANSPORT,
@@ -32,27 +36,10 @@ const SECURE_MODE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 const ENTITLEMENT_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const LAUNCHD_PID = 1;
 
-/** The daemon's own flavor, compiled into the daemon (C-11). */
-export interface MigrationLauncherExpectation {
-  readonly teamId: string;
-  /** `brand.appId` for this flavor; a `.dev` suffix is not special (W6). */
-  readonly flavorId: string;
-  readonly secureMode: string;
-  readonly buildId: string;
-}
-
-export interface MigrationDaemonExpectation {
-  readonly teamId: string;
-  readonly identifier: string;
-  /** §3.2.5: a custom entitlement (preferred) or the embedded daemon cdhash. */
-  readonly binding:
-    | {
-        readonly kind: 'entitlement';
-        readonly key: string;
-        readonly value: string;
-      }
-    | { readonly kind: 'cdhash'; readonly cdhash: string };
-}
+export type {
+  MigrationDaemonExpectation,
+  MigrationLauncherExpectation,
+} from './migration-platform';
 
 /** The constant principal for one admitted launcher channel (§3.3). */
 export interface MigrationCaller extends MigrationChannelFacts {
@@ -98,7 +85,7 @@ export type MigrationDestinationRefusal =
   | 'code:identifier'
   | 'code:binding';
 
-/** Windows and Linux cannot launch the daemon at the pin (C-4; VA-W, VA-L). */
+/** W2/L2 verifiers are absent: a launch channel alone never authorizes migration. */
 export interface MigrationUnavailable {
   readonly refusal: 'unavailable';
   readonly os: Exclude<MigrationHostOs, 'darwin'>;
@@ -375,6 +362,7 @@ export function createMigrationAdmission(
       transport: MIGRATION_LAUNCHER_TRANSPORT,
       channelId: randomBytes(16).toString('hex'),
       launcher: Object.freeze({
+        os: 'darwin',
         pid: peer.token.pid,
         pidversion: peer.token.pidversion,
       }),

@@ -242,6 +242,7 @@ function ConfiguredAiGateway({
         <CloudChatsKeySection
           organizationId={adapter.organizationId}
           baseUrl={config.baseUrl}
+          revision={keyRevision}
           onAvailabilityChange={setCloudKeys}
         />
       ) : null}

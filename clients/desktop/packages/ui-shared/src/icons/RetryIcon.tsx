@@ -1,6 +1,9 @@
-import type { JSX, SVGProps } from 'react';
-import { RetryIcon as AppCatalogRetryIcon } from './AppIcons';
+import type { JSX } from 'react';
+import {
+  RetryIcon as AppCatalogRetryIcon,
+  type AppIconProps,
+} from './AppIcons';
 
-export function RetryIcon(props: SVGProps<SVGSVGElement>): JSX.Element {
-  return <AppCatalogRetryIcon width="14" height="14" {...props} />;
+export function RetryIcon(props: AppIconProps): JSX.Element {
+  return <AppCatalogRetryIcon size="sm" {...props} />;
 }

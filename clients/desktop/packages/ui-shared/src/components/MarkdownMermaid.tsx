@@ -529,14 +529,14 @@ function MarkdownMermaidComponent({
     {
       id: 'toggle-text',
       label: textToggleLabel,
-      icon: <CodeIcon width={14} height={14} aria-hidden="true" />,
+      icon: <CodeIcon size="sm" aria-hidden="true" />,
       testId: 'mermaid-toggle-text',
       onSelect: () => setCodeView({ source, open: !codeOpen }),
     },
     {
       id: 'copy-text',
       label: 'Copy diagram text',
-      icon: <CopyIcon width={14} height={14} aria-hidden="true" />,
+      icon: <CopyIcon size="sm" aria-hidden="true" />,
       testId: 'mermaid-copy-source',
       disabled: pending !== null,
       onSelect: copyText,
@@ -544,7 +544,7 @@ function MarkdownMermaidComponent({
     {
       id: 'save-svg',
       label: 'Save as SVG…',
-      icon: <FileDownIcon width={14} height={14} aria-hidden="true" />,
+      icon: <FileDownIcon size="sm" aria-hidden="true" />,
       testId: 'mermaid-save-svg',
       disabled: !canExport,
       onSelect: () => save('svg'),
@@ -555,7 +555,7 @@ function MarkdownMermaidComponent({
     {
       key: 'copy-image',
       label: 'Copy image',
-      icon: <CopyIcon width={14} height={14} aria-hidden="true" />,
+      icon: <CopyIcon size="sm" aria-hidden="true" />,
       disabled: !canExport || clipboardUnavailable !== undefined,
       tooltip: clipboardUnavailable,
       testId: 'mermaid-context-copy-image',
@@ -564,7 +564,7 @@ function MarkdownMermaidComponent({
     {
       key: 'save-png',
       label: 'Save as picture…',
-      icon: <DownloadIcon width={14} height={14} aria-hidden="true" />,
+      icon: <DownloadIcon size="sm" aria-hidden="true" />,
       disabled: !canExport,
       testId: 'mermaid-context-save-png',
       onSelect: () => save('png'),
@@ -572,7 +572,7 @@ function MarkdownMermaidComponent({
     {
       key: 'save-svg',
       label: 'Save as SVG…',
-      icon: <FileDownIcon width={14} height={14} aria-hidden="true" />,
+      icon: <FileDownIcon size="sm" aria-hidden="true" />,
       disabled: !canExport,
       testId: 'mermaid-context-save-svg',
       onSelect: () => save('svg'),
@@ -580,7 +580,7 @@ function MarkdownMermaidComponent({
     {
       key: 'copy-text',
       label: 'Copy diagram text',
-      icon: <CodeIcon width={14} height={14} aria-hidden="true" />,
+      icon: <CodeIcon size="sm" aria-hidden="true" />,
       separatorBefore: true,
       testId: 'mermaid-context-copy-text',
       disabled: pending !== null,

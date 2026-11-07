@@ -1,10 +1,10 @@
 import { Button } from '@canopy/ui-shared/components';
-import { useEffect, useRef, useState, type JSX } from 'react';
+import { useEffect, useId, useRef, useState, type JSX } from 'react';
 import { useShallow } from 'zustand/shallow';
-import { DropdownMenuSurface } from '@canopy/ui-shared';
 import {
   ActionMenuItems,
   ActionMenuRowStyle,
+  FloatingMenu,
   type ActionMenuItem,
 } from '@canopy/ui-shared/components';
 import { ChevronDownIcon } from '@canopy/ui-shared/icons';
@@ -31,7 +31,8 @@ export function BranchFromConfirmationModalHost(): JSX.Element | null {
     (state) => state.resolveConfirmation,
   );
   const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuId = useId();
 
   useEffect(() => {
     setMenuOpen(false);
@@ -49,22 +50,6 @@ export function BranchFromConfirmationModalHost(): JSX.Element | null {
         }
       : null,
   );
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    const closeOnOutsidePointer = (event: PointerEvent): void => {
-      if (
-        !(event.target instanceof Node) ||
-        !menuRef.current?.contains(event.target)
-      ) {
-        setMenuOpen(false);
-      }
-    };
-    document.addEventListener('pointerdown', closeOnOutsidePointer);
-    return (): void => {
-      document.removeEventListener('pointerdown', closeOnOutsidePointer);
-    };
-  }, [menuOpen]);
 
   if (!pending) return null;
 
@@ -89,18 +74,19 @@ export function BranchFromConfirmationModalHost(): JSX.Element | null {
           <Button size="compact" onClick={() => resolveConfirmation(null)}>
             Cancel
           </Button>
-          <div ref={menuRef} className="relative">
+          <div>
             <Button
+              ref={triggerRef}
               variant="primary"
               size="compact"
               onClick={() => setMenuOpen((open) => !open)}
               aria-haspopup="menu"
               aria-expanded={menuOpen}
+              aria-controls={menuOpen ? menuId : undefined}
             >
               Continue
               <ChevronDownIcon
-                width={12}
-                height={12}
+                size="sm"
                 aria-hidden="true"
                 className={
                   menuOpen
@@ -109,19 +95,23 @@ export function BranchFromConfirmationModalHost(): JSX.Element | null {
                 }
               />
             </Button>
-            {menuOpen && (
-              <DropdownMenuSurface
-                role="menu"
-                className="absolute bottom-full right-0 z-dropdown mb-1 w-40"
-              >
-                <ActionMenuRowStyle>
-                  <ActionMenuItems
-                    items={CONTINUE_MENU_ITEMS}
-                    onSelect={(item): void => choose(item.key)}
-                  />
-                </ActionMenuRowStyle>
-              </DropdownMenuSurface>
-            )}
+            <FloatingMenu
+              id={menuId}
+              open={menuOpen}
+              onOpenChange={setMenuOpen}
+              anchorRef={triggerRef}
+              placement="top-right"
+              interaction="menu"
+              outsidePressSwallowsClick={false}
+              className="w-40"
+            >
+              <ActionMenuRowStyle>
+                <ActionMenuItems
+                  items={CONTINUE_MENU_ITEMS}
+                  onSelect={(item): void => choose(item.key)}
+                />
+              </ActionMenuRowStyle>
+            </FloatingMenu>
           </div>
         </div>
       </div>

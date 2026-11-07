@@ -1,4 +1,4 @@
-import { openOpenCodeExecutionRuntime } from '../../opencode/execution-runtime';
+import { openOpenCodeExecutionForWorkerRun } from '../../agent-runs/opencode-worker-runtime';
 import type { AiCreditsAttribution } from '../ai-credits-routing';
 import { clampThinkingLevelToDeclared } from '@canopy/protocol/thinking';
 import { snapshotOpenCodeMcpTools } from '../../opencode/capability-snapshot';
@@ -138,16 +138,19 @@ export function createOpenCodeDelegationRunner(options: {
           return Promise.resolve();
         });
       const interrupted = new AbortController();
-      const runtime = await openOpenCodeExecutionRuntime({
-        model: request.route.runtimeModelId,
-        expectedInferenceBindingKey: request.route.authAccountKey,
-        sessionId: `${request.parent.sessionKey}:delegated:${request.delegationId}`,
-        cwd: prepared.tools.cwd,
-        attribution: () => Promise.resolve(prepared.attribution ?? {}),
-        signal: AbortSignal.any([context.signal, interrupted.signal]),
-        workspaceId: request.parent.projectId,
-        restrictedEnvironment: true,
-      });
+      const runtime = await openOpenCodeExecutionForWorkerRun(
+        'opencodeDelegationRunner',
+        {
+          model: request.route.runtimeModelId,
+          expectedInferenceBindingKey: request.route.authAccountKey,
+          sessionId: `${request.parent.sessionKey}:delegated:${request.delegationId}`,
+          cwd: prepared.tools.cwd,
+          attribution: () => Promise.resolve(prepared.attribution ?? {}),
+          signal: AbortSignal.any([context.signal, interrupted.signal]),
+          workspaceId: request.parent.projectId,
+          restrictedEnvironment: true,
+        },
+      );
       context.retain(() => runtime.close());
       context.setInterrupt(() => {
         interrupted.abort();

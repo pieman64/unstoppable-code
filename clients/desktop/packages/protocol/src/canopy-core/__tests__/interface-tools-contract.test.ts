@@ -20,10 +20,14 @@ const meta = { idempotencyKey: 'key-1' };
 describe('interface tool contract (CAN-4131)', () => {
   it('the catalog holds only presentation tools and names the surfaces that serve each', () => {
     expect(Object.keys(INTERFACE_TOOL_CATALOG).sort()).toEqual([
+      'ui.app_advisor.present',
+      'ui.app_advisor.show_files',
       'ui.get_current_ui_state',
       'ui.show_files',
     ]);
     expect(INTERFACE_TOOL_NAMES).toEqual([
+      'ui.app_advisor.present',
+      'ui.app_advisor.show_files',
       'ui.get_current_ui_state',
       'ui.show_files',
     ]);

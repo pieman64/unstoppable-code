@@ -84,8 +84,7 @@ function CompactionInfoBlockComponent({
     >
       <div className="flex items-center gap-2">
         <AppCatalogRestoreIcon
-          width="14"
-          height="14"
+          size="sm"
           className="flex-shrink-0"
           aria-hidden="true"
         />

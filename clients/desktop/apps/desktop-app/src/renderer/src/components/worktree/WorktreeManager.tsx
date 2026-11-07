@@ -2119,7 +2119,7 @@ export function WorktreeManager(): JSX.Element {
                           disabled={createTaskDisabled}
                           data-onboarding-anchor="task-create"
                         >
-                          <TaskIcon width={12} height={12} />
+                          <TaskIcon size="sm" />
                           Create task
                         </Button>
                       </Tooltip>
@@ -2128,7 +2128,7 @@ export function WorktreeManager(): JSX.Element {
                         size="compact"
                         onClick={() => openAddRepoModal()}
                       >
-                        <AppCatalogPlusIcon width="12" height="12" />
+                        <AppCatalogPlusIcon size="sm" />
                         Add project
                       </Button>
                     </div>
@@ -2154,11 +2154,7 @@ export function WorktreeManager(): JSX.Element {
                       }
                       aria-pressed={kanbanChatPanelVisible}
                     >
-                      <AppCatalogMessageIcon
-                        width="14"
-                        height="14"
-                        aria-hidden="true"
-                      />
+                      <AppCatalogMessageIcon size="sm" aria-hidden="true" />
                     </Button>
                   </Tooltip>
                 </span>

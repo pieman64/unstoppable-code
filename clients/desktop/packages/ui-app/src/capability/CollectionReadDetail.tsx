@@ -16,6 +16,7 @@ import {
   ExecutionActionButton,
   Heading,
 } from '@canopy/ui-shared/components';
+import { Surface } from '@canopy/ui-shared/components';
 
 export type CollectionReadMemberRef =
   | ({ kind: 'skill' } & CollectionSkillRef)
@@ -139,21 +140,26 @@ export function CollectionReadDetail({
 
       <div>
         <p className="mb-1.5 text-s fg-secondary">Name</p>
-        <p className="rounded-lg border bg-secondary/30 px-3 py-2 text-s fg-primary">
-          {collection.name}
-        </p>
+        <Surface variant="group">
+          <p className="px-3 py-2 text-s fg-primary">{collection.name}</p>
+        </Surface>
       </div>
       <div>
         <p className="mb-1.5 text-s fg-secondary">Description</p>
-        <div className="rounded-lg border bg-secondary/30 px-3 py-2 text-s fg-primary">
-          {hasMarkdownDescriptionText(collection.description) ? (
-            <DescriptionMarkdown tone="primary" dataTestId="share-description">
-              {collection.description}
-            </DescriptionMarkdown>
-          ) : (
-            <span className="fg-secondary italic">No description.</span>
-          )}
-        </div>
+        <Surface variant="group">
+          <div className="px-3 py-2 text-s fg-primary">
+            {hasMarkdownDescriptionText(collection.description) ? (
+              <DescriptionMarkdown
+                tone="primary"
+                dataTestId="share-description"
+              >
+                {collection.description}
+              </DescriptionMarkdown>
+            ) : (
+              <span className="fg-secondary italic">No description.</span>
+            )}
+          </div>
+        </Surface>
       </div>
 
       {GROUPS.map(({ kind, label }) => {
@@ -164,66 +170,68 @@ export function CollectionReadDetail({
             <Heading level={2} variant="label" className="mb-2">
               {label} ({refs.length})
             </Heading>
-            <div className="divide-y overflow-hidden rounded-lg border">
-              {refs.map((ref) => {
-                const refKey = collectionMemberRefKey(ref);
-                const member = resolvedByRef.get(refKey);
-                if (!member) {
-                  return (
+            <Surface variant="outline" className="overflow-hidden">
+              <div className="divide-y">
+                {refs.map((ref) => {
+                  const refKey = collectionMemberRefKey(ref);
+                  const member = resolvedByRef.get(refKey);
+                  if (!member) {
+                    return (
+                      <div
+                        key={refKey}
+                        data-testid="collection-read-unresolved"
+                        className="bg-secondary/20 px-3 py-2"
+                      >
+                        <p className="text-s font-medium fg-primary">
+                          {unresolvedLabel(ref)}
+                        </p>
+                        <p className="text-xs fg-secondary">
+                          {catalogTruncated?.[ref.kind] === true
+                            ? 'Couldn\u2019t verify this member \u2014 the catalog list was truncated in transfer.'
+                            : 'This collection member is not available in the current catalog.'}
+                        </p>
+                      </div>
+                    );
+                  }
+                  const content = (
+                    <>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-s font-medium fg-primary">
+                          {member.name}
+                        </span>
+                        <span className="block truncate text-xs fg-secondary">
+                          {member.description || member.source}
+                        </span>
+                      </span>
+                      <span className="shrink-0 text-xs fg-secondary">
+                        {member.source}
+                      </span>
+                    </>
+                  );
+                  return onOpenEntry ? (
+                    <button
+                      key={refKey}
+                      type="button"
+                      data-testid="collection-read-member"
+                      data-entry-key={member.entryKey}
+                      onClick={() => onOpenEntry(member)}
+                      className="focus-ring flex w-full items-center gap-3 bg-base px-3 py-2 text-left hover:bg-accent-subtle"
+                    >
+                      {content}
+                    </button>
+                  ) : (
                     <div
                       key={refKey}
-                      data-testid="collection-read-unresolved"
-                      className="bg-secondary/20 px-3 py-2"
+                      data-testid="collection-read-member"
+                      data-entry-key={member.entryKey}
+                      className="flex items-center gap-3 bg-base px-3 py-2"
                     >
-                      <p className="text-s font-medium fg-primary">
-                        {unresolvedLabel(ref)}
-                      </p>
-                      <p className="text-xs fg-secondary">
-                        {catalogTruncated?.[ref.kind] === true
-                          ? 'Couldn\u2019t verify this member \u2014 the catalog list was truncated in transfer.'
-                          : 'This collection member is not available in the current catalog.'}
-                      </p>
+                      {content}
                     </div>
                   );
-                }
-                const content = (
-                  <>
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-s font-medium fg-primary">
-                        {member.name}
-                      </span>
-                      <span className="block truncate text-xs fg-secondary">
-                        {member.description || member.source}
-                      </span>
-                    </span>
-                    <span className="shrink-0 text-xs fg-secondary">
-                      {member.source}
-                    </span>
-                  </>
-                );
-                return onOpenEntry ? (
-                  <button
-                    key={refKey}
-                    type="button"
-                    data-testid="collection-read-member"
-                    data-entry-key={member.entryKey}
-                    onClick={() => onOpenEntry(member)}
-                    className="focus-ring flex w-full items-center gap-3 bg-base px-3 py-2 text-left hover:bg-accent-subtle"
-                  >
-                    {content}
-                  </button>
-                ) : (
-                  <div
-                    key={refKey}
-                    data-testid="collection-read-member"
-                    data-entry-key={member.entryKey}
-                    className="flex items-center gap-3 bg-base px-3 py-2"
-                  >
-                    {content}
-                  </div>
-                );
-              })}
-            </div>
+                })}
+              </div>
+            </Surface>
           </section>
         );
       })}

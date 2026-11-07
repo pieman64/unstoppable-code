@@ -43,6 +43,10 @@ import {
 } from './canopy-runtime/desktop-runtime';
 import { setDesktopCanopyRuntime } from './canopy-runtime/desktop-runtime-access';
 import {
+  disposeDesktopDaemonGitRoute,
+  getDesktopDaemonGitRoute,
+} from './canopy-runtime/electron-daemon-git-access';
+import {
   disposeElectronDaemonFiles,
   getDesktopDaemonFilesRoute,
 } from './canopy-runtime/electron-daemon-files-access';
@@ -232,6 +236,7 @@ import {
   prewarmAiCreditsRoutingMode,
 } from './agents/ai-credits-routing';
 import { shutdownClaudeProcessHost } from './agents/claude-process-host-runner';
+import { shutdownProviderProcessHost } from './agent-runs/provider-process-host';
 import {
   enableClaudeProcessPidPersistence,
   reapStaleClaudeProcesses,
@@ -274,7 +279,7 @@ import {
 import { getAppAdvisorWatcherService } from './app-advisor/watchers';
 import { getLatestAppAdvisorWindowUiState } from './app-advisor/window-ui-state';
 import { shutdownArchiveIoRunner } from './archive/archive-io-runner';
-import { getAuthTerminalManager } from './auth-terminal/manager';
+import { shutdownSignInRuns } from './sign-in-runs/sign-in-runs';
 import {
   prewarmProviderNativeAuthStatus,
   shouldPrewarmCodexNativeAuthAtStartup,
@@ -557,6 +562,7 @@ import {
   initializeGlobalFocusShortcutService,
 } from './lifecycle/global-focus-shortcut';
 import { initializeLaunchAtLoginService } from './lifecycle/launch-at-login';
+import { stopLinuxCrashpadHandlers } from './lifecycle/linux-crashpad-cleanup';
 import { createMainWindowRecreation } from './lifecycle/main-window-recreation';
 import {
   DrainedProcessExitGuard,
@@ -2308,6 +2314,9 @@ async function cleanupRuntimeResources(
     const claudeProcessTermination = stages
       .run('claude-processes', shutdownClaudeProcessHost)
       .catch(() => undefined);
+    const providerProcessTermination = stages
+      .run('provider-processes', shutdownProviderProcessHost)
+      .catch(() => undefined);
     const archiveIoTermination = stages
       .run('archive-io', shutdownArchiveIoRunner)
       .catch(() => undefined);
@@ -2383,13 +2392,14 @@ async function cleanupRuntimeResources(
     destroyBackgroundTray();
     await stages.run('activation-journey', shutdownActivationJourney);
     getVoiceService().shutdown();
-    getAuthTerminalManager().shutdown();
+    shutdownSignInRuns();
     await stages.run('ollama', () => getOllamaService().shutdown('app-quit'));
     await stages.run('account-proxy-local', shutdownLocalAccountProxyAtQuit);
     await splitBackgroundDrain;
     await codexRuntimeShutdown;
     await pipelineProcessTermination;
     await claudeProcessTermination;
+    await providerProcessTermination;
     await archiveIoTermination;
     await cursorShutdown;
     await stagedSessionImportCleanup;
@@ -2427,7 +2437,10 @@ async function cleanupRuntimeResources(
     await daemonTerminalsTeardown;
     await stages.bestEffort(
       'electron-daemon-connections',
-      disposeElectronDaemonFiles,
+      async (): Promise<void> => {
+        disposeDesktopDaemonGitRoute();
+        await disposeElectronDaemonFiles();
+      },
     );
     bindConfiguredPromptFilesystemDispatcher(null);
     bindLedgerToolsDispatcher(null);
@@ -2536,6 +2549,22 @@ async function cleanupRuntimeResources(
         : new Error(formatUnknownError(failure));
     }
   });
+  // Datadog starts Electron's Crashpad handler. On Linux it can outlive all
+  // windows and app-owned children. Stop it last, on success or cleanup failure,
+  // while the single-instance lock still protects this crash database.
+  runtimeCleanupPromise = runtimeCleanupPromise.finally(
+    async (): Promise<void> => {
+      const hostOs = hostOperatingSystem();
+      if (hostOs !== 'linux') return;
+      await stages.bestEffort('linux-crashpad', () =>
+        stopLinuxCrashpadHandlers({
+          platform: hostOs,
+          executablePath: process.execPath,
+          crashDumpsPath: app.getPath('crashDumps'),
+        }),
+      );
+    },
+  );
   runtimeCleanupPromise = runtimeCleanupPromise.then(
     async (): Promise<void> => {
       // The OUTER runtime stage has emitted completed, including after observability.
@@ -6673,6 +6702,7 @@ void app.whenReady().then(async (): Promise<void> => {
     },
     {
       dispatcher: activeDesktopCanopyRuntime,
+      daemonGitRoute: getDesktopDaemonGitRoute,
       resolveRelaySurface: (event) => {
         const devUrl = is.dev
           ? process.env['ELECTRON_RENDERER_URL']

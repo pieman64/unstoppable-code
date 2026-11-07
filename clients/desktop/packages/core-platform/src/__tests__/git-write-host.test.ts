@@ -9,7 +9,12 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { GitRepositoryWriteError } from '@canopy/core-runtime/node/git';
+import {
+  GitRepositoryWriteError,
+  type GitHubCredentialLease,
+  type GitHubCredentialLeasePort,
+  type GitHubCredentialLeaseRefusal,
+} from '@canopy/core-runtime/node/git';
 import { createGitWriteHostWith, gitWriteCommandFor } from '../git-write/host';
 
 const posix = process.platform === 'win32' ? describe.skip : describe;
@@ -104,6 +109,46 @@ describe('Git write commands (CAN-4108)', () => {
   ])('refuses %o before any selection', (write) => {
     expect(
       refusalCode(() => gitWriteCommandFor('darwin', write, environment)),
+    ).toBe('invalid_request');
+  });
+
+  it.each([
+    [{ kind: 'head-sha' }, ['rev-parse', '--verify', 'HEAD']],
+    [
+      { kind: 'tracking-head-sha', branch: 'topic' },
+      ['rev-parse', '--verify', 'refs/remotes/origin/topic'],
+    ],
+    [{ kind: 'stage-all' }, ['add', '-A']],
+    [
+      { kind: 'commit-message', message: '  message\n' },
+      ['commit', '-m', 'message'],
+    ],
+    [{ kind: 'push-head', key: 'dispatch' }, ['push', '-u', 'origin', 'HEAD']],
+  ])(
+    'plans commit/push %o without force or timeout and refuses it on win32',
+    (write, args) => {
+      expect(
+        gitWriteCommandFor('linux', write, environment)('/usr/bin/git'),
+      ).toMatchObject({
+        args,
+        timeoutMs: undefined,
+        env: { GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' },
+      });
+      expect(
+        refusalCode(() => gitWriteCommandFor('win32', write, environment)),
+      ).toBe('unsupported_command');
+    },
+  );
+  it.each([
+    { kind: 'commit-message', message: '' },
+    { kind: 'commit-message', message: '   ' },
+    { kind: 'commit-message', message: 'a\0b' },
+    { kind: 'commit-message', message: 'a'.repeat(100001) },
+    { kind: 'tracking-head-sha', branch: '-bad' },
+    { kind: 'push-head', key: '' },
+  ])('rejects invalid commit/push argv %o', (write) => {
+    expect(
+      refusalCode(() => gitWriteCommandFor('linux', write, environment)),
     ).toBe('invalid_request');
   });
 
@@ -267,6 +312,115 @@ posix('Git write host', () => {
     expect(() => readFileSync(join(dir, 'argv'))).toThrow();
   });
 
+  it('refuses a stale recipient lease without spawning a push or retrying credentials', async () => {
+    const executable = fakeGit('exit 0');
+    const revoke = jest.fn((): void => undefined);
+    const mint = jest.fn<
+      ReturnType<GitHubCredentialLeasePort['mint']>,
+      Parameters<GitHubCredentialLeasePort['mint']>
+    >(
+      (request): ReturnType<GitHubCredentialLeasePort['mint']> =>
+        Promise.resolve({
+          kind: 'minted',
+          lease: {
+            ...request,
+            deliver: (): Promise<GitHubCredentialLeaseRefusal> =>
+              Promise.resolve({ kind: 'refused', reason: 'stale' }),
+            revoke,
+          },
+        }),
+    );
+    const host = createGitWriteHostWith(
+      {
+        os: process.platform === 'darwin' ? 'darwin' : 'linux',
+        environment,
+        selectExecutable: () => Promise.resolve(executable),
+        githubLeases: { mint },
+      },
+      {},
+    );
+    await expect(
+      host.port.run(
+        { kind: 'push-head', key: 'one-dispatch' },
+        dir,
+        environment,
+      ),
+    ).rejects.toMatchObject({
+      payload: { kind: 'permission_denied', retry: { kind: 'never' } },
+    });
+    expect(mint).toHaveBeenCalledTimes(1);
+    expect(mint).toHaveBeenCalledWith(
+      expect.objectContaining({
+        purpose: 'git-push',
+        audience: { operation: 'worker.git.push', key: 'one-dispatch' },
+      }),
+    );
+    expect(revoke).toHaveBeenCalledTimes(1);
+    expect(() => readFileSync(join(dir, 'argv'))).toThrow();
+    await expect(host.stop(new AbortController().signal)).resolves.toEqual({
+      state: 'stopped',
+    });
+  });
+
+  it('waits for pending mint admission on stop and never spawns its admitted push', async () => {
+    const executable = fakeGit('exit 0');
+    let admit: (() => void) | undefined;
+    let mintStarted: (() => void) | undefined;
+    const admission = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      mintStarted = resolve;
+    });
+    const revoke = jest.fn((): void => undefined);
+    const lease: GitHubCredentialLease = {
+      purpose: 'git-push',
+      audience: { operation: 'worker.git.push', key: 'pending' },
+      expiresAt: performance.now() + 30_000,
+      deliver: (request, spawn) => {
+        expect(request).toEqual({
+          purpose: 'git-push',
+          audience: { operation: 'worker.git.push', key: 'pending' },
+        });
+        return Promise.resolve({
+          kind: 'delivered',
+          value: spawn(new Uint8Array()),
+        });
+      },
+      revoke,
+    };
+    const host = createGitWriteHostWith(
+      {
+        os: process.platform === 'darwin' ? 'darwin' : 'linux',
+        environment,
+        selectExecutable: () => Promise.resolve(executable),
+        githubLeases: {
+          mint: async () => {
+            mintStarted?.();
+            await admission;
+            return { kind: 'minted', lease };
+          },
+        },
+      },
+      {},
+    );
+    const running = host.port.run(
+      { kind: 'push-head', key: 'pending' },
+      dir,
+      environment,
+    );
+    const outcome = expect(running).rejects.toEqual(
+      new GitRepositoryWriteError('stopped'),
+    );
+    await started;
+    const stopping = host.stop(new AbortController().signal);
+    admit?.();
+    await outcome;
+    await expect(stopping).resolves.toEqual({ state: 'stopped' });
+    expect(revoke).toHaveBeenCalledTimes(1);
+    expect(() => readFileSync(join(dir, 'argv'))).toThrow();
+  });
+
   it('lets a started checkout finish across stop, then refuses new commands', async () => {
     const executable = fakeGit(`sleep 0.3; echo done > "${dir}/finished"`);
     const host = createGitWriteHostWith(
@@ -370,5 +524,43 @@ posix('Git write host', () => {
     await expect(
       host.port.run({ kind: 'local-branch', branch: 'missing' }, repo),
     ).resolves.toMatchObject({ exitCode: 1 });
+  });
+});
+
+describe('Git local merge commands (CAN-5884)', () => {
+  it.each([
+    [{ kind: 'merge-worktree-list' }, ['worktree', 'list', '--porcelain']],
+    [
+      { kind: 'merge-worktree-add', path: '/tmp/merge', branch: 'main' },
+      ['worktree', 'add', '/tmp/merge', 'main'],
+    ],
+    [
+      { kind: 'merge-worktree-remove', path: '/tmp/merge' },
+      ['worktree', 'remove', '--force', '/tmp/merge'],
+    ],
+    [
+      { kind: 'merge-local', branch: 'feature' },
+      ['merge', '--no-edit', 'feature'],
+    ],
+    [{ kind: 'merge-abort' }, ['merge', '--abort']],
+    [{ kind: 'merge-head' }, ['rev-parse', 'HEAD']],
+  ])('plans fixed unbounded POSIX argv %o', (write, args) => {
+    expect(
+      gitWriteCommandFor('darwin', write, environment)('/usr/bin/git'),
+    ).toMatchObject({ args, timeoutMs: undefined });
+    expect(
+      refusalCode(() => gitWriteCommandFor('win32', write, environment)),
+    ).toBe('unsupported_command');
+  });
+  it.each([
+    { kind: 'merge-local', branch: '' },
+    { kind: 'merge-local', branch: '--abort' },
+    { kind: 'merge-local', branch: 'x\0y' },
+    { kind: 'merge-worktree-add', path: 'relative', branch: 'main' },
+    { kind: 'merge-worktree-remove', path: '/tmp/x\0y' },
+  ])('rejects unsafe values %o', (write) => {
+    expect(
+      refusalCode(() => gitWriteCommandFor('darwin', write, environment)),
+    ).toBe('invalid_request');
   });
 });

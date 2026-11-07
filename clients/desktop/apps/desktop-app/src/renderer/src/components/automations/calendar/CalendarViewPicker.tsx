@@ -53,7 +53,7 @@ export function CalendarViewPicker({
         data-testid="automations-calendar-view-picker"
       >
         <span>{VIEW_LABELS[calendarView]}</span>
-        <ChevronDownIcon width={12} height={12} />
+        <ChevronDownIcon size="sm" />
       </Button>
       <FloatingPickerMenu
         id={menuId}

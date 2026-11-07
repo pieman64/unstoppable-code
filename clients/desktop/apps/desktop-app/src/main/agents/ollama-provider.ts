@@ -7,24 +7,33 @@ import {
 import { isOllamaSupportedOnPlatform } from '@canopy/desktop-shared/platform-capabilities';
 import {
   ClaudeCodeProvider,
+  type ClaudeCodeProviderOptions,
   type ClaudeCompatibleInvocation,
 } from './claude-session';
 import { resolveClaudeCompatibleInvocation } from '../ollama/claude-compatible';
 import { OLLAMA_UNSUPPORTED_PLATFORM_MESSAGE } from '../ollama/service';
 
 export class OllamaProvider implements AgentProvider {
-  private readonly delegate = new ClaudeCodeProvider({
-    providerType: 'ollama',
-    prepareInvocation: (
-      model: ChatModel | undefined,
-      reason: 'session-start' | 'model-change',
-    ): Promise<ClaudeCompatibleInvocation> =>
-      resolveClaudeCompatibleInvocation(model, {
-        ensureRunningReason: 'chat',
-        assertInstalled:
-          reason === 'session-start' || reason === 'model-change',
-      }),
-  });
+  private readonly delegate: ClaudeCodeProvider;
+
+  constructor(options?: {
+    prepareInvocation?: ClaudeCodeProviderOptions['prepareInvocation'];
+  }) {
+    this.delegate = new ClaudeCodeProvider({
+      providerType: 'ollama',
+      prepareInvocation:
+        options?.prepareInvocation ??
+        ((
+          model: ChatModel | undefined,
+          reason: 'session-start' | 'model-change',
+        ): Promise<ClaudeCompatibleInvocation> =>
+          resolveClaudeCompatibleInvocation(model, {
+            ensureRunningReason: 'chat',
+            assertInstalled:
+              reason === 'session-start' || reason === 'model-change',
+          })),
+    });
+  }
 
   createSession(
     opts: AgentSessionOptions,

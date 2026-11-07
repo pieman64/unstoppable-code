@@ -104,6 +104,19 @@ export const MemoryReplicaModeSchema = z.enum([
   'deleted_in_cloud',
 ]);
 
+/**
+ * Why a pulled change and a local edit were left to the person as a
+ * conflict (design §13.2): edits in the same place, or a delete against an
+ * edit (`overlap`); a line diff too costly to run (`too_costly`); or a side,
+ * or the merged document, past what a merge or sync carries (`too_large`).
+ */
+export const MemoryConflictReasonSchema = z.enum([
+  'overlap',
+  'too_costly',
+  'too_large',
+]);
+export type MemoryConflictReason = z.output<typeof MemoryConflictReasonSchema>;
+
 export const MemorySyncStateFileSchema = z.looseObject({
   version: z.literal(1),
   binding: MemoryReplicaBindingSchema,
@@ -162,6 +175,9 @@ export const MemorySyncStateFileSchema = z.looseObject({
       detectedAt: MemoryTimestampSchema,
       theirsRevision: MemoryRevisionSchema,
       oursFile: z.string().min(1).max(256),
+      // Absent in a file an earlier build wrote, and unknown in one a later
+      // build wrote: either reads as an overlap, not as an unreadable state.
+      reason: MemoryConflictReasonSchema.catch('overlap'),
     }),
   ),
   firstEnable: z
@@ -255,6 +271,26 @@ export const MemorySyncOutboxFileSchema = z.looseObject({
       lastUsedAt: MemoryTimestampSchema,
     }),
   ),
+  /**
+   * The usage push in flight, marked sent before it goes: it is sent again
+   * as it is until it is answered, and only that answer, by its `seq` from
+   * the operations' sequence, removes it. Uses counted meanwhile wait in
+   * `usage`.
+   */
+  usageSent: z
+    .looseObject({
+      seq: z.int().min(1),
+      deltas: z
+        .array(
+          z.object({
+            fileKey: z.string().min(1).max(256),
+            uses: z.int().min(1).max(MEMORY_SYNC_LIMITS.usageDeltaUsesMax),
+            lastUsedAt: MemoryTimestampSchema,
+          }),
+        )
+        .max(MEMORY_SYNC_LIMITS.usageDeltasMax),
+    })
+    .optional(),
 });
 export type MemorySyncOutboxFile = z.output<typeof MemorySyncOutboxFileSchema>;
 

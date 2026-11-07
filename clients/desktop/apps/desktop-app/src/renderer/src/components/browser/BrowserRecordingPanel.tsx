@@ -77,7 +77,7 @@ export function BrowserRecordingPanel({
             onClick={(): void => clearRecording(browserId)}
             aria-label="Delete recording"
           >
-            <TrashIcon width={13} height={13} />
+            <TrashIcon size="sm" />
           </Button>
         </Tooltip>
       </div>
@@ -103,7 +103,7 @@ export function BrowserRecordingPanel({
                     }}
                     disabled={busy}
                   >
-                    <ChatIcon width={12} height={12} />
+                    <ChatIcon size="sm" />
                     <span>{CHAT_UNIT_LABEL}</span>
                   </Button>
                 )}

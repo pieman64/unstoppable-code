@@ -43,8 +43,7 @@ export const SteeringTitle = memo(function SteeringTitle(): JSX.Element {
     >
       <SteerIcon
         data-testid="steering-title-icon"
-        width={11}
-        height={11}
+        size="sm"
         className="shrink-0"
       />
       <span>Steering</span>

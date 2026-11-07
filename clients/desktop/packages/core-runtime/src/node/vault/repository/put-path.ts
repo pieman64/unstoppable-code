@@ -29,7 +29,8 @@ import {
 import { isSupersededCommit, pruneExpiredTombstones } from './reconciliation';
 import { VAULT_SECRET_MAX_BYTES } from './record-format';
 import { sealVaultSecret } from './sealed-secret';
-import type { VaultStore } from './store';
+import type { VaultMigrationUpdate, VaultStore } from './store';
+import type { VaultIntentDraft } from './store-records';
 import type { VaultSubkeys } from './vault-keys';
 import {
   refuseVaultWrite,
@@ -63,6 +64,10 @@ export type VaultPutRefusalStep =
   | 'intent';
 
 export interface VaultPutHooks {
+  /** Internal inert seam: attach authenticated provenance to the minted intent. */
+  readonly migrationIntent?: (
+    draft: VaultIntentDraft,
+  ) => VaultMigrationUpdate | undefined;
   /** Test seam: awaited at each put's hold point, after its intent is durable. */
   readonly holdPut?: (sequence: number) => Promise<void>;
   /** Observes every refused put; it cannot change the outcome. */
@@ -495,6 +500,7 @@ export function createVaultWritePath(
     input: PutInput,
   ): Promise<VaultPutOutcome> {
     const ref = refOf(receipt.entryId);
+    store.setIntentRunning(sequence, true);
     try {
       await hold(sequence);
       if (receipt.superseded) return { kind: 'superseded', ref };
@@ -502,6 +508,7 @@ export function createVaultWritePath(
     } catch {
       return { kind: 'unavailable', ref };
     } finally {
+      store.setIntentRunning(sequence, false);
       zeroBytes(input.material);
     }
   }
@@ -644,14 +651,18 @@ export function createVaultWritePath(
         });
       const mac = vaultPutReceipt(keys, receiptParams(family, input));
       recover();
-      const written = store.recordIntent({
+      const draft: VaultIntentDraft = {
         kind: 'put',
         family,
         idempotencyKey: input.idempotencyKey,
         entryId,
         expectedRevision: input.expectedRevision,
         receipt: mac,
-      });
+      };
+      const written = store.recordIntent(
+        draft,
+        options.migrationIntent?.(draft),
+      );
       if (written.kind === 'not_written')
         return notAccepted('intent', input, closure, unrecorded);
       intent = {

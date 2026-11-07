@@ -41,9 +41,10 @@ export function WorkspaceIconDisclosureSwap({
           rule (which zeroes every descendant transition-duration), so the
           chevron turns smoothly when the section toggles while hovered. */}
       <ChevronDownMediumIcon
+        size="sm"
         data-testid={`workspace-section-collapse-chevron${testIdSuffix}`}
         data-workspace-disclosure-chevron="true"
-        className={`pointer-events-none absolute h-4 w-4 fg-secondary opacity-0 transition-[opacity,rotate] group-hover/sidebar-item:opacity-100 group-focus-within/sidebar-item:opacity-100 ${
+        className={`pointer-events-none absolute fg-secondary opacity-0 transition-[opacity,rotate] group-hover/sidebar-item:opacity-100 group-focus-within/sidebar-item:opacity-100 ${
           collapsed ? '-rotate-90' : 'rotate-0'
         }`}
       />

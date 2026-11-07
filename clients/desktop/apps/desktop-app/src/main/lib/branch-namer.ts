@@ -33,7 +33,7 @@ import {
 } from '../lib/preferences-store';
 import { checkGitHubCliStatus } from './github-auth';
 import type { HelperUsage } from '../agents/utils';
-import { getObservabilityService } from '../observability';
+import { getExecutionObservabilityIngest } from '../observability/ingest';
 import type { BranchMatchResult } from './resolve-worktree';
 import { doesBranchMatchWorktreeId } from './resolve-worktree';
 import { isModelBlockedByStoredPolicy } from './model-policy-state';
@@ -152,7 +152,7 @@ function seedBranchNamingTranscript(
     return;
   }
 
-  const observabilityService = getObservabilityService();
+  const observabilityService = getExecutionObservabilityIngest();
   observabilityService.seedTranscript(taskKey, {
     provider,
     originalText,
@@ -177,7 +177,7 @@ function appendBranchNamingTranscriptEvent(
     return;
   }
 
-  const observabilityService = getObservabilityService();
+  const observabilityService = getExecutionObservabilityIngest();
   observabilityService.appendTranscriptRecord(taskKey, event);
 }
 
@@ -285,7 +285,7 @@ function recordBranchNamingPolicyRefusal(
   // Finalized here rather than by the caller so the Audit Trail records the
   // refusal instead of a zero-token success. `finalizeObservedTask` is
   // idempotent, so the caller's later success finalize is a no-op.
-  getObservabilityService().finalizeObservedTask(
+  getExecutionObservabilityIngest().finalizeObservedTask(
     taskKey,
     'failure',
     BRANCH_NAMING_MODEL_POLICY_REFUSAL,
@@ -392,16 +392,22 @@ async function runClaudeBranchNamingQuery(
           appendBranchNamingTranscriptEvent(observabilityTaskKey, event),
         markAttempt: (attempt): void => {
           if (observabilityTaskKey) {
-            getObservabilityService().updateObservedTask(observabilityTaskKey, {
-              attempt,
-            });
+            getExecutionObservabilityIngest().updateObservedTask(
+              observabilityTaskKey,
+              {
+                attempt,
+              },
+            );
           }
         },
         markSessionId: (sdkSessionId): void => {
           if (observabilityTaskKey) {
-            getObservabilityService().updateObservedTask(observabilityTaskKey, {
-              sdkSessionId,
-            });
+            getExecutionObservabilityIngest().updateObservedTask(
+              observabilityTaskKey,
+              {
+                sdkSessionId,
+              },
+            );
           }
         },
       },
@@ -478,14 +484,14 @@ async function runCodexBranchNamingQuery(
             appendEvent: (event): void =>
               appendBranchNamingTranscriptEvent(observabilityTaskKey, event),
             markAttempt: (attempt): void =>
-              getObservabilityService().updateObservedTask(
+              getExecutionObservabilityIngest().updateObservedTask(
                 observabilityTaskKey,
                 {
                   attempt,
                 },
               ),
             markSessionId: (sdkSessionId): void =>
-              getObservabilityService().updateObservedTask(
+              getExecutionObservabilityIngest().updateObservedTask(
                 observabilityTaskKey,
                 {
                   sdkSessionId,

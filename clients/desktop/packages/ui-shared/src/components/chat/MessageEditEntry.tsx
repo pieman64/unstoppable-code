@@ -272,7 +272,7 @@ export function MessageEditBadge({
         }
       }}
     >
-      <PencilIcon width={14} height={14} aria-hidden="true" />
+      <PencilIcon size="sm" aria-hidden="true" />
     </Button>
   );
 }

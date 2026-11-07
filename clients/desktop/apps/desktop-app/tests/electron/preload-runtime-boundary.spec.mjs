@@ -117,6 +117,73 @@ test('desktop preload avoids renderer vm and still exposes the IPC bridge', asyn
         message.includes(UNSUPPORTED_VM_WARNING),
       ),
     ).toEqual([]);
+    // Feedback diagnostics must cross the real preload/main boundary without
+    // exposing a host path or rebuilding an archive between preview and read.
+    const diagnostics = await window.evaluate(async () => {
+      const capability = await window.api.feedbackDiagnosticsCapabilities();
+      const error = {
+        referenceId: 'ERR-01234567',
+        code: 'future.feedback_test',
+        kind: 'defect',
+        occurredAt: 123,
+        copy: { title: 'An error' },
+        detail: { message: 'Unicode trace café', stack: 'original trace\n```' },
+      };
+      const snapshot = await window.api.prepareFeedbackDiagnostics({
+        context: {},
+        error,
+      });
+      const manifest = await window.api.readFeedbackDiagnosticsEntry(
+        snapshot.id,
+        'feedback.json',
+      );
+      await window.api.releaseFeedbackDiagnostics(snapshot.id);
+      let released = false;
+      try {
+        await window.api.readFeedbackDiagnosticsEntry(
+          snapshot.id,
+          'feedback.json',
+        );
+      } catch {
+        released = true;
+      }
+      return { capability, snapshot, manifest, released };
+    });
+    expect(diagnostics.capability).toEqual({ snapshots: true, version: 1 });
+    expect(diagnostics.snapshot).not.toHaveProperty('absolutePath');
+    expect(diagnostics.manifest).toEqual({
+      kind: 'text',
+      text: diagnostics.snapshot.manifest,
+    });
+    expect(JSON.parse(diagnostics.snapshot.manifest).error.detail.stack).toBe(
+      'original trace\n```',
+    );
+    expect(
+      diagnostics.snapshot.entries.some(
+        (entry) => entry.path === 'feedback.json',
+      ),
+    ).toBe(true);
+    expect(diagnostics.released).toBe(true);
+    const legacyRejections = await window.evaluate(async () => {
+      const refused = [];
+      try {
+        await window.api.prepareFeedback({ area: 'overview', description: '' });
+      } catch {
+        refused.push('feedback:prepare');
+      }
+      try {
+        await window.api.submitFeedback({
+          type: 'bug',
+          description: '',
+          context: {},
+          includeDiagnostics: false,
+        });
+      } catch {
+        refused.push('feedback:submit');
+      }
+      return refused;
+    });
+    expect(legacyRejections).toEqual(['feedback:prepare', 'feedback:submit']);
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }

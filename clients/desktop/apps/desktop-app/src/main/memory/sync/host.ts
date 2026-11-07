@@ -326,6 +326,20 @@ async function startEngine(accountId: string): Promise<void> {
     onScopeChanged: (scope): void => {
       if (scope.kind === 'user') broadcastLocalMemoryChanged(USER_SCOPE);
     },
+    requestConsolidation: (scope, delayMs): void => {
+      if (scope.kind !== 'user') return;
+      // Loaded on demand: the scheduler's session imports stay off this
+      // module's graph, and main has already loaded it by the time a run ends.
+      void import('../local/consolidation-scheduler')
+        .then((scheduler) =>
+          scheduler.retryLocalMemoryConsolidation({}, delayMs),
+        )
+        .catch((error: unknown) => {
+          logMainProcessWarn('Memory consolidation could not be rearmed', {
+            error: error instanceof Error ? error.name : 'unknown',
+          });
+        });
+    },
     recordProblem,
   });
   engine = next;

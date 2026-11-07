@@ -68,7 +68,7 @@ export function SharedContainerPastSharesPage({
             onClick={onClose}
             title="Back to the project"
           >
-            <BackIcon width={14} height={14} aria-hidden="true" />
+            <BackIcon size="sm" aria-hidden="true" />
             Back
           </HeaderActionButton>
           <span

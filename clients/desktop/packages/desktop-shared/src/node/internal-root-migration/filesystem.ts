@@ -11,7 +11,21 @@ import {
   statfs,
   rm,
 } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
+import { flushDirectory } from '@canopy/core-platform/directory-flush';
+import { isWithin } from '@canopy/core-runtime/node/relocation/transition';
+import {
+  DEFAULT_FILESYSTEM_HOST,
+  copyInternalRootTree,
+  createPrivateMigrationDirectory,
+  qualifyCopyVolume,
+  qualifyMigrationGroup,
+  observeMigrationNode,
+  migrationNodeIdentity,
+  ownedMigrationNode,
+  windowsFilesystem,
+  type InternalRootFilesystemHost,
+} from './filesystem-host';
 import { execFile } from 'node:child_process';
 import { promisify, isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
@@ -142,16 +156,20 @@ export async function statIfPresent(path: string): Promise<Stats | null> {
   }
 }
 
-export async function privateDirectory(path: string): Promise<void> {
+export async function privateDirectory(
+  path: string,
+  host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
+): Promise<void> {
   const stat = await lstat(path);
   if (
     !stat.isDirectory() ||
     stat.isSymbolicLink() ||
     (await realpath(path)) !== path ||
-    (stat.mode & 0o077) !== 0 ||
-    stat.uid !== process.getuid?.()
+    (hostOperatingSystem() !== 'win32' && (stat.mode & 0o077) !== 0) ||
+    !ownedMigrationNode(stat)
   )
     refuseLayout(`Expected an owner-only canonical directory: ${path}`);
+  if (await observeMigrationNode(path, stat, host)) return;
   const os = hostOperatingSystem();
   if (
     !os ||
@@ -172,7 +190,14 @@ export async function privateDirectory(path: string): Promise<void> {
 }
 
 export async function flush(path: string): Promise<void> {
-  const handle = await open(path, 'r');
+  if (hostOperatingSystem() === 'win32' && (await lstat(path)).isDirectory()) {
+    await flushDirectory(path);
+    return;
+  }
+  const handle = await open(
+    path,
+    hostOperatingSystem() === 'win32' ? 'r+' : 'r',
+  );
   try {
     await handle.sync();
   } finally {
@@ -180,7 +205,13 @@ export async function flush(path: string): Promise<void> {
   }
 }
 
-export async function durableJson(path: string, value: unknown): Promise<void> {
+export async function durableJson(
+  path: string,
+  value: unknown,
+  host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
+): Promise<void> {
+  if (hostOperatingSystem() === 'win32')
+    await privateDirectory(dirname(path), host);
   const temp = `${path}.${randomUUID()}.tmp`;
   const handle = await open(temp, 'wx', 0o600);
   try {
@@ -189,7 +220,7 @@ export async function durableJson(path: string, value: unknown): Promise<void> {
   } finally {
     await handle.close();
   }
-  await rename(temp, path);
+  await replaceMigrationFile(temp, path, host);
   await flush(dirname(path));
 }
 
@@ -207,7 +238,11 @@ interface TreeManifest {
   readonly files: number;
   readonly bytes: number;
 }
-async function manifest(root: string, durable = false): Promise<TreeManifest> {
+async function manifest(
+  root: string,
+  durable = false,
+  host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
+): Promise<TreeManifest> {
   const rootDevice = (await lstat(root)).dev;
   const hash = createHash('sha256');
   const row = (value: unknown): void => {
@@ -221,8 +256,10 @@ async function manifest(root: string, durable = false): Promise<TreeManifest> {
     const stat = await lstat(path);
     if (stat.dev !== rootDevice)
       refuseLayout(`Cross-filesystem tree entry: ${path}`);
-    if (stat.uid !== process.getuid?.())
+    if (!ownedMigrationNode(stat))
       refuseLayout(`Foreign-owned tree entry: ${path}`);
+    qualifyMigrationGroup(path, stat);
+    const windows = await observeMigrationNode(path, stat, host);
     const mode = stat.mode & 0o7777;
     const metadata = [
       relative,
@@ -232,6 +269,8 @@ async function manifest(root: string, durable = false): Promise<TreeManifest> {
       stat.size,
       Math.floor(stat.mtimeMs),
     ];
+    if (windows)
+      row(['windows', relative, windows.attributes, windows.security]);
     if (stat.isSymbolicLink()) row(['link', ...metadata, await readlink(path)]);
     else if (stat.isDirectory()) {
       // Directory sizes are filesystem-specific, unlike file and symlink sizes.
@@ -252,12 +291,22 @@ async function manifest(root: string, durable = false): Promise<TreeManifest> {
       // Only small W5 log/receipt records get byte hashes; never scan worktree
       // contents or opaque credential payloads. Other changes are metadata-only.
       const critical =
-        relative.startsWith('w5/') && stat.size <= 16 * 1024 * 1024;
-      row(['file', ...metadata, critical ? await hashFile(path) : null]);
+        relative.startsWith(`w5${sep}`) && stat.size <= 16 * 1024 * 1024;
+      row([
+        'file',
+        ...metadata,
+        critical
+          ? hostOperatingSystem() === 'win32'
+            ? createHash('sha256')
+                .update(windowsFilesystem(host).read(path))
+                .digest('hex')
+            : await hashFile(path)
+          : null,
+      ]);
       files += 1;
       bytes += stat.size;
       if (durable) await flush(path);
-    } else if (!(stat.isSocket() && relative.startsWith('runtime/')))
+    } else if (!(stat.isSocket() && relative.startsWith(`runtime${sep}`)))
       // Sockets carry no recoverable data; C must discard stale runtime state.
       refuseLayout(`Special file: ${path}`);
   }
@@ -273,9 +322,17 @@ function inode(stat: Stats | null): string | null {
   return stat ? `${stat.dev}:${stat.ino}` : null;
 }
 
+async function inodeAt(
+  path: string,
+  stat: Stats | null,
+): Promise<string | null> {
+  return stat ? migrationNodeIdentity(path, stat) : null;
+}
+
 export async function inspectInternalRoot(
   identity: InternalRootIdentity,
   inspectDestination = false,
+  host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
 ): Promise<InternalRootInventory> {
   const home = dirname(identity.source);
   if (resolve(home) !== home || (await realpath(home)) !== home)
@@ -289,14 +346,16 @@ export async function inspectInternalRoot(
   ]) {
     if (dirname(path) !== home)
       refuseLayout('Migration paths must be canonical siblings.');
-    if (await statIfPresent(path)) await privateDirectory(path);
+    if (await statIfPresent(path)) await privateDirectory(path, host);
   }
   const source = await statIfPresent(identity.source);
   const destination = await statIfPresent(identity.destination);
+  if (source && hostOperatingSystem() === 'linux')
+    await qualifyCopyVolume(identity.source, identity.destination);
   const live = inspectDestination ? identity.destination : identity.source;
   const exists = inspectDestination ? destination : source;
   const tree = exists
-    ? await manifest(live)
+    ? await manifest(live, false, host)
     : { fingerprint: '', files: 0, bytes: 0 };
   const ownerPath = join(live, 'build-storage-owner.json');
   let stableOwned = false;
@@ -327,8 +386,8 @@ export async function inspectInternalRoot(
     stableOwned = owner.data.build === 'stable';
   }
   return {
-    sourceIdentity: inode(source),
-    destinationIdentity: inode(destination),
+    sourceIdentity: await inodeAt(identity.source, source),
+    destinationIdentity: await inodeAt(identity.destination, destination),
     ...tree,
     historicalSecure: (await statIfPresent(identity.historicalSecure)) !== null,
     nestedSecure:
@@ -340,10 +399,11 @@ export async function inspectInternalRoot(
 
 export async function readInternalRootJournal(
   identity: InternalRootIdentity,
+  host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
 ): Promise<InternalRootJournal | null> {
   const path = join(identity.coordination, 'journal.json');
   if (!(await statIfPresent(identity.coordination))) return null;
-  await privateDirectory(identity.coordination);
+  await privateDirectory(identity.coordination, host);
   const stat = await statIfPresent(path);
   if (!stat) {
     const names = await readdir(identity.coordination);
@@ -367,12 +427,17 @@ export async function readInternalRootJournal(
       stat.isSymbolicLink() ||
       stat.nlink !== 1 ||
       stat.size > 16 * 1024 * 1024 ||
-      stat.uid !== process.getuid?.() ||
-      stat.mode & 0o077
+      !ownedMigrationNode(stat) ||
+      (hostOperatingSystem() !== 'win32' && stat.mode & 0o077)
     )
       throw new Error('Unsafe journal');
+    await observeMigrationNode(path, stat, host);
     const journal = journalSchema.parse(
-      JSON.parse(await readFile(path, 'utf8')),
+      JSON.parse(
+        hostOperatingSystem() === 'win32'
+          ? windowsFilesystem(host).read(path).toString('utf8')
+          : await readFile(path, 'utf8'),
+      ),
     );
     if (
       !isDeepStrictEqual(journal.identity, identity) ||
@@ -409,7 +474,7 @@ export async function readInternalRootJournal(
         journal.externalSnapshots?.some((entry) => !entry.postimage))
     )
       throw new Error('Unrecognized transaction');
-    await validateExternalRootFiles(identity, journal.externalFiles);
+    await validateExternalRootFiles(identity, journal.externalFiles, host);
     return journal;
   } catch {
     throw new InternalRootMigrationRefused(
@@ -419,7 +484,7 @@ export async function readInternalRootJournal(
   }
 }
 
-/** Production never falls back to a byte copy: macOS cp -c requires clonefile. */
+/** APFS-only primitive; portable construction is explicitly selected by build. */
 export async function cloneInternalRoot(
   source: string,
   destination: string,
@@ -484,21 +549,22 @@ export function internalRootStaging(identity: InternalRootIdentity): string {
 export async function validateInternalRootStaging(
   identity: InternalRootIdentity,
   journal: InternalRootJournal | null,
+  host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
 ): Promise<void> {
   const path = internalRootStaging(identity);
   const stat = await statIfPresent(path);
   if (!stat) return;
   if (
     !journal ||
-    inode(stat) !== journal.stagingIdentity ||
+    (await inodeAt(path, stat)) !== journal.stagingIdentity ||
     (journal.phase !== 'building' && journal.phase !== 'publishing')
   )
     throw new InternalRootMigrationRefused(
       'destination-exists',
       'Unknown or replaced migration staging tree. Preserve it and the journal for teammate-assisted recovery.',
     );
-  await privateDirectory(path);
-  if ((stat.mode & 0o7777) !== 0o700)
+  await privateDirectory(path, host);
+  if (hostOperatingSystem() !== 'win32' && (stat.mode & 0o7777) !== 0o700)
     refuseLayout('Migration staging requires mode 0700.');
   if (stat.dev !== (await lstat(identity.source)).dev)
     refuseLayout('Migration staging must remain on the source volume.');
@@ -507,6 +573,7 @@ export async function validateInternalRootStaging(
 export async function validateExternalRootFiles(
   identity: InternalRootIdentity,
   files: readonly string[],
+  host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
 ): Promise<void> {
   for (const path of files) {
     if (
@@ -518,16 +585,19 @@ export async function validateExternalRootFiles(
         identity.coordination,
         internalRootStaging(identity),
         identity.historicalSecure,
-      ].some((root) => path === root || path.startsWith(`${root}/`))
+      ].some((root) => isWithin(root, path))
     )
       refuseLayout(
         'External repair files must be canonical and outside both roots, coordination and secure history.',
       );
+    if (hostOperatingSystem() === 'win32')
+      await privateDirectory(dirname(path), host);
     const stat = await lstat(path);
+    await observeMigrationNode(path, stat, host);
     if (
       !stat.isFile() ||
       stat.nlink !== 1 ||
-      stat.uid !== process.getuid?.() ||
+      !ownedMigrationNode(stat) ||
       stat.size > 1024 * 1024 ||
       (stat.mode & 0o7000) !== 0
     )
@@ -543,14 +613,34 @@ function externalFingerprint(bytes: Buffer, mode: number): string {
 
 async function readExternalMetadata(
   path: string,
+  host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
 ): Promise<{ bytes: Buffer; mode: number }> {
+  if (hostOperatingSystem() === 'win32') {
+    const before = await lstat(path);
+    await observeMigrationNode(path, before, host);
+    const beforeIdentity = await migrationNodeIdentity(path, before);
+    const bytes = windowsFilesystem(host).read(path);
+    const after = await lstat(path);
+    if (
+      !before.isFile() ||
+      before.nlink !== 1 ||
+      bytes.length > 1024 * 1024 ||
+      before.size !== bytes.length ||
+      beforeIdentity !== (await migrationNodeIdentity(path, after)) ||
+      before.mode !== after.mode ||
+      before.mtimeMs !== after.mtimeMs ||
+      before.ctimeMs !== after.ctimeMs
+    )
+      refuseExternalRecovery('External metadata changed while being read.');
+    return { bytes, mode: before.mode & 0o777 };
+  }
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const before = await handle.stat();
     if (
       !before.isFile() ||
       before.nlink !== 1 ||
-      before.uid !== process.getuid?.() ||
+      !ownedMigrationNode(before) ||
       before.size > 1024 * 1024
     )
       refuseExternalRecovery('Unsafe or oversized external metadata.');
@@ -593,37 +683,42 @@ async function writeDurableBytes(
   path: string,
   bytes: Buffer,
   mode: number,
+  host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
 ): Promise<void> {
+  if (hostOperatingSystem() === 'win32')
+    await privateDirectory(dirname(path), host);
   const temp = `${path}.${randomUUID()}.tmp`;
   const handle = await open(temp, 'wx', 0o600);
   try {
     await handle.writeFile(bytes);
-    await handle.chmod(mode);
+    if (hostOperatingSystem() !== 'win32') await handle.chmod(mode);
     await handle.sync();
   } finally {
     await handle.close();
   }
-  await rename(temp, path);
+  await replaceMigrationFile(temp, path, host);
   await flush(dirname(path));
 }
 
 async function readPreimage(
   journal: InternalRootJournal,
   entry: InternalRootExternalSnapshot,
+  host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
 ): Promise<Buffer> {
-  await privateDirectory(journal.identity.coordination);
+  await privateDirectory(journal.identity.coordination, host);
   const path = preimagePath(journal, entry.path);
   const stat = await statIfPresent(path);
   if (
     !stat ||
     !stat.isFile() ||
     stat.nlink !== 1 ||
-    stat.uid !== process.getuid?.() ||
-    (stat.mode & 0o7777) !== 0o600 ||
+    !ownedMigrationNode(stat) ||
+    (hostOperatingSystem() !== 'win32' && (stat.mode & 0o7777) !== 0o600) ||
     stat.size > 1024 * 1024
   )
     refuseExternalRecovery('Missing or unsafe external preimage.');
-  const { bytes } = await readExternalMetadata(path);
+  await observeMigrationNode(path, stat, host);
+  const { bytes } = await readExternalMetadata(path, host);
   if (externalFingerprint(bytes, entry.mode) !== entry.preimage)
     refuseExternalRecovery('External preimage changed.');
   return bytes;
@@ -639,17 +734,22 @@ function refuseExternalRecovery(detail: string): never {
 /** Small opaque metadata copies only; never a root backup or credential decoder. */
 export async function captureInternalRootExternal(
   journal: InternalRootJournal,
+  host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
 ): Promise<readonly InternalRootExternalSnapshot[]> {
-  await validateExternalRootFiles(journal.identity, journal.externalFiles);
+  await validateExternalRootFiles(
+    journal.identity,
+    journal.externalFiles,
+    host,
+  );
   const entries: InternalRootExternalSnapshot[] = [];
   for (const path of journal.externalFiles) {
-    const { bytes, mode } = await readExternalMetadata(path);
+    const { bytes, mode } = await readExternalMetadata(path, host);
     const entry = { path, mode, preimage: externalFingerprint(bytes, mode) };
     const backup = preimagePath(journal, path);
-    if (await statIfPresent(backup)) await readPreimage(journal, entry);
+    if (await statIfPresent(backup)) await readPreimage(journal, entry, host);
     else {
-      await writeDurableBytes(backup, bytes, 0o600);
-      await readPreimage(journal, entry);
+      await writeDurableBytes(backup, bytes, 0o600, host);
+      await readPreimage(journal, entry, host);
     }
     entries.push(entry);
   }
@@ -658,18 +758,23 @@ export async function captureInternalRootExternal(
 
 export async function sealInternalRootExternal(
   journal: InternalRootJournal,
+  host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
 ): Promise<readonly InternalRootExternalSnapshot[]> {
-  await validateExternalRootFiles(journal.identity, journal.externalFiles);
+  await validateExternalRootFiles(
+    journal.identity,
+    journal.externalFiles,
+    host,
+  );
   if (!journal.externalSnapshots)
     refuseExternalRecovery('Missing external preimages.');
   const entries: InternalRootExternalSnapshot[] = [];
   for (const entry of journal.externalSnapshots) {
-    await readPreimage(journal, entry);
+    await readPreimage(journal, entry, host);
     // C syncs replacement contents; B also makes their directory entries durable
     // before the journal can seal these external postimages for publication.
     await flush(entry.path);
     await flush(dirname(entry.path));
-    const { bytes, mode } = await readExternalMetadata(entry.path);
+    const { bytes, mode } = await readExternalMetadata(entry.path, host);
     entries.push({
       ...entry,
       postimage: externalFingerprint(bytes, mode),
@@ -681,15 +786,20 @@ export async function sealInternalRootExternal(
 async function inspectExternalRestore(
   journal: InternalRootJournal,
   allowRestored: boolean,
+  host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
 ): Promise<void> {
-  await validateExternalRootFiles(journal.identity, journal.externalFiles);
+  await validateExternalRootFiles(
+    journal.identity,
+    journal.externalFiles,
+    host,
+  );
   if (!journal.externalSnapshots)
     refuseExternalRecovery('Missing external preimages.');
   // Check the entire set before restoring any file; a changed later backlink
   // must not leave an otherwise completed installation partially restored.
   for (const entry of journal.externalSnapshots) {
-    await readPreimage(journal, entry);
-    const { bytes, mode } = await readExternalMetadata(entry.path);
+    await readPreimage(journal, entry, host);
+    const { bytes, mode } = await readExternalMetadata(entry.path, host);
     const actual = externalFingerprint(bytes, mode);
     if (
       !entry.postimage ||
@@ -704,19 +814,25 @@ async function inspectExternalRestore(
 
 export async function assertInternalRootExternalPostimages(
   journal: InternalRootJournal,
+  host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
 ): Promise<void> {
-  await inspectExternalRestore(journal, false);
+  await inspectExternalRestore(journal, false, host);
 }
 
 export async function assertInternalRootExternalPreimages(
   journal: InternalRootJournal,
+  host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
 ): Promise<void> {
-  await validateExternalRootFiles(journal.identity, journal.externalFiles);
+  await validateExternalRootFiles(
+    journal.identity,
+    journal.externalFiles,
+    host,
+  );
   if (!journal.externalSnapshots)
     refuseExternalRecovery('Missing external preimages.');
   for (const entry of journal.externalSnapshots) {
-    await readPreimage(journal, entry);
-    const { bytes, mode } = await readExternalMetadata(entry.path);
+    await readPreimage(journal, entry, host);
+    const { bytes, mode } = await readExternalMetadata(entry.path, host);
     if (externalFingerprint(bytes, mode) !== entry.preimage)
       refuseExternalRecovery(
         `External metadata changed after restore: ${entry.path}.`,
@@ -726,13 +842,14 @@ export async function assertInternalRootExternalPreimages(
 
 export async function restoreInternalRootExternal(
   journal: InternalRootJournal,
+  host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
 ): Promise<void> {
-  await inspectExternalRestore(journal, true);
+  await inspectExternalRestore(journal, true, host);
   for (const entry of journal.externalSnapshots ?? []) {
     // Durable restore intent accepts mixed pre/postimages after interruption.
-    const bytes = await readPreimage(journal, entry);
-    await validateExternalRootFiles(journal.identity, [entry.path]);
-    const current = await readExternalMetadata(entry.path);
+    const bytes = await readPreimage(journal, entry, host);
+    await validateExternalRootFiles(journal.identity, [entry.path], host);
+    const current = await readExternalMetadata(entry.path, host);
     const actual = externalFingerprint(current.bytes, current.mode);
     if (actual === entry.preimage) {
       await flush(entry.path);
@@ -743,24 +860,25 @@ export async function restoreInternalRootExternal(
       refuseExternalRecovery(
         `External metadata changed during restore: ${entry.path}.`,
       );
-    await writeDurableBytes(entry.path, bytes, entry.mode);
+    await writeDurableBytes(entry.path, bytes, entry.mode, host);
   }
 }
 
 export async function buildInternalRoot(
   journal: InternalRootJournal,
-  cloneTree: (
-    source: string,
-    destination: string,
-  ) => Promise<void> = cloneInternalRoot,
+  cloneTree?: (source: string, destination: string) => Promise<void>,
+  host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
 ): Promise<string> {
   const { identity } = journal;
+  let constructionIdentity: string | null = null;
+  const portableCopy =
+    !cloneTree && ['linux', 'win32'].includes(hostOperatingSystem() ?? '');
   if (await statIfPresent(identity.destination))
     throw new InternalRootMigrationRefused(
       'destination-exists',
       'Never overwrite an independent destination.',
     );
-  await validateInternalRootStaging(identity, journal);
+  await validateInternalRootStaging(identity, journal, host);
   const sibling = internalRootStaging(identity);
   const staging = join(identity.coordination, 'staging');
   if (await statIfPresent(sibling)) {
@@ -770,19 +888,56 @@ export async function buildInternalRoot(
         'Both private clone and sibling staging exist. Preserve both for recovery.',
       );
     // Re-enter private coordination before discarding a partial repaired tree.
-    await rename(sibling, staging);
+    await renameMigrationDirectory(
+      sibling,
+      staging,
+      journal.stagingIdentity,
+      host,
+    );
     await flush(dirname(sibling));
     await flush(identity.coordination);
   }
   if (await statIfPresent(staging)) {
-    await privateDirectory(staging);
+    await privateDirectory(staging, host);
+    if (
+      portableCopy &&
+      (!journal.stagingIdentity ||
+        (await migrationNodeIdentity(staging, await lstat(staging))) !==
+          journal.stagingIdentity)
+    )
+      refuseLayout('Private staging was replaced. Preserve it for recovery.');
+    if (portableCopy) await manifest(staging, false, host);
     await rm(staging, { recursive: true });
   }
-  await cloneTree(identity.source, staging);
-  await privateDirectory(staging);
+  if (portableCopy) {
+    await createPrivateMigrationDirectory(staging, host);
+    const stagingIdentity = await migrationNodeIdentity(
+      staging,
+      await lstat(staging),
+    );
+    constructionIdentity = stagingIdentity;
+    if (!stagingIdentity) refuseLayout('Construction identity is unavailable.');
+    await flush(identity.coordination);
+    await durableJson(
+      join(identity.coordination, 'journal.json'),
+      { ...journal, stagingIdentity },
+      host,
+    );
+    await copyInternalRootTree(identity.source, staging, host, true);
+  } else await (cloneTree ?? cloneInternalRoot)(identity.source, staging);
   if (
-    (await manifest(staging)).fingerprint !== journal.settledFingerprint ||
-    (await inspectInternalRoot(identity)).fingerprint !==
+    constructionIdentity &&
+    (await inodeAt(staging, await statIfPresent(staging))) !==
+      constructionIdentity
+  )
+    refuseLayout(
+      'Private staging was replaced during construction. Preserve it for recovery.',
+    );
+  await privateDirectory(staging, host);
+  if (
+    (await manifest(staging, false, host)).fingerprint !==
+      journal.settledFingerprint ||
+    (await inspectInternalRoot(identity, false, host)).fingerprint !==
       journal.settledFingerprint
   )
     throw new InternalRootMigrationRefused(
@@ -790,32 +945,43 @@ export async function buildInternalRoot(
       'Clone differs from settled source. Retain the original; retry migration after diagnosis.',
     );
   const stat = await lstat(staging);
+  if (
+    constructionIdentity &&
+    (await migrationNodeIdentity(staging, stat)) !== constructionIdentity
+  )
+    refuseLayout(
+      'Private staging changed during verification. Preserve it for recovery.',
+    );
   await flush(staging);
   await flush(identity.coordination);
-  return `${stat.dev}:${stat.ino}`;
+  return migrationNodeIdentity(staging, stat);
 }
 
 /** Called only after the clone's inode is durable in the non-moving journal. */
 export async function exposeInternalRootStaging(
   journal: InternalRootJournal,
+  host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
 ): Promise<void> {
   const { identity } = journal;
   const from = join(identity.coordination, 'staging');
   const to = internalRootStaging(identity);
   if (
     (await statIfPresent(to)) ||
-    inode(await statIfPresent(from)) !== journal.stagingIdentity
+    (await inodeAt(from, await statIfPresent(from))) !== journal.stagingIdentity
   )
     throw new InternalRootMigrationRefused(
       'destination-exists',
       'Staging changed before exposure. Preserve the journal and both trees for recovery.',
     );
-  await privateDirectory(from);
-  if (((await lstat(from)).mode & 0o7777) !== 0o700)
+  await privateDirectory(from, host);
+  if (
+    hostOperatingSystem() !== 'win32' &&
+    ((await lstat(from)).mode & 0o7777) !== 0o700
+  )
     refuseLayout('Migration staging requires mode 0700.');
   if ((await lstat(from)).dev !== (await lstat(dirname(to))).dev)
     refuseLayout('Migration staging must remain on the source volume.');
-  await rename(from, to);
+  await renameMigrationDirectory(from, to, journal.stagingIdentity, host);
   await flush(identity.coordination);
   await flush(dirname(to));
 }
@@ -824,29 +990,36 @@ export async function exposeInternalRootStaging(
 export async function sealInternalRoot(
   journal: InternalRootJournal,
   publicationIdentity: string,
+  host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
 ): Promise<string> {
   const staging = internalRootStaging(journal.identity);
-  await privateDirectory(staging);
-  if (inode(await statIfPresent(staging)) !== publicationIdentity)
+  await privateDirectory(staging, host);
+  if (
+    (await inodeAt(staging, await statIfPresent(staging))) !==
+    publicationIdentity
+  )
     throw new InternalRootMigrationRefused(
       'destination-exists',
       'Staging was replaced during repair. Preserve the journal and request recovery.',
     );
   // clonefile/cp exit alone does not durably publish every nested entry.
-  return (await manifest(staging, true)).fingerprint;
+  return (await manifest(staging, true, host)).fingerprint;
 }
 
 /** Revalidate a sealed tree on BOTH sides of the publication crash window. */
 export async function internalRootPublicationRoot(
   journal: InternalRootJournal,
+  host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
 ): Promise<string> {
   const staging = internalRootStaging(journal.identity);
   const to = await statIfPresent(journal.identity.destination);
   const from = await statIfPresent(staging);
   const path =
-    !to && inode(from) === journal.publicationIdentity
+    !to && (await inodeAt(staging, from)) === journal.publicationIdentity
       ? staging
-      : !from && inode(to) === journal.publicationIdentity
+      : !from &&
+          (await inodeAt(journal.identity.destination, to)) ===
+            journal.publicationIdentity
         ? journal.identity.destination
         : null;
   if (!path)
@@ -854,15 +1027,19 @@ export async function internalRootPublicationRoot(
       'destination-exists',
       'Destination or staging identity changed. Preserve the journal and request recovery.',
     );
-  await privateDirectory(path);
-  if ((await manifest(path)).fingerprint !== journal.publicationFingerprint)
+  await privateDirectory(path, host);
+  if (
+    (await manifest(path, false, host)).fingerprint !==
+    journal.publicationFingerprint
+  )
     throw new InternalRootMigrationRefused(
       'source-changed',
       'Sealed destination changed during publication. Preserve both roots and the journal for teammate-assisted recovery.',
     );
   // The recursive scan can be long; do not use its pre-scan path observations.
   if (
-    inode(await statIfPresent(path)) !== journal.publicationIdentity ||
+    (await inodeAt(path, await statIfPresent(path))) !==
+      journal.publicationIdentity ||
     (await statIfPresent(
       path === staging ? journal.identity.destination : staging,
     ))
@@ -876,10 +1053,16 @@ export async function internalRootPublicationRoot(
 
 export async function publishInternalRoot(
   journal: InternalRootJournal,
+  host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
 ): Promise<void> {
-  const path = await internalRootPublicationRoot(journal);
+  const path = await internalRootPublicationRoot(journal, host);
   if (path !== journal.identity.destination)
-    await rename(path, journal.identity.destination);
+    await renameMigrationDirectory(
+      path,
+      journal.identity.destination,
+      journal.publicationIdentity,
+      host,
+    );
   await flush(dirname(journal.identity.destination));
   await flush(journal.identity.coordination);
 }
@@ -888,6 +1071,7 @@ export async function publishInternalRoot(
 export async function discardInternalRootDestination(
   journal: InternalRootJournal,
   checkOnly = false,
+  host: InternalRootFilesystemHost = DEFAULT_FILESYSTEM_HOST,
 ): Promise<void> {
   const destination = journal.identity.destination;
   const discarded = join(journal.identity.coordination, 'discarding');
@@ -901,12 +1085,12 @@ export async function discardInternalRootDestination(
   const path = to ? destination : discarded;
   const stat = to ?? old;
   if (!stat) return; // Interrupted deletion; rebuild intent is already durable.
-  if (inode(stat) !== journal.publicationIdentity)
+  if ((await migrationNodeIdentity(path, stat)) !== journal.publicationIdentity)
     throw new InternalRootMigrationRefused(
       'destination-exists',
       'Recorded destination was replaced. Never discard another installation.',
     );
-  await privateDirectory(path);
+  await privateDirectory(path, host);
   if (await statIfPresent(join(path, 'secure-storage')))
     throw new InternalRootMigrationRefused(
       'recovery-required',
@@ -915,10 +1099,63 @@ export async function discardInternalRootDestination(
   if (checkOnly) return;
   if (to) {
     // Never leave a partially deleted resolver candidate after interrupted rm.
-    await rename(destination, discarded);
+    await renameMigrationDirectory(
+      destination,
+      discarded,
+      journal.publicationIdentity,
+      host,
+    );
     await flush(dirname(destination));
     await flush(journal.identity.coordination);
   }
+  if (hostOperatingSystem() !== 'darwin')
+    await manifest(discarded, false, host);
   await rm(discarded, { recursive: true });
   await flush(journal.identity.coordination);
+}
+
+async function replaceMigrationFile(
+  from: string,
+  to: string,
+  host: InternalRootFilesystemHost,
+): Promise<void> {
+  if (hostOperatingSystem() !== 'win32') {
+    await rename(from, to);
+    return;
+  }
+  if (await statIfPresent(to)) windowsFilesystem(host).finish(to, from);
+  const result = await hostPlatformServices(
+    createPlatformEndpointServices('win32'),
+  ).secureFiles.rename({ from, to, mode: 'replace' });
+  if (result.kind !== 'renamed' || result.sourceState !== 'removed')
+    refuseLayout(
+      'Metadata replacement could not be confirmed. Preserve the journal.',
+    );
+}
+
+/** Shared with classification in the repair composition; no lexical slash test. */
+export { isWithin as isWithinInternalRoot } from '@canopy/core-runtime/node/relocation/transition';
+
+async function renameMigrationDirectory(
+  from: string,
+  to: string,
+  identity: string | undefined,
+  host: InternalRootFilesystemHost,
+): Promise<void> {
+  if (hostOperatingSystem() !== 'linux') {
+    await rename(from, to);
+    return;
+  }
+  if (!host.renameNoReplace || !identity)
+    refuseLayout(
+      'Linux no-replace directory publication is unavailable. Preserve both trees.',
+    );
+  try {
+    host.renameNoReplace(from, to, identity);
+  } catch {
+    throw new InternalRootMigrationRefused(
+      'destination-exists',
+      'No-replace directory rename refused. Preserve both trees and the journal for recovery.',
+    );
+  }
 }

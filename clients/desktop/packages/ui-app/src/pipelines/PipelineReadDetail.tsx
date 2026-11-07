@@ -6,6 +6,7 @@ import { PipelineIcon } from '@canopy/ui-shared';
 import { Button, Heading } from '@canopy/ui-shared/components';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { EmptyStateRow } from '@canopy/ui-shared/components';
+import { Surface } from '@canopy/ui-shared/components';
 
 export interface PipelineReadDetailProps {
   definition: PortalPipelineDefinitionViewModel;
@@ -45,13 +46,15 @@ export function PipelineReadDetail({
         data-testid="pipeline-read-detail-meta"
       >
         <div className="flex items-start gap-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-secondary fg-secondary">
-            {definition.icon ? (
-              <span className="text-lg">{definition.icon}</span>
-            ) : (
-              <PipelineIcon className="h-5 w-5" />
-            )}
-          </div>
+          <Surface variant="group" className="w-10 shrink-0">
+            <div className="flex h-10 items-center justify-center fg-secondary">
+              {definition.icon ? (
+                <span className="text-lg">{definition.icon}</span>
+              ) : (
+                <PipelineIcon size="xl" />
+              )}
+            </div>
+          </Surface>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <Heading level={1} variant="page">
@@ -128,19 +131,23 @@ export function PipelineReadDetail({
               </p>
             )}
             {/* Raw YAML holds prompts, scripts, and env values. */}
-            <pre
-              className={`${REPLAY_BLOCK_CLASS} max-h-144 overflow-auto rounded-lg border bg-secondary/40 p-4 text-xs fg-primary`}
-              data-testid="pipeline-read-detail-yaml"
-            >
-              <code>{definition.canonicalYaml}</code>
-            </pre>
+            <Surface variant="group" className="overflow-hidden">
+              <pre
+                className={`${REPLAY_BLOCK_CLASS} max-h-144 overflow-auto p-4 text-xs fg-primary`}
+                data-testid="pipeline-read-detail-yaml"
+              >
+                <code>{definition.canonicalYaml}</code>
+              </pre>
+            </Surface>
           </div>
         ) : (
           <div className="space-y-3">
             {definition.jobs.map((job) => (
-              <article
+              <Surface
                 key={job.id}
-                className="overflow-hidden rounded-lg border"
+                as="article"
+                variant="outline"
+                className="overflow-hidden"
                 data-testid="pipeline-read-detail-job"
               >
                 <div className="flex items-center gap-2 bg-secondary/50 px-3 py-2">
@@ -196,7 +203,7 @@ export function PipelineReadDetail({
                     </li>
                   ))}
                 </ol>
-              </article>
+              </Surface>
             ))}
           </div>
         )}

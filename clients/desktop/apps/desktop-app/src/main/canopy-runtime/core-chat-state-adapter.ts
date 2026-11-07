@@ -1,6 +1,7 @@
 import type {
   CanopyQueryHandlerMap,
   CanopyQueryResult,
+  CanopyStreamCursor,
   CanopyWorkspaceScope,
   CoreChatNoBillingSource,
   CoreChatTabSettings,
@@ -24,6 +25,7 @@ import {
 } from '@canopy/core-runtime';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from './desktop-runtime-identity';
 import { chatDisplayLabel } from '@canopy/protocol';
+import type { ChatEventReplayLog } from './chat-event-replay-log';
 
 export interface ChatStateProjectionCapture {
   captureState(result: ChatStateSnapshot): void;
@@ -180,6 +182,7 @@ function projectChatTabExtras(
 function projectSnapshot(
   snapshot: ChatStateSnapshot,
   chatId?: string,
+  eventsCursor?: CanopyStreamCursor,
 ): CoreChatSnapshotGetResult {
   const selectedTabs = chatId
     ? snapshot.tabsFile.tabs.filter((tab) => tab.id === chatId)
@@ -203,6 +206,7 @@ function projectSnapshot(
     workspaceId: snapshot.projectId,
     worktreeId: snapshot.worktreeId,
     revision: snapshot.revision,
+    ...(eventsCursor ? { eventsCursor } : {}),
     tabs: {
       activeTabId: snapshot.tabsFile.activeTabId,
       items: selectedTabs.map((tab) => ({
@@ -221,6 +225,9 @@ function projectSnapshot(
           ? {}
           : { providerId: tab.providerType }),
         ...projectChatTabExtras(tab),
+        ...(tab.transcript?.transcriptRevision === undefined
+          ? {}
+          : { transcriptRevision: tab.transcript.transcriptRevision }),
       })),
     },
     archives: selectedArchives.map((archive) => ({
@@ -244,6 +251,7 @@ function projectSnapshot(
           id: entry.id,
           origin: entry.origin,
           enqueuedAtMs: entry.enqueuedAtMs,
+          revision: entry.revision ?? 1,
         })),
       })),
   };
@@ -273,6 +281,7 @@ export function listState(
 export function createCoreChatStateAdapter(
   getPort: () => ChatStateCommandPort | null,
   capture?: ChatStateProjectionCapture,
+  replay?: ChatEventReplayLog,
 ): ChatStateQueries {
   return {
     'core.chat.snapshot.get': async (
@@ -281,6 +290,12 @@ export function createCoreChatStateAdapter(
       requireLocalScope(params.scope);
       const port = getPort();
       if (!port) throw new Error('Chat state service is unavailable.');
+      const finishCursor = replay?.attach()
+        ? replay.beginSnapshot({
+            projectId: params.scope.workspaceId,
+            worktreeId: params.scope.worktreeId,
+          })
+        : undefined;
       let snapshot: ChatStateSnapshot;
       try {
         snapshot = await port.getState({
@@ -291,7 +306,11 @@ export function createCoreChatStateAdapter(
         throw canopyInternalError('Chat state read failed.', error);
       }
       capture?.captureState(snapshot);
-      return projectSnapshot(snapshot, params.chatId);
+      return projectSnapshot(
+        snapshot,
+        params.chatId,
+        finishCursor?.(snapshot.revision),
+      );
     },
     'core.chat.list': async (params): Promise<CoreChatListResult> => {
       requireLocalScope(params.scope);

@@ -11,7 +11,7 @@ import { normalizeNeeds } from '@canopy/desktop-shared/types/pipeline';
 import type { Selection } from '../../../hooks/usePipelineEditor';
 import { Badge, Count } from '@canopy/ui-shared/components';
 import { StepCard } from './StepCard';
-import { PipelineDragHandleIcon } from './PipelinePanelPrimitives';
+import { DragHandleIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { Button } from '@canopy/ui-shared/components';
 import {
   ChevronRightMediumIcon as AppCatalogChevronRightMediumIcon,
@@ -96,7 +96,7 @@ export function JobCard({
             className="shrink-0 cursor-grab active:cursor-grabbing p-0.5 fg-secondary hover:fg-primary touch-none"
             onClick={(e) => e.stopPropagation()}
           >
-            <PipelineDragHandleIcon />
+            <DragHandleIcon size="sm" />
           </button>
         )}
 
@@ -113,8 +113,7 @@ export function JobCard({
           aria-expanded={!collapsed}
         >
           <AppCatalogChevronRightMediumIcon
-            width="14"
-            height="14"
+            size="sm"
             className={`transition-transform ${collapsed ? '' : 'rotate-90'}`}
           />
         </Button>
@@ -148,7 +147,7 @@ export function JobCard({
             }}
             aria-label="Add step"
           >
-            <AppCatalogPlusIcon width="14" height="14" />
+            <AppCatalogPlusIcon size="sm" />
           </Button>
         )}
       </div>

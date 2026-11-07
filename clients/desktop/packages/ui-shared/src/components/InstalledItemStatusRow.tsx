@@ -211,7 +211,7 @@ function InstalledItemMoreMenu({
             data-testid={`${testId}-more`}
             onClick={(): void => setOpen((current) => !current)}
           >
-            <MoreHorizontalIcon width={14} height={14} aria-hidden="true" />
+            <MoreHorizontalIcon size="sm" aria-hidden="true" />
           </Button>
         </Tooltip>
       </span>

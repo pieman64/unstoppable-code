@@ -45,7 +45,12 @@ import { DeleteConfirmModal } from '@/components/shared/DeleteConfirmModal';
 import { DialogModal } from '@/components/shared/DialogModal';
 import { brandText } from '@/lib/brand';
 import type { SharedContainerRunState } from './useSharedContainerRun';
-import { Disclosure, ErrorBanner, Heading } from '@canopy/ui-shared/components';
+import {
+  Disclosure,
+  ErrorBanner,
+  Heading,
+  Surface,
+} from '@canopy/ui-shared/components';
 
 export interface SharedContainerRunPanelProps {
   run: SharedContainerRunState;
@@ -105,45 +110,49 @@ function SharedContainerRunCommandRow({
   onRun: () => void;
 }): JSX.Element {
   return (
-    <li
-      className="rounded-md ring ring-line-base px-2 py-1.5"
+    <Surface
+      as="li"
+      variant="outline"
+      size="small"
       data-testid={`shared-container-run-command-${command.name}`}
     >
-      <div className="flex items-center gap-2">
-        <p className="min-w-0 flex-1 truncate text-s font-medium fg-primary">
-          {getScriptDisplayName(command.name)}
-        </p>
-        {showRun && (
-          <Button
-            variant="outline"
-            size="sm"
-            data-testid={`shared-container-run-command-start-${command.name}`}
-            disabled={runDisabled}
-            onClick={onRun}
-          >
-            Run
-          </Button>
-        )}
-      </div>
-      <Disclosure
-        label="Details"
-        dataTestId={`shared-container-run-command-disclosure-${command.name}`}
-        toggleTestId={`shared-container-run-command-details-${command.name}`}
-      >
-        {/* The body keeps its own test id, which specs key on. */}
-        <div
-          className="space-y-0.5"
-          data-testid={`shared-container-run-command-details-body-${command.name}`}
-        >
-          <p
-            className={`${POSTHOG_REPLAY_BLOCK_CLASS} break-all font-mono text-xs fg-secondary`}
-          >
-            {command.command}
+      <div className="px-2 py-1.5">
+        <div className="flex items-center gap-2">
+          <p className="min-w-0 flex-1 truncate text-s font-medium fg-primary">
+            {getScriptDisplayName(command.name)}
           </p>
-          <p className="text-xs fg-quaternary">{`Runs in ${locationLabel}`}</p>
+          {showRun && (
+            <Button
+              variant="outline"
+              size="sm"
+              data-testid={`shared-container-run-command-start-${command.name}`}
+              disabled={runDisabled}
+              onClick={onRun}
+            >
+              Run
+            </Button>
+          )}
         </div>
-      </Disclosure>
-    </li>
+        <Disclosure
+          label="Details"
+          dataTestId={`shared-container-run-command-disclosure-${command.name}`}
+          toggleTestId={`shared-container-run-command-details-${command.name}`}
+        >
+          {/* The body keeps its own test id, which specs key on. */}
+          <div
+            className="space-y-0.5"
+            data-testid={`shared-container-run-command-details-body-${command.name}`}
+          >
+            <p
+              className={`${POSTHOG_REPLAY_BLOCK_CLASS} break-all font-mono text-xs fg-secondary`}
+            >
+              {command.command}
+            </p>
+            <p className="text-xs fg-quaternary">{`Runs in ${locationLabel}`}</p>
+          </div>
+        </Disclosure>
+      </div>
+    </Surface>
   );
 }
 

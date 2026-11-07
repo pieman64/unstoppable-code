@@ -5,7 +5,7 @@ import {
   NOTICE_GALLERY_SECTIONS,
   type NoticeGalleryEntry,
 } from './noticeStateGalleryData';
-import { Chip, Heading } from '@canopy/ui-shared/components';
+import { Chip, Heading, Surface } from '@canopy/ui-shared/components';
 
 /**
  * The composer preview at the top of the Notice States gallery: the real
@@ -143,33 +143,35 @@ export function NoticeComposerPreview({
       {/* The composer centers itself at `--chat-composer-shell-width`, so the
           frame stays full width and lets it find its own measure, exactly as
           the chat panel does. */}
-      <div
-        ref={surfaceRef}
-        className="flex min-h-155 flex-col justify-end rounded-xl bg-base ring-[length:var(--border-hairline)] ring-line-secondary"
-        data-testid="notice-preview-surface"
-      >
-        <ChatInput
-          tab={PREVIEW_TAB}
-          targetOverride={PREVIEW_TARGET}
-          composerShortcutsEnabled={false}
-          // A plan-mode toggle with no session behind it can only mislead.
-          hidePlanMode
-          hideDirectoryPicker
-          disableFileTypeahead
-          disableTerminalMode
-          onSendMessage={(): Promise<void> => Promise.resolve()}
-          {...(selected
-            ? {
-                // `mb-1.5` mirrors the live stack's own bottom margin
-                // (`chat-input-notices` in `ChatInput`); keep the two in
-                // step so this page shows the real gap.
-                beforeComposer: (
-                  <div className="mb-1.5">{renderNotice(selected)}</div>
-                ),
-              }
-            : {})}
-        />
-      </div>
+      <Surface variant="inset">
+        <div
+          className="flex flex-col justify-end min-h-155"
+          ref={surfaceRef}
+          data-testid="notice-preview-surface"
+        >
+          <ChatInput
+            tab={PREVIEW_TAB}
+            targetOverride={PREVIEW_TARGET}
+            composerShortcutsEnabled={false}
+            // A plan-mode toggle with no session behind it can only mislead.
+            hidePlanMode
+            hideDirectoryPicker
+            disableFileTypeahead
+            disableTerminalMode
+            onSendMessage={(): Promise<void> => Promise.resolve()}
+            {...(selected
+              ? {
+                  // `mb-1.5` mirrors the live stack's own bottom margin
+                  // (`chat-input-notices` in `ChatInput`); keep the two in
+                  // step so this page shows the real gap.
+                  beforeComposer: (
+                    <div className="mb-1.5">{renderNotice(selected)}</div>
+                  ),
+                }
+              : {})}
+          />
+        </div>
+      </Surface>
     </section>
   );
 }

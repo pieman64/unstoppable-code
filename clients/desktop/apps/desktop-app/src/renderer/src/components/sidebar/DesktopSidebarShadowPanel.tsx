@@ -7,7 +7,7 @@ import {
   type JSX,
 } from 'react';
 import type { CanopyClient, SessionViewModel } from '@canopy/app-core';
-import { Disclosure } from '@canopy/ui-shared/components';
+import { Disclosure, Surface } from '@canopy/ui-shared/components';
 import { ipcCanopyClient } from '@/client/ipc-canopy-client';
 import {
   WORKTREE_STATUS_META,
@@ -206,7 +206,7 @@ export function DesktopSidebarShadowPanel({
         onOpenChange={setExpanded}
         dataTestId="desktop-sidebar-shadow-disclosure"
       >
-        <div className="overflow-hidden rounded border">
+        <Surface variant="outline" size="small" className="overflow-hidden">
           <Profiler
             id="desktop-sidebar-shadow"
             onRender={commitCounter.increment}
@@ -226,7 +226,7 @@ export function DesktopSidebarShadowPanel({
             onToggle={() => setReadoutExpanded((value) => !value)}
             refreshCount={refreshCount}
           />
-        </div>
+        </Surface>
       </Disclosure>
     </section>
   );

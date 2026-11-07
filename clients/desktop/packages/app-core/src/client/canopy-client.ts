@@ -1,3 +1,4 @@
+import type { FeedbackReportClient } from '@canopy/protocol/feedback-report';
 import type { SharedMultiRepoClient } from './shared-multi-repo-client';
 import type {
   OnboardingTipsCommandMap,
@@ -812,6 +813,7 @@ export type CommandName = keyof CommandMap;
  * `as` casts so the public contract stays honest.
  */
 export interface CanopyClient {
+  readonly feedback?: FeedbackReportClient;
   /** Open a web URL outside the app through the host's browser. */
   openExternalUrl?(url: string): void;
   readonly sharedMultiRepo?: SharedMultiRepoClient;

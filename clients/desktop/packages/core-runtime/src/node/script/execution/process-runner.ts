@@ -11,7 +11,7 @@ import {
   type ScriptShellHost,
 } from './shell-command';
 
-const FORCE_KILL_DELAY_MS = 5_000;
+export const FORCE_KILL_DELAY_MS = 5_000;
 /** The output a run keeps for its result: 256 KiB, then a truncation line. */
 export const MAX_SCRIPT_OUTPUT_BYTES = 256 * 1024;
 
@@ -90,6 +90,8 @@ export interface RunScriptProcessOptions {
   /** Null or omitted runs without a timeout. */
   timeoutMs?: number | null;
   onChunk?: (lines: string[]) => void;
+  /** Cuts an `onChunk` line longer than this, dropping the rest until its newline; omitted keeps lines whole. */
+  maxLineLength?: number;
   /** Raw output as it arrives, before line batching. */
   onData?: (chunk: Buffer, stream: 'stdout' | 'stderr') => void;
   signal?: AbortSignal;
@@ -145,6 +147,12 @@ export function runScriptProcess(
     let totalBytes = 0;
 
     const lineBuffers = { stdout: '', stderr: '' };
+    // The kept start of a pipe's line longer than `maxLineLength`; the rest
+    // of it is dropped until its newline.
+    const cutLines: Record<'stdout' | 'stderr', string | null> = {
+      stdout: null,
+      stderr: null,
+    };
     let pendingLines: string[] = [];
     let flushTimer: NodeJS.Timeout | undefined;
 
@@ -161,10 +169,10 @@ export function runScriptProcess(
 
     const flushBufferedOutput = (): void => {
       for (const stream of ['stdout', 'stderr'] as const) {
-        if (options.onChunk && lineBuffers[stream].length > 0) {
-          pendingLines.push(lineBuffers[stream]);
-          lineBuffers[stream] = '';
-        }
+        const rest = cutLines[stream] ?? lineBuffers[stream];
+        if (options.onChunk && rest.length > 0) pendingLines.push(rest);
+        cutLines[stream] = null;
+        lineBuffers[stream] = '';
       }
       flushPendingLines();
     };
@@ -253,7 +261,25 @@ export function runScriptProcess(
       );
       // The last element is the incomplete line (or empty string if the
       // chunk ended with a recognized newline).
-      lineBuffers[stream] = parts.pop() ?? '';
+      let partial = parts.pop() ?? '';
+      const cutLine = cutLines[stream];
+      if (cutLine !== null && parts.length > 0) {
+        parts[0] = cutLine;
+        cutLines[stream] = null;
+      }
+      const { maxLineLength } = options;
+      if (
+        cutLines[stream] === null &&
+        maxLineLength !== undefined &&
+        partial.length > maxLineLength
+      ) {
+        cutLines[stream] = partial.slice(0, maxLineLength);
+        partial = '';
+      } else if (cutLines[stream] !== null) {
+        // Keeps a carriage return whose newline arrives in the next chunk.
+        partial = partial.endsWith('\r') ? '\r' : '';
+      }
+      lineBuffers[stream] = partial;
       if (parts.length === 0) return;
 
       pendingLines.push(...parts);

@@ -1,5 +1,6 @@
 import type { JSX } from 'react';
 import { Button, ToggleSwitch } from '@canopy/ui-shared/components';
+import { Surface } from '@canopy/ui-shared/components';
 
 export interface ShareLayoutRowProps {
   /** Whether receivers open to the publisher's layout. */
@@ -38,31 +39,30 @@ export function ShareLayoutRow({
   const childTestId = (suffix: string): string | undefined =>
     testId ? `${testId}-${suffix}` : undefined;
   return (
-    <div
-      className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-xs fg-secondary"
-      data-testid={testId}
-    >
-      <span className="fg-primary">{label}</span>
-      <div className="flex items-center gap-3">
-        {enabled && updateLabel !== undefined && (
-          <Button
-            variant="link"
+    <Surface variant="outline" data-testid={testId}>
+      <div className="flex items-center justify-between gap-3 px-3 py-2 text-xs fg-secondary">
+        <span className="fg-primary">{label}</span>
+        <div className="flex items-center gap-3">
+          {enabled && updateLabel !== undefined && (
+            <Button
+              variant="link"
+              disabled={saving}
+              onClick={onUpdate}
+              data-testid={childTestId('update')}
+            >
+              {updateLabel}
+            </Button>
+          )}
+          <ToggleSwitch
+            checked={enabled}
             disabled={saving}
-            onClick={onUpdate}
-            data-testid={childTestId('update')}
-          >
-            {updateLabel}
-          </Button>
-        )}
-        <ToggleSwitch
-          checked={enabled}
-          disabled={saving}
-          label={label}
-          onChange={onToggle}
-          size="sm"
-          dataTestId={childTestId('switch')}
-        />
+            label={label}
+            onChange={onToggle}
+            size="sm"
+            dataTestId={childTestId('switch')}
+          />
+        </div>
       </div>
-    </div>
+    </Surface>
   );
 }

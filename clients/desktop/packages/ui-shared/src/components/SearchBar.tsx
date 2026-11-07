@@ -28,18 +28,6 @@ export interface SearchBarProps {
   placeholder?: string;
 }
 
-function ChevronUpIcon(): JSX.Element {
-  return <AppCatalogChevronTopMediumIcon width="14" height="14" />;
-}
-
-function ChevronDownIcon(): JSX.Element {
-  return <AppCatalogChevronDownMediumIcon width="14" height="14" />;
-}
-
-function CloseIcon(): JSX.Element {
-  return <AppCatalogCloseIcon width="14" height="14" />;
-}
-
 export function SearchBar({
   query,
   onQueryChange,
@@ -113,7 +101,7 @@ export function SearchBar({
         disabled={totalCount === 0}
         aria-label="Previous match"
       >
-        <ChevronUpIcon />
+        <AppCatalogChevronTopMediumIcon size="sm" />
       </Button>
       <Button
         variant="ghost"
@@ -123,7 +111,7 @@ export function SearchBar({
         disabled={totalCount === 0}
         aria-label="Next match"
       >
-        <ChevronDownIcon />
+        <AppCatalogChevronDownMediumIcon size="sm" />
       </Button>
       {onClose && (
         <Button
@@ -133,7 +121,7 @@ export function SearchBar({
           onClick={onClose}
           aria-label="Close search"
         >
-          <CloseIcon />
+          <AppCatalogCloseIcon size="sm" />
         </Button>
       )}
     </div>

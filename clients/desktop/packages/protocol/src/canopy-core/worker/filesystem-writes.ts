@@ -280,8 +280,8 @@ export type WorkerFilesystemDirectoryCreateErrorCode =
   (typeof WORKER_FILESYSTEM_DIRECTORY_CREATE_ERROR_CODES)[number];
 
 // Served by the web core (CAN-4159) and the desktop dispatcher (CAN-4100).
-// Kept out of WORKER_INSTRUCTION_DEFINITIONS, so the daemon profile does not
-// admit them, until CAN-4100's daemon registration follow-up.
+// Composed into WORKER_INSTRUCTION_DEFINITIONS (CAN-5518); the daemon
+// registers both, with no production grant and fail-closed write admission.
 export const WORKER_FILESYSTEM_WRITE_INSTRUCTION_DEFINITIONS =
   defineCanopyInstructionRegistry('worker', {
     'worker.filesystem.file.write': defineCanopyInstruction({
@@ -320,6 +320,7 @@ export const WORKER_FILESYSTEM_ENTRY_INSTRUCTION_DEFINITIONS =
       version: 1,
       placement: 'target-selectable',
       idempotency: 'keyed',
+      abandonedRetry: 'same_idempotency_key',
       requiredGrants: ['worker.filesystem.write'],
       params: WorkerFilesystemEntryDeleteParamsSchema,
       result: WorkerFilesystemEntryDeleteResultSchema,
@@ -331,6 +332,7 @@ export const WORKER_FILESYSTEM_ENTRY_INSTRUCTION_DEFINITIONS =
       version: 1,
       placement: 'target-selectable',
       idempotency: 'keyed',
+      abandonedRetry: 'same_idempotency_key',
       requiredGrants: ['worker.filesystem.write'],
       params: WorkerFilesystemEntryCopyParamsSchema,
       result: WorkerFilesystemEntryCopyResultSchema,
@@ -342,6 +344,7 @@ export const WORKER_FILESYSTEM_ENTRY_INSTRUCTION_DEFINITIONS =
       version: 1,
       placement: 'target-selectable',
       idempotency: 'keyed',
+      abandonedRetry: 'same_idempotency_key',
       requiredGrants: ['worker.filesystem.write'],
       params: WorkerFilesystemEntryMoveParamsSchema,
       result: WorkerFilesystemEntryMoveResultSchema,

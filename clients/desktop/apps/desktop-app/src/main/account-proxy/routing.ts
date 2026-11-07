@@ -190,6 +190,9 @@ export async function resolveAccountProxySessionRoute(
     // delegated Codex children on their parent's account.
     forwardCanopyHeaders: false,
     extraHeaders: sessionHeaders,
+    // The proxy is the user's own; large context windows send bodies past
+    // the hosted routes' 8 MiB ceiling.
+    unlimitedRequestBody: true,
     // Requests in flight, and their retries, stop when the proxy on this
     // device stops serving, before its released port can be taken.
     upstreamSignal: accountProxyServingSignal,

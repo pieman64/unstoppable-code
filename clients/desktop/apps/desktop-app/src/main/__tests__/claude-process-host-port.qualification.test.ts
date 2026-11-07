@@ -27,6 +27,7 @@ import {
   ReportedExecutionHost,
 } from '@canopy/desktop-shared/node/execution-host/port';
 import type * as RunnerModule from '../agents/claude-process-host-runner';
+import { registerHostedClaudeProcess } from '../agents/claude-process-registry';
 import {
   resetClaudeProcessHostForTests,
   shutdownClaudeProcessHost,
@@ -67,8 +68,22 @@ const HOST_EXIT_ERROR =
 
 let dir = '';
 const strays = new Set<number>();
+const hostPids = new Set<number>();
 
-function present(pid: number): boolean {
+/** Linux only: a process's state letter and parent, from /proc. */
+function procStat(pid: number): { state: string; parent: number } | undefined {
+  if (os !== 'linux') return undefined;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const [state, parent] = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    return { state, parent: Number(parent) };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether `pid` exists at all, a zombie included. */
+function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
@@ -77,12 +92,53 @@ function present(pid: number): boolean {
   }
 }
 
-async function until(check: () => boolean, timeoutMs = 10_000): Promise<void> {
+/** This process, the hosts it launched, and the CLIs and grandchildren. */
+function underTest(pid: number): boolean {
+  return pid === process.pid || hostPids.has(pid) || strays.has(pid);
+}
+
+function present(pid: number): boolean {
+  // An orphaned zombie has exited and waits on a reaper outside the tree
+  // under test, which the host does not control; `kill(pid, 0)` still
+  // succeeds on it. A zombie whose parent is in the tree is not yet reaped.
+  const stat = procStat(pid);
+  if (stat?.state === 'Z' && !underTest(stat.parent)) return false;
+  return alive(pid);
+}
+
+/** The remaining pids, with their state and parent where /proc has them. */
+function remaining(pids: readonly number[]): string {
+  return pids
+    .filter(alive)
+    .map((pid) => {
+      const stat = procStat(pid);
+      return stat ? `${pid} (${stat.state}, parent ${stat.parent})` : `${pid}`;
+    })
+    .join(', ');
+}
+
+async function until(
+  check: () => boolean,
+  timeoutMs = 10_000,
+  explain?: () => string,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!check()) {
-    if (Date.now() > deadline) throw new Error('condition not met in time');
+    if (Date.now() > deadline)
+      throw new Error(
+        `condition not met in time${explain ? `: ${explain()}` : ''}`,
+      );
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
+}
+
+/** The CLI pids whose start the runner has read from the host. */
+function trackedPids(): Set<number> {
+  return new Set(
+    jest
+      .mocked(registerHostedClaudeProcess)
+      .mock.calls.map(([record]) => record.pid),
+  );
 }
 
 function delay(ms: number): Promise<void> {
@@ -251,6 +307,7 @@ afterEach(() => {
   for (const pid of Array.from(strays))
     if (present(pid)) process.kill(pid, 'SIGKILL');
   strays.clear();
+  hostPids.clear();
 });
 
 afterAll(() => {
@@ -269,6 +326,7 @@ describe.each(['in-process', 'owned-process'] as const)(
 
       beforeEach(() => {
         resetClaudeProcessHostForTests();
+        jest.mocked(registerHostedClaudeProcess).mockClear();
         hosts = [];
         services = undefined;
         if (mode === 'in-process') {
@@ -287,6 +345,9 @@ describe.each(['in-process', 'owned-process'] as const)(
           launch(request) {
             const host = owned.launch(request);
             hosts.push(host);
+            host.once('spawn', () => {
+              if (host.pid !== undefined) hostPids.add(host.pid);
+            });
             return host;
           },
           probe: (request) => owned.probe(request),
@@ -369,14 +430,32 @@ describe.each(['in-process', 'owned-process'] as const)(
             ]),
           );
           const observed = proxies.map(observe);
-          const pids = (await Promise.all(files.map(pidsOf))).flat();
+          const groups = await Promise.all(files.map(pidsOf));
+          const pids = groups.flat();
+          // The runner reaps the groups of CLIs whose start it has read. A pid
+          // file shows a CLI runs, not that the host's report of it arrived.
+          await until(
+            () => groups.every(([cli]) => trackedPids().has(cli)),
+            undefined,
+            () =>
+              `runner tracked [${Array.from(trackedPids()).join(', ')}] of CLIs [${groups
+                .map(([cli]) => cli)
+                .join(', ')}]`,
+          );
           expect(hosts).toHaveLength(1);
 
           const host = hosts[0];
           if (host instanceof InProcessClaudeHost) host.exit(1);
           else expect(host.kill()).toBe(true);
 
-          await until(() => pids.every((pid) => !present(pid)), REAP_WITHIN_MS);
+          await until(
+            () => pids.every((pid) => !present(pid)),
+            REAP_WITHIN_MS,
+            () =>
+              `still present: ${remaining(pids)}; proxies ended: ${
+                observed.filter((o) => o.exits.length > 0).length
+              } of ${observed.length}`,
+          );
           await until(() => observed.every((o) => o.exits.length > 0));
           await delay(50);
           for (const o of observed) {

@@ -7,7 +7,9 @@ import {
   type OperationFailure,
   type OperationOrigin,
   type OperationOwner,
+  type OperationRecord,
   type WorkerAgentSubagentRunParams,
+  type WorkerAgentTurnScope,
 } from '@canopy/protocol/canopy-core';
 
 import { CanopyOperationError } from '../../../runtime/errors';
@@ -16,7 +18,10 @@ import type {
   LocalWorkerDispatchResult,
   LocalWorkerExecution,
 } from '../../operations/local-worker';
-import type { OperationService } from '../../operations/service';
+import {
+  OperationCancelRefusedError,
+  type OperationService,
+} from '../../operations/service';
 
 export const CORE_AGENT_SUBAGENT_RUN_KIND = 'core.agent.subagent.run';
 export const WORKER_AGENT_SUBAGENT_RUN = 'worker.agent.subagent.run';
@@ -26,6 +31,13 @@ export interface SubagentRunRef {
   readonly operationId: string;
   readonly delegationId: string;
   readonly runGeneration: number;
+}
+/** The delegated run a cancelled core.agent.subagent.run must stop (CAN-4112). */
+export interface SubagentNativeStopTarget {
+  readonly subagentRunId: string;
+  readonly delegationId: string;
+  readonly runGeneration: number;
+  readonly scope: WorkerAgentTurnScope;
 }
 export interface CoreSubagentBeginRequest {
   params: WorkerAgentSubagentRunParams;
@@ -78,19 +90,22 @@ function toErrorPayload(failure: OperationFailure): CanopyErrorPayload {
 export class CoreSubagentRuns {
   private readonly live = new Map<string, SubagentRunRef>();
   private readonly reserved = new Set<string>();
+  private readonly stopTargets = new Map<string, SubagentNativeStopTarget>();
+  private readonly stopping = new Map<string, Promise<void>>();
 
   constructor(
     private readonly options: {
       operations: OperationService;
       localWorker: LocalWorkerExecution;
       onError?: (error: unknown, context: string) => void;
+      stopNative?: (target: SubagentNativeStopTarget) => Promise<void>;
     },
   ) {
     options.operations.registerDomain({
       domain: 'core.agent.subagent',
       kinds: [CORE_AGENT_SUBAGENT_RUN_KIND],
       restartClass: 'lost',
-      cancel: () => Promise.resolve('requested'),
+      cancel: (operation) => this.cancelRun(operation),
     });
   }
 
@@ -121,6 +136,12 @@ export class CoreSubagentRuns {
       runGeneration: params.runGeneration,
     };
     this.live.set(key, ref);
+    this.stopTargets.set(operationId, {
+      subagentRunId: params.subagentRunId,
+      delegationId: params.delegationId,
+      runGeneration: params.runGeneration,
+      scope: params.scope,
+    });
     const settled = this.options.localWorker
       .dispatch({
         parentOperationId: operationId,
@@ -134,6 +155,8 @@ export class CoreSubagentRuns {
       )
       .then((result) => {
         if (this.live.get(key) === ref) this.live.delete(key);
+        this.stopTargets.delete(operationId);
+        this.stopping.delete(operationId);
         return result;
       });
     return { ref, settled };
@@ -141,6 +164,28 @@ export class CoreSubagentRuns {
 
   findLive(delegationId: string, runGeneration: number): SubagentRunRef | null {
     return this.live.get(`${delegationId}\u0000${runGeneration}`) ?? null;
+  }
+
+  private async cancelRun(operation: OperationRecord): Promise<'requested'> {
+    const { stopNative } = this.options;
+    const target = this.stopTargets.get(operation.operationId);
+    if (!stopNative || !target) return 'requested';
+    let stop = this.stopping.get(operation.operationId);
+    if (!stop) {
+      stop = stopNative(target);
+      this.stopping.set(operation.operationId, stop);
+    }
+    try {
+      await stop;
+    } catch (error) {
+      if (this.stopping.get(operation.operationId) === stop)
+        this.stopping.delete(operation.operationId);
+      this.options.onError?.(error, 'subagent native stop');
+      throw new OperationCancelRefusedError(
+        'This subagent run could not be stopped.',
+      );
+    }
+    return 'requested';
   }
 
   private async admit(request: CoreSubagentBeginRequest): Promise<string> {

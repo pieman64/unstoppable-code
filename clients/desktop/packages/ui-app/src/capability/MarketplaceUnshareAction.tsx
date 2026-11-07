@@ -141,7 +141,7 @@ export function useMarketplaceUnshare({
       onSelect: open,
       disabled,
       destructive: true,
-      icon: <UnshareIcon width={14} height={14} aria-hidden />,
+      icon: <UnshareIcon size="sm" aria-hidden />,
     },
     dialog: isOpen ? (
       <ConfirmDialog
@@ -212,7 +212,7 @@ export function MarketplaceUnshareAction({
           disabled={unshare.disabled}
           data-testid={dataTestId}
         >
-          <UnshareIcon width={12} height={12} aria-hidden />
+          <UnshareIcon size="sm" aria-hidden />
           {MARKETPLACE_UNSHARE_LABEL}
         </Button>
       )}

@@ -6,6 +6,7 @@ import {
   admittedStorageRowForPath,
   isAdmittedStorageCandidate,
 } from '../admitted-storage-paths';
+import { writeFileAtomicallySync } from '../atomic-file';
 
 // Reads the planning census, so the desktop public export excludes this suite.
 const MANIFEST = resolve(
@@ -114,4 +115,41 @@ it('does not admit secure files under the data root or an unrelated secure root'
       ),
     ).toBeUndefined();
   }
+});
+
+it('guards native snapshot directories and exact members without admitting nested or unrelated paths', () => {
+  for (const tail of [
+    'native-artifacts',
+    'native-artifacts/run-id',
+    'native-artifacts/run-id/owner.json',
+    'native-artifacts/run-id/core-secret-protection.node',
+    'native-artifacts/native-artifacts',
+    'native-artifacts/native-artifacts/owner.json',
+    'native-artifacts/owner.json',
+  ]) {
+    const namedRoot = join(ROOT, 'native-artifacts');
+    expect(admittedStorageRowForPath(join(namedRoot, tail), namedRoot)).toBe(
+      'daemon_native_artifact_snapshots',
+    );
+    const target = join(ROOT, tail);
+    expect(admittedStorageRowForPath(target, ROOT, SECURE)).toBe(
+      'daemon_native_artifact_snapshots',
+    );
+    expect(() => writeFileAtomicallySync(target, 'unadmitted')).toThrow(
+      /daemon_native_artifact_snapshots.*unadmitted_writer/,
+    );
+    expect(
+      admittedStorageRowForPath(join(SECURE, tail), ROOT, SECURE),
+    ).toBeUndefined();
+  }
+  for (const tail of [
+    'native-artifacts/run-id/unowned.json',
+    'native-artifacts/run-id/nested/owner.json',
+    'native-artifacts/run-id/core-secret-protection.node.tmp',
+    'runtime/run-id/owner.json',
+    'other/native-artifacts/run-id/owner.json',
+  ])
+    expect(
+      admittedStorageRowForPath(join(ROOT, tail), ROOT, SECURE),
+    ).toBeUndefined();
 });

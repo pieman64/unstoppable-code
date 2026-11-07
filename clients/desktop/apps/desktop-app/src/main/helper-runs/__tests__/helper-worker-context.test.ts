@@ -143,6 +143,7 @@ const mockStart = jest.fn(() =>
 );
 jest.mock('../../codex/runtime-service', () => ({
   getCodexRuntimeService: jest.fn(() => ({ startThread: mockStart })),
+  codexRuntimeForWorkerRun: jest.fn(() => ({ startThread: mockStart })),
 }));
 import {
   runStructuredHelper,

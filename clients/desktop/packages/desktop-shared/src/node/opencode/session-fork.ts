@@ -28,6 +28,8 @@ import type { OpenCodeForkScope } from './approval-plugin';
 type RuntimeOptions = Pick<
   OpenCodeRuntimeOptions,
   | 'executable'
+  | 'spawnProcess'
+  | 'processOwner'
   | 'prefix'
   | 'env'
   | 'providerConfig'

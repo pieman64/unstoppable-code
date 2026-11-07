@@ -26,6 +26,7 @@ import {
 import { revealInList } from './drawer-layout';
 
 import { DrawerRowPresentationContext } from './drawer-presentation';
+import { Divider } from '@canopy/ui-shared/components';
 
 const DETAIL_FADE_MASK =
   'linear-gradient(to right, black calc(100% - 24px), transparent)';
@@ -442,10 +443,7 @@ export function DrawerRow({
             data-testid="background-tray-inspector"
           >
             {presentation === 'legacy' && (
-              <div
-                aria-hidden="true"
-                className="mb-1 mr-9.5 border-t border-fg-quaternary"
-              />
+              <Divider aria-hidden className="mb-1 mr-9.5" />
             )}
             <InspectorReveal animate={animateDetails}>
               {inspector.render()}

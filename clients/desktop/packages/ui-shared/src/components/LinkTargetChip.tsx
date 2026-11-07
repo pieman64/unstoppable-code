@@ -67,9 +67,9 @@ export function LinkTargetChip({
         {busy ? (
           <LoadingSpinner sizePx={14} decorative />
         ) : status === 'blocked' ? (
-          <WarningIcon width={14} height={14} aria-hidden />
+          <WarningIcon size="sm" aria-hidden />
         ) : (
-          <BranchIcon width={14} height={14} aria-hidden />
+          <BranchIcon size="sm" aria-hidden />
         )}
       </span>
       <span
@@ -110,7 +110,7 @@ export function LinkTargetChip({
             onClick={onDismiss}
             className="focus-ring inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full fg-secondary hover:bg-subtle hover:fg-primary"
           >
-            <CloseMediumIcon width={12} height={12} aria-hidden />
+            <CloseMediumIcon size="sm" aria-hidden />
           </button>
         </Tooltip>
       )}

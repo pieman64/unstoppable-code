@@ -231,12 +231,15 @@ async function scanCuratedMarketplaceUncached(
   const marketplaceName = getCuratedPluginMarketplaceName();
   const recommendedPluginNames = new Set(
     claudeEntries
-      .filter((entry) => entry.recommended === true)
+      .filter(
+        (entry) =>
+          typeof entry?.name === 'string' && entry.recommended === true,
+      )
       .map((entry) => entry.name.toLowerCase()),
   );
   const tryNowPrompts = new Map(
     [...codexEntries, ...claudeEntries].flatMap((entry) =>
-      entry.name && entry.tryNowPrompt !== undefined
+      typeof entry?.name === 'string' && typeof entry.tryNowPrompt === 'string'
         ? [[entry.name.toLowerCase(), entry.tryNowPrompt] as const]
         : [],
     ),
@@ -255,7 +258,10 @@ async function scanCuratedMarketplaceUncached(
   const claudeStatus = deps.providerStatus('claude', {
     accepted: claudeManifest !== null,
     pluginCount: claudeFacets.length,
-    marketplaceName: claudeManifest?.name ?? marketplaceName,
+    marketplaceName:
+      typeof claudeManifest?.name === 'string'
+        ? claudeManifest.name
+        : marketplaceName,
     marketplacePath: claudeManifestPath,
     installLocation: root,
     error:
@@ -266,7 +272,10 @@ async function scanCuratedMarketplaceUncached(
   const codexStatus = deps.providerStatus('codex', {
     accepted: codexManifest !== null,
     pluginCount: codexFacets.length,
-    marketplaceName: codexManifest?.name ?? marketplaceName,
+    marketplaceName:
+      typeof codexManifest?.name === 'string'
+        ? codexManifest.name
+        : marketplaceName,
     marketplacePath: codexManifestPath,
     installLocation: root,
     error:

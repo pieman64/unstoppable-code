@@ -8,6 +8,7 @@ import {
   StatusLabel,
   ToggleSwitch,
 } from '@canopy/ui-shared/components';
+import { Surface } from '@canopy/ui-shared/components';
 
 export interface McpServerReadDetailProps {
   statusSection?: ReactNode;
@@ -234,68 +235,71 @@ export function McpServerReadDetail({
             {server.configs.map((config) => {
               const feedback = configToggleFeedback?.[config.id];
               return (
-                <div
+                <Surface
+                  variant="group"
+                  padding="compact"
                   key={config.id}
-                  className="flex items-start justify-between gap-3 rounded-lg border bg-secondary/20 p-3"
                   data-testid="mcp-server-read-config"
                 >
-                  <div className="min-w-0">
-                    <p className="text-s font-medium fg-primary">
-                      {config.name}
-                    </p>
-                    {config.description && (
-                      <p className="mt-0.5 text-xs fg-secondary">
-                        {config.description}
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-s font-medium fg-primary">
+                        {config.name}
                       </p>
-                    )}
-                    <p className="mt-1 text-2xs fg-secondary">
-                      Environment variables:{' '}
-                      {config.envVarNames.length > 0
-                        ? config.envVarNames.join(', ')
-                        : 'none'}{' '}
-                      · {config.extraArgCount} extra arguments
-                      {extraHeadersSummary(server, config)}
-                      {' · '}token{' '}
-                      {config.hasAuthToken ? 'configured' : 'not configured'}
-                    </p>
-                  </div>
-                  {statusSection ? null : onToggleConfig ? (
-                    <div className="flex shrink-0 flex-col items-end gap-1">
-                      <ToggleSwitch
-                        checked={config.enabled}
-                        label={`${config.enabled ? 'Disable' : 'Enable'} ${config.name}`}
-                        onChange={(next) => onToggleConfig(config.id, next)}
-                        disabled={feedback?.pending === true}
-                        busy={feedback?.pending === true}
-                        dataTestId="mcp-server-read-config-toggle"
-                      />
-                      {/* The switch only marks itself busy, so the pending
-                          change is named in text the user can see. */}
-                      {feedback?.pending === true && (
-                        <span className="text-3xs fg-secondary">Saving…</span>
+                      {config.description && (
+                        <p className="mt-0.5 text-xs fg-secondary">
+                          {config.description}
+                        </p>
                       )}
-                      {feedback?.message && (
-                        <span
-                          role="status"
-                          data-testid="mcp-server-read-config-feedback"
-                          className={`max-w-52 text-right text-3xs ${
-                            feedback.tone === 'error' ? '' : 'fg-secondary'
-                          }`}
-                        >
-                          {feedback.tone === 'error' ? (
-                            <StatusLabel>{feedback.message}</StatusLabel>
-                          ) : (
-                            feedback.message
-                          )}
-                        </span>
-                      )}
+                      <p className="mt-1 text-2xs fg-secondary">
+                        Environment variables:{' '}
+                        {config.envVarNames.length > 0
+                          ? config.envVarNames.join(', ')
+                          : 'none'}{' '}
+                        · {config.extraArgCount} extra arguments
+                        {extraHeadersSummary(server, config)}
+                        {' · '}token{' '}
+                        {config.hasAuthToken ? 'configured' : 'not configured'}
+                      </p>
                     </div>
-                  ) : (
-                    <span className="shrink-0 text-xs fg-secondary">
-                      {config.enabled ? 'Enabled' : 'Disabled'}
-                    </span>
-                  )}
-                </div>
+                    {statusSection ? null : onToggleConfig ? (
+                      <div className="flex shrink-0 flex-col items-end gap-1">
+                        <ToggleSwitch
+                          checked={config.enabled}
+                          label={`${config.enabled ? 'Disable' : 'Enable'} ${config.name}`}
+                          onChange={(next) => onToggleConfig(config.id, next)}
+                          disabled={feedback?.pending === true}
+                          busy={feedback?.pending === true}
+                          dataTestId="mcp-server-read-config-toggle"
+                        />
+                        {/* The switch only marks itself busy, so the pending
+                          change is named in text the user can see. */}
+                        {feedback?.pending === true && (
+                          <span className="text-3xs fg-secondary">Saving…</span>
+                        )}
+                        {feedback?.message && (
+                          <span
+                            role="status"
+                            data-testid="mcp-server-read-config-feedback"
+                            className={`max-w-52 text-right text-3xs ${
+                              feedback.tone === 'error' ? '' : 'fg-secondary'
+                            }`}
+                          >
+                            {feedback.tone === 'error' ? (
+                              <StatusLabel>{feedback.message}</StatusLabel>
+                            ) : (
+                              feedback.message
+                            )}
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="shrink-0 text-xs fg-secondary">
+                        {config.enabled ? 'Enabled' : 'Disabled'}
+                      </span>
+                    )}
+                  </div>
+                </Surface>
               );
             })}
           </div>

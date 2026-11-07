@@ -26,16 +26,15 @@ import {
 } from '@canopy/ui-shared';
 import { ListRow } from '@canopy/ui-shared/components';
 import { WORKTREE_STATUS_META } from '@/lib/worktree-status';
-import { AgentProviderIcon } from '@/lib/providerUi';
+import { ModelProviderIcon } from '@canopy/ui-shared/components';
 import type { UiAgentProvider } from '@/lib/providerLabels';
 import type { PaletteItem, PaletteItemKind } from './paletteItems';
 
-/** Lucide icons and the app's git glyphs both satisfy this render contract. */
-type KindIcon = ComponentType<{ className?: string }>;
+/** Raw Lucide entries retain their numeric sizing contract. */
+type KindIcon = ComponentType<{ size?: number }>;
 
-const KIND_ICON: Record<PaletteItemKind, KindIcon> = {
+const KIND_ICON: Record<Exclude<PaletteItemKind, 'worktree'>, KindIcon> = {
   command: Terminal,
-  worktree: GitBranch,
   archive: Archive,
   chat: MessageSquare,
   'chat-content': FileText,
@@ -68,7 +67,7 @@ function PaletteResultRowInner({
   onActivate,
   registerRef,
 }: PaletteResultRowProps): JSX.Element {
-  const Icon = KIND_ICON[item.kind];
+  const Icon = item.kind === 'worktree' ? null : KIND_ICON[item.kind];
   const dotClass =
     item.worktreeStatus !== undefined
       ? WORKTREE_STATUS_META[item.worktreeStatus].dotClass
@@ -119,11 +118,19 @@ function PaletteResultRowInner({
         onMouseEnter={(): void => onHover(index)}
         onClick={(): void => onActivate(item)}
         icon={
-          <Icon
-            className="h-4 w-4"
-            data-testid={`command-palette-kind-${item.kind}`}
-            aria-hidden
-          />
+          Icon === null ? (
+            <GitBranch
+              size="sm"
+              data-testid={`command-palette-kind-${item.kind}`}
+              aria-hidden
+            />
+          ) : (
+            <Icon
+              size={16}
+              data-testid={`command-palette-kind-${item.kind}`}
+              aria-hidden
+            />
+          )
         }
         description={
           item.subtitle ? (
@@ -176,9 +183,11 @@ function PaletteResultRowInner({
             />
           )}
           {provider && (
-            <AgentProviderIcon
+            <ModelProviderIcon
+              size="md"
               provider={provider}
-              className="h-4 w-4 shrink-0 fg-secondary"
+              tone="secondary"
+              className="shrink-0"
               data-testid={`command-palette-provider-${provider}`}
               aria-hidden
             />

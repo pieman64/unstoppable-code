@@ -1,9 +1,10 @@
 /**
  * Hover-revealed row actions for list-style rows.
  *
- * `RowActionTray` is absolutely positioned and only reveals on row hover (and
- * optionally focus). It backs sidebar, attachment, and similar compact rows;
- * its 28px quiet icon buttons fit the 28–32px rows it floats over.
+ * `RowActionTray` is absolutely positioned and reveals on row hover and focus,
+ * and stays visible on touch, where neither exists. It backs sidebar,
+ * attachment, and similar compact rows; its 28px quiet icon buttons fit the
+ * 28–32px rows it floats over.
  *
  * See `./TableActions.tsx` for the always-visible, right-aligned
  * `TableActionButton` / `TableActionsCell` used inside data-table `<td>`s,
@@ -17,10 +18,15 @@ import { Tooltip } from './Tooltip';
 export interface RowActionTrayProps {
   readonly children: ReactNode;
   readonly testId?: string;
-  /** Reveal keyboard-focused actions in addition to the default row hover. */
+  /** Reveal keyboard-focused actions as well as on row hover. */
   readonly revealOnFocus?: boolean;
   /** Keep replacement controls visible after their trigger unmounts. */
   readonly forceVisible?: boolean;
+  /**
+   * On touch, where the tray always shows, take its place in a flex row
+   * instead of covering the row's label.
+   */
+  readonly inRowOnTouch?: boolean;
 }
 
 /**
@@ -31,8 +37,9 @@ export interface RowActionTrayProps {
 export function RowActionTray({
   children,
   testId,
-  revealOnFocus = false,
+  revealOnFocus = true,
   forceVisible = false,
+  inRowOnTouch = false,
 }: RowActionTrayProps): JSX.Element {
   const visibilityClasses = forceVisible
     ? 'pointer-events-auto opacity-100'
@@ -40,11 +47,14 @@ export function RowActionTray({
         revealOnFocus
           ? ' focus-within:pointer-events-auto focus-within:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100'
           : ''
-      }`;
+      } pointer-coarse:pointer-events-auto pointer-coarse:opacity-100`;
+  const touchClasses = inRowOnTouch
+    ? ' pointer-coarse:static pointer-coarse:pr-1 pointer-coarse:shrink-0 pointer-coarse:translate-y-0 pointer-coarse:self-center pointer-coarse:bg-transparent pointer-coarse:shadow-none'
+    : '';
 
   return (
     <div
-      className={`absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 rounded-full bg-card shadow-sm pointer-coarse:gap-4 transition-opacity ${visibilityClasses}`}
+      className={`absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 rounded-full bg-card shadow-sm pointer-coarse:gap-4 transition-opacity ${visibilityClasses}${touchClasses}`}
       data-testid={testId}
     >
       {children}

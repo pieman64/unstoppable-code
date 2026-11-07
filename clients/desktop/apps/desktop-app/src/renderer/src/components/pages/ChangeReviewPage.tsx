@@ -19,12 +19,13 @@ import {
   BubbleCopyBadge,
   ChatComposerToolbarChip,
   ChatPreviewPopover,
+  type ChatPreviewRow,
   ExecutionActionButton,
   HeaderActionButton,
   Heading,
   PanelSection as SharedPanelSection,
+  Surface,
   WorktreeRow,
-  type ChatPreviewRow,
   type WorktreeRowProps,
 } from '@canopy/ui-shared/components';
 import { DEFAULT_PANEL_LEAF_MINIMUM_WIDTH } from '@canopy/ui-shared/panels';
@@ -41,6 +42,8 @@ import {
   RerunIcon,
   RetryIcon,
   TerminalIcon,
+  NoteIcon,
+  EditBigIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { isChangeReviewPageEnabled } from '@/components/sidebar/change-review-page-flag';
 import { WakeLockIndicatorView } from '@/components/sidebar/WakeLockIndicator';
@@ -51,8 +54,6 @@ import {
   PanelSection as DesktopPanelSection,
 } from '../shared/panel-section';
 import { AdvisorEtaBadge } from '../activity/AdvisorEtaBadge';
-import { NoteIcon } from '../activity/NotesSection';
-import { PromptIcon } from '../activity/PromptsSection';
 import { ChatMessageItem } from '../chat/ChatMessageItem';
 import { FastModeButton } from '../chat/FastModeButton';
 import { QueuedMessageBubble } from '../chat/QueuedMessageBubble';
@@ -119,9 +120,12 @@ interface ReviewSectionProps {
 
 function ReviewSection({ section, children }: ReviewSectionProps): JSX.Element {
   return (
-    <section
+    <Surface
       data-testid={`change-review-section-${section.id}`}
-      className="min-w-0 rounded-xl bg-base p-4 ring-[length:var(--border-hairline)] ring-line-secondary"
+      as="section"
+      variant="inset"
+      padding="default"
+      className="min-w-0"
     >
       <Heading level={2} variant="title">
         {section.title}
@@ -138,7 +142,7 @@ function ReviewSection({ section, children }: ReviewSectionProps): JSX.Element {
         <StageLabel>After</StageLabel>
         <div className="min-w-0">{children}</div>
       </div>
-    </section>
+    </Surface>
   );
 }
 
@@ -173,51 +177,54 @@ function GitActionsAfter({ ready }: { ready: boolean }): JSX.Element {
 
 function UserBubblesAfter(): JSX.Element {
   return (
-    <div
-      className="space-y-5 rounded-lg bg-base p-4 ring-[length:var(--border-hairline)] ring-line-secondary"
+    <Surface
+      variant="inset"
+      padding="default"
       data-testid="change-review-bubble-surface"
     >
-      {USER_BUBBLE_FIXTURES.map((fixture) => (
-        <div
-          key={fixture.id}
-          className="min-w-0"
-          data-testid={`change-review-bubble-${fixture.id}`}
-        >
-          <div className="mb-2">
-            <Caption>{fixture.title}</Caption>
+      <div className="space-y-5">
+        {USER_BUBBLE_FIXTURES.map((fixture) => (
+          <div
+            key={fixture.id}
+            className="min-w-0"
+            data-testid={`change-review-bubble-${fixture.id}`}
+          >
+            <div className="mb-2">
+              <Caption>{fixture.title}</Caption>
+            </div>
+            <ChatMessageItem
+              message={fixture.message}
+              chatPendingQuestions={[]}
+              onResetToPoint={noopAsync}
+            />
           </div>
-          <ChatMessageItem
-            message={fixture.message}
-            chatPendingQuestions={[]}
-            onResetToPoint={noopAsync}
-          />
-        </div>
-      ))}
-      {QUEUED_BUBBLE_FIXTURES.map((fixture) => (
-        <div
-          key={fixture.id}
-          className="min-w-0"
-          data-testid={`change-review-bubble-${fixture.id}`}
-        >
-          <div className="mb-2">
-            <Caption>{fixture.title}</Caption>
+        ))}
+        {QUEUED_BUBBLE_FIXTURES.map((fixture) => (
+          <div
+            key={fixture.id}
+            className="min-w-0"
+            data-testid={`change-review-bubble-${fixture.id}`}
+          >
+            <div className="mb-2">
+              <Caption>{fixture.title}</Caption>
+            </div>
+            <QueuedMessageBubble
+              message={fixture.message}
+              index={0}
+              onClear={noop}
+              turnPhase={fixture.message.turnPhase}
+              onForce={noop}
+              onEdit={noop}
+              canForce
+            />
           </div>
-          <QueuedMessageBubble
-            message={fixture.message}
-            index={0}
-            onClear={noop}
-            turnPhase={fixture.message.turnPhase}
-            onForce={noop}
-            onEdit={noop}
-            canForce
-          />
-        </div>
-      ))}
-      <Caption>
-        The transcript has no sticky variant of its own on this page — the
-        pinned section header only exists inside a scrolling chat.
-      </Caption>
-    </div>
+        ))}
+        <Caption>
+          The transcript has no sticky variant of its own on this page — the
+          pinned section header only exists inside a scrolling chat.
+        </Caption>
+      </div>
+    </Surface>
   );
 }
 
@@ -232,9 +239,9 @@ function ActivityCardIconGlyph({
 }): JSX.Element {
   switch (icon) {
     case 'notes':
-      return <NoteIcon />;
+      return <NoteIcon size="sm" />;
     case 'prompts':
-      return <PromptIcon />;
+      return <EditBigIcon size="sm" />;
     case 'attachments':
       return <AttachmentIcon size={16} />;
     case 'plans':
@@ -258,12 +265,11 @@ function CardRows({ rows }: { rows: readonly string[] }): JSX.Element {
   return (
     <ul className="space-y-1">
       {rows.map((row) => (
-        <li
-          key={row}
-          className="flex min-h-8 items-center rounded-md bg-base/40 px-2.5 text-xs fg-primary"
-        >
-          <span className="truncate">{row}</span>
-        </li>
+        <Surface as="li" variant="group" size="small" key={row}>
+          <div className="flex items-center min-h-8 px-2.5 text-xs fg-primary">
+            <span className="truncate">{row}</span>
+          </div>
+        </Surface>
       ))}
     </ul>
   );
@@ -349,33 +355,36 @@ function ActivityCardsAfter(): JSX.Element {
 function SleepPausedPillAfter(): JSX.Element {
   return (
     <div className="space-y-2">
-      <div
-        className="relative h-80 overflow-hidden rounded-lg bg-secondary ring-[length:var(--border-hairline)] ring-line-secondary"
+      <Surface
+        variant="group"
+        className="relative overflow-hidden"
         data-testid="change-review-panel-area"
       >
-        {/* Placeholder panel content: the chip floats over whatever is
+        <div className="h-80">
+          {/* Placeholder panel content: the chip floats over whatever is
             there, so the stand-in is deliberately unremarkable. */}
-        <div className="flex h-9 items-center gap-2 px-3 text-xs fg-secondary">
-          <TerminalIcon size={14} />
-          Panel
-        </div>
-        <div className="space-y-2 px-3">
-          <div className="h-2.5 w-3/5 rounded-full bg-subtle" />
-          <div className="h-2.5 w-4/5 rounded-full bg-subtle" />
-          <div className="h-2.5 w-2/5 rounded-full bg-subtle" />
-          <div className="h-2.5 w-3/4 rounded-full bg-subtle" />
-        </div>
-        {/* Same anchoring as the app's bottom status host: `right-3 bottom-3`
+          <div className="flex h-9 items-center gap-2 px-3 text-xs fg-secondary">
+            <TerminalIcon size={14} />
+            Panel
+          </div>
+          <div className="space-y-2 px-3">
+            <div className="h-2.5 w-3/5 rounded-full bg-subtle" />
+            <div className="h-2.5 w-4/5 rounded-full bg-subtle" />
+            <div className="h-2.5 w-2/5 rounded-full bg-subtle" />
+            <div className="h-2.5 w-3/4 rounded-full bg-subtle" />
+          </div>
+          {/* Same anchoring as the app's bottom status host: `right-3 bottom-3`
             in the shell's bottom-right corner, floating over the content. */}
-        <div className="pointer-events-none absolute right-3 bottom-3 z-10 flex items-center justify-end [&>*]:pointer-events-auto">
-          <WakeLockIndicatorView
-            state={DEMO_WAKE_LOCK_STATE}
-            collapsed={false}
-            statusBar
-            onClick={noop}
-          />
+          <div className="pointer-events-none absolute right-3 bottom-3 z-10 flex items-center justify-end [&>*]:pointer-events-auto">
+            <WakeLockIndicatorView
+              state={DEMO_WAKE_LOCK_STATE}
+              collapsed={false}
+              statusBar
+              onClick={noop}
+            />
+          </div>
         </div>
-      </div>
+      </Surface>
       <Caption>
         In the app the chip floats in the bottom-right corner of the main shell
         while an agent turn or workflow runs and Keep system awake is on in
@@ -425,12 +434,10 @@ function FixedLeaf({
   return (
     <div className="space-y-1.5">
       <Caption>{label}</Caption>
-      <div
-        data-testid={testId}
-        className="overflow-hidden rounded-lg ring-[length:var(--border-hairline)] ring-line-secondary"
-        style={{ width: `${width}px` }}
-      >
-        <LeafCard />
+      <div data-testid={testId} style={{ width: `${width}px` }}>
+        <Surface variant="outline" className="overflow-hidden">
+          <LeafCard />
+        </Surface>
       </div>
     </div>
   );
@@ -477,47 +484,46 @@ function PanelMinWidthAfter(): JSX.Element {
 function PipelineRowChipsAfter(): JSX.Element {
   return (
     <div className="space-y-2">
-      <div
-        className="flex flex-wrap items-center gap-2 rounded-lg bg-secondary px-3 py-2.5"
-        data-testid="change-review-badge-row"
-      >
-        <PipelineRunStatusPill status="running" />
-        <PipelineRunStatusPill status="success" muted />
-        <PlanModifiedBadge />
-        <InputRequiredBadge />
-        <AdvisorEtaBadge
-          snapshot={DEMO_ADVISOR_SNAPSHOT}
-          pipelineStatus="running"
-          interactive={false}
-        />
-        <FollowUpButton
-          label={CHAT_UNIT_LABEL}
-          icon={<ChatIcon />}
-          onClick={noop}
-          dataTestId="change-review-follow-up-chat"
-        />
-        <FollowUpButton
-          label="Workflow"
-          icon={<PipelineIcon />}
-          onClick={noop}
-        />
-        <ExecutionActionButton
-          label="Try again"
-          icon={<RetryIcon width={13} height={13} />}
-          onClick={noop}
-          ariaLabel="Try the workflow run again"
-          variant="warning"
-          dataTestId="change-review-retry"
-        />
-        <ExecutionActionButton
-          label="Start over"
-          icon={<RerunIcon width={13} height={13} />}
-          onClick={noop}
-          ariaLabel="Start workflow run over"
-          variant="destructive-chip"
-          dataTestId="change-review-rerun"
-        />
-      </div>
+      <Surface variant="group" data-testid="change-review-badge-row">
+        <div className="flex flex-wrap items-center gap-2 px-3 py-2.5">
+          <PipelineRunStatusPill status="running" />
+          <PipelineRunStatusPill status="success" muted />
+          <PlanModifiedBadge />
+          <InputRequiredBadge />
+          <AdvisorEtaBadge
+            snapshot={DEMO_ADVISOR_SNAPSHOT}
+            pipelineStatus="running"
+            interactive={false}
+          />
+          <FollowUpButton
+            label={CHAT_UNIT_LABEL}
+            icon={<ChatIcon />}
+            onClick={noop}
+            dataTestId="change-review-follow-up-chat"
+          />
+          <FollowUpButton
+            label="Workflow"
+            icon={<PipelineIcon />}
+            onClick={noop}
+          />
+          <ExecutionActionButton
+            label="Try again"
+            icon={<RetryIcon size="sm" />}
+            onClick={noop}
+            ariaLabel="Try the workflow run again"
+            variant="warning"
+            dataTestId="change-review-retry"
+          />
+          <ExecutionActionButton
+            label="Start over"
+            icon={<RerunIcon size="sm" />}
+            onClick={noop}
+            ariaLabel="Start workflow run over"
+            variant="destructive-chip"
+            dataTestId="change-review-rerun"
+          />
+        </div>
+      </Surface>
       <Caption>
         Left to right: the status badges — running, success (muted), Plan
         updated, Input required, Advisor ETA — then the action buttons — Chat
@@ -677,29 +683,28 @@ function RichTooltipsAfter(): JSX.Element {
         Hover: tooltips now open instantly; previously native title tooltips
         took about a second.
       </Caption>
-      <div
-        className="flex flex-wrap items-center gap-3 rounded-lg bg-secondary px-3 py-2"
-        data-testid="change-review-tooltip-row"
-      >
-        <ChatComposerToolbarChip
-          icon={<PlanModeIcon size={14} />}
-          label="Plan"
-          title="Plan before making changes"
-          ariaLabel="Plan mode"
-          onClick={noop}
-        />
-        <FastModeButton value={fastMode} onChange={setFastMode} />
-        <BubbleCopyBadge
-          copyText="Copied from the review page"
-          label="Copy to clipboard"
-        />
-        <VoiceInputButton
-          state="idle"
-          error={null}
-          onStart={noop}
-          onStop={noop}
-        />
-      </div>
+      <Surface variant="group" data-testid="change-review-tooltip-row">
+        <div className="flex flex-wrap items-center gap-3 px-3 py-2">
+          <ChatComposerToolbarChip
+            icon={<PlanModeIcon size={14} />}
+            label="Plan"
+            title="Plan before making changes"
+            ariaLabel="Plan mode"
+            onClick={noop}
+          />
+          <FastModeButton value={fastMode} onChange={setFastMode} />
+          <BubbleCopyBadge
+            copyText="Copied from the review page"
+            label="Copy to clipboard"
+          />
+          <VoiceInputButton
+            state="idle"
+            error={null}
+            onStart={noop}
+            onStop={noop}
+          />
+        </div>
+      </Surface>
       <div className="space-y-1.5">
         <Caption>{TOOLTIP_SIDEBAR_ROW.caption}</Caption>
         <DemoSidebarRow fixture={TOOLTIP_SIDEBAR_ROW} />

@@ -53,6 +53,13 @@ export function createSkillsAPI(): SkillsAPI {
         ipcRenderer.removeListener(SKILLS_CHANNELS.UPDATE_PROGRESS, handler);
       };
     },
+    onChanged: (callback): (() => void) => {
+      const handler = (): void => callback();
+      ipcRenderer.on(SKILLS_CHANNELS.CHANGED, handler);
+      return () => {
+        ipcRenderer.removeListener(SKILLS_CHANNELS.CHANGED, handler);
+      };
+    },
     readContent: (sourceId: string, skillName: string) =>
       ipcRenderer.invoke(SKILLS_CHANNELS.READ_CONTENT, sourceId, skillName),
     listFiles: (sourceId: string, skillName: string) =>

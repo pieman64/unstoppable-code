@@ -58,6 +58,7 @@ import {
   type RepositoryTranscriptPortFixture,
 } from './helpers/repository-transcript-port-fixture';
 import { request as claudeRequest } from './helpers/delegation-runner-fixtures/claude';
+import { runInAgentWorker } from '../agent-runs/agent-worker-context';
 import {
   fakeHandle as fakeCodexHandle,
   preparation as codexPreparation,
@@ -208,6 +209,9 @@ jest.mock('../agents/delegation/canopy-tools', () => ({
 }));
 jest.mock('../codex/runtime-service', () => ({
   getCodexRuntimeService: jest.fn(() => {
+    throw new Error('The conformance fixture injects the Codex runtime.');
+  }),
+  codexRuntimeForWorkerRun: jest.fn(() => {
     throw new Error('The conformance fixture injects the Codex runtime.');
   }),
 }));
@@ -784,11 +788,16 @@ async function runProvider(
         resolveTerminal = resolve;
       },
     );
-    await runner.start(request, (envelope) => {
-      collected.push(envelope.event);
-      if (envelope.event.type === 'terminal') resolveTerminal(envelope.event);
-      return Promise.resolve();
-    });
+    await runInAgentWorker(
+      { kind: 'subagent', runId: request.delegationId },
+      () =>
+        runner.start(request, (envelope) => {
+          collected.push(envelope.event);
+          if (envelope.event.type === 'terminal')
+            resolveTerminal(envelope.event);
+          return Promise.resolve();
+        }),
+    );
     terminal = await terminalEvent;
     events = collected;
     await runner.close({ runId: request.delegationId });
