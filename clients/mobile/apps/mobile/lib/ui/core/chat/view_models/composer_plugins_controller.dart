@@ -14,6 +14,7 @@ final class ComposerPluginsSource {
     required this.save,
     required this.selectedCount,
     required this.providerType,
+    this.readOnlyReason,
   });
 
   final Future<ComposerPluginCatalog> Function() loadCatalog;
@@ -33,6 +34,9 @@ final class ComposerPluginsSource {
 
   /// The explicit choices for the Plugins row; null when not yet known.
   final int? Function() selectedCount;
+
+  /// Why this host can browse selections but cannot safely replace them.
+  final String? readOnlyReason;
 }
 
 enum ComposerPluginsStatus { loading, ready, failed }
@@ -65,6 +69,7 @@ class ComposerPluginsController extends ChangeNotifier
 
   ComposerPluginsStatus get status => _status;
   ComposerPluginCatalog get catalog => _catalog;
+  String? get readOnlyReason => _source.readOnlyReason;
 
   /// The row whose write is in flight; other rows wait for it.
   ComposerPluginItem? get saving => _saving;
@@ -80,10 +85,10 @@ class ComposerPluginsController extends ChangeNotifier
   bool isSupported(ComposerPluginItem item) =>
       item.supports(composerPluginProviderOf(_providerType));
 
-  /// Whether [item] can change now: a selected item can always turn off,
-  /// so a choice the provider cannot use stays removable.
+  /// Editable sources always allow selected items to turn off, including
+  /// choices the provider cannot use. Read-only sources disable every toggle.
   bool canToggle(ComposerPluginItem item) =>
-      isSelected(item) || isSupported(item);
+      readOnlyReason == null && (isSelected(item) || isSupported(item));
 
   /// Loads the catalog and selection again, after a failure.
   void load() {

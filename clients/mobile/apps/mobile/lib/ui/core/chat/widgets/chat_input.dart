@@ -167,7 +167,9 @@ class ChatInput extends StatelessWidget {
       if (plugins != null)
         ComposerAction(
           name: 'plugins',
-          description: 'Choose plugins and skills for this chat',
+          description: plugins.readOnlyReason == null
+              ? 'Choose plugins and skills for this chat'
+              : 'Browse plugins and skills for this chat',
           onRun: () => unawaited(showComposerPluginsSheet(context, plugins)),
         ),
       if (attachments != null)

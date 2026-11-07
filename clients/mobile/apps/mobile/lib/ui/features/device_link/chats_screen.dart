@@ -2,7 +2,7 @@ import 'package:mobile/services/speech_recognizer.dart';
 import 'package:mobile/ui/core/chat/widgets/voice_composer_binding.dart';
 import 'package:mobile/ui/core/activity/worktree_activity_context.dart';
 import 'computer_connect/activity_drawer.dart';
-import 'package:mobile/ui/core/chat/widgets/queued_messages_status.dart';
+import 'computer_connect/work_composer.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:mobile/core/design-system/app-bar/canopy_app_bar.dart';
@@ -28,6 +28,7 @@ import 'package:mobile/ui/core/chat/widgets/attachment_thumbnail_scope.dart';
 import 'package:mobile/ui/core/chat/widgets/chat_attachment_input.dart';
 import 'chats_view_model.dart';
 import 'computer_connect/chat_controls.dart';
+import 'computer_connect/composer_sources.dart';
 import 'device_chat_attachment_uploader.dart';
 
 /// Shown on the attach control while the computer is unreachable.
@@ -59,6 +60,8 @@ class DeviceChatScreen extends StatefulWidget {
 class _DeviceChatScreenState extends State<DeviceChatScreen>
     with WidgetsBindingObserver {
   late final _composer = TextEditingController(text: widget.model.draft);
+  late final _composerSources = DeviceComposerSources(widget.model);
+  late final _changes = Listenable.merge([widget.model, _composerSources]);
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   late final _locationTarget = widget.model.state?.ref;
   final _expanded = <String>{};
@@ -170,6 +173,7 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
     // A send still in flight then discards its files if it is refused.
     _attachments = null;
     _composer.removeListener(_draftChanged);
+    _composerSources.dispose();
     _composer.dispose();
     super.dispose();
   }
@@ -222,10 +226,11 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
-    listenable: widget.model,
+    listenable: _changes,
     builder: (context, _) {
       final model = widget.model;
       final state = model.state;
+      final sources = _composerSources.current();
       final providedWorktree = widget.worktree;
       final worktree = state == null
           ? null
@@ -427,19 +432,6 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
                                       : null,
                                   loadingOlder: model.chats.loadingOlder,
                                   trailing: [
-                                    if ((state.runtime['queuedMessageIds']
-                                                as List? ??
-                                            [])
-                                        .isNotEmpty)
-                                      QueuedMessagesStatus(
-                                        key: const ValueKey(
-                                          'device-queued-messages',
-                                        ),
-                                        count:
-                                            (state.runtime['queuedMessageIds']
-                                                    as List)
-                                                .length,
-                                      ),
                                     for (final question in questions)
                                       PendingQuestionCard(
                                         key: ValueKey(
@@ -487,37 +479,43 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
               ),
               composer: SingleChildScrollView(
                 reverse: true,
-                child: VoiceComposerBinding(
-                  draft: _composer,
-                  target: state?.ref.key,
-                  active: model.online && state?.closed != true,
-                  recognizer: widget.speechRecognizer,
-                  builder: (context, voice) => ChatInput(
-                    key: const ValueKey('device-chat-composer'),
-                    controller: _composer,
-                    sending: model.chats.sending,
-                    enabled: model.canSend,
-                    hintText: model.chats.pendingSend != null
-                        ? 'Check delivery before sending…'
-                        : null,
-                    voice: voice,
-                    voiceEnabled: model.online && state?.closed != true,
-                    onSend: () {
-                      final dictated = voice.dictated;
-                      unawaited(voice.abandon());
-                      unawaited(_send(dictated: dictated));
-                    },
-                    controls: deviceComposerControls(model),
-                    actionsEnabled: model.online,
-                    attachments: switch (_attachments) {
-                      final attachments? => chatInputAttachmentsFor(
-                        attachments,
-                      ),
-                      null => null,
-                    },
-                    attachmentsUnavailableReason: model.online
-                        ? null
-                        : kDeviceAttachmentsNeedReconnect,
+                child: DeviceWorkComposer(
+                  model: model,
+                  builder: (workHeader) => VoiceComposerBinding(
+                    draft: _composer,
+                    target: state?.ref.key,
+                    active: model.online && state?.closed != true,
+                    recognizer: widget.speechRecognizer,
+                    builder: (context, voice) => ChatInput(
+                      key: const ValueKey('device-chat-composer'),
+                      attachedHeader: workHeader,
+                      controller: _composer,
+                      sending: model.chats.sending,
+                      enabled: model.canSend,
+                      hintText: model.chats.pendingSend != null
+                          ? 'Check delivery before sending…'
+                          : null,
+                      voice: voice,
+                      voiceEnabled: model.online && state?.closed != true,
+                      onSend: () {
+                        final dictated = voice.dictated;
+                        unawaited(voice.abandon());
+                        unawaited(_send(dictated: dictated));
+                      },
+                      controls: deviceComposerControls(model),
+                      commands: sources?.commands,
+                      plugins: sources?.plugins,
+                      actionsEnabled: model.online,
+                      attachments: switch (_attachments) {
+                        final attachments? => chatInputAttachmentsFor(
+                          attachments,
+                        ),
+                        null => null,
+                      },
+                      attachmentsUnavailableReason: model.online
+                          ? null
+                          : kDeviceAttachmentsNeedReconnect,
+                    ),
                   ),
                 ),
               ),

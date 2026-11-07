@@ -8,7 +8,6 @@ import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
 import 'package:mobile/core/design-system/settings-list/canopy_settings_row.dart';
 import 'package:mobile/core/design-system/settings-list/canopy_settings_section.dart';
 import 'package:mobile/ui/core/dimens.dart';
-import 'package:mobile/ui/core/external_links.dart';
 import 'package:mobile/ui/features/account/view_models/api_keys_view_model.dart';
 import 'package:mobile/ui/features/account/view_models/profile_view_model.dart';
 import 'package:mobile/ui/features/account/view_models/two_factor_view_model.dart';
@@ -96,15 +95,6 @@ class AccountScreen extends StatelessWidget {
             ],
             CanopySettingsSection(
               children: [
-                CanopySettingsRow(
-                  glyph: CanopyGlyph.github,
-                  title: 'We are open source! Check our repository',
-                  onTap: () => unawaited(
-                    openExternalUrl(
-                      'https://github.com/unstoppable-si/unstoppable-code/tree/main',
-                    ),
-                  ),
-                ),
                 CanopySettingsRow.destructive(
                   glyph: CanopyGlyph.arrowBoxRight,
                   title: 'Sign out',

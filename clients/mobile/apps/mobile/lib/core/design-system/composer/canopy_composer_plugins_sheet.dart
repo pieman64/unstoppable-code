@@ -51,12 +51,14 @@ class CanopyComposerPluginsSheet extends StatefulWidget {
     required this.sections,
     required this.onToggle,
     required this.onRetry,
+    this.notice,
   });
 
   final CanopyPluginsSheetState state;
   final List<CanopyPluginSection> sections;
   final ValueChanged<String> onToggle;
   final VoidCallback onRetry;
+  final String? notice;
 
   static const _title = 'Plugins';
 
@@ -118,6 +120,7 @@ class _CanopyComposerPluginsSheetState
                 style: AppTypography.title.copyWith(color: colors.foreground),
               ),
             ),
+            if (widget.notice case final notice?) message(notice),
             if (widget.state == CanopyPluginsSheetState.ready && hasRows)
               Padding(
                 key: const ValueKey('composer-plugins-search'),

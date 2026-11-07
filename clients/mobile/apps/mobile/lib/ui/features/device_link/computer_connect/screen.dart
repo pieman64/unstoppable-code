@@ -326,146 +326,144 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
                 )
               : null,
         ),
+        // Each body applies the scaffold insets inside its scroll view, so
+        // content scrolls under the translucent app bar.
         body: Builder(
-          builder: (context) => Padding(
-            padding: !retainingComputer && widget.account != null
-                ? EdgeInsets.zero
-                : CanopyScaffold.contentPaddingOf(context),
-            child: retainingComputer
-                ? DeviceProjectsOverview(
-                    controller: controller,
-                    opening: _opening,
-                    openError: _openError,
-                    onOpenWorktree: _open,
-                    onCreateTask: (project) => unawaited(_newTask(project)),
-                    onOpenChat: _openChat,
-                  )
-                : widget.account != null
-                ? ComputerConnectionView(account: widget.account!)
-                : ListView(
-                    padding: const EdgeInsets.all(24),
-                    children: [
-                      Text(
-                        'Connect to your computer',
-                        style: Theme.of(context).textTheme.titleLarge,
+          builder: (context) => retainingComputer
+              ? DeviceProjectsOverview(
+                  controller: controller,
+                  opening: _opening,
+                  openError: _openError,
+                  onOpenWorktree: _open,
+                  onCreateTask: (project) => unawaited(_newTask(project)),
+                  onOpenChat: _openChat,
+                )
+              : widget.account != null
+              ? ComputerConnectionView(account: widget.account!)
+              : ListView(
+                  padding:
+                      CanopyScaffold.contentPaddingOf(context) +
+                      const EdgeInsets.all(24),
+                  children: [
+                    Text(
+                      'Connect to your computer',
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Turn on Remote access on your computer. Use a temporary manual API key from the same account to find it.',
+                    ),
+                    const SizedBox(height: 20),
+                    CanopyTextField(
+                      key: const ValueKey('computer-connect-origin'),
+                      controller: _origin,
+                      labelText: 'Server URL',
+                      onChanged: (_) => unawaited(controller.disconnect()),
+                      enabled: !controller.discovering && !connection.busy,
+                    ),
+                    const SizedBox(height: 12),
+                    if (!connection.busy)
+                      CanopyButton(
+                        label: 'Paste API key and find computers',
+                        loading: controller.discovering || _readingClipboard,
+                        onPressed: controller.discovering || _readingClipboard
+                            ? null
+                            : _pasteAndFind,
                       ),
-                      const SizedBox(height: 12),
-                      const Text(
-                        'Turn on Remote access on your computer. Use a temporary manual API key from the same account to find it.',
-                      ),
-                      const SizedBox(height: 20),
-                      CanopyTextField(
-                        key: const ValueKey('computer-connect-origin'),
-                        controller: _origin,
-                        labelText: 'Server URL',
-                        onChanged: (_) => unawaited(controller.disconnect()),
-                        enabled: !controller.discovering && !connection.busy,
-                      ),
-                      const SizedBox(height: 12),
-                      if (!connection.busy)
-                        CanopyButton(
-                          label: 'Paste API key and find computers',
-                          loading: controller.discovering || _readingClipboard,
-                          onPressed: controller.discovering || _readingClipboard
-                              ? null
-                              : _pasteAndFind,
-                        ),
-                      if (_enterKey && !connection.busy) ...[
-                        const SizedBox(height: 16),
-                        const Text('Enter the temporary API key below.'),
-                        const SizedBox(height: 12),
-                        CanopyTextField(
-                          key: const ValueKey('computer-connect-api-key'),
-                          controller: _apiKey,
-                          labelText: 'API key',
-                          obscureText: true,
-                          enabled: !controller.discovering,
-                          textInputAction: TextInputAction.done,
-                        ),
-                        const SizedBox(height: 12),
-                        ValueListenableBuilder(
-                          valueListenable: _apiKey,
-                          builder: (context, value, _) => CanopyButton(
-                            label: 'Find computers',
-                            onPressed:
-                                controller.discovering ||
-                                    value.text.trim().isEmpty
-                                ? null
-                                : () => _find(value.text),
-                          ),
-                        ),
-                      ],
-                      if (controller.error ?? connection.error
-                          case final error?)
-                        _notice(error),
-                      if (connection.busy) ...[
-                        const SizedBox(height: 20),
-                        Semantics(
-                          liveRegion: true,
-                          child: Text(
-                            connection.phase == DesktopLinkPhase.pairing
-                                ? 'Compare the code on your computer'
-                                : 'Connecting…',
-                          ),
-                        ),
-                        if (connection.code case final code?)
-                          Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 16),
-                            child: Text(
-                              code,
-                              key: const ValueKey('computer-connect-code'),
-                              style: Theme.of(context).textTheme.headlineLarge,
-                            ),
-                          ),
-                        if (connection.code != null)
-                          const Text(
-                            'Allow only when both codes match. Your computer will grant this device control.',
-                          ),
-                        CanopyButton(
-                          label: 'Cancel',
-                          variant: CanopyButtonVariant.inline,
-                          onPressed: controller.disconnect,
-                        ),
-                      ],
-                      for (final computer in controller.computers)
-                        ListTile(
-                          key: ValueKey('computer-connect-peer-${computer.id}'),
-                          title: Text(computer.name),
-                          subtitle: const Text('Remote access is on'),
-                          onTap: () => controller.connect(computer),
-                        ),
-                      if (!controller.discovering &&
-                          controller.computers.isEmpty &&
-                          controller.error == null &&
-                          !connection.busy)
-                        const Padding(
-                          padding: EdgeInsets.symmetric(vertical: 16),
-                          child: Text(
-                            'Only online computers with Remote access enabled appear here.',
-                          ),
-                        ),
-                      if (connection.canReconnect && !connection.busy)
-                        CanopyButton(
-                          label: 'Reconnect',
-                          variant: CanopyButtonVariant.inline,
-                          onPressed: connection.reconnect,
-                        ),
-                      if (!connection.busy)
-                        CanopyButton(
-                          label: 'Forget pairing',
-                          variant: CanopyButtonVariant.inline,
-                          onPressed: () async {
-                            await controller.disconnect();
-                            await connection.forget();
-                          },
-                        ),
+                    if (_enterKey && !connection.busy) ...[
                       const SizedBox(height: 16),
-                      const Text(
-                        'The API key stays in memory until you disconnect or close this version. Pairing keys are stored separately from Remote Control. Revoke the temporary API key on your computer when finished.',
+                      const Text('Enter the temporary API key below.'),
+                      const SizedBox(height: 12),
+                      CanopyTextField(
+                        key: const ValueKey('computer-connect-api-key'),
+                        controller: _apiKey,
+                        labelText: 'API key',
+                        obscureText: true,
+                        enabled: !controller.discovering,
+                        textInputAction: TextInputAction.done,
+                      ),
+                      const SizedBox(height: 12),
+                      ValueListenableBuilder(
+                        valueListenable: _apiKey,
+                        builder: (context, value, _) => CanopyButton(
+                          label: 'Find computers',
+                          onPressed:
+                              controller.discovering ||
+                                  value.text.trim().isEmpty
+                              ? null
+                              : () => _find(value.text),
+                        ),
                       ),
                     ],
-                  ),
-          ),
+                    if (controller.error ?? connection.error case final error?)
+                      _notice(error),
+                    if (connection.busy) ...[
+                      const SizedBox(height: 20),
+                      Semantics(
+                        liveRegion: true,
+                        child: Text(
+                          connection.phase == DesktopLinkPhase.pairing
+                              ? 'Compare the code on your computer'
+                              : 'Connecting…',
+                        ),
+                      ),
+                      if (connection.code case final code?)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          child: Text(
+                            code,
+                            key: const ValueKey('computer-connect-code'),
+                            style: Theme.of(context).textTheme.headlineLarge,
+                          ),
+                        ),
+                      if (connection.code != null)
+                        const Text(
+                          'Allow only when both codes match. Your computer will grant this device control.',
+                        ),
+                      CanopyButton(
+                        label: 'Cancel',
+                        variant: CanopyButtonVariant.inline,
+                        onPressed: controller.disconnect,
+                      ),
+                    ],
+                    for (final computer in controller.computers)
+                      ListTile(
+                        key: ValueKey('computer-connect-peer-${computer.id}'),
+                        title: Text(computer.name),
+                        subtitle: const Text('Remote access is on'),
+                        onTap: () => controller.connect(computer),
+                      ),
+                    if (!controller.discovering &&
+                        controller.computers.isEmpty &&
+                        controller.error == null &&
+                        !connection.busy)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 16),
+                        child: Text(
+                          'Only online computers with Remote access enabled appear here.',
+                        ),
+                      ),
+                    if (connection.canReconnect && !connection.busy)
+                      CanopyButton(
+                        label: 'Reconnect',
+                        variant: CanopyButtonVariant.inline,
+                        onPressed: connection.reconnect,
+                      ),
+                    if (!connection.busy)
+                      CanopyButton(
+                        label: 'Forget pairing',
+                        variant: CanopyButtonVariant.inline,
+                        onPressed: () async {
+                          await controller.disconnect();
+                          await connection.forget();
+                        },
+                      ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'The API key stays in memory until you disconnect or close this version. Pairing keys are stored separately from Remote Control. Revoke the temporary API key on your computer when finished.',
+                    ),
+                  ],
+                ),
         ),
       );
     },

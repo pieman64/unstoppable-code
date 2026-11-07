@@ -53,6 +53,7 @@ class _ComposerPluginsSheetState extends State<_ComposerPluginsSheet> {
         for (final item in controller.catalog.items) item.key: item,
       };
       return CanopyComposerPluginsSheet(
+        notice: controller.readOnlyReason,
         state: switch (controller.status) {
           ComposerPluginsStatus.loading => CanopyPluginsSheetState.loading,
           ComposerPluginsStatus.failed => CanopyPluginsSheetState.failed,

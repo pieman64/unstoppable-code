@@ -9,11 +9,12 @@ import 'package:mobile/core/design-system/settings-list/canopy_settings_section.
 import 'package:mobile/ui/core/action_dialogs.dart';
 import 'package:mobile/ui/core/dimens.dart';
 import 'package:mobile/ui/core/navigation/home_navigation_scope.dart';
+import 'package:mobile/ui/features/settings/views/help_settings_section.dart';
 
 /// Settings for a guest (CAN-2872). A guest has no profile, sign-in methods,
 /// two-factor or API keys, and the server takes feedback only from accounts,
-/// so this offers sign-in, the licenses, and leaving guest mode instead of
-/// [AccountScreen]'s sections.
+/// so this offers sign-in, the licenses and repository link, and leaving guest
+/// mode instead of [AccountScreen]'s sections.
 class GuestAccountScreen extends StatelessWidget {
   const GuestAccountScreen({
     super.key,
@@ -67,6 +68,7 @@ class GuestAccountScreen extends StatelessWidget {
                   trailing: const CanopySettingsChevron(),
                   onTap: () => showLicensePage(context: context),
                 ),
+                const OpenSourceRepositoryRow(),
               ],
             ),
             _sectionGap,

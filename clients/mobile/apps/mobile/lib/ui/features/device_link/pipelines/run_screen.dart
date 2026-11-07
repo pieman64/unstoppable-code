@@ -198,20 +198,20 @@ class _PipelineContentScreen extends StatelessWidget {
       ),
     ),
     body: Builder(
-      builder: (context) => Padding(
-        padding: CanopyScaffold.contentPaddingOf(context),
-        child: Center(
-          child: PipelineContentLoader(
-            supported: true,
-            load: () => repository.content(ref, id, source),
-            emptyMessage: empty,
-            builder: (context, chunks) => ListView.builder(
-              key: const ValueKey('pipeline-content'),
-              padding: const EdgeInsets.all(16),
-              itemCount: chunks.length,
-              itemBuilder: (context, index) =>
-                  PipelineContentChunkView(chunk: chunks[index]),
-            ),
+      builder: (context) => Center(
+        child: PipelineContentLoader(
+          supported: true,
+          load: () => repository.content(ref, id, source),
+          emptyMessage: empty,
+          // The content scrolls under the translucent app bar.
+          builder: (context, chunks) => ListView.builder(
+            key: const ValueKey('pipeline-content'),
+            padding:
+                CanopyScaffold.contentPaddingOf(context) +
+                const EdgeInsets.all(16),
+            itemCount: chunks.length,
+            itemBuilder: (context, index) =>
+                PipelineContentChunkView(chunk: chunks[index]),
           ),
         ),
       ),

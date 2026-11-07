@@ -1403,6 +1403,12 @@ body {
   max-width: calc(100vw - 16px);
 }
 
+.canopy-floating-menu-content {
+  width: max-content;
+  min-width: min(10rem, calc(100vw - 16px));
+  max-width: min(20rem, calc(100vw - 16px));
+}
+
 /*
  * Action menus and listboxes scroll inside the surface content box rather
  * than on the rounded outer layer. The surface's canonical 4px padding is
@@ -1448,9 +1454,8 @@ body {
 }
 
 /*
- * Flagship picker anatomy. Width grows from the shared 216px default to the
- * trigger width, then stops at the shared 320px/viewport cap. Intrinsic labels
- * truncate inside the shared rails instead of changing the shell. Searchable
+ * Flagship picker anatomy. Width follows intrinsic labels between the shared
+ * minimum/trigger floor and 320px/viewport cap. Long labels truncate at the cap. Searchable
  * manual composites use their list as the sole native scroll viewport. Its
  * native `auto` gutter matches the managed action-menu viewport: short lists
  * retain symmetric row insets, while an actual overflow reserves scrollbar
@@ -1458,15 +1463,15 @@ body {
  */
 .canopy-picker-menu {
   display: flex;
-  width: min(
+  width: max-content;
+  min-width: min(
     max(
       var(--canopy-picker-trigger-width, 0px),
-      var(--canopy-picker-minimum-width, 13.5rem)
+      var(--canopy-picker-minimum-width, 10rem)
     ),
     var(--canopy-picker-maximum-width, 20rem),
     calc(100vw - 16px)
   );
-  min-width: 0;
   max-width: min(var(--canopy-picker-maximum-width, 20rem), calc(100vw - 16px));
   flex-direction: column;
   overflow: hidden;
@@ -1981,4 +1986,46 @@ body {
 [data-testid='completed-work-dialog'] button,
 [data-testid='completed-work-dialog'] button:disabled {
   cursor: default;
+}
+
+@utility sidebar-selection-toolbar-presence {
+  opacity: 0;
+  transform: translateY(25%);
+  visibility: hidden;
+  pointer-events: none;
+  transition-property: opacity, transform, visibility;
+  transition-duration: 140ms, 140ms, 0s;
+  transition-timing-function: var(--ease-drawer);
+  transition-delay: 0s, 0s, 140ms;
+}
+
+.sidebar-selection-toolbar-presence[data-state='open'] {
+  opacity: 1;
+  transform: translateY(0);
+  visibility: visible;
+  pointer-events: auto;
+  transition-duration: 180ms, 180ms, 0s;
+  transition-delay: 0s;
+}
+
+/* Navigation/selection by keyboard should respond at once. */
+.sidebar-selection-toolbar-presence[data-motion='instant'] {
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-selection-toolbar-presence,
+  .sidebar-selection-toolbar-presence[data-state='open'] {
+    transform: none;
+    transition-property: opacity, visibility;
+    transition-duration: 100ms, 0s;
+  }
+
+  .sidebar-selection-toolbar-presence {
+    transition-delay: 0s, 100ms;
+  }
+
+  .sidebar-selection-toolbar-presence[data-state='open'] {
+    transition-delay: 0s;
+  }
 }

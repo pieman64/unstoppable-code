@@ -16,14 +16,10 @@ class DeviceWorktreeArchiveRow extends StatefulWidget {
     required this.controller,
     required this.worktree,
     required this.onTap,
-    this.contextLabel,
   });
   final ComputerConnectController controller;
   final DeviceWorktree worktree;
   final VoidCallback onTap;
-
-  /// Passed to [WorktreeRow.contextLabel].
-  final String? contextLabel;
 
   @override
   State<DeviceWorktreeArchiveRow> createState() =>
@@ -125,7 +121,6 @@ class _DeviceWorktreeArchiveRowState extends State<DeviceWorktreeArchiveRow> {
               needsAnswer: worktree.pendingQuestion,
               codeGraphBuilding: controller.worktrees.codeGraphBuilding
                   .contains(worktree.key),
-              contextLabel: widget.contextLabel,
               onTap: pending ? null : widget.onTap,
             ),
             if (pending)

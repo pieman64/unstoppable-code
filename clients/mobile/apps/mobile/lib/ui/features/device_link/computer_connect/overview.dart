@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:mobile/core/design-system/app-bar/canopy_scaffold.dart';
 import 'package:mobile/core/design-system/spinner/dot_spinner.dart';
 import 'package:mobile/device_link/chats/models.dart';
 import 'package:mobile/device_link/worktrees/repository.dart';
@@ -59,10 +60,6 @@ class _DeviceProjectsOverviewState extends State<DeviceProjectsOverview> {
               'Some projects are hidden because their ownership is unavailable.',
           onRetry: controller.refresh,
         ),
-      for (final worktree in worktrees.where(
-        (w) => w.status == 'Needs input' || w.unread,
-      ))
-        _worktree(context, worktree, contextLabel: worktree.projectName),
       Padding(
         padding: const EdgeInsets.only(bottom: 4),
         child: Row(
@@ -140,7 +137,7 @@ class _DeviceProjectsOverviewState extends State<DeviceProjectsOverview> {
         );
       }
       for (final worktree in branches) {
-        rows.add(_worktree(context, worktree));
+        rows.add(_worktree(worktree));
       }
       for (final chat in chats) {
         rows.add(_chat(chat));
@@ -176,11 +173,14 @@ class _DeviceProjectsOverviewState extends State<DeviceProjectsOverview> {
       for (var index = 0; index < rows.length; index++) ?rows[index].key: index,
     };
     return RefreshIndicator(
+      edgeOffset: CanopyScaffold.contentPaddingOf(context).top,
       onRefresh: controller.refresh,
       child: ListView.builder(
         key: const ValueKey('device-projects-list'),
         physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
+        padding:
+            CanopyScaffold.contentPaddingOf(context) +
+            const EdgeInsets.fromLTRB(16, 12, 16, 32),
         itemCount: rows.length,
         findChildIndexCallback: (key) => indexByKey[key],
         itemBuilder: (_, index) => rows[index],
@@ -206,19 +206,10 @@ class _DeviceProjectsOverviewState extends State<DeviceProjectsOverview> {
     ),
     onTap: () => widget.onOpenChat(chat),
   );
-  Widget _worktree(
-    BuildContext context,
-    DeviceWorktree worktree, {
-    String? contextLabel,
-  }) => DeviceWorktreeArchiveRow(
-    key: ValueKey(
-      contextLabel == null
-          ? 'device-worktree-${worktree.key}'
-          : 'device-attention-${worktree.key}',
-    ),
+  Widget _worktree(DeviceWorktree worktree) => DeviceWorktreeArchiveRow(
+    key: ValueKey('device-worktree-${worktree.key}'),
     controller: widget.controller,
     worktree: worktree,
-    contextLabel: contextLabel,
     onTap: () => widget.onOpenWorktree(worktree),
   );
 }
